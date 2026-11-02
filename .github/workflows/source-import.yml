@@ -35,6 +35,9 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y zstd
           fi
+          echo "archive_bytes=$(wc -c < "$archive")"
+          echo "archive_sha256=$(sha256sum "$archive" | cut -d\  -f1)"
+          echo "base64_chars=$(cat .bootstrap/parts/*.b64 | wc -c)"
           zstd --test "$archive"
           zstd --decompress --stdout "$archive" | tar -xf - -C "$RUNNER_TEMP/open-ro-source"
           test -f "$RUNNER_TEMP/open-ro-source/open-ro/PROJECT.md"
