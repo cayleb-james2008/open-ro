@@ -16,7 +16,7 @@ export interface McpServerSpec {
 
 type JsonRpcMessage = {
   jsonrpc: '2.0';
-  id?: number;
+  id?: number | string;
   method?: string;
   params?: Record<string, unknown>;
   result?: unknown;
@@ -26,9 +26,11 @@ type JsonRpcMessage = {
 export class McpStdioClient {
   private child: ChildProcessWithoutNullStreams | null = null;
   private nextId = 1;
-  private pending = new Map<number, { resolve: (value: unknown) => void; reject: (err: Error) => void }>();
+  private pending = new Map<number, { resolve: (value: unknown) => void; reject: (err: Error) => void; timer: NodeJS.Timeout }>();
   private buffer = '';
   private tools: McpToolSummary[] = [];
+
+  constructor(private readonly requestTimeoutMs = 15_000) {}
 
   get running(): boolean {
     return this.child !== null && this.child.exitCode === null;
@@ -38,27 +40,37 @@ export class McpStdioClient {
     if (this.running) {
       throw new Error('An MCP server is already active. Stop it before connecting another.');
     }
-    this.child = spawn(spec.command, spec.args, {
+    const child = spawn(spec.command, spec.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: scrubbedEnv(),
       shell: false,
       windowsHide: true,
     });
-    this.child.stdout.setEncoding('utf8');
-    this.child.stdout.on('data', (chunk: string) => this.onData(chunk));
-    this.child.stderr.setEncoding('utf8');
-    this.child.stderr.on('data', () => {
+    this.child = child;
+    this.buffer = '';
+    // Events from an older process must not reach requests sent to a newer one.
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => this.child === child && this.onData(chunk));
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', () => {
       /* server logs are not treated as protocol failures */
     });
-    this.child.on('error', (error) => this.rejectAll(error));
-    this.child.on('exit', () => this.rejectAll(new Error('MCP server exited unexpectedly.')));
-    await this.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'Open-Ro Studio', version: '0.1.0' },
-    });
-    this.notify('notifications/initialized');
-    await this.refreshTools();
+    child.on('error', (error) => this.child === child && this.rejectAll(error));
+    child.on('exit', () => this.child === child && this.rejectAll(new Error('MCP server exited unexpectedly.')));
+    child.stdin.on('error', (error) => this.child === child && this.rejectAll(error));
+    try {
+      await this.request('initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'Open-Ro Studio', version: '0.1.0' },
+      });
+      this.notify('notifications/initialized');
+      await this.refreshTools();
+    } catch (error) {
+      // A failed handshake must not leave a live process that blocks the next connect.
+      await this.stop();
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {
@@ -78,11 +90,16 @@ export class McpStdioClient {
   }
 
   async refreshTools(): Promise<McpToolSummary[]> {
-    const result = (await this.request('tools/list', {})) as { tools?: Array<{ name: string; description?: string }> };
-    this.tools = (result?.tools ?? []).map((tool) => ({
-      name: String(tool.name),
-      description: String(tool.description ?? ''),
-    }));
+    const result = (await this.request('tools/list', {})) as { tools?: Array<{ name: string; description?: string; inputSchema?: unknown }> };
+    this.tools = (result?.tools ?? []).map((tool) => {
+      const schema = tool.inputSchema;
+      const objectSchema = schema && typeof schema === 'object' && !Array.isArray(schema) && (schema as { type?: unknown }).type === 'object';
+      return {
+        name: String(tool.name),
+        description: String(tool.description ?? ''),
+        ...(objectSchema ? { inputSchema: schema as Record<string, unknown> } : {}),
+      };
+    });
     return this.listTools();
   }
 
@@ -112,9 +129,16 @@ export class McpStdioClient {
   }
 
   private onMessage(message: JsonRpcMessage): void {
+    if (typeof message.method === 'string') {
+      if (message.id !== undefined) {
+        this.answerServerRequest(message.id, message.method);
+      }
+      return;
+    }
     if (typeof message.id === 'number') {
       const pending = this.pending.get(message.id);
       if (pending) {
+        clearTimeout(pending.timer);
         this.pending.delete(message.id);
         if (message.error) {
           pending.reject(new Error(message.error.message));
@@ -135,6 +159,15 @@ export class McpStdioClient {
     this.child?.stdin.write(`${line}\n`);
   }
 
+  /** Server-to-client requests: ping gets an empty result; this client offers no other capabilities. */
+  private answerServerRequest(id: number | string, method: string): void {
+    if (method === 'ping') {
+      this.send({ jsonrpc: '2.0', id, result: {} });
+      return;
+    }
+    this.send({ jsonrpc: '2.0', id, error: { code: -32601, message: `Method not supported by Open-Ro: ${method}` } });
+  }
+
   private notify(method: string): void {
     this.send({ jsonrpc: '2.0', method, params: {} });
   }
@@ -146,19 +179,19 @@ export class McpStdioClient {
     }
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.send({ jsonrpc: '2.0', id, method, params });
-      setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id);
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id)) {
           reject(new Error(`MCP request ${method} timed out.`));
         }
-      }, 15_000);
+      }, this.requestTimeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      this.send({ jsonrpc: '2.0', id, method, params });
     });
   }
 
   private rejectAll(err: Error): void {
     for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
       pending.reject(err);
     }
     this.pending.clear();
