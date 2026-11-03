@@ -78,4 +78,13 @@ describe('playtest evidence gate (S04)', () => {
     const same = await grade({ ...full, assertions: [{ description: 'long', expected: `${long}A`, actual: `${long}A` }] });
     expect(same).toMatchObject({ status: 'NO_EVIDENCE', reason: expect.stringMatching(/longer than 2000 characters/) });
   });
+
+  it('fails on a later assertion or state check, not only the first', async () => {
+    const good = full.assertions[0];
+    const laterAssertion = await grade({ ...full, assertions: [good, good, { description: 'third', expected: '3', actual: '2' }] });
+    expect(laterAssertion).toMatchObject({ status: 'FAILED', failingCheck: 'assertion "third": expected 3, got 2' });
+    const state = full.stateChecks[0];
+    const laterState = await grade({ ...full, stateChecks: [state, { ...state, instancePath: 'Workspace.Door', property: 'Open', expected: 'true', actual: 'false' }] });
+    expect(laterState).toMatchObject({ status: 'FAILED', failingCheck: 'state Workspace.Door.Open: expected true, got false' });
+  });
 });
