@@ -137,6 +137,40 @@ export function stageStudioTool(
         pendingApproval: { kind: 'studio' as const, tool: 'get_console_output', path: 'game', id: item.id },
       };
     }
+    if (input.name === 'studio_keyboard' || input.name === 'studio_mouse') {
+      const toolName = input.name === 'studio_keyboard' ? 'user_keyboard_input' : 'user_mouse_input';
+      if (!caller.listTools().some((tool) => tool.name === toolName)) {
+        return { ok: false, output: `The connected MCP server has no ${toolName} tool.` };
+      }
+      if (!studioId) {
+        return { ok: false, output: 'Studio needs a studioId. Run list_roblox_studios first.' };
+      }
+      const actions = args.actions;
+      if (!Array.isArray(actions) || actions.length === 0) {
+        return { ok: false, output: 'actions must be a non-empty array.' };
+      }
+      if (actions.length > 40) {
+        return { ok: false, output: 'actions must contain at most 40 steps.' };
+      }
+      const clean = actions.map((action) => (action && typeof action === 'object' ? (action as Record<string, unknown>) : null));
+      if (clean.some((action) => !action || typeof action.action !== 'string' || !action.action.trim())) {
+        return { ok: false, output: 'Every input action needs an action string.' };
+      }
+      const item = approvals.stageStudio({
+        projectRoot: input.projectRoot,
+        op: 'input',
+        path: 'game',
+        tool: toolName,
+        args: { actions: clean, datamodel_type: 'Client', studio_id: studioId },
+        server,
+        studioId,
+      });
+      return {
+        ok: true,
+        output: `Staged ${clean.length} input action(s) for approval. Nothing has run in Studio.`,
+        pendingApproval: { kind: 'studio' as const, tool: toolName, path: 'game', id: item.id },
+      };
+    }
     const segments = parseInstancePath(String(args.path ?? ''));
     const path = segments.join('.');
     if (input.name === 'studio_read_script') {
@@ -191,7 +225,7 @@ export async function runApprovedStudio(
   if (!sameServer(item.mcpServer, caller.identity)) {
     return fail(`The MCP server changed after this Studio ${item.studioOp} was staged. Nothing ran. Ask for it again.`);
   }
-  if (item.studioOp === 'play' || item.studioOp === 'console') {
+  if (item.studioOp === 'play' || item.studioOp === 'console' || item.studioOp === 'input') {
     let args: Record<string, unknown>;
     try {
       args = JSON.parse(item.mcpArgs ?? '{}') as Record<string, unknown>;
@@ -207,6 +241,10 @@ export async function runApprovedStudio(
           summary: `${args.is_start === true ? 'Started' : 'Stopped'} playtesting.`,
           output: text.slice(0, 4_000),
         };
+      }
+      if (item.studioOp === 'input') {
+        const count = Array.isArray(args.actions) ? args.actions.length : 0;
+        return { ok: true, decision: 'approve', summary: `Sent ${count} input action(s) to Studio.`, output: text.slice(0, 4_000) };
       }
       return { ok: true, decision: 'approve', summary: 'Read the Studio output.', output: text.slice(0, 20_000) };
     } catch (error) {

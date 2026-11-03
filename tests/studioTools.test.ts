@@ -273,3 +273,70 @@ describe('Studio playtest and console tools', () => {
     expect(studio.calls).toHaveLength(0);
   });
 });
+
+describe('Studio input simulation', () => {
+  const root = '/project';
+  const tools: McpToolSummary[] = [
+    executeLuau,
+    { name: 'user_keyboard_input', description: '' },
+    { name: 'user_mouse_input', description: '' },
+  ];
+  const stage = (studio: ReturnType<typeof fakeStudio>, approvals: ApprovalQueue, name: string, args: Record<string, unknown>) =>
+    stageStudioTool(approvals, studio.caller, new StudioReads(), { projectRoot: root, name, args });
+  const keys = [{ action: 'keyPress', key_code: 'Space' }];
+  const mouse = [{ action: 'mouseButtonClick', mouse_button: 'left', x: 640, y: 360 }];
+
+  it('stages keyboard and mouse sequences with Client datamodel and frozen args', () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    const keyboard = stage(studio, approvals, 'studio_keyboard', { actions: keys, studioId: 'S1' });
+    const mouseInput = stage(studio, approvals, 'studio_mouse', { actions: mouse, studioId: 'S1' });
+    expect([keyboard.ok, mouseInput.ok]).toEqual([true, true]);
+    expect(studio.calls).toEqual([]);
+    const items = approvals.list();
+    expect(items[0]).toMatchObject({ kind: 'studio', studioOp: 'input', mcpTool: 'user_keyboard_input', studioId: 'S1' });
+    expect(JSON.parse(items[0].mcpArgs ?? '{}')).toEqual({ actions: keys, datamodel_type: 'Client', studio_id: 'S1' });
+    expect(items[1]).toMatchObject({ studioOp: 'input', mcpTool: 'user_mouse_input' });
+    expect(JSON.parse(items[1].mcpArgs ?? '{}')).toEqual({ actions: mouse, datamodel_type: 'Client', studio_id: 'S1' });
+  });
+
+  it('refuses missing tools, a missing studio id, and invalid action lists', () => {
+    const approvals = new ApprovalQueue();
+    const noTools = fakeStudio([]);
+    expect(stage(noTools, approvals, 'studio_keyboard', { actions: keys, studioId: 'S1' }).output).toMatch(/no user_keyboard_input/);
+    expect(stage(noTools, approvals, 'studio_mouse', { actions: mouse, studioId: 'S1' }).output).toMatch(/no user_mouse_input/);
+    const studio = fakeStudio(tools);
+    expect(stage(studio, approvals, 'studio_keyboard', { actions: keys }).output).toMatch(/needs a studioId/);
+    expect(stage(studio, approvals, 'studio_keyboard', { actions: [], studioId: 'S1' }).output).toMatch(/non-empty array/);
+    expect(stage(studio, approvals, 'studio_keyboard', { actions: Array.from({ length: 41 }, () => ({ action: 'wait', wait_time_ms: 1 })), studioId: 'S1' }).output).toMatch(/at most 40/);
+    expect(stage(studio, approvals, 'studio_keyboard', { actions: [{ key_code: 'A' }], studioId: 'S1' }).output).toMatch(/needs an action string/);
+    expect(stage(studio, approvals, 'studio_keyboard', { actions: [{ action: '   ' }], studioId: 'S1' }).output).toMatch(/needs an action string/);
+    expect(approvals.list()).toHaveLength(0);
+  });
+
+  it('runs an approved multi-step keyboard sequence with capped output', async () => {
+    const studio = fakeStudio(tools);
+    studio.replies.push('x'.repeat(5_000));
+    const approvals = new ApprovalQueue();
+    const sequence = [
+      { action: 'keyDown', key_code: 'W' },
+      { action: 'wait', wait_time_ms: 250 },
+      { action: 'keyUp', key_code: 'W' },
+    ];
+    const staged = stage(studio, approvals, 'studio_keyboard', { actions: sequence, studioId: 'S1' });
+    const result = await runApprovedStudio(approvals.take(staged.pendingApproval!.id, 'studio'), studio.caller, new StudioReads());
+    expect(result).toMatchObject({ ok: true, summary: 'Sent 3 input action(s) to Studio.' });
+    expect(result.output).toHaveLength(4_000);
+    expect(studio.calls).toEqual([{ name: 'user_keyboard_input', args: { actions: sequence, datamodel_type: 'Client', studio_id: 'S1' } }]);
+  });
+
+  it('refuses input approvals after the MCP server changes', async () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    const staged = stage(studio, approvals, 'studio_mouse', { actions: mouse, studioId: 'S1' });
+    const restarted = { ...studio.caller, identity: { command: 'StudioMCP', args: [], session: 'session-2' } };
+    const result = await runApprovedStudio(approvals.take(staged.pendingApproval!.id, 'studio'), restarted, new StudioReads());
+    expect(result.summary).toMatch(/MCP server changed/);
+    expect(studio.calls).toHaveLength(0);
+  });
+});
