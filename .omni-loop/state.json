@@ -1,0 +1,29 @@
+{
+  "version": "3.0.0",
+  "mode": "0B",
+  "project": "open-ro",
+  "updated": "2026-11-03T14:30:00Z",
+  "iteration": 3,
+  "branch": "cursor/quality-waves-7ac4",
+  "harnesses": ["H1_SYSTEMS_CODE", "H5_PUBLICATION_DOCS"],
+  "lastVerification": {
+    "node": "22.23.4",
+    "typecheck": "pass",
+    "lint": "pass",
+    "test": "13 passed",
+    "build": "pass",
+    "rendererSmoke": "headless Chrome, four screens, 1280x800 and 960x700",
+    "electronLaunch": "not run",
+    "packaging": "not run"
+  },
+  "nextWaves": [
+    "Launch Electron on a real desktop and record the preload, file dialog, and keyring result.",
+    "Build Windows NSIS and Linux AppImage/deb/pacman artifacts and keep the receipts.",
+    "Persist the selected project folder and restore it with the chat history.",
+    "Return approved tool output to the model as a tool result instead of asking the user to paste a follow-up.",
+    "Classify Studio MCP tools as read, mutation, playtest, or publish before a call is allowed.",
+    "Stream provider responses and show cancellation.",
+    "Add an ESLint TypeScript config on top of scripts/check-source.mjs.",
+    "Align or replace the purple docs wordmark with the lime mark used in the app."
+  ]
+}

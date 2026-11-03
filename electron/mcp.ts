@@ -1,4 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { pushMcpChunk } from './mcpFraming';
+import { scrubbedEnv } from './toolEnv';
 import type { McpToolSummary } from './types';
 
 /**
@@ -38,14 +40,17 @@ export class McpStdioClient {
     }
     this.child = spawn(spec.command, spec.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: scrubbedEnv(),
+      shell: false,
+      windowsHide: true,
     });
     this.child.stdout.setEncoding('utf8');
     this.child.stdout.on('data', (chunk: string) => this.onData(chunk));
     this.child.stderr.setEncoding('utf8');
     this.child.stderr.on('data', () => {
-      /* server logs are surfaced via tools, not crashed on */
+      /* server logs are not treated as protocol failures */
     });
+    this.child.on('error', (error) => this.rejectAll(error));
     this.child.on('exit', () => this.rejectAll(new Error('MCP server exited unexpectedly.')));
     await this.request('initialize', {
       protocolVersion: '2024-11-05',
@@ -62,6 +67,8 @@ export class McpStdioClient {
       return;
     }
     this.child = null;
+    this.tools = [];
+    this.buffer = '';
     this.rejectAll(new Error('MCP server stopped.'));
     child.kill();
   }
@@ -95,25 +102,16 @@ export class McpStdioClient {
   }
 
   private onData(chunk: string): void {
-    this.buffer += chunk;
-    let newline = this.buffer.indexOf('\n');
-    while (newline >= 0) {
-      const line = this.buffer.slice(0, newline).trim();
-      this.buffer = this.buffer.slice(newline + 1);
-      if (line.length > 0) {
-        this.onLine(line);
+    const parsed = pushMcpChunk(this.buffer, chunk);
+    this.buffer = parsed.buffer;
+    for (const message of parsed.messages) {
+      if (message && typeof message === 'object') {
+        this.onMessage(message as JsonRpcMessage);
       }
-      newline = this.buffer.indexOf('\n');
     }
   }
 
-  private onLine(line: string): void {
-    let message: JsonRpcMessage;
-    try {
-      message = JSON.parse(line) as JsonRpcMessage;
-    } catch {
-      return;
-    }
+  private onMessage(message: JsonRpcMessage): void {
     if (typeof message.id === 'number') {
       const pending = this.pending.get(message.id);
       if (pending) {
@@ -127,10 +125,13 @@ export class McpStdioClient {
     }
   }
 
+  private send(message: unknown): void {
+    const body = JSON.stringify(message);
+    this.child?.stdin.write(`Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n${body}`);
+  }
+
   private notify(method: string): void {
-    this.child?.stdin.write(
-      `${JSON.stringify({ jsonrpc: '2.0', method, params: {} })}\n`,
-    );
+    this.send({ jsonrpc: '2.0', method, params: {} });
   }
 
   private request(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -141,7 +142,7 @@ export class McpStdioClient {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+      this.send({ jsonrpc: '2.0', id, method, params });
       setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);

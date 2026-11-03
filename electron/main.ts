@@ -1,245 +1,272 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
-import { spawn } from 'node:child_process';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
-import * as os from 'node:os';
 import * as path from 'node:path';
+import { ApprovalQueue, type PendingApproval } from './approvals';
 import { detectCapabilities } from './capabilities';
-import { McpStdioClient, type McpServerSpec } from './mcp';
+import { McpStdioClient } from './mcp';
+import { assertMcpSpec } from './mcpFraming';
+import { isIgnoredName, isSecretName, resolveWithinRoot } from './pathSafety';
+import { getProviderOption, isProviderKind, providerOptions, type ProviderKind } from './providerCatalog';
 import {
-  deleteCredential,
-  loadCredential,
-  saveCredential,
-  secureStorageAvailable,
-  listCredentialServices,
-  storePath,
-} from './secureStore';
-import { getProviderOption, providerOptions, type ProviderKind } from './providerCatalog';
+  activateProvider,
+  listProviderViews,
+  parseProviderState,
+  removeProvider,
+  upsertProvider,
+  validateProviderSave,
+  type ProviderAppState,
+} from './providerState';
+import { runShellCommand } from './runCommand';
+import { sanitizeSessions } from './sessions';
+import { deleteCredential, listCredentialServices, loadCredential, saveCredential, secureStorageAvailable, storePath } from './secureStore';
 import { runAgentTurn, testConnection, toolSchemas } from './agent';
 import type {
   AgentTurnResult,
+  ApprovalResult,
   CapabilityInfo,
   ChatMessage,
   ConnectionTestResult,
   FileEntry,
   McpToolSummary,
+  PendingApprovalView,
   ProviderConnection,
   StoredProviderView,
   ToolExecutor,
 } from './types';
 
 /**
- * Electron main process: owns privileged operations behind a validated typed
- * IPC boundary (docs/ARCHITECTURE.md). The renderer never sees raw provider
- * credentials, Node objects, or unrestricted filesystem access.
+ * Electron main process. Privileged work stays here: credential access, the
+ * project root the user picked, and the approval queue. The renderer cannot
+ * substitute a different path, file body, or command after something is staged.
  */
 
 let mainWindow: BrowserWindow | null = null;
+let projectRoot = '';
 const mcp = new McpStdioClient();
+const approvals = new ApprovalQueue();
 
-// --- Approval tokens ---------------------------------------------------------
-// Writes and shell commands are staged: the preview step returns a short-lived
-// token bound to the exact (path, content) / (cwd, command); only a matching
-// token executes. This keeps the approval gate inside the main process.
-const APPROVAL_TTL_MS = 10 * 60_000;
-const approvals = new Map<string, { action: 'write' | 'command'; hash: string; payload: string; expires: number }>();
-
-function approvalToken(action: 'write' | 'command', payload: string): string {
-  const hash = crypto.createHash('sha256').update(`${action}:${payload}`).digest('hex');
-  const token = crypto.randomUUID();
-  approvals.set(token, { action, hash, payload, expires: Date.now() + APPROVAL_TTL_MS });
-  return token;
-}
-
-function consumeApproval(action: 'write' | 'command', payload: string, token: string): boolean {
-  const entry = approvals.get(token);
-  if (!entry || entry.action !== action || entry.hash !== crypto.createHash('sha256').update(`${action}:${payload}`).digest('hex')) {
-    return false;
-  }
-  approvals.delete(token);
-  return true;
-}
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [token, entry] of approvals) {
-    if (entry.expires < now) {
-      approvals.delete(token);
-    }
-  }
-}, 60_000).unref?.();
-
-// --- Active provider connection ----------------------------------------------
-interface AppState {
-  active?: { kind: ProviderKind; model: string; baseUrl?: string };
-}
 const statePath = (): string => path.join(app.getPath('userData'), 'state.json');
+const sessionsPath = (): string => path.join(app.getPath('userData'), 'sessions.json');
+const checkpointRoot = (): string => path.join(app.getPath('userData'), 'checkpoints');
 
-async function readAppState(): Promise<AppState> {
+function toApprovalView(item: PendingApproval): PendingApprovalView {
+  return {
+    id: item.id,
+    kind: item.kind,
+    createdAt: item.createdAt,
+    relPath: item.relPath,
+    previous: item.previous,
+    content: item.content,
+    command: item.command,
+    cwd: item.cwd,
+  };
+}
+
+async function readAppState(): Promise<ProviderAppState> {
   try {
-    return JSON.parse(await fs.readFile(statePath(), 'utf8')) as AppState;
+    return parseProviderState(JSON.parse(await fs.readFile(statePath(), 'utf8')) as unknown);
   } catch {
-    return {};
+    return { providers: [] };
   }
 }
 
-async function writeAppState(state: AppState): Promise<void> {
+async function writeAppState(state: ProviderAppState): Promise<void> {
   await fs.mkdir(app.getPath('userData'), { recursive: true });
-  await fs.writeFile(statePath(), JSON.stringify(state, null, 2), 'utf8');
+  await fs.writeFile(statePath(), JSON.stringify(state, null, 2), { encoding: 'utf8', mode: 0o600 });
 }
 
 async function resolveActiveConnection(provided?: Partial<ProviderConnection>): Promise<ProviderConnection | null> {
   const state = await readAppState();
-  const kind = (provided?.kind ?? state.active?.kind) as ProviderKind | undefined;
-  if (!kind) {
+  const kind = provided?.kind ?? state.activeKind;
+  if (!kind || !isProviderKind(kind)) {
     return null;
   }
-  const model = provided?.model ?? state.active?.model ?? '';
-  const baseUrl = provided?.baseUrl ?? state.active?.baseUrl;
-  const apiKey = provided?.apiKey ?? loadCredential(`provider:${kind}`);
+  const record = state.providers.find((item) => item.kind === kind);
+  const model = provided?.model?.trim() || record?.model || '';
+  const baseUrl = provided?.baseUrl?.trim() || record?.baseUrl;
+  const typedKey = provided?.apiKey?.trim();
+  const apiKey = typedKey || loadCredential(`provider:${kind}`);
   return { kind, model, baseUrl, apiKey };
 }
 
-// --- Project tools ------------------------------------------------------------
-const IGNORED = new Set(['.git', 'node_modules', 'dist', 'dist-electron', 'release', 'coverage', '.openro']);
-
-function resolveWithin(root: string, rel: string): string {
-  const target = path.resolve(root, rel.replace(/^[/\\]+/, ''));
-  const normalizedRoot = path.resolve(root);
-  if (target !== normalizedRoot && !target.startsWith(normalizedRoot + path.sep)) {
-    throw new Error('Path escapes the selected project root.');
-  }
-  return target;
-}
-
 async function listFiles(root: string, rel: string): Promise<FileEntry[]> {
-  const target = resolveWithin(root, rel || '.');
+  const target = await resolveWithinRoot(root, rel || '.');
   const entries = await fs.readdir(target, { withFileTypes: true });
   return entries
-    .filter((entry) => !IGNORED.has(entry.name) && !entry.name.startsWith('.'))
-    .map((entry): FileEntry => ({ name: entry.name, path: path.join(rel || '.', entry.name), type: entry.isDirectory() ? 'dir' : 'file' }))
+    .filter((entry) => !isIgnoredName(entry.name) && !isSecretName(entry.name))
+    .map((entry): FileEntry => ({
+      name: entry.name,
+      path: path.posix.join((rel || '.').replace(/\\/g, '/'), entry.name),
+      type: entry.isDirectory() ? 'dir' : 'file',
+    }))
     .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
-}  // --- Agent executor -----------------------------------------------------------
+}
+
+async function readTextIfExists(target: string): Promise<string | null> {
+  try {
+    return await fs.readFile(target, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function writeCheckpoint(root: string, relPath: string, previous: string | null): Promise<void> {
+  const dir = checkpointRoot();
+  await fs.mkdir(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const entry = { ts: stamp, projectRoot: root, relPath, previous };
+  const name = `${stamp}-${crypto.createHash('sha1').update(`${root}:${relPath}`).digest('hex').slice(0, 8)}.json`;
+  await fs.writeFile(path.join(dir, name), JSON.stringify(entry), 'utf8');
+}
+
 function buildExecutor(root: string): ToolExecutor {
   return {
     schemas: () => toolSchemas(),
     async execute(call) {
+      if (!root) {
+        return { ok: false, output: 'No project folder selected.' };
+      }
       const { name, args } = call;
-      switch (name) {
-        case 'list_dir': {
-          const rel = typeof args.path === 'string' ? args.path : '.';
-          try {
+      try {
+        switch (name) {
+          case 'list_dir': {
+            const rel = typeof args.path === 'string' ? args.path : '.';
             const entries = await listFiles(root, rel);
             return { ok: true, output: entries.map((entry) => `${entry.type === 'dir' ? '[d]' : '[f]'} ${entry.path}`).join('\n') || '(empty directory)' };
-          } catch (error) {
-            return { ok: false, output: error instanceof Error ? error.message : 'list_dir failed.' };
           }
-        }
-        case 'read_file': {
-          try {
-            const text = await fs.readFile(resolveWithin(root, String(args.path ?? '')), 'utf8');
+          case 'read_file': {
+            const text = await fs.readFile(await resolveWithinRoot(root, String(args.path ?? '')), 'utf8');
             return { ok: true, output: text.slice(0, 40_000) };
-          } catch (error) {
-            return { ok: false, output: error instanceof Error ? error.message : 'read_file failed.' };
           }
+          case 'write_file': {
+            const rel = String(args.path ?? '');
+            const content = String(args.content ?? '');
+            const target = await resolveWithinRoot(root, rel);
+            const previous = (await readTextIfExists(target)) ?? '';
+            const pending = approvals.stageWrite({ projectRoot: root, relPath: rel, content, previous });
+            return {
+              ok: true,
+              output: `Staged ${rel} for approval. Nothing was written.`,
+              pendingApproval: { kind: 'file-write', path: rel, id: pending.id },
+            };
+          }
+          case 'run_command': {
+            const command = String(args.command ?? '');
+            const cwd = await resolveWithinRoot(root, '.');
+            const pending = approvals.stageCommand({ projectRoot: root, command, cwd });
+            return {
+              ok: true,
+              output: 'Staged the command for approval. It has not run.',
+              pendingApproval: { kind: 'command', command: pending.command, id: pending.id },
+            };
+          }
+          default:
+            return { ok: false, output: `Unknown tool: ${String(name)}` };
         }
-        case 'write_file': {
-          // Staged: agent proposes; the user approves in the UI, then main writes.
-          const rel = String(args.path ?? '');
-          const content = String(args.content ?? '');
-          await stageCheckpoint(root, rel);
-          return {
-            ok: true,
-            output: 'Staged for user approval. Do not assume it was written until the user approves.',
-            pendingApproval: { kind: 'file-write', path: rel },
-          };
-        }
-        case 'run_command': {
-          const command = String(args.command ?? '');
-          return {
-            ok: true,
-            output: 'Staged for user approval. Do not assume it ran until the user approves.',
-            pendingApproval: { kind: 'command', command },
-          };
-        }
-        default:
-          return { ok: false, output: `Unknown tool: ${String(name)}` };
+      } catch (error) {
+        return { ok: false, output: error instanceof Error ? error.message : 'Tool failed.' };
       }
     },
   };
 }
 
-// --- Checkpoints --------------------------------------------------------------
-const checkpointRoot = () => path.join(app.getPath('userData'), 'checkpoints');
-
-async function stageCheckpoint(projectRoot: string, relPath: string): Promise<void> {
-  const target = resolveWithin(projectRoot, relPath);
-  let previous: string | null = null;
-  try {
-    previous = await fs.readFile(target, 'utf8');
-  } catch {
-    previous = null;
+function requireMessages(messages: ChatMessage[]): ChatMessage[] {
+  if (!Array.isArray(messages)) {
+    throw new Error('Messages must be a list.');
   }
-  const dir = path.join(checkpointRoot());
-  await fs.mkdir(dir, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const entry = { ts: stamp, projectRoot, relPath, previous };
-  await fs.writeFile(path.join(dir, `${stamp}-${crypto.createHash('sha1').update(`${projectRoot}:${relPath}`).digest('hex').slice(0, 8)}.json`), JSON.stringify(entry), 'utf8');
+  return messages
+    .filter((message) => message && typeof message.content === 'string' && (message.role === 'user' || message.role === 'assistant' || message.role === 'system'))
+    .slice(-40)
+    .map((message) => ({ role: message.role, content: message.content.slice(0, 20_000) }));
 }
 
-// --- IPC registration -----------------------------------------------------------
+async function resolveApproval(id: string, decision: 'approve' | 'reject'): Promise<ApprovalResult> {
+  if (!projectRoot) {
+    throw new Error('No project folder selected.');
+  }
+  const item = approvals.take(id);
+  if (path.resolve(item.projectRoot) !== path.resolve(projectRoot)) {
+    throw new Error('Project folder changed. The staged action was discarded.');
+  }
+  if (decision === 'reject') {
+    return {
+      ok: true,
+      decision,
+      summary: item.kind === 'write' ? `Rejected the write to ${item.relPath ?? 'the file'}. Nothing was changed.` : 'Rejected the command. It did not run.',
+    };
+  }
+  if (item.kind === 'write') {
+    const relPath = item.relPath ?? '';
+    const content = item.content ?? '';
+    try {
+      const target = await resolveWithinRoot(projectRoot, relPath);
+      const previous = await readTextIfExists(target);
+      await writeCheckpoint(projectRoot, relPath, previous);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, content, { encoding: 'utf8', mode: 0o644 });
+      return { ok: true, decision, summary: `Wrote ${relPath}. A checkpoint of the previous contents was saved.` };
+    } catch (error) {
+      approvals.stageWrite({ projectRoot, relPath, content, previous: item.previous ?? '' });
+      throw error;
+    }
+  }
+  const cwd = await resolveWithinRoot(projectRoot, '.');
+  const result = await runShellCommand({ command: item.command ?? '', cwd, timeoutMs: 60_000 });
+  const output = [result.stdout, result.stderr].filter((part) => part.trim().length > 0).join('\n');
+  if (result.timedOut) {
+    return { ok: false, decision, summary: 'Command timed out and was stopped.', output };
+  }
+  return {
+    ok: result.code === 0,
+    decision,
+    summary: `Command exited with code ${String(result.code)}.`,
+    output,
+  };
+}
+
 function registerIpc(): void {
-  // Providers
   ipcMain.handle('providers:catalog', () => providerOptions);
   ipcMain.handle('providers:list', async (): Promise<StoredProviderView[]> => {
     const state = await readAppState();
-    const services = listCredentialServices().filter((service) => service.startsWith('provider:'));
-    const views: StoredProviderView[] = [];
-    for (const service of services) {
-      const kind = service.slice('provider:'.length) as ProviderKind;
-      views.push({
-        kind,
-        model: state.active?.kind === kind ? state.active.model : '',
-        baseUrl: state.active?.kind === kind ? state.active.baseUrl : undefined,
-        hasKey: true,
-        active: state.active?.kind === kind,
-        secure: secureStorageAvailable(),
-      });
-    }
-    if (state.active && !services.some((service) => service === `provider:${state.active!.kind}`) && !getProviderOption(state.active.kind).keyless) {
-      // active without persisted key: keep the row visible for diagnostics
-      views.push({ kind: state.active.kind, model: state.active.model, baseUrl: state.active.baseUrl, hasKey: false, active: true, secure: secureStorageAvailable() });
-    }
-    return views;
+    return listProviderViews(state, { credentialServices: listCredentialServices(), secure: secureStorageAvailable() });
   });
   ipcMain.handle('providers:save', async (_event, args: { kind: ProviderKind; model: string; baseUrl?: string; apiKey?: string }) => {
-    const option = getProviderOption(args.kind);
-    if (args.apiKey && args.apiKey.length > 0) {
-      saveCredential(`provider:${args.kind}`, args.apiKey);
+    if (!args || !isProviderKind(args.kind)) {
+      throw new Error('Unknown provider.');
     }
-    if (option.needsBaseUrl && !args.baseUrl) {
-      throw new Error('This provider requires a base URL.');
+    const option = getProviderOption(args.kind);
+    const validated = validateProviderSave(option, {
+      model: args.model ?? '',
+      baseUrl: args.baseUrl,
+      apiKey: args.apiKey,
+      existingKey: Boolean(loadCredential(`provider:${args.kind}`)),
+    });
+    if (validated.apiKey) {
+      saveCredential(`provider:${args.kind}`, validated.apiKey);
     }
     const state = await readAppState();
-    state.active = { kind: args.kind, model: args.model, baseUrl: args.baseUrl };
-    await writeAppState(state);
-    return { ok: true, service: `provider:${args.kind}`, secure: secureStorageAvailable() };
+    await writeAppState(upsertProvider(state, { kind: args.kind, model: validated.model, baseUrl: validated.baseUrl }));
+    return { ok: true, secure: secureStorageAvailable() };
   });
   ipcMain.handle('providers:set-active', async (_event, args: { kind: ProviderKind }) => {
-    const kind = args.kind;
-    if (kind) {
-      const state = await readAppState();
-      const existing = state.active?.kind === kind ? state.active : undefined;
-      const model = existing?.model ?? '';
-      state.active = { kind, model, baseUrl: existing?.baseUrl };
-      await writeAppState(state);
-    } else {
-      await writeAppState({});
+    if (!args || !isProviderKind(args.kind)) {
+      throw new Error('Unknown provider.');
     }
+    const state = await readAppState();
+    await writeAppState(activateProvider(state, args.kind));
     return { ok: true };
   });
-  ipcMain.handle('providers:delete', (_event, args: { kind: ProviderKind }) => {
+  ipcMain.handle('providers:delete', async (_event, args: { kind: ProviderKind }) => {
+    if (!args || !isProviderKind(args.kind)) {
+      throw new Error('Unknown provider.');
+    }
     deleteCredential(`provider:${args.kind}`);
+    const state = await readAppState();
+    await writeAppState(removeProvider(state, args.kind));
     return { ok: true };
   });
   ipcMain.handle('providers:storage-state', () => ({ secure: secureStorageAvailable(), services: listCredentialServices().length, store: storePath() }));
@@ -248,82 +275,65 @@ function registerIpc(): void {
     if (!connection) {
       return { ok: false, detail: 'No provider connection configured yet.' };
     }
-    return testConnection(connection, getProjectRoot());
+    return testConnection(connection, projectRoot);
   });
 
-  // Agent
-  ipcMain.handle('agent:send', (_event, args: { sessionId: string; messages: ChatMessage[]; projectRoot: string }): Promise<AgentTurnResult> => {
-    const connectionPromise = resolveActiveConnection();
-    return (async () => {
-      const connection = await connectionPromise;
-      if (!connection) {
-        return { ok: false, assistantText: '', toolTrace: [], error: 'Connect a model first (Models screen).' };
-      }
-      if (!connection.model && getProviderOption(connection.kind).connection !== 'cli') {
-        return { ok: false, assistantText: '', toolTrace: [], error: 'Select a model for the active provider.' };
-      }
-      return runAgentTurn({ connection, messages: args.messages, projectRoot: args.projectRoot, executor: buildExecutor(args.projectRoot) });
-    })();
+  ipcMain.handle('agent:send', async (_event, args: { messages: ChatMessage[] }): Promise<AgentTurnResult> => {
+    const connection = await resolveActiveConnection();
+    if (!connection) {
+      return { ok: false, assistantText: '', toolTrace: [], error: 'Connect a model first (Models).' };
+    }
+    if (!connection.model && getProviderOption(connection.kind).connection !== 'cli') {
+      return { ok: false, assistantText: '', toolTrace: [], error: 'Enter a model ID for the active provider.' };
+    }
+    return runAgentTurn({
+      connection,
+      messages: requireMessages(args?.messages ?? []),
+      projectRoot,
+      executor: buildExecutor(projectRoot),
+    });
   });
 
-  // Project tools
-  let projectRoot = '';
-  const getProjectRoot = () => projectRoot;
   ipcMain.handle('project:select-root', async () => {
     if (!mainWindow) {
       return null;
     }
     const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory', 'createDirectory'], title: 'Open-Ro — choose a project folder' });
-    projectRoot = result.canceled || result.filePaths.length === 0 ? projectRoot : result.filePaths[0];
-    return projectRoot || null;
+    if (result.canceled || result.filePaths.length === 0) {
+      return projectRoot || null;
+    }
+    const next = result.filePaths[0];
+    if (path.resolve(next) !== path.resolve(projectRoot)) {
+      approvals.clear();
+    }
+    projectRoot = next;
+    return projectRoot;
   });
   ipcMain.handle('project:root', () => projectRoot || null);
   ipcMain.handle('project:list', async (_event, args: { rel?: string }) => {
     if (!projectRoot) {
       throw new Error('No project folder selected.');
     }
-    return listFiles(projectRoot, args.rel ?? '.');
+    return listFiles(projectRoot, args?.rel ?? '.');
   });
   ipcMain.handle('project:read', async (_event, args: { rel: string }) => {
     if (!projectRoot) {
       throw new Error('No project folder selected.');
     }
-    return fs.readFile(resolveWithin(projectRoot, args.rel), 'utf8');
+    return fs.readFile(await resolveWithinRoot(projectRoot, args.rel), 'utf8');
   });
   ipcMain.handle('project:preview-write', async (_event, args: { rel: string; content: string }) => {
     if (!projectRoot) {
       throw new Error('No project folder selected.');
     }
-    const target = resolveWithin(projectRoot, args.rel);
-    const payload = JSON.stringify({ abs: target, content: args.content });
-    let previous = '';
-    try {
-      previous = await fs.readFile(target, 'utf8');
-    } catch {
-      previous = '';
-    }
-    return {
-      abs: target,
-      previous,
-      token: approvalToken('write', payload),
-    };
+    const target = await resolveWithinRoot(projectRoot, args.rel);
+    const previous = (await readTextIfExists(target)) ?? '';
+    return toApprovalView(approvals.stageWrite({ projectRoot, relPath: args.rel, content: String(args.content ?? ''), previous }));
   });
-  ipcMain.handle('project:write', async (_event, args: { rel: string; content: string; token: string }) => {
-    if (!projectRoot) {
-      throw new Error('No project folder selected.');
-    }
-    const target = resolveWithin(projectRoot, args.rel);
-    await stageCheckpoint(projectRoot, args.rel);
-    if (!consumeApproval('write', JSON.stringify({ abs: target, content: args.content }), args.token)) {
-      throw new Error('Write rejected: missing or stale approval. Preview the diff again to approve.');
-    }
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(target, args.content, { encoding: 'utf8', mode: 0o644 });
-    return { ok: true, path: target };
-  });
+  ipcMain.handle('project:write', async (_event, args: { id: string }) => resolveApproval(args.id, 'approve'));
   ipcMain.handle('project:checkpoints', async () => {
     try {
-      return (await fs.readdir(checkpointRoot())).sort().reverse().slice(0, 20);
+      return (await fs.readdir(checkpointRoot())).filter((name) => name.endsWith('.json')).sort().reverse().slice(0, 20);
     } catch {
       return [];
     }
@@ -332,97 +342,98 @@ function registerIpc(): void {
     if (!projectRoot) {
       throw new Error('No project folder selected.');
     }
-    if (!/^[\w.-]+\.json$/.test(args.file)) {
+    if (!args || !/^[\w.-]+\.json$/.test(args.file)) {
       throw new Error('Invalid checkpoint file.');
     }
     const record = JSON.parse(await fs.readFile(path.join(checkpointRoot(), args.file), 'utf8')) as { projectRoot: string; relPath: string; previous: string | null };
     if (path.resolve(record.projectRoot) !== path.resolve(projectRoot)) {
       throw new Error('Checkpoint belongs to a different project.');
     }
-    const target = resolveWithin(projectRoot, record.relPath);
+    const target = await resolveWithinRoot(projectRoot, record.relPath);
     if (record.previous === null) {
       await fs.rm(target, { force: true });
     } else {
+      await fs.mkdir(path.dirname(target), { recursive: true });
       await fs.writeFile(target, record.previous, 'utf8');
     }
     return { ok: true };
   });
 
-  // Approval-gated shell execution
-  ipcMain.handle('command:preview', (_event, args: { command: string; cwd?: string }) => {
-    const cwd = args.cwd || projectRoot || os.homedir();
-    const payload = JSON.stringify({ cwd, command: args.command });
-    return { cwd, token: approvalToken('command', payload), executable: args.command.split(/\s+/)[0] };
-  });
-  ipcMain.handle('command:run', (_event, args: { command: string; token: string; timeoutMs?: number; cwd?: string }) => {
-    const cwd = args.cwd || projectRoot || os.homedir();
-    if (!consumeApproval('command', JSON.stringify({ cwd, command: args.command }), args.token)) {
-      throw new Error('Command rejected: missing or stale approval.');
+  ipcMain.handle('command:preview', async (_event, args: { command: string }) => {
+    if (!projectRoot) {
+      throw new Error('No project folder selected.');
     }
-    return new Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }>((resolve, reject) => {
-      const timeoutMs = args.timeoutMs ?? 60_000;
-      const isWin = process.platform === 'win32';
-      const child = spawn(isWin ? 'cmd.exe' : '/bin/sh', isWin ? ['/c', args.command] : ['-lc', args.command], { cwd, env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', APPDATA: process.env.APPDATA ?? '' } });
-      let stdout = '';
-      let stderr = '';
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill();
-      }, timeoutMs);
-      child.stdout.setEncoding('utf8');
-      child.stdout.on('data', (chunk) => {
-        stdout += chunk;
-      });
-      child.stderr.setEncoding('utf8');
-      child.stderr.on('data', (chunk) => {
-        stderr += chunk;
-      });
-      child.on('error', (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
-      child.on('exit', (code) => {
-        clearTimeout(timer);
-        if (timedOut) {
-          reject(new Error(`Command timed out after ${timeoutMs} ms and was killed: ${stdout.slice(0, 2000)}${stderr.slice(0, 2000)}`));
-        } else {
-          resolve({ code, stdout: stdout.slice(0, 20_000), stderr: stderr.slice(0, 20_000), timedOut });
-        }
-      });
-    });
+    const cwd = await resolveWithinRoot(projectRoot, '.');
+    return toApprovalView(approvals.stageCommand({ projectRoot, command: args.command, cwd }));
+  });
+  ipcMain.handle('command:run', async (_event, args: { id: string }) => resolveApproval(args.id, 'approve'));
+
+  ipcMain.handle('approvals:list', () => approvals.list().map(toApprovalView));
+  ipcMain.handle('approvals:resolve', (_event, args: { id: string; decision: 'approve' | 'reject' }) => {
+    if (!args || (args.decision !== 'approve' && args.decision !== 'reject') || typeof args.id !== 'string') {
+      throw new Error('Approval decision is invalid.');
+    }
+    return resolveApproval(args.id, args.decision);
   });
 
-  // MCP (single active server; limitation kept per docs/BUILD-STATUS.md)
   ipcMain.handle('mcp:status', (): { running: boolean; tools: McpToolSummary[] } => ({ running: mcp.running, tools: mcp.listTools() }));
-  ipcMain.handle('mcp:connect', async (_event, spec: McpServerSpec): Promise<McpToolSummary[]> => {
-    await mcp.start({ command: `${spec.command}`, args: spec.args });
-    const tools = mcp.listTools();
-    return tools;
+  ipcMain.handle('mcp:connect', async (_event, spec: { command?: unknown; args?: unknown }): Promise<McpToolSummary[]> => {
+    const clean = assertMcpSpec(spec ?? {});
+    await mcp.start(clean);
+    return mcp.listTools();
   });
   ipcMain.handle('mcp:disconnect', () => mcp.stop());
   ipcMain.handle('mcp:call', async (_event, args: { name: string; arguments: Record<string, unknown> }) => {
     if (!mcp.running) {
       throw new Error('No MCP server is connected.');
     }
-    const text = await mcp.callTool(`${args.name}`, args.arguments ?? {});
+    if (!args || typeof args.name !== 'string' || !args.name.trim()) {
+      throw new Error('MCP tool name is required.');
+    }
+    const text = await mcp.callTool(args.name, args.arguments ?? {});
     return { ok: true, output: text.slice(0, 20_000) };
   });
 
-  // Capabilities
   ipcMain.handle('capabilities:detect', (): Promise<CapabilityInfo[]> => detectCapabilities());
+
+  ipcMain.handle('sessions:load', async () => {
+    try {
+      return sanitizeSessions(JSON.parse(await fs.readFile(sessionsPath(), 'utf8')) as unknown);
+    } catch {
+      return { activeId: null, sessions: [] };
+    }
+  });
+  ipcMain.handle('sessions:save', async (_event, payload: unknown) => {
+    const snapshot = sanitizeSessions(payload);
+    await fs.mkdir(app.getPath('userData'), { recursive: true });
+    await fs.writeFile(sessionsPath(), JSON.stringify(snapshot), { encoding: 'utf8', mode: 0o600 });
+    return { ok: true, count: snapshot.sessions.length };
+  });
+
+  ipcMain.handle('shell:open-external', async (_event, args: { url?: string }) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(String(args?.url ?? ''));
+    } catch {
+      throw new Error('Invalid link.');
+    }
+    if (parsed.protocol !== 'https:') {
+      throw new Error('Only https links can be opened.');
+    }
+    await shell.openExternal(parsed.toString());
+    return { ok: true };
+  });
 }
 
-// --- Window lifecycle ----------------------------------------------------------
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1240,
-    height: 800,
+    height: 820,
     minWidth: 960,
     minHeight: 640,
     autoHideMenuBar: true,
     title: 'Open-Ro Studio',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    backgroundColor: '#0c0e12',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -431,14 +442,22 @@ function createWindow(): void {
       webSecurity: true,
     },
   });
+  const allowNavigation = (url: string): boolean => (app.isPackaged ? url.startsWith('file:') : url.startsWith('http://127.0.0.1:5173'));
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (!allowNavigation(url)) {
+      event.preventDefault();
+      if (url.startsWith('https://')) {
+        void shell.openExternal(url);
+      }
+    }
+  });
   if (!app.isPackaged) {
     void mainWindow.loadURL('http://127.0.0.1:5173');
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
     void mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https:\/\//.test(url)) {
+    if (url.startsWith('https://')) {
       void shell.openExternal(url);
     }
     return { action: 'deny' };

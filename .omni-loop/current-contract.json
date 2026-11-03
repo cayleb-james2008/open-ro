@@ -1,0 +1,31 @@
+{
+  "iteration": 3,
+  "mode": "0B",
+  "scope": [
+    "electron/pathSafety.ts",
+    "electron/approvals.ts",
+    "electron/main.ts",
+    "electron/mcp.ts",
+    "electron/providerState.ts",
+    "src/App.tsx",
+    "src/styles.css",
+    "tests/safety.test.ts",
+    "README.md",
+    "SECURITY.md",
+    "docs/BUILD-STATUS.md"
+  ],
+  "nonGoals": [
+    "Live provider calls",
+    "Electron packaging",
+    "Roblox Studio session",
+    "Rewriting the product roadmap"
+  ],
+  "oracles": [
+    "npm run typecheck",
+    "npm run lint",
+    "npm test",
+    "npm run build",
+    "headless Chrome navigation of Chat, Models, Workspace, Integrations"
+  ],
+  "antiTamper": "Do not delete tests, weaken assertions, or add ts-ignore, eslint-disable, or skipped tests."
+}

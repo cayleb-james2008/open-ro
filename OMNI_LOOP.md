@@ -1,48 +1,26 @@
 # OMNI_LOOP.md — open-ro operating state
 
-**System:** OMNI-LOOP persistent project-evolution loop (skill: `omni-loop`).
-**Project:** Open-Ro — local-first AI development studio for Roblox (Electron 45 + React 19 + TypeScript, per recovered docs).
-**Repo:** `cayleb-james2008/open-ro`, branch `freebuff/8651cb99a120ef99f53ffd58` (worktree of `main` @ `137fc16`).
+**System:** OMNI-LOOP v3.0, brownfield mode 0B.
+**Project:** Open-Ro Studio — local-first AI development studio for Roblox.
+**Repo:** `cayleb-james2008/open-ro`
 
-## Current session state (2026-11-03)
+## Resume here
 
-1. Repo is in a **bootstrap state**: the real Open-Ro 0.1.0 source tree is staged as
-   base64 fragments in `.bootstrap/parts/*.b64`; `.github/workflows/source-import.yml`
-   is designed to reconstruct, validate, and import it on push to `main`.
-2. **BLOCKER found in iteration 001:** the reconstructed `open-ro.tar.zst` is a
-   **truncated/incomplete zstd frame**. Diagnosis evidence in
-   `.omni-loop/iteration-log.md`. The tail of the archive (all of `src/` scripts,
-   `electron/`, `package.json`, ~8+ of the 37 documented source files) was never
-   successfully staged.
-3. A best-effort recovery recovered **29 of the archive's files** (docs, configs,
-   tests, workflows) into `.omni-loop/recovered-2026-11-03/`. `src/styles.css` is
-   partial. These are recovery evidence only — they do NOT restore the project.
-4. No alternate copy of the full source was found: `git ls-remote` shows only
-   `main`; GitHub account inventory contains no second Open-Ro/source-snapshot repo;
-   `talos-workspace` (recovery-hands hub) predates open-ro and holds no pin.
+Read `.omni-loop/state.json`, `.omni-loop/opportunity-backlog.md`, and the latest entries in `.omni-loop/iteration-log.md`.
 
-## You cannot proceed to product iterations until
+The source tree is the working application. The truncated archive under `.bootstrap/parts/` is historical and must not be re-imported. `.omni-loop/recovered-2026-11-03/` is evidence from that archive, not a second source of truth.
 
-The full `open-ro.tar.zst` is re-staged (all parts, fresh sha256) — or the project
-source is provided by another route the owner controls (local machine / zip via
-chat / another repo). After it lands, run the import locally in this workspace
-first (`zstd --test`, extract, verify `PROJECT.md`, `README.md`, `docs/ROADMAP.md`,
-`electron/main.ts`, `LICENSE`), then commit.
+## Last accepted iteration
 
-## Operating rules
+Iteration 003 on 2026-11-03. Path containment, approval queue, provider records, navigation, local chat history, and the repo-page docs were updated. Verification recorded in `.omni-loop/state.json`.
 
-- One atomic improvement per iteration; verify before accepting; record outcomes in
-  `.omni-loop/iteration-log.md`.
-- Baseline and backlog live in `.omni-loop/baseline.md` and
-  `.omni-loop/opportunity-backlog.md`.
-- Do not push, deploy, or mutate remotes without explicit user authorization.
-- Once source exists: run `npm ci` (lockfile from import), `npm run typecheck`,
-  `npm test`, `npm run build` to establish the verified baseline; record results.
-- Product gates: `docs/RELEASE-GATES.md` (recovered copy) governs "done".
+## Next waves
 
-## Repo hygiene note
+The ordered list is `nextWaves` in `.omni-loop/state.json`. Do not mark Electron launch, installers, live inference, or Studio as verified until those commands have been run and their output saved.
 
-The GitHub Actions import timeline shows corrupted-stage-fix cycles (parts 01/02
-were corrected in follow-up commits `f5027e4`, `55932a3`). When the archive is
-re-staged, validate the **whole** reconstruction (frame size, checksum, tar
-round-trip) *before* pushing, so the import workflow succeeds on first try.
+## Rules
+
+- One wave at a time. Verify before accepting. Record the result in `.omni-loop/iteration-log.md`.
+- Do not delete tests or weaken assertions to make a check pass.
+- Do not commit secrets.
+- Keep claims in README, SECURITY, and BUILD-STATUS tied to a command that was actually run.

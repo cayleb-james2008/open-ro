@@ -29,6 +29,11 @@ const INVOKE_CHANNELS = new Set([
   'mcp:disconnect',
   'mcp:call',
   'capabilities:detect',
+  'approvals:list',
+  'approvals:resolve',
+  'sessions:load',
+  'sessions:save',
+  'shell:open-external',
 ]);
 
 const api = {
