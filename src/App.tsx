@@ -540,14 +540,14 @@ export default function App() {
                 What are we <span>building<span>?</span></span>
               </h1>
               <p className="welcome-sub">
-                Bring your own model — OpenAI, Anthropic, OpenRouter, OpenCode, Ollama or any OpenAI-compatible endpoint. Pick a project folder to give the agent file tools. Nothing leaves your machine except the model requests you send.
+                Start with a free local model: Ollama or llama.cpp on this computer. Paid APIs are optional. Pick a project folder to give the agent file tools. Open-Ro has no account and does not send telemetry.
               </p>
               <div className="setup-row">
                 <button type="button" className={`setup-tile ${activeProvider ? 'complete' : ''}`} onClick={() => setScreen('models')}>
                   <span className="tile-icon">{activeProvider ? ICONS.check : ICONS.spark}</span>
                   <span>
                     <b>Connect a model</b>
-                    <small>{activeProvider ? catalogByKind.get(activeProvider.kind)?.name : 'API key or official CLI sign-in'}</small>
+                    <small>{activeProvider ? catalogByKind.get(activeProvider.kind)?.name : 'Ollama or llama.cpp. No account.'}</small>
                   </span>
                   {activeProvider && <span className="tile-check" aria-hidden="true">{ICONS.check}</span>}
                 </button>
@@ -681,7 +681,7 @@ export default function App() {
           <div>
             <span className="eyebrow">Model connections</span>
             <h1>Models & providers</h1>
-            <p>One connection is all you need. API keys are stored with Electron safeStorage; subscription routes run the official CLI and never read its credentials.</p>
+            <p>The default path is a local model on this machine. Paid APIs and subscription CLIs are optional. API keys, when you choose one, are stored with Electron safeStorage. Open-Ro does not require an account and does not send telemetry.</p>
           </div>
           <div className="heading-actions">
             <span className="outline-btn" style={{ cursor: 'default' }}>{bridgeMissing || !storage ? 'Secure storage: open the desktop app' : storage.secure ? 'Secure storage available' : 'No desktop keyring'}</span>

@@ -4,14 +4,15 @@
  * the catalog contract (docs/ARCHITECTURE.md §3).
  */
 export type ProviderKind =
+  | 'ollama'
+  | 'llama-cpp'
+  | 'custom-openai'
   | 'openai-api'
   | 'codex-cli'
   | 'anthropic-api'
   | 'claude-code-cli'
   | 'openrouter-api'
-  | 'opencode-cli'
-  | 'ollama'
-  | 'custom-openai';
+  | 'opencode-cli';
 
 export interface ProviderOption {
   kind: ProviderKind;
@@ -42,6 +43,30 @@ export interface ProviderOption {
 }
 
 export const providerOptions: ProviderOption[] = [
+  {
+    kind: 'ollama',
+    connection: 'local',
+    name: 'Ollama (local)',
+    setup: 'Install Ollama, then pull a model, for example `ollama pull qwen2.5-coder`. No account and no API key.',
+    url: 'https://ollama.com/download',
+    costNote: 'Free local runtime. Compute stays on this machine and no cloud key is required.',
+    modelHint: 'e.g. qwen2.5-coder',
+    api: 'openai-chat',
+    defaultBaseUrl: 'http://127.0.0.1:11434/v1',
+    keyless: true,
+  },
+  {
+    kind: 'llama-cpp',
+    connection: 'local',
+    name: 'llama.cpp server (local)',
+    setup: 'Run llama-server from llama.cpp. Its default listen port is 9931 and it serves OpenAI-compatible /v1 routes with no API key.',
+    url: 'https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md',
+    costNote: 'Free local runtime. The server stays on this machine. Paid APIs are not used.',
+    modelHint: 'model id or alias reported by the server',
+    api: 'openai-chat',
+    defaultBaseUrl: 'http://127.0.0.1:9931/v1',
+    keyless: true,
+  },
   {
     kind: 'openai-api',
     connection: 'api-key',
@@ -104,18 +129,6 @@ export const providerOptions: ProviderOption[] = [
     costNote: 'Provider account and plan are handled by OpenCode and its provider.',
     modelHint: 'leave empty to use the CLI default model',
     cliCommand: 'opencode',
-  },
-  {
-    kind: 'ollama',
-    connection: 'local',
-    name: 'Ollama (local)',
-    setup: 'Install Ollama, pull a model, e.g. `ollama pull qwen2.5-coder`.',
-    url: 'https://ollama.com/download',
-    costNote: 'Runs on your machine; no cloud key required and no data leaves your device.',
-    modelHint: 'e.g. qwen2.5-coder',
-    api: 'openai-chat',
-    defaultBaseUrl: 'http://127.0.0.1:11434/v1',
-    keyless: true,
   },
   {
     kind: 'custom-openai',
