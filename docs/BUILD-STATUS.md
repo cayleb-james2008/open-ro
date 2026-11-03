@@ -15,6 +15,7 @@
 - Agent turns can be stopped from the chat composer: the Stop control aborts the in-flight HTTP request or the CLI process tree, and the cancelled turn is recorded in the chat.
 - Provider requests retry transient failures up to three attempts: HTTP 429/5xx and network errors back off (250 ms, 500 ms, capped at 4 s) and honor Retry-After; aborts win, and other 4xx responses fail immediately.
 - OpenAI-compatible provider turns stream text over SSE when a delta listener is attached: deltas are emitted in order, tool-call arguments split across chunks are assembled by index, and a non-SSE response falls back to one delta. The main process forwards `agent:delta` {sessionId, text}, preload exposes `onAgentDelta`, and the chat renders deltas into a transient assistant bubble while the turn runs (cleared when the final message arrives). Anthropic and CLI routes remain non-streaming.
+- Studio playtest and console tools run through the same approval queue: `studio_playtest` starts or stops the running game and `studio_console` reads Studio's output; both stage the exact `start_stop_play`/`get_console_output` arguments, apply the same-server guard, and cap output (4,000 / 20,000). Approval-card copy and agent-facing schemas for these two arrive in the next slice; generic `mcp__` tools already existed but are typed as MCP calls, not as reviewed Studio actions.
 - A deterministic project index (metadata only) enumerates the active project: ignored segments and secret files are skipped, symlinks/junctions are not followed, paths are sorted posix-relative with byte sizes, and caps (2,000 files / 4 MB / depth 12) set a truncated flag. Each HTTP agent turn receives a compact map from this index (max 150 entries / 6,000 characters) inside the system prompt, explicitly labeled untrusted data whose file names are never instructions; an empty index injects nothing.
 - The Workspace screen shows the indexed project map: total file count, a truncation notice when caps applied, and the first 40 entries with byte sizes; clicking an entry opens the file.
 - Approval-gated file writes and command execution. File checkpoint restores are staged as ordinary write approvals (diff review plus a fresh checkpoint of the overwritten state), so a restore can itself be restored. Creation checkpoints — where Open-Ro created the file — restore through a reviewable delete approval that checkpoints the file's current contents before removal.
@@ -32,7 +33,7 @@ Commands run in this Windows 11 workspace:
 
 - `npm run typecheck` passed.
 - `npm run lint` passed (rejects type suppressions, skipped tests, and placeholder text).
-- `npm test` passed: 191 tests in 31 files under `tests/`.
+- `npm test` passed: 196 tests in 31 files under `tests/`.
 - `npm run build` passed. Vite emitted `dist/` and `tsc` emitted `dist-electron/`.
 - `npm run package:win` passed with electron-builder 26.18.0: produced `release/Open-Ro Studio Setup 0.1.0.exe` (NSIS, one-click disabled, unsigned).
 - `npm run package:linux` was not run in this workspace; it requires the Linux packaging toolchain and runs in CI.
@@ -45,7 +46,7 @@ Earlier verification preserved from the prior workspace run:
 
 - With `OPENRO_LUAU_BIN` set to a Luau CLI, `npm test` also runs `tests/luau` (7 more tests): the write and read Luau the Studio tools generate runs against the mock DataModel in `tests/fixtures/studio-datamodel.luau`. It covers update, exact read-back of CRLF and NUL sources, stale-source refusal (including a CRLF/LF difference), a script that appeared after the review, duplicate names, a removed script, a class change, and whether the undo step was recorded.
 - The renderer was driven in headless Chrome with a stubbed IPC bridge: the agent staged two actions, one was approved and one rejected, and the renderer sent one follow-up turn with both results. The Electron main process was not running.
-- Open-Ro's own Studio pipeline ran live against a Baseplate in this session: the app's MCP client connected to the official bridge (33 tools), a staged-and-approved `studio_snapshot` read 5 instances (Workspace camera/baseplate/terrain, StarterPlayer scripts), a `studio_read_script` of a missing path reported it absent, a staged-and-approved `studio_write_script` created `ServerScriptService.OpenRoLiveProbe` and Studio read back the same path, class and source, and a re-read returned the exact source. Studio did not record an undo step for the MCP write; the script remains in the unsaved test place.
+- Open-Ro's own Studio pipeline ran live against a Baseplate in this session: the app's MCP client connected to the official bridge (33 tools), a staged-and-approved `studio_snapshot` read 5 instances (Workspace camera/baseplate/terrain, StarterPlayer scripts), a `studio_read_script` of a missing path reported it absent, a staged-and-approved `studio_write_script` created `ServerScriptService.OpenRoLiveProbe` and Studio read back the same path, class and source, and a re-read returned the exact source. A staged-and-approved playtest start reported "Game Started"; a console read returned the earlier script's output ("open-ro live write", "Mode: rotate"); a stop reported "Game Stopped"; Studio returned to Edit mode. Studio did not record an undo step for the MCP write; the script remains in the unsaved test place.
 - The MCP client completed the handshake, listed tools, and called `echo` against `@modelcontextprotocol/server-everything` 2.1.0 over stdio, both directly and as a staged call approved through the queue.
 
 These checks do **not** prove an installer install/uninstall journey, cloud-provider inference or CLI sign-in, or a full Roblox Studio playtest/input/screenshot/repair workflow.
@@ -57,7 +58,7 @@ These checks do **not** prove an installer install/uninstall journey, cloud-prov
 - Linux AppImage, Debian package, or pacman install/uninstall or keyring behavior on Omarchy. CI packaging builds the artifacts; they are not installed.
 - Live inference against cloud providers and official CLI sign-ins; no cloud keys or accounts were used in this workspace. The local Ollama route is verified above.
 - Full native CLI sign-in/connection validation on Windows and Linux.
-- Live Roblox Studio workflows beyond single-instance reads and writes: no playtest, input simulation, viewport capture, or repair loop has run, and the open Baseplate now contains an unsaved test script. The app's approved Studio write flow is verified on that Baseplate.
+- Live Roblox Studio workflows beyond reads, writes, playtest start/stop and console output: no input simulation, viewport capture through the app, or repair loop has run. The open Baseplate contains an unsaved test script.
 - Live Blender workflow, asset import/export, Rojo synchronization.
 - Image, thumbnail, icon, audio or 3D generation integrations.
 
