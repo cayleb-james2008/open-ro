@@ -1,14 +1,17 @@
 import type { ProviderKind, ProviderOption } from '../electron/providerCatalog';
 import type {
   AgentTurnResult,
+  ApprovalResult,
   CapabilityInfo,
   ChatMessage,
   ConnectionTestResult,
   FileEntry,
   McpToolSummary,
+  PendingApprovalView,
   ProviderConnection,
   StoredProviderView,
 } from '../electron/types';
+import type { SessionSnapshot } from '../electron/sessions';
 
 /** Typed view of the preload bridge. No raw secrets ever cross this boundary. */
 export interface Api {
@@ -19,17 +22,22 @@ export interface Api {
   deleteProvider(kind: ProviderKind): Promise<unknown>;
   storageState(): Promise<{ secure: boolean; services: number; store: string }>;
   testProvider(args?: Partial<ProviderConnection>): Promise<ConnectionTestResult>;
-  sendPrompt(args: { sessionId: string; messages: ChatMessage[]; projectRoot: string }): Promise<AgentTurnResult>;
+  sendPrompt(args: { sessionId: string; messages: ChatMessage[] }): Promise<AgentTurnResult>;
   selectProjectRoot(): Promise<string | null>;
   projectRoot(): Promise<string | null>;
   listProject(rel?: string): Promise<FileEntry[]>;
   readProject(rel: string): Promise<string>;
-  previewWrite(args: { rel: string; content: string }): Promise<{ abs: string; previous: string; token: string }>;
-  writeProject(args: { rel: string; content: string; token: string }): Promise<unknown>;
+  previewWrite(args: { rel: string; content: string }): Promise<PendingApprovalView>;
+  writeProject(args: { id: string }): Promise<ApprovalResult>;
   checkpoints(): Promise<string[]>;
   restoreCheckpoint(file: string): Promise<unknown>;
-  previewCommand(args: { command: string; cwd?: string }): Promise<{ cwd: string; token: string }>;
-  runCommand(args: { command: string; token: string; timeoutMs?: number; cwd?: string }): Promise<{ code: number | null; stdout: string; stderr: string }>;
+  previewCommand(args: { command: string }): Promise<PendingApprovalView>;
+  runCommand(args: { id: string }): Promise<ApprovalResult>;
+  approvals(): Promise<PendingApprovalView[]>;
+  resolveApproval(args: { id: string; decision: 'approve' | 'reject' }): Promise<ApprovalResult>;
+  loadSessions(): Promise<SessionSnapshot>;
+  saveSessions(snapshot: SessionSnapshot): Promise<unknown>;
+  openExternal(url: string): Promise<unknown>;
   mcpStatus(): Promise<{ running: boolean; tools: McpToolSummary[] }>;
   mcpConnect(spec: { command: string; args: string[] }): Promise<McpToolSummary[]>;
   mcpDisconnect(): Promise<unknown>;
@@ -44,6 +52,9 @@ declare global {
 }
 
 function call<T>(channel: string, payload?: unknown): Promise<T> {
+  if (typeof window === 'undefined' || !window.openro) {
+    return Promise.reject(new Error('Desktop bridge unavailable. Start Open-Ro with npm run dev so the Electron preload is loaded.'));
+  }
   return window.openro.invoke(channel, payload) as Promise<T>;
 }
 
@@ -60,12 +71,17 @@ export const api: Api = {
   projectRoot: () => call<string | null>('project:root'),
   listProject: (rel) => call<FileEntry[]>('project:list', { rel }),
   readProject: (rel) => call<string>('project:read', { rel }),
-  previewWrite: (args) => call<{ abs: string; previous: string; token: string }>('project:preview-write', args),
-  writeProject: (args) => call('project:write', args),
+  previewWrite: (args) => call<PendingApprovalView>('project:preview-write', args),
+  writeProject: (args) => call<ApprovalResult>('project:write', args),
   checkpoints: () => call<string[]>('project:checkpoints'),
   restoreCheckpoint: (file) => call('project:restore-checkpoint', { file }),
-  previewCommand: (args) => call<{ cwd: string; token: string }>('command:preview', args),
-  runCommand: (args) => call<{ code: number | null; stdout: string; stderr: string }>('command:run', args),
+  previewCommand: (args) => call<PendingApprovalView>('command:preview', args),
+  runCommand: (args) => call<ApprovalResult>('command:run', args),
+  approvals: () => call<PendingApprovalView[]>('approvals:list'),
+  resolveApproval: (args) => call<ApprovalResult>('approvals:resolve', args),
+  loadSessions: () => call<SessionSnapshot>('sessions:load'),
+  saveSessions: (snapshot) => call('sessions:save', snapshot),
+  openExternal: (url) => call('shell:open-external', { url }),
   mcpStatus: () => call<{ running: boolean; tools: McpToolSummary[] }>('mcp:status'),
   mcpConnect: (spec) => call<McpToolSummary[]>('mcp:connect', spec),
   mcpDisconnect: () => call('mcp:disconnect'),

@@ -2,6 +2,18 @@
 
 All notable changes to Open-Ro Studio are documented here. This project is in early development; version numbers describe source milestones, not a guarantee that every configured package has passed release acceptance.
 
+## [Unreleased]
+
+### Fixed
+- Project tools stay inside the folder selected in the main process, including symlink escapes, and they refuse likely secret files.
+- Agent writes and shell commands remain staged until the user approves that exact action. Rejecting one does not change the project.
+- Saved providers keep their model IDs. Local Ollama stays visible without an API key. Deleting the active provider clears it.
+- Chat, Models, Workspace, and Integrations are all reachable. Git detection is listed. Studio MCP points at Roblox's Studio MCP documentation.
+- Chat history is stored in the app's user-data directory. The renderer no longer navigates itself away when opening the repository link.
+
+### Corrected
+- Documentation no longer says a Blender task runner or an OS approval dialog exists. Blender detection is `blender --version` only.
+
 ## [0.1.0] — 2026-11-02
 
 ### Added

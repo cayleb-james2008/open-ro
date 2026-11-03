@@ -78,9 +78,9 @@ The first implementation's one-server limit and lack of live Studio validation m
 
 ## 6. Local project and safety boundaries
 
-- Project tools operate relative to a user-selected root.
-- Resolve paths and reject traversal outside the allowed root.
-- Shell execution must be approval-gated and show the exact command, args, cwd and timeout.
+- Project tools operate relative to the folder the user selected in the main process. A path sent by the renderer is not used as the root.
+- Resolve paths with `realpath` and reject traversal, prefix siblings, and symlink escapes.
+- Shell execution and file writes are staged in the main process. Approval sends an id; the stored command or file body is what runs. The tray shows the command and working directory, or a line diff, before approval.
 - Destructive and publish actions need separate permission classes.
 - Record before/after diffs and support rollback checkpoints.
 - Credentials are stored via OS secure storage; no plaintext fallback.

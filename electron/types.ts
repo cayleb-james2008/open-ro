@@ -40,7 +40,26 @@ export interface ToolCallResult {
   ok: boolean;
   output: string;
   /** Set when the action was staged for user approval instead of executed. */
-  pendingApproval?: { kind: 'file-write' | 'command'; path?: string; command?: string };
+  pendingApproval?: { kind: 'file-write' | 'command'; path?: string; command?: string; id?: string };
+}
+
+/** Approval the renderer may inspect. The id is the only value accepted back. */
+export interface PendingApprovalView {
+  id: string;
+  kind: 'write' | 'command';
+  createdAt: string;
+  relPath?: string;
+  previous?: string;
+  content?: string;
+  command?: string;
+  cwd?: string;
+}
+
+export interface ApprovalResult {
+  ok: boolean;
+  decision: 'approve' | 'reject';
+  summary: string;
+  output?: string;
 }
 
 /** A configured provider connection, as stored/passed around. */

@@ -1,4 +1,22 @@
-# Iteration log — append only
+# Iteration log — latest five
+
+## Iteration 003 — 2026-11-03
+- **Status:** ACCEPTED after local verification. Not yet a desktop or installer proof.
+- **Branch:** `cursor/quality-waves-7ac4`
+- **What changed:**
+  - Project tools ignore a renderer-supplied root and reject symlink escapes, prefix siblings, ignored folders, and likely secret names.
+  - Agent writes and shell commands are queued in the main process. Approval uses an id. Rejecting does not write or run anything.
+  - MCP stdio accepts Content-Length frames and newline JSON, and child processes get a scrubbed environment.
+  - Provider records keep model IDs. Ollama stays visible without a key. Deleting the active provider clears it. Custom endpoints may omit a key.
+  - Sidebar reaches Chat, Models, Workspace, and Integrations. Git is listed. Studio MCP links to `https://create.roblox.com/docs/studio/mcp`.
+  - Chat sessions persist under user data. External links stay on https and do not navigate the window away.
+  - Readable type and contrast floors, dialog focus trap, and a favicon that matches the in-app mark.
+- **Commands:** `npm ci`; `npm run typecheck` pass; `npm run lint` pass; `npm test` 13 pass; `npm run build` pass. Headless Chrome clicked the four screens at 1280×800 and 960×700 with no page errors.
+- **Not run:** Electron, `package:win`, `package:linux`, live model calls.
+- **Rollback:** revert the iteration 003 commit. Do not restore `.bootstrap` import.
+- **Next:** desktop launch and packaging receipts, then persisted project root and tool-result continuation. See `.omni-loop/state.json`.
+
+# Earlier iterations
 
 ## Iteration 001 — 2026-11-03
 - **Status:** INCONCLUSIVE (blocked at evidentiary gate; no code change to product)

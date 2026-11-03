@@ -1,15 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import api from './api';
-import type { ProviderKind, ProviderOption } from '../electron/providerCatalog';
-import type { AgentTurnResult, ChatMessage, FileEntry, StoredProviderView } from '../electron/types';
+import { Dialog } from './Dialog';
+import { diffLines } from './textDiff';
+import { providerOptions, type ProviderKind, type ProviderOption } from '../electron/providerCatalog';
+import type { SessionSnapshot, StoredChatSession } from '../electron/sessions';
+import type { AgentTurnResult, ApprovalResult, ChatMessage, FileEntry, PendingApprovalView, StoredProviderView } from '../electron/types';
 
 type Screen = 'chat' | 'models' | 'workspace' | 'integrations';
 
-interface ChatSession {
-  id: string;
-  title: string;
-  messages: Array<{ role: 'user' | 'assistant'; content: string; trace?: AgentTurnResult['toolTrace']; error?: string }>;
-}
+type ChatSession = StoredChatSession;
 
 type ProviderForm = { kind: ProviderKind | null; model: string; baseUrl: string; apiKey: string };
 
@@ -20,7 +19,14 @@ const SUGGESTIONS: Array<{ title: string; body: string; prompt: string }> = [
   { title: 'Set up a test command', body: 'Find a safe way to check that the game still builds.', prompt: 'Suggest a safe command to validate this project. Stage it for my approval; do not run it unasked.' },
 ];
 
-const ICONS: Record<string, React.ReactNode> = {
+const NAV: Array<{ id: Screen; label: string; icon: string }> = [
+  { id: 'chat', label: 'Chat', icon: 'chat' },
+  { id: 'models', label: 'Models', icon: 'models' },
+  { id: 'workspace', label: 'Workspace', icon: 'workspace' },
+  { id: 'integrations', label: 'Integrations', icon: 'integrations' },
+];
+
+const ICONS: Record<string, ReactNode> = {
   chat: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M2 3h12v8H6l-3 3V3z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" /></svg>,
   models: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="5" height="5" rx="1.5" stroke="currentColor" strokeWidth="1.3" /><rect x="9" y="2" width="5" height="5" rx="1.5" stroke="currentColor" strokeWidth="1.3" /><rect x="2" y="9" width="5" height="5" rx="1.5" stroke="currentColor" strokeWidth="1.3" /><rect x="9" y="9" width="5" height="5" rx="1.5" stroke="currentColor" strokeWidth="1.3" /></svg>,
   workspace: <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M2 13V3h4l1.5 2H14v8H2z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" /></svg>,
@@ -35,6 +41,16 @@ const ICONS: Record<string, React.ReactNode> = {
   x: <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="m3 3 10 10M13 3 3 13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>,
 };
 
+function providerStatus(view: StoredProviderView, option: ProviderOption | undefined): string {
+  if (option?.connection === 'cli') {
+    return 'Official CLI sign-in, no key stored here';
+  }
+  if (option?.keyless) {
+    return 'Local endpoint, no API key';
+  }
+  return view.hasKey ? 'API key stored with the OS' : 'Saved without a key';
+}
+
 function initials(name: string): string {
   const letters = name.split(/[\s-]/).filter(Boolean).slice(0, 2);
   return letters.map((part) => part[0]?.toUpperCase() ?? '').join('') || 'OP';
@@ -43,7 +59,7 @@ function initials(name: string): string {
 export default function App() {
   const [screen, setScreen] = useState<Screen>('chat');
   const [providerViews, setProviderViews] = useState<StoredProviderView[]>([]);
-  const [catalog, setCatalog] = useState<ProviderOption[]>([]);
+  const [catalog, setCatalog] = useState<ProviderOption[]>(providerOptions);
   const [storage, setStorage] = useState<{ secure: boolean; services: number } | null>(null);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSession, setActiveSession] = useState<string | null>(null);
@@ -61,21 +77,57 @@ export default function App() {
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
   const [providerModal, setProviderModal] = useState<ProviderForm>(resetForm());
   const [providerTest, setProviderTest] = useState<{ kind: ProviderKind; ok: boolean; detail: string } | null>(null);
-  const [commandBar, setCommandBar] = useState<{ command: string; token: string; cwd: string; result?: { code: number | null; stdout: string; stderr: string }; failed?: string } | null>(null);
+  const [approvals, setApprovals] = useState<PendingApprovalView[]>([]);
+  const [actionResult, setActionResult] = useState<ApprovalResult | null>(null);
+  const [sessionsReady, setSessionsReady] = useState(false);
+  const [bridgeMissing, setBridgeMissing] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const sessionsRef = useRef<ChatSession[]>([]);
 
   const activeSessionData = useMemo(() => sessions.find((session) => session.id === activeSession) ?? null, [sessions, activeSession]);
   const activeProvider = useMemo(() => providerViews.find((view) => view.active) ?? null, [providerViews]);
   const catalogByKind = useMemo(() => new Map(catalog.map((option) => [option.kind, option])), [catalog]);
 
   useEffect(() => {
-    void refreshAll();
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const saved = await api.loadSessions();
+        if (saved.sessions.length > 0) {
+          setSessions(saved.sessions);
+          setActiveSession(saved.activeId);
+        }
+      } catch {
+        // The browser preview has no preload bridge. The shell still renders.
+      } finally {
+        setSessionsReady(true);
+      }
+      await refreshAll();
+    })();
   }, []);
+
+  useEffect(() => {
+    if (!sessionsReady) {
+      return;
+    }
+    const snapshot: SessionSnapshot = { activeId: activeSession, sessions };
+    const handle = setTimeout(() => {
+      void api.saveSessions(snapshot).catch(() => undefined);
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [sessions, activeSession, sessionsReady]);
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [activeSessionData?.messages.length, sending]);
 
   async function refreshAll() {
+    if (typeof window === 'undefined' || !window.openro) {
+      setBridgeMissing(true);
+      return;
+    }
     try {
       const [views, cat, store, root, caps, mcp] = await Promise.all([
         api.providers(),
@@ -91,6 +143,7 @@ export default function App() {
       setProjectRoot(root);
       setCapabilities(caps);
       setMcpState(mcp);
+      setApprovals(await api.approvals());
     } catch (error) {
       setBanner(asMessage(error));
     }
@@ -138,8 +191,12 @@ export default function App() {
     }
     setProviderTest({ kind: providerModal.kind, ok: false, detail: 'Testing connection…' });
     try {
-      // Only submit the typed key when the user re-entered one; otherwise test the stored one.
-      const result = await api.testProvider();
+      const result = await api.testProvider({
+        kind: providerModal.kind,
+        model: providerModal.model.trim(),
+        baseUrl: providerModal.baseUrl.trim() || undefined,
+        apiKey: providerModal.apiKey.trim() || undefined,
+      });
       setProviderTest({ kind: providerModal.kind, ok: result.ok, detail: result.detail });
     } catch (error) {
       setProviderTest({ kind: providerModal.kind, ok: false, detail: asMessage(error) });
@@ -152,41 +209,47 @@ export default function App() {
   }
 
   function newChat() {
-    const session: ChatSession = { id: `chat-${Date.now()}`, title: 'New chat', messages: [] };
+    const session: ChatSession = { id: `chat-${Date.now()}`, title: 'New chat', updatedAt: new Date().toISOString(), messages: [] };
     setSessions((prev) => [session, ...prev]);
     setActiveSession(session.id);
     setScreen('chat');
   }
 
-  async function sendDraft() {
-    const text = draft.trim();
+  async function sendDraft(textOverride?: string) {
+    const text = (textOverride ?? draft).trim();
     if (!text || sending) {
       return;
     }
+    const prior = sessionsRef.current;
     let sessionId = activeSession;
+    let historySource: ChatSession['messages'];
     if (!sessionId) {
-      const fresh: ChatSession = { id: `chat-${Date.now()}`, title: text.slice(0, 40) || 'New chat', messages: [{ role: 'user', content: text }] };
+      const fresh: ChatSession = { id: `chat-${Date.now()}`, title: text.slice(0, 40) || 'New chat', updatedAt: new Date().toISOString(), messages: [{ role: 'user', content: text }] };
       sessionId = fresh.id;
+      historySource = fresh.messages;
       setSessions((prev) => [fresh, ...prev]);
       setActiveSession(fresh.id);
     } else {
+      const current = prior.find((session) => session.id === sessionId);
+      historySource = [...(current?.messages ?? []), { role: 'user', content: text }];
       setSessions((prev) =>
         prev.map((session) =>
           session.id === sessionId
             ? {
                 ...session,
+                updatedAt: new Date().toISOString(),
                 title: session.messages.length === 0 ? text.slice(0, 40) : session.title,
-                messages: [...session.messages, { role: 'user', content: text }],
+                messages: historySource,
               }
             : session,
         ),
       );
     }
-    const history: ChatMessage[] = [...(sessions.find((session) => session.id === sessionId)?.messages ?? []), { role: 'user' as const, content: text }].map((message): ChatMessage => ({ role: message.role, content: message.content }));
+    const history: ChatMessage[] = historySource.map((message): ChatMessage => ({ role: message.role, content: message.content }));
     setDraft('');
     setSending(true);
     try {
-      const result = await api.sendPrompt({ sessionId, messages: history, projectRoot: projectRoot ?? '' });
+      const result = await api.sendPrompt({ sessionId, messages: history });
       setSessions((prev) =>
         prev.map((session) =>
           session.id === sessionId
@@ -201,8 +264,7 @@ export default function App() {
         ),
       );
       if (result.toolTrace.some((entry) => entry.status === 'staged')) {
-        // Changes are staged, never auto-applied: surface the approval drawer state in Workspace.
-        void refreshWorkspaceState();
+        setApprovals(await api.approvals());
       }
     } catch (error) {
       setSessions((prev) =>
@@ -276,6 +338,30 @@ export default function App() {
     }
   }
 
+  async function resolveApproval(id: string, decision: 'approve' | 'reject') {
+    try {
+      const result = await api.resolveApproval({ id, decision });
+      setActionResult(result);
+      setApprovals(await api.approvals());
+      if (decision === 'approve') {
+        await refreshWorkspaceState();
+      }
+    } catch (error) {
+      setBanner(asMessage(error));
+      setApprovals(await api.approvals().catch(() => []));
+    }
+  }
+
+  function continueWithResult() {
+    if (!actionResult) {
+      return;
+    }
+    const followup = `I ${actionResult.decision === 'approve' ? 'approved' : 'rejected'} a staged action. ${actionResult.summary}${actionResult.output ? `\n\nOutput:\n${actionResult.output.slice(0, 4000)}` : ''}\nContinue from that result.`;
+    setActionResult(null);
+    setScreen('chat');
+    void sendDraft(followup);
+  }
+
   async function connectMcp() {
     if (!mcpForm.command.trim()) {
       return;
@@ -295,10 +381,11 @@ export default function App() {
     setMcpState({ running: false, tools: [] });
   }
 
-  const hasProvider = providerViews.some((view) => view.hasKey || catalogByKind.get(view.kind)?.keyless) || providerViews.length > 0;
+  const hasProvider = providerViews.some((view) => view.hasKey || catalogByKind.get(view.kind)?.keyless || catalogByKind.get(view.kind)?.connection === 'cli');
 
   return (
     <div className="shell">
+      <a className="skip-link" href="#main">Skip to content</a>
       <aside className="sidebar">
         <div className="brand-row">
           <div className="brand-mark">OR</div>
@@ -306,28 +393,36 @@ export default function App() {
             <strong>Open-Ro</strong>
             <span>STUDIO 0.1.0</span>
           </div>
-          <button className="icon-btn small more" title="Settings and docs" onClick={() => window.open('https://github.com/cayleb-james2008/open-ro', '_self')}>
+          <button type="button" className="icon-btn small more" aria-label="Open the Open-Ro repository" onClick={() => void api.openExternal('https://github.com/cayleb-james2008/open-ro')}>
             {ICONS.chevron}
           </button>
         </div>
-        <button className={`project-switch ${projectRoot ? 'has-project' : ''}`} onClick={() => void selectProject()}>
+        <button type="button" className={`project-switch ${projectRoot ? 'has-project' : ''}`} onClick={() => void selectProject()}>
           {ICONS.folder}
           <span>{projectRoot ? projectRoot.split(/[\\/]/).pop() : 'Choose project folder…'}</span>
         </button>
         <div className="nav-label">WORKSPACE</div>
-        <button className="new-chat-btn" onClick={newChat}>
+        <nav className="side-nav" aria-label="Primary">
+          {NAV.map((item) => (
+            <button type="button" key={item.id} className={`nav-item ${screen === item.id ? 'active' : ''}`} aria-current={screen === item.id ? 'page' : undefined} onClick={() => setScreen(item.id)}>
+              {ICONS[item.icon]}
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+        <button type="button" className="new-chat-btn" onClick={newChat}>
           {ICONS.plus}
           <span>New chat</span>
         </button>
         <div className="recent-label nav-label">RECENT</div>
         <div className="recent-chat-list">
           {sessions.map((session) => (
-            <button key={session.id} className={`recent-chat ${session.id === activeSession ? 'active' : ''}`} onClick={() => { setActiveSession(session.id); setScreen('chat'); }}>
+            <button type="button" key={session.id} className={`recent-chat ${session.id === activeSession ? 'active' : ''}`} aria-current={session.id === activeSession ? 'true' : undefined} onClick={() => { setActiveSession(session.id); setScreen('chat'); }}>
               {ICONS.chat}
               <span>{session.title}</span>
             </button>
           ))}
-          {sessions.length === 0 && <div className="recent-chat" style={{ opacity: 0.5 }}>Session history stays this session</div>}
+          {sessions.length === 0 && <p className="recent-empty">No chats yet. History is saved on this computer.</p>}
         </div>
         <div className="side-spacer" />
         <div className="connection-card">
@@ -336,7 +431,7 @@ export default function App() {
             MODEL CONNECTION
           </div>
           <div className="connection-model">{activeProvider ? `${catalogByKind.get(activeProvider.kind)?.name ?? activeProvider.kind}${activeProvider.model ? ` · ${activeProvider.model}` : ''}` : 'No model connected'}</div>
-          <button className="connection-action" onClick={() => setScreen('models')}>
+          <button type="button" className="connection-action" onClick={() => setScreen('models')}>
             {activeProvider ? 'Manage providers' : 'Connect a model'}
             <span>→</span>
           </button>
@@ -347,7 +442,8 @@ export default function App() {
         </div>
       </aside>
 
-      <main className="main-area">
+      <main className="main-area" id="main">
+        <div className="sr-only" aria-live="polite">{sending ? 'The agent is working.' : actionResult ? actionResult.summary : ''}</div>
         <div className="topbar">
           <div className="crumb">
             <strong>Open-Ro</strong>
@@ -356,16 +452,18 @@ export default function App() {
           </div>
           <div className="top-actions">
             <span className="project-pill" title={projectRoot ?? undefined}>{projectRoot ?? 'No project'}</span>
-            <span className={`runtime-pill ${sending ? 'working' : ''}`}>{sending ? 'Agent working…' : 'Idle'}</span>
+            <span className={`runtime-pill ${sending ? 'working' : ''}`} role="status">{sending ? 'Agent working' : approvals.length > 0 ? `${approvals.length} pending approval${approvals.length === 1 ? '' : 's'}` : 'Idle'}</span>
           </div>
         </div>
 
         {banner && (
-          <div className="error-banner">
+          <div className="error-banner" role="alert">
             <span>{banner}</span>
-            <button onClick={() => setBanner(null)} aria-label="Dismiss">{ICONS.x}</button>
+            <button type="button" onClick={() => setBanner(null)} aria-label="Dismiss notice">{ICONS.x}</button>
           </div>
         )}
+
+        {(approvals.length > 0 || actionResult) && <ApprovalTray />}
 
         {screen === 'chat' && <ChatPage />}
         {screen === 'models' && <ModelsPage />}
@@ -375,21 +473,60 @@ export default function App() {
 
       {providerModal.kind && <ProviderModal />}
       {fileView && (
-        <div className="modal-backdrop" onClick={() => setFileView(null)}>
-          <div className="file-modal" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-title">
-              <div>
-                <strong>{fileView.rel}</strong>
-                <small>{fileView.content.length} characters · read only in 0.1.0</small>
-              </div>
-              <button className="icon-btn" onClick={() => setFileView(null)}>{ICONS.x}</button>
+        <Dialog labelledBy="file-title" className="file-modal" onClose={() => setFileView(null)}>
+          <div className="modal-title">
+            <div>
+              <strong id="file-title">{fileView.rel}</strong>
+              <small>{fileView.content.length} characters, read only</small>
             </div>
-            <pre>{fileView.content}</pre>
+            <button type="button" className="icon-btn" aria-label="Close file preview" onClick={() => setFileView(null)}>{ICONS.x}</button>
           </div>
-        </div>
+          <pre tabIndex={0}>{fileView.content}</pre>
+        </Dialog>
       )}
     </div>
   );
+
+  function ApprovalTray() {
+    return (
+      <section className="approval-tray" aria-label="Pending approvals">
+        {actionResult && (
+          <div className={`test-result ${actionResult.ok ? 'success' : 'failed'}`}>
+            <div>
+              <strong>{actionResult.summary}</strong>
+              {actionResult.output && <pre>{actionResult.output}</pre>}
+              <div className="modal-actions">
+                <button type="button" className="text-btn" onClick={() => void continueWithResult()}>Send result to the agent</button>
+                <button type="button" className="outline-btn" onClick={() => setActionResult(null)}>Dismiss</button>
+              </div>
+            </div>
+          </div>
+        )}
+        {approvals.map((item) => {
+          const rows = item.kind === 'write' ? diffLines(item.previous ?? '', item.content ?? '').slice(0, 240) : [];
+          return (
+            <article className="approval-card" key={item.id}>
+              <header>
+                <strong>{item.kind === 'write' ? `Review write: ${item.relPath}` : 'Review command'}</strong>
+                <span>{item.kind === 'command' ? item.cwd : 'Nothing is written until you approve'}</span>
+              </header>
+              {item.kind === 'command' ? <pre className="command-preview">{item.command}</pre> : (
+                <pre className="diff" aria-label="Proposed diff">
+                  {rows.map((row, index) => (
+                    <span className={`diff-${row.kind}`} key={`${item.id}-${index}`}>{row.kind === 'add' ? '+ ' : row.kind === 'del' ? '- ' : '  '}{row.text}{'\n'}</span>
+                  ))}
+                </pre>
+              )}
+              <div className="modal-actions">
+                <button type="button" className="outline-btn" onClick={() => void resolveApproval(item.id, 'reject')}>Reject</button>
+                <button type="button" className="primary-btn" onClick={() => void resolveApproval(item.id, 'approve')}>{item.kind === 'write' ? 'Approve write' : 'Run command'}</button>
+              </div>
+            </article>
+          );
+        })}
+      </section>
+    );
+  }
 
   // ---- Chat ------------------------------------------------------------
   function ChatPage() {
@@ -406,16 +543,16 @@ export default function App() {
                 Bring your own model — OpenAI, Anthropic, OpenRouter, OpenCode, Ollama or any OpenAI-compatible endpoint. Pick a project folder to give the agent file tools. Nothing leaves your machine except the model requests you send.
               </p>
               <div className="setup-row">
-                <button className={`setup-tile ${activeProvider ? 'complete' : ''}`} onClick={() => setScreen('models')}>
-                  <span className="tile-icon">{ICONS.check}</span>
+                <button type="button" className={`setup-tile ${activeProvider ? 'complete' : ''}`} onClick={() => setScreen('models')}>
+                  <span className="tile-icon">{activeProvider ? ICONS.check : ICONS.spark}</span>
                   <span>
                     <b>Connect a model</b>
                     <small>{activeProvider ? catalogByKind.get(activeProvider.kind)?.name : 'API key or official CLI sign-in'}</small>
                   </span>
-                  {activeProvider && <span className="tile-check">{ICONS.check}</span>}
+                  {activeProvider && <span className="tile-check" aria-hidden="true">{ICONS.check}</span>}
                 </button>
-                <button className="setup-tile" onClick={() => setScreen('workspace')}>
-                  <span className="tile-icon">{ICONS.folder}</span>
+                <button type="button" className={`setup-tile ${projectRoot ? 'complete' : ''}`} onClick={() => setScreen('workspace')}>
+                  <span className="tile-icon">{projectRoot ? ICONS.check : ICONS.folder}</span>
                   <span>
                     <b>Select project</b>
                     <small>{projectRoot ? projectRoot : 'Optional — enables file tools'}</small>
@@ -424,7 +561,7 @@ export default function App() {
               </div>
               <div className="suggestion-grid">
                 {SUGGESTIONS.map((item) => (
-                  <button key={item.title} onClick={() => setDraft(item.prompt)}>
+                  <button type="button" key={item.title} onClick={() => setDraft(item.prompt)}>
                     {ICONS.spark}
                     <span>
                       <b>{item.title}</b>
@@ -495,14 +632,21 @@ export default function App() {
   function Composer() {
     return (
       <div className="composer-wrap">
-        {!storage?.secure && (
+        {bridgeMissing && (
+          <div className="composer-notice" role="status">
+            <span>Desktop bridge is not loaded. Start Open-Ro with npm run dev to connect a model and a project folder.</span>
+          </div>
+        )}
+        {!bridgeMissing && storage && !storage.secure && (
           <div className="composer-notice">
-            <span>⚠ Keyring not detected — API keys cannot be saved securely. Install a desktop secret service and restart to persist keys.</span>
+            <span>Keyring not detected. API keys cannot be saved securely until a desktop secret service is available.</span>
           </div>
         )}
         <div className="composer">
+          <label className="sr-only" htmlFor="composer-input">Message</label>
           <textarea
-            placeholder="Describe a change, ask a question, or propose an experiment…"
+            id="composer-input"
+            placeholder="Describe a change, ask a question, or propose an experiment"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -518,7 +662,7 @@ export default function App() {
               {hasProvider ? <span className="provider-mini">{activeProvider ? `${catalogByKind.get(activeProvider.kind)?.name}${activeProvider.model ? ` · ${activeProvider.model}` : ''}` : 'provider saved — set active'}</span> : <span>Connect a model first →</span>}
             </div>
             <div className="composer-right">
-              <button className="send-btn" disabled={!draft.trim() || sending} onClick={() => void sendDraft()} aria-label="Send">
+              <button type="button" className="send-btn" disabled={!draft.trim() || sending} onClick={() => void sendDraft()} aria-label="Send message">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 8h11M9 3.5 13.5 8 9 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
               </button>
             </div>
@@ -540,7 +684,7 @@ export default function App() {
             <p>One connection is all you need. API keys are stored with Electron safeStorage; subscription routes run the official CLI and never read its credentials.</p>
           </div>
           <div className="heading-actions">
-            <span className="outline-btn" style={{ cursor: 'default' }}>{storage?.secure ? 'Secure storage: OK' : 'No desktop keyring'}</span>
+            <span className="outline-btn" style={{ cursor: 'default' }}>{bridgeMissing || !storage ? 'Secure storage: open the desktop app' : storage.secure ? 'Secure storage available' : 'No desktop keyring'}</span>
           </div>
         </div>
 
@@ -564,12 +708,12 @@ export default function App() {
                 <span className={`provider-logo ${view.kind}`}>{initials(option?.name ?? view.kind)}</span>
                 <span className="provider-info">
                   <b>{option?.name ?? view.kind}</b>
-                  <small>{view.hasKey ? 'API key stored securely' : 'keyless / save pending'}{view.model ? ` · ${view.model}` : ''}</small>
+                  <small>{providerStatus(view, option)}{view.model ? ` · ${view.model}` : ''}</small>
                 </span>
                 {view.active && <span className="active-tag">ACTIVE</span>}
-                <button className="outline-btn" onClick={() => openProviderModal(view.kind)}>Edit</button>
-                {!view.active && <button className="outline-btn" onClick={async () => { await api.setActive(view.kind); await refreshAll(); }}>Use</button>}
-                <button className="icon-btn small danger" title="Remove stored key" onClick={() => void removeProvider(view.kind)}>{ICONS.x}</button>
+                <button type="button" className="outline-btn" onClick={() => openProviderModal(view.kind)}>Edit</button>
+                {!view.active && <button type="button" className="outline-btn" onClick={async () => { await api.setActive(view.kind); await refreshAll(); }}>Use</button>}
+                <button type="button" className="icon-btn small danger" aria-label={`Remove ${option?.name ?? view.kind}`} onClick={() => void removeProvider(view.kind)}>{ICONS.x}</button>
               </div>
             );
           })}
@@ -595,7 +739,7 @@ export default function App() {
                 <small>{option.setup}</small>
                 <span className="choice-cost">{option.costNote}</span>
               </span>
-              <button className="outline-btn" onClick={() => openProviderModal(option.kind)}>Connect</button>
+              <button type="button" className="outline-btn" onClick={() => openProviderModal(option.kind)}>Connect</button>
             </div>
           ))}
         </div>
@@ -613,14 +757,13 @@ export default function App() {
     const isCli = option?.connection === 'cli';
     const test = providerTest && providerTest.kind === kind ? providerTest : null;
     return (
-      <div className="modal-backdrop" onClick={() => setProviderModal(resetForm())}>
-        <div className="provider-modal" onClick={(event) => event.stopPropagation()}>
+      <Dialog labelledBy="provider-title" className="provider-modal" onClose={() => setProviderModal(resetForm())}>
           <div className="modal-title">
             <div>
-              <strong>{option?.name}</strong>
+              <strong id="provider-title">{option?.name}</strong>
               <small>{option?.setup}</small>
             </div>
-            <button className="icon-btn" onClick={() => setProviderModal(resetForm())}>{ICONS.x}</button>
+            <button type="button" className="icon-btn" aria-label="Close provider setup" onClick={() => setProviderModal(resetForm())}>{ICONS.x}</button>
           </div>
           <div className="provider-steps">
             <div className="steps-heading">SETUP STEPS</div>
@@ -666,12 +809,11 @@ export default function App() {
           </div>
           {test && <div className={`test-result ${test.ok ? 'success' : 'failed'}`}>{test.detail}</div>}
           <div className="modal-actions">
-            <button className="text-btn" onClick={() => void testProvider()}>Check connection</button>
-            <button className="outline-btn" onClick={() => setProviderModal(resetForm())}>Cancel</button>
-            <button className="primary-btn" onClick={() => void saveProvider()}>Save & set active</button>
+            <button type="button" className="text-btn" onClick={() => void testProvider()}>Check connection</button>
+            <button type="button" className="outline-btn" onClick={() => setProviderModal(resetForm())}>Cancel</button>
+            <button type="button" className="primary-btn" onClick={() => void saveProvider()}>Save and set active</button>
           </div>
-        </div>
-      </div>
+      </Dialog>
     );
   }
 
@@ -686,8 +828,8 @@ export default function App() {
             <p>File browsing is read-only in 0.1.0; agent write proposals are reviewed before anything lands, and every accepted write leaves a checkpoint.</p>
           </div>
           <div className="heading-actions">
-            <button className="outline-btn" onClick={() => void refreshWorkspaceState()}>Refresh</button>
-            <button className="primary-btn" onClick={() => void selectProject()}>Choose folder…</button>
+            <button type="button" className="outline-btn" onClick={() => void refreshWorkspaceState()}>Refresh</button>
+            <button type="button" className="primary-btn" onClick={() => void selectProject()}>Choose folder</button>
           </div>
         </div>
 
@@ -704,47 +846,13 @@ export default function App() {
           <span>{projectEntries.get('.')?.length ?? 0} top-level entries</span>
         </div>
         {projectRoot && projectEntries.get('.') && (
-          <div className="integration-list">
-            {[...projectEntries.entries()].map(([dir, entries]) => (
-              <div key={dir} style={{ marginLeft: dir === '.' ? 0 : 14 }}>
-                <div className="section-title" style={{ marginBottom: 6 }}>
-                  <span style={{ letterSpacing: 0, color: '#8a95a4', fontFamily: 'Inter, sans-serif', fontSize: 10 }}>{dir}/{(expandedDirs.has(dir) || dir === '.') && dir !== '.' ? '' : ''}</span>
-                  <span onClick={() => toggleDir(dir)} style={{ cursor: 'pointer' }}>{expandedDirs.has(dir) || dir === '.' ? '' : ''}</span>
-                </div>
-                {entries.map((entry) => (
-                  <div className="integration-card" key={entry.path} style={{ maxWidth: 560 }}>
-                    {entry.type === 'dir' ? (
-                      <button className="integration-top" onClick={() => void toggleDir(entry.path)}>
-                        <span className="integration-icon">{ICONS.folder}</span>
-                        <span className="integration-copy">
-                          <b>{entry.name}/</b>
-                          <small>Directory — click to expand</small>
-                        </span>
-                        <span className="state-pill">{projectEntries.has(entry.path) ? `${projectEntries.get(entry.path)!.length} entries` : 'open'}</span>
-                        <svg className="rotate" style={{ color: '#7e8997', transform: expandedDirs.has(entry.path) ? 'rotate(180deg)' : 'none' }} width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="m4 6 4 4 4-4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
-                      </button>
-                    ) : (
-                      <button className="integration-top" onClick={() => void openFile(entry.path)}>
-                        <span className="integration-icon">{ICONS.file}</span>
-                        <span className="integration-copy">
-                          <b>{entry.name}</b>
-                          <small>Click to preview contents</small>
-                        </span>
-                        <span className="state-pill">{ICONS.file}</span>
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ))}
-            {projectEntries.get('.')!.length === 0 && (
-              <div className="empty-state">
-                <span className="empty-icon">{ICONS.folder}</span>
-                <b>Nothing here</b>
-                <p>Hidden files and build folders (node_modules, dist, .git) are ignored.</p>
-              </div>
-            )}
-          </div>
+          projectEntries.get('.')!.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-icon">{ICONS.folder}</span>
+              <b>This folder has no visible files</b>
+              <p>Build folders, .git, and likely secret files such as .env are hidden.</p>
+            </div>
+          ) : <FileTree dir="." depth={0} />
         )}
 
         <div className="section-title" style={{ marginTop: 28 }}>
@@ -754,7 +862,7 @@ export default function App() {
         <div className="integration-list">
           {checkpoints.map((file) => (
             <div className="integration-card" key={file}>
-              <button className="integration-top" onClick={() => void restoreCheckpoint(file)}>
+              <button type="button" className="integration-top" onClick={() => void restoreCheckpoint(file)}>
                 <span className="integration-icon">{ICONS.shield}</span>
                 <span className="integration-copy">
                   <b>{file}</b>
@@ -779,9 +887,10 @@ export default function App() {
   // ---- Integrations ------------------------------------------------------------
   function IntegrationsPage() {
     const groups: Array<{ title: string; category: string }> = [
-      { title: 'PROVIDER CLIs', category: 'provider-cli' },
       { title: 'ROBLOX STUDIO', category: 'studio' },
-      { title: 'ASSET & PROJECT TOOLS', category: 'asset' },
+      { title: 'PROJECT TOOLS', category: 'vcs' },
+      { title: 'ASSET TOOLS', category: 'asset' },
+      { title: 'PROVIDER CLIS', category: 'provider-cli' },
     ];
     return (
       <div className="content-page">
@@ -792,7 +901,7 @@ export default function App() {
             <p>Detect, test, install or skip. No capability below is required — the chat workspace works with only a model connection.</p>
           </div>
           <div className="heading-actions">
-            <button className="outline-btn" onClick={() => void refreshAll()}>Re-detect</button>
+            <button type="button" className="outline-btn" onClick={() => void refreshAll()}>Re-detect</button>
           </div>
         </div>
 
@@ -806,7 +915,7 @@ export default function App() {
 
         <div className="section-title">
           <span>MCP STDIO SERVER</span>
-          <span>approval-gated</span>
+          <span>one server</span>
         </div>
         <div className="form-stack" style={{ maxWidth: 560 }}>
           <label>
@@ -818,8 +927,8 @@ export default function App() {
             <input placeholder="mcp-server --port …" value={mcpForm.args} onChange={(event) => setMcpForm({ ...mcpForm, args: event.target.value })} />
           </label>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="primary-btn" disabled={mcpState.running} onClick={() => void connectMcp()}>Connect</button>
-            {mcpState.running && <button className="outline-btn" onClick={() => void disconnectMcp()}>Stop server</button>}
+            <button type="button" className="primary-btn" disabled={mcpState.running} onClick={() => void connectMcp()}>Connect</button>
+            {mcpState.running && <button type="button" className="outline-btn" onClick={() => void disconnectMcp()}>Stop server</button>}
           </div>
           {mcpState.tools.length > 0 && (
             <div className="provider-steps">
@@ -834,16 +943,21 @@ export default function App() {
           )}
         </div>
 
-        {groups.map((group) => (
+        {groups.map((group) => {
+          const items = capabilities.filter((capability) => capability.category === group.category);
+          if (items.length === 0) {
+            return null;
+          }
+          return (
           <div key={group.title} style={{ marginTop: 30 }}>
             <div className="section-title">
               <span>{group.title}</span>
-              <span>local detection</span>
+              <span>{items.length} listed</span>
             </div>
             <div className="integration-list">
-              {capabilities.filter((capability) => capability.category === group.category).map((capability) => (
+              {items.map((capability) => (
                 <div className={`integration-card ${expandedCards.has(capability.id) ? 'expanded' : ''}`} key={capability.id}>
-                  <button className="integration-top" onClick={() => setExpandedCards((prev) => { const next = new Set(prev); if (next.has(capability.id)) { next.delete(capability.id); } else { next.add(capability.id); } return next; })}>
+                  <button type="button" className="integration-top" aria-expanded={expandedCards.has(capability.id)} onClick={() => setExpandedCards((prev) => { const next = new Set(prev); if (next.has(capability.id)) { next.delete(capability.id); } else { next.add(capability.id); } return next; })}>
                     <span className="integration-icon">{ICONS.spark}</span>
                     <span className="integration-copy">
                       <b>{capability.name}</b>
@@ -853,23 +967,50 @@ export default function App() {
                     <svg className={expandedCards.has(capability.id) ? 'rotate' : ''} style={{ color: '#7e8997' }} width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="m4 6 4 4 4-4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
                   </button>
                   <div className="integration-detail">
-                    <p>Official install page: <a style={{ color: 'var(--accent)' }} href={capability.installUrl ?? '#'} target="_blank" rel="noreferrer">{capability.installUrl}</a>.</p>
+                    {capability.installUrl ? <p>Official page: <a href={capability.installUrl} target="_blank" rel="noreferrer">{capability.installUrl}</a></p> : <p>No separate installer. Use the tool's own documentation.</p>}
                     <div className="integration-meta">
-                      <span>CATEGORY · {capability.category}</span>
-                      <span>STATUS · {capability.state.toUpperCase()}</span>
+                      <span>Category: {capability.category}</span>
+                      <span>Status: {capability.state}</span>
                     </div>
                   </div>
                 </div>
               ))}
             </div>
           </div>
-        ))}
+          );
+        })}
 
         <div className="footnote">
           {ICONS.shield}
           <span>Open-Ro never auto-installs extensions. Setup guides, permissions and uninstall paths are documented in docs/EXTENSIONS.md.</span>
         </div>
       </div>
+    );
+  }
+
+  function FileTree({ dir, depth }: { dir: string; depth: number }) {
+    const entries = projectEntries.get(dir) ?? [];
+    return (
+      <ul className="file-tree" style={{ marginLeft: depth === 0 ? 0 : 16 }}>
+        {entries.map((entry) => (
+          <li key={entry.path}>
+            {entry.type === 'dir' ? (
+              <>
+                <button type="button" className="tree-row" aria-expanded={expandedDirs.has(entry.path)} onClick={() => void toggleDir(entry.path)}>
+                  {ICONS.folder}
+                  <span>{entry.name}</span>
+                </button>
+                {expandedDirs.has(entry.path) && <FileTree dir={entry.path} depth={depth + 1} />}
+              </>
+            ) : (
+              <button type="button" className="tree-row" onClick={() => void openFile(entry.path)}>
+                {ICONS.file}
+                <span>{entry.name}</span>
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
     );
   }
 }

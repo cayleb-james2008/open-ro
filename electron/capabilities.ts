@@ -79,9 +79,17 @@ const checks: Array<{
   },
 ];
 
+const studioCapability: CapabilityInfo = {
+  id: 'roblox-studio',
+  name: 'Roblox Studio MCP',
+  category: 'studio',
+  state: 'experimental',
+  detail: 'Built into Roblox Studio. Enable it under Assistant, then Manage MCP Servers. Open-Ro does not launch Studio or install it for you.',
+  installUrl: 'https://create.roblox.com/docs/studio/mcp',
+};
+
 export async function detectCapabilities(): Promise<CapabilityInfo[]> {
-  await Promise.resolve();
-  return Promise.all(
+  const detected = await Promise.all(
     checks.map(async (check) => {
       try {
         const { stdout } = await exec(check.command, check.args, { timeout: 4_000 });
@@ -105,4 +113,5 @@ export async function detectCapabilities(): Promise<CapabilityInfo[]> {
       }
     }),
   );
+  return [studioCapability, ...detected];
 }
