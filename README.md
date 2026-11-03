@@ -23,7 +23,7 @@ Open-Ro is being built for **Windows and native Linux desktops, including Omarch
 
 ## Interface
 
-These screenshots are the renderer at 1280×800, opened in a browser without the Electron preload. The green notice on the chat screen is that missing-bridge state. Inside `npm run dev` the preload is present and that notice is not shown.
+These screenshots are the renderer at 1280×800, opened in a browser without the Electron preload. The green notice on the chat screen is the missing-bridge state. Inside `npm run dev` the preload is present and the notice is not shown.
 
 ![Open-Ro welcome screen with chat, models, workspace, and integrations navigation](docs/assets/ui-chat.png)
 
@@ -118,7 +118,7 @@ Windows and Linux are equal first-class targets for the Open-Ro desktop client. 
 | Desktop shell | Chat, provider forms, project picker, and an approval tray | A beginner can prompt a playable game without writing Luau |
 | Provider connections | Catalog with Ollama and llama.cpp first, then API keys and official CLI handoffs | A tested local model with the network off, plus a visible data-flow line |
 | Local project access | List and read files. Writes stay staged until approved. Checkpoints exist | The same gate for Studio edits, with a line diff and restore |
-| Agent tools | Approval-gated local shell, file, and MCP tool calls. Once you have decided every approval from an agent turn, the results go back to that chat automatically and the agent continues. A playtest report is marked passed only when it lists assertions, state checks, and a PNG path in the project, and each expected value equals the actual one. The agent reports those values and the screenshot path; Open-Ro does not verify them against a run | Plans, evidence, and recovery tied to a real playtest |
+| Agent tools | Approval-gated local shell, file, and MCP tool calls; once every approval in an agent turn is decided, the results return to that chat and the agent continues. A playtest report is marked passed only when the report lists assertions, state checks, and a PNG path in the project with each expected value equal to the actual one — Open-Ro renders that report but does not yet verify it against a real run | Plans, evidence, and recovery tied to a real playtest |
 | MCP | One stdio server. Starting it and every agent tool call need your approval. Tested against the MCP reference server, not yet against Studio | A tested Studio connection, not a typed command alone |
 | Roblox Studio | Three agent tools: read the place tree, read a script, and write a Script, LocalScript or ModuleScript. Each one sends Luau through the Studio MCP server's `execute_luau` (or `run_code`) tool and needs your approval first. A write shows a line diff against the last read, refuses client-side currency changes, stops if the script changed since the read, and is read back. Tested against a mock DataModel in the Luau CLI, **not yet against a live Studio session** | Edit the right instance, playtest, and store the evidence |
 | Rojo | `rojo --version` detection only | Sync direction and overwrite scope shown before files move |

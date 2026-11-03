@@ -1,65 +1,31 @@
-name: CI and desktop packages
+name: CI
 
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: open-ro-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
-  checks:
-    runs-on: ubuntu-latest
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install --no-audit --no-fund
-      - run: npm run typecheck
-      - run: npm run lint
-      - run: npm test
-      - run: npm run build
-
-  windows:
-    needs: checks
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm install --no-audit --no-fund
-      - run: npm run package:win
-      - uses: actions/upload-artifact@v4
-        with:
-          name: open-ro-windows-x64
-          path: release/*.exe
-          if-no-files-found: error
-
-  linux:
-    needs: checks
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y rpm fakeroot
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm install --no-audit --no-fund
-      - run: npm run package:linux
-      - uses: actions/upload-artifact@v4
-        with:
-          name: open-ro-linux-x64
-          path: |
-            release/*.AppImage
-            release/*.deb
-            release/*.pacman
-          if-no-files-found: error
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint (source hygiene + token drift)
+        run: npm run lint
+      - name: Tests
+        run: npm test
+      - name: Build
+        run: npm run build
