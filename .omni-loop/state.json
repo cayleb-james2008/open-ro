@@ -4,15 +4,15 @@
   "switched_at": "2026-11-03T14:19:00Z",
   "mode": "0B_BROWNFIELD_BASELINE",
   "project": "open-ro",
-  "incumbent_commit": "bbbddc2379a50eece43f20b79606e81e17bef4f8",
+  "incumbent_commit": "ee86610db607ba3ded596640289401de803a31d6",
   "main_commits_after_rebase": {
     "approval_gate": "09f0b67",
     "motion_and_v4_records": "2db61e4",
     "sentence_case": "4ed11a7",
     "handoff_stamp": "01ccd8ebacd5fa763ef20d5150ac9ed40efac2f6"
   },
-  "current_iteration": 6,
-  "current_wave": 3,
+  "current_iteration": 7,
+  "current_wave": 4,
   "harness_state": "HARD_GATE_BLOCKED",
   "hard_gate_blockers": ["U01", "U03", "U04", "U09", "U12", "U14"],
   "universal_dimensions": {
@@ -26,7 +26,7 @@
     "U08": { "score": 3.6, "confidence": "HIGH", "stagnation": 0, "evidence": "verify-ui-craft reported transitionAll=0 at 1440, 768, and 375. Reduced motion keeps color transitions. A waiting-dots keyframe remains." },
     "U09": { "score": 3.9, "confidence": "MEDIUM", "stagnation": 0, "evidence": "Primary controls, inputs, tree rows, and nav rows are 44px. The 8-state matrix is still incomplete, so the 4.0 floor is not claimed." },
     "U10": { "score": 3.5, "confidence": "LOW", "stagnation": 0, "evidence": "vite build reported a 259.53 kB JS bundle, gzip 79.36 kB. LCP, INP, and CLS were not measured." },
-    "U11": { "score": 3.0, "confidence": "MEDIUM", "stagnation": 0, "evidence": "Provider and command calls use timeouts. There is no React error boundary." },
+    "U11": { "score": 3.4, "confidence": "MEDIUM", "stagnation": 0, "evidence": "src/ErrorBoundary.tsx wraps the studio. A thrown render was not executed in a browser test." },
     "U12": { "score": 4.0, "confidence": "HIGH", "stagnation": 0, "evidence": "safety.test.ts covers symlink escape, secret names, approval expiry, and a scrubbed command environment. No live keyring test." },
     "U13": { "score": 3.5, "confidence": "MEDIUM", "stagnation": 0, "evidence": "Path, approval, provider, and session rules sit in their own modules. App.tsx is still the whole shell." },
     "U14": { "score": 3.8, "confidence": "HIGH", "stagnation": 0, "evidence": "typecheck, lint, 13 tests, and the UI craft gate passed. There is no Electron E2E test." },
@@ -35,17 +35,17 @@
   },
   "composite": {
     "active_dimensions": 15,
-    "mean": 3.65,
+    "mean": 3.67,
     "min": 2.5,
-    "universal_composite": 3.36,
+    "universal_composite": 3.38,
     "formula": "0.75 * mean + 0.25 * min, U05 excluded as N/A"
   },
   "next_recommended_action": {
-    "id": "ITER-007",
-    "title": "Catch a renderer crash without blanking the studio",
-    "target_dimension": "U11",
-    "scope_files": ["src/main.tsx", "src/ErrorBoundary.tsx"],
-    "uevam": 6.4,
+    "id": "ITER-008",
+    "title": "Flatten the connection-card gradient and status glow",
+    "target_dimension": "U07",
+    "scope_files": ["src/styles.css"],
+    "uevam": 3.2,
     "contract": ".omni-loop/current-contract.json"
   }
 }

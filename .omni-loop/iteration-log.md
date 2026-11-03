@@ -1,5 +1,24 @@
 # Iteration log — latest five
 
+## Iteration 007 (Wave 4) - 2026-11-03T14:28:00Z
+- **Status:** ACCEPTED
+- **Active Harness & Target Dimension:** H1_SYSTEMS_CODE -> U11 Reliability
+- **UEVAM Score & Breakdown:** 6.4 (Impact=3, Severity=3, Conf=0.9, Unlocks=0, VoI=0.5, ASPO_Sub=1.1, Effort=1.5, Risk=0.2)
+- **Baseline Commit & Rollback Tag:** `ee86610db607ba3ded596640289401de803a31d6` / `omni-loop/iter-7-pre`
+- **Atomic Improvement Attempted:** Wrap the studio in a React error boundary.
+- **Problem Reproduction Evidence:** `src/main.tsx` rendered `App` with no boundary. Red-team check 40 was FAIL.
+- **Skills Routed (RADEG Passed):** Ponytail rung 7. React has no function-component error boundary, so the minimum class component is the implementation.
+- **Files Changed & Net LOC:** `src/ErrorBoundary.tsx`, `src/main.tsx`, loop records.
+- **Acceptance & Metamorphic Oracles Run:** `npm run typecheck` exit 0. `npm test` exit 0, 14 passed. `npm run build` exit 0.
+- **Anti-Tamper Audit:** PASS. No test file changed.
+- **Browser / Visual Evidence:** A thrown render was not executed. The boundary reuses existing classes.
+- **Clean-Room 6-Role Evaluator Verdict:** ACCEPT for the wrap. The crash path itself was not clicked.
+- **Scorecard Delta:** U11 3.0 -> 3.4. Composite 3.36 -> 3.38.
+- **Grader Co-Evolution / Reusable Lesson:** A component test needs a renderer test library this repo does not have. Do not add one only for this.
+- **Next Highest-UEVAM Opportunity:** ITER-008 quiet the connection-card chrome.
+
+# Earlier iterations
+
 ## Iteration 006 (Wave 3) - 2026-11-03T14:26:00Z
 - **Status:** ACCEPTED
 - **Active Harness & Target Dimension:** H1_SYSTEMS_CODE -> U06 User experience
