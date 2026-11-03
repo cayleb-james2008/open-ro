@@ -12,7 +12,7 @@ import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServe
 import { gradePlaytest, parsePlaytestReport } from './playtestEvidence';
 import { runApprovedStudio, stageStudioRestore, stageStudioTool, StudioReads, type StudioCheckpoint } from './studioTools';
 import { isIgnoredName, isSecretName, resolveWithinRoot, sameProjectRoot } from './pathSafety';
-import { indexProject, type ProjectIndex } from './projectIndex';
+import { indexProject, buildProjectContext, type ProjectIndex } from './projectIndex';
 import { getProviderOption, isProviderKind, providerOptions, type ProviderKind } from './providerCatalog';
 import {
   activateProvider,
@@ -413,12 +413,15 @@ function registerIpc(): void {
       if (controller.signal.aborted) {
         return { ok: false, assistantText: '', toolTrace: [], error: 'Cancelled.' };
       }
+      const index = await indexProject(turnRoot).catch(() => null);
+      const projectContext = index ? buildProjectContext(index) : '';
       return await runAgentTurn({
         connection,
         messages: requireMessages(args?.messages ?? []),
         projectRoot: turnRoot,
         executor: buildExecutor(turnRoot),
         signal: controller.signal,
+        projectContext: projectContext || undefined,
       });
     } catch (error) {
       if (controller.signal.aborted) {

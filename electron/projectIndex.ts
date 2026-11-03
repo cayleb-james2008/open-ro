@@ -97,3 +97,52 @@ export async function indexProject(root: string, limits: Partial<IndexLimits> = 
   await walk(root, 0, '');
   return { root, entries, truncated };
 }
+
+export interface ProjectContextOptions {
+  maxEntries?: number;
+  maxChars?: number;
+}
+
+/**
+ * Compact, bounded project map for the agent prompt. Metadata only; the caller
+ * must label it as untrusted data. Returns '' for an empty index.
+ */
+export function buildProjectContext(index: ProjectIndex, options: ProjectContextOptions = {}): string {
+  const maxEntries = options.maxEntries ?? 150;
+  const maxChars = options.maxChars ?? 6_000;
+  if (index.entries.length === 0) {
+    return '';
+  }
+  const noteReserve = 160;
+  const pick = (budget: number): { lines: string[]; included: number } => {
+    const lines: string[] = [];
+    let chars = 0;
+    let included = 0;
+    for (const entry of index.entries.slice(0, maxEntries)) {
+      const line = `${entry.relPath} (${entry.bytes} B)`;
+      if (chars + line.length + 1 > budget) {
+        break;
+      }
+      lines.push(line);
+      chars += line.length + 1;
+      included += 1;
+    }
+    return { lines, included };
+  };
+
+  const full = pick(maxChars);
+  if (full.included === index.entries.length && !index.truncated) {
+    return full.lines.join('\n');
+  }
+  // Truncation is real: reserve room so the note survives the character cap.
+  const reserved = pick(Math.max(0, maxChars - noteReserve));
+  const omitted = index.entries.length - reserved.included;
+  const note = `... ${omitted > 0 ? `${omitted} more file(s); ` : ''}index${index.truncated ? ' was truncated by caps' : ''}. Use list_dir/read_file for specifics.`;
+  let text = reserved.lines.join('\n');
+  const room = maxChars - text.length - (text ? 1 : 0);
+  if (room > 0) {
+    const clipped = note.length > room ? note.slice(0, room) : note;
+    text = text ? `${text}\n${clipped}` : clipped;
+  }
+  return text.length > maxChars ? text.slice(0, maxChars) : text;
+}
