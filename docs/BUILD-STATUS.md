@@ -2,7 +2,7 @@
 
 **Source version:** `0.1.0`  
 **Date:** 2026-11-03  
-**State:** early functional foundation. Dependency install, typecheck, lint, unit tests, and the production build run on Windows 11 (Node 26.13.0) and in GitHub Actions on `ubuntu-latest` and `windows-latest`. The packaged app has been launched from `release/win-unpacked` on Windows 11: the window rendered with the preload bridge and loaded provider state over IPC. The NSIS installer has not been installed, and the file dialog and OS keyring have not been exercised.
+**State:** early functional foundation. Dependency install, typecheck, lint, unit tests, and the production build run on Windows 11 (Node 26.13.0) and in GitHub Actions on `ubuntu-latest` and `windows-latest`. The packaged app has been launched from `release/win-unpacked` on Windows 11: the window rendered with the preload bridge and loaded provider state over IPC. A live Roblox Studio MCP round trip succeeded on a Baseplate (`get_studio_state` + `execute_luau`). The NSIS installer has not been installed, and the file dialog and OS keyring have not been exercised.
 
 ## Included in this source tree
 
@@ -43,9 +43,10 @@ Earlier verification preserved from the prior workspace run:
 
 - With `OPENRO_LUAU_BIN` set to a Luau CLI, `npm test` also runs `tests/luau` (7 more tests): the write and read Luau the Studio tools generate runs against the mock DataModel in `tests/fixtures/studio-datamodel.luau`. It covers update, exact read-back of CRLF and NUL sources, stale-source refusal (including a CRLF/LF difference), a script that appeared after the review, duplicate names, a removed script, a class change, and whether the undo step was recorded.
 - The renderer was driven in headless Chrome with a stubbed IPC bridge: the agent staged two actions, one was approved and one rejected, and the renderer sent one follow-up turn with both results. The Electron main process was not running.
+- The official Roblox Studio MCP bridge completed a live round trip on a Baseplate in this session: `get_studio_state` reported `Current Studio Mode: Edit` and `execute_luau` returned `open-ro live probe`. The bridge advertised 33 tools; no place mutation or playtest ran.
 - The MCP client completed the handshake, listed tools, and called `echo` against `@modelcontextprotocol/server-everything` 2.1.0 over stdio, both directly and as a staged call approved through the queue.
 
-These checks do **not** prove an installer install/uninstall journey, cloud-provider inference or CLI sign-in, or a Roblox Studio session.
+These checks do **not** prove an installer install/uninstall journey, cloud-provider inference or CLI sign-in, or a full Roblox Studio playtest/input/screenshot/repair workflow.
 
 ## Not verified / not produced
 
@@ -54,7 +55,7 @@ These checks do **not** prove an installer install/uninstall journey, cloud-prov
 - Linux AppImage, Debian package, or pacman install/uninstall or keyring behavior on Omarchy. CI packaging builds the artifacts; they are not installed.
 - Live inference against cloud providers and official CLI sign-ins; no cloud keys or accounts were used in this workspace. The local Ollama route is verified above.
 - Full native CLI sign-in/connection validation on Windows and Linux.
-- Live Roblox Studio MCP workflow, playtest/input/screenshot/repair loop. The official Studio MCP bridge (`cmd.exe /c %LOCALAPPDATA%\Roblox\mcp.bat`) handshook over stdio and advertised 33 tools, including `execute_luau`, `list_roblox_studios`, and `screen_capture`; `list_roblox_studios` returned one attached instance. No place was open, so `get_studio_state` and `execute_luau` returned "Place is not open" and no Studio mutation has run.
+- Live Roblox Studio MCP workflow beyond reads: with a Baseplate open, the official Studio MCP bridge returned Edit mode via `get_studio_state` and `execute_luau` returned a probe value (`open-ro live probe`). No place mutation, playtest, input, screenshot, or repair loop has run, and the app's approved Studio write flow has not been exercised live.
 - Live Blender workflow, asset import/export, Rojo synchronization.
 - Image, thumbnail, icon, audio or 3D generation integrations.
 
