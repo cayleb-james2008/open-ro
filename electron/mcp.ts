@@ -1,7 +1,8 @@
+import * as crypto from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { pushMcpChunk } from './mcpFraming';
 import { scrubbedEnv } from './toolEnv';
-import type { McpToolSummary } from './types';
+import type { McpServerIdentity, McpToolSummary } from './types';
 
 /**
  * Minimal MCP stdio client: initialize handshake, tool discovery and tool
@@ -29,8 +30,14 @@ export class McpStdioClient {
   private pending = new Map<number, { resolve: (value: unknown) => void; reject: (err: Error) => void; timer: NodeJS.Timeout }>();
   private buffer = '';
   private tools: McpToolSummary[] = [];
+  private serverIdentity: McpServerIdentity | null = null;
 
   constructor(private readonly requestTimeoutMs = 15_000) {}
+
+  /** Command, arguments and a per-start session id of the running server, or null. */
+  get identity(): McpServerIdentity | null {
+    return this.running ? this.serverIdentity : null;
+  }
 
   get running(): boolean {
     return this.child !== null && this.child.exitCode === null;
@@ -66,6 +73,7 @@ export class McpStdioClient {
       });
       this.notify('notifications/initialized');
       await this.refreshTools();
+      this.serverIdentity = { command: spec.command, args: [...spec.args], session: crypto.randomUUID() };
     } catch (error) {
       // A failed handshake must not leave a live process that blocks the next connect.
       await this.stop();
@@ -74,6 +82,7 @@ export class McpStdioClient {
   }
 
   async stop(): Promise<void> {
+    this.serverIdentity = null;
     const child = this.child;
     if (!child) {
       return;

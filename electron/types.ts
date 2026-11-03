@@ -63,6 +63,13 @@ export interface PendingApprovalView {
   serverArgs?: string[];
 }
 
+/** Which server process a staged MCP call was staged against. `session` changes on every start. */
+export interface McpServerIdentity {
+  command: string;
+  args: string[];
+  session: string;
+}
+
 export interface ApprovalResult {
   ok: boolean;
   decision: 'approve' | 'reject';

@@ -1,6 +1,6 @@
 import type { ApprovalQueue, PendingApproval } from './approvals';
 import { assertMcpSpec } from './mcpFraming';
-import type { ApprovalResult, McpToolSummary, ToolCallResult, ToolSchema } from './types';
+import type { ApprovalResult, McpServerIdentity, McpToolSummary, ToolCallResult, ToolSchema } from './types';
 
 /**
  * Connected MCP tools for the agent. The agent can only stage a call. The
@@ -12,6 +12,8 @@ const MAX_AGENT_TOOL_NAME = 64;
 
 export interface McpCaller {
   readonly running: boolean;
+  /** Command, arguments and per-start session of the running server. */
+  readonly identity: McpServerIdentity | null;
   listTools(): McpToolSummary[];
   callTool(name: string, args: Record<string, unknown>): Promise<string>;
 }
@@ -58,14 +60,15 @@ export function stageMcpCall(
   caller: McpCaller,
   input: { projectRoot: string; agentName: string; args: Record<string, unknown> },
 ): ToolCallResult {
-  if (!caller.running) {
+  const server = caller.identity;
+  if (!caller.running || !server) {
     return { ok: false, output: 'No MCP server is connected.' };
   }
   const match = mcpAgentTools(caller.listTools()).find((entry) => entry.agentName === input.agentName);
   if (!match) {
     return { ok: false, output: `Unknown MCP tool: ${input.agentName}` };
   }
-  const pending = approvals.stageMcp({ projectRoot: input.projectRoot, tool: match.tool.name, args: input.args });
+  const pending = approvals.stageMcp({ projectRoot: input.projectRoot, tool: match.tool.name, args: input.args, server });
   return {
     ok: true,
     output: `Staged MCP tool ${match.tool.name} for approval. It has not run.`,
@@ -82,6 +85,9 @@ export async function runApprovedMcpCall(item: PendingApproval, caller: McpCalle
   if (!caller.running || !caller.listTools().some((entry) => entry.name === tool)) {
     return { ok: false, decision: 'approve', summary: `MCP tool ${tool} is no longer available. It did not run.` };
   }
+  if (!sameServer(item.mcpServer, caller.identity)) {
+    return { ok: false, decision: 'approve', summary: `The MCP server changed after ${tool} was staged. It did not run. Ask for the call again.` };
+  }
   const args = JSON.parse(item.mcpArgs ?? '{}') as Record<string, unknown>;
   try {
     const output = await caller.callTool(tool, args);
@@ -89,6 +95,17 @@ export async function runApprovedMcpCall(item: PendingApproval, caller: McpCalle
   } catch (error) {
     return { ok: false, decision: 'approve', summary: `MCP tool ${tool} failed.`, output: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/** Same command, same arguments and the same process session. A restart of the same command is a different server. */
+export function sameServer(staged: McpServerIdentity | undefined, current: McpServerIdentity | null): boolean {
+  return !!staged && !!current && staged.session === current.session && staged.command === current.command &&
+    staged.args.length === current.args.length && staged.args.every((arg, index) => arg === current.args[index]);
+}
+
+/** One-line label of a server for approval cards. */
+export function serverLabel(server: { command: string; args: string[] }): string {
+  return [server.command, ...server.args.map((arg) => (/[\s"']/.test(arg) ? JSON.stringify(arg) : arg))].join(' ');
 }
 
 export interface McpServerStarter {

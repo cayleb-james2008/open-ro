@@ -1,4 +1,5 @@
 import * as crypto from 'node:crypto';
+import type { McpServerIdentity } from './types';
 
 export type ApprovalKind = 'write' | 'command' | 'mcp' | 'mcp-server';
 export type ApprovalDecision = 'approve' | 'reject';
@@ -18,6 +19,8 @@ export interface PendingApproval {
   mcpTool?: string;
   mcpArgs?: string;
   serverArgs?: string[];
+  /** The server an MCP call was staged against; the call runs only on that same server session. */
+  mcpServer?: McpServerIdentity;
 }
 
 const MAX_PENDING = 30;
@@ -98,7 +101,7 @@ export class ApprovalQueue {
   }
 
   /** Stage an MCP tool call. Arguments are frozen as JSON so they cannot change after review. */
-  stageMcp(input: { projectRoot: string; tool: string; args: Record<string, unknown> }): PendingApproval {
+  stageMcp(input: { projectRoot: string; tool: string; args: Record<string, unknown>; server?: McpServerIdentity }): PendingApproval {
     this.assertRoom();
     if (!input.tool.trim()) {
       throw new Error('MCP tool name is empty.');
@@ -116,6 +119,7 @@ export class ApprovalQueue {
       order: this.nextOrder++,
       mcpTool: input.tool,
       mcpArgs,
+      mcpServer: input.server ? { ...input.server, args: [...input.server.args] } : undefined,
     };
     this.items.set(item.id, item);
     return item;
