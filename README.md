@@ -182,4 +182,4 @@ Open-Ro is MIT-licensed and welcomes issue reports, implementation proposals, pr
 
 Open-Ro is an independent community project. It is not affiliated with Roblox Corporation, Ropilot, OpenAI, Anthropic, OpenRouter, or OpenCode. Product and company names identify compatibility targets only. Each optional tool, provider, model, and generated asset retains its own license and terms; see [`docs/EXTENSIONS.md`](docs/EXTENSIONS.md).
 
-**License file:** [`LICENSE`](LICENSE) is headed "MIT License" and includes the MIT permission grant, but it stops before the standard limitation-of-liability paragraph. That shorter text is why GitHub's detector can label the repository "Other" instead of MIT. The file was not rewritten here. Replacing it with the OSI MIT text, or choosing Apache-2.0, needs an explicit decision from the maintainer.
+**License:** MIT. See [`LICENSE`](LICENSE).
