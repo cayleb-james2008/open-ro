@@ -884,7 +884,7 @@ export default function App() {
               </button>
             </div>
           ))}
-          {checkpoints.length === 0 && (
+          {checkpoints.length === 0 && studioCheckpoints.length === 0 && (
             <div className="empty-state">
               <span className="empty-icon">{ICONS.shield}</span>
               <b>No checkpoints yet</b>

@@ -53,10 +53,11 @@ export function approvalCopy(item: PendingApprovalView): ApprovalCopy {
       if (item.studioOp === 'read') {
         return { title: `Review Studio read: ${target}`, detail: `Read-only Luau runs in Studio${where} only if you approve`, preview: target, approveLabel: 'Read script' };
       }
-      const action = item.previous === undefined ? 'Creates' : 'Changes';
+      const action = item.previous === undefined ? 'Creates this script' : 'Changes this script';
+      const guard = item.previous === undefined ? 'It stops if a script appears there first' : 'It stops if the script changed since it was read';
       return {
         title: `Review Studio write: ${target} (${item.studioClass ?? ''})`,
-        detail: `${action} this script in Studio${where} only if you approve. It stops if the script changed since it was read. Ctrl+Z in Studio undoes it`,
+        detail: `${action} in Studio${where} only if you approve. ${guard}. Ctrl+Z in Studio undoes it`,
         preview: '',
         approveLabel: 'Write to Studio',
       };
