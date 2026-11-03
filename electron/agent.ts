@@ -76,6 +76,45 @@ export function toolSchemas(): ToolSchema[] {
         required: ['scenario', 'assertions', 'stateChecks', 'screenshots'],
       },
     },
+    {
+      name: 'studio_snapshot',
+      description: 'Stage a read-only walk of the open Roblox Studio place. Services Studio has not created are reported as missing. Runs after approval.',
+      parameters: {
+        type: 'object',
+        properties: {
+          services: { type: 'array', description: 'Service names, such as Workspace or ServerScriptService. Defaults to the common services.', items: { type: 'string' } },
+          maxDepth: { type: 'number', description: 'How many levels below each service to list, 1 to 6. Default 3.' },
+          studioId: { type: 'string', description: 'Studio instance id from list_roblox_studios, when the server requires one.' },
+        },
+      },
+    },
+    {
+      name: 'studio_read_script',
+      description: 'Stage reading one instance and its script source in Studio. Required before studio_write_script on the same path.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Dot path from game, such as game.ServerScriptService.Shop.' },
+          studioId: { type: 'string', description: 'Studio instance id, when required.' },
+        },
+        required: ['path'],
+      },
+    },
+    {
+      name: 'studio_write_script',
+      description:
+        'Stage writing a Script, LocalScript or ModuleScript in Studio. The user sees a line diff against your last read. Client scripts may not change currency or rewards; server code that does must start with --!strict and check client arguments with typeof().',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Dot path from game, such as game.ServerScriptService.Shop.' },
+          className: { type: 'string', description: 'Script, LocalScript or ModuleScript.', enum: ['Script', 'LocalScript', 'ModuleScript'] },
+          source: { type: 'string', description: 'The complete new source.' },
+          studioId: { type: 'string', description: 'Studio instance id, when required.' },
+        },
+        required: ['path', 'className', 'source'],
+      },
+    },
   ];
 }
 
@@ -93,6 +132,7 @@ function systemPrompt(): string {
     'Tools named mcp__<tool> call the connected MCP server, such as Roblox Studio. They also only stage an approval.',
     'Never claim a file was written, a command ran, or an MCP tool ran unless the result says it completed.',
     'Never say a playtest passed unless report_playtest returned PASSED.',
+    'studio_* tools stage Luau for Roblox Studio. Read a script with studio_read_script before writing it, and say a Studio write happened only when the result says Studio read it back.',
     'Report exactly what you inspected, staged, or left unverified.',
   ].join(' ');
 }

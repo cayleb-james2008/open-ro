@@ -7,6 +7,7 @@ import { detectCapabilities } from './capabilities';
 import { McpStdioClient } from './mcp';
 import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServer, serverLabel, stageMcpCall, stageMcpConnect } from './mcpTools';
 import { gradePlaytest, parsePlaytestReport } from './playtestEvidence';
+import { runApprovedStudio, stageStudioRestore, stageStudioTool, StudioReads, type StudioCheckpoint } from './studioTools';
 import { isIgnoredName, isSecretName, resolveWithinRoot } from './pathSafety';
 import { getProviderOption, isProviderKind, providerOptions, type ProviderKind } from './providerCatalog';
 import {
@@ -47,6 +48,8 @@ let mainWindow: BrowserWindow | null = null;
 let projectRoot = '';
 const mcp = new McpStdioClient();
 const approvals = new ApprovalQueue();
+/** What approved Studio reads saw; a Studio write needs one for its diff. */
+const studioReads = new StudioReads();
 
 const statePath = (): string => path.join(app.getPath('userData'), 'state.json');
 const sessionsPath = (): string => path.join(app.getPath('userData'), 'sessions.json');
@@ -66,6 +69,10 @@ function toApprovalView(item: PendingApproval): PendingApprovalView {
     mcpArgs: item.mcpArgs,
     mcpServer: item.mcpServer ? serverLabel(item.mcpServer) : undefined,
     serverArgs: item.serverArgs,
+    studioOp: item.studioOp,
+    studioPath: item.studioPath,
+    studioClass: item.studioClass,
+    studioServices: item.studioServices,
   };
 }
 
@@ -146,6 +153,13 @@ async function writePlaytestRecord(root: string, report: unknown, verdict: { sta
   await fs.writeFile(path.join(dir, `${stamp}-${verdict.status.toLowerCase()}.json`), JSON.stringify({ projectRoot: root, report, verdict }, null, 2), 'utf8');
 }
 
+/** Studio snapshots and checkpoints are kept as JSON under userData/<folder>. */
+async function writeStudioRecord(folder: 'studio-snapshots' | 'studio-checkpoints', record: object): Promise<void> {
+  const dir = path.join(app.getPath('userData'), folder);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}.json`), JSON.stringify(record, null, 2), 'utf8');
+}
+
 function buildExecutor(root: string): ToolExecutor {
   return {
     schemas: () => [...toolSchemas(), ...mcpToolSchemas(mcp.running ? mcp.listTools() : [])],
@@ -194,6 +208,10 @@ function buildExecutor(root: string): ToolExecutor {
             const failing = verdict.failingCheck ? ` Failing check: ${verdict.failingCheck}` : '';
             return { ok: verdict.status === 'PASSED', output: `Playtest ${verdict.status}. ${verdict.reason}${failing}` };
           }
+          case 'studio_snapshot':
+          case 'studio_read_script':
+          case 'studio_write_script':
+            return stageStudioTool(approvals, mcp, studioReads, { projectRoot: root, name, args });
           default:
             if (isMcpAgentTool(name)) {
               return stageMcpCall(approvals, mcp, { projectRoot: root, agentName: name, args });
@@ -234,6 +252,8 @@ async function resolveApproval(id: string, decision: 'approve' | 'reject'): Prom
             ? `Rejected MCP tool ${item.mcpTool ?? ''}. It did not run.`
             : item.kind === 'mcp-server'
               ? 'Rejected starting the MCP server. It did not run.'
+            : item.kind === 'studio'
+              ? `Rejected the Studio ${item.studioOp ?? 'call'} of game.${item.studioPath ?? ''}. Nothing ran in Studio.`
             : 'Rejected the command. It did not run.',
     };
   }
@@ -254,6 +274,16 @@ async function resolveApproval(id: string, decision: 'approve' | 'reject'): Prom
   }
   if (item.kind === 'mcp') {
     return runApprovedMcpCall(item, mcp);
+  }
+  if (item.kind === 'studio') {
+    const { snapshot, checkpoint, ...result } = await runApprovedStudio(item, mcp, studioReads);
+    if (snapshot) {
+      await writeStudioRecord('studio-snapshots', { projectRoot, server: item.mcpServer?.command, snapshot });
+    }
+    if (checkpoint) {
+      await writeStudioRecord('studio-checkpoints', { projectRoot, checkpoint });
+    }
+    return result;
   }
   if (item.kind === 'mcp-server') {
     return runApprovedMcpServer(item, mcp);
@@ -349,6 +379,7 @@ function registerIpc(): void {
     const next = result.filePaths[0];
     if (projectRoot && path.resolve(next) !== path.resolve(projectRoot)) {
       approvals.clear();
+      studioReads.clear();
     }
     projectRoot = next;
     await saveProjectRoot(next);
@@ -424,7 +455,29 @@ function registerIpc(): void {
   ipcMain.handle('mcp:status', (): { running: boolean; tools: McpToolSummary[] } => ({ running: mcp.running, tools: mcp.listTools() }));
   // Starting a server runs a local program, so it is staged like any other command.
   ipcMain.handle('mcp:connect', (_event, spec: unknown): PendingApprovalView => toApprovalView(stageMcpConnect(approvals, mcp, spec)));
-  ipcMain.handle('mcp:disconnect', () => mcp.stop());
+  ipcMain.handle('mcp:disconnect', () => {
+    studioReads.clear();
+    return mcp.stop();
+  });
+  const studioCheckpoints = (): string => path.join(app.getPath('userData'), 'studio-checkpoints');
+  ipcMain.handle('studio:checkpoints', async () => {
+    try {
+      return (await fs.readdir(studioCheckpoints())).filter((name) => name.endsWith('.json')).sort().reverse().slice(0, 20);
+    } catch {
+      return [];
+    }
+  });
+  // Restoring a Studio script is another Studio write, so it is staged for approval like the original.
+  ipcMain.handle('studio:restore-checkpoint', async (_event, args: { file: string }): Promise<PendingApprovalView> => {
+    if (!projectRoot || !args || !/^[\w.-]+\.json$/.test(args.file)) {
+      throw new Error('Invalid checkpoint file.');
+    }
+    const record = JSON.parse(await fs.readFile(path.join(studioCheckpoints(), args.file), 'utf8')) as { projectRoot: string; checkpoint: StudioCheckpoint };
+    if (path.resolve(record.projectRoot) !== path.resolve(projectRoot)) {
+      throw new Error('Checkpoint belongs to a different project.');
+    }
+    return toApprovalView(stageStudioRestore(approvals, mcp, record.checkpoint, { projectRoot }));
+  });
   ipcMain.handle('capabilities:detect', (): Promise<CapabilityInfo[]> => detectCapabilities());
 
   ipcMain.handle('sessions:load', async () => {
