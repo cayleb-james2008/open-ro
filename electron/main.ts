@@ -395,17 +395,6 @@ function registerIpc(): void {
     return mcp.listTools();
   });
   ipcMain.handle('mcp:disconnect', () => mcp.stop());
-  ipcMain.handle('mcp:call', async (_event, args: { name: string; arguments: Record<string, unknown> }) => {
-    if (!mcp.running) {
-      throw new Error('No MCP server is connected.');
-    }
-    if (!args || typeof args.name !== 'string' || !args.name.trim()) {
-      throw new Error('MCP tool name is required.');
-    }
-    const text = await mcp.callTool(args.name, args.arguments ?? {});
-    return { ok: true, output: text.slice(0, 20_000) };
-  });
-
   ipcMain.handle('capabilities:detect', (): Promise<CapabilityInfo[]> => detectCapabilities());
 
   ipcMain.handle('sessions:load', async () => {

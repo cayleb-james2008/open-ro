@@ -41,7 +41,6 @@ export interface Api {
   mcpStatus(): Promise<{ running: boolean; tools: McpToolSummary[] }>;
   mcpConnect(spec: { command: string; args: string[] }): Promise<McpToolSummary[]>;
   mcpDisconnect(): Promise<unknown>;
-  mcpCall(args: { name: string; arguments: Record<string, unknown> }): Promise<{ ok: boolean; output: string }>;
   detectCapabilities(): Promise<CapabilityInfo[]>;
 }
 
@@ -85,7 +84,6 @@ export const api: Api = {
   mcpStatus: () => call<{ running: boolean; tools: McpToolSummary[] }>('mcp:status'),
   mcpConnect: (spec) => call<McpToolSummary[]>('mcp:connect', spec),
   mcpDisconnect: () => call('mcp:disconnect'),
-  mcpCall: (args) => call<{ ok: boolean; output: string }>('mcp:call', args),
   detectCapabilities: () => call<CapabilityInfo[]>('capabilities:detect'),
 };
 

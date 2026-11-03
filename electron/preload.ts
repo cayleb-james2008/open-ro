@@ -27,7 +27,6 @@ const INVOKE_CHANNELS = new Set([
   'mcp:status',
   'mcp:connect',
   'mcp:disconnect',
-  'mcp:call',
   'capabilities:detect',
   'approvals:list',
   'approvals:resolve',
