@@ -24,8 +24,9 @@ Commands run in this workspace after `npm ci` (Node.js 24.22.1):
 
 - `npm run typecheck` passed.
 - `npm run lint` passed (rejects type suppressions, skipped tests, and placeholder text).
-- `npm test` passed: 84 tests in 17 files under `tests/`.
+- `npm test` passed: 92 tests in 19 files under `tests/`.
 - With `OPENRO_LUAU_BIN` set to a Luau CLI, `npm test` also runs `tests/luau` (7 more tests): the write and read Luau the Studio tools generate runs against the mock DataModel in `tests/fixtures/studio-datamodel.luau`. It covers update, exact read-back of CRLF and NUL sources, stale-source refusal (including a CRLF/LF difference), a script that appeared after the review, duplicate names, a removed script, a class change, and whether the undo step was recorded. A stdio MCP test server that runs `execute_luau` code the same way was driven through the approval queue. Neither is Roblox Studio.
+- The renderer was driven in headless Chrome with a stubbed IPC bridge: the agent staged two actions, one was approved and one rejected, and the renderer sent one follow-up turn with both results. The Electron main process was not running.
 - The MCP client completed the handshake, listed tools, and called `echo` against `@modelcontextprotocol/server-everything` 2.1.0 over stdio, both directly and as a staged call approved through the queue. Before the framing fix the same `initialize` request timed out after 15 s.
 - `npm run build` passed. Vite emitted `dist/` and `tsc` emitted `dist-electron/`.
 - The renderer was opened in headless Chrome at 1280×800 and 960×700. Chat, Models, Workspace, and Integrations navigation were clicked. The Models screen rendered 9 provider routes, with Ollama and llama.cpp first. No page errors were logged. The favicon request succeeded.
@@ -49,7 +50,7 @@ CI is present as configuration. This document does not claim a green GitHub Acti
 
 - MCP client supports one active stdio server at a time. It answers server `ping`; other server-to-client requests such as `roots/list` get method-not-found because the client declares no capabilities.
 - Chat history is saved locally. The selected project folder is not restored after a restart.
-- An approved command's output is shown in the app. It is not sent back to the model unless the user chooses "Send result to the agent".
+- The automatic follow-up waits until every approval from the agent turn is decided, and until the chat that staged them is open. Results of approvals you start yourself, such as connecting an MCP server, are not sent to the agent.
 - There is no Blender task runner, Rojo sync UI, or image/thumbnail/3D adapter.
 - Roblox Studio integration needs a live Studio MCP session. Linux Studio through Wine/Vinegar is not claimed.
 
