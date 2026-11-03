@@ -13,6 +13,7 @@ import {
   listProviderViews,
   parseProviderState,
   removeProvider,
+  rememberProjectRoot,
   upsertProvider,
   validateProviderSave,
   type ProviderAppState,
@@ -74,6 +75,16 @@ async function readAppState(): Promise<ProviderAppState> {
 async function writeAppState(state: ProviderAppState): Promise<void> {
   await fs.mkdir(app.getPath('userData'), { recursive: true });
   await fs.writeFile(statePath(), JSON.stringify(state, null, 2), { encoding: 'utf8', mode: 0o600 });
+}
+
+async function loadSavedProjectRoot(): Promise<void> {
+  const state = await readAppState();
+  projectRoot = state.projectRoot ?? '';
+}
+
+async function saveProjectRoot(root: string): Promise<void> {
+  const state = await readAppState();
+  await writeAppState(rememberProjectRoot(state, root));
 }
 
 async function resolveActiveConnection(provided?: Partial<ProviderConnection>): Promise<ProviderConnection | null> {
@@ -303,10 +314,11 @@ function registerIpc(): void {
       return projectRoot || null;
     }
     const next = result.filePaths[0];
-    if (path.resolve(next) !== path.resolve(projectRoot)) {
+    if (projectRoot && path.resolve(next) !== path.resolve(projectRoot)) {
       approvals.clear();
     }
     projectRoot = next;
+    await saveProjectRoot(next);
     return projectRoot;
   });
   ipcMain.handle('project:root', () => projectRoot || null);
@@ -467,8 +479,9 @@ function createWindow(): void {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   registerIpc();
+  await loadSavedProjectRoot();
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

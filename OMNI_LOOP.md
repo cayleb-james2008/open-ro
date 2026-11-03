@@ -2,13 +2,13 @@
 
 **Harness:** v4.0 APEX, brownfield. Switched from v3.0 on 2026-11-03 after commit `ecf91db`.
 **Project:** Open-Ro Studio (`cayleb-james2008/open-ro`).
-**State:** `.omni-loop/state.json`. Composite 3.35 / 5. `HARD_GATE_BLOCKED` on U01, U03, U04, U09, U12, U14.
+**State:** `.omni-loop/state.json`. Composite 3.36 / 5. `HARD_GATE_BLOCKED` on U01, U03, U04, U09, U12, U14.
 
 ## Resume
 
 1. Read this file and `.omni-loop/state.json` before any edit.
 2. Pull request 1 was rebase-merged, so the pre-merge SHAs are not on main. `incumbent_commit` is `01ccd8ebacd5fa763ef20d5150ac9ed40efac2f6`. If `origin/main` is ahead of that by a screenshot refresh, resume from the tip.
-3. Create tag `omni-loop/iter-6-pre` at the current HEAD, then execute `.omni-loop/current-contract.json` (persist the selected project folder).
+3. Create tag `omni-loop/iter-7-pre` at the current HEAD, then execute `.omni-loop/current-contract.json` (renderer error boundary).
 4. Smoke: `npm test`, then `npm run verify:ui` with the renderer on port 5173.
 
 ## Do not
