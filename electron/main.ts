@@ -5,6 +5,8 @@ import * as path from 'node:path';
 import { ApprovalQueue, type PendingApproval } from './approvals';
 import { detectCapabilities } from './capabilities';
 import { McpStdioClient } from './mcp';
+import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, stageMcpCall } from './mcpTools';
+import { gradePlaytest, parsePlaytestReport } from './playtestEvidence';
 import { assertMcpSpec } from './mcpFraming';
 import { isIgnoredName, isSecretName, resolveWithinRoot } from './pathSafety';
 import { getProviderOption, isProviderKind, providerOptions, type ProviderKind } from './providerCatalog';
@@ -61,6 +63,9 @@ function toApprovalView(item: PendingApproval): PendingApprovalView {
     content: item.content,
     command: item.command,
     cwd: item.cwd,
+    mcpTool: item.mcpTool,
+    mcpArgs: item.mcpArgs,
+    serverArgs: item.serverArgs,
   };
 }
 
@@ -134,9 +139,16 @@ async function writeCheckpoint(root: string, relPath: string, previous: string |
   await fs.writeFile(path.join(dir, name), JSON.stringify(entry), 'utf8');
 }
 
+async function writePlaytestRecord(root: string, report: unknown, verdict: { status: string }): Promise<void> {
+  const dir = path.join(app.getPath('userData'), 'playtests');
+  await fs.mkdir(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  await fs.writeFile(path.join(dir, `${stamp}-${verdict.status.toLowerCase()}.json`), JSON.stringify({ projectRoot: root, report, verdict }, null, 2), 'utf8');
+}
+
 function buildExecutor(root: string): ToolExecutor {
   return {
-    schemas: () => toolSchemas(),
+    schemas: () => [...toolSchemas(), ...mcpToolSchemas(mcp.running ? mcp.listTools() : [])],
     async execute(call) {
       if (!root) {
         return { ok: false, output: 'No project folder selected.' };
@@ -175,7 +187,17 @@ function buildExecutor(root: string): ToolExecutor {
               pendingApproval: { kind: 'command', command: pending.command, id: pending.id },
             };
           }
+          case 'report_playtest': {
+            const report = parsePlaytestReport(args);
+            const verdict = await gradePlaytest(report, (reported) => resolveWithinRoot(root, reported));
+            await writePlaytestRecord(root, report, verdict);
+            const failing = verdict.failingCheck ? ` Failing check: ${verdict.failingCheck}` : '';
+            return { ok: verdict.status === 'PASSED', output: `Playtest ${verdict.status}. ${verdict.reason}${failing}` };
+          }
           default:
+            if (isMcpAgentTool(name)) {
+              return stageMcpCall(approvals, mcp, { projectRoot: root, agentName: name, args });
+            }
             return { ok: false, output: `Unknown tool: ${String(name)}` };
         }
       } catch (error) {
@@ -196,18 +218,23 @@ function requireMessages(messages: ChatMessage[]): ChatMessage[] {
 }
 
 async function resolveApproval(id: string, decision: 'approve' | 'reject'): Promise<ApprovalResult> {
-  if (!projectRoot) {
-    throw new Error('No project folder selected.');
-  }
   const item = approvals.take(id);
-  if (path.resolve(item.projectRoot) !== path.resolve(projectRoot)) {
+  // MCP server starts are not tied to a project. Everything else must match the current project.
+  if (item.kind !== 'mcp-server' && (!projectRoot || path.resolve(item.projectRoot) !== path.resolve(projectRoot))) {
     throw new Error('Project folder changed. The staged action was discarded.');
   }
   if (decision === 'reject') {
     return {
       ok: true,
       decision,
-      summary: item.kind === 'write' ? `Rejected the write to ${item.relPath ?? 'the file'}. Nothing was changed.` : 'Rejected the command. It did not run.',
+      summary:
+        item.kind === 'write'
+          ? `Rejected the write to ${item.relPath ?? 'the file'}. Nothing was changed.`
+          : item.kind === 'mcp'
+            ? `Rejected MCP tool ${item.mcpTool ?? ''}. It did not run.`
+            : item.kind === 'mcp-server'
+              ? 'Rejected starting the MCP server. It did not run.'
+            : 'Rejected the command. It did not run.',
     };
   }
   if (item.kind === 'write') {
@@ -224,6 +251,13 @@ async function resolveApproval(id: string, decision: 'approve' | 'reject'): Prom
       approvals.stageWrite({ projectRoot, relPath, content, previous: item.previous ?? '' });
       throw error;
     }
+  }
+  if (item.kind === 'mcp') {
+    return runApprovedMcpCall(item, mcp);
+  }
+  if (item.kind === 'mcp-server') {
+    await mcp.start({ command: item.command ?? '', args: item.serverArgs ?? [] });
+    return { ok: true, decision, summary: `MCP server started with ${mcp.listTools().length} tools.` };
   }
   const cwd = await resolveWithinRoot(projectRoot, '.');
   const result = await runShellCommand({ command: item.command ?? '', cwd, timeoutMs: 60_000 });
@@ -389,10 +423,13 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('mcp:status', (): { running: boolean; tools: McpToolSummary[] } => ({ running: mcp.running, tools: mcp.listTools() }));
-  ipcMain.handle('mcp:connect', async (_event, spec: { command?: unknown; args?: unknown }): Promise<McpToolSummary[]> => {
+  // Starting a server runs a local program, so it is staged like any other command.
+  ipcMain.handle('mcp:connect', (_event, spec: { command?: unknown; args?: unknown }): PendingApprovalView => {
     const clean = assertMcpSpec(spec ?? {});
-    await mcp.start(clean);
-    return mcp.listTools();
+    if (mcp.running) {
+      throw new Error('An MCP server is already active. Stop it before connecting another.');
+    }
+    return toApprovalView(approvals.stageMcpServer({ projectRoot: '', command: clean.command, args: clean.args }));
   });
   ipcMain.handle('mcp:disconnect', () => mcp.stop());
   ipcMain.handle('capabilities:detect', (): Promise<CapabilityInfo[]> => detectCapabilities());

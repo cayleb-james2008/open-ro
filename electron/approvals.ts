@@ -1,6 +1,6 @@
 import * as crypto from 'node:crypto';
 
-export type ApprovalKind = 'write' | 'command';
+export type ApprovalKind = 'write' | 'command' | 'mcp' | 'mcp-server';
 export type ApprovalDecision = 'approve' | 'reject';
 
 export interface PendingApproval {
@@ -15,10 +15,14 @@ export interface PendingApproval {
   previous?: string;
   command?: string;
   cwd?: string;
+  mcpTool?: string;
+  mcpArgs?: string;
+  serverArgs?: string[];
 }
 
 const MAX_PENDING = 30;
 const MAX_TEXT = 1_000_000;
+const MAX_MCP_ARGS = 100_000;
 
 /**
  * In-memory approval queue. The staged payload stays in the main process;
@@ -71,6 +75,47 @@ export class ApprovalQueue {
       order: this.nextOrder++,
       command,
       cwd: input.cwd,
+    };
+    this.items.set(item.id, item);
+    return item;
+  }
+
+  /** Stage starting an MCP server. The exact command and arguments are what will run. */
+  stageMcpServer(input: { projectRoot: string; command: string; args: string[] }): PendingApproval {
+    this.assertRoom();
+    const item: PendingApproval = {
+      id: crypto.randomUUID(),
+      kind: 'mcp-server',
+      projectRoot: input.projectRoot,
+      createdAt: new Date(this.now()).toISOString(),
+      expiresAt: this.now() + this.ttlMs,
+      order: this.nextOrder++,
+      command: input.command,
+      serverArgs: [...input.args],
+    };
+    this.items.set(item.id, item);
+    return item;
+  }
+
+  /** Stage an MCP tool call. Arguments are frozen as JSON so they cannot change after review. */
+  stageMcp(input: { projectRoot: string; tool: string; args: Record<string, unknown> }): PendingApproval {
+    this.assertRoom();
+    if (!input.tool.trim()) {
+      throw new Error('MCP tool name is empty.');
+    }
+    const mcpArgs = JSON.stringify(input.args ?? {});
+    if (mcpArgs.length > MAX_MCP_ARGS) {
+      throw new Error('Refusing to stage MCP arguments larger than 100,000 characters.');
+    }
+    const item: PendingApproval = {
+      id: crypto.randomUUID(),
+      kind: 'mcp',
+      projectRoot: input.projectRoot,
+      createdAt: new Date(this.now()).toISOString(),
+      expiresAt: this.now() + this.ttlMs,
+      order: this.nextOrder++,
+      mcpTool: input.tool,
+      mcpArgs,
     };
     this.items.set(item.id, item);
     return item;

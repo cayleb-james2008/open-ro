@@ -39,7 +39,7 @@ export interface Api {
   saveSessions(snapshot: SessionSnapshot): Promise<unknown>;
   openExternal(url: string): Promise<unknown>;
   mcpStatus(): Promise<{ running: boolean; tools: McpToolSummary[] }>;
-  mcpConnect(spec: { command: string; args: string[] }): Promise<McpToolSummary[]>;
+  mcpConnect(spec: { command: string; args: string[] }): Promise<PendingApprovalView>;
   mcpDisconnect(): Promise<unknown>;
   detectCapabilities(): Promise<CapabilityInfo[]>;
 }
@@ -82,7 +82,7 @@ export const api: Api = {
   saveSessions: (snapshot) => call('sessions:save', snapshot),
   openExternal: (url) => call('shell:open-external', { url }),
   mcpStatus: () => call<{ running: boolean; tools: McpToolSummary[] }>('mcp:status'),
-  mcpConnect: (spec) => call<McpToolSummary[]>('mcp:connect', spec),
+  mcpConnect: (spec) => call<PendingApprovalView>('mcp:connect', spec),
   mcpDisconnect: () => call('mcp:disconnect'),
   detectCapabilities: () => call<CapabilityInfo[]>('capabilities:detect'),
 };

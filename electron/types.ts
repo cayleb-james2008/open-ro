@@ -16,14 +16,16 @@ export interface ChatMessage {
 }
 
 /** A tool the agent may call; names owned by the main process executor. */
-export type ToolName = 'list_dir' | 'read_file' | 'write_file' | 'run_command';
+export type BuiltinToolName = 'list_dir' | 'read_file' | 'write_file' | 'run_command' | 'report_playtest';
+/** Connected MCP server tools are exposed to the model as `mcp__<tool>`. */
+export type ToolName = BuiltinToolName | `mcp__${string}`;
 
 export interface ToolSchema {
   name: ToolName;
   description: string;
   parameters: {
     type: 'object';
-    properties: Record<string, { type: string; description: string }> & Record<string, unknown>;
+    properties: Record<string, { type: string; description: string } & Record<string, unknown>>;
     required?: string[];
   };
 }
@@ -40,19 +42,25 @@ export interface ToolCallResult {
   ok: boolean;
   output: string;
   /** Set when the action was staged for user approval instead of executed. */
-  pendingApproval?: { kind: 'file-write' | 'command'; path?: string; command?: string; id?: string };
+  pendingApproval?: { kind: 'file-write' | 'command' | 'mcp'; path?: string; command?: string; tool?: string; id?: string };
 }
 
 /** Approval the renderer may inspect. The id is the only value accepted back. */
 export interface PendingApprovalView {
   id: string;
-  kind: 'write' | 'command';
+  kind: 'write' | 'command' | 'mcp' | 'mcp-server';
   createdAt: string;
   relPath?: string;
   previous?: string;
   content?: string;
   command?: string;
   cwd?: string;
+  /** MCP tool name as the server reported it. */
+  mcpTool?: string;
+  /** Exact JSON arguments that run if this call is approved. */
+  mcpArgs?: string;
+  /** Arguments for an MCP server start, passed without a shell. */
+  serverArgs?: string[];
 }
 
 export interface ApprovalResult {
@@ -122,6 +130,8 @@ export interface AgentTurnResult {
 export interface McpToolSummary {
   name: string;
   description: string;
+  /** JSON Schema for the tool arguments, when the server sent an object schema. */
+  inputSchema?: Record<string, unknown>;
 }
 
 /** The executor the main process injects into the agent loop. */

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import api from './api';
 import { Dialog } from './Dialog';
 import { diffLines } from './textDiff';
+import { approvalCopy, providerInitials } from './labels';
 import { providerOptions, type ProviderKind, type ProviderOption } from '../electron/providerCatalog';
 import type { SessionSnapshot, StoredChatSession } from '../electron/sessions';
 import type { AgentTurnResult, ApprovalResult, ChatMessage, FileEntry, PendingApprovalView, StoredProviderView } from '../electron/types';
@@ -51,10 +52,6 @@ function providerStatus(view: StoredProviderView, option: ProviderOption | undef
   return view.hasKey ? 'API key stored with the OS' : 'Saved without a key';
 }
 
-function initials(name: string): string {
-  const letters = name.split(/[\s-]/).filter(Boolean).slice(0, 2);
-  return letters.map((part) => part[0]?.toUpperCase() ?? '').join('') || 'OP';
-}
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('chat');
@@ -345,6 +342,7 @@ export default function App() {
       setApprovals(await api.approvals());
       if (decision === 'approve') {
         await refreshWorkspaceState();
+        setMcpState(await api.mcpStatus());
       }
     } catch (error) {
       setBanner(asMessage(error));
@@ -368,9 +366,9 @@ export default function App() {
     }
     try {
       const args = mcpForm.args.trim() ? mcpForm.args.split(/\s+/) : [];
-      const tools = await api.mcpConnect({ command: mcpForm.command.trim(), args });
-      setMcpState({ running: true, tools });
-      setBanner(`MCP server connected. Discovered ${tools.length} tools; single active server limit applies.`);
+      await api.mcpConnect({ command: mcpForm.command.trim(), args });
+      setApprovals(await api.approvals());
+      setBanner('Review the server command in the approval tray. Nothing has started yet.');
     } catch (error) {
       setBanner(asMessage(error));
     }
@@ -504,13 +502,14 @@ export default function App() {
         )}
         {approvals.map((item) => {
           const rows = item.kind === 'write' ? diffLines(item.previous ?? '', item.content ?? '').slice(0, 240) : [];
+          const copy = approvalCopy(item);
           return (
             <article className="approval-card" key={item.id}>
               <header>
-                <strong>{item.kind === 'write' ? `Review write: ${item.relPath}` : 'Review command'}</strong>
-                <span>{item.kind === 'command' ? item.cwd : 'Nothing is written until you approve'}</span>
+                <strong>{copy.title}</strong>
+                <span>{copy.detail}</span>
               </header>
-              {item.kind === 'command' ? <pre className="command-preview">{item.command}</pre> : (
+              {item.kind !== 'write' ? <pre className="command-preview" aria-label={item.kind === 'mcp' ? 'Tool arguments' : 'Command'}>{copy.preview}</pre> : (
                 <pre className="diff" aria-label="Proposed diff">
                   {rows.map((row, index) => (
                     <span className={`diff-${row.kind}`} key={`${item.id}-${index}`}>{row.kind === 'add' ? '+ ' : row.kind === 'del' ? '- ' : '  '}{row.text}{'\n'}</span>
@@ -519,7 +518,7 @@ export default function App() {
               )}
               <div className="modal-actions">
                 <button type="button" className="outline-btn" onClick={() => void resolveApproval(item.id, 'reject')}>Reject</button>
-                <button type="button" className="primary-btn" onClick={() => void resolveApproval(item.id, 'approve')}>{item.kind === 'write' ? 'Approve write' : 'Run command'}</button>
+                <button type="button" className="primary-btn" onClick={() => void resolveApproval(item.id, 'approve')}>{copy.approveLabel}</button>
               </div>
             </article>
           );
@@ -572,7 +571,7 @@ export default function App() {
               </div>
               <div className="welcome-foot">
                 {ICONS.shield}
-                <span>Every file write and command needs your approval — nothing runs unchecked.</span>
+                <span>Every file write, command and MCP tool call needs your approval — nothing runs unchecked.</span>
               </div>
             </div>
             <Composer />
@@ -705,7 +704,7 @@ export default function App() {
             const option = catalogByKind.get(view.kind);
             return (
               <div className={`provider-row ${view.active ? 'selected' : ''}`} key={view.kind}>
-                <span className={`provider-logo ${view.kind}`}>{initials(option?.name ?? view.kind)}</span>
+                <span className={`provider-logo ${view.kind}`}>{providerInitials(option?.name ?? view.kind)}</span>
                 <span className="provider-info">
                   <b>{option?.name ?? view.kind}</b>
                   <small>{providerStatus(view, option)}{view.model ? ` · ${view.model}` : ''}</small>
@@ -733,7 +732,7 @@ export default function App() {
         <div className="provider-catalog">
           {catalog.map((option) => (
             <div className="provider-choice" key={option.kind}>
-              <span className={`provider-logo ${option.kind}`}>{initials(option.name)}</span>
+              <span className={`provider-logo ${option.kind}`}>{providerInitials(option.name)}</span>
               <span className="choice-copy">
                 <b>{option.name}</b>
                 <small>{option.setup}</small>
@@ -910,7 +909,7 @@ export default function App() {
             <span className={mcpState.running ? 'status-dot on' : 'status-dot'} />
             MCP server: {mcpState.running ? 'connected' : 'not connected'} · {mcpState.tools.length} tools
           </div>
-          <p>One active stdio server at a time (0.1.0 limit). Multi-server lifecycle and scoped approvals are roadmap work.</p>
+          <p>One active stdio server at a time (0.1.0 limit). Starting a server and every agent tool call wait for your approval.</p>
         </div>
 
         <div className="section-title">

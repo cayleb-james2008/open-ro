@@ -61,6 +61,21 @@ export function toolSchemas(): ToolSchema[] {
         required: ['command'],
       },
     },
+    {
+      name: 'report_playtest',
+      description:
+        'Record a playtest result. It is PASSED only with at least one assertion, one state check and one PNG screenshot in the project, and every expected value equals the actual value.',
+      parameters: {
+        type: 'object',
+        properties: {
+          scenario: { type: 'string', description: 'What the playtest exercised.' },
+          assertions: { type: 'array', description: 'Checks as {description, expected, actual}.', items: { type: 'object' } },
+          stateChecks: { type: 'array', description: 'Instance state as {instancePath, property, expected, actual}.', items: { type: 'object' } },
+          screenshots: { type: 'array', description: 'PNG paths relative to the project root.', items: { type: 'string' } },
+        },
+        required: ['scenario', 'assertions', 'stateChecks', 'screenshots'],
+      },
+    },
   ];
 }
 
@@ -75,7 +90,9 @@ function systemPrompt(): string {
     'You are Open-Ro, a development agent inside a local Roblox workspace.',
     'Work on the selected local project. Read files before proposing changes.',
     'write_file and run_command only stage an approval. They do not change the project until the user approves that exact action in Open-Ro.',
-    'Never claim a file was written or a command ran unless the tool result says it completed.',
+    'Tools named mcp__<tool> call the connected MCP server, such as Roblox Studio. They also only stage an approval.',
+    'Never claim a file was written, a command ran, or an MCP tool ran unless the result says it completed.',
+    'Never say a playtest passed unless report_playtest returned PASSED.',
     'Report exactly what you inspected, staged, or left unverified.',
   ].join(' ');
 }
@@ -231,7 +248,7 @@ async function runTool(
       args: tracedArgs,
       status: result.pendingApproval ? 'staged' : result.ok ? 'executed' : 'error',
       detail: result.pendingApproval
-        ? `Waiting for user approval: ${result.pendingApproval.kind}${result.pendingApproval.path ? ` ${result.pendingApproval.path}` : result.pendingApproval.command ? ` ${result.pendingApproval.command}` : ''}`
+        ? `Waiting for user approval: ${result.pendingApproval.kind}${result.pendingApproval.path ? ` ${result.pendingApproval.path}` : result.pendingApproval.command ? ` ${result.pendingApproval.command}` : result.pendingApproval.tool ? ` ${result.pendingApproval.tool}` : ''}`
         : result.output.slice(0, 500),
     });
     return result;
