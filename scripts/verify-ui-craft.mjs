@@ -15,7 +15,7 @@ if (!chromePath) {
   console.error(`No Chrome or Chromium found. Set CHROME_PATH. Checked: ${chromeCandidates.join(', ')}`);
   process.exit(1);
 }
-const shotDir = process.env.SCREENSHOT_DIR || '.omni-loop/screenshots';
+const shotDir = process.env.SCREENSHOT_DIR || 'artifacts/ui-screenshots';
 const port = 9333;
 const viewports = [
   { name: 'desktop', width: 1440, height: 900 },

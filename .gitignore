@@ -3,6 +3,7 @@ dist/
 dist-electron/
 release/
 coverage/
+artifacts/
 *.log
 .env
 .env.*
