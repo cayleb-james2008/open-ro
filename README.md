@@ -19,7 +19,7 @@
 
 Open-Ro is being built for **Windows and native Linux desktops, including Omarchy (Arch Linux)**. Users bring a model connection; everything else is an optional capability they can install, connect, or skip.
 
-> **Current release state: 0.1.0 foundation.** This repository contains an early Electron desktop client, provider routes, local project tools, approval-gated commands, an MCP client foundation, and Windows/Linux packaging configuration. The Windows NSIS installer builds locally; install/uninstall acceptance is still pending. It is not yet a complete Ropilot-equivalent product. The long-term target and the unfinished work are documented below and in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Current release state: 0.1.0 foundation.** This repository contains an early Electron desktop client, provider routes, local project tools, approval-gated commands, an MCP client foundation, and Windows/Linux packaging configuration. Windows NSIS and Linux AppImage/deb/pacman packages build in CI; install/uninstall acceptance is still pending. It is not yet a complete Ropilot-equivalent product. The long-term target and the unfinished work are documented below and in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Interface
 
@@ -126,8 +126,8 @@ Windows and Linux are equal first-class targets for the Open-Ro desktop client. 
 | Skills and asset library | Not implemented | Local skills the model actually receives, and optional downloads with a checksum and license |
 | Published-game upkeep | Not implemented | Recommendations that quote an official metric, and a separate approval before publishing |
 | Images / thumbnails | Not implemented | An optional provider and local review before any upload |
-| Windows packaging | NSIS installer builds locally (`Open-Ro Studio Setup 0.1.0.exe`); install/uninstall and code signing not yet recorded | Install and uninstall recorded on a real machine |
-| Omarchy packaging | AppImage, deb, and pacman targets are configured; install/uninstall not yet recorded | Install and uninstall recorded on a real machine |
+| Windows packaging | NSIS installer builds locally and in CI (`Open-Ro Studio Setup 0.1.0.exe`); install/uninstall and code signing not yet recorded | Install and uninstall recorded on a real machine |
+| Omarchy packaging | AppImage, deb, and pacman packages build in CI; install/uninstall not yet recorded | Install and uninstall recorded on a real machine |
 
 Open-Ro has not yet been run against a live Studio session, and does not yet playtest a game, drive Blender, download an asset pack, or watch a published experience. Those are goals, not current behavior.
 

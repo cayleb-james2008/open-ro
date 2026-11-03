@@ -29,7 +29,7 @@ Commands run in this Windows 11 workspace:
 - `npm run build` passed. Vite emitted `dist/` and `tsc` emitted `dist-electron/`.
 - `npm run package:win` passed with electron-builder 26.18.0: produced `release/Open-Ro Studio Setup 0.1.0.exe` (NSIS, one-click disabled, unsigned).
 - `npm run package:linux` was not run in this workspace; it requires the Linux packaging toolchain and runs in CI.
-- GitHub Actions (`CI and desktop packages`): the `checks` matrix passes on `ubuntu-latest` and `windows-latest`. The `windows` and `linux` packaging jobs are configured to build and upload installers; the Actions run for the packaging commit is the evidence for that step.
+- GitHub Actions (`CI and desktop packages`): the `checks` matrix passes on `ubuntu-latest` and `windows-latest`. Packaging is green for commit `509a080` (run 24): the `windows` job built and uploaded `open-ro-windows-x64` (116.3 MB) and the `linux` job built and uploaded `open-ro-linux-x64` (305.7 MB: AppImage, deb, pacman).
 
 Earlier verification preserved from the prior workspace run:
 
@@ -50,7 +50,7 @@ These checks do **not** prove an Electron window launch, an installer install/un
 - Live Blender workflow, asset import/export, Rojo synchronization.
 - Image, thumbnail, icon, audio or 3D generation integrations.
 
-CI runs the checks matrix on both supported operating systems and is configured to build the packaging artifacts. A green run proves the build and unit checks for that commit; it does not prove install behavior or a live app session.
+CI runs the checks matrix on both supported operating systems and builds the packaging artifacts (green run 24 for commit `509a080`). A green run proves the build and unit checks for that commit; it does not prove install behavior or a live app session.
 
 ## Known limitations
 
