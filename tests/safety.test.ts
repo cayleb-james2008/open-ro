@@ -35,7 +35,10 @@ describe('project path safety', () => {
     await writeFile(path.join(root, 'ok.txt'), 'yes');
     await writeFile(path.join(evil, 'x.txt'), 'no');
     await writeFile(path.join(outside, 'secret.txt'), 'nope');
-    await symlink(outside, path.join(root, 'link'));
+    // Windows junctions realize the same unprivileged directory redirection and
+    // are resolved by realpath exactly like POSIX directory symlinks; creating
+    // a symlink node itself needs admin or developer-mode rights on Windows.
+    await symlink(outside, path.join(root, 'link'), process.platform === 'win32' ? 'junction' : 'dir');
 
     const ok = await resolveWithinRoot(root, 'ok.txt');
     expect(ok).toBe(await realpath(path.join(root, 'ok.txt')));
@@ -122,7 +125,7 @@ describe('mcp framing', () => {
 describe('command execution', () => {
   it('plans a shell without taking a renderer-supplied working directory', () => {
     expect(shellInvocation('rojo build', 'linux')).toEqual({ file: '/bin/sh', args: ['-lc', 'rojo build'] });
-    expect(shellInvocation('rojo build', 'win32').args).toEqual(['/c', 'rojo build']);
+    expect(shellInvocation('rojo build', 'win32').args).toEqual(['/d', '/s', '/c', '"rojo build"']);
   });
 
   it('runs an approved command without inheriting secret environment variables', async () => {
@@ -148,7 +151,9 @@ describe('command execution', () => {
   });
 
   it('stops a command that exceeds its timeout', async () => {
-    const result = await runShellCommand({ command: 'sleep 30', cwd: process.cwd(), timeoutMs: 1_000 });
+    // Both sentinels block far longer than the 1 s budget on their platform.
+    const sentinel = process.platform === 'win32' ? 'ping -n 31 127.0.0.1' : 'sleep 30';
+    const result = await runShellCommand({ command: sentinel, cwd: process.cwd(), timeoutMs: 1_000 });
     expect(result.timedOut).toBe(true);
   });
 });
