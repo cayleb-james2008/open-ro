@@ -26,11 +26,12 @@ Commands run in this Windows 11 workspace:
 
 - `npm run typecheck` passed.
 - `npm run lint` passed (rejects type suppressions, skipped tests, and placeholder text).
-- `npm test` passed: 135 tests in 26 files under `tests/`.
+- `npm test` passed: 140 tests in 27 files under `tests/`.
 - `npm run build` passed. Vite emitted `dist/` and `tsc` emitted `dist-electron/`.
 - `npm run package:win` passed with electron-builder 26.18.0: produced `release/Open-Ro Studio Setup 0.1.0.exe` (NSIS, one-click disabled, unsigned).
 - `npm run package:linux` was not run in this workspace; it requires the Linux packaging toolchain and runs in CI.
-- GitHub Actions (`CI and desktop packages`): the `checks` matrix passes on `ubuntu-latest` and `windows-latest`. Packaging is green for commit `509a080` (run 24): the `windows` job built and uploaded `open-ro-windows-x64` (116.3 MB) and the `linux` job built and uploaded `open-ro-linux-x64` (305.7 MB: AppImage, deb, pacman).
+- GitHub Actions (`CI and desktop packages`): the `checks` matrix passes on `ubuntu-latest` and `windows-latest`. Packaging is green for commit `509a080` (run 24) and commit `02f2860` (run 27): the `windows` job built and uploaded `open-ro-windows-x64` (116.3 MB) and the `linux` job built and uploaded `open-ro-linux-x64` (305.7 MB: AppImage, deb, pacman).
+- The inference adapters were exercised over real HTTP against a local mock provider (`tests/inferenceRoutes.test.ts`): OpenAI-compatible connection check (request path, Bearer header, model, response parsing) plus a 401 rejection, Anthropic connection check (`GET /v1/models` with key and version headers), a full agent turn with a tool call and tool-result round trip, and a refused-connection failure path. All servers bind ephemeral loopback ports and close after each test.
 
 Earlier verification preserved from the prior workspace run:
 
@@ -44,8 +45,8 @@ These checks do **not** prove an Electron window launch, an installer install/un
 
 - A running Electron application, including the preload bridge, file dialog, and keyring.
 - Windows installer install/upgrade/uninstall journey and Authenticode signing. The unsigned NSIS artifact builds; the journey is not recorded.
-- Linux AppImage, Debian package, or pacman install/uninstall or keyring behavior on Omarchy. CI packaging is configured to build the artifacts; they are not installed.
-- Live model inference for any provider.
+- Linux AppImage, Debian package, or pacman install/uninstall or keyring behavior on Omarchy. CI packaging builds the artifacts; they are not installed.
+- Live model inference against a real provider; no real keys or accounts were used in this workspace. The adapters themselves are verified over HTTP against a local mock (see above), but model behavior, provider quotas, and real authentication remain untested.
 - Full native CLI sign-in/connection validation on Windows and Linux.
 - Live Roblox Studio MCP workflow, playtest/input/screenshot/repair loop.
 - Live Blender workflow, asset import/export, Rojo synchronization.
