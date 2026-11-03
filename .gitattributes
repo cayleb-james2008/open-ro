@@ -1,0 +1,10 @@
+# Normalize every text file to LF in the repository and in every checkout.
+# This keeps Windows, Linux, and CI checkouts byte-identical and stops
+# core.autocrlf from breaking tests that compare generated text files
+# (for example tests/tokens.test.ts comparing src/tokens.css to buildCss output).
+* text=auto eol=lf
+
+# Batch and PowerShell scripts are parsed by Windows hosts and keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
