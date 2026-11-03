@@ -33,6 +33,7 @@ Commands run in this Windows 11 workspace:
 - `npm run package:linux` was not run in this workspace; it requires the Linux packaging toolchain and runs in CI.
 - GitHub Actions (`CI and desktop packages`): the `checks` matrix passes on `ubuntu-latest` and `windows-latest`. Packaging is green for commit `509a080` (run 24) and commit `02f2860` (run 27): the `windows` job built and uploaded `open-ro-windows-x64` (116.3 MB) and the `linux` job built and uploaded `open-ro-linux-x64` (305.7 MB: AppImage, deb, pacman).
 - The inference adapters were exercised over real HTTP against a local mock provider (`tests/inferenceRoutes.test.ts`): OpenAI-compatible connection check (request path, Bearer header, model, response parsing) plus a 401 rejection, Anthropic connection check (`GET /v1/models` with key and version headers), a full agent turn with a tool call and tool-result round trip, and a refused-connection failure path. All servers bind ephemeral loopback ports and close after each test.
+- Real local inference was verified end to end through the app's exported adapters on this machine: Ollama 0.40.14 serving `qwen2.5:0.5b`, `testConnection` returned "Model responded: open-ro connection check", and `runAgentTurn` returned "I am Open-Ro, a development agent inside a local Roblox workspace." No cloud key or account was used; the in-app provider form was not exercised.
 
 Earlier verification preserved from the prior workspace run:
 
@@ -40,14 +41,14 @@ Earlier verification preserved from the prior workspace run:
 - The renderer was driven in headless Chrome with a stubbed IPC bridge: the agent staged two actions, one was approved and one rejected, and the renderer sent one follow-up turn with both results. The Electron main process was not running.
 - The MCP client completed the handshake, listed tools, and called `echo` against `@modelcontextprotocol/server-everything` 2.1.0 over stdio, both directly and as a staged call approved through the queue.
 
-These checks do **not** prove an Electron window launch, an installer install/uninstall journey, live model inference, or a Roblox Studio session.
+These checks do **not** prove an installer install/uninstall journey, cloud-provider inference or CLI sign-in, or a Roblox Studio session.
 
 ## Not verified / not produced
 
 - A running Electron application window: the packaged app from `release/win-unpacked` launched on Windows 11 at 1240×816 with the preload bridge active (the renderer showed loaded provider/connection state, not the missing-bridge notice). The file dialog, OS keyring, and installer install/upgrade/uninstall journey remain unverified.
 - Windows installer install/upgrade/uninstall journey and Authenticode signing. The unsigned NSIS artifact builds; the journey is not recorded.
 - Linux AppImage, Debian package, or pacman install/uninstall or keyring behavior on Omarchy. CI packaging builds the artifacts; they are not installed.
-- Live model inference against a real provider; no real keys or accounts were used in this workspace. The adapters themselves are verified over HTTP against a local mock (see above), but model behavior, provider quotas, and real authentication remain untested.
+- Live inference against cloud providers and official CLI sign-ins; no cloud keys or accounts were used in this workspace. The local Ollama route is verified above.
 - Full native CLI sign-in/connection validation on Windows and Linux.
 - Live Roblox Studio MCP workflow, playtest/input/screenshot/repair loop. The official Studio MCP bridge (`cmd.exe /c %LOCALAPPDATA%\Roblox\mcp.bat`) handshook over stdio and advertised 33 tools, including `execute_luau`, `list_roblox_studios`, and `screen_capture`; `list_roblox_studios` returned one attached instance. No place was open, so `get_studio_state` and `execute_luau` returned "Place is not open" and no Studio mutation has run.
 - Live Blender workflow, asset import/export, Rojo synchronization.
