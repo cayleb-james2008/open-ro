@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ApprovalQueue } from '../electron/approvals';
 import { assertMcpSpec, pushMcpChunk } from '../electron/mcpFraming';
 import { isInsideRoot, resolveWithinRoot } from '../electron/pathSafety';
-import { activateProvider, listProviderViews, parseProviderState, removeProvider, upsertProvider, validateProviderSave } from '../electron/providerState';
+import { activateProvider, listProviderViews, parseProviderState, rememberProjectRoot, removeProvider, upsertProvider, validateProviderSave } from '../electron/providerState';
 import { getProviderOption } from '../electron/providerCatalog';
 import { runShellCommand, shellInvocation } from '../electron/runCommand';
 import { sanitizeSessions } from '../electron/sessions';
@@ -87,6 +87,18 @@ describe('provider state', () => {
     expect(() => validateProviderSave(getProviderOption('custom-openai'), { model: 'local', existingKey: false })).toThrow(/base URL/);
     expect(validateProviderSave(getProviderOption('codex-cli'), { model: '', existingKey: false }).model).toBe('');
     expect(() => validateProviderSave(getProviderOption('ollama'), { model: '  ', existingKey: false })).toThrow(/model ID/);
+  });
+
+  it('restores a saved project folder and does not invent the working directory', () => {
+    const saved = rememberProjectRoot({ providers: [] }, '  /proj/game  ');
+    const roundTrip = parseProviderState(JSON.parse(JSON.stringify(saved)));
+    expect(roundTrip.projectRoot).toBe('/proj/game');
+    expect(parseProviderState({ projectRoot: '' }).projectRoot).toBeUndefined();
+    expect(parseProviderState({ projectRoot: '   ' }).projectRoot).toBeUndefined();
+    expect(parseProviderState({ projectRoot: '.' }).projectRoot).toBeUndefined();
+    expect(parseProviderState({ providers: [] }).projectRoot).toBeUndefined();
+    expect(upsertProvider(saved, { kind: 'ollama', model: 'qwen2.5-coder' }).projectRoot).toBe('/proj/game');
+    expect(removeProvider(saved, 'ollama').projectRoot).toBe('/proj/game');
   });
 });
 

@@ -5,7 +5,7 @@ Status values follow OMNI-LOOP v4: source code alone is never `VERIFIED`.
 | ID | Title | Acceptance | Status | Files and tests |
 |---|---|---|---|---|
 | FEAT-001 | Choose one model route | A saved provider keeps its model id and can be selected without showing the secret | PARTIAL | `electron/providerState.ts`, `tests/safety.test.ts`. Keyring and live HTTP were not run. |
-| FEAT-002 | Local project folder | Tools cannot leave the selected root, including through a symlink | PARTIAL | `electron/pathSafety.ts`, `tests/safety.test.ts`. The folder is not restored after restart. |
+| FEAT-002 | Local project folder | Tools cannot leave the selected root, including through a symlink | PARTIAL | `electron/pathSafety.ts`, `electron/providerState.ts`, `tests/safety.test.ts`. The saved path round-trips in unit tests. Electron startup restore was not launched. |
 | FEAT-003 | Approve a write or command | Rejecting changes nothing. Approving uses the stored body, not a renderer substitute | PARTIAL | `electron/approvals.ts`, `electron/main.ts`, `tests/safety.test.ts`. The queue was not driven through Electron IPC. |
 | FEAT-004 | Chat history | Sessions round-trip through the sanitizer and drop unexpected fields | PARTIAL | `electron/sessions.ts`, `tests/safety.test.ts`. Disk IO runs only inside Electron. |
 | FEAT-005 | Integrations catalog | Studio, Git, Rojo, Blender, and provider CLIs are listed. Studio is not auto-started | PARTIAL | `electron/capabilities.ts`. Detection was not executed in this session. |
