@@ -1,5 +1,24 @@
 # Iteration log — latest five
 
+## Iteration 004 (Wave 1) - 2026-11-03T14:19:00Z
+- **Status:** ACCEPTED
+- **Active Harness & Target Dimension:** H1_SYSTEMS_CODE -> U08 Motion, with U09 viewport overflow
+- **UEVAM Score & Breakdown:** 9.4 (Impact=4, Severity=3, Conf=0.9, Unlocks=1, VoI=2, ASPO_Sub=1.2, Effort=1.5, Risk=0.3)
+- **Baseline Commit & Rollback Tag:** `ecf91dbc50ab12ca482a94be76daaaf792ba6f57` / `omni-loop/iter-4-pre`
+- **Atomic Improvement Attempted:** Replace shorthand transitions and stop the narrow shell from overflowing.
+- **Problem Reproduction Evidence:** `transition: .15s ease` computes to `transition-property: all`. A 375px row layout with a 252px sidebar overflows.
+- **Skills Routed (RADEG Passed):** Emil Kowalski motion (explicit properties, 160ms, reduced-motion color fade). Ponytail rung 4 (Chrome DevTools already on the machine, no new package).
+- **Files Changed & Net LOC:** `src/styles.css`, `scripts/verify-ui-craft.mjs`, `package.json`, plus v4 loop records.
+- **Acceptance & Metamorphic Oracles Run:** `node scripts/verify-ui-craft.mjs` exit 0. `npm test` exit 0, 13 passed. `tsc` exit 0.
+- **Anti-Tamper Audit:** PASS. Test hashes unchanged from `ecf91db`. 0 suppressions.
+- **Browser / Visual Evidence:** `.omni-loop/screenshots/route_desktop.png`, `route_tablet.png`, `route_mobile.png`.
+- **Clean-Room 6-Role Evaluator Verdict:** see `.omni-loop/last-verdict.json`. Decision ACCEPT. Project remains HARD_GATE_BLOCKED.
+- **Scorecard Delta:** Universal composite 3.21 -> 3.31. U08 2.5 -> 3.6. U09 3.2 -> 3.6.
+- **Grader Co-Evolution / Reusable Lesson:** Appendix C.1 is now `scripts/verify-ui-craft.mjs` without adding Playwright.
+- **Next Highest-UEVAM Opportunity:** ITER-005 sentence case and 44px targets.
+
+# Earlier iterations
+
 ## Iteration 003 — 2026-11-03
 - **Status:** ACCEPTED after local verification. Not yet a desktop or installer proof.
 - **Branch:** `cursor/quality-waves-7ac4`
