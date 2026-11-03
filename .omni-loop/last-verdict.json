@@ -1,0 +1,57 @@
+{
+  "schema_version": "4.0.0",
+  "iteration_id": 4,
+  "clean_room_cot_stripped": true,
+  "decision": "ACCEPT",
+  "six_role_verdicts": {
+    "product_intent": "PASS for the motion and viewport contract. The product is still an early studio: model calls, Electron launch, and installers were not exercised.",
+    "design_visual_unslop": "PASS for transition-property and the narrow shell. FAIL remains for uppercase labels, the connection-card gradient, and the status-dot glow. Those are outside this contract.",
+    "systems_analytical_ponytail": "PASS. The change is CSS plus a dependency-free Chrome verifier. No new package.",
+    "epistemic_citation_fidelity": "PASS. The verdict cites commands run in this workspace. No new external citation was added.",
+    "adversarial_red_team_fuzzer": "PASS for the three viewports: overflow false, tiny text 0, transition-property all 0. Touch targets under 44px were observed in CSS and left for iteration 5.",
+    "completeness_dod_gatekeeper": "PASS for iteration 4 only. The project composite remains HARD_GATE_BLOCKED."
+  },
+  "oracle_results": [
+    {
+      "id": "ui-craft",
+      "exit_code": 0,
+      "passed": true,
+      "observed_stdout": "[desktop] overflow=false tiny=0 transitionAll=0; [tablet] overflow=false tiny=0 transitionAll=0; [mobile] overflow=false tiny=0 transitionAll=0; [PASS] UI craft gate"
+    },
+    {
+      "id": "unit",
+      "exit_code": 0,
+      "passed": true,
+      "observed_stdout": "Test Files 2 passed; Tests 13 passed"
+    }
+  ],
+  "anti_tamper_passed": true,
+  "defects": [
+    {
+      "severity": "P1_HIGH",
+      "role": "design_visual_unslop",
+      "location": "src/App.tsx sidebar labels",
+      "description": "Tracked uppercase labels remain. v4 copy pass requires sentence case.",
+      "remediation": "Iteration 5 contract: sentence case plus 44px targets."
+    },
+    {
+      "severity": "P2_MEDIUM",
+      "role": "design_visual_unslop",
+      "location": "src/styles.css .connection-card and .status-dot",
+      "description": "The connection card uses a two-stop gradient and the status dot uses a glow.",
+      "remediation": "A later Unslop pass can flatten the card and keep the 6px dot without the glow."
+    },
+    {
+      "severity": "P1_HIGH",
+      "role": "completeness_dod_gatekeeper",
+      "location": "electron runtime",
+      "description": "Electron was not launched and no installer was built.",
+      "remediation": "Needs a desktop session. Do not mark those journeys verified."
+    }
+  ],
+  "score_delta": {
+    "before_composite": 3.21,
+    "after_composite": 3.31,
+    "net_gain": 0.1
+  }
+}

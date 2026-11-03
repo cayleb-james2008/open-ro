@@ -1,29 +1,45 @@
 {
-  "version": "3.0.0",
-  "mode": "0B",
+  "schema_version": "4.0.0",
+  "switched_from": "3.0.0",
+  "switched_at": "2026-11-03T14:19:00Z",
+  "mode": "0B_BROWNFIELD_BASELINE",
   "project": "open-ro",
-  "updated": "2026-11-03T14:30:00Z",
-  "iteration": 3,
-  "branch": "cursor/quality-waves-7ac4",
-  "harnesses": ["H1_SYSTEMS_CODE", "H5_PUBLICATION_DOCS"],
-  "lastVerification": {
-    "node": "22.23.4",
-    "typecheck": "pass",
-    "lint": "pass",
-    "test": "13 passed",
-    "build": "pass",
-    "rendererSmoke": "headless Chrome, four screens, 1280x800 and 960x700",
-    "electronLaunch": "not run",
-    "packaging": "not run"
+  "incumbent_commit": "ecf91dbc50ab12ca482a94be76daaaf792ba6f57",
+  "current_iteration": 4,
+  "current_wave": 1,
+  "harness_state": "HARD_GATE_BLOCKED",
+  "hard_gate_blockers": ["U01", "U03", "U04", "U09", "U12", "U14"],
+  "universal_dimensions": {
+    "U01": { "score": 2.5, "confidence": "MEDIUM", "stagnation": 0, "evidence": "Foundation journeys exist in the UI. Install, live model, and Studio playtest were not run." },
+    "U02": { "score": 5.0, "confidence": "HIGH", "stagnation": 0, "evidence": "scripts/check-source.mjs found no TODO, TBD, or placeholder text in src, electron, or tests." },
+    "U03": { "score": 3.5, "confidence": "HIGH", "stagnation": 0, "evidence": "13 unit tests passed, including path escape and approval expiry. Electron IPC was not executed." },
+    "U04": { "score": 4.0, "confidence": "MEDIUM", "stagnation": 0, "evidence": "BUILD-STATUS and SECURITY were corrected to commands from this workspace. Provider marketing URLs were not re-fetched this session." },
+    "U05": { "score": null, "confidence": "HIGH", "stagnation": 0, "evidence": "N/A. This repository has no spreadsheet or financial model." },
+    "U06": { "score": 3.5, "confidence": "MEDIUM", "stagnation": 0, "evidence": "Four screens are reachable in Chrome. The selected project folder is not restored after restart." },
+    "U07": { "score": 3.0, "confidence": "HIGH", "stagnation": 0, "evidence": "Direction is locked in genesis-dag.json. Uppercase labels, a card gradient, and a status glow remain." },
+    "U08": { "score": 3.6, "confidence": "HIGH", "stagnation": 0, "evidence": "verify-ui-craft reported transitionAll=0 at 1440, 768, and 375. Reduced motion keeps color transitions. A waiting-dots keyframe remains." },
+    "U09": { "score": 3.6, "confidence": "HIGH", "stagnation": 0, "evidence": "Dialog traps focus. Three viewports had no overflow and no sub-11px text. Several controls are under 44px." },
+    "U10": { "score": 3.5, "confidence": "LOW", "stagnation": 0, "evidence": "vite build reported a 259.53 kB JS bundle, gzip 79.36 kB. LCP, INP, and CLS were not measured." },
+    "U11": { "score": 3.0, "confidence": "MEDIUM", "stagnation": 0, "evidence": "Provider and command calls use timeouts. There is no React error boundary." },
+    "U12": { "score": 4.0, "confidence": "HIGH", "stagnation": 0, "evidence": "safety.test.ts covers symlink escape, secret names, approval expiry, and a scrubbed command environment. No live keyring test." },
+    "U13": { "score": 3.5, "confidence": "MEDIUM", "stagnation": 0, "evidence": "Path, approval, provider, and session rules sit in their own modules. App.tsx is still the whole shell." },
+    "U14": { "score": 3.8, "confidence": "HIGH", "stagnation": 0, "evidence": "typecheck, lint, 13 tests, and the UI craft gate passed. There is no Electron E2E test." },
+    "U15": { "score": 3.6, "confidence": "MEDIUM", "stagnation": 0, "evidence": "PNGs in .omni-loop/screenshots were inspected. The 375px sidebar scrolls inside 42vh and clips the lower rows until scrolled." },
+    "U16": { "score": 3.6, "confidence": "HIGH", "stagnation": 0, "evidence": "npm ci, typecheck, lint, test, and build are reproducible here. Packaging commands were not run. Rollback tag omni-loop/iter-3-pre exists." }
   },
-  "nextWaves": [
-    "Launch Electron on a real desktop and record the preload, file dialog, and keyring result.",
-    "Build Windows NSIS and Linux AppImage/deb/pacman artifacts and keep the receipts.",
-    "Persist the selected project folder and restore it with the chat history.",
-    "Return approved tool output to the model as a tool result instead of asking the user to paste a follow-up.",
-    "Classify Studio MCP tools as read, mutation, playtest, or publish before a call is allowed.",
-    "Stream provider responses and show cancellation.",
-    "Add an ESLint TypeScript config on top of scripts/check-source.mjs.",
-    "Align or replace the purple docs wordmark with the lime mark used in the app."
-  ]
+  "composite": {
+    "active_dimensions": 15,
+    "mean": 3.58,
+    "min": 2.5,
+    "universal_composite": 3.31,
+    "formula": "0.75 * mean + 0.25 * min, U05 excluded as N/A"
+  },
+  "next_recommended_action": {
+    "id": "ITER-005",
+    "title": "Sentence case labels and 44px targets",
+    "target_dimension": "U09",
+    "scope_files": ["src/App.tsx", "src/styles.css"],
+    "uevam": 10.5,
+    "contract": ".omni-loop/current-contract.json"
+  }
 }
