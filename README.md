@@ -19,7 +19,7 @@
 
 Open-Ro is being built for **Windows and native Linux desktops, including Omarchy (Arch Linux)**. Users bring a model connection; everything else is an optional capability they can install, connect, or skip.
 
-> **Current release state: 0.1.0 foundation.** This repository contains an early Electron desktop client, provider routes, local project tools, approval-gated commands, an MCP client foundation, and Windows/Linux packaging configuration. It is not yet a complete Ropilot-equivalent product. The long-term target and the unfinished work are documented below and in [`docs/ROADMAP.md`](docs/ROADMAP.md). Native installers are configured and have not been acceptance-tested on a desktop machine.
+> **Current release state: 0.1.0 foundation.** This repository contains an early Electron desktop client, provider routes, local project tools, approval-gated commands, an MCP client foundation, and Windows/Linux packaging configuration. The Windows NSIS installer builds locally; install/uninstall acceptance is still pending. It is not yet a complete Ropilot-equivalent product. The long-term target and the unfinished work are documented below and in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Interface
 
@@ -117,7 +117,7 @@ Windows and Linux are equal first-class targets for the Open-Ro desktop client. 
 |---|---|---|
 | Desktop shell | Chat, provider forms, project picker, and an approval tray | A beginner can prompt a playable game without writing Luau |
 | Provider connections | Catalog with Ollama and llama.cpp first, then API keys and official CLI handoffs | A tested local model with the network off, plus a visible data-flow line |
-| Local project access | List and read files. Writes stay staged until approved. Checkpoints exist | The same gate for Studio edits, with a line diff and restore |
+| Local project access | List and read files. Writes stay staged until approved. Checkpoint restores are staged for review too, and a restore is itself checkpointed | The same gate for Studio edits, with a line diff and restore |
 | Agent tools | Approval-gated local shell, file, and MCP tool calls; once every approval in an agent turn is decided, the results return to that chat and the agent continues. A playtest report is marked passed only when the report lists assertions, state checks, and a PNG path in the project with each expected value equal to the actual one — Open-Ro renders that report but does not yet verify it against a real run | Plans, evidence, and recovery tied to a real playtest |
 | MCP | One stdio server. Starting it and every agent tool call need your approval. Tested against the MCP reference server, not yet against Studio | A tested Studio connection, not a typed command alone |
 | Roblox Studio | Three agent tools: read the place tree, read a script, and write a Script, LocalScript or ModuleScript. Each one sends Luau through the Studio MCP server's `execute_luau` (or `run_code`) tool and needs your approval first. A write shows a line diff against the last read, refuses client-side currency changes, stops if the script changed since the read, and is read back. Tested against a mock DataModel in the Luau CLI, **not yet against a live Studio session** | Edit the right instance, playtest, and store the evidence |
@@ -126,8 +126,8 @@ Windows and Linux are equal first-class targets for the Open-Ro desktop client. 
 | Skills and asset library | Not implemented | Local skills the model actually receives, and optional downloads with a checksum and license |
 | Published-game upkeep | Not implemented | Recommendations that quote an official metric, and a separate approval before publishing |
 | Images / thumbnails | Not implemented | An optional provider and local review before any upload |
-| Windows packaging | Configured; not acceptance-tested | Install and uninstall recorded on a real machine |
-| Omarchy packaging | Configured; not acceptance-tested | Install and uninstall recorded on a real machine |
+| Windows packaging | NSIS installer builds locally (`Open-Ro Studio Setup 0.1.0.exe`); install/uninstall and code signing not yet recorded | Install and uninstall recorded on a real machine |
+| Omarchy packaging | AppImage, deb, and pacman targets are configured; install/uninstall not yet recorded | Install and uninstall recorded on a real machine |
 
 Open-Ro has not yet been run against a live Studio session, and does not yet playtest a game, drive Blender, download an asset pack, or watch a published experience. Those are goals, not current behavior.
 
