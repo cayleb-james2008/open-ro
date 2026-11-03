@@ -1,0 +1,58 @@
+{
+  "schema_version": "4.0.0",
+  "prompt_summary": "Raise the existing Open-Ro desktop studio to the owner's quality bar and leave a resumable v4 loop.",
+  "entry_mode": "0B_BROWNFIELD_BASELINE",
+  "active_harnesses": ["H1_SYSTEMS_CODE", "H5_PUBLICATION_DOCS"],
+  "surface_mode": "OPERATE",
+  "unslop_direction": {
+    "product": "A local desktop studio where a Roblox developer connects their own model and reviews every file change before it lands.",
+    "character": "exact, nocturnal, tactile",
+    "world": "A graphite night workbench with one acid-lime instrument lamp.",
+    "moments": "The welcome question, and the approval diff where a write or command is accepted.",
+    "signature": "A 6px lime status dot for the live model connection."
+  },
+  "explicit_requirements": [
+    "Local-first Roblox studio with one required model connection",
+    "Approval before file writes and shell commands",
+    "Windows and Linux desktop targets",
+    "Honest docs, real verification, and a resumable .omni-loop"
+  ],
+  "implicit_domain_standards": [
+    "WCAG 2.2 AA contrast and keyboard access for the desktop shell",
+    "No plaintext credential fallback",
+    "Project tools cannot escape the selected folder"
+  ],
+  "deliverable_targets": [
+    "Electron + React + TypeScript application",
+    "README, SECURITY, CONTRIBUTING, and CI",
+    ".omni-loop v4 records"
+  ],
+  "waves": [
+    {
+      "wave_id": 0,
+      "name": "Trust boundary and approval queue",
+      "parallel_nodes": ["path-containment", "approval-id", "provider-records"],
+      "write_set_files": ["electron/main.ts", "electron/pathSafety.ts", "electron/approvals.ts", "src/App.tsx", "tests/safety.test.ts"],
+      "verification_oracle": "npm test && npm run typecheck && npm run build"
+    },
+    {
+      "wave_id": 1,
+      "name": "Motion and viewport craft gate",
+      "parallel_nodes": ["explicit-transitions", "narrow-shell"],
+      "write_set_files": ["src/styles.css", "scripts/verify-ui-craft.mjs"],
+      "verification_oracle": "node scripts/verify-ui-craft.mjs"
+    },
+    {
+      "wave_id": 2,
+      "name": "Touch targets and sentence case",
+      "parallel_nodes": ["row-height", "sentence-case"],
+      "write_set_files": ["src/App.tsx", "src/styles.css"],
+      "verification_oracle": "node scripts/verify-ui-craft.mjs"
+    }
+  ],
+  "definition_of_done": [
+    "Hard-gate dimensions U01, U03, U04, U09, U12, and U14 are at or above their floors with command evidence",
+    "Electron launch and installer receipts exist for Windows and Linux",
+    "A live model connection and a rejected-then-approved file write have been exercised"
+  ]
+}

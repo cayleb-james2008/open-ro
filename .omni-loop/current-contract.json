@@ -1,31 +1,53 @@
 {
-  "iteration": 3,
-  "mode": "0B",
-  "scope": [
-    "electron/pathSafety.ts",
-    "electron/approvals.ts",
-    "electron/main.ts",
-    "electron/mcp.ts",
-    "electron/providerState.ts",
-    "src/App.tsx",
-    "src/styles.css",
-    "tests/safety.test.ts",
-    "README.md",
-    "SECURITY.md",
-    "docs/BUILD-STATUS.md"
+  "schema_version": "4.0.0",
+  "iteration_id": 5,
+  "wave_id": 2,
+  "active_harness": "H1_SYSTEMS_CODE",
+  "target_dimension": "U09",
+  "ponytail_rung_selected": 4,
+  "problem_or_genesis_goal": "Sidebar labels are tracked uppercase and several controls are shorter than a 44px touch target.",
+  "reproduction_evidence": "Headless Chrome at 375x812 showed WORKSPACE, RECENT, and MODEL CONNECTION in uppercase. Nav rows are 41px and icon buttons are 31px in src/styles.css.",
+  "user_impact": "The shell is harder to scan and the narrow layout misses the WCAG 2.2 target size used by the v4 accessibility floor.",
+  "atomic_scope_files": ["src/App.tsx", "src/styles.css"],
+  "indivisibility_proof": "The labels live in App.tsx and the row heights live in styles.css. Both are required for the same U09 pass.",
+  "non_goals": [
+    "Do not redesign the lime accent or the welcome headline",
+    "Do not change approval or filesystem behavior",
+    "Do not add a dependency"
   ],
-  "nonGoals": [
-    "Live provider calls",
-    "Electron packaging",
-    "Roblox Studio session",
-    "Rewriting the product roadmap"
+  "acceptance_oracles": [
+    {
+      "id": "ui-craft",
+      "description": "No horizontal overflow, no sub-11px text, no transition-property all at 1440, 768, and 375.",
+      "command": "node scripts/verify-ui-craft.mjs"
+    },
+    {
+      "id": "unit",
+      "description": "Existing provider and safety tests still pass.",
+      "command": "npm test"
+    }
   ],
-  "oracles": [
-    "npm run typecheck",
-    "npm run lint",
-    "npm test",
-    "npm run build",
-    "headless Chrome navigation of Chat, Models, Workspace, Integrations"
+  "metamorphic_invariants": [
+    "Changing a label to sentence case does not change which screen a nav button selects",
+    "A control that was keyboard-focusable stays keyboard-focusable"
   ],
-  "antiTamper": "Do not delete tests, weaken assertions, or add ts-ignore, eslint-disable, or skipped tests."
+  "regression_commands": ["npm run typecheck", "npm test", "npm run lint"],
+  "rollback_tag": "omni-loop/iter-5-pre",
+  "pre_edit_hashes": {
+    "src/App.tsx": "0e569758f7d505e49601089696d00142ea1b9150e76166bae40609f6e87a0a8e",
+    "src/styles.css": "dc5813bd5692af353c64f96eb74a215e2d16d1d5fefd599c6711401f3f8d0d5d",
+    "tests/providerCatalog.test.ts": "7862994a3de441e813ee2183264e07c5ff2b31a26f970d98ccf930bb3d9ebc3b",
+    "tests/safety.test.ts": "9a2e92ec57575d136b91ba9982fc63912205009cd06d4a317c53ecfb97767dae"
+  },
+  "uevam_inputs": {
+    "impact": 4,
+    "severity": 4,
+    "confidence": 0.8,
+    "unlocks": 1,
+    "info_gain": 1,
+    "substructure_reward": 1.4,
+    "effort": 2,
+    "risk": 0.4,
+    "is_p0_blocker": false
+  }
 }
