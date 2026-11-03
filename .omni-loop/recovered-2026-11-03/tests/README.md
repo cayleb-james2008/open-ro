@@ -1,1 +1,0 @@
-The current automated tests cover provider catalog integrity. Integration testing requires Windows and an Arch/Omarchy machine with the relevant provider CLI, Roblox Studio and/or Wine/Vinegar installed. See `docs/ROADMAP.md` for the release gate.

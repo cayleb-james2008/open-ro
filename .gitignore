@@ -11,3 +11,7 @@ coverage/
 Thumbs.db
 *.pem
 *.key
+
+# OMNI-LOOP state and grading artifacts stay local
+.omni-loop/
+OMNI_LOOP.md

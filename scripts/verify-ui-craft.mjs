@@ -4,11 +4,18 @@
  * Does not add a browser dependency.
  */
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const target = process.env.TARGET_URL || 'http://127.0.0.1:5173';
-const chromePath = process.env.CHROME_PATH || '/usr/local/bin/google-chrome';
+const chromeCandidates = ['/usr/local/bin/google-chrome', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
+const chromePath = process.env.CHROME_PATH || chromeCandidates.find((candidate) => existsSync(candidate));
+if (!chromePath) {
+  console.error(`No Chrome or Chromium found. Set CHROME_PATH. Checked: ${chromeCandidates.join(', ')}`);
+  process.exit(1);
+}
+const shotDir = process.env.SCREENSHOT_DIR || '.omni-loop/screenshots';
 const port = 9333;
 const viewports = [
   { name: 'desktop', width: 1440, height: 900 },
@@ -73,7 +80,7 @@ try {
   await connect();
   await send('Page.enable');
   await send('Runtime.enable');
-  await mkdir('.omni-loop/screenshots', { recursive: true });
+  await mkdir(shotDir, { recursive: true });
   const failures = [];
   for (const viewport of viewports) {
     await send('Emulation.setDeviceMetricsOverride', {
@@ -101,7 +108,7 @@ try {
       return { overflow, tiny, transitionAll, title: document.querySelector('h1')?.textContent || '' };
     })()`);
     const shot = await send('Page.captureScreenshot', { format: 'png' });
-    await writeFile(`.omni-loop/screenshots/route_${viewport.name}.png`, Buffer.from(shot.data, 'base64'));
+    await writeFile(`${shotDir}/route_${viewport.name}.png`, Buffer.from(shot.data, 'base64'));
     if (report.overflow) failures.push(`${viewport.name}: horizontal overflow`);
     if (viewport.name === 'mobile' && report.tiny.length > 0) failures.push(`mobile text under 11px: ${report.tiny.slice(0, 8).join(', ')}`);
     if (report.transitionAll > 0) failures.push(`${viewport.name}: ${report.transitionAll} elements use transition-property all`);

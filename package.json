@@ -18,7 +18,7 @@
     "dev": "concurrently -ks i \"vite\" \"wait-on tcp:127.0.0.1:5173 && electron .\"",
     "dev:renderer": "vite",
     "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.renderer.json",
-    "lint": "node scripts/check-source.mjs && node scripts/validate-omni-loop.mjs",
+    "lint": "node scripts/check-source.mjs",
     "verify:ui": "node scripts/verify-ui-craft.mjs",
     "test": "vitest run",
     "build": "tsc -p tsconfig.electron.json && vite build",
