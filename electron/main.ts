@@ -73,6 +73,7 @@ function toApprovalView(item: PendingApproval): PendingApprovalView {
     studioPath: item.studioPath,
     studioClass: item.studioClass,
     studioServices: item.studioServices,
+    studioId: item.studioId,
   };
 }
 

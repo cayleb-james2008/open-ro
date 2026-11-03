@@ -70,6 +70,8 @@ export interface PendingApprovalView {
   studioPath?: string;
   studioClass?: string;
   studioServices?: string[];
+  /** The studio_id the Studio call targets, when there is one. */
+  studioId?: string;
 }
 
 /** Which server process a staged MCP call was staged against. `session` changes on every start. */

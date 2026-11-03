@@ -45,7 +45,8 @@ export function approvalCopy(item: PendingApprovalView): ApprovalCopy {
         approveLabel: 'Start server',
       };
     case 'studio': {
-      const where = item.mcpServer ? ` on ${item.mcpServer}` : '';
+      // Which Studio runs it: the studio_id when the server takes one, then the server command line.
+      const where = `${item.studioId ? ` ${JSON.stringify(item.studioId)}` : ''}${item.mcpServer ? ` on ${item.mcpServer}` : ''}`;
       const target = `game.${item.studioPath ?? ''}`;
       if (item.studioOp === 'snapshot') {
         return { title: 'Review Studio read: place tree', detail: `Read-only Luau runs in Studio${where} only if you approve`, preview: `Services: ${(item.studioServices ?? []).join(', ')}`, approveLabel: 'Read place' };

@@ -22,4 +22,10 @@ describe('Studio approval cards', () => {
       title: 'Review Studio read: place tree', detail: 'Read-only Luau runs in Studio on StudioMCP only if you approve', preview: 'Services: Workspace, Teams',
     });
   });
+
+  it('names the studio_id the call targets', () => {
+    expect(approvalCopy({ ...base, studioId: 'A', studioOp: 'read', studioPath: 'Workspace.Door' }).detail).toBe('Read-only Luau runs in Studio "A" on StudioMCP only if you approve');
+    expect(approvalCopy({ ...base, studioId: 'B', studioOp: 'write', studioPath: 'Workspace.Door', studioClass: 'Script', previous: '' }).detail).toMatch(/^Changes this script in Studio "B" on StudioMCP only if you approve/);
+    expect(approvalCopy({ ...base, studioId: 'A', studioOp: 'snapshot', studioPath: 'game', studioServices: [] }).detail).toContain('Studio "A" on StudioMCP');
+  });
 });
