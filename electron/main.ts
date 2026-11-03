@@ -4,6 +4,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { registerApprovalChannels } from './approvalChannels';
 import { ApprovalQueue, type ApprovalKind, type PendingApproval } from './approvals';
+import { writeTextAtomic } from './atomicWrite';
 import { detectCapabilities } from './capabilities';
 import { parseCheckpointRecord, stageCheckpointRestore } from './checkpoints';
 import { McpStdioClient } from './mcp';
@@ -88,8 +89,7 @@ async function readAppState(): Promise<ProviderAppState> {
 }
 
 async function writeAppState(state: ProviderAppState): Promise<void> {
-  await fs.mkdir(app.getPath('userData'), { recursive: true });
-  await fs.writeFile(statePath(), JSON.stringify(state, null, 2), { encoding: 'utf8', mode: 0o600 });
+  await writeTextAtomic(statePath(), JSON.stringify(state, null, 2));
 }
 
 async function loadSavedProjectRoot(): Promise<void> {
@@ -477,8 +477,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('sessions:save', async (_event, payload: unknown) => {
     const snapshot = sanitizeSessions(payload);
-    await fs.mkdir(app.getPath('userData'), { recursive: true });
-    await fs.writeFile(sessionsPath(), JSON.stringify(snapshot), { encoding: 'utf8', mode: 0o600 });
+    await writeTextAtomic(sessionsPath(), JSON.stringify(snapshot));
     return { ok: true, count: snapshot.sessions.length };
   });
 
