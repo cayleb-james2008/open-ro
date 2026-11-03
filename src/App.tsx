@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import api from './api';
 import { Dialog } from './Dialog';
 import { diffPreview } from './textDiff';
+import { dropMissing, followupText, recordResolution, trackStaged, type FollowupBatch } from './approvalFollowup';
 import { approvalCopy, providerInitials } from './labels';
 import { providerOptions, type ProviderKind, type ProviderOption } from '../electron/providerCatalog';
 import type { SessionSnapshot, StoredChatSession } from '../electron/sessions';
@@ -83,6 +84,9 @@ export default function App() {
   const [bridgeMissing, setBridgeMissing] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const sessionsRef = useRef<ChatSession[]>([]);
+  // Approvals each agent turn staged; once all are decided the results go back to that chat.
+  const followupsRef = useRef<FollowupBatch[]>([]);
+  const [readyFollowups, setReadyFollowups] = useState<FollowupBatch[]>([]);
 
   const activeSessionData = useMemo(() => sessions.find((session) => session.id === activeSession) ?? null, [sessions, activeSession]);
   const activeProvider = useMemo(() => providerViews.find((view) => view.active) ?? null, [providerViews]);
@@ -264,6 +268,7 @@ export default function App() {
         ),
       );
       if (result.toolTrace.some((entry) => entry.status === 'staged')) {
+        followupsRef.current = trackStaged(followupsRef.current, sessionId, result.toolTrace.map((entry) => (entry.status === 'staged' ? entry.approvalId ?? '' : '')));
         setApprovals(await api.approvals());
       }
     } catch (error) {
@@ -349,20 +354,48 @@ export default function App() {
     }
   }
 
+  function settleFollowups(next: { batches: FollowupBatch[]; ready: FollowupBatch[] }, live: PendingApprovalView[]) {
+    const swept = dropMissing(next.batches, live.map((item) => item.id));
+    followupsRef.current = swept.batches;
+    const ready = [...next.ready, ...swept.ready];
+    if (ready.length > 0) {
+      setReadyFollowups((prev) => [...prev, ...ready]);
+    }
+  }
+
   async function resolveApproval(id: string, decision: 'approve' | 'reject') {
     try {
       const result = await api.resolveApproval({ id, decision });
       setActionResult(result);
-      setApprovals(await api.approvals());
+      const live = await api.approvals();
+      setApprovals(live);
+      settleFollowups(recordResolution(followupsRef.current, id, result), live);
       if (decision === 'approve') {
         await refreshWorkspaceState();
         setMcpState(await api.mcpStatus());
       }
     } catch (error) {
       setBanner(asMessage(error));
-      setApprovals(await api.approvals().catch(() => []));
+      const live = await api.approvals().catch(() => null);
+      setApprovals(live ?? []);
+      // If the approval left the queue, it was attempted; tell the agent it failed.
+      if (live && !live.some((item) => item.id === id)) {
+        settleFollowups(recordResolution(followupsRef.current, id, { ok: false, decision, summary: asMessage(error) }), live);
+      }
     }
   }
+
+  // Send each settled batch back to the chat that staged it, once that chat is open and idle.
+  useEffect(() => {
+    const next = sending ? undefined : readyFollowups.find((batch) => batch.sessionId === activeSession);
+    if (!next) {
+      return;
+    }
+    setReadyFollowups((prev) => prev.filter((batch) => batch !== next));
+    setActionResult(null);
+    setScreen('chat');
+    void sendDraft(followupText(next));
+  }, [readyFollowups, sending, activeSession]);
 
   function continueWithResult() {
     if (!actionResult) {
