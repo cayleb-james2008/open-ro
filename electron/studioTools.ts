@@ -1,5 +1,5 @@
 import type { ApprovalQueue, PendingApproval } from './approvals';
-import type { McpCaller } from './mcpTools';
+import { sameServer, type McpCaller } from './mcpTools';
 import {
   currencyProblems,
   formatPath,
@@ -62,7 +62,8 @@ export function stageStudioTool(
   reads: StudioReads,
   input: { projectRoot: string; name: string; args: Record<string, unknown> },
 ): ToolCallResult {
-  if (!caller.running) {
+  const server = caller.identity;
+  if (!caller.running || !server) {
     return { ok: false, output: 'No MCP server is connected. Connect the Roblox Studio MCP server first.' };
   }
   try {
@@ -71,7 +72,7 @@ export function stageStudioTool(
     const tools = caller.listTools();
     const stage = (op: 'snapshot' | 'read' | 'write', path: string, code: string, extra: Partial<Parameters<ApprovalQueue['stageStudio']>[0]>) => {
       const call = luauToolCall(tools, code, studioId);
-      const item = approvals.stageStudio({ projectRoot: input.projectRoot, op, path, tool: call.tool, args: call.args, ...extra });
+      const item = approvals.stageStudio({ projectRoot: input.projectRoot, op, path, tool: call.tool, args: call.args, server, ...extra });
       return { ok: true, output: `Staged Studio ${op} of ${path} for approval. Nothing has run in Studio.`, pendingApproval: { kind: 'studio' as const, tool: call.tool, path, id: item.id } };
     };
     if (input.name === 'studio_snapshot') {
@@ -132,6 +133,9 @@ export async function runApprovedStudio(
   if (!caller.running || !caller.listTools().some((entry) => entry.name === tool)) {
     return fail(`Studio tool ${tool} is no longer available. Nothing ran.`);
   }
+  if (!sameServer(item.mcpServer, caller.identity)) {
+    return fail(`The MCP server changed after this Studio ${item.studioOp} was staged. Nothing ran. Ask for it again.`);
+  }
   let text: string;
   try {
     text = await caller.callTool(tool, JSON.parse(item.mcpArgs ?? '{}') as Record<string, unknown>);
@@ -180,6 +184,9 @@ export async function runApprovedStudio(
 
 /** Stage putting a checkpoint's previous source back. It only applies if the script still holds what Open-Ro wrote. */
 export function stageStudioRestore(approvals: ApprovalQueue, caller: McpCaller, checkpoint: StudioCheckpoint, input: { projectRoot: string; studioId?: string }): PendingApproval {
+  if (!caller.running || !caller.identity) {
+    throw new Error('No MCP server is connected. Connect the Roblox Studio MCP server first.');
+  }
   if (checkpoint.previous === null) {
     throw new Error('Open-Ro created this script, so there is no earlier source. Delete it in Studio or use Ctrl+Z.');
   }
@@ -188,6 +195,6 @@ export function stageStudioRestore(approvals: ApprovalQueue, caller: McpCaller, 
   const call = luauToolCall(caller.listTools(), code, input.studioId);
   return approvals.stageStudio({
     projectRoot: input.projectRoot, op: 'write', path: checkpoint.path, tool: call.tool, args: call.args,
-    className: checkpoint.className, previous: checkpoint.content, content: checkpoint.previous,
+    className: checkpoint.className, previous: checkpoint.content, content: checkpoint.previous, server: caller.identity,
   });
 }

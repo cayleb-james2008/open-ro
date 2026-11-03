@@ -145,8 +145,9 @@ export class ApprovalQueue {
     services?: string[];
     previous?: string;
     content?: string;
+    server?: McpServerIdentity;
   }): PendingApproval {
-    const item = this.stageMcp({ projectRoot: input.projectRoot, tool: input.tool, args: input.args });
+    const item = this.stageMcp({ projectRoot: input.projectRoot, tool: input.tool, args: input.args, server: input.server });
     Object.assign(item, {
       kind: 'studio',
       studioOp: input.op,

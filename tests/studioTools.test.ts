@@ -16,6 +16,7 @@ function fakeStudio(tools: McpToolSummary[] = [executeLuau]) {
   const replies: string[] = [];
   const caller: McpCaller = {
     running: true,
+    identity: { command: 'StudioMCP', args: [], session: 'session-1' },
     listTools: () => tools,
     callTool: async (name, args) => {
       calls.push({ name, args });
@@ -143,6 +144,8 @@ describe('running approved Studio calls', () => {
     expect(reads.get('Workspace.X')).toBeUndefined();
     const gone = { ...studio.caller, listTools: () => [] };
     expect((await runApprovedStudio(item, gone, reads)).summary).toMatch(/no longer available/);
+    const restarted = { ...studio.caller, identity: { command: 'StudioMCP', args: [], session: 'session-2' } };
+    expect((await runApprovedStudio(item, restarted, reads)).summary).toMatch(/MCP server changed after this Studio read was staged/);
     expect(studio.calls).toHaveLength(2);
   });
 });
