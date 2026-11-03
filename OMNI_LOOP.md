@@ -7,7 +7,7 @@
 ## Resume
 
 1. Read this file and `.omni-loop/state.json` before any edit.
-2. `incumbent_commit` is the last commit that does not exist solely to stamp that field. If `HEAD` is one commit ahead and the diff only updates the stamp, continue.
+2. Pull request 1 was rebase-merged, so the pre-merge SHAs are not on main. `incumbent_commit` is `01ccd8ebacd5fa763ef20d5150ac9ed40efac2f6`. If `origin/main` is ahead of that by a screenshot refresh, resume from the tip.
 3. Create tag `omni-loop/iter-6-pre` at the current HEAD, then execute `.omni-loop/current-contract.json` (persist the selected project folder).
 4. Smoke: `npm test`, then `npm run verify:ui` with the renderer on port 5173.
 
