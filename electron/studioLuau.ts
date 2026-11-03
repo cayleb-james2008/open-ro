@@ -12,8 +12,15 @@ export const DEFAULT_SNAPSHOT_SERVICES = [
   'ServerStorage', 'StarterGui', 'StarterPack', 'StarterPlayer', 'SoundService', 'Teams',
 ];
 
-/** A Luau long string that cannot be closed early by its own contents. */
+/**
+ * A Luau string literal that decodes to exactly `value`. Long brackets cannot be
+ * closed early by their contents, but Luau turns \r\n and \n\r inside them into
+ * \n and rejects NUL, so such values use a quoted string with decimal escapes.
+ */
 export function luauString(value: string): string {
+  if (/[\r\0]/.test(value)) {
+    return `"${value.replace(/[\0-\x1f\x7f"\\]/g, (char) => `\\${String(char.charCodeAt(0)).padStart(3, '0')}`)}"`;
+  }
   let level = 0;
   while (value.includes(`]${'='.repeat(level)}]`) || value.endsWith(`]${'='.repeat(level)}`)) {
     level += 1;
