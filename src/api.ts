@@ -30,7 +30,8 @@ export interface Api {
   previewWrite(args: { rel: string; content: string }): Promise<PendingApprovalView>;
   writeProject(args: { id: string }): Promise<ApprovalResult>;
   checkpoints(): Promise<string[]>;
-  restoreCheckpoint(file: string): Promise<unknown>;
+  /** Stages the restore as a write approval; the file changes only after approval. */
+  restoreCheckpoint(file: string): Promise<PendingApprovalView>;
   studioCheckpoints(): Promise<string[]>;
   /** Stages the restore as a Studio write; it does not run until approved. */
   restoreStudioCheckpoint(file: string): Promise<PendingApprovalView>;
@@ -76,7 +77,7 @@ export const api: Api = {
   previewWrite: (args) => call<PendingApprovalView>('project:preview-write', args),
   writeProject: (args) => call<ApprovalResult>('project:write', args),
   checkpoints: () => call<string[]>('project:checkpoints'),
-  restoreCheckpoint: (file) => call('project:restore-checkpoint', { file }),
+  restoreCheckpoint: (file) => call<PendingApprovalView>('project:restore-checkpoint', { file }),
   studioCheckpoints: () => call<string[]>('studio:checkpoints'),
   restoreStudioCheckpoint: (file) => call<PendingApprovalView>('studio:restore-checkpoint', { file }),
   previewCommand: (args) => call<PendingApprovalView>('command:preview', args),

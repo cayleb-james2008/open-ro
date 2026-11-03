@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { registerApprovalChannels } from './approvalChannels';
 import { ApprovalQueue, type ApprovalKind, type PendingApproval } from './approvals';
 import { detectCapabilities } from './capabilities';
+import { parseCheckpointRecord, stageCheckpointRestore } from './checkpoints';
 import { McpStdioClient } from './mcp';
 import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServer, serverLabel, stageMcpCall, stageMcpConnect } from './mcpTools';
 import { gradePlaytest, parsePlaytestReport } from './playtestEvidence';
@@ -422,18 +423,10 @@ function registerIpc(): void {
     if (!args || !/^[\w.-]+\.json$/.test(args.file)) {
       throw new Error('Invalid checkpoint file.');
     }
-    const record = JSON.parse(await fs.readFile(path.join(checkpointRoot(), args.file), 'utf8')) as { projectRoot: string; relPath: string; previous: string | null };
-    if (path.resolve(record.projectRoot) !== path.resolve(projectRoot)) {
-      throw new Error('Checkpoint belongs to a different project.');
-    }
+    const record = parseCheckpointRecord(await fs.readFile(path.join(checkpointRoot(), args.file), 'utf8'), projectRoot);
     const target = await resolveWithinRoot(projectRoot, record.relPath);
-    if (record.previous === null) {
-      await fs.rm(target, { force: true });
-    } else {
-      await fs.mkdir(path.dirname(target), { recursive: true });
-      await fs.writeFile(target, record.previous, 'utf8');
-    }
-    return { ok: true };
+    const current = (await readTextIfExists(target)) ?? '';
+    return toApprovalView(stageCheckpointRestore(approvals, { projectRoot, record, current }));
   });
 
   ipcMain.handle('command:preview', async (_event, args: { command: string }) => {

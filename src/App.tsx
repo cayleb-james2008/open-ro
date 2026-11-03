@@ -340,7 +340,8 @@ export default function App() {
   async function restoreCheckpoint(file: string) {
     try {
       await api.restoreCheckpoint(file);
-      setBanner(`Restored ${file}. Re-check the file tree to see the reverted content.`);
+      setApprovals(await api.approvals());
+      setBanner(`Staged the restore of ${file}. Review it in the approval tray; nothing changes until you approve.`);
     } catch (error) {
       setBanner(asMessage(error));
     }
@@ -902,7 +903,7 @@ export default function App() {
 
         <div className="section-title" style={{ marginTop: 28 }}>
           <span>Checkpoints</span>
-          <span>restore on click</span>
+          <span>restoring needs approval</span>
         </div>
         <div className="integration-list">
           {checkpoints.map((file) => (
@@ -911,9 +912,9 @@ export default function App() {
                 <span className="integration-icon">{ICONS.shield}</span>
                 <span className="integration-copy">
                   <b>{file}</b>
-                  <small>Recorded before an accepted write</small>
+                  <small>File before an accepted write. Restoring needs approval</small>
                 </span>
-                <span className="state-pill">restore</span>
+                <span className="state-pill">stage restore</span>
               </button>
             </div>
           ))}
