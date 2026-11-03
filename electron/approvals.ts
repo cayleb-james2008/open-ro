@@ -1,7 +1,7 @@
 import * as crypto from 'node:crypto';
 import type { McpServerIdentity } from './types';
 
-export type ApprovalKind = 'write' | 'command' | 'mcp' | 'mcp-server' | 'studio';
+export type ApprovalKind = 'write' | 'command' | 'mcp' | 'mcp-server' | 'studio' | 'delete';
 export type StudioOp = 'snapshot' | 'read' | 'write';
 export type ApprovalDecision = 'approve' | 'reject';
 
@@ -62,6 +62,26 @@ export class ApprovalQueue {
       order: this.nextOrder++,
       relPath: input.relPath,
       content: input.content,
+      previous: input.previous,
+    };
+    this.items.set(item.id, item);
+    return item;
+  }
+
+  /** Stage deleting one project file to undo a creation checkpoint. */
+  stageDelete(input: { projectRoot: string; relPath: string; previous: string }): PendingApproval {
+    this.assertRoom();
+    if (input.previous.length > MAX_TEXT) {
+      throw new Error('Refusing to stage a delete of a file larger than 1,000,000 characters.');
+    }
+    const item: PendingApproval = {
+      id: crypto.randomUUID(),
+      kind: 'delete',
+      projectRoot: input.projectRoot,
+      createdAt: new Date(this.now()).toISOString(),
+      expiresAt: this.now() + this.ttlMs,
+      order: this.nextOrder++,
+      relPath: input.relPath,
       previous: input.previous,
     };
     this.items.set(item.id, item);

@@ -74,4 +74,41 @@ describe('checkpoint restoration', () => {
     expect(handler).not.toMatch(/fs\.(writeFile|rm)\(/);
     expect(handler).not.toContain('JSON.parse(');
   });
+
+  it('stages a delete approval for a creation checkpoint', () => {
+    const queue = new ApprovalQueue();
+    const staged = queue.stageDelete({ projectRoot: root, relPath: 'src/init.lua', previous: 'print("new")' });
+    expect(staged.kind).toBe('delete');
+    expect(staged.relPath).toBe('src/init.lua');
+    expect(staged.previous).toBe('print("new")');
+    expect(queue.list()).toHaveLength(1);
+  });
+
+  it('refuses an oversized delete payload without staging', () => {
+    const queue = new ApprovalQueue();
+    expect(() => queue.stageDelete({ projectRoot: root, relPath: 'big.lua', previous: 'x'.repeat(1_000_001) })).toThrow('larger than');
+    expect(queue.list()).toHaveLength(0);
+  });
+
+  it('gates the delete kind on resolve', () => {
+    const queue = new ApprovalQueue();
+    const staged = queue.stageDelete({ projectRoot: root, relPath: 'src/init.lua', previous: 'x' });
+    expect(() => queue.take(staged.id, 'write')).toThrow('not a write');
+    expect(queue.list()).toHaveLength(1);
+    expect(queue.take(staged.id, 'delete').kind).toBe('delete');
+  });
+
+  it('restores creation checkpoints through a checkpointed delete approval', () => {
+    const source = readFileSync('electron/main.ts', 'utf8');
+    const start = source.indexOf("ipcMain.handle('project:restore-checkpoint'");
+    const handler = source.slice(start, source.indexOf('\n  });', start));
+    expect(handler).toContain('record.previous === null');
+    expect(handler).toContain('approvals.stageDelete(');
+    const resolveStart = source.indexOf('async function resolveApproval');
+    const resolve = source.slice(resolveStart, source.indexOf('\nfunction registerIpc', resolveStart));
+    expect(resolve).toContain("item.kind === 'delete'");
+    expect(resolve).toContain('writeCheckpoint(');
+    expect(resolve).toContain('fs.rm(');
+    expect(resolve).toContain('is already absent');
+  });
 });

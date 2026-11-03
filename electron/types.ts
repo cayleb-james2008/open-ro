@@ -50,7 +50,7 @@ export interface ToolCallResult {
 /** Approval the renderer may inspect. The id is the only value accepted back. */
 export interface PendingApprovalView {
   id: string;
-  kind: 'write' | 'command' | 'mcp' | 'mcp-server' | 'studio';
+  kind: 'write' | 'command' | 'mcp' | 'mcp-server' | 'studio' | 'delete';
   createdAt: string;
   relPath?: string;
   previous?: string;

@@ -251,7 +251,9 @@ async function resolveApproval(id: string, decision: 'approve' | 'reject', kind?
       summary:
         item.kind === 'write'
           ? `Rejected the write to ${item.relPath ?? 'the file'}. Nothing was changed.`
-          : item.kind === 'mcp'
+          : item.kind === 'delete'
+            ? `Rejected deleting ${item.relPath ?? 'the file'}. Nothing was changed.`
+            : item.kind === 'mcp'
             ? `Rejected MCP tool ${item.mcpTool ?? ''}. It did not run.`
             : item.kind === 'mcp-server'
               ? 'Rejected starting the MCP server. It did not run.'
@@ -259,6 +261,22 @@ async function resolveApproval(id: string, decision: 'approve' | 'reject', kind?
               ? `Rejected the Studio ${item.studioOp ?? 'call'} of game.${item.studioPath ?? ''}. Nothing ran in Studio.`
             : 'Rejected the command. It did not run.',
     };
+  }
+  if (item.kind === 'delete') {
+    const relPath = item.relPath ?? '';
+    try {
+      const target = await resolveWithinRoot(projectRoot, relPath);
+      const previous = await readTextIfExists(target);
+      if (previous === null) {
+        return { ok: true, decision, summary: `${relPath} is already absent. Nothing was changed.` };
+      }
+      await writeCheckpoint(projectRoot, relPath, previous);
+      await fs.rm(target, { force: true });
+      return { ok: true, decision, summary: `Deleted ${relPath}. A checkpoint of the deleted contents was saved.` };
+    } catch (error) {
+      approvals.stageDelete({ projectRoot, relPath, previous: item.previous ?? '' });
+      throw error;
+    }
   }
   if (item.kind === 'write') {
     const relPath = item.relPath ?? '';
@@ -445,6 +463,9 @@ function registerIpc(): void {
     const record = parseCheckpointRecord(await fs.readFile(path.join(checkpointRoot(), args.file), 'utf8'), projectRoot);
     const target = await resolveWithinRoot(projectRoot, record.relPath);
     const current = (await readTextIfExists(target)) ?? '';
+    if (record.previous === null) {
+      return toApprovalView(approvals.stageDelete({ projectRoot, relPath: record.relPath, previous: current }));
+    }
     return toApprovalView(stageCheckpointRestore(approvals, { projectRoot, record, current }));
   });
 

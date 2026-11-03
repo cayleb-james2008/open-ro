@@ -25,6 +25,8 @@ export function approvalCopy(item: PendingApprovalView): ApprovalCopy {
   switch (item.kind) {
     case 'write':
       return { title: `Review write: ${item.relPath ?? ''}`, detail: 'Nothing is written until you approve', preview: '', approveLabel: 'Approve write' };
+    case 'delete':
+      return { title: `Review delete: ${item.relPath ?? ''}`, detail: 'The file is removed only if you approve. Its current contents are checkpointed first', preview: '', approveLabel: 'Delete file' };
     case 'mcp': {
       let preview = item.mcpArgs ?? '{}';
       try {
