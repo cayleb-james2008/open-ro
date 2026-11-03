@@ -4,7 +4,7 @@ The roadmap is ordered by user value and dependency. A feature is complete only 
 
 ## Current release: 0.1.0 foundation
 
-Implemented in source: Electron/React desktop shell, provider selection foundation, API and official CLI routes, local project tools, approval-gated shell/file operations, secure credential-storage guard, single-server MCP client (tool discovery only; calls not exposed yet), Blender detection via `blender --version` (no task runner), and Windows/Linux packaging configuration.
+Implemented in source: Electron/React desktop shell, provider selection foundation, API and official CLI routes, local project tools, approval-gated shell/file operations, secure credential-storage guard, single-server MCP client with approval-gated server start and agent tool calls, a playtest evidence gate (no runner yet), Blender detection via `blender --version` (no task runner), and Windows/Linux packaging configuration.
 
 Not established: a dependency-resolved build, native installers, live Studio integration, complete Blender asset transfer, image/thumbnail generation, or complete parity. See [`BUILD-STATUS.md`](BUILD-STATUS.md).
 

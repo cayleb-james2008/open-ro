@@ -12,7 +12,8 @@
 - Local project file listing/reading and agent tool foundation.
 - Approval-gated file writes and command execution.
 - Credential storage guarded by Electron `safeStorage`; no plaintext persistence fallback.
-- Single active stdio MCP client. It sends newline-delimited JSON-RPC as the MCP stdio transport requires, and lists the server's tools. Tool calls are not reachable from the renderer or the agent until they go through the approval queue.
+- Single active stdio MCP client. It sends newline-delimited JSON-RPC as the MCP stdio transport requires, lists the server's tools, answers server `ping`, and stops the process when the handshake fails. Starting a server and each agent tool call (`mcp__<tool>`) are staged in the approval queue; the exact command or argument JSON runs only after approval.
+- Playtest evidence gate (`report_playtest`): a result is PASSED only with at least one assertion, one state check, and one PNG screenshot inside the project, and every expected value equals the actual one. A mismatch is FAILED with the failing check; anything else is NO_EVIDENCE. There is no playtest runner yet, so the agent supplies the values from tool output.
 - Blender is detected by running `blender --version`. There is no Blender task runner.
 - Windows NSIS and Linux AppImage/deb/pacman packaging configuration.
 - Basic provider catalogue tests and CI configuration.
@@ -23,8 +24,8 @@ Commands run in this workspace after `npm ci` (Node.js 24.22.1):
 
 - `npm run typecheck` passed.
 - `npm run lint` passed (rejects type suppressions, skipped tests, and placeholder text).
-- `npm test` passed: 17 tests in `tests/providerCatalog.test.ts`, `tests/safety.test.ts`, and `tests/mcpStdio.test.ts`.
-- The MCP client completed the handshake, listed tools, and called `echo` against `@modelcontextprotocol/server-everything` 2.1.0 over stdio. Before the framing fix the same `initialize` request timed out after 15 s.
+- `npm test` passed: 41 tests in 7 files under `tests/`.
+- The MCP client completed the handshake, listed tools, and called `echo` against `@modelcontextprotocol/server-everything` 2.1.0 over stdio, both directly and as a staged call approved through the queue. Before the framing fix the same `initialize` request timed out after 15 s.
 - `npm run build` passed. Vite emitted `dist/` and `tsc` emitted `dist-electron/`.
 - The renderer was opened in headless Chrome at 1280×800 and 960×700. Chat, Models, Workspace, and Integrations navigation were clicked. The Models screen rendered 9 provider routes, with Ollama and llama.cpp first. No page errors were logged. The favicon request succeeded.
 
@@ -45,7 +46,7 @@ CI is present as configuration. This document does not claim a green GitHub Acti
 
 ## Known limitations
 
-- MCP client supports one active stdio server at a time. Connecting it runs the command the user typed; it is not the same gate as file and shell approvals.
+- MCP client supports one active stdio server at a time. It answers server `ping`; other server-to-client requests such as `roots/list` get method-not-found because the client declares no capabilities.
 - Chat history is saved locally. The selected project folder is not restored after a restart.
 - An approved command's output is shown in the app. It is not sent back to the model unless the user chooses "Send result to the agent".
 - There is no Blender task runner, Rojo sync UI, or image/thumbnail/3D adapter.

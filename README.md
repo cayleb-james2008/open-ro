@@ -118,8 +118,8 @@ Windows and Linux are equal first-class targets for the Open-Ro desktop client. 
 | Desktop shell | Chat, provider forms, project picker, and an approval tray | A beginner can prompt a playable game without writing Luau |
 | Provider connections | Catalog with Ollama and llama.cpp first, then API keys and official CLI handoffs | A tested local model with the network off, plus a visible data-flow line |
 | Local project access | List and read files. Writes stay staged until approved. Checkpoints exist | The same gate for Studio edits, with a line diff and restore |
-| Agent tools | Approval-gated local shell and file tools | Plans, evidence, and recovery tied to a real playtest |
-| MCP | One stdio server the user starts by typing a command. Tested against the MCP reference server, not yet against Studio. Tool calls are not exposed yet | A tested Studio connection, not a typed command alone |
+| Agent tools | Approval-gated local shell, file, and MCP tool calls. A reported playtest counts as passed only with assertions, state checks, and a PNG screenshot that all match | Plans, evidence, and recovery tied to a real playtest |
+| MCP | One stdio server. Starting it and every agent tool call need your approval. Tested against the MCP reference server, not yet against Studio | A tested Studio connection, not a typed command alone |
 | Roblox Studio | Not connected | Read the place, edit the right instance, playtest, and store the evidence |
 | Rojo | `rojo --version` detection only | Sync direction and overwrite scope shown before files move |
 | Blender | `blender --version` detection only | Reviewed models and animations, then a separate import approval |

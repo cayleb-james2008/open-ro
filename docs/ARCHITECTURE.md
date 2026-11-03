@@ -31,7 +31,9 @@ The UI must never receive raw provider credentials, Node.js process objects, or 
 | `electron/agent.ts` | Agent loop, provider calls, tool schema and execution routing |
 | `electron/providerCatalog.ts` | Provider definitions and connection routes |
 | `electron/secureStore.ts` | Secure credential storage via Electron safeStorage |
-| `electron/mcp.ts` | MCP stdio transport and tool discovery. `callTool` exists but nothing in the app can reach it yet |
+| `electron/mcp.ts` | MCP stdio transport, tool discovery and calls |
+| `electron/mcpTools.ts` | Exposes connected MCP tools to the agent as `mcp__<tool>`; calls are staged and run only after approval |
+| `electron/playtestEvidence.ts` | Playtest evidence gate: no PASSED without matching assertions, state checks and a PNG screenshot |
 | `electron/capabilities.ts` | Optional local capability detection/metadata |
 | `electron/types.ts` | Shared typed contracts |
 | `tests/` | Deterministic tests for provider catalogue and other core logic |
@@ -59,7 +61,7 @@ Capabilities are adapters, not hard dependencies of the app. The future registry
 - Setup guide, official signup/download link, cost boundary, and removal path.
 - MCP tool schemas or a typed native adapter contract.
 
-The current application supports a single MCP stdio process at a time. Multi-server lifecycle, per-tool permission scopes, automatic reconnect and a signed extension registry remain roadmap work.
+The current application supports a single MCP stdio process at a time. Starting it and every agent tool call go through the approval queue. Multi-server lifecycle, per-tool permission scopes, automatic reconnect and a signed extension registry remain roadmap work.
 
 ## 5. Roblox Studio architecture
 
