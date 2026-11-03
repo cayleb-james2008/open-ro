@@ -11,6 +11,7 @@ function stageAll(queue: ApprovalQueue): Record<ApprovalKind, string> {
     mcp: queue.stageMcp({ projectRoot: '/p', tool: 'echo', args: { message: 'hi' }, server }).id,
     'mcp-server': queue.stageMcpServer({ projectRoot: '/p', command: 'node', args: ['server.js'] }).id,
     studio: queue.stageStudio({ projectRoot: '/p', op: 'read', path: 'Workspace.Door', tool: 'execute_luau', args: { code: 'x' }, server }).id,
+    delete: queue.stageDelete({ projectRoot: '/p', relPath: 'a.lua', previous: 'prev' }).id,
   };
 }
 
@@ -24,9 +25,9 @@ describe('approvals taken by a run channel', () => {
       }
       expect(() => queue.take(id, channel)).toThrow(`That approval is a ${kind} approval, not a ${channel} one. It is still pending.`);
     }
-    expect(queue.list().map((item) => item.kind).sort()).toEqual(['command', 'mcp', 'mcp-server', 'studio', 'write']);
+    expect(queue.list().map((item) => item.kind).sort()).toEqual(['command', 'delete', 'mcp', 'mcp-server', 'studio', 'write']);
     expect(queue.take(ids[channel], channel).kind).toBe(channel);
-    expect(queue.list()).toHaveLength(4);
+    expect(queue.list()).toHaveLength(5);
     expect(() => queue.take(ids[channel], channel)).toThrow('That approval is no longer pending.');
   });
 
@@ -35,6 +36,7 @@ describe('approvals taken by a run channel', () => {
     const ids = stageAll(queue);
     expect(queue.take(ids.studio).kind).toBe('studio');
     expect(queue.take(ids.mcp).kind).toBe('mcp');
+    expect(queue.take(ids.delete).kind).toBe('delete');
   });
 });
 
@@ -62,7 +64,7 @@ describe('approval IPC channels as main.ts registers them', () => {
     expect(() => invoke('project:write', { id: ids.studio })).toThrow('not a write one');
     expect(() => invoke('command:run', { id: ids.write })).toThrow('That approval is a write approval, not a command one. It is still pending.');
     expect(() => invoke('command:run', { id: ids.mcp })).toThrow('not a command one');
-    expect(queue.list()).toHaveLength(5);
+    expect(queue.list()).toHaveLength(6);
     expect((invoke('project:write', { id: ids.write }) as { kind: string }).kind).toBe('write');
     expect((invoke('command:run', { id: ids.command }) as { kind: string }).kind).toBe('command');
     expect(calls.slice(-2)).toEqual([
