@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { runTool } from '../electron/agent';
-import { dropMissing, followupText, newNonce, recordResolution, resultSession, showsResultIn, trackStaged } from '../src/approvalFollowup';
+import { draftAfterSend, dropMissing, followupText, newNonce, recordResolution, resultSession, showsResultIn, trackStaged } from '../src/approvalFollowup';
 
 const ok = (summary: string, output?: string) => ({ ok: true, decision: 'approve' as const, summary, output });
 
@@ -111,5 +111,13 @@ describe('which chat a decision result belongs to', () => {
     expect(showsResultIn('chat-A', 'chat-B')).toBe(false);
     expect(showsResultIn('chat-A', null)).toBe(false);
     expect(showsResultIn(null, 'chat-B')).toBe(true);
+  });
+});
+
+describe('the composer draft when a message goes out', () => {
+  it('clears the draft the user sent, and keeps it when an automatic follow-up is sent', () => {
+    expect(draftAfterSend('fix the door script')).toBe('');
+    expect(draftAfterSend('half-typed idea', 'Results of the actions you staged...')).toBe('half-typed idea');
+    expect(draftAfterSend('', 'Results...')).toBe('');
   });
 });

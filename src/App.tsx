@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import api from './api';
 import { Dialog } from './Dialog';
 import { diffPreview } from './textDiff';
-import { dropMissing, followupText, recordResolution, resultSession, showsResultIn, trackStaged, type FollowupBatch } from './approvalFollowup';
+import { draftAfterSend, dropMissing, followupText, recordResolution, resultSession, showsResultIn, trackStaged, type FollowupBatch } from './approvalFollowup';
 import { approvalCopy, providerInitials } from './labels';
 import { providerOptions, type ProviderKind, type ProviderOption } from '../electron/providerCatalog';
 import type { SessionSnapshot, StoredChatSession } from '../electron/sessions';
@@ -252,7 +252,7 @@ export default function App() {
       );
     }
     const history: ChatMessage[] = historySource.map((message): ChatMessage => ({ role: message.role, content: message.content }));
-    setDraft('');
+    setDraft((current) => draftAfterSend(current, textOverride));
     setSending(true);
     try {
       const result = await api.sendPrompt({ sessionId, messages: history });

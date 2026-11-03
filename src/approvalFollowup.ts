@@ -20,6 +20,11 @@ function settle(batches: FollowupBatch[]): { batches: FollowupBatch[]; ready: Fo
   return { batches: batches.filter((batch) => batch.pending.length > 0), ready: batches.filter((batch) => batch.pending.length === 0) };
 }
 
+/** Sending the composer's text clears it; an automatic follow-up leaves what the user is typing alone. */
+export function draftAfterSend(current: string, sentOverride?: string): string {
+  return sentOverride === undefined ? '' : current;
+}
+
 /** The chat whose agent turn staged an approval, or null when the user started it (for example an MCP connect). */
 export function resultSession(batches: FollowupBatch[], id: string): string | null {
   return batches.find((batch) => batch.pending.includes(id))?.sessionId ?? null;
