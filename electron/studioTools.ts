@@ -185,7 +185,7 @@ export async function runApprovedStudio(
   return {
     ok: true,
     decision: 'approve',
-    summary: `Wrote ${label} (${className}). Studio read back the same path, class and source. Ctrl+Z in Studio undoes it.`,
+    summary: `Wrote ${label} (${className}). Studio read back the same path, class and source. ${result.undoRecorded === true ? 'Ctrl+Z in Studio undoes it.' : 'Studio did not record an undo step, so Ctrl+Z will not undo it.'}`,
     checkpoint: { path, className, previous: item.previous ?? null, content, studioId: item.studioId },
   };
 }
@@ -196,7 +196,7 @@ export function stageStudioRestore(approvals: ApprovalQueue, caller: McpCaller, 
     throw new Error('No MCP server is connected. Connect the Roblox Studio MCP server first.');
   }
   if (checkpoint.previous === null) {
-    throw new Error('Open-Ro created this script, so there is no earlier source. Delete it in Studio or use Ctrl+Z.');
+    throw new Error('Open-Ro created this script, so there is no earlier source. Delete it in Studio, or use Ctrl+Z if the write said it recorded an undo step.');
   }
   const segments = parseInstancePath(checkpoint.path);
   const code = buildWriteLuau({ segments, className: checkpoint.className, source: checkpoint.previous, expectedPrevious: checkpoint.content });

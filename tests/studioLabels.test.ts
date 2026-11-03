@@ -14,6 +14,8 @@ describe('Studio approval cards', () => {
     expect(diffLines(item.previous, item.content)).toEqual([{ kind: 'del', text: 'print(1)' }, { kind: 'add', text: 'print(2)' }]);
     expect(approvalCopy({ ...item, previous: undefined }).detail).toMatch(/^Creates this script in Studio on StudioMCP only if you approve\. It stops if a script appears there first\./);
     expect(copy.detail).toContain('It stops if the script changed since it was read.');
+    expect(copy.detail).toBe('Changes this script in Studio on StudioMCP only if you approve. It stops if the script changed since it was read.');
+    expect(copy.detail).not.toMatch(/Ctrl\+Z|undo/i);
   });
 
   it('marks reads as read-only and lists snapshot services', () => {

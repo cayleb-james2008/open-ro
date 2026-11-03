@@ -123,8 +123,9 @@ describe('running approved Studio calls', () => {
     expect(write('print(2)').output).toMatch(/studio_read_script first/);
     reads.set(studioReadKey('session-1', undefined, path), { exists: true, className: 'Script', source: 'print(1)' });
     write('print(2)');
-    studio.replies.push(ok({ path, className: 'Script', source: 'print(2)' }));
+    studio.replies.push(ok({ path, className: 'Script', source: 'print(2)', undoRecorded: true }));
     const good = await runApprovedStudio(approvals.take(approvals.list()[0].id), studio.caller, reads);
+    expect(good.summary).toMatch(/source\. Ctrl\+Z in Studio undoes it\.$/);
     expect(good).toMatchObject({ ok: true, checkpoint: { path, className: 'Script', previous: 'print(1)', content: 'print(2)' } });
     expect(studio.calls.map((call) => call.name)).toEqual(['execute_luau', 'execute_luau', 'execute_luau']);
     const restore = stageStudioRestore(approvals, studio.caller, good.checkpoint ?? { path, className: 'Script', previous: null, content: '' }, { projectRoot: root });
@@ -163,9 +164,10 @@ describe('running approved Studio calls', () => {
     const write = approvals.list()[0];
     expect(write).toMatchObject({ studioId: 'A', previous: 'print(1)' });
     expect(JSON.parse(write.mcpArgs ?? '{}').studio_id).toBe('A');
-    studio.replies.push(ok({ path, className: 'Script', source: 'print(2)' }));
+    studio.replies.push(ok({ path, className: 'Script', source: 'print(2)', undoRecorded: false }));
     const done = await runApprovedStudio(approvals.take(write.id), studio.caller, reads);
     expect(done.checkpoint).toMatchObject({ studioId: 'A' });
+    expect(done.summary).toMatch(/Studio did not record an undo step, so Ctrl\+Z will not undo it\.$/);
     const restore = stageStudioRestore(approvals, studio.caller, done.checkpoint ?? { path, className: 'Script', previous: null, content: '' }, { projectRoot: root });
     expect(restore.studioId).toBe('A');
     expect(JSON.parse(restore.mcpArgs ?? '{}').studio_id).toBe('A');

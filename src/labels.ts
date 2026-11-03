@@ -58,7 +58,7 @@ export function approvalCopy(item: PendingApprovalView): ApprovalCopy {
       const guard = item.previous === undefined ? 'It stops if a script appears there first' : 'It stops if the script changed since it was read';
       return {
         title: `Review Studio write: ${target} (${item.studioClass ?? ''})`,
-        detail: `${action} in Studio${where} only if you approve. ${guard}. Ctrl+Z in Studio undoes it`,
+        detail: `${action} in Studio${where} only if you approve. ${guard}.`,
         preview: '',
         approveLabel: 'Write to Studio',
       };
