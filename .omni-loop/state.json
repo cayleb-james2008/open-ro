@@ -4,7 +4,13 @@
   "switched_at": "2026-11-03T14:19:00Z",
   "mode": "0B_BROWNFIELD_BASELINE",
   "project": "open-ro",
-  "incumbent_commit": "6e0f22ed1d81020e915b950cec3c9b7a4e4af8e5",
+  "incumbent_commit": "01ccd8ebacd5fa763ef20d5150ac9ed40efac2f6",
+  "main_commits_after_rebase": {
+    "approval_gate": "09f0b67",
+    "motion_and_v4_records": "2db61e4",
+    "sentence_case": "4ed11a7",
+    "handoff_stamp": "01ccd8ebacd5fa763ef20d5150ac9ed40efac2f6"
+  },
   "current_iteration": 5,
   "current_wave": 2,
   "harness_state": "HARD_GATE_BLOCKED",
