@@ -59,6 +59,8 @@ export interface PendingApprovalView {
   mcpTool?: string;
   /** Exact JSON arguments that run if this call is approved. */
   mcpArgs?: string;
+  /** The server an MCP tool call will run on (command line). */
+  mcpServer?: string;
   /** Arguments for an MCP server start, passed without a shell. */
   serverArgs?: string[];
 }

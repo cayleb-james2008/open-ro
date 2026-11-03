@@ -32,7 +32,10 @@ export function approvalCopy(item: PendingApprovalView): ApprovalCopy {
       } catch {
         // Show the stored text as is.
       }
-      return { title: `Review MCP tool: ${item.mcpTool ?? ''}`, detail: 'The tool runs on the connected MCP server only if you approve these exact arguments', preview, approveLabel: 'Run tool' };
+      const detail = item.mcpServer
+        ? `Runs on ${item.mcpServer} only if you approve these exact arguments. It will not run on any other server`
+        : 'The tool runs on the connected MCP server only if you approve these exact arguments';
+      return { title: `Review MCP tool: ${item.mcpTool ?? ''}`, detail, preview, approveLabel: 'Run tool' };
     }
     case 'mcp-server':
       return {

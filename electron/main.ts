@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { ApprovalQueue, type PendingApproval } from './approvals';
 import { detectCapabilities } from './capabilities';
 import { McpStdioClient } from './mcp';
-import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServer, stageMcpCall, stageMcpConnect } from './mcpTools';
+import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServer, serverLabel, stageMcpCall, stageMcpConnect } from './mcpTools';
 import { gradePlaytest, parsePlaytestReport } from './playtestEvidence';
 import { isIgnoredName, isSecretName, resolveWithinRoot } from './pathSafety';
 import { getProviderOption, isProviderKind, providerOptions, type ProviderKind } from './providerCatalog';
@@ -64,6 +64,7 @@ function toApprovalView(item: PendingApproval): PendingApprovalView {
     cwd: item.cwd,
     mcpTool: item.mcpTool,
     mcpArgs: item.mcpArgs,
+    mcpServer: item.mcpServer ? serverLabel(item.mcpServer) : undefined,
     serverArgs: item.serverArgs,
   };
 }

@@ -4,7 +4,8 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ApprovalQueue } from '../electron/approvals';
 import { McpStdioClient } from '../electron/mcp';
-import { runApprovedMcpCall, sameServer, stageMcpCall } from '../electron/mcpTools';
+import { runApprovedMcpCall, sameServer, serverLabel, stageMcpCall } from '../electron/mcpTools';
+import { approvalCopy } from '../src/labels';
 
 // Server named by argv[3]; logs each tools/call to argv[2] with its own name.
 const namedServer = `
@@ -67,5 +68,12 @@ describe('a staged MCP call is bound to the server it was staged on', () => {
     expect(sameServer(base, { ...base, command: 'deno' })).toBe(false);
     expect(sameServer(undefined, base)).toBe(false);
     expect(sameServer(base, null)).toBe(false);
+  });
+
+  it('names the target server on the approval card', () => {
+    const label = serverLabel({ command: 'npx', args: ['-y', 'my server'] });
+    expect(label).toBe('npx -y "my server"');
+    const copy = approvalCopy({ id: '1', kind: 'mcp', createdAt: '', mcpTool: 'run_code', mcpArgs: '{}', mcpServer: label });
+    expect(copy.detail).toBe('Runs on npx -y "my server" only if you approve these exact arguments. It will not run on any other server');
   });
 });
