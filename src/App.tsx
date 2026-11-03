@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import api from './api';
+import api, { type ProjectIndexSummary } from './api';
 import { Dialog } from './Dialog';
 import { diffPreview } from './textDiff';
 import { draftAfterSend, dropMissing, followupText, nextFollowup, recordResolution, resultSession, showsResultIn, trackStaged, type FollowupBatch } from './approvalFollowup';
@@ -71,6 +71,7 @@ export default function App() {
   const [fileView, setFileView] = useState<{ rel: string; content: string } | null>(null);
   const [checkpoints, setCheckpoints] = useState<string[]>([]);
   const [studioCheckpoints, setStudioCheckpoints] = useState<string[]>([]);
+  const [projectIndex, setProjectIndex] = useState<ProjectIndexSummary | null>(null);
   const [capabilities, setCapabilities] = useState<Awaited<ReturnType<typeof api.detectCapabilities>>>([]);
   const [mcpState, setMcpState] = useState<{ running: boolean; tools: Awaited<ReturnType<typeof api.mcpStatus>>['tools'] }>({ running: false, tools: [] });
   const [mcpForm, setMcpForm] = useState({ command: '', args: '' });
@@ -322,6 +323,30 @@ export default function App() {
       setBanner(asMessage(error));
     }
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!projectRoot) {
+      setProjectIndex(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+    void api.indexProject()
+      .then((index) => {
+        if (!cancelled) {
+          setProjectIndex(index);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setProjectIndex(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectRoot]);
 
   async function refreshWorkspaceState() {
     try {
@@ -940,6 +965,34 @@ export default function App() {
             </div>
           ) : <FileTree dir="." depth={0} />
         )}
+
+        <div className="section-title" style={{ marginTop: 28 }}>
+          <span>Project map</span>
+          <span>{projectIndex ? `${projectIndex.entries.length} files${projectIndex.truncated ? ' · truncated' : ''}` : 'not indexed'}</span>
+        </div>
+        <div className="integration-list">
+          {projectIndex && projectIndex.entries.length > 0 ? (
+            <div className="integration-card">
+              {projectIndex.entries.slice(0, 40).map((entry) => (
+                <button type="button" className="integration-top" key={entry.relPath} onClick={() => void openFile(entry.relPath)}>
+                  <span className="integration-icon">{ICONS.folder}</span>
+                  <span className="integration-copy">
+                    <b>{entry.relPath}</b>
+                    <small>{entry.bytes} bytes</small>
+                  </span>
+                </button>
+              ))}
+              {projectIndex.entries.length > 40 && <p className="recent-empty">Showing 40 of {projectIndex.entries.length}. The agent receives a bounded map too.</p>}
+              {projectIndex.truncated && <p className="recent-empty">The index hit a cap; large folders are partially listed.</p>}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <span className="empty-icon">{ICONS.folder}</span>
+              <b>{projectRoot ? 'This project has no indexed files' : 'No project map yet'}</b>
+              <p>{projectRoot ? 'Ignored folders and secret files are hidden from the map.' : 'Choose a project folder to build the index.'}</p>
+            </div>
+          )}
+        </div>
 
         <div className="section-title" style={{ marginTop: 28 }}>
           <span>Checkpoints</span>
