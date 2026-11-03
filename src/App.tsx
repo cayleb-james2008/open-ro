@@ -68,6 +68,7 @@ export default function App() {
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [fileView, setFileView] = useState<{ rel: string; content: string } | null>(null);
   const [checkpoints, setCheckpoints] = useState<string[]>([]);
+  const [studioCheckpoints, setStudioCheckpoints] = useState<string[]>([]);
   const [capabilities, setCapabilities] = useState<Awaited<ReturnType<typeof api.detectCapabilities>>>([]);
   const [mcpState, setMcpState] = useState<{ running: boolean; tools: Awaited<ReturnType<typeof api.mcpStatus>>['tools'] }>({ running: false, tools: [] });
   const [mcpForm, setMcpForm] = useState({ command: '', args: '' });
@@ -279,6 +280,7 @@ export default function App() {
   async function refreshWorkspaceState() {
     try {
       setCheckpoints(await api.checkpoints());
+      setStudioCheckpoints(await api.studioCheckpoints());
       const root = projectRoot ?? (await api.projectRoot());
       setProjectRoot(root);
       if (root) {
@@ -330,6 +332,16 @@ export default function App() {
     try {
       await api.restoreCheckpoint(file);
       setBanner(`Restored ${file}. Re-check the file tree to see the reverted content.`);
+    } catch (error) {
+      setBanner(asMessage(error));
+    }
+  }
+
+  async function restoreStudioCheckpoint(file: string) {
+    try {
+      await api.restoreStudioCheckpoint(file);
+      setApprovals(await api.approvals());
+      setBanner('Staged the Studio restore. Review it in Chat; nothing changes in Studio until you approve.');
     } catch (error) {
       setBanner(asMessage(error));
     }
@@ -501,7 +513,8 @@ export default function App() {
           </div>
         )}
         {approvals.map((item) => {
-          const rows = item.kind === 'write' ? diffLines(item.previous ?? '', item.content ?? '').slice(0, 240) : [];
+          const showsDiff = item.kind === 'write' || item.studioOp === 'write';
+          const rows = showsDiff ? diffLines(item.previous ?? '', item.content ?? '').slice(0, 240) : [];
           const copy = approvalCopy(item);
           return (
             <article className="approval-card" key={item.id}>
@@ -509,7 +522,7 @@ export default function App() {
                 <strong>{copy.title}</strong>
                 <span>{copy.detail}</span>
               </header>
-              {item.kind !== 'write' ? <pre className="command-preview" aria-label={item.kind === 'mcp' ? 'Tool arguments' : 'Command'}>{copy.preview}</pre> : (
+              {!showsDiff ? <pre className="command-preview" aria-label={item.kind === 'mcp' ? 'Tool arguments' : 'Command'}>{copy.preview}</pre> : (
                 <pre className="diff" aria-label="Proposed diff">
                   {rows.map((row, index) => (
                     <span className={`diff-${row.kind}`} key={`${item.id}-${index}`}>{row.kind === 'add' ? '+ ' : row.kind === 'del' ? '- ' : '  '}{row.text}{'\n'}</span>
@@ -878,6 +891,18 @@ export default function App() {
               <p>Each approved agent write records the previous file state here first.</p>
             </div>
           )}
+          {studioCheckpoints.map((file) => (
+            <div className="integration-card" key={`studio-${file}`}>
+              <button type="button" className="integration-top" onClick={() => void restoreStudioCheckpoint(file)}>
+                <span className="integration-icon">{ICONS.shield}</span>
+                <span className="integration-copy">
+                  <b>{file}</b>
+                  <small>Studio script before an approved write. Restoring needs approval</small>
+                </span>
+                <span className="state-pill">stage restore</span>
+              </button>
+            </div>
+          ))}
         </div>
       </div>
     );

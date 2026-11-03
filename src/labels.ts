@@ -44,6 +44,23 @@ export function approvalCopy(item: PendingApprovalView): ApprovalCopy {
         preview: [item.command ?? '', ...(item.serverArgs ?? []).map((arg) => (/[\s"']/.test(arg) ? JSON.stringify(arg) : arg))].join(' '),
         approveLabel: 'Start server',
       };
+    case 'studio': {
+      const where = item.mcpServer ? ` on ${item.mcpServer}` : '';
+      const target = `game.${item.studioPath ?? ''}`;
+      if (item.studioOp === 'snapshot') {
+        return { title: 'Review Studio read: place tree', detail: `Read-only Luau runs in Studio${where} only if you approve`, preview: `Services: ${(item.studioServices ?? []).join(', ')}`, approveLabel: 'Read place' };
+      }
+      if (item.studioOp === 'read') {
+        return { title: `Review Studio read: ${target}`, detail: `Read-only Luau runs in Studio${where} only if you approve`, preview: target, approveLabel: 'Read script' };
+      }
+      const action = item.previous === undefined ? 'Creates' : 'Changes';
+      return {
+        title: `Review Studio write: ${target} (${item.studioClass ?? ''})`,
+        detail: `${action} this script in Studio${where} only if you approve. It stops if the script changed since it was read. Ctrl+Z in Studio undoes it`,
+        preview: '',
+        approveLabel: 'Write to Studio',
+      };
+    }
     default:
       return { title: 'Review command', detail: item.cwd ?? '', preview: item.command ?? '', approveLabel: 'Run command' };
   }
