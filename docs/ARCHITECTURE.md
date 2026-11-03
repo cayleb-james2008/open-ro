@@ -31,7 +31,7 @@ The UI must never receive raw provider credentials, Node.js process objects, or 
 | `electron/agent.ts` | Agent loop, provider calls, tool schema and execution routing |
 | `electron/providerCatalog.ts` | Provider definitions and connection routes |
 | `electron/secureStore.ts` | Secure credential storage via Electron safeStorage |
-| `electron/mcp.ts` | MCP stdio transport and tool discovery/calls |
+| `electron/mcp.ts` | MCP stdio transport and tool discovery. `callTool` exists but nothing in the app can reach it yet |
 | `electron/capabilities.ts` | Optional local capability detection/metadata |
 | `electron/types.ts` | Shared typed contracts |
 | `tests/` | Deterministic tests for provider catalogue and other core logic |
