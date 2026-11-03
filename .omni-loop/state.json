@@ -4,7 +4,7 @@
   "switched_at": "2026-11-03T14:19:00Z",
   "mode": "0B_BROWNFIELD_BASELINE",
   "project": "open-ro",
-  "incumbent_commit": "67e60d920b05981a94328c5fbb35fe655aace9f6",
+  "incumbent_commit": "6e0f22ed1d81020e915b950cec3c9b7a4e4af8e5",
   "current_iteration": 5,
   "current_wave": 2,
   "harness_state": "HARD_GATE_BLOCKED",
