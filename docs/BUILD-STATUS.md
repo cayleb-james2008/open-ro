@@ -39,6 +39,7 @@ Commands run in this Windows 11 workspace:
 - GitHub Actions (`CI and desktop packages`): the `checks` matrix passes on `ubuntu-latest` and `windows-latest`. Packaging is green for commit `509a080` (run 24) and commit `02f2860` (run 27): the `windows` job built and uploaded `open-ro-windows-x64` (116.3 MB) and the `linux` job built and uploaded `open-ro-linux-x64` (305.7 MB: AppImage, deb, pacman).
 - The inference adapters were exercised over real HTTP against a local mock provider (`tests/inferenceRoutes.test.ts`): OpenAI-compatible connection check (request path, Bearer header, model, response parsing) plus a 401 rejection, Anthropic connection check (`GET /v1/models` with key and version headers), a full agent turn with a tool call and tool-result round trip, and a refused-connection failure path. All servers bind ephemeral loopback ports and close after each test.
 - Real local inference was verified end to end through the app's exported adapters on this machine: Ollama 0.40.14 serving `qwen2.5:0.5b`, `testConnection` returned "Model responded: open-ro connection check", and `runAgentTurn` returned "I am Open-Ro, a development agent inside a local Roblox workspace." No cloud key or account was used; the in-app provider form was not exercised.
+- Live streaming was verified through the same adapter against Ollama: 19 text deltas arrived before completion (first at ~4.8 s, total ~5.6 s) and their concatenation equals the final assistant text.
 
 Earlier verification preserved from the prior workspace run:
 
