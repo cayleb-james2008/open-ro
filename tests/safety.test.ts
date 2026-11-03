@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ApprovalQueue } from '../electron/approvals';
 import { assertMcpSpec, pushMcpChunk } from '../electron/mcpFraming';
-import { isInsideRoot, resolveWithinRoot } from '../electron/pathSafety';
+import { isInsideRoot, resolveWithinRoot, sameProjectRoot } from '../electron/pathSafety';
 import { activateProvider, listProviderViews, parseProviderState, rememberProjectRoot, removeProvider, upsertProvider, validateProviderSave } from '../electron/providerState';
 import { getProviderOption } from '../electron/providerCatalog';
 import { runShellCommand, shellInvocation } from '../electron/runCommand';
@@ -50,6 +50,19 @@ describe('project path safety', () => {
     expect(created.startsWith(await realpath(root) + path.sep)).toBe(true);
     expect(isInsideRoot(root, path.join(root, 'src'))).toBe(true);
     expect(isInsideRoot(root, evil)).toBe(false);
+  });
+
+  it('compares project roots the way the platform filesystem does', async () => {
+    const root = await tempDir('openro-root-');
+    const other = await tempDir('openro-other-');
+    expect(sameProjectRoot(root, path.resolve(root))).toBe(true);
+    expect(sameProjectRoot(root, `${root}${path.sep}`)).toBe(true);
+    if (process.platform === 'win32') {
+      expect(sameProjectRoot(root, root.toUpperCase())).toBe(true);
+    } else {
+      expect(sameProjectRoot(root, root.toUpperCase())).toBe(false);
+    }
+    expect(sameProjectRoot(root, other)).toBe(false);
   });
 });
 

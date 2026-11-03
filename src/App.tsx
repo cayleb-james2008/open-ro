@@ -4,7 +4,7 @@ import { Dialog } from './Dialog';
 import { diffPreview } from './textDiff';
 import { draftAfterSend, dropMissing, followupText, nextFollowup, recordResolution, resultSession, showsResultIn, trackStaged, type FollowupBatch } from './approvalFollowup';
 import { approvalCopy, providerInitials } from './labels';
-import { isSessionVisibleForProject } from './sessionScope';
+import { isSessionVisibleForProject, normalizeProjectPath, resolveActiveSessionId } from './sessionScope';
 import { providerOptions, type ProviderKind, type ProviderOption } from '../electron/providerCatalog';
 import type { SessionSnapshot, StoredChatSession } from '../electron/sessions';
 import type { AgentTurnResult, ApprovalResult, ChatMessage, FileEntry, PendingApprovalView, StoredProviderView } from '../electron/types';
@@ -93,6 +93,18 @@ export default function App() {
 
   const activeSessionData = useMemo(() => sessions.find((session) => session.id === activeSession) ?? null, [sessions, activeSession]);
   const visibleSessions = useMemo(() => sessions.filter((session) => isSessionVisibleForProject(session, projectRoot)), [sessions, projectRoot]);
+
+  // A project change can hide the active chat; move to a visible chat instead of
+  // leaving a chat open that the Recent list no longer shows.
+  useEffect(() => {
+    if (!sessionsReady) {
+      return;
+    }
+    const next = resolveActiveSessionId(sessions, activeSession, projectRoot);
+    if (next !== activeSession) {
+      setActiveSession(next);
+    }
+  }, [sessions, activeSession, projectRoot, sessionsReady]);
   const activeProvider = useMemo(() => providerViews.find((view) => view.active) ?? null, [providerViews]);
   const catalogByKind = useMemo(() => new Map(catalog.map((option) => [option.kind, option])), [catalog]);
 
@@ -257,7 +269,15 @@ export default function App() {
     setDraft((current) => draftAfterSend(current, textOverride));
     setSending(true);
     try {
-      const result = await api.sendPrompt({ sessionId, messages: history });
+      const turnProjectRoot = prior.find((session) => session.id === sessionId)?.projectRoot ?? projectRoot ?? undefined;
+      const result = await api.sendPrompt({ sessionId, messages: history, ...(turnProjectRoot ? { projectRoot: turnProjectRoot } : {}) });
+      if (turnProjectRoot && (!projectRoot || normalizeProjectPath(turnProjectRoot) !== normalizeProjectPath(projectRoot))) {
+        setProjectRoot(turnProjectRoot);
+        setProjectEntries(new Map());
+        setExpandedDirs(new Set());
+        setApprovals(await api.approvals());
+        await refreshWorkspaceState();
+      }
       setSessions((prev) =>
         prev.map((session) =>
           session.id === sessionId
@@ -292,7 +312,7 @@ export default function App() {
     try {
       setCheckpoints(await api.checkpoints());
       setStudioCheckpoints(await api.studioCheckpoints());
-      const root = projectRoot ?? (await api.projectRoot());
+      const root = await api.projectRoot();
       setProjectRoot(root);
       if (root) {
         const entries = await api.listProject('.');

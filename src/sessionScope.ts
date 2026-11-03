@@ -25,3 +25,23 @@ export function isSessionVisibleForProject(session: SessionProjectRef, activePro
   }
   return normalizeProjectPath(session.projectRoot) === normalizeProjectPath(activeProjectRoot);
 }
+
+/**
+ * Which chat should be active after a project change. Keeps the active chat
+ * when it is still visible, replaces a hidden one with the first visible chat,
+ * and never auto-selects a chat when none was open.
+ */
+export function resolveActiveSessionId(
+  sessions: Array<SessionProjectRef & { id: string }>,
+  activeId: string | null,
+  activeProjectRoot: string | null,
+): string | null {
+  if (!activeId) {
+    return null;
+  }
+  const active = sessions.find((session) => session.id === activeId);
+  if (!active || isSessionVisibleForProject(active, activeProjectRoot)) {
+    return activeId;
+  }
+  return sessions.find((session) => isSessionVisibleForProject(session, activeProjectRoot))?.id ?? null;
+}

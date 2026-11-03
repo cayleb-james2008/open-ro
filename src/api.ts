@@ -22,7 +22,7 @@ export interface Api {
   deleteProvider(kind: ProviderKind): Promise<unknown>;
   storageState(): Promise<{ secure: boolean; services: number; store: string }>;
   testProvider(args?: Partial<ProviderConnection>): Promise<ConnectionTestResult>;
-  sendPrompt(args: { sessionId: string; messages: ChatMessage[] }): Promise<AgentTurnResult>;
+  sendPrompt(args: { sessionId: string; messages: ChatMessage[]; projectRoot?: string }): Promise<AgentTurnResult>;
   selectProjectRoot(): Promise<string | null>;
   projectRoot(): Promise<string | null>;
   listProject(rel?: string): Promise<FileEntry[]>;

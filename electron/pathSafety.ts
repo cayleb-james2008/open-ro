@@ -14,6 +14,16 @@ export function isSecretName(name: string): boolean {
   return SECRET_SEGMENT.test(name);
 }
 
+/**
+ * Two project roots name the same folder when their resolved forms match.
+ * Windows compares case-insensitively; POSIX paths are case-sensitive.
+ */
+export function sameProjectRoot(left: string, right: string): boolean {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
 /** True when `target` is `root` or a descendant. Prefix tricks such as `/proj` vs `/proj-evil` fail this check. */
 export function isInsideRoot(root: string, target: string): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(target));

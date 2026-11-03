@@ -84,7 +84,7 @@ The first implementation's one-server limit and lack of live Studio validation m
 
 ## 6. Local project and safety boundaries
 
-- Project tools operate relative to the folder the user selected in the main process. A path sent by the renderer is not used as the root.
+- Project tools operate relative to the active project folder. A chat may name its project root with a turn; the main process validates that it is an existing directory and adopts it as the active root (clearing pending approvals and studio reads) before any tool runs, so tools and approvals never bind to different folders. An arbitrary renderer path is not used as a tool root without that validation.
 - Resolve paths with `realpath` and reject traversal, prefix siblings, and symlink escapes.
 - Shell execution and file writes are staged in the main process. Approval sends an id; the stored command or file body is what runs. The tray shows the command and working directory, or a line diff, before approval.
 - Destructive and publish actions need separate permission classes.

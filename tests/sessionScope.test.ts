@@ -1,6 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { sanitizeSessions } from '../electron/sessions';
-import { isSessionVisibleForProject, normalizeProjectPath } from '../src/sessionScope';
+import { isSessionVisibleForProject, normalizeProjectPath, resolveActiveSessionId } from '../src/sessionScope';
 
 function session(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return { id: 'chat-1', title: 'Door logic', messages: [], updatedAt: '2026-11-03T00:00:00.000Z', ...overrides };
@@ -33,6 +34,60 @@ describe('session visibility per project', () => {
   it('never hides legacy or project-less chats', () => {
     expect(isSessionVisibleForProject({}, active)).toBe(true);
     expect(isSessionVisibleForProject({ projectRoot: '' }, active)).toBe(true);
+  });
+});
+
+describe('active chat after a project change', () => {
+  const active = 'C:\\Work\\Obby';
+  const sessions = [
+    { id: 'a', projectRoot: 'C:\\Work\\Obby' },
+    { id: 'b', projectRoot: 'C:\\Work\\Other' },
+    { id: 'legacy' },
+  ];
+
+  it('keeps the active chat when it is visible', () => {
+    expect(resolveActiveSessionId(sessions, 'a', active)).toBe('a');
+    expect(resolveActiveSessionId(sessions, 'legacy', active)).toBe('legacy');
+  });
+
+  it('replaces a hidden active chat with the first visible chat', () => {
+    expect(resolveActiveSessionId(sessions, 'b', active)).toBe('a');
+  });
+
+  it('clears the active chat when nothing visible remains', () => {
+    expect(resolveActiveSessionId([{ id: 'b', projectRoot: 'C:\\Work\\Other' }], 'b', active)).toBeNull();
+  });
+
+  it('never auto-selects a chat when none was open', () => {
+    expect(resolveActiveSessionId(sessions, null, active)).toBeNull();
+  });
+});
+
+describe('agent turn project coherence', () => {
+  it('agent:send validates and switches to the chat project before running tools', () => {
+    const source = readFileSync('electron/main.ts', 'utf8');
+    const start = source.indexOf("ipcMain.handle('agent:send'");
+    expect(start).toBeGreaterThan(-1);
+    const handler = source.slice(start, source.indexOf('\n  });', start));
+    expect(handler).toContain('projectRoot?: string');
+    expect(handler).toContain('args.projectRoot');
+    expect(handler).toContain('isDirectory()');
+    expect(handler).toContain('approvals.clear()');
+    expect(handler).toContain('studioReads.clear()');
+    expect(handler).toContain('saveProjectRoot(');
+    const switchAt = handler.indexOf('projectRoot = next;');
+    const turnAt = handler.indexOf('runAgentTurn({');
+    expect(switchAt).toBeGreaterThan(-1);
+    expect(turnAt).toBeGreaterThan(switchAt);
+    expect(handler).toContain('projectRoot: turnRoot,');
+    expect(handler).toContain('buildExecutor(turnRoot)');
+  });
+
+  it('the renderer sends the chat project and auto-switches a hidden chat', () => {
+    const source = readFileSync('src/App.tsx', 'utf8');
+    expect(source).toContain('api.sendPrompt({ sessionId, messages: history, ...(turnProjectRoot ? { projectRoot: turnProjectRoot } : {}) })');
+    expect(source).toContain('const turnProjectRoot = prior.find((session) => session.id === sessionId)?.projectRoot ?? projectRoot ?? undefined;');
+    expect(source).toContain('resolveActiveSessionId(sessions, activeSession, projectRoot)');
   });
 });
 
