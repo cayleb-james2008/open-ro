@@ -12,7 +12,7 @@
 - Local project file listing/reading and agent tool foundation.
 - Approval-gated file writes and command execution.
 - Credential storage guarded by Electron `safeStorage`; no plaintext persistence fallback.
-- Single active stdio MCP client. It sends newline-delimited JSON-RPC as the MCP stdio transport requires, lists the server's tools, answers server `ping`, and stops the process when the handshake fails. Starting a server and each agent tool call (`mcp__<tool>`) are staged in the approval queue; the exact command or argument JSON runs only after approval. A staged tool call is bound to the server session it was staged on; after a reconnect or a different server it is refused.
+- Single active stdio MCP client. It sends newline-delimited JSON-RPC as the MCP stdio transport requires, lists the server's tools, answers server `ping`, and stops the process when the handshake fails. Starting a server and each agent tool call (`mcp__<tool>`) are staged in the approval queue; the exact command or argument JSON runs only after approval. A staged tool call is bound to the server session it was staged on. It is refused after a reconnect, after a crash and restart (including during the new server's handshake), and on a different server; `tests/mcpServerBinding.test.ts` and `tests/mcpCrashRestart.test.ts` cover these cases.
 - Playtest evidence gate (`report_playtest`): a result is PASSED only with at least one assertion, one state check, and one PNG screenshot inside the project, and every expected value equals the actual one. A mismatch is FAILED with the failing check; anything else, including more than 50 items in a list or a value over 2,000 characters, is NO_EVIDENCE. There is no playtest runner yet, so the agent supplies the values and the screenshot path, and Open-Ro does not verify them against a run.
 - Blender is detected by running `blender --version`. There is no Blender task runner.
 - Windows NSIS and Linux AppImage/deb/pacman packaging configuration.
@@ -24,7 +24,7 @@ Commands run in this workspace after `npm ci` (Node.js 24.22.1):
 
 - `npm run typecheck` passed.
 - `npm run lint` passed (rejects type suppressions, skipped tests, and placeholder text).
-- `npm test` passed: 49 tests in 9 files under `tests/`.
+- `npm test` passed: 53 tests in 10 files under `tests/`.
 - The MCP client completed the handshake, listed tools, and called `echo` against `@modelcontextprotocol/server-everything` 2.1.0 over stdio, both directly and as a staged call approved through the queue. Before the framing fix the same `initialize` request timed out after 15 s.
 - `npm run build` passed. Vite emitted `dist/` and `tsc` emitted `dist-electron/`.
 - The renderer was opened in headless Chrome at 1280×800 and 960×700. Chat, Models, Workspace, and Integrations navigation were clicked. The Models screen rendered 9 provider routes, with Ollama and llama.cpp first. No page errors were logged. The favicon request succeeded.
