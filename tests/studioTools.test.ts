@@ -189,3 +189,87 @@ describe('running approved Studio calls', () => {
     expect(studio.calls).toHaveLength(2);
   });
 });
+
+describe('Studio playtest and console tools', () => {
+  const root = '/project';
+  const tools: McpToolSummary[] = [
+    executeLuau,
+    { name: 'start_stop_play', description: '' },
+    { name: 'get_console_output', description: '' },
+  ];
+  const stage = (studio: ReturnType<typeof fakeStudio>, approvals: ApprovalQueue, name: string, args: Record<string, unknown>) =>
+    stageStudioTool(approvals, studio.caller, new StudioReads(), { projectRoot: root, name, args });
+
+  it('stages start, stop, and console with frozen args and no Studio call', () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    const start = stage(studio, approvals, 'studio_playtest', { isStart: true, studioId: 'S1' });
+    const stop = stage(studio, approvals, 'studio_playtest', { isStart: false, studioId: 'S1' });
+    const consoleRead = stage(studio, approvals, 'studio_console', { studioId: 'S1' });
+    expect([start.ok, stop.ok, consoleRead.ok]).toEqual([true, true, true]);
+    expect(studio.calls).toEqual([]);
+    const items = approvals.list();
+    expect(items[0]).toMatchObject({ kind: 'studio', studioOp: 'play', mcpTool: 'start_stop_play', studioId: 'S1', studioPath: 'game' });
+    expect(JSON.parse(items[0].mcpArgs ?? '{}')).toEqual({ is_start: true, studio_id: 'S1' });
+    expect(JSON.parse(items[1].mcpArgs ?? '{}')).toEqual({ is_start: false, studio_id: 'S1' });
+    expect(items[2]).toMatchObject({ studioOp: 'console', mcpTool: 'get_console_output' });
+    expect(JSON.parse(items[2].mcpArgs ?? '{}')).toEqual({ studio_id: 'S1' });
+  });
+
+  it('refuses missing tools, a missing studio id, and a non-boolean isStart', () => {
+    const approvals = new ApprovalQueue();
+    const noTools = fakeStudio([]);
+    expect(stage(noTools, approvals, 'studio_playtest', { isStart: true, studioId: 'S1' }).output).toMatch(/no start_stop_play/);
+    expect(stage(noTools, approvals, 'studio_console', { studioId: 'S1' }).output).toMatch(/no get_console_output/);
+    const studio = fakeStudio(tools);
+    expect(stage(studio, approvals, 'studio_playtest', { isStart: 'yes', studioId: 'S1' }).output).toMatch(/must be true or false/);
+    expect(stage(studio, approvals, 'studio_playtest', { isStart: true }).output).toMatch(/needs a studioId/);
+    expect(stage(studio, approvals, 'studio_console', {}).output).toMatch(/needs a studioId/);
+    expect(approvals.list()).toHaveLength(0);
+  });
+
+  it('runs approved playtest and console calls with bounded output', async () => {
+    const studio = fakeStudio(tools);
+    studio.replies.push('Edit started', 'x'.repeat(25_000));
+    const approvals = new ApprovalQueue();
+    const reads = new StudioReads();
+    const start = stage(studio, approvals, 'studio_playtest', { isStart: true, studioId: 'S1' });
+    const started = await runApprovedStudio(approvals.take(start.pendingApproval!.id, 'studio'), studio.caller, reads);
+    expect(started).toMatchObject({ ok: true, summary: 'Started playtesting.' });
+    expect(started.output).toBe('Edit started');
+    const consoleRead = stage(studio, approvals, 'studio_console', { studioId: 'S1' });
+    const output = await runApprovedStudio(approvals.take(consoleRead.pendingApproval!.id, 'studio'), studio.caller, reads);
+    expect(output).toMatchObject({ ok: true, summary: 'Read the Studio output.' });
+    expect(output.output).toHaveLength(20_000);
+    expect(studio.calls).toEqual([
+      { name: 'start_stop_play', args: { is_start: true, studio_id: 'S1' } },
+      { name: 'get_console_output', args: { studio_id: 'S1' } },
+    ]);
+  });
+
+  it('bounds play output and reports a stop with the frozen start flag', async () => {
+    const studio = fakeStudio(tools);
+    studio.replies.push('y'.repeat(5_000), 'stopped');
+    const approvals = new ApprovalQueue();
+    const reads = new StudioReads();
+    const start = stage(studio, approvals, 'studio_playtest', { isStart: false, studioId: 'S1' });
+    const stopped = await runApprovedStudio(approvals.take(start.pendingApproval!.id, 'studio'), studio.caller, reads);
+    expect(stopped).toMatchObject({ ok: true, summary: 'Stopped playtesting.' });
+    expect(stopped.output).toHaveLength(4_000);
+    expect(studio.calls).toEqual([{ name: 'start_stop_play', args: { is_start: false, studio_id: 'S1' } }]);
+  });
+
+  it('refuses play and console approvals after the MCP server changes', async () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    const reads = new StudioReads();
+    const play = stage(studio, approvals, 'studio_playtest', { isStart: true, studioId: 'S1' });
+    const consoleRead = stage(studio, approvals, 'studio_console', { studioId: 'S1' });
+    const restarted = { ...studio.caller, identity: { command: 'StudioMCP', args: [], session: 'session-2' } };
+    const playResult = await runApprovedStudio(approvals.take(play.pendingApproval!.id, 'studio'), restarted, reads);
+    const consoleResult = await runApprovedStudio(approvals.take(consoleRead.pendingApproval!.id, 'studio'), restarted, reads);
+    expect(playResult.summary).toMatch(/MCP server changed/);
+    expect(consoleResult.summary).toMatch(/MCP server changed/);
+    expect(studio.calls).toHaveLength(0);
+  });
+});

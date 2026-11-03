@@ -218,6 +218,8 @@ function buildExecutor(root: string): ToolExecutor {
           case 'studio_snapshot':
           case 'studio_read_script':
           case 'studio_write_script':
+          case 'studio_playtest':
+          case 'studio_console':
             return stageStudioTool(approvals, mcp, studioReads, { projectRoot: root, name, args });
           default:
             if (isMcpAgentTool(name)) {

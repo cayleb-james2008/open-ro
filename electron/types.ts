@@ -18,7 +18,8 @@ export interface ChatMessage {
 /** A tool the agent may call; names owned by the main process executor. */
 export type BuiltinToolName =
   | 'list_dir' | 'read_file' | 'write_file' | 'run_command' | 'report_playtest'
-  | 'studio_snapshot' | 'studio_read_script' | 'studio_write_script';
+  | 'studio_snapshot' | 'studio_read_script' | 'studio_write_script'
+  | 'studio_playtest' | 'studio_console';
 /** Connected MCP server tools are exposed to the model as `mcp__<tool>`. */
 export type ToolName = BuiltinToolName | `mcp__${string}`;
 
@@ -66,7 +67,7 @@ export interface PendingApprovalView {
   /** Arguments for an MCP server start, passed without a shell. */
   serverArgs?: string[];
   /** Studio approvals: what runs, on which instance (dot path from game). */
-  studioOp?: 'snapshot' | 'read' | 'write';
+  studioOp?: 'snapshot' | 'read' | 'write' | 'play' | 'console';
   studioPath?: string;
   studioClass?: string;
   studioServices?: string[];

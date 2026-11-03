@@ -90,6 +90,53 @@ export function stageStudioTool(
       const maxDepth = Math.min(Math.max(Math.trunc(Number(args.maxDepth) || 3), 1), 6);
       return stage('snapshot', 'game', buildSnapshotLuau({ services, maxDepth, maxNodes: 2000 }), { services });
     }
+    if (input.name === 'studio_playtest') {
+      if (!caller.listTools().some((tool) => tool.name === 'start_stop_play')) {
+        return { ok: false, output: 'The connected MCP server has no start_stop_play tool.' };
+      }
+      if (typeof args.isStart !== 'boolean') {
+        return { ok: false, output: 'isStart must be true or false.' };
+      }
+      if (!studioId) {
+        return { ok: false, output: 'Studio needs a studioId. Run list_roblox_studios first.' };
+      }
+      const item = approvals.stageStudio({
+        projectRoot: input.projectRoot,
+        op: 'play',
+        path: 'game',
+        tool: 'start_stop_play',
+        args: { is_start: args.isStart, studio_id: studioId },
+        server,
+        studioId,
+      });
+      return {
+        ok: true,
+        output: `Staged ${args.isStart ? 'starting' : 'stopping'} playtest for approval. Nothing has run in Studio.`,
+        pendingApproval: { kind: 'studio' as const, tool: 'start_stop_play', path: 'game', id: item.id },
+      };
+    }
+    if (input.name === 'studio_console') {
+      if (!caller.listTools().some((tool) => tool.name === 'get_console_output')) {
+        return { ok: false, output: 'The connected MCP server has no get_console_output tool.' };
+      }
+      if (!studioId) {
+        return { ok: false, output: 'Studio needs a studioId. Run list_roblox_studios first.' };
+      }
+      const item = approvals.stageStudio({
+        projectRoot: input.projectRoot,
+        op: 'console',
+        path: 'game',
+        tool: 'get_console_output',
+        args: { studio_id: studioId },
+        server,
+        studioId,
+      });
+      return {
+        ok: true,
+        output: 'Staged reading the Studio output for approval. Nothing has run in Studio.',
+        pendingApproval: { kind: 'studio' as const, tool: 'get_console_output', path: 'game', id: item.id },
+      };
+    }
     const segments = parseInstancePath(String(args.path ?? ''));
     const path = segments.join('.');
     if (input.name === 'studio_read_script') {
@@ -143,6 +190,28 @@ export async function runApprovedStudio(
   }
   if (!sameServer(item.mcpServer, caller.identity)) {
     return fail(`The MCP server changed after this Studio ${item.studioOp} was staged. Nothing ran. Ask for it again.`);
+  }
+  if (item.studioOp === 'play' || item.studioOp === 'console') {
+    let args: Record<string, unknown>;
+    try {
+      args = JSON.parse(item.mcpArgs ?? '{}') as Record<string, unknown>;
+    } catch {
+      return fail(`The staged Studio ${item.studioOp} request was malformed. Nothing ran.`);
+    }
+    try {
+      const text = await caller.callTool(tool, args);
+      if (item.studioOp === 'play') {
+        return {
+          ok: true,
+          decision: 'approve',
+          summary: `${args.is_start === true ? 'Started' : 'Stopped'} playtesting.`,
+          output: text.slice(0, 4_000),
+        };
+      }
+      return { ok: true, decision: 'approve', summary: 'Read the Studio output.', output: text.slice(0, 20_000) };
+    } catch (error) {
+      return fail(`Studio ${item.studioOp} failed.`, error instanceof Error ? error.message : String(error));
+    }
   }
   let text: string;
   try {
