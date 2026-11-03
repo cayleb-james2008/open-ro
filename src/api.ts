@@ -23,6 +23,8 @@ export interface Api {
   storageState(): Promise<{ secure: boolean; services: number; store: string }>;
   testProvider(args?: Partial<ProviderConnection>): Promise<ConnectionTestResult>;
   sendPrompt(args: { sessionId: string; messages: ChatMessage[]; projectRoot?: string }): Promise<AgentTurnResult>;
+  /** Aborts the one in-flight agent turn, if any. */
+  cancelAgent(): Promise<{ ok: boolean; cancelled: boolean }>;
   selectProjectRoot(): Promise<string | null>;
   projectRoot(): Promise<string | null>;
   listProject(rel?: string): Promise<FileEntry[]>;
@@ -70,6 +72,7 @@ export const api: Api = {
   storageState: () => call<{ secure: boolean; services: number; store: string }>('providers:storage-state'),
   testProvider: (args) => call<ConnectionTestResult>('providers:test', args ?? {}),
   sendPrompt: (args) => call<AgentTurnResult>('agent:send', args),
+  cancelAgent: () => call<{ ok: boolean; cancelled: boolean }>('agent:cancel'),
   selectProjectRoot: () => call<string | null>('project:select-root'),
   projectRoot: () => call<string | null>('project:root'),
   listProject: (rel) => call<FileEntry[]>('project:list', { rel }),

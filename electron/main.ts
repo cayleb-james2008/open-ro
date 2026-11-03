@@ -387,28 +387,31 @@ function registerIpc(): void {
     if (activeTurn) {
       return { ok: false, assistantText: '', toolTrace: [], error: 'A turn is already running. Wait for it to finish or cancel it.' };
     }
-    const requestedRoot = typeof args?.projectRoot === 'string' ? args.projectRoot.trim() : '';
-    const currentRoot = projectRoot ? path.resolve(projectRoot) : '';
-    let turnRoot = currentRoot;
-    if (requestedRoot) {
-      const next = path.resolve(requestedRoot);
-      const info = await fs.stat(next).catch(() => null);
-      if (!info?.isDirectory()) {
-        return { ok: false, assistantText: '', toolTrace: [], error: "This chat's project folder is no longer available. Open the folder again before sending." };
-      }
-      if (!currentRoot || !sameProjectRoot(currentRoot, next)) {
-        approvals.clear();
-        studioReads.clear();
-        projectRoot = next;
-        await saveProjectRoot(next);
-        turnRoot = next;
-      }
-      // Same folder under a different spelling: keep the canonical active root so
-      // approvals staged during this turn bind to the same string resolveApproval checks.
-    }
     const controller = new AbortController();
     activeTurn = controller;
     try {
+      const requestedRoot = typeof args?.projectRoot === 'string' ? args.projectRoot.trim() : '';
+      const currentRoot = projectRoot ? path.resolve(projectRoot) : '';
+      let turnRoot = currentRoot;
+      if (requestedRoot) {
+        const next = path.resolve(requestedRoot);
+        const info = await fs.stat(next).catch(() => null);
+        if (!info?.isDirectory()) {
+          return { ok: false, assistantText: '', toolTrace: [], error: "This chat's project folder is no longer available. Open the folder again before sending." };
+        }
+        if (!currentRoot || !sameProjectRoot(currentRoot, next)) {
+          approvals.clear();
+          studioReads.clear();
+          projectRoot = next;
+          await saveProjectRoot(next);
+          turnRoot = next;
+        }
+        // Same folder under a different spelling: keep the canonical active root so
+        // approvals staged during this turn bind to the same string resolveApproval checks.
+      }
+      if (controller.signal.aborted) {
+        return { ok: false, assistantText: '', toolTrace: [], error: 'Cancelled.' };
+      }
       return await runAgentTurn({
         connection,
         messages: requireMessages(args?.messages ?? []),

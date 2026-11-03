@@ -308,6 +308,21 @@ export default function App() {
     }
   }
 
+  useEffect(() => {
+    if (!sending) {
+      setBanner((current) => (current === 'Stopping the current turn…' ? null : current));
+    }
+  }, [sending]);
+
+  async function stopTurn() {
+    try {
+      const result = await api.cancelAgent();
+      setBanner(result.cancelled ? 'Stopping the current turn…' : 'No turn is running.');
+    } catch (error) {
+      setBanner(asMessage(error));
+    }
+  }
+
   async function refreshWorkspaceState() {
     try {
       setCheckpoints(await api.checkpoints());
@@ -730,6 +745,9 @@ export default function App() {
               {hasProvider ? <span className="provider-mini">{activeProvider ? `${catalogByKind.get(activeProvider.kind)?.name}${activeProvider.model ? ` · ${activeProvider.model}` : ''}` : 'provider saved — set active'}</span> : <span>Connect a model first →</span>}
             </div>
             <div className="composer-right">
+              {sending && (
+                <button type="button" className="outline-btn" onClick={() => void stopTurn()} aria-label="Stop the current agent turn">Stop</button>
+              )}
               <button type="button" className="send-btn" disabled={!draft.trim() || sending} onClick={() => void sendDraft()} aria-label="Send message">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 8h11M9 3.5 13.5 8 9 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
               </button>
