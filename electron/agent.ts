@@ -73,9 +73,10 @@ function sanitizeMessages(messages: ChatMessage[]): ChatMessage[] {
 function systemPrompt(): string {
   return [
     'You are Open-Ro, a development agent inside a local Roblox workspace.',
-    'Work on the selected local project. Read files before changing them.',
-    'Write changes only through the provided tools; write_file and run_command are approval-gated and the user reviews them.',
-    'Report exactly what you inspected, changed, or left unverified.',
+    'Work on the selected local project. Read files before proposing changes.',
+    'write_file and run_command only stage an approval. They do not change the project until the user approves that exact action in Open-Ro.',
+    'Never claim a file was written or a command ran unless the tool result says it completed.',
+    'Report exactly what you inspected, staged, or left unverified.',
   ].join(' ');
 }
 
@@ -145,7 +146,7 @@ async function callAnthropic(
   const base = (connection.baseUrl ?? 'https://api.anthropic.com').replace(/\/+$/, '');
   const trace: AgentTurnResult['toolTrace'] = [];
   const baseURL = `${base}/v1/messages`;
-  let system = systemPrompt();
+  const system = systemPrompt();
   const turns: Array<Record<string, unknown>> = sanitizeMessages(messages)
     .filter((message) => message.role !== 'system')
     .map((message) => ({ role: message.role === 'assistant' ? 'assistant' : 'user', content: message.content }));
@@ -220,10 +221,14 @@ async function runTool(
   const name = call.name as ToolCallRequest['name'];
   try {
     const result = await executor.execute({ id: call.id, name, args: call.args });
+    const tracedArgs = { ...call.args };
+    if (typeof tracedArgs.content === 'string') {
+      tracedArgs.content = `[${tracedArgs.content.length} characters staged for approval]`;
+    }
     trace.push({
       id: call.id,
       name,
-      args: call.args,
+      args: tracedArgs,
       status: result.pendingApproval ? 'staged' : result.ok ? 'executed' : 'error',
       detail: result.pendingApproval
         ? `Waiting for user approval: ${result.pendingApproval.kind}${result.pendingApproval.path ? ` ${result.pendingApproval.path}` : result.pendingApproval.command ? ` ${result.pendingApproval.command}` : ''}`
@@ -232,7 +237,11 @@ async function runTool(
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    trace.push({ id: call.id, name, args: call.args, status: 'error', detail: message });
+    const tracedArgs = { ...call.args };
+    if (typeof tracedArgs.content === 'string') {
+      tracedArgs.content = `[${tracedArgs.content.length} characters]`;
+    }
+    trace.push({ id: call.id, name, args: tracedArgs, status: 'error', detail: message });
     return { ok: false, output: `Tool failed: ${message}` };
   }
 }

@@ -35,6 +35,8 @@ export interface ProviderOption {
   needsBaseUrl?: boolean;
   /** True when no credential is stored at all (local runtime). */
   keyless?: boolean;
+  /** True when an API key is accepted but not required (custom endpoints). */
+  keyOptional?: boolean;
   /** CLI executable handed the official sign-in flow. */
   cliCommand?: string;
 }
@@ -125,8 +127,15 @@ export const providerOptions: ProviderOption[] = [
     modelHint: 'exact model ID served by the endpoint',
     api: 'openai-chat',
     needsBaseUrl: true,
+    keyOptional: true,
   },
 ];
+
+const PROVIDER_KINDS = new Set<ProviderKind>(providerOptions.map((option) => option.kind));
+
+export function isProviderKind(value: string): value is ProviderKind {
+  return PROVIDER_KINDS.has(value as ProviderKind);
+}
 
 export function getProviderOption(kind: ProviderKind): ProviderOption {
   const found = providerOptions.find((option) => option.kind === kind);

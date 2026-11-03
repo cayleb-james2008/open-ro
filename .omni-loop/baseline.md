@@ -65,6 +65,10 @@ No project build/test checks can run yet: no package.json or dependencies exist.
 Release blockers currently: truncated source archive (blocks everything);
 unverifiable build/test baseline.
 
+## UPDATE 2026-11-03 (iteration 003)
+
+Local checks passed: typecheck, lint, 13 tests, production build, and a headless Chrome pass of the four primary screens. Reliability stays at 3 until Electron and installers are run. Security moved from unknown to 4 for the code boundaries that now have tests (path, symlink, secret denial, approval id, scrubbed env). The product is still an early foundation.
+
 ## UPDATE 2026-11-03 (after iteration 002, user-authorized rebuild)
 
 The truncated archive was bypassed: the owner authorized a spec-based rebuild of

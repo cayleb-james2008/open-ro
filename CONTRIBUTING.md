@@ -28,6 +28,7 @@ Run before opening a pull request:
 
 ```bash
 npm run typecheck
+npm run lint
 npm test
 npm run build
 ```

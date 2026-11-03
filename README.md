@@ -19,7 +19,17 @@
 
 Open-Ro is being built for **Windows and native Linux desktops, including Omarchy (Arch Linux)**. Users bring a model connection; everything else is an optional capability they can install, connect, or skip.
 
-> **Current release state: 0.1.0 foundation.** This repository contains an early Electron desktop client, provider routes, local project tools, approval-gated commands, an MCP client foundation, and Windows/Linux packaging configuration. It is not yet a complete Ropilot-equivalent product. The long-term target and the unfinished work are documented below and in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Current release state: 0.1.0 foundation.** This repository contains an early Electron desktop client, provider routes, local project tools, approval-gated commands, an MCP client foundation, and Windows/Linux packaging configuration. It is not yet a complete Ropilot-equivalent product. The long-term target and the unfinished work are documented below and in [`docs/ROADMAP.md`](docs/ROADMAP.md). Native installers are configured and have not been acceptance-tested on a desktop machine.
+
+## Interface
+
+These screenshots are the renderer at 1280×800, opened in a browser without the Electron preload. The green notice on the chat screen is that missing-bridge state. Inside `npm run dev` the preload is present and that notice is not shown.
+
+![Open-Ro welcome screen with chat, models, workspace, and integrations navigation](docs/assets/ui-chat.png)
+
+![Models screen listing provider routes, including OpenAI and Codex CLI](docs/assets/ui-models.png)
+
+![Workspace screen before a project folder is selected](docs/assets/ui-workspace.png)
 
 ## What we are building
 
@@ -136,6 +146,7 @@ Build and package:
 
 ```bash
 npm run typecheck
+npm run lint
 npm test
 npm run package:win       # Windows x64 NSIS
 npm run package:linux     # AppImage + deb + pacman
