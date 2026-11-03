@@ -56,6 +56,23 @@ export function approvalCopy(item: PendingApprovalView): ApprovalCopy {
       if (item.studioOp === 'read') {
         return { title: `Review Studio read: ${target}`, detail: `Read-only Luau runs in Studio${where} only if you approve`, preview: target, approveLabel: 'Read script' };
       }
+      if (item.studioOp === 'play') {
+        let starting = true;
+        try {
+          starting = (JSON.parse(item.mcpArgs ?? '{}') as { is_start?: unknown }).is_start === true;
+        } catch {
+          // Unreadable arguments: default to the start wording rather than throwing.
+        }
+        return {
+          title: `Review Studio playtest: ${starting ? 'start' : 'stop'}`,
+          detail: `${starting ? 'Starts' : 'Stops'} the running game in Studio${where} only if you approve`,
+          preview: '',
+          approveLabel: starting ? 'Start playtest' : 'Stop playtest',
+        };
+      }
+      if (item.studioOp === 'console') {
+        return { title: 'Review Studio console read', detail: `Reads the Studio output in Studio${where} only if you approve`, preview: '', approveLabel: 'Read output' };
+      }
       const action = item.previous === undefined ? 'Creates this script' : 'Changes this script';
       const guard = item.previous === undefined ? 'It stops if a script appears there first' : 'It stops if the script changed since it was read';
       return {

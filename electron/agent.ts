@@ -286,6 +286,29 @@ export function toolSchemas(): ToolSchema[] {
         required: ['path', 'className', 'source'],
       },
     },
+    {
+      name: 'studio_playtest',
+      description: 'Stage starting or stopping Roblox Studio playtesting. Nothing runs until the user approves.',
+      parameters: {
+        type: 'object',
+        properties: {
+          isStart: { type: 'boolean', description: 'true to start the game, false to stop it.' },
+          studioId: { type: 'string', description: 'Studio instance id from list_roblox_studios.' },
+        },
+        required: ['isStart', 'studioId'],
+      },
+    },
+    {
+      name: 'studio_console',
+      description: 'Stage reading the Roblox Studio output log. Nothing runs until the user approves.',
+      parameters: {
+        type: 'object',
+        properties: {
+          studioId: { type: 'string', description: 'Studio instance id from list_roblox_studios.' },
+        },
+        required: ['studioId'],
+      },
+    },
   ];
 }
 
