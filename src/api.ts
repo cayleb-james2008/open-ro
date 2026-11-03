@@ -53,7 +53,10 @@ export interface Api {
 
 declare global {
   interface Window {
-    openro: { invoke(channel: string, payload?: unknown): Promise<unknown> };
+    openro: {
+      invoke(channel: string, payload?: unknown): Promise<unknown>;
+      onAgentDelta?(listener: (payload: { sessionId: string; text: string }) => void): () => void;
+    };
   }
 }
 

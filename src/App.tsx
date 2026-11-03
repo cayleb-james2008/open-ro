@@ -64,6 +64,7 @@ export default function App() {
   const [activeSession, setActiveSession] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [streaming, setStreaming] = useState<{ sessionId: string; text: string } | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [projectRoot, setProjectRoot] = useState<string | null>(null);
   const [projectEntries, setProjectEntries] = useState<Map<string, FileEntry[]>>(new Map());
@@ -142,7 +143,7 @@ export default function App() {
   }, [sessions, activeSession, sessionsReady]);
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [activeSessionData?.messages.length, sending]);
+  }, [activeSessionData?.messages.length, sending, streaming?.text]);
 
   async function refreshAll() {
     if (typeof window === 'undefined' || !window.openro) {
@@ -268,6 +269,7 @@ export default function App() {
     }
     const history: ChatMessage[] = historySource.map((message): ChatMessage => ({ role: message.role, content: message.content }));
     setDraft((current) => draftAfterSend(current, textOverride));
+    setStreaming({ sessionId, text: '' });
     setSending(true);
     try {
       const turnProjectRoot = prior.find((session) => session.id === sessionId)?.projectRoot ?? projectRoot ?? undefined;
@@ -306,6 +308,7 @@ export default function App() {
       );
     } finally {
       setSending(false);
+      setStreaming(null);
     }
   }
 
@@ -323,6 +326,15 @@ export default function App() {
       setBanner(asMessage(error));
     }
   }
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.openro?.onAgentDelta) {
+      return;
+    }
+    return window.openro.onAgentDelta(({ sessionId, text }) => {
+      setStreaming((prev) => (prev && prev.sessionId === sessionId ? { sessionId, text: prev.text + text } : { sessionId, text }));
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -722,9 +734,16 @@ export default function App() {
                   <div className="message-row">
                     <span className="message-avatar assistant">RO</span>
                     <div className="message-content">
-                      <div className="thinking">
-                        <span /><span /><span />
-                      </div>
+                      {streaming && streaming.sessionId === activeSession && streaming.text ? (
+                        <>
+                          <div className="message-author">Open-Ro</div>
+                          <div className="message-text">{streaming.text}</div>
+                        </>
+                      ) : (
+                        <div className="thinking">
+                          <span /><span /><span />
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}

@@ -14,7 +14,7 @@
 - Agent turns use the chat's project: the renderer sends the chat's root, the main process validates it is an existing folder and switches the active root when it differs (clearing pending approvals and studio reads), and a project switch moves the active chat to a visible one instead of leaving a hidden chat open.
 - Agent turns can be stopped from the chat composer: the Stop control aborts the in-flight HTTP request or the CLI process tree, and the cancelled turn is recorded in the chat.
 - Provider requests retry transient failures up to three attempts: HTTP 429/5xx and network errors back off (250 ms, 500 ms, capped at 4 s) and honor Retry-After; aborts win, and other 4xx responses fail immediately.
-- OpenAI-compatible provider turns stream text over SSE when a delta listener is attached: deltas are emitted in order, tool-call arguments split across chunks are assembled by index, and a non-SSE response falls back to one delta. The main process forwards `agent:delta` {sessionId, text} and preload exposes `onAgentDelta`. The chat UI still waits for the final result (incremental rendering is the next slice); Anthropic and CLI routes remain non-streaming.
+- OpenAI-compatible provider turns stream text over SSE when a delta listener is attached: deltas are emitted in order, tool-call arguments split across chunks are assembled by index, and a non-SSE response falls back to one delta. The main process forwards `agent:delta` {sessionId, text}, preload exposes `onAgentDelta`, and the chat renders deltas into a transient assistant bubble while the turn runs (cleared when the final message arrives). Anthropic and CLI routes remain non-streaming.
 - A deterministic project index (metadata only) enumerates the active project: ignored segments and secret files are skipped, symlinks/junctions are not followed, paths are sorted posix-relative with byte sizes, and caps (2,000 files / 4 MB / depth 12) set a truncated flag. Each HTTP agent turn receives a compact map from this index (max 150 entries / 6,000 characters) inside the system prompt, explicitly labeled untrusted data whose file names are never instructions; an empty index injects nothing.
 - The Workspace screen shows the indexed project map: total file count, a truncation notice when caps applied, and the first 40 entries with byte sizes; clicking an entry opens the file.
 - Approval-gated file writes and command execution. File checkpoint restores are staged as ordinary write approvals (diff review plus a fresh checkpoint of the overwritten state), so a restore can itself be restored. Creation checkpoints — where Open-Ro created the file — restore through a reviewable delete approval that checkpoints the file's current contents before removal.
@@ -32,7 +32,7 @@ Commands run in this Windows 11 workspace:
 
 - `npm run typecheck` passed.
 - `npm run lint` passed (rejects type suppressions, skipped tests, and placeholder text).
-- `npm test` passed: 187 tests in 30 files under `tests/`.
+- `npm test` passed: 191 tests in 31 files under `tests/`.
 - `npm run build` passed. Vite emitted `dist/` and `tsc` emitted `dist-electron/`.
 - `npm run package:win` passed with electron-builder 26.18.0: produced `release/Open-Ro Studio Setup 0.1.0.exe` (NSIS, one-click disabled, unsigned).
 - `npm run package:linux` was not run in this workspace; it requires the Linux packaging toolchain and runs in CI.

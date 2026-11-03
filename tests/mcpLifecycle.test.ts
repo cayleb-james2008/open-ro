@@ -43,7 +43,8 @@ describe('mcp client lifecycle', () => {
   });
 
   it('stops the server when the handshake fails, so the next connect works', async () => {
-    const client = new McpStdioClient(300);
+    // 3 s: under parallel vitest workers a node spawn plus handshake can exceed 300 ms.
+    const client = new McpStdioClient(3_000);
     clients.push(client);
     await expect(client.start({ command: process.execPath, args: [path.join(dir, 'silent.cjs')] })).rejects.toThrow(/initialize timed out/);
     expect(client.running).toBe(false);
