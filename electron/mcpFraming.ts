@@ -1,7 +1,7 @@
 /**
- * MCP stdio framing. Servers send either LSP-style Content-Length headers
- * or newline-delimited JSON. Both show up in the wild; a client that only
- * splits on newlines cannot talk to a header-framed Studio server.
+ * Reads MCP stdio output. The MCP stdio transport is newline-delimited
+ * JSON-RPC, and the client sends only that. Reading also accepts LSP-style
+ * Content-Length frames so an older header-framed server still parses.
  */
 
 export interface McpParseResult {

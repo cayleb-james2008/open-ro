@@ -125,9 +125,14 @@ export class McpStdioClient {
     }
   }
 
+  /**
+   * MCP stdio transport: one JSON-RPC message per line, no embedded newlines.
+   * U+2028 and U+2029 are escaped because line readers such as Node's readline
+   * treat them as line breaks, and JSON.stringify leaves them raw.
+   */
   private send(message: unknown): void {
-    const body = JSON.stringify(message);
-    this.child?.stdin.write(`Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n${body}`);
+    const line = JSON.stringify(message).replace(/[\u2028\u2029]/g, (char) => `\\u${char.charCodeAt(0).toString(16)}`);
+    this.child?.stdin.write(`${line}\n`);
   }
 
   private notify(method: string): void {
