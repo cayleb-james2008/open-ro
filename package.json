@@ -1,0 +1,79 @@
+{
+  "name": "open-ro",
+  "productName": "Open-Ro Studio",
+  "version": "0.1.0",
+  "description": "Local-first AI development studio for Roblox — bring your own model.",
+  "license": "MIT",
+  "author": "Open-Ro contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cayleb-james2008/open-ro.git"
+  },
+  "main": "dist-electron/main.js",
+  "private": false,
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "concurrently -ks i \"vite\" \"wait-on tcp:127.0.0.1:5173 && electron .\"",
+    "dev:renderer": "vite",
+    "typecheck": "tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.renderer.json",
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.electron.json && vite build",
+    "dev:electron": "electron .",
+    "package:win": "npm run build && electron-builder --win --x64",
+    "package:linux": "npm run build && electron-builder --linux AppImage deb pacman",
+    "package:linux-omarchy": "npm run build && electron-builder --linux pacman AppImage"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "concurrently": "^10.0.6",
+    "electron": "^45.2.1",
+    "electron-builder": "^26.18.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^5.1.0",
+    "wait-on": "^9.5.1"
+  },
+  "electron-builder": {
+    "appId": "studio.openro.app",
+    "productName": "Open-Ro Studio",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb",
+        "pacman"
+      ],
+      "category": "Development",
+      "artifactName": "open-ro-${version}-${arch}.${ext}"
+    }
+  }
+}
