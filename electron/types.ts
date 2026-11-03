@@ -16,7 +16,9 @@ export interface ChatMessage {
 }
 
 /** A tool the agent may call; names owned by the main process executor. */
-export type BuiltinToolName = 'list_dir' | 'read_file' | 'write_file' | 'run_command' | 'report_playtest';
+export type BuiltinToolName =
+  | 'list_dir' | 'read_file' | 'write_file' | 'run_command' | 'report_playtest'
+  | 'studio_snapshot' | 'studio_read_script' | 'studio_write_script';
 /** Connected MCP server tools are exposed to the model as `mcp__<tool>`. */
 export type ToolName = BuiltinToolName | `mcp__${string}`;
 
@@ -42,13 +44,13 @@ export interface ToolCallResult {
   ok: boolean;
   output: string;
   /** Set when the action was staged for user approval instead of executed. */
-  pendingApproval?: { kind: 'file-write' | 'command' | 'mcp'; path?: string; command?: string; tool?: string; id?: string };
+  pendingApproval?: { kind: 'file-write' | 'command' | 'mcp' | 'studio'; path?: string; command?: string; tool?: string; id?: string };
 }
 
 /** Approval the renderer may inspect. The id is the only value accepted back. */
 export interface PendingApprovalView {
   id: string;
-  kind: 'write' | 'command' | 'mcp' | 'mcp-server';
+  kind: 'write' | 'command' | 'mcp' | 'mcp-server' | 'studio';
   createdAt: string;
   relPath?: string;
   previous?: string;
@@ -63,6 +65,11 @@ export interface PendingApprovalView {
   mcpServer?: string;
   /** Arguments for an MCP server start, passed without a shell. */
   serverArgs?: string[];
+  /** Studio approvals: what runs, on which instance (dot path from game). */
+  studioOp?: 'snapshot' | 'read' | 'write';
+  studioPath?: string;
+  studioClass?: string;
+  studioServices?: string[];
 }
 
 /** Which server process a staged MCP call was staged against. `session` changes on every start. */

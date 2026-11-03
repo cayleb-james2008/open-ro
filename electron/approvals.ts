@@ -1,7 +1,8 @@
 import * as crypto from 'node:crypto';
 import type { McpServerIdentity } from './types';
 
-export type ApprovalKind = 'write' | 'command' | 'mcp' | 'mcp-server';
+export type ApprovalKind = 'write' | 'command' | 'mcp' | 'mcp-server' | 'studio';
+export type StudioOp = 'snapshot' | 'read' | 'write';
 export type ApprovalDecision = 'approve' | 'reject';
 
 export interface PendingApproval {
@@ -21,6 +22,11 @@ export interface PendingApproval {
   serverArgs?: string[];
   /** The server an MCP call was staged against; the call runs only on that same server session. */
   mcpServer?: McpServerIdentity;
+  studioOp?: StudioOp;
+  /** Dot path from game, for example ServerScriptService.Shop. */
+  studioPath?: string;
+  studioClass?: string;
+  studioServices?: string[];
 }
 
 const MAX_PENDING = 30;
@@ -122,6 +128,34 @@ export class ApprovalQueue {
       mcpServer: input.server ? { ...input.server, args: [...input.server.args] } : undefined,
     };
     this.items.set(item.id, item);
+    return item;
+  }
+
+  /**
+   * Stage a Roblox Studio edit or read. The Luau tool call is frozen like an
+   * MCP call; a write also keeps the previous and new source for the diff.
+   */
+  stageStudio(input: {
+    projectRoot: string;
+    op: StudioOp;
+    path: string;
+    tool: string;
+    args: Record<string, unknown>;
+    className?: string;
+    services?: string[];
+    previous?: string;
+    content?: string;
+  }): PendingApproval {
+    const item = this.stageMcp({ projectRoot: input.projectRoot, tool: input.tool, args: input.args });
+    Object.assign(item, {
+      kind: 'studio',
+      studioOp: input.op,
+      studioPath: input.path,
+      studioClass: input.className,
+      studioServices: input.services ? [...input.services] : undefined,
+      previous: input.previous,
+      content: input.content,
+    });
     return item;
   }
 
