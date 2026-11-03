@@ -14,6 +14,7 @@
 - Agent turns use the chat's project: the renderer sends the chat's root, the main process validates it is an existing folder and switches the active root when it differs (clearing pending approvals and studio reads), and a project switch moves the active chat to a visible one instead of leaving a hidden chat open.
 - Agent turns can be stopped from the chat composer: the Stop control aborts the in-flight HTTP request or the CLI process tree, and the cancelled turn is recorded in the chat.
 - Provider requests retry transient failures up to three attempts: HTTP 429/5xx and network errors back off (250 ms, 500 ms, capped at 4 s) and honor Retry-After; aborts win, and other 4xx responses fail immediately.
+- A deterministic project index (metadata only) enumerates the active project: ignored segments and secret files are skipped, symlinks/junctions are not followed, paths are sorted posix-relative with byte sizes, and caps (2,000 files / 4 MB / depth 12) set a truncated flag. File contents are not read, and no UI or agent prompt consumes it yet.
 - Approval-gated file writes and command execution. File checkpoint restores are staged as ordinary write approvals (diff review plus a fresh checkpoint of the overwritten state), so a restore can itself be restored. Creation checkpoints — where Open-Ro created the file — restore through a reviewable delete approval that checkpoints the file's current contents before removal.
 - Credential storage guarded by Electron `safeStorage`; no plaintext persistence fallback.
 - Single active stdio MCP client. It sends newline-delimited JSON-RPC as the MCP stdio transport requires, lists the server's tools, answers server `ping`, and stops the process when the handshake fails. Starting a server and each agent tool call (`mcp__<tool>`) are staged in the approval queue; the exact command or argument JSON runs only after approval. A staged tool call is bound to the server session it was staged on. It is refused after a reconnect, after a crash and restart (including during the new server's handshake), and on a different server; `tests/mcpServerBinding.test.ts` and `tests/mcpCrashRestart.test.ts` cover these cases.
@@ -29,7 +30,7 @@ Commands run in this Windows 11 workspace:
 
 - `npm run typecheck` passed.
 - `npm run lint` passed (rejects type suppressions, skipped tests, and placeholder text).
-- `npm test` passed: 163 tests in 28 files under `tests/`.
+- `npm test` passed: 169 tests in 29 files under `tests/`.
 - `npm run build` passed. Vite emitted `dist/` and `tsc` emitted `dist-electron/`.
 - `npm run package:win` passed with electron-builder 26.18.0: produced `release/Open-Ro Studio Setup 0.1.0.exe` (NSIS, one-click disabled, unsigned).
 - `npm run package:linux` was not run in this workspace; it requires the Linux packaging toolchain and runs in CI.
