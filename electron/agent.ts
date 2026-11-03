@@ -26,6 +26,83 @@ function turnSignal(signal?: AbortSignal): AbortSignal {
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
+const RETRY_ATTEMPTS = 3;
+const RETRY_BASE_MS = 250;
+const RETRY_MAX_DELAY_MS = 4_000;
+
+function abortError(): DOMException {
+  return new DOMException('The operation was aborted.', 'AbortError');
+}
+
+function retryWait(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      cleanup();
+      reject(abortError());
+    };
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/** Backoff for one retry: Retry-After when present, otherwise 250ms, 500ms, ... capped at 4s. */
+function retryDelayMs(response: Response | null, attempt: number): number {
+  const header = response?.headers.get('retry-after');
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.min(seconds * 1000, RETRY_MAX_DELAY_MS);
+    }
+    const at = Date.parse(header);
+    if (!Number.isNaN(at)) {
+      return Math.max(0, Math.min(at - Date.now(), RETRY_MAX_DELAY_MS));
+    }
+  }
+  return Math.min(RETRY_BASE_MS * 2 ** attempt, RETRY_MAX_DELAY_MS);
+}
+
+/**
+ * Fetch a provider endpoint with bounded retries for transient failures.
+ * 429 and 5xx responses retry after Retry-After/backoff; network errors retry;
+ * aborts and other 4xx responses return immediately.
+ */
+async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+  const signal = init.signal ?? undefined;
+  for (let attempt = 0; ; attempt += 1) {
+    if (signal?.aborted) {
+      throw abortError();
+    }
+    try {
+      const response = await fetch(url, init);
+      const transient = response.status === 429 || response.status >= 500;
+      if (!transient || attempt >= RETRY_ATTEMPTS - 1) {
+        return response;
+      }
+      await response.body?.cancel().catch(() => undefined);
+      await retryWait(retryDelayMs(response, attempt), signal);
+    } catch (error) {
+      if (signal?.aborted || (error as { name?: string }).name === 'AbortError') {
+        throw error;
+      }
+      if (attempt >= RETRY_ATTEMPTS - 1) {
+        throw error;
+      }
+      await retryWait(retryDelayMs(null, attempt), signal);
+    }
+  }
+}
+
 export function toolSchemas(): ToolSchema[] {
   return [
     {
@@ -163,7 +240,7 @@ async function callOpenAiCompatible(
   let assistantText = '';
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
-    const response = await fetch(`${base}/chat/completions`, {
+    const response = await fetchWithRetry(`${base}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -218,7 +295,7 @@ async function callAnthropic(
   let assistantText = '';
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
-    const response = await fetch(baseURL, {
+    const response = await fetchWithRetry(baseURL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -423,7 +500,7 @@ export async function testConnection(connection: ProviderConnection, projectRoot
     }
     if (option.api === 'anthropic-messages') {
       return await (async () => {
-        const response = await fetch(`${(connection.baseUrl ?? option.defaultBaseUrl ?? '').replace(/\/+$/, '')}/v1/models`, {
+        const response = await fetchWithRetry(`${(connection.baseUrl ?? option.defaultBaseUrl ?? '').replace(/\/+$/, '')}/v1/models`, {
           headers: { 'x-api-key': connection.apiKey ?? '', 'anthropic-version': '2023-06-01' },
           signal: AbortSignal.timeout(20_000),
         });
@@ -433,7 +510,7 @@ export async function testConnection(connection: ProviderConnection, projectRoot
       })();
     }
     const base = (connection.baseUrl ?? option.defaultBaseUrl ?? '').replace(/\/+$/, '');
-    const response = await fetch(`${base}/chat/completions`, {
+    const response = await fetchWithRetry(`${base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(connection.apiKey ? { Authorization: `Bearer ${connection.apiKey}` } : {}) },
       body: JSON.stringify({ model: connection.model, messages: [{ role: 'user', content: 'Reply with exactly: open-ro connection check' }], max_tokens: 30 }),

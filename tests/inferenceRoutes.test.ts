@@ -12,7 +12,7 @@ interface CapturedRequest {
   body: string;
 }
 
-type Respond = (status: number, payload: unknown) => void;
+type Respond = (status: number, payload: unknown, headers?: Record<string, string>) => void;
 type Responder = (request: CapturedRequest, respond: Respond) => void;
 
 const servers: Server[] = [];
@@ -28,8 +28,8 @@ async function mockProvider(responder: Responder): Promise<{ baseUrl: string; re
     request.on('end', () => {
       const captured: CapturedRequest = { method: request.method ?? '', url: request.url ?? '', headers: request.headers, body };
       requests.push(captured);
-      responder(captured, (status, payload) => {
-        response.writeHead(status, { 'Content-Type': 'application/json' });
+      responder(captured, (status, payload, headers) => {
+        response.writeHead(status, { 'Content-Type': 'application/json', ...headers });
         response.end(JSON.stringify(payload));
       });
     });
@@ -137,6 +137,68 @@ describe('network failure path', () => {
     const result = await testConnection({ kind: 'openai-api', model: 'mock-model', baseUrl: provider.baseUrl }, process.cwd());
     expect(result.ok).toBe(false);
     expect(result.detail.length).toBeGreaterThan(0);
+  });
+});
+
+describe('transient provider failures', () => {
+  const executor: ToolExecutor = { schemas: () => [], execute: async () => ({ ok: true, output: '' }) };
+  const turn = (baseUrl: string, signal?: AbortSignal) => runAgentTurn({
+    connection: { kind: 'openai-api', model: 'mock-model', baseUrl },
+    messages: [{ role: 'user', content: 'hi' }],
+    projectRoot: process.cwd(),
+    executor,
+    signal,
+  });
+
+  it('retries two 5xx responses and succeeds on the third attempt', async () => {
+    let calls = 0;
+    const provider = await mockProvider((_request, respond) => {
+      calls += 1;
+      if (calls < 3) {
+        respond(502, { error: 'upstream' });
+      } else {
+        respond(200, { choices: [{ message: { content: 'recovered' } }] });
+      }
+    });
+    const result = await turn(provider.baseUrl);
+    expect(result.ok).toBe(true);
+    expect(result.assistantText).toBe('recovered');
+    expect(provider.requests).toHaveLength(3);
+  });
+
+  it('honors Retry-After on a 429 and retries', async () => {
+    let calls = 0;
+    const provider = await mockProvider((_request, respond) => {
+      calls += 1;
+      if (calls === 1) {
+        respond(429, { error: 'slow down' }, { 'Retry-After': '0' });
+      } else {
+        respond(200, { choices: [{ message: { content: 'after wait' } }] });
+      }
+    });
+    const result = await turn(provider.baseUrl);
+    expect(result.ok).toBe(true);
+    expect(result.assistantText).toBe('after wait');
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  it('does not retry a non-429 4xx response', async () => {
+    const provider = await mockProvider((_request, respond) => respond(400, { error: 'bad request' }));
+    const result = await turn(provider.baseUrl);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('HTTP 400');
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  it('aborts during the retry wait', async () => {
+    const provider = await mockProvider((_request, respond) => respond(500, { error: 'down' }));
+    const controller = new AbortController();
+    const started = Date.now();
+    const pending = turn(provider.baseUrl, controller.signal);
+    setTimeout(() => controller.abort(), 100);
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(provider.requests).toHaveLength(1);
   });
 });
 
