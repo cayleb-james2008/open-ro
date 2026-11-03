@@ -112,3 +112,82 @@ export function stageStudioTool(
     return { ok: false, output: error instanceof Error ? error.message : String(error) };
   }
 }
+
+/** What a confirmed Studio write replaced. `previous: null` means Open-Ro created the script. */
+export interface StudioCheckpoint { path: string; className: ScriptClass; previous: string | null; content: string }
+
+/** Run an approved Studio call and check what Studio reports back. */
+export async function runApprovedStudio(
+  item: PendingApproval,
+  caller: McpCaller,
+  reads: StudioReads,
+): Promise<ApprovalResult & { snapshot?: TreeSnapshot; checkpoint?: StudioCheckpoint }> {
+  const tool = item.mcpTool ?? '';
+  const path = item.studioPath ?? '';
+  if (item.kind !== 'studio' || !tool || !item.studioOp) {
+    throw new Error('Not a Studio approval.');
+  }
+  const label = path === 'game' ? 'the place tree' : `game.${path}`;
+  const fail = (summary: string, output?: string) => ({ ok: false, decision: 'approve' as const, summary, output });
+  if (!caller.running || !caller.listTools().some((entry) => entry.name === tool)) {
+    return fail(`Studio tool ${tool} is no longer available. Nothing ran.`);
+  }
+  let text: string;
+  try {
+    text = await caller.callTool(tool, JSON.parse(item.mcpArgs ?? '{}') as Record<string, unknown>);
+  } catch (error) {
+    return fail(`Studio ${item.studioOp} of ${label} failed.`, error instanceof Error ? error.message : String(error));
+  }
+  const reply = parseLuauReply(text);
+  if (!reply.ok) {
+    return fail(`Studio ${item.studioOp} of ${label} failed.`, reply.error);
+  }
+  const result = reply.result;
+  if (item.studioOp === 'snapshot') {
+    const snapshot = normalizeSnapshot(result, item.studioServices ?? []);
+    const lines = snapshot.services.flatMap((service) => service.nodes.map((node) => `${'  '.repeat(node.depth - 1)}${node.path} (${node.className})`));
+    const missing = snapshot.missing.length > 0 ? ` Missing services: ${snapshot.missing.join(', ')}.` : '';
+    const cut = snapshot.truncated ? ' The tree was cut at 2,000 instances.' : '';
+    return { ok: true, decision: 'approve', summary: `Read ${snapshot.nodeCount} instances.${missing}${cut}`, output: lines.slice(0, 400).join('\n'), snapshot };
+  }
+  if (item.studioOp === 'read') {
+    if (result.exists !== true) {
+      reads.set(path, { exists: false, source: null });
+      return { ok: true, decision: 'approve', summary: `${label} does not exist. Missing: game.${String(result.missing ?? path)}.` };
+    }
+    if (result.path !== path || typeof result.className !== 'string') {
+      return fail(`Studio returned a different instance than ${label}.`, JSON.stringify(result.path ?? null));
+    }
+    const source = typeof result.source === 'string' ? result.source : null;
+    reads.set(path, { exists: true, className: result.className, source });
+    return { ok: true, decision: 'approve', summary: `Read ${label} (${result.className}).`, output: source ?? '(not a script)' };
+  }
+  const className = item.studioClass as ScriptClass;
+  const content = item.content ?? '';
+  const problems = readbackProblems(parseInstancePath(path), className, content, result);
+  if (problems.length > 0) {
+    reads.delete(path);
+    return fail(`Studio did not confirm the write to ${label}. Read it again before another write.`, problems.join('\n'));
+  }
+  reads.set(path, { exists: true, className, source: content });
+  return {
+    ok: true,
+    decision: 'approve',
+    summary: `Wrote ${label} (${className}). Studio read back the same path, class and source. Ctrl+Z in Studio undoes it.`,
+    checkpoint: { path, className, previous: item.previous ?? null, content },
+  };
+}
+
+/** Stage putting a checkpoint's previous source back. It only applies if the script still holds what Open-Ro wrote. */
+export function stageStudioRestore(approvals: ApprovalQueue, caller: McpCaller, checkpoint: StudioCheckpoint, input: { projectRoot: string; studioId?: string }): PendingApproval {
+  if (checkpoint.previous === null) {
+    throw new Error('Open-Ro created this script, so there is no earlier source. Delete it in Studio or use Ctrl+Z.');
+  }
+  const segments = parseInstancePath(checkpoint.path);
+  const code = buildWriteLuau({ segments, className: checkpoint.className, source: checkpoint.previous, expectedPrevious: checkpoint.content });
+  const call = luauToolCall(caller.listTools(), code, input.studioId);
+  return approvals.stageStudio({
+    projectRoot: input.projectRoot, op: 'write', path: checkpoint.path, tool: call.tool, args: call.args,
+    className: checkpoint.className, previous: checkpoint.content, content: checkpoint.previous,
+  });
+}

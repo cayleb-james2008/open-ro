@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ApprovalQueue } from '../electron/approvals';
 import type { McpCaller } from '../electron/mcpTools';
-import { luauToolCall, stageStudioTool, StudioReads } from '../electron/studioTools';
+import { luauToolCall, runApprovedStudio, stageStudioRestore, stageStudioTool, StudioReads } from '../electron/studioTools';
 import type { McpToolSummary } from '../electron/types';
 
 const executeLuau: McpToolSummary = {
@@ -83,5 +83,66 @@ describe('staging Studio tools', () => {
     const studio = fakeStudio();
     const offline = { ...studio.caller, running: false };
     expect(stageStudioTool(new ApprovalQueue(), offline, new StudioReads(), { projectRoot: root, name: 'studio_snapshot', args: {} }).ok).toBe(false);
+  });
+});
+
+describe('running approved Studio calls', () => {
+  const root = '/project';
+  const ok = (result: unknown) => `OPENRO:${JSON.stringify({ ok: true, result })}`;
+  const setup = () => ({ studio: fakeStudio(), approvals: new ApprovalQueue(), reads: new StudioReads() });
+
+  it('a snapshot reports missing services and never invents them', async () => {
+    const { studio, approvals, reads } = setup();
+    stageStudioTool(approvals, studio.caller, reads, { projectRoot: root, name: 'studio_snapshot', args: { services: ['Workspace', 'Teams'] } });
+    studio.replies.push(ok({ truncated: false, services: [
+      { name: 'Workspace', present: true, nodes: [{ path: 'Workspace.Baseplate', className: 'Part', depth: 1 }] },
+      { name: 'Teams', present: true, nodes: 'garbage' },
+    ] }));
+    const result = await runApprovedStudio(approvals.list()[0], studio.caller, reads);
+    expect(result.summary).toBe('Read 1 instances.');
+    expect(result.output).toBe('Workspace.Baseplate (Part)');
+    studio.replies.push(ok({ services: [{ name: 'Workspace', present: true, nodes: [] }] }));
+    const again = await runApprovedStudio(approvals.list()[0], studio.caller, reads);
+    expect(again.snapshot?.missing).toEqual(['Teams']);
+    expect(again.summary).toMatch(/Missing services: Teams\./);
+  });
+
+  it('read, then write, then the read-back must match before a checkpoint is kept', async () => {
+    const { studio, approvals, reads } = setup();
+    const path = 'ServerScriptService.Shop';
+    stageStudioTool(approvals, studio.caller, reads, { projectRoot: root, name: 'studio_read_script', args: { path } });
+    studio.replies.push(ok({ exists: true, path, className: 'Script', source: 'print(1)' }));
+    expect((await runApprovedStudio(approvals.take(approvals.list()[0].id), studio.caller, reads)).output).toBe('print(1)');
+    const write = (source: string) => stageStudioTool(approvals, studio.caller, reads, { projectRoot: root, name: 'studio_write_script', args: { path, className: 'Script', source } });
+    write('print(2)');
+    studio.replies.push(ok({ path, className: 'Script', source: 'print(2) tampered' }));
+    const bad = await runApprovedStudio(approvals.take(approvals.list()[0].id), studio.caller, reads);
+    expect(bad).toMatchObject({ ok: false, output: 'Read-back source does not match the approved source.' });
+    expect(bad.checkpoint).toBeUndefined();
+    expect(write('print(2)').output).toMatch(/studio_read_script first/);
+    reads.set(path, { exists: true, className: 'Script', source: 'print(1)' });
+    write('print(2)');
+    studio.replies.push(ok({ path, className: 'Script', source: 'print(2)' }));
+    const good = await runApprovedStudio(approvals.take(approvals.list()[0].id), studio.caller, reads);
+    expect(good).toMatchObject({ ok: true, checkpoint: { path, className: 'Script', previous: 'print(1)', content: 'print(2)' } });
+    expect(studio.calls.map((call) => call.name)).toEqual(['execute_luau', 'execute_luau', 'execute_luau']);
+    const restore = stageStudioRestore(approvals, studio.caller, good.checkpoint ?? { path, className: 'Script', previous: null, content: '' }, { projectRoot: root });
+    expect(restore).toMatchObject({ studioOp: 'write', previous: 'print(2)', content: 'print(1)' });
+    expect(String(JSON.parse(restore.mcpArgs ?? '{}').code)).toContain('local expectedPrevious = [[print(2)]]');
+    expect(() => stageStudioRestore(approvals, studio.caller, { path, className: 'Script', previous: null, content: 'x' }, { projectRoot: root })).toThrow(/created this script/);
+  });
+
+  it('a Studio error, a missing reply or a vanished tool is a failure', async () => {
+    const { studio, approvals, reads } = setup();
+    stageStudioTool(approvals, studio.caller, reads, { projectRoot: root, name: 'studio_read_script', args: { path: 'Workspace.X' } });
+    const item = approvals.list()[0];
+    studio.replies.push('OPENRO:{"ok":false,"error":"Two instances named X under Workspace"}');
+    expect(await runApprovedStudio(item, studio.caller, reads)).toMatchObject({ ok: false, output: 'Two instances named X under Workspace' });
+    studio.replies.push('Luau error: attempt to index nil');
+    expect((await runApprovedStudio(item, studio.caller, reads)).ok).toBe(false);
+    expect(reads.get('Workspace.X')).toBeUndefined();
+    const gone = { ...studio.caller, listTools: () => [] };
+    expect((await runApprovedStudio(item, gone, reads)).summary).toMatch(/no longer available/);
+    expect(studio.calls).toHaveLength(2);
   });
 });
