@@ -1,22 +1,22 @@
 {
   "schema_version": "4.0.0",
-  "iteration_id": 5,
+  "iteration_id": 6,
   "clean_room_cot_stripped": true,
   "decision": "ACCEPT",
   "six_role_verdicts": {
-    "product_intent": "PASS for sentence case and larger controls. Live model, Electron, and installers are still unrun.",
-    "design_visual_unslop": "PASS for sentence case. The connection-card gradient and status-dot glow remain.",
-    "systems_analytical_ponytail": "PASS. Labels and control heights only. No new package.",
+    "product_intent": "PASS for remembering the folder in state. Electron was not started, so the startup read was not observed live.",
+    "design_visual_unslop": "N/A. No visual diff.",
+    "systems_analytical_ponytail": "PASS. The field lives on the existing state object. Empty and dot roots stay absent.",
     "epistemic_citation_fidelity": "PASS. No new external claim.",
-    "adversarial_red_team_fuzzer": "PASS. verify-ui-craft exit 0 at 1440, 768, and 375 after the height change. npm test 13 passed.",
-    "completeness_dod_gatekeeper": "PASS for iteration 5 only. HARD_GATE_BLOCKED remains on U01, U03, U04, U09, U12, and U14."
+    "adversarial_red_team_fuzzer": "PASS. The new test covers a saved path, blank, whitespace, and a dot. npm test 14 passed.",
+    "completeness_dod_gatekeeper": "PASS for the pure round trip. Startup inside Electron remains unrun. HARD_GATE_BLOCKED continues."
   },
   "oracle_results": [
     {
-      "id": "ui-craft",
+      "id": "restore-root",
       "exit_code": 0,
       "passed": true,
-      "observed_stdout": "After sentence case and 44px controls: [desktop] [tablet] [mobile] overflow=false tiny=0 transitionAll=0. [PASS] UI craft gate."
+      "observed_stdout": "Test Files 2 passed. Tests 14 passed. Includes restores a saved project folder and does not invent the working directory."
     },
     {
       "id": "unit",
@@ -50,8 +50,8 @@
     }
   ],
   "score_delta": {
-    "before_composite": 3.31,
-    "after_composite": 3.35,
-    "net_gain": 0.04
+    "before_composite": 3.35,
+    "after_composite": 3.36,
+    "net_gain": 0.01
   }
 }

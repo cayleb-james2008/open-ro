@@ -1,5 +1,24 @@
 # Iteration log — latest five
 
+## Iteration 006 (Wave 3) - 2026-11-03T14:26:00Z
+- **Status:** ACCEPTED
+- **Active Harness & Target Dimension:** H1_SYSTEMS_CODE -> U06 User experience
+- **UEVAM Score & Breakdown:** 11.2 (Impact=4, Severity=3, Conf=0.85, Unlocks=2, VoI=1, ASPO_Sub=1.5, Effort=2, Risk=0.4)
+- **Baseline Commit & Rollback Tag:** `bbbddc2379a50eece43f20b79606e81e17bef4f8` / `omni-loop/iter-6-pre`
+- **Atomic Improvement Attempted:** Persist the selected project folder in app state and restore it on startup.
+- **Problem Reproduction Evidence:** `projectRoot` lived only in a `let` in `electron/main.ts`.
+- **Skills Routed (RADEG Passed):** Ponytail rung 2. The existing provider state file already owns `state.json`.
+- **Files Changed & Net LOC:** `electron/providerState.ts`, `electron/main.ts`, `tests/safety.test.ts`.
+- **Acceptance & Metamorphic Oracles Run:** `npm test` exit 0, 14 passed. `npm run typecheck` exit 0. `npm run lint` exit 0.
+- **Anti-Tamper Audit:** PASS. The new test adds an assertion. No existing assertion was weakened.
+- **Browser / Visual Evidence:** No UI change.
+- **Clean-Room 6-Role Evaluator Verdict:** `.omni-loop/last-verdict.json`, decision ACCEPT. Electron was not launched, so startup restore is code plus a pure round-trip test.
+- **Scorecard Delta:** U06 3.5 -> 3.8. Composite 3.35 -> 3.36. Still HARD_GATE_BLOCKED.
+- **Grader Co-Evolution / Reusable Lesson:** Empty, whitespace, and `.` roots stay absent instead of becoming the working directory.
+- **Next Highest-UEVAM Opportunity:** ITER-007 render error boundary.
+
+# Earlier iterations
+
 ## Iteration 005 (Wave 2) - 2026-11-03T14:21:00Z
 - **Status:** ACCEPTED
 - **Active Harness & Target Dimension:** H1_SYSTEMS_CODE -> U09 Accessibility

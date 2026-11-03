@@ -10,6 +10,8 @@ export interface ProviderRecord {
 export interface ProviderAppState {
   activeKind?: ProviderKind;
   providers: ProviderRecord[];
+  /** Absolute folder the user selected. Absent means no project, never the process cwd. */
+  projectRoot?: string;
 }
 
 export interface ProviderSaveInput {
@@ -60,26 +62,48 @@ export function parseProviderState(raw: unknown): ProviderAppState {
   if (activeKind && !providers.some((item) => item.kind === activeKind)) {
     activeKind = undefined;
   }
-  return { activeKind, providers };
+  const projectRoot = storedProjectRoot(value.projectRoot);
+  return projectRoot ? { activeKind, providers, projectRoot } : { activeKind, providers };
+}
+
+function storedProjectRoot(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === '.') {
+    return undefined;
+  }
+  return trimmed;
+}
+
+export function rememberProjectRoot(state: ProviderAppState, root: string): ProviderAppState {
+  const projectRoot = storedProjectRoot(root);
+  if (!projectRoot) {
+    const { projectRoot: _ignored, ...rest } = state;
+    return rest;
+  }
+  return { ...state, projectRoot };
 }
 
 export function upsertProvider(state: ProviderAppState, record: ProviderRecord): ProviderAppState {
   const providers = state.providers.filter((item) => item.kind !== record.kind);
   providers.push({ kind: record.kind, model: record.model, baseUrl: record.baseUrl });
-  return { providers, activeKind: record.kind };
+  return { providers, activeKind: record.kind, projectRoot: state.projectRoot };
 }
 
 export function activateProvider(state: ProviderAppState, kind: ProviderKind): ProviderAppState {
   if (!state.providers.some((item) => item.kind === kind)) {
     throw new Error('Save this provider before setting it active.');
   }
-  return { ...state, providers: state.providers, activeKind: kind };
+  return { ...state, activeKind: kind };
 }
 
 export function removeProvider(state: ProviderAppState, kind: ProviderKind): ProviderAppState {
   return {
     providers: state.providers.filter((item) => item.kind !== kind),
     activeKind: state.activeKind === kind ? undefined : state.activeKind,
+    projectRoot: state.projectRoot,
   };
 }
 
