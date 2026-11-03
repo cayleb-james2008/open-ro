@@ -141,6 +141,8 @@ export interface AgentTurnResult {
     args: Record<string, unknown>;
     status: 'executed' | 'error' | 'staged' | 'cancelled';
     detail?: string;
+    /** Set when status is 'staged': the approval this call is waiting on. */
+    approvalId?: string;
   }>;
   error?: string;
 }

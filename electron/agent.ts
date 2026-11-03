@@ -270,7 +270,7 @@ function safeParseArgs(raw: string | undefined): Record<string, unknown> {
   }
 }
 
-async function runTool(
+export async function runTool(
   call: { id: string; name: string; args: Record<string, unknown> },
   executor: ToolExecutor,
   trace: AgentTurnResult['toolTrace'],
@@ -287,6 +287,7 @@ async function runTool(
       name,
       args: tracedArgs,
       status: result.pendingApproval ? 'staged' : result.ok ? 'executed' : 'error',
+      approvalId: result.pendingApproval?.id,
       detail: result.pendingApproval
         ? `Waiting for user approval: ${result.pendingApproval.kind}${result.pendingApproval.path ? ` ${result.pendingApproval.path}` : result.pendingApproval.command ? ` ${result.pendingApproval.command}` : result.pendingApproval.tool ? ` ${result.pendingApproval.tool}` : ''}`
         : result.output.slice(0, 500),
