@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { runTool } from '../electron/agent';
-import { dropMissing, followupText, recordResolution, trackStaged } from '../src/approvalFollowup';
+import { dropMissing, followupText, recordResolution, resultSession, showsResultIn, trackStaged } from '../src/approvalFollowup';
 
 const ok = (summary: string, output?: string) => ({ ok: true, decision: 'approve' as const, summary, output });
 
@@ -63,5 +63,18 @@ describe('agent tool trace', () => {
     await runTool({ id: 'c1', name: 'write_file', args: { path: 'a.lua', content: 'x' } }, executor, trace);
     await runTool({ id: 'c2', name: 'list_dir', args: {} }, executor, trace);
     expect(trace.map((entry) => [entry.status, entry.approvalId])).toEqual([['staged', 'approval-7'], ['executed', undefined]]);
+  });
+});
+
+describe('which chat a decision result belongs to', () => {
+  it('binds a result to the chat whose turn staged it, and never shows it in another chat', () => {
+    const batches = trackStaged(trackStaged([], 'chat-A', ['a1', 'a2']), 'chat-B', ['b1']);
+    expect(resultSession(batches, 'a2')).toBe('chat-A');
+    expect(resultSession(batches, 'b1')).toBe('chat-B');
+    expect(resultSession(batches, 'user-connect')).toBeNull();
+    expect(showsResultIn('chat-A', 'chat-A')).toBe(true);
+    expect(showsResultIn('chat-A', 'chat-B')).toBe(false);
+    expect(showsResultIn('chat-A', null)).toBe(false);
+    expect(showsResultIn(null, 'chat-B')).toBe(true);
   });
 });

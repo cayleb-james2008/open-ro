@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import api from './api';
 import { Dialog } from './Dialog';
 import { diffPreview } from './textDiff';
-import { dropMissing, followupText, recordResolution, trackStaged, type FollowupBatch } from './approvalFollowup';
+import { dropMissing, followupText, recordResolution, resultSession, showsResultIn, trackStaged, type FollowupBatch } from './approvalFollowup';
 import { approvalCopy, providerInitials } from './labels';
 import { providerOptions, type ProviderKind, type ProviderOption } from '../electron/providerCatalog';
 import type { SessionSnapshot, StoredChatSession } from '../electron/sessions';
@@ -77,7 +77,9 @@ export default function App() {
   const [providerModal, setProviderModal] = useState<ProviderForm>(resetForm());
   const [providerTest, setProviderTest] = useState<{ kind: ProviderKind; ok: boolean; detail: string } | null>(null);
   const [approvals, setApprovals] = useState<PendingApprovalView[]>([]);
-  const [actionResult, setActionResult] = useState<ApprovalResult | null>(null);
+  /** The last decision's result and the chat it belongs to (null when the user started the action). */
+  const [lastResult, setLastResult] = useState<{ sessionId: string | null; result: ApprovalResult } | null>(null);
+  const actionResult = lastResult && showsResultIn(lastResult.sessionId, activeSession) ? lastResult.result : null;
   /** Approval cards whose whole diff the user opened; a cut diff must be opened before it can be approved. */
   const [expandedDiffs, setExpandedDiffs] = useState<Set<string>>(new Set());
   const [sessionsReady, setSessionsReady] = useState(false);
@@ -365,8 +367,9 @@ export default function App() {
 
   async function resolveApproval(id: string, decision: 'approve' | 'reject') {
     try {
+      const owner = resultSession(followupsRef.current, id);
       const result = await api.resolveApproval({ id, decision });
-      setActionResult(result);
+      setLastResult({ sessionId: owner, result });
       const live = await api.approvals();
       setApprovals(live);
       settleFollowups(recordResolution(followupsRef.current, id, result), live);
@@ -392,20 +395,10 @@ export default function App() {
       return;
     }
     setReadyFollowups((prev) => prev.filter((batch) => batch !== next));
-    setActionResult(null);
+    setLastResult(null);
     setScreen('chat');
     void sendDraft(followupText(next));
   }, [readyFollowups, sending, activeSession]);
-
-  function continueWithResult() {
-    if (!actionResult) {
-      return;
-    }
-    const followup = `I ${actionResult.decision === 'approve' ? 'approved' : 'rejected'} a staged action. ${actionResult.summary}${actionResult.output ? `\n\nOutput:\n${actionResult.output.slice(0, 4000)}` : ''}\nContinue from that result.`;
-    setActionResult(null);
-    setScreen('chat');
-    void sendDraft(followup);
-  }
 
   async function connectMcp() {
     if (!mcpForm.command.trim()) {
@@ -541,8 +534,7 @@ export default function App() {
               <strong>{actionResult.summary}</strong>
               {actionResult.output && <pre>{actionResult.output}</pre>}
               <div className="modal-actions">
-                <button type="button" className="text-btn" onClick={() => void continueWithResult()}>Send result to the agent</button>
-                <button type="button" className="outline-btn" onClick={() => setActionResult(null)}>Dismiss</button>
+                <button type="button" className="outline-btn" onClick={() => setLastResult(null)}>Dismiss</button>
               </div>
             </div>
           </div>

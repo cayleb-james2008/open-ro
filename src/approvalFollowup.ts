@@ -20,6 +20,16 @@ function settle(batches: FollowupBatch[]): { batches: FollowupBatch[]; ready: Fo
   return { batches: batches.filter((batch) => batch.pending.length > 0), ready: batches.filter((batch) => batch.pending.length === 0) };
 }
 
+/** The chat whose agent turn staged an approval, or null when the user started it (for example an MCP connect). */
+export function resultSession(batches: FollowupBatch[], id: string): string | null {
+  return batches.find((batch) => batch.pending.includes(id))?.sessionId ?? null;
+}
+
+/** A result card shows only in the chat it belongs to; a user-started action's result shows anywhere. */
+export function showsResultIn(owner: string | null, activeSession: string | null): boolean {
+  return owner === null || owner === activeSession;
+}
+
 /** Record a decision. A batch is ready once every approval in it is decided or gone. */
 export function recordResolution(batches: FollowupBatch[], id: string, result: ApprovalResult | null) {
   return settle(
