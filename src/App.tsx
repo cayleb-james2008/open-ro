@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import api from './api';
 import { Dialog } from './Dialog';
 import { diffPreview } from './textDiff';
-import { draftAfterSend, dropMissing, followupText, recordResolution, resultSession, showsResultIn, trackStaged, type FollowupBatch } from './approvalFollowup';
+import { draftAfterSend, dropMissing, followupText, nextFollowup, recordResolution, resultSession, showsResultIn, trackStaged, type FollowupBatch } from './approvalFollowup';
 import { approvalCopy, providerInitials } from './labels';
 import { providerOptions, type ProviderKind, type ProviderOption } from '../electron/providerCatalog';
 import type { SessionSnapshot, StoredChatSession } from '../electron/sessions';
@@ -390,7 +390,7 @@ export default function App() {
 
   // Send each settled batch back to the chat that staged it, once that chat is open and idle.
   useEffect(() => {
-    const next = sending ? undefined : readyFollowups.find((batch) => batch.sessionId === activeSession);
+    const next = nextFollowup(readyFollowups, activeSession, sending);
     if (!next) {
       return;
     }

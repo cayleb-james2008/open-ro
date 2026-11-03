@@ -20,6 +20,14 @@ function settle(batches: FollowupBatch[]): { batches: FollowupBatch[]; ready: Fo
   return { batches: batches.filter((batch) => batch.pending.length > 0), ready: batches.filter((batch) => batch.pending.length === 0) };
 }
 
+/** The settled batch to send now: only one that belongs to the open chat, and only while that chat is idle. */
+export function nextFollowup(ready: FollowupBatch[], activeSession: string | null, sending: boolean): FollowupBatch | undefined {
+  if (sending || activeSession === null) {
+    return undefined;
+  }
+  return ready.find((batch) => batch.sessionId === activeSession);
+}
+
 /** Sending the composer's text clears it; an automatic follow-up leaves what the user is typing alone. */
 export function draftAfterSend(current: string, sentOverride?: string): string {
   return sentOverride === undefined ? '' : current;

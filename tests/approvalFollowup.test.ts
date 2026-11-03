@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { runTool } from '../electron/agent';
-import { draftAfterSend, dropMissing, followupText, newNonce, recordResolution, resultSession, showsResultIn, trackStaged } from '../src/approvalFollowup';
+import { draftAfterSend, dropMissing, followupText, newNonce, nextFollowup, recordResolution, resultSession, showsResultIn, trackStaged } from '../src/approvalFollowup';
+import type { FollowupBatch } from '../src/approvalFollowup';
 
 const ok = (summary: string, output?: string) => ({ ok: true, decision: 'approve' as const, summary, output });
 
@@ -119,5 +120,24 @@ describe('the composer draft when a message goes out', () => {
     expect(draftAfterSend('fix the door script')).toBe('');
     expect(draftAfterSend('half-typed idea', 'Results of the actions you staged...')).toBe('half-typed idea');
     expect(draftAfterSend('', 'Results...')).toBe('');
+  });
+});
+
+describe('which settled batch is sent', () => {
+  it("sends a batch only into the chat that staged it, and only while that chat is idle", () => {
+    let batches = trackStaged(trackStaged([], 'chat-A', ['a']), 'chat-B', ['b']);
+    let ready: FollowupBatch[] = [];
+    for (const id of ['b', 'a']) {
+      const step = recordResolution(batches, id, ok(`Ran ${id}.`));
+      batches = step.batches;
+      ready = [...ready, ...step.ready];
+    }
+    expect(ready.map((batch) => batch.sessionId)).toEqual(['chat-B', 'chat-A']);
+    expect(nextFollowup(ready, 'chat-A', false)?.sessionId).toBe('chat-A');
+    expect(nextFollowup(ready, 'chat-B', false)?.sessionId).toBe('chat-B');
+    expect(nextFollowup(ready, 'chat-C', false)).toBeUndefined();
+    expect(nextFollowup(ready, null, false)).toBeUndefined();
+    expect(nextFollowup(ready, 'chat-A', true)).toBeUndefined();
+    expect(nextFollowup([], 'chat-A', false)).toBeUndefined();
   });
 });
