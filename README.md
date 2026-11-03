@@ -27,7 +27,7 @@ These screenshots are the renderer at 1280×800, opened in a browser without the
 
 ![Open-Ro welcome screen with chat, models, workspace, and integrations navigation](docs/assets/ui-chat.png)
 
-![Models screen listing provider routes, including OpenAI and Codex CLI](docs/assets/ui-models.png)
+![Models screen listing the local Ollama and llama.cpp routes first](docs/assets/ui-models.png)
 
 ![Workspace screen before a project folder is selected](docs/assets/ui-workspace.png)
 
@@ -116,10 +116,10 @@ Windows and Linux are equal first-class targets for the Open-Ro desktop client. 
 | Area | 0.1.0 state | Target |
 |---|---|---|
 | Desktop shell | Chat, provider forms, project picker, and an approval tray | A beginner can prompt a playable game without writing Luau |
-| Provider connections | Catalog for API keys, official CLI handoffs, and Ollama | A tested local model with the network off, plus a visible data-flow line |
+| Provider connections | Catalog with Ollama and llama.cpp first, then API keys and official CLI handoffs | A tested local model with the network off, plus a visible data-flow line |
 | Local project access | List and read files. Writes stay staged until approved. Checkpoints exist | The same gate for Studio edits, with a line diff and restore |
 | Agent tools | Approval-gated local shell and file tools | Plans, evidence, and recovery tied to a real playtest |
-| MCP | One stdio server the user starts by typing a command | A tested Studio connection, not a typed command alone |
+| MCP | One stdio server the user starts by typing a command. Tested against the MCP reference server, not yet against Studio. Tool calls are not exposed yet | A tested Studio connection, not a typed command alone |
 | Roblox Studio | Not connected | Read the place, edit the right instance, playtest, and store the evidence |
 | Rojo | `rojo --version` detection only | Sync direction and overwrite scope shown before files move |
 | Blender | `blender --version` detection only | Reviewed models and animations, then a separate import approval |

@@ -8,24 +8,25 @@
 
 - Electron 45 + React 19 + TypeScript desktop shell.
 - Vite renderer build and Electron main-process TypeScript configuration.
-- Provider catalogue for OpenAI/Anthropic API, official Codex/Claude Code/OpenCode CLI handoffs, OpenRouter, Ollama and custom OpenAI-compatible endpoints.
+- Provider catalogue with the local Ollama and llama.cpp routes first, then OpenAI/Anthropic API, official Codex/Claude Code/OpenCode CLI handoffs, OpenRouter and custom OpenAI-compatible endpoints.
 - Local project file listing/reading and agent tool foundation.
 - Approval-gated file writes and command execution.
 - Credential storage guarded by Electron `safeStorage`; no plaintext persistence fallback.
-- Single active stdio MCP client with server tool discovery and calls.
+- Single active stdio MCP client. It sends newline-delimited JSON-RPC as the MCP stdio transport requires, and lists the server's tools. Tool calls are not reachable from the renderer or the agent until they go through the approval queue.
 - Blender is detected by running `blender --version`. There is no Blender task runner.
 - Windows NSIS and Linux AppImage/deb/pacman packaging configuration.
 - Basic provider catalogue tests and CI configuration.
 
 ## Checks completed on 2026-11-03
 
-Commands run in this workspace after `npm ci` (Node.js 22.23.4):
+Commands run in this workspace after `npm ci` (Node.js 24.22.1):
 
 - `npm run typecheck` passed.
 - `npm run lint` passed (rejects type suppressions, skipped tests, and placeholder text).
-- `npm test` passed: 13 tests in `tests/providerCatalog.test.ts` and `tests/safety.test.ts`.
+- `npm test` passed: 17 tests in `tests/providerCatalog.test.ts`, `tests/safety.test.ts`, and `tests/mcpStdio.test.ts`.
+- The MCP client completed the handshake, listed tools, and called `echo` against `@modelcontextprotocol/server-everything` 2.1.0 over stdio. Before the framing fix the same `initialize` request timed out after 15 s.
 - `npm run build` passed. Vite emitted `dist/` and `tsc` emitted `dist-electron/`.
-- The renderer was opened in headless Chrome at 1280×800 and 960×700. Chat, Models, Workspace, and Integrations navigation were clicked. The Models screen rendered 8 provider routes. No page errors were logged. The favicon request succeeded.
+- The renderer was opened in headless Chrome at 1280×800 and 960×700. Chat, Models, Workspace, and Integrations navigation were clicked. The Models screen rendered 9 provider routes, with Ollama and llama.cpp first. No page errors were logged. The favicon request succeeded.
 
 These checks do **not** prove an Electron window launch, a signed installer, live model inference, or a Roblox Studio session.
 

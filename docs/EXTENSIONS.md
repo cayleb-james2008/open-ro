@@ -6,7 +6,7 @@ Open-Ro has one required dependency: a usable model connection. Every other capa
 
 | Capability | Local dependency | External account/key | Status in 0.1.0 |
 |---|---|---|---|
-| Roblox Studio | Roblox Studio with built-in MCP server | Roblox account for Studio itself | MCP stdio connection implemented; Windows setup documented; Linux Wine/Vinegar experimental |
+| Roblox Studio | Roblox Studio with built-in MCP server | Roblox account for Studio itself | Generic MCP stdio client exists and was tested against the MCP reference server, not against Studio; Windows setup documented; Linux Wine/Vinegar experimental |
 | Rojo | Rojo CLI and Studio plugin | None | Detection and setup guidance; project sync workflow planned |
 | Blender | Blender desktop executable | None | Background Python task runner implemented; complete mesh/asset transfer UX planned |
 | Git | Git CLI | None for local work | Detection and guidance; checkpoint/diff UI planned |
