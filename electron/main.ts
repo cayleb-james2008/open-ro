@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { registerApprovalChannels } from './approvalChannels';
 import { ApprovalQueue, type ApprovalKind, type PendingApproval } from './approvals';
 import { detectCapabilities } from './capabilities';
 import { McpStdioClient } from './mcp';
@@ -407,7 +408,6 @@ function registerIpc(): void {
     const previous = (await readTextIfExists(target)) ?? '';
     return toApprovalView(approvals.stageWrite({ projectRoot, relPath: args.rel, content: String(args.content ?? ''), previous }));
   });
-  ipcMain.handle('project:write', async (_event, args: { id: string }) => resolveApproval(args.id, 'approve', 'write'));
   ipcMain.handle('project:checkpoints', async () => {
     try {
       return (await fs.readdir(checkpointRoot())).filter((name) => name.endsWith('.json')).sort().reverse().slice(0, 20);
@@ -443,15 +443,9 @@ function registerIpc(): void {
     const cwd = await resolveWithinRoot(projectRoot, '.');
     return toApprovalView(approvals.stageCommand({ projectRoot, command: args.command, cwd }));
   });
-  ipcMain.handle('command:run', async (_event, args: { id: string }) => resolveApproval(args.id, 'approve', 'command'));
 
   ipcMain.handle('approvals:list', () => approvals.list().map(toApprovalView));
-  ipcMain.handle('approvals:resolve', (_event, args: { id: string; decision: 'approve' | 'reject' }) => {
-    if (!args || (args.decision !== 'approve' && args.decision !== 'reject') || typeof args.id !== 'string') {
-      throw new Error('Approval decision is invalid.');
-    }
-    return resolveApproval(args.id, args.decision);
-  });
+  registerApprovalChannels((channel, listener) => ipcMain.handle(channel, listener), resolveApproval);
 
   ipcMain.handle('mcp:status', (): { running: boolean; tools: McpToolSummary[] } => ({ running: mcp.running, tools: mcp.listTools() }));
   // Starting a server runs a local program, so it is staged like any other command.

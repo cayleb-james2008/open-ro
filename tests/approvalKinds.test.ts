@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ApprovalQueue, type ApprovalKind } from '../electron/approvals';
+import { registerApprovalChannels } from '../electron/approvalChannels';
 
 const server = { command: 'node', args: ['studio.js'], session: 's1' };
 
@@ -34,5 +35,51 @@ describe('approvals taken by a run channel', () => {
     const ids = stageAll(queue);
     expect(queue.take(ids.studio).kind).toBe('studio');
     expect(queue.take(ids.mcp).kind).toBe('mcp');
+  });
+});
+
+describe('approval IPC channels as main.ts registers them', () => {
+  function wire(queue: ApprovalQueue) {
+    const handlers = new Map<string, (event: unknown, args: unknown) => unknown>();
+    const calls: Array<[string, string, ApprovalKind | undefined]> = [];
+    registerApprovalChannels(
+      (channel, listener) => handlers.set(channel, listener),
+      (id, decision, kind) => {
+        calls.push([id, decision, kind]);
+        return queue.take(id, kind);
+      },
+    );
+    const invoke = (channel: string, args: unknown) => handlers.get(channel)!(undefined, args);
+    return { handlers, calls, invoke };
+  }
+
+  it('project:write approves only writes and command:run only commands', () => {
+    const queue = new ApprovalQueue();
+    const ids = stageAll(queue);
+    const { handlers, calls, invoke } = wire(queue);
+    expect([...handlers.keys()].sort()).toEqual(['approvals:resolve', 'command:run', 'project:write']);
+    expect(() => invoke('project:write', { id: ids.command })).toThrow('That approval is a command approval, not a write one. It is still pending.');
+    expect(() => invoke('project:write', { id: ids.studio })).toThrow('not a write one');
+    expect(() => invoke('command:run', { id: ids.write })).toThrow('That approval is a write approval, not a command one. It is still pending.');
+    expect(() => invoke('command:run', { id: ids.mcp })).toThrow('not a command one');
+    expect(queue.list()).toHaveLength(5);
+    expect((invoke('project:write', { id: ids.write }) as { kind: string }).kind).toBe('write');
+    expect((invoke('command:run', { id: ids.command }) as { kind: string }).kind).toBe('command');
+    expect(calls.slice(-2)).toEqual([
+      [ids.write, 'approve', 'write'],
+      [ids.command, 'approve', 'command'],
+    ]);
+  });
+
+  it('approvals:resolve takes any kind and rejects a malformed decision', () => {
+    const queue = new ApprovalQueue();
+    const ids = stageAll(queue);
+    const { calls, invoke } = wire(queue);
+    for (const bad of [undefined, { id: ids.mcp }, { id: ids.mcp, decision: 'run' }, { id: 7, decision: 'approve' }]) {
+      expect(() => invoke('approvals:resolve', bad)).toThrow('Approval decision is invalid.');
+    }
+    expect(calls).toEqual([]);
+    expect((invoke('approvals:resolve', { id: ids.mcp, decision: 'reject' }) as { kind: string }).kind).toBe('mcp');
+    expect(calls).toEqual([[ids.mcp, 'reject', undefined]]);
   });
 });
