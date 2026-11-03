@@ -20,6 +20,12 @@ import type {
 const MAX_TOOL_ROUNDS = 6;
 const API_TIMEOUT_MS = 120_000;
 
+/** Combine a caller's cancellation signal with the hard request timeout. */
+function turnSignal(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(API_TIMEOUT_MS);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
 export function toolSchemas(): ToolSchema[] {
   return [
     {
@@ -143,6 +149,7 @@ async function callOpenAiCompatible(
   option: ProviderOption,
   messages: ChatMessage[],
   executor: ToolExecutor,
+  signal?: AbortSignal,
 ): Promise<AgentTurnResult> {
   const base = (connection.baseUrl ?? option.defaultBaseUrl ?? '').replace(/\/+$/, '');
   if (!base) {
@@ -167,7 +174,7 @@ async function callOpenAiCompatible(
         messages: convo,
         tools: executor.schemas().map((schema) => ({ type: 'function', function: schema })),
       }),
-      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+      signal: turnSignal(signal),
     });
     if (!response.ok) {
       return { ok: false, assistantText, toolTrace: trace, error: `Provider request failed: HTTP ${response.status} ${(await response.text()).slice(0, 300)}` };
@@ -199,6 +206,7 @@ async function callAnthropic(
   connection: ProviderConnection,
   messages: ChatMessage[],
   executor: ToolExecutor,
+  signal?: AbortSignal,
 ): Promise<AgentTurnResult> {
   const base = (connection.baseUrl ?? 'https://api.anthropic.com').replace(/\/+$/, '');
   const trace: AgentTurnResult['toolTrace'] = [];
@@ -228,7 +236,7 @@ async function callAnthropic(
           input_schema: schema.parameters,
         })),
       }),
-      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+      signal: turnSignal(signal),
     });
     if (!response.ok) {
       return { ok: false, assistantText, toolTrace: trace, error: `Provider request failed: HTTP ${response.status} ${(await response.text()).slice(0, 300)}` };
@@ -309,6 +317,7 @@ async function callCli(
   connection: ProviderConnection,
   prompt: string,
   projectRoot: string,
+  signal?: AbortSignal,
 ): Promise<AgentTurnResult> {
   const option = getProviderOption(connection.kind);
   const isWindows = process.platform === 'win32';
@@ -335,7 +344,26 @@ async function callCli(
     });
     let stdout = '';
     let stderr = '';
-    const timer = setTimeout(() => child.kill(), 10 * 60_000);
+    const stop = (): void => {
+      // cmd.exe (shell: true) does not propagate a kill to the CLI it launched.
+      if (isWindows && child.pid) {
+        try {
+          spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true }).on('error', () => child.kill());
+        } catch {
+          child.kill();
+        }
+      } else {
+        child.kill();
+      }
+    };
+    const timer = setTimeout(stop, 10 * 60_000);
+    if (signal) {
+      if (signal.aborted) {
+        stop();
+      } else {
+        signal.addEventListener('abort', stop, { once: true });
+      }
+    }
     child.stdout.on('data', (chunk) => {
       stdout += chunk.toString();
     });
@@ -348,7 +376,9 @@ async function callCli(
     });
     child.on('exit', (code) => {
       clearTimeout(timer);
-      if (code === 0) {
+      if (signal?.aborted) {
+        resolve({ ok: false, assistantText: '', toolTrace: [], error: 'Cancelled.' });
+      } else if (code === 0) {
         resolve({ ok: true, assistantText: stdout.trim() || '(command completed with no output)', toolTrace: [] });
       } else {
         resolve({ ok: false, assistantText: stdout.trim(), toolTrace: [], error: `${option.cliCommand} exited with code ${code}: ${stderr.trim().slice(0, 400)}` });
@@ -363,18 +393,22 @@ export async function runAgentTurn(args: {
   messages: ChatMessage[];
   projectRoot: string;
   executor: ToolExecutor;
+  signal?: AbortSignal;
 }): Promise<AgentTurnResult> {
-  const { connection, messages, projectRoot, executor } = args;
+  const { connection, messages, projectRoot, executor, signal } = args;
+  if (signal?.aborted) {
+    return { ok: false, assistantText: '', toolTrace: [], error: 'Cancelled.' };
+  }
   const option = getProviderOption(connection.kind);
   const lastPrompt = [...messages].reverse().find((message) => message.role === 'user')?.content ?? '';
 
   if (option.connection === 'cli') {
-    return callCli(connection, lastPrompt, projectRoot);
+    return callCli(connection, lastPrompt, projectRoot, signal);
   }
   if (option.api === 'anthropic-messages') {
-    return callAnthropic(connection, messages, executor);
+    return callAnthropic(connection, messages, executor, signal);
   }
-  return callOpenAiCompatible(connection, option, sanitizeMessages(messages), executor);
+  return callOpenAiCompatible(connection, option, sanitizeMessages(messages), executor, signal);
 }
 
 /** Connection test per route (docs/AUTH.md: a CLI route is validated by running its status command). */

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -136,5 +137,47 @@ describe('network failure path', () => {
     const result = await testConnection({ kind: 'openai-api', model: 'mock-model', baseUrl: provider.baseUrl }, process.cwd());
     expect(result.ok).toBe(false);
     expect(result.detail.length).toBeGreaterThan(0);
+  });
+});
+
+describe('turn cancellation', () => {
+  it('aborts an in-flight agent turn when its signal fires', async () => {
+    const provider = await mockProvider(() => {
+      // Hold the request open; the abort must end it.
+    });
+    const controller = new AbortController();
+    const executor: ToolExecutor = { schemas: () => [], execute: async () => ({ ok: true, output: '' }) };
+    const started = Date.now();
+    const pending = runAgentTurn({
+      connection: { kind: 'openai-api', model: 'mock-model', baseUrl: provider.baseUrl, apiKey: 'test-key' },
+      messages: [{ role: 'user', content: 'hang' }],
+      projectRoot: process.cwd(),
+      executor,
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 120);
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  it('wires cancellation through the handler, preload allowlist, and adapters', () => {
+    const main = readFileSync('electron/main.ts', 'utf8');
+    const start = main.indexOf("ipcMain.handle('agent:send'");
+    expect(start).toBeGreaterThan(-1);
+    const handler = main.slice(start, main.indexOf('\n  });', start));
+    expect(handler).toContain('new AbortController()');
+    expect(handler).toContain('signal: controller.signal');
+    expect(handler).toContain('A turn is already running');
+    const guardAt = handler.indexOf('A turn is already running');
+    const rootAt = handler.indexOf('const requestedRoot');
+    expect(guardAt).toBeGreaterThan(-1);
+    expect(rootAt).toBeGreaterThan(guardAt);
+    expect(main).toContain("ipcMain.handle('agent:cancel'");
+    expect(main).toContain('activeTurn.abort()');
+    expect(readFileSync('electron/preload.ts', 'utf8')).toContain("'agent:cancel'");
+    const agent = readFileSync('electron/agent.ts', 'utf8');
+    expect(agent).toContain('AbortSignal.any([signal, timeout])');
+    expect(agent).toContain('signal: turnSignal(signal)');
   });
 });

@@ -14,6 +14,7 @@ const INVOKE_CHANNELS = new Set([
   'providers:storage-state',
   'providers:test',
   'agent:send',
+  'agent:cancel',
   'project:select-root',
   'project:root',
   'project:list',

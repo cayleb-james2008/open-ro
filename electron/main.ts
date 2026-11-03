@@ -54,6 +54,9 @@ const approvals = new ApprovalQueue();
 /** What approved Studio reads saw; a Studio write needs one for its diff. */
 const studioReads = new StudioReads();
 
+/** The one in-flight agent turn, if any. Cancelling aborts its fetch or CLI process. */
+let activeTurn: AbortController | null = null;
+
 const statePath = (): string => path.join(app.getPath('userData'), 'state.json');
 const sessionsPath = (): string => path.join(app.getPath('userData'), 'sessions.json');
 const checkpointRoot = (): string => path.join(app.getPath('userData'), 'checkpoints');
@@ -381,6 +384,9 @@ function registerIpc(): void {
     if (!connection.model && getProviderOption(connection.kind).connection !== 'cli') {
       return { ok: false, assistantText: '', toolTrace: [], error: 'Enter a model ID for the active provider.' };
     }
+    if (activeTurn) {
+      return { ok: false, assistantText: '', toolTrace: [], error: 'A turn is already running. Wait for it to finish or cancel it.' };
+    }
     const requestedRoot = typeof args?.projectRoot === 'string' ? args.projectRoot.trim() : '';
     const currentRoot = projectRoot ? path.resolve(projectRoot) : '';
     let turnRoot = currentRoot;
@@ -400,12 +406,33 @@ function registerIpc(): void {
       // Same folder under a different spelling: keep the canonical active root so
       // approvals staged during this turn bind to the same string resolveApproval checks.
     }
-    return runAgentTurn({
-      connection,
-      messages: requireMessages(args?.messages ?? []),
-      projectRoot: turnRoot,
-      executor: buildExecutor(turnRoot),
-    });
+    const controller = new AbortController();
+    activeTurn = controller;
+    try {
+      return await runAgentTurn({
+        connection,
+        messages: requireMessages(args?.messages ?? []),
+        projectRoot: turnRoot,
+        executor: buildExecutor(turnRoot),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return { ok: false, assistantText: '', toolTrace: [], error: 'Cancelled.' };
+      }
+      throw error;
+    } finally {
+      if (activeTurn === controller) {
+        activeTurn = null;
+      }
+    }
+  });
+  ipcMain.handle('agent:cancel', () => {
+    if (!activeTurn) {
+      return { ok: true, cancelled: false };
+    }
+    activeTurn.abort();
+    return { ok: true, cancelled: true };
   });
 
   ipcMain.handle('project:select-root', async () => {
