@@ -1,5 +1,15 @@
 # Iteration log — latest five
 
+## Iteration 008 (Wave 5) - 2026-11-03T14:40:00Z
+- **Status:** ACCEPTED as a planning record, not a product capability
+- **Active Harness & Target Dimension:** H1_SYSTEMS_CODE -> U01
+- **Atomic Improvement Attempted:** Replace match-the-competitor done checks with a surpass bar and honest statuses.
+- **Problem Reproduction Evidence:** Public pages at ropilot.ai, ropilot.ai/download, ropilot.ai/automate-roblox-scripts, and ropilot.ai/ai-roblox-script-generator. analytics.ropilot.ai timed out.
+- **Acceptance & Metamorphic Oracles Run:** `node scripts/validate-omni-loop.mjs`
+- **Next Highest-UEVAM Opportunity:** S04 playtest evidence. Do not invent metrics for S13.
+
+# Earlier iterations
+
 ## Iteration 007 (Wave 4) - 2026-11-03T14:28:00Z
 - **Status:** ACCEPTED
 - **Active Harness & Target Dimension:** H1_SYSTEMS_CODE -> U11 Reliability

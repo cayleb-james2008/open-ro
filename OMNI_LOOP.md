@@ -8,7 +8,7 @@
 
 1. Read this file and `.omni-loop/state.json` before any edit.
 2. Pull request 1 was rebase-merged, so the pre-merge SHAs are not on main. `incumbent_commit` is `01ccd8ebacd5fa763ef20d5150ac9ed40efac2f6`. If `origin/main` is ahead of that by a screenshot refresh, resume from the tip.
-3. Create tag `omni-loop/iter-8-pre` at the current HEAD, then execute `.omni-loop/current-contract.json` (flatten the connection-card gradient and status glow).
+3. The done bar is the `surpass_checklist` in `.omni-loop/genesis-dag.json`. Matching a public competitor feature is not done. Next build work is S04/S02 evidence from a real Studio session, or S13 only with a real official metric. Do not invent player stats.
 4. Smoke: `npm test`, then `npm run verify:ui` with the renderer on port 5173.
 
 ## Do not

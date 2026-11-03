@@ -43,22 +43,23 @@ Open-Ro is not just a Luau autocomplete panel. It is intended to be a full devel
 
 ## The one-required-setup rule
 
-A user should be able to install Open-Ro, connect one model, choose a project, and start working. No Open-Ro account, hosted inference proxy, subscription, or credit wallet is required.
+A user should be able to install Open-Ro, run a free local model, choose a project, and start working. No Open-Ro account, hosted service, subscription, or credit wallet is required. Paid model APIs are optional. Open-Ro does not send telemetry.
 
 ### Model connections
 
-Users can connect one or more model routes and choose which one is active. Supported routes in the current foundation are listed below; provider terms and available models remain controlled by their respective vendors.
+Users can connect one or more model routes and choose which one is active. Local routes come first and need no paid account. Every later row is optional. Provider terms and available models remain controlled by their respective vendors.
 
 | Route | How the user connects | Cost / account boundary | Current foundation |
 |---|---|---|---|
-| OpenAI API | API key | Direct OpenAI Platform billing | API route |
-| ChatGPT subscription | Official Codex CLI sign-in | Subscription and limits handled by Codex | CLI handoff |
-| Anthropic API | API key | Direct Anthropic Console billing | API route |
-| Claude subscription | Official Claude Code sign-in | Sign-in and subscription handled by Claude Code | CLI handoff |
-| OpenRouter | API key + model ID | OpenRouter billing and model routing | API-compatible route |
-| OpenCode / OpenCode Go | Official OpenCode CLI sign-in | Provider account and OpenCode plan | CLI handoff |
-| Ollama | Local endpoint + model | Local compute; no cloud key required | API-compatible route |
-| Other OpenAI-compatible services | Base URL, model ID, optional key | Depends on selected service | Custom endpoint |
+| Ollama | Local endpoint + model | Free local compute; no cloud key | Default local route |
+| llama.cpp server | Local endpoint + model | Free local compute; default port 9931; no API key | Local OpenAI-compatible route |
+| OpenAI API | API key | Optional. Direct OpenAI Platform billing | API route |
+| ChatGPT subscription | Official Codex CLI sign-in | Optional. Subscription and limits handled by Codex | CLI handoff |
+| Anthropic API | API key | Optional. Direct Anthropic Console billing | API route |
+| Claude subscription | Official Claude Code sign-in | Optional. Sign-in and subscription handled by Claude Code | CLI handoff |
+| OpenRouter | API key + model ID | Optional. OpenRouter billing and model routing | API-compatible route |
+| OpenCode / OpenCode Go | Official OpenCode CLI sign-in | Optional. Provider account and OpenCode plan | CLI handoff |
+| Other OpenAI-compatible services | Base URL, model ID, optional key | Local or paid, depending on the service you select | Custom endpoint |
 
 **Subscription credentials are not scraped or copied.** Where subscription access is exposed only through an official CLI, Open-Ro launches that unmodified CLI and lets it authenticate itself. Direct API-key use is available for users who prefer a conventional provider API. See [`docs/AUTH.md`](docs/AUTH.md).
 
@@ -114,18 +115,21 @@ Windows and Linux are equal first-class targets for the Open-Ro desktop client. 
 
 | Area | 0.1.0 state | Target |
 |---|---|---|
-| Desktop shell | Implemented foundation | Polished multi-project workspace and onboarding |
-| Provider connections | API routes and official CLI handoffs | Guided install/sign-in/test, model catalogue, routing, fallback |
-| Local project access | Browse/read/write foundation | Diffs, checkpoints, ignore rules, rollback, multi-project context |
-| Agent tools | Approval-gated shell and file operations | Typed permissions, task plans, progress, recovery and audit trail |
-| MCP | One stdio server at a time | Multi-server registry, lifecycle management, granular approvals |
-| Roblox Studio | MCP integration foundation | Full inspect/edit/playtest/screenshot/input/repair loop |
-| Rojo | Setup guidance | Project mapping and sync status/workflow |
-| Blender | Python task runner foundation | Reviewed modeling/animation and asset import/export pipeline |
-| Images / thumbnails | Not implemented | Selectable provider adapters and asset review flow |
-| 3D generation | Not implemented | Optional generation backends and Blender handoff |
-| Windows packaging | Configured; not acceptance-tested | Signed installer and tested upgrade/uninstall path |
-| Omarchy packaging | Configured; not acceptance-tested | Verified AppImage and pacman install/update/uninstall |
+| Desktop shell | Chat, provider forms, project picker, and an approval tray | A beginner can prompt a playable game without writing Luau |
+| Provider connections | Catalog for API keys, official CLI handoffs, and Ollama | A tested local model with the network off, plus a visible data-flow line |
+| Local project access | List and read files. Writes stay staged until approved. Checkpoints exist | The same gate for Studio edits, with a line diff and restore |
+| Agent tools | Approval-gated local shell and file tools | Plans, evidence, and recovery tied to a real playtest |
+| MCP | One stdio server the user starts by typing a command | A tested Studio connection, not a typed command alone |
+| Roblox Studio | Not connected | Read the place, edit the right instance, playtest, and store the evidence |
+| Rojo | `rojo --version` detection only | Sync direction and overwrite scope shown before files move |
+| Blender | `blender --version` detection only | Reviewed models and animations, then a separate import approval |
+| Skills and asset library | Not implemented | Local skills the model actually receives, and optional downloads with a checksum and license |
+| Published-game upkeep | Not implemented | Recommendations that quote an official metric, and a separate approval before publishing |
+| Images / thumbnails | Not implemented | An optional provider and local review before any upload |
+| Windows packaging | Configured; not acceptance-tested | Install and uninstall recorded on a real machine |
+| Omarchy packaging | Configured; not acceptance-tested | Install and uninstall recorded on a real machine |
+
+Open-Ro does not yet read a Studio place, playtest a game, drive Blender, download an asset pack, or watch a published experience. Those are goals, not current behavior.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for milestones and acceptance criteria, and [`docs/BUILD-STATUS.md`](docs/BUILD-STATUS.md) for the exact verification boundary.
 
@@ -178,4 +182,4 @@ Open-Ro is MIT-licensed and welcomes issue reports, implementation proposals, pr
 
 Open-Ro is an independent community project. It is not affiliated with Roblox Corporation, Ropilot, OpenAI, Anthropic, OpenRouter, or OpenCode. Product and company names identify compatibility targets only. Each optional tool, provider, model, and generated asset retains its own license and terms; see [`docs/EXTENSIONS.md`](docs/EXTENSIONS.md).
 
-**License:** MIT. See [`LICENSE`](LICENSE).
+**License file:** [`LICENSE`](LICENSE) is headed "MIT License" and includes the MIT permission grant, but it stops before the standard limitation-of-liability paragraph. That shorter text is why GitHub's detector can label the repository "Other" instead of MIT. The file was not rewritten here. Replacing it with the OSI MIT text, or choosing Apache-2.0, needs an explicit decision from the maintainer.

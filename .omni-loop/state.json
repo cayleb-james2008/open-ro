@@ -41,11 +41,11 @@
     "formula": "0.75 * mean + 0.25 * min, U05 excluded as N/A"
   },
   "next_recommended_action": {
-    "id": "ITER-008",
-    "title": "Flatten the connection-card gradient and status glow",
-    "target_dimension": "U07",
-    "scope_files": ["src/styles.css"],
-    "uevam": 3.2,
+    "id": "S04",
+    "title": "Playtest evidence that cannot pass without assertions and screenshots",
+    "target_dimension": "U01",
+    "scope_files": ["electron/main.ts"],
+    "uevam": 20,
     "contract": ".omni-loop/current-contract.json"
   }
 }
