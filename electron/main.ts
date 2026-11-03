@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { ApprovalQueue, type PendingApproval } from './approvals';
+import { ApprovalQueue, type ApprovalKind, type PendingApproval } from './approvals';
 import { detectCapabilities } from './capabilities';
 import { McpStdioClient } from './mcp';
 import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServer, serverLabel, stageMcpCall, stageMcpConnect } from './mcpTools';
@@ -236,8 +236,8 @@ function requireMessages(messages: ChatMessage[]): ChatMessage[] {
     .map((message) => ({ role: message.role, content: message.content.slice(0, 20_000) }));
 }
 
-async function resolveApproval(id: string, decision: 'approve' | 'reject'): Promise<ApprovalResult> {
-  const item = approvals.take(id);
+async function resolveApproval(id: string, decision: 'approve' | 'reject', kind?: ApprovalKind): Promise<ApprovalResult> {
+  const item = approvals.take(id, kind);
   // MCP server starts are not tied to a project. Everything else must match the current project.
   if (item.kind !== 'mcp-server' && (!projectRoot || path.resolve(item.projectRoot) !== path.resolve(projectRoot))) {
     throw new Error('Project folder changed. The staged action was discarded.');
@@ -407,7 +407,7 @@ function registerIpc(): void {
     const previous = (await readTextIfExists(target)) ?? '';
     return toApprovalView(approvals.stageWrite({ projectRoot, relPath: args.rel, content: String(args.content ?? ''), previous }));
   });
-  ipcMain.handle('project:write', async (_event, args: { id: string }) => resolveApproval(args.id, 'approve'));
+  ipcMain.handle('project:write', async (_event, args: { id: string }) => resolveApproval(args.id, 'approve', 'write'));
   ipcMain.handle('project:checkpoints', async () => {
     try {
       return (await fs.readdir(checkpointRoot())).filter((name) => name.endsWith('.json')).sort().reverse().slice(0, 20);
@@ -443,7 +443,7 @@ function registerIpc(): void {
     const cwd = await resolveWithinRoot(projectRoot, '.');
     return toApprovalView(approvals.stageCommand({ projectRoot, command: args.command, cwd }));
   });
-  ipcMain.handle('command:run', async (_event, args: { id: string }) => resolveApproval(args.id, 'approve'));
+  ipcMain.handle('command:run', async (_event, args: { id: string }) => resolveApproval(args.id, 'approve', 'command'));
 
   ipcMain.handle('approvals:list', () => approvals.list().map(toApprovalView));
   ipcMain.handle('approvals:resolve', (_event, args: { id: string; decision: 'approve' | 'reject' }) => {

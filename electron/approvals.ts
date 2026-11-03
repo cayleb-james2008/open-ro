@@ -169,12 +169,18 @@ export class ApprovalQueue {
     return [...this.items.values()].sort((a, b) => a.order - b.order);
   }
 
-  /** Remove and return a still-valid approval. A second call throws. */
-  take(id: string): PendingApproval {
+  /**
+   * Remove and return a still-valid approval. A second call throws. With `kind`,
+   * an approval of any other kind is refused and left pending.
+   */
+  take(id: string, kind?: ApprovalKind): PendingApproval {
     this.prune();
     const item = this.items.get(id);
     if (!item) {
       throw new Error('That approval is no longer pending.');
+    }
+    if (kind && item.kind !== kind) {
+      throw new Error(`That approval is a ${item.kind} approval, not a ${kind} one. It is still pending.`);
     }
     this.items.delete(id);
     return item;
