@@ -17,6 +17,7 @@ const INVOKE_CHANNELS = new Set([
   'agent:cancel',
   'project:select-root',
   'project:root',
+  'project:index',
   'project:list',
   'project:read',
   'project:preview-write',

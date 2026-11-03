@@ -27,6 +27,7 @@ export interface Api {
   cancelAgent(): Promise<{ ok: boolean; cancelled: boolean }>;
   selectProjectRoot(): Promise<string | null>;
   projectRoot(): Promise<string | null>;
+  indexProject(): Promise<ProjectIndexSummary>;
   listProject(rel?: string): Promise<FileEntry[]>;
   readProject(rel: string): Promise<string>;
   previewWrite(args: { rel: string; content: string }): Promise<PendingApprovalView>;
@@ -63,6 +64,12 @@ function call<T>(channel: string, payload?: unknown): Promise<T> {
   return window.openro.invoke(channel, payload) as Promise<T>;
 }
 
+export interface ProjectIndexSummary {
+  root: string;
+  entries: Array<{ relPath: string; bytes: number }>;
+  truncated: boolean;
+}
+
 export const api: Api = {
   catalog: () => call<ProviderOption[]>('providers:catalog'),
   providers: () => call<StoredProviderView[]>('providers:list'),
@@ -75,6 +82,7 @@ export const api: Api = {
   cancelAgent: () => call<{ ok: boolean; cancelled: boolean }>('agent:cancel'),
   selectProjectRoot: () => call<string | null>('project:select-root'),
   projectRoot: () => call<string | null>('project:root'),
+  indexProject: () => call<ProjectIndexSummary>('project:index'),
   listProject: (rel) => call<FileEntry[]>('project:list', { rel }),
   readProject: (rel) => call<string>('project:read', { rel }),
   previewWrite: (args) => call<PendingApprovalView>('project:preview-write', args),

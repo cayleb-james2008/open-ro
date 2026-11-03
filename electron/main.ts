@@ -12,6 +12,7 @@ import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServe
 import { gradePlaytest, parsePlaytestReport } from './playtestEvidence';
 import { runApprovedStudio, stageStudioRestore, stageStudioTool, StudioReads, type StudioCheckpoint } from './studioTools';
 import { isIgnoredName, isSecretName, resolveWithinRoot, sameProjectRoot } from './pathSafety';
+import { indexProject, type ProjectIndex } from './projectIndex';
 import { getProviderOption, isProviderKind, providerOptions, type ProviderKind } from './providerCatalog';
 import {
   activateProvider,
@@ -502,6 +503,17 @@ function registerIpc(): void {
       return toApprovalView(approvals.stageDelete({ projectRoot, relPath: record.relPath, previous: current }));
     }
     return toApprovalView(stageCheckpointRestore(approvals, { projectRoot, record, current }));
+  });
+
+  ipcMain.handle('project:index', async (): Promise<ProjectIndex> => {
+    if (!projectRoot) {
+      throw new Error('No project folder selected.');
+    }
+    const info = await fs.stat(projectRoot).catch(() => null);
+    if (!info?.isDirectory()) {
+      throw new Error('The project folder is no longer available.');
+    }
+    return indexProject(projectRoot);
   });
 
   ipcMain.handle('command:preview', async (_event, args: { command: string }) => {
