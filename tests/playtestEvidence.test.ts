@@ -62,4 +62,20 @@ describe('playtest evidence gate (S04)', () => {
     const verdict = await grade({ ...full, screenshots: [], stateChecks: [{ instancePath: 'Workspace.Door', property: 'CanCollide', expected: 'false', actual: 'true' }] });
     expect(verdict).toMatchObject({ status: 'FAILED', failingCheck: 'state Workspace.Door.CanCollide: expected false, got true' });
   });
+
+  it('never passes over-limit input: a failing 51st assertion fails, 51 matching items are not evidence', async () => {
+    const match = { description: 'ok', expected: 'Open', actual: 'Open' };
+    const failing51 = await grade({ ...full, assertions: [...Array.from({ length: 50 }, () => match), { description: 'door 51', expected: 'Open', actual: 'Closed' }] });
+    expect(failing51).toMatchObject({ status: 'FAILED', failingCheck: 'assertion "door 51": expected Open, got Closed' });
+    const many = await grade({ ...full, stateChecks: Array.from({ length: 51 }, () => full.stateChecks[0]) });
+    expect(many).toMatchObject({ status: 'NO_EVIDENCE', reason: expect.stringMatching(/stateChecks has 51 items, over the limit of 50/) });
+  });
+
+  it('never passes values that differ after 2,000 characters, and refuses over-long values', async () => {
+    const long = 'x'.repeat(2_000);
+    const differs = await grade({ ...full, assertions: [{ description: 'long', expected: `${long}A`, actual: `${long}B` }] });
+    expect(differs.status).toBe('FAILED');
+    const same = await grade({ ...full, assertions: [{ description: 'long', expected: `${long}A`, actual: `${long}A` }] });
+    expect(same).toMatchObject({ status: 'NO_EVIDENCE', reason: expect.stringMatching(/longer than 2000 characters/) });
+  });
 });

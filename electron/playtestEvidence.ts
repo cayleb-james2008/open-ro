@@ -44,12 +44,14 @@ export interface PlaytestVerdict {
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const MAX_SCREENSHOT_BYTES = 25_000_000;
 const MAX_ITEMS = 50;
+const MAX_VALUE = 2_000;
 
 function text(value: unknown, field: string): string {
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
     throw new Error(`Playtest report field ${field} must be a string, number or boolean.`);
   }
-  return String(value).slice(0, 2_000);
+  // Never cut a graded value: a difference after the cut would pass. Over-limit values are refused by gradePlaytest.
+  return String(value);
 }
 
 function list(value: unknown, field: string): unknown[] {
@@ -59,7 +61,7 @@ function list(value: unknown, field: string): unknown[] {
   if (!Array.isArray(value)) {
     throw new Error(`Playtest report field ${field} must be a list.`);
   }
-  return value.slice(0, MAX_ITEMS);
+  return [...value];
 }
 
 function record(value: unknown, field: string): Record<string, unknown> {
@@ -95,7 +97,7 @@ export function parsePlaytestReport(raw: unknown): PlaytestReport {
 export async function gradePlaytest(report: PlaytestReport, resolveScreenshot: (reported: string) => Promise<string>): Promise<PlaytestVerdict> {
   const screenshots: PlaytestScreenshotEvidence[] = [];
   const rejected: string[] = [];
-  for (const reported of report.screenshots) {
+  for (const reported of report.screenshots.slice(0, MAX_ITEMS)) {
     try {
       const target = await resolveScreenshot(reported);
       const stat = await fs.stat(target);
@@ -124,6 +126,17 @@ export async function gradePlaytest(report: PlaytestReport, resolveScreenshot: (
   }
 
   const missing: string[] = [];
+  const lists = { assertions: report.assertions.length, stateChecks: report.stateChecks.length, screenshots: report.screenshots.length };
+  for (const [field, count] of Object.entries(lists)) {
+    if (count > MAX_ITEMS) missing.push(`${field} has ${count} items, over the limit of ${MAX_ITEMS}`);
+  }
+  const values = [
+    report.scenario,
+    ...report.assertions.flatMap((check) => [check.description, check.expected, check.actual]),
+    ...report.stateChecks.flatMap((check) => [check.instancePath, check.property, check.expected, check.actual]),
+    ...report.screenshots,
+  ];
+  if (values.some((value) => value.length > MAX_VALUE)) missing.push(`a value is longer than ${MAX_VALUE} characters`);
   if (report.assertions.length === 0) missing.push('no assertions');
   if (report.stateChecks.length === 0) missing.push('no state checks');
   if (screenshots.length === 0) missing.push('no readable PNG screenshot');
