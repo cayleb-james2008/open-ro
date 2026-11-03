@@ -33,4 +33,9 @@ describe('design tokens', () => {
     }
     expect(contrast(hex('on-accent'), hex('accent')), 'on-accent on accent').toBeGreaterThanOrEqual(4.5);
   });
+
+  it('runs the token check as part of npm run lint', () => {
+    const scripts = JSON.parse(readFileSync('package.json', 'utf8')).scripts;
+    expect(scripts.lint).toContain('node scripts/build-tokens.mjs --check');
+  });
 });
