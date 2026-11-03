@@ -158,7 +158,7 @@ describe('project context for the agent', () => {
     const anthropic = source.slice(source.indexOf('async function callAnthropic'), source.indexOf('async function callCli'));
     expect(openAi).toContain('systemPrompt(projectContext)');
     expect(anthropic).toContain('systemPrompt(projectContext)');
-    expect(source).toContain('callOpenAiCompatible(connection, option, sanitizeMessages(messages), executor, signal, projectContext)');
+    expect(source).toContain('callOpenAiCompatible(connection, option, sanitizeMessages(messages), executor, signal, projectContext, onDelta)');
     expect(source).toContain('callAnthropic(connection, messages, executor, signal, projectContext)');
   });
 

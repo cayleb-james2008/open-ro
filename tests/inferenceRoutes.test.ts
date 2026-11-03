@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
+import { createServer, type IncomingHttpHeaders, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runAgentTurn, testConnection } from '../electron/agent';
@@ -13,7 +13,7 @@ interface CapturedRequest {
 }
 
 type Respond = (status: number, payload: unknown, headers?: Record<string, string>) => void;
-type Responder = (request: CapturedRequest, respond: Respond) => void;
+type Responder = (request: CapturedRequest, respond: Respond, raw: ServerResponse) => void;
 
 const servers: Server[] = [];
 
@@ -31,7 +31,7 @@ async function mockProvider(responder: Responder): Promise<{ baseUrl: string; re
       responder(captured, (status, payload, headers) => {
         response.writeHead(status, { 'Content-Type': 'application/json', ...headers });
         response.end(JSON.stringify(payload));
-      });
+      }, response);
     });
   });
   servers.push(server);
@@ -199,6 +199,81 @@ describe('transient provider failures', () => {
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(provider.requests).toHaveLength(1);
+  });
+});
+
+describe('streaming responses', () => {
+  const executor: ToolExecutor = { schemas: () => [], execute: async () => ({ ok: true, output: '' }) };
+  const turn = (baseUrl: string, onDelta?: (text: string) => void) => runAgentTurn({
+    connection: { kind: 'openai-api', model: 'mock-model', baseUrl },
+    messages: [{ role: 'user', content: 'hi' }],
+    projectRoot: process.cwd(),
+    executor,
+    onDelta,
+  });
+
+  it('emits text deltas in order and assembles the final text', async () => {
+    const provider = await mockProvider((_request, _respond, raw) => {
+      raw.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      raw.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Hel' } }] })}\n\n`);
+      raw.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'lo' } }] })}\n\n`);
+      raw.end('data: [DONE]\n\n');
+    });
+    const deltas: string[] = [];
+    const result = await turn(provider.baseUrl, (text) => deltas.push(text));
+    expect(result.ok).toBe(true);
+    expect(result.assistantText).toBe('Hello');
+    expect(deltas.join('')).toBe('Hello');
+    expect(JSON.parse(provider.requests[0].body).stream).toBe(true);
+  });
+
+  it('assembles a tool call split across stream chunks and runs it', async () => {
+    let calls = 0;
+    const provider = await mockProvider((_request, _respond, raw) => {
+      calls += 1;
+      if (calls === 1) {
+        raw.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        raw.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'read_file', arguments: '{"path":' } }] } }] })}\n\n`);
+        raw.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"src/init.lua"}' } }] } }] })}\n\n`);
+        raw.end('data: [DONE]\n\n');
+        return;
+      }
+      raw.writeHead(200, { 'Content-Type': 'application/json' });
+      raw.end(JSON.stringify({ choices: [{ message: { content: 'Done' } }] }));
+    });
+    const executed: ToolCallRequest[] = [];
+    const result = await runAgentTurn({
+      connection: { kind: 'openai-api', model: 'mock-model', baseUrl: provider.baseUrl },
+      messages: [{ role: 'user', content: 'read it' }],
+      projectRoot: process.cwd(),
+      executor: {
+        schemas: () => [{ name: 'read_file', description: 'read', parameters: { type: 'object', properties: { path: { type: 'string', description: 'path' } }, required: ['path'] } }],
+        execute: async (call) => {
+          executed.push(call);
+          return { ok: true, output: 'file body' };
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.assistantText).toBe('Done');
+    expect(executed).toEqual([{ id: 'call_1', name: 'read_file', args: { path: 'src/init.lua' } }]);
+    expect(provider.requests).toHaveLength(2);
+  });
+
+  it('falls back to a JSON body and emits one delta when the server ignores stream', async () => {
+    const provider = await mockProvider((_request, respond) => respond(200, { choices: [{ message: { content: 'whole' } }] }));
+    const deltas: string[] = [];
+    const result = await turn(provider.baseUrl, (text) => deltas.push(text));
+    expect(result.ok).toBe(true);
+    expect(result.assistantText).toBe('whole');
+    expect(deltas).toEqual(['whole']);
+  });
+
+  it('forwards deltas over IPC and exposes a preload subscription', () => {
+    const main = readFileSync('electron/main.ts', 'utf8');
+    expect(main).toContain("sender.send('agent:delta'");
+    expect(main).toContain('sessionId');
+    expect(readFileSync('electron/preload.ts', 'utf8')).toContain('onAgentDelta');
   });
 });
 

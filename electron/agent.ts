@@ -103,6 +103,94 @@ async function fetchWithRetry(url: string, init: RequestInit): Promise<Response>
   }
 }
 
+interface StreamedToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+/** Read an OpenAI-compatible SSE stream, emitting text deltas and assembling tool calls by index. */
+async function readOpenAiStream(response: Response, onDelta?: (text: string) => void): Promise<{ content: string; calls: StreamedToolCall[] }> {
+  if (!response.body) {
+    return { content: '', calls: [] };
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+  const calls = new Map<number, { id?: string; name?: string; args: string }>();
+
+  const handleLine = (line: string): void => {
+    if (!line.startsWith('data:')) {
+      return;
+    }
+    const data = line.slice(5).trim();
+    if (!data || data === '[DONE]') {
+      return;
+    }
+    type Chunk = {
+      choices?: Array<{
+        delta?: {
+          content?: string;
+          tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>;
+        };
+      }>;
+    };
+    let payload: Chunk;
+    try {
+      payload = JSON.parse(data) as Chunk;
+    } catch {
+      return;
+    }
+    const delta = payload.choices?.[0]?.delta;
+    if (!delta) {
+      return;
+    }
+    if (typeof delta.content === 'string' && delta.content) {
+      content += delta.content;
+      onDelta?.(delta.content);
+    }
+    (delta.tool_calls ?? []).forEach((call, position) => {
+      const index = typeof call.index === 'number' ? call.index : position;
+      const existing = calls.get(index) ?? { args: '' };
+      if (call.id) {
+        existing.id = call.id;
+      }
+      if (call.function?.name) {
+        existing.name = (existing.name ?? '') + call.function.name;
+      }
+      if (typeof call.function?.arguments === 'string') {
+        existing.args += call.function.arguments;
+      }
+      calls.set(index, existing);
+    });
+  };
+
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    let newline = buffer.indexOf('\n');
+    while (newline >= 0) {
+      handleLine(buffer.slice(0, newline).replace(/\r$/, ''));
+      buffer = buffer.slice(newline + 1);
+      newline = buffer.indexOf('\n');
+    }
+  }
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    handleLine(buffer.trim());
+  }
+  return {
+    content,
+    calls: [...calls.entries()]
+      .sort((left, right) => left[0] - right[0])
+      .map(([, call]) => ({ id: call.id ?? '', name: call.name ?? '', arguments: call.args })),
+  };
+}
+
 export function toolSchemas(): ToolSchema[] {
   return [
     {
@@ -232,6 +320,7 @@ async function callOpenAiCompatible(
   executor: ToolExecutor,
   signal?: AbortSignal,
   projectContext?: string,
+  onDelta?: (text: string) => void,
 ): Promise<AgentTurnResult> {
   const base = (connection.baseUrl ?? option.defaultBaseUrl ?? '').replace(/\/+$/, '');
   if (!base) {
@@ -255,26 +344,44 @@ async function callOpenAiCompatible(
         model: connection.model,
         messages: convo,
         tools: executor.schemas().map((schema) => ({ type: 'function', function: schema })),
+        ...(onDelta ? { stream: true } : {}),
       }),
       signal: turnSignal(signal),
     });
     if (!response.ok) {
       return { ok: false, assistantText, toolTrace: trace, error: `Provider request failed: HTTP ${response.status} ${(await response.text()).slice(0, 300)}` };
     }
-    const payload = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string; tool_calls?: Array<{ id: string; function?: { name: string; arguments: string } }> } }>;
-    };
-    const choice = payload.choices?.[0]?.message;
-    assistantText = choice?.content ?? assistantText;
-    const calls = (choice?.tool_calls ?? []).map((call, index) => ({
-      id: call.id ?? `call-${round}-${index}`,
-      name: call.function?.name ?? '',
-      args: safeParseArgs(call.function?.arguments),
-    }));
+    const streamed = (response.headers.get('content-type') ?? '').includes('text/event-stream');
+    let roundText = '';
+    let calls: Array<{ id: string; name: string; args: Record<string, unknown> }> = [];
+    if (streamed) {
+      const parsed = await readOpenAiStream(response, onDelta);
+      roundText = parsed.content;
+      calls = parsed.calls.map((call, index) => ({
+        id: call.id || `call-${round}-${index}`,
+        name: call.name,
+        args: safeParseArgs(call.arguments),
+      }));
+    } else {
+      const payload = (await response.json()) as {
+        choices?: Array<{ message?: { content?: string; tool_calls?: Array<{ id: string; function?: { name: string; arguments: string } }> } }>;
+      };
+      const choice = payload.choices?.[0]?.message;
+      roundText = choice?.content ?? '';
+      if (onDelta && roundText) {
+        onDelta(roundText);
+      }
+      calls = (choice?.tool_calls ?? []).map((call, index) => ({
+        id: call.id ?? `call-${round}-${index}`,
+        name: call.function?.name ?? '',
+        args: safeParseArgs(call.function?.arguments),
+      }));
+    }
+    assistantText = roundText || assistantText;
     if (calls.length === 0) {
       break;
     }
-    convo.push({ role: 'assistant', content: choice?.content ?? '', tool_calls: calls.map((call) => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } })) });
+    convo.push({ role: 'assistant', content: roundText, tool_calls: calls.map((call) => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } })) });
     for (const call of calls) {
       const executed = await runTool(call, executor, trace);
       convo.push({ role: 'tool', tool_call_id: call.id, content: executed.output });
@@ -478,8 +585,9 @@ export async function runAgentTurn(args: {
   executor: ToolExecutor;
   signal?: AbortSignal;
   projectContext?: string;
+  onDelta?: (text: string) => void;
 }): Promise<AgentTurnResult> {
-  const { connection, messages, projectRoot, executor, signal, projectContext } = args;
+  const { connection, messages, projectRoot, executor, signal, projectContext, onDelta } = args;
   if (signal?.aborted) {
     return { ok: false, assistantText: '', toolTrace: [], error: 'Cancelled.' };
   }
@@ -492,7 +600,7 @@ export async function runAgentTurn(args: {
   if (option.api === 'anthropic-messages') {
     return callAnthropic(connection, messages, executor, signal, projectContext);
   }
-  return callOpenAiCompatible(connection, option, sanitizeMessages(messages), executor, signal, projectContext);
+  return callOpenAiCompatible(connection, option, sanitizeMessages(messages), executor, signal, projectContext, onDelta);
 }
 
 /** Connection test per route (docs/AUTH.md: a CLI route is validated by running its status command). */

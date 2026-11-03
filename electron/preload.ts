@@ -44,6 +44,16 @@ const api = {
     }
     return ipcRenderer.invoke(channel, payload);
   },
+  /** Subscribe to live agent text deltas. Returns an unsubscribe function. */
+  onAgentDelta: (listener: (payload: { sessionId: string; text: string }) => void): (() => void) => {
+    const handler = (_event: unknown, payload: unknown): void => {
+      listener(payload as { sessionId: string; text: string });
+    };
+    ipcRenderer.on('agent:delta', handler);
+    return () => {
+      ipcRenderer.removeListener('agent:delta', handler);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld('openro', api);

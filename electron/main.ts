@@ -377,7 +377,7 @@ function registerIpc(): void {
     return testConnection(connection, projectRoot);
   });
 
-  ipcMain.handle('agent:send', async (_event, args: { messages: ChatMessage[]; projectRoot?: string }): Promise<AgentTurnResult> => {
+  ipcMain.handle('agent:send', async (event, args: { messages: ChatMessage[]; projectRoot?: string; sessionId?: string }): Promise<AgentTurnResult> => {
     const connection = await resolveActiveConnection();
     if (!connection) {
       return { ok: false, assistantText: '', toolTrace: [], error: 'Connect a model first (Models).' };
@@ -415,6 +415,15 @@ function registerIpc(): void {
       }
       const index = await indexProject(turnRoot).catch(() => null);
       const projectContext = index ? buildProjectContext(index) : '';
+      const sessionId = typeof args?.sessionId === 'string' ? args.sessionId : '';
+      const sender = event.sender;
+      const onDelta = sessionId
+        ? (text: string): void => {
+            if (!sender.isDestroyed()) {
+              sender.send('agent:delta', { sessionId, text });
+            }
+          }
+        : undefined;
       return await runAgentTurn({
         connection,
         messages: requireMessages(args?.messages ?? []),
@@ -422,6 +431,7 @@ function registerIpc(): void {
         executor: buildExecutor(turnRoot),
         signal: controller.signal,
         projectContext: projectContext || undefined,
+        onDelta,
       });
     } catch (error) {
       if (controller.signal.aborted) {
