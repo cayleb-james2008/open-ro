@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ApprovalQueue } from '../electron/approvals';
 import type { McpCaller } from '../electron/mcpTools';
-import { luauToolCall, runApprovedStudio, stageStudioRestore, stageStudioTool, StudioReads } from '../electron/studioTools';
+import { luauToolCall, runApprovedStudio, stageStudioRestore, stageStudioTool, studioReadKey, StudioReads } from '../electron/studioTools';
 import type { McpToolSummary } from '../electron/types';
 
 const executeLuau: McpToolSummary = {
@@ -68,13 +68,13 @@ describe('staging Studio tools', () => {
     const write = (args: Record<string, unknown>) => stage(studio, reads, approvals, 'studio_write_script', args);
     const shop = { path: 'ServerScriptService.Shop', className: 'Script', source: 'print(2)' };
     expect(write(shop).output).toMatch(/studio_read_script first/);
-    reads.set('ServerScriptService.Shop', { exists: true, className: 'ModuleScript', source: 'return {}' });
+    reads.set(studioReadKey('session-1', undefined, 'ServerScriptService.Shop'), { exists: true, className: 'ModuleScript', source: 'return {}' });
     expect(write(shop).output).toMatch(/is a ModuleScript, not a Script/);
     expect(write({ ...shop, path: 'StarterGui.Shop' }).output).toMatch(/does not run in StarterGui/);
     expect(write({ ...shop, source: 'p.leaderstats.Coins.Value += 1' }).output).toMatch(/--!strict/);
     expect(write({ ...shop, className: 'Part' }).ok).toBe(false);
     expect(approvals.list()).toEqual([]);
-    reads.set('ServerScriptService.Shop', { exists: true, className: 'Script', source: 'print(1)' });
+    reads.set(studioReadKey('session-1', undefined, 'ServerScriptService.Shop'), { exists: true, className: 'Script', source: 'print(1)' });
     expect(write(shop)).toMatchObject({ ok: true, pendingApproval: { kind: 'studio', path: 'ServerScriptService.Shop' } });
     expect(approvals.list()[0]).toMatchObject({ studioOp: 'write', studioClass: 'Script', previous: 'print(1)', content: 'print(2)' });
     expect(studio.calls).toEqual([]);
@@ -121,7 +121,7 @@ describe('running approved Studio calls', () => {
     expect(bad).toMatchObject({ ok: false, output: 'Read-back source does not match the approved source.' });
     expect(bad.checkpoint).toBeUndefined();
     expect(write('print(2)').output).toMatch(/studio_read_script first/);
-    reads.set(path, { exists: true, className: 'Script', source: 'print(1)' });
+    reads.set(studioReadKey('session-1', undefined, path), { exists: true, className: 'Script', source: 'print(1)' });
     write('print(2)');
     studio.replies.push(ok({ path, className: 'Script', source: 'print(2)' }));
     const good = await runApprovedStudio(approvals.take(approvals.list()[0].id), studio.caller, reads);
@@ -144,6 +144,33 @@ describe('running approved Studio calls', () => {
     expect(write.output).toMatch(/studio_read_script first/);
   });
 
+  it('a read in one studio or server session never authorizes a write in another', async () => {
+    const { studio, approvals, reads } = setup();
+    const path = 'ServerScriptService.Shop';
+    const stage = (name: string, args: Record<string, unknown>, caller = studio.caller) => stageStudioTool(approvals, caller, reads, { projectRoot: root, name, args: { path, ...args } });
+    stage('studio_read_script', { studioId: 'A' });
+    const read = approvals.list()[0];
+    expect(read.studioId).toBe('A');
+    expect(JSON.parse(read.mcpArgs ?? '{}').studio_id).toBe('A');
+    studio.replies.push(ok({ exists: true, path, className: 'Script', source: 'print(1)' }));
+    expect((await runApprovedStudio(approvals.take(read.id), studio.caller, reads)).ok).toBe(true);
+    expect(stage('studio_write_script', { studioId: 'B', className: 'Script', source: 'x' }).output).toMatch(/studio_read_script first/);
+    expect(stage('studio_write_script', { className: 'Script', source: 'x' }).output).toMatch(/studio_read_script first/);
+    const restarted = { ...studio.caller, identity: { command: 'StudioMCP', args: [], session: 'session-2' } };
+    expect(stage('studio_write_script', { studioId: 'A', className: 'Script', source: 'x' }, restarted).output).toMatch(/studio_read_script first/);
+    expect(approvals.list()).toHaveLength(0);
+    expect(stage('studio_write_script', { studioId: 'A', className: 'Script', source: 'print(2)' }).ok).toBe(true);
+    const write = approvals.list()[0];
+    expect(write).toMatchObject({ studioId: 'A', previous: 'print(1)' });
+    expect(JSON.parse(write.mcpArgs ?? '{}').studio_id).toBe('A');
+    studio.replies.push(ok({ path, className: 'Script', source: 'print(2)' }));
+    const done = await runApprovedStudio(approvals.take(write.id), studio.caller, reads);
+    expect(done.checkpoint).toMatchObject({ studioId: 'A' });
+    const restore = stageStudioRestore(approvals, studio.caller, done.checkpoint ?? { path, className: 'Script', previous: null, content: '' }, { projectRoot: root });
+    expect(restore.studioId).toBe('A');
+    expect(JSON.parse(restore.mcpArgs ?? '{}').studio_id).toBe('A');
+  });
+
   it('a Studio error, a missing reply or a vanished tool is a failure', async () => {
     const { studio, approvals, reads } = setup();
     stageStudioTool(approvals, studio.caller, reads, { projectRoot: root, name: 'studio_read_script', args: { path: 'Workspace.X' } });
@@ -152,7 +179,7 @@ describe('running approved Studio calls', () => {
     expect(await runApprovedStudio(item, studio.caller, reads)).toMatchObject({ ok: false, output: 'Two instances named X under Workspace' });
     studio.replies.push('Luau error: attempt to index nil');
     expect((await runApprovedStudio(item, studio.caller, reads)).ok).toBe(false);
-    expect(reads.get('Workspace.X')).toBeUndefined();
+    expect(reads.size).toBe(0);
     const gone = { ...studio.caller, listTools: () => [] };
     expect((await runApprovedStudio(item, gone, reads)).summary).toMatch(/no longer available/);
     const restarted = { ...studio.caller, identity: { command: 'StudioMCP', args: [], session: 'session-2' } };

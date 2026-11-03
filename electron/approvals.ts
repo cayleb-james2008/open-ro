@@ -27,6 +27,8 @@ export interface PendingApproval {
   studioPath?: string;
   studioClass?: string;
   studioServices?: string[];
+  /** The studio_id the Luau call targets, when the server asked for one. */
+  studioId?: string;
 }
 
 const MAX_PENDING = 30;
@@ -146,6 +148,7 @@ export class ApprovalQueue {
     previous?: string;
     content?: string;
     server?: McpServerIdentity;
+    studioId?: string;
   }): PendingApproval {
     const item = this.stageMcp({ projectRoot: input.projectRoot, tool: input.tool, args: input.args, server: input.server });
     Object.assign(item, {
@@ -154,6 +157,7 @@ export class ApprovalQueue {
       studioPath: input.path,
       studioClass: input.className,
       studioServices: input.services ? [...input.services] : undefined,
+      studioId: input.studioId,
       previous: input.previous,
       content: input.content,
     });

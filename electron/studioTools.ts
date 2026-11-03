@@ -51,8 +51,15 @@ export function luauToolCall(tools: McpToolSummary[], code: string, studioId?: s
   return { tool: tool.name, args };
 }
 
-/** What approved reads saw, by dot path. `source: null` means the instance exists but is not a script; a missing entry means it was never read. */
+/**
+ * What approved reads saw, keyed by studioReadKey. `source: null` means the instance exists but is not a script;
+ * a missing entry means it was never read. A read authorizes writes only on the same server session and studio.
+ */
 export class StudioReads extends Map<string, { exists: boolean; className?: string; source: string | null }> {}
+
+export function studioReadKey(session: string, studioId: string | undefined, path: string): string {
+  return JSON.stringify([session, studioId ?? null, path]);
+}
 
 const SERVICE_NAME = /^[A-Za-z]{1,40}$/;
 
@@ -72,7 +79,7 @@ export function stageStudioTool(
     const tools = caller.listTools();
     const stage = (op: 'snapshot' | 'read' | 'write', path: string, code: string, extra: Partial<Parameters<ApprovalQueue['stageStudio']>[0]>) => {
       const call = luauToolCall(tools, code, studioId);
-      const item = approvals.stageStudio({ projectRoot: input.projectRoot, op, path, tool: call.tool, args: call.args, server, ...extra });
+      const item = approvals.stageStudio({ projectRoot: input.projectRoot, op, path, tool: call.tool, args: call.args, server, studioId, ...extra });
       return { ok: true, output: `Staged Studio ${op} of ${path} for approval. Nothing has run in Studio.`, pendingApproval: { kind: 'studio' as const, tool: call.tool, path, id: item.id } };
     };
     if (input.name === 'studio_snapshot') {
@@ -100,7 +107,7 @@ export function stageStudioTool(
     if (problems.length > 0) {
       return { ok: false, output: `Not staged. ${problems.join(' ')}` };
     }
-    const seen = reads.get(path);
+    const seen = reads.get(studioReadKey(server.session, studioId, path));
     if (!seen) {
       return { ok: false, output: `Read ${formatPath(segments)} with studio_read_script first, so the review shows what changes.` };
     }
@@ -115,7 +122,7 @@ export function stageStudioTool(
 }
 
 /** What a confirmed Studio write replaced. `previous: null` means Open-Ro created the script. */
-export interface StudioCheckpoint { path: string; className: ScriptClass; previous: string | null; content: string }
+export interface StudioCheckpoint { path: string; className: ScriptClass; previous: string | null; content: string; studioId?: string }
 
 /** Run an approved Studio call and check what Studio reports back. */
 export async function runApprovedStudio(
@@ -129,6 +136,7 @@ export async function runApprovedStudio(
     throw new Error('Not a Studio approval.');
   }
   const label = path === 'game' ? 'the place tree' : `game.${path}`;
+  const key = studioReadKey(item.mcpServer?.session ?? '', item.studioId, path);
   const fail = (summary: string, output?: string) => ({ ok: false, decision: 'approve' as const, summary, output });
   if (!caller.running || !caller.listTools().some((entry) => entry.name === tool)) {
     return fail(`Studio tool ${tool} is no longer available. Nothing ran.`);
@@ -156,34 +164,34 @@ export async function runApprovedStudio(
   }
   if (item.studioOp === 'read') {
     if (result.exists !== true) {
-      reads.set(path, { exists: false, source: null });
+      reads.set(key, { exists: false, source: null });
       return { ok: true, decision: 'approve', summary: `${label} does not exist. Missing: game.${String(result.missing ?? path)}.` };
     }
     if (result.path !== path || typeof result.className !== 'string') {
       return fail(`Studio returned a different instance than ${label}.`, JSON.stringify(result.path ?? null));
     }
     const source = typeof result.source === 'string' ? result.source : null;
-    reads.set(path, { exists: true, className: result.className, source });
+    reads.set(key, { exists: true, className: result.className, source });
     return { ok: true, decision: 'approve', summary: `Read ${label} (${result.className}).`, output: source ?? '(not a script)' };
   }
   const className = item.studioClass as ScriptClass;
   const content = item.content ?? '';
   const problems = readbackProblems(parseInstancePath(path), className, content, result);
   if (problems.length > 0) {
-    reads.delete(path);
+    reads.delete(key);
     return fail(`Studio did not confirm the write to ${label}. Read it again before another write.`, problems.join('\n'));
   }
-  reads.set(path, { exists: true, className, source: content });
+  reads.set(key, { exists: true, className, source: content });
   return {
     ok: true,
     decision: 'approve',
     summary: `Wrote ${label} (${className}). Studio read back the same path, class and source. Ctrl+Z in Studio undoes it.`,
-    checkpoint: { path, className, previous: item.previous ?? null, content },
+    checkpoint: { path, className, previous: item.previous ?? null, content, studioId: item.studioId },
   };
 }
 
 /** Stage putting a checkpoint's previous source back. It only applies if the script still holds what Open-Ro wrote. */
-export function stageStudioRestore(approvals: ApprovalQueue, caller: McpCaller, checkpoint: StudioCheckpoint, input: { projectRoot: string; studioId?: string }): PendingApproval {
+export function stageStudioRestore(approvals: ApprovalQueue, caller: McpCaller, checkpoint: StudioCheckpoint, input: { projectRoot: string }): PendingApproval {
   if (!caller.running || !caller.identity) {
     throw new Error('No MCP server is connected. Connect the Roblox Studio MCP server first.');
   }
@@ -192,9 +200,9 @@ export function stageStudioRestore(approvals: ApprovalQueue, caller: McpCaller, 
   }
   const segments = parseInstancePath(checkpoint.path);
   const code = buildWriteLuau({ segments, className: checkpoint.className, source: checkpoint.previous, expectedPrevious: checkpoint.content });
-  const call = luauToolCall(caller.listTools(), code, input.studioId);
+  const call = luauToolCall(caller.listTools(), code, checkpoint.studioId);
   return approvals.stageStudio({
-    projectRoot: input.projectRoot, op: 'write', path: checkpoint.path, tool: call.tool, args: call.args,
+    projectRoot: input.projectRoot, op: 'write', path: checkpoint.path, tool: call.tool, args: call.args, studioId: checkpoint.studioId,
     className: checkpoint.className, previous: checkpoint.content, content: checkpoint.previous, server: caller.identity,
   });
 }
