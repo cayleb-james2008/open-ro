@@ -33,7 +33,7 @@ The UI must never receive raw provider credentials, Node.js process objects, or 
 | `electron/secureStore.ts` | Secure credential storage via Electron safeStorage |
 | `electron/mcp.ts` | MCP stdio transport, tool discovery and calls |
 | `electron/mcpTools.ts` | Exposes connected MCP tools to the agent as `mcp__<tool>`; calls are staged and run only after approval |
-| `electron/playtestEvidence.ts` | Playtest evidence gate: no PASSED without matching assertions, state checks and a PNG screenshot |
+| `electron/playtestEvidence.ts` | Playtest report check: PASSED needs agent-reported assertions, state checks and a PNG path inside the project, with every expected value equal to the actual one. It checks completeness and consistency only; values and the screenshot are not verified against a run |
 | `electron/capabilities.ts` | Optional local capability detection/metadata |
 | `electron/types.ts` | Shared typed contracts |
 | `tests/` | Deterministic tests for provider catalogue and other core logic |

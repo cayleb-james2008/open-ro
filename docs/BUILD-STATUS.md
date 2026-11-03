@@ -13,7 +13,7 @@
 - Approval-gated file writes and command execution.
 - Credential storage guarded by Electron `safeStorage`; no plaintext persistence fallback.
 - Single active stdio MCP client. It sends newline-delimited JSON-RPC as the MCP stdio transport requires, lists the server's tools, answers server `ping`, and stops the process when the handshake fails. Starting a server and each agent tool call (`mcp__<tool>`) are staged in the approval queue; the exact command or argument JSON runs only after approval.
-- Playtest evidence gate (`report_playtest`): a result is PASSED only with at least one assertion, one state check, and one PNG screenshot inside the project, and every expected value equals the actual one. A mismatch is FAILED with the failing check; anything else is NO_EVIDENCE. There is no playtest runner yet, so the agent supplies the values from tool output.
+- Playtest evidence gate (`report_playtest`): a result is PASSED only with at least one assertion, one state check, and one PNG screenshot inside the project, and every expected value equals the actual one. A mismatch is FAILED with the failing check; anything else, including more than 50 items in a list or a value over 2,000 characters, is NO_EVIDENCE. There is no playtest runner yet, so the agent supplies the values and the screenshot path, and Open-Ro does not verify them against a run.
 - Blender is detected by running `blender --version`. There is no Blender task runner.
 - Windows NSIS and Linux AppImage/deb/pacman packaging configuration.
 - Basic provider catalogue tests and CI configuration.
