@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import api from './api';
 import { Dialog } from './Dialog';
-import { diffLines } from './textDiff';
+import { diffPreview } from './textDiff';
 import { approvalCopy, providerInitials } from './labels';
 import { providerOptions, type ProviderKind, type ProviderOption } from '../electron/providerCatalog';
 import type { SessionSnapshot, StoredChatSession } from '../electron/sessions';
@@ -77,6 +77,8 @@ export default function App() {
   const [providerTest, setProviderTest] = useState<{ kind: ProviderKind; ok: boolean; detail: string } | null>(null);
   const [approvals, setApprovals] = useState<PendingApprovalView[]>([]);
   const [actionResult, setActionResult] = useState<ApprovalResult | null>(null);
+  /** Approval cards whose whole diff the user opened; a cut diff must be opened before it can be approved. */
+  const [expandedDiffs, setExpandedDiffs] = useState<Set<string>>(new Set());
   const [sessionsReady, setSessionsReady] = useState(false);
   const [bridgeMissing, setBridgeMissing] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -514,7 +516,7 @@ export default function App() {
         )}
         {approvals.map((item) => {
           const showsDiff = item.kind === 'write' || item.studioOp === 'write';
-          const rows = showsDiff ? diffLines(item.previous ?? '', item.content ?? '').slice(0, 240) : [];
+          const { rows, hidden, invisibleChange } = showsDiff ? diffPreview(item.previous ?? '', item.content ?? '', expandedDiffs.has(item.id)) : { rows: [], hidden: 0, invisibleChange: false };
           const copy = approvalCopy(item);
           return (
             <article className="approval-card" key={item.id}>
@@ -529,9 +531,15 @@ export default function App() {
                   ))}
                 </pre>
               )}
+              {invisibleChange && <p className="diff-note">Only line endings or other invisible characters change.</p>}
+              {hidden > 0 && (
+                <button type="button" className="text-btn" onClick={() => setExpandedDiffs((prev) => new Set(prev).add(item.id))}>
+                  +{hidden} more lines. Show the whole diff to approve.
+                </button>
+              )}
               <div className="modal-actions">
                 <button type="button" className="outline-btn" onClick={() => void resolveApproval(item.id, 'reject')}>Reject</button>
-                <button type="button" className="primary-btn" onClick={() => void resolveApproval(item.id, 'approve')}>{copy.approveLabel}</button>
+                <button type="button" className="primary-btn" disabled={hidden > 0} title={hidden > 0 ? 'Show the whole diff first' : undefined} onClick={() => void resolveApproval(item.id, 'approve')}>{copy.approveLabel}</button>
               </div>
             </article>
           );

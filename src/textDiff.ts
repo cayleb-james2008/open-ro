@@ -48,3 +48,16 @@ export function diffLines(before: string, after: string): DiffRow[] {
   }
   return rows;
 }
+
+/** Rows an approval card shows before the user expands the diff. */
+export const DIFF_PREVIEW_ROWS = 240;
+
+/**
+ * What an approval card shows: the first DIFF_PREVIEW_ROWS rows unless expanded, how many rows are
+ * hidden, and whether the text changes although no line visibly does (for example only line endings).
+ */
+export function diffPreview(before: string, after: string, expanded: boolean): { rows: DiffRow[]; hidden: number; invisibleChange: boolean } {
+  const all = diffLines(before, after);
+  const rows = expanded ? all : all.slice(0, DIFF_PREVIEW_ROWS);
+  return { rows, hidden: all.length - rows.length, invisibleChange: before !== after && all.every((row) => row.kind === 'context') };
+}
