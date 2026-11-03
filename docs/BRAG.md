@@ -10,7 +10,7 @@ This file is a factual project-change log for release notes, project reviews, an
 - **MCP:** starting a stdio server and every agent call to its tools need approval. A staged call runs only on the server session it was staged on, including after a crash and restart (`tests/mcpServerBinding.test.ts`, `tests/mcpCrashRestart.test.ts`). Outgoing U+2028 and U+2029 are escaped for line-reading servers (`tests/mcpLineSeparators.test.ts`). The client was run against `@modelcontextprotocol/server-everything` 2.1.0.
 - **Playtest reports:** marked passed only when the agent reports assertions, state checks and a PNG path, and every expected value equals the actual one. Those values are agent-reported, not checked against a run.
 - **Studio tools:** place snapshot, script read and script write through the Studio MCP `execute_luau` tool, each behind approval. The generated Luau was run in the Luau CLI against a mock DataModel, not in Studio.
-- **Verification run:** `npm ci`, `npm run typecheck`, `npm run lint`, `npm test` (101 passed in 20 files), `npm run build` and `npm run verify:ui` completed in this Linux workspace on Node.js 24.22.1. Electron itself was not launched, and no installer was built.
+- **Verification run:** `npm ci`, `npm run typecheck`, `npm run lint`, `npm test` (106 passed in 22 files), `npm run build` and `npm run verify:ui` completed in this Linux workspace on Node.js 24.22.1. Electron itself was not launched, and no installer was built.
 - **Not claimed:** live inference, a live Roblox Studio session, packaging, or a desktop keyring.
 
 ## 2026-11-02 — project direction and repository foundation

@@ -26,6 +26,8 @@ The UI must never receive raw provider credentials, Node.js process objects, or 
 | Module | Responsibility |
 |---|---|
 | `src/` | Renderer UI, screens, styles, state and interaction |
+| `design/tokens.json` | Locked design tokens (Catppuccin Mocha palette, one lavender accent, type, spacing, motion). `npm run tokens:build` generates `src/tokens.css`; `npm run lint` fails if it drifts or if raw colors or gradients appear elsewhere in `src/` |
+| `src/comps/` | Dev-only `/comps/<state>` routes (`chat-empty`, `chat-approvals`, `loading`, `error`) that render the app against fixture data; excluded from production builds |
 | `electron/main.ts` | App lifecycle, IPC registration, privileged operations and approval dialogs |
 | `electron/preload.ts` | Narrow renderer bridge |
 | `electron/agent.ts` | Agent loop, provider calls, tool schema and execution routing |
