@@ -1,22 +1,22 @@
 {
   "schema_version": "4.0.0",
-  "iteration_id": 4,
+  "iteration_id": 5,
   "clean_room_cot_stripped": true,
   "decision": "ACCEPT",
   "six_role_verdicts": {
-    "product_intent": "PASS for the motion and viewport contract. The product is still an early studio: model calls, Electron launch, and installers were not exercised.",
-    "design_visual_unslop": "PASS for transition-property and the narrow shell. FAIL remains for uppercase labels, the connection-card gradient, and the status-dot glow. Those are outside this contract.",
-    "systems_analytical_ponytail": "PASS. The change is CSS plus a dependency-free Chrome verifier. No new package.",
-    "epistemic_citation_fidelity": "PASS. The verdict cites commands run in this workspace. No new external citation was added.",
-    "adversarial_red_team_fuzzer": "PASS for the three viewports: overflow false, tiny text 0, transition-property all 0. Touch targets under 44px were observed in CSS and left for iteration 5.",
-    "completeness_dod_gatekeeper": "PASS for iteration 4 only. The project composite remains HARD_GATE_BLOCKED."
+    "product_intent": "PASS for sentence case and larger controls. Live model, Electron, and installers are still unrun.",
+    "design_visual_unslop": "PASS for sentence case. The connection-card gradient and status-dot glow remain.",
+    "systems_analytical_ponytail": "PASS. Labels and control heights only. No new package.",
+    "epistemic_citation_fidelity": "PASS. No new external claim.",
+    "adversarial_red_team_fuzzer": "PASS. verify-ui-craft exit 0 at 1440, 768, and 375 after the height change. npm test 13 passed.",
+    "completeness_dod_gatekeeper": "PASS for iteration 5 only. HARD_GATE_BLOCKED remains on U01, U03, U04, U09, U12, and U14."
   },
   "oracle_results": [
     {
       "id": "ui-craft",
       "exit_code": 0,
       "passed": true,
-      "observed_stdout": "[desktop] overflow=false tiny=0 transitionAll=0; [tablet] overflow=false tiny=0 transitionAll=0; [mobile] overflow=false tiny=0 transitionAll=0; [PASS] UI craft gate"
+      "observed_stdout": "After sentence case and 44px controls: [desktop] [tablet] [mobile] overflow=false tiny=0 transitionAll=0. [PASS] UI craft gate."
     },
     {
       "id": "unit",
@@ -31,8 +31,8 @@
       "severity": "P1_HIGH",
       "role": "design_visual_unslop",
       "location": "src/App.tsx sidebar labels",
-      "description": "Tracked uppercase labels remain. v4 copy pass requires sentence case.",
-      "remediation": "Iteration 5 contract: sentence case plus 44px targets."
+      "description": "The connection card gradient and status glow are still present after sentence case.",
+      "remediation": "A later quiet-chrome pass can flatten the card and keep the 6px dot."
     },
     {
       "severity": "P2_MEDIUM",
@@ -50,8 +50,8 @@
     }
   ],
   "score_delta": {
-    "before_composite": 3.21,
-    "after_composite": 3.31,
-    "net_gain": 0.1
+    "before_composite": 3.31,
+    "after_composite": 3.35,
+    "net_gain": 0.04
   }
 }

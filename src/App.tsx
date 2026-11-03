@@ -391,7 +391,7 @@ export default function App() {
           <div className="brand-mark">OR</div>
           <div className="brand-lockup">
             <strong>Open-Ro</strong>
-            <span>STUDIO 0.1.0</span>
+            <span>Studio 0.1.0</span>
           </div>
           <button type="button" className="icon-btn small more" aria-label="Open the Open-Ro repository" onClick={() => void api.openExternal('https://github.com/cayleb-james2008/open-ro')}>
             {ICONS.chevron}
@@ -401,7 +401,7 @@ export default function App() {
           {ICONS.folder}
           <span>{projectRoot ? projectRoot.split(/[\\/]/).pop() : 'Choose project folder…'}</span>
         </button>
-        <div className="nav-label">WORKSPACE</div>
+        <div className="nav-label">Workspace</div>
         <nav className="side-nav" aria-label="Primary">
           {NAV.map((item) => (
             <button type="button" key={item.id} className={`nav-item ${screen === item.id ? 'active' : ''}`} aria-current={screen === item.id ? 'page' : undefined} onClick={() => setScreen(item.id)}>
@@ -414,7 +414,7 @@ export default function App() {
           {ICONS.plus}
           <span>New chat</span>
         </button>
-        <div className="recent-label nav-label">RECENT</div>
+        <div className="recent-label nav-label">Recent</div>
         <div className="recent-chat-list">
           {sessions.map((session) => (
             <button type="button" key={session.id} className={`recent-chat ${session.id === activeSession ? 'active' : ''}`} aria-current={session.id === activeSession ? 'true' : undefined} onClick={() => { setActiveSession(session.id); setScreen('chat'); }}>
@@ -428,7 +428,7 @@ export default function App() {
         <div className="connection-card">
           <div className="connection-head">
             <span className={`status-dot ${activeProvider ? 'on' : ''}`} />
-            MODEL CONNECTION
+            Model connection
           </div>
           <div className="connection-model">{activeProvider ? `${catalogByKind.get(activeProvider.kind)?.name ?? activeProvider.kind}${activeProvider.model ? ` · ${activeProvider.model}` : ''}` : 'No model connected'}</div>
           <button type="button" className="connection-action" onClick={() => setScreen('models')}>
@@ -535,7 +535,7 @@ export default function App() {
         {!activeSessionData || activeSessionData.messages.length === 0 ? (
           <div className="chat-scroll" ref={scrollRef}>
             <div className="welcome-wrap">
-              <span className="welcome-chip">LOCAL-FIRST ROBLOX WORKSPACE</span>
+              <span className="welcome-chip">Local-first Roblox workspace</span>
               <h1>
                 What are we <span>building<span>?</span></span>
               </h1>
@@ -679,7 +679,7 @@ export default function App() {
       <div className="content-page">
         <div className="page-heading">
           <div>
-            <span className="eyebrow">MODEL CONNECTIONS</span>
+            <span className="eyebrow">Model connections</span>
             <h1>Models & providers</h1>
             <p>One connection is all you need. API keys are stored with Electron safeStorage; subscription routes run the official CLI and never read its credentials.</p>
           </div>
@@ -697,7 +697,7 @@ export default function App() {
         </div>
 
         <div className="section-title">
-          <span>CONNECTED PROVIDERS</span>
+          <span>Connected providers</span>
           <span>{providerViews.length} saved</span>
         </div>
         <div className="provider-list">
@@ -710,7 +710,7 @@ export default function App() {
                   <b>{option?.name ?? view.kind}</b>
                   <small>{providerStatus(view, option)}{view.model ? ` · ${view.model}` : ''}</small>
                 </span>
-                {view.active && <span className="active-tag">ACTIVE</span>}
+                {view.active && <span className="active-tag">Active</span>}
                 <button type="button" className="outline-btn" onClick={() => openProviderModal(view.kind)}>Edit</button>
                 {!view.active && <button type="button" className="outline-btn" onClick={async () => { await api.setActive(view.kind); await refreshAll(); }}>Use</button>}
                 <button type="button" className="icon-btn small danger" aria-label={`Remove ${option?.name ?? view.kind}`} onClick={() => void removeProvider(view.kind)}>{ICONS.x}</button>
@@ -727,7 +727,7 @@ export default function App() {
         </div>
 
         <div className="section-title provider-section-head">
-          <span>AVAILABLE ROUTES</span>
+          <span>Available routes</span>
           <span>official setup links</span>
         </div>
         <div className="provider-catalog">
@@ -766,7 +766,7 @@ export default function App() {
             <button type="button" className="icon-btn" aria-label="Close provider setup" onClick={() => setProviderModal(resetForm())}>{ICONS.x}</button>
           </div>
           <div className="provider-steps">
-            <div className="steps-heading">SETUP STEPS</div>
+            <div className="steps-heading">Setup steps</div>
             {(option?.setup ?? '').split(/[.;]/).filter((step) => step.trim()).map((step, index) => (
               <div className="step-line" key={index}>
                 <span>{index + 1}</span>
@@ -823,7 +823,7 @@ export default function App() {
       <div className="content-page">
         <div className="page-heading">
           <div>
-            <span className="eyebrow">LOCAL PROJECT</span>
+            <span className="eyebrow">Local project</span>
             <h1>Workspace</h1>
             <p>File browsing is read-only in 0.1.0; agent write proposals are reviewed before anything lands, and every accepted write leaves a checkpoint.</p>
           </div>
@@ -842,7 +842,7 @@ export default function App() {
         </div>
 
         <div className="section-title">
-          <span>FILES</span>
+          <span>Files</span>
           <span>{projectEntries.get('.')?.length ?? 0} top-level entries</span>
         </div>
         {projectRoot && projectEntries.get('.') && (
@@ -856,7 +856,7 @@ export default function App() {
         )}
 
         <div className="section-title" style={{ marginTop: 28 }}>
-          <span>CHECKPOINTS</span>
+          <span>Checkpoints</span>
           <span>restore on click</span>
         </div>
         <div className="integration-list">
@@ -887,16 +887,16 @@ export default function App() {
   // ---- Integrations ------------------------------------------------------------
   function IntegrationsPage() {
     const groups: Array<{ title: string; category: string }> = [
-      { title: 'ROBLOX STUDIO', category: 'studio' },
-      { title: 'PROJECT TOOLS', category: 'vcs' },
-      { title: 'ASSET TOOLS', category: 'asset' },
-      { title: 'PROVIDER CLIS', category: 'provider-cli' },
+      { title: 'Roblox Studio', category: 'studio' },
+      { title: 'Project tools', category: 'vcs' },
+      { title: 'Asset tools', category: 'asset' },
+      { title: 'Provider CLIs', category: 'provider-cli' },
     ];
     return (
       <div className="content-page">
         <div className="page-heading">
           <div>
-            <span className="eyebrow">OPTIONAL CAPABILITIES</span>
+            <span className="eyebrow">Optional capabilities</span>
             <h1>Integrations</h1>
             <p>Detect, test, install or skip. No capability below is required — the chat workspace works with only a model connection.</p>
           </div>
@@ -914,7 +914,7 @@ export default function App() {
         </div>
 
         <div className="section-title">
-          <span>MCP STDIO SERVER</span>
+          <span>MCP stdio server</span>
           <span>one server</span>
         </div>
         <div className="form-stack" style={{ maxWidth: 560 }}>
@@ -932,7 +932,7 @@ export default function App() {
           </div>
           {mcpState.tools.length > 0 && (
             <div className="provider-steps">
-              <div className="steps-heading">DISCOVERED TOOLS</div>
+              <div className="steps-heading">Discovered tools</div>
               {mcpState.tools.slice(0, 12).map((tool) => (
                 <div className="step-line" key={tool.name}>
                   <span>{ICONS.file}</span>

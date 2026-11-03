@@ -1,5 +1,24 @@
 # Iteration log — latest five
 
+## Iteration 005 (Wave 2) - 2026-11-03T14:21:00Z
+- **Status:** ACCEPTED
+- **Active Harness & Target Dimension:** H1_SYSTEMS_CODE -> U09 Accessibility
+- **UEVAM Score & Breakdown:** 10.5 (Impact=4, Severity=4, Conf=0.8, Unlocks=1, VoI=1, ASPO_Sub=1.4, Effort=2, Risk=0.4)
+- **Baseline Commit & Rollback Tag:** `67e60d920b05981a94328c5fbb35fe655aace9f6` / `omni-loop/iter-5-pre`
+- **Atomic Improvement Attempted:** Sentence-case the shell labels and raise primary controls to 44px.
+- **Problem Reproduction Evidence:** Uppercase strings in `src/App.tsx` and control heights of 26–36px in `src/styles.css`.
+- **Skills Routed (RADEG Passed):** Unslop pass 5 (sentence case). WCAG 2.2 target size. Ponytail rung 4, CSS only.
+- **Files Changed & Net LOC:** `src/App.tsx`, `src/styles.css`, and loop records.
+- **Acceptance & Metamorphic Oracles Run:** `node scripts/verify-ui-craft.mjs` exit 0. `npm test` exit 0, 13 passed. `npm run typecheck` exit 0.
+- **Anti-Tamper Audit:** PASS. `tests/safety.test.ts` hash unchanged.
+- **Browser / Visual Evidence:** Craft gate screenshots refreshed for desktop, tablet, and mobile.
+- **Clean-Room 6-Role Evaluator Verdict:** `.omni-loop/last-verdict.json`, decision ACCEPT.
+- **Scorecard Delta:** Composite 3.31 -> 3.35. U07 3.0 -> 3.4. U09 3.6 -> 3.9. U09 floor 4.0 is still not claimed.
+- **Grader Co-Evolution / Reusable Lesson:** The same craft gate catches overflow after the height change.
+- **Next Highest-UEVAM Opportunity:** ITER-006 persist the selected project folder.
+
+# Earlier iterations
+
 ## Iteration 004 (Wave 1) - 2026-11-03T14:19:00Z
 - **Status:** ACCEPTED
 - **Active Harness & Target Dimension:** H1_SYSTEMS_CODE -> U08 Motion, with U09 viewport overflow
