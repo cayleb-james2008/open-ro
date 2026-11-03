@@ -24,7 +24,8 @@ Commands run in this workspace after `npm ci` (Node.js 24.22.1):
 
 - `npm run typecheck` passed.
 - `npm run lint` passed (rejects type suppressions, skipped tests, and placeholder text).
-- `npm test` passed: 53 tests in 10 files under `tests/`.
+- `npm test` passed: 73 tests in 14 files under `tests/`.
+- The Luau that the Studio tools generate ran in the Luau CLI against a small mock DataModel: snapshot, read, create, update, stale-source refusal, duplicate names, and read-back. A stdio MCP test server that runs `execute_luau` code the same way was driven through the approval queue. Neither is Roblox Studio.
 - The MCP client completed the handshake, listed tools, and called `echo` against `@modelcontextprotocol/server-everything` 2.1.0 over stdio, both directly and as a staged call approved through the queue. Before the framing fix the same `initialize` request timed out after 15 s.
 - `npm run build` passed. Vite emitted `dist/` and `tsc` emitted `dist-electron/`.
 - The renderer was opened in headless Chrome at 1280×800 and 960×700. Chat, Models, Workspace, and Integrations navigation were clicked. The Models screen rendered 9 provider routes, with Ollama and llama.cpp first. No page errors were logged. The favicon request succeeded.

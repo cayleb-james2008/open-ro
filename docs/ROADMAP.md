@@ -60,8 +60,8 @@ Not established: a dependency-resolved build, native installers, live Studio int
 **Goal:** Complete an observable build → playtest → diagnose → repair loop.
 
 - [ ] Studio connection discovery and health state.
-- [ ] DataModel tree, instance properties, script search and inspection.
-- [ ] Luau edit with scoped diffs and rollback.
+- [ ] DataModel tree, instance properties, script search and inspection. (Tree snapshot and script read exist; not yet tested in live Studio.)
+- [ ] Luau edit with scoped diffs and rollback. (Approval diff, stale check, read-back and checkpoint restore exist; not yet tested in live Studio.)
 - [ ] Studio output and error capture.
 - [ ] Playtest start/stop and environment identity.
 - [ ] Keyboard/mouse input simulation and reproducible interaction scripts.

@@ -120,7 +120,7 @@ Windows and Linux are equal first-class targets for the Open-Ro desktop client. 
 | Local project access | List and read files. Writes stay staged until approved. Checkpoints exist | The same gate for Studio edits, with a line diff and restore |
 | Agent tools | Approval-gated local shell, file, and MCP tool calls. A playtest report is marked passed only when it lists assertions, state checks, and a PNG path in the project, and each expected value equals the actual one. The agent reports those values and the screenshot path; Open-Ro does not verify them against a run | Plans, evidence, and recovery tied to a real playtest |
 | MCP | One stdio server. Starting it and every agent tool call need your approval. Tested against the MCP reference server, not yet against Studio | A tested Studio connection, not a typed command alone |
-| Roblox Studio | Not connected | Read the place, edit the right instance, playtest, and store the evidence |
+| Roblox Studio | Three agent tools: read the place tree, read a script, and write a Script, LocalScript or ModuleScript. Each one sends Luau through the Studio MCP server's `execute_luau` (or `run_code`) tool and needs your approval first. A write shows a line diff against the last read, refuses client-side currency changes, stops if the script changed since the read, and is read back. Tested against a mock DataModel in the Luau CLI, **not yet against a live Studio session** | Edit the right instance, playtest, and store the evidence |
 | Rojo | `rojo --version` detection only | Sync direction and overwrite scope shown before files move |
 | Blender | `blender --version` detection only | Reviewed models and animations, then a separate import approval |
 | Skills and asset library | Not implemented | Local skills the model actually receives, and optional downloads with a checksum and license |
@@ -129,7 +129,7 @@ Windows and Linux are equal first-class targets for the Open-Ro desktop client. 
 | Windows packaging | Configured; not acceptance-tested | Install and uninstall recorded on a real machine |
 | Omarchy packaging | Configured; not acceptance-tested | Install and uninstall recorded on a real machine |
 
-Open-Ro does not yet read a Studio place, playtest a game, drive Blender, download an asset pack, or watch a published experience. Those are goals, not current behavior.
+Open-Ro has not yet been run against a live Studio session, and does not yet playtest a game, drive Blender, download an asset pack, or watch a published experience. Those are goals, not current behavior.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for milestones and acceptance criteria, and [`docs/BUILD-STATUS.md`](docs/BUILD-STATUS.md) for the exact verification boundary.
 
