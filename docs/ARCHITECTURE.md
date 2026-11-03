@@ -76,7 +76,7 @@ Target flow:
 5. Call the tool and preserve structured result/evidence.
 6. On failure, report the failure without pretending that the action succeeded.
 
-The first Studio tools (`studio_snapshot`, `studio_read_script`, `studio_write_script`, in `electron/studioTools.ts`) are built on `execute_luau`. Reads and writes are both approval-gated. Writes compare against the reviewed source before changing it, are recorded with ChangeHistoryService, and are read back. Each confirmed write saves a checkpoint, and restoring one is staged as another approved write. The argument names and reply format come from the published tool schema, not a live session.
+The first Studio tools (`studio_snapshot`, `studio_read_script`, `studio_write_script`, in `electron/studioTools.ts`) are built on `execute_luau`. Reads and writes are both approval-gated. A read authorizes writes only on the same server session and `studio_id`. Writes compare against the reviewed source before changing it, ask ChangeHistoryService to record an undo step (the result says whether it did), and are read back. Each confirmed write saves a checkpoint, and restoring one is staged as another approved write. The argument names and reply format come from the published tool schema, not a live session.
 
 The first implementation's one-server limit and lack of live Studio validation must remain visible until those constraints are removed and tested.
 
