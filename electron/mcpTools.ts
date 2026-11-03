@@ -1,4 +1,5 @@
 import type { ApprovalQueue, PendingApproval } from './approvals';
+import { assertMcpSpec } from './mcpFraming';
 import type { ApprovalResult, McpToolSummary, ToolCallResult, ToolSchema } from './types';
 
 /**
@@ -88,4 +89,28 @@ export async function runApprovedMcpCall(item: PendingApproval, caller: McpCalle
   } catch (error) {
     return { ok: false, decision: 'approve', summary: `MCP tool ${tool} failed.`, output: error instanceof Error ? error.message : String(error) };
   }
+}
+
+export interface McpServerStarter {
+  readonly running: boolean;
+  start(spec: { command: string; args: string[] }): Promise<void>;
+  listTools(): McpToolSummary[];
+}
+
+/** Stage starting an MCP server from the renderer's form. Never starts anything: starting a server runs a local program. */
+export function stageMcpConnect(approvals: ApprovalQueue, client: McpServerStarter, spec: unknown): PendingApproval {
+  const clean = assertMcpSpec((spec ?? {}) as { command?: unknown; args?: unknown });
+  if (client.running) {
+    throw new Error('An MCP server is already active. Stop it before connecting another.');
+  }
+  return approvals.stageMcpServer({ projectRoot: '', command: clean.command, args: clean.args });
+}
+
+/** Start exactly the command and arguments the user approved. */
+export async function runApprovedMcpServer(item: PendingApproval, client: McpServerStarter): Promise<ApprovalResult> {
+  if (item.kind !== 'mcp-server' || !item.command) {
+    throw new Error('Not an MCP server approval.');
+  }
+  await client.start({ command: item.command, args: [...(item.serverArgs ?? [])] });
+  return { ok: true, decision: 'approve', summary: `MCP server started with ${client.listTools().length} tools.` };
 }

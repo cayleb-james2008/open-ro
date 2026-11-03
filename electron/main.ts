@@ -5,9 +5,8 @@ import * as path from 'node:path';
 import { ApprovalQueue, type PendingApproval } from './approvals';
 import { detectCapabilities } from './capabilities';
 import { McpStdioClient } from './mcp';
-import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, stageMcpCall } from './mcpTools';
+import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServer, stageMcpCall, stageMcpConnect } from './mcpTools';
 import { gradePlaytest, parsePlaytestReport } from './playtestEvidence';
-import { assertMcpSpec } from './mcpFraming';
 import { isIgnoredName, isSecretName, resolveWithinRoot } from './pathSafety';
 import { getProviderOption, isProviderKind, providerOptions, type ProviderKind } from './providerCatalog';
 import {
@@ -256,8 +255,7 @@ async function resolveApproval(id: string, decision: 'approve' | 'reject'): Prom
     return runApprovedMcpCall(item, mcp);
   }
   if (item.kind === 'mcp-server') {
-    await mcp.start({ command: item.command ?? '', args: item.serverArgs ?? [] });
-    return { ok: true, decision, summary: `MCP server started with ${mcp.listTools().length} tools.` };
+    return runApprovedMcpServer(item, mcp);
   }
   const cwd = await resolveWithinRoot(projectRoot, '.');
   const result = await runShellCommand({ command: item.command ?? '', cwd, timeoutMs: 60_000 });
@@ -424,13 +422,7 @@ function registerIpc(): void {
 
   ipcMain.handle('mcp:status', (): { running: boolean; tools: McpToolSummary[] } => ({ running: mcp.running, tools: mcp.listTools() }));
   // Starting a server runs a local program, so it is staged like any other command.
-  ipcMain.handle('mcp:connect', (_event, spec: { command?: unknown; args?: unknown }): PendingApprovalView => {
-    const clean = assertMcpSpec(spec ?? {});
-    if (mcp.running) {
-      throw new Error('An MCP server is already active. Stop it before connecting another.');
-    }
-    return toApprovalView(approvals.stageMcpServer({ projectRoot: '', command: clean.command, args: clean.args }));
-  });
+  ipcMain.handle('mcp:connect', (_event, spec: unknown): PendingApprovalView => toApprovalView(stageMcpConnect(approvals, mcp, spec)));
   ipcMain.handle('mcp:disconnect', () => mcp.stop());
   ipcMain.handle('capabilities:detect', (): Promise<CapabilityInfo[]> => detectCapabilities());
 
