@@ -2,7 +2,7 @@
 
 **Source version:** `0.1.0`  
 **Date:** 2026-11-03  
-**State:** early functional foundation. Dependency install, typecheck, lint, unit tests, and the production build run on Windows 11 (Node 26.13.0) and in GitHub Actions on `ubuntu-latest` and `windows-latest`. A Windows NSIS installer was built locally (`release/Open-Ro Studio Setup 0.1.0.exe`); it has not been installed or launched, and no Electron window has been opened in this workspace.
+**State:** early functional foundation. Dependency install, typecheck, lint, unit tests, and the production build run on Windows 11 (Node 26.13.0) and in GitHub Actions on `ubuntu-latest` and `windows-latest`. The packaged app has been launched from `release/win-unpacked` on Windows 11: the window rendered with the preload bridge and loaded provider state over IPC. The NSIS installer has not been installed, and the file dialog and OS keyring have not been exercised.
 
 ## Included in this source tree
 
@@ -44,12 +44,12 @@ These checks do **not** prove an Electron window launch, an installer install/un
 
 ## Not verified / not produced
 
-- A running Electron application, including the preload bridge, file dialog, and keyring.
+- A running Electron application window: the packaged app from `release/win-unpacked` launched on Windows 11 at 1240×816 with the preload bridge active (the renderer showed loaded provider/connection state, not the missing-bridge notice). The file dialog, OS keyring, and installer install/upgrade/uninstall journey remain unverified.
 - Windows installer install/upgrade/uninstall journey and Authenticode signing. The unsigned NSIS artifact builds; the journey is not recorded.
 - Linux AppImage, Debian package, or pacman install/uninstall or keyring behavior on Omarchy. CI packaging builds the artifacts; they are not installed.
 - Live model inference against a real provider; no real keys or accounts were used in this workspace. The adapters themselves are verified over HTTP against a local mock (see above), but model behavior, provider quotas, and real authentication remain untested.
 - Full native CLI sign-in/connection validation on Windows and Linux.
-- Live Roblox Studio MCP workflow, playtest/input/screenshot/repair loop.
+- Live Roblox Studio MCP workflow, playtest/input/screenshot/repair loop. The official Studio MCP bridge (`cmd.exe /c %LOCALAPPDATA%\Roblox\mcp.bat`) handshook over stdio and advertised 33 tools, including `execute_luau`, `list_roblox_studios`, and `screen_capture`; `list_roblox_studios` returned one attached instance. No place was open, so `get_studio_state` and `execute_luau` returned "Place is not open" and no Studio mutation has run.
 - Live Blender workflow, asset import/export, Rojo synchronization.
 - Image, thumbnail, icon, audio or 3D generation integrations.
 
