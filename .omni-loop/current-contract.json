@@ -1,51 +1,45 @@
 {
   "schema_version": "4.0.0",
-  "iteration_id": 5,
-  "wave_id": 2,
+  "iteration_id": 6,
+  "wave_id": 3,
   "active_harness": "H1_SYSTEMS_CODE",
-  "target_dimension": "U09",
-  "ponytail_rung_selected": 4,
-  "problem_or_genesis_goal": "Sidebar labels are tracked uppercase and several controls are shorter than a 44px touch target.",
-  "reproduction_evidence": "Headless Chrome at 375x812 showed WORKSPACE, RECENT, and MODEL CONNECTION in uppercase. Nav rows are 41px and icon buttons are 31px in src/styles.css.",
-  "user_impact": "The shell is harder to scan and the narrow layout misses the WCAG 2.2 target size used by the v4 accessibility floor.",
-  "atomic_scope_files": ["src/App.tsx", "src/styles.css"],
-  "indivisibility_proof": "The labels live in App.tsx and the row heights live in styles.css. Both are required for the same U09 pass.",
+  "target_dimension": "U06",
+  "ponytail_rung_selected": 2,
+  "problem_or_genesis_goal": "The selected project folder is forgotten when the app restarts, so the next session cannot continue in the same workspace.",
+  "reproduction_evidence": "electron/main.ts keeps projectRoot in a process-local variable. feature-inventory FEAT-002 is PARTIAL for that reason.",
+  "user_impact": "A developer who reopens Open-Ro has to choose the folder again before file tools work.",
+  "atomic_scope_files": ["electron/providerState.ts", "electron/main.ts", "tests/safety.test.ts"],
+  "indivisibility_proof": "The persisted field, the main-process read/write, and the unit test are one behavior.",
   "non_goals": [
-    "Do not redesign the lime accent or the welcome headline",
-    "Do not change approval or filesystem behavior",
-    "Do not add a dependency"
+    "Do not launch Electron in this iteration",
+    "Do not change approval tokens",
+    "Do not add a database"
   ],
   "acceptance_oracles": [
     {
-      "id": "ui-craft",
-      "description": "No horizontal overflow, no sub-11px text, no transition-property all at 1440, 768, and 375.",
-      "command": "node scripts/verify-ui-craft.mjs"
-    },
-    {
-      "id": "unit",
-      "description": "Existing provider and safety tests still pass.",
+      "id": "restore-root",
+      "description": "A saved root round-trips through parse and is ignored when the path is empty.",
       "command": "npm test"
     }
   ],
   "metamorphic_invariants": [
-    "Changing a label to sentence case does not change which screen a nav button selects",
-    "A control that was keyboard-focusable stays keyboard-focusable"
+    "Saving a root and parsing the same JSON returns that root",
+    "A missing root stays empty rather than becoming the process cwd"
   ],
   "regression_commands": ["npm run typecheck", "npm test", "npm run lint"],
-  "rollback_tag": "omni-loop/iter-5-pre",
+  "rollback_tag": "omni-loop/iter-6-pre",
   "pre_edit_hashes": {
-    "src/App.tsx": "0e569758f7d505e49601089696d00142ea1b9150e76166bae40609f6e87a0a8e",
-    "src/styles.css": "dc5813bd5692af353c64f96eb74a215e2d16d1d5fefd599c6711401f3f8d0d5d",
-    "tests/providerCatalog.test.ts": "7862994a3de441e813ee2183264e07c5ff2b31a26f970d98ccf930bb3d9ebc3b",
+    "electron/providerState.ts": "d3591b5c3c9c5cee310134d7a768de47b610ec8a2d8f6f9fc20d59d4e9927681",
+    "electron/main.ts": "bd455c16f435b9bb7fa34eb7e921bffca673d8a03c78281a83166d5a862196d6",
     "tests/safety.test.ts": "9a2e92ec57575d136b91ba9982fc63912205009cd06d4a317c53ecfb97767dae"
   },
   "uevam_inputs": {
     "impact": 4,
-    "severity": 4,
-    "confidence": 0.8,
-    "unlocks": 1,
+    "severity": 3,
+    "confidence": 0.85,
+    "unlocks": 2,
     "info_gain": 1,
-    "substructure_reward": 1.4,
+    "substructure_reward": 1.5,
     "effort": 2,
     "risk": 0.4,
     "is_p0_blocker": false
