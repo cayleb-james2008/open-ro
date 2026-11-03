@@ -1,0 +1,135 @@
+# Roadmap and parity checklist
+
+The roadmap is ordered by user value and dependency. A feature is complete only when its acceptance criteria are backed by tests or real-machine evidence. This is an independent implementation based on public behavior and documented interfaces; it does not reuse Ropilot source code, private APIs, assets, or branding.
+
+## Current release: 0.1.0 foundation
+
+Implemented in source: Electron/React desktop shell, provider selection foundation, API and official CLI routes, local project tools, approval-gated shell/file operations, secure credential-storage guard, single-server MCP client, Blender Python task foundation, and Windows/Linux packaging configuration.
+
+Not established: a dependency-resolved build, native installers, live Studio integration, complete Blender asset transfer, image/thumbnail generation, or complete parity. See [`BUILD-STATUS.md`](BUILD-STATUS.md).
+
+## Milestones
+
+### M0 — Foundation and safe desktop core
+
+**Goal:** A stable Windows/Linux app where users connect one model and safely work with local project files.
+
+- [x] Electron + React + TypeScript application foundation.
+- [x] Provider catalogue for API keys, official CLI routes, OpenRouter, Ollama, OpenCode and custom endpoints.
+- [x] Secure credential persistence guard; no plaintext fallback.
+- [x] Project file listing/reading and guarded writes.
+- [x] Approval-gated command execution.
+- [x] Single stdio MCP transport/tool discovery foundation.
+- [ ] End-to-end onboarding acceptance on Windows and Omarchy.
+- [ ] Persistent multi-project chat history, robust checkpoints and diff rollback.
+- [ ] Live inference and provider-switch verification for every documented route.
+
+**Exit gate:** fresh install → connect one model → open local project → propose/review/apply a change → restart and recover session. Windows and Omarchy receipts required.
+
+### M1 — Agent workspace and model router
+
+**Goal:** Make the core daily coding workspace reliable before adding broad integrations.
+
+- [ ] Persistent local database for projects, chats, task runs, approvals and checkpoints.
+- [ ] Streaming agent responses and typed tool calls across every provider route.
+- [ ] Per-task model selection (planning, coding, review, vision) and user-configurable fallback.
+- [ ] Model catalogue/metadata, context limits and capability-aware routing.
+- [ ] Project indexing, ignore rules, targeted retrieval and context controls.
+- [ ] Reviewable unified diffs, staged apply, undo and restore checkpoints.
+- [ ] Task plan, progress timeline, retries, cancellation and resumability.
+- [ ] Local usage/cost estimates when provider data is available; clearly mark estimates.
+
+**Exit gate:** a multi-file task completes with a saved plan, traceable tool activity, approved diff, rollback point, and a truthful result report.
+
+### M2 — Optional capabilities and guided setup
+
+**Goal:** Everything except one model connection is installable or selectable as needed.
+
+- [ ] Multi-server MCP registry with start/stop/reconnect/health and scoped tools.
+- [ ] Capability catalog with OS-aware detection, setup guides and official signup/download links.
+- [ ] Install/uninstall manager with source, version, publisher, checksum and permissions.
+- [ ] Per-capability permissions for filesystem, shell, network, Studio mutation and uploads.
+- [ ] Free/paid/usage-based labels and data-flow details.
+- [ ] Guided setup tests and troubleshooting.
+- [ ] Optional Git adapter, Rojo adapter, Blender adapter and documentation MCP examples.
+
+**Exit gate:** user can add/test/disable an optional integration without creating an Open-Ro account or losing access to core chat.
+
+### M3 — Roblox Studio closed loop
+
+**Goal:** Complete an observable build → playtest → diagnose → repair loop.
+
+- [ ] Studio connection discovery and health state.
+- [ ] DataModel tree, instance properties, script search and inspection.
+- [ ] Luau edit with scoped diffs and rollback.
+- [ ] Studio output and error capture.
+- [ ] Playtest start/stop and environment identity.
+- [ ] Keyboard/mouse input simulation and reproducible interaction scripts.
+- [ ] Viewport screenshot capture and evidence attachments.
+- [ ] Acceptance-check definitions, result ledger and repair iterations.
+- [ ] Asset search/insertion and mesh/material tool coverage where documented.
+- [ ] Dedicated Studio plugin/bridge only if the built-in MCP surface proves insufficient.
+
+**Exit gate:** Windows test experience demonstrates inspect → edit → run/playtest → input → screenshot/log → diagnose → repair → re-test, with all changes and evidence visible. Nothing is auto-published.
+
+### M4 — Project sync, collaboration and recovery
+
+**Goal:** Keep Roblox place files, Studio and version control aligned.
+
+- [ ] Rojo project configuration editor/validator.
+- [ ] Bidirectional sync status and conflict detection.
+- [ ] Git status, diff, branch, commit and checkpoint actions.
+- [ ] Backup/restore for file trees and approved Studio changes where supported.
+- [ ] Import/export profiles and portable project metadata.
+
+**Exit gate:** user can safely sync an existing project, inspect conflicts, restore a prior checkpoint and reproduce the project on a second machine.
+
+### M5 — Creative asset pipeline
+
+**Goal:** Make visual and 3D assets optional but first-class.
+
+- [ ] Provider adapters for image/icon/thumbnail generation.
+- [ ] Cost and terms preview before paid generation.
+- [ ] Asset review, versioning and replace/approve flow.
+- [ ] Blender install/version detection and project isolation.
+- [ ] Mesh/texture/material/rig/animation generation or assisted authoring.
+- [ ] Preview and validation in Blender before Studio import.
+- [ ] Asset import/export with metadata and source attribution.
+- [ ] Optional audio generation/editing and asset review.
+
+**Exit gate:** complete image or 3D asset workflow from prompt/reference through review into a Roblox project with clear licensing and file provenance.
+
+### M6 — Native releases and ecosystem
+
+**Goal:** Publish trustworthy desktop builds and support community capabilities.
+
+- [ ] Windows NSIS signed installer, upgrade and uninstall acceptance.
+- [ ] Linux AppImage and pacman package acceptance on Omarchy.
+- [ ] Reproducible versioned release artifacts/checksums.
+- [ ] Crash reporting opt-in, logs with secret redaction and recovery diagnostics.
+- [ ] Capability manifest validation and signed/verified extension sources.
+- [ ] Community contribution docs, examples, and compatibility matrix.
+- [ ] Accessibility and keyboard navigation review.
+
+**Exit gate:** `docs/RELEASE-GATES.md` fully satisfied for every platform claimed in the release.
+
+## Cross-cutting backlog
+
+- [ ] Permission matrix and audit log.
+- [ ] Prompt injection/data-as-instructions defenses for project files, tool outputs and web content.
+- [ ] Secrets redaction from app logs, screenshots, tool traces and crash reports.
+- [ ] Task budgets, cancel/stop, retry caps and runaway-process handling.
+- [ ] Project context isolation and no writes outside user-selected scope.
+- [ ] Keyboard-first workflows and accessible contrast/focus.
+- [ ] User-facing cost disclosure and external data-flow disclosure.
+- [ ] Documentation and integration version drift checks.
+
+## Status vocabulary
+
+- **Implemented:** source code exists and the named automated checks pass.
+- **Partially implemented:** some code exists, but one or more user acceptance journeys are incomplete.
+- **Experimental:** works only in selected environments or requires manual configuration; compatibility is not guaranteed.
+- **Planned:** not implemented yet.
+- **Verified:** a reproducible test or hardware receipt exists for the exact source and platform.
+
+Do not promote a feature to Verified based on code inspection alone.
