@@ -832,7 +832,7 @@ export default function App() {
           ) : null}
           <div className="form-stack">
             <label>
-              Model ID {option?.modelHint ? <em style={{ color: '#84909e' }}>({option.modelHint})</em> : null}
+              Model ID {option?.modelHint ? <em style={{ color: 'var(--color-dim)' }}>({option.modelHint})</em> : null}
               <input value={providerModal.model} placeholder={option?.modelHint} onChange={(event) => setProviderModal({ ...providerModal, model: event.target.value })} />
             </label>
             {!isCli && (
@@ -1021,7 +1021,7 @@ export default function App() {
                       <small>{capability.detail}</small>
                     </span>
                     <span className={`state-pill ${capability.state}`}>{capability.state}</span>
-                    <svg className={expandedCards.has(capability.id) ? 'rotate' : ''} style={{ color: '#7e8997' }} width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="m4 6 4 4 4-4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
+                    <svg className={expandedCards.has(capability.id) ? 'rotate' : ''} style={{ color: 'var(--color-dim)' }} width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="m4 6 4 4 4-4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
                   </button>
                   <div className="integration-detail">
                     {capability.installUrl ? <p>Official page: <a href={capability.installUrl} target="_blank" rel="noreferrer">{capability.installUrl}</a></p> : <p>No separate installer. Use the tool's own documentation.</p>}
