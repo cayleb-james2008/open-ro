@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildWriteLuau, luauString } from '../electron/studioLuau';
+import { buildReadLuau, buildWriteLuau, luauString } from '../electron/studioLuau';
 
 /** Decode a Luau long string the way the Luau lexer does: up to the first matching close bracket. */
 function decodeLongString(literal: string): { value: string; rest: string } {
@@ -44,6 +44,22 @@ describe('Luau literals', () => {
       const literal = luauString(value);
       expect(decodeLongString(literal)).toEqual({ value, rest: '' });
     }
+  });
+
+  it('every write guard is in the generated Luau (tests/luau runs them with OPENRO_LUAU_BIN)', () => {
+    const create = buildWriteLuau({ segments: ['ServerScriptService', 'Shop'], className: 'Script', source: 'x', expectedPrevious: null });
+    const update = buildWriteLuau({ segments: ['ServerScriptService', 'Shop'], className: 'Script', source: 'x', expectedPrevious: 'old' });
+    for (const luau of [create, update, buildReadLuau(['ServerScriptService', 'Shop'])]) {
+      expect(luau).toContain('if found ~= nil then error("Two instances named " .. name .. " under " .. parent:GetFullName(), 0) end');
+      expect(luau).toContain('local nextItem = child(parent, segments[i])');
+    }
+    for (const luau of [create, update]) {
+      expect(luau).toContain('local target = child(parent, name)');
+      expect(luau).toContain('if target ~= nil then error(target:GetFullName() .. " appeared after the review. Read it again.", 0) end');
+      expect(luau).toContain('elseif target.Source ~= expectedPrevious then\n    error(target:GetFullName() .. " changed after the review. Read it again.", 0)');
+    }
+    expect(create).toContain('local expectedPrevious = nil\n');
+    expect(update).toContain('local expectedPrevious = [[old]]\n');
   });
 
   it('a write embeds the source as data, never as code', () => {

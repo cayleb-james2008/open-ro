@@ -133,6 +133,17 @@ describe('running approved Studio calls', () => {
     expect(() => stageStudioRestore(approvals, studio.caller, { path, className: 'Script', previous: null, content: 'x' }, { projectRoot: root })).toThrow(/created this script/);
   });
 
+  it('a read that Studio answers for another path is refused and authorizes nothing', async () => {
+    const { studio, approvals, reads } = setup();
+    stageStudioTool(approvals, studio.caller, reads, { projectRoot: root, name: 'studio_read_script', args: { path: 'ServerScriptService.Shop' } });
+    studio.replies.push(ok({ exists: true, path: 'ServerScriptService.Other', className: 'Script', source: 'print(1)' }));
+    const read = await runApprovedStudio(approvals.take(approvals.list()[0].id), studio.caller, reads);
+    expect(read).toMatchObject({ ok: false, summary: 'Studio returned a different instance than game.ServerScriptService.Shop.' });
+    expect(reads.size).toBe(0);
+    const write = stageStudioTool(approvals, studio.caller, reads, { projectRoot: root, name: 'studio_write_script', args: { path: 'ServerScriptService.Shop', className: 'Script', source: 'x' } });
+    expect(write.output).toMatch(/studio_read_script first/);
+  });
+
   it('a Studio error, a missing reply or a vanished tool is a failure', async () => {
     const { studio, approvals, reads } = setup();
     stageStudioTool(approvals, studio.caller, reads, { projectRoot: root, name: 'studio_read_script', args: { path: 'Workspace.X' } });
