@@ -15,7 +15,7 @@ flowchart LR
   M --> SH[Approval-gated shell]
   M --> MCP[MCP stdio client]
   MCP --> RBX[Roblox Studio MCP]
-  M --> BL[Blender process]
+  M --> CAP[Capability detection: rojo and blender --version only]
   A --> CLOUD[Selected provider API / official CLI / local model]
 ```
 
