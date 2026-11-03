@@ -25,7 +25,9 @@
     "dev:electron": "electron .",
     "package:win": "npm run build && electron-builder --win --x64",
     "package:linux": "npm run build && electron-builder --linux AppImage deb pacman",
-    "package:linux-omarchy": "npm run build && electron-builder --linux pacman AppImage"
+    "package:linux-omarchy": "npm run build && electron-builder --linux pacman AppImage",
+    "tokens:build": "node scripts/build-tokens.mjs",
+    "tokens:check": "node scripts/build-tokens.mjs --check"
   },
   "dependencies": {
     "react": "^19.3.1",
