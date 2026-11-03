@@ -100,8 +100,9 @@ end))`;
 
 /**
  * Write one script. It refuses when the script changed after the review
- * (expectedPrevious), records a ChangeHistoryService step so Ctrl+Z undoes
- * it in Studio, and reads the instance back after the write.
+ * (expectedPrevious), tries to record a ChangeHistoryService step so Ctrl+Z
+ * undoes it in Studio (undoRecorded says whether that worked), and reads the
+ * instance back after the write.
  */
 export function buildWriteLuau(input: { segments: string[]; className: ScriptClass; source: string; expectedPrevious: string | null }): string {
   const parentSegments = input.segments.slice(0, -1);
@@ -132,8 +133,11 @@ return finish(pcall(function()
   else
     target.Source = source
   end
-  if recorded and recording then history:FinishRecording(recording, Enum.FinishRecordingOperation.Commit) end
+  local undoRecorded = false
+  if recorded and recording then
+    undoRecorded = pcall(function() history:FinishRecording(recording, Enum.FinishRecordingOperation.Commit) end)
+  end
   local check = child(parent, name)
-  return { path = check and check:GetFullName() or nil, className = check and check.ClassName or nil, source = check and check.Source or nil, created = expectedPrevious == nil }
+  return { path = check and check:GetFullName() or nil, className = check and check.ClassName or nil, source = check and check.Source or nil, created = expectedPrevious == nil, undoRecorded = undoRecorded }
 end))`;
 }

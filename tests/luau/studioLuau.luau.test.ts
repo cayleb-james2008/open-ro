@@ -12,10 +12,10 @@ const mock = readFileSync(join(__dirname, '../fixtures/studio-datamodel.luau'), 
 const dir = mkdtempSync(join(tmpdir(), 'openro-luau-'));
 const SHOP = "print('old')\n-- ]] tricky ]=] end";
 
-/** Run one snippet; `after` runs once the snippet has finished and may print lines prefixed AFTER:. */
-function run(snippet: string, after = '') {
+/** Run one snippet; `before` can change the mock, and `after` runs once the snippet finished and may print lines prefixed AFTER:. */
+function run(snippet: string, after = '', before = '') {
   const file = join(dir, 'case.luau');
-  writeFileSync(file, `${mock}\n${snippet.replace(/\nreturn finish\(/, '\nlocal __reply = finish(')}\n${after}\n`);
+  writeFileSync(file, `${mock}\n${before}\n${snippet.replace(/\nreturn finish\(/, '\nlocal __reply = finish(')}\n${after}\n`);
   const out = execFileSync(luau, [file], { encoding: 'utf8' });
   return { reply: parseLuauReply(out), after: out.split('\n').filter((line) => line.startsWith('AFTER:')).map((line) => line.slice(6)) };
 }
@@ -59,5 +59,15 @@ describe('generated Studio Luau, run by the Luau CLI', () => {
   it('refuses a removed script and a class change', () => {
     expect(run(write(['ServerScriptService', 'Gone'], 'x', 'old')).reply).toEqual({ ok: false, error: 'The script was removed after the review.' });
     expect(run(write(['ReplicatedStorage', 'Shared', 'Util'], 'x', 'return {}')).reply).toEqual({ ok: false, error: 'ReplicatedStorage.Shared.Util is a ModuleScript, not a Script' });
+  });
+
+  it('reports undoRecorded only when Studio recorded and committed the undo step', () => {
+    const update = write(['ServerScriptService', 'Shop'], 'print(3)', SHOP);
+    expect(run(update).reply).toMatchObject({ ok: true, result: { undoRecorded: true } });
+    for (const before of ['RECORDING_ID = nil', 'services.ChangeHistoryService.TryBeginRecording = function() error("no plugin") end', 'services.ChangeHistoryService.FinishRecording = function() error("busy") end']) {
+      const { reply, after } = run(update, shopSource, before);
+      expect(reply).toMatchObject({ ok: true, result: { undoRecorded: false, source: 'print(3)' } });
+      expect(after).toEqual([hex('print(3)')]);
+    }
   });
 });

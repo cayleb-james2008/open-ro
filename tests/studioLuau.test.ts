@@ -59,6 +59,8 @@ describe('Luau literals', () => {
       expect(luau).toContain('elseif target.Source ~= expectedPrevious then\n    error(target:GetFullName() .. " changed after the review. Read it again.", 0)');
     }
     expect(create).toContain('local expectedPrevious = nil\n');
+    expect(update).toContain('undoRecorded = pcall(function() history:FinishRecording(recording, Enum.FinishRecordingOperation.Commit) end)');
+    expect(update).toContain('undoRecorded = undoRecorded }');
     expect(update).toContain('local expectedPrevious = [[old]]\n');
   });
 

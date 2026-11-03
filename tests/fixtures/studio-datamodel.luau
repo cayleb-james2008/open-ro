@@ -48,9 +48,11 @@ local function encode(v)
   local p = {} for k, x in pairs(v) do table.insert(p, encode(tostring(k)) .. ":" .. encode(x)) end return "{" .. table.concat(p, ",") .. "}"
 end
 local RECORDED, COMMITTED = nil, nil
+-- What TryBeginRecording returns; a test sets it to nil to act like Studio refusing to record.
+local RECORDING_ID = "rec1"
 local services = {
   HttpService = { JSONEncode = function(_, v) return encode(v) end },
-  ChangeHistoryService = { TryBeginRecording = function(_, n) RECORDED = n return "rec1" end, FinishRecording = function(_, id, op) COMMITTED = id end },
+  ChangeHistoryService = { TryBeginRecording = function(_, n) RECORDED = n return RECORDING_ID end, FinishRecording = function(_, id, op) COMMITTED = id end },
 }
 local created = {}
 function methods.FindService(self, n) return created[n] end
