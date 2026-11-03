@@ -4,6 +4,7 @@ import { Dialog } from './Dialog';
 import { diffPreview } from './textDiff';
 import { draftAfterSend, dropMissing, followupText, nextFollowup, recordResolution, resultSession, showsResultIn, trackStaged, type FollowupBatch } from './approvalFollowup';
 import { approvalCopy, providerInitials } from './labels';
+import { isSessionVisibleForProject } from './sessionScope';
 import { providerOptions, type ProviderKind, type ProviderOption } from '../electron/providerCatalog';
 import type { SessionSnapshot, StoredChatSession } from '../electron/sessions';
 import type { AgentTurnResult, ApprovalResult, ChatMessage, FileEntry, PendingApprovalView, StoredProviderView } from '../electron/types';
@@ -91,6 +92,7 @@ export default function App() {
   const [readyFollowups, setReadyFollowups] = useState<FollowupBatch[]>([]);
 
   const activeSessionData = useMemo(() => sessions.find((session) => session.id === activeSession) ?? null, [sessions, activeSession]);
+  const visibleSessions = useMemo(() => sessions.filter((session) => isSessionVisibleForProject(session, projectRoot)), [sessions, projectRoot]);
   const activeProvider = useMemo(() => providerViews.find((view) => view.active) ?? null, [providerViews]);
   const catalogByKind = useMemo(() => new Map(catalog.map((option) => [option.kind, option])), [catalog]);
 
@@ -215,7 +217,7 @@ export default function App() {
   }
 
   function newChat() {
-    const session: ChatSession = { id: `chat-${Date.now()}`, title: 'New chat', updatedAt: new Date().toISOString(), messages: [] };
+    const session: ChatSession = { id: `chat-${Date.now()}`, title: 'New chat', updatedAt: new Date().toISOString(), messages: [], ...(projectRoot ? { projectRoot } : {}) };
     setSessions((prev) => [session, ...prev]);
     setActiveSession(session.id);
     setScreen('chat');
@@ -230,7 +232,7 @@ export default function App() {
     let sessionId = activeSession;
     let historySource: ChatSession['messages'];
     if (!sessionId) {
-      const fresh: ChatSession = { id: `chat-${Date.now()}`, title: text.slice(0, 40) || 'New chat', updatedAt: new Date().toISOString(), messages: [{ role: 'user', content: text }] };
+      const fresh: ChatSession = { id: `chat-${Date.now()}`, title: text.slice(0, 40) || 'New chat', updatedAt: new Date().toISOString(), messages: [{ role: 'user', content: text }], ...(projectRoot ? { projectRoot } : {}) };
       sessionId = fresh.id;
       historySource = fresh.messages;
       setSessions((prev) => [fresh, ...prev]);
@@ -455,13 +457,13 @@ export default function App() {
         </button>
         <div className="recent-label nav-label">Recent</div>
         <div className="recent-chat-list">
-          {sessions.map((session) => (
+          {visibleSessions.map((session) => (
             <button type="button" key={session.id} className={`recent-chat ${session.id === activeSession ? 'active' : ''}`} aria-current={session.id === activeSession ? 'true' : undefined} onClick={() => { setActiveSession(session.id); setScreen('chat'); }}>
               {ICONS.chat}
               <span>{session.title}</span>
             </button>
           ))}
-          {sessions.length === 0 && <p className="recent-empty">No chats yet. History is saved on this computer.</p>}
+          {visibleSessions.length === 0 && <p className="recent-empty">No chats for this project yet. History is saved on this computer.</p>}
         </div>
         <div className="side-spacer" />
         <div className="connection-card">

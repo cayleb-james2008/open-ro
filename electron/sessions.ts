@@ -16,6 +16,8 @@ export interface StoredChatSession {
   title: string;
   messages: StoredChatMessage[];
   updatedAt: string;
+  /** Absolute project root this chat belongs to; absent for legacy or project-less chats. */
+  projectRoot?: string;
 }
 
 export interface SessionSnapshot {
@@ -26,6 +28,7 @@ export interface SessionSnapshot {
 const MAX_SESSIONS = 40;
 const MAX_MESSAGES = 100;
 const MAX_CONTENT = 20_000;
+const MAX_PROJECT_ROOT = 1_000;
 
 function asTrace(value: unknown): StoredTraceEntry[] | undefined {
   if (!Array.isArray(value)) {
@@ -58,7 +61,7 @@ export function sanitizeSessions(input: unknown): SessionSnapshot {
     if (!item || typeof item !== 'object') {
       continue;
     }
-    const record = item as { id?: unknown; title?: unknown; messages?: unknown; updatedAt?: unknown };
+    const record = item as { id?: unknown; title?: unknown; messages?: unknown; updatedAt?: unknown; projectRoot?: unknown };
     if (typeof record.id !== 'string' || !/^[\w.-]{1,80}$/.test(record.id)) {
       continue;
     }
@@ -86,6 +89,7 @@ export function sanitizeSessions(input: unknown): SessionSnapshot {
       title,
       messages,
       updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt.slice(0, 40) : new Date().toISOString(),
+      projectRoot: typeof record.projectRoot === 'string' && record.projectRoot.trim() ? record.projectRoot.trim().slice(0, MAX_PROJECT_ROOT) : undefined,
     });
   }
   const activeId = typeof source.activeId === 'string' && sessions.some((session) => session.id === source.activeId) ? source.activeId : (sessions[0]?.id ?? null);

@@ -10,7 +10,7 @@
 - Vite renderer build and Electron main-process TypeScript configuration.
 - Provider catalogue with the local Ollama and llama.cpp routes first, then OpenAI/Anthropic API, official Codex/Claude Code/OpenCode CLI handoffs, OpenRouter and custom OpenAI-compatible endpoints.
 - Local project file listing/reading and agent tool foundation.
-- Chat history and provider state persist under `userData` with atomic writes (temp file, fsync, rename), so a crash cannot truncate them; the last selected project folder is restored on startup.
+- Chat history is scoped to the project that created it (chats without a project stay visible in every project) and, together with provider state, persists under `userData` using atomic writes (temp file, fsync, rename); the last selected project folder is restored on startup.
 - Approval-gated file writes and command execution. File checkpoint restores are staged as ordinary write approvals (diff review plus a fresh checkpoint of the overwritten state), so a restore can itself be restored. Creation checkpoints — where Open-Ro created the file — refuse to restore instead of deleting silently.
 - Credential storage guarded by Electron `safeStorage`; no plaintext persistence fallback.
 - Single active stdio MCP client. It sends newline-delimited JSON-RPC as the MCP stdio transport requires, lists the server's tools, answers server `ping`, and stops the process when the handshake fails. Starting a server and each agent tool call (`mcp__<tool>`) are staged in the approval queue; the exact command or argument JSON runs only after approval. A staged tool call is bound to the server session it was staged on. It is refused after a reconnect, after a crash and restart (including during the new server's handshake), and on a different server; `tests/mcpServerBinding.test.ts` and `tests/mcpCrashRestart.test.ts` cover these cases.
@@ -26,7 +26,7 @@ Commands run in this Windows 11 workspace:
 
 - `npm run typecheck` passed.
 - `npm run lint` passed (rejects type suppressions, skipped tests, and placeholder text).
-- `npm test` passed: 126 tests in 25 files under `tests/`.
+- `npm test` passed: 135 tests in 26 files under `tests/`.
 - `npm run build` passed. Vite emitted `dist/` and `tsc` emitted `dist-electron/`.
 - `npm run package:win` passed with electron-builder 26.18.0: produced `release/Open-Ro Studio Setup 0.1.0.exe` (NSIS, one-click disabled, unsigned).
 - `npm run package:linux` was not run in this workspace; it requires the Linux packaging toolchain and runs in CI.
@@ -56,7 +56,7 @@ CI runs the checks matrix on both supported operating systems and builds the pac
 ## Known limitations
 
 - MCP client supports one active stdio server at a time. It answers server `ping`; other server-to-client requests such as `roots/list` get method-not-found because the client declares no capabilities.
-- Chat history is saved locally in `userData/sessions.json` with atomic writes, and the last selected project folder is restored on startup. History is still global rather than scoped per project, and retention is capped at 40 sessions / 100 messages per session.
+- Chat history is saved locally in `userData/sessions.json` with atomic writes, the last selected project folder is restored on startup, and the Recent list is scoped to the open project (project-less and legacy chats stay visible). Retention is capped at 40 sessions / 100 messages per session.
 - File checkpoint restores are reviewable. Creation checkpoints (a file Open-Ro created) cannot be restored from the UI yet; the app refuses rather than deleting without review.
 - The automatic follow-up waits until every approval from the agent turn is decided, and until the chat that staged them is open. Results of approvals you start yourself, such as connecting an MCP server, are not sent to the agent. A result card shows only in the chat it belongs to.
 - Tool output in the follow-up is sent inside a closed data block with a random per-message nonce, after the instructions. This labels it as data for the model; it does not guarantee that a model ignores instructions written in it.
