@@ -47,6 +47,8 @@ export class McpStdioClient {
     if (this.running) {
       throw new Error('An MCP server is already active. Stop it before connecting another.');
     }
+    // Nothing from an earlier process (for example one that crashed without stop()) may describe this one.
+    this.forgetServer();
     const child = spawn(spec.command, spec.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: scrubbedEnv(),
@@ -62,8 +64,8 @@ export class McpStdioClient {
     child.stderr.on('data', () => {
       /* server logs are not treated as protocol failures */
     });
-    child.on('error', (error) => this.child === child && this.rejectAll(error));
-    child.on('exit', () => this.child === child && this.rejectAll(new Error('MCP server exited unexpectedly.')));
+    child.on('error', (error) => this.child === child && this.onChildGone(error));
+    child.on('exit', () => this.child === child && this.onChildGone(new Error('MCP server exited unexpectedly.')));
     child.stdin.on('error', (error) => this.child === child && this.rejectAll(error));
     try {
       await this.request('initialize', {
@@ -196,6 +198,17 @@ export class McpStdioClient {
       this.pending.set(id, { resolve, reject, timer });
       this.send({ jsonrpc: '2.0', id, method, params });
     });
+  }
+
+  /** The identity is set only after a completed handshake, so it is null while a new server starts. */
+  private forgetServer(): void {
+    this.serverIdentity = null;
+    this.tools = [];
+  }
+
+  private onChildGone(err: Error): void {
+    this.forgetServer();
+    this.rejectAll(err);
   }
 
   private rejectAll(err: Error): void {
