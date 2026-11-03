@@ -7,9 +7,16 @@ export interface SessionProjectRef {
   projectRoot?: string;
 }
 
-/** Compare project roots the way a desktop app should: slashes and case ignored, no trailing separator. */
+/** Windows drive paths, backslash paths, and UNC shares compare case-insensitively; POSIX paths stay case-sensitive. */
+function isWindowsStylePath(value: string): boolean {
+  const normalized = value.trim().replace(/\\/g, '/');
+  return value.includes('\\') || /^[a-z]:(\/|$)/i.test(normalized) || /^\/\/[^/]/.test(normalized);
+}
+
+/** Compare project roots the way the platform filesystem should: separators normalized, platform-aware case. */
 export function normalizeProjectPath(value: string): string {
-  return value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const normalized = value.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  return isWindowsStylePath(value) ? normalized.toLowerCase() : normalized;
 }
 
 /**

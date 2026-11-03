@@ -8,9 +8,20 @@ function session(overrides: Record<string, unknown> = {}): Record<string, unknow
 }
 
 describe('project path normalization', () => {
-  it('ignores slashes, case, whitespace, and trailing separators', () => {
+  it('ignores slashes, case, whitespace, and trailing separators for Windows paths', () => {
     expect(normalizeProjectPath('  C:\\Work\\Obby\\  ')).toBe('c:/work/obby');
     expect(normalizeProjectPath('c:/work/obby')).toBe('c:/work/obby');
+  });
+
+  it('keeps POSIX paths case-sensitive', () => {
+    expect(normalizeProjectPath('/Work/Obby/')).toBe('/Work/Obby');
+    expect(normalizeProjectPath('/work/obby')).toBe('/work/obby');
+    expect(isSessionVisibleForProject({ projectRoot: '/work/obby' }, '/Work/Obby')).toBe(false);
+    expect(isSessionVisibleForProject({ projectRoot: '/Work/Obby/' }, '/Work/Obby')).toBe(true);
+  });
+
+  it('treats forward-slash UNC shares as Windows paths', () => {
+    expect(normalizeProjectPath('//Server/Share/')).toBe('//server/share');
   });
 });
 
@@ -88,6 +99,27 @@ describe('agent turn project coherence', () => {
     expect(source).toContain('api.sendPrompt({ sessionId, messages: history, ...(turnProjectRoot ? { projectRoot: turnProjectRoot } : {}) })');
     expect(source).toContain('const turnProjectRoot = prior.find((session) => session.id === sessionId)?.projectRoot ?? projectRoot ?? undefined;');
     expect(source).toContain('resolveActiveSessionId(sessions, activeSession, projectRoot)');
+    expect(source).toContain("const showsDiff = item.kind === 'write' || item.studioOp === 'write' || item.kind === 'delete';");
+  });
+
+  it('treats the same folder under another spelling as no project switch', () => {
+    const source = readFileSync('electron/main.ts', 'utf8');
+    const selectStart = source.indexOf("ipcMain.handle('project:select-root'");
+    const select = source.slice(selectStart, source.indexOf('\n  });', selectStart));
+    expect(select).toContain('if (projectRoot && sameProjectRoot(projectRoot, next)) {');
+    expect(select).toContain('return projectRoot;');
+    const keepAt = select.indexOf('return projectRoot;');
+    const assignAt = select.indexOf('projectRoot = next;');
+    expect(keepAt).toBeGreaterThan(-1);
+    expect(assignAt).toBeGreaterThan(keepAt);
+    expect(select).not.toContain('path.resolve(next)');
+    const resolveStart = source.indexOf('async function resolveApproval');
+    const resolve = source.slice(resolveStart, source.indexOf('\nfunction registerIpc', resolveStart));
+    expect(resolve).toContain('!sameProjectRoot(item.projectRoot, projectRoot)');
+    const turnStart = source.indexOf("ipcMain.handle('agent:send'");
+    const turn = source.slice(turnStart, source.indexOf('\n  });', turnStart));
+    expect(turn).toContain('let turnRoot = currentRoot;');
+    expect(turn).toContain('!sameProjectRoot(currentRoot, next)');
   });
 });
 

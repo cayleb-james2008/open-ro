@@ -563,7 +563,7 @@ export default function App() {
           </div>
         )}
         {approvals.map((item) => {
-          const showsDiff = item.kind === 'write' || item.studioOp === 'write';
+          const showsDiff = item.kind === 'write' || item.studioOp === 'write' || item.kind === 'delete';
           const { rows, hidden, invisibleChange } = showsDiff ? diffPreview(item.previous ?? '', item.content ?? '', expandedDiffs.has(item.id)) : { rows: [], hidden: 0, invisibleChange: false };
           const copy = approvalCopy(item);
           return (

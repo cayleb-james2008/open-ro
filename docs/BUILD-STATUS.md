@@ -27,7 +27,7 @@ Commands run in this Windows 11 workspace:
 
 - `npm run typecheck` passed.
 - `npm run lint` passed (rejects type suppressions, skipped tests, and placeholder text).
-- `npm test` passed: 151 tests in 27 files under `tests/`.
+- `npm test` passed: 154 tests in 27 files under `tests/`.
 - `npm run build` passed. Vite emitted `dist/` and `tsc` emitted `dist-electron/`.
 - `npm run package:win` passed with electron-builder 26.18.0: produced `release/Open-Ro Studio Setup 0.1.0.exe` (NSIS, one-click disabled, unsigned).
 - `npm run package:linux` was not run in this workspace; it requires the Linux packaging toolchain and runs in CI.
@@ -59,7 +59,7 @@ CI runs the checks matrix on both supported operating systems and builds the pac
 
 - MCP client supports one active stdio server at a time. It answers server `ping`; other server-to-client requests such as `roots/list` get method-not-found because the client declares no capabilities.
 - Chat history is saved locally in `userData/sessions.json` with atomic writes, the last selected project folder is restored on startup, and the Recent list is scoped to the open project (project-less and legacy chats stay visible). Retention is capped at 40 sessions / 100 messages per session.
-- File checkpoint restores are reviewable, including creation checkpoints: restoring one stages a delete approval that checkpoints the file's current contents before removal. Delete approvals do not yet render a line diff in the tray.
+- File checkpoint restores are reviewable, including creation checkpoints: restoring one stages a delete approval that checkpoints the file's current contents before removal. Delete approvals render the removed lines and use the same expand-before-approve gate as writes.
 - The automatic follow-up waits until every approval from the agent turn is decided, and until the chat that staged them is open. Results of approvals you start yourself, such as connecting an MCP server, are not sent to the agent. A result card shows only in the chat it belongs to.
 - Tool output in the follow-up is sent inside a closed data block with a random per-message nonce, after the instructions. This labels it as data for the model; it does not guarantee that a model ignores instructions written in it.
 - There is no Blender task runner, Rojo sync UI, or image/thumbnail/3D adapter.

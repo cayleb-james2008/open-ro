@@ -241,7 +241,7 @@ function requireMessages(messages: ChatMessage[]): ChatMessage[] {
 async function resolveApproval(id: string, decision: 'approve' | 'reject', kind?: ApprovalKind): Promise<ApprovalResult> {
   const item = approvals.take(id, kind);
   // MCP server starts are not tied to a project. Everything else must match the current project.
-  if (item.kind !== 'mcp-server' && (!projectRoot || path.resolve(item.projectRoot) !== path.resolve(projectRoot))) {
+  if (item.kind !== 'mcp-server' && (!projectRoot || !sameProjectRoot(item.projectRoot, projectRoot))) {
     throw new Error('Project folder changed. The staged action was discarded.');
   }
   if (decision === 'reject') {
@@ -417,7 +417,12 @@ function registerIpc(): void {
       return projectRoot || null;
     }
     const next = result.filePaths[0];
-    if (projectRoot && path.resolve(next) !== path.resolve(projectRoot)) {
+    if (projectRoot && sameProjectRoot(projectRoot, next)) {
+      // Same folder under another spelling: keep the canonical root so pending
+      // approvals (staged with that casing) still resolve.
+      return projectRoot;
+    }
+    if (projectRoot) {
       approvals.clear();
       studioReads.clear();
     }
