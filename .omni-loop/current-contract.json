@@ -1,48 +1,42 @@
 {
   "schema_version": "4.0.0",
-  "iteration_id": 7,
-  "wave_id": 4,
+  "iteration_id": 8,
+  "wave_id": 5,
   "active_harness": "H1_SYSTEMS_CODE",
-  "target_dimension": "U11",
-  "ponytail_rung_selected": 7,
-  "problem_or_genesis_goal": "A render exception unmounts the whole studio because the React tree has no error boundary.",
-  "reproduction_evidence": "src/main.tsx renders App directly. Red-team check 40 is FAIL.",
-  "user_impact": "One broken screen wipes the shell instead of showing the error and keeping the rest of the session.",
-  "atomic_scope_files": ["src/main.tsx", "src/ErrorBoundary.tsx"],
-  "indivisibility_proof": "The boundary component and the place it wraps are the same behavior.",
+  "target_dimension": "U07",
+  "ponytail_rung_selected": 4,
+  "problem_or_genesis_goal": "The model-connection card uses a two-stop gradient and the status dot glows, which the v4 quiet-chrome pass rejects.",
+  "reproduction_evidence": ".connection-card uses linear-gradient and .status-dot.on uses box-shadow glow in src/styles.css. Red-team check 11 is FAIL.",
+  "user_impact": "The sidebar chrome competes with the lime status dot, which is the one signature detail.",
+  "atomic_scope_files": ["src/styles.css"],
   "non_goals": [
-    "Do not restyle the shell",
-    "Do not catch main-process exceptions here"
+    "Do not change layout",
+    "Do not remove the lime accent"
   ],
   "acceptance_oracles": [
     {
-      "id": "typecheck",
-      "description": "Renderer typecheck stays green.",
-      "command": "npm run typecheck"
-    },
-    {
-      "id": "unit",
-      "description": "Existing tests stay green.",
-      "command": "npm test"
+      "id": "build",
+      "description": "Production CSS still minifies.",
+      "command": "npm run build"
     }
   ],
   "metamorphic_invariants": [
-    "A child that renders normally still shows the studio",
-    "A thrown render shows the error text and does not replace it with a blank document"
+    "The status dot stays visible when a model is connected",
+    "No transition-property all is introduced"
   ],
-  "regression_commands": ["npm run typecheck", "npm test", "npm run lint"],
-  "rollback_tag": "omni-loop/iter-7-pre",
+  "regression_commands": ["npm run build", "npm test", "npm run lint"],
+  "rollback_tag": "omni-loop/iter-8-pre",
   "pre_edit_hashes": {
-    "src/main.tsx": "549c1953bf5561384fe6f8cdf75295641d3764b98d82be3510bb0be20c9c7e6b"
+    "src/styles.css": "052ea8734e46832ea67efe1f7bdb7e449db3accd5edc84b96be46404c18a4cdd"
   },
   "uevam_inputs": {
-    "impact": 3,
-    "severity": 3,
+    "impact": 2,
+    "severity": 2,
     "confidence": 0.9,
     "unlocks": 0,
-    "info_gain": 0.5,
-    "substructure_reward": 1.1,
-    "effort": 1.5,
+    "info_gain": 0,
+    "substructure_reward": 1,
+    "effort": 1,
     "risk": 0.2,
     "is_p0_blocker": false
   }

@@ -1,22 +1,22 @@
 {
   "schema_version": "4.0.0",
-  "iteration_id": 6,
+  "iteration_id": 7,
   "clean_room_cot_stripped": true,
   "decision": "ACCEPT",
   "six_role_verdicts": {
-    "product_intent": "PASS for remembering the folder in state. Electron was not started, so the startup read was not observed live.",
-    "design_visual_unslop": "N/A. No visual diff.",
-    "systems_analytical_ponytail": "PASS. The field lives on the existing state object. Empty and dot roots stay absent.",
+    "product_intent": "PASS. A renderer exception now has a visible fallback. The throw was not clicked in a browser.",
+    "design_visual_unslop": "PASS. The fallback reuses existing classes and does not add a new visual system.",
+    "systems_analytical_ponytail": "PASS. One class component, which is the React boundary requirement, and one wrap.",
     "epistemic_citation_fidelity": "PASS. No new external claim.",
-    "adversarial_red_team_fuzzer": "PASS. The new test covers a saved path, blank, whitespace, and a dot. npm test 14 passed.",
-    "completeness_dod_gatekeeper": "PASS for the pure round trip. Startup inside Electron remains unrun. HARD_GATE_BLOCKED continues."
+    "adversarial_red_team_fuzzer": "INCONCLUSIVE. No automated throw was executed. typecheck, 14 tests, and build passed.",
+    "completeness_dod_gatekeeper": "PASS for the wrap only. HARD_GATE_BLOCKED continues."
   },
   "oracle_results": [
     {
-      "id": "restore-root",
+      "id": "build",
       "exit_code": 0,
       "passed": true,
-      "observed_stdout": "Test Files 2 passed. Tests 14 passed. Includes restores a saved project folder and does not invent the working directory."
+      "observed_stdout": "vite build succeeded. JS 260.12 kB, CSS 23.89 kB. npm test 14 passed. typecheck exit 0."
     },
     {
       "id": "unit",
@@ -50,8 +50,8 @@
     }
   ],
   "score_delta": {
-    "before_composite": 3.35,
-    "after_composite": 3.36,
-    "net_gain": 0.01
+    "before_composite": 3.36,
+    "after_composite": 3.38,
+    "net_gain": 0.02
   }
 }
