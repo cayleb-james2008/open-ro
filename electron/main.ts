@@ -1,7 +1,10 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { execFile } from 'node:child_process';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
+import { promisify } from 'node:util';
 import { registerApprovalChannels } from './approvalChannels';
 import { ApprovalQueue, type ApprovalKind, type PendingApproval } from './approvals';
 import { writeTextAtomic } from './atomicWrite';
@@ -9,6 +12,7 @@ import { detectCapabilities } from './capabilities';
 import { parseCheckpointRecord, stageCheckpointRestore } from './checkpoints';
 import { McpStdioClient } from './mcp';
 import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServer, serverLabel, stageMcpCall, stageMcpConnect } from './mcpTools';
+import { reportMediaHardware, type MediaHardwareProfile, type MediaReport } from './mediaCatalog';
 import { gradePlaytest, parsePlaytestReport, resolvePlaytestScreenshot } from './playtestEvidence';
 import { deriveRepairPlan, summarizePlaytestLedger, type PlaytestLedgerEntry, type PlaytestLedgerRecord, type PlaytestRepairPlan } from './playtestLedger';
 import { runApprovedStudio, stageStudioRestore, stageStudioTool, StudioReads, type StudioCheckpoint } from './studioTools';
@@ -182,6 +186,64 @@ async function readPlaytestLedger(root: string): Promise<PlaytestLedgerEntry[]> 
     }
   }
   return summarizePlaytestLedger(records, root);
+}
+
+const execFileAsync = promisify(execFile);
+const GIB = 1024 ** 3;
+
+async function detectNvidiaGpu(): Promise<{ name: string | null; vramsGB: number[]; count: number }> {
+  if (process.platform !== 'win32' && process.platform !== 'linux') {
+    return { name: null, vramsGB: [], count: 0 };
+  }
+  try {
+    const { stdout } = await execFileAsync('nvidia-smi', ['--query-gpu=name,memory.total', '--format=csv,noheader,nounits'], {
+      timeout: 3000,
+      windowsHide: true,
+    });
+    const rows = stdout
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => line.split(',').map((part) => part.trim()))
+      .filter((parts) => parts.length >= 2 && Number.isFinite(Number(parts[1])));
+    if (rows.length === 0) {
+      return { name: null, vramsGB: [], count: 0 };
+    }
+    const vramsGB = rows.map((parts) => Math.round((Number(parts[1]) / 1024) * 10) / 10);
+    return {
+      name: rows.map((parts) => parts[0]).join(' + '),
+      vramsGB,
+      count: rows.length,
+    };
+  } catch {
+    return { name: null, vramsGB: [], count: 0 };
+  }
+}
+
+async function detectMediaReport(): Promise<MediaReport> {
+  const cpus = os.cpus();
+  const gpu = await detectNvidiaGpu();
+  let freeDiskGB: number | null = null;
+  try {
+    const stats = await fs.statfs(app.getPath('userData'));
+    freeDiskGB = Math.round(((stats.bavail * stats.bsize) / GIB) * 10) / 10;
+  } catch {
+    freeDiskGB = null;
+  }
+  const profile: MediaHardwareProfile = {
+    totalRamGB: Math.round((os.totalmem() / GIB) * 10) / 10,
+    freeRamGB: Math.round((os.freemem() / GIB) * 10) / 10,
+    cpuModel: cpus[0]?.model ?? 'unknown',
+    cores: cpus.length,
+    platform: process.platform,
+    arch: process.arch,
+    gpuName: gpu.name,
+    vramGB: gpu.vramsGB.length > 0 ? Math.max(...gpu.vramsGB) : null,
+    gpuVramGB: gpu.vramsGB,
+    gpuCount: gpu.count,
+    vramSource: gpu.count > 0 ? 'nvidia-smi' : 'unknown',
+    freeDiskGB,
+  };
+  return reportMediaHardware(profile);
 }
 
 async function saveStudioCapture(data: Buffer, mimeType: string, captureId: string): Promise<string> {
@@ -584,6 +646,8 @@ function registerIpc(): void {
     }
     return deriveRepairPlan(await readPlaytestLedger(projectRoot));
   });
+
+  ipcMain.handle('media:hardware', async (): Promise<MediaReport> => detectMediaReport());
 
   ipcMain.handle('command:preview', async (_event, args: { command: string }) => {
     if (!projectRoot) {

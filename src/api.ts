@@ -13,6 +13,7 @@ import type {
 } from '../electron/types';
 import type { SessionSnapshot } from '../electron/sessions';
 import type { PlaytestLedgerEntry, PlaytestRepairPlan } from '../electron/playtestLedger';
+import type { MediaReport } from '../electron/mediaCatalog';
 
 /** Typed view of the preload bridge. No raw secrets ever cross this boundary. */
 export interface Api {
@@ -33,6 +34,8 @@ export interface Api {
   playtestLedger(): Promise<PlaytestLedgerEntry[]>;
   /** The newest unresolved playtest failure, or null when nothing is open. */
   playtestRepairPlan(): Promise<PlaytestRepairPlan | null>;
+  /** Local hardware profile plus the 2026-only media catalog recommendations. */
+  mediaHardware(): Promise<MediaReport>;
   listProject(rel?: string): Promise<FileEntry[]>;
   readProject(rel: string): Promise<string>;
   previewWrite(args: { rel: string; content: string }): Promise<PendingApprovalView>;
@@ -93,6 +96,7 @@ export const api: Api = {
   indexProject: () => call<ProjectIndexSummary>('project:index'),
   playtestLedger: () => call<PlaytestLedgerEntry[]>('playtest:ledger'),
   playtestRepairPlan: () => call<PlaytestRepairPlan | null>('playtest:repair-plan'),
+  mediaHardware: () => call<MediaReport>('media:hardware'),
   listProject: (rel) => call<FileEntry[]>('project:list', { rel }),
   readProject: (rel) => call<string>('project:read', { rel }),
   previewWrite: (args) => call<PendingApprovalView>('project:preview-write', args),
