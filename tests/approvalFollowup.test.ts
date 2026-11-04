@@ -1,9 +1,44 @@
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
-import { runTool } from '../electron/agent';
-import { draftAfterSend, dropMissing, followupText, newNonce, nextFollowup, recordResolution, resultSession, showsResultIn, trackStaged } from '../src/approvalFollowup';
+import { parseAcceptanceDefinition } from '../electron/acceptanceChecks';
+import { runAgentTurn, runTool } from '../electron/agent';
+import type { ToolExecutor } from '../electron/types';
+import { acceptanceFirst, batchHasAppliedChange, draftAfterSend, dropMissing, followupText, needsRepairNudge, newNonce, nextFollowup, nudgeAction, recordResolution, repairNudgeText, repairWriteNudgeText, resultSession, showsResultIn, trackStaged } from '../src/approvalFollowup';
 import type { FollowupBatch } from '../src/approvalFollowup';
 
 const ok = (summary: string, output?: string) => ({ ok: true, decision: 'approve' as const, summary, output });
+
+async function startProvider(respond: (index: number) => unknown): Promise<{ baseUrl: string; requests: string[]; close: () => Promise<void> }> {
+  const requests: string[] = [];
+  const server = createServer((request, response) => {
+    let body = '';
+    request.on('data', (chunk: Buffer) => {
+      body += chunk.toString('utf8');
+    });
+    request.on('end', () => {
+      const index = requests.length;
+      requests.push(body);
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify(respond(index)));
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const address = server.address() as AddressInfo;
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    requests,
+    close: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}
+
+const stagedExecutor: ToolExecutor = {
+  schemas: () => [],
+  execute: async () => ({ ok: true, output: 'Staged.', pendingApproval: { kind: 'file-write', path: 'a.txt', id: 'approval-1' } }),
+};
 
 describe('sending approved results back to the agent', () => {
   it('waits until every approval from the turn is decided, then sends one message', () => {
@@ -99,6 +134,219 @@ describe('agent tool trace', () => {
     await runTool({ id: 'c1', name: 'write_file', args: { path: 'a.lua', content: 'x' } }, executor, trace);
     await runTool({ id: 'c2', name: 'list_dir', args: {} }, executor, trace);
     expect(trace.map((entry) => [entry.status, entry.approvalId])).toEqual([['staged', 'approval-7'], ['executed', undefined]]);
+  });
+});
+
+describe('staged approval stops the turn', () => {
+  it('does not send the tool result back to an OpenAI-compatible model before the user decides', async () => {
+    const provider = await startProvider((index) => index === 0
+      ? { choices: [{ message: { content: '', tool_calls: [{ id: 'call_1', function: { name: 'write_file', arguments: JSON.stringify({ path: 'a.txt', content: 'x' }) } }] } }] }
+      : { choices: [{ message: { content: 'should not be requested' } }] });
+    try {
+      const result = await runAgentTurn({
+        connection: { kind: 'openai-api', model: 'mock', baseUrl: provider.baseUrl, apiKey: 'test' },
+        messages: [{ role: 'user', content: 'Fix a.txt' }],
+        projectRoot: process.cwd(),
+        executor: stagedExecutor,
+      });
+      expect(provider.requests).toHaveLength(1);
+      expect(result.toolTrace).toMatchObject([{ name: 'write_file', status: 'staged', approvalId: 'approval-1' }]);
+      expect(result.assistantText).toBe('');
+    } finally {
+      await provider.close();
+    }
+  });
+
+  it('does the same for the Anthropic adapter', async () => {
+    const provider = await startProvider((index) => index === 0
+      ? { content: [{ type: 'tool_use', id: 'tool_1', name: 'write_file', input: { path: 'a.txt', content: 'x' } }] }
+      : { content: [{ type: 'text', text: 'should not be requested' }] });
+    try {
+      const result = await runAgentTurn({
+        connection: { kind: 'anthropic-api', model: 'mock', baseUrl: provider.baseUrl, apiKey: 'test' },
+        messages: [{ role: 'user', content: 'Fix a.txt' }],
+        projectRoot: process.cwd(),
+        executor: stagedExecutor,
+      });
+      expect(provider.requests).toHaveLength(1);
+      expect(result.toolTrace).toMatchObject([{ name: 'write_file', status: 'staged', approvalId: 'approval-1' }]);
+    } finally {
+      await provider.close();
+    }
+  });
+
+  it('stops a multi-call OpenAI batch after the first staged call', async () => {
+    const provider = await startProvider((index) => index === 0
+      ? { choices: [{ message: { content: '', tool_calls: [
+        { id: 'write', function: { name: 'write_file', arguments: JSON.stringify({ path: 'a.txt', content: 'x' }) } },
+        { id: 'report', function: { name: 'report_playtest', arguments: JSON.stringify({ scenario: 'x' }) } },
+      ] } }] }
+      : { choices: [{ message: { content: 'should not be requested' } }] });
+    const executed: string[] = [];
+    const executor: ToolExecutor = {
+      schemas: () => [],
+      execute: async (call) => {
+        executed.push(call.name);
+        return call.name === 'write_file'
+          ? { ok: true, output: 'Staged.', pendingApproval: { kind: 'file-write', path: 'a.txt', id: 'approval-1' } }
+          : { ok: true, output: 'reported' };
+      },
+    };
+    try {
+      const result = await runAgentTurn({
+        connection: { kind: 'openai-api', model: 'mock', baseUrl: provider.baseUrl, apiKey: 'test' },
+        messages: [{ role: 'user', content: 'Fix a.txt' }],
+        projectRoot: process.cwd(),
+        executor,
+      });
+      expect(executed).toEqual(['write_file']);
+      expect(provider.requests).toHaveLength(1);
+      expect(result.toolTrace).toHaveLength(1);
+      expect(result.toolTrace[0]).toMatchObject({ name: 'write_file', status: 'staged' });
+    } finally {
+      await provider.close();
+    }
+  });
+
+  it('stops a multi-call Anthropic batch after the first staged call', async () => {
+    const provider = await startProvider((index) => index === 0
+      ? { content: [
+        { type: 'tool_use', id: 'write', name: 'write_file', input: { path: 'a.txt', content: 'x' } },
+        { type: 'tool_use', id: 'report', name: 'report_playtest', input: { scenario: 'x' } },
+      ] }
+      : { content: [{ type: 'text', text: 'should not be requested' }] });
+    const executed: string[] = [];
+    const executor: ToolExecutor = {
+      schemas: () => [],
+      execute: async (call) => {
+        executed.push(call.name);
+        return call.name === 'write_file'
+          ? { ok: true, output: 'Staged.', pendingApproval: { kind: 'file-write', path: 'a.txt', id: 'approval-1' } }
+          : { ok: true, output: 'reported' };
+      },
+    };
+    try {
+      const result = await runAgentTurn({
+        connection: { kind: 'anthropic-api', model: 'mock', baseUrl: provider.baseUrl, apiKey: 'test' },
+        messages: [{ role: 'user', content: 'Fix a.txt' }],
+        projectRoot: process.cwd(),
+        executor,
+      });
+      expect(executed).toEqual(['write_file']);
+      expect(provider.requests).toHaveLength(1);
+      expect(result.toolTrace).toHaveLength(1);
+    } finally {
+      await provider.close();
+    }
+  });
+});
+
+describe('repair continuation after an approved change', () => {
+  it('moves the acceptance definition ahead of the generic repair instruction', () => {
+    const base = 'Repair "Coin pickup" (attempt 2). Last failure: assertion did not match.';
+    const acceptance = 'Acceptance definition for "Coin pickup":\n- assertion "coin count": expected "1"';
+    const ordered = acceptanceFirst(`${base}\n\n${acceptance}`);
+    expect(ordered.startsWith('Acceptance definition for "Coin pickup"')).toBe(true);
+    expect(ordered).toContain(base);
+    expect(acceptanceFirst(base)).toBe(base);
+  });
+
+  const plan = {
+    scenario: 'Coin pickup',
+    instruction: 'Repair "Coin pickup" (attempt 2).\n\nAcceptance definition for "Coin pickup":\n- assertion "coin count": expected "1"',
+    attempt: 2,
+  };
+
+  it('places the scenario and plan before the result blocks', () => {
+    const [batch] = recordResolution(trackStaged([], 'chat-1', ['a']), 'a', ok('Wrote coin.lua.')).ready;
+    const text = followupText(batch, 'N', plan);
+    expect(text).toContain('Open repair continuation: the approved change was applied.');
+    expect(text).toContain('"Coin pickup" (attempt 2)');
+    expect(text).toContain('Acceptance definition for "Coin pickup"');
+    expect(text.indexOf('Open repair continuation')).toBeLessThan(text.indexOf('1. Approved.'));
+  });
+
+  it('does not ask for a re-test after a rejection or a failed approval', () => {
+    const [rejected] = recordResolution(trackStaged([], 'chat-1', ['a']), 'a', { ok: true, decision: 'reject', summary: 'Rejected.' }).ready;
+    expect(followupText(rejected, 'N', plan)).not.toContain('Open repair continuation');
+    const [failed] = recordResolution(trackStaged([], 'chat-1', ['a']), 'a', { ok: false, decision: 'approve', summary: 'Write failed.' }).ready;
+    expect(followupText(failed, 'N', plan)).not.toContain('Open repair continuation');
+  });
+
+  it('caps a long plan and stays under the transport limit', () => {
+    const [batch] = recordResolution(trackStaged([], 'chat-1', ['a']), 'a', ok('Wrote coin.lua.', 'y'.repeat(4000))).ready;
+    const text = followupText(batch, 'N', { ...plan, instruction: 'x'.repeat(20_000) });
+    expect(text).toContain('[repair details cut');
+    expect(text.length).toBeLessThan(20_000);
+  });
+
+  it('triggers one automatic nudge only for an approved change with no report_playtest call', () => {
+    const settled = (result: { ok: boolean; decision: 'approve' | 'reject'; summary: string; output?: string }) =>
+      recordResolution(trackStaged([], 'chat-1', ['a']), 'a', result).ready[0];
+    const applied = settled(ok('Wrote coin.lua.'));
+    const rejected = settled({ ok: true, decision: 'reject', summary: 'Rejected.' });
+    const failed = settled({ ok: false, decision: 'approve', summary: 'Write failed.' });
+    const expired = dropMissing(trackStaged([], 'chat-1', ['a']), []).ready[0];
+    expect(batchHasAppliedChange(applied)).toBe(true);
+    expect(batchHasAppliedChange(rejected)).toBe(false);
+    expect(needsRepairNudge(plan, applied, [])).toBe(true);
+    expect(needsRepairNudge(plan, applied, [{ name: 'read_file', status: 'executed' }])).toBe(true);
+    expect(needsRepairNudge(plan, applied, [{ name: 'write_file', status: 'staged' }])).toBe(false);
+    expect(needsRepairNudge(plan, applied, [{ name: 'studio_playtest', status: 'staged' }])).toBe(false);
+    expect(needsRepairNudge(plan, applied, [{ name: 'report_playtest', status: 'executed' }])).toBe(false);
+    expect(needsRepairNudge(plan, applied, [{ name: 'report_playtest', status: 'error' }])).toBe(false);
+    expect(needsRepairNudge(plan, rejected, [])).toBe(false);
+    expect(needsRepairNudge(plan, failed, [])).toBe(false);
+    expect(needsRepairNudge(plan, expired, [])).toBe(false);
+    expect(needsRepairNudge(null, applied, [])).toBe(false);
+    expect(nudgeAction(null, 'chat-1')).toBe('wait');
+    expect(nudgeAction({ sessionId: 'chat-1' }, 'chat-1')).toBe('send');
+    expect(nudgeAction({ sessionId: 'chat-1' }, 'chat-2')).toBe('switch');
+    const nudge = repairNudgeText(plan);
+    expect(nudge).toContain('[automatic repair step]');
+    expect(nudge).toContain('Now complete the repair loop for "Coin pickup" (attempt 2).');
+    expect(nudge).toContain('Call report_playtest now');
+    expect(nudge).toContain('do not call studio_* or MCP tools');
+    const definition = parseAcceptanceDefinition(JSON.stringify({
+      version: 1,
+      checks: [
+        { id: 'coin', scenario: 'Coin pickup', type: 'assertion', description: 'coin count', expected: '1' },
+        { id: 'door', scenario: 'Coin pickup', type: 'state', instancePath: 'Workspace.Door', property: 'Enabled', expected: 'true' },
+        { id: 'file', scenario: 'Coin pickup', type: 'file', path: 'reports/coin.txt', contains: 'collected' },
+      ],
+      screenshots: ['reports/coin.png'],
+    }));
+    const detailed = repairNudgeText(plan, definition);
+    expect(detailed).toContain('"scenario": "Coin pickup"');
+    expect(detailed).toContain('"description": "coin count"');
+    expect(detailed).toContain('"expected": "1"');
+    expect(detailed).toContain('"actual": "<observed>"');
+    expect(detailed).toContain('"instancePath": "Workspace.Door"');
+    expect(detailed).toContain('"property": "Enabled"');
+    expect(detailed).toContain('requires reports/coin.txt to contain "collected"');
+    expect(detailed).toContain('"screenshots": [');
+    expect(detailed).toContain('"reports/coin.png"');
+  });
+
+  it('builds a file-write nudge from the acceptance file checks', () => {
+    const definition = parseAcceptanceDefinition(JSON.stringify({
+      version: 1,
+      checks: [
+        { id: 'file', scenario: 'Coin pickup', type: 'file', path: 'reports/coin.txt', contains: 'collected' },
+        { id: 'exact', scenario: 'Coin pickup', type: 'file', path: 'reports/exact.txt', expected: 'exact text' },
+      ],
+    }));
+    const nudge = repairWriteNudgeText(plan, definition);
+    expect(nudge).toContain('[automatic repair step]');
+    expect(nudge).toContain('write_file path "reports/coin.txt" with content "collected"');
+    expect(nudge).toContain('write_file path "reports/exact.txt" with content "exact text"');
+    expect(nudge).toContain('Do not call studio_playtest');
+    expect(repairWriteNudgeText(plan, null)).toBe('');
+    const noFiles = parseAcceptanceDefinition(JSON.stringify({
+      version: 1,
+      checks: [{ id: 'a', scenario: 'Coin pickup', type: 'assertion', description: 'coin count', expected: '1' }],
+    }));
+    expect(repairWriteNudgeText(plan, noFiles)).toBe('');
   });
 });
 

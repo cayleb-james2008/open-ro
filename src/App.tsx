@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import api, { type ComfyStatusView, type MediaPlanView, type MediaResultView, type ProjectIndexSummary } from './api';
 import { Dialog } from './Dialog';
 import { diffPreview } from './textDiff';
-import { draftAfterSend, dropMissing, followupText, nextFollowup, recordResolution, resultSession, showsResultIn, trackStaged, type FollowupBatch } from './approvalFollowup';
+import { acceptanceFirst, draftAfterSend, dropMissing, followupText, needsRepairNudge, nextFollowup, nudgeAction, recordResolution, repairNudgeText, repairWriteNudgeText, resultSession, showsResultIn, trackStaged, type FollowupBatch } from './approvalFollowup';
 import { approvalCopy, providerInitials } from './labels';
 import { isSessionVisibleForProject, normalizeProjectPath, resolveActiveSessionId } from './sessionScope';
 import { providerOptions, type ProviderKind, type ProviderOption } from '../electron/providerCatalog';
 import type { SessionSnapshot, StoredChatSession } from '../electron/sessions';
+import type { AcceptanceDefinition } from '../electron/acceptanceChecks';
 import type { PlaytestLedgerEntry, PlaytestRepairPlan } from '../electron/playtestLedger';
 import type { AgentTurnResult, ApprovalResult, ChatMessage, FileEntry, PendingApprovalView, StoredProviderView } from '../electron/types';
 
@@ -116,6 +117,8 @@ export default function App() {
   // Approvals each agent turn staged; once all are decided the results go back to that chat.
   const followupsRef = useRef<FollowupBatch[]>([]);
   const [readyFollowups, setReadyFollowups] = useState<FollowupBatch[]>([]);
+  const [repairNudge, setRepairNudge] = useState<{ plan: PlaytestRepairPlan; sessionId: string } | null>(null);
+  const [repairWriteNudge, setRepairWriteNudge] = useState<{ plan: PlaytestRepairPlan; definition: AcceptanceDefinition | null; sessionId: string } | null>(null);
 
   const activeSessionData = useMemo(() => sessions.find((session) => session.id === activeSession) ?? null, [sessions, activeSession]);
   const visibleSessions = useMemo(() => sessions.filter((session) => isSessionVisibleForProject(session, projectRoot)), [sessions, projectRoot]);
@@ -261,11 +264,12 @@ export default function App() {
     setScreen('chat');
   }
 
-  async function sendDraft(textOverride?: string, options: { projectRoot?: string | null; newSession?: boolean } = {}) {
+  async function sendDraft(textOverride?: string, options: { projectRoot?: string | null; newSession?: boolean } = {}): Promise<{ result: AgentTurnResult; sessionId: string } | null> {
     const text = (textOverride ?? draft).trim();
     if (!text || sending) {
-      return;
+      return null;
     }
+    let turn: AgentTurnResult | null = null;
     const prior = sessionsRef.current;
     let sessionId = options.newSession ? null : activeSession;
     let historySource: ChatSession['messages'];
@@ -299,6 +303,7 @@ export default function App() {
     try {
       const turnProjectRoot = prior.find((session) => session.id === sessionId)?.projectRoot ?? projectRoot ?? undefined;
       const result = await api.sendPrompt({ sessionId, messages: history, ...(turnProjectRoot ? { projectRoot: turnProjectRoot } : {}) });
+      turn = result;
       if (turnProjectRoot && (!projectRoot || normalizeProjectPath(turnProjectRoot) !== normalizeProjectPath(projectRoot))) {
         setProjectRoot(turnProjectRoot);
         setProjectEntries(new Map());
@@ -337,6 +342,7 @@ export default function App() {
       setSending(false);
       setStreaming(null);
     }
+    return turn ? { result: turn, sessionId } : null;
   }
 
   useEffect(() => {
@@ -492,7 +498,16 @@ export default function App() {
       return;
     }
     setScreen('chat');
-    await sendDraft(plan.instruction, { newSession: true, projectRoot });
+    const first = await sendDraft(acceptanceFirst(plan.instruction), { newSession: true, projectRoot });
+    if (first && !first.result.toolTrace.some((entry) => entry.status === 'staged')) {
+      const current = await api.playtestRepairPlan().catch(() => null);
+      if (current) {
+        const definition = await api.acceptanceChecks().catch(() => null);
+        if (repairWriteNudgeText(current, definition)) {
+          setRepairWriteNudge({ plan: current, definition, sessionId: first.sessionId });
+        }
+      }
+    }
     await loadRepairPlan();
   }
 
@@ -698,8 +713,56 @@ export default function App() {
     setReadyFollowups((prev) => prev.filter((batch) => batch !== next));
     setLastResult(null);
     setScreen('chat');
-    void sendDraft(followupText(next));
+    void (async () => {
+      // If a repair is open, the same automatic follow-up asks the agent to re-test.
+      const plan = await api.playtestRepairPlan().catch(() => null);
+      const turn = await sendDraft(followupText(next, undefined, plan));
+      if (plan && turn && needsRepairNudge(plan, next, turn.result.toolTrace)) {
+        setRepairNudge({ plan, sessionId: turn.sessionId });
+      }
+    })();
   }, [readyFollowups, sending, activeSession]);
+
+  // One automatic write nudge when the opened repair produced no staged change.
+  useEffect(() => {
+    if (!repairWriteNudge || sending) {
+      return;
+    }
+    const action = nudgeAction(repairWriteNudge, activeSession);
+    if (action === 'wait') {
+      return;
+    }
+    if (action === 'switch') {
+      setActiveSession(repairWriteNudge.sessionId);
+      return;
+    }
+    const { plan, definition } = repairWriteNudge;
+    setRepairWriteNudge(null);
+    setScreen('chat');
+    void sendDraft(repairWriteNudgeText(plan, definition));
+  }, [repairWriteNudge, sending, activeSession]);
+
+  // One automatic second turn when the follow-up produced no report_playtest call.
+  useEffect(() => {
+    if (!repairNudge || sending) {
+      return;
+    }
+    const action = nudgeAction(repairNudge, activeSession);
+    if (action === 'wait') {
+      return;
+    }
+    if (action === 'switch') {
+      setActiveSession(repairNudge.sessionId);
+      return;
+    }
+    const plan = repairNudge.plan;
+    setRepairNudge(null);
+    setScreen('chat');
+    void (async () => {
+      const definition = await api.acceptanceChecks().catch(() => null);
+      await sendDraft(repairNudgeText(plan, definition));
+    })();
+  }, [repairNudge, sending, activeSession]);
 
   async function connectMcp() {
     if (!mcpForm.command.trim()) {

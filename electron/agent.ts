@@ -469,9 +469,19 @@ async function callOpenAiCompatible(
       break;
     }
     convo.push({ role: 'assistant', content: roundText, tool_calls: calls.map((call) => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } })) });
+    let staged = false;
     for (const call of calls) {
       const executed = await runTool(call, executor, trace);
       convo.push({ role: 'tool', tool_call_id: call.id, content: executed.output });
+      if (executed.pendingApproval) {
+        staged = true;
+        break;
+      }
+    }
+    // Nothing may run on the back of an unapproved action. The renderer resumes
+    // this chat after the queue settles and sends the decision results back.
+    if (staged) {
+      break;
     }
   }
   return { ok: true, assistantText, toolTrace: trace };
@@ -534,11 +544,20 @@ async function callAnthropic(
     }
     turns.push({ role: 'assistant', content: payload.content ?? [] });
     const results: Array<Record<string, unknown>> = [];
+    let staged = false;
     for (const call of toolCalls) {
       const executed = await runTool(call, executor, trace);
       results.push({ type: 'tool_result', tool_use_id: call.id, content: executed.output, is_error: !executed.ok });
+      if (executed.pendingApproval) {
+        staged = true;
+        break;
+      }
     }
     turns.push({ role: 'user', content: results });
+    // Stop before the model can act on an unapproved change.
+    if (staged) {
+      break;
+    }
   }
   return { ok: true, assistantText, toolTrace: trace };
 }
