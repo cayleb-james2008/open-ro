@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -199,7 +199,9 @@ describe('ComfyUI generation and media sink', () => {
     expect(result.promptId).toBe('p1');
     expect(result.files).toHaveLength(1);
     const saved = result.files[0];
-    expect(path.resolve(saved.path).startsWith(path.resolve(sink))).toBe(true);
+    const relative = path.relative(await realpath(sink), await realpath(saved.path));
+    expect(relative.startsWith('..')).toBe(false);
+    expect(path.isAbsolute(relative)).toBe(false);
     expect(path.basename(saved.path)).toContain('evil.mp3');
     expect(path.basename(saved.path)).not.toContain('..');
     expect(saved.bytes).toBe(Buffer.from('ID3-open-ro-live-audio').length);
