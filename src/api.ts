@@ -15,6 +15,46 @@ import type { SessionSnapshot } from '../electron/sessions';
 import type { PlaytestLedgerEntry, PlaytestRepairPlan } from '../electron/playtestLedger';
 import type { MediaReport } from '../electron/mediaCatalog';
 
+/** Renderer-safe mirror of the Comfy bridge responses; the main module is Node-only. */
+export interface ComfyDeviceView {
+  name: string;
+  type: string | null;
+  vramTotalGB: number | null;
+  vramFreeGB: number | null;
+}
+export interface ComfyStatusView {
+  ok: boolean;
+  baseUrl: string;
+  system: { comfyVersion: string | null; devices: ComfyDeviceView[]; ramTotalGB: number | null; ramFreeGB: number | null } | null;
+  nodeCount: number;
+  presets: Array<{ presetId: string; modelId: string; ready: boolean; missingNodes: string[]; reason: string }>;
+  error?: string;
+}
+export interface MediaPrepareView {
+  presetId: string;
+  prompt: string;
+  lyrics?: string;
+  durationSeconds?: number;
+  seed?: number;
+}
+export interface MediaPlanView {
+  planId: string;
+  presetId: string;
+  modelId: string;
+  prompt: string;
+  lyrics: string;
+  durationSeconds: number;
+  seed: number;
+  summary: string;
+  createdAt: string;
+}
+export interface MediaResultView {
+  ok: boolean;
+  promptId: string;
+  summary: string;
+  files: Array<{ path: string; bytes: number; sha256: string }>;
+}
+
 /** Typed view of the preload bridge. No raw secrets ever cross this boundary. */
 export interface Api {
   catalog(): Promise<ProviderOption[]>;
@@ -36,6 +76,12 @@ export interface Api {
   playtestRepairPlan(): Promise<PlaytestRepairPlan | null>;
   /** Local hardware profile plus the 2026-only media catalog recommendations. */
   mediaHardware(): Promise<MediaReport>;
+  /** Health of the loopback ComfyUI server and the 2026 presets it can run. */
+  comfyStatus(): Promise<ComfyStatusView>;
+  /** Freezes a reviewed ComfyUI plan; generation requires the returned plan id. */
+  prepareMedia(input: MediaPrepareView): Promise<MediaPlanView>;
+  /** Runs a prepared plan once and saves outputs under userData/media. */
+  generateMedia(planId: string): Promise<MediaResultView>;
   listProject(rel?: string): Promise<FileEntry[]>;
   readProject(rel: string): Promise<string>;
   previewWrite(args: { rel: string; content: string }): Promise<PendingApprovalView>;
@@ -97,6 +143,9 @@ export const api: Api = {
   playtestLedger: () => call<PlaytestLedgerEntry[]>('playtest:ledger'),
   playtestRepairPlan: () => call<PlaytestRepairPlan | null>('playtest:repair-plan'),
   mediaHardware: () => call<MediaReport>('media:hardware'),
+  comfyStatus: () => call<ComfyStatusView>('media:comfy-status'),
+  prepareMedia: (input) => call<MediaPlanView>('media:prepare', input),
+  generateMedia: (planId) => call<MediaResultView>('media:generate', { planId }),
   listProject: (rel) => call<FileEntry[]>('project:list', { rel }),
   readProject: (rel) => call<string>('project:read', { rel }),
   previewWrite: (args) => call<PendingApprovalView>('project:preview-write', args),

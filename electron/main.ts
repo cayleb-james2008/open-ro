@@ -13,6 +13,18 @@ import { parseCheckpointRecord, stageCheckpointRestore } from './checkpoints';
 import { McpStdioClient } from './mcp';
 import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServer, serverLabel, stageMcpCall, stageMcpConnect } from './mcpTools';
 import { reportMediaHardware, type MediaHardwareProfile, type MediaReport } from './mediaCatalog';
+import {
+  getComfyHealth,
+  normalizeComfyBaseUrl,
+  prepareComfyGeneration,
+  publicPlan,
+  runComfyPlan,
+  type ComfyGenerationInput,
+  type ComfyGenerationPlan,
+  type ComfyGenerationResult,
+  type ComfyHealth,
+  type ComfyPlanSummary,
+} from './comfyClient';
 import { gradePlaytest, parsePlaytestReport, resolvePlaytestScreenshot } from './playtestEvidence';
 import { deriveRepairPlan, summarizePlaytestLedger, type PlaytestLedgerEntry, type PlaytestLedgerRecord, type PlaytestRepairPlan } from './playtestLedger';
 import { runApprovedStudio, stageStudioRestore, stageStudioTool, StudioReads, type StudioCheckpoint } from './studioTools';
@@ -57,6 +69,21 @@ let mainWindow: BrowserWindow | null = null;
 let projectRoot = '';
 const mcp = new McpStdioClient();
 const approvals = new ApprovalQueue();
+const mediaPlans = new Map<string, { plan: ComfyGenerationPlan; expiresAt: number }>();
+const MEDIA_PLAN_TTL_MS = 10 * 60_000;
+
+function comfyBaseUrl(): string {
+  return normalizeComfyBaseUrl(process.env.OPENRO_COMFY_URL?.trim() || 'http://127.0.0.1:8188');
+}
+
+function pruneMediaPlans(): void {
+  const now = Date.now();
+  for (const [id, item] of mediaPlans) {
+    if (item.expiresAt <= now) {
+      mediaPlans.delete(id);
+    }
+  }
+}
 /** What approved Studio reads saw; a Studio write needs one for its diff. */
 const studioReads = new StudioReads();
 
@@ -648,6 +675,34 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('media:hardware', async (): Promise<MediaReport> => detectMediaReport());
+
+  ipcMain.handle('media:comfy-status', async (): Promise<ComfyHealth> => getComfyHealth(comfyBaseUrl()));
+
+  ipcMain.handle('media:prepare', async (_event, input: ComfyGenerationInput): Promise<ComfyPlanSummary> => {
+    if (!input || typeof input.presetId !== 'string' || typeof input.prompt !== 'string') {
+      throw new Error('A ComfyUI preset and prompt are required.');
+    }
+    pruneMediaPlans();
+    if (mediaPlans.size >= 30) {
+      throw new Error('Too many prepared media plans. Generate or wait for one to expire.');
+    }
+    const plan = await prepareComfyGeneration(comfyBaseUrl(), input);
+    mediaPlans.set(plan.planId, { plan, expiresAt: Date.now() + MEDIA_PLAN_TTL_MS });
+    return publicPlan(plan);
+  });
+
+  ipcMain.handle('media:generate', async (_event, args: { planId?: unknown }): Promise<ComfyGenerationResult> => {
+    const planId = typeof args?.planId === 'string' ? args.planId : '';
+    const stored = planId ? mediaPlans.get(planId) : undefined;
+    if (!stored || stored.expiresAt <= Date.now()) {
+      if (planId) {
+        mediaPlans.delete(planId);
+      }
+      throw new Error('That media plan is missing or expired. Prepare it again.');
+    }
+    mediaPlans.delete(planId);
+    return runComfyPlan(comfyBaseUrl(), stored.plan, path.join(app.getPath('userData'), 'media'));
+  });
 
   ipcMain.handle('command:preview', async (_event, args: { command: string }) => {
     if (!projectRoot) {
