@@ -79,22 +79,38 @@ change on its own.
 3. The Workspace shows the scenario, failing check, attempt and reason. **Run
    repair** sends the plan instruction, including only the matching scenario's
    acceptance definition, in a fresh project-bound chat.
-4. The agent proposes and stages a change. Approve it explicitly.
-5. The agent calls `report_playtest` again. The gate grades the assertions and
-   state checks, verifies declared files, and records the verdict.
+4. The agent proposes and stages a change. If the first turn stages nothing, one
+   automatic write nudge derived from the file checks asks for the focused write.
+   Approve it explicitly; nothing runs before approval.
+5. The app automatically continues the same chat with the plan checks. If the
+   model skips the re-test, one automatic nudge supplies the exact JSON shape
+   (with `<observed>` placeholders). The agent calls `report_playtest` again; the
+   gate grades the assertions and state checks, verifies declared files, and
+   records the verdict. A follow-up that stages another approval is not nudged
+   again until that approval is decided.
 6. A PASS closes the plan; another failure reopens it with the preserved failing
    check.
 
 ## Verification
 
 - Unit and integration tests: `npx.cmd vitest run tests/acceptanceChecks.test.ts`.
-- Full suite: `npm test` (284 tests in 37 files at this checkpoint).
+- Full suite: `npm test` (294 tests in 37 files at this checkpoint).
 - Final-build gate smoke: `node C:\Users\KK\AppData\Local\Temp\opencode\cdp-final-gate-smoke.cjs`
   (missing file -> FAILED, approved write -> PASSED, invalid definition ->
   FAILED).
-- Real-model receipt verifier: `node C:\Users\KK\AppData\Local\Temp\opencode\verify-ollama-write-receipt.cjs`.
+- Real-model receipt verifier: `node C:\Users\KK\AppData\Local\Temp\opencode\verify-ollama-auto-repair.cjs`.
 
-The real qwen2.5:3b run wrote `repair-probe.txt` after approval and needed one
-manual re-test continuation to reach PASSED. A llama3.2:3b run reported without
-the file and the gate recorded it FAILED with `acceptance file ... is missing or
-unreadable`. Fully autonomous real-model repair is not verified.
+On the final packaged build, real qwen2.5:3b staged `repair-probe.txt` and the
+human only approved the write. The automatic report nudge produced PASSED in
+about 197s with exactly 1 assertion, 1 state check and 1 screenshot; the plan
+closed. An earlier run needed the automatic write nudge because the first turn
+staged nothing. Automatic messages are marked `[automatic repair step]`. A
+llama3.2:3b run reported without the file and the gate recorded it FAILED with
+`acceptance file ... is missing or unreadable`.
+
+Residual limits: acceptance definitions inject checks and enforce file checks,
+but do not yet require the report's assertion/state set to exactly match the
+definition (an earlier run added an extra assertion and the gate accepted it).
+The 29-byte fixture PNG passes the pre-existing signature-only image check.
+Unattended approval-free repair is not a goal; writes still need a human
+approval.

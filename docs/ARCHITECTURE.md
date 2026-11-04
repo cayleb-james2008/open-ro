@@ -30,7 +30,8 @@ The UI must never receive raw provider credentials, Node.js process objects, or 
 | `src/comps/` | Dev-only `/comps/<state>` routes (`chat-empty`, `chat-approvals`, `loading`, `error`) that render the app against fixture data; excluded from production builds |
 | `electron/main.ts` | App lifecycle, IPC registration, privileged operations and approval dialogs |
 | `electron/preload.ts` | Narrow renderer bridge |
-| `electron/agent.ts` | Agent loop, provider calls, tool schema and execution routing |
+| `electron/agent.ts` | Agent loop, provider calls, tool schema and execution routing. A staged tool call ends the turn: no later tool in the batch runs and no model request follows until the approval queue settles |
+| `src/approvalFollowup.ts` | Renderer follow-up state: approval batches, fenced tool results, acceptance-first repair prompt, post-approval continuation, one-shot write/report nudges bound to the staging chat, and the 20,000-character transport budget |
 | `electron/providerCatalog.ts` | Provider definitions and connection routes |
 | `electron/secureStore.ts` | Secure credential storage via Electron safeStorage |
 | `electron/mcp.ts` | MCP stdio transport, tool discovery and calls |
