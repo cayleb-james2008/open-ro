@@ -7,6 +7,7 @@ import { approvalCopy, providerInitials } from './labels';
 import { isSessionVisibleForProject, normalizeProjectPath, resolveActiveSessionId } from './sessionScope';
 import { providerOptions, type ProviderKind, type ProviderOption } from '../electron/providerCatalog';
 import type { SessionSnapshot, StoredChatSession } from '../electron/sessions';
+import type { PlaytestLedgerEntry } from '../electron/playtestLedger';
 import type { AgentTurnResult, ApprovalResult, ChatMessage, FileEntry, PendingApprovalView, StoredProviderView } from '../electron/types';
 
 type Screen = 'chat' | 'models' | 'workspace' | 'integrations';
@@ -73,6 +74,9 @@ export default function App() {
   const [checkpoints, setCheckpoints] = useState<string[]>([]);
   const [studioCheckpoints, setStudioCheckpoints] = useState<string[]>([]);
   const [projectIndex, setProjectIndex] = useState<ProjectIndexSummary | null>(null);
+  const [playtestHistory, setPlaytestHistory] = useState<PlaytestLedgerEntry[]>([]);
+  const [playtestHistoryError, setPlaytestHistoryError] = useState<string | null>(null);
+  const playtestHistoryRequest = useRef(0);
   const [capabilities, setCapabilities] = useState<Awaited<ReturnType<typeof api.detectCapabilities>>>([]);
   const [mcpState, setMcpState] = useState<{ running: boolean; tools: Awaited<ReturnType<typeof api.mcpStatus>>['tools'] }>({ running: false, tools: [] });
   const [mcpForm, setMcpForm] = useState({ command: '', args: '' });
@@ -360,12 +364,67 @@ export default function App() {
     };
   }, [projectRoot]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const request = ++playtestHistoryRequest.current;
+    setPlaytestHistory([]);
+    setPlaytestHistoryError(null);
+    if (!projectRoot) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    void api.playtestLedger()
+      .then((entries) => {
+        if (!cancelled && request === playtestHistoryRequest.current) {
+          setPlaytestHistory(entries);
+        }
+      })
+      .catch(() => {
+        if (!cancelled && request === playtestHistoryRequest.current) {
+          setPlaytestHistory([]);
+          setPlaytestHistoryError('Could not load playtest history.');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectRoot]);
+
+  async function loadPlaytestHistory(root: string | null = projectRoot) {
+    const request = ++playtestHistoryRequest.current;
+    if (!root) {
+      setPlaytestHistory([]);
+      setPlaytestHistoryError(null);
+      return;
+    }
+    try {
+      const entries = await api.playtestLedger();
+      if (request === playtestHistoryRequest.current) {
+        setPlaytestHistory(entries);
+        setPlaytestHistoryError(null);
+      }
+    } catch {
+      if (request === playtestHistoryRequest.current) {
+        setPlaytestHistory([]);
+        setPlaytestHistoryError('Could not load playtest history.');
+      }
+    }
+  }
+
+  function repairFromLedger(entry: PlaytestLedgerEntry) {
+    const failure = entry.failingCheck ?? entry.reason;
+    setDraft(`Repair the last failed playtest for "${entry.scenario}". Failing check: ${failure}. Inspect the relevant script, propose one focused change, and stage it for review. Do not claim the playtest passes until report_playtest returns PASSED.`);
+    setScreen('chat');
+  }
+
   async function refreshWorkspaceState() {
     try {
-      setCheckpoints(await api.checkpoints());
-      setStudioCheckpoints(await api.studioCheckpoints());
       const root = await api.projectRoot();
       setProjectRoot(root);
+      await loadPlaytestHistory(root);
+      setCheckpoints(await api.checkpoints());
+      setStudioCheckpoints(await api.studioCheckpoints());
       if (root) {
         const entries = await api.listProject('.');
         setProjectEntries((prev) => new Map(prev).set('.', entries));
@@ -1010,6 +1069,44 @@ export default function App() {
               <b>{projectRoot ? 'This project has no indexed files' : 'No project map yet'}</b>
               <p>{projectRoot ? 'Ignored folders and secret files are hidden from the map.' : 'Choose a project folder to build the index.'}</p>
             </div>
+          )}
+        </div>
+
+        <div className="section-title" style={{ marginTop: 28 }}>
+          <span>Playtest history</span>
+          <span>{playtestHistory.length === 0 ? 'no recorded runs' : `${playtestHistory.length} recorded run(s)`}</span>
+        </div>
+        <button type="button" className="text-btn" style={{ marginTop: 8 }} onClick={() => void loadPlaytestHistory()}>Refresh history</button>
+        <div className="integration-list">
+          {playtestHistoryError ? (
+            <div className="empty-state">
+              <span className="empty-icon">{ICONS.shield}</span>
+              <b>History unavailable</b>
+              <p>{playtestHistoryError}</p>
+            </div>
+          ) : playtestHistory.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-icon">{ICONS.shield}</span>
+              <b>No playtest runs yet</b>
+              <p>Reports recorded from this project appear here after report_playtest runs.</p>
+            </div>
+          ) : (
+            <>
+              {playtestHistory.slice(0, 10).map((entry) => (
+                <div className="integration-card" key={entry.file}>
+                  <div className="integration-top">
+                    <span className="integration-copy">
+                      <b>{entry.status} · {entry.scenario}</b>
+                      <small>{entry.screenshots} screenshot(s) · {new Date(entry.createdAt).toLocaleString()} · {entry.file}</small>
+                    </span>
+                    {entry.status === 'FAILED' && (
+                      <button type="button" className="outline-btn" onClick={() => repairFromLedger(entry)}>Draft repair</button>
+                    )}
+                  </div>
+                  <p className="recent-empty">{entry.failingCheck ?? entry.reason}</p>
+                </div>
+              ))}
+            </>
           )}
         </div>
 
