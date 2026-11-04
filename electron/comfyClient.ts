@@ -444,10 +444,10 @@ async function saveOutput(baseUrl: string, output: ComfyOutputFile, sinkDir: str
     const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
     const resolvedSink = path.resolve(sinkDir);
     await fs.mkdir(resolvedSink, { recursive: true });
-    const realSink = await fs.realpath(resolvedSink);
-    if (process.platform === 'win32' ? realSink.toLowerCase() !== resolvedSink.toLowerCase() : realSink !== resolvedSink) {
+    if ((await fs.lstat(resolvedSink)).isSymbolicLink()) {
       throw new Error('The media sink must not be a symlink.');
     }
+    const realSink = await fs.realpath(resolvedSink);
     let handle: FileHandle | null = null;
     let target = '';
     for (let attempt = 0; attempt < 10; attempt += 1) {
