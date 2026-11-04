@@ -8,6 +8,7 @@ import {
   acceptanceText,
   applyAcceptanceChecks,
   parseAcceptanceDefinition,
+  verifyAcceptanceChecks,
   verifyAcceptanceFiles,
 } from '../electron/acceptanceChecks';
 
@@ -158,6 +159,93 @@ describe('acceptance definitions', () => {
     expect(acceptanceText(JSON.stringify(valid), true)?.checks).toHaveLength(4);
   });
 
+  it('requires the exact declared assertion and state multiset', async () => {
+    const definition = parseAcceptanceDefinition(JSON.stringify({
+      version: 1,
+      checks: [
+        { id: 'coin', scenario: 'Coin pickup', type: 'assertion', description: 'coin count', expected: '1' },
+        { id: 'door', scenario: 'Coin pickup', type: 'state', instancePath: 'Workspace.Door', property: 'Enabled', expected: 'true' },
+        { id: 'file', scenario: 'Coin pickup', type: 'file', path: 'coin.txt', contains: 'collected' },
+      ],
+    }));
+    const report = {
+      assertions: [{ description: 'coin count', expected: '1', actual: '1' }],
+      stateChecks: [{ instancePath: 'Workspace.Door', property: 'Enabled', expected: 'true', actual: 'true' }],
+    };
+    const extraAssertion = { ...report, assertions: [...report.assertions, { description: 'extra', expected: 'true', actual: 'true' }] };
+    const extraState = { ...report, stateChecks: [...report.stateChecks, { instancePath: 'Workspace.Door', property: 'Locked', expected: 'false', actual: 'false' }] };
+    expect(verifyAcceptanceChecks(definition, 'Coin pickup', report)).toBeNull();
+    expect(verifyAcceptanceChecks(definition, 'Coin pickup', extraAssertion)).toContain('unexpected');
+    expect(verifyAcceptanceChecks(definition, 'Coin pickup', extraState)).toContain('unexpected');
+    expect(verifyAcceptanceChecks(definition, 'Coin pickup', { assertions: [], stateChecks: report.stateChecks })).toContain('missing');
+    const wrong = { ...report, assertions: [{ description: 'coin count', expected: '2', actual: '2' }] };
+    expect(verifyAcceptanceChecks(definition, 'Coin pickup', wrong)).toContain('missing');
+    expect(verifyAcceptanceChecks(definition, 'Coin pickup', wrong)).toContain('unexpected');
+    const fileOnly = parseAcceptanceDefinition(JSON.stringify({
+      version: 1,
+      checks: [{ id: 'file', scenario: 'Coin pickup', type: 'file', path: 'coin.txt', contains: 'collected' }],
+    }));
+    expect(verifyAcceptanceChecks(fileOnly, 'Coin pickup', extraAssertion)).toBeNull();
+
+    const failed = await applyAcceptanceChecks({ status: 'PASSED', reason: 'all matched' }, definition, null, 'Coin pickup', async () => 'collected', extraAssertion);
+    expect(failed.status).toBe('FAILED');
+    expect(failed.reason).toContain('Acceptance assertion/state set failed');
+    expect(failed.reason).toContain('unexpected');
+    expect(failed.failingCheck).toContain('acceptance set:');
+    const earlier = { status: 'FAILED' as const, reason: '1 assertion did not match.', failingCheck: 'assertion "coin count": expected 1, got 0' };
+    const preserved = await applyAcceptanceChecks(earlier, definition, null, 'Coin pickup', async () => 'collected', extraAssertion);
+    expect(preserved.failingCheck).toBe(earlier.failingCheck);
+    expect(preserved.reason).toContain('Acceptance assertion/state set failed');
+    const exact = await applyAcceptanceChecks({ status: 'PASSED', reason: 'all matched' }, definition, null, 'Coin pickup', async () => 'collected', report);
+    expect(exact.status).toBe('PASSED');
+  });
+
+  it('counts duplicate declarations and trims only for comparison', () => {
+    const duplicate = parseAcceptanceDefinition(JSON.stringify({
+      version: 1,
+      checks: [
+        { id: 'a1', scenario: 'Coin pickup', type: 'assertion', description: 'coin count', expected: '1' },
+        { id: 'a2', scenario: 'Coin pickup', type: 'assertion', description: 'coin count', expected: '1' },
+      ],
+    }));
+    const one = { assertions: [{ description: 'coin count', expected: '1', actual: '1' }], stateChecks: [] };
+    const two = { assertions: [...one.assertions, ...one.assertions], stateChecks: [] };
+    const three = { assertions: [...two.assertions, ...one.assertions], stateChecks: [] };
+    expect(verifyAcceptanceChecks(duplicate, 'Coin pickup', one)).toContain('missing');
+    expect(verifyAcceptanceChecks(duplicate, 'Coin pickup', two)).toBeNull();
+    expect(verifyAcceptanceChecks(duplicate, 'Coin pickup', three)).toContain('unexpected');
+    const single = parseAcceptanceDefinition(JSON.stringify({
+      version: 1,
+      checks: [{ id: 'a', scenario: 'Coin pickup', type: 'assertion', description: 'coin count', expected: '1' }],
+    }));
+    expect(verifyAcceptanceChecks(single, 'Coin pickup', {
+      assertions: [{ description: '  coin count  ', expected: '  1  ', actual: '1' }],
+      stateChecks: [],
+    })).toBeNull();
+  });
+
+  it('reports both a set mismatch and a file failure', async () => {
+    const definition = parseAcceptanceDefinition(JSON.stringify({
+      version: 1,
+      checks: [
+        { id: 'a', scenario: 'Coin pickup', type: 'assertion', description: 'coin count', expected: '1' },
+        { id: 'file', scenario: 'Coin pickup', type: 'file', path: 'coin.txt', contains: 'collected' },
+      ],
+    }));
+    const extra = {
+      assertions: [
+        { description: 'coin count', expected: '1', actual: '1' },
+        { description: 'extra', expected: 'true', actual: 'true' },
+      ],
+      stateChecks: [],
+    };
+    const result = await applyAcceptanceChecks({ status: 'PASSED', reason: 'all matched' }, definition, null, 'Coin pickup', async () => null, extra);
+    expect(result.status).toBe('FAILED');
+    expect(result.reason).toContain('Acceptance assertion/state set failed');
+    expect(result.reason).toContain('Acceptance file check failed');
+    expect(result.failingCheck).toContain('acceptance set:');
+  });
+
   it('maps read outcomes to strict or silent definitions', () => {
     const raw = JSON.stringify(valid);
     expect(acceptanceFromRead({ kind: 'missing' }, true)).toBeNull();
@@ -175,6 +263,7 @@ describe('acceptance definitions', () => {
     expect(main).toContain('acceptanceInstruction(definition, plan.scenario)');
     expect(main).toContain('readAcceptanceDefinition(projectRoot, true)');
     expect(main).toContain('applyAcceptanceChecks(verdict, definition, definitionError, report.scenario');
+    expect(main).toContain('}, report);');
     expect(main).toContain('stat.size > 256_000');
     expect(main).toContain('acceptanceFromRead(outcome, strict)');
     expect(main).toContain('readAcceptanceDefinition(root, true)');

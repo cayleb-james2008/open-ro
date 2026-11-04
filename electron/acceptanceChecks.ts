@@ -5,6 +5,23 @@
 
 export type AcceptanceCheckType = 'assertion' | 'state' | 'file';
 
+/** The subset of a playtest report needed to check the declared assertion/state sets. */
+export interface AcceptanceReportCheck {
+  description: string;
+  expected: string;
+}
+
+export interface AcceptanceReportStateCheck {
+  instancePath: string;
+  property: string;
+  expected: string;
+}
+
+export interface AcceptanceReport {
+  assertions: AcceptanceReportCheck[];
+  stateChecks: AcceptanceReportStateCheck[];
+}
+
 export interface AcceptanceAssertion {
   id: string;
   scenario: string;
@@ -237,6 +254,83 @@ export interface AcceptanceVerdict {
   failingCheck?: string;
 }
 
+function setKey(parts: string[]): string {
+  return parts.map((part) => part.trim()).join('\u0000');
+}
+
+function describeSetKey(key: string): string {
+  return JSON.stringify(key.split('\u0000').join(' / '));
+}
+
+function describeList(items: string[]): string {
+  return items.length <= 3 ? items.join(', ') : `${items.slice(0, 3).join(', ')} (+${items.length - 3} more)`;
+}
+
+function compareSet(kind: 'assertion' | 'state', expectedParts: string[][], actualParts: string[][]): string | null {
+  const expected = new Map<string, number>();
+  const actual = new Map<string, number>();
+  for (const parts of expectedParts) {
+    const key = setKey(parts);
+    expected.set(key, (expected.get(key) ?? 0) + 1);
+  }
+  for (const parts of actualParts) {
+    const key = setKey(parts);
+    actual.set(key, (actual.get(key) ?? 0) + 1);
+  }
+  const missing: string[] = [];
+  const extra: string[] = [];
+  for (const [key, count] of expected) {
+    for (let index = actual.get(key) ?? 0; index < count; index += 1) {
+      missing.push(describeSetKey(key));
+    }
+  }
+  for (const [key, count] of actual) {
+    for (let index = expected.get(key) ?? 0; index < count; index += 1) {
+      extra.push(describeSetKey(key));
+    }
+  }
+  if (missing.length === 0 && extra.length === 0) {
+    return null;
+  }
+  const parts: string[] = [];
+  if (missing.length > 0) {
+    parts.push(`missing ${describeList(missing)}`);
+  }
+  if (extra.length > 0) {
+    parts.push(`unexpected ${describeList(extra)}`);
+  }
+  return `${kind} set does not match (${parts.join('; ')})`;
+}
+
+/**
+ * The declared assertion/state multiset must match exactly. A definition with
+ * no assertion (or state) checks does not constrain that part of the report.
+ */
+export function verifyAcceptanceChecks(definition: AcceptanceDefinition, scenario: string, report: AcceptanceReport): string | null {
+  const scoped = acceptanceForScenario(definition, scenario);
+  if (!scoped) {
+    return null;
+  }
+  if (scoped.assertions.length > 0) {
+    const failure = compareSet(
+      'assertion',
+      scoped.assertions.map((check) => [check.description, check.expected]),
+      report.assertions.map((check) => [check.description, check.expected]),
+    );
+    if (failure) {
+      return failure;
+    }
+  }
+  if (scoped.stateChecks.length > 0) {
+    return compareSet(
+      'state',
+      scoped.stateChecks.map((check) => [check.instancePath, check.property, check.expected]),
+      report.stateChecks.map((check) => [check.instancePath, check.property, check.expected]),
+    );
+  }
+  return null;
+}
+
 /**
  * Apply acceptance definitions to a graded verdict. A malformed definition or
  * an unmet file check can only make a verdict stricter; it never turns a
@@ -248,6 +342,7 @@ export async function applyAcceptanceChecks<T extends AcceptanceVerdict>(
   definitionError: string | null,
   scenario: string,
   read: (path: string) => Promise<string | null>,
+  report?: AcceptanceReport | null,
 ): Promise<T> {
   if (definitionError) {
     const invalid = `Acceptance definition is invalid: ${definitionError}`;
@@ -257,19 +352,28 @@ export async function applyAcceptanceChecks<T extends AcceptanceVerdict>(
   if (!definition) {
     return verdict;
   }
+  const setFailure = report ? verifyAcceptanceChecks(definition, scenario, report) : null;
   const fileFailure = await verifyAcceptanceFiles(definition, scenario, read);
-  if (!fileFailure) {
+  if (!setFailure && !fileFailure) {
     return verdict;
   }
-  const detail = `Acceptance file check failed: ${fileFailure}.`;
+  const details: string[] = [];
+  if (setFailure) {
+    details.push(`Acceptance assertion/state set failed: ${setFailure}.`);
+  }
+  if (fileFailure) {
+    details.push(`Acceptance file check failed: ${fileFailure}.`);
+  }
+  const detail = details.join(' ');
+  const primary = setFailure ? `acceptance set: ${setFailure}` : (fileFailure as string);
   if (verdict.status === 'PASSED') {
-    return { ...verdict, status: 'FAILED', reason: detail, failingCheck: fileFailure } as T;
+    return { ...verdict, status: 'FAILED', reason: detail, failingCheck: primary } as T;
   }
   return {
     ...verdict,
     status: 'FAILED',
     reason: `${verdict.reason} ${detail}`.trim(),
-    failingCheck: verdict.failingCheck ?? fileFailure,
+    failingCheck: verdict.failingCheck ?? primary,
   } as T;
 }
 

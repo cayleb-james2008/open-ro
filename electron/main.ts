@@ -422,7 +422,7 @@ function buildExecutor(root: string): ToolExecutor {
               } catch {
                 return null;
               }
-            });
+            }, report);
             await writePlaytestRecord(root, report, verdict);
             const failing = verdict.failingCheck ? ` Failing check: ${verdict.failingCheck}` : '';
             const plan = verdict.status === 'FAILED' ? deriveRepairPlan(await readPlaytestLedger(root).catch(() => [])) : null;
