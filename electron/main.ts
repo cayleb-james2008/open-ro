@@ -5,6 +5,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
+import { acceptanceFromRead, acceptanceInstruction, applyAcceptanceChecks, type AcceptanceDefinition, type AcceptanceReadOutcome } from './acceptanceChecks';
 import { registerApprovalChannels } from './approvalChannels';
 import { ApprovalQueue, type ApprovalKind, type PendingApproval } from './approvals';
 import { writeTextAtomic } from './atomicWrite';
@@ -199,6 +200,25 @@ async function writePlaytestRecord(root: string, report: unknown, verdict: { sta
   await fs.writeFile(path.join(dir, `${stamp}-${verdict.status.toLowerCase()}.json`), JSON.stringify({ projectRoot: root, report, verdict }, null, 2), 'utf8');
 }
 
+async function readAcceptanceDefinition(root: string, strict = false): Promise<AcceptanceDefinition | null> {
+  let outcome: AcceptanceReadOutcome;
+  try {
+    const target = await resolveWithinRoot(root, '.openro/acceptance.json');
+    const stat = await fs.stat(target);
+    if (!stat.isFile()) {
+      throw new Error('Acceptance path is not a file.');
+    }
+    if (stat.size > 256_000) {
+      throw new Error('Acceptance file is larger than 256 KB.');
+    }
+    outcome = { kind: 'text', raw: await fs.readFile(target, 'utf8') };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    outcome = code === 'ENOENT' || code === 'ENOTDIR' ? { kind: 'missing' } : { kind: 'error', error };
+  }
+  return acceptanceFromRead(outcome, strict);
+}
+
 async function readPlaytestLedger(root: string): Promise<PlaytestLedgerEntry[]> {
   const dir = path.join(app.getPath('userData'), 'playtests');
   let names: string[];
@@ -385,9 +405,24 @@ function buildExecutor(root: string): ToolExecutor {
           }
           case 'report_playtest': {
             const report = parsePlaytestReport(args);
-            const verdict = await gradePlaytest(report, (reported) =>
+            let verdict = await gradePlaytest(report, (reported) =>
               resolvePlaytestScreenshot(root, reported, path.join(app.getPath('userData'), 'studio-captures')),
             );
+            let definition: AcceptanceDefinition | null = null;
+            let definitionError: string | null = null;
+            try {
+              definition = await readAcceptanceDefinition(root, true);
+            } catch (error) {
+              definitionError = error instanceof Error ? error.message : String(error);
+            }
+            // A present-but-invalid definition or an unmet file check can only make the verdict stricter.
+            verdict = await applyAcceptanceChecks(verdict, definition, definitionError, report.scenario, async (relPath) => {
+              try {
+                return await fs.readFile(await resolveWithinRoot(root, relPath), 'utf8');
+              } catch {
+                return null;
+              }
+            });
             await writePlaytestRecord(root, report, verdict);
             const failing = verdict.failingCheck ? ` Failing check: ${verdict.failingCheck}` : '';
             const plan = verdict.status === 'FAILED' ? deriveRepairPlan(await readPlaytestLedger(root).catch(() => [])) : null;
@@ -750,7 +785,20 @@ function registerIpc(): void {
     if (!projectRoot) {
       return null;
     }
-    return deriveRepairPlan(await readPlaytestLedger(projectRoot));
+    const plan = deriveRepairPlan(await readPlaytestLedger(projectRoot));
+    if (!plan) {
+      return null;
+    }
+    const definition = await readAcceptanceDefinition(projectRoot);
+    const extra = definition ? acceptanceInstruction(definition, plan.scenario) : '';
+    return extra ? { ...plan, instruction: `${plan.instruction}\n\n${extra}` } : plan;
+  });
+
+  ipcMain.handle('acceptance:read', async (): Promise<AcceptanceDefinition | null> => {
+    if (!projectRoot) {
+      return null;
+    }
+    return readAcceptanceDefinition(projectRoot, true);
   });
 
   ipcMain.handle('media:hardware', async (): Promise<MediaReport> => detectMediaReport());

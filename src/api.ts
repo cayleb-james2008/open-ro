@@ -13,6 +13,7 @@ import type {
 } from '../electron/types';
 import type { SessionSnapshot } from '../electron/sessions';
 import type { PlaytestLedgerEntry, PlaytestRepairPlan } from '../electron/playtestLedger';
+import type { AcceptanceDefinition } from '../electron/acceptanceChecks';
 import type { MediaReport } from '../electron/mediaCatalog';
 
 /** Renderer-safe mirror of the Comfy bridge responses; the main module is Node-only. */
@@ -74,6 +75,8 @@ export interface Api {
   playtestLedger(): Promise<PlaytestLedgerEntry[]>;
   /** The newest unresolved playtest failure, or null when nothing is open. */
   playtestRepairPlan(): Promise<PlaytestRepairPlan | null>;
+  /** Project acceptance definitions from .openro/acceptance.json, or null. */
+  acceptanceChecks(): Promise<AcceptanceDefinition | null>;
   /** Local hardware profile plus the 2026-only media catalog recommendations. */
   mediaHardware(): Promise<MediaReport>;
   /** Health of the loopback ComfyUI server and the 2026 presets it can run. */
@@ -142,6 +145,7 @@ export const api: Api = {
   indexProject: () => call<ProjectIndexSummary>('project:index'),
   playtestLedger: () => call<PlaytestLedgerEntry[]>('playtest:ledger'),
   playtestRepairPlan: () => call<PlaytestRepairPlan | null>('playtest:repair-plan'),
+  acceptanceChecks: () => call<AcceptanceDefinition | null>('acceptance:read'),
   mediaHardware: () => call<MediaReport>('media:hardware'),
   comfyStatus: () => call<ComfyStatusView>('media:comfy-status'),
   prepareMedia: (input) => call<MediaPlanView>('media:prepare', input),
