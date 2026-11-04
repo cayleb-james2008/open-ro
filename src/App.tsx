@@ -4,6 +4,7 @@ import { Dialog } from './Dialog';
 import { diffPreview } from './textDiff';
 import { acceptanceFirst, draftAfterSend, dropMissing, followupText, needsRepairNudge, nextFollowup, nudgeAction, recordResolution, repairNudgeText, repairWriteNudgeText, resultSession, showsResultIn, trackStaged, type FollowupBatch } from './approvalFollowup';
 import { approvalCopy, providerInitials } from './labels';
+import { buildProgressTimeline, progressSummary } from './progressTimeline';
 import { isSessionVisibleForProject, normalizeProjectPath, resolveActiveSessionId } from './sessionScope';
 import { providerOptions, type ProviderKind, type ProviderOption } from '../electron/providerCatalog';
 import type { SessionSnapshot, StoredChatSession } from '../electron/sessions';
@@ -122,6 +123,12 @@ export default function App() {
 
   const activeSessionData = useMemo(() => sessions.find((session) => session.id === activeSession) ?? null, [sessions, activeSession]);
   const visibleSessions = useMemo(() => sessions.filter((session) => isSessionVisibleForProject(session, projectRoot)), [sessions, projectRoot]);
+  const progressInput = useMemo(
+    () => ({ repairPlan, playtestHistory, sessions: visibleSessions, projectRoot }),
+    [repairPlan, playtestHistory, visibleSessions, projectRoot],
+  );
+  const progressEvents = useMemo(() => buildProgressTimeline(progressInput), [progressInput]);
+  const progressStats = useMemo(() => progressSummary(progressInput), [progressInput]);
 
   // A project change can hide the active chat; move to a visible chat instead of
   // leaving a chat open that the Recent list no longer shows.
@@ -1358,6 +1365,36 @@ export default function App() {
                 </div>
               ))}
             </>
+          )}
+        </div>
+
+        <div className="section-title" style={{ marginTop: 28 }}>
+          <span>Plan &amp; progress</span>
+          <span>
+            {progressStats.runs === 0
+              ? 'no runs yet'
+              : `${progressStats.passed}/${progressStats.runs} passed · attempt ${progressStats.openAttempt ?? '—'} · ${progressStats.chats} chat${progressStats.chats === 1 ? '' : 's'}`}
+          </span>
+        </div>
+        <div className="integration-list">
+          {progressEvents.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-icon">{ICONS.shield}</span>
+              <b>No progress yet</b>
+              <p>Repair attempts, playtest verdicts and project chats appear here in order.</p>
+            </div>
+          ) : (
+            progressEvents.map((event) => (
+              <div className="integration-card" key={event.id}>
+                <div className="integration-top">
+                  <span className="integration-copy">
+                    <b>{event.title}</b>
+                    <small>{new Date(event.time).toLocaleString()} · {event.detail}</small>
+                  </span>
+                  <span className="state-pill">{event.status}</span>
+                </div>
+              </div>
+            ))
           )}
         </div>
 
