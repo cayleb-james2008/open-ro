@@ -12,6 +12,7 @@ import type {
   StoredProviderView,
 } from '../electron/types';
 import type { SessionSnapshot } from '../electron/sessions';
+import type { PlaytestLedgerEntry } from '../electron/playtestLedger';
 
 /** Typed view of the preload bridge. No raw secrets ever cross this boundary. */
 export interface Api {
@@ -28,6 +29,8 @@ export interface Api {
   selectProjectRoot(): Promise<string | null>;
   projectRoot(): Promise<string | null>;
   indexProject(): Promise<ProjectIndexSummary>;
+  /** Prior playtest verdicts for the open project, newest first. */
+  playtestLedger(): Promise<PlaytestLedgerEntry[]>;
   listProject(rel?: string): Promise<FileEntry[]>;
   readProject(rel: string): Promise<string>;
   previewWrite(args: { rel: string; content: string }): Promise<PendingApprovalView>;
@@ -86,6 +89,7 @@ export const api: Api = {
   selectProjectRoot: () => call<string | null>('project:select-root'),
   projectRoot: () => call<string | null>('project:root'),
   indexProject: () => call<ProjectIndexSummary>('project:index'),
+  playtestLedger: () => call<PlaytestLedgerEntry[]>('playtest:ledger'),
   listProject: (rel) => call<FileEntry[]>('project:list', { rel }),
   readProject: (rel) => call<string>('project:read', { rel }),
   previewWrite: (args) => call<PendingApprovalView>('project:preview-write', args),

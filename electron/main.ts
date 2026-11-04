@@ -10,6 +10,7 @@ import { parseCheckpointRecord, stageCheckpointRestore } from './checkpoints';
 import { McpStdioClient } from './mcp';
 import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServer, serverLabel, stageMcpCall, stageMcpConnect } from './mcpTools';
 import { gradePlaytest, parsePlaytestReport, resolvePlaytestScreenshot } from './playtestEvidence';
+import { summarizePlaytestLedger, type PlaytestLedgerEntry, type PlaytestLedgerRecord } from './playtestLedger';
 import { runApprovedStudio, stageStudioRestore, stageStudioTool, StudioReads, type StudioCheckpoint } from './studioTools';
 import { isIgnoredName, isSecretName, resolveWithinRoot, sameProjectRoot } from './pathSafety';
 import { indexProject, buildProjectContext, type ProjectIndex } from './projectIndex';
@@ -543,6 +544,32 @@ function registerIpc(): void {
       throw new Error('The project folder is no longer available.');
     }
     return indexProject(projectRoot);
+  });
+
+  ipcMain.handle('playtest:ledger', async (): Promise<PlaytestLedgerEntry[]> => {
+    if (!projectRoot) {
+      return [];
+    }
+    const dir = path.join(app.getPath('userData'), 'playtests');
+    let names: string[];
+    try {
+      names = await fs.readdir(dir);
+    } catch {
+      return [];
+    }
+    const records: PlaytestLedgerRecord[] = [];
+    for (const file of names.filter((name) => name.endsWith('.json')).sort().reverse().slice(0, 100)) {
+      const full = path.join(dir, file);
+      const stat = await fs.stat(full).catch(() => null);
+      if (!stat || stat.size > 1_000_000) {
+        continue;
+      }
+      const raw = await fs.readFile(full, 'utf8').catch(() => null);
+      if (raw !== null) {
+        records.push({ file, modifiedMs: stat.mtimeMs, raw });
+      }
+    }
+    return summarizePlaytestLedger(records, projectRoot);
   });
 
   ipcMain.handle('command:preview', async (_event, args: { command: string }) => {

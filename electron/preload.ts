@@ -18,6 +18,7 @@ const INVOKE_CHANNELS = new Set([
   'project:select-root',
   'project:root',
   'project:index',
+  'playtest:ledger',
   'project:list',
   'project:read',
   'project:preview-write',
