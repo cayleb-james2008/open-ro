@@ -29,14 +29,15 @@ export function approvalCopy(item: PendingApprovalView): ApprovalCopy {
       return { title: `Review delete: ${item.relPath ?? ''}`, detail: 'The file is removed only if you approve. Its current contents are checkpointed first', preview: '', approveLabel: 'Delete file' };
     case 'media': {
       const preset = item.mediaPreset ?? 'ComfyUI audio';
+      const isImage = preset.startsWith('image-');
       const prompt = (item.mediaPrompt ?? '').slice(0, 400);
-      const duration = typeof item.mediaDuration === 'number' ? `${item.mediaDuration}s` : 'audio';
+      const duration = typeof item.mediaDuration === 'number' && item.mediaDuration > 0 ? `${item.mediaDuration}s` : (isImage ? '1024x1024' : 'audio');
       const seed = typeof item.mediaSeed === 'number' ? `, seed ${item.mediaSeed}` : '';
       return {
-        title: `Generate local audio: ${preset}`,
+        title: isImage ? `Generate local image: ${preset}` : `Generate local audio: ${preset}`,
         detail: `${duration}${seed} · runs on your loopback ComfyUI server only if you approve; nothing is downloaded`,
         preview: prompt,
-        approveLabel: 'Generate audio',
+        approveLabel: isImage ? 'Generate image' : 'Generate audio',
       };
     }
     case 'mcp': {

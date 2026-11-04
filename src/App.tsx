@@ -88,6 +88,10 @@ export default function App() {
   const [mediaResult, setMediaResult] = useState<MediaResultView | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [mediaBusy, setMediaBusy] = useState(false);
+  const wantsImage = mediaPresetId === 'image-flux-2-klein-4b';
+  const imagePreset = comfyStatus?.presets.find((preset) => preset.presetId === 'image-flux-2-klein-4b');
+  const imageGpuReady = imagePreset?.ready ?? false;
+  const planIsImage = mediaPlan?.presetId.startsWith('image-') ?? false;
   const [capabilities, setCapabilities] = useState<Awaited<ReturnType<typeof api.detectCapabilities>>>([]);
   const [mcpState, setMcpState] = useState<{ running: boolean; tools: Awaited<ReturnType<typeof api.mcpStatus>>['tools'] }>({ running: false, tools: [] });
   const [mcpForm, setMcpForm] = useState({ command: '', args: '' });
@@ -462,16 +466,21 @@ export default function App() {
     setMediaError(null);
     setMediaResult(null);
     setMediaPlan(null);
+    if (wantsImage && !imageGpuReady) {
+      setMediaError('FLUX.2 klein 4B needs a CUDA/ROCm device with at least 13GB VRAM. This machine reports none.');
+      setMediaBusy(false);
+      return;
+    }
     try {
       const plan = await api.prepareMedia({
         presetId: mediaPresetId,
         prompt: mediaPrompt,
-        lyrics: mediaLyrics,
-        durationSeconds: mediaDuration,
+        ...(wantsImage ? {} : { lyrics: mediaLyrics, durationSeconds: mediaDuration }),
         ...(mediaSeed.trim() ? { seed: Number(mediaSeed) } : {}),
       });
       setMediaPlan(plan);
     } catch (error) {
+      setMediaPlan(null);
       setMediaError(asMessage(error));
     } finally {
       setMediaBusy(false);
@@ -1204,44 +1213,63 @@ export default function App() {
 
         <div className="section-title" style={{ marginTop: 28 }}>
           <span>Local media</span>
-          <span>{comfyStatus?.ok ? `ComfyUI ${comfyStatus.system?.comfyVersion ?? ''} · ${comfyStatus.nodeCount} nodes` : 'ComfyUI offline'}</span>
+          <span>{comfyStatus?.ok ? `ComfyUI ${comfyStatus.system?.comfyVersion ?? ''} · ${comfyStatus.nodeCount} nodes${imageGpuReady ? ' · image ready' : ' · image unavailable'}` : 'ComfyUI offline'}</span>
         </div>
         <div className="integration-card">
           <div className="form-stack">
             <label>
               Preset
-              <select value={mediaPresetId} onChange={(event) => setMediaPresetId(event.target.value)}>
+              <select
+                value={mediaPresetId}
+                onChange={(event) => {
+                  setMediaPresetId(event.target.value);
+                  setMediaPlan(null);
+                  setMediaResult(null);
+                  setMediaError(null);
+                }}
+              >
                 <option value="audio-ace-step-1.5-turbo">ACE-Step 1.5 Turbo (CPU / low VRAM)</option>
                 <option value="audio-ace-step-1.5-xl">ACE-Step 1.5 XL (larger GPU)</option>
+                <option value="image-flux-2-klein-4b" disabled={!imageGpuReady}>FLUX.2 klein 4B (13GB GPU + nodes)</option>
               </select>
             </label>
             <label>
               Prompt
               <textarea
                 value={mediaPrompt}
-                placeholder="Warm lo-fi hip hop, vinyl crackle, mellow piano"
+                placeholder={wantsImage ? 'A hedgehog wearing a tiny party hat, product photo' : 'Warm lo-fi hip hop, vinyl crackle, mellow piano'}
                 onChange={(event) => setMediaPrompt(event.target.value)}
                 rows={2}
               />
             </label>
-            <label>
-              Lyrics (optional)
-              <textarea value={mediaLyrics} onChange={(event) => setMediaLyrics(event.target.value)} rows={3} />
-            </label>
-            <label>
-              Duration (5-60 seconds)
-              <input
-                type="number"
-                min={5}
-                max={60}
-                value={mediaDuration}
-                onChange={(event) => setMediaDuration(Number(event.target.value))}
-              />
-            </label>
+            {!wantsImage && (
+              <>
+                <label>
+                  Lyrics (optional)
+                  <textarea value={mediaLyrics} onChange={(event) => setMediaLyrics(event.target.value)} rows={3} />
+                </label>
+                <label>
+                  Duration (5-60 seconds)
+                  <input
+                    type="number"
+                    min={5}
+                    max={60}
+                    value={mediaDuration}
+                    onChange={(event) => setMediaDuration(Number(event.target.value))}
+                  />
+                </label>
+              </>
+            )}
             <label>
               Seed (optional)
               <input value={mediaSeed} placeholder="random" onChange={(event) => setMediaSeed(event.target.value)} />
             </label>
+            {wantsImage && (
+              <p className="recent-empty">
+                FLUX.2 klein 4B · 1024x1024 · 4 steps. Install flux-2-klein-4b.safetensors, qwen_3_4b_fp4_flux2.safetensors and flux2-vae.safetensors in ComfyUI.
+                {imageGpuReady ? '' : ' A CUDA/ROCm device with at least 13GB VRAM is required.'}
+              </p>
+            )}
           </div>
           <div className="modal-actions">
             <button type="button" className="outline-btn" onClick={() => void loadComfyStatus()}>Refresh ComfyUI</button>
@@ -1250,11 +1278,12 @@ export default function App() {
             </button>
             {mediaPlan && (
               <button type="button" className="primary-btn" disabled={mediaBusy} onClick={() => void generateMediaPlan()}>
-                Generate audio
+                {planIsImage ? 'Generate image' : 'Generate audio'}
               </button>
             )}
           </div>
           {comfyError && <p className="recent-empty">{comfyError}</p>}
+          {comfyStatus?.ok && !imageGpuReady && <p className="recent-empty">{imagePreset?.reason ?? 'Image generation is unavailable.'}</p>}
           {mediaError && <p className="recent-empty">{mediaError}</p>}
           {mediaPlan && <p className="recent-empty">Frozen plan: “{mediaPlan.prompt}” · {mediaPlan.summary}</p>}
           {mediaResult && (

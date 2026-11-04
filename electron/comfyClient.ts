@@ -27,7 +27,8 @@ export interface ComfyPreset {
   id: string;
   modelId: string;
   name: string;
-  modality: 'audio';
+  modality: 'audio' | 'image';
+  family: 'ace' | 'flux';
   requiredNodes: string[];
   unet: string;
   clip1: string;
@@ -35,6 +36,8 @@ export interface ComfyPreset {
   vae: string;
   steps: number;
   defaultSeconds: number;
+  width?: number;
+  height?: number;
 }
 
 export interface ComfyPresetReadiness {
@@ -127,12 +130,29 @@ const REQUIRED_ACE_NODES = [
   'PrimitiveInt',
 ];
 
+const REQUIRED_FLUX_NODES = [
+  'UNETLoader',
+  'CLIPLoader',
+  'VAELoader',
+  'CLIPTextEncode',
+  'ConditioningZeroOut',
+  'Flux2Scheduler',
+  'KSamplerSelect',
+  'CFGGuider',
+  'RandomNoise',
+  'SamplerCustomAdvanced',
+  'EmptyFlux2LatentImage',
+  'VAEDecode',
+  'SaveImage',
+];
+
 export const COMFY_PRESETS: ComfyPreset[] = [
   {
     id: 'audio-ace-step-1.5-turbo',
     modelId: 'ace-step-1.5-turbo',
     name: 'ACE-Step 1.5 Turbo',
     modality: 'audio',
+    family: 'ace',
     requiredNodes: REQUIRED_ACE_NODES,
     unet: 'acestep_v1.5_turbo.safetensors',
     clip1: 'qwen_0.6b_ace15.safetensors',
@@ -146,6 +166,7 @@ export const COMFY_PRESETS: ComfyPreset[] = [
     modelId: 'ace-step-1.5-xl',
     name: 'ACE-Step 1.5 XL Turbo',
     modality: 'audio',
+    family: 'ace',
     requiredNodes: REQUIRED_ACE_NODES,
     unet: 'acestep_v1.5_xl_turbo_bf16.safetensors',
     clip1: 'qwen_0.6b_ace15.safetensors',
@@ -153,6 +174,22 @@ export const COMFY_PRESETS: ComfyPreset[] = [
     vae: 'ace_1.5_vae.safetensors',
     steps: 8,
     defaultSeconds: 10,
+  },
+  {
+    id: 'image-flux-2-klein-4b',
+    modelId: 'flux-2-klein-4b',
+    name: 'FLUX.2 klein 4B',
+    modality: 'image',
+    family: 'flux',
+    requiredNodes: REQUIRED_FLUX_NODES,
+    unet: 'flux-2-klein-4b.safetensors',
+    clip1: 'qwen_3_4b_fp4_flux2.safetensors',
+    clip2: '',
+    vae: 'flux2-vae.safetensors',
+    steps: 4,
+    defaultSeconds: 0,
+    width: 1024,
+    height: 1024,
   },
 ];
 
@@ -267,15 +304,17 @@ export async function getComfyHealth(baseUrl: string, timeoutMs = 10_000): Promi
         };
       });
     const nodeNames = info && typeof info === 'object' ? Object.keys(info) : [];
+    const gpu = imageDeviceReady(devices);
     const presets = COMFY_PRESETS.map((preset): ComfyPresetReadiness => {
       const missingNodes = preset.requiredNodes.filter((node) => !nodeNames.includes(node));
-      return {
-        presetId: preset.id,
-        modelId: preset.modelId,
-        ready: missingNodes.length === 0,
-        missingNodes,
-        reason: missingNodes.length === 0 ? 'Required ComfyUI nodes are installed.' : `Missing ComfyUI nodes: ${missingNodes.join(', ')}.`,
-      };
+      const needsImageGpu = preset.family === 'flux';
+      const ready = missingNodes.length === 0 && (!needsImageGpu || gpu.ready);
+      const reason = missingNodes.length > 0
+        ? `Missing ComfyUI nodes: ${missingNodes.join(', ')}.`
+        : needsImageGpu && !gpu.ready
+          ? gpu.reason
+          : 'Required ComfyUI nodes are installed.';
+      return { presetId: preset.id, modelId: preset.modelId, ready, missingNodes, reason };
     });
     return {
       ok: true,
@@ -294,7 +333,7 @@ export async function getComfyHealth(baseUrl: string, timeoutMs = 10_000): Promi
   }
 }
 
-function planWorkflow(preset: ComfyPreset, prompt: string, lyrics: string, durationSeconds: number, seed: number): Record<string, ComfyWorkflowNode> {
+function planAceWorkflow(preset: ComfyPreset, prompt: string, lyrics: string, durationSeconds: number, seed: number): Record<string, ComfyWorkflowNode> {
   const workflow = JSON.parse(JSON.stringify(ACE_WORKFLOW)) as Record<string, ComfyWorkflowNode>;
   workflow['3'].inputs.steps = preset.steps;
   workflow['94'].inputs.tags = prompt;
@@ -308,6 +347,30 @@ function planWorkflow(preset: ComfyPreset, prompt: string, lyrics: string, durat
   workflow['109'].inputs.value = seed;
   workflow['111'].inputs.filename_prefix = 'audio/openro';
   return workflow;
+}
+
+function planFluxWorkflow(preset: ComfyPreset, prompt: string, seed: number): Record<string, ComfyWorkflowNode> {
+  const width = preset.width ?? 1024;
+  const height = preset.height ?? 1024;
+  return {
+    '1': { class_type: 'UNETLoader', inputs: { unet_name: preset.unet, weight_dtype: 'default' } },
+    '2': { class_type: 'CLIPLoader', inputs: { clip_name: preset.clip1, type: 'flux2', device: 'default' } },
+    '3': { class_type: 'VAELoader', inputs: { vae_name: preset.vae } },
+    '4': { class_type: 'CLIPTextEncode', inputs: { text: prompt, clip: ['2', 0] } },
+    '5': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['4', 0] } },
+    '6': { class_type: 'Flux2Scheduler', inputs: { steps: preset.steps, width, height } },
+    '7': { class_type: 'KSamplerSelect', inputs: { sampler_name: 'euler' } },
+    '8': { class_type: 'CFGGuider', inputs: { model: ['1', 0], positive: ['4', 0], negative: ['5', 0], cfg: 1 } },
+    '9': { class_type: 'RandomNoise', inputs: { noise_seed: seed } },
+    '10': { class_type: 'SamplerCustomAdvanced', inputs: { noise: ['9', 0], guider: ['8', 0], sampler: ['7', 0], sigmas: ['6', 0], latent_image: ['11', 0] } },
+    '11': { class_type: 'EmptyFlux2LatentImage', inputs: { width, height, batch_size: 1 } },
+    '12': { class_type: 'VAEDecode', inputs: { samples: ['10', 0], vae: ['3', 0] } },
+    '13': { class_type: 'SaveImage', inputs: { images: ['12', 0], filename_prefix: 'image/openro' } },
+  };
+}
+
+function planWorkflow(preset: ComfyPreset, prompt: string, lyrics: string, durationSeconds: number, seed: number): Record<string, ComfyWorkflowNode> {
+  return preset.family === 'flux' ? planFluxWorkflow(preset, prompt, seed) : planAceWorkflow(preset, prompt, lyrics, durationSeconds, seed);
 }
 
 export function buildComfyPlan(input: ComfyGenerationInput): ComfyGenerationPlan {
@@ -324,7 +387,9 @@ export function buildComfyPlan(input: ComfyGenerationInput): ComfyGenerationPlan
   }
   const lyrics = ((typeof input.lyrics === 'string' ? input.lyrics.trim() : '') || '[Instrumental]').slice(0, MAX_LYRICS);
   const requestedSeconds = input.durationSeconds ?? preset.defaultSeconds;
-  const durationSeconds = Math.min(60, Math.max(5, Number.isFinite(requestedSeconds) ? Math.round(requestedSeconds) : preset.defaultSeconds));
+  const durationSeconds = preset.modality === 'image'
+    ? 0
+    : Math.min(60, Math.max(5, Number.isFinite(requestedSeconds) ? Math.round(requestedSeconds) : preset.defaultSeconds));
   let seed = crypto.randomInt(0, 2 ** 31 - 1);
   if (input.seed !== undefined) {
     if (!Number.isInteger(input.seed) || input.seed < 0 || input.seed > 2 ** 31 - 1) {
@@ -341,9 +406,35 @@ export function buildComfyPlan(input: ComfyGenerationInput): ComfyGenerationPlan
     durationSeconds,
     seed,
     workflow: planWorkflow(preset, prompt, lyrics, durationSeconds, seed),
-    summary: `${preset.name}: ${durationSeconds}s, ${preset.steps} steps, seed ${seed}. Review this plan, then generate to save under the app media folder.`,
+    summary: preset.modality === 'image'
+      ? `${preset.name}: ${preset.width ?? 1024}x${preset.height ?? 1024}, ${preset.steps} steps, seed ${seed}. Review this plan, then generate to save under the app media folder.`
+      : `${preset.name}: ${durationSeconds}s, ${preset.steps} steps, seed ${seed}. Review this plan, then generate to save under the app media folder.`,
     createdAt: new Date().toISOString(),
   };
+}
+
+function imageDeviceReady(devices: ComfyDeviceStats[]): { ready: boolean; reason: string } {
+  const gpu = devices.find((device) => ['cuda', 'rocm'].includes((device.type ?? '').toLowerCase()) && (device.vramTotalGB ?? 0) >= 13);
+  return gpu
+    ? { ready: true, reason: `${gpu.name} reports ${gpu.vramTotalGB}GB VRAM.` }
+    : { ready: false, reason: 'FLUX.2 klein 4B needs a CUDA/ROCm device with at least 13GB VRAM; ComfyUI reports none.' };
+}
+
+export function imagePresetDeviceReady(health: ComfyHealth): { ready: boolean; reason: string } {
+  if (!health.ok) {
+    return { ready: false, reason: 'ComfyUI is not reachable.' };
+  }
+  return imageDeviceReady(health.system?.devices ?? []);
+}
+
+export function planReadyOnHealth(health: ComfyHealth, presetId: string): { ready: boolean; reason: string } {
+  if (!health.ok) {
+    return { ready: false, reason: health.error ?? 'ComfyUI is not reachable.' };
+  }
+  const preset = health.presets.find((entry) => entry.presetId === presetId);
+  return preset
+    ? { ready: preset.ready, reason: preset.reason }
+    : { ready: false, reason: `Unknown ComfyUI preset: ${presetId}.` };
 }
 
 export async function prepareComfyGeneration(baseUrl: string, input: ComfyGenerationInput): Promise<ComfyGenerationPlan> {
@@ -522,7 +613,7 @@ export async function runComfyPlan(
       return {
         ok: true,
         promptId,
-        summary: `${plan.modelId} generated ${files.length} file(s) in ${plan.durationSeconds}s.`,
+        summary: `${plan.modelId} generated ${files.length} file(s) via ComfyUI.`,
         files,
       };
     }

@@ -17,6 +17,7 @@ import {
   buildComfyPlan,
   getComfyHealth,
   normalizeComfyBaseUrl,
+  planReadyOnHealth,
   prepareComfyGeneration,
   publicPlan,
   runComfyPlan,
@@ -298,14 +299,14 @@ async function writeStudioRecord(folder: 'studio-snapshots' | 'studio-checkpoint
 const MEDIA_TOOL_SCHEMA: ToolSchema = {
   name: 'media_generate',
   description:
-    'Generate local audio from a reviewed ComfyUI plan. The exact preset, prompt, duration and seed are staged for approval; the app never downloads models and only talks to a loopback ComfyUI server.',
+    'Generate local audio or an image from a reviewed ComfyUI plan. The exact preset, prompt, duration/size and seed are staged for approval; the app never downloads models and only talks to a loopback ComfyUI server.',
   parameters: {
     type: 'object',
     properties: {
       presetId: {
         type: 'string',
-        enum: ['audio-ace-step-1.5-turbo', 'audio-ace-step-1.5-xl'],
-        description: 'The 2026 ACE-Step preset. Turbo is the CPU/low-VRAM option; XL needs a larger GPU.',
+        enum: ['audio-ace-step-1.5-turbo', 'audio-ace-step-1.5-xl', 'image-flux-2-klein-4b'],
+        description: 'The 2026 preset: ACE-Step audio (Turbo is CPU/low-VRAM; XL needs a larger GPU) or FLUX.2 klein 4B image (needs a 13GB+ GPU).',
       },
       prompt: { type: 'string', description: 'Music style, instruments, mood and production tags.' },
       lyrics: { type: 'string', description: 'Lyrics with section tags, or [Instrumental]. Optional.' },
@@ -327,9 +328,18 @@ function buildExecutor(root: string): ToolExecutor {
       try {
         switch (name) {
           case 'media_generate': {
-            // Stage only. Health is checked by the approve-time execution so the card can be reviewed offline.
+            // Stage only. Health is checked by the approve-time execution. Audio does not contact ComfyUI here;
+            // image also pre-checks the server's own device/nodes because a host NVIDIA probe would reject ROCm.
+            const presetId = typeof args.presetId === 'string' ? args.presetId : '';
+            if (presetId === 'image-flux-2-klein-4b') {
+              const health = await getComfyHealth(comfyBaseUrl());
+              const readiness = planReadyOnHealth(health, 'image-flux-2-klein-4b');
+              if (!readiness.ready) {
+                throw new Error(readiness.reason);
+              }
+            }
             const plan = buildComfyPlan({
-              presetId: typeof args.presetId === 'string' ? args.presetId : '',
+              presetId,
               prompt: typeof args.prompt === 'string' ? args.prompt : '',
               lyrics: typeof args.lyrics === 'string' ? args.lyrics : undefined,
               durationSeconds: typeof args.durationSeconds === 'number' ? args.durationSeconds : undefined,
@@ -476,6 +486,13 @@ async function resolveApproval(id: string, decision: 'approve' | 'reject', kind?
   if (item.kind === 'media') {
     if (!item.mediaPlan) {
       return { ok: false, decision, summary: 'The frozen media plan is missing. Nothing ran.' };
+    }
+    const plan = item.mediaPlan;
+    const health = await getComfyHealth(comfyBaseUrl());
+    const readiness = planReadyOnHealth(health, plan.presetId);
+    if (!readiness.ready) {
+      approvals.stageMedia({ projectRoot: item.projectRoot, plan });
+      return { ok: false, decision, summary: readiness.reason };
     }
     try {
       const result = await runComfyPlan(comfyBaseUrl(), item.mediaPlan, path.join(app.getPath('userData'), 'media'));
@@ -761,6 +778,11 @@ function registerIpc(): void {
         mediaPlans.delete(planId);
       }
       throw new Error('That media plan is missing or expired. Prepare it again.');
+    }
+    const health = await getComfyHealth(comfyBaseUrl());
+    const readiness = planReadyOnHealth(health, stored.plan.presetId);
+    if (!readiness.ready) {
+      throw new Error(readiness.reason);
     }
     mediaPlans.delete(planId);
     return runComfyPlan(comfyBaseUrl(), stored.plan, path.join(app.getPath('userData'), 'media'));

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, realpath, rm, symlink } from 'node:fs/promises';
@@ -8,11 +9,14 @@ import {
   COMFY_PRESETS,
   buildComfyPlan,
   getComfyHealth,
+  imagePresetDeviceReady,
   normalizeComfyBaseUrl,
+  planReadyOnHealth,
   prepareComfyGeneration,
   publicPlan,
   runComfyPlan,
 } from '../electron/comfyClient';
+import { approvalCopy } from '../src/labels';
 
 type Handler = (req: IncomingMessage, res: ServerResponse, body: string) => void;
 
@@ -41,12 +45,40 @@ function json(res: ServerResponse, value: unknown): void {
 }
 
 function requiredNodes(omit: string[] = []): Record<string, unknown> {
-  return Object.fromEntries(COMFY_PRESETS[0].requiredNodes.filter((node) => !omit.includes(node)).map((node) => [node, {}]));
+  const all = new Set(COMFY_PRESETS.flatMap((preset) => preset.requiredNodes));
+  return Object.fromEntries([...all].filter((node) => !omit.includes(node)).map((node) => [node, {}]));
 }
+
+const NODE_COUNT = new Set(COMFY_PRESETS.flatMap((preset) => preset.requiredNodes)).size;
 
 const systemStats = {
   system: { comfyui_version: '0.44.0', ram_total: 16 * 1024 ** 3, ram_free: 8 * 1024 ** 3 },
   devices: [{ name: 'CPU', type: 'cpu', vram_total: 16 * 1024 ** 3, vram_free: 8 * 1024 ** 3 }],
+};
+
+const cudaStats = {
+  system: { comfyui_version: '0.44.0', ram_total: 32 * 1024 ** 3, ram_free: 24 * 1024 ** 3 },
+  devices: [{ name: 'cuda:0 RTX 4080', type: 'cuda', vram_total: 16 * 1024 ** 3, vram_free: 15 * 1024 ** 3 }],
+};
+
+const smallGpuStats = {
+  system: { comfyui_version: '0.44.0', ram_total: 32 * 1024 ** 3, ram_free: 24 * 1024 ** 3 },
+  devices: [{ name: 'cuda:0 RTX 3060', type: 'cuda', vram_total: 12 * 1024 ** 3, vram_free: 11 * 1024 ** 3 }],
+};
+
+const edgeGpuStats = {
+  system: { comfyui_version: '0.44.0', ram_total: 32 * 1024 ** 3, ram_free: 24 * 1024 ** 3 },
+  devices: [{ name: 'cuda:0 13GB', type: 'cuda', vram_total: 13 * 1024 ** 3, vram_free: 12 * 1024 ** 3 }],
+};
+
+const mpsStats = {
+  system: { comfyui_version: '0.44.0', ram_total: 32 * 1024 ** 3, ram_free: 24 * 1024 ** 3 },
+  devices: [{ name: 'mps', type: 'mps', vram_total: 16 * 1024 ** 3, vram_free: 15 * 1024 ** 3 }],
+};
+
+const rocmStats = {
+  system: { comfyui_version: '0.44.0', ram_total: 32 * 1024 ** 3, ram_free: 24 * 1024 ** 3 },
+  devices: [{ name: 'rocm:0', type: 'rocm', vram_total: 16 * 1024 ** 3, vram_free: 15 * 1024 ** 3 }],
 };
 
 afterEach(async () => {
@@ -59,7 +91,7 @@ describe('ComfyUI health and presets', () => {
   it('reads system stats and object_info into preset readiness', async () => {
     const baseUrl = await startServer((req, res) => {
       if (req.url === '/system_stats') {
-        json(res, systemStats);
+        json(res, cudaStats);
       } else if (req.url === '/object_info') {
         json(res, requiredNodes());
       } else {
@@ -68,10 +100,10 @@ describe('ComfyUI health and presets', () => {
       }
     });
     const health = await getComfyHealth(baseUrl);
-    expect(health).toMatchObject({ ok: true, baseUrl, nodeCount: 11 });
+    expect(health).toMatchObject({ ok: true, baseUrl, nodeCount: NODE_COUNT });
     expect(health.system?.comfyVersion).toBe('0.44.0');
-    expect(health.system?.ramTotalGB).toBe(16);
-    expect(health.system?.devices[0]).toMatchObject({ name: 'CPU', type: 'cpu', vramTotalGB: null, vramFreeGB: null });
+    expect(health.system?.ramTotalGB).toBe(32);
+    expect(health.system?.devices[0]).toMatchObject({ name: 'cuda:0 RTX 4080', type: 'cuda', vramTotalGB: 16 });
     expect(health.presets.every((preset) => preset.ready)).toBe(true);
     expect(health.presets.map((preset) => preset.presetId)).toEqual(COMFY_PRESETS.map((preset) => preset.id));
   });
@@ -79,7 +111,7 @@ describe('ComfyUI health and presets', () => {
   it('reports missing nodes and refuses to prepare that preset', async () => {
     const baseUrl = await startServer((req, res) => {
       if (req.url === '/system_stats') {
-        json(res, systemStats);
+        json(res, cudaStats);
       } else {
         json(res, requiredNodes(['SaveAudioAdvanced']));
       }
@@ -87,7 +119,29 @@ describe('ComfyUI health and presets', () => {
     const health = await getComfyHealth(baseUrl);
     expect(health.ok).toBe(true);
     expect(health.presets[0]).toMatchObject({ ready: false, missingNodes: ['SaveAudioAdvanced'] });
+    expect(health.presets.find((preset) => preset.presetId === 'image-flux-2-klein-4b')?.ready).toBe(true);
     await expect(prepareComfyGeneration(baseUrl, { presetId: 'audio-ace-step-1.5-turbo', prompt: 'test' })).rejects.toThrow(/Missing ComfyUI nodes/);
+  });
+
+  it('gates FLUX.2 klein on a 13GB+ CUDA/ROCm device', async () => {
+    const cpu = await getComfyHealth(await startServer((req, res) => (req.url === '/system_stats' ? json(res, systemStats) : json(res, requiredNodes()))));
+    expect(imagePresetDeviceReady(cpu)).toMatchObject({ ready: false });
+    expect(cpu.presets.find((preset) => preset.presetId === 'image-flux-2-klein-4b')?.ready).toBe(false);
+    const cuda = await getComfyHealth(await startServer((req, res) => (req.url === '/system_stats' ? json(res, cudaStats) : json(res, requiredNodes()))));
+    expect(imagePresetDeviceReady(cuda)).toMatchObject({ ready: true });
+    const small = await getComfyHealth(await startServer((req, res) => (req.url === '/system_stats' ? json(res, smallGpuStats) : json(res, requiredNodes()))));
+    expect(imagePresetDeviceReady(small)).toMatchObject({ ready: false });
+    const edge = await getComfyHealth(await startServer((req, res) => (req.url === '/system_stats' ? json(res, edgeGpuStats) : json(res, requiredNodes()))));
+    expect(imagePresetDeviceReady(edge)).toMatchObject({ ready: true });
+    const mps = await getComfyHealth(await startServer((req, res) => (req.url === '/system_stats' ? json(res, mpsStats) : json(res, requiredNodes()))));
+    expect(imagePresetDeviceReady(mps)).toMatchObject({ ready: false });
+    const rocm = await getComfyHealth(await startServer((req, res) => (req.url === '/system_stats' ? json(res, rocmStats) : json(res, requiredNodes()))));
+    expect(imagePresetDeviceReady(rocm)).toMatchObject({ ready: true });
+    expect(planReadyOnHealth(cpu, 'image-flux-2-klein-4b')).toMatchObject({ ready: false });
+    expect(planReadyOnHealth(cuda, 'image-flux-2-klein-4b')).toMatchObject({ ready: true });
+    const offline = await getComfyHealth('http://127.0.0.1:9', 500);
+    expect(planReadyOnHealth(offline, 'image-flux-2-klein-4b')).toMatchObject({ ready: false });
+    expect(planReadyOnHealth(cuda, 'missing')).toMatchObject({ ready: false });
   });
 
   it('returns an error instead of throwing when ComfyUI is down', async () => {
@@ -139,6 +193,54 @@ describe('ComfyUI plans', () => {
     expect(plan.workflow['109'].inputs.value).toBe(42);
     expect(plan.summary).toContain('ACE-Step 1.5 Turbo');
     expect(publicPlan(plan)).not.toHaveProperty('workflow');
+  });
+
+  it('builds the distilled FLUX.2 klein workflow with image semantics', () => {
+    const imagePreset = COMFY_PRESETS.find((preset) => preset.id === 'image-flux-2-klein-4b');
+    expect(imagePreset).toMatchObject({
+      modelId: 'flux-2-klein-4b',
+      modality: 'image',
+      family: 'flux',
+      steps: 4,
+      width: 1024,
+      height: 1024,
+      unet: 'flux-2-klein-4b.safetensors',
+      clip1: 'qwen_3_4b_fp4_flux2.safetensors',
+      vae: 'flux2-vae.safetensors',
+    });
+    expect(imagePreset?.requiredNodes).toEqual([
+      'UNETLoader', 'CLIPLoader', 'VAELoader', 'CLIPTextEncode', 'ConditioningZeroOut',
+      'Flux2Scheduler', 'KSamplerSelect', 'CFGGuider', 'RandomNoise', 'SamplerCustomAdvanced',
+      'EmptyFlux2LatentImage', 'VAEDecode', 'SaveImage',
+    ]);
+    expect(COMFY_PRESETS.find((preset) => preset.id === 'audio-ace-step-1.5-turbo')?.requiredNodes).toEqual([
+      'UNETLoader', 'DualCLIPLoader', 'VAELoader', 'TextEncodeAceStepAudio1.5',
+      'EmptyAceStep1.5LatentAudio', 'KSampler', 'ModelSamplingAuraFlow',
+      'ConditioningZeroOut', 'VAEDecodeAudio', 'SaveAudioAdvanced', 'PrimitiveInt',
+    ]);
+    const plan = buildComfyPlan({ presetId: 'image-flux-2-klein-4b', prompt: 'A red fox in a library', seed: 5, durationSeconds: 30 });
+    expect(plan.durationSeconds).toBe(0);
+    expect(plan.workflow['1'].inputs.unet_name).toBe('flux-2-klein-4b.safetensors');
+    expect(plan.workflow['2'].inputs).toMatchObject({ clip_name: 'qwen_3_4b_fp4_flux2.safetensors', type: 'flux2' });
+    expect(plan.workflow['3'].inputs.vae_name).toBe('flux2-vae.safetensors');
+    expect(plan.workflow['4'].inputs).toMatchObject({ text: 'A red fox in a library', clip: ['2', 0] });
+    expect(plan.workflow['5'].inputs.conditioning).toEqual(['4', 0]);
+    expect(plan.workflow['6'].inputs).toMatchObject({ steps: 4, width: 1024, height: 1024 });
+    expect(plan.workflow['7'].inputs.sampler_name).toBe('euler');
+    expect(plan.workflow['8'].inputs).toMatchObject({ model: ['1', 0], positive: ['4', 0], negative: ['5', 0], cfg: 1 });
+    expect(plan.workflow['9'].inputs.noise_seed).toBe(5);
+    expect(plan.workflow['10'].inputs).toMatchObject({ noise: ['9', 0], guider: ['8', 0], sampler: ['7', 0], sigmas: ['6', 0], latent_image: ['11', 0] });
+    expect(plan.workflow['11'].inputs).toMatchObject({ width: 1024, height: 1024, batch_size: 1 });
+    expect(plan.workflow['12'].inputs).toMatchObject({ samples: ['10', 0], vae: ['3', 0] });
+    expect(plan.workflow['13'].inputs).toMatchObject({ images: ['12', 0], filename_prefix: 'image/openro' });
+    expect(Object.values(plan.workflow).map((node) => node.class_type)).toEqual([
+      'UNETLoader', 'CLIPLoader', 'VAELoader', 'CLIPTextEncode', 'ConditioningZeroOut',
+      'Flux2Scheduler', 'KSamplerSelect', 'CFGGuider', 'RandomNoise', 'SamplerCustomAdvanced',
+      'EmptyFlux2LatentImage', 'VAEDecode', 'SaveImage',
+    ]);
+    expect(plan.workflow['94']).toBeUndefined();
+    expect(plan.summary).toContain('1024x1024');
+    expect(plan.summary).not.toContain('0s');
   });
 
   it('validates prompts, presets, defaults and duration bounds', () => {
@@ -210,6 +312,36 @@ describe('ComfyUI generation and media sink', () => {
     expect(submitted).toContain('"client_id":"open-ro"');
     expect(submitted).toContain('Late night trap');
     expect(submitted).toContain('acestep_v1.5_turbo.safetensors');
+  });
+
+  it('submits a FLUX image plan and saves a PNG inside the sink', async () => {
+    let submitted = '';
+    const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');
+    const baseUrl = await startServer((req, res, body) => {
+      if (req.method === 'POST' && req.url === '/prompt') {
+        submitted = body;
+        json(res, { prompt_id: 'img1' });
+      } else if (req.url === '/history/img1') {
+        json(res, { img1: { status: { status_str: 'success' }, outputs: { 13: { images: [{ filename: 'flux.png', subfolder: 'image', type: 'output' }] } } } });
+      } else if (req.url?.startsWith('/view')) {
+        res.writeHead(200, { 'content-type': 'image/png' });
+        res.end(png);
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    const plan = buildComfyPlan({ presetId: 'image-flux-2-klein-4b', prompt: 'A red fox', seed: 9 });
+    const sink = await mkdtemp(path.join(tmpdir(), 'openro-media-'));
+    cleanups.push(() => rm(sink, { recursive: true, force: true }));
+    const result = await runComfyPlan(baseUrl, plan, sink, { timeoutMs: 5_000, pollMs: 10 });
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0].path.endsWith('.png')).toBe(true);
+    expect(result.files[0].bytes).toBe(png.length);
+    expect(result.files[0].sha256).toBe(createHash('sha256').update(png).digest('hex'));
+    expect(submitted).toContain('flux-2-klein-4b.safetensors');
+    expect(submitted).toContain('"class_type":"SaveImage"');
+    expect(submitted).toContain('A red fox');
   });
 
   it('surfaces a ComfyUI error status and refuses unsupported output types', async () => {
@@ -300,6 +432,40 @@ describe('ComfyUI generation and media sink', () => {
     const sink = await mkdtemp(path.join(tmpdir(), 'openro-media-'));
     cleanups.push(() => rm(sink, { recursive: true, force: true }));
     await expect(runComfyPlan(baseUrl, plan, sink, { timeoutMs: 60, pollMs: 10 })).rejects.toThrow(/timed out/);
+  });
+
+  it('exposes the image preset in the card, tool schema and GPU-gated UI', () => {
+    const copy = approvalCopy({
+      id: 'i',
+      kind: 'media',
+      createdAt: '',
+      mediaPreset: 'image-flux-2-klein-4b',
+      mediaPrompt: 'A red fox',
+      mediaDuration: 0,
+      mediaSeed: 5,
+    });
+    expect(copy.title).toBe('Generate local image: image-flux-2-klein-4b');
+    expect(copy.detail).toContain('1024x1024');
+    expect(copy.approveLabel).toBe('Generate image');
+    const main = readFileSync('electron/main.ts', 'utf8');
+    expect(main).toContain("enum: ['audio-ace-step-1.5-turbo', 'audio-ace-step-1.5-xl', 'image-flux-2-klein-4b']");
+    expect(main).toContain("if (presetId === 'image-flux-2-klein-4b')");
+    expect(main).toContain('const health = await getComfyHealth(comfyBaseUrl());');
+    expect(main).toContain("planReadyOnHealth(health, 'image-flux-2-klein-4b')");
+    expect(main).toContain('planReadyOnHealth(health, plan.presetId)');
+    expect(main).toContain('planReadyOnHealth(health, stored.plan.presetId)');
+    expect(main).not.toContain('const hardware = await detectMediaReport();');
+    expect(main).toContain('approvals.stageMedia({ projectRoot: item.projectRoot, plan });');
+    const app = readFileSync('src/App.tsx', 'utf8').replace(/\r\n/g, '\n');
+    expect(app).toContain('image-flux-2-klein-4b');
+    expect(app).toContain('imagePreset?.ready');
+    expect(app).toContain('disabled={!imageGpuReady}');
+    expect(app).toContain('image unavailable');
+    expect(app).toContain('FLUX.2 klein 4B (13GB GPU + nodes)');
+    expect(app).toContain("planIsImage ? 'Generate image' : 'Generate audio'");
+    expect(app).toContain('CUDA/ROCm device with at least 13GB VRAM');
+    expect(app).toContain('if (wantsImage && !imageGpuReady)');
+    expect(app).toContain('setMediaPresetId(event.target.value);\n                  setMediaPlan(null);');
   });
 
   it('is wired through IPC, the preload allowlist and the api', () => {
