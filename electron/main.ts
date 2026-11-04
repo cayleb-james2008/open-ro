@@ -160,9 +160,18 @@ async function writePlaytestRecord(root: string, report: unknown, verdict: { sta
   await fs.writeFile(path.join(dir, `${stamp}-${verdict.status.toLowerCase()}.json`), JSON.stringify({ projectRoot: root, report, verdict }, null, 2), 'utf8');
 }
 
+async function saveStudioCapture(data: Buffer, mimeType: string, captureId: string): Promise<string> {
+  const dir = path.join(app.getPath('userData'), 'studio-captures');
+  await fs.mkdir(dir, { recursive: true });
+  const safe = captureId.replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'capture';
+  const extension = mimeType === 'image/png' ? '.png' : mimeType === 'image/jpeg' ? '.jpg' : '.bin';
+  const file = path.join(dir, `${safe}-${Date.now()}${extension}`);
+  await fs.writeFile(file, data, { mode: 0o600 });
+  return file;
+}
+
 /** Studio snapshots and checkpoints are kept as JSON under userData/<folder>. */
-async function writeStudioRecord(folder: 'studio-snapshots' | 'studio-checkpoints', record: object): Promise<void> {
-  const dir = path.join(app.getPath('userData'), folder);
+async function writeStudioRecord(folder: 'studio-snapshots' | 'studio-checkpoints', record: object): Promise<void> {  const dir = path.join(app.getPath('userData'), folder);
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}.json`), JSON.stringify(record, null, 2), 'utf8');
 }
@@ -222,6 +231,7 @@ function buildExecutor(root: string): ToolExecutor {
           case 'studio_console':
           case 'studio_keyboard':
           case 'studio_mouse':
+          case 'studio_capture':
             return stageStudioTool(approvals, mcp, studioReads, { projectRoot: root, name, args });
           default:
             if (isMcpAgentTool(name)) {
@@ -305,7 +315,7 @@ async function resolveApproval(id: string, decision: 'approve' | 'reject', kind?
     return runApprovedMcpCall(item, mcp);
   }
   if (item.kind === 'studio') {
-    const { snapshot, checkpoint, ...result } = await runApprovedStudio(item, mcp, studioReads);
+    const { snapshot, checkpoint, ...result } = await runApprovedStudio(item, mcp, studioReads, saveStudioCapture);
     if (snapshot) {
       await writeStudioRecord('studio-snapshots', { projectRoot, server: item.mcpServer?.command, snapshot });
     }

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { ApprovalQueue } from '../electron/approvals';
 import type { McpCaller } from '../electron/mcpTools';
@@ -338,5 +339,89 @@ describe('Studio input simulation', () => {
     const result = await runApprovedStudio(approvals.take(staged.pendingApproval!.id, 'studio'), restarted, new StudioReads());
     expect(result.summary).toMatch(/MCP server changed/);
     expect(studio.calls).toHaveLength(0);
+  });
+});
+
+describe('Studio viewport capture', () => {
+  const root = '/project';
+  const tools: McpToolSummary[] = [executeLuau, { name: 'screen_capture', description: '' }];
+  const stage = (studio: ReturnType<typeof fakeStudio>, approvals: ApprovalQueue, args: Record<string, unknown>) =>
+    stageStudioTool(approvals, studio.caller, new StudioReads(), { projectRoot: root, name: 'studio_capture', args });
+
+  function imageStudio(images: Array<{ mimeType: string; data: string }>, text = '') {
+    const base = fakeStudio(tools);
+    const caller = {
+      ...base.caller,
+      callToolResult: async (name: string, args: Record<string, unknown>) => {
+        base.calls.push({ name, args });
+        return { text, images, isError: false };
+      },
+    } as McpCaller;
+    return { caller, calls: base.calls };
+  }
+
+  it('stages exact screen_capture arguments with a supplied or generated id', () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    expect(stage(studio, approvals, { studioId: 'S1', captureId: 'shot-1' }).ok).toBe(true);
+    expect(stage(studio, approvals, { studioId: 'S1' }).ok).toBe(true);
+    expect(studio.calls).toHaveLength(0);
+    const [supplied, generated] = approvals.list();
+    expect(supplied).toMatchObject({ studioOp: 'capture', mcpTool: 'screen_capture', studioId: 'S1' });
+    expect(JSON.parse(supplied.mcpArgs ?? '{}')).toEqual({ capture_id: 'shot-1', studio_id: 'S1' });
+    expect(JSON.parse(generated.mcpArgs ?? '{}').capture_id).toMatch(/^openro-capture-\d+$/);
+  });
+
+  it('refuses a missing tool or studio id', () => {
+    const approvals = new ApprovalQueue();
+    const noTool = fakeStudio([]);
+    expect(stage(noTool, approvals, { studioId: 'S1' }).output).toMatch(/no screen_capture/);
+    const studio = fakeStudio(tools);
+    expect(stage(studio, approvals, { captureId: 'x' }).output).toMatch(/needs a studioId/);
+    expect(approvals.list()).toHaveLength(0);
+  });
+
+  it('saves exactly the decoded image bytes through the sink', async () => {
+    const bytes = Buffer.from('abc');
+    const image = { mimeType: 'image/png', data: bytes.toString('base64') };
+    const capture = imageStudio([image]);
+    const approvals = new ApprovalQueue();
+    const staged = stage(fakeStudio(tools), approvals, { studioId: 'S1', captureId: 'shot-1' });
+    const saved: Array<{ hex: string; mime: string; id: string }> = [];
+    const result = await runApprovedStudio(approvals.take(staged.pendingApproval!.id, 'studio'), capture.caller, new StudioReads(), async (data, mime, id) => {
+      saved.push({ hex: data.toString('hex'), mime, id });
+      return '/captures/shot-1.png';
+    });
+    expect(result).toMatchObject({ ok: true, summary: 'Captured the Studio viewport to /captures/shot-1.png.', output: 'image/png, 3 bytes' });
+    expect(saved).toEqual([{ hex: Buffer.from('abc').toString('hex'), mime: 'image/png', id: 'shot-1' }]);
+    expect(capture.calls).toEqual([{ name: 'screen_capture', args: { capture_id: 'shot-1', studio_id: 'S1' } }]);
+  });
+
+  it('fails when Studio returns no image, the image is too large, or no sink/client is available', async () => {
+    const approvals = new ApprovalQueue();
+    const empty = imageStudio([]);
+    const staged = stage(fakeStudio(tools), approvals, { studioId: 'S1' });
+    expect((await runApprovedStudio(approvals.take(staged.pendingApproval!.id, 'studio'), empty.caller, new StudioReads(), async () => '/x.png')).summary).toMatch(/no image/);
+
+    const huge = imageStudio([{ mimeType: 'image/png', data: 'a'.repeat(8_000_001) }]);
+    const stagedHuge = stage(fakeStudio(tools), approvals, { studioId: 'S1' });
+    expect((await runApprovedStudio(approvals.take(stagedHuge.pendingApproval!.id, 'studio'), huge.caller, new StudioReads(), async () => '/x.png')).summary).toMatch(/capture limit/);
+
+    const ok = imageStudio([{ mimeType: 'image/png', data: Buffer.from('a').toString('base64') }]);
+    const stagedNoSink = stage(fakeStudio(tools), approvals, { studioId: 'S1' });
+    expect((await runApprovedStudio(approvals.take(stagedNoSink.pendingApproval!.id, 'studio'), ok.caller, new StudioReads())).summary).toMatch(/No capture sink/);
+
+    const stagedNoClient = stage(fakeStudio(tools), approvals, { studioId: 'S1' });
+    expect((await runApprovedStudio(approvals.take(stagedNoClient.pendingApproval!.id, 'studio'), fakeStudio(tools).caller, new StudioReads(), async () => '/x.png')).summary).toMatch(/cannot return image content/);
+  });
+
+  it('is wired to a userData sink and the executor', () => {
+    const main = readFileSync('electron/main.ts', 'utf8');
+    expect(main).toContain("path.join(app.getPath('userData'), 'studio-captures')");
+    expect(main).toContain('runApprovedStudio(item, mcp, studioReads, saveStudioCapture)');
+    expect(main).toContain("case 'studio_capture'");
+    expect(main).toContain('mode: 0o600');
+    expect(main).toContain("captureId.replace(/[^\\w.-]+/g, '-')");
+    expect(main).toContain("mimeType === 'image/png' ? '.png' : mimeType === 'image/jpeg' ? '.jpg' : '.bin'");
   });
 });

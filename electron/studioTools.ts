@@ -171,6 +171,30 @@ export function stageStudioTool(
         pendingApproval: { kind: 'studio' as const, tool: toolName, path: 'game', id: item.id },
       };
     }
+    if (input.name === 'studio_capture') {
+      if (!caller.listTools().some((tool) => tool.name === 'screen_capture')) {
+        return { ok: false, output: 'The connected MCP server has no screen_capture tool.' };
+      }
+      if (!studioId) {
+        return { ok: false, output: 'Studio needs a studioId. Run list_roblox_studios first.' };
+      }
+      const supplied = typeof args.captureId === 'string' ? args.captureId.trim().slice(0, 80) : '';
+      const captureId = supplied || `openro-capture-${Date.now()}`;
+      const item = approvals.stageStudio({
+        projectRoot: input.projectRoot,
+        op: 'capture',
+        path: 'game',
+        tool: 'screen_capture',
+        args: { capture_id: captureId, studio_id: studioId },
+        server,
+        studioId,
+      });
+      return {
+        ok: true,
+        output: `Staged capturing the Studio viewport as ${captureId} for approval. Nothing has run in Studio.`,
+        pendingApproval: { kind: 'studio' as const, tool: 'screen_capture', path: 'game', id: item.id },
+      };
+    }
     const segments = parseInstancePath(String(args.path ?? ''));
     const path = segments.join('.');
     if (input.name === 'studio_read_script') {
@@ -205,11 +229,16 @@ export function stageStudioTool(
 /** What a confirmed Studio write replaced. `previous: null` means Open-Ro created the script. */
 export interface StudioCheckpoint { path: string; className: ScriptClass; previous: string | null; content: string; studioId?: string }
 
+type ImageCapableCaller = McpCaller & {
+  callToolResult?(name: string, args: Record<string, unknown>): Promise<{ text: string; images: Array<{ mimeType: string; data: string }>; isError: boolean }>;
+};
+
 /** Run an approved Studio call and check what Studio reports back. */
 export async function runApprovedStudio(
   item: PendingApproval,
   caller: McpCaller,
   reads: StudioReads,
+  saveCapture?: (data: Buffer, mimeType: string, captureId: string) => Promise<string>,
 ): Promise<ApprovalResult & { snapshot?: TreeSnapshot; checkpoint?: StudioCheckpoint }> {
   const tool = item.mcpTool ?? '';
   const path = item.studioPath ?? '';
@@ -224,6 +253,45 @@ export async function runApprovedStudio(
   }
   if (!sameServer(item.mcpServer, caller.identity)) {
     return fail(`The MCP server changed after this Studio ${item.studioOp} was staged. Nothing ran. Ask for it again.`);
+  }
+  if (item.studioOp === 'capture') {
+    let args: Record<string, unknown>;
+    try {
+      args = JSON.parse(item.mcpArgs ?? '{}') as Record<string, unknown>;
+    } catch {
+      return fail('The staged Studio capture request was malformed. Nothing ran.');
+    }
+    const imageCaller = caller as ImageCapableCaller;
+    if (!imageCaller.callToolResult) {
+      return fail('This MCP client cannot return image content, so the capture was not saved.');
+    }
+    if (!saveCapture) {
+      return fail('No capture sink is configured, so the image was not saved.');
+    }
+    try {
+      const result = await imageCaller.callToolResult(tool, args);
+      if (result.isError) {
+        return fail('Studio capture failed.', result.text);
+      }
+      const image = result.images[0];
+      if (!image) {
+        return fail('Studio returned no image for the capture.', result.text);
+      }
+      if (image.data.length > 8_000_000) {
+        return fail('Studio returned an image larger than the 8,000,000-character capture limit.');
+      }
+      const bytes = Buffer.from(image.data, 'base64');
+      const captureId = String(args.capture_id ?? 'capture');
+      const saved = await saveCapture(bytes, image.mimeType, captureId);
+      return {
+        ok: true,
+        decision: 'approve',
+        summary: `Captured the Studio viewport to ${saved}.`,
+        output: `${image.mimeType}, ${bytes.length} bytes`,
+      };
+    } catch (error) {
+      return fail('Studio capture failed.', error instanceof Error ? error.message : String(error));
+    }
   }
   if (item.studioOp === 'play' || item.studioOp === 'console' || item.studioOp === 'input') {
     let args: Record<string, unknown>;

@@ -2,7 +2,7 @@ import * as crypto from 'node:crypto';
 import type { McpServerIdentity } from './types';
 
 export type ApprovalKind = 'write' | 'command' | 'mcp' | 'mcp-server' | 'studio' | 'delete';
-export type StudioOp = 'snapshot' | 'read' | 'write' | 'play' | 'console' | 'input';
+export type StudioOp = 'snapshot' | 'read' | 'write' | 'play' | 'console' | 'input' | 'capture';
 export type ApprovalDecision = 'approve' | 'reject';
 
 export interface PendingApproval {
