@@ -12,7 +12,7 @@ import type {
   StoredProviderView,
 } from '../electron/types';
 import type { SessionSnapshot } from '../electron/sessions';
-import type { PlaytestLedgerEntry } from '../electron/playtestLedger';
+import type { PlaytestLedgerEntry, PlaytestRepairPlan } from '../electron/playtestLedger';
 
 /** Typed view of the preload bridge. No raw secrets ever cross this boundary. */
 export interface Api {
@@ -31,6 +31,8 @@ export interface Api {
   indexProject(): Promise<ProjectIndexSummary>;
   /** Prior playtest verdicts for the open project, newest first. */
   playtestLedger(): Promise<PlaytestLedgerEntry[]>;
+  /** The newest unresolved playtest failure, or null when nothing is open. */
+  playtestRepairPlan(): Promise<PlaytestRepairPlan | null>;
   listProject(rel?: string): Promise<FileEntry[]>;
   readProject(rel: string): Promise<string>;
   previewWrite(args: { rel: string; content: string }): Promise<PendingApprovalView>;
@@ -90,6 +92,7 @@ export const api: Api = {
   projectRoot: () => call<string | null>('project:root'),
   indexProject: () => call<ProjectIndexSummary>('project:index'),
   playtestLedger: () => call<PlaytestLedgerEntry[]>('playtest:ledger'),
+  playtestRepairPlan: () => call<PlaytestRepairPlan | null>('playtest:repair-plan'),
   listProject: (rel) => call<FileEntry[]>('project:list', { rel }),
   readProject: (rel) => call<string>('project:read', { rel }),
   previewWrite: (args) => call<PendingApprovalView>('project:preview-write', args),

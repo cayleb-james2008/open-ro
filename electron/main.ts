@@ -10,7 +10,7 @@ import { parseCheckpointRecord, stageCheckpointRestore } from './checkpoints';
 import { McpStdioClient } from './mcp';
 import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServer, serverLabel, stageMcpCall, stageMcpConnect } from './mcpTools';
 import { gradePlaytest, parsePlaytestReport, resolvePlaytestScreenshot } from './playtestEvidence';
-import { summarizePlaytestLedger, type PlaytestLedgerEntry, type PlaytestLedgerRecord } from './playtestLedger';
+import { deriveRepairPlan, summarizePlaytestLedger, type PlaytestLedgerEntry, type PlaytestLedgerRecord, type PlaytestRepairPlan } from './playtestLedger';
 import { runApprovedStudio, stageStudioRestore, stageStudioTool, StudioReads, type StudioCheckpoint } from './studioTools';
 import { isIgnoredName, isSecretName, resolveWithinRoot, sameProjectRoot } from './pathSafety';
 import { indexProject, buildProjectContext, type ProjectIndex } from './projectIndex';
@@ -161,6 +161,29 @@ async function writePlaytestRecord(root: string, report: unknown, verdict: { sta
   await fs.writeFile(path.join(dir, `${stamp}-${verdict.status.toLowerCase()}.json`), JSON.stringify({ projectRoot: root, report, verdict }, null, 2), 'utf8');
 }
 
+async function readPlaytestLedger(root: string): Promise<PlaytestLedgerEntry[]> {
+  const dir = path.join(app.getPath('userData'), 'playtests');
+  let names: string[];
+  try {
+    names = await fs.readdir(dir);
+  } catch {
+    return [];
+  }
+  const records: PlaytestLedgerRecord[] = [];
+  for (const file of names.filter((name) => name.endsWith('.json')).sort().reverse().slice(0, 100)) {
+    const full = path.join(dir, file);
+    const stat = await fs.stat(full).catch(() => null);
+    if (!stat || stat.size > 1_000_000) {
+      continue;
+    }
+    const raw = await fs.readFile(full, 'utf8').catch(() => null);
+    if (raw !== null) {
+      records.push({ file, modifiedMs: stat.mtimeMs, raw });
+    }
+  }
+  return summarizePlaytestLedger(records, root);
+}
+
 async function saveStudioCapture(data: Buffer, mimeType: string, captureId: string): Promise<string> {
   const dir = path.join(app.getPath('userData'), 'studio-captures');
   await fs.mkdir(dir, { recursive: true });
@@ -225,7 +248,9 @@ function buildExecutor(root: string): ToolExecutor {
             );
             await writePlaytestRecord(root, report, verdict);
             const failing = verdict.failingCheck ? ` Failing check: ${verdict.failingCheck}` : '';
-            return { ok: verdict.status === 'PASSED', output: `Playtest ${verdict.status}. ${verdict.reason}${failing}` };
+            const plan = verdict.status === 'FAILED' ? deriveRepairPlan(await readPlaytestLedger(root).catch(() => [])) : null;
+            const repair = plan ? ` Repair loop: attempt ${plan.attempt} for "${plan.scenario}". Fix the failing check, then call report_playtest again; do not claim success until PASSED.` : '';
+            return { ok: verdict.status === 'PASSED', output: `Playtest ${verdict.status}. ${verdict.reason}${failing}${repair}` };
           }
           case 'studio_snapshot':
           case 'studio_read_script':
@@ -550,26 +575,14 @@ function registerIpc(): void {
     if (!projectRoot) {
       return [];
     }
-    const dir = path.join(app.getPath('userData'), 'playtests');
-    let names: string[];
-    try {
-      names = await fs.readdir(dir);
-    } catch {
-      return [];
+    return readPlaytestLedger(projectRoot);
+  });
+
+  ipcMain.handle('playtest:repair-plan', async (): Promise<PlaytestRepairPlan | null> => {
+    if (!projectRoot) {
+      return null;
     }
-    const records: PlaytestLedgerRecord[] = [];
-    for (const file of names.filter((name) => name.endsWith('.json')).sort().reverse().slice(0, 100)) {
-      const full = path.join(dir, file);
-      const stat = await fs.stat(full).catch(() => null);
-      if (!stat || stat.size > 1_000_000) {
-        continue;
-      }
-      const raw = await fs.readFile(full, 'utf8').catch(() => null);
-      if (raw !== null) {
-        records.push({ file, modifiedMs: stat.mtimeMs, raw });
-      }
-    }
-    return summarizePlaytestLedger(records, projectRoot);
+    return deriveRepairPlan(await readPlaytestLedger(projectRoot));
   });
 
   ipcMain.handle('command:preview', async (_event, args: { command: string }) => {

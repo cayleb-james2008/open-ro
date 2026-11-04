@@ -22,6 +22,17 @@ export interface PlaytestLedgerEntry {
   createdAt: string;
 }
 
+export interface PlaytestRepairPlan {
+  scenario: string;
+  failingCheck: string;
+  reason: string;
+  attempt: number;
+  screenshots: number;
+  lastFailedAt: string;
+  lastFailedFile: string;
+  instruction: string;
+}
+
 const MAX_ENTRIES = 50;
 
 function normalizeRoot(value: string): string {
@@ -86,4 +97,49 @@ export function summarizePlaytestLedger(records: PlaytestLedgerRecord[], project
   return entries
     .sort((left, right) => (right.createdAt === left.createdAt ? left.file.localeCompare(right.file) : right.createdAt.localeCompare(left.createdAt)))
     .slice(0, limit);
+}
+
+/**
+ * Derive the newest repair iteration from ledger entries (newest first). A
+ * PASSED run closes every older failure for its scenario; the newest FAILED
+ * run with no newer pass is the open plan. NO_EVIDENCE runs count as attempts
+ * but never supply the failing check.
+ */
+export function deriveRepairPlan(entries: PlaytestLedgerEntry[]): PlaytestRepairPlan | null {
+  const resolved = new Set<string>();
+  let candidate: PlaytestLedgerEntry | null = null;
+  for (const entry of entries) {
+    if (entry.status === 'PASSED') {
+      resolved.add(entry.scenario);
+      continue;
+    }
+    if (entry.status === 'FAILED' && !resolved.has(entry.scenario)) {
+      candidate = entry;
+      break;
+    }
+  }
+  if (!candidate) {
+    return null;
+  }
+  let attempt = 0;
+  for (const entry of entries) {
+    if (entry.scenario !== candidate.scenario) {
+      continue;
+    }
+    if (entry.status === 'PASSED') {
+      break;
+    }
+    attempt += 1;
+  }
+  const failure = candidate.failingCheck ?? (candidate.reason || 'no recorded failure detail');
+  return {
+    scenario: candidate.scenario,
+    failingCheck: failure,
+    reason: candidate.reason,
+    attempt,
+    screenshots: candidate.screenshots,
+    lastFailedAt: candidate.createdAt,
+    lastFailedFile: candidate.file,
+    instruction: `Repair "${candidate.scenario}" (attempt ${attempt}). Last failure: ${failure}. Inspect the relevant script, make one focused change, then run the playtest and record report_playtest with the same scenario. Do not claim success until the verdict is PASSED.`,
+  };
 }
