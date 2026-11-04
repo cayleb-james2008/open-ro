@@ -235,14 +235,14 @@ export function toolSchemas(): ToolSchema[] {
     {
       name: 'report_playtest',
       description:
-        'Record a playtest result. It is PASSED only with at least one assertion, one state check and one PNG screenshot in the project, and every expected value equals the actual value.',
+        'Record a playtest result. It is PASSED only with at least one assertion, one state check and one PNG or JPEG screenshot in the project (or the absolute path of a saved Studio capture), and every expected value equals the actual value.',
       parameters: {
         type: 'object',
         properties: {
           scenario: { type: 'string', description: 'What the playtest exercised.' },
           assertions: { type: 'array', description: 'Checks as {description, expected, actual}.', items: { type: 'object' } },
           stateChecks: { type: 'array', description: 'Instance state as {instancePath, property, expected, actual}.', items: { type: 'object' } },
-          screenshots: { type: 'array', description: 'PNG paths relative to the project root.', items: { type: 'string' } },
+          screenshots: { type: 'array', description: 'PNG or JPEG paths relative to the project root, or the absolute path of a saved Studio capture.', items: { type: 'string' } },
         },
         required: ['scenario', 'assertions', 'stateChecks', 'screenshots'],
       },

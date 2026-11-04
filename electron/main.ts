@@ -9,7 +9,7 @@ import { detectCapabilities } from './capabilities';
 import { parseCheckpointRecord, stageCheckpointRestore } from './checkpoints';
 import { McpStdioClient } from './mcp';
 import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServer, serverLabel, stageMcpCall, stageMcpConnect } from './mcpTools';
-import { gradePlaytest, parsePlaytestReport } from './playtestEvidence';
+import { gradePlaytest, parsePlaytestReport, resolvePlaytestScreenshot } from './playtestEvidence';
 import { runApprovedStudio, stageStudioRestore, stageStudioTool, StudioReads, type StudioCheckpoint } from './studioTools';
 import { isIgnoredName, isSecretName, resolveWithinRoot, sameProjectRoot } from './pathSafety';
 import { indexProject, buildProjectContext, type ProjectIndex } from './projectIndex';
@@ -219,7 +219,9 @@ function buildExecutor(root: string): ToolExecutor {
           }
           case 'report_playtest': {
             const report = parsePlaytestReport(args);
-            const verdict = await gradePlaytest(report, (reported) => resolveWithinRoot(root, reported));
+            const verdict = await gradePlaytest(report, (reported) =>
+              resolvePlaytestScreenshot(root, reported, path.join(app.getPath('userData'), 'studio-captures')),
+            );
             await writePlaytestRecord(root, report, verdict);
             const failing = verdict.failingCheck ? ` Failing check: ${verdict.failingCheck}` : '';
             return { ok: verdict.status === 'PASSED', output: `Playtest ${verdict.status}. ${verdict.reason}${failing}` };

@@ -1,5 +1,7 @@
 import * as crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import * as path from 'node:path';
+import { resolveWithinRoot } from './pathSafety';
 
 /**
  * Playtest evidence gate (S04). A playtest result is PASSED only when it has
@@ -42,9 +44,42 @@ export interface PlaytestVerdict {
 }
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const JPEG_SIGNATURE = Buffer.from([0xff, 0xd8, 0xff]);
 const MAX_SCREENSHOT_BYTES = 25_000_000;
 const MAX_ITEMS = 50;
 const MAX_VALUE = 2_000;
+
+function isImage(bytes: Buffer): boolean {
+  const png = bytes.length > PNG_SIGNATURE.length && bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE);
+  const jpeg = bytes.length > JPEG_SIGNATURE.length && bytes.subarray(0, JPEG_SIGNATURE.length).equals(JPEG_SIGNATURE);
+  return png || jpeg;
+}
+
+/**
+ * Resolve a reported playtest screenshot. Project-relative paths keep every
+ * path-safety check; an absolute path may instead point at an existing file
+ * inside the managed Studio capture folder (the reviewed capture sink).
+ */
+export async function resolvePlaytestScreenshot(root: string, reported: string, captureDir: string): Promise<string> {
+  if (!path.isAbsolute(reported)) {
+    return resolveWithinRoot(root, reported);
+  }
+  const resolvedBase = path.resolve(captureDir);
+  const base = await fs.realpath(resolvedBase).catch(() => resolvedBase);
+  const candidate = await fs.realpath(path.resolve(reported)).catch(() => null);
+  if (!candidate) {
+    throw new Error('Capture path is not an existing file.');
+  }
+  // realpath canonicalizes case on Windows, so a direct comparison is correct.
+  if (!candidate.startsWith(`${base}${path.sep}`)) {
+    throw new Error('Path is outside the project and the managed capture folder.');
+  }
+  const stat = await fs.stat(candidate);
+  if (!stat.isFile()) {
+    throw new Error('Capture path is not a file.');
+  }
+  return candidate;
+}
 
 function text(value: unknown, field: string): string {
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
@@ -105,8 +140,8 @@ export async function gradePlaytest(report: PlaytestReport, resolveScreenshot: (
         throw new Error('not a file under 25 MB');
       }
       const bytes = await fs.readFile(target);
-      if (bytes.length <= PNG_SIGNATURE.length || !bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
-        throw new Error('not a PNG');
+      if (!isImage(bytes)) {
+        throw new Error('not a PNG or JPEG');
       }
       screenshots.push({ path: reported, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length });
     } catch (error) {
@@ -139,7 +174,7 @@ export async function gradePlaytest(report: PlaytestReport, resolveScreenshot: (
   if (values.some((value) => value.length > MAX_VALUE)) missing.push(`a value is longer than ${MAX_VALUE} characters`);
   if (report.assertions.length === 0) missing.push('no assertions');
   if (report.stateChecks.length === 0) missing.push('no state checks');
-  if (screenshots.length === 0) missing.push('no readable PNG screenshot');
+  if (screenshots.length === 0) missing.push('no readable image screenshot');
   if (rejected.length > 0) missing.push(`unusable screenshots: ${rejected.join(', ')}`);
   if (missing.length > 0) {
     return { status: 'NO_EVIDENCE', reason: `Cannot mark this playtest passed: ${missing.join('; ')}.`, screenshots };
