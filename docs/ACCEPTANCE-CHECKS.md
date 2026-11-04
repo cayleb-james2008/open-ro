@@ -3,8 +3,9 @@
 Open-Ro can read a project-scoped acceptance definition from
 `.openro/acceptance.json`. The definition is versioned with the project and is
 injected into the recorded repair plan for the matching playtest scenario. The
-playtest gate also enforces declared file checks, so a model cannot claim a pass
-while a required file is missing.
+playtest gate also requires the report's assertion and state multisets to match
+the declared checks exactly, and it enforces declared file checks, so a model
+cannot claim a pass with missing/extra checks or a required file missing.
 
 The file is optional. The app never writes it, downloads models, or approves a
 change on its own.
@@ -66,9 +67,11 @@ change on its own.
   `release`, `coverage`) or likely secret names (`.env`, keys, credentials).
 - A malformed or unreadable definition makes `report_playtest` fail closed. A
   missing definition is simply ignored.
-- Assertion and state grading is unchanged. File checks run after grading and
-  can only make a verdict stricter. A missing file turns a PASSED report into a
-  FAILED verdict and preserves any earlier failing check.
+- Assertion and state grading is unchanged. The report's assertion/state
+  multisets must match the declared checks for the scenario; missing, extra,
+  duplicate-count and wrong-expected checks fail. File checks run after grading
+  and can only make a verdict stricter. A missing file or set mismatch turns a
+  PASSED report into a FAILED verdict and preserves any earlier failing check.
 - The repair plan still requires approval for writes, commands, Studio edits and
   media. There is no auto-approval.
 
@@ -86,18 +89,23 @@ change on its own.
    model skips the re-test, one automatic nudge supplies the exact JSON shape
    (with `<observed>` placeholders). The agent calls `report_playtest` again; the
    gate grades the assertions and state checks, verifies declared files, and
-   records the verdict. A follow-up that stages another approval is not nudged
-   again until that approval is decided.
+   records the verdict. The report's assertion and state sets must match the
+   declared multisets exactly for the scenario; missing or extra checks fail.
+   A follow-up that stages another approval is not nudged again until that
+   approval is decided.
 6. A PASS closes the plan; another failure reopens it with the preserved failing
    check.
 
 ## Verification
 
 - Unit and integration tests: `npx.cmd vitest run tests/acceptanceChecks.test.ts`.
-- Full suite: `npm test` (294 tests in 37 files at this checkpoint).
+- Full suite: `npm test` (297 tests in 37 files at this checkpoint).
 - Final-build gate smoke: `node C:\Users\KK\AppData\Local\Temp\opencode\cdp-final-gate-smoke.cjs`
   (missing file -> FAILED, approved write -> PASSED, invalid definition ->
   FAILED).
+- Exact-set smoke: `node C:\Users\KK\AppData\Local\Temp\opencode\cdp-acceptance-set.cjs`
+  (extra assertion -> FAILED `unexpected "Enabled property / true"`; exact set ->
+  PASSED).
 - Real-model receipt verifier: `node C:\Users\KK\AppData\Local\Temp\opencode\verify-ollama-auto-repair.cjs`.
 
 On the final packaged build, real qwen2.5:3b staged `repair-probe.txt` and the
@@ -108,9 +116,13 @@ staged nothing. Automatic messages are marked `[automatic repair step]`. A
 llama3.2:3b run reported without the file and the gate recorded it FAILED with
 `acceptance file ... is missing or unreadable`.
 
-Residual limits: acceptance definitions inject checks and enforce file checks,
-but do not yet require the report's assertion/state set to exactly match the
-definition (an earlier run added an extra assertion and the gate accepted it).
-The 29-byte fixture PNG passes the pre-existing signature-only image check.
-Unattended approval-free repair is not a goal; writes still need a human
-approval.
+The final-build exact-set smoke rejected an extra assertion with
+`Acceptance assertion/state set failed: assertion set does not match (unexpected
+"Enabled property / true")`, then accepted the declared set.
+
+Residual limits: the set comparator trims whitespace and does not compare the
+report's `actual` values to the declared expected values beyond the existing
+`gradePlaytest` check; screenshots are verified for readability but not enforced
+as an exact declared set. The 29-byte fixture PNG passes the pre-existing
+signature-only image check. Unattended approval-free repair is not a goal;
+writes still need a human approval.
