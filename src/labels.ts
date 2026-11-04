@@ -73,6 +73,41 @@ export function approvalCopy(item: PendingApprovalView): ApprovalCopy {
       if (item.studioOp === 'console') {
         return { title: 'Review Studio console read', detail: `Reads the Studio output in Studio${where} only if you approve`, preview: '', approveLabel: 'Read output' };
       }
+      if (item.studioOp === 'input') {
+        const keyboard = item.mcpTool === 'user_keyboard_input';
+        let total = 0;
+        let steps: string[] = [];
+        try {
+          const parsed = JSON.parse(item.mcpArgs ?? '{}') as { actions?: Array<Record<string, unknown>> };
+          const actions = Array.isArray(parsed.actions) ? parsed.actions : [];
+          total = actions.length;
+          steps = actions.map((step) => {
+            const name = typeof step.action === 'string' ? step.action : 'action';
+            const key = typeof step.key_code === 'string' ? ` ${step.key_code}` : '';
+            let text = '';
+            if (typeof step.text_inputs === 'string') {
+              const raw = JSON.stringify(step.text_inputs);
+              text = ` ${raw.length > 300 ? `${raw.slice(0, 300)}…` : raw}`;
+            }
+            const wait = typeof step.wait_time_ms === 'number' ? ` ${step.wait_time_ms}ms` : '';
+            const button = typeof step.mouse_button === 'string' ? ` ${step.mouse_button}` : '';
+            const coords = typeof step.x === 'number' && typeof step.y === 'number' ? ` (${step.x}, ${step.y})` : '';
+            const target = typeof step.instance_path === 'string' ? ` @ ${step.instance_path}` : '';
+            return `${name}${key}${text}${wait}${button}${coords}${target}`;
+          });
+        } catch {
+          // Unreadable arguments: show the card without a step preview.
+        }
+        return {
+          title: `Review Studio ${keyboard ? 'keyboard' : 'mouse'} input`,
+          detail: `${total} step(s) go to the running playtest in Studio${where} only if you approve`,
+          preview: steps.join('\n'),
+          approveLabel: 'Send input',
+        };
+      }
+      if (item.studioOp === 'capture') {
+        return { title: 'Review Studio viewport capture', detail: `Captures the current viewport in Studio${where} only if you approve`, preview: '', approveLabel: 'Capture viewport' };
+      }
       const action = item.previous === undefined ? 'Creates this script' : 'Changes this script';
       const guard = item.previous === undefined ? 'It stops if a script appears there first' : 'It stops if the script changed since it was read';
       return {

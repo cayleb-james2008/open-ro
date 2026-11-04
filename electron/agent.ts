@@ -309,6 +309,70 @@ export function toolSchemas(): ToolSchema[] {
         required: ['studioId'],
       },
     },
+    {
+      name: 'studio_keyboard',
+      description: 'Stage keyboard input for the running Roblox Studio playtest (Client datamodel). Nothing runs until the user approves.',
+      parameters: {
+        type: 'object',
+        properties: {
+          actions: {
+            type: 'array',
+            description: 'Up to 40 ordered keyboard steps: keyDown, keyUp, keyPress, textInput or wait.',
+            items: {
+              type: 'object',
+              properties: {
+                action: { type: 'string', description: 'keyDown, keyUp, keyPress, textInput or wait.' },
+                key_code: { type: 'string', description: 'Roblox key code for key actions.' },
+                text_inputs: { type: 'string', description: 'Text to send for textInput.' },
+                wait_time_ms: { type: 'number', description: 'Delay before the next step for wait.' },
+              },
+              required: ['action'],
+            },
+          },
+          studioId: { type: 'string', description: 'Studio instance id from list_roblox_studios.' },
+        },
+        required: ['actions', 'studioId'],
+      },
+    },
+    {
+      name: 'studio_mouse',
+      description: 'Stage mouse input for the running Roblox Studio playtest (Client datamodel). Nothing runs until the user approves.',
+      parameters: {
+        type: 'object',
+        properties: {
+          actions: {
+            type: 'array',
+            description: 'Up to 40 ordered mouse steps: moveTo, mouseButtonDown, mouseButtonUp, mouseButtonClick, scrollUp, scrollDown or wait.',
+            items: {
+              type: 'object',
+              properties: {
+                action: { type: 'string', description: 'Mouse action for this step.' },
+                mouse_button: { type: 'string', description: 'left or right for button actions.' },
+                x: { type: 'number', description: 'Screen X coordinate when no instance path is used.' },
+                y: { type: 'number', description: 'Screen Y coordinate when no instance path is used.' },
+                instance_path: { type: 'string', description: 'Optional instance path to target.' },
+                wait_time_ms: { type: 'number', description: 'Delay before the next step for wait.' },
+              },
+              required: ['action'],
+            },
+          },
+          studioId: { type: 'string', description: 'Studio instance id from list_roblox_studios.' },
+        },
+        required: ['actions', 'studioId'],
+      },
+    },
+    {
+      name: 'studio_capture',
+      description: 'Stage capturing the Roblox Studio viewport. The image is saved only if the user approves.',
+      parameters: {
+        type: 'object',
+        properties: {
+          studioId: { type: 'string', description: 'Studio instance id from list_roblox_studios.' },
+          captureId: { type: 'string', description: 'Optional capture name; generated when omitted.' },
+        },
+        required: ['studioId'],
+      },
+    },
   ];
 }
 
