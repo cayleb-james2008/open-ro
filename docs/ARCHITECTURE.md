@@ -36,6 +36,7 @@ The UI must never receive raw provider credentials, Node.js process objects, or 
 | `electron/mcp.ts` | MCP stdio transport, tool discovery and calls |
 | `electron/mcpTools.ts` | Exposes connected MCP tools to the agent as `mcp__<tool>`; calls are staged and run only after approval |
 | `electron/playtestEvidence.ts` | Playtest report check: PASSED needs agent-reported assertions, state checks and a PNG or JPEG path inside the project or a saved capture inside the managed capture folder, with every expected value equal to the actual one. It checks completeness and consistency only; values and the screenshot are not verified against a run |
+| `electron/playtestLedger.ts` | Project-scoped playtest history and repair plans: validates stored verdicts, derives the newest unresolved failure with attempts since the last pass, and feeds a repair hint into a failed report. Read-only; it never runs a repair |
 | `electron/capabilities.ts` | Optional local capability detection/metadata |
 | `electron/types.ts` | Shared typed contracts |
 | `tests/` | Deterministic tests for provider catalogue and other core logic |

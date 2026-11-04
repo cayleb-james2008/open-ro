@@ -4,6 +4,9 @@ All notable changes to Open-Ro Studio are documented here. This project is in ea
 
 ## [Unreleased]
 
+### Added
+- Playtest repair loop state: the ledger now derives the newest unresolved failure and counts attempts since the last pass; a FAILED `report_playtest` result returns a "Repair loop: attempt N" instruction to the agent, and the plan is exposed to the renderer. It is instructive only and never auto-runs a repair.
+
 ### Fixed
 - Project tools stay inside the folder selected in the main process, including symlink escapes, and they refuse likely secret files.
 - Agent writes and shell commands remain staged until the user approves that exact action. Rejecting one does not change the project.
