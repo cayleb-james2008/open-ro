@@ -88,14 +88,14 @@ Not established: a dependency-resolved build, native installers, live Studio int
 
 **Goal:** Make visual and 3D assets optional but first-class.
 
-- [ ] Provider adapters for image/icon/thumbnail generation.
+- [ ] Provider adapters for image/icon/thumbnail generation. (2026-only local catalog, hardware tiers and ComfyUI workflow keys exist; bridge and generation pending.)
 - [ ] Cost and terms preview before paid generation.
 - [ ] Asset review, versioning and replace/approve flow.
 - [ ] Blender install/version detection and project isolation.
 - [ ] Mesh/texture/material/rig/animation generation or assisted authoring.
 - [ ] Preview and validation in Blender before Studio import.
 - [ ] Asset import/export with metadata and source attribution.
-- [ ] Optional audio generation/editing and asset review.
+- [ ] Optional audio generation/editing and asset review. (ACE-Step 1.5, MiniMax Music 3 and Qwen3-TTS are catalogued with license/VRAM/RAM tiers; no engine is connected yet.)
 
 **Exit gate:** complete image or 3D asset workflow from prompt/reference through review into a Roblox project with clear licensing and file provenance.
 

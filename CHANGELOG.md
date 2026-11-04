@@ -5,6 +5,7 @@ All notable changes to Open-Ro Studio are documented here. This project is in ea
 ## [Unreleased]
 
 ### Added
+- Local media planning: a hardware profile (RAM, CPU, per-GPU NVIDIA memory, free disk) and a 2026-only catalog of 9 image/audio/voice/video/3D models with release dates, licenses, steps, VRAM/RAM floors and confidence. Recommendations match per-device memory, prefer the newest fitting model, allow explicit CPU-only fallbacks, and report no-fit rather than using a 2025 model. No ComfyUI bridge or generation yet.
 - Playtest repair loop state: the ledger now derives the newest unresolved failure and counts attempts since the last pass; a FAILED `report_playtest` result returns a "Repair loop: attempt N" instruction to the agent, and the plan is exposed to the renderer. It is instructive only and never auto-runs a repair.
 
 ### Fixed

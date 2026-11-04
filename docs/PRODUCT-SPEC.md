@@ -118,6 +118,8 @@ This document translates [`../PROJECT.md`](../PROJECT.md) into user journeys and
 
 - Present provider choices as optional adapters.
 - Show provider terms and cost before paid generation.
+- Prefer the local ComfyUI route for 2026-only models; show release date, license, steps and hardware floor before generation.
+- Never substitute a 2025 model when the current hardware does not fit; report the no-fit reason instead.
 - Keep prompts, media, and outputs local unless a selected provider receives them.
 - Review outputs and allow regenerate/replace/approve.
 - Preserve attribution/asset licensing notes.
