@@ -95,7 +95,7 @@ Not established: a dependency-resolved build, native installers, live Studio int
 - [ ] Mesh/texture/material/rig/animation generation or assisted authoring.
 - [ ] Preview and validation in Blender before Studio import.
 - [ ] Asset import/export with metadata and source attribution.
-- [ ] Optional audio generation/editing and asset review. (ACE-Step 1.5 turbo/XL are connected through the ComfyUI bridge; Workspace UI, agent tool and approval card exist, and two live clips landed in the production sink. Agent→approval execution and audio editing/review remain unverified.)
+- [ ] Optional audio generation/editing and asset review. (ACE-Step 1.5 turbo/XL are connected through the ComfyUI bridge; Workspace UI and first-class agent approval exist, with live production-sink clips including an agent->approval run. Audio editing/review and image/video/3D remain unverified.)
 
 **Exit gate:** complete image or 3D asset workflow from prompt/reference through review into a Roblox project with clear licensing and file provenance.
 
