@@ -66,7 +66,7 @@ Not established: a dependency-resolved build, native installers, live Studio int
 - [ ] Playtest start/stop and environment identity. (Start/stop verified live; environment identity pending.)
 - [x] Keyboard/mouse input simulation and reproducible interaction scripts. (Keyboard and mouse sequences reported Success live.)
 - [x] Viewport screenshot capture and evidence attachments. (A live JPEG capture backed a PASSED playtest report.)
-- [ ] Acceptance-check definitions, result ledger and repair iterations.
+- [ ] Acceptance-check definitions, result ledger and repair iterations. (Ledger API, Workspace history and Draft repair exist; acceptance-check definitions and automated repair iterations pending.)
 - [ ] Asset search/insertion and mesh/material tool coverage where documented.
 - [ ] Dedicated Studio plugin/bridge only if the built-in MCP surface proves insufficient.
 
