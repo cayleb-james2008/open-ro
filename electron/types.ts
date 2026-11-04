@@ -20,6 +20,7 @@ export type BuiltinToolName =
   | 'list_dir' | 'read_file' | 'write_file' | 'run_command' | 'report_playtest'
   | 'studio_snapshot' | 'studio_read_script' | 'studio_write_script'
   | 'studio_playtest' | 'studio_console' | 'studio_keyboard' | 'studio_mouse' | 'studio_capture'
+  | 'studio_search_tree' | 'studio_inspect' | 'studio_multi_edit' | 'studio_asset' | 'studio_navigate'
   | 'media_generate';
 /** Connected MCP server tools are exposed to the model as `mcp__<tool>`. */
 export type ToolName = BuiltinToolName | `mcp__${string}`;
@@ -68,7 +69,7 @@ export interface PendingApprovalView {
   /** Arguments for an MCP server start, passed without a shell. */
   serverArgs?: string[];
   /** Studio approvals: what runs, on which instance (dot path from game). */
-  studioOp?: 'snapshot' | 'read' | 'write' | 'play' | 'console' | 'input' | 'capture';
+  studioOp?: 'snapshot' | 'read' | 'write' | 'play' | 'console' | 'input' | 'capture' | 'search_tree' | 'inspect' | 'multi_edit' | 'asset';
   studioPath?: string;
   studioClass?: string;
   studioServices?: string[];
@@ -166,3 +167,272 @@ export interface ToolExecutor {
   schemas(): ToolSchema[];
   execute(call: ToolCallRequest): Promise<ToolCallResult>;
 }
+
+export interface StudioSearchTreeParams {
+  path?: string;
+  instance_type?: string;
+  keywords?: string;
+  max_depth?: number;
+  head_limit?: number;
+  studioId?: string;
+  datamodel_type?: 'Edit' | 'Client' | 'Server';
+}
+
+export interface StudioSearchTreeResult {
+  instances: Array<{ path: string; className: string; name: string }>;
+}
+
+export interface StudioInspectParams {
+  path: string;
+  max_depth?: number;
+  studioId?: string;
+}
+
+export interface StudioInspectResult {
+  path: string;
+  className: string;
+  name?: string;
+  uniqueId?: string;
+  properties: Record<string, unknown>;
+  attributes: Record<string, unknown>;
+  children: Array<unknown> | { immediateChildren: Array<{ className: string; path: string }>; childrenCount: number; totalDescendants: number };
+  matches?: Array<{
+    path: string;
+    className: string;
+    name?: string;
+    uniqueId?: string;
+    properties: Record<string, unknown>;
+    attributes: Record<string, unknown>;
+    children?: unknown;
+  }>;
+  warning?: string;
+}
+
+export interface StudioMultiEditItem {
+  path?: string;
+  old_string?: string;
+  new_string: string;
+  className?: string;
+  replace_all?: boolean;
+}
+
+export interface StudioMultiEditParams {
+  edits: StudioMultiEditItem[];
+  file_path?: string;
+  path?: string;
+  className?: string;
+  studioId?: string;
+}
+
+export interface StudioMultiEditResult {
+  success: boolean;
+  modified_scripts: string[];
+}
+
+export interface StudioAssetParams {
+  action: 'search' | 'insert';
+  asset_type?: string;
+  keyword?: string;
+  query?: string;
+  asset_id?: number | string;
+  target_parent?: string;
+  parentPath?: string;
+  scope?: string;
+  maxResults?: number;
+  max_results?: number;
+  priceFilter?: string;
+  studioId?: string;
+}
+
+export interface StudioAssetResult {
+  results?: Array<unknown>;
+  inserted_instance?: string;
+}
+
+// ==========================================
+// Playtest Scenario Actions & Runner Types
+// ==========================================
+
+export type PlaytestActionType = 'navigate' | 'keyboard' | 'mouse' | 'wait' | 'inspect';
+
+export interface PlaytestNavigateParams {
+  x?: number;
+  y?: number;
+  z?: number;
+  instance_path?: string;
+  speed_multiplier?: number;
+  studio_id?: string;
+  studioId?: string;
+}
+
+export interface PlaytestKeyboardActionItem {
+  action: 'keyDown' | 'keyUp' | 'keyPress' | 'textInput' | 'wait';
+  key_code?: string;
+  text_inputs?: string;
+  text?: string;
+  instance_path?: string;
+  wait_time_ms?: number;
+}
+
+export interface PlaytestKeyboardParams {
+  actions: PlaytestKeyboardActionItem[];
+  studio_id?: string;
+  studioId?: string;
+}
+
+export interface PlaytestMouseActionItem {
+  action: 'moveTo' | 'mouseButtonDown' | 'mouseButtonUp' | 'mouseButtonClick' | 'scrollUp' | 'scrollDown' | 'wait';
+  mouse_button?: 'left' | 'right';
+  instance_path?: string;
+  x?: number;
+  y?: number;
+  wait_time_ms?: number;
+}
+
+export interface PlaytestMouseParams {
+  actions: PlaytestMouseActionItem[];
+  studio_id?: string;
+  studioId?: string;
+}
+
+export interface PlaytestWaitParams {
+  durationMs: number;
+}
+
+export interface PlaytestInspectParams {
+  path: string;
+  max_depth?: number;
+}
+
+export interface PlaytestScenarioAction {
+  type: PlaytestActionType;
+  params: Record<string, unknown>;
+}
+
+export interface PlaytestCheckResult {
+  name: string;
+  expected: unknown;
+  actual: unknown;
+  passed: boolean;
+}
+
+export interface PlaytestRunResult {
+  verdict: 'PASSED' | 'FAILED' | 'ERROR';
+  scenario: string;
+  checks: PlaytestCheckResult[];
+  screenshotPaths: string[];
+  consoleLogs: string[];
+  durationMs: number;
+  error?: string;
+}
+
+export interface PlaytestStateCheckSpec {
+  instancePath: string;
+  property: string;
+  expected: unknown;
+  actual?: unknown;
+}
+
+export interface PlaytestRunnerOptions {
+  maxDurationSeconds?: number;
+  captureScreenshots?: boolean;
+  actions?: PlaytestScenarioAction[];
+  customChecks?: Array<{ name: string; expected: unknown; actual: unknown }>;
+  stateChecks?: PlaytestStateCheckSpec[];
+  projectRoot?: string;
+  acceptanceDef?: unknown;
+  caller?: unknown;
+  scenarioActuals?: {
+    assertions?: Record<string, string>;
+    states?: Record<string, string>;
+    customScreenshots?: string[];
+  };
+  studioId?: string;
+  captureDir?: string;
+  stopTimeoutMs?: number;
+  spawnDelayMs?: number;
+}
+
+// ==========================================
+// Studio MCP Playtest Tool Function Wrappers
+// ==========================================
+
+export interface StudioNavigateParams {
+  x?: number;
+  y?: number;
+  z?: number;
+  instance_path?: string;
+  speed_multiplier?: number;
+  studioId?: string;
+  studio_id?: string;
+  datamodel_type?: 'Client' | 'Edit' | 'Server';
+}
+
+export interface StudioNavigateResult {
+  success: boolean;
+  output: string;
+}
+
+export interface StudioKeyboardParams {
+  actions: PlaytestKeyboardActionItem[];
+  studioId?: string;
+  studio_id?: string;
+  datamodel_type?: 'Client' | 'Edit' | 'Server';
+}
+
+export interface StudioKeyboardResult {
+  success: boolean;
+  output: string;
+}
+
+export interface StudioMouseParams {
+  actions: PlaytestMouseActionItem[];
+  studioId?: string;
+  studio_id?: string;
+  datamodel_type?: 'Client' | 'Edit' | 'Server';
+}
+
+export interface StudioMouseResult {
+  success: boolean;
+  output: string;
+}
+
+export interface StudioPlaytestParams {
+  mode?: 'Play' | 'Run' | 'Stop';
+  is_start?: boolean;
+  isStart?: boolean;
+  studioId?: string;
+  studio_id?: string;
+}
+
+export interface StudioPlaytestResult {
+  success: boolean;
+  output: string;
+}
+
+export interface StudioConsoleParams {
+  studioId?: string;
+  studio_id?: string;
+}
+
+export interface StudioConsoleResult {
+  logs: string[];
+  rawText: string;
+}
+
+export interface StudioCaptureParams {
+  captureId?: string;
+  capture_id?: string;
+  studioId?: string;
+  studio_id?: string;
+  cameraPosition?: [number, number, number];
+  lookAtPosition?: [number, number, number];
+}
+
+export interface StudioCaptureResult {
+  savedPath: string;
+  bytes: number;
+  mimeType: string;
+}
+
+

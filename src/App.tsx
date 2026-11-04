@@ -912,7 +912,8 @@ export default function App() {
         )}
         {approvals.map((item) => {
           const showsDiff = item.kind === 'write' || item.studioOp === 'write' || item.kind === 'delete';
-          const { rows, hidden, invisibleChange } = showsDiff ? diffPreview(item.previous ?? '', item.content ?? '', expandedDiffs.has(item.id)) : { rows: [], hidden: 0, invisibleChange: false };
+          const diffVisible = showsDiff || item.studioOp === 'multi_edit';
+          const { rows, hidden, invisibleChange } = diffVisible ? diffPreview(item.previous ?? '', item.content ?? '', expandedDiffs.has(item.id)) : { rows: [], hidden: 0, invisibleChange: false };
           const copy = approvalCopy(item);
           const resolving = resolvingApprovals.has(item.id);
           return (
@@ -921,7 +922,7 @@ export default function App() {
                 <strong>{copy.title}</strong>
                 <span>{copy.detail}</span>
               </header>
-              {!showsDiff ? <pre className="command-preview" aria-label={item.kind === 'mcp' ? 'Tool arguments' : 'Command'}>{copy.preview}</pre> : (
+              {!diffVisible ? <pre className="command-preview" aria-label={item.kind === 'mcp' ? 'Tool arguments' : 'Command'}>{copy.preview}</pre> : (
                 <pre className="diff" aria-label="Proposed diff">
                   {rows.map((row, index) => (
                     <span className={`diff-${row.kind}`} key={`${item.id}-${index}`}>{row.kind === 'add' ? '+ ' : row.kind === 'del' ? '- ' : '  '}{row.text}{'\n'}</span>

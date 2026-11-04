@@ -16,3 +16,8 @@ Thumbs.db
 # OMNI-LOOP state and grading artifacts stay local
 .omni-loop/
 OMNI_LOOP.md
+
+# Open-Ro local test captures and python cache
+.openro/captures/
+__pycache__/
+*.pyc

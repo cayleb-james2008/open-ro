@@ -437,6 +437,10 @@ function buildExecutor(root: string): ToolExecutor {
           case 'studio_keyboard':
           case 'studio_mouse':
           case 'studio_capture':
+          case 'studio_search_tree':
+          case 'studio_inspect':
+          case 'studio_multi_edit':
+          case 'studio_asset':
             return stageStudioTool(approvals, mcp, studioReads, { projectRoot: root, name, args });
           default:
             if (isMcpAgentTool(name)) {

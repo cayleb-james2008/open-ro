@@ -121,6 +121,55 @@ export function approvalCopy(item: PendingApprovalView): ApprovalCopy {
       if (item.studioOp === 'capture') {
         return { title: 'Review Studio viewport capture', detail: `Captures the current viewport in Studio${where} only if you approve`, preview: '', approveLabel: 'Capture viewport' };
       }
+      if (item.studioOp === 'search_tree') {
+        let preview = item.mcpArgs ?? '';
+        try {
+          preview = JSON.stringify(JSON.parse(preview), null, 2);
+        } catch {
+          // ignore
+        }
+        return {
+          title: `Review Studio hierarchy search: ${item.studioPath ?? 'game'}`,
+          detail: `Explores game hierarchy in Studio${where} only if you approve`,
+          preview,
+          approveLabel: 'Search hierarchy',
+        };
+      }
+      if (item.studioOp === 'inspect') {
+        return {
+          title: `Review Studio inspect: ${target}`,
+          detail: `Inspects instance properties and hierarchy in Studio${where} only if you approve`,
+          preview: target,
+          approveLabel: 'Inspect instance',
+        };
+      }
+      if (item.studioOp === 'multi_edit') {
+        const action = item.previous === undefined ? 'Creates this script' : 'Applies batch edits to this script';
+        const guard = item.previous === undefined ? 'It stops if a script appears there first' : 'It stops if the script changed since it was read';
+        return {
+          title: `Review Studio multi-edit: ${target} (${item.studioClass ?? ''})`,
+          detail: `${action} in Studio${where} only if you approve. ${guard}.`,
+          preview: '',
+          approveLabel: 'Apply edits',
+        };
+      }
+      if (item.studioOp === 'asset') {
+        const isInsert = item.mcpTool === 'insert_asset';
+        let preview = item.mcpArgs ?? '';
+        try {
+          preview = JSON.stringify(JSON.parse(preview), null, 2);
+        } catch {
+          // ignore
+        }
+        return {
+          title: isInsert ? `Review Studio asset insert: ${item.studioPath ?? 'Workspace'}` : 'Review Studio asset search',
+          detail: isInsert
+            ? `Inserts an asset into the DataModel in Studio${where} only if you approve`
+            : `Searches Creator Store assets in Studio${where} only if you approve`,
+          preview,
+          approveLabel: isInsert ? 'Insert asset' : 'Search assets',
+        };
+      }
       const action = item.previous === undefined ? 'Creates this script' : 'Changes this script';
       const guard = item.previous === undefined ? 'It stops if a script appears there first' : 'It stops if the script changed since it was read';
       return {

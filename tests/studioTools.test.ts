@@ -2,7 +2,18 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { ApprovalQueue } from '../electron/approvals';
 import type { McpCaller } from '../electron/mcpTools';
-import { luauToolCall, runApprovedStudio, stageStudioRestore, stageStudioTool, studioReadKey, StudioReads } from '../electron/studioTools';
+import {
+  luauToolCall,
+  runApprovedStudio,
+  stageStudioRestore,
+  stageStudioTool,
+  studio_asset,
+  studio_inspect,
+  studio_multi_edit,
+  studio_search_tree,
+  studioReadKey,
+  StudioReads,
+} from '../electron/studioTools';
 import type { McpToolSummary } from '../electron/types';
 
 const executeLuau: McpToolSummary = {
@@ -425,3 +436,293 @@ describe('Studio viewport capture', () => {
     expect(main).toContain("mimeType === 'image/png' ? '.png' : mimeType === 'image/jpeg' ? '.jpg' : '.bin'");
   });
 });
+
+describe('Native Studio MCP tools: studio_search_tree', () => {
+  const root = '/project';
+  const tools: McpToolSummary[] = [
+    executeLuau,
+    { name: 'search_game_tree', description: 'Search game tree' },
+  ];
+  const stage = (studio: ReturnType<typeof fakeStudio>, approvals: ApprovalQueue, args: Record<string, unknown>) =>
+    stageStudioTool(approvals, studio.caller, new StudioReads(), { projectRoot: root, name: 'studio_search_tree', args });
+
+  it('stages search_game_tree with clamped depth and head_limit without executing', () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    const result = stage(studio, approvals, {
+      path: 'Workspace.Models',
+      instance_type: 'Model',
+      keywords: 'door',
+      max_depth: 99,
+      head_limit: 5000,
+      studioId: 'S1',
+    });
+    expect(result.ok).toBe(true);
+    expect(result.pendingApproval).toMatchObject({ kind: 'studio', tool: 'search_game_tree', path: 'Workspace.Models' });
+    expect(studio.calls).toHaveLength(0);
+    const staged = approvals.list()[0];
+    expect(staged).toMatchObject({ kind: 'studio', studioOp: 'search_tree', studioId: 'S1' });
+    const args = JSON.parse(staged.mcpArgs ?? '{}');
+    expect(args).toEqual({
+      datamodel_type: 'Edit',
+      max_depth: 10,
+      head_limit: 1000,
+      studio_id: 'S1',
+      path: 'Workspace.Models',
+      instance_type: 'Model',
+      keywords: 'door',
+    });
+  });
+
+  it('refuses when search_game_tree is missing from connected tools', () => {
+    const studio = fakeStudio([]);
+    const approvals = new ApprovalQueue();
+    const result = stage(studio, approvals, { path: 'Workspace' });
+    expect(result.ok).toBe(false);
+    expect(result.output).toMatch(/no search_game_tree/);
+  });
+
+  it('runs approved search_game_tree call and parses array output', async () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    const staged = stage(studio, approvals, { path: 'Workspace' });
+    const mockNodes = [
+      { fullPath: 'Workspace.PartA', className: 'Part', name: 'PartA' },
+      { fullPath: 'Workspace.PartB', className: 'Part', name: 'PartB' },
+    ];
+    studio.replies.push(JSON.stringify(mockNodes));
+    const result = await runApprovedStudio(approvals.take(staged.pendingApproval!.id, 'studio'), studio.caller, new StudioReads());
+    expect(result.ok).toBe(true);
+    expect(result.summary).toBe('Found 2 instance(s) in DataModel.');
+    expect(JSON.parse(result.output ?? '[]')).toEqual(mockNodes);
+  });
+
+  it('programmatic studio_search_tree normalizes node items', async () => {
+    const studio = fakeStudio(tools);
+    studio.replies.push(JSON.stringify([
+      { fullPath: 'Workspace.Model', className: 'Model', name: 'Model' },
+      { path: 'Workspace.Model.Part', className: 'Part', name: 'Part' },
+    ]));
+    const result = await studio_search_tree(studio.caller, { path: 'Workspace', max_depth: 2 });
+    expect(result.instances).toEqual([
+      { path: 'Workspace.Model', className: 'Model', name: 'Model' },
+      { path: 'Workspace.Model.Part', className: 'Part', name: 'Part' },
+    ]);
+  });
+});
+
+describe('Native Studio MCP tools: studio_inspect', () => {
+  const root = '/project';
+  const tools: McpToolSummary[] = [
+    executeLuau,
+    { name: 'inspect_instance', description: 'Inspect instance' },
+  ];
+  const stage = (studio: ReturnType<typeof fakeStudio>, approvals: ApprovalQueue, args: Record<string, unknown>) =>
+    stageStudioTool(approvals, studio.caller, new StudioReads(), { projectRoot: root, name: 'studio_inspect', args });
+
+  it('requires a valid path parameter for staging', () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    expect(stage(studio, approvals, {}).output).toMatch(/path is required/);
+    expect(stage(studio, approvals, { path: '   ' }).output).toMatch(/path is required/);
+    expect(approvals.list()).toHaveLength(0);
+  });
+
+  it('stages inspect_instance with frozen path and studioId', () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    const result = stage(studio, approvals, { path: 'Workspace.Part', studioId: 'S2' });
+    expect(result.ok).toBe(true);
+    expect(result.pendingApproval).toMatchObject({ kind: 'studio', tool: 'inspect_instance', path: 'Workspace.Part' });
+    const staged = approvals.list()[0];
+    expect(staged).toMatchObject({ studioOp: 'inspect', studioPath: 'Workspace.Part', studioId: 'S2' });
+    expect(JSON.parse(staged.mcpArgs ?? '{}')).toEqual({ path: 'Workspace.Part', studio_id: 'S2' });
+  });
+
+  it('execution records discovered script source into StudioReads', async () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    const reads = new StudioReads();
+    const path = 'ServerScriptService.GameManager';
+    const staged = stage(studio, approvals, { path, studioId: 'S1' });
+    const inspectReply = {
+      path,
+      className: 'Script',
+      properties: { Source: 'print("inspected script")' },
+      attributes: { Version: 1 },
+      children: { immediateChildren: [{ className: 'Folder', path: `${path}.Config` }] },
+    };
+    studio.replies.push(JSON.stringify(inspectReply));
+    const result = await runApprovedStudio(approvals.take(staged.pendingApproval!.id, 'studio'), studio.caller, reads);
+    expect(result.ok).toBe(true);
+    expect(result.summary).toContain(`Inspected game.${path}`);
+    const key = studioReadKey('session-1', 'S1', path);
+    expect(reads.get(key)).toEqual({ exists: true, className: 'Script', source: 'print("inspected script")' });
+  });
+
+  it('programmatic studio_inspect handles single and multiple matches', async () => {
+    const studio = fakeStudio(tools);
+    studio.replies.push(JSON.stringify({
+      matches: [
+        {
+          path: 'Workspace.Part',
+          className: 'Part',
+          properties: { Anchored: true },
+          attributes: {},
+          children: { immediateChildren: [] },
+        },
+      ],
+      count: 1,
+      totalFound: 1,
+    }));
+    const res = await studio_inspect(studio.caller, { path: 'Workspace.Part' });
+    expect(res.path).toBe('Workspace.Part');
+    expect(res.className).toBe('Part');
+    expect(res.properties).toEqual({ Anchored: true });
+    expect(res.matches).toHaveLength(1);
+  });
+});
+
+describe('Native Studio MCP tools: studio_multi_edit', () => {
+  const root = '/project';
+  const tools: McpToolSummary[] = [
+    executeLuau,
+    { name: 'multi_edit', description: 'Atomic multi edit' },
+  ];
+  const stage = (studio: ReturnType<typeof fakeStudio>, approvals: ApprovalQueue, reads: StudioReads, args: Record<string, unknown>) =>
+    stageStudioTool(approvals, studio.caller, reads, { projectRoot: root, name: 'studio_multi_edit', args });
+
+  it('requires a prior read or inspect in StudioReads before staging an existing script edit', () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    const reads = new StudioReads();
+    const res = stage(studio, approvals, reads, {
+      path: 'ServerScriptService.Shop',
+      edits: [{ old_string: 'foo', new_string: 'bar' }],
+    });
+    expect(res.output).toMatch(/studio_read_script first/);
+    expect(approvals.list()).toHaveLength(0);
+  });
+
+  it('simulates edits on previous source and rejects if old_string does not match', () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    const reads = new StudioReads();
+    const path = 'ServerScriptService.Shop';
+    reads.set(studioReadKey('session-1', undefined, path), { exists: true, className: 'Script', source: 'local x = 1' });
+    const res = stage(studio, approvals, reads, {
+      path,
+      edits: [{ old_string: 'nonexistent', new_string: 'replacement' }],
+    });
+    expect(res.output).toMatch(/old_string not found/);
+    expect(approvals.list()).toHaveLength(0);
+  });
+
+  it('enforces currency and placement safety on simulated script content', () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    const reads = new StudioReads();
+    const clientPath = 'StarterGui.ClientUI';
+    reads.set(studioReadKey('session-1', undefined, clientPath), { exists: true, className: 'LocalScript', source: 'local x = 1' });
+    const clientEdit = stage(studio, approvals, reads, {
+      path: clientPath,
+      edits: [{ old_string: 'local x = 1', new_string: 'player.leaderstats.Coins.Value += 100' }],
+    });
+    expect(clientEdit.output).toMatch(/Client code changes currency/);
+
+    const serverPath = 'ServerScriptService.Shop';
+    reads.set(studioReadKey('session-1', undefined, serverPath), { exists: true, className: 'Script', source: 'local x = 1' });
+    const serverEdit = stage(studio, approvals, reads, {
+      path: serverPath,
+      edits: [{ old_string: 'local x = 1', new_string: 'player.leaderstats.Coins.Value += 100' }],
+    });
+    expect(serverEdit.output).toMatch(/--!strict/);
+  });
+
+  it('stages valid multi-edit, generates checkpoint on execution, and allows restore', async () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    const reads = new StudioReads();
+    const path = 'ServerScriptService.Shop';
+    const initial = '--!strict\nlocal Price = 10\nreturn Price';
+    reads.set(studioReadKey('session-1', undefined, path), { exists: true, className: 'Script', source: initial });
+    const staged = stage(studio, approvals, reads, {
+      path,
+      edits: [{ old_string: 'local Price = 10', new_string: 'local Price = 25' }],
+    });
+    expect(staged.ok).toBe(true);
+    const item = approvals.take(staged.pendingApproval!.id, 'studio');
+    expect(item).toMatchObject({
+      studioOp: 'multi_edit',
+      previous: initial,
+      content: '--!strict\nlocal Price = 25\nreturn Price',
+    });
+
+    studio.replies.push(JSON.stringify({ success: true, modified_scripts: [path] }));
+    const result = await runApprovedStudio(item, studio.caller, reads);
+    expect(result.ok).toBe(true);
+    expect(result.summary).toContain(`Wrote batch edits to game.${path}`);
+    expect(result.checkpoint).toMatchObject({
+      path,
+      className: 'Script',
+      previous: initial,
+      content: '--!strict\nlocal Price = 25\nreturn Price',
+    });
+    const key = studioReadKey('session-1', undefined, path);
+    expect(reads.get(key)?.source).toBe('--!strict\nlocal Price = 25\nreturn Price');
+
+    const restore = stageStudioRestore(approvals, studio.caller, result.checkpoint!, { projectRoot: root });
+    expect(restore.previous).toBe('--!strict\nlocal Price = 25\nreturn Price');
+    expect(restore.content).toBe(initial);
+  });
+});
+
+describe('Native Studio MCP tools: studio_asset', () => {
+  const root = '/project';
+  const tools: McpToolSummary[] = [
+    executeLuau,
+    { name: 'search_asset', description: 'Search asset' },
+    { name: 'insert_asset', description: 'Insert asset' },
+  ];
+  const stage = (studio: ReturnType<typeof fakeStudio>, approvals: ApprovalQueue, args: Record<string, unknown>) =>
+    stageStudioTool(approvals, studio.caller, new StudioReads(), { projectRoot: root, name: 'studio_asset', args });
+
+  it('stages asset search and executes with parsed results', async () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    const staged = stage(studio, approvals, { action: 'search', keyword: 'tree', asset_type: 'Model' });
+    expect(staged.ok).toBe(true);
+    expect(staged.pendingApproval).toMatchObject({ tool: 'search_asset', path: 'CreatorStore' });
+
+    studio.replies.push(JSON.stringify({ results: [{ assetId: 501, name: 'Oak Tree' }] }));
+    const result = await runApprovedStudio(approvals.take(staged.pendingApproval!.id, 'studio'), studio.caller, new StudioReads());
+    expect(result.ok).toBe(true);
+    expect(result.summary).toBe('Found 1 asset(s) in Creator Store.');
+  });
+
+  it('stages asset insert and validates asset_id', async () => {
+    const studio = fakeStudio(tools);
+    const approvals = new ApprovalQueue();
+    expect(stage(studio, approvals, { action: 'insert' }).output).toMatch(/asset_id is required/);
+    const staged = stage(studio, approvals, { action: 'insert', asset_id: 12345, target_parent: 'Workspace.Props' });
+    expect(staged.ok).toBe(true);
+    expect(staged.pendingApproval).toMatchObject({ tool: 'insert_asset', path: 'Workspace.Props' });
+
+    studio.replies.push(JSON.stringify({ inserted_instance: 'Workspace.Props.Asset_12345' }));
+    const result = await runApprovedStudio(approvals.take(staged.pendingApproval!.id, 'studio'), studio.caller, new StudioReads());
+    expect(result.ok).toBe(true);
+    expect(result.summary).toContain('Inserted asset 12345 under Workspace.Props');
+  });
+
+  it('programmatic studio_asset works for search and insert', async () => {
+    const studio = fakeStudio(tools);
+    studio.replies.push(JSON.stringify({ results: [{ assetId: 999, name: 'Lamp' }] }));
+    const searchRes = await studio_asset(studio.caller, { action: 'search', keyword: 'Lamp' });
+    expect(searchRes.results).toHaveLength(1);
+
+    studio.replies.push(JSON.stringify({ inserted_instance: 'Workspace.Lamp' }));
+    const insertRes = await studio_asset(studio.caller, { action: 'insert', asset_id: 999 });
+    expect(insertRes.inserted_instance).toBe('Workspace.Lamp');
+  });
+});
+

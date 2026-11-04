@@ -373,6 +373,75 @@ export function toolSchemas(): ToolSchema[] {
         required: ['studioId'],
       },
     },
+    {
+      name: 'studio_search_tree',
+      description: 'Stage exploring the Roblox Studio game hierarchy tree using search_game_tree. Supports filtering by path, instance type, keywords, and depth.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Start exploration from this path. Examples: Workspace, ServerScriptService.' },
+          instance_type: { type: 'string', description: 'Filter by ClassName using IsA() check. Examples: BasePart, BaseScript, Model.' },
+          keywords: { type: 'string', description: 'Filter by instance name keywords (case-insensitive).' },
+          max_depth: { type: 'number', description: 'Maximum depth to traverse (1 to 10, default 3).' },
+          head_limit: { type: 'number', description: 'Maximum number of results to return (default 200).' },
+          studioId: { type: 'string', description: 'Studio instance id from list_roblox_studios, when required.' },
+        },
+      },
+    },
+    {
+      name: 'studio_inspect',
+      description: 'Stage deep inspection of a Roblox Studio instance using inspect_instance. Returns detailed property map, attributes, and children.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Path to the instance to inspect using dot notation. Example: Workspace.Model.Part.' },
+          studioId: { type: 'string', description: 'Studio instance id from list_roblox_studios, when required.' },
+        },
+        required: ['path'],
+      },
+    },
+    {
+      name: 'studio_multi_edit',
+      description: 'Stage atomic batch text replacements or script creation in Roblox Studio using multi_edit. The user sees a live line diff.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Dot-notation path of the script (e.g. ServerScriptService.MyScript).' },
+          className: { type: 'string', description: 'Script, LocalScript or ModuleScript (required for new scripts).' },
+          edits: {
+            type: 'array',
+            description: 'Array of edit operations with old_string and new_string.',
+            items: {
+              type: 'object',
+              properties: {
+                old_string: { type: 'string', description: 'Text to replace (empty string for initial creation).' },
+                new_string: { type: 'string', description: 'Replacement text.' },
+                replace_all: { type: 'boolean', description: 'Replace all occurrences (default false).' },
+              },
+              required: ['old_string', 'new_string'],
+            },
+          },
+          studioId: { type: 'string', description: 'Studio instance id from list_roblox_studios, when required.' },
+        },
+        required: ['edits'],
+      },
+    },
+    {
+      name: 'studio_asset',
+      description: 'Stage searching or inserting Creator Store assets in Roblox Studio. Searches are read-only; insertions place the asset in DataModel.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['search', 'insert'], description: 'search to query Creator Store; insert to load an asset by ID.' },
+          keyword: { type: 'string', description: 'Search query for action=search.' },
+          asset_type: { type: 'string', description: 'Asset type filter (Model, Audio, Mesh, Image, Decal, Video, Package).' },
+          asset_id: { type: 'string', description: 'Numeric asset ID to insert for action=insert.' },
+          target_parent: { type: 'string', description: 'Parent path for inserted asset (defaults to Workspace).' },
+          studioId: { type: 'string', description: 'Studio instance id from list_roblox_studios, when required.' },
+        },
+        required: ['action'],
+      },
+    },
   ];
 }
 
