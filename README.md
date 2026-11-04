@@ -19,7 +19,7 @@
 
 Open-Ro is being built for **Windows and native Linux desktops, including Omarchy (Arch Linux)**. Users bring a model connection; everything else is an optional capability they can install, connect, or skip.
 
-> **Current release state: 0.1.0 foundation.** This repository contains an early Electron desktop client, provider routes, local project tools, approval-gated commands, an MCP client foundation, and Windows/Linux packaging configuration. Windows NSIS and Linux AppImage/deb/pacman packages build in CI; install/uninstall acceptance is still pending. It is not yet a complete Ropilot-equivalent product. The long-term target and the unfinished work are documented below and in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+> **Current release state: 0.1.0 foundation.** This repository contains an early Electron desktop client, provider routes, local project tools, approval-gated commands, an MCP client foundation, and Windows/Linux packaging configuration. Windows NSIS and Linux AppImage/deb/pacman packages build in CI; Windows 0.1.0 install/launch/uninstall acceptance is recorded, while Linux install/uninstall and signing remain pending. It is not yet a complete Ropilot-equivalent product. The long-term target and the unfinished work are documented below and in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Interface
 
@@ -127,7 +127,7 @@ Windows and Linux are equal first-class targets for the Open-Ro desktop client. 
 | Published-game upkeep | Not implemented | Recommendations that quote an official metric, and a separate approval before publishing |
 | Images / thumbnails | Not implemented | An optional provider and local review before any upload |
 | Local media (ComfyUI) | 2026-only catalog and hardware tiers; loopback ComfyUI health, frozen plan, submit/poll and `userData/media` sink for two ACE-Step audio presets. A live 5s CPU clip produced a 124,348-byte MP3; no media UI or agent tool yet, and the production sink is not live-exercised | Reviewed local audio/image/video/3D generation with license and provenance |
-| Windows packaging | NSIS installer builds locally and in CI (`Open-Ro Studio Setup 0.1.0.exe`); install/uninstall and code signing not yet recorded | Install and uninstall recorded on a real machine |
+| Windows packaging | NSIS installer builds locally and in CI; 0.1.0 installed, launched from the Start Menu and desktop shortcuts, and uninstalled cleanly on Windows 11. Code signing and upgrade path not recorded | Signed installer and upgrade acceptance |
 | Omarchy packaging | AppImage, deb, and pacman packages build in CI; install/uninstall not yet recorded | Install and uninstall recorded on a real machine |
 
 Open-Ro has been run against a live Studio session (tree/script reads, a reviewed script write with exact read-back, playtest start/stop, console output, keyboard/mouse input, and a reviewed viewport capture that backed a PASSED playtest report). It does not yet auto-run repairs (a failed playtest returns a tracked repair plan), expose media generation in the UI or agent, drive Blender, download asset packs, or watch a published experience. Those are goals, not current behavior.
@@ -136,7 +136,7 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) for milestones and acceptance criteria,
 
 ## Get started
 
-The project is currently distributed as source; native installers have not yet passed release acceptance.
+The project is currently distributed as source. The Windows 0.1.0 NSIS installer has passed local install/launch/uninstall acceptance; Linux packages and code signing have not.
 
 **Requirements:** Node.js 22.12+, npm 10+, Git, and the platform-specific desktop build prerequisites.
 

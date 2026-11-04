@@ -103,7 +103,7 @@ Not established: a dependency-resolved build, native installers, live Studio int
 
 **Goal:** Publish trustworthy desktop builds and support community capabilities.
 
-- [ ] Windows NSIS signed installer, upgrade and uninstall acceptance.
+- [ ] Windows NSIS signed installer, upgrade and uninstall acceptance. (Unsigned 0.1.0 install/launch/uninstall is recorded; signing and upgrade pending.)
 - [ ] Linux AppImage and pacman package acceptance on Omarchy.
 - [ ] Reproducible versioned release artifacts/checksums.
 - [ ] Crash reporting opt-in, logs with secret redaction and recovery diagnostics.

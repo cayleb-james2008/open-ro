@@ -2,7 +2,7 @@
 
 **Source version:** `0.1.0`  
 **Date:** 2026-11-03  
-**State:** early functional foundation. Dependency install, typecheck, lint, unit tests, and the production build run on Windows 11 (Node 26.13.0) and in GitHub Actions on `ubuntu-latest` and `windows-latest`. The packaged app has been launched from `release/win-unpacked` on Windows 11: the window rendered with the preload bridge and loaded provider state over IPC. A live Roblox Studio MCP round trip succeeded on a Baseplate (`get_studio_state` + `execute_luau`). The NSIS installer has not been installed, and the file dialog and OS keyring have not been exercised.
+**State:** early functional foundation. Dependency install, typecheck, lint, unit tests, and the production build run on Windows 11 (Node 26.13.0) and in GitHub Actions on `ubuntu-latest` and `windows-latest`. The packaged app has been launched from `release/win-unpacked` on Windows 11: the window rendered with the preload bridge and loaded provider state over IPC. A live Roblox Studio MCP round trip succeeded on a Baseplate (`get_studio_state` + `execute_luau`). The NSIS installer has been installed, launched from both the Start Menu and desktop shortcuts, and uninstalled on Windows 11 (0.1.0, per-user); the file dialog and OS keyring have not been exercised.
 
 ## Included in this source tree
 
@@ -40,7 +40,7 @@ Commands run in this Windows 11 workspace:
 - `npm run lint` passed (rejects type suppressions, skipped tests, and placeholder text).
 - `npm test` passed: 267 tests in 36 files under `tests/`.
 - `npm run build` passed. Vite emitted `dist/` and `tsc` emitted `dist-electron/`.
-- `npm run package:win` passed with electron-builder 26.18.0: produced `release/Open-Ro Studio Setup 0.1.0.exe` (NSIS, one-click disabled, unsigned).
+- `npm run package:win` passed with electron-builder 26.18.0: produced `release/Open-Ro Studio Setup 0.1.0.exe` (NSIS, one-click disabled, unsigned). The 0.1.0 installer (122,002,550 bytes, sha256 `3089d983…`) was installed from commit `1d9146e`; see the installer acceptance bullet below.
 - `npm run package:linux` was not run in this workspace; it requires the Linux packaging toolchain and runs in CI.
 - GitHub Actions (`CI and desktop packages`): the `checks` matrix passes on `ubuntu-latest` and `windows-latest`. Packaging is green for commit `509a080` (run 24) and commit `02f2860` (run 27): the `windows` job built and uploaded `open-ro-windows-x64` (116.3 MB) and the `linux` job built and uploaded `open-ro-linux-x64` (305.7 MB: AppImage, deb, pacman).
 - The inference adapters were exercised over real HTTP against a local mock provider (`tests/inferenceRoutes.test.ts`): OpenAI-compatible connection check (request path, Bearer header, model, response parsing) plus a 401 rejection, Anthropic connection check (`GET /v1/models` with key and version headers), a full agent turn with a tool call and tool-result round trip, and a refused-connection failure path. All servers bind ephemeral loopback ports and close after each test.
@@ -54,12 +54,13 @@ Earlier verification preserved from the prior workspace run:
 - Open-Ro's own Studio pipeline ran live against a Baseplate in this session: the app's MCP client connected to the official bridge (33 tools), a staged-and-approved `studio_snapshot` read 5 instances (Workspace camera/baseplate/terrain, StarterPlayer scripts), a `studio_read_script` of a missing path reported it absent, a staged-and-approved `studio_write_script` created `ServerScriptService.OpenRoLiveProbe` and Studio read back the same path, class and source, and a re-read returned the exact source. A staged-and-approved playtest start reported "Game Started"; a console read returned the earlier script's output ("open-ro live write", "Mode: rotate"); staged keyboard (keyDown/wait/keyUp) and mouse click input both reported "Success" during the playtest; a staged capture saved a 201,683-byte JPEG (magic ffd8ffe0) through a temporary sink; that capture was attached to a playtest report and the gate returned PASSED (1 assertion, 1 state check, 1 screenshot, sha256 5a2d877b…); a stop reported "Game Stopped"; Studio returned to Edit mode. Studio did not record an undo step for the MCP write; the script remains in the unsaved test place.
 - The MCP client completed the handshake, listed tools, and called `echo` against `@modelcontextprotocol/server-everything` 2.1.0 over stdio, both directly and as a staged call approved through the queue.
 
-These checks do **not** prove an installer install/uninstall journey, cloud-provider inference or CLI sign-in, or a full Roblox Studio playtest/input/screenshot/repair workflow.
+These checks do **not** prove an installer upgrade path or Authenticode signing, cloud-provider inference or CLI sign-in, or a full Roblox Studio playtest/input/screenshot/repair workflow.
 
 ## Not verified / not produced
 
-- A running Electron application window: the packaged app from `release/win-unpacked` launched on Windows 11 at 1240×816 with the preload bridge active (the renderer showed loaded provider/connection state, not the missing-bridge notice). The file dialog, OS keyring, and installer install/upgrade/uninstall journey remain unverified.
-- Windows installer install/upgrade/uninstall journey and Authenticode signing. The unsigned NSIS artifact builds; the journey is not recorded.
+- A running Electron application window: the packaged app from `release/win-unpacked` launched on Windows 11 at 1240×816 with the preload bridge active (the renderer showed loaded provider/connection state, not the missing-bridge notice). The file dialog and OS keyring remain unverified; the installer install/uninstall journey is recorded below.
+- Windows installer upgrade path and Authenticode signing. The unsigned NSIS artifact installs, launches and uninstalls cleanly; an upgrade and signing are not recorded.
+- Windows installer acceptance (2026-11-05): built from `1d9146e` (122,002,550 bytes, sha256 `3089d983…`), silent install exit 0 to `C:\Users\KK\AppData\Local\Programs\Open-Ro Studio`, HKCU uninstall entry `Open-Ro Studio 0.1.0` (publisher Open-Ro contributors), Start Menu and desktop shortcuts created, the installed 0.1.0 window launched via the Start Menu shortcut and reported responding, silent uninstall exit 0 removed the directory, HKCU entry and both shortcuts while preserving `%APPDATA%\Open-Ro Studio` (including `sessions.json`). Upgrade and Authenticode signing remain unverified.
 - Linux AppImage, Debian package, or pacman install/uninstall or keyring behavior on Omarchy. CI packaging builds the artifacts; they are not installed.
 - Live inference against cloud providers and official CLI sign-ins; no cloud keys or accounts were used in this workspace. The local Ollama route is verified above.
 - Full native CLI sign-in/connection validation on Windows and Linux.

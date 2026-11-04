@@ -20,8 +20,8 @@ A package build is not a release. A release is the combination of exact source i
 
 ## Gate C — Windows acceptance
 
-- [ ] NSIS installer installs for current user.
-- [ ] App launches from Start Menu and desktop shortcut.
+- [x] NSIS installer installs for current user. (0.1.0 from `1d9146e`, per-user, silent exit 0.)
+- [x] App launches from Start Menu and desktop shortcut. (Start Menu shortcut launch verified; both shortcuts created and removed by uninstall.)
 - [ ] API key can be saved securely and used; key never appears in logs/UI after save.
 - [ ] Official CLI provider setup/check works.
 - [ ] Project browse/read/write approval works and rejected writes do not mutate files.
