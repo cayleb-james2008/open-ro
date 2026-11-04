@@ -2,7 +2,7 @@ import * as crypto from 'node:crypto';
 import type { ComfyGenerationPlan } from './comfyClient';
 import type { McpServerIdentity } from './types';
 
-export type ApprovalKind = 'write' | 'command' | 'mcp' | 'mcp-server' | 'studio' | 'delete';
+export type ApprovalKind = 'write' | 'command' | 'mcp' | 'mcp-server' | 'studio' | 'delete' | 'media';
 export type StudioOp = 'snapshot' | 'read' | 'write' | 'play' | 'console' | 'input' | 'capture';
 export type ApprovalDecision = 'approve' | 'reject';
 
@@ -32,6 +32,10 @@ export interface PendingApproval {
   studioId?: string;
   /** The frozen ComfyUI plan for a media approval; kept in main only. */
   mediaPlan?: ComfyGenerationPlan;
+  mediaPreset?: string;
+  mediaPrompt?: string;
+  mediaDuration?: number;
+  mediaSeed?: number;
 }
 
 const MAX_PENDING = 30;
@@ -161,22 +165,25 @@ export class ApprovalQueue {
    * workflow; the renderer only sees the summary arguments.
    */
   stageMedia(input: { projectRoot: string; plan: ComfyGenerationPlan }): PendingApproval {
-    const item = this.stageMcp({
+    this.assertRoom();
+    const plan = structuredClone(input.plan);
+    if (!plan.presetId || !plan.prompt) {
+      throw new Error('A media plan needs a preset and prompt.');
+    }
+    const item: PendingApproval = {
+      id: crypto.randomUUID(),
+      kind: 'media',
       projectRoot: input.projectRoot,
-      tool: 'media_generate',
-      args: {
-        presetId: input.plan.presetId,
-        modelId: input.plan.modelId,
-        prompt: input.plan.prompt,
-        lyrics: input.plan.lyrics,
-        durationSeconds: input.plan.durationSeconds,
-        seed: input.plan.seed,
-        summary: input.plan.summary,
-      },
-      // Reserved identity so a real MCP tool named media_generate cannot be mistaken for this card.
-      server: { command: 'openro-media', args: [], session: 'openro' },
-    });
-    item.mediaPlan = structuredClone(input.plan);
+      createdAt: new Date(this.now()).toISOString(),
+      expiresAt: this.now() + this.ttlMs,
+      order: this.nextOrder++,
+      mediaPlan: plan,
+      mediaPreset: plan.presetId,
+      mediaPrompt: plan.prompt,
+      mediaDuration: plan.durationSeconds,
+      mediaSeed: plan.seed,
+    };
+    this.items.set(item.id, item);
     return item;
   }
 

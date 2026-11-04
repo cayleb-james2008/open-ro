@@ -41,11 +41,12 @@ describe('approval card copy', () => {
   it('describes a local media generation without MCP wording', () => {
     const copy = approvalCopy({
       id: 'm',
-      kind: 'mcp',
+      kind: 'media',
       createdAt: '',
-      mcpTool: 'media_generate',
-      mcpServer: 'openro-media',
-      mcpArgs: JSON.stringify({ presetId: 'audio-ace-step-1.5-turbo', prompt: 'Late night trap', durationSeconds: 5, seed: 7 }),
+      mediaPreset: 'audio-ace-step-1.5-turbo',
+      mediaPrompt: 'Late night trap',
+      mediaDuration: 5,
+      mediaSeed: 7,
     });
     expect(copy).toEqual({
       title: 'Generate local audio: audio-ace-step-1.5-turbo',
@@ -53,12 +54,10 @@ describe('approval card copy', () => {
       preview: 'Late night trap',
       approveLabel: 'Generate audio',
     });
-    const malformed = approvalCopy({ id: 'm2', kind: 'mcp', createdAt: '', mcpTool: 'media_generate', mcpServer: 'openro-media', mcpArgs: 'not json' });
-    expect(malformed.preview).toBe('');
-    expect(malformed.title).toContain('ComfyUI audio');
-    const nullArgs = approvalCopy({ id: 'm3', kind: 'mcp', createdAt: '', mcpTool: 'media_generate', mcpServer: 'openro-media', mcpArgs: 'null' });
-    expect(nullArgs.preview).toBe('');
-    const foreignMcp = approvalCopy({ id: 'm4', kind: 'mcp', createdAt: '', mcpTool: 'media_generate', mcpServer: 'some-other-server', mcpArgs: '{}' });
+    const empty = approvalCopy({ id: 'm2', kind: 'media', createdAt: '' });
+    expect(empty.preview).toBe('');
+    expect(empty.title).toContain('ComfyUI audio');
+    const foreignMcp = approvalCopy({ id: 'm4', kind: 'mcp', createdAt: '', mcpTool: 'media_generate', mcpServer: 'openro-media', mcpArgs: '{}' });
     expect(foreignMcp.title).toBe('Review MCP tool: media_generate');
   });
 });
@@ -77,37 +76,51 @@ describe('local media approval', () => {
     createdAt: '2026-11-05T00:00:00.000Z',
   };
 
-  it('freezes the plan behind an MCP-shaped approval', () => {
+  it('freezes the plan behind a first-class media approval', () => {
     const queue = new ApprovalQueue(() => 1_000);
     const item = queue.stageMedia({ projectRoot: 'C:\\Game', plan });
-    expect(item).toMatchObject({ kind: 'mcp', mcpTool: 'media_generate', projectRoot: 'C:\\Game' });
-    expect(item.mcpServer).toMatchObject({ command: 'openro-media' });
+    expect(item).toMatchObject({
+      kind: 'media',
+      projectRoot: 'C:\\Game',
+      mediaPreset: 'audio-ace-step-1.5-turbo',
+      mediaPrompt: 'Late night trap',
+      mediaDuration: 5,
+      mediaSeed: 3,
+    });
+    expect(item.mcpTool).toBeUndefined();
+    expect(item.mcpArgs).toBeUndefined();
+    expect(item.mcpServer).toBeUndefined();
     expect(item.mediaPlan).not.toBe(plan);
     plan.prompt = 'mutated after staging';
+    plan.workflow['94'].inputs.tags = 'mutated workflow';
     expect(item.mediaPlan?.prompt).toBe('Late night trap');
-    expect(JSON.parse(item.mcpArgs ?? '{}')).toMatchObject({
-      presetId: 'audio-ace-step-1.5-turbo',
-      modelId: 'ace-step-1.5-turbo',
-      prompt: 'Late night trap',
-      durationSeconds: 5,
-      seed: 3,
-    });
-    const taken = queue.take(item.id, 'mcp');
+    expect(item.mediaPlan?.workflow['94'].inputs.tags).toBe('Late night trap');
+    const taken = queue.take(item.id, 'media');
     expect(taken.mediaPlan?.planId).toBe('plan-1');
   });
 
   it('is wired through the agent tool, approval execution, UI and production sink', () => {
     const main = readFileSync('electron/main.ts', 'utf8');
     expect(main).toContain("name: 'media_generate'");
+    expect(main).not.toContain("as ToolSchema['name']");
     expect(main).toContain('[...toolSchemas(), MEDIA_TOOL_SCHEMA,');
-    expect(main).toContain("if (String(name) === 'media_generate')");
+    expect(main).toContain("case 'media_generate':");
     expect(main).toContain('const plan = buildComfyPlan({');
     expect(main).toContain('Stage only. Health is checked by the approve-time execution');
     expect(main).toContain('approvals.stageMedia({ projectRoot: root, plan })');
-    expect(main).toContain("if (item.kind === 'mcp' && item.mediaPlan)");
+    expect(main).toContain("pendingApproval: { kind: 'media'");
+    expect(main).toContain("if (item.kind === 'media')");
     expect(main).toContain("path.join(app.getPath('userData'), 'media')");
     expect(main).toContain('runComfyPlan(comfyBaseUrl(), item.mediaPlan, path.join(app.getPath(\'userData\'), \'media\'))');
     expect(main).toContain("'Rejected the local media generation. Nothing ran.'");
+    expect(main).toContain('mediaPreset: item.mediaPreset');
+    expect(main).toContain('mediaPrompt: item.mediaPrompt');
+    expect(main).toContain('mediaDuration: item.mediaDuration');
+    expect(main).toContain('mediaSeed: item.mediaSeed');
+    const types = readFileSync('electron/types.ts', 'utf8');
+    expect(types).toContain("| 'media_generate'");
+    expect(types).toContain("studio' | 'delete' | 'media'");
+    expect(types).toContain('mediaPreset?: string');
     const app = readFileSync('src/App.tsx', 'utf8');
     expect(app).toContain('<span>Local media</span>');
     expect(app).toContain('api.comfyStatus()');
@@ -120,7 +133,8 @@ describe('local media approval', () => {
     expect(app).toContain('Frozen plan:');
     expect(app).toContain('setMediaPlan(null);');
     const labels = readFileSync('src/labels.ts', 'utf8');
-    expect(labels).toContain("item.mcpServer === 'openro-media'");
+    expect(labels).toContain("case 'media':");
+    expect(labels).not.toContain("openro-media");
     expect(labels).toContain('Generate local audio');
   });
 });

@@ -115,6 +115,10 @@ function toApprovalView(item: PendingApproval): PendingApprovalView {
     studioClass: item.studioClass,
     studioServices: item.studioServices,
     studioId: item.studioId,
+    mediaPreset: item.mediaPreset,
+    mediaPrompt: item.mediaPrompt,
+    mediaDuration: item.mediaDuration,
+    mediaSeed: item.mediaSeed,
   };
 }
 
@@ -292,7 +296,7 @@ async function writeStudioRecord(folder: 'studio-snapshots' | 'studio-checkpoint
 }
 
 const MEDIA_TOOL_SCHEMA: ToolSchema = {
-  name: 'media_generate' as ToolSchema['name'],
+  name: 'media_generate',
   description:
     'Generate local audio from a reviewed ComfyUI plan. The exact preset, prompt, duration and seed are staged for approval; the app never downloads models and only talks to a loopback ComfyUI server.',
   parameters: {
@@ -321,23 +325,23 @@ function buildExecutor(root: string): ToolExecutor {
       }
       const { name, args } = call;
       try {
-        if (String(name) === 'media_generate') {
-          // Stage only. Health is checked by the approve-time execution so the card can be reviewed offline.
-          const plan = buildComfyPlan({
-            presetId: typeof args.presetId === 'string' ? args.presetId : '',
-            prompt: typeof args.prompt === 'string' ? args.prompt : '',
-            lyrics: typeof args.lyrics === 'string' ? args.lyrics : undefined,
-            durationSeconds: typeof args.durationSeconds === 'number' ? args.durationSeconds : undefined,
-            seed: typeof args.seed === 'number' ? args.seed : undefined,
-          });
-          const pending = approvals.stageMedia({ projectRoot: root, plan });
-          return {
-            ok: true,
-            output: `Staged ${plan.modelId} for approval. Nothing runs until you approve it.`,
-            pendingApproval: { kind: 'mcp', tool: 'media_generate', id: pending.id },
-          };
-        }
         switch (name) {
+          case 'media_generate': {
+            // Stage only. Health is checked by the approve-time execution so the card can be reviewed offline.
+            const plan = buildComfyPlan({
+              presetId: typeof args.presetId === 'string' ? args.presetId : '',
+              prompt: typeof args.prompt === 'string' ? args.prompt : '',
+              lyrics: typeof args.lyrics === 'string' ? args.lyrics : undefined,
+              durationSeconds: typeof args.durationSeconds === 'number' ? args.durationSeconds : undefined,
+              seed: typeof args.seed === 'number' ? args.seed : undefined,
+            });
+            const pending = approvals.stageMedia({ projectRoot: root, plan });
+            return {
+              ok: true,
+              output: `Staged ${plan.modelId} for approval. Nothing runs until you approve it.`,
+              pendingApproval: { kind: 'media', tool: 'media_generate', id: pending.id },
+            };
+          }
           case 'list_dir': {
             const rel = typeof args.path === 'string' ? args.path : '.';
             const entries = await listFiles(root, rel);
@@ -427,10 +431,10 @@ async function resolveApproval(id: string, decision: 'approve' | 'reject', kind?
           ? `Rejected the write to ${item.relPath ?? 'the file'}. Nothing was changed.`
           : item.kind === 'delete'
             ? `Rejected deleting ${item.relPath ?? 'the file'}. Nothing was changed.`
+            : item.kind === 'media'
+            ? 'Rejected the local media generation. Nothing ran.'
             : item.kind === 'mcp'
-            ? item.mediaPlan
-              ? 'Rejected the local media generation. Nothing ran.'
-              : `Rejected MCP tool ${item.mcpTool ?? ''}. It did not run.`
+            ? `Rejected MCP tool ${item.mcpTool ?? ''}. It did not run.`
             : item.kind === 'mcp-server'
               ? 'Rejected starting the MCP server. It did not run.'
             : item.kind === 'studio'
@@ -469,7 +473,10 @@ async function resolveApproval(id: string, decision: 'approve' | 'reject', kind?
       throw error;
     }
   }
-  if (item.kind === 'mcp' && item.mediaPlan) {
+  if (item.kind === 'media') {
+    if (!item.mediaPlan) {
+      return { ok: false, decision, summary: 'The frozen media plan is missing. Nothing ran.' };
+    }
     try {
       const result = await runComfyPlan(comfyBaseUrl(), item.mediaPlan, path.join(app.getPath('userData'), 'media'));
       return {
