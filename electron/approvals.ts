@@ -1,4 +1,5 @@
 import * as crypto from 'node:crypto';
+import type { ComfyGenerationPlan } from './comfyClient';
 import type { McpServerIdentity } from './types';
 
 export type ApprovalKind = 'write' | 'command' | 'mcp' | 'mcp-server' | 'studio' | 'delete';
@@ -29,6 +30,8 @@ export interface PendingApproval {
   studioServices?: string[];
   /** The studio_id the Luau call targets, when the server asked for one. */
   studioId?: string;
+  /** The frozen ComfyUI plan for a media approval; kept in main only. */
+  mediaPlan?: ComfyGenerationPlan;
 }
 
 const MAX_PENDING = 30;
@@ -150,6 +153,30 @@ export class ApprovalQueue {
       mcpServer: input.server ? { ...input.server, args: [...input.server.args] } : undefined,
     };
     this.items.set(item.id, item);
+    return item;
+  }
+
+  /**
+   * Stage a local ComfyUI generation. The plan is frozen, including the full
+   * workflow; the renderer only sees the summary arguments.
+   */
+  stageMedia(input: { projectRoot: string; plan: ComfyGenerationPlan }): PendingApproval {
+    const item = this.stageMcp({
+      projectRoot: input.projectRoot,
+      tool: 'media_generate',
+      args: {
+        presetId: input.plan.presetId,
+        modelId: input.plan.modelId,
+        prompt: input.plan.prompt,
+        lyrics: input.plan.lyrics,
+        durationSeconds: input.plan.durationSeconds,
+        seed: input.plan.seed,
+        summary: input.plan.summary,
+      },
+      // Reserved identity so a real MCP tool named media_generate cannot be mistaken for this card.
+      server: { command: 'openro-media', args: [], session: 'openro' },
+    });
+    item.mediaPlan = structuredClone(input.plan);
     return item;
   }
 

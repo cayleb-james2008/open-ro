@@ -14,6 +14,7 @@ import { McpStdioClient } from './mcp';
 import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServer, serverLabel, stageMcpCall, stageMcpConnect } from './mcpTools';
 import { reportMediaHardware, type MediaHardwareProfile, type MediaReport } from './mediaCatalog';
 import {
+  buildComfyPlan,
   getComfyHealth,
   normalizeComfyBaseUrl,
   prepareComfyGeneration,
@@ -57,6 +58,7 @@ import type {
   ProviderConnection,
   StoredProviderView,
   ToolExecutor,
+  ToolSchema,
 } from './types';
 
 /**
@@ -289,15 +291,52 @@ async function writeStudioRecord(folder: 'studio-snapshots' | 'studio-checkpoint
   await fs.writeFile(path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}.json`), JSON.stringify(record, null, 2), 'utf8');
 }
 
+const MEDIA_TOOL_SCHEMA: ToolSchema = {
+  name: 'media_generate' as ToolSchema['name'],
+  description:
+    'Generate local audio from a reviewed ComfyUI plan. The exact preset, prompt, duration and seed are staged for approval; the app never downloads models and only talks to a loopback ComfyUI server.',
+  parameters: {
+    type: 'object',
+    properties: {
+      presetId: {
+        type: 'string',
+        enum: ['audio-ace-step-1.5-turbo', 'audio-ace-step-1.5-xl'],
+        description: 'The 2026 ACE-Step preset. Turbo is the CPU/low-VRAM option; XL needs a larger GPU.',
+      },
+      prompt: { type: 'string', description: 'Music style, instruments, mood and production tags.' },
+      lyrics: { type: 'string', description: 'Lyrics with section tags, or [Instrumental]. Optional.' },
+      durationSeconds: { type: 'number', description: 'Output length from 5 to 60 seconds. Defaults to 10.' },
+      seed: { type: 'integer', description: 'Optional integer seed from 0 to 2147483647.' },
+    },
+    required: ['presetId', 'prompt'],
+  },
+};
+
 function buildExecutor(root: string): ToolExecutor {
   return {
-    schemas: () => [...toolSchemas(), ...mcpToolSchemas(mcp.running ? mcp.listTools() : [])],
+    schemas: () => [...toolSchemas(), MEDIA_TOOL_SCHEMA, ...mcpToolSchemas(mcp.running ? mcp.listTools() : [])],
     async execute(call) {
       if (!root) {
         return { ok: false, output: 'No project folder selected.' };
       }
       const { name, args } = call;
       try {
+        if (String(name) === 'media_generate') {
+          // Stage only. Health is checked by the approve-time execution so the card can be reviewed offline.
+          const plan = buildComfyPlan({
+            presetId: typeof args.presetId === 'string' ? args.presetId : '',
+            prompt: typeof args.prompt === 'string' ? args.prompt : '',
+            lyrics: typeof args.lyrics === 'string' ? args.lyrics : undefined,
+            durationSeconds: typeof args.durationSeconds === 'number' ? args.durationSeconds : undefined,
+            seed: typeof args.seed === 'number' ? args.seed : undefined,
+          });
+          const pending = approvals.stageMedia({ projectRoot: root, plan });
+          return {
+            ok: true,
+            output: `Staged ${plan.modelId} for approval. Nothing runs until you approve it.`,
+            pendingApproval: { kind: 'mcp', tool: 'media_generate', id: pending.id },
+          };
+        }
         switch (name) {
           case 'list_dir': {
             const rel = typeof args.path === 'string' ? args.path : '.';
@@ -389,7 +428,9 @@ async function resolveApproval(id: string, decision: 'approve' | 'reject', kind?
           : item.kind === 'delete'
             ? `Rejected deleting ${item.relPath ?? 'the file'}. Nothing was changed.`
             : item.kind === 'mcp'
-            ? `Rejected MCP tool ${item.mcpTool ?? ''}. It did not run.`
+            ? item.mediaPlan
+              ? 'Rejected the local media generation. Nothing ran.'
+              : `Rejected MCP tool ${item.mcpTool ?? ''}. It did not run.`
             : item.kind === 'mcp-server'
               ? 'Rejected starting the MCP server. It did not run.'
             : item.kind === 'studio'
@@ -425,6 +466,20 @@ async function resolveApproval(id: string, decision: 'approve' | 'reject', kind?
       return { ok: true, decision, summary: `Wrote ${relPath}. A checkpoint of the previous contents was saved.` };
     } catch (error) {
       approvals.stageWrite({ projectRoot, relPath, content, previous: item.previous ?? '' });
+      throw error;
+    }
+  }
+  if (item.kind === 'mcp' && item.mediaPlan) {
+    try {
+      const result = await runComfyPlan(comfyBaseUrl(), item.mediaPlan, path.join(app.getPath('userData'), 'media'));
+      return {
+        ok: true,
+        decision,
+        summary: `Generated ${result.files.length} local media file(s) with ${result.promptId}.`,
+        output: result.files.map((file) => `${file.path} (${file.bytes} bytes, sha256 ${file.sha256})`).join('\n'),
+      };
+    } catch (error) {
+      approvals.stageMedia({ projectRoot: item.projectRoot, plan: item.mediaPlan });
       throw error;
     }
   }

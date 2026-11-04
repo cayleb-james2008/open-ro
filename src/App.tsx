@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import api, { type ProjectIndexSummary } from './api';
+import api, { type ComfyStatusView, type MediaPlanView, type MediaResultView, type ProjectIndexSummary } from './api';
 import { Dialog } from './Dialog';
 import { diffPreview } from './textDiff';
 import { draftAfterSend, dropMissing, followupText, nextFollowup, recordResolution, resultSession, showsResultIn, trackStaged, type FollowupBatch } from './approvalFollowup';
@@ -77,6 +77,17 @@ export default function App() {
   const [playtestHistory, setPlaytestHistory] = useState<PlaytestLedgerEntry[]>([]);
   const [playtestHistoryError, setPlaytestHistoryError] = useState<string | null>(null);
   const playtestHistoryRequest = useRef(0);
+  const [comfyStatus, setComfyStatus] = useState<ComfyStatusView | null>(null);
+  const [comfyError, setComfyError] = useState<string | null>(null);
+  const [mediaPresetId, setMediaPresetId] = useState('audio-ace-step-1.5-turbo');
+  const [mediaPrompt, setMediaPrompt] = useState('');
+  const [mediaLyrics, setMediaLyrics] = useState('[Instrumental]');
+  const [mediaDuration, setMediaDuration] = useState(5);
+  const [mediaSeed, setMediaSeed] = useState('');
+  const [mediaPlan, setMediaPlan] = useState<MediaPlanView | null>(null);
+  const [mediaResult, setMediaResult] = useState<MediaResultView | null>(null);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const [mediaBusy, setMediaBusy] = useState(false);
   const [capabilities, setCapabilities] = useState<Awaited<ReturnType<typeof api.detectCapabilities>>>([]);
   const [mcpState, setMcpState] = useState<{ running: boolean; tools: Awaited<ReturnType<typeof api.mcpStatus>>['tools'] }>({ running: false, tools: [] });
   const [mcpForm, setMcpForm] = useState({ command: '', args: '' });
@@ -84,6 +95,8 @@ export default function App() {
   const [providerModal, setProviderModal] = useState<ProviderForm>(resetForm());
   const [providerTest, setProviderTest] = useState<{ kind: ProviderKind; ok: boolean; detail: string } | null>(null);
   const [approvals, setApprovals] = useState<PendingApprovalView[]>([]);
+  const [resolvingApprovals, setResolvingApprovals] = useState<Set<string>>(new Set());
+  const resolvingApprovalsRef = useRef<Set<string>>(new Set());
   /** The last decision's result and the chat it belongs to (null when the user started the action). */
   const [lastResult, setLastResult] = useState<{ sessionId: string | null; result: ApprovalResult } | null>(null);
   const actionResult = lastResult && showsResultIn(lastResult.sessionId, activeSession) ? lastResult.result : null;
@@ -412,6 +425,76 @@ export default function App() {
     }
   }
 
+  useEffect(() => {
+    let cancelled = false;
+    void api.comfyStatus()
+      .then((status) => {
+        if (!cancelled) {
+          setComfyStatus(status);
+          setComfyError(status.ok ? null : status.error ?? 'ComfyUI is not reachable.');
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setComfyError(asMessage(error));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function loadComfyStatus() {
+    setComfyError(null);
+    try {
+      const status = await api.comfyStatus();
+      setComfyStatus(status);
+      if (!status.ok) {
+        setComfyError(status.error ?? 'ComfyUI is not reachable.');
+      }
+    } catch (error) {
+      setComfyError(asMessage(error));
+    }
+  }
+
+  async function prepareMediaPlan() {
+    setMediaBusy(true);
+    setMediaError(null);
+    setMediaResult(null);
+    setMediaPlan(null);
+    try {
+      const plan = await api.prepareMedia({
+        presetId: mediaPresetId,
+        prompt: mediaPrompt,
+        lyrics: mediaLyrics,
+        durationSeconds: mediaDuration,
+        ...(mediaSeed.trim() ? { seed: Number(mediaSeed) } : {}),
+      });
+      setMediaPlan(plan);
+    } catch (error) {
+      setMediaError(asMessage(error));
+    } finally {
+      setMediaBusy(false);
+    }
+  }
+
+  async function generateMediaPlan() {
+    if (!mediaPlan) {
+      return;
+    }
+    setMediaBusy(true);
+    setMediaError(null);
+    try {
+      setMediaResult(await api.generateMedia(mediaPlan.planId));
+      setMediaPlan(null);
+    } catch (error) {
+      setMediaPlan(null);
+      setMediaError(asMessage(error));
+    } finally {
+      setMediaBusy(false);
+    }
+  }
+
   function repairFromLedger(entry: PlaytestLedgerEntry) {
     const failure = entry.failingCheck ?? entry.reason;
     setDraft(`Repair the last failed playtest for "${entry.scenario}". Failing check: ${failure}. Inspect the relevant script, propose one focused change, and stage it for review. Do not claim the playtest passes until report_playtest returns PASSED.`);
@@ -500,6 +583,11 @@ export default function App() {
   }
 
   async function resolveApproval(id: string, decision: 'approve' | 'reject') {
+    if (resolvingApprovalsRef.current.has(id)) {
+      return;
+    }
+    resolvingApprovalsRef.current.add(id);
+    setResolvingApprovals(new Set(resolvingApprovalsRef.current));
     try {
       const owner = resultSession(followupsRef.current, id);
       const result = await api.resolveApproval({ id, decision });
@@ -519,6 +607,9 @@ export default function App() {
       if (live && !live.some((item) => item.id === id)) {
         settleFollowups(recordResolution(followupsRef.current, id, { ok: false, decision, summary: asMessage(error) }), live);
       }
+    } finally {
+      resolvingApprovalsRef.current.delete(id);
+      setResolvingApprovals(new Set(resolvingApprovalsRef.current));
     }
   }
 
@@ -677,6 +768,7 @@ export default function App() {
           const showsDiff = item.kind === 'write' || item.studioOp === 'write' || item.kind === 'delete';
           const { rows, hidden, invisibleChange } = showsDiff ? diffPreview(item.previous ?? '', item.content ?? '', expandedDiffs.has(item.id)) : { rows: [], hidden: 0, invisibleChange: false };
           const copy = approvalCopy(item);
+          const resolving = resolvingApprovals.has(item.id);
           return (
             <article className="approval-card" key={item.id}>
               <header>
@@ -697,8 +789,8 @@ export default function App() {
                 </button>
               )}
               <div className="modal-actions">
-                <button type="button" className="outline-btn" onClick={() => void resolveApproval(item.id, 'reject')}>Reject</button>
-                <button type="button" className="primary-btn" disabled={hidden > 0} title={hidden > 0 ? 'Show the whole diff first' : undefined} onClick={() => void resolveApproval(item.id, 'approve')}>{copy.approveLabel}</button>
+                <button type="button" className="outline-btn" disabled={resolving} onClick={() => void resolveApproval(item.id, 'reject')}>Reject</button>
+                <button type="button" className="primary-btn" disabled={hidden > 0 || resolving} title={hidden > 0 ? 'Show the whole diff first' : undefined} onClick={() => void resolveApproval(item.id, 'approve')}>{resolving ? 'Working…' : copy.approveLabel}</button>
               </div>
             </article>
           );
@@ -1107,6 +1199,74 @@ export default function App() {
                 </div>
               ))}
             </>
+          )}
+        </div>
+
+        <div className="section-title" style={{ marginTop: 28 }}>
+          <span>Local media</span>
+          <span>{comfyStatus?.ok ? `ComfyUI ${comfyStatus.system?.comfyVersion ?? ''} · ${comfyStatus.nodeCount} nodes` : 'ComfyUI offline'}</span>
+        </div>
+        <div className="integration-card">
+          <div className="form-stack">
+            <label>
+              Preset
+              <select value={mediaPresetId} onChange={(event) => setMediaPresetId(event.target.value)}>
+                <option value="audio-ace-step-1.5-turbo">ACE-Step 1.5 Turbo (CPU / low VRAM)</option>
+                <option value="audio-ace-step-1.5-xl">ACE-Step 1.5 XL (larger GPU)</option>
+              </select>
+            </label>
+            <label>
+              Prompt
+              <textarea
+                value={mediaPrompt}
+                placeholder="Warm lo-fi hip hop, vinyl crackle, mellow piano"
+                onChange={(event) => setMediaPrompt(event.target.value)}
+                rows={2}
+              />
+            </label>
+            <label>
+              Lyrics (optional)
+              <textarea value={mediaLyrics} onChange={(event) => setMediaLyrics(event.target.value)} rows={3} />
+            </label>
+            <label>
+              Duration (5-60 seconds)
+              <input
+                type="number"
+                min={5}
+                max={60}
+                value={mediaDuration}
+                onChange={(event) => setMediaDuration(Number(event.target.value))}
+              />
+            </label>
+            <label>
+              Seed (optional)
+              <input value={mediaSeed} placeholder="random" onChange={(event) => setMediaSeed(event.target.value)} />
+            </label>
+          </div>
+          <div className="modal-actions">
+            <button type="button" className="outline-btn" onClick={() => void loadComfyStatus()}>Refresh ComfyUI</button>
+            <button type="button" className="primary-btn" disabled={mediaBusy || !mediaPrompt.trim()} onClick={() => void prepareMediaPlan()}>
+              Prepare plan
+            </button>
+            {mediaPlan && (
+              <button type="button" className="primary-btn" disabled={mediaBusy} onClick={() => void generateMediaPlan()}>
+                Generate audio
+              </button>
+            )}
+          </div>
+          {comfyError && <p className="recent-empty">{comfyError}</p>}
+          {mediaError && <p className="recent-empty">{mediaError}</p>}
+          {mediaPlan && <p className="recent-empty">Frozen plan: “{mediaPlan.prompt}” · {mediaPlan.summary}</p>}
+          {mediaResult && (
+            <div>
+              <p className="recent-empty">Generated {mediaResult.files.length} file(s) via ComfyUI.</p>
+              {mediaResult.files.map((file) => (
+                <p className="recent-empty" key={file.path}>{file.path} · {file.bytes} bytes · sha256 {file.sha256.slice(0, 12)}…</p>
+              ))}
+            </div>
+          )}
+          {!comfyStatus?.ok && (
+            <p className="recent-empty">Start ComfyUI locally on http://127.0.0.1:8188 and refresh. Open-Ro never downloads models.</p>
           )}
         </div>
 

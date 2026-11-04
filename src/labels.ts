@@ -28,6 +28,27 @@ export function approvalCopy(item: PendingApprovalView): ApprovalCopy {
     case 'delete':
       return { title: `Review delete: ${item.relPath ?? ''}`, detail: 'The file is removed only if you approve. Its current contents are checkpointed first', preview: '', approveLabel: 'Delete file' };
     case 'mcp': {
+      if (item.mcpTool === 'media_generate' && item.mcpServer === 'openro-media') {
+        let plan: { presetId?: unknown; prompt?: unknown; durationSeconds?: unknown; seed?: unknown } = {};
+        try {
+          const parsed: unknown = JSON.parse(item.mcpArgs ?? '{}');
+          if (parsed && typeof parsed === 'object') {
+            plan = parsed as typeof plan;
+          }
+        } catch {
+          // A malformed plan still gets a safe card.
+        }
+        const preset = typeof plan.presetId === 'string' ? plan.presetId : 'ComfyUI audio';
+        const prompt = typeof plan.prompt === 'string' ? plan.prompt.slice(0, 400) : '';
+        const duration = typeof plan.durationSeconds === 'number' ? `${plan.durationSeconds}s` : 'audio';
+        const seed = typeof plan.seed === 'number' ? `, seed ${plan.seed}` : '';
+        return {
+          title: `Generate local audio: ${preset}`,
+          detail: `${duration}${seed} · runs on your loopback ComfyUI server only if you approve; nothing is downloaded`,
+          preview: prompt,
+          approveLabel: 'Generate audio',
+        };
+      }
       let preview = item.mcpArgs ?? '{}';
       try {
         preview = JSON.stringify(JSON.parse(preview), null, 2);
