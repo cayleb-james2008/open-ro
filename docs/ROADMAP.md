@@ -88,7 +88,7 @@ Not established: a dependency-resolved build, native installers, live Studio int
 
 **Goal:** Make visual and 3D assets optional but first-class.
 
-- [ ] Provider adapters for image/icon/thumbnail generation. (2026-only local catalog, hardware tiers and a ComfyUI bridge exist for audio; image presets, UI and agent tool pending.)
+- [ ] Provider adapters for image/icon/thumbnail generation. (FLUX.2 klein 4B has a distilled ComfyUI workflow, Workspace option and 13GB+ CUDA/ROCm gate; no live image has run on this CPU. Video/3D and icon/thumbnail adapters pending.)
 - [ ] Cost and terms preview before paid generation.
 - [ ] Asset review, versioning and replace/approve flow.
 - [ ] Blender install/version detection and project isolation.
