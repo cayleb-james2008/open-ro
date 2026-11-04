@@ -20,7 +20,7 @@ describe('playtest history panel', () => {
     expect(effect).not.toContain('sendDraft(');
 
     const loadStart = app.indexOf('async function loadPlaytestHistory(root: string | null = projectRoot)');
-    const load = app.slice(loadStart, app.indexOf('function repairFromLedger', loadStart));
+    const load = app.slice(loadStart, app.indexOf('useEffect(() => {', loadStart));
     expect(load).toContain('const request = ++playtestHistoryRequest.current;');
     expect(load).toContain('if (!root) {\n      setPlaytestHistory([]);\n      setPlaytestHistoryError(null);');
     expect(load.match(/request === playtestHistoryRequest\.current/g)).toHaveLength(2);
@@ -31,8 +31,8 @@ describe('playtest history panel', () => {
     const refreshStart = app.indexOf('async function refreshWorkspaceState');
     const refresh = app.slice(refreshStart, app.indexOf('async function toggleDir', refreshStart));
     expect(refresh).toContain('const root = await api.projectRoot();');
-    expect(refresh).toContain('await loadPlaytestHistory(root);');
-    expect(refresh.indexOf('const root = await api.projectRoot();')).toBeLessThan(refresh.indexOf('await loadPlaytestHistory(root);'));
+    expect(refresh).toContain('await Promise.all([loadPlaytestHistory(root), loadRepairPlan(root)]);');
+    expect(refresh.indexOf('const root = await api.projectRoot();')).toBeLessThan(refresh.indexOf('await Promise.all([loadPlaytestHistory(root), loadRepairPlan(root)]);'));
   });
 
   it('renders a bounded history with verdict details and always-available refresh', () => {
@@ -46,7 +46,7 @@ describe('playtest history panel', () => {
     const refreshAt = app.indexOf('Refresh history', panelStart);
     expect(refreshAt).toBeGreaterThan(-1);
     expect(refreshAt).toBeLessThan(listStart);
-    expect(app.slice(refreshAt - 120, refreshAt)).toContain('onClick={() => void loadPlaytestHistory()}');
+    expect(app.slice(refreshAt - 120, refreshAt)).toContain('onClick={() => void refreshPlaytestPanels()}');
     expect(panel).toContain('playtestHistory.slice(0, 10)');
     expect(panel).toContain('{entry.status} · {entry.scenario}');
     expect(panel).toContain("{entry.screenshots} screenshot(s) · {new Date(entry.createdAt).toLocaleString()} · {entry.file}");
@@ -66,10 +66,39 @@ describe('playtest history panel', () => {
     expect(app.match(/repairFromLedger/g)).toHaveLength(2);
     expect(app).toContain('`Repair the last failed playtest for "${entry.scenario}". Failing check: ${failure}.');
     expect(app).toContain('Do not claim the playtest passes until report_playtest returns PASSED.');
-    expect(app.match(/sendDraft\(/g)).toHaveLength(4);
+    expect(app.match(/sendDraft\(/g)).toHaveLength(5);
     expect(app).toContain('void sendDraft(followupText(next));');
     const repair = app.slice(app.indexOf('function repairFromLedger'), app.indexOf('async function refreshWorkspaceState'));
     expect(repair).not.toContain('sendDraft(');
+  });
+
+  it('loads the open repair plan and executes it with one click', () => {
+    expect(app).toContain('api.playtestRepairPlan()');
+    expect(app).toContain('setRepairPlan');
+    expect(app).toMatch(/void api\.playtestRepairPlan\(\)[\s\S]{0,500}\}, \[projectRoot\]\);/);
+    expect(app).toContain('<span>Open repair</span>');
+    expect(app).toContain('Run repair');
+    expect(app).toContain('repairPlan.scenario');
+    expect(app).toContain('repairPlan.attempt');
+    expect(app).toContain('repairPlan.failingCheck');
+    expect(app).toContain('repairPlan.reason');
+    expect(app).toContain('disabled={sending} onClick={() => void runRepair(repairPlan)}');
+    const planEffectStart = app.indexOf('const request = ++repairPlanRequest.current;');
+    const planEffect = app.slice(planEffectStart, planEffectStart + 900);
+    expect(planEffect).toContain('void api.playtestRepairPlan()');
+    expect(planEffect).toContain('if (!cancelled && request === repairPlanRequest.current)');
+    const run = app.slice(app.indexOf('async function runRepair'), app.indexOf('async function refreshWorkspaceState'));
+    expect(run).toContain('await sendDraft(plan.instruction, { newSession: true, projectRoot })');
+    expect(run).toContain("setScreen('chat')");
+    expect(run).toContain('await loadRepairPlan()');
+    expect(run).not.toContain('resolveApproval');
+    expect(run).not.toContain("'approve'");
+    const send = app.slice(app.indexOf('async function sendDraft'), app.indexOf('async function stopTurn'));
+    expect(send).toContain('void loadRepairPlan();');
+    expect(send).toContain('void loadPlaytestHistory();');
+    const panels = app.slice(app.indexOf('async function refreshPlaytestPanels'), app.indexOf('async function runRepair'));
+    expect(panels).toContain('loadPlaytestHistory()');
+    expect(panels).toContain('loadRepairPlan()');
   });
 
   it('uses the failing check first and falls back to the reason', () => {

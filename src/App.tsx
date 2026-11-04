@@ -7,7 +7,7 @@ import { approvalCopy, providerInitials } from './labels';
 import { isSessionVisibleForProject, normalizeProjectPath, resolveActiveSessionId } from './sessionScope';
 import { providerOptions, type ProviderKind, type ProviderOption } from '../electron/providerCatalog';
 import type { SessionSnapshot, StoredChatSession } from '../electron/sessions';
-import type { PlaytestLedgerEntry } from '../electron/playtestLedger';
+import type { PlaytestLedgerEntry, PlaytestRepairPlan } from '../electron/playtestLedger';
 import type { AgentTurnResult, ApprovalResult, ChatMessage, FileEntry, PendingApprovalView, StoredProviderView } from '../electron/types';
 
 type Screen = 'chat' | 'models' | 'workspace' | 'integrations';
@@ -77,6 +77,9 @@ export default function App() {
   const [playtestHistory, setPlaytestHistory] = useState<PlaytestLedgerEntry[]>([]);
   const [playtestHistoryError, setPlaytestHistoryError] = useState<string | null>(null);
   const playtestHistoryRequest = useRef(0);
+  const [repairPlan, setRepairPlan] = useState<PlaytestRepairPlan | null>(null);
+  const [repairPlanError, setRepairPlanError] = useState<string | null>(null);
+  const repairPlanRequest = useRef(0);
   const [comfyStatus, setComfyStatus] = useState<ComfyStatusView | null>(null);
   const [comfyError, setComfyError] = useState<string | null>(null);
   const [mediaPresetId, setMediaPresetId] = useState('audio-ace-step-1.5-turbo');
@@ -258,16 +261,17 @@ export default function App() {
     setScreen('chat');
   }
 
-  async function sendDraft(textOverride?: string) {
+  async function sendDraft(textOverride?: string, options: { projectRoot?: string | null; newSession?: boolean } = {}) {
     const text = (textOverride ?? draft).trim();
     if (!text || sending) {
       return;
     }
     const prior = sessionsRef.current;
-    let sessionId = activeSession;
+    let sessionId = options.newSession ? null : activeSession;
     let historySource: ChatSession['messages'];
     if (!sessionId) {
-      const fresh: ChatSession = { id: `chat-${Date.now()}`, title: text.slice(0, 40) || 'New chat', updatedAt: new Date().toISOString(), messages: [{ role: 'user', content: text }], ...(projectRoot ? { projectRoot } : {}) };
+      const sessionRoot = options.projectRoot ?? projectRoot;
+      const fresh: ChatSession = { id: `chat-${Date.now()}`, title: text.slice(0, 40) || 'New chat', updatedAt: new Date().toISOString(), messages: [{ role: 'user', content: text }], ...(sessionRoot ? { projectRoot: sessionRoot } : {}) };
       sessionId = fresh.id;
       historySource = fresh.messages;
       setSessions((prev) => [fresh, ...prev]);
@@ -302,6 +306,8 @@ export default function App() {
         setApprovals(await api.approvals());
         await refreshWorkspaceState();
       }
+      void loadRepairPlan();
+      void loadPlaytestHistory();
       setSessions((prev) =>
         prev.map((session) =>
           session.id === sessionId
@@ -431,6 +437,67 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    const request = ++repairPlanRequest.current;
+    setRepairPlan(null);
+    setRepairPlanError(null);
+    if (!projectRoot) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    void api.playtestRepairPlan()
+      .then((plan) => {
+        if (!cancelled && request === repairPlanRequest.current) {
+          setRepairPlan(plan);
+        }
+      })
+      .catch(() => {
+        if (!cancelled && request === repairPlanRequest.current) {
+          setRepairPlan(null);
+          setRepairPlanError('Could not load the open repair plan.');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectRoot]);
+
+  async function loadRepairPlan(root: string | null = projectRoot) {
+    const request = ++repairPlanRequest.current;
+    if (!root) {
+      setRepairPlan(null);
+      setRepairPlanError(null);
+      return;
+    }
+    try {
+      const plan = await api.playtestRepairPlan();
+      if (request === repairPlanRequest.current) {
+        setRepairPlan(plan);
+        setRepairPlanError(null);
+      }
+    } catch {
+      if (request === repairPlanRequest.current) {
+        setRepairPlan(null);
+        setRepairPlanError('Could not load the open repair plan.');
+      }
+    }
+  }
+
+  async function refreshPlaytestPanels() {
+    await Promise.all([loadPlaytestHistory(), loadRepairPlan()]);
+  }
+
+  async function runRepair(plan: PlaytestRepairPlan) {
+    if (sending) {
+      return;
+    }
+    setScreen('chat');
+    await sendDraft(plan.instruction, { newSession: true, projectRoot });
+    await loadRepairPlan();
+  }
+
+  useEffect(() => {
+    let cancelled = false;
     void api.comfyStatus()
       .then((status) => {
         if (!cancelled) {
@@ -514,7 +581,7 @@ export default function App() {
     try {
       const root = await api.projectRoot();
       setProjectRoot(root);
-      await loadPlaytestHistory(root);
+      await Promise.all([loadPlaytestHistory(root), loadRepairPlan(root)]);
       setCheckpoints(await api.checkpoints());
       setStudioCheckpoints(await api.studioCheckpoints());
       if (root) {
@@ -1173,11 +1240,31 @@ export default function App() {
           )}
         </div>
 
+        {repairPlan && (
+          <>
+            <div className="section-title" style={{ marginTop: 28 }}>
+              <span>Open repair</span>
+              <span>attempt {repairPlan.attempt}</span>
+            </div>
+            <div className="integration-card">
+              <div className="integration-top">
+                <span className="integration-copy">
+                  <b>{repairPlan.scenario}</b>
+                  <small>{repairPlan.failingCheck}</small>
+                </span>
+                <button type="button" className="outline-btn" disabled={sending} onClick={() => void runRepair(repairPlan)}>Run repair</button>
+              </div>
+              <p className="recent-empty">{repairPlan.reason}</p>
+            </div>
+          </>
+        )}
+        {repairPlanError && <p className="recent-empty">{repairPlanError}</p>}
+
         <div className="section-title" style={{ marginTop: 28 }}>
           <span>Playtest history</span>
           <span>{playtestHistory.length === 0 ? 'no recorded runs' : `${playtestHistory.length} recorded run(s)`}</span>
         </div>
-        <button type="button" className="text-btn" style={{ marginTop: 8 }} onClick={() => void loadPlaytestHistory()}>Refresh history</button>
+        <button type="button" className="text-btn" style={{ marginTop: 8 }} onClick={() => void refreshPlaytestPanels()}>Refresh history</button>
         <div className="integration-list">
           {playtestHistoryError ? (
             <div className="empty-state">
