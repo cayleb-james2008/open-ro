@@ -115,18 +115,31 @@ export class McpStdioClient {
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<string> {
+    const result = await this.callToolResult(name, args);
+    if (result.isError) {
+      throw new Error(result.text || `MCP tool ${name} reported an error.`);
+    }
+    return result.text;
+  }
+
+  /** Full tool result: text plus any base64 image blocks (for example screen_capture). */
+  async callToolResult(name: string, args: Record<string, unknown>): Promise<{ text: string; images: Array<{ mimeType: string; data: string }>; isError: boolean }> {
     const result = (await this.request('tools/call', { name, arguments: args ?? {} })) as {
-      content?: Array<{ type: string; text?: string }>;
+      content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
       isError?: boolean;
     };
-    const text = (result?.content ?? [])
+    const content = result?.content ?? [];
+    const text = content
       .filter((entry) => entry.type === 'text' && typeof entry.text === 'string')
-      .map((entry) => entry.text)
+      .map((entry) => entry.text as string)
       .join('\n');
-    if (result?.isError) {
-      throw new Error(text || `MCP tool ${name} reported an error.`);
-    }
-    return text;
+    const images = content
+      .filter((entry) => entry.type === 'image' && typeof entry.data === 'string')
+      .map((entry) => ({
+        mimeType: typeof entry.mimeType === 'string' && entry.mimeType ? entry.mimeType : 'image/png',
+        data: entry.data as string,
+      }));
+    return { text, images, isError: result?.isError === true };
   }
 
   private onData(chunk: string): void {

@@ -26,6 +26,32 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', (l
 });
 `;
 
+// Returns text and image content blocks; `fail: true` returns an isError result.
+const imageServer = `
+const send = (msg) => process.stdout.write(JSON.stringify(msg) + '\\n');
+require('node:readline').createInterface({ input: process.stdin }).on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: msg.params.protocolVersion, capabilities: {}, serverInfo: { name: 'img', version: '1' } } });
+    return;
+  }
+  if (msg.method === 'tools/list') {
+    send({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'screen_capture', description: 'capture', inputSchema: { type: 'object', properties: {} } }] } });
+    return;
+  }
+  if (msg.method === 'tools/call') {
+    if (msg.params.arguments && msg.params.arguments.fail) {
+      send({ jsonrpc: '2.0', id: msg.id, result: { isError: true, content: [{ type: 'text', text: 'capture failed' }] } });
+      return;
+    }
+    send({
+      jsonrpc: '2.0', id: msg.id,
+      result: { content: [ { type: 'text', text: 'captured' }, { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' }, { type: 'image', data: 'd29ybGQ=' } ] },
+    });
+  }
+});
+`;
+
 describe('mcp client lifecycle', () => {
   let dir = '';
   const clients: McpStdioClient[] = [];
@@ -34,6 +60,7 @@ describe('mcp client lifecycle', () => {
     dir = await mkdtemp(path.join(tmpdir(), 'openro-mcp-life-'));
     await writeFile(path.join(dir, 'silent.cjs'), silentServer, 'utf8');
     await writeFile(path.join(dir, 'ask.cjs'), askingServer, 'utf8');
+    await writeFile(path.join(dir, 'image.cjs'), imageServer, 'utf8');
   });
 
   afterEach(async () => {
@@ -70,5 +97,23 @@ describe('mcp client lifecycle', () => {
       { jsonrpc: '2.0', id: 'srv-ping', result: {} },
       { jsonrpc: '2.0', id: 7, error: { code: -32601, message: 'Method not supported by Open-Ro: roots/list' } },
     ]);
+  });
+
+  it('returns text and base64 images from callToolResult while callTool stays text-only', async () => {
+    const client = new McpStdioClient();
+    clients.push(client);
+    await client.start({ command: process.execPath, args: [path.join(dir, 'image.cjs')] });
+    const result = await client.callToolResult('screen_capture', {});
+    expect(result).toEqual({
+      text: 'captured',
+      isError: false,
+      images: [
+        { mimeType: 'image/png', data: 'aGVsbG8=' },
+        { mimeType: 'image/png', data: 'd29ybGQ=' },
+      ],
+    });
+    expect(await client.callTool('screen_capture', {})).toBe('captured');
+    expect(await client.callToolResult('screen_capture', { fail: true })).toMatchObject({ isError: true, text: 'capture failed' });
+    await expect(client.callTool('screen_capture', { fail: true })).rejects.toThrow('capture failed');
   });
 });
