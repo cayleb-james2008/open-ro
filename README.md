@@ -126,10 +126,11 @@ Windows and Linux are equal first-class targets for the Open-Ro desktop client. 
 | Skills and asset library | Not implemented | Local skills the model actually receives, and optional downloads with a checksum and license |
 | Published-game upkeep | Not implemented | Recommendations that quote an official metric, and a separate approval before publishing |
 | Images / thumbnails | Not implemented | An optional provider and local review before any upload |
+| Local media (ComfyUI) | 2026-only catalog and hardware tiers; loopback ComfyUI health, frozen plan, submit/poll and `userData/media` sink for two ACE-Step audio presets. A live 5s CPU clip produced a 124,348-byte MP3; no media UI or agent tool yet, and the production sink is not live-exercised | Reviewed local audio/image/video/3D generation with license and provenance |
 | Windows packaging | NSIS installer builds locally and in CI (`Open-Ro Studio Setup 0.1.0.exe`); install/uninstall and code signing not yet recorded | Install and uninstall recorded on a real machine |
 | Omarchy packaging | AppImage, deb, and pacman packages build in CI; install/uninstall not yet recorded | Install and uninstall recorded on a real machine |
 
-Open-Ro has been run against a live Studio session (tree/script reads, a reviewed script write with exact read-back, playtest start/stop, console output, keyboard/mouse input, and a reviewed viewport capture that backed a PASSED playtest report). It does not yet auto-run repairs (a failed playtest returns a tracked repair plan), and it does not drive Blender, download asset packs, or watch a published experience. Those are goals, not current behavior.
+Open-Ro has been run against a live Studio session (tree/script reads, a reviewed script write with exact read-back, playtest start/stop, console output, keyboard/mouse input, and a reviewed viewport capture that backed a PASSED playtest report). It does not yet auto-run repairs (a failed playtest returns a tracked repair plan), expose media generation in the UI or agent, drive Blender, download asset packs, or watch a published experience. Those are goals, not current behavior.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for milestones and acceptance criteria, and [`docs/BUILD-STATUS.md`](docs/BUILD-STATUS.md) for the exact verification boundary.
 
