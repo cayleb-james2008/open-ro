@@ -215,10 +215,8 @@ except PermissionError:
 
     it('Node.js runBlenderTask: fails closed when scriptPath or outputDir are omitted', async () => {
       const runner = new BlenderRunner();
-      // @ts-expect-error test invalid invocation
-      await expect(runner.runBlenderTask({})).rejects.toThrow('scriptPath must be specified');
-      // @ts-expect-error test invalid invocation
-      await expect(runner.runBlenderTask({ scriptPath: 'test.py' })).rejects.toThrow('outputDir must be specified');
+      await expect(runner.runBlenderTask({} as any)).rejects.toThrow('scriptPath must be specified');
+      await expect(runner.runBlenderTask({ scriptPath: 'test.py' } as any)).rejects.toThrow('outputDir must be specified');
     });
 
     it('Node.js runPipelineTask: verifies output containment and relative path resolution', async () => {

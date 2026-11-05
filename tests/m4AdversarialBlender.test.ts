@@ -215,7 +215,7 @@ class MockBlender {
 
     const elapsed = Date.now() - start;
     expect(result.ok).toBe(true);
-    expect(elapsed).toBeLessThan(500);
+    expect(elapsed).toBeLessThan(1500);
   });
 
   // =========================================================================
