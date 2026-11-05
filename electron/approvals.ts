@@ -1,4 +1,5 @@
 import * as crypto from 'node:crypto';
+import { logAuditEvent } from './auditLog';
 import type { ComfyGenerationPlan } from './comfyClient';
 import type { McpServerIdentity } from './types';
 
@@ -84,6 +85,7 @@ export class ApprovalQueue {
       previous: input.previous,
     };
     this.items.set(item.id, item);
+    this.logStaged(item);
     return item;
   }
 
@@ -104,6 +106,7 @@ export class ApprovalQueue {
       previous: input.previous,
     };
     this.items.set(item.id, item);
+    this.logStaged(item);
     return item;
   }
 
@@ -127,6 +130,7 @@ export class ApprovalQueue {
       cwd: input.cwd,
     };
     this.items.set(item.id, item);
+    this.logStaged(item);
     return item;
   }
 
@@ -145,6 +149,7 @@ export class ApprovalQueue {
       mcpServerId: input.mcpServerId?.trim() || undefined,
     };
     this.items.set(item.id, item);
+    this.logStaged(item);
     return item;
   }
 
@@ -170,6 +175,7 @@ export class ApprovalQueue {
       mcpServer: input.server ? { ...input.server, args: [...input.server.args] } : undefined,
     };
     this.items.set(item.id, item);
+    this.logStaged(item);
     return item;
   }
 
@@ -197,6 +203,7 @@ export class ApprovalQueue {
       mediaSeed: plan.seed,
     };
     this.items.set(item.id, item);
+    this.logStaged(item);
     return item;
   }
 
@@ -297,7 +304,25 @@ export class ApprovalQueue {
       blenderParams: params,
     };
     this.items.set(item.id, item);
+    this.logStaged(item);
     return item;
+  }
+
+  private logStaged(item: PendingApproval): void {
+    logAuditEvent({
+      category: 'APPROVAL_STAGED',
+      actor: 'agent',
+      details: {
+        id: item.id,
+        kind: item.kind,
+        projectRoot: item.projectRoot,
+        relPath: item.relPath,
+        command: item.command,
+        mcpTool: item.mcpTool,
+        mcpServerId: item.mcpServerId,
+        studioOp: item.studioOp,
+      },
+    });
   }
 
   list(): PendingApproval[] {
@@ -319,6 +344,35 @@ export class ApprovalQueue {
       throw new Error(`That approval is a ${item.kind} approval, not a ${kind} one. It is still pending.`);
     }
     this.items.delete(id);
+    logAuditEvent({
+      category: 'APPROVAL_GRANTED',
+      actor: 'user',
+      details: {
+        id: item.id,
+        kind: item.kind,
+        projectRoot: item.projectRoot,
+      },
+    });
+    return item;
+  }
+
+  /** Reject and remove a pending approval. */
+  reject(id: string): PendingApproval {
+    this.prune();
+    const item = this.items.get(id);
+    if (!item) {
+      throw new Error('That approval is no longer pending.');
+    }
+    this.items.delete(id);
+    logAuditEvent({
+      category: 'APPROVAL_REJECTED',
+      actor: 'user',
+      details: {
+        id: item.id,
+        kind: item.kind,
+        projectRoot: item.projectRoot,
+      },
+    });
     return item;
   }
 
@@ -331,6 +385,15 @@ export class ApprovalQueue {
     for (const [id, item] of this.items) {
       if (item.expiresAt <= now) {
         this.items.delete(id);
+        logAuditEvent({
+          category: 'APPROVAL_EXPIRED',
+          actor: 'system',
+          details: {
+            id: item.id,
+            kind: item.kind,
+            projectRoot: item.projectRoot,
+          },
+        });
       }
     }
   }

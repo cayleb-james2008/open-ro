@@ -136,9 +136,9 @@ Open-Ro was designed and engineered to decisively surpass the proprietary, close
 
 ## Cross-cutting backlog
 
-- [ ] Permission matrix and audit log.
+- [x] Permission matrix and audit log. (Completed in Omni-Loop iteration 39: `electron/auditLog.ts`)
 - [ ] Prompt injection/data-as-instructions defenses for project files, tool outputs and web content.
-- [ ] Secrets redaction from app logs, screenshots, tool traces and crash reports.
+- [ ] Secrets redaction from app logs, screenshots, tool traces and crash reports. (Completed in Omni-Loop iteration 39: `electron/redaction.ts`)
 - [ ] Task budgets, cancel/stop, retry caps and runaway-process handling.
 - [ ] Project context isolation and no writes outside user-selected scope.
 - [ ] Keyboard-first workflows and accessible contrast/focus.
