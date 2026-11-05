@@ -140,7 +140,7 @@ Open-Ro was designed and engineered to decisively surpass the proprietary, close
 - [x] Prompt injection/data-as-instructions defenses for project files, tool outputs and web content. (Completed in Omni-Loop iteration 40: `electron/promptSafety.ts`)
 - [x] Secrets redaction from app logs, screenshots, tool traces and crash reports. (Completed in Omni-Loop iteration 39: `electron/redaction.ts`)
 - [x] Task budgets, cancel/stop, retry caps and runaway-process handling. (Completed in Omni-Loop iteration 41: `electron/taskBudget.ts`)
-- [ ] Project context isolation and no writes outside user-selected scope.
+- [x] Project context isolation and no writes outside user-selected scope. (Completed in Omni-Loop iteration 42: `electron/pathSafety.ts`)
 - [ ] Keyboard-first workflows and accessible contrast/focus.
 - [ ] User-facing cost disclosure and external data-flow disclosure.
 - [ ] Documentation and integration version drift checks.

@@ -31,7 +31,7 @@ import {
 import { gradePlaytest, parsePlaytestReport, resolvePlaytestScreenshot } from './playtestEvidence';
 import { deriveRepairPlan, summarizePlaytestLedger, type PlaytestLedgerEntry, type PlaytestLedgerRecord, type PlaytestRepairPlan } from './playtestLedger';
 import { runApprovedStudio, stageStudioRestore, stageStudioTool, StudioReads, type StudioCheckpoint } from './studioTools';
-import { isIgnoredName, isSecretName, resolveWithinRoot, sameProjectRoot } from './pathSafety';
+import { isIgnoredName, isSecretName, resolveWithinRoot, sameProjectRoot, ProjectScope } from './pathSafety';
 import { indexProject, buildProjectContext, type ProjectIndex } from './projectIndex';
 import { getProviderOption, isProviderKind, providerOptions, type ProviderKind } from './providerCatalog';
 import {
@@ -398,13 +398,24 @@ function buildExecutor(root: string): ToolExecutor {
             return { ok: true, output: entries.map((entry) => `${entry.type === 'dir' ? '[d]' : '[f]'} ${entry.path}`).join('\n') || '(empty directory)' };
           }
           case 'read_file': {
-            const text = await fs.readFile(await resolveWithinRoot(root, String(args.path ?? '')), 'utf8');
+            const rel = String(args.path ?? '');
+            const scope = new ProjectScope({ root });
+            const check = scope.validateRead(rel);
+            if (!check.ok) {
+              return { ok: false, output: `Read rejected: ${check.reason}` };
+            }
+            const text = await fs.readFile(await scope.resolve(rel), 'utf8');
             return { ok: true, output: text.slice(0, 40_000) };
           }
           case 'write_file': {
             const rel = String(args.path ?? '');
             const content = String(args.content ?? '');
-            const target = await resolveWithinRoot(root, rel);
+            const scope = new ProjectScope({ root });
+            const check = scope.validateWrite(rel);
+            if (!check.ok) {
+              return { ok: false, output: `Write rejected: ${check.reason}` };
+            }
+            const target = await scope.resolve(rel);
             const previous = (await readTextIfExists(target)) ?? '';
             const pending = approvals.stageWrite({ projectRoot: root, relPath: rel, content, previous });
             return {

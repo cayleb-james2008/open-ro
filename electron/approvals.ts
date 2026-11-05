@@ -1,4 +1,5 @@
 import * as crypto from 'node:crypto';
+import { sameProjectRoot } from './pathSafety';
 import { logAuditEvent } from './auditLog';
 import type { ComfyGenerationPlan } from './comfyClient';
 import type { McpServerIdentity } from './types';
@@ -334,7 +335,7 @@ export class ApprovalQueue {
    * Remove and return a still-valid approval. A second call throws. With `kind`,
    * an approval of any other kind is refused and left pending.
    */
-  take(id: string, kind?: ApprovalKind): PendingApproval {
+  take(id: string, kind?: ApprovalKind, expectedRoot?: string): PendingApproval {
     this.prune();
     const item = this.items.get(id);
     if (!item) {
@@ -342,6 +343,9 @@ export class ApprovalQueue {
     }
     if (kind && item.kind !== kind) {
       throw new Error(`That approval is a ${item.kind} approval, not a ${kind} one. It is still pending.`);
+    }
+    if (expectedRoot && item.projectRoot && !sameProjectRoot(item.projectRoot, expectedRoot)) {
+      throw new Error(`That approval was staged for "${item.projectRoot}", which does not match active project "${expectedRoot}".`);
     }
     this.items.delete(id);
     logAuditEvent({
@@ -357,11 +361,14 @@ export class ApprovalQueue {
   }
 
   /** Reject and remove a pending approval. */
-  reject(id: string): PendingApproval {
+  reject(id: string, expectedRoot?: string): PendingApproval {
     this.prune();
     const item = this.items.get(id);
     if (!item) {
       throw new Error('That approval is no longer pending.');
+    }
+    if (expectedRoot && item.projectRoot && !sameProjectRoot(item.projectRoot, expectedRoot)) {
+      throw new Error(`That approval was staged for "${item.projectRoot}", which does not match active project "${expectedRoot}".`);
     }
     this.items.delete(id);
     logAuditEvent({

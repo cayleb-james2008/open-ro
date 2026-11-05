@@ -5,6 +5,11 @@ import * as path from 'node:path';
 export const IGNORED_SEGMENTS = new Set(['.git', 'node_modules', 'dist', 'dist-electron', 'release', 'coverage']);
 
 const SECRET_SEGMENT = /^(?:\.env(?:\..*)?|.*\.(?:pem|key|p12|pfx)|id_rsa|id_ed25519|credentials\.json)$/i;
+const WINDOWS_RESERVED_DEVICE = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i;
+
+export function isReservedDeviceName(name: string): boolean {
+  return process.platform === 'win32' && WINDOWS_RESERVED_DEVICE.test(name);
+}
 
 export function isIgnoredName(name: string): boolean {
   return IGNORED_SEGMENTS.has(name);
@@ -31,8 +36,22 @@ export function isInsideRoot(root: string, target: string): boolean {
 }
 
 export function assertProjectRelative(rel: string): void {
+  if (rel.includes('\0')) {
+    throw new Error('Path contains invalid null byte.');
+  }
   const parts = (rel || '.').split(/[/\\]+/).filter((part) => part.length > 0 && part !== '.');
   for (const part of parts) {
+    if (part.includes('\0')) {
+      throw new Error('Path contains invalid null byte.');
+    }
+    if (process.platform === 'win32') {
+      if (part.includes(':')) {
+        throw new Error('Path contains reserved character (:).');
+      }
+      if (WINDOWS_RESERVED_DEVICE.test(part)) {
+        throw new Error(`Path uses a reserved device name (${part}).`);
+      }
+    }
     if (part === '..') {
       throw new Error('Path escapes the selected project root.');
     }
@@ -94,4 +113,95 @@ export async function resolveWithinRoot(root: string, rel: string): Promise<stri
     return existing;
   }
   return path.join(existing, ...missing.reverse());
+}
+
+
+export interface ProjectScopeConfig {
+  root: string;
+  readOnly?: boolean;
+  allowedWritePrefixes?: string[];
+  deniedWritePrefixes?: string[];
+}
+
+/**
+ * Encapsulates the user-selected project scope boundary.
+ * Enforces read-only locks, allowed subpaths, and restricted write areas.
+ */
+export class ProjectScope {
+  private readonly root: string;
+  private readonly readOnly: boolean;
+  private readonly allowedWritePrefixes: string[];
+  private readonly deniedWritePrefixes: string[];
+
+  constructor(config: ProjectScopeConfig) {
+    if (!config.root || !config.root.trim()) {
+      throw new Error('Project scope requires a non-empty root path.');
+    }
+    this.root = path.resolve(config.root);
+    this.readOnly = config.readOnly ?? false;
+    this.allowedWritePrefixes = (config.allowedWritePrefixes ?? []).map((p) => p.replace(/^[/\\]+|[/\\]+$/g, ''));
+    this.deniedWritePrefixes = (config.deniedWritePrefixes ?? []).map((p) => p.replace(/^[/\\]+|[/\\]+$/g, ''));
+  }
+
+  public getRoot(): string {
+    return this.root;
+  }
+
+  public isReadOnly(): boolean {
+    return this.readOnly;
+  }
+
+  /**
+   * Validate whether a relative path is allowed to be written within this scope.
+   */
+  public validateWrite(rel: string): { ok: boolean; reason?: string } {
+    if (this.readOnly) {
+      return { ok: false, reason: 'Project context is in read-only mode; file writes are forbidden.' };
+    }
+    try {
+      assertProjectRelative(rel);
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+    const normalized = rel.replace(/^[/\\]+/, '').replace(/\\/g, '/');
+
+    for (const denied of this.deniedWritePrefixes) {
+      if (denied && (normalized === denied || normalized.startsWith(`${denied}/`))) {
+        return { ok: false, reason: `Writes to restricted prefix '${denied}' are forbidden.` };
+      }
+    }
+
+    if (this.allowedWritePrefixes.length > 0) {
+      const allowed = this.allowedWritePrefixes.some(
+        (prefix) => prefix === '' || normalized === prefix || normalized.startsWith(`${prefix}/`),
+      );
+      if (!allowed) {
+        return {
+          ok: false,
+          reason: `Path '${rel}' is outside the user-selected write scope [${this.allowedWritePrefixes.join(', ')}].`,
+        };
+      }
+    }
+
+    return { ok: true };
+  }
+
+  /**
+   * Validate whether a relative path is allowed to be read within this scope.
+   */
+  public validateRead(rel: string): { ok: boolean; reason?: string } {
+    try {
+      assertProjectRelative(rel);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /**
+   * Resolve a relative path strictly within this scope.
+   */
+  public resolve(rel: string): Promise<string> {
+    return resolveWithinRoot(this.root, rel);
+  }
 }
