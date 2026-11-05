@@ -18,7 +18,7 @@ export const SECRET_PATTERNS: SecretPattern[] = [
   },
   {
     name: 'ROBLOSECURITY',
-    pattern: /_\|WARNING:-DO-NOT-SHARE-THIS[._][a-zA-Z0-9_-]+/gi,
+    pattern: /_\|WARNING:?-?DO-NOT-SHARE-THIS[^\s;"]+/gi,
     replacement: '[REDACTED:ROBLOSECURITY]',
   },
   {
