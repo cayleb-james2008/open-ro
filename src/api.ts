@@ -105,14 +105,183 @@ export interface Api {
   mcpStatus(): Promise<{ running: boolean; tools: McpToolSummary[] }>;
   mcpConnect(spec: { command: string; args: string[] }): Promise<PendingApprovalView>;
   mcpDisconnect(): Promise<unknown>;
+  mcpPoolList(): Promise<McpServerView[]>;
+  mcpPoolServerStatus(serverId: string): Promise<McpServerView | null>;
+  mcpPoolConnect(config: McpServerConfig): Promise<PendingApprovalView>;
+  mcpPoolDisconnect(serverId: string): Promise<unknown>;
+  mcpPoolReconnect(serverId: string): Promise<PendingApprovalView>;
+  mcpPoolSaveConfig(config: McpServerConfig): Promise<unknown>;
+  mcpPoolDeleteConfig(serverId: string): Promise<unknown>;
+  mcpPoolTools(): Promise<McpPooledToolSummary[]>;
+  mcpPoolHealth(): Promise<McpPoolHealthReport>;
+  onMcpServerEvent?(listener: (event: McpServerPoolEvent) => void): () => void;
   detectCapabilities(): Promise<CapabilityInfo[]>;
+  blenderStatus(): Promise<BlenderStatusView>;
+  blenderDetect(args?: { customPath?: string }): Promise<BlenderStatusView>;
+  blenderRunTask(input: BlenderRunTaskInput): Promise<BlenderTaskResultView | PendingApprovalView>;
+  blenderCancelTask(args?: { taskId?: string }): Promise<{ ok: boolean; cancelled: boolean; error?: string }>;
+  blenderHistory(): Promise<BlenderTaskHistoryEntry[]>;
+  onBlenderEvent?(listener: (event: BlenderTaskEvent) => void): () => void;
 }
+
+export interface BlenderStatusView {
+  installed: boolean;
+  binaryPath: string | null;
+  version: string | null;
+  majorVersion: number | null;
+  supported: boolean;
+  error?: string;
+  installGuideUrl: string;
+}
+
+export type BlenderTaskType =
+  | 'inspect_mesh'
+  | 'convert_format'
+  | 'decimate_mesh'
+  | 'generate_collision'
+  | 'export_roblox_package'
+  | 'custom';
+
+export interface BlenderRunTaskInput {
+  taskType: BlenderTaskType;
+  inputFile?: string;
+  outputDir?: string;
+  targetFormat?: 'obj' | 'fbx' | 'gltf' | 'glb';
+  targetTriangles?: number;
+  decimateRatio?: number;
+  preserveUv?: boolean;
+  preserveNormals?: boolean;
+  coordinateNormalization?: boolean;
+  collisionType?: 'box' | 'hull' | 'exact';
+  texturePaths?: string[];
+  scriptPath?: string;
+  customArgs?: string[];
+  timeoutMs?: number;
+  stageOnly?: boolean;
+  assetName?: string;
+  author?: string;
+  license?: string;
+}
+
+export interface BlenderTaskResultView {
+  ok: boolean;
+  taskId: string;
+  taskType: string;
+  summary: string;
+  generatedFiles: Array<{ path: string; bytes: number; relPath?: string }>;
+  metrics?: {
+    trianglesBefore?: number;
+    trianglesAfter?: number;
+    verticesBefore?: number;
+    verticesAfter?: number;
+    boundsX?: number;
+    boundsY?: number;
+    boundsZ?: number;
+    uvMapCount?: number;
+    materialCount?: number;
+  };
+  logs: string;
+  durationMs: number;
+  error?: string;
+}
+
+export interface BlenderTaskHistoryEntry {
+  taskId: string;
+  taskType: string;
+  createdAt: string;
+  status: 'COMPLETED' | 'FAILED' | 'CANCELLED';
+  durationMs: number;
+  summary: string;
+  generatedFiles: string[];
+}
+
+export type BlenderTaskEvent =
+  | { type: 'task-started'; taskId: string; taskType: string }
+  | { type: 'task-progress'; taskId: string; percent?: number; stage: string; logLine?: string }
+  | { type: 'task-completed'; taskId: string; success: boolean; generatedFiles: string[]; durationMs: number }
+  | { type: 'task-cancelled'; taskId: string }
+  | { type: 'task-error'; taskId: string; error: string };
+
+export interface McpServerConfig {
+  id: string;
+  name?: string;
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+  autoRestart?: boolean;
+  maxRestarts?: number;
+  requestTimeoutMs?: number;
+  disabled?: boolean;
+}
+
+export interface McpServerInfo {
+  id: string;
+  command: string;
+  args: string[];
+  session: string;
+  tools: McpToolSummary[];
+}
+
+export type McpServerStatus =
+  | 'connected'
+  | 'connecting'
+  | 'disconnected'
+  | 'hibernating'
+  | 'error'
+  | 'reconnecting'
+  | 'crashed'
+  | 'failed';
+
+export interface McpServerView {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+  running: boolean;
+  status: McpServerStatus;
+  error?: string;
+  session: string | null;
+  toolCount: number;
+  tools: McpToolSummary[];
+  health: {
+    isHealthy: boolean;
+    lastPingMs?: number;
+    consecutiveFailures: number;
+    uptimeMs?: number;
+    restartCount: number;
+  };
+}
+
+export interface McpPooledToolSummary {
+  serverId: string;
+  serverName: string;
+  agentToolName: string;
+  directAgentToolName?: string;
+  tool: McpToolSummary;
+}
+
+export interface McpPoolHealthReport {
+  activeCount: number;
+  maxActive: number;
+  totalConfigured: number;
+  healthyCount: number;
+  unhealthyCount: number;
+  servers: Record<string, { isHealthy: boolean; pingMs?: number; status: string }>;
+}
+
+export type McpServerPoolEvent =
+  | { type: 'server-started'; serverId: string; toolCount: number }
+  | { type: 'server-stopped'; serverId: string; reason?: string }
+  | { type: 'server-crashed'; serverId: string; error: string; willRestart: boolean }
+  | { type: 'server-restarted'; serverId: string; session: string }
+  | { type: 'health-updated'; serverId: string; isHealthy: boolean; pingMs: number };
 
 declare global {
   interface Window {
     openro: {
       invoke(channel: string, payload?: unknown): Promise<unknown>;
       onAgentDelta?(listener: (payload: { sessionId: string; text: string }) => void): () => void;
+      onMcpServerEvent?(listener: (event: McpServerPoolEvent) => void): () => void;
     };
   }
 }
@@ -168,7 +337,33 @@ export const api: Api = {
   mcpStatus: () => call<{ running: boolean; tools: McpToolSummary[] }>('mcp:status'),
   mcpConnect: (spec) => call<PendingApprovalView>('mcp:connect', spec),
   mcpDisconnect: () => call('mcp:disconnect'),
+  mcpPoolList: () => call<McpServerView[]>('mcp:pool:list'),
+  mcpPoolServerStatus: (serverId) => call<McpServerView | null>('mcp:pool:server-status', { serverId }),
+  mcpPoolConnect: (config) => call<PendingApprovalView>('mcp:pool:connect', config),
+  mcpPoolDisconnect: (serverId) => call('mcp:pool:disconnect', { serverId }),
+  mcpPoolReconnect: (serverId) => call<PendingApprovalView>('mcp:pool:reconnect', { serverId }),
+  mcpPoolSaveConfig: (config) => call('mcp:pool:save-config', config),
+  mcpPoolDeleteConfig: (serverId) => call('mcp:pool:delete-config', { serverId }),
+  mcpPoolTools: () => call<McpPooledToolSummary[]>('mcp:pool:tools'),
+  mcpPoolHealth: () => call<McpPoolHealthReport>('mcp:pool:health'),
+  onMcpServerEvent: (listener) => {
+    if (typeof window !== 'undefined' && window.openro?.onMcpServerEvent) {
+      return window.openro.onMcpServerEvent(listener);
+    }
+    return () => {};
+  },
   detectCapabilities: () => call<CapabilityInfo[]>('capabilities:detect'),
+  blenderStatus: () => call<BlenderStatusView>('blender:status'),
+  blenderDetect: (args) => call<BlenderStatusView>('blender:detect', args ?? {}),
+  blenderRunTask: (input) => call<BlenderTaskResultView | PendingApprovalView>('blender:run-task', input),
+  blenderCancelTask: (args) => call<{ ok: boolean; cancelled: boolean; error?: string }>('blender:cancel-task', args ?? {}),
+  blenderHistory: () => call<BlenderTaskHistoryEntry[]>('blender:history'),
+  onBlenderEvent: (listener) => {
+    if (typeof window !== 'undefined' && (window as unknown as { openro?: { onBlenderEvent?: (l: (e: BlenderTaskEvent) => void) => () => void } }).openro?.onBlenderEvent) {
+      return (window as unknown as { openro: { onBlenderEvent: (l: (e: BlenderTaskEvent) => void) => () => void } }).openro.onBlenderEvent(listener);
+    }
+    return () => {};
+  },
 };
 
 export default api;

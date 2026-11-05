@@ -45,7 +45,7 @@ Not established: a dependency-resolved build, native installers, live Studio int
 
 **Goal:** Everything except one model connection is installable or selectable as needed.
 
-- [ ] Multi-server MCP registry with start/stop/reconnect/health and scoped tools.
+- [x] Multi-server MCP registry with start/stop/reconnect/health and scoped tools. (Milestone 3 Iterations 1 & 2 complete: `McpServerPool` manages concurrent child processes with 6-server connection pooling, LRU hibernation, active 30s ping heartbeats with 5s timeout, auto-restart backoff and circuit breaker, tree kill zombie prevention, namespaced `mcp__<server>__<tool>` and direct alias routing, and fault-isolated staged approval session binding. Iteration 2 remediation preserves `mcpServerId` across the Electron IPC approval queue, enforces $\le 6$ active server capacity on auto-wake via mutexed `wakeServer`/`onBeforeWake`, retains tool discovery schemas across hibernation, and ensures robust multi-hyphen server ID parsing via dual-layer RFC-4122/token extraction.)
 - [ ] Capability catalog with OS-aware detection, setup guides and official signup/download links.
 - [ ] Install/uninstall manager with source, version, publisher, checksum and permissions.
 - [ ] Per-capability permissions for filesystem, shell, network, Studio mutation and uploads.

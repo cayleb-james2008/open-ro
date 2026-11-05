@@ -36,12 +36,26 @@ const INVOKE_CHANNELS = new Set([
   'mcp:status',
   'mcp:connect',
   'mcp:disconnect',
+  'mcp:pool:list',
+  'mcp:pool:server-status',
+  'mcp:pool:connect',
+  'mcp:pool:disconnect',
+  'mcp:pool:reconnect',
+  'mcp:pool:save-config',
+  'mcp:pool:delete-config',
+  'mcp:pool:tools',
+  'mcp:pool:health',
   'capabilities:detect',
   'approvals:list',
   'approvals:resolve',
   'sessions:load',
   'sessions:save',
   'shell:open-external',
+  'blender:status',
+  'blender:detect',
+  'blender:run-task',
+  'blender:cancel-task',
+  'blender:history',
 ]);
 
 const api = {
@@ -59,6 +73,26 @@ const api = {
     ipcRenderer.on('agent:delta', handler);
     return () => {
       ipcRenderer.removeListener('agent:delta', handler);
+    };
+  },
+  /** Subscribe to live MCP server pool events. Returns an unsubscribe function. */
+  onMcpServerEvent: (listener: (payload: unknown) => void): (() => void) => {
+    const handler = (_event: unknown, payload: unknown): void => {
+      listener(payload);
+    };
+    ipcRenderer.on('mcp:pool:event', handler);
+    return () => {
+      ipcRenderer.removeListener('mcp:pool:event', handler);
+    };
+  },
+  /** Subscribe to live Blender headless task events. Returns an unsubscribe function. */
+  onBlenderEvent: (listener: (payload: unknown) => void): (() => void) => {
+    const handler = (_event: unknown, payload: unknown): void => {
+      listener(payload);
+    };
+    ipcRenderer.on('blender:event', handler);
+    return () => {
+      ipcRenderer.removeListener('blender:event', handler);
     };
   },
 };

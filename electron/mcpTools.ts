@@ -54,12 +54,34 @@ export function isMcpAgentTool(name: string): boolean {
   return name.startsWith(MCP_TOOL_PREFIX);
 }
 
+export interface McpToolResolver {
+  resolveAgentTool(agentName: string): { tool: McpToolSummary; serverIdentity: McpServerIdentity; caller: McpCaller } | null;
+}
+
 /** Stage an agent MCP call. Never calls the server. */
 export function stageMcpCall(
   approvals: ApprovalQueue,
   caller: McpCaller,
   input: { projectRoot: string; agentName: string; args: Record<string, unknown> },
 ): ToolCallResult {
+  if (typeof (caller as unknown as McpToolResolver).resolveAgentTool === 'function') {
+    const resolved = (caller as unknown as McpToolResolver).resolveAgentTool(input.agentName);
+    if (!resolved) {
+      return { ok: false, output: `Unknown MCP tool: ${input.agentName}` };
+    }
+    const pending = approvals.stageMcp({
+      projectRoot: input.projectRoot,
+      tool: resolved.tool.name,
+      args: input.args,
+      server: resolved.serverIdentity,
+    });
+    return {
+      ok: true,
+      output: `Staged MCP tool ${resolved.tool.name} for approval. It has not run.`,
+      pendingApproval: { kind: 'mcp', tool: resolved.tool.name, id: pending.id },
+    };
+  }
+
   const server = caller.identity;
   if (!caller.running || !server) {
     return { ok: false, output: 'No MCP server is connected.' };
@@ -82,6 +104,11 @@ export async function runApprovedMcpCall(item: PendingApproval, caller: McpCalle
   if (item.kind !== 'mcp' || !tool) {
     throw new Error('Not an MCP approval.');
   }
+  // If caller is a hibernating MCP pool client, auto-wake it before running
+  const statusHolder = caller as unknown as { status?: string; start?: () => Promise<void> };
+  if (!caller.running && statusHolder.status === 'hibernating' && typeof statusHolder.start === 'function') {
+    await statusHolder.start();
+  }
   if (!caller.running || !caller.listTools().some((entry) => entry.name === tool)) {
     return { ok: false, decision: 'approve', summary: `MCP tool ${tool} is no longer available. It did not run.` };
   }
@@ -97,10 +124,61 @@ export async function runApprovedMcpCall(item: PendingApproval, caller: McpCalle
   }
 }
 
+/**
+ * Robustly extracts the server ID from a session string.
+ *
+ * Handles:
+ * 1. Standard pool sessions with UUID suffix: `pool-<serverId>-<uuid>`
+ *    Regex: /^pool-(.+)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/i
+ * 2. Test / synthetic sessions with arbitrary non-hyphenated tokens: `pool-<serverId>-<token>`
+ *    Regex: /^pool-(.+)-[^-]+$/
+ * 3. Returns undefined for non-pool or invalid sessions.
+ */
+export function extractServerIdFromSession(session?: string | null): string | undefined {
+  if (!session || typeof session !== 'string' || !session.startsWith('pool-')) {
+    return undefined;
+  }
+  const uuidMatch = session.match(
+    /^pool-(.+)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/i,
+  );
+  if (uuidMatch) {
+    return uuidMatch[1];
+  }
+  const tokenMatch = session.match(/^pool-(.+)-[^-]+$/);
+  if (tokenMatch) {
+    return tokenMatch[1];
+  }
+  return undefined;
+}
+
+/**
+ * Extracts canonical server ID from McpServerIdentity, preferring explicit
+ * `serverId` property and falling back to robust session parsing.
+ */
+export function extractServerIdFromIdentity(identity?: McpServerIdentity | null): string | undefined {
+  if (!identity) return undefined;
+  if (identity.serverId && typeof identity.serverId === 'string' && identity.serverId.trim().length > 0) {
+    return identity.serverId.trim();
+  }
+  return extractServerIdFromSession(identity.session);
+}
+
 /** Same command, same arguments and the same process session. A restart of the same command is a different server. */
 export function sameServer(staged: McpServerIdentity | undefined, current: McpServerIdentity | null): boolean {
-  return !!staged && !!current && staged.session === current.session && staged.command === current.command &&
-    staged.args.length === current.args.length && staged.args.every((arg, index) => arg === current.args[index]);
+  if (!staged || !current) {
+    return false;
+  }
+  const stagedServer = extractServerIdFromIdentity(staged);
+  const currentServer = extractServerIdFromIdentity(current);
+  if (stagedServer && currentServer && stagedServer !== currentServer) {
+    return false;
+  }
+  return (
+    staged.session === current.session &&
+    staged.command === current.command &&
+    staged.args.length === current.args.length &&
+    staged.args.every((arg, index) => arg === current.args[index])
+  );
 }
 
 /** One-line label of a server for approval cards. */
@@ -128,6 +206,34 @@ export async function runApprovedMcpServer(item: PendingApproval, client: McpSer
   if (item.kind !== 'mcp-server' || !item.command) {
     throw new Error('Not an MCP server approval.');
   }
+  const serverId = item.mcpServerId?.trim();
+  if (serverId && typeof (client as unknown as { connectMcpServer?: (cfg: unknown) => Promise<unknown> }).connectMcpServer === 'function') {
+    await (client as unknown as { connectMcpServer: (cfg: unknown) => Promise<unknown> }).connectMcpServer({
+      id: serverId,
+      command: item.command,
+      args: item.serverArgs ?? [],
+    });
+    return { ok: true, decision: 'approve', summary: `MCP server "${serverId}" connected with ${client.listTools().length} tools.` };
+  }
   await client.start({ command: item.command, args: [...(item.serverArgs ?? [])] });
   return { ok: true, decision: 'approve', summary: `MCP server started with ${client.listTools().length} tools.` };
+}
+
+/** Stage starting an MCP server in the pool with approval. */
+export function stageMcpPoolConnect(
+  approvals: ApprovalQueue,
+  config: { id: string; command: string; args: string[] },
+): PendingApproval {
+  if (!config.id || !config.id.trim()) {
+    throw new Error('Server config requires id.');
+  }
+  if (!config.command || !config.command.trim()) {
+    throw new Error('Server config requires id and command.');
+  }
+  return approvals.stageMcpServer({
+    projectRoot: '',
+    command: config.command.trim(),
+    args: config.args ?? [],
+    mcpServerId: config.id.trim(),
+  });
 }

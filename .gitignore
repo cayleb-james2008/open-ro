@@ -21,3 +21,4 @@ OMNI_LOOP.md
 .openro/captures/
 __pycache__/
 *.pyc
+.agents/

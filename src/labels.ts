@@ -179,6 +179,27 @@ export function approvalCopy(item: PendingApprovalView): ApprovalCopy {
         approveLabel: 'Write to Studio',
       };
     }
+    case 'blender-task': {
+      const task = item.blenderTaskType ?? 'Headless task';
+      const target = item.blenderTargetFiles?.length
+        ? item.blenderTargetFiles.join(', ')
+        : (item.blenderInputFile ?? item.relPath ?? 'project mesh');
+      const desc = item.blenderTaskDescription ?? item.blenderDescription ?? 'Runs Blender in headless background mode';
+      let preview = item.blenderScriptSummary ?? '';
+      if (!preview && item.blenderParams) {
+        try {
+          preview = JSON.stringify(item.blenderParams, null, 2);
+        } catch {
+          preview = String(item.blenderParams);
+        }
+      }
+      return {
+        title: `Review Blender 3D Task: ${task}`,
+        detail: `${desc} · Target: ${target} · runs only if you approve; no UI opens`,
+        preview,
+        approveLabel: 'Run 3D task',
+      };
+    }
     default:
       return { title: 'Review command', detail: item.cwd ?? '', preview: item.command ?? '', approveLabel: 'Run command' };
   }

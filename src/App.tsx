@@ -1,5 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import api, { type ComfyStatusView, type MediaPlanView, type MediaResultView, type ProjectIndexSummary } from './api';
+import api, {
+  type ComfyStatusView,
+  type MediaPlanView,
+  type MediaResultView,
+  type ProjectIndexSummary,
+  type McpServerConfig,
+  type McpServerView,
+  type McpPooledToolSummary,
+  type McpPoolHealthReport,
+  type BlenderStatusView,
+  type BlenderTaskType,
+  type BlenderTaskResultView,
+} from './api';
 import { Dialog } from './Dialog';
 import { diffPreview } from './textDiff';
 import { acceptanceFirst, draftAfterSend, dropMissing, followupText, needsRepairNudge, nextFollowup, nudgeAction, recordResolution, repairNudgeText, repairWriteNudgeText, resultSession, showsResultIn, trackStaged, type FollowupBatch } from './approvalFollowup';
@@ -97,8 +109,32 @@ export default function App() {
   const imagePreset = comfyStatus?.presets.find((preset) => preset.presetId === 'image-flux-2-klein-4b');
   const imageGpuReady = imagePreset?.ready ?? false;
   const planIsImage = mediaPlan?.presetId.startsWith('image-') ?? false;
+  // Blender 3D Asset Pipeline State
+  const [blenderStatus, setBlenderStatus] = useState<BlenderStatusView | null>(null);
+  const [blenderBusy, setBlenderBusy] = useState(false);
+  const [blenderTaskType, setBlenderTaskType] = useState<BlenderTaskType>('inspect_mesh');
+  const [blenderInputFile, setBlenderInputFile] = useState('');
+  const [blenderTargetFormat, setBlenderTargetFormat] = useState<'fbx' | 'obj' | 'glb'>('fbx');
+  const [blenderNormalizeCoords, setBlenderNormalizeCoords] = useState(true);
+  const [blenderTargetTris, setBlenderTargetTris] = useState(10000);
+  const [blenderDecimateRatio, setBlenderDecimateRatio] = useState(0.5);
+  const [blenderPreserveUv, setBlenderPreserveUv] = useState(true);
+  const [blenderPreserveNormals, setBlenderPreserveNormals] = useState(true);
+  const [blenderCollisionType, setBlenderCollisionType] = useState<'hull' | 'box' | 'exact'>('hull');
+  const [blenderPackageName, setBlenderPackageName] = useState('');
+  const [blenderAuthor, setBlenderAuthor] = useState('');
+  const [blenderProgress, setBlenderProgress] = useState<{ stage: string; percent?: number } | null>(null);
+  const [blenderResult, setBlenderResult] = useState<BlenderTaskResultView | null>(null);
+  const [blenderError, setBlenderError] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<Awaited<ReturnType<typeof api.detectCapabilities>>>([]);
   const [mcpState, setMcpState] = useState<{ running: boolean; tools: Awaited<ReturnType<typeof api.mcpStatus>>['tools'] }>({ running: false, tools: [] });
+  const [mcpPoolServers, setMcpPoolServers] = useState<McpServerView[]>([]);
+  const [mcpPoolHealth, setMcpPoolHealth] = useState<McpPoolHealthReport | null>(null);
+  const [mcpPooledTools, setMcpPooledTools] = useState<McpPooledToolSummary[]>([]);
+  const [mcpModalOpen, setMcpModalOpen] = useState(false);
+  const [mcpModalConfig, setMcpModalConfig] = useState<McpServerConfig>({ id: '', name: '', command: '', args: [] });
+  const [mcpToolFilter, setMcpToolFilter] = useState('');
+  const [mcpSelectedServerFilter, setMcpSelectedServerFilter] = useState<string>('all');
   const [mcpForm, setMcpForm] = useState({ command: '', args: '' });
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
   const [providerModal, setProviderModal] = useState<ProviderForm>(resetForm());
@@ -185,13 +221,16 @@ export default function App() {
       return;
     }
     try {
-      const [views, cat, store, root, caps, mcp] = await Promise.all([
+      const [views, cat, store, root, caps, mcp, poolList, poolHealth, poolTools] = await Promise.all([
         api.providers(),
         api.catalog(),
         api.storageState(),
         api.projectRoot(),
         api.detectCapabilities(),
         api.mcpStatus(),
+        api.mcpPoolList().catch(() => []),
+        api.mcpPoolHealth().catch(() => null),
+        api.mcpPoolTools().catch(() => []),
       ]);
       setProviderViews(views);
       setCatalog(cat);
@@ -199,6 +238,9 @@ export default function App() {
       setProjectRoot(root);
       setCapabilities(caps);
       setMcpState(mcp);
+      setMcpPoolServers(poolList);
+      setMcpPoolHealth(poolHealth);
+      setMcpPooledTools(poolTools);
       setApprovals(await api.approvals());
     } catch (error) {
       setBanner(asMessage(error));
@@ -593,6 +635,121 @@ export default function App() {
     }
   }
 
+  useEffect(() => {
+    let cancelled = false;
+    void api.blenderStatus()
+      .then((status) => {
+        if (!cancelled) {
+          setBlenderStatus(status);
+        }
+      })
+      .catch(() => {});
+
+    if (api.onBlenderEvent) {
+      const unsub = api.onBlenderEvent((event) => {
+        if (event.type === 'task-progress') {
+          setBlenderProgress({ stage: event.stage, percent: event.percent });
+        } else if (event.type === 'task-completed' || event.type === 'task-cancelled' || event.type === 'task-error') {
+          setBlenderProgress(null);
+        }
+      });
+      return () => {
+        cancelled = true;
+        unsub();
+      };
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function detectBlender(customPath?: string) {
+    setBlenderBusy(true);
+    setBlenderError(null);
+    try {
+      const status = await api.blenderDetect({ customPath });
+      setBlenderStatus(status);
+    } catch (err) {
+      setBlenderError(asMessage(err));
+    } finally {
+      setBlenderBusy(false);
+    }
+  }
+
+  async function stageBlenderTaskFromUi() {
+    if (!blenderInputFile) return;
+    setBlenderBusy(true);
+    setBlenderError(null);
+    try {
+      const res = await api.blenderRunTask({
+        taskType: blenderTaskType,
+        inputFile: blenderInputFile,
+        targetFormat: blenderTargetFormat,
+        coordinateNormalization: blenderNormalizeCoords,
+        targetTriangles: blenderTargetTris,
+        decimateRatio: blenderDecimateRatio,
+        preserveUv: blenderPreserveUv,
+        preserveNormals: blenderPreserveNormals,
+        collisionType: blenderCollisionType,
+        assetName: blenderPackageName.trim() || undefined,
+        author: blenderAuthor.trim() || undefined,
+        stageOnly: true,
+      });
+      if ('id' in res) {
+        setApprovals((prev) => [...prev, res]);
+        setBanner('Staged Blender 3D task for approval.');
+      }
+    } catch (err) {
+      setBlenderError(asMessage(err));
+    } finally {
+      setBlenderBusy(false);
+    }
+  }
+
+  async function runBlenderTaskDirectly() {
+    if (!blenderInputFile) return;
+    setBlenderBusy(true);
+    setBlenderError(null);
+    setBlenderResult(null);
+    setBlenderProgress({ stage: 'Starting 3D task…', percent: 10 });
+    try {
+      const res = await api.blenderRunTask({
+        taskType: blenderTaskType,
+        inputFile: blenderInputFile,
+        targetFormat: blenderTargetFormat,
+        coordinateNormalization: blenderNormalizeCoords,
+        targetTriangles: blenderTargetTris,
+        decimateRatio: blenderDecimateRatio,
+        preserveUv: blenderPreserveUv,
+        preserveNormals: blenderPreserveNormals,
+        collisionType: blenderCollisionType,
+        assetName: blenderPackageName.trim() || undefined,
+        author: blenderAuthor.trim() || undefined,
+        stageOnly: false,
+      });
+      if ('ok' in res) {
+        setBlenderResult(res);
+      }
+    } catch (err) {
+      setBlenderError(asMessage(err));
+    } finally {
+      setBlenderBusy(false);
+      setBlenderProgress(null);
+    }
+  }
+
+  async function cancelBlenderTask() {
+    try {
+      await api.blenderCancelTask({});
+      setBanner('Cancelled in-flight Blender task.');
+    } catch (err) {
+      setBlenderError(asMessage(err));
+    } finally {
+      setBlenderBusy(false);
+      setBlenderProgress(null);
+    }
+  }
+
   function repairFromLedger(entry: PlaytestLedgerEntry) {
     const failure = entry.failingCheck ?? entry.reason;
     setDraft(`Repair the last failed playtest for "${entry.scenario}". Failing check: ${failure}. Inspect the relevant script, propose one focused change, and stage it for review. Do not claim the playtest passes until report_playtest returns PASSED.`);
@@ -788,6 +945,85 @@ export default function App() {
   async function disconnectMcp() {
     await api.mcpDisconnect();
     setMcpState({ running: false, tools: [] });
+    const [servers, health, tools] = await Promise.all([
+      api.mcpPoolList().catch(() => []),
+      api.mcpPoolHealth().catch(() => null),
+      api.mcpPoolTools().catch(() => []),
+    ]);
+    setMcpPoolServers(servers);
+    setMcpPoolHealth(health);
+    setMcpPooledTools(tools);
+  }
+
+  async function connectPoolServer(cfg: McpServerConfig) {
+    try {
+      await api.mcpPoolConnect(cfg);
+      setApprovals(await api.approvals());
+      setBanner(`Review the connection approval for "${cfg.name || cfg.id}". Nothing runs until approved.`);
+    } catch (err) {
+      setBanner(asMessage(err));
+    }
+  }
+
+  async function disconnectPoolServer(serverId: string) {
+    try {
+      await api.mcpPoolDisconnect(serverId);
+      const [servers, health, tools, status] = await Promise.all([
+        api.mcpPoolList(),
+        api.mcpPoolHealth(),
+        api.mcpPoolTools(),
+        api.mcpStatus(),
+      ]);
+      setMcpPoolServers(servers);
+      setMcpPoolHealth(health);
+      setMcpPooledTools(tools);
+      setMcpState(status);
+    } catch (err) {
+      setBanner(asMessage(err));
+    }
+  }
+
+  async function reconnectPoolServer(serverId: string) {
+    try {
+      await api.mcpPoolReconnect(serverId);
+      setApprovals(await api.approvals());
+      setBanner(`Review the reconnection approval for "${serverId}".`);
+    } catch (err) {
+      setBanner(asMessage(err));
+    }
+  }
+
+  async function deletePoolServer(serverId: string) {
+    try {
+      await api.mcpPoolDeleteConfig(serverId);
+      const [servers, health, tools, status] = await Promise.all([
+        api.mcpPoolList(),
+        api.mcpPoolHealth(),
+        api.mcpPoolTools(),
+        api.mcpStatus(),
+      ]);
+      setMcpPoolServers(servers);
+      setMcpPoolHealth(health);
+      setMcpPooledTools(tools);
+      setMcpState(status);
+    } catch (err) {
+      setBanner(asMessage(err));
+    }
+  }
+
+  async function saveModalServer() {
+    if (!mcpModalConfig.id.trim() || !mcpModalConfig.command.trim()) {
+      setBanner('Server ID and Command are required.');
+      return;
+    }
+    try {
+      await api.mcpPoolSaveConfig(mcpModalConfig);
+      await connectPoolServer(mcpModalConfig);
+      setMcpModalOpen(false);
+      setMcpModalConfig({ id: '', name: '', command: '', args: [] });
+    } catch (err) {
+      setBanner(asMessage(err));
+    }
   }
 
   const hasProvider = providerViews.some((view) => view.hasKey || catalogByKind.get(view.kind)?.keyless || catalogByKind.get(view.kind)?.connection === 'cli');
@@ -1487,6 +1723,308 @@ export default function App() {
           )}
         </div>
 
+        {/* ---- Blender 3D Asset Pipeline Section ---- */}
+        <div className="section-title" style={{ marginTop: 28 }}>
+          <span>Blender 3D Asset Pipeline</span>
+          <span>{blenderStatus?.installed ? `Blender ${blenderStatus.version ?? ''}` : 'Blender not detected'}</span>
+        </div>
+
+        <div className="integration-card blender-panel">
+          {/* Status & Diagnostic Bar */}
+          <div className="integration-top">
+            <span className="integration-copy">
+              <b>
+                <span className={`status-dot ${blenderStatus?.installed ? 'on' : 'off'}`} />
+                {blenderStatus?.installed ? `Blender ${blenderStatus.version} (Ready)` : 'Blender Not Installed or Detected'}
+              </b>
+              <small>
+                {blenderStatus?.installed
+                  ? `Binary: ${blenderStatus.binaryPath}`
+                  : 'Blender is required for 3D mesh inspection, conversion, decimation, and Roblox bundling.'}
+              </small>
+            </span>
+            <button type="button" className="outline-btn" disabled={blenderBusy} onClick={() => void detectBlender()}>
+              {blenderBusy ? 'Scanning…' : 'Re-detect'}
+            </button>
+          </div>
+
+          {!blenderStatus?.installed && (
+            <div className="setup-guide-box">
+              <p className="recent-empty">
+                Blender is an optional open-source 3D tool. Open-Ro does not auto-install external binaries.
+              </p>
+              <div className="modal-actions" style={{ justifyContent: 'flex-start', marginTop: 8 }}>
+                <button
+                  type="button"
+                  className="outline-btn"
+                  onClick={() => void api.openExternal('https://www.blender.org/download/')}
+                >
+                  Download Blender (Official)
+                </button>
+              </div>
+              <p className="recent-empty" style={{ marginTop: 6 }}>
+                Tip: On Windows, install Blender to standard Program Files or set the OPENRO_BLENDER_BIN environment variable.
+              </p>
+            </div>
+          )}
+
+          {blenderStatus?.installed && (
+            <>
+              {/* 3D Task Launcher Form */}
+              <div className="form-stack" style={{ marginTop: 14 }}>
+                <div className="form-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  <label>
+                    Task Operation
+                    <select
+                      value={blenderTaskType}
+                      onChange={(e) => setBlenderTaskType(e.target.value as BlenderTaskType)}
+                      disabled={blenderBusy}
+                    >
+                      <option value="inspect_mesh">Inspect Mesh (Metrics & Diagnostics)</option>
+                      <option value="convert_format">Convert Format (OBJ / FBX / glTF)</option>
+                      <option value="decimate_mesh">Decimate Mesh (Roblox Triangle Budget)</option>
+                      <option value="generate_collision">Generate Collision Geometry</option>
+                      <option value="export_roblox_package">Export Complete Roblox Package</option>
+                    </select>
+                  </label>
+
+                  <label>
+                    Source 3D File
+                    <select
+                      value={blenderInputFile}
+                      onChange={(e) => setBlenderInputFile(e.target.value)}
+                      disabled={blenderBusy}
+                    >
+                      <option value="">Choose a mesh from project…</option>
+                      {projectIndex?.entries
+                        .filter((e) => /\.(obj|fbx|gltf|glb)/i.test(e.relPath))
+                        .map((e) => (
+                          <option key={e.relPath} value={e.relPath}>
+                            {e.relPath} ({(e.bytes / 1024).toFixed(1)} KB)
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                </div>
+
+                {/* Task-Specific Parameter Sub-Forms */}
+                {blenderTaskType === 'convert_format' && (
+                  <div className="form-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                    <label>
+                      Target Format
+                      <select
+                        value={blenderTargetFormat}
+                        onChange={(e) => setBlenderTargetFormat(e.target.value as 'fbx' | 'obj' | 'glb')}
+                      >
+                        <option value="fbx">FBX (Recommended for Roblox MeshParts)</option>
+                        <option value="obj">Wavefront OBJ (Universal)</option>
+                        <option value="glb">glTF Binary GLB</option>
+                      </select>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 22 }}>
+                      <input
+                        type="checkbox"
+                        checked={blenderNormalizeCoords}
+                        onChange={(e) => setBlenderNormalizeCoords(e.target.checked)}
+                      />
+                      Normalize Coordinates (Blender Z-up to Roblox Y-up)
+                    </label>
+                  </div>
+                )}
+
+                {blenderTaskType === 'decimate_mesh' && (
+                  <div className="form-stack">
+                    <div className="form-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                      <label>
+                        Roblox Target Triangle Budget
+                        <select
+                          value={blenderTargetTris}
+                          onChange={(e) => setBlenderTargetTris(Number(e.target.value))}
+                        >
+                          <option value={10000}>10,000 Triangles (Roblox Standard Recommendation)</option>
+                          <option value={20000}>20,000 Triangles (Roblox Hard Maximum)</option>
+                          <option value={5000}>5,000 Triangles (Mobile / High-Density Props)</option>
+                          <option value={2500}>2,500 Triangles (Low-Poly / LOD)</option>
+                        </select>
+                      </label>
+                      <label>
+                        Decimation Ratio Slider (Collapse Factor: {blenderDecimateRatio})
+                        <input
+                          type="range"
+                          min="0.05"
+                          max="1.0"
+                          step="0.05"
+                          value={blenderDecimateRatio}
+                          onChange={(e) => setBlenderDecimateRatio(Number(e.target.value))}
+                        />
+                      </label>
+                    </div>
+                    <div style={{ display: 'flex', gap: 16 }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <input
+                          type="checkbox"
+                          checked={blenderPreserveUv}
+                          onChange={(e) => setBlenderPreserveUv(e.target.checked)}
+                        />
+                        Preserve UV Seams
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <input
+                          type="checkbox"
+                          checked={blenderPreserveNormals}
+                          onChange={(e) => setBlenderPreserveNormals(e.target.checked)}
+                        />
+                        Preserve Sharp Normals
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                {blenderTaskType === 'generate_collision' && (
+                  <label>
+                    Collision Mesh Type
+                    <select
+                      value={blenderCollisionType}
+                      onChange={(e) => setBlenderCollisionType(e.target.value as 'hull' | 'box' | 'exact')}
+                    >
+                      <option value="hull">Convex Hull (Fast, accurate physical boundary)</option>
+                      <option value="box">Oriented Bounding Box (Ultra-lightweight)</option>
+                      <option value="exact">Simplified Mesh Proxy (Under 1,000 triangles)</option>
+                    </select>
+                  </label>
+                )}
+
+                {blenderTaskType === 'export_roblox_package' && (
+                  <div className="form-row" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                    <label>
+                      Package Name
+                      <input
+                        type="text"
+                        value={blenderPackageName}
+                        placeholder="e.g. MedievalSword_Asset"
+                        onChange={(e) => setBlenderPackageName(e.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Creator / Attribution
+                      <input
+                        type="text"
+                        value={blenderAuthor}
+                        placeholder="e.g. Open-Ro Creator"
+                        onChange={(e) => setBlenderAuthor(e.target.value)}
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+
+              {/* Action Controls */}
+              <div className="modal-actions" style={{ marginTop: 14 }}>
+                <button
+                  type="button"
+                  className="outline-btn"
+                  disabled={blenderBusy || !blenderInputFile}
+                  onClick={() => void stageBlenderTaskFromUi()}
+                >
+                  Stage for Approval
+                </button>
+                <button
+                  type="button"
+                  className="primary-btn"
+                  disabled={blenderBusy || !blenderInputFile}
+                  onClick={() => void runBlenderTaskDirectly()}
+                >
+                  Run 3D Task
+                </button>
+                {blenderBusy && (
+                  <button
+                    type="button"
+                    className="outline-btn"
+                    onClick={() => void cancelBlenderTask()}
+                  >
+                    Cancel Execution
+                  </button>
+                )}
+              </div>
+
+              {/* Progress Banner */}
+              {blenderProgress && (
+                <div className="blender-progress-banner" style={{ marginTop: 12 }}>
+                  <span className="status-dot on" />
+                  <span>{blenderProgress.stage}</span>
+                  {typeof blenderProgress.percent === 'number' && (
+                    <div className="progress-bar-wrap">
+                      <div className="progress-bar-fill" style={{ width: `${blenderProgress.percent}%` }} />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Results & Metrics Display */}
+              {blenderResult && (
+                <div className="blender-result-card" style={{ marginTop: 14 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <b>{blenderResult.ok ? '✓ Task Succeeded' : '✗ Task Failed'}</b>
+                    <small>{blenderResult.summary} ({(blenderResult.durationMs / 1000).toFixed(2)}s)</small>
+                  </div>
+
+                  {blenderResult.metrics && (
+                    <div className="metrics-grid" style={{ marginTop: 8 }}>
+                      {typeof blenderResult.metrics.trianglesBefore === 'number' && (
+                        <div className="metric-box">
+                          <small>Triangles</small>
+                          <b>{blenderResult.metrics.trianglesBefore.toLocaleString()} → {blenderResult.metrics.trianglesAfter?.toLocaleString()}</b>
+                        </div>
+                      )}
+                      {typeof blenderResult.metrics.verticesAfter === 'number' && (
+                        <div className="metric-box">
+                          <small>Vertices</small>
+                          <b>{blenderResult.metrics.verticesAfter.toLocaleString()}</b>
+                        </div>
+                      )}
+                      {typeof blenderResult.metrics.boundsX === 'number' && (
+                        <div className="metric-box">
+                          <small>Extents</small>
+                          <b>{blenderResult.metrics.boundsX.toFixed(1)}×{blenderResult.metrics.boundsY?.toFixed(1)}×{blenderResult.metrics.boundsZ?.toFixed(1)}</b>
+                        </div>
+                      )}
+                      {typeof blenderResult.metrics.uvMapCount === 'number' && (
+                        <div className="metric-box">
+                          <small>UV Maps</small>
+                          <b>{blenderResult.metrics.uvMapCount}</b>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {blenderResult.generatedFiles.length > 0 && (
+                    <div className="generated-files-list" style={{ marginTop: 8 }}>
+                      <small style={{ color: 'var(--color-dim)' }}>Generated Files:</small>
+                      {blenderResult.generatedFiles.map((file) => (
+                        <div key={file.path} className="file-entry-row">
+                          <span>{file.relPath ?? file.path}</span>
+                          <small>({(file.bytes / 1024).toFixed(1)} KB)</small>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {blenderResult.logs && (
+                    <details style={{ marginTop: 8 }}>
+                      <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--color-dim)' }}>View Process Logs</summary>
+                      <pre className="blender-logs" style={{ maxHeight: 160, overflowY: 'auto', marginTop: 4 }}>
+                        {blenderResult.logs}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+              )}
+
+              {blenderError && <p className="recent-empty">{blenderError}</p>}
+            </>
+          )}
+        </div>
+
         <div className="section-title" style={{ marginTop: 28 }}>
           <span>Checkpoints</span>
           <span>restoring needs approval</span>
@@ -1549,43 +2087,202 @@ export default function App() {
           </div>
         </div>
 
-        <div className="integration-summary">
-          <div>
-            <span className={mcpState.running ? 'status-dot on' : 'status-dot'} />
-            MCP server: {mcpState.running ? 'connected' : 'not connected'} · {mcpState.tools.length} tools
+        {/* MCP Pool Health Bar & Overview */}
+        <div className="mcp-pool-health-bar">
+          <div className="mcp-health-meta">
+            <span className={mcpPoolHealth?.activeCount && mcpPoolHealth.activeCount > 0 ? 'status-dot on' : (mcpState.running ? 'status-dot on' : 'status-dot')} />
+            <strong>MCP Server Pool</strong>
+            <span className="badge">Active: {mcpPoolHealth?.activeCount ?? (mcpState.running ? 1 : 0)} / {mcpPoolHealth?.maxActive ?? 6}</span>
+            <span className="badge">Total Tools: {mcpPooledTools.length || mcpState.tools.length}</span>
+            {mcpPoolHealth && mcpPoolHealth.unhealthyCount > 0 && (
+              <span className="badge badge-warn">{mcpPoolHealth.unhealthyCount} unhealthy</span>
+            )}
           </div>
-          <p>One active stdio server at a time (0.1.0 limit). Starting a server and every agent tool call wait for your approval.</p>
+          <div className="mcp-health-actions">
+            <button type="button" className="primary-btn small" onClick={() => {
+              setMcpModalConfig({ id: '', name: '', command: '', args: [] });
+              setMcpModalOpen(true);
+            }}>+ Add MCP Server</button>
+            {mcpState.running && (
+              <button type="button" className="outline-btn small" onClick={() => void disconnectMcp()}>Stop all servers</button>
+            )}
+          </div>
         </div>
 
-        <div className="section-title">
-          <span>MCP stdio server</span>
-          <span>one server</span>
-        </div>
-        <div className="form-stack" style={{ maxWidth: 560 }}>
-          <label>
-            Command
-            <input placeholder="npx" value={mcpForm.command} onChange={(event) => setMcpForm({ ...mcpForm, command: event.target.value })} />
-          </label>
-          <label>
-            Arguments (space-separated)
-            <input placeholder="mcp-server --port …" value={mcpForm.args} onChange={(event) => setMcpForm({ ...mcpForm, args: event.target.value })} />
-          </label>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button type="button" className="primary-btn" disabled={mcpState.running} onClick={() => void connectMcp()}>Connect</button>
-            {mcpState.running && <button type="button" className="outline-btn" onClick={() => void disconnectMcp()}>Stop server</button>}
-          </div>
-          {mcpState.tools.length > 0 && (
-            <div className="provider-steps">
-              <div className="steps-heading">Discovered tools</div>
-              {mcpState.tools.slice(0, 12).map((tool) => (
-                <div className="step-line" key={tool.name}>
-                  <span>{ICONS.file}</span>
-                  <p><code>{tool.name}</code> — {tool.description.slice(0, 120)}</p>
-                </div>
-              ))}
+        {/* Add MCP Server Modal */}
+        {mcpModalOpen && (
+          <Dialog labelledBy="mcp-modal-title" className="provider-modal" onClose={() => setMcpModalOpen(false)}>
+            <div className="modal-title">
+              <div>
+                <strong id="mcp-modal-title">Configure MCP Server</strong>
+                <small>Register an MCP stdio server in the connection pool</small>
+              </div>
+              <button type="button" className="icon-btn" aria-label="Close modal" onClick={() => setMcpModalOpen(false)}>{ICONS.x}</button>
             </div>
-          )}
+            <div className="mcp-preset-buttons">
+              <span style={{ fontSize: 12, color: 'var(--color-dim)', alignSelf: 'center' }}>Presets:</span>
+              <button type="button" className="preset-btn" onClick={() => setMcpModalConfig({ id: 'studio', name: 'Roblox Studio MCP', command: 'npx', args: ['-y', 'roblox-studio-mcp'] })}>Roblox Studio</button>
+              <button type="button" className="preset-btn" onClick={() => setMcpModalConfig({ id: 'blender', name: 'Blender 3D MCP', command: 'python', args: ['-m', 'blender_mcp'] })}>Blender 3D</button>
+              <button type="button" className="preset-btn" onClick={() => setMcpModalConfig({ id: 'filesystem', name: 'Filesystem MCP', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '.'] })}>Filesystem</button>
+            </div>
+            <div className="form-stack">
+              <label>
+                Server ID
+                <input placeholder="e.g. studio, blender" value={mcpModalConfig.id} onChange={(e) => setMcpModalConfig({ ...mcpModalConfig, id: e.target.value })} />
+              </label>
+              <label>
+                Display Name (optional)
+                <input placeholder="e.g. Roblox Studio MCP" value={mcpModalConfig.name ?? ''} onChange={(e) => setMcpModalConfig({ ...mcpModalConfig, name: e.target.value })} />
+              </label>
+              <label>
+                Command
+                <input placeholder="e.g. npx, python" value={mcpModalConfig.command} onChange={(e) => setMcpModalConfig({ ...mcpModalConfig, command: e.target.value })} />
+              </label>
+              <label>
+                Arguments (space-separated)
+                <input placeholder="e.g. -y roblox-studio-mcp" value={mcpModalConfig.args.join(' ')} onChange={(e) => setMcpModalConfig({ ...mcpModalConfig, args: e.target.value.trim() ? e.target.value.trim().split(/\s+/) : [] })} />
+              </label>
+              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                <button type="button" className="primary-btn" onClick={() => void saveModalServer()}>Save & Connect</button>
+                <button type="button" className="outline-btn" onClick={() => setMcpModalOpen(false)}>Cancel</button>
+              </div>
+            </div>
+          </Dialog>
+        )}
+
+        {/* Multi-Server Grid */}
+        <div className="section-title">
+          <span>Configured MCP Servers</span>
+          <span>{mcpPoolServers.length} servers</span>
         </div>
+        {mcpPoolServers.length > 0 ? (
+          <div className="mcp-server-grid">
+            {mcpPoolServers.map((server) => (
+              <div key={server.id} className={`mcp-server-card ${server.running ? 'active' : ''} ${server.status === 'hibernating' ? 'hibernating' : ''}`}>
+                <div className="mcp-card-header">
+                  <div>
+                    <span className={`status-dot ${server.running ? 'on' : server.status === 'hibernating' ? 'hibernating' : server.status === 'error' || server.status === 'failed' ? 'error' : ''}`} />
+                    <strong>{server.name || server.id}</strong>
+                    <code className="server-id-tag">({server.id})</code>
+                  </div>
+                  <span className={`status-tag ${server.status}`}>{server.status}</span>
+                </div>
+                <div className="mcp-card-body">
+                  <div className="server-cmd-preview">
+                    <code>{server.command} {server.args.join(' ')}</code>
+                  </div>
+                  <div className="server-stats-row">
+                    <span>Tools: {server.toolCount}</span>
+                    <span>{server.health.isHealthy ? 'Healthy' : 'Unhealthy'}</span>
+                    {server.health.lastPingMs !== undefined && server.health.lastPingMs > 0 && (
+                      <span>Ping: {server.health.lastPingMs}ms</span>
+                    )}
+                    {server.health.restartCount > 0 && (
+                      <span className="badge badge-warn">Restarts: {server.health.restartCount}</span>
+                    )}
+                  </div>
+                  {server.error && (
+                    <div className="server-error-text">{server.error}</div>
+                  )}
+                </div>
+                <div className="mcp-card-footer">
+                  {!server.running ? (
+                    <button type="button" className="primary-btn small" onClick={() => void connectPoolServer(server)}>Connect</button>
+                  ) : (
+                    <>
+                      <button type="button" className="outline-btn small" onClick={() => void disconnectPoolServer(server.id)}>Stop</button>
+                      <button type="button" className="outline-btn small" onClick={() => void reconnectPoolServer(server.id)}>Restart</button>
+                    </>
+                  )}
+                  <button type="button" className="outline-btn small" onClick={() => setMcpSelectedServerFilter(server.id)}>Filter Tools</button>
+                  <button type="button" className="outline-btn small danger" onClick={() => void deletePoolServer(server.id)}>Delete</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="form-stack" style={{ maxWidth: 560, marginBottom: 24 }}>
+            <label>
+              Command
+              <input placeholder="npx" value={mcpForm.command} onChange={(event) => setMcpForm({ ...mcpForm, command: event.target.value })} />
+            </label>
+            <label>
+              Arguments (space-separated)
+              <input placeholder="mcp-server --port …" value={mcpForm.args} onChange={(event) => setMcpForm({ ...mcpForm, args: event.target.value })} />
+            </label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" className="primary-btn" disabled={mcpState.running} onClick={() => void connectMcp()}>Connect</button>
+              {mcpState.running && <button type="button" className="outline-btn" onClick={() => void disconnectMcp()}>Stop server</button>}
+            </div>
+          </div>
+        )}
+
+        {/* Discovered Tools Browser */}
+        {(() => {
+          const filteredTools = mcpPooledTools.length > 0
+            ? mcpPooledTools.filter((t) => {
+                const matchesServer = mcpSelectedServerFilter === 'all' || t.serverId === mcpSelectedServerFilter;
+                const query = mcpToolFilter.toLowerCase().trim();
+                const matchesQuery = !query || t.tool.name.toLowerCase().includes(query) || t.tool.description.toLowerCase().includes(query) || t.agentToolName.toLowerCase().includes(query);
+                return matchesServer && matchesQuery;
+              })
+            : mcpState.tools.filter((t) => {
+                const query = mcpToolFilter.toLowerCase().trim();
+                return !query || t.name.toLowerCase().includes(query) || t.description.toLowerCase().includes(query);
+              }).map((t) => ({
+                serverId: 'default',
+                serverName: 'Default MCP Server',
+                agentToolName: `mcp__${t.name}`,
+                directAgentToolName: `mcp__${t.name}`,
+                tool: t,
+              }));
+          return (
+            <div style={{ marginTop: 24 }}>
+              <div className="section-title">
+                <span>Discovered MCP Tools ({filteredTools.length})</span>
+                <div className="mcp-filter-bar">
+                  <input
+                    type="text"
+                    placeholder="Search tools..."
+                    className="tool-search-input"
+                    value={mcpToolFilter}
+                    onChange={(e) => setMcpToolFilter(e.target.value)}
+                  />
+                  <select
+                    className="tool-server-select"
+                    value={mcpSelectedServerFilter}
+                    onChange={(e) => setMcpSelectedServerFilter(e.target.value)}
+                  >
+                    <option value="all">All Servers</option>
+                    {mcpPoolServers.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name || s.id}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              {filteredTools.length > 0 ? (
+                <div className="provider-steps">
+                  <div className="steps-heading">Exposed Agent Tools</div>
+                  {filteredTools.slice(0, 24).map((item) => (
+                    <div className="step-line" key={item.agentToolName}>
+                      <span>{ICONS.file}</span>
+                      <p>
+                        <code>{item.agentToolName}</code>
+                        {item.directAgentToolName && item.directAgentToolName !== item.agentToolName && (
+                          <span style={{ color: 'var(--color-dim)', marginLeft: 6 }}>(alias: <code>{item.directAgentToolName}</code>)</span>
+                        )}
+                        <span style={{ color: 'var(--color-dim)', marginLeft: 8 }}>[{item.serverName}]</span>
+                        {' — '}{item.tool.description.slice(0, 120)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="recent-empty">No tools match the selected server or filter query.</div>
+              )}
+            </div>
+          );
+        })()}
 
         {groups.map((group) => {
           const items = capabilities.filter((capability) => capability.category === group.category);

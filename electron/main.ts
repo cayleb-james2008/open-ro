@@ -11,8 +11,8 @@ import { ApprovalQueue, type ApprovalKind, type PendingApproval } from './approv
 import { writeTextAtomic } from './atomicWrite';
 import { detectCapabilities } from './capabilities';
 import { parseCheckpointRecord, stageCheckpointRestore } from './checkpoints';
-import { McpStdioClient } from './mcp';
-import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServer, serverLabel, stageMcpCall, stageMcpConnect } from './mcpTools';
+import { McpServerPool, type McpServerConfig, type McpServerView, type McpPooledToolSummary, type McpServerPoolEvent } from './mcpPool';
+import { isMcpAgentTool, mcpToolSchemas, runApprovedMcpCall, runApprovedMcpServer, serverLabel, stageMcpCall, stageMcpConnect, stageMcpPoolConnect } from './mcpTools';
 import { reportMediaHardware, type MediaHardwareProfile, type MediaReport } from './mediaCatalog';
 import {
   buildComfyPlan,
@@ -48,6 +48,15 @@ import { runShellCommand } from './runCommand';
 import { sanitizeSessions } from './sessions';
 import { deleteCredential, listCredentialServices, loadCredential, saveCredential, secureStorageAvailable, storePath } from './secureStore';
 import { runAgentTurn, testConnection, toolSchemas } from './agent';
+import { blenderRunner } from './blenderRunner';
+import type {
+  BlenderRunTaskInput,
+  BlenderStatusView,
+  BlenderTaskEvent,
+  BlenderTaskHistoryEntry,
+  BlenderTaskResultView,
+  BlenderTaskType,
+} from './blenderTypes';
 import type {
   AgentTurnResult,
   ApprovalResult,
@@ -71,7 +80,7 @@ import type {
 
 let mainWindow: BrowserWindow | null = null;
 let projectRoot = '';
-const mcp = new McpStdioClient();
+const mcp = new McpServerPool();
 const approvals = new ApprovalQueue();
 const mediaPlans = new Map<string, { plan: ComfyGenerationPlan; expiresAt: number }>();
 const MEDIA_PLAN_TTL_MS = 10 * 60_000;
@@ -111,6 +120,7 @@ function toApprovalView(item: PendingApproval): PendingApprovalView {
     mcpTool: item.mcpTool,
     mcpArgs: item.mcpArgs,
     mcpServer: item.mcpServer ? serverLabel(item.mcpServer) : undefined,
+    mcpServerId: item.mcpServerId,
     serverArgs: item.serverArgs,
     studioOp: item.studioOp,
     studioPath: item.studioPath,
@@ -121,6 +131,15 @@ function toApprovalView(item: PendingApproval): PendingApprovalView {
     mediaPrompt: item.mediaPrompt,
     mediaDuration: item.mediaDuration,
     mediaSeed: item.mediaSeed,
+    blenderTaskType: item.blenderTaskType,
+    blenderTaskDescription: item.blenderTaskDescription,
+    blenderScriptPath: item.blenderScriptPath,
+    blenderScriptSummary: item.blenderScriptSummary,
+    blenderInputFile: item.blenderInputFile,
+    blenderOutputDir: item.blenderOutputDir,
+    blenderTargetFiles: item.blenderTargetFiles,
+    blenderParams: item.blenderParams,
+    blenderDescription: item.blenderDescription,
   };
 }
 
@@ -339,7 +358,7 @@ const MEDIA_TOOL_SCHEMA: ToolSchema = {
 
 function buildExecutor(root: string): ToolExecutor {
   return {
-    schemas: () => [...toolSchemas(), MEDIA_TOOL_SCHEMA, ...mcpToolSchemas(mcp.running ? mcp.listTools() : [])],
+    schemas: () => [...toolSchemas(), MEDIA_TOOL_SCHEMA, ...mcp.getAgentToolSchemas()],
     async execute(call) {
       if (!root) {
         return { ok: false, output: 'No project folder selected.' };
@@ -482,10 +501,12 @@ async function resolveApproval(id: string, decision: 'approve' | 'reject', kind?
             ? `Rejected deleting ${item.relPath ?? 'the file'}. Nothing was changed.`
             : item.kind === 'media'
             ? 'Rejected the local media generation. Nothing ran.'
+            : item.kind === 'blender-task'
+              ? `Rejected Blender 3D task "${item.blenderTaskDescription ?? item.blenderTaskType ?? 'task'}". Nothing ran.`
             : item.kind === 'mcp'
             ? `Rejected MCP tool ${item.mcpTool ?? ''}. It did not run.`
             : item.kind === 'mcp-server'
-              ? 'Rejected starting the MCP server. It did not run.'
+              ? (item.mcpServerId ? `Rejected starting MCP server "${item.mcpServerId}". It did not run.` : 'Rejected starting the MCP server. It did not run.')
             : item.kind === 'studio'
               ? `Rejected the Studio ${item.studioOp ?? 'call'} of game.${item.studioPath ?? ''}. Nothing ran in Studio.`
             : 'Rejected the command. It did not run.',
@@ -547,7 +568,11 @@ async function resolveApproval(id: string, decision: 'approve' | 'reject', kind?
     }
   }
   if (item.kind === 'mcp') {
-    return runApprovedMcpCall(item, mcp);
+    const caller = mcp.getClientForApproval(item.mcpServer);
+    if (caller && caller.status === 'hibernating') {
+      await mcp.wakeServer(caller.serverId);
+    }
+    return runApprovedMcpCall(item, caller ?? mcp);
   }
   if (item.kind === 'studio') {
     const { snapshot, checkpoint, ...result } = await runApprovedStudio(item, mcp, studioReads, saveStudioCapture);
@@ -560,7 +585,59 @@ async function resolveApproval(id: string, decision: 'approve' | 'reject', kind?
     return result;
   }
   if (item.kind === 'mcp-server') {
-    return runApprovedMcpServer(item, mcp);
+    if (!item.command) {
+      throw new Error('Not an MCP server approval.');
+    }
+    const serverId = item.mcpServerId?.trim() || 'default';
+    const serverInfo = await mcp.connectMcpServer({
+      id: serverId,
+      command: item.command,
+      args: item.serverArgs ?? [],
+    });
+    const toolCount = mcp.getMcpClient(serverId)?.listTools().length ?? serverInfo.tools.length;
+    return {
+      ok: true,
+      decision,
+      summary: item.mcpServerId?.trim()
+        ? `MCP server "${serverId}" connected with ${toolCount} tools.`
+        : `MCP server started with ${toolCount} tools.`,
+    };
+  }
+  if (item.kind === 'blender-task') {
+    try {
+      const outputDir = item.blenderOutputDir ?? path.join(projectRoot, 'assets/models');
+      const taskInput: BlenderRunTaskInput = {
+        taskType: (item.blenderTaskType as BlenderTaskType) ?? 'custom',
+        inputFile: item.blenderInputFile,
+        outputDir,
+        ...(item.blenderParams as Record<string, unknown>),
+      };
+      const result = await blenderRunner.runPipelineTask(taskInput, {
+        projectRoot,
+        onProgress: (event) => {
+          mainWindow?.webContents.send('blender:event', event);
+        },
+      });
+      return {
+        ok: result.ok,
+        decision,
+        summary: result.summary,
+        output: result.logs,
+      };
+    } catch (error) {
+      approvals.stageBlenderTask({
+        projectRoot: item.projectRoot,
+        taskType: item.blenderTaskType,
+        inputFile: item.blenderInputFile,
+        outputDir: item.blenderOutputDir ?? 'assets/models',
+        targetFiles: item.blenderTargetFiles,
+        description: item.blenderTaskDescription ?? item.blenderDescription,
+        taskDescription: item.blenderTaskDescription,
+        scriptSummary: item.blenderScriptSummary,
+        params: item.blenderParams,
+      });
+      throw error;
+    }
   }
   const cwd = await resolveWithinRoot(projectRoot, '.');
   const result = await runShellCommand({ command: item.command ?? '', cwd, timeoutMs: 60_000 });
@@ -854,10 +931,38 @@ function registerIpc(): void {
   ipcMain.handle('mcp:status', (): { running: boolean; tools: McpToolSummary[] } => ({ running: mcp.running, tools: mcp.listTools() }));
   // Starting a server runs a local program, so it is staged like any other command.
   ipcMain.handle('mcp:connect', (_event, spec: unknown): PendingApprovalView => toApprovalView(stageMcpConnect(approvals, mcp, spec)));
-  ipcMain.handle('mcp:disconnect', () => {
+  ipcMain.handle('mcp:disconnect', async () => {
     studioReads.clear();
-    return mcp.stop();
+    await mcp.disconnectAll();
   });
+
+  // Multi-server pool channels
+  ipcMain.handle('mcp:pool:list', (): McpServerView[] => mcp.listServerViews());
+  ipcMain.handle('mcp:pool:server-status', (_event, args: { serverId: string }) => mcp.getServerView(args.serverId));
+  ipcMain.handle('mcp:pool:connect', (_event, config: McpServerConfig): PendingApprovalView => {
+    return toApprovalView(stageMcpPoolConnect(approvals, config));
+  });
+  ipcMain.handle('mcp:pool:disconnect', async (_event, args: { serverId: string }) => {
+    await mcp.disconnectMcpServer(args.serverId);
+    return { ok: true };
+  });
+  ipcMain.handle('mcp:pool:reconnect', (_event, args: { serverId: string }): PendingApprovalView => {
+    const view = mcp.getServerView(args.serverId);
+    if (!view) {
+      throw new Error(`MCP server not found in pool: ${args.serverId}`);
+    }
+    return toApprovalView(stageMcpPoolConnect(approvals, { id: view.id, command: view.command, args: view.args }));
+  });
+  ipcMain.handle('mcp:pool:save-config', async (_event, config: McpServerConfig) => {
+    await mcp.saveServerConfig(config);
+    return { ok: true };
+  });
+  ipcMain.handle('mcp:pool:delete-config', async (_event, args: { serverId: string }) => {
+    await mcp.deleteServerConfig(args.serverId);
+    return { ok: true };
+  });
+  ipcMain.handle('mcp:pool:tools', (): McpPooledToolSummary[] => mcp.listAllAgentTools());
+  ipcMain.handle('mcp:pool:health', () => mcp.getHealthReport());
   const studioCheckpoints = (): string => path.join(app.getPath('userData'), 'studio-checkpoints');
   ipcMain.handle('studio:checkpoints', async () => {
     try {
@@ -905,6 +1010,52 @@ function registerIpc(): void {
     await shell.openExternal(parsed.toString());
     return { ok: true };
   });
+
+  // --- Blender 3D Task Runner IPC Handlers ---
+  ipcMain.handle('blender:status', async (): Promise<BlenderStatusView> => {
+    return blenderRunner.getStatus();
+  });
+
+  ipcMain.handle('blender:detect', async (_event, args?: { customPath?: string }): Promise<BlenderStatusView> => {
+    return blenderRunner.detect(args?.customPath);
+  });
+
+  ipcMain.handle('blender:run-task', async (_event, input: BlenderRunTaskInput): Promise<BlenderTaskResultView | PendingApprovalView> => {
+    if (!projectRoot) {
+      throw new Error('Pick a project folder before running Blender tasks.');
+    }
+    if (input.inputFile) {
+      await resolveWithinRoot(projectRoot, input.inputFile);
+    }
+
+    if (input.stageOnly) {
+      const pending = approvals.stageBlenderTask({
+        projectRoot,
+        taskType: input.taskType,
+        inputFile: input.inputFile,
+        outputDir: input.outputDir ?? 'assets/models',
+        params: input as unknown as Record<string, unknown>,
+        description: `Blender 3D task: ${input.taskType} on ${input.inputFile ?? 'project'}`,
+        taskDescription: `${input.taskType} (${input.inputFile ?? 'project mesh'})`,
+      });
+      return toApprovalView(pending);
+    }
+
+    return blenderRunner.runPipelineTask(input, {
+      projectRoot,
+      onProgress: (event: BlenderTaskEvent) => {
+        mainWindow?.webContents.send('blender:event', event);
+      },
+    });
+  });
+
+  ipcMain.handle('blender:cancel-task', async (_event, args?: { taskId?: string }) => {
+    return blenderRunner.cancelTask(args?.taskId);
+  });
+
+  ipcMain.handle('blender:history', async (): Promise<BlenderTaskHistoryEntry[]> => {
+    return blenderRunner.getHistory(projectRoot);
+  });
 }
 
 function createWindow(): void {
@@ -944,6 +1095,9 @@ function createWindow(): void {
     }
     return { action: 'deny' };
   });
+  mcp.on('event', (event: McpServerPoolEvent) => {
+    mainWindow?.webContents.send('mcp:pool:event', event);
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -961,7 +1115,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  void mcp.stop();
+  void mcp.disconnectAll();
   if (process.platform !== 'darwin') {
     app.quit();
   }

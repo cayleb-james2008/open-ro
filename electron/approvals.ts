@@ -2,7 +2,7 @@ import * as crypto from 'node:crypto';
 import type { ComfyGenerationPlan } from './comfyClient';
 import type { McpServerIdentity } from './types';
 
-export type ApprovalKind = 'write' | 'command' | 'mcp' | 'mcp-server' | 'studio' | 'delete' | 'media';
+export type ApprovalKind = 'write' | 'command' | 'mcp' | 'mcp-server' | 'studio' | 'delete' | 'media' | 'blender-task';
 export type StudioOp = 'snapshot' | 'read' | 'write' | 'play' | 'console' | 'input' | 'capture' | 'search_tree' | 'inspect' | 'multi_edit' | 'asset';
 export type ApprovalDecision = 'approve' | 'reject';
 
@@ -21,6 +21,8 @@ export interface PendingApproval {
   mcpTool?: string;
   mcpArgs?: string;
   serverArgs?: string[];
+  /** Target server ID in multi-server MCP pool (e.g., 'studio', 'blender'). Defaults to 'default' if omitted. */
+  mcpServerId?: string;
   /** The server an MCP call was staged against; the call runs only on that same server session. */
   mcpServer?: McpServerIdentity;
   studioOp?: StudioOp;
@@ -36,6 +38,16 @@ export interface PendingApproval {
   mediaPrompt?: string;
   mediaDuration?: number;
   mediaSeed?: number;
+  /** Blender headless task review fields */
+  blenderTaskType?: string;
+  blenderTaskDescription?: string;
+  blenderScriptPath?: string;
+  blenderScriptSummary?: string;
+  blenderInputFile?: string;
+  blenderOutputDir?: string;
+  blenderTargetFiles?: string[];
+  blenderParams?: Record<string, unknown>;
+  blenderDescription?: string;
 }
 
 const MAX_PENDING = 30;
@@ -119,7 +131,7 @@ export class ApprovalQueue {
   }
 
   /** Stage starting an MCP server. The exact command and arguments are what will run. */
-  stageMcpServer(input: { projectRoot: string; command: string; args: string[] }): PendingApproval {
+  stageMcpServer(input: { projectRoot: string; command: string; args: string[]; mcpServerId?: string }): PendingApproval {
     this.assertRoom();
     const item: PendingApproval = {
       id: crypto.randomUUID(),
@@ -130,6 +142,7 @@ export class ApprovalQueue {
       order: this.nextOrder++,
       command: input.command,
       serverArgs: [...input.args],
+      mcpServerId: input.mcpServerId?.trim() || undefined,
     };
     this.items.set(item.id, item);
     return item;
@@ -215,6 +228,75 @@ export class ApprovalQueue {
       previous: input.previous,
       content: input.content,
     });
+    return item;
+  }
+
+  /**
+   * Stage a Blender 3D pipeline task or headless script run for human review.
+   */
+  stageBlenderTask(
+    taskDescriptionOrInput:
+      | string
+      | {
+          projectRoot: string;
+          taskType?: string;
+          inputFile?: string;
+          outputDir: string;
+          targetFiles?: string[];
+          description?: string;
+          taskDescription?: string;
+          scriptSummary?: string;
+          params?: Record<string, unknown>;
+        },
+    scriptSummary?: string,
+    outputDir?: string,
+    targetFiles?: string[],
+    projectRoot?: string,
+  ): PendingApproval {
+    this.assertRoom();
+    let pRoot: string;
+    let desc: string;
+    let sSummary: string | undefined;
+    let outDir: string;
+    let targets: string[] | undefined;
+    let taskType: string | undefined;
+    let inputFile: string | undefined;
+    let params: Record<string, unknown> | undefined;
+
+    if (typeof taskDescriptionOrInput === 'string') {
+      desc = taskDescriptionOrInput;
+      sSummary = scriptSummary;
+      outDir = outputDir ?? '';
+      targets = targetFiles;
+      pRoot = projectRoot ?? '';
+    } else {
+      pRoot = taskDescriptionOrInput.projectRoot;
+      desc = taskDescriptionOrInput.taskDescription ?? taskDescriptionOrInput.description ?? 'Blender task';
+      sSummary = taskDescriptionOrInput.scriptSummary;
+      outDir = taskDescriptionOrInput.outputDir;
+      targets = taskDescriptionOrInput.targetFiles ?? (taskDescriptionOrInput.inputFile ? [taskDescriptionOrInput.inputFile] : undefined);
+      taskType = taskDescriptionOrInput.taskType;
+      inputFile = taskDescriptionOrInput.inputFile;
+      params = taskDescriptionOrInput.params;
+    }
+
+    const item: PendingApproval = {
+      id: crypto.randomUUID(),
+      kind: 'blender-task',
+      projectRoot: pRoot,
+      createdAt: new Date(this.now()).toISOString(),
+      expiresAt: this.now() + this.ttlMs,
+      order: this.nextOrder++,
+      blenderTaskType: taskType,
+      blenderTaskDescription: desc,
+      blenderDescription: desc,
+      blenderScriptSummary: sSummary,
+      blenderOutputDir: outDir,
+      blenderTargetFiles: targets ? [...targets] : undefined,
+      blenderInputFile: inputFile,
+      blenderParams: params,
+    };
+    this.items.set(item.id, item);
     return item;
   }
 

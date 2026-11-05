@@ -53,7 +53,7 @@ export interface ToolCallResult {
 /** Approval the renderer may inspect. The id is the only value accepted back. */
 export interface PendingApprovalView {
   id: string;
-  kind: 'write' | 'command' | 'mcp' | 'mcp-server' | 'studio' | 'delete' | 'media';
+  kind: 'write' | 'command' | 'mcp' | 'mcp-server' | 'studio' | 'delete' | 'media' | 'blender-task';
   createdAt: string;
   relPath?: string;
   previous?: string;
@@ -68,6 +68,8 @@ export interface PendingApprovalView {
   mcpServer?: string;
   /** Arguments for an MCP server start, passed without a shell. */
   serverArgs?: string[];
+  /** Target server ID in connection pool. */
+  mcpServerId?: string;
   /** Studio approvals: what runs, on which instance (dot path from game). */
   studioOp?: 'snapshot' | 'read' | 'write' | 'play' | 'console' | 'input' | 'capture' | 'search_tree' | 'inspect' | 'multi_edit' | 'asset';
   studioPath?: string;
@@ -80,6 +82,16 @@ export interface PendingApprovalView {
   mediaPrompt?: string;
   mediaDuration?: number;
   mediaSeed?: number;
+  /** Blender headless task review fields */
+  blenderTaskType?: string;
+  blenderTaskDescription?: string;
+  blenderScriptPath?: string;
+  blenderScriptSummary?: string;
+  blenderInputFile?: string;
+  blenderOutputDir?: string;
+  blenderTargetFiles?: string[];
+  blenderParams?: Record<string, unknown>;
+  blenderDescription?: string;
 }
 
 /** Which server process a staged MCP call was staged against. `session` changes on every start. */
@@ -87,6 +99,8 @@ export interface McpServerIdentity {
   command: string;
   args: string[];
   session: string;
+  /** Explicit pool server ID (e.g. 'studio-mcp', 'blender-3d'). */
+  serverId?: string;
 }
 
 export interface ApprovalResult {
