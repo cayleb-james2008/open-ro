@@ -45,6 +45,7 @@ import {
   type ProviderAppState,
 } from './providerState';
 import { runShellCommand } from './runCommand';
+import { globalProcessSupervisor } from './taskBudget';
 import { sanitizeSessions } from './sessions';
 import { deleteCredential, listCredentialServices, loadCredential, saveCredential, secureStorageAvailable, storePath } from './secureStore';
 import { runAgentTurn, testConnection, toolSchemas } from './agent';
@@ -770,11 +771,12 @@ function registerIpc(): void {
       }
     }
   });
-  ipcMain.handle('agent:cancel', () => {
+  ipcMain.handle('agent:cancel', async () => {
     if (!activeTurn) {
       return { ok: true, cancelled: false };
     }
     activeTurn.abort();
+    await globalProcessSupervisor.terminateAll('User cancelled active agent turn');
     return { ok: true, cancelled: true };
   });
 
@@ -1116,7 +1118,12 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   void mcp.disconnectAll();
+  void globalProcessSupervisor.terminateAll('Application window closed');
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+app.on('before-quit', () => {
+  void globalProcessSupervisor.terminateAll('Application exiting');
 });

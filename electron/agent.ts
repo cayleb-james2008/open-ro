@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 
 import { disarmInjections, scanForInjections } from './promptSafety';
 import { getProviderOption, type ProviderOption, type ProviderKind } from './providerCatalog';
+import { globalProcessSupervisor, killProcessTree, TaskBudgetTracker, type TaskBudgetOptions } from './taskBudget';
 import type {
   AgentTurnResult,
   ChatMessage,
@@ -483,6 +484,7 @@ async function callOpenAiCompatible(
   signal?: AbortSignal,
   projectContext?: string,
   onDelta?: (text: string) => void,
+  budget: TaskBudgetTracker = new TaskBudgetTracker(),
 ): Promise<AgentTurnResult> {
   const base = (connection.baseUrl ?? option.defaultBaseUrl ?? '').replace(/\/+$/, '');
   if (!base) {
@@ -495,7 +497,14 @@ async function callOpenAiCompatible(
   ];
   let assistantText = '';
 
-  for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
+  for (let round = 0; ; round += 1) {
+    if (signal?.aborted) {
+      return { ok: false, assistantText, toolTrace: trace, error: 'Cancelled.' };
+    }
+    const roundCheck = budget.recordRound();
+    if (!roundCheck.ok) {
+      return { ok: false, assistantText, toolTrace: trace, error: roundCheck.reason ?? 'Task budget exceeded.' };
+    }
     const response = await fetchWithRetry(`${base}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -546,8 +555,26 @@ async function callOpenAiCompatible(
     convo.push({ role: 'assistant', content: roundText, tool_calls: calls.map((call) => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } })) });
     let staged = false;
     for (const call of calls) {
-      const executed = await runTool(call, executor, trace);
+      if (signal?.aborted) {
+        return { ok: false, assistantText, toolTrace: trace, error: 'Cancelled.' };
+      }
+      const toolCheck = budget.recordToolCall(call.name);
+      if (!toolCheck.ok) {
+        trace.push({
+          id: call.id,
+          name: call.name as ToolCallRequest['name'],
+          args: call.args,
+          status: 'error',
+          detail: toolCheck.reason ?? 'Budget exceeded',
+        });
+        return { ok: false, assistantText, toolTrace: trace, error: toolCheck.reason ?? 'Task budget exceeded.' };
+      }
+      const executed = await runTool(call, executor, trace, signal);
       convo.push({ role: 'tool', tool_call_id: call.id, content: executed.output });
+      const outcomeCheck = budget.recordToolResult(call.name, executed.ok, executed.output);
+      if (!outcomeCheck.ok) {
+        return { ok: false, assistantText, toolTrace: trace, error: outcomeCheck.reason ?? 'Consecutive tool failure limit exceeded.' };
+      }
       if (executed.pendingApproval) {
         staged = true;
         break;
@@ -569,6 +596,7 @@ async function callAnthropic(
   executor: ToolExecutor,
   signal?: AbortSignal,
   projectContext?: string,
+  budget: TaskBudgetTracker = new TaskBudgetTracker(),
 ): Promise<AgentTurnResult> {
   const base = (connection.baseUrl ?? 'https://api.anthropic.com').replace(/\/+$/, '');
   const trace: AgentTurnResult['toolTrace'] = [];
@@ -579,7 +607,14 @@ async function callAnthropic(
     .map((message) => ({ role: message.role === 'assistant' ? 'assistant' : 'user', content: message.content }));
   let assistantText = '';
 
-  for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
+  for (let round = 0; ; round += 1) {
+    if (signal?.aborted) {
+      return { ok: false, assistantText, toolTrace: trace, error: 'Cancelled.' };
+    }
+    const roundCheck = budget.recordRound();
+    if (!roundCheck.ok) {
+      return { ok: false, assistantText, toolTrace: trace, error: roundCheck.reason ?? 'Task budget exceeded.' };
+    }
     const response = await fetchWithRetry(baseURL, {
       method: 'POST',
       headers: {
@@ -621,8 +656,26 @@ async function callAnthropic(
     const results: Array<Record<string, unknown>> = [];
     let staged = false;
     for (const call of toolCalls) {
-      const executed = await runTool(call, executor, trace);
+      if (signal?.aborted) {
+        return { ok: false, assistantText, toolTrace: trace, error: 'Cancelled.' };
+      }
+      const toolCheck = budget.recordToolCall(call.name);
+      if (!toolCheck.ok) {
+        trace.push({
+          id: call.id,
+          name: call.name as ToolCallRequest['name'],
+          args: call.args,
+          status: 'error',
+          detail: toolCheck.reason ?? 'Budget exceeded',
+        });
+        return { ok: false, assistantText, toolTrace: trace, error: toolCheck.reason ?? 'Task budget exceeded.' };
+      }
+      const executed = await runTool(call, executor, trace, signal);
       results.push({ type: 'tool_result', tool_use_id: call.id, content: executed.output, is_error: !executed.ok });
+      const outcomeCheck = budget.recordToolResult(call.name, executed.ok, executed.output);
+      if (!outcomeCheck.ok) {
+        return { ok: false, assistantText, toolTrace: trace, error: outcomeCheck.reason ?? 'Consecutive tool failure limit exceeded.' };
+      }
       if (executed.pendingApproval) {
         staged = true;
         break;
@@ -653,7 +706,11 @@ export async function runTool(
   call: { id: string; name: string; args: Record<string, unknown> },
   executor: ToolExecutor,
   trace: AgentTurnResult['toolTrace'],
+  signal?: AbortSignal,
 ): Promise<ToolCallResult> {
+  if (signal?.aborted) {
+    return { ok: false, output: 'Tool execution cancelled.' };
+  }
   const name = call.name as ToolCallRequest['name'];
   try {
     const result = await executor.execute({ id: call.id, name, args: call.args });
@@ -719,16 +776,19 @@ async function callCli(
       },
       shell: isWindows,
     });
+    const unregister = child.pid
+      ? globalProcessSupervisor.register({
+          pid: child.pid,
+          command: option.cliCommand ?? 'cli',
+          timeoutMs: 10 * 60_000,
+          killer: () => killProcessTree(child.pid!),
+        })
+      : () => {};
     let stdout = '';
     let stderr = '';
     const stop = (): void => {
-      // cmd.exe (shell: true) does not propagate a kill to the CLI it launched.
-      if (isWindows && child.pid) {
-        try {
-          spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true }).on('error', () => child.kill());
-        } catch {
-          child.kill();
-        }
+      if (child.pid) {
+        void killProcessTree(child.pid);
       } else {
         child.kill();
       }
@@ -748,10 +808,12 @@ async function callCli(
       stderr += chunk.toString();
     });
     child.on('error', (error) => {
+      unregister();
       clearTimeout(timer);
       resolve({ ok: false, assistantText: '', toolTrace: [], error: `Could not launch ${option.cliCommand}: ${error.message}` });
     });
     child.on('exit', (code) => {
+      unregister();
       clearTimeout(timer);
       if (signal?.aborted) {
         resolve({ ok: false, assistantText: '', toolTrace: [], error: 'Cancelled.' });
@@ -773,11 +835,14 @@ export async function runAgentTurn(args: {
   signal?: AbortSignal;
   projectContext?: string;
   onDelta?: (text: string) => void;
+  budget?: TaskBudgetTracker;
+  budgetOptions?: TaskBudgetOptions;
 }): Promise<AgentTurnResult> {
-  const { connection, messages, projectRoot, executor, signal, projectContext, onDelta } = args;
+  const { connection, messages, projectRoot, executor, signal, projectContext, onDelta, budgetOptions } = args;
   if (signal?.aborted) {
     return { ok: false, assistantText: '', toolTrace: [], error: 'Cancelled.' };
   }
+  const budget = args.budget ?? new TaskBudgetTracker(budgetOptions);
   const option = getProviderOption(connection.kind);
   const lastPrompt = [...messages].reverse().find((message) => message.role === 'user')?.content ?? '';
 
@@ -785,9 +850,13 @@ export async function runAgentTurn(args: {
     return callCli(connection, lastPrompt, projectRoot, signal);
   }
   if (option.api === 'anthropic-messages') {
-    return callAnthropic(connection, messages, executor, signal, projectContext);
+    return args.budget || args.budgetOptions
+      ? callAnthropic(connection, messages, executor, signal, projectContext, budget)
+      : callAnthropic(connection, messages, executor, signal, projectContext);
   }
-  return callOpenAiCompatible(connection, option, sanitizeMessages(messages), executor, signal, projectContext, onDelta);
+  return args.budget || args.budgetOptions
+    ? callOpenAiCompatible(connection, option, sanitizeMessages(messages), executor, signal, projectContext, onDelta, budget)
+    : callOpenAiCompatible(connection, option, sanitizeMessages(messages), executor, signal, projectContext, onDelta);
 }
 
 /** Connection test per route (docs/AUTH.md: a CLI route is validated by running its status command). */
@@ -829,3 +898,4 @@ export async function testConnection(connection: ProviderConnection, projectRoot
 }
 
 export type { ProviderKind };
+export { TaskBudgetTracker, type TaskBudgetOptions };

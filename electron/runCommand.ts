@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { globalProcessSupervisor, killProcessTree } from './taskBudget';
 import { scrubbedEnv } from './toolEnv';
 
 export interface CommandResult {
@@ -6,6 +7,7 @@ export interface CommandResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  cancelled?: boolean;
 }
 
 const MAX_OUTPUT = 20_000;
@@ -39,7 +41,10 @@ function cap(value: string): string {
 }
 
 /** Run one already-approved command. The caller must have checked the working directory. */
-export function runShellCommand(options: { command: string; cwd: string; timeoutMs?: number }): Promise<CommandResult> {
+export function runShellCommand(options: { command: string; cwd: string; timeoutMs?: number; signal?: AbortSignal }): Promise<CommandResult> {
+  if (options.signal?.aborted) {
+    return Promise.resolve({ code: null, stdout: '', stderr: '', timedOut: false, cancelled: true });
+  }
   const requested = options.timeoutMs ?? 60_000;
   const timeoutMs = Math.min(Math.max(requested, 1_000), 5 * 60_000);
   const { file, args } = shellInvocation(options.command);
@@ -51,6 +56,15 @@ export function runShellCommand(options: { command: string; cwd: string; timeout
       detached: process.platform !== 'win32',
       windowsVerbatimArguments: process.platform === 'win32',
     });
+    const unregister = child.pid
+      ? globalProcessSupervisor.register({
+          pid: child.pid,
+          command: options.command,
+          timeoutMs,
+          killer: () => killProcessTree(child.pid!),
+        })
+      : () => {};
+
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -60,35 +74,35 @@ export function runShellCommand(options: { command: string; cwd: string; timeout
         return;
       }
       settled = true;
+      unregister();
       clearTimeout(timer);
+      if (options.signal) {
+        options.signal.removeEventListener('abort', onAbort);
+      }
       resolve(result);
     };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      if (child.pid && process.platform !== 'win32') {
-        try {
-          process.kill(-child.pid, 'SIGKILL');
-        } catch {
-          child.kill('SIGKILL');
-        }
-      } else if (child.pid) {
-        // cmd.exe does not propagate kills to its descendants; ask taskkill
-        // to terminate the whole process group, then force-stop cmd itself.
-        // Whether taskkill exits (success or not) or fails to start, cmd is
-        // always force-stopped so the promise still settles.
-        const killer = spawn('taskkill.exe', ['/pid', String(child.pid), '/t', '/f'], {
-          windowsHide: true,
-          windowsVerbatimArguments: false,
-        });
-        const stopCmd = () => {
-          child.kill('SIGKILL');
-        };
-        killer.on('exit', stopCmd);
-        killer.on('error', stopCmd);
+
+    const onAbort = () => {
+      if (child.pid) {
+        void killProcessTree(child.pid);
       } else {
         child.kill('SIGKILL');
       }
-      // Never let a stalled taskkill keep this entry waiting forever; cmd
+      finish({ code: null, stdout, stderr, timedOut: false, cancelled: true });
+    };
+
+    if (options.signal) {
+      options.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      if (child.pid) {
+        void killProcessTree(child.pid);
+      } else {
+        child.kill('SIGKILL');
+      }
+      // Never let a stalled cleanup keep this entry waiting forever; cmd
       // itself is always force-stopped two seconds after a timeout is observed.
       setTimeout(() => {
         if (!settled) {
@@ -109,7 +123,11 @@ export function runShellCommand(options: { command: string; cwd: string; timeout
         return;
       }
       settled = true;
+      unregister();
       clearTimeout(timer);
+      if (options.signal) {
+        options.signal.removeEventListener('abort', onAbort);
+      }
       reject(error);
     });
     child.on('exit', (code) => {
