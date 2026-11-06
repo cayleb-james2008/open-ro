@@ -19,6 +19,15 @@ import { approvalCopy, providerInitials } from './labels';
 import { buildProgressTimeline, progressSummary } from './progressTimeline';
 import { isSessionVisibleForProject, normalizeProjectPath, resolveActiveSessionId } from './sessionScope';
 import { providerOptions, type ProviderKind, type ProviderOption } from '../electron/providerCatalog';
+import { Button } from './components/ui/button';
+import { Badge } from './components/ui/badge';
+import { PresenceMark } from './components/ui/presence';
+import { AnimatedGroup } from './components/motion/animated-group';
+import { AnimatedBackground } from './components/motion/animated-background';
+import { TransitionPanel } from './components/motion/transition-panel';
+import { HoldToConfirm } from './components/kitchen/hold-to-confirm';
+import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from './components/ui/accordion';
+import { TactileButton } from './components/kitchen/tactile-button';
 import type { SessionSnapshot, StoredChatSession } from '../electron/sessions';
 import type { AcceptanceDefinition } from '../electron/acceptanceChecks';
 import type { PlaytestLedgerEntry, PlaytestRepairPlan } from '../electron/playtestLedger';
@@ -36,6 +45,20 @@ const SUGGESTIONS: Array<{ title: string; body: string; prompt: string }> = [
   { title: 'Explain a file', body: 'Pick a script and walk through what it does, step by step.', prompt: 'Pick one script from my project and explain what it does.' },
   { title: 'Set up a test command', body: 'Find a safe way to check that the game still builds.', prompt: 'Suggest a safe command to validate this project. Stage it for my approval; do not run it unasked.' },
 ];
+
+const THREAD_GROUP_VARIANTS = {
+  container: { hidden: {}, visible: { transition: { staggerChildren: 0.04 } } },
+  item: {
+    hidden: { opacity: 0, y: 8 },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.22, ease: [0.2, 0, 0, 1] as const } },
+  },
+};
+
+const PANEL_VARIANTS = {
+  enter: { opacity: 0, y: 6 },
+  center: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: -6 },
+};
 
 const NAV: Array<{ id: Screen; label: string; icon: string }> = [
   { id: 'chat', label: 'Chat', icon: 'chat' },
@@ -1126,7 +1149,7 @@ export default function App() {
       <a className="skip-link" href="#main">Skip to content</a>
       <aside className="sidebar">
         <div className="brand-row">
-          <div className="brand-mark">OR</div>
+          <PresenceMark size={30} />
           <div className="brand-lockup">
             <strong>Open-Ro</strong>
             <span>Studio 0.1.0</span>
@@ -1141,17 +1164,24 @@ export default function App() {
         </button>
         <div className="nav-label">Workspace</div>
         <nav className="side-nav" aria-label="Primary">
-          {NAV.map((item) => (
-            <button type="button" key={item.id} className={`nav-item ${screen === item.id ? 'active' : ''}`} aria-current={screen === item.id ? 'page' : undefined} onClick={() => setScreen(item.id)}>
-              {ICONS[item.icon]}
-              <span>{item.label}</span>
-            </button>
-          ))}
+          <AnimatedBackground
+            defaultValue={screen}
+            onValueChange={(value) => { if (value) { setScreen(value as Screen); } }}
+            className="nav-active-pill"
+            transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+          >
+            {NAV.map((item) => (
+              <button type="button" key={item.id} data-id={item.id} className={`nav-item ${screen === item.id ? 'active' : ''}`} aria-current={screen === item.id ? 'page' : undefined} onClick={() => setScreen(item.id)}>
+                {ICONS[item.icon]}
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </AnimatedBackground>
         </nav>
-        <button type="button" className="new-chat-btn" onClick={newChat}>
+        <Button variant="primary" className="new-chat-btn" onClick={newChat}>
           {ICONS.plus}
           <span>New chat</span>
-        </button>
+        </Button>
         <div className="recent-label nav-label">Recent</div>
         <div className="recent-chat-list">
           {visibleSessions.map((session) => (
@@ -1203,10 +1233,17 @@ export default function App() {
 
         {(approvals.length > 0 || actionResult) && <ApprovalTray />}
 
-        {screen === 'chat' && <ChatPage />}
-        {screen === 'models' && <ModelsPage />}
-        {screen === 'workspace' && <WorkspacePage />}
-        {screen === 'integrations' && <IntegrationsPage />}
+        <TransitionPanel
+          activeIndex={NAV.findIndex((item) => item.id === screen)}
+          variants={PANEL_VARIANTS}
+          transition={{ duration: 0.2, ease: [0.2, 0, 0, 1] }}
+          className="screen-panel"
+        >
+          <ChatPage />
+          <ModelsPage />
+          <WorkspacePage />
+          <IntegrationsPage />
+        </TransitionPanel>
       </main>
 
       {shortcutsOpen && (
@@ -1295,7 +1332,7 @@ export default function App() {
               )}
               <div className="modal-actions">
                 <button type="button" className="outline-btn" disabled={resolving} onClick={() => void resolveApproval(item.id, 'reject')}>Reject</button>
-                <button type="button" className="primary-btn" disabled={hidden > 0 || resolving} title={hidden > 0 ? 'Show the whole diff first' : undefined} onClick={() => void resolveApproval(item.id, 'approve')}>{resolving ? 'Working…' : copy.approveLabel}</button>
+                <HoldToConfirm className="primary-btn" disabled={hidden > 0 || resolving} title={hidden > 0 ? 'Show the whole diff first' : 'Press and hold to approve'} onConfirm={() => void resolveApproval(item.id, 'approve')}>{resolving ? 'Working…' : <>{copy.approveLabel}<span className="hold-hint">hold</span></>}</HoldToConfirm>
               </div>
             </article>
           );
@@ -1311,6 +1348,7 @@ export default function App() {
         {!activeSessionData || activeSessionData.messages.length === 0 ? (
           <div className="chat-scroll" ref={scrollRef}>
             <div className="welcome-wrap">
+              <span className="welcome-presence"><PresenceMark size={44} /></span>
               <span className="welcome-chip">Local-first Roblox workspace</span>
               <h1>
                 What are we <span>building<span>?</span></span>
@@ -1335,7 +1373,7 @@ export default function App() {
                   </span>
                 </button>
               </div>
-              <div className="suggestion-grid">
+              <AnimatedGroup className="suggestion-grid" variants={THREAD_GROUP_VARIANTS}>
                 {SUGGESTIONS.map((item) => (
                   <button type="button" key={item.title} onClick={() => setDraft(item.prompt)}>
                     {ICONS.spark}
@@ -1345,7 +1383,7 @@ export default function App() {
                     </span>
                   </button>
                 ))}
-              </div>
+              </AnimatedGroup>
               <div className="welcome-foot">
                 {ICONS.shield}
                 <span>Every file write, command and MCP tool call needs your approval — nothing runs unchecked.</span>
@@ -1356,7 +1394,7 @@ export default function App() {
         ) : (
           <>
             <div className="chat-scroll" ref={scrollRef}>
-              <div className="message-list">
+              <AnimatedGroup className="message-list" variants={THREAD_GROUP_VARIANTS}>
                 {activeSessionData.messages.map((message, index) => (
                   <div className="message-row" key={index}>
                     <span className={`message-avatar ${message.role === 'assistant' ? 'assistant' : ''}`}>{message.role === 'assistant' ? 'RO' : 'YOU'}</span>
@@ -1408,7 +1446,7 @@ export default function App() {
                     </div>
                   </div>
                 )}
-              </div>
+              </AnimatedGroup>
             </div>
             <Composer />
           </>
@@ -1465,9 +1503,9 @@ export default function App() {
               {sending && (
                 <button type="button" className="outline-btn" onClick={() => void stopTurn()} aria-label="Stop the current agent turn">Stop</button>
               )}
-              <button type="button" className="send-btn" disabled={!draft.trim() || sending} onClick={() => void sendDraft()} aria-label="Send message">
+              <TactileButton className="send-btn" disabled={!draft.trim() || sending} onClick={() => void sendDraft()} aria-label="Send message">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 8h11M9 3.5 13.5 8 9 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
-              </button>
+              </TactileButton>
             </div>
           </div>
         </div>
@@ -1612,9 +1650,9 @@ export default function App() {
           </div>
           {test && <div className={`test-result ${test.ok ? 'success' : 'failed'}`}>{test.detail}</div>}
           <div className="modal-actions">
-            <button type="button" className="text-btn" onClick={() => void testProvider()}>Check connection</button>
-            <button type="button" className="outline-btn" onClick={() => setProviderModal(resetForm())}>Cancel</button>
-            <button type="button" className="primary-btn" onClick={() => void saveProvider()}>Save and set active</button>
+            <Button variant="ghost" onClick={() => void testProvider()}>Check connection</Button>
+            <Button variant="outline" onClick={() => setProviderModal(resetForm())}>Cancel</Button>
+            <Button variant="primary" onClick={() => void saveProvider()}>Save and set active</Button>
           </div>
       </Dialog>
     );
@@ -1631,8 +1669,8 @@ export default function App() {
             <p>File browsing is read-only in 0.1.0; agent write proposals are reviewed before anything lands, and every accepted write leaves a checkpoint.</p>
           </div>
           <div className="heading-actions">
-            <button type="button" className="outline-btn" onClick={() => void refreshWorkspaceState()}>Refresh</button>
-            <button type="button" className="primary-btn" onClick={() => void selectProject()}>Choose folder</button>
+            <Button variant="outline" onClick={() => void refreshWorkspaceState()}>Refresh</Button>
+            <Button variant="primary" onClick={() => void selectProject()}>Choose folder</Button>
           </div>
         </div>
 
@@ -2222,7 +2260,7 @@ export default function App() {
             <p>Detect, test, install or skip. No capability below is required — the chat workspace works with only a model connection.</p>
           </div>
           <div className="heading-actions">
-            <button type="button" className="outline-btn" onClick={() => void refreshAll()}>Re-detect</button>
+            <Button variant="outline" onClick={() => void refreshAll()}>Re-detect</Button>
           </div>
         </div>
 
@@ -2434,10 +2472,15 @@ export default function App() {
               <span>{group.title}</span>
               <span>{items.length} listed</span>
             </div>
-            <div className="integration-list">
+            <Accordion
+              type="multiple"
+              className="integration-list"
+              value={[...expandedCards]}
+              onValueChange={(values) => setExpandedCards(new Set(values))}
+            >
               {items.map((capability) => (
-                <div className={`integration-card ${expandedCards.has(capability.id) ? 'expanded' : ''}`} key={capability.id}>
-                  <button type="button" className="integration-top" aria-expanded={expandedCards.has(capability.id)} onClick={() => setExpandedCards((prev) => { const next = new Set(prev); if (next.has(capability.id)) { next.delete(capability.id); } else { next.add(capability.id); } return next; })}>
+                <AccordionItem className={`integration-card ${expandedCards.has(capability.id) ? 'expanded' : ''}`} key={capability.id} value={capability.id}>
+                  <AccordionTrigger className="integration-top">
                     <span className="integration-icon">{ICONS.spark}</span>
                     <span className="integration-copy">
                       <b>{capability.name}</b>
@@ -2445,17 +2488,17 @@ export default function App() {
                     </span>
                     <span className={`state-pill ${capability.state}`}>{capability.state}</span>
                     <svg className={expandedCards.has(capability.id) ? 'rotate' : ''} style={{ color: 'var(--color-dim)' }} width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="m4 6 4 4 4-4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
-                  </button>
-                  <div className="integration-detail">
+                  </AccordionTrigger>
+                  <AccordionContent className="integration-detail">
                     {capability.installUrl ? <p>Official page: <a href={capability.installUrl} target="_blank" rel="noreferrer">{capability.installUrl}</a></p> : <p>No separate installer. Use the tool's own documentation.</p>}
                     <div className="integration-meta">
                       <span>Category: {capability.category}</span>
                       <span>Status: {capability.state}</span>
                     </div>
-                  </div>
-                </div>
+                  </AccordionContent>
+                </AccordionItem>
               ))}
-            </div>
+            </Accordion>
           </div>
           );
         })}
