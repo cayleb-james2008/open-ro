@@ -462,7 +462,7 @@ export default function App() {
                 ...session,
                 messages: [
                   ...session.messages,
-                  { role: 'assistant', content: result.assistantText || '(no text in response)', trace: result.toolTrace, error: result.ok ? undefined : result.error },
+                  { role: 'assistant', content: result.assistantText || '(no text in response)', trace: result.toolTrace, error: result.ok ? undefined : result.error, ...(result.usage ? { costLabel: result.usage.costLabel } : {}) },
                 ],
               }
             : session,
@@ -1364,6 +1364,11 @@ export default function App() {
                       <div className="message-author">
                         {message.role === 'assistant' ? 'Open-Ro' : 'You'}
                         {message.trace && message.trace.length > 0 && <span>{message.trace.map((entry) => entry.status).join(', ')}</span>}
+                        {(message as { costLabel?: string }).costLabel && (
+                          <span className="state-pill" title="Token consumption & estimated cost">
+                            {(message as { costLabel?: string }).costLabel}
+                          </span>
+                        )}
                       </div>
                       {message.error ? (
                         <div className="test-result failed">{message.error}</div>
@@ -1443,7 +1448,18 @@ export default function App() {
           <div className="composer-bottom">
             <div className="composer-hints">
               <span>↵ send · ⇧↵ newline · <span className="shortcut-hint" onClick={() => setShortcutsOpen(true)} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') setShortcutsOpen(true); }} aria-label="View keyboard shortcuts"><kbd>?</kbd> shortcuts</span></span>
-              {hasProvider ? <span className="provider-mini">{activeProvider ? `${catalogByKind.get(activeProvider.kind)?.name}${activeProvider.model ? ` · ${activeProvider.model}` : ''}` : 'provider saved — set active'}</span> : <span>Connect a model first →</span>}
+              {hasProvider ? (
+                <span className="provider-mini">
+                  {activeProvider ? `${catalogByKind.get(activeProvider.kind)?.name}${activeProvider.model ? ` · ${activeProvider.model}` : ''}` : 'provider saved — set active'}
+                  {activeProvider && (
+                    <span className="state-pill" title={catalogByKind.get(activeProvider.kind)?.connection === 'local' ? '100% on-device local execution. Zero data egress.' : catalogByKind.get(activeProvider.kind)?.connection === 'cli' ? 'Subprocess subscription CLI' : 'Encrypted HTTPS remote cloud inference'}>
+                      {catalogByKind.get(activeProvider.kind)?.connection === 'local' ? '🔒 Local Free' : catalogByKind.get(activeProvider.kind)?.connection === 'cli' ? '⚡ CLI Subscription' : '🌐 Cloud API'}
+                    </span>
+                  )}
+                </span>
+              ) : (
+                <span>Connect a model first →</span>
+              )}
             </div>
             <div className="composer-right">
               {sending && (

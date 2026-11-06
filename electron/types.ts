@@ -154,6 +154,26 @@ export interface StoredProviderView {
 }
 
 /** Turn result from the agent loop. */
+export type DataEgressCategory = 'LOCAL_ONLY' | 'REMOTE_INFERENCE' | 'SUBSCRIPTION_CLI';
+
+export interface DataFlowDisclosure {
+  category: DataEgressCategory;
+  destination: string;
+  summary: string;
+  egressPayloads: string[];
+  localOnlyPayloads: string[];
+}
+
+export interface TurnCostUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
+  costLabel: string;
+  isFreeOrLocal: boolean;
+}
+
+/** Turn result from the agent loop. */
 export interface AgentTurnResult {
   ok: boolean;
   assistantText: string;
@@ -167,6 +187,8 @@ export interface AgentTurnResult {
     approvalId?: string;
   }>;
   error?: string;
+  usage?: TurnCostUsage;
+  dataFlow?: DataFlowDisclosure;
 }
 
 export interface McpToolSummary {

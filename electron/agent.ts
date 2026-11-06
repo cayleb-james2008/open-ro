@@ -7,11 +7,14 @@ import type {
   AgentTurnResult,
   ChatMessage,
   ConnectionTestResult,
+  DataEgressCategory,
+  DataFlowDisclosure,
   ProviderConnection,
   ToolCallRequest,
   ToolCallResult,
   ToolExecutor,
   ToolSchema,
+  TurnCostUsage,
 } from './types';
 
 /**
@@ -476,6 +479,143 @@ export function systemPrompt(projectContext?: string): string {
 }
 
 /** OpenAI-compatible adapter (openai, openrouter, ollama, custom endpoints). */
+
+/**
+ * Rates per 1,000,000 tokens (USD): [promptRate, completionRate].
+ * Published standard rates as of 2025/2026.
+ */
+const MODEL_PRICING: Array<{ pattern: RegExp; promptPerMTok: number; completionPerMTok: number }> = [
+  // OpenAI
+  { pattern: /gpt-4o-mini/i, promptPerMTok: 0.15, completionPerMTok: 0.60 },
+  { pattern: /gpt-4o/i, promptPerMTok: 2.50, completionPerMTok: 10.00 },
+  { pattern: /o1-mini/i, promptPerMTok: 1.10, completionPerMTok: 4.40 },
+  { pattern: /o1|o3/i, promptPerMTok: 15.00, completionPerMTok: 60.00 },
+  // Anthropic
+  { pattern: /claude-3-5-haiku/i, promptPerMTok: 0.80, completionPerMTok: 4.00 },
+  { pattern: /claude-3-5-sonnet|claude-3-7-sonnet/i, promptPerMTok: 3.00, completionPerMTok: 15.00 },
+  { pattern: /claude-3-opus/i, promptPerMTok: 15.00, completionPerMTok: 75.00 },
+  // Default remote fallback
+  { pattern: /.*/, promptPerMTok: 2.00, completionPerMTok: 6.00 },
+];
+
+/**
+ * Determine the data egress boundaries and destination disclosure for a provider connection.
+ */
+export function getDataFlowDisclosure(connection: ProviderConnection): DataFlowDisclosure {
+  const option = getProviderOption(connection.kind);
+
+  if (option.connection === 'local') {
+    return {
+      category: 'LOCAL_ONLY',
+      destination: connection.baseUrl ?? option.defaultBaseUrl ?? '127.0.0.1 (Local)',
+      summary: '100% on-device local execution. Zero prompts, file contents, or tokens leave your machine.',
+      egressPayloads: [],
+      localOnlyPayloads: [
+        'user prompts',
+        'project files and metadata',
+        'Studio script diffs and inspections',
+        'command execution outputs',
+        'screenshots and playtest ledger',
+      ],
+    };
+  }
+
+  if (option.connection === 'cli') {
+    return {
+      category: 'SUBSCRIPTION_CLI',
+      destination: `${option.cliCommand ?? 'Subscription CLI'} (Local subprocess)`,
+      summary: 'Invokes your locally installed, unmodified CLI subscription runner in a scrubbed environment.',
+      egressPayloads: ['user prompt string'],
+      localOnlyPayloads: [
+        'unrelated environment credentials',
+        'studio IPC reads and checkpoints',
+        'local approval state',
+      ],
+    };
+  }
+
+  const destinationUrl = connection.baseUrl ?? option.defaultBaseUrl ?? 'remote provider';
+  return {
+    category: 'REMOTE_INFERENCE',
+    destination: destinationUrl,
+    summary: 'Cloud inference over HTTPS. Transmits active conversation turns, project index summary, and executed tool results.',
+    egressPayloads: [
+      'conversation messages',
+      'project index summary (names and sizes only)',
+      'executed tool outputs and errors',
+    ],
+    localOnlyPayloads: [
+      'system credentials and safeStorage keyring',
+      'unapproved staged file writes and commands',
+      'files outside user prompt and tool scope',
+      'local checkpoints and audit ledger',
+    ],
+  };
+}
+
+/** Approximate token count from text using character heuristics (approx 4 chars/token). */
+export function estimateTokensFromText(text: string): number {
+  if (!text) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+/**
+ * Compute the token usage and estimated USD cost for an agent turn.
+ */
+export function calculateTurnCost(
+  connection: ProviderConnection,
+  promptTokens = 0,
+  completionTokens = 0,
+): TurnCostUsage {
+  const option = getProviderOption(connection.kind);
+  const totalTokens = promptTokens + completionTokens;
+
+  // Local inference is completely free
+  if (option.connection === 'local') {
+    return {
+      promptTokens,
+      completionTokens,
+      totalTokens,
+      estimatedCostUsd: 0,
+      costLabel: `${totalTokens.toLocaleString()} tokens ($0.00 / Local Free)`,
+      isFreeOrLocal: true,
+    };
+  }
+
+  // Subscription CLI routes are covered by fixed subscription
+  if (option.connection === 'cli') {
+    return {
+      promptTokens,
+      completionTokens,
+      totalTokens,
+      estimatedCostUsd: 0,
+      costLabel: 'Subscription Covered',
+      isFreeOrLocal: true,
+    };
+  }
+
+  // Remote pay-per-token API
+  const modelName = connection.model || '';
+  const pricing = MODEL_PRICING.find((p) => p.pattern.test(modelName)) ?? MODEL_PRICING[MODEL_PRICING.length - 1]!;
+  const promptCost = (promptTokens / 1_000_000) * pricing.promptPerMTok;
+  const completionCost = (completionTokens / 1_000_000) * pricing.completionPerMTok;
+  const estimatedCostUsd = Math.round((promptCost + completionCost) * 100_000) / 100_000;
+
+  const costFormatted = estimatedCostUsd < 0.0001 ? '<$0.0001' : `$${estimatedCostUsd.toFixed(4)}`;
+  const costLabel = `${totalTokens.toLocaleString()} tokens (~${costFormatted})`;
+
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    estimatedCostUsd,
+    costLabel,
+    isFreeOrLocal: false,
+  };
+}
+
 async function callOpenAiCompatible(
   connection: ProviderConnection,
   option: ProviderOption,
@@ -586,7 +726,11 @@ async function callOpenAiCompatible(
       break;
     }
   }
-  return { ok: true, assistantText, toolTrace: trace };
+  const estimatedPrompt = convo.reduce((acc: number, msg) => acc + estimateTokensFromText(typeof (msg as { content?: string }).content === 'string' ? (msg as { content: string }).content : ''), 0);
+  const estimatedCompletion = estimateTokensFromText(assistantText);
+  const usage = calculateTurnCost(connection, estimatedPrompt, estimatedCompletion);
+  const dataFlow = getDataFlowDisclosure(connection);
+  return { ok: true, assistantText, toolTrace: trace, usage, dataFlow };
 }
 
 /** Anthropic adapter (/v1/messages). */
@@ -687,7 +831,11 @@ async function callAnthropic(
       break;
     }
   }
-  return { ok: true, assistantText, toolTrace: trace };
+  const estimatedPrompt = turns.reduce((acc, msg) => acc + estimateTokensFromText(typeof msg.content === 'string' ? msg.content : ''), 0) + estimateTokensFromText(system);
+  const estimatedCompletion = estimateTokensFromText(assistantText);
+  const usage = calculateTurnCost(connection, estimatedPrompt, estimatedCompletion);
+  const dataFlow = getDataFlowDisclosure(connection);
+  return { ok: true, assistantText, toolTrace: trace, usage, dataFlow };
 }
 
 function safeParseArgs(raw: string | undefined): Record<string, unknown> {
@@ -818,7 +966,15 @@ async function callCli(
       if (signal?.aborted) {
         resolve({ ok: false, assistantText: '', toolTrace: [], error: 'Cancelled.' });
       } else if (code === 0) {
-        resolve({ ok: true, assistantText: stdout.trim() || '(command completed with no output)', toolTrace: [] });
+        const promptTokens = estimateTokensFromText(prompt);
+        const completionTokens = estimateTokensFromText(stdout);
+        resolve({
+          ok: true,
+          assistantText: stdout.trim() || '(command completed with no output)',
+          toolTrace: [],
+          usage: calculateTurnCost(connection, promptTokens, completionTokens),
+          dataFlow: getDataFlowDisclosure(connection),
+        });
       } else {
         resolve({ ok: false, assistantText: stdout.trim(), toolTrace: [], error: `${option.cliCommand} exited with code ${code}: ${stderr.trim().slice(0, 400)}` });
       }
@@ -897,5 +1053,5 @@ export async function testConnection(connection: ProviderConnection, projectRoot
   }
 }
 
-export type { ProviderKind };
+export type { ProviderKind, DataEgressCategory, DataFlowDisclosure, TurnCostUsage };
 export { TaskBudgetTracker, type TaskBudgetOptions };
