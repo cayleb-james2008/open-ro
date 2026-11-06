@@ -2,13 +2,15 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { CapabilityInfo } from './types';
 
-const exec = promisify(execFile);
+const defaultExec = promisify(execFile);
 
-/**
- * Optional capability detection (docs/ARCHITECTURE.md §4). Capabilities are
- * reported as adapters with explicit state, never auto-installed.
- */
-const checks: Array<{
+export type CommandRunner = (
+  command: string,
+  args: string[],
+  options: { timeout: number }
+) => Promise<{ stdout: string; stderr?: string }>;
+
+export interface CapabilityCheckDefinition {
   id: string;
   name: string;
   category: CapabilityInfo['category'];
@@ -17,12 +19,20 @@ const checks: Array<{
   command: string;
   args: string[];
   parse: (stdout: string) => string;
-}> = [
+  platform?: NodeJS.Platform;
+}
+
+/**
+ * Optional capability detection (docs/ARCHITECTURE.md §4). Capabilities are
+ * reported as adapters with explicit state, never auto-installed.
+ */
+export const capabilityChecks: CapabilityCheckDefinition[] = [
   {
     id: 'git',
     name: 'Git',
     category: 'vcs',
     state: 'ready',
+    installUrl: 'https://git-scm.com/downloads',
     command: 'git',
     args: ['--version'],
     parse: (stdout) => stdout.trim(),
@@ -77,9 +87,20 @@ const checks: Array<{
     args: ['--version'],
     parse: (stdout) => stdout.trim(),
   },
+  {
+    id: 'vinegar',
+    name: 'Vinegar (Linux Roblox Studio runner)',
+    category: 'studio',
+    state: 'experimental',
+    installUrl: 'https://vinegarhq.org/',
+    command: 'vinegar',
+    args: ['--version'],
+    parse: (stdout) => stdout.trim(),
+    platform: 'linux',
+  },
 ];
 
-const studioCapability: CapabilityInfo = {
+export const studioCapability: CapabilityInfo = {
   id: 'roblox-studio',
   name: 'Roblox Studio MCP',
   category: 'studio',
@@ -88,16 +109,29 @@ const studioCapability: CapabilityInfo = {
   installUrl: 'https://create.roblox.com/docs/studio/mcp',
 };
 
-export async function detectCapabilities(): Promise<CapabilityInfo[]> {
+export async function detectCapabilities(options?: {
+  runner?: CommandRunner;
+  platform?: NodeJS.Platform;
+}): Promise<CapabilityInfo[]> {
+  const runner = options?.runner ?? defaultExec;
+  const currentPlatform = options?.platform ?? process.platform;
+
+  const relevantChecks = capabilityChecks.filter((check) => {
+    if (check.platform && check.platform !== currentPlatform) {
+      return false;
+    }
+    return true;
+  });
+
   const detected = await Promise.all(
-    checks.map(async (check) => {
+    relevantChecks.map(async (check) => {
       try {
-        const { stdout } = await exec(check.command, check.args, { timeout: 4_000 });
+        const { stdout } = await runner(check.command, check.args, { timeout: 4_000 });
         return {
           id: check.id,
           name: check.name,
           category: check.category,
-          state: 'ready' as const,
+          state: (check.state === 'experimental' ? 'experimental' : 'ready') as CapabilityInfo['state'],
           detail: check.parse(stdout) || 'Detected locally.',
           installUrl: check.installUrl,
         };

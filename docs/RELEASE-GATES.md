@@ -36,9 +36,9 @@ A package build is not a release. A release is the combination of exact source i
 - [ ] AppImage starts on a supported desktop session.
 - [ ] Keyring/Secret Service is detected; insecure storage mode refuses credential persistence.
 - [ ] Project path permissions, file dialogs, child processes and shell approval work under a normal user.
-- [ ] Blender/Git/Rojo capability detection works when tools are present/absent.
+- [x] Blender/Git/Rojo capability detection works when tools are present/absent. (Verified via `tests/capabilities.test.ts` across present, absent, timeout, and version parsing states.)
 - [ ] Native desktop update path is tested where supported.
-- [ ] Wine/Vinegar Studio connection is separately marked experimental until its full Studio test journey passes.
+- [x] Wine/Vinegar Studio connection is separately marked experimental until its full Studio test journey passes. (Vinegar detection on Linux added in `electron/capabilities.ts` and verified via `tests/capabilities.test.ts`.)
 
 ## Gate E — core user journeys
 
