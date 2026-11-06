@@ -143,7 +143,7 @@ Open-Ro was designed and engineered to decisively surpass the proprietary, close
 - [x] Project context isolation and no writes outside user-selected scope. (Completed in Omni-Loop iteration 42: `electron/pathSafety.ts`)
 - [x] Keyboard-first workflows and accessible contrast/focus. (Completed in Omni-Loop iteration 43: `src/App.tsx`, `src/styles.css`)
 - [x] User-facing cost disclosure and external data-flow disclosure. (Completed in Omni-Loop iteration 44: `electron/agent.ts`, `src/App.tsx`)
-- [ ] Documentation and integration version drift checks.
+- [x] Documentation and integration version drift checks. (Completed in Omni-Loop iteration 45: `scripts/check-drift.mjs`, `electron/versionDrift.ts`)
 
 ## Status vocabulary
 
