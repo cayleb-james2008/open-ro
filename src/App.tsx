@@ -156,6 +156,7 @@ export default function App() {
   const [readyFollowups, setReadyFollowups] = useState<FollowupBatch[]>([]);
   const [repairNudge, setRepairNudge] = useState<{ plan: PlaytestRepairPlan; sessionId: string } | null>(null);
   const [repairWriteNudge, setRepairWriteNudge] = useState<{ plan: PlaytestRepairPlan; definition: AcceptanceDefinition | null; sessionId: string } | null>(null);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   const activeSessionData = useMemo(() => sessions.find((session) => session.id === activeSession) ?? null, [sessions, activeSession]);
   const visibleSessions = useMemo(() => sessions.filter((session) => isSessionVisibleForProject(session, projectRoot)), [sessions, projectRoot]);
@@ -214,6 +215,98 @@ export default function App() {
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [activeSessionData?.messages.length, sending, streaming?.text]);
+  useEffect(() => {
+    const handleGlobalKeydown = (event: KeyboardEvent) => {
+      const isMac = navigator.platform.toUpperCase().includes('MAC');
+      const mod = isMac ? event.metaKey : event.ctrlKey;
+      const target = event.target as HTMLElement | null;
+      const inInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+
+      if (event.key === 'Escape') {
+        if (shortcutsOpen) {
+          event.preventDefault();
+          setShortcutsOpen(false);
+          return;
+        }
+        if (sending) {
+          event.preventDefault();
+          void stopTurn();
+          return;
+        }
+      }
+
+      if (mod && (event.key === 'k' || event.key === 'K')) {
+        event.preventDefault();
+        const input = document.getElementById('composer-input');
+        input?.focus();
+        return;
+      }
+
+      if (mod && event.shiftKey && (event.key === 'n' || event.key === 'N')) {
+        event.preventDefault();
+        newChat();
+        return;
+      }
+
+      if (mod && (event.key === 'o' || event.key === 'O')) {
+        event.preventDefault();
+        void selectProject();
+        return;
+      }
+
+      if (mod && event.key === '1') {
+        event.preventDefault();
+        setScreen('chat');
+        return;
+      }
+      if (mod && event.key === '2') {
+        event.preventDefault();
+        setScreen('models');
+        return;
+      }
+      if (mod && event.key === '3') {
+        event.preventDefault();
+        setScreen('workspace');
+        return;
+      }
+      if (mod && event.key === '4') {
+        event.preventDefault();
+        setScreen('integrations');
+        return;
+      }
+
+      if (event.altKey && (event.key === 'a' || event.key === 'A') && !inInput) {
+        if (approvals.length > 0 && approvals[0]) {
+          event.preventDefault();
+          void resolveApproval(approvals[0].id, 'approve');
+          return;
+        }
+      }
+
+      if (event.altKey && (event.key === 'r' || event.key === 'R') && !inInput) {
+        if (approvals.length > 0 && approvals[0]) {
+          event.preventDefault();
+          void resolveApproval(approvals[0].id, 'reject');
+          return;
+        }
+      }
+
+      if (event.key === '?' && !inInput && !mod && !event.altKey) {
+        event.preventDefault();
+        setShortcutsOpen(true);
+        return;
+      }
+
+      if (mod && event.key === '/') {
+        event.preventDefault();
+        setShortcutsOpen((prev) => !prev);
+        return;
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeydown);
+    return () => window.removeEventListener('keydown', handleGlobalKeydown);
+  }, [shortcutsOpen, sending, approvals]);
 
   async function refreshAll() {
     if (typeof window === 'undefined' || !window.openro) {
@@ -1116,6 +1209,35 @@ export default function App() {
         {screen === 'integrations' && <IntegrationsPage />}
       </main>
 
+      {shortcutsOpen && (
+        <Dialog labelledBy="shortcuts-title" onClose={() => setShortcutsOpen(false)}>
+          <div className="modal-title">
+            <strong id="shortcuts-title">Keyboard Shortcuts</strong>
+            <button type="button" className="icon-btn" aria-label="Close shortcuts" onClick={() => setShortcutsOpen(false)}>{ICONS.x}</button>
+          </div>
+          <div className="shortcuts-table-wrap">
+            <table className="shortcuts-table" aria-label="Available keyboard shortcuts">
+              <thead>
+                <tr>
+                  <th scope="col">Shortcut</th>
+                  <th scope="col">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td><kbd>Ctrl</kbd> + <kbd>K</kbd></td><td>Focus prompt input</td></tr>
+                <tr><td><kbd>Ctrl</kbd> + <kbd>Enter</kbd></td><td>Send prompt message</td></tr>
+                <tr><td><kbd>Esc</kbd></td><td>Stop active turn or dismiss dialog</td></tr>
+                <tr><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>N</kbd></td><td>Start new chat session</td></tr>
+                <tr><td><kbd>Ctrl</kbd> + <kbd>O</kbd></td><td>Open project folder</td></tr>
+                <tr><td><kbd>Ctrl</kbd> + <kbd>1</kbd> .. <kbd>4</kbd></td><td>Switch views (Chat, Models, Workspace, Integrations)</td></tr>
+                <tr><td><kbd>Alt</kbd> + <kbd>A</kbd></td><td>Approve top pending action</td></tr>
+                <tr><td><kbd>Alt</kbd> + <kbd>R</kbd></td><td>Reject top pending action</td></tr>
+                <tr><td><kbd>?</kbd> or <kbd>Ctrl</kbd> + <kbd>/</kbd></td><td>Toggle this keyboard shortcuts guide</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </Dialog>
+      )}
       {providerModal.kind && <ProviderModal />}
       {fileView && (
         <Dialog labelledBy="file-title" className="file-modal" onClose={() => setFileView(null)}>
@@ -1307,11 +1429,12 @@ export default function App() {
           <label className="sr-only" htmlFor="composer-input">Message</label>
           <textarea
             id="composer-input"
+            aria-keyshortcuts="Control+Enter Meta+Enter Control+K Meta+K"
             placeholder="Describe a change, ask a question, or propose an experiment"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
+              if ((event.key === 'Enter' && !event.shiftKey) || (event.key === 'Enter' && (event.ctrlKey || event.metaKey))) {
                 event.preventDefault();
                 void sendDraft();
               }
@@ -1319,7 +1442,7 @@ export default function App() {
           />
           <div className="composer-bottom">
             <div className="composer-hints">
-              <span>↵ send · ⇧↵ newline</span>
+              <span>↵ send · ⇧↵ newline · <span className="shortcut-hint" onClick={() => setShortcutsOpen(true)} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') setShortcutsOpen(true); }} aria-label="View keyboard shortcuts"><kbd>?</kbd> shortcuts</span></span>
               {hasProvider ? <span className="provider-mini">{activeProvider ? `${catalogByKind.get(activeProvider.kind)?.name}${activeProvider.model ? ` · ${activeProvider.model}` : ''}` : 'provider saved — set active'}</span> : <span>Connect a model first →</span>}
             </div>
             <div className="composer-right">
