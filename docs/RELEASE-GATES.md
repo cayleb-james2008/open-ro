@@ -34,7 +34,7 @@ A package build is not a release. A release is the combination of exact source i
 
 - [ ] pacman artifact installs and uninstalls cleanly.
 - [ ] AppImage starts on a supported desktop session.
-- [ ] Keyring/Secret Service is detected; insecure storage mode refuses credential persistence.
+- [x] Keyring/Secret Service is detected; insecure storage mode refuses credential persistence. (Verified via `electron/secureStore.ts` and `tests/secureStore.test.ts`: insecure environments without desktop keyring strictly refuse persistence, writing zero plaintext bytes to disk.)
 - [ ] Project path permissions, file dialogs, child processes and shell approval work under a normal user.
 - [x] Blender/Git/Rojo capability detection works when tools are present/absent. (Verified via `tests/capabilities.test.ts` across present, absent, timeout, and version parsing states.)
 - [ ] Native desktop update path is tested where supported.

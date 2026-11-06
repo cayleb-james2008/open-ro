@@ -2,7 +2,7 @@
 
 **Source version:** `0.1.0`  
 **Date:** 2026-11-05  
-**State:** 0.1.0 release foundation verified across Milestones 1 through 5 and all cross-cutting roadmap capabilities. Dependency install, typecheck, lint, full automated test suite (749 tests across 70 test files with 100% pass rate, 0 failures, 0 regressions), and the production build run on Windows 11 (Node 26.13.0) and in GitHub Actions on `ubuntu-latest` and `windows-latest`. The packaged app has been launched from `release/win-unpacked` on Windows 11: the window rendered with the preload bridge and loaded provider state over IPC. A live Roblox Studio MCP round trip succeeded on a Baseplate (`get_studio_state` + `execute_luau`). The NSIS installer has been installed, launched from both the Start Menu and desktop shortcuts, and uninstalled on Windows 11 (0.1.0, per-user); the file dialog and OS keyring have not been exercised.
+**State:** 0.1.0 release foundation verified across Milestones 1 through 5 and all cross-cutting roadmap capabilities. Dependency install, typecheck, lint, full automated test suite (754 tests across 71 test files with 100% pass rate, 0 failures, 0 regressions), and the production build run on Windows 11 (Node 26.13.0) and in GitHub Actions on `ubuntu-latest` and `windows-latest`. The packaged app has been launched from `release/win-unpacked` on Windows 11: the window rendered with the preload bridge and loaded provider state over IPC. A live Roblox Studio MCP round trip succeeded on a Baseplate (`get_studio_state` + `execute_luau`). The NSIS installer has been installed, launched from both the Start Menu and desktop shortcuts, and uninstalled on Windows 11 (0.1.0, per-user); the file dialog and OS keyring have not been exercised.
 
 ## Included in this source tree
 
@@ -39,7 +39,7 @@ Commands run in this Windows 11 workspace:
 
 - `npm run typecheck` passed (0 errors across electron and src).
 - `npm run lint` passed (0 errors; rejects type suppressions, skipped tests, and placeholder text).
-- `npm test` passed: 749 tests across 70 test files under `tests/` (100% pass rate, 0 failures, 0 regressions).
+- `npm test` passed: 754 tests across 71 test files under `tests/` (100% pass rate, 0 failures, 0 regressions).
 - `npm run build` passed. Vite emitted `dist/` and `tsc` emitted `dist-electron/`.
 - `npm run package:win` passed with electron-builder 26.18.0: produced `release/Open-Ro Studio Setup 0.1.0.exe` (NSIS, one-click disabled, unsigned). The 0.1.0 installer (122,002,550 bytes, sha256 `3089d983…`) was installed from commit `1d9146e`; see the installer acceptance bullet below.
 - Verification commit milestones:
