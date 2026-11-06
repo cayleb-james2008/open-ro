@@ -20,7 +20,7 @@ export function buildCss(tokens) {
     const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex(name).slice(i, i + 2), 16));
     lines.push(`  --color-${role}: rgb(${r} ${g} ${b} / ${alpha});`);
   }
-  for (const [group, values] of [['font', tokens.font], ['weight', tokens.weight], ['space', tokens.space], ['motion', tokens.motion]]) {
+  for (const [group, values] of [['font', tokens.font], ['weight', tokens.weight], ['space', tokens.space], ['radius', tokens.radius], ['motion', tokens.motion]]) {
     for (const [key, value] of Object.entries(values)) lines.push(`  --${group}-${key}: ${value};`);
   }
   lines.push('}', '', '@media (prefers-reduced-motion: reduce) {', '  :root {');

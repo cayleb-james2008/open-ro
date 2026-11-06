@@ -100,9 +100,9 @@ describe('Cost Disclosure & Data-Flow Egress Governance', () => {
 
     it('renders data-flow disclosure indicators in composer hints', () => {
       expect(app).toContain("catalogByKind.get(activeProvider.kind)?.connection === 'local'");
-      expect(app).toContain('🔒 Local Free');
-      expect(app).toContain('⚡ CLI Subscription');
-      expect(app).toContain('🌐 Cloud API');
+      expect(app).toContain('Local Free');
+      expect(app).toContain('CLI Subscription');
+      expect(app).toContain('Cloud API');
       expect(app).toContain('100% on-device local execution. Zero data egress.');
     });
   });

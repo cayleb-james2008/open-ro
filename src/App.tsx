@@ -1171,7 +1171,6 @@ export default function App() {
           <div className="connection-model">{activeProvider ? `${catalogByKind.get(activeProvider.kind)?.name ?? activeProvider.kind}${activeProvider.model ? ` · ${activeProvider.model}` : ''}` : 'No model connected'}</div>
           <button type="button" className="connection-action" onClick={() => setScreen('models')}>
             {activeProvider ? 'Manage providers' : 'Connect a model'}
-            <span>→</span>
           </button>
         </div>
         <div className="sidebar-footer">
@@ -1311,6 +1310,14 @@ export default function App() {
         {!activeSessionData || activeSessionData.messages.length === 0 ? (
           <div className="chat-scroll" ref={scrollRef}>
             <div className="welcome-wrap">
+              <svg className="stud-field" aria-hidden="true" focusable="false">
+                <defs>
+                  <pattern id="stud-grid" width="26" height="26" patternUnits="userSpaceOnUse">
+                    <circle cx="4" cy="4" r="4" fill="currentColor" />
+                  </pattern>
+                </defs>
+                <rect width="100%" height="100%" fill="url(#stud-grid)" />
+              </svg>
               <span className="welcome-chip">Local-first Roblox workspace</span>
               <h1>
                 What are we <span>building<span>?</span></span>
@@ -1453,12 +1460,12 @@ export default function App() {
                   {activeProvider ? `${catalogByKind.get(activeProvider.kind)?.name}${activeProvider.model ? ` · ${activeProvider.model}` : ''}` : 'provider saved — set active'}
                   {activeProvider && (
                     <span className="state-pill" title={catalogByKind.get(activeProvider.kind)?.connection === 'local' ? '100% on-device local execution. Zero data egress.' : catalogByKind.get(activeProvider.kind)?.connection === 'cli' ? 'Subprocess subscription CLI' : 'Encrypted HTTPS remote cloud inference'}>
-                      {catalogByKind.get(activeProvider.kind)?.connection === 'local' ? '🔒 Local Free' : catalogByKind.get(activeProvider.kind)?.connection === 'cli' ? '⚡ CLI Subscription' : '🌐 Cloud API'}
+                      {catalogByKind.get(activeProvider.kind)?.connection === 'local' ? 'Local Free' : catalogByKind.get(activeProvider.kind)?.connection === 'cli' ? 'CLI Subscription' : 'Cloud API'}
                     </span>
                   )}
                 </span>
               ) : (
-                <span>Connect a model first →</span>
+                <span>Connect a model first</span>
               )}
             </div>
             <div className="composer-right">
@@ -1577,7 +1584,7 @@ export default function App() {
               </div>
             ))}
             <a className="link-btn" href={option?.url} target="_blank" rel="noreferrer">
-              Open official page ↗
+              Open official page
             </a>
           </div>
           {isCli ? (

@@ -19,10 +19,10 @@ describe('design tokens', () => {
     expect(readFileSync('src/tokens.css', 'utf8')).toBe(buildCss(tokens));
   });
 
-  it('uses one accent, taken from the Catppuccin Mocha accents', () => {
-    expect(tokens.color.accent).toBe('lavender');
-    expect(tokens.palette.lavender).toBe('#b4befe');
-    expect(tokens.palette.base).toBe('#1e1e2e');
+  it('uses one accent, the acid lime of the product brand tile', () => {
+    expect(tokens.color.accent).toBe('acid');
+    expect(tokens.palette.acid).toBe('#b1f36b');
+    expect(tokens.palette.slate0).toBe('#0d1117');
   });
 
   it('meets WCAG AA for body text (4.5:1) on every surface', () => {
