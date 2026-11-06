@@ -488,7 +488,7 @@ const COMPS: Record<string, (channel: string) => Promise<unknown>> = {
   models: fixture(models),
   workspace: fixture(workspace),
   integrations: fixture(integrations),
-  'chat-empty': fixture(home),
+  'chat-empty': fixture(base),
   'chat-approvals': fixture(oldApprovals),
   loading: () => new Promise(() => undefined),
   error: async () => { throw new Error('Fixture: the main process did not answer.'); },
