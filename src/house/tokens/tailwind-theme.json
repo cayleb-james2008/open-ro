@@ -1,0 +1,207 @@
+{
+  "colors": {
+    "transparent": "transparent",
+    "current": "currentColor",
+    "inherit": "inherit",
+    "base": "#171717",
+    "panel": "#202020",
+    "line": "#323232",
+    "seam": "#181818",
+    "slab": "#262626",
+    "slab-repaired": "#303030",
+    "floor-seam": "#414141",
+    "wall-seam": "#3B3B3B",
+    "apron": "#393939",
+    "text-1": "#DDDDDD",
+    "text-2": "#A4A4A4",
+    "text-2-contrast": "#CFCFCF",
+    "info-bar": "#525252",
+    "pad-live": "#343434",
+    "pad-shadow": "#5C5C5C",
+    "pad-manual": "#535353",
+    "amber": "#98763E",
+    "stale-light": "#8A8A8A",
+    "stale-dark": "#3E3E3E",
+    "red": "#8E473A",
+    "crit-text": "#D59D97",
+    "mustard": "#9E8E3E",
+    "shadow-chip": "#5B6C7E",
+    "synthetic": "#8A7A3A",
+    "pulse": "#AFAFAF",
+    "sentinel-t0": "#66717E",
+    "sentinel-t1": "#545E69",
+    "sentinel-t2": "#444C56",
+    "sentry-t0": "#7C776F",
+    "sentry-t1": "#67635B",
+    "sentry-t2": "#54504A",
+    "assembler-t0": "#8C5E3E",
+    "assembler-t1": "#74502F",
+    "assembler-t2": "#604027",
+    "orbiter-t0": "#6A6E76",
+    "orbiter-t1": "#5A5E66",
+    "orbiter-t2": "#4A4E55",
+    "brute-t0": "#5E6168",
+    "brute-t1": "#4F5258",
+    "brute-t2": "#42454B",
+    "brute-plates-t0": "#6A5B4C",
+    "brute-plates-t1": "#594C40",
+    "brute-plates-t2": "#4A4036",
+    "walker-t0": "#666A4F",
+    "walker-t1": "#555841",
+    "walker-t2": "#454835",
+    "focus": "#DDDDDD",
+    "focus-pad-edge": "#DDDDDD",
+    "hollow": "#A4A4A4",
+    "no-data-outline": "#A4A4A4",
+    "lock-bar": "#A4A4A4",
+    "chip-manual": "#A4A4A4",
+    "chip-live": "#9E8E3E",
+    "chip-live-chain": "#9E8E3E",
+    "chip-live-text": "#171717",
+    "alert-crit": "#8E473A",
+    "alert-warn": "#98763E",
+    "alert-info": "#525252",
+    "glyph-alive": "#98763E",
+    "glyph-dead": "#8E473A",
+    "glyph-recorded": "#A4A4A4",
+    "glyph-no-data": "#A4A4A4",
+    "dead-body": "#3E3E3E",
+    "wall-repaired": "#262626",
+    "eye-off": "#181818"
+  },
+  "fontFamily": {
+    "mono": "\"Geist Mono\", ui-monospace, \"SF Mono\", Menlo, Consolas, monospace",
+    "sans": "\"Geist\", \"Geist Sans\", ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif"
+  },
+  "fontSize": {
+    "chip": [
+      "12px",
+      {
+        "lineHeight": "1.35"
+      }
+    ],
+    "small": [
+      "13px",
+      {
+        "lineHeight": "1.35"
+      }
+    ],
+    "label": [
+      "13px",
+      {
+        "lineHeight": "1.35"
+      }
+    ],
+    "meta": [
+      "14px",
+      {
+        "lineHeight": "1.35"
+      }
+    ],
+    "stat-compact": [
+      "24px",
+      {
+        "lineHeight": "1.35"
+      }
+    ],
+    "stat": [
+      "30px",
+      {
+        "lineHeight": "1.35"
+      }
+    ]
+  },
+  "fontWeight": {
+    "regular": "500",
+    "label": "600",
+    "strong": "700"
+  },
+  "letterSpacing": {
+    "label": "0.06em"
+  },
+  "lineHeight": {
+    "base": "1.35"
+  },
+  "screens": {
+    "compact": "760px",
+    "desktop": "1264px"
+  },
+  "transitionDuration": {
+    "0": "0ms",
+    "pose": "400ms",
+    "gesture": "600ms",
+    "gesture-hold": "120ms",
+    "step": "40ms",
+    "value": "280ms",
+    "panel": "220ms",
+    "morph": "180ms"
+  },
+  "transitionTimingFunction": {
+    "house-out": "cubic-bezier(0.16, 1, 0.3, 1)",
+    "house-in-out": "cubic-bezier(0.4, 0, 0.2, 1)"
+  },
+  "zIndex": {
+    "stage": "0",
+    "plates": "1",
+    "header": "2",
+    "alerts": "3",
+    "skip-link": "4"
+  },
+  "spacing": {
+    "unit": "4px",
+    "card-padding-y": "12px",
+    "card-padding-x": "12px",
+    "gap": "8px",
+    "gutter": "16px",
+    "header": "48px",
+    "row-min": "44px",
+    "target": "44px",
+    "focus-ring": "2px",
+    "focus-offset": "2px",
+    "border": "1px",
+    "border-contrast": "2px",
+    "alert-bar": "6px",
+    "mode-mark": "6px",
+    "guard-tile": "6px",
+    "state-glyph": "10px",
+    "glyph": "48px",
+    "hatch-band": "8px",
+    "dead-rule": "2px"
+  },
+  "borderRadius": {
+    "base": "10px",
+    "control": "8px"
+  },
+  "minWidth": {
+    "plate-front": "180px",
+    "plate-shelf": "160px"
+  },
+  "width": {
+    "plate-phone": "358px"
+  },
+  "height": {
+    "chip": "20px",
+    "header": "48px"
+  },
+  "minHeight": {
+    "row": "44px",
+    "target": "44px",
+    "stage": "240px"
+  },
+  "maxHeight": {
+    "stage": "520px"
+  },
+  "borderWidth": {
+    "0": "0px",
+    "1": "1px",
+    "2": "2px",
+    "6": "6px",
+    "DEFAULT": "1px"
+  },
+  "outlineWidth": {
+    "focus": "2px"
+  },
+  "outlineOffset": {
+    "focus": "2px"
+  }
+}

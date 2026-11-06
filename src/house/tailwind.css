@@ -1,0 +1,7 @@
+/* The house utility layer: the FRONTEND-LIBRARY standard's Tailwind pipeline, compiled against the
+   house theme (src/house/tokens/tailwind-theme.json) with the pack's own core-plugin cut
+   (tailwind.config.cjs) and the SPEC 11.2 --tw-* strip (postcss.config.cjs). The house primitives in
+   src/house/ui import their classes from here, unmodified. No @tailwind base: the pack turns preflight
+   off and src/styles.css carries the reset. */
+@tailwind components;
+@tailwind utilities;

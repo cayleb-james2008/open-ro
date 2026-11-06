@@ -13,6 +13,10 @@ import api, {
   type BlenderTaskResultView,
 } from './api';
 import { Dialog } from './Dialog';
+// The fleet FRONTEND-LIBRARY standard, carried into this repo verbatim (src/house/PROVENANCE.md):
+// the house primitives (Square UI grammar) and the Motion Primitives patterns.
+import { AnimatedNumber, Button, Card, Pill, TextMorph, TransitionPanel } from './house/ui/index.js';
+import { TactileButton, Ticket } from './house/kitchen';
 import { diffPreview } from './textDiff';
 import { acceptanceFirst, draftAfterSend, dropMissing, followupText, needsRepairNudge, nextFollowup, nudgeAction, recordResolution, repairNudgeText, repairWriteNudgeText, resultSession, showsResultIn, trackStaged, type FollowupBatch } from './approvalFollowup';
 import { approvalCopy, providerInitials } from './labels';
@@ -56,7 +60,7 @@ const ICONS: Record<string, ReactNode> = {
   plus: <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>,
   chevron: <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="m4 6 4 4 4-4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>,
   shield: <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 1.5 13 3.5v4c0 3.6-2.2 6-5 7-2.8-1-5-3.4-5-7v-4l5-2z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" /></svg>,
-  x: <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="m3 3 10 10M13 3 3 13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>,
+  x: <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="m3 3 10 10M13 3 3 13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>,  arrowUpRight: <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M5 11 11 5M6 5h5v5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>,
 };
 
 function providerStatus(view: StoredProviderView, option: ProviderOption | undefined): string {
@@ -1122,67 +1126,62 @@ export default function App() {
   const hasProvider = providerViews.some((view) => view.hasKey || catalogByKind.get(view.kind)?.keyless || catalogByKind.get(view.kind)?.connection === 'cli');
 
   return (
-    <div className="shell">
+    <div className="app">
       <a className="skip-link" href="#main">Skip to content</a>
-      <aside className="sidebar">
-        <div className="brand-row">
-          <div className="brand-mark">OR</div>
-          <div className="brand-lockup">
+      <aside className="rail" aria-label="Workspace">
+        <div className="rail-head">
+          <span className="brand-mark" aria-hidden="true">OR</span>
+          <span className="brand-lockup">
             <strong>Open-Ro</strong>
             <span>Studio 0.1.0</span>
-          </div>
-          <button type="button" className="icon-btn small more" aria-label="Open the Open-Ro repository" onClick={() => void api.openExternal('https://github.com/cayleb-james2008/open-ro')}>
-            {ICONS.chevron}
+          </span>
+          <button type="button" className="rail-icon-btn" aria-label="Open the Open-Ro repository" onClick={() => void api.openExternal('https://github.com/cayleb-james2008/open-ro')}>
+            {ICONS.arrowUpRight}
           </button>
         </div>
         <button type="button" className={`project-switch ${projectRoot ? 'has-project' : ''}`} onClick={() => void selectProject()}>
           {ICONS.folder}
           <span>{projectRoot ? projectRoot.split(/[\\/]/).pop() : 'Choose project folder…'}</span>
         </button>
-        <div className="nav-label">Workspace</div>
-        <nav className="side-nav" aria-label="Primary">
+        <nav className="rail-nav" aria-label="Primary">
           {NAV.map((item) => (
-            <button type="button" key={item.id} className={`nav-item ${screen === item.id ? 'active' : ''}`} aria-current={screen === item.id ? 'page' : undefined} onClick={() => setScreen(item.id)}>
+            <button type="button" key={item.id} className={`rail-item ${screen === item.id ? 'is-current' : ''}`} aria-current={screen === item.id ? 'page' : undefined} onClick={() => setScreen(item.id)}>
               {ICONS[item.icon]}
               <span>{item.label}</span>
             </button>
           ))}
         </nav>
-        <button type="button" className="new-chat-btn" onClick={newChat}>
+        <TactileButton variant="quiet" size="md" className="new-chat-btn" onClick={newChat}>
           {ICONS.plus}
           <span>New chat</span>
-        </button>
-        <div className="recent-label nav-label">Recent</div>
-        <div className="recent-chat-list">
+        </TactileButton>
+        <div className="rail-label">Recent</div>
+        <div className="rail-recent">
           {visibleSessions.map((session) => (
             <button type="button" key={session.id} className={`recent-chat ${session.id === activeSession ? 'active' : ''}`} aria-current={session.id === activeSession ? 'true' : undefined} onClick={() => { setActiveSession(session.id); setScreen('chat'); }}>
-              {ICONS.chat}
               <span>{session.title}</span>
             </button>
           ))}
-          {visibleSessions.length === 0 && <p className="recent-empty">No chats for this project yet. History is saved on this computer.</p>}
+          {visibleSessions.length === 0 && <p className="recent-empty">No chats for this project yet. History stays on this computer.</p>}
         </div>
-        <div className="side-spacer" />
-        <div className="connection-card">
-          <div className="connection-head">
-            <span className={`status-dot ${activeProvider ? 'on' : ''}`} />
-            Model connection
+        <div className="rail-foot">
+          <div className="connection-card">
+            <div className="connection-head">
+              <span className={`status-dot ${activeProvider ? 'on' : ''}`} />
+              <span>Model connection</span>
+            </div>
+            <div className="connection-model">{activeProvider ? `${catalogByKind.get(activeProvider.kind)?.name ?? activeProvider.kind}${activeProvider.model ? ` · ${activeProvider.model}` : ''}` : 'No model connected'}</div>
+            <button type="button" className="connection-action" onClick={() => setScreen('models')}>
+              <span>{activeProvider ? 'Manage providers' : 'Connect a model'}</span>
+              <span aria-hidden="true">→</span>
+            </button>
           </div>
-          <div className="connection-model">{activeProvider ? `${catalogByKind.get(activeProvider.kind)?.name ?? activeProvider.kind}${activeProvider.model ? ` · ${activeProvider.model}` : ''}` : 'No model connected'}</div>
-          <button type="button" className="connection-action" onClick={() => setScreen('models')}>
-            {activeProvider ? 'Manage providers' : 'Connect a model'}
-            <span>→</span>
-          </button>
-        </div>
-        <div className="sidebar-footer">
-          {ICONS.shield}
-          <span>Local-first · credentials stay in OS secure storage</span>
+          <p className="rail-note">{ICONS.shield}<span>Local-first. Credentials stay in OS secure storage.</span></p>
         </div>
       </aside>
 
-      <main className="main-area" id="main">
-        <div className="sr-only" aria-live="polite">{sending ? 'The agent is working.' : actionResult ? actionResult.summary : ''}</div>
-        <div className="topbar">
+      <div className="workbench">
+        <header className="topbar">
           <div className="crumb">
             <strong>Open-Ro</strong>
             <span className="slash">/</span>
@@ -1190,24 +1189,32 @@ export default function App() {
           </div>
           <div className="top-actions">
             <span className="project-pill" title={projectRoot ?? undefined}>{projectRoot ?? 'No project'}</span>
-            <span className={`runtime-pill ${sending ? 'working' : ''}`} role="status">{sending ? 'Agent working' : approvals.length > 0 ? `${approvals.length} pending approval${approvals.length === 1 ? '' : 's'}` : 'Idle'}</span>
+            <span className={`runtime-pill ${sending ? 'working' : ''}`} role="status">
+              <TextMorph text={sending ? 'Working' : approvals.length > 0 ? `${approvals.length} pending` : 'Ready'} />
+            </span>
           </div>
-        </div>
+        </header>
 
-        {banner && (
-          <div className="error-banner" role="alert">
-            <span>{banner}</span>
-            <button type="button" onClick={() => setBanner(null)} aria-label="Dismiss notice">{ICONS.x}</button>
-          </div>
-        )}
+        <main className="stage" id="main">
+          <div className="sr-only" aria-live="polite">{sending ? 'The agent is working.' : actionResult ? actionResult.summary : ''}</div>
 
-        {(approvals.length > 0 || actionResult) && <ApprovalTray />}
+          {banner && (
+            <div className="error-banner" role="alert">
+              <span>{banner}</span>
+              <button type="button" onClick={() => setBanner(null)} aria-label="Dismiss notice">{ICONS.x}</button>
+            </div>
+          )}
 
-        {screen === 'chat' && <ChatPage />}
-        {screen === 'models' && <ModelsPage />}
-        {screen === 'workspace' && <WorkspacePage />}
-        {screen === 'integrations' && <IntegrationsPage />}
-      </main>
+          <TransitionPanel open={approvals.length > 0 || Boolean(actionResult)} className="approvals-panel">
+            <ApprovalTray />
+          </TransitionPanel>
+
+          {screen === 'chat' && <ChatPage />}
+          {screen === 'models' && <ModelsPage />}
+          {screen === 'workspace' && <WorkspacePage />}
+          {screen === 'integrations' && <IntegrationsPage />}
+        </main>
+      </div>
 
       {shortcutsOpen && (
         <Dialog labelledBy="shortcuts-title" onClose={() => setShortcutsOpen(false)}>
@@ -1275,11 +1282,7 @@ export default function App() {
           const copy = approvalCopy(item);
           const resolving = resolvingApprovals.has(item.id);
           return (
-            <article className="approval-card" key={item.id}>
-              <header>
-                <strong>{copy.title}</strong>
-                <span>{copy.detail}</span>
-              </header>
+            <Ticket key={item.id} className="approval-card" title={copy.title} detail={copy.detail} meta={item.id}>
               {!diffVisible ? <pre className="command-preview" aria-label={item.kind === 'mcp' ? 'Tool arguments' : 'Command'}>{copy.preview}</pre> : (
                 <pre className="diff" aria-label="Proposed diff">
                   {rows.map((row, index) => (
@@ -1297,7 +1300,7 @@ export default function App() {
                 <button type="button" className="outline-btn" disabled={resolving} onClick={() => void resolveApproval(item.id, 'reject')}>Reject</button>
                 <button type="button" className="primary-btn" disabled={hidden > 0 || resolving} title={hidden > 0 ? 'Show the whole diff first' : undefined} onClick={() => void resolveApproval(item.id, 'approve')}>{resolving ? 'Working…' : copy.approveLabel}</button>
               </div>
-            </article>
+            </Ticket>
           );
         })}
       </section>
@@ -1319,31 +1322,31 @@ export default function App() {
                 Start with a free local model: Ollama or llama.cpp on this computer. Paid APIs are optional. Pick a project folder to give the agent file tools. Open-Ro has no account and does not send telemetry.
               </p>
               <div className="setup-row">
-                <button type="button" className={`setup-tile ${activeProvider ? 'complete' : ''}`} onClick={() => setScreen('models')}>
+                <Card as="button" type="button" className={`setup-tile ${activeProvider ? 'complete' : ''}`} onClick={() => setScreen('models')}>
                   <span className="tile-icon">{activeProvider ? ICONS.check : ICONS.spark}</span>
                   <span>
                     <b>Connect a model</b>
                     <small>{activeProvider ? catalogByKind.get(activeProvider.kind)?.name : 'Ollama or llama.cpp. No account.'}</small>
                   </span>
                   {activeProvider && <span className="tile-check" aria-hidden="true">{ICONS.check}</span>}
-                </button>
-                <button type="button" className={`setup-tile ${projectRoot ? 'complete' : ''}`} onClick={() => setScreen('workspace')}>
+                </Card>
+                <Card as="button" type="button" className={`setup-tile ${projectRoot ? 'complete' : ''}`} onClick={() => setScreen('workspace')}>
                   <span className="tile-icon">{projectRoot ? ICONS.check : ICONS.folder}</span>
                   <span>
                     <b>Select project</b>
                     <small>{projectRoot ? projectRoot : 'Optional — enables file tools'}</small>
                   </span>
-                </button>
+                </Card>
               </div>
               <div className="suggestion-grid">
                 {SUGGESTIONS.map((item) => (
-                  <button type="button" key={item.title} onClick={() => setDraft(item.prompt)}>
+                  <Card as="button" type="button" key={item.title} onClick={() => setDraft(item.prompt)}>
                     {ICONS.spark}
                     <span>
                       <b>{item.title}</b>
                       <small>{item.body}</small>
                     </span>
-                  </button>
+                  </Card>
                 ))}
               </div>
               <div className="welcome-foot">
@@ -1465,9 +1468,9 @@ export default function App() {
               {sending && (
                 <button type="button" className="outline-btn" onClick={() => void stopTurn()} aria-label="Stop the current agent turn">Stop</button>
               )}
-              <button type="button" className="send-btn" disabled={!draft.trim() || sending} onClick={() => void sendDraft()} aria-label="Send message">
+              <TactileButton variant="primary" size="sm" className="send-btn" disabled={!draft.trim() || sending} onClick={() => void sendDraft()} aria-label="Send message">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 8h11M9 3.5 13.5 8 9 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
-              </button>
+              </TactileButton>
             </div>
           </div>
         </div>
@@ -1487,7 +1490,7 @@ export default function App() {
             <p>The default path is a local model on this machine. Paid APIs and subscription CLIs are optional. API keys, when you choose one, are stored with Electron safeStorage. Open-Ro does not require an account and does not send telemetry.</p>
           </div>
           <div className="heading-actions">
-            <span className="outline-btn" style={{ cursor: 'default' }}>{bridgeMissing || !storage ? 'Secure storage: open the desktop app' : storage.secure ? 'Secure storage available' : 'No desktop keyring'}</span>
+            <Pill tone={!bridgeMissing && storage?.secure ? 'neutral' : 'warn'}>{bridgeMissing || !storage ? 'Secure storage: open the desktop app' : storage.secure ? 'Secure storage available' : 'No desktop keyring'}</Pill>
           </div>
         </div>
 
@@ -1631,8 +1634,8 @@ export default function App() {
             <p>File browsing is read-only in 0.1.0; agent write proposals are reviewed before anything lands, and every accepted write leaves a checkpoint.</p>
           </div>
           <div className="heading-actions">
-            <button type="button" className="outline-btn" onClick={() => void refreshWorkspaceState()}>Refresh</button>
-            <button type="button" className="primary-btn" onClick={() => void selectProject()}>Choose folder</button>
+            <Button variant="secondary" size="sm" className="house-action" onClick={() => void refreshWorkspaceState()}>Refresh</Button>
+            <Button variant="primary" size="sm" className="house-action" onClick={() => void selectProject()}>Choose folder</Button>
           </div>
         </div>
 
@@ -1646,7 +1649,7 @@ export default function App() {
 
         <div className="section-title">
           <span>Files</span>
-          <span>{projectEntries.get('.')?.length ?? 0} top-level entries</span>
+          <span><AnimatedNumber value={projectEntries.get('.')?.length ?? 0} format={(value: number) => `${Math.round(value)} top-level entries`} /></span>
         </div>
         {projectRoot && projectEntries.get('.') && (
           projectEntries.get('.')!.length === 0 ? (
@@ -2222,7 +2225,7 @@ export default function App() {
             <p>Detect, test, install or skip. No capability below is required — the chat workspace works with only a model connection.</p>
           </div>
           <div className="heading-actions">
-            <button type="button" className="outline-btn" onClick={() => void refreshAll()}>Re-detect</button>
+            <Button variant="secondary" size="sm" className="house-action" onClick={() => void refreshAll()}>Re-detect</Button>
           </div>
         </div>
 
@@ -2292,7 +2295,7 @@ export default function App() {
         {/* Multi-Server Grid */}
         <div className="section-title">
           <span>Configured MCP Servers</span>
-          <span>{mcpPoolServers.length} servers</span>
+          <span><AnimatedNumber value={mcpPoolServers.length} format={(value: number) => `${Math.round(value)} servers`} /></span>
         </div>
         {mcpPoolServers.length > 0 ? (
           <div className="mcp-server-grid">

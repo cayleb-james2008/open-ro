@@ -1,0 +1,254 @@
+/* The Kitchen component CSS — the tactile face and the ticket, re-expressed for React.
+ *
+ * Lineage: the fleet's accepted dashboard build, ticket 001, at
+ * /home/cayleb/.dsh-fleet-state/missions/m-0035/work/build-dashboard.mjs
+ * (sha256 82223b141867c2ce6df0c40561a2b2c81b0ddb1f253a9b978d8d5073af96547a).
+ * `drawPanelNode()` and `drawTicketNode()` draw `.n-depth` (the wall), `.n-face` (the plate),
+ * `.n-lip` (the top light), `.n-perf` (the dashed tear) and `.n-notch` (the punch). The CSS
+ * below is the same recipe on DOM boxes: `.tactile-edge` / `.tactile-face` and `.ticket` /
+ * `.ticket-perf` / `.ticket-notch`. All colour is read from public/house/house.css.
+ *
+ * No raw colour, no shadow, no gradient, and no transition on every property: the tactile press
+ * animates transform and background-color only, at the 120 ms gesture-hold budget.
+ */
+
+/* ── Tactile Button ─────────────────────────────────────────────────────────── */
+
+.tactile {
+  --tactile-depth: var(--sp-unit); /* the 4 px wall the face presses into */
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  min-width: 0;
+  padding: 0 0 var(--tactile-depth);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--c-text-1);
+  font-family: var(--font-sans);
+  font-weight: var(--fw-label);
+  line-height: var(--lh);
+  text-align: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tactile-md {
+  min-height: var(--sp-target); /* 44 px */
+  font-size: var(--fs-small);
+}
+
+.tactile-sm {
+  min-height: calc(var(--sp-unit) * 7); /* 28 px */
+  font-size: var(--fs-chip);
+}
+
+/* The wall: a firm plate behind the face, visible as a 4 px lip at the bottom. */
+.tactile-edge {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border: var(--sp-border) solid var(--c-line);
+  border-radius: inherit;
+  background: var(--c-seam);
+}
+
+/* The face: the plate the reader sees and the pointer presses. */
+.tactile-face {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-gap);
+  min-width: 0;
+  padding: 0 var(--sp-gutter);
+  border: var(--sp-border) solid var(--c-line);
+  border-radius: inherit;
+  background: var(--c-panel);
+  color: inherit;
+  white-space: nowrap;
+  transform: translateY(0);
+  transition:
+    transform var(--m-gesture-hold) var(--m-ease-out),
+    background-color var(--m-gesture-hold) var(--m-ease-out);
+}
+
+/* The top lip: the 1 px light that sits on a real edge. */
+.tactile-face::before {
+  content: '';
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: var(--radius-control);
+  height: var(--sp-border);
+  background: var(--c-wall-seam);
+  pointer-events: none;
+}
+
+.tactile-sm .tactile-face {
+  padding-inline: calc(var(--sp-unit) * 3);
+}
+
+/* Primary: the white plate on the dark surface (the inverse of the page). */
+.tactile-primary .tactile-face {
+  border-color: var(--c-text-1);
+  background: var(--c-text-1);
+  color: var(--c-base);
+}
+
+.tactile-primary .tactile-face::before {
+  background: var(--c-text-2-contrast);
+}
+
+.tactile-primary .tactile-edge {
+  border-color: var(--c-text-1);
+  background: var(--c-text-2);
+}
+
+/* Quiet: a hairline panel, for the control that sits beside the primary one. */
+.tactile-quiet .tactile-face {
+  border-color: var(--c-line);
+  background: var(--c-panel);
+  color: var(--c-text-1);
+}
+
+.tactile-quiet .tactile-edge {
+  border-color: var(--c-line);
+  background: var(--c-seam);
+}
+
+/* The press: the face travels down into the wall. Nothing moves when disabled. */
+.tactile:not(:disabled):active .tactile-face {
+  transform: translateY(var(--tactile-depth));
+}
+
+.tactile-primary:not(:disabled):active .tactile-face {
+  border-color: var(--c-text-2-contrast);
+  background: var(--c-text-2-contrast);
+}
+
+.tactile-quiet:not(:disabled):active .tactile-face {
+  background: var(--c-slab);
+}
+
+.tactile:focus-visible {
+  outline: var(--sp-focus-ring) solid var(--c-focus);
+  outline-offset: var(--sp-focus-offset);
+}
+
+.tactile:disabled {
+  cursor: not-allowed;
+}
+
+.tactile:disabled .tactile-face {
+  border-color: var(--c-line);
+  background: var(--c-slab);
+  color: var(--c-text-2);
+}
+
+.tactile:disabled .tactile-edge {
+  border-color: var(--c-line);
+  background: var(--c-seam);
+}
+
+/* ── Ticket ─────────────────────────────────────────────────────────────────── */
+
+.ticket {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: var(--sp-border) solid var(--c-line);
+  border-radius: var(--radius-base);
+  background: var(--c-panel);
+  color: var(--c-text-1);
+  font-family: var(--font-sans);
+  font-size: var(--fs-small);
+  line-height: var(--lh);
+}
+
+/* The paper sheen: one 1 px lighter lip inside the face. No gradient. */
+.ticket::before {
+  content: '';
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: var(--radius-base);
+  height: var(--sp-border);
+  background: var(--c-wall-seam);
+  pointer-events: none;
+}
+
+.ticket-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-gap);
+  padding: var(--sp-card-padding-y) var(--sp-card-padding-x);
+}
+
+.ticket-title {
+  margin: 0;
+  color: var(--c-text-1);
+  font-size: var(--fs-small);
+  font-weight: var(--fw-label);
+  line-height: var(--lh);
+}
+
+.ticket-detail {
+  margin: 0;
+  color: var(--c-text-2);
+  font-size: var(--fs-chip);
+  line-height: var(--lh);
+}
+
+/* The perforation: a dashed hairline the ticket tears along. */
+.ticket-perf {
+  position: relative;
+  flex: 0 0 auto;
+  height: 0;
+  border-block-start: var(--sp-border) dashed var(--c-line);
+}
+
+/* The punch: a base-coloured disk straddling the perforation at each edge. */
+.ticket-notch {
+  position: absolute;
+  top: calc(var(--sp-unit) * -1.5);
+  width: calc(var(--sp-unit) * 3);
+  height: calc(var(--sp-unit) * 3);
+  border-radius: 50%;
+  background: var(--c-base);
+  pointer-events: none;
+}
+
+.ticket-notch-start {
+  left: calc(var(--sp-unit) * -1.5);
+}
+
+.ticket-notch-end {
+  right: calc(var(--sp-unit) * -1.5);
+}
+
+/* The stub carries the mission or approval id, in Geist Mono. */
+.ticket-stub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-gap);
+  padding: var(--sp-card-padding-y) var(--sp-card-padding-x);
+  color: var(--c-text-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh);
+}
+
+.ticket-stub:empty {
+  display: none;
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .tactile-face {
+    transition: none;
+  }
+}
