@@ -33,13 +33,13 @@ These screenshots are the renderer at 1280×800, opened in a browser without the
 
 ## What we are building
 
-Open-Ro is not just a Luau autocomplete panel. It is intended to be a full development workspace with five connected parts:
+Open-Ro is a full Roblox development workspace with five connected parts:
 
 1. **A model-agnostic agent workspace** — chat, project context, task planning, code edits, tool use, session history, review, and recovery.
 2. **A Roblox Studio control plane** — inspect the DataModel, understand scripts and instances, edit Luau, run Studio operations, capture screenshots, simulate input, and diagnose test failures.
 3. **A closed-loop development workflow** — plan, make a scoped change, review the diff, run or playtest, inspect evidence, repair, and repeat until the acceptance criteria pass.
 4. **A creative asset pipeline** — optional Blender modeling/animation, image and thumbnail generation, asset review, and import into the game.
-5. **An installable capability ecosystem** — Rojo, Git, MCP servers, local tools, and third-party providers are selectable add-ons, not mandatory infrastructure.
+5. **Optional tooling** — Rojo, Git, MCP servers, local tools, and third-party providers are selectable add-ons, not mandatory infrastructure.
 
 ## The one-required-setup rule
 
