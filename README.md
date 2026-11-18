@@ -10,9 +10,12 @@ Fresh codebase (17 Nov 2026 restart), built apart from the original app.
 - **Rust binary** serving an embedded web UI (plain HTML/CSS/JS string
   constants, hand-rolled HTTP over `std::net::TcpListener` — no frontend
   framework, no build step). Shell: left sidebar (chat list + New chat +
-  the game's name), one scrolling thread, one composer row pinned at the
-  bottom, and one status chip — "Studio connected" / "Studio not
-  connected" — reflecting the real bridge state.
+  the game's name), one scrolling thread where the agent's steps read
+  as a build timeline (playtest verdicts land as plain, weighted
+  bands), an ideas bar with one-tap builds, one composer row pinned at
+  the bottom, and one status chip — "Studio connected" / "Studio not
+  connected" — reflecting the real bridge state. Light + dark themes,
+  toggle in Settings, dark default.
 - **Model route:** OpenCode Go — `POST {base}/chat/completions`, default
   base `https://opencode.ai/zen/go/v1`, default model
   `deepseek-v4.1-flash`, bearer key from `OPENRO_MODEL_API_KEY`. Every
@@ -25,13 +28,25 @@ Fresh codebase (17 Nov 2026 restart), built apart from the original app.
   `write_script`, `delete_script`, `create_instance`, `delete_instance`,
   `playtest`, `get_console` — all seven are required up front; a bridge
   missing one is refused honestly before any ask runs.
-- **Rune drives code generation:** five Luau code-generation skills —
-  `round_manager`, `leaderboard`, `day_night`, `kill_brick`, `spawn_link`
-  — each an embedded Rune script (`src/*.rn`) executed on a Rune VM.
-  The registry is the single source for both the system prompt and
-  dispatch; Luau comes only from skills, never from hand-written model
-  output. Skill arguments are type-, range- and content-validated in
-  Rust before a script runs.
+- **Rune drives code generation:** ten Luau code-generation skills —
+  `round_manager`, `leaderboard`, `day_night`, `kill_brick`, `spawn_link`,
+  `currency` (leaderstats + DataStore save/load with a shutdown save),
+  `shop` (server-side purchases over a RemoteEvent), `game_gui`
+  (the game's screen: title, live balance, shop button), `checkpoints`
+  (stage pads + respawn progression), `soundtrack` — each an embedded
+  Rune script (`src/*.rn`) executed on a Rune VM. The registry is the
+  single source for both the system prompt and dispatch; Luau comes
+  only from skills, never from hand-written model output. Skill
+  arguments are type-, range- and content-validated in Rust before a
+  script runs.
+- **It pitches, unprompted:** a creativity engine watches what the
+  game already has and speaks first — on an empty chat it offers
+  complete games it can build in one go (a lava obby, a coin tycoon,
+  a round arena); after a build it offers the feature that fits next.
+  Each idea carries a built-in plan that runs through the same
+  checkpoint / playtest / repair machinery with no model call, and a
+  build whose prerequisite is missing is refused by name. Pitch state
+  persists per chat across restarts.
 - **Agent loop:** the model replies with JSON steps —
   `{"skill": ...}`, `{"tool": ...}`, or `{"done": true, "summary": ...}`.
   Each ask's changes are checkpointed (previous state recorded only
@@ -47,10 +62,13 @@ Fresh codebase (17 Nov 2026 restart), built apart from the original app.
 ## Test fixture
 
 `src/bin/mock_studio.rs` is a mock Studio MCP server (stdio JSON-RPC,
-in-memory place tree), clearly a fixture, not product code. Its playtest
-rule: FAILS with `ServerScriptService.RoundManager:4: attempt to index
-nil with 'Start'` if any written script contains `workspace.Round.` but
-no script creates it (no `Name = "Round"`); otherwise it PASSES.
+in-memory place tree), clearly a fixture, not product code. Its
+playtest applies deterministic rules for the failure shapes a build
+can actually produce — a Round object referenced but never created, a
+missing spawn pad, a checkpoints folder referenced but not created, a
+DataStore used without a shutdown save, a game screen waiting on a
+shop event nobody created, a shop with no currency behind it — and
+passes only when none fire.
 
 ## Run
 
@@ -68,7 +86,7 @@ Env: `OPENRO_MODEL_BASE_URL`, `OPENRO_MODEL_ID`, `OPENRO_MODEL_API_KEY`,
 ## Proof
 
 ```sh
-CARGO_BUILD_JOBS=2 cargo test   # 46 tests, all passing
+CARGO_BUILD_JOBS=2 cargo test   # 57 tests, all passing
 ```
 
 Integration tests (`tests/integration.rs`) run the full loop against a
@@ -79,9 +97,13 @@ restores the pre-ask tree. Plus shell and no-key honesty tests, over both
 the agent API and real HTTP.
 
 Beyond the suite, an independently written sealed acceptance exam
-(12 black-box checks — one-shot build, repair loop, revert exactness,
-persistence, the done-gate in both directions, capability refusal)
-passes **12/12** against the unmodified binary.
+(14 black-box checks — one-shot build, repair loop, revert exactness,
+persistence, the done-gate in both directions, capability refusal, a
+one-shot COMPLETE game with repair, and the proactive pitch engine
+building with zero model calls) passes **14/14** against the
+unmodified binary. The front end was measured with the hallmark-rune
+lint (8 widths × light + dark, full / empty / API-down states):
+0 failures.
 
 The live-model path is real code, exercised here against the stub
 because no model key is available in the build environment; the Studio
