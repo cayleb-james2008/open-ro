@@ -936,9 +936,8 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
   #ideas[hidden] {{ display: none; }}
   .ideas-label {{ font-size: var(--text-label); font-weight: 600; color: var(--muted); }}
   .idea-btns {{ display: flex; flex-wrap: wrap; gap: var(--sp-2); }}
-  .idea-card {{ background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: var(--r-card); padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-1); max-width: 340px; flex: 1 1 240px; }}
-  .idea-title {{ font-weight: 600; }}
-  .idea-pitch {{ color: var(--muted); font-size: var(--text-small); line-height: 1.5; flex: 1; }}
+  .idea-card {{ background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: var(--r-card); padding: var(--sp-3); display: flex; align-items: center; gap: var(--sp-3); max-width: 340px; flex: 1 1 240px; }}
+  .idea-title {{ font-weight: 600; flex: 1; }}
   .idea-btn {{ background: var(--accent); color: var(--accent-ink); border: 0; border-radius: var(--r-control); padding: var(--sp-2) var(--sp-4); min-height: 44px; font-weight: 600; cursor: pointer; align-self: flex-start; }}
   .idea-btn:hover {{ background: var(--accent-hover); }}
   .idea-btn:disabled {{ opacity: 0.45; cursor: default; }}
@@ -1108,17 +1107,16 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
       const title = document.createElement('div');
       title.className = 'idea-title';
       title.textContent = idea.title;
-      const pitch = document.createElement('div');
-      pitch.className = 'idea-pitch';
-      pitch.textContent = idea.pitch;
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'idea-btn';
       b.textContent = 'Build this';
       b.disabled = !STUDIO;
       b.addEventListener('click', () => buildIdea(idea, b));
+      /* The card is the action, not a second copy of the pitch: the
+         full pitch line sits in the thread directly above this bar
+         (elevation checker note — no verbatim duplication). */
       card.appendChild(title);
-      card.appendChild(pitch);
       card.appendChild(b);
       ideaBtns.appendChild(card);
     }}

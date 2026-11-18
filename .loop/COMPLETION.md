@@ -113,6 +113,39 @@ mock Studio, 46/46 tests, sealed exam 12/12 (`.loop/REPORT.md`).
 - Sealed exam extended maker-side: O13 (one-shot complete game with
   repair), O14 (proactivity + built-in plan, zero model calls).
   14 checks total; run recorded below.
+- Thermonuclear review: **SHIP** for the functionality phase
+  (report: `.loop/runs/completion-thermonuclear.md`). 1 medium
+  (needs enforced only at pitch time) + 3 lows (net-zero plan called
+  "Built"; all-or-nothing pitch filter stranding half-built ideas;
+  failed builds not teaching the pitch engine) — all fixed in
+  commit a9efb06 with regression tests. Suite 57/57.
+- Exam runs: first full run failed at the build step only — the
+  512 MB /tmp tmpfs filled during the `ring` C compile while other
+  builds ran concurrently (exam-runs/openro-20261118-113855-38001).
+  Serial re-run: **14/14, exit 0**
+  (exam-runs/openro-20261118-114839-50684). Manifests: exam.sh
+  `439db90e…`, checks.py `31f576b5…`.
+- Elevation pass (hallmark-rune, commit 824795a): tokens migrated
+  onto the hr-template + OpenRO anchor row (radii fork 8/12/16, old
+  names deleted, --faint kept verbatim per the pinned contrast
+  test); signature = the build timeline (steps as a mono ledger on a
+  rail, playtest verdicts as weighted bands); idea cards replace
+  bare pills; NEW thread-load error state (an outage no longer
+  dresses up as an empty chat); chip is dot + word; R5 fixed
+  (sentence case), R9 fixed (phone rail → top bar, horizontal chat
+  row); overrides logged at the foot of render_page (R9 chat rail,
+  R1 mono ledger). Kept-check inventory (every id, endpoint,
+  handler, the openro-theme key) preserved — suite 57/57 and exam
+  O1 green post-elevation.
+- Rune lint (scratch instances only): first pass 36 FAIL (composer
+  overflow at 320–390; idea/chat/theme buttons under the 44px touch
+  floor at ≤768) — all fixed. Final: **FLOOR: 0 FAIL, WARN: 0** on
+  full state, empty state, and --states (aborted APIs), 8 widths ×
+  both themes each. Screenshots eyeballed at 1440 dark + 390 light.
+- Post-elevation exam re-run: **14/14, exit 0**
+  (exam-runs/openro-20261118-115820-59354).
+- Elevation checker (fresh context): PENDING — verdict lands in
+  `.loop/runs/completion-checker-elevation.md`.
 
 ## Weakest remaining point
 
