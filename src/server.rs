@@ -859,77 +859,113 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
   }} catch (e) {{ /* dark stays the default */ }}
 </script>
 <style>
+/* hallmark-rune · app: openro · vernacular: playful creative studio · nav: chat rail (the list is the work) · signature: build timeline · tokens: hr-template v1 (OpenRO anchor row, radii fork 8/12/16) · critique: weakest State coverage — fixed in this pass with a real thread-load error state */
   :root {{
     color-scheme: dark;
-    --bg: #101014; --panel: #1b1b22; --sidebar: #17171d; --ink: #eeeeee;
-    --muted: #9a9aad; --faint: #8e8ea5; --rule: #2a2a33;
-    --accent: #2f6fed; --accent-hover: #2a62d4;
-    --user-bubble: #23232e; --field: #1b1b22;
-    --ok-bg: #173d24; --ok-ink: #7ee2a0; --bad-bg: #3d1717; --bad-ink: #f09393;
-    --warn-bg: #3a2f10; --warn-ink: #f2d38a;
+    --bg: #121218; --panel: #1a1a23; --panel-2: #23232f; --field: #14141c;
+    --ink: #eeeef3; --muted: #a7a7ba; --faint: #8e8ea5; --rule: #2c2c3a;
+    --accent: #2f6fed; --accent-hover: #2a62d4; --accent-ink: #ffffff;
+    --ok: #7ee2a0; --ok-bg: #173d24; --warn: #f2d38a; --warn-bg: #3a2f10;
+    --err: #f09393; --err-bg: #3d1717;
+    --font-body: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --text-meta: 11px; --text-label: 12px; --text-small: 13px; --text-dense: 14px;
+    --text-body: 15px; --text-title: 18px; --text-screen: 20px; --text-display: 24px;
+    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px; --sp-7: 48px;
+    --r-control: 8px; --r-card: 12px; --r-panel: 16px; --r-chip: 999px;
+    --dur-micro: 120ms; --dur-short: 200ms; --dur-panel: 280ms;
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   }}
   [data-theme="light"] {{
     color-scheme: light;
-    --bg: #f6f6f4; --panel: #ffffff; --sidebar: #ececea; --ink: #1d1d22;
-    --muted: #5d5d6b; --faint: #62627a; --rule: #d9d9d4;
-    --accent: #2459c4; --accent-hover: #1e4dab;
-    --user-bubble: #e6e6e1; --field: #ffffff;
-    --ok-bg: #e2f2e6; --ok-ink: #1c6b34; --bad-bg: #fbe7e7; --bad-ink: #9c2222;
-    --warn-bg: #fdf3e3; --warn-ink: #7a4b12;
+    --bg: #f4f4f8; --panel: #ffffff; --panel-2: #e9e9f1; --field: #ffffff;
+    --ink: #1d1d26; --muted: #5b5b70; --faint: #62627a; --rule: #d8d8e2;
+    --accent: #2459c4; --accent-hover: #1e4dab; --accent-ink: #ffffff;
+    --ok: #1c6b34; --ok-bg: #e2f2e6; --warn: #7a4b12; --warn-bg: #fdf3e3;
+    --err: #9c2222; --err-bg: #fbe7e7;
   }}
   * {{ box-sizing: border-box; }}
-  body {{ margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--ink); display: flex; height: 100vh; font-size: 15px; }}
-  ::selection {{ background: var(--accent); color: #fff; }}
+  html, body {{ overflow-x: clip; }}
+  body {{ margin: 0; font-family: var(--font-body); background: var(--bg); color: var(--ink); display: flex; height: 100vh; font-size: var(--text-body); line-height: 1.55; }}
+  ::selection {{ background: var(--accent); color: var(--accent-ink); }}
+  html {{ scrollbar-color: var(--rule) transparent; caret-color: var(--accent); }}
   :focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
   button {{ font: inherit; }}
   .sr-only {{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }}
-  #sidebar {{ width: 264px; flex: 0 0 264px; background: var(--sidebar); border-right: 1px solid var(--rule); display: flex; flex-direction: column; padding: 16px; gap: 12px; min-height: 0; }}
-  #sidebar h1 {{ font-size: 18px; margin: 0; font-weight: 600; }}
-  #game-name {{ color: var(--muted); font-size: 13px; }}
-  #new-chat {{ background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 10px; cursor: pointer; font-weight: 600; }}
+  #sidebar {{ width: 264px; flex: 0 0 264px; background: var(--panel); border-right: 1px solid var(--rule); display: flex; flex-direction: column; padding: var(--sp-4); gap: var(--sp-3); min-height: 0; }}
+  #sidebar h1 {{ font-size: var(--text-screen); margin: 0; font-weight: 600; letter-spacing: -0.01em; }}
+  #game-name {{ color: var(--muted); font-size: var(--text-small); }}
+  #new-chat {{ background: var(--accent); color: var(--accent-ink); border: 0; border-radius: var(--r-control); padding: var(--sp-2) var(--sp-3); min-height: 44px; cursor: pointer; font-weight: 600; }}
   #new-chat:hover {{ background: var(--accent-hover); }}
-  #chat-list {{ list-style: none; margin: 0; padding: 0; font-size: 14px; overflow-y: auto; flex: 1; min-height: 48px; display: flex; flex-direction: column; gap: 4px; }}
+  #chat-list {{ list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 48px; display: flex; flex-direction: column; gap: var(--sp-1); }}
   #chat-list li {{ margin: 0; }}
-  .chat-btn {{ display: block; width: 100%; text-align: left; background: none; border: 0; padding: 8px 10px; border-radius: 6px; color: var(--muted); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; }}
+  .chat-btn {{ display: block; width: 100%; text-align: left; background: none; border: 0; padding: var(--sp-2) var(--sp-3); min-height: 44px; border-radius: var(--r-control); color: var(--muted); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--text-dense); }}
   .chat-btn:hover {{ color: var(--ink); }}
-  .chat-btn.active {{ background: var(--panel); color: var(--ink); }}
-  .chip {{ font-size: 12px; padding: 6px 10px; border-radius: 999px; text-align: center; }}
-  .chip.on {{ background: var(--ok-bg); color: var(--ok-ink); }}
-  .chip.off {{ background: var(--bad-bg); color: var(--bad-ink); }}
-  #settings {{ border-top: 1px solid var(--rule); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }}
-  #settings h2 {{ font-size: 12px; font-weight: 600; color: var(--faint); margin: 0; text-transform: uppercase; letter-spacing: 0.08em; }}
-  .set-row {{ display: flex; align-items: center; gap: 8px; }}
-  .set-row .set-name {{ font-size: 13px; color: var(--muted); flex: 1; }}
-  .theme-btn {{ background: none; border: 1px solid var(--rule); color: var(--muted); border-radius: 999px; padding: 4px 12px; font-size: 13px; cursor: pointer; }}
+  .chat-btn.active {{ background: var(--panel-2); color: var(--ink); }}
+  .chip {{ display: flex; align-items: center; justify-content: center; gap: var(--sp-2); font-size: var(--text-label); padding: var(--sp-2) var(--sp-3); min-height: 32px; border-radius: var(--r-chip); }}
+  .chip::before {{ content: ""; width: 8px; height: 8px; border-radius: 50%; flex: none; }}
+  .chip.on {{ background: var(--ok-bg); color: var(--ok); }}
+  .chip.on::before {{ background: var(--ok); }}
+  .chip.off {{ background: var(--err-bg); color: var(--err); }}
+  .chip.off::before {{ background: var(--err); }}
+  #settings {{ border-top: 1px solid var(--rule); padding-top: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }}
+  #settings h2 {{ font-size: var(--text-small); font-weight: 600; color: var(--muted); margin: 0; }}
+  .set-row {{ display: flex; align-items: center; gap: var(--sp-2); }}
+  .set-row .set-name {{ font-size: var(--text-small); color: var(--muted); flex: 1; }}
+  .theme-btn {{ background: var(--panel-2); border: 1px solid var(--rule); color: var(--muted); border-radius: var(--r-chip); padding: var(--sp-1) var(--sp-3); min-height: 44px; font-size: var(--text-small); cursor: pointer; }}
   .theme-btn[aria-pressed="true"] {{ background: var(--ink); color: var(--bg); border-color: var(--ink); }}
   main {{ flex: 1; display: flex; flex-direction: column; min-width: 0; }}
-  .banner {{ background: var(--warn-bg); color: var(--warn-ink); padding: 10px 16px; font-size: 13px; }}
-  #thread {{ flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 10px; }}
-  .msg {{ max-width: 75ch; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; border-radius: 10px; padding: 10px 14px; }}
-  .msg.user {{ background: var(--user-bubble); align-self: flex-end; }}
-  .msg.assistant {{ background: var(--panel); border: 1px solid var(--rule); align-self: flex-start; }}
-  .msg.step {{ background: transparent; color: var(--muted); font-size: 13px; align-self: flex-start; padding: 2px 14px; }}
-  .msg.step.verdict-ok {{ color: var(--ok-ink); font-weight: 600; }}
-  .msg.step.verdict-bad {{ color: var(--bad-ink); font-weight: 600; }}
-  .empty {{ color: var(--faint); text-align: center; margin-top: 12vh; line-height: 1.6; }}
-  #composer {{ display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--rule); }}
-  #composer input {{ flex: 1; background: var(--field); color: var(--ink); border: 1px solid var(--muted); border-radius: 8px; padding: 10px; font-size: 15px; }}
-  #composer button {{ background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 10px 16px; cursor: pointer; font-weight: 600; }}
-  #composer button:disabled {{ opacity: 0.45; cursor: default; }}
-  #revert {{ background: var(--panel) !important; color: var(--ink) !important; border: 1px solid var(--rule) !important; }}
-  #ideas {{ border-top: 1px solid var(--rule); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }}
+  .banner {{ background: var(--warn-bg); color: var(--warn); padding: var(--sp-3) var(--sp-4); font-size: var(--text-small); }}
+  #thread {{ flex: 1; overflow-y: auto; padding: var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-3); }}
+  .msg {{ max-width: 75ch; line-height: 1.55; white-space: pre-wrap; word-wrap: break-word; border-radius: var(--r-card); padding: var(--sp-3) var(--sp-4); }}
+  .msg.user {{ background: var(--panel-2); align-self: flex-end; }}
+  .msg.assistant {{ background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r-panel); align-self: flex-start; }}
+  .msg.idea {{ background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: var(--r-panel); align-self: flex-start; }}
+  /* the build timeline: the agent's steps as one ledger rail, the
+     playtest verdicts as the weighted bands the vernacular calls for */
+  .msg.step {{ background: transparent; color: var(--muted); font-family: var(--font-mono); font-size: var(--text-small); align-self: stretch; max-width: none; padding: var(--sp-1) var(--sp-4) var(--sp-1) var(--sp-6); position: relative; }}
+  .msg.step::before {{ content: ""; position: absolute; left: 13px; top: 0; bottom: 0; width: 2px; background: var(--rule); }}
+  .msg.step::after {{ content: ""; position: absolute; left: 10px; top: 12px; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }}
+  .msg.step.verdict-ok, .msg.step.verdict-bad {{ font-family: var(--font-body); font-size: var(--text-body); font-weight: 600; padding: var(--sp-3) var(--sp-4); border-radius: var(--r-card); }}
+  .msg.step.verdict-ok {{ background: var(--ok-bg); color: var(--ok); }}
+  .msg.step.verdict-bad {{ background: var(--err-bg); color: var(--err); }}
+  .msg.step.verdict-ok::before, .msg.step.verdict-ok::after, .msg.step.verdict-bad::before, .msg.step.verdict-bad::after {{ content: none; }}
+  .empty {{ color: var(--muted); background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r-panel); text-align: center; margin: 12vh auto 0; max-width: 55ch; padding: var(--sp-5); line-height: 1.6; }}
+  .thread-error {{ color: var(--err); background: var(--err-bg); border-radius: var(--r-card); padding: var(--sp-3) var(--sp-4); max-width: 75ch; }}
+  #ideas {{ border-top: 1px solid var(--rule); padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }}
   #ideas[hidden] {{ display: none; }}
-  .ideas-label {{ font-size: 12px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.08em; }}
-  .idea-btns {{ display: flex; flex-wrap: wrap; gap: 8px; }}
-  .idea-btn {{ background: var(--panel); color: var(--ink); border: 1px solid var(--accent); border-radius: 999px; padding: 7px 14px; font-size: 14px; cursor: pointer; }}
-  .idea-btn:hover {{ border-color: var(--accent-hover); }}
+  .ideas-label {{ font-size: var(--text-label); font-weight: 600; color: var(--muted); }}
+  .idea-btns {{ display: flex; flex-wrap: wrap; gap: var(--sp-2); }}
+  .idea-card {{ background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: var(--r-card); padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-1); max-width: 340px; flex: 1 1 240px; }}
+  .idea-title {{ font-weight: 600; }}
+  .idea-pitch {{ color: var(--muted); font-size: var(--text-small); line-height: 1.5; flex: 1; }}
+  .idea-btn {{ background: var(--accent); color: var(--accent-ink); border: 0; border-radius: var(--r-control); padding: var(--sp-2) var(--sp-4); min-height: 44px; font-weight: 600; cursor: pointer; align-self: flex-start; }}
+  .idea-btn:hover {{ background: var(--accent-hover); }}
   .idea-btn:disabled {{ opacity: 0.45; cursor: default; }}
+  #composer {{ display: flex; gap: var(--sp-2); padding: var(--sp-3); border-top: 1px solid var(--rule); }}
+  #composer input {{ flex: 1; min-width: 0; background: var(--field); color: var(--ink); border: 1px solid var(--rule); border-radius: var(--r-control); padding: var(--sp-3); min-height: 44px; font-size: var(--text-body); }}
+  #composer button {{ border: 0; border-radius: var(--r-control); padding: var(--sp-2) var(--sp-4); min-height: 44px; cursor: pointer; font-weight: 600; display: inline-flex; align-items: center; gap: var(--sp-2); }}
+  #send {{ background: var(--accent); color: var(--accent-ink); }}
+  #send:hover {{ background: var(--accent-hover); }}
+  #composer button:disabled {{ opacity: 0.45; cursor: default; }}
+  #revert {{ background: var(--panel); color: var(--ink); border: 1px solid var(--rule); }}
+  #revert svg {{ width: 16px; height: 16px; flex: none; }}
   @media (max-width: 760px) {{
     body {{ flex-direction: column; }}
-    #sidebar {{ width: 100%; flex: none; max-height: 44vh; overflow-y: auto; border-right: 0; border-bottom: 1px solid var(--rule); }}
+    #sidebar {{ width: 100%; flex: none; border-right: 0; border-bottom: 1px solid var(--rule); padding: var(--sp-3); gap: var(--sp-2); }}
+    #chat-list {{ flex-direction: row; overflow-x: auto; overflow-y: hidden; flex: none; min-height: 44px; }}
+    #chat-list li {{ flex: none; }}
+    .chat-btn {{ min-height: 44px; }}
+    #settings {{ flex-direction: row; align-items: center; }}
+    #settings h2 {{ display: none; }}
+    .set-row {{ flex: 1; }}
+    #thread {{ padding: var(--sp-4); }}
+    #composer {{ flex-wrap: wrap; }}
+    #composer input {{ flex: 1 1 100%; }}
+    #composer button {{ flex: 1; justify-content: center; }}
   }}
   @media (prefers-reduced-motion: reduce) {{
-    * {{ scroll-behavior: auto !important; transition: none !important; }}
+    *, *::before, *::after {{ animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }}
   }}
 </style>
 </head>
@@ -959,7 +995,7 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
     <form id="composer">
       <label class="sr-only" for="composer-input">Describe the game</label>
       <input id="composer-input" type="text" placeholder="Describe the game…" autocomplete="off">
-      <button id="revert" type="button">Revert</button>
+      <button id="revert" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 9h9a7 7 0 0 1 0 14h-3" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>Revert</button>
       <button id="send" type="submit">Send</button>
     </form>
   </main>
@@ -986,6 +1022,7 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
 
   function lineClass(text) {{
     if (text.startsWith('You: ')) return 'msg user';
+    if (text.startsWith('OpenRO: Idea — ')) return 'msg idea';
     if (text.startsWith('OpenRO: ')) return 'msg assistant';
     if (text === 'Playtest passed.') return 'msg step verdict-ok';
     if (text.startsWith('Playtest failed')) return 'msg step verdict-bad';
@@ -994,6 +1031,8 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
   function addLine(text) {{
     const empty = thread.querySelector('.empty');
     if (empty) empty.remove();
+    const err = thread.querySelector('.thread-error');
+    if (err) err.remove();
     const div = document.createElement('div');
     div.className = lineClass(text);
     div.textContent = text;
@@ -1007,6 +1046,11 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
       ? '<div class="empty">Describe the game you want — OpenRO builds it in Studio and playtests it before calling it done.</div>'
       : '<div class="empty">Describe the game you want. To build it, OpenRO needs a model key and a Studio connection — see the notes above.</div>';
   }}
+  function showThreadError() {{
+    /* The error state: the conversation did not load, and the screen
+       says so — it never dresses an outage up as an empty chat. */
+    thread.innerHTML = '<div class="thread-error">Could not load the conversation — the OpenRO server did not answer. Reload to try again.</div>';
+  }}
   async function refreshThread() {{
     try {{
       const r = await fetch('/api/thread');
@@ -1016,7 +1060,7 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
       if (!data.thread.length) {{ showEmpty(); return; }}
       data.thread.forEach(addLine);
     }} catch (err) {{
-      if (!thread.children.length) showEmpty();
+      if (!thread.children.length) showThreadError();
     }}
   }}
   async function refreshChats() {{
@@ -1049,9 +1093,9 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
       }}
     }} catch (err) {{ /* the list keeps its last good state */ }}
   }}
-  /* the proactive pitch: idea buttons for what fits this game now.
+  /* the proactive pitch: idea cards for what fits this game now.
      The pitch itself is spoken into the thread by the server; these
-     buttons are the one-tap way to say "build that one". */
+     cards are the one-tap way to say "build that one". */
   const ideasBar = document.getElementById('ideas');
   const ideaBtns = document.getElementById('idea-btns');
   function renderIdeaButtons(ideas) {{
@@ -1059,14 +1103,24 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
     if (!ideas || !ideas.length) {{ ideasBar.hidden = true; return; }}
     ideasBar.hidden = false;
     for (const idea of ideas) {{
+      const card = document.createElement('div');
+      card.className = 'idea-card';
+      const title = document.createElement('div');
+      title.className = 'idea-title';
+      title.textContent = idea.title;
+      const pitch = document.createElement('div');
+      pitch.className = 'idea-pitch';
+      pitch.textContent = idea.pitch;
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'idea-btn';
-      b.textContent = 'Build: ' + idea.title;
+      b.textContent = 'Build this';
       b.disabled = !STUDIO;
-      b.title = idea.pitch;
       b.addEventListener('click', () => buildIdea(idea, b));
-      ideaBtns.appendChild(b);
+      card.appendChild(title);
+      card.appendChild(pitch);
+      card.appendChild(b);
+      ideaBtns.appendChild(card);
     }}
   }}
   async function refreshIdeas() {{
@@ -1149,3 +1203,8 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
 </html>"##
     )
 }
+
+/* hallmark-rune override log — OpenRO elevation (18 Nov 2026)
+   override · R9 · guard: the chat list is the primary navigation between a game's build sessions and is used constantly; the phone face collapses the rail to a top bar with a horizontal chat row in this same pass · reason: in OpenRO the rail is the session list, not chrome — the BAR's DIRECTION v1 fixes this shell and familiarity outranks novelty
+   override · R1 (borderline) · guard: thread step lines render the build ledger — data returned by the API (skills run, scripts written, verdicts) · reason: mono carries the ledger because the ledger is data; UI labels, pitches and prose stay in the body face
+*/
