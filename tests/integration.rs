@@ -993,8 +993,9 @@ fn http_refused_and_failed_asks_stay_in_the_thread() {
     assert!(body.contains("no model key configured"), "the refusal persists: {body}");
 
     // A model that never produces a valid step: the ask fails honestly
-    // and the thread keeps the exchange.
-    let garbage: Vec<String> = (0..16).map(|_| "this is not json at all".to_string()).collect();
+    // and the thread keeps the exchange. (One garbage reply per step
+    // the loop allows — MAX_STEPS is 40 since the completion round.)
+    let garbage: Vec<String> = (0..40).map(|_| "this is not json at all".to_string()).collect();
     let (agent, _stub) = agent_with_script(garbage);
     let port = start_server(Some(agent));
     let (status, _) = http_request(
@@ -1584,4 +1585,278 @@ fn claim_flag_curly_apostrophes_and_semicolons() {
             "summary {summary:?} should_flag={should_flag}: {thread}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Completion round (18 Nov 2026): the full objective — a proactive
+// creativity engine, a generation kit that can one-shot a COMPLETE
+// game, and the one-shot proof itself.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn new_skills_generate_parameterised_luau() {
+    let registry = openro_rs::skills::registry();
+    assert_eq!(registry.len(), 10, "ten skills registered: {:?}", registry.iter().map(|s| s.name).collect::<Vec<_>>());
+    let prompt = openro_rs::agent::system_prompt();
+    for def in &registry {
+        assert!(prompt.contains(def.name), "system prompt lists skill {}", def.name);
+    }
+    // currency: persistence-shaped — DataStore load/save + BindToClose.
+    let cur = openro_rs::skills::generate(
+        "currency",
+        &json!({ "currency": "Coins", "start_amount": 25, "earn_amount": 10, "earn_seconds": 5, "bind_close": true }),
+    )
+    .unwrap();
+    assert!(cur.contains("GetDataStore("), "currency uses a DataStore: {cur}");
+    assert!(cur.contains("BindToClose"), "currency binds the shutdown save: {cur}");
+    assert!(cur.contains("START_AMOUNT = 25"), "parameters land in the Luau: {cur}");
+    let unbound = openro_rs::skills::generate(
+        "currency",
+        &json!({ "currency": "Coins", "bind_close": false }),
+    )
+    .unwrap();
+    assert!(unbound.contains("GetDataStore(") && !unbound.contains("BindToClose"), "bind_close=false omits the shutdown save: {unbound}");
+    // A quote in the currency is escaped, never an injection.
+    let evil = openro_rs::skills::generate("currency", &json!({ "currency": "x\"; hacked(" })).unwrap();
+    assert!(evil.contains("\\\""), "currency quote is escaped in the Luau: {evil}");
+    // shop: creates the RemoteEvent the GUI fires.
+    let shop = openro_rs::skills::generate(
+        "shop",
+        &json!({ "item_name": "Speed Coil", "price": 100, "currency": "Coins" }),
+    )
+    .unwrap();
+    assert!(shop.contains("Instance.new(\"RemoteEvent\")") && shop.contains("OpenROShopBuy"), "shop creates the buy event: {shop}");
+    assert!(shop.contains("PRICE = 100"), "price lands in the Luau: {shop}");
+    // game_gui: a StarterGui LocalScript with the balance label + button.
+    let gui = openro_rs::skills::generate(
+        "game_gui",
+        &json!({ "title": "Coin Tycoon", "button_label": "Buy", "currency": "Coins" }),
+    )
+    .unwrap();
+    assert!(gui.contains("ScreenGui") && gui.contains("Coin Tycoon"), "gui builds the screen: {gui}");
+    assert!(gui.contains("WaitForChild(\"OpenROShopBuy\")"), "gui fires the shop event: {gui}");
+    // checkpoints: creates its folder, or references it when told not to.
+    let cp = openro_rs::skills::generate(
+        "checkpoints",
+        &json!({ "stage_count": 6, "folder_name": "Checkpoints", "create_folder": true }),
+    )
+    .unwrap();
+    assert!(cp.contains("Name = \"Checkpoints\"") && cp.contains("STAGES = 6"), "checkpoints create their folder: {cp}");
+    let cp_ref = openro_rs::skills::generate(
+        "checkpoints",
+        &json!({ "stage_count": 6, "folder_name": "Checkpoints", "create_folder": false }),
+    )
+    .unwrap();
+    assert!(cp_ref.contains("workspace.Checkpoints") && !cp_ref.contains("Name = \"Checkpoints\""), "create_folder=false only references: {cp_ref}");
+    // soundtrack.
+    let st = openro_rs::skills::generate(
+        "soundtrack",
+        &json!({ "sound_id": 123, "volume": 7, "looped": true }),
+    )
+    .unwrap();
+    assert!(st.contains("rbxassetid://123") && st.contains("Volume = 7 / 10") && st.contains("Looped = true"), "soundtrack parameters land: {st}");
+    // Validation, both directions: bad args are refused, not coerced.
+    assert!(openro_rs::skills::generate("currency", &json!({ "earn_seconds": 0 })).is_err());
+    assert!(openro_rs::skills::generate("currency", &json!({ "earn_amount": 0 })).is_err());
+    assert!(openro_rs::skills::generate("shop", &json!({ "price": 0 })).is_err());
+    assert!(openro_rs::skills::generate("checkpoints", &json!({ "stage_count": 1 })).is_err());
+    assert!(openro_rs::skills::generate("checkpoints", &json!({ "stage_count": 51 })).is_err());
+    assert!(openro_rs::skills::generate("checkpoints", &json!({ "folder_name": "Bad Name" })).is_err());
+    assert!(openro_rs::skills::generate("soundtrack", &json!({ "volume": 11 })).is_err());
+    assert!(openro_rs::skills::generate("soundtrack", &json!({ "sound_id": -1 })).is_err());
+    assert!(openro_rs::skills::generate("game_gui", &json!({ "title": "bad\u{0007}title" })).is_err());
+}
+
+#[test]
+fn one_shot_complete_game_with_repair() {
+    // ONE ask builds a whole small game: saved currency, a GUI whose
+    // shop button has nothing to fire (playtest FAILS), the shop added
+    // as the repair, then checkpoints, day/night, spawn and lava —
+    // playtest passes, and the whole ask reverts.
+    let script = vec![
+        json!({ "skill": "currency", "args": { "currency": "Coins", "start_amount": 50, "earn_amount": 10, "earn_seconds": 5, "bind_close": true } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Currency", "skill": "currency" } }).to_string(),
+        json!({ "skill": "game_gui", "args": { "title": "Coin Tycoon", "button_label": "Buy Speed Coil (100)", "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "StarterGui.GameGui", "skill": "game_gui" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "skill": "shop", "args": { "item_name": "Speed Coil", "price": 100, "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Shop", "skill": "shop" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "skill": "checkpoints", "args": { "stage_count": 6, "folder_name": "Checkpoints", "create_folder": true } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Checkpoints", "skill": "checkpoints" } }).to_string(),
+        json!({ "skill": "day_night", "args": { "cycle_minutes": 10 } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.DayNight", "skill": "day_night" } }).to_string(),
+        json!({ "tool": "create_instance", "args": { "class_name": "SpawnLocation", "name": "SpawnPad", "parent": "Workspace", "properties": { "Anchored": true } } }).to_string(),
+        json!({ "skill": "spawn_link", "args": { "instance_name": "SpawnPad" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.SpawnLink", "skill": "spawn_link" } }).to_string(),
+        json!({ "tool": "create_instance", "args": { "class_name": "Part", "name": "LavaBrick", "parent": "Workspace", "properties": { "Anchored": true } } }).to_string(),
+        json!({ "skill": "kill_brick", "args": { "damage": 25 } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "Workspace.LavaBrick.KillBrick", "skill": "kill_brick" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Built the whole Coin Tycoon starter — saved money, shop, screen, checkpoints, spawn and lava. Playtest passes." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    let outcome = agent
+        .run_ask("chat-1", "build me a complete coin tycoon game with a shop, checkpoints and lava")
+        .expect("the one-shot ask completes");
+    let transcript = outcome.transcript.join("\n");
+    assert!(transcript.contains("repair attempt 1"), "the GUI-first playtest failed and was repaired: {transcript}");
+    assert!(transcript.contains("OpenROShopBuy RemoteEvent was never created"), "the failure was the real missing-shop error: {transcript}");
+    for skill in ["currency", "game_gui", "shop", "checkpoints", "day_night", "spawn_link", "kill_brick"] {
+        assert!(outcome.skills_used.iter().any(|s| s == skill), "skill {skill} was used: {:?}", outcome.skills_used);
+    }
+    let tree = agent.place_tree().unwrap();
+    let scripts = tree["scripts"].as_object().unwrap();
+    for path in [
+        "ServerScriptService.Currency",
+        "StarterGui.GameGui",
+        "ServerScriptService.Shop",
+        "ServerScriptService.Checkpoints",
+        "ServerScriptService.DayNight",
+        "ServerScriptService.SpawnLink",
+        "Workspace.LavaBrick.KillBrick",
+    ] {
+        assert!(scripts.contains_key(path), "script {path} landed: {:?}", scripts.keys().collect::<Vec<_>>());
+    }
+    assert!(tree["scripts"]["ServerScriptService.Currency"].as_str().unwrap().contains("GetDataStore("));
+    assert!(tree["scripts"]["StarterGui.GameGui"].as_str().unwrap().contains("ScreenGui"));
+    let instances = tree["instances"].as_object().unwrap();
+    assert!(instances.contains_key("Workspace.SpawnPad") && instances.contains_key("Workspace.LavaBrick"), "instances landed: {instances:?}");
+    // The whole game is ONE change set: revert removes all of it.
+    let restored = agent.revert_chat("chat-1").unwrap();
+    assert_eq!(restored.len(), 9, "seven scripts + two instances revert together: {restored:?}");
+    let tree = agent.place_tree().unwrap();
+    assert_eq!(tree["scripts"], json!({}), "scripts empty after revert");
+    assert_eq!(tree["instances"], json!({}), "instances empty after revert");
+}
+
+#[test]
+fn currency_without_bind_close_fails_and_repairs() {
+    let script = vec![
+        json!({ "skill": "currency", "args": { "currency": "Coins", "bind_close": false } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Currency", "use_generated": true } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "skill": "currency", "args": { "currency": "Coins", "bind_close": true } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Currency", "use_generated": true } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Currency added with saving bound; playtest passes." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    let outcome = agent
+        .run_ask("chat-1", "add money that saves between sessions")
+        .expect("the repair converges");
+    let transcript = outcome.transcript.join("\n");
+    assert!(transcript.contains("BindToClose was never bound"), "the DataStore failure was the real console error: {transcript}");
+    assert!(transcript.contains("repair attempt 1"), "the repair is recorded: {transcript}");
+}
+
+#[test]
+fn builtin_plan_builds_a_complete_game() {
+    // No model replies at all: a built-in idea plan runs through the
+    // loop's own machinery — skills, instances, playtest — and lands a
+    // complete game as one revertable change set.
+    let (mut agent, _stub) = agent_with_script(vec![]);
+    let outcome = agent
+        .build_idea("chat-1", "obby-starter")
+        .expect("the built-in plan builds the game");
+    assert!(outcome.summary.contains("Lava Obby"), "summary names the game: {}", outcome.summary);
+    let thread = outcome.thread.join("\n");
+    assert!(thread.contains("no model call involved"), "the build is honest about having no model: {thread}");
+    assert!(thread.contains("Playtest passed."), "the plan's playtest passed: {thread}");
+    for skill in ["spawn_link", "checkpoints", "kill_brick", "currency", "day_night"] {
+        assert!(outcome.skills_used.iter().any(|s| s == skill), "plan used {skill}: {:?}", outcome.skills_used);
+    }
+    let tree = agent.place_tree().unwrap();
+    let scripts = tree["scripts"].as_object().unwrap();
+    for path in [
+        "ServerScriptService.SpawnLink",
+        "ServerScriptService.Checkpoints",
+        "ServerScriptService.Currency",
+        "ServerScriptService.DayNight",
+        "Workspace.LavaBrick.KillBrick",
+    ] {
+        assert!(scripts.contains_key(path), "plan wrote {path}: {:?}", scripts.keys().collect::<Vec<_>>());
+    }
+    let instances = tree["instances"].as_object().unwrap();
+    assert!(instances.contains_key("Workspace.SpawnPad") && instances.contains_key("Workspace.LavaBrick"), "plan placed its instances: {instances:?}");
+    let restored = agent.revert_chat("chat-1").unwrap();
+    assert_eq!(restored.len(), 7, "the whole plan reverts as one set: {restored:?}");
+    let tree = agent.place_tree().unwrap();
+    assert_eq!(tree["scripts"], json!({}), "scripts empty after revert");
+    assert_eq!(tree["instances"], json!({}), "instances empty after revert");
+    // An unknown idea is refused by name, never improvised.
+    let err = agent.build_idea("chat-1", "no-such-idea").expect_err("unknown ideas refuse");
+    assert!(err.message.contains("unknown idea"), "refusal names the problem: {}", err.message);
+}
+
+#[test]
+fn ideas_engine_pitches_by_context() {
+    // An empty game gets the complete-game pitches.
+    let opening = openro_rs::ideas::ideas_for(&[]);
+    assert_eq!(opening.len(), 3, "three opening games pitched");
+    assert!(opening.iter().any(|i| i.id == "obby-starter"));
+    // With money built, the shop follow-up unlocks; built skills are
+    // never re-pitched.
+    let built = vec!["currency".to_string()];
+    let follow = openro_rs::ideas::ideas_for(&built);
+    assert!(follow.iter().any(|i| i.id == "add-shop"), "the shop pitch unlocks once money exists: {:?}", follow.iter().map(|i| i.id).collect::<Vec<_>>());
+    assert!(follow.iter().all(|i| !i.skills.contains(&"currency")), "built skills are not re-pitched");
+    // Everything built → nothing left to pitch (no empty promises).
+    let all: Vec<String> = ["currency", "shop", "game_gui", "checkpoints", "soundtrack", "day_night", "kill_brick"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert!(openro_rs::ideas::ideas_for(&all).is_empty(), "a complete game gets no stale pitches");
+    // Every pitched plan only uses steps the loop understands, and
+    // every skill it names exists in the registry.
+    let names: Vec<&str> = openro_rs::skills::registry().iter().map(|s| s.name).collect();
+    for idea in openro_rs::ideas::catalogue() {
+        assert!(!idea.plan.is_empty(), "idea {} has a plan", idea.id);
+        for step in &idea.plan {
+            let is_skill = step.get("skill").and_then(|s| s.as_str()).map(|s| names.contains(&s)).unwrap_or(false);
+            let is_tool = step.get("tool").and_then(|s| s.as_str()).map(|t| ["write_script", "create_instance", "delete_instance", "delete_script", "playtest"].contains(&t)).unwrap_or(false);
+            assert!(is_skill || is_tool, "idea {} plan step is executable: {step}", idea.id);
+        }
+    }
+}
+
+#[test]
+fn http_ideas_pitch_and_build() {
+    let (agent, _stub) = agent_with_script(vec![]);
+    let port = start_server(Some(agent));
+    // The agent speaks first: asking for ideas pitches the opening
+    // games INTO the thread (the record), not just to the buttons.
+    let (status, body) = http_request(port, "POST", "/api/ideas", Some("{}"));
+    assert_eq!(status, 200);
+    assert!(body.contains("obby-starter") && body.contains("coin-tycoon"), "opening ideas returned: {body}");
+    let (_, thread) = http_request(port, "GET", "/api/thread", None);
+    assert!(thread.contains("games I can build for you right now"), "the pitch intro is in the record: {thread}");
+    assert!(thread.contains("Idea — Lava Obby"), "the pitch itself is in the record: {thread}");
+    // The same set is not pitched twice.
+    let (_, body) = http_request(port, "POST", "/api/ideas", Some("{}"));
+    assert!(body.contains("\"pitched_new\":false"), "a repeat call does not re-pitch: {body}");
+    // One tap builds the whole game through the real bridge.
+    let (status, body) = http_request(
+        port,
+        "POST",
+        "/api/ideas/build",
+        Some(&json!({ "id": "obby-starter" }).to_string()),
+    );
+    assert_eq!(status, 200, "the plan build succeeds: {body}");
+    assert!(body.contains("Lava Obby"), "the response names the build: {body}");
+    let (_, tree_body) = http_request(port, "GET", "/api/place-tree", None);
+    assert!(tree_body.contains("ServerScriptService.Currency"), "the game landed: {tree_body}");
+    assert!(tree_body.contains("Workspace.SpawnPad"), "the instances landed: {tree_body}");
+    let (_, thread) = http_request(port, "GET", "/api/thread", None);
+    assert!(thread.contains("You: Build this — Lava Obby"), "the tap is recorded: {thread}");
+    assert!(thread.contains("Playtest passed."), "the build proved itself: {thread}");
+    assert!(thread.contains("Next, I could add:"), "the follow-up pitch follows the build, unprompted: {thread}");
+    // Unknown ideas 404; they are never improvised.
+    let (status, _) = http_request(
+        port,
+        "POST",
+        "/api/ideas/build",
+        Some(&json!({ "id": "no-such-idea" }).to_string()),
+    );
+    assert_eq!(status, 404);
 }

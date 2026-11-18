@@ -15,6 +15,11 @@ const LEADERBOARD_RN: &str = include_str!("leaderboard.rn");
 const DAY_NIGHT_RN: &str = include_str!("day_night.rn");
 const KILL_BRICK_RN: &str = include_str!("kill_brick.rn");
 const SPAWN_LINK_RN: &str = include_str!("spawn_link.rn");
+const CURRENCY_RN: &str = include_str!("currency.rn");
+const SHOP_RN: &str = include_str!("shop.rn");
+const GAME_GUI_RN: &str = include_str!("game_gui.rn");
+const CHECKPOINTS_RN: &str = include_str!("checkpoints.rn");
+const SOUNDTRACK_RN: &str = include_str!("soundtrack.rn");
 
 pub struct SkillDef {
     pub name: &'static str,
@@ -62,6 +67,41 @@ pub fn registry() -> Vec<SkillDef> {
             params: "{\"instance_name\": string}",
             source: SPAWN_LINK_RN,
             entry: "generate_spawn_link",
+        },
+        SkillDef {
+            name: "currency",
+            description: "a Currency script (ServerScriptService): leaderstats whose balance is saved in a DataStore between sessions — loaded on join, topped up passively over time, saved on leave and at shutdown (bind_close). Supersedes the plain leaderboard skill when the game needs money that persists",
+            params: "{\"currency\": string, \"start_amount\": int, \"earn_amount\": int, \"earn_seconds\": int, \"bind_close\": bool}",
+            source: CURRENCY_RN,
+            entry: "generate_currency",
+        },
+        SkillDef {
+            name: "shop",
+            description: "a Shop script (ServerScriptService) that creates the OpenROShopBuy RemoteEvent in ReplicatedStorage and sells one item for the currency: checks the buyer's balance, deducts the price, records the purchase on the player",
+            params: "{\"item_name\": string, \"price\": int, \"currency\": string}",
+            source: SHOP_RN,
+            entry: "generate_shop",
+        },
+        SkillDef {
+            name: "game_gui",
+            description: "a GameGui LocalScript — it belongs in StarterGui, NOT ServerScriptService: a title, a live balance label that follows the player's currency stat, and a shop button that fires the shop's OpenROShopBuy RemoteEvent. The game also needs the shop skill, or the playtest fails because the button has nothing to fire",
+            params: "{\"title\": string, \"button_label\": string, \"currency\": string}",
+            source: GAME_GUI_RN,
+            entry: "generate_game_gui",
+        },
+        SkillDef {
+            name: "checkpoints",
+            description: "a Checkpoints script (ServerScriptService): stage pads that record each player's progress and respawn them at their highest stage; with create_folder it first creates the checkpoints folder and pads it uses",
+            params: "{\"stage_count\": int, \"folder_name\": string, \"create_folder\": bool}",
+            source: CHECKPOINTS_RN,
+            entry: "generate_checkpoints",
+        },
+        SkillDef {
+            name: "soundtrack",
+            description: "a Soundtrack script (ServerScriptService) that plays a music track from SoundService for every player; sound_id 0 leaves the track silent until a real audio id is chosen",
+            params: "{\"sound_id\": int, \"volume\": int (tenths, 0-10), \"looped\": bool}",
+            source: SOUNDTRACK_RN,
+            entry: "generate_soundtrack",
         },
     ]
 }
@@ -170,6 +210,48 @@ pub fn generate(skill: &str, args: &Value) -> Result<String, String> {
                 ));
             }
             run_skill(def.source, def.entry, (instance_name,))
+        }
+        "currency" => {
+            let currency = arg_string(args, "currency", "Coins")?;
+            let start_amount = arg_i64_range(args, "start_amount", 0, 0, 1_000_000_000)?;
+            let earn_amount = arg_i64_range(args, "earn_amount", 10, 1, 1_000_000)?;
+            // A passive-income period longer than an hour is not a period.
+            let earn_seconds = arg_i64_range(args, "earn_seconds", 5, 1, 3_600)?;
+            let bind_close = arg_bool(args, "bind_close", true)?;
+            run_skill(
+                def.source,
+                def.entry,
+                (currency, start_amount, earn_amount, earn_seconds, bind_close),
+            )
+        }
+        "shop" => {
+            let item_name = arg_string(args, "item_name", "Speed Coil")?;
+            let price = arg_i64_range(args, "price", 100, 1, 1_000_000_000)?;
+            let currency = arg_string(args, "currency", "Coins")?;
+            run_skill(def.source, def.entry, (item_name, price, currency))
+        }
+        "game_gui" => {
+            let title = arg_string(args, "title", "My Game")?;
+            let button_label = arg_string(args, "button_label", "Shop")?;
+            let currency = arg_string(args, "currency", "Coins")?;
+            run_skill(def.source, def.entry, (title, button_label, currency))
+        }
+        "checkpoints" => {
+            let stage_count = arg_i64_range(args, "stage_count", 5, 2, 50)?;
+            let folder_name = arg_string(args, "folder_name", "Checkpoints")?;
+            if !valid_identifier(&folder_name) {
+                return Err(format!(
+                    "skill arg 'folder_name' must be a plain name (letters, digits, underscores), got: {folder_name}"
+                ));
+            }
+            let create_folder = arg_bool(args, "create_folder", true)?;
+            run_skill(def.source, def.entry, (stage_count, folder_name, create_folder))
+        }
+        "soundtrack" => {
+            let sound_id = arg_i64_range(args, "sound_id", 0, 0, 9_999_999_999)?;
+            let volume = arg_i64_range(args, "volume", 5, 0, 10)?;
+            let looped = arg_bool(args, "looped", true)?;
+            run_skill(def.source, def.entry, (sound_id, volume, looped))
         }
         _ => unreachable!("registry and dispatch are kept in step"),
     }

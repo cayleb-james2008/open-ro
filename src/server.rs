@@ -41,12 +41,22 @@ fn default_chat() -> Chat {
     }
 }
 
+/// Per-chat creativity state: what the game already has (skills that
+/// have generated for this chat) and which idea set was last pitched
+/// into it, so a set is pitched once per context — never repeated.
+#[derive(Default)]
+pub struct ChatIdeas {
+    pub built: Vec<String>,
+    pub pitched: Vec<String>,
+}
+
 pub struct Shared {
     pub agent: Mutex<Option<Agent>>,
     pub chats: Mutex<Vec<Chat>>,
     pub active_chat: Mutex<String>,
     pub game_name: String,
     pub data_dir: Option<PathBuf>,
+    pub ideas: Mutex<std::collections::HashMap<String, ChatIdeas>>,
 }
 
 impl Shared {
@@ -60,6 +70,7 @@ impl Shared {
             active_chat: Mutex::new(active),
             game_name,
             data_dir: None,
+            ideas: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -78,6 +89,7 @@ impl Shared {
             active_chat: Mutex::new(active),
             game_name,
             data_dir: Some(data_dir),
+            ideas: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -166,6 +178,44 @@ impl Shared {
             "active": *active,
         })
     }
+
+    /// Record skills a finished run used, so the creativity engine
+    /// knows what this chat's game already has.
+    pub fn note_built(&self, chat_id: &str, skills: &[String]) {
+        let mut state = self.ideas.lock().unwrap();
+        let entry = state.entry(chat_id.to_string()).or_default();
+        for s in skills {
+            if !entry.built.contains(s) {
+                entry.built.push(s.clone());
+            }
+        }
+    }
+
+    /// The ideas to pitch for a chat right now, and the thread lines
+    /// for the pitch — non-empty only when this set is NEW for the
+    /// chat (the context changed since the last pitch). A pitch is
+    /// spoken once per context, never repeated into the record.
+    pub fn pitch_for(&self, chat_id: &str, intro: &str) -> (Vec<crate::ideas::Idea>, Vec<String>) {
+        let mut state = self.ideas.lock().unwrap();
+        let entry = state.entry(chat_id.to_string()).or_default();
+        let ideas = crate::ideas::ideas_for(&entry.built);
+        let ids: Vec<String> = ideas.iter().map(|i| i.id.to_string()).collect();
+        if ids == entry.pitched {
+            return (ideas, Vec::new());
+        }
+        entry.pitched = ids;
+        let lines = crate::ideas::pitch_lines(&ideas, intro);
+        (ideas, lines)
+    }
+}
+
+fn ideas_json(ideas: &[crate::ideas::Idea]) -> Value {
+    Value::Array(
+        ideas
+            .iter()
+            .map(|i| json!({ "id": i.id, "title": i.title, "pitch": i.pitch }))
+            .collect(),
+    )
 }
 
 /// Move a corrupt state file aside to the first free backup name so
@@ -445,6 +495,17 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                 Some(agent) => match agent.run_ask(&chat_id, &message) {
                     Ok(outcome) => {
                         shared.append_lines_to(&chat_id, &outcome.thread);
+                        // The agent speaks next, unprompted: record
+                        // what the game now has and pitch the follow-up
+                        // set for the new context (once per context).
+                        shared.note_built(&chat_id, &outcome.skills_used);
+                        let (_, pitch) = shared.pitch_for(
+                            &chat_id,
+                            "OpenRO: That landed. Next, I could add:",
+                        );
+                        if !pitch.is_empty() {
+                            shared.append_lines_to(&chat_id, &pitch);
+                        }
                         respond_json(
                             &mut stream,
                             "200 OK",
@@ -465,6 +526,107 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                         shared.append_lines_to(&chat_id, &[format!("OpenRO: {}", f.message)]);
                         let status = if f.message.contains("no model key configured")
                             || f.message.contains("Studio not connected")
+                            || f.message.contains("does not offer")
+                        {
+                            "503 Service Unavailable"
+                        } else {
+                            "502 Bad Gateway"
+                        };
+                        respond_json(
+                            &mut stream,
+                            status,
+                            &json!({ "ok": false, "error": f.message }),
+                        );
+                    }
+                },
+            }
+        }
+        ("POST", "/api/ideas") => {
+            // The proactive pitch: which ideas fit this chat's game
+            // right now. A new set is also spoken into the thread (the
+            // agent talking first is part of the chat's record); a set
+            // already pitched is returned silently for the buttons.
+            let chat_id = shared.active_chat.lock().unwrap().clone();
+            let intro = if shared.thread_lines().is_empty() {
+                "OpenRO: While you think — here are games I can build for you right now, in one go:"
+            } else {
+                "OpenRO: Next, I could add:"
+            };
+            let (ideas, lines) = shared.pitch_for(&chat_id, intro);
+            if !lines.is_empty() {
+                shared.append_lines_to(&chat_id, &lines);
+            }
+            respond_json(
+                &mut stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "ideas": ideas_json(&ideas),
+                    "pitched_new": !lines.is_empty(),
+                }),
+            );
+        }
+        ("POST", "/api/ideas/build") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let id = body
+                .get("id")
+                .and_then(|i| i.as_str())
+                .unwrap_or("")
+                .to_string();
+            let idea = match crate::ideas::find(&id) {
+                Some(i) => i,
+                None => {
+                    respond_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &json!({ "ok": false, "error": format!("unknown idea: {id}") }),
+                    );
+                    return Ok(());
+                }
+            };
+            let chat_id = shared.active_chat.lock().unwrap().clone();
+            // The tap is the user's words for this build — recorded
+            // first, like a typed ask, so a refused build never loses it.
+            shared.append_lines_to(&chat_id, &[format!("You: Build this — {}", idea.title)]);
+            let mut guard = shared.agent.lock().unwrap();
+            match guard.as_mut() {
+                None => {
+                    let error =
+                        "Studio not connected: set OPENRO_MCP_COMMAND to a Studio MCP server";
+                    shared.append_lines_to(&chat_id, &[format!("OpenRO: {error}")]);
+                    respond_json(
+                        &mut stream,
+                        "503 Service Unavailable",
+                        &json!({ "ok": false, "error": error }),
+                    );
+                }
+                Some(agent) => match agent.build_idea(&chat_id, &id) {
+                    Ok(outcome) => {
+                        shared.append_lines_to(&chat_id, &outcome.thread);
+                        shared.note_built(&chat_id, &outcome.skills_used);
+                        let (next, pitch) = shared.pitch_for(
+                            &chat_id,
+                            "OpenRO: That landed. Next, I could add:",
+                        );
+                        if !pitch.is_empty() {
+                            shared.append_lines_to(&chat_id, &pitch);
+                        }
+                        respond_json(
+                            &mut stream,
+                            "200 OK",
+                            &json!({
+                                "ok": true,
+                                "summary": outcome.summary,
+                                "thread": outcome.thread,
+                                "transcript": outcome.transcript,
+                                "ideas": ideas_json(&next),
+                            }),
+                        );
+                    }
+                    Err(f) => {
+                        shared.append_lines_to(&chat_id, &f.thread);
+                        shared.append_lines_to(&chat_id, &[format!("OpenRO: {}", f.message)]);
+                        let status = if f.message.contains("Studio not connected")
                             || f.message.contains("does not offer")
                         {
                             "503 Service Unavailable"
@@ -652,6 +814,13 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
   #composer button {{ background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 10px 16px; cursor: pointer; font-weight: 600; }}
   #composer button:disabled {{ opacity: 0.45; cursor: default; }}
   #revert {{ background: var(--panel) !important; color: var(--ink) !important; border: 1px solid var(--rule) !important; }}
+  #ideas {{ border-top: 1px solid var(--rule); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }}
+  #ideas[hidden] {{ display: none; }}
+  .ideas-label {{ font-size: 12px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.08em; }}
+  .idea-btns {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+  .idea-btn {{ background: var(--panel); color: var(--ink); border: 1px solid var(--accent); border-radius: 999px; padding: 7px 14px; font-size: 14px; cursor: pointer; }}
+  .idea-btn:hover {{ border-color: var(--accent-hover); }}
+  .idea-btn:disabled {{ opacity: 0.45; cursor: default; }}
   @media (max-width: 760px) {{
     body {{ flex-direction: column; }}
     #sidebar {{ width: 100%; flex: none; max-height: 44vh; overflow-y: auto; border-right: 0; border-bottom: 1px solid var(--rule); }}
@@ -680,6 +849,10 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
   <main>
     {key_banner}
     <div id="thread" aria-live="polite"></div>
+    <div id="ideas" hidden>
+      <span class="ideas-label">OpenRO can build this now</span>
+      <div class="idea-btns" id="idea-btns"></div>
+    </div>
     <form id="composer">
       <label class="sr-only" for="composer-input">Describe the game</label>
       <input id="composer-input" type="text" placeholder="Describe the game…" autocomplete="off">
@@ -692,6 +865,7 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
   const chatList = document.getElementById('chat-list');
   const rootEl = document.documentElement;
   const CAN_BUILD = {can_build};
+  const STUDIO = {studio_connected};
 
   /* appearance — the settings toggle; the choice persists on this device */
   const themeBtns = document.querySelectorAll('.theme-btn');
@@ -765,11 +939,56 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
           }}
           await refreshChats();
           await refreshThread();
+          await refreshIdeas();
         }});
         li.appendChild(btn);
         chatList.appendChild(li);
       }}
     }} catch (err) {{ /* the list keeps its last good state */ }}
+  }}
+  /* the proactive pitch: idea buttons for what fits this game now.
+     The pitch itself is spoken into the thread by the server; these
+     buttons are the one-tap way to say "build that one". */
+  const ideasBar = document.getElementById('ideas');
+  const ideaBtns = document.getElementById('idea-btns');
+  function renderIdeaButtons(ideas) {{
+    ideaBtns.innerHTML = '';
+    if (!ideas || !ideas.length) {{ ideasBar.hidden = true; return; }}
+    ideasBar.hidden = false;
+    for (const idea of ideas) {{
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'idea-btn';
+      b.textContent = 'Build: ' + idea.title;
+      b.disabled = !STUDIO;
+      b.title = idea.pitch;
+      b.addEventListener('click', () => buildIdea(idea, b));
+      ideaBtns.appendChild(b);
+    }}
+  }}
+  async function refreshIdeas() {{
+    try {{
+      const r = await fetch('/api/ideas', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: '{{}}' }});
+      if (!r.ok) return;
+      const data = await r.json();
+      renderIdeaButtons(data.ideas);
+      if (data.pitched_new) await refreshThread();
+    }} catch (err) {{ /* the bar keeps its last good state */ }}
+  }}
+  async function buildIdea(idea, btn) {{
+    btn.disabled = true;
+    btn.textContent = 'Building…';
+    try {{
+      const r = await fetch('/api/ideas/build', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{ id: idea.id }}) }});
+      const data = await r.json();
+      if (!data.ok) {{ addLine('OpenRO: ' + data.error); }}
+      else if (data.ideas) {{ renderIdeaButtons(data.ideas); }}
+    }} catch (err) {{
+      addLine('OpenRO: Could not reach the OpenRO server.');
+    }}
+    await refreshThread();
+    await refreshChats();
+    await refreshIdeas();
   }}
   document.getElementById('composer').addEventListener('submit', async (e) => {{
     e.preventDefault();
@@ -792,6 +1011,7 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
     send.disabled = false;
     send.textContent = 'Send';
     await refreshChats();
+    await refreshIdeas();
     input.focus();
   }});
   document.getElementById('revert').addEventListener('click', async () => {{
@@ -815,10 +1035,12 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
     }}
     await refreshChats();
     await refreshThread();
+    await refreshIdeas();
     document.getElementById('composer-input').focus();
   }});
   refreshChats();
   refreshThread();
+  refreshIdeas();
 </script>
 </body>
 </html>"##

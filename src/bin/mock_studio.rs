@@ -13,6 +13,19 @@
 //!        `Workspace.SpawnPad is not a valid member of Workspace "Workspace"`
 //!      if any written script references `workspace.SpawnPad` but no
 //!      instance exists at `Workspace.SpawnPad`.
+//!   3. playtest FAILS with console error
+//!        `Workspace.Checkpoints is not a valid member of Workspace "Workspace"`
+//!      if any written script references `workspace.Checkpoints` but no
+//!      script creates it (no `Name = "Checkpoints"` anywhere) and no
+//!      instance exists at `Workspace.Checkpoints`.
+//!   4. playtest FAILS with console error
+//!        `ServerScriptService.Currency: DataStore save failed: BindToClose was never bound`
+//!      if any written script calls `GetDataStore(` without binding a
+//!      shutdown save (`BindToClose` absent from that script).
+//!   5. playtest FAILS with console error
+//!        `StarterGui.GameGui: OpenROShopBuy RemoteEvent was never created in ReplicatedStorage`
+//!      if any written script waits on `WaitForChild("OpenROShopBuy")`
+//!      but no written script creates a RemoteEvent.
 //!   Otherwise the playtest PASSES and `get_console` returns an OK line.
 //!
 //! The place tree holds scripts AND instances:
@@ -26,6 +39,10 @@ const FAIL_CONSOLE: &str =
     "ServerScriptService.RoundManager:4: attempt to index nil with 'Start'";
 const SPAWN_FAIL_CONSOLE: &str =
     "Workspace.SpawnPad is not a valid member of Workspace \"Workspace\"";
+const CHECKPOINT_FAIL_CONSOLE: &str =
+    "Workspace.Checkpoints is not a valid member of Workspace \"Workspace\"";
+const DATASTORE_FAIL_CONSOLE: &str = "ServerScriptService.Currency: DataStore save failed: BindToClose was never bound — balances would be lost at shutdown";
+const SHOP_FAIL_CONSOLE: &str = "StarterGui.GameGui: OpenROShopBuy RemoteEvent was never created in ReplicatedStorage — the shop button has nothing to fire";
 const OK_CONSOLE: &str = "Playtest OK: all scripts ran without errors";
 
 fn main() {
@@ -226,10 +243,32 @@ fn tool_call(
                 .values()
                 .any(|s| s.contains("workspace.SpawnPad"));
             let has_spawn = instances.contains_key("Workspace.SpawnPad");
+            let references_checkpoints = scripts
+                .values()
+                .any(|s| s.contains("workspace.Checkpoints"));
+            let creates_checkpoints = scripts
+                .values()
+                .any(|s| s.contains("Name = \"Checkpoints\""));
+            let has_checkpoints = instances.contains_key("Workspace.Checkpoints");
+            let datastore_unbound = scripts
+                .values()
+                .any(|s| s.contains("GetDataStore(") && !s.contains("BindToClose"));
+            let waits_remote = scripts
+                .values()
+                .any(|s| s.contains("WaitForChild(\"OpenROShopBuy\")"));
+            let creates_remote = scripts
+                .values()
+                .any(|s| s.contains("Instance.new(\"RemoteEvent\")"));
             let (passed, msg) = if references_round && !creates_round {
                 (false, FAIL_CONSOLE)
             } else if references_spawn && !has_spawn {
                 (false, SPAWN_FAIL_CONSOLE)
+            } else if references_checkpoints && !creates_checkpoints && !has_checkpoints {
+                (false, CHECKPOINT_FAIL_CONSOLE)
+            } else if datastore_unbound {
+                (false, DATASTORE_FAIL_CONSOLE)
+            } else if waits_remote && !creates_remote {
+                (false, SHOP_FAIL_CONSOLE)
             } else {
                 (true, OK_CONSOLE)
             };
