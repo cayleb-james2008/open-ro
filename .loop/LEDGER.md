@@ -42,3 +42,9 @@
 - B (claim check): PASS WITH NOTES. Fixed here: curly apostrophes normalised (U+2019 split "wasn't" and smuggled claims past suppressors), semicolons end sentences, spawned/fixed/repaired added to the verb list. Remaining edges are LOW noise on a factual line (idiom false negatives like "set up"; "I already built it" dodging on "already"; "I made sure…" flagged) — accepted and recorded; the line states a fact, it does not accuse.
 - C (round-3 fixes): all verified except chats.json — F5's "same treatment" was half true: entry-level malformation (missing id, non-array lines) was silently dropped and the next save destroyed the original. FIXED: strict entry-level loading (id must be a string, lines an array of strings, title a string when present); any violation backs the whole file up. Pinned.
 - Verify fix-round-5: 46/46 green. Remaining known items are LOW/accepted (capability strictness stance, claim-line idiom noise) — no material findings open.
+
+## Sealed exam (independent examiner + runner) — 12/12 PASS
+- Exam at ~/workspace/restart-20261117/exams/openro/ (exam.sh, checks.py; 12 checks O1–O12: shell/themes, game-name HTML escaping, no-key honesty, no-Studio honesty, one-shot build, repair loop, revert exactness + honest second revert, multi-script + instance, persistence, done-gate both directions, MOCK_DROP capability refusal).
+- Attempt 1 (manifest exam.sh 382ac064…, checks.py f959f73b…): failed before any check ran — exam.sh's extraction tar ran as root without --no-same-owner and this workspace filesystem forbids chown (tar exit 2). Environmental, not an app or check failure.
+- Patch (exam side only): extraction tar gained --no-same-owner; checks.py byte-identical. New manifest: exam.sh 439db90e…, checks.py f959f73b… (unchanged).
+- Run (independent runner, hashes verified, run dir ~/workspace/exam-runs/openro-20261118-015134-15949): PASS O1–O12, EXAM RESULT 12/12, exit 0. App tree unmodified throughout (git status clean).
