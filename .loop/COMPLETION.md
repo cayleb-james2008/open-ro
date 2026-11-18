@@ -144,9 +144,41 @@ mock Studio, 46/46 tests, sealed exam 12/12 (`.loop/REPORT.md`).
   both themes each. Screenshots eyeballed at 1440 dark + 390 light.
 - Post-elevation exam re-run: **14/14, exit 0**
   (exam-runs/openro-20261118-115820-59354).
-- Elevation checker (fresh context): PENDING — verdict lands in
-  `.loop/runs/completion-checker-elevation.md`.
+- Elevation checker (fresh context): **PASS-WITH-NOTES** (report:
+  `.loop/runs/completion-checker-elevation.md`). It re-created the
+  lint venv, re-ran the lint itself (0 FAIL / 0 WARN, full + states +
+  empty), ran the suite itself (57/57), probed every flow over HTTP,
+  and closed the exam claim by re-running checks.py against the
+  elevated run's own binaries (14/14). Notes dispositioned in commit
+  5df830e: idea cards no longer duplicate the pitch verbatim (the
+  pitch lives in the thread; the card is the action); the plan
+  summary no longer restates the pass the verdict band already
+  states. Accepted as-is: the theme toggle's chip radius (standard
+  segmented control); the honest empty state being superseded by the
+  proactive pitch on a live instance (by design — the pitch IS the
+  first thing an empty chat gets). Post-note-fix: suite 57/57, lint
+  FLOOR: 0 FAIL, final exam 14/14 (run dir below).
+- Final exam run against the pushed binary: **14/14, exit 0**
+  (exam-runs/openro-20261118-120633-9693).
+- Public surfaces (checker-proven facts only): repo
+  github.com/cayleb-james2008/open-ro main pushed (ac7d624..7b6bf4e,
+  README updated: ten skills, creativity engine, 57 tests, 14/14,
+  lint 0 FAIL — read back live via the GitHub API); site page
+  projects/openro.html updated + pushed (40be170) and verified live;
+  staging replacement/openro/{README.md, CLAIMS.md, openro.html}
+  refreshed to match.
+- Final verify: `bash .loop/verify completion-final` — build ok,
+  tests ok, 57/57.
 
 ## Weakest remaining point
 
-(to be named at close)
+The pitch engine's picture of the game is the set of skills it has
+generated, not the scripts actually in the place — a game built by
+hand in Studio (or by an older session) is invisible to it, so a
+follow-up pitch can offer something the place already has. Closing
+that needs the pitch context read from the live place tree, which
+needs a real Studio session to prove — and real Studio is
+desktop-only, unreachable from this VM. Everything here is proven
+against the mock bridge and a stub model; no live Studio run and no
+live-model run has ever touched this build, and the public copy says
+exactly that.
