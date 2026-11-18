@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -57,6 +57,11 @@ pub struct Shared {
     pub game_name: String,
     pub data_dir: Option<PathBuf>,
     pub ideas: Mutex<std::collections::HashMap<String, ChatIdeas>>,
+    /// Backup file names of saved state that was corrupt at startup and
+    /// was set aside (empty normally).
+    pub store_recovered: Vec<String>,
+    /// Connection handler threads running now (capped per server).
+    pub active_handlers: AtomicUsize,
 }
 
 impl Shared {
@@ -71,6 +76,8 @@ impl Shared {
             game_name,
             data_dir: None,
             ideas: Mutex::new(std::collections::HashMap::new()),
+            store_recovered: Vec::new(),
+            active_handlers: AtomicUsize::new(0),
         })
     }
 
@@ -78,12 +85,13 @@ impl Shared {
     /// inside `data_dir`.
     pub fn with_data_dir(agent: Option<Agent>, game_name: String, data_dir: PathBuf) -> Arc<Shared> {
         let _ = std::fs::create_dir_all(&data_dir);
-        let (chats, active) = load_chats(&data_dir).unwrap_or_else(|| {
+        let mut recovered = agent.as_ref().map(|a| a.recovered.clone()).unwrap_or_default();
+        let (chats, active) = load_chats(&data_dir, &mut recovered).unwrap_or_else(|| {
             let chat = default_chat();
             let active = chat.id.clone();
             (vec![chat], active)
         });
-        let ideas = load_ideas(&data_dir);
+        let ideas = load_ideas(&data_dir, &mut recovered);
         Arc::new(Shared {
             agent: Mutex::new(agent),
             chats: Mutex::new(chats),
@@ -91,6 +99,8 @@ impl Shared {
             game_name,
             data_dir: Some(data_dir),
             ideas: Mutex::new(ideas),
+            store_recovered: recovered,
+            active_handlers: AtomicUsize::new(0),
         })
     }
 
@@ -180,6 +190,19 @@ impl Shared {
         })
     }
 
+    /// A revert took back the skills of the set it undid: they are no
+    /// longer in the place, so the prerequisite gate stops counting
+    /// them. A skill another remaining set still holds stays counted.
+    pub fn forget_built(&self, chat_id: &str, reverted: &[String], kept: &[String]) {
+        let mut state = self.ideas.lock().unwrap();
+        let Some(entry) = state.get_mut(chat_id) else { return };
+        let before = entry.built.len();
+        entry.built.retain(|s| !reverted.contains(s) || kept.contains(s));
+        if entry.built.len() != before {
+            self.persist_ideas(&state);
+        }
+    }
+
     /// Record skills a finished run used, so the creativity engine
     /// knows what this chat's game already has.
     pub fn note_built(&self, chat_id: &str, skills: &[String]) {
@@ -238,7 +261,7 @@ impl Shared {
 /// changes loaders: any malformed entry makes the whole file corrupt
 /// — backed up, never partially read (a half-remembered context
 /// would pitch games the place already has, or skip ones it needs).
-fn load_ideas(dir: &PathBuf) -> std::collections::HashMap<String, ChatIdeas> {
+fn load_ideas(dir: &PathBuf, recovered: &mut Vec<String>) -> std::collections::HashMap<String, ChatIdeas> {
     let path = dir.join("ideas.json");
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
@@ -269,7 +292,7 @@ fn load_ideas(dir: &PathBuf) -> std::collections::HashMap<String, ChatIdeas> {
     match strict {
         Some(map) => map,
         None => {
-            let _ = backup_corrupt(&path);
+            set_aside(&path, recovered);
             std::collections::HashMap::new()
         }
     }
@@ -282,6 +305,14 @@ fn ideas_json(ideas: &[crate::ideas::Idea]) -> Value {
             .map(|i| json!({ "id": i.id, "title": i.title, "pitch": i.pitch, "skills": i.skills }))
             .collect(),
     )
+}
+
+/// Back up a corrupt state file and remember its backup name, so the
+/// page can tell the operator what was set aside.
+fn set_aside(path: &std::path::Path, recovered: &mut Vec<String>) {
+    if let Some(bak) = backup_corrupt(path) {
+        recovered.push(bak.file_name().unwrap_or_default().to_string_lossy().into_owned());
+    }
 }
 
 /// Move a corrupt state file aside to the first free backup name so
@@ -303,7 +334,7 @@ pub fn backup_corrupt(path: &std::path::Path) -> Option<std::path::PathBuf> {
     Some(candidate)
 }
 
-fn load_chats(dir: &PathBuf) -> Option<(Vec<Chat>, String)> {
+fn load_chats(dir: &PathBuf, recovered: &mut Vec<String>) -> Option<(Vec<Chat>, String)> {
     let path = dir.join("chats.json");
     let text = std::fs::read_to_string(&path).ok()?;
     let parsed = serde_json::from_str::<Value>(&text);
@@ -313,7 +344,7 @@ fn load_chats(dir: &PathBuf) -> Option<(Vec<Chat>, String)> {
         .unwrap_or(false);
     if !shape_ok {
         // Corrupt (unparseable or wrong shape): preserve the bytes.
-        let _ = backup_corrupt(&path);
+        set_aside(&path, recovered);
         return None;
     }
     let v = parsed.ok()?;
@@ -343,7 +374,7 @@ fn load_chats(dir: &PathBuf) -> Option<(Vec<Chat>, String)> {
     let chats = match strict {
         Some(c) => c,
         None => {
-            let _ = backup_corrupt(&path);
+            set_aside(&path, recovered);
             return None;
         }
     };
@@ -358,17 +389,58 @@ fn load_chats(dir: &PathBuf) -> Option<(Vec<Chat>, String)> {
     Some((chats, active))
 }
 
+/// Handler threads allowed at once. Asks hold their thread for minutes,
+/// so the cap is generous; beyond it a connection gets a plain 503.
+const MAX_HANDLERS: usize = 64;
+/// How long one read or write on a connection may stall before it is dropped.
+const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Largest request body the API accepts (chat asks are small JSON).
+const MAX_BODY_BYTES: usize = 1_048_576;
+
+/// Holds one handler slot for the life of its thread.
+struct HandlerSlot(Arc<Shared>);
+
+impl Drop for HandlerSlot {
+    fn drop(&mut self) {
+        self.0.active_handlers.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> {
+    // Extra host names this server answers to, beyond this machine's own.
+    let allowed: Arc<Vec<String>> = Arc::new(
+        std::env::var("OPENRO_ALLOWED_HOSTS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|h| h.trim().to_string())
+            .filter(|h| !h.is_empty())
+            .collect(),
+    );
     for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let shared = Arc::clone(&shared);
-                std::thread::spawn(move || {
-                    let _ = handle(stream, &shared);
-                });
-            }
-            Err(_) => continue,
+        let Ok(mut stream) = stream else { continue };
+        let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+        let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+        if shared.active_handlers.load(Ordering::SeqCst) >= MAX_HANDLERS {
+            // Answered off the accept loop: a silent client must not
+            // stall the connections queued behind it.
+            std::thread::spawn(move || {
+                respond_json(
+                    &mut stream,
+                    "503 Service Unavailable",
+                    &json!({ "ok": false, "error": "OpenRO is busy with other requests. Try again in a moment." }),
+                );
+                let _ = stream.read(&mut [0u8; 8192]);
+            });
+            continue;
         }
+        shared.active_handlers.fetch_add(1, Ordering::SeqCst);
+        let slot = HandlerSlot(Arc::clone(&shared));
+        let shared = Arc::clone(&shared);
+        let allowed = Arc::clone(&allowed);
+        std::thread::spawn(move || {
+            let _slot = slot;
+            let _ = handle(stream, &shared, &allowed);
+        });
     }
     Ok(())
 }
@@ -377,6 +449,11 @@ struct Request {
     method: String,
     path: String,
     body: Vec<u8>,
+    host: String,
+    origin: String,
+    sec_fetch_site: String,
+    content_type: String,
+    content_length: usize,
 }
 
 fn read_request(stream: &mut TcpStream) -> Option<Request> {
@@ -401,31 +478,97 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
     let mut lines = head.lines();
     let first = lines.next()?;
     let mut parts = first.split_whitespace();
-    let method = parts.next()?.to_string();
-    let path = parts.next()?.to_string();
-    let mut content_length = 0usize;
+    let mut req = Request {
+        method: parts.next()?.to_string(),
+        path: parts.next()?.to_string(),
+        body: Vec::new(),
+        host: String::new(),
+        origin: String::new(),
+        sec_fetch_site: String::new(),
+        content_type: String::new(),
+        content_length: 0,
+    };
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
-            if k.trim().eq_ignore_ascii_case("content-length") {
-                content_length = v.trim().parse().unwrap_or(0);
+            let v = v.trim();
+            match k.trim().to_ascii_lowercase().as_str() {
+                "content-length" => req.content_length = v.parse().unwrap_or(0),
+                "host" => req.host = v.to_string(),
+                "origin" => req.origin = v.to_string(),
+                "sec-fetch-site" => req.sec_fetch_site = v.to_ascii_lowercase(),
+                "content-type" => req.content_type = v.to_ascii_lowercase(),
+                _ => {}
             }
         }
     }
-    // Bodies are small JSON; a request claiming a huge one is dropped
-    // rather than waited on forever.
-    if content_length > 1_048_576 {
-        return None;
+    // An oversized body is not read at all: handle answers 413.
+    if req.content_length > MAX_BODY_BYTES {
+        return Some(req);
     }
     let mut body = buf[header_end..].to_vec();
-    while body.len() < content_length {
+    while body.len() < req.content_length {
         let n = stream.read(&mut chunk).ok()?;
         if n == 0 {
             break;
         }
         body.extend_from_slice(&chunk[..n]);
     }
-    body.truncate(content_length);
-    Some(Request { method, path, body })
+    body.truncate(req.content_length);
+    req.body = body;
+    Some(req)
+}
+
+/// Lower-cased host name of a Host or Origin authority, without port.
+fn host_name(authority: &str) -> String {
+    let a = authority.trim().to_ascii_lowercase();
+    if a.starts_with('[') {
+        return a.split(']').next().map(|h| format!("{h}]")).unwrap_or_default();
+    }
+    a.split(':').next().unwrap_or("").to_string()
+}
+
+fn host_allowed(host: &str, allowed: &[String]) -> bool {
+    let name = host_name(host);
+    ["localhost", "127.0.0.1", "[::1]"].contains(&name.as_str())
+        || allowed.iter().any(|a| host_name(a) == name)
+}
+
+/// Why a request is refused before it reaches a handler, as (status,
+/// plain-words message); None when it may proceed. A foreign Host is
+/// refused outright (a rebinding page cannot read the API); a
+/// state-changing request is refused when it is cross-site, when its
+/// Origin is not this server's own authority, or when its body is not
+/// JSON (a plain form post from another page cannot send one).
+fn refusal(req: &Request, allowed: &[String]) -> Option<(&'static str, &'static str)> {
+    if !host_allowed(&req.host, allowed) {
+        return Some(("403 Forbidden", "This OpenRO server only answers requests addressed to this machine. Open it at http://127.0.0.1 instead."));
+    }
+    if req.content_length > MAX_BODY_BYTES {
+        return Some(("413 Payload Too Large", "That message is too large (over 1 MB). Send a shorter one."));
+    }
+    let changes_state = matches!(req.method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
+    if !changes_state {
+        return None;
+    }
+    if req.content_length > 0 && !req.content_type.starts_with("application/json") {
+        return Some(("415 Unsupported Media Type", "OpenRO takes JSON requests only. The page sends them; a plain form post is refused."));
+    }
+    let origin_authority = req
+        .origin
+        .split("://")
+        .nth(1)
+        .unwrap_or(req.origin.as_str())
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !req.origin.is_empty() && origin_authority != req.host.trim().to_ascii_lowercase() {
+        return Some(("403 Forbidden", "cross-origin requests are refused"));
+    }
+    if req.sec_fetch_site == "cross-site" {
+        return Some(("403 Forbidden", "cross-origin requests are refused"));
+    }
+    None
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -447,17 +590,31 @@ fn respond_json(stream: &mut TcpStream, status: &str, value: &Value) {
     respond(stream, status, "application/json", &value.to_string());
 }
 
-fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
+fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io::Result<()> {
     let req = match read_request(&mut stream) {
         Some(r) => r,
         None => return Ok(()),
     };
+    if let Some((status, message)) = refusal(&req, allowed) {
+        respond_json(&mut stream, status, &json!({ "ok": false, "error": message }));
+        if req.content_length > MAX_BODY_BYTES {
+            // The body was never read: take it (bounded by its declared
+            // length) so closing does not reset the 413 before it arrives.
+            drain_unread(&mut stream, req.content_length.min(4 * MAX_BODY_BYTES));
+        }
+        return Ok(());
+    }
     let path = req.path.split('?').next().unwrap_or("/").to_string();
 
     match (req.method.as_str(), path.as_str()) {
         ("GET", "/") => {
             let (studio_connected, model_configured) = status_flags(shared);
-            let html = render_page(&shared.game_name, studio_connected, model_configured);
+            let html = render_page_with(
+                &shared.game_name,
+                studio_connected,
+                model_configured,
+                &shared.store_recovered,
+            );
             respond(&mut stream, "200 OK", "text/html; charset=utf-8", &html);
         }
         ("GET", "/api/status") => {
@@ -469,6 +626,7 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                     "studio_connected": studio_connected,
                     "model_configured": model_configured,
                     "game_name": shared.game_name,
+                    "store_recovered": shared.store_recovered,
                 }),
             );
         }
@@ -559,6 +717,17 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                     );
                 }
                 Some(agent) => match agent.run_ask(&chat_id, &message) {
+                    Ok(outcome) if outcome.refused => {
+                        // Refused, not built: the plain reason is the
+                        // answer, the model's success claim is not shown,
+                        // and no pitch follows.
+                        shared.append_lines_to(&chat_id, &outcome.thread);
+                        respond_json(
+                            &mut stream,
+                            "502 Bad Gateway",
+                            &json!({ "ok": false, "error": outcome.summary }),
+                        );
+                    }
                     Ok(outcome) => {
                         shared.append_lines_to(&chat_id, &outcome.thread);
                         // The agent speaks next, unprompted: record
@@ -748,9 +917,11 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
         ("POST", "/api/revert") => {
             let chat_id = shared.active_chat.lock().unwrap().clone();
             let mut guard = shared.agent.lock().unwrap();
+            let reverted = guard.as_ref().map(|a| a.top_skills(&chat_id)).unwrap_or_default();
             match guard.as_mut() {
                 Some(agent) => match agent.revert_chat(&chat_id) {
                     Ok(restored) => {
+                        shared.forget_built(&chat_id, &reverted, &agent.chat_skills(&chat_id));
                         shared.append_lines_to(&chat_id, &[format!(
                             "OpenRO: Undid the last build: {} change(s) put back.",
                             restored.len()
@@ -804,6 +975,17 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Read and discard up to `budget` bytes the client is still sending.
+fn drain_unread(stream: &mut TcpStream, mut budget: usize) {
+    let mut chunk = [0u8; 8192];
+    while budget > 0 {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => budget = budget.saturating_sub(n),
+        }
+    }
+}
+
 fn status_flags(shared: &Shared) -> (bool, bool) {
     let mut guard = shared.agent.lock().unwrap();
     match guard.as_mut() {
@@ -830,6 +1012,17 @@ fn esc_html(s: &str) -> String {
 }
 
 pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bool) -> String {
+    render_page_with(game_name, studio_connected, model_configured, &[])
+}
+
+/// The page, with the names of any saved files that were set aside at
+/// startup (each gets a calm, dismissible banner).
+pub fn render_page_with(
+    game_name: &str,
+    studio_connected: bool,
+    model_configured: bool,
+    recovered: &[String],
+) -> String {
     let chip = if studio_connected {
         "Studio connected"
     } else {
@@ -844,6 +1037,13 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
     }
     if !studio_connected {
         banners.push_str("<div class=\"banner\" id=\"no-studio-banner\"><span><strong>Studio not connected.</strong> OpenRO cannot build until Roblox Studio is connected. Set OPENRO_MCP_COMMAND to a Studio MCP server, then restart.</span></div>");
+    }
+    if !recovered.is_empty() {
+        let names: Vec<String> = recovered.iter().map(|n| format!("<code>{}</code>", esc_html(n))).collect();
+        banners.push_str(&format!(
+            "<div class=\"banner\" id=\"recovered-banner\" role=\"status\"><span><strong>Some saved data could not be read.</strong> It was set aside as {} in your data folder, and OpenRO started fresh with it. The original file is kept there.</span><button class=\"btn btn-quiet\" type=\"button\" data-dismiss=\"recovered-banner\">Dismiss</button></div>",
+            names.join(", ")
+        ));
     }
     let can_build = model_configured && studio_connected;
     // The game name is the only operator-supplied value: it is escaped,

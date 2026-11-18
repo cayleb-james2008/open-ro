@@ -730,7 +730,12 @@
     renderThread();
     try {
       const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }) });
-      await r.json();
+      const data = await r.json().catch(() => ({}));
+      /* the server refused the message before it reached the chat: say why, and keep the words */
+      if (r.status === 403 || r.status === 413 || r.status === 415) {
+        input.value = message;
+        notice(data.error || 'OpenRO did not take that message.', true);
+      }
     } catch (err) {
       notice('Could not reach the OpenRO server. Check that it is running, then send again.', true);
     }
@@ -823,6 +828,9 @@
     await refreshIdeas();
     await refreshPlace();
   }
+  document.querySelectorAll('[data-dismiss]').forEach((b) => {
+    b.addEventListener('click', () => { b.closest('.banner').hidden = true; });
+  });
   refreshAll();
 </script>
 </body>

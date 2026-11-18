@@ -87,6 +87,9 @@ pub struct RunOutcome {
     /// these to the creativity engine, so follow-up pitches know what
     /// the game already has.
     pub skills_used: Vec<String>,
+    /// True when the ask was refused rather than completed: `summary`
+    /// then holds the plain refusal, not the model's claim of success.
+    pub refused: bool,
 }
 
 /// A failed ask, carrying the thread and transcript lines produced
@@ -185,6 +188,24 @@ impl Change {
     }
 }
 
+/// One change-making ask's set: its checkpoints, and the skills it ran
+/// (so a revert can tell the creativity engine what the place lost).
+#[derive(Clone)]
+struct ChangeSet {
+    changes: Vec<Change>,
+    skills: Vec<String>,
+}
+
+/// Whether a chat's place still holds changes no passing playtest has
+/// covered, and the console of the last playtest that failed (until a
+/// later pass clears it). Kept per chat, so a later ask cannot say
+/// "done" over a game the app's own last test run rejected.
+#[derive(Default, Clone)]
+struct Proof {
+    unproven: bool,
+    failed_console: Option<String>,
+}
+
 pub struct Agent {
     pub model: ModelClient,
     pub studio: Option<McpClient>,
@@ -198,11 +219,15 @@ pub struct Agent {
     /// set, leaving its changes unrevertable forever; merging instead
     /// would break per-ask prev state — each set's checkpoints are the
     /// place as it was when THAT ask started.)
-    changes_by_chat: HashMap<String, Vec<Vec<Change>>>,
+    changes_by_chat: HashMap<String, Vec<ChangeSet>>,
     /// Change set being accumulated by the ask currently running.
     current_changes: Vec<Change>,
     /// Where change sets persist across restarts, when set.
     changes_path: Option<std::path::PathBuf>,
+    /// Proof state per chat (in memory: a restart starts unproven-free).
+    proof_by_chat: HashMap<String, Proof>,
+    /// Backup file names written when a corrupt changes file was set aside.
+    pub recovered: Vec<String>,
 }
 
 impl Agent {
@@ -215,6 +240,8 @@ impl Agent {
             changes_by_chat: HashMap::new(),
             current_changes: Vec::new(),
             changes_path: None,
+            proof_by_chat: HashMap::new(),
+            recovered: Vec::new(),
         }
     }
 
@@ -226,7 +253,7 @@ impl Agent {
     /// revert acting on coerced records can destroy real work.
     pub fn set_changes_file(&mut self, path: std::path::PathBuf) {
         if let Ok(text) = std::fs::read_to_string(&path) {
-            let loaded = (|| -> Option<HashMap<String, Vec<Vec<Change>>>> {
+            let loaded = (|| -> Option<HashMap<String, Vec<ChangeSet>>> {
                 let v: Value = serde_json::from_str(&text).ok()?;
                 let obj = v.as_object()?;
                 let mut out = HashMap::new();
@@ -234,13 +261,9 @@ impl Agent {
                     let sets = stack.as_array()?;
                     let mut parsed_stack = Vec::new();
                     for set in sets {
-                        let items = set.as_array()?;
-                        let mut parsed_set = Vec::new();
-                        for item in items {
-                            parsed_set.push(Change::from_json(item)?);
-                        }
-                        if !parsed_set.is_empty() {
-                            parsed_stack.push(parsed_set);
+                        let parsed = parse_set(set)?;
+                        if !parsed.changes.is_empty() {
+                            parsed_stack.push(parsed);
                         }
                     }
                     if !parsed_stack.is_empty() {
@@ -252,7 +275,9 @@ impl Agent {
             match loaded {
                 Some(map) => self.changes_by_chat = map,
                 None => {
-                    let _ = crate::server::backup_corrupt(&path);
+                    if let Some(bak) = crate::server::backup_corrupt(&path) {
+                        self.recovered.push(bak.file_name().unwrap_or_default().to_string_lossy().into_owned());
+                    }
                 }
             }
         }
@@ -269,7 +294,10 @@ impl Agent {
                     stack
                         .iter()
                         .map(|set| {
-                            Value::Array(set.iter().map(Change::to_json).collect())
+                            json!({
+                                "changes": set.changes.iter().map(Change::to_json).collect::<Vec<_>>(),
+                                "skills": set.skills,
+                            })
                         })
                         .collect(),
                 ),
@@ -330,16 +358,43 @@ impl Agent {
     /// harvested into that chat's revertable change set.
     pub fn run_ask(&mut self, chat_id: &str, ask: &str) -> Result<RunOutcome, AskFailure> {
         self.current_changes.clear();
-        let result = self.run_ask_inner(ask);
+        let result = self.run_ask_inner(chat_id, ask);
+        let skills = match &result {
+            Ok(o) => o.skills_used.clone(),
+            Err(f) => f.skills_used.clone(),
+        };
+        self.harvest(chat_id, skills);
+        result
+    }
+
+    /// Push this ask's checkpoints (if it changed anything) onto the
+    /// chat's change-set stack, with the skills it ran.
+    fn harvest(&mut self, chat_id: &str, skills: Vec<String>) {
         let harvested = std::mem::take(&mut self.current_changes);
         if !harvested.is_empty() {
             self.changes_by_chat
                 .entry(chat_id.to_string())
                 .or_default()
-                .push(harvested);
+                .push(ChangeSet { changes: harvested, skills });
             self.save_changes();
         }
-        result
+    }
+
+    /// Skills the chat's newest change set ran (what a revert takes back).
+    pub fn top_skills(&self, chat_id: &str) -> Vec<String> {
+        self.changes_by_chat
+            .get(chat_id)
+            .and_then(|stack| stack.last())
+            .map(|set| set.skills.clone())
+            .unwrap_or_default()
+    }
+
+    /// Skills still held by the chat's remaining change sets.
+    pub fn chat_skills(&self, chat_id: &str) -> Vec<String> {
+        self.changes_by_chat
+            .get(chat_id)
+            .map(|stack| stack.iter().flat_map(|set| set.skills.clone()).collect())
+            .unwrap_or_default()
     }
 
     /// Build one of the creativity engine's ideas by id: the idea's
@@ -370,20 +425,42 @@ impl Agent {
         steps: &[Value],
     ) -> Result<RunOutcome, AskFailure> {
         self.current_changes.clear();
-        let result = self.run_plan_inner(label, steps);
-        let harvested = std::mem::take(&mut self.current_changes);
-        if !harvested.is_empty() {
-            self.changes_by_chat
-                .entry(chat_id.to_string())
-                .or_default()
-                .push(harvested);
-            self.save_changes();
-        }
+        let result = self.run_plan_inner(chat_id, label, steps);
+        let skills = match &result {
+            Ok(o) => o.skills_used.clone(),
+            Err(f) => f.skills_used.clone(),
+        };
+        self.harvest(chat_id, skills);
         result
+    }
+
+    /// Record a playtest verdict for the chat's place.
+    fn record_verdict(&mut self, chat_id: &str, outcome: &PlaytestOutcome) {
+        let proof = self.proof_by_chat.entry(chat_id.to_string()).or_default();
+        match outcome {
+            PlaytestOutcome::Passed(_) => {
+                proof.unproven = false;
+                proof.failed_console = None;
+            }
+            PlaytestOutcome::Failed(_, console) => {
+                proof.unproven = true;
+                proof.failed_console = Some(console.clone());
+            }
+            PlaytestOutcome::Unreadable(..) => {
+                proof.unproven = true;
+                proof.failed_console = None;
+            }
+        }
+    }
+
+    /// A change landed in the chat's place: it is unproven until a pass.
+    fn note_change(&mut self, chat_id: &str) {
+        self.proof_by_chat.entry(chat_id.to_string()).or_default().unproven = true;
     }
 
     fn run_plan_inner(
         &mut self,
+        chat_id: &str,
         label: &str,
         steps: &[Value],
     ) -> Result<RunOutcome, AskFailure> {
@@ -425,33 +502,39 @@ impl Agent {
         macro_rules! plan_playtest {
             () => {
                 match self.run_playtest(&mut transcript, &mut thread) {
-                    Ok(PlaytestOutcome::Passed(_)) => {
-                        unproven_changes = false;
-                    }
-                    Ok(PlaytestOutcome::Failed(_, console)) => {
-                        // run_playtest narrated "reading the console
-                        // and repairing" — a plan does not repair, so
-                        // correct the line before it misleads.
-                        if let Some(last) = thread.last_mut() {
-                            if last.starts_with("Playtest failed") {
-                                *last = "Playtest failed.".to_string();
+                    Ok(outcome) => {
+                        self.record_verdict(chat_id, &outcome);
+                        match outcome {
+                            PlaytestOutcome::Passed(_) => {
+                                unproven_changes = false;
+                            }
+                            PlaytestOutcome::Failed(_, console) => {
+                                // run_playtest narrated "reading the console
+                                // and repairing" — a plan does not repair, so
+                                // correct the line before it misleads.
+                                if let Some(last) = thread.last_mut() {
+                                    if last.starts_with("Playtest failed") {
+                                        *last = "Playtest failed.".to_string();
+                                    }
+                                }
+                                return Err(fail(
+                                    format!(
+                                        "my built-in plan for “{label}” failed its playtest — nothing \
+                                         is called done. Console output: {console} Undo last build \
+                                         undoes what it changed."
+                                    ),
+                                    &thread, &transcript, &skills_used));
+                            }
+                            PlaytestOutcome::Unreadable(_, raw) => {
+                                return Err(fail(
+                                    format!(
+                                        "my built-in plan for “{label}” got a playtest result that \
+                                         could not be read as a verdict ({raw}) — the build counts \
+                                         as unproven, not done"
+                                    ),
+                                    &thread, &transcript, &skills_used));
                             }
                         }
-                        return Err(fail(
-                            format!(
-                                "my built-in plan for “{label}” failed its playtest — nothing \
-                                 is called done. Console output: {console}"
-                            ),
-                            &thread, &transcript, &skills_used));
-                    }
-                    Ok(PlaytestOutcome::Unreadable(_, raw)) => {
-                        return Err(fail(
-                            format!(
-                                "my built-in plan for “{label}” got a playtest result that \
-                                 could not be read as a verdict ({raw}) — the build counts \
-                                 as unproven, not done"
-                            ),
-                            &thread, &transcript, &skills_used));
                     }
                     Err(e) => return Err(fail(e, &thread, &transcript, &skills_used)),
                 }
@@ -488,6 +571,7 @@ impl Agent {
                         Ok(_) => {
                             changes_made += 1;
                             unproven_changes = true;
+                            self.note_change(chat_id);
                         }
                         Err(e) => {
                             return Err(fail(
@@ -505,6 +589,7 @@ impl Agent {
                         ) {
                             changes_made += 1;
                             unproven_changes = true;
+                            self.note_change(chat_id);
                         }
                     }
                     Err(e) => {
@@ -557,10 +642,11 @@ impl Agent {
             thread,
             transcript,
             skills_used,
+            refused: false,
         })
     }
 
-    fn run_ask_inner(&mut self, ask: &str) -> Result<RunOutcome, AskFailure> {
+    fn run_ask_inner(&mut self, chat_id: &str, ask: &str) -> Result<RunOutcome, AskFailure> {
         let mut thread: Vec<String> = Vec::new();
         let mut transcript: Vec<String> = Vec::new();
         let mut skills_used: Vec<String> = Vec::new();
@@ -601,6 +687,10 @@ impl Agent {
         // on an empty-handed "done").
         let mut unproven_changes = false;
         let mut changes_made = 0usize;
+        // Plain-words reasons for each step that failed in this ask, and
+        // the last script this ask wrote (named when the ask gives up).
+        let mut problems: Vec<String> = Vec::new();
+        let mut last_written: Option<String> = None;
 
         for _ in 0..MAX_STEPS {
             let content = match self.model.chat(&messages) {
@@ -635,6 +725,42 @@ impl Agent {
                     .and_then(|v| v.as_str())
                     .unwrap_or("Done.")
                     .to_string();
+                // An ask that changed nothing because a step failed is
+                // refused in plain words: its own summary is not the
+                // result, and no pitch follows it.
+                if changes_made == 0 && !problems.is_empty() {
+                    let message = format!(
+                        "I could not build that, so nothing in your game changed. What went wrong: {}.",
+                        problems.join("; ")
+                    );
+                    thread.push(format!("OpenRO: {message}"));
+                    transcript.push("done refused: nothing changed and a step failed".to_string());
+                    return Ok(RunOutcome {
+                        summary: message,
+                        thread,
+                        transcript,
+                        skills_used: Vec::new(),
+                        refused: true,
+                    });
+                }
+                // The place still holds a change an earlier ask made
+                // that no passing playtest has covered (or the app's
+                // last playtest failed): a success summary would be false.
+                let proof = self.proof_by_chat.get(chat_id).cloned().unwrap_or_default();
+                if proof.unproven {
+                    let why = match &proof.failed_console {
+                        Some(console) => format!(
+                            "the last test run of your game failed. Console output: {console}"
+                        ),
+                        None => "changes to your game have not passed a test run yet".to_string(),
+                    };
+                    transcript.push("done refused: the place is not proven".to_string());
+                    return Err(fail(
+                        format!(
+                            "I can't call this done: {why}. Undo last build puts the game back as it was before that build."
+                        ),
+                        &thread, &transcript, &skills_used));
+                }
                 thread.push(format!("OpenRO: {s}"));
                 // A vacuous playtest (nothing changed, so nothing to
                 // break) does NOT excuse a build claim: when the
@@ -659,6 +785,7 @@ impl Agent {
                         messages.push(json!({ "role": "user", "content": note }));
                     }
                     Err(e) => {
+                        problems.push(format!("the {skill} step failed: {e}"));
                         transcript.push(format!("skill {skill} error: {e}"));
                         messages.push(json!({
                             "role": "user",
@@ -672,7 +799,22 @@ impl Agent {
             if let Some(tool) = step.get("tool").and_then(|v| v.as_str()) {
                 let args = step.get("args").cloned().unwrap_or(json!({}));
                 if tool == "playtest" {
-                    match self.run_playtest(&mut transcript, &mut thread) {
+                    // Nothing changed in this ask: there is nothing to
+                    // test, and a run now would be a vacuous pass.
+                    if changes_made == 0 {
+                        transcript.push("playtest not run: this ask changed nothing".to_string());
+                        thread.push("Playtest not run — nothing has changed yet, so there is nothing to test.".to_string());
+                        messages.push(json!({
+                            "role": "user",
+                            "content": "tool_result: playtest not run: this ask has not changed the game, so there is nothing to test. Make the change first, then playtest."
+                        }));
+                        continue;
+                    }
+                    let verdict = self.run_playtest(&mut transcript, &mut thread);
+                    if let Ok(outcome) = &verdict {
+                        self.record_verdict(chat_id, outcome);
+                    }
+                    match verdict {
                         Ok(PlaytestOutcome::Passed(note)) => {
                             unproven_changes = false;
                             messages.push(json!({ "role": "user", "content": note }));
@@ -724,9 +866,13 @@ impl Agent {
                         Ok(note) => {
                             changes_made += 1;
                             unproven_changes = true;
+                            self.note_change(chat_id);
+                            last_written = args.get("path").and_then(|v| v.as_str()).map(|p| p.to_string());
                             messages.push(json!({ "role": "user", "content": note }));
                         }
                         Err(e) => {
+                            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("the script");
+                            problems.push(format!("saving {path} failed: {e}"));
                             transcript.push(format!("tool write_script error: {e}"));
                             messages.push(json!({
                                 "role": "user",
@@ -744,10 +890,12 @@ impl Agent {
                         ) {
                             changes_made += 1;
                             unproven_changes = true;
+                            self.note_change(chat_id);
                         }
                         messages.push(json!({ "role": "user", "content": note }));
                     }
                     Err(e) => {
+                        problems.push(format!("the {tool} step failed: {e}"));
                         transcript.push(format!("tool error: {e}"));
                         messages.push(json!({
                             "role": "user",
@@ -770,10 +918,23 @@ impl Agent {
                 thread,
                 transcript,
                 skills_used,
+                refused: false,
             }),
-            None => Err(fail(
-                format!("agent loop did not finish within {MAX_STEPS} steps"),
-                &thread, &transcript, &skills_used)),
+            None => {
+                let mut message = format!("agent loop did not finish within {MAX_STEPS} steps");
+                if let Some(path) = &last_written {
+                    let proof = self.proof_by_chat.get(chat_id).cloned().unwrap_or_default();
+                    let status = if proof.failed_console.is_some() {
+                        "its last test run failed"
+                    } else {
+                        "no test run has passed it"
+                    };
+                    message.push_str(&format!(
+                        ". The game was left with the script {path}, and {status}. Undo last build undoes it."
+                    ));
+                }
+                Err(fail(message, &thread, &transcript, &skills_used))
+            }
         }
     }
 
@@ -1147,7 +1308,7 @@ impl Agent {
         }
         let changes = match self.changes_by_chat.get(chat_id) {
             Some(stack) => match stack.last() {
-                Some(c) if !c.is_empty() => c.clone(),
+                Some(c) if !c.changes.is_empty() => c.changes.clone(),
                 _ => return Err(NOTHING_TO_REVERT.to_string()),
             },
             None => return Err(NOTHING_TO_REVERT.to_string()),
@@ -1174,6 +1335,12 @@ impl Agent {
                 self.changes_by_chat.remove(chat_id);
             }
         }
+        // The place is back to an earlier state. With no set left it is
+        // the game as it was before any build; otherwise its verdict is
+        // not known, so it stays unproven (and the failed run is gone).
+        let remaining = self.changes_by_chat.get(chat_id).is_some();
+        self.proof_by_chat
+            .insert(chat_id.to_string(), Proof { unproven: remaining, failed_console: None });
         self.save_changes();
         Ok(restored)
     }
@@ -1331,6 +1498,30 @@ fn claims_building(summary: &str) -> bool {
         }
     }
     false
+}
+
+/// One change set from changes.json: the current object form
+/// (`changes` + `skills`) or the older bare array of changes (no skills
+/// recorded). Anything else is malformed.
+fn parse_set(set: &Value) -> Option<ChangeSet> {
+    let (items, skills) = match set {
+        Value::Array(items) => (items, Vec::new()),
+        Value::Object(_) => {
+            let skills = set
+                .get("skills")?
+                .as_array()?
+                .iter()
+                .map(|s| s.as_str().map(|x| x.to_string()))
+                .collect::<Option<Vec<_>>>()?;
+            (set.get("changes")?.as_array()?, skills)
+        }
+        _ => return None,
+    };
+    let mut changes = Vec::new();
+    for item in items {
+        changes.push(Change::from_json(item)?);
+    }
+    Some(ChangeSet { changes, skills })
 }
 
 fn parse_step(content: &str) -> Result<Value, String> {
