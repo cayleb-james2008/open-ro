@@ -201,20 +201,36 @@ fn load_chats(dir: &PathBuf) -> Option<(Vec<Chat>, String)> {
         return None;
     }
     let v = parsed.ok()?;
-    let mut chats = Vec::new();
-    for item in v["chats"].as_array()? {
-        let id = item["id"].as_str()?.to_string();
-        let title = item["title"].as_str().unwrap_or("New chat").to_string();
-        let lines: Vec<String> = item["lines"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|l| l.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        chats.push(Chat { id, title, lines });
-    }
+    // Entry-level strictness, the same standard changes.json gets:
+    // an entry without a string id, or with lines that are not an
+    // array of strings, makes the whole file corrupt — backed up,
+    // never silently dropped or coerced (a lenient load once let a
+    // malformed entry start the server fresh, and the first save
+    // destroyed the original chats unrecoverably).
+    let strict = (|| -> Option<Vec<Chat>> {
+        let mut chats = Vec::new();
+        for item in v["chats"].as_array()? {
+            let id = item["id"].as_str()?.to_string();
+            let title = match item.get("title") {
+                None => "New chat".to_string(),
+                Some(t) => t.as_str()?.to_string(),
+            };
+            let lines_arr = item["lines"].as_array()?;
+            let mut lines = Vec::new();
+            for l in lines_arr {
+                lines.push(l.as_str()?.to_string());
+            }
+            chats.push(Chat { id, title, lines });
+        }
+        Some(chats)
+    })();
+    let chats = match strict {
+        Some(c) => c,
+        None => {
+            let _ = backup_corrupt(&path);
+            return None;
+        }
+    };
     if chats.is_empty() {
         return None;
     }

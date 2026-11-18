@@ -192,6 +192,16 @@ fn tool_call(
             if instances.contains_key(&path) {
                 return error_result(format!("instance already exists at {path}"));
             }
+            // MOCK_INST_EXTRA=1: the bridge adds one of its own
+            // default properties to every instance record, as a real
+            // place tree does.
+            let properties = if std::env::var("MOCK_INST_EXTRA").is_ok() {
+                let mut p = properties.as_object().cloned().unwrap_or_default();
+                p.insert("BridgeDefault".to_string(), json!(true));
+                Value::Object(p)
+            } else {
+                properties
+            };
             instances.insert(
                 path.clone(),
                 json!({ "class_name": class_name, "properties": properties }),
