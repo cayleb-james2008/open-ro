@@ -364,3 +364,187 @@ fn http_loop_and_revert_via_api() {
     let tree: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(tree["scripts"], json!({}), "tree is empty again after revert: {body}");
 }
+
+// ---------------------------------------------------------------------------
+// Scale-up proofs: skill system, instances, repair loop, capability check
+// ---------------------------------------------------------------------------
+
+fn mock_studio_min_command() -> String {
+    env!("CARGO_BIN_EXE_mock_studio_min").to_string()
+}
+
+fn agent_with_script(script: Vec<String>) -> (Agent, StubModel) {
+    let stub = start_stub_model(script);
+    let model = ModelClient::new(
+        stub.base_url.clone(),
+        "deepseek-v4.1-flash".to_string(),
+        Some("test-key-not-real".to_string()),
+    );
+    let studio = McpClient::spawn(&mock_studio_command()).unwrap();
+    (Agent::new(model, Some(studio)), stub)
+}
+
+#[test]
+fn skill_registry_generates_distinct_parameterised_luau() {
+    let registry = openro_rs::skills::registry();
+    let names: Vec<&str> = registry.iter().map(|s| s.name).collect();
+    assert!(names.len() >= 4, "at least four skills registered: {names:?}");
+    for expected in ["round_manager", "leaderboard", "day_night", "kill_brick"] {
+        assert!(names.contains(&expected), "registry has {expected}: {names:?}");
+    }
+    // The system prompt is generated from the registry.
+    let prompt = openro_rs::agent::system_prompt();
+    for name in &names {
+        assert!(prompt.contains(name), "system prompt lists skill {name}");
+    }
+    // Parameters change the generated Luau.
+    let a = openro_rs::skills::generate("leaderboard", &json!({"currency": "Coins", "start_amount": 0})).unwrap();
+    let b = openro_rs::skills::generate("leaderboard", &json!({"currency": "Gems", "start_amount": 50})).unwrap();
+    assert!(a.contains("\"Coins\"") && a.contains("Value = 0"), "{a}");
+    assert!(b.contains("\"Gems\"") && b.contains("Value = 50"), "{b}");
+    assert_ne!(a, b);
+    let kb = openro_rs::skills::generate("kill_brick", &json!({"damage": 25})).unwrap();
+    assert!(kb.contains("TakeDamage") && kb.contains("25"), "{kb}");
+    let dn = openro_rs::skills::generate("day_night", &json!({"cycle_minutes": 5})).unwrap();
+    assert!(dn.contains("ClockTime") && dn.contains("5"), "{dn}");
+    // Unknown skills are refused, not fabricated.
+    assert!(openro_rs::skills::generate("fly_hack", &json!({})).is_err());
+}
+
+#[test]
+fn one_ask_writes_two_scripts_from_two_skills() {
+    // Both skills are generated BEFORE either write — the case the old
+    // single-slot `last_generated` got wrong.
+    let script = vec![
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins", "start_amount": 10 } }).to_string(),
+        json!({ "skill": "day_night", "args": { "cycle_minutes": 4 } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Leaderboard", "skill": "leaderboard" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.DayNight", "skill": "day_night" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Added a leaderboard and a day/night cycle." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    let outcome = agent
+        .run_ask("add a coin leaderboard and a day/night cycle")
+        .expect("multi-script ask completes");
+    assert_eq!(outcome.summary, "Added a leaderboard and a day/night cycle.");
+
+    let tree = agent.place_tree().unwrap();
+    let lb = tree["scripts"]["ServerScriptService.Leaderboard"].as_str().expect("leaderboard written");
+    assert!(lb.contains("leaderstats"), "Leaderboard path holds the leaderboard Luau: {lb}");
+    let dn = tree["scripts"]["ServerScriptService.DayNight"].as_str().expect("day/night written");
+    assert!(dn.contains("ClockTime"), "DayNight path holds the day/night Luau: {dn}");
+
+    let restored = agent.revert_last().unwrap();
+    assert_eq!(restored.len(), 2, "both scripts reverted: {restored:?}");
+    let tree = agent.place_tree().unwrap();
+    assert_eq!(tree["scripts"], json!({}), "tree is empty after revert");
+}
+
+#[test]
+fn instances_round_trip_and_revert() {
+    let script = vec![
+        json!({ "tool": "create_instance", "args": { "class_name": "SpawnLocation", "name": "SpawnPad", "parent": "Workspace", "properties": { "Anchored": true } } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.SpawnChecker", "source": "local pad = workspace.SpawnPad\nprint(pad.Name)" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Spawn pad placed and checked." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    agent.run_ask("add a spawn pad").expect("instance ask completes");
+
+    let tree = agent.place_tree().unwrap();
+    let inst = &tree["instances"]["Workspace.SpawnPad"];
+    assert_eq!(inst["class_name"], json!("SpawnLocation"), "instance recorded: {tree}");
+    assert_eq!(inst["properties"]["Anchored"], json!(true), "properties recorded: {tree}");
+
+    let restored = agent.revert_last().unwrap();
+    assert_eq!(restored.len(), 2, "script and instance reverted: {restored:?}");
+    let tree = agent.place_tree().unwrap();
+    assert_eq!(tree["scripts"], json!({}), "scripts empty after revert");
+    assert_eq!(tree["instances"], json!({}), "instances empty after revert");
+}
+
+#[test]
+fn playtest_failure_repaired_by_creating_the_missing_instance() {
+    let script = vec![
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.SpawnChecker", "source": "local pad = workspace.SpawnPad\nprint(pad.Name)" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "tool": "create_instance", "args": { "class_name": "SpawnLocation", "name": "SpawnPad", "parent": "Workspace", "properties": {} } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Created the missing spawn pad; playtest passes." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    let outcome = agent
+        .run_ask("make the spawn checker work")
+        .expect("repair via instance creation completes");
+    let transcript = outcome.transcript.join("\n");
+    assert!(transcript.contains("SpawnPad is not a valid member"), "console error captured: {transcript}");
+    assert!(transcript.contains("repair attempt 1"), "repair attempt recorded: {transcript}");
+    assert_eq!(outcome.summary, "Created the missing spawn pad; playtest passes.");
+}
+
+#[test]
+fn repair_loop_survives_a_repeated_identical_attempt() {
+    let script = vec![
+        json!({ "skill": "round_manager", "args": { "create_round": false } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.RoundManager", "use_generated": true } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        // The model repeats the exact same failing generation once...
+        json!({ "skill": "round_manager", "args": { "create_round": false } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.RoundManager", "use_generated": true } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        // ...then actually fixes it.
+        json!({ "skill": "round_manager", "args": { "create_round": true } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.RoundManager", "use_generated": true } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Round manager added; playtest passes." }).to_string(),
+    ];
+    let (mut agent, stub) = agent_with_script(script);
+    let outcome = agent
+        .run_ask("add a round manager that starts the round")
+        .expect("loop converges despite the repeated attempt");
+    let transcript = outcome.transcript.join("\n");
+    assert!(transcript.contains("repair attempt 1"), "first repair recorded: {transcript}");
+    assert!(transcript.contains("repair attempt 2"), "second repair recorded: {transcript}");
+    // The loop told the model its rewrite was byte-identical to the failing one.
+    let recorded = stub.recorded_requests.lock().unwrap();
+    assert!(
+        recorded.iter().any(|r| r.contains("byte-identical")),
+        "model was warned about the identical rewrite; requests: {recorded:?}"
+    );
+}
+
+#[test]
+fn repair_loop_gives_up_honestly_when_the_model_never_fixes() {
+    let mut script = Vec::new();
+    for _ in 0..4 {
+        script.push(json!({ "skill": "round_manager", "args": { "create_round": false } }).to_string());
+        script.push(json!({ "tool": "write_script", "args": { "path": "ServerScriptService.RoundManager", "use_generated": true } }).to_string());
+        script.push(json!({ "tool": "playtest", "args": {} }).to_string());
+    }
+    script.push(json!({ "done": true, "summary": "this done must never be reached" }).to_string());
+    let (mut agent, _stub) = agent_with_script(script);
+    let err = agent
+        .run_ask("add a round manager that starts the round")
+        .expect_err("an unfixable game must end in an honest failure");
+    assert!(err.contains(CONSOLE_ERROR), "failure names the actual console output: {err}");
+    assert!(err.contains("attempt"), "failure states the attempt count: {err}");
+    assert!(!err.contains("did not finish within"), "failure is specific, not the opaque step-cap message: {err}");
+}
+
+#[test]
+fn missing_bridge_tool_refuses_honestly() {
+    let stub = start_stub_model(vec![]);
+    let model = ModelClient::new(
+        stub.base_url.clone(),
+        "deepseek-v4.1-flash".to_string(),
+        Some("test-key-not-real".to_string()),
+    );
+    let studio = McpClient::spawn(&mock_studio_min_command()).unwrap();
+    let mut agent = Agent::new(model, Some(studio));
+    let err = agent
+        .run_ask("add a leaderboard")
+        .expect_err("a bridge without write_script cannot build");
+    assert!(err.contains("write_script"), "refusal names the missing tool: {err}");
+    assert!(err.contains("does not offer"), "refusal is honest about the bridge: {err}");
+}
