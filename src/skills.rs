@@ -14,6 +14,7 @@ const ROUND_MANAGER_RN: &str = include_str!("round_manager.rn");
 const LEADERBOARD_RN: &str = include_str!("leaderboard.rn");
 const DAY_NIGHT_RN: &str = include_str!("day_night.rn");
 const KILL_BRICK_RN: &str = include_str!("kill_brick.rn");
+const SPAWN_LINK_RN: &str = include_str!("spawn_link.rn");
 
 pub struct SkillDef {
     pub name: &'static str,
@@ -55,7 +56,56 @@ pub fn registry() -> Vec<SkillDef> {
             source: KILL_BRICK_RN,
             entry: "generate_kill_brick",
         },
+        SkillDef {
+            name: "spawn_link",
+            description: "a SpawnLink script (ServerScriptService) that links to a named Workspace instance at startup — write it, playtest, and if the instance is missing the playtest says so and you create it",
+            params: "{\"instance_name\": string}",
+            source: SPAWN_LINK_RN,
+            entry: "generate_spawn_link",
+        },
     ]
+}
+
+/// A present-but-wrong-typed argument is an error, never a silent
+/// default: a model typo must change nothing quietly. (Absent args
+/// still take their documented defaults.)
+fn arg_i64(args: &Value, name: &str, default: i64) -> Result<i64, String> {
+    match args.get(name) {
+        None => Ok(default),
+        Some(v) => v
+            .as_i64()
+            .ok_or_else(|| format!("skill arg '{name}' must be an integer, got: {v}")),
+    }
+}
+
+fn arg_bool(args: &Value, name: &str, default: bool) -> Result<bool, String> {
+    match args.get(name) {
+        None => Ok(default),
+        Some(v) => v
+            .as_bool()
+            .ok_or_else(|| format!("skill arg '{name}' must be true or false, got: {v}")),
+    }
+}
+
+fn arg_string(args: &Value, name: &str, default: &str) -> Result<String, String> {
+    match args.get(name) {
+        None => Ok(default.to_string()),
+        Some(v) => v
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| format!("skill arg '{name}' must be a string, got: {v}")),
+    }
+}
+
+/// A plain Luau identifier — the only thing allowed in member position
+/// (`workspace.<name>`) in generated code.
+fn valid_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Run the named skill's Rune script with the model's JSON args and
@@ -67,37 +117,30 @@ pub fn generate(skill: &str, args: &Value) -> Result<String, String> {
         .ok_or_else(|| format!("unknown skill: {skill}"))?;
     match def.name {
         "round_manager" => {
-            let create_round = args
-                .get("create_round")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let create_round = arg_bool(args, "create_round", false)?;
             run_skill(def.source, def.entry, (create_round,))
         }
         "leaderboard" => {
-            let currency = args
-                .get("currency")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Coins")
-                .to_string();
-            let start_amount = args
-                .get("start_amount")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
+            let currency = arg_string(args, "currency", "Coins")?;
+            let start_amount = arg_i64(args, "start_amount", 0)?;
             run_skill(def.source, def.entry, (currency, start_amount))
         }
         "day_night" => {
-            let cycle_minutes = args
-                .get("cycle_minutes")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(10);
+            let cycle_minutes = arg_i64(args, "cycle_minutes", 10)?;
             run_skill(def.source, def.entry, (cycle_minutes,))
         }
         "kill_brick" => {
-            let damage = args
-                .get("damage")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(100);
+            let damage = arg_i64(args, "damage", 100)?;
             run_skill(def.source, def.entry, (damage,))
+        }
+        "spawn_link" => {
+            let instance_name = arg_string(args, "instance_name", "SpawnPad")?;
+            if !valid_identifier(&instance_name) {
+                return Err(format!(
+                    "skill arg 'instance_name' must be a plain name (letters, digits, underscores), got: {instance_name}"
+                ));
+            }
+            run_skill(def.source, def.entry, (instance_name,))
         }
         _ => unreachable!("registry and dispatch are kept in step"),
     }

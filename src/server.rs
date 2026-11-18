@@ -240,6 +240,11 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
             }
         }
     }
+    // Bodies are small JSON; a request claiming a huge one is dropped
+    // rather than waited on forever.
+    if content_length > 1_048_576 {
+        return None;
+    }
     let mut body = buf[header_end..].to_vec();
     while body.len() < content_length {
         let n = stream.read(&mut chunk).ok()?;
@@ -361,14 +366,24 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                 );
                 return Ok(());
             }
+            // The user's words are recorded FIRST, before the ask runs:
+            // a refused or failed ask must never silently lose them
+            // (the no-key path used to record nothing at all, so the
+            // exchange vanished on reload).
+            shared.append_lines(&[format!("You: {message}")]);
+            let chat_id = shared.active_chat.lock().unwrap().clone();
             let mut guard = shared.agent.lock().unwrap();
             match guard.as_mut() {
-                None => respond_json(
-                    &mut stream,
-                    "503 Service Unavailable",
-                    &json!({ "ok": false, "error": "no model key configured: set OPENRO_MODEL_API_KEY to enable chat" }),
-                ),
-                Some(agent) => match agent.run_ask(&message) {
+                None => {
+                    let error = "no model key configured: set OPENRO_MODEL_API_KEY to enable chat";
+                    shared.append_lines(&[format!("OpenRO: {error}")]);
+                    respond_json(
+                        &mut stream,
+                        "503 Service Unavailable",
+                        &json!({ "ok": false, "error": error }),
+                    );
+                }
+                Some(agent) => match agent.run_ask(&chat_id, &message) {
                     Ok(outcome) => {
                         shared.append_lines(&outcome.thread);
                         respond_json(
@@ -382,25 +397,35 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                             }),
                         );
                     }
-                    Err(e) => {
-                        let status = if e.contains("no model key configured") {
-                            "403 Forbidden"
+                    Err(f) => {
+                        // The ask's own lines and its failure both join
+                        // the persisted thread — the chat tells the
+                        // truth about what happened, and the change set
+                        // stays revertable in this chat.
+                        shared.append_lines(&f.thread);
+                        shared.append_lines(&[format!("OpenRO: {}", f.message)]);
+                        let status = if f.message.contains("no model key configured")
+                            || f.message.contains("Studio not connected")
+                            || f.message.contains("does not offer")
+                        {
+                            "503 Service Unavailable"
                         } else {
                             "502 Bad Gateway"
                         };
                         respond_json(
                             &mut stream,
                             status,
-                            &json!({ "ok": false, "error": e }),
+                            &json!({ "ok": false, "error": f.message }),
                         );
                     }
                 },
             }
         }
         ("POST", "/api/revert") => {
+            let chat_id = shared.active_chat.lock().unwrap().clone();
             let mut guard = shared.agent.lock().unwrap();
             match guard.as_mut() {
-                Some(agent) => match agent.revert_last() {
+                Some(agent) => match agent.revert_chat(&chat_id) {
                     Ok(restored) => {
                         shared.append_lines(&[
                             "OpenRO: Reverted the last change set.".to_string(),
@@ -409,6 +434,19 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                             &mut stream,
                             "200 OK",
                             &json!({ "ok": true, "restored": restored }),
+                        );
+                    }
+                    Err(e) if e == crate::agent::NOTHING_TO_REVERT => {
+                        // A normal state, stated plainly — never the
+                        // fabricated "Reverted the last change set."
+                        shared.append_lines(&[
+                            "OpenRO: Nothing to revert — no change set is waiting in this chat."
+                                .to_string(),
+                        ]);
+                        respond_json(
+                            &mut stream,
+                            "200 OK",
+                            &json!({ "ok": false, "error": e }),
                         );
                     }
                     Err(e) => respond_json(
@@ -423,14 +461,6 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                     &json!({ "ok": false, "error": "Studio not connected" }),
                 ),
             }
-        }
-        ("POST", "/api/new-chat") => {
-            let chat = shared.create_chat();
-            respond_json(
-                &mut stream,
-                "200 OK",
-                &json!({ "ok": true, "id": chat.id }),
-            );
         }
         _ => respond_json(
             &mut stream,
@@ -453,19 +483,35 @@ fn status_flags(shared: &Shared) -> (bool, bool) {
 /// the game's name + settings), one scrolling thread, one composer row
 /// pinned at the bottom, and ONE status chip reflecting the real bridge
 /// state. Light + dark themes; dark is the default.
+/// Escape a value interpolated into the page (the game name comes from
+/// the operator's environment; unescaped, it was a straight HTML
+/// injection into <title> and the sidebar).
+fn esc_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bool) -> String {
+    let game_name = esc_html(game_name);
     let chip = if studio_connected {
         "Studio connected"
     } else {
         "Studio not connected"
     };
     let chip_class = if studio_connected { "chip on" } else { "chip off" };
-    let key_banner = if model_configured {
-        String::new()
-    } else {
-        "<div class=\"banner\" id=\"no-key-banner\">no model key configured — set OPENRO_MODEL_API_KEY to enable chat</div>"
-            .to_string()
-    };
+    // Both blockers get a banner of the same weight, each naming its
+    // fix — the no-Studio state used to be a lone 12px chip.
+    let mut banners = String::new();
+    if !model_configured {
+        banners.push_str("<div class=\"banner\" id=\"no-key-banner\">no model key configured — set OPENRO_MODEL_API_KEY to enable chat</div>");
+    }
+    if !studio_connected {
+        banners.push_str("<div class=\"banner\" id=\"no-studio-banner\">Studio not connected — set OPENRO_MCP_COMMAND to a Studio MCP server; OpenRO cannot build until one is connected</div>");
+    }
+    let key_banner = banners;
+    let can_build = model_configured && studio_connected;
     format!(
         r##"<!DOCTYPE html>
 <html lang="en" data-theme="dark">
@@ -483,7 +529,7 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
   :root {{
     color-scheme: dark;
     --bg: #101014; --panel: #1b1b22; --sidebar: #17171d; --ink: #eeeeee;
-    --muted: #9a9aad; --faint: #76768a; --rule: #2a2a33;
+    --muted: #9a9aad; --faint: #8e8ea5; --rule: #2a2a33;
     --accent: #2f6fed; --accent-hover: #2a62d4;
     --user-bubble: #23232e; --field: #1b1b22;
     --ok-bg: #173d24; --ok-ink: #7ee2a0; --bad-bg: #3d1717; --bad-ink: #f09393;
@@ -492,7 +538,7 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
   [data-theme="light"] {{
     color-scheme: light;
     --bg: #f6f6f4; --panel: #ffffff; --sidebar: #ececea; --ink: #1d1d22;
-    --muted: #5d5d6b; --faint: #76768a; --rule: #d9d9d4;
+    --muted: #5d5d6b; --faint: #62627a; --rule: #d9d9d4;
     --accent: #2459c4; --accent-hover: #1e4dab;
     --user-bubble: #e6e6e1; --field: #ffffff;
     --ok-bg: #e2f2e6; --ok-ink: #1c6b34; --bad-bg: #fbe7e7; --bad-ink: #9c2222;
@@ -510,9 +556,10 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
   #new-chat {{ background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 10px; cursor: pointer; font-weight: 600; }}
   #new-chat:hover {{ background: var(--accent-hover); }}
   #chat-list {{ list-style: none; margin: 0; padding: 0; font-size: 14px; overflow-y: auto; flex: 1; min-height: 48px; display: flex; flex-direction: column; gap: 4px; }}
-  #chat-list li {{ padding: 8px 10px; border-radius: 6px; color: var(--muted); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-  #chat-list li:hover {{ color: var(--ink); }}
-  #chat-list li.active {{ background: var(--panel); color: var(--ink); }}
+  #chat-list li {{ margin: 0; }}
+  .chat-btn {{ display: block; width: 100%; text-align: left; background: none; border: 0; padding: 8px 10px; border-radius: 6px; color: var(--muted); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; }}
+  .chat-btn:hover {{ color: var(--ink); }}
+  .chat-btn.active {{ background: var(--panel); color: var(--ink); }}
   .chip {{ font-size: 12px; padding: 6px 10px; border-radius: 999px; text-align: center; }}
   .chip.on {{ background: var(--ok-bg); color: var(--ok-ink); }}
   .chip.off {{ background: var(--bad-bg); color: var(--bad-ink); }}
@@ -533,13 +580,13 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
   .msg.step.verdict-bad {{ color: var(--bad-ink); font-weight: 600; }}
   .empty {{ color: var(--faint); text-align: center; margin-top: 12vh; line-height: 1.6; }}
   #composer {{ display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--rule); }}
-  #composer input {{ flex: 1; background: var(--field); color: var(--ink); border: 1px solid var(--rule); border-radius: 8px; padding: 10px; font-size: 15px; }}
+  #composer input {{ flex: 1; background: var(--field); color: var(--ink); border: 1px solid var(--muted); border-radius: 8px; padding: 10px; font-size: 15px; }}
   #composer button {{ background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 10px 16px; cursor: pointer; font-weight: 600; }}
   #composer button:disabled {{ opacity: 0.45; cursor: default; }}
   #revert {{ background: var(--panel) !important; color: var(--ink) !important; border: 1px solid var(--rule) !important; }}
   @media (max-width: 760px) {{
     body {{ flex-direction: column; }}
-    #sidebar {{ width: 100%; flex: none; max-height: 44vh; border-right: 0; border-bottom: 1px solid var(--rule); }}
+    #sidebar {{ width: 100%; flex: none; max-height: 44vh; overflow-y: auto; border-right: 0; border-bottom: 1px solid var(--rule); }}
   }}
   @media (prefers-reduced-motion: reduce) {{
     * {{ scroll-behavior: auto !important; transition: none !important; }}
@@ -576,6 +623,7 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
   const thread = document.getElementById('thread');
   const chatList = document.getElementById('chat-list');
   const rootEl = document.documentElement;
+  const CAN_BUILD = {can_build};
 
   /* appearance — the settings toggle; the choice persists on this device */
   const themeBtns = document.querySelectorAll('.theme-btn');
@@ -608,30 +656,52 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
     thread.scrollTop = thread.scrollHeight;
   }}
   function showEmpty() {{
-    thread.innerHTML = '<div class="empty">Describe the game you want — OpenRO builds it in Studio and playtests it before calling it done.</div>';
+    /* The empty state must not promise, in the present tense, work the
+       current screen cannot do (no key / no Studio). */
+    thread.innerHTML = CAN_BUILD
+      ? '<div class="empty">Describe the game you want — OpenRO builds it in Studio and playtests it before calling it done.</div>'
+      : '<div class="empty">Describe the game you want. To build it, OpenRO needs a model key and a Studio connection — see the notes above.</div>';
   }}
   async function refreshThread() {{
-    const r = await fetch('/api/thread');
-    const data = await r.json();
-    thread.innerHTML = '';
-    if (!data.thread.length) {{ showEmpty(); return; }}
-    data.thread.forEach(addLine);
+    try {{
+      const r = await fetch('/api/thread');
+      if (!r.ok) throw new Error('thread');
+      const data = await r.json();
+      thread.innerHTML = '';
+      if (!data.thread.length) {{ showEmpty(); return; }}
+      data.thread.forEach(addLine);
+    }} catch (err) {{
+      if (!thread.children.length) showEmpty();
+    }}
   }}
   async function refreshChats() {{
-    const r = await fetch('/api/chats');
-    const data = await r.json();
-    chatList.innerHTML = '';
-    for (const c of data.chats) {{
-      const li = document.createElement('li');
-      li.textContent = c.title || 'New chat';
-      if (c.id === data.active) li.className = 'active';
-      li.onclick = async () => {{
-        await fetch('/api/chats/select', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{ id: c.id }}) }});
-        await refreshChats();
-        await refreshThread();
-      }};
-      chatList.appendChild(li);
-    }}
+    try {{
+      const r = await fetch('/api/chats');
+      if (!r.ok) throw new Error('chats');
+      const data = await r.json();
+      chatList.innerHTML = '';
+      for (const c of data.chats) {{
+        const li = document.createElement('li');
+        /* A real <button>: chat switching is keyboard-reachable. */
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'chat-btn' + (c.id === data.active ? ' active' : '');
+        btn.textContent = c.title || 'New chat';
+        btn.addEventListener('click', async () => {{
+          try {{
+            const sr = await fetch('/api/chats/select', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{ id: c.id }}) }});
+            if (!sr.ok) throw new Error('select');
+          }} catch (err) {{
+            addLine('OpenRO: Could not switch chats — the server did not answer.');
+            return;
+          }}
+          await refreshChats();
+          await refreshThread();
+        }});
+        li.appendChild(btn);
+        chatList.appendChild(li);
+      }}
+    }} catch (err) {{ /* the list keeps its last good state */ }}
   }}
   document.getElementById('composer').addEventListener('submit', async (e) => {{
     e.preventDefault();
@@ -657,12 +727,24 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
     input.focus();
   }});
   document.getElementById('revert').addEventListener('click', async () => {{
-    const r = await fetch('/api/revert', {{ method: 'POST' }});
-    const data = await r.json();
-    addLine(data.ok ? 'OpenRO: Reverted the last change set.' : 'OpenRO: ' + data.error);
+    try {{
+      const r = await fetch('/api/revert', {{ method: 'POST' }});
+      const data = await r.json();
+      if (data.ok) addLine('OpenRO: Reverted the last change set.');
+      else if (data.error === 'nothing to revert') addLine('OpenRO: Nothing to revert — no change set is waiting in this chat.');
+      else addLine('OpenRO: ' + data.error);
+    }} catch (err) {{
+      addLine('OpenRO: Could not reach the OpenRO server.');
+    }}
   }});
   document.getElementById('new-chat').addEventListener('click', async () => {{
-    await fetch('/api/chats', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: '{{}}' }});
+    try {{
+      const r = await fetch('/api/chats', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: '{{}}' }});
+      if (!r.ok) throw new Error('new chat');
+    }} catch (err) {{
+      addLine('OpenRO: Could not reach the OpenRO server.');
+      return;
+    }}
     await refreshChats();
     await refreshThread();
     document.getElementById('composer-input').focus();
