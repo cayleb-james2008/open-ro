@@ -65,8 +65,8 @@ fn main() {
                         "isError": false
                     }),
                     other => json!({
-                        "content": [{ "type": "text", "text": json!({ "error": format!("unknown tool {other}") }).to_string() }],
-                        "isError": false
+                        "content": [{ "type": "text", "text": format!("unknown tool {other}") }],
+                        "isError": true
                     }),
                 }
             }

@@ -195,7 +195,7 @@ fn full_loop_repairs_failed_playtest_then_revert_restores_tree() {
     assert_eq!(before["scripts"], json!({}), "tree starts empty");
 
     let outcome = agent
-        .run_ask("add a round manager that starts the round")
+        .run_ask("chat-1", "add a round manager that starts the round")
         .expect("agent loop completes");
     let transcript = outcome.transcript.join("\n");
 
@@ -265,7 +265,7 @@ fn full_loop_repairs_failed_playtest_then_revert_restores_tree() {
     assert!(source.contains("workspace.Round."), "final script starts the round: {source}");
 
     // Revert proof: the place tree returns to its pre-ask state.
-    let restored = agent.revert_last().unwrap();
+    let restored = agent.revert_chat("chat-1").unwrap();
     assert_eq!(restored, vec!["ServerScriptService.RoundManager".to_string()]);
     let reverted = agent.place_tree().unwrap();
     assert_eq!(reverted, before, "tree is back to its pre-ask state");
@@ -425,7 +425,7 @@ fn one_ask_writes_two_scripts_from_two_skills() {
     ];
     let (mut agent, _stub) = agent_with_script(script);
     let outcome = agent
-        .run_ask("add a coin leaderboard and a day/night cycle")
+        .run_ask("chat-1", "add a coin leaderboard and a day/night cycle")
         .expect("multi-script ask completes");
     assert_eq!(outcome.summary, "Added a leaderboard and a day/night cycle.");
 
@@ -435,7 +435,7 @@ fn one_ask_writes_two_scripts_from_two_skills() {
     let dn = tree["scripts"]["ServerScriptService.DayNight"].as_str().expect("day/night written");
     assert!(dn.contains("ClockTime"), "DayNight path holds the day/night Luau: {dn}");
 
-    let restored = agent.revert_last().unwrap();
+    let restored = agent.revert_chat("chat-1").unwrap();
     assert_eq!(restored.len(), 2, "both scripts reverted: {restored:?}");
     let tree = agent.place_tree().unwrap();
     assert_eq!(tree["scripts"], json!({}), "tree is empty after revert");
@@ -445,19 +445,20 @@ fn one_ask_writes_two_scripts_from_two_skills() {
 fn instances_round_trip_and_revert() {
     let script = vec![
         json!({ "tool": "create_instance", "args": { "class_name": "SpawnLocation", "name": "SpawnPad", "parent": "Workspace", "properties": { "Anchored": true } } }).to_string(),
-        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.SpawnChecker", "source": "local pad = workspace.SpawnPad\nprint(pad.Name)" } }).to_string(),
+        json!({ "skill": "spawn_link", "args": { "instance_name": "SpawnPad" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.SpawnChecker", "skill": "spawn_link" } }).to_string(),
         json!({ "tool": "playtest", "args": {} }).to_string(),
         json!({ "done": true, "summary": "Spawn pad placed and checked." }).to_string(),
     ];
     let (mut agent, _stub) = agent_with_script(script);
-    agent.run_ask("add a spawn pad").expect("instance ask completes");
+    agent.run_ask("chat-1", "add a spawn pad").expect("instance ask completes");
 
     let tree = agent.place_tree().unwrap();
     let inst = &tree["instances"]["Workspace.SpawnPad"];
     assert_eq!(inst["class_name"], json!("SpawnLocation"), "instance recorded: {tree}");
     assert_eq!(inst["properties"]["Anchored"], json!(true), "properties recorded: {tree}");
 
-    let restored = agent.revert_last().unwrap();
+    let restored = agent.revert_chat("chat-1").unwrap();
     assert_eq!(restored.len(), 2, "script and instance reverted: {restored:?}");
     let tree = agent.place_tree().unwrap();
     assert_eq!(tree["scripts"], json!({}), "scripts empty after revert");
@@ -467,7 +468,8 @@ fn instances_round_trip_and_revert() {
 #[test]
 fn playtest_failure_repaired_by_creating_the_missing_instance() {
     let script = vec![
-        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.SpawnChecker", "source": "local pad = workspace.SpawnPad\nprint(pad.Name)" } }).to_string(),
+        json!({ "skill": "spawn_link", "args": { "instance_name": "SpawnPad" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.SpawnChecker", "skill": "spawn_link" } }).to_string(),
         json!({ "tool": "playtest", "args": {} }).to_string(),
         json!({ "tool": "create_instance", "args": { "class_name": "SpawnLocation", "name": "SpawnPad", "parent": "Workspace", "properties": {} } }).to_string(),
         json!({ "tool": "playtest", "args": {} }).to_string(),
@@ -475,7 +477,7 @@ fn playtest_failure_repaired_by_creating_the_missing_instance() {
     ];
     let (mut agent, _stub) = agent_with_script(script);
     let outcome = agent
-        .run_ask("make the spawn checker work")
+        .run_ask("chat-1", "make the spawn checker work")
         .expect("repair via instance creation completes");
     let transcript = outcome.transcript.join("\n");
     assert!(transcript.contains("SpawnPad is not a valid member"), "console error captured: {transcript}");
@@ -501,7 +503,7 @@ fn repair_loop_survives_a_repeated_identical_attempt() {
     ];
     let (mut agent, stub) = agent_with_script(script);
     let outcome = agent
-        .run_ask("add a round manager that starts the round")
+        .run_ask("chat-1", "add a round manager that starts the round")
         .expect("loop converges despite the repeated attempt");
     let transcript = outcome.transcript.join("\n");
     assert!(transcript.contains("repair attempt 1"), "first repair recorded: {transcript}");
@@ -525,11 +527,18 @@ fn repair_loop_gives_up_honestly_when_the_model_never_fixes() {
     script.push(json!({ "done": true, "summary": "this done must never be reached" }).to_string());
     let (mut agent, _stub) = agent_with_script(script);
     let err = agent
-        .run_ask("add a round manager that starts the round")
+        .run_ask("chat-1", "add a round manager that starts the round")
         .expect_err("an unfixable game must end in an honest failure");
-    assert!(err.contains(CONSOLE_ERROR), "failure names the actual console output: {err}");
-    assert!(err.contains("attempt"), "failure states the attempt count: {err}");
-    assert!(!err.contains("did not finish within"), "failure is specific, not the opaque step-cap message: {err}");
+    assert!(err.message.contains(CONSOLE_ERROR), "failure names the actual console output: {}", err.message);
+    assert!(err.message.contains("attempt"), "failure states the attempt count: {}", err.message);
+    assert!(!err.message.contains("did not finish within"), "failure is specific, not the opaque step-cap message: {}", err.message);
+    // The failed ask's change set stays revertable (this was claimed in
+    // the loop ledger but asserted nowhere): reverting removes the
+    // script the failed ask wrote.
+    let restored = agent.revert_chat("chat-1").expect("failed ask leaves a revertable change set");
+    assert_eq!(restored, vec!["ServerScriptService.RoundManager".to_string()]);
+    let tree = agent.place_tree().unwrap();
+    assert_eq!(tree["scripts"], json!({}), "tree is back to pre-ask after reverting the failed ask");
 }
 
 #[test]
@@ -543,10 +552,10 @@ fn missing_bridge_tool_refuses_honestly() {
     let studio = McpClient::spawn(&mock_studio_min_command()).unwrap();
     let mut agent = Agent::new(model, Some(studio));
     let err = agent
-        .run_ask("add a leaderboard")
+        .run_ask("chat-1", "add a leaderboard")
         .expect_err("a bridge without write_script cannot build");
-    assert!(err.contains("write_script"), "refusal names the missing tool: {err}");
-    assert!(err.contains("does not offer"), "refusal is honest about the bridge: {err}");
+    assert!(err.message.contains("write_script"), "refusal names the missing tool: {}", err.message);
+    assert!(err.message.contains("does not offer"), "refusal is honest about the bridge: {}", err.message);
 }
 
 #[test]
@@ -558,7 +567,8 @@ fn shell_has_themes_and_settings() {
     assert!(html.contains("[data-theme=\"light\"]"), "a light theme must be defined");
     assert!(html.contains("id=\"settings\""), "settings area missing");
     assert!(html.contains("Appearance"), "appearance toggle missing from settings");
-    assert!(html.contains("openro-theme"), "theme choice must persist via localStorage");
+    assert!(html.contains("localStorage.setItem('openro-theme'"), "the toggle must SAVE the theme choice");
+    assert!(html.contains("localStorage.getItem('openro-theme')"), "the page must READ the saved theme choice");
     assert!(html.contains(":focus-visible"), "keyboard focus must be visible");
     assert!(html.contains("for=\"composer-input\""), "composer input must be labelled");
     assert!(!html.contains("linear-gradient"), "no hue gradients (unslop gate)");
@@ -637,4 +647,377 @@ fn chats_persist_across_restart_and_switch() {
     assert_eq!(status, 200);
     assert!(body.contains("playtest passes"), "first chat's thread persisted: {body}");
     assert!(body.contains("You: add a round manager"), "the ask itself persisted: {body}");
+}
+
+// ---------------------------------------------------------------------------
+// Regression tests from the scale-up thermonuclear + checks + lens
+// reviews. Each test names the defect it pins down.
+// ---------------------------------------------------------------------------
+
+fn agent_with_mock_command(script: Vec<String>, command: String) -> (Agent, StubModel) {
+    let stub = start_stub_model(script);
+    let model = ModelClient::new(
+        stub.base_url.clone(),
+        "deepseek-v4.1-flash".to_string(),
+        Some("test-key-not-real".to_string()),
+    );
+    let studio = McpClient::spawn(&command).unwrap();
+    (Agent::new(model, Some(studio)), stub)
+}
+
+/// F1: write_script accepted hand-written `source`, bypassing the Rune
+/// skill system entirely — the product's core invariant. The bypass is
+/// refused and fed back; the skill path still works.
+#[test]
+fn luau_comes_only_from_skills() {
+    let script = vec![
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Raw", "source": "print('hand-written')" } }).to_string(),
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins", "start_amount": 5 } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Leaderboard", "skill": "leaderboard" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Leaderboard added." }).to_string(),
+    ];
+    let (mut agent, stub) = agent_with_script(script);
+    let outcome = agent
+        .run_ask("chat-1", "add a leaderboard")
+        .expect("ask completes via the skill path");
+    let recorded = stub.recorded_requests.lock().unwrap();
+    assert!(
+        recorded.iter().any(|r| r.contains("Luau comes only from")),
+        "the model was told hand-written source is refused: {recorded:?}"
+    );
+    let tree = agent.place_tree().unwrap();
+    assert!(
+        tree["scripts"].get("ServerScriptService.Raw").is_none(),
+        "no hand-written script landed in the tree: {tree}"
+    );
+    let lb = tree["scripts"]["ServerScriptService.Leaderboard"].as_str().unwrap();
+    assert!(lb.contains("leaderstats"), "the written script is the skill's Luau: {lb}");
+    assert_eq!(outcome.summary, "Leaderboard added.");
+}
+
+/// F2: the leaderboard currency was interpolated unescaped into a Luau
+/// string literal — a crafted currency injected arbitrary Luau.
+#[test]
+fn leaderboard_currency_cannot_inject_luau() {
+    let out = openro_rs::skills::generate(
+        "leaderboard",
+        &json!({ "currency": "Coins\"; game.Players:ClearAllChildren(); x = \"", "start_amount": 0 }),
+    )
+    .unwrap();
+    assert!(
+        out.contains("Coins\\\";"),
+        "the quote is escaped inside the literal: {out}"
+    );
+    assert!(
+        !out.contains("stat.Name = \"Coins\";"),
+        "the literal cannot be broken out of: {out}"
+    );
+}
+
+/// F12: wrong-typed skill args were silently coerced to defaults.
+#[test]
+fn skill_args_are_validated_not_coerced() {
+    let err = openro_rs::skills::generate("kill_brick", &json!({ "damage": "not-a-number" }))
+        .expect_err("a string damage must be refused");
+    assert!(err.contains("must be an integer"), "{err}");
+    assert!(openro_rs::skills::generate("leaderboard", &json!({ "currency": 42 })).is_err());
+    assert!(openro_rs::skills::generate("round_manager", &json!({ "create_round": "yes" })).is_err());
+    assert!(openro_rs::skills::generate("spawn_link", &json!({ "instance_name": "Pad; evil()" })).is_err());
+    // Absent args still take their documented defaults.
+    assert!(openro_rs::skills::generate("kill_brick", &json!({})).is_ok());
+}
+
+/// F3 (change-making case): a done with changes no playtest has passed
+/// is fed back, not accepted.
+#[test]
+fn done_with_unproven_changes_is_fed_back() {
+    let script = vec![
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Leaderboard", "skill": "leaderboard" } }).to_string(),
+        json!({ "done": true, "summary": "Done — trust me." }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Leaderboard added and playtested." }).to_string(),
+    ];
+    let (mut agent, stub) = agent_with_script(script);
+    let outcome = agent
+        .run_ask("chat-1", "add a leaderboard")
+        .expect("ask completes after proving the change");
+    assert_eq!(outcome.summary, "Leaderboard added and playtested.");
+    let transcript = outcome.transcript.join("\n");
+    assert!(transcript.contains("done refused"), "the gate fired: {transcript}");
+    let recorded = stub.recorded_requests.lock().unwrap();
+    assert!(
+        recorded.iter().any(|r| r.contains("no playtest has passed since")),
+        "the model was told why done was refused: {recorded:?}"
+    );
+}
+
+/// F4 (client level): a bridge tool error (isError) is an Err, never a
+/// success string the agent can narrate.
+#[test]
+fn bridge_tool_errors_are_errors() {
+    let command = format!("env MOCK_ERR_TOOLS=1 {}", mock_studio_command());
+    let mut client = McpClient::spawn(&command).unwrap();
+    let err = client
+        .call_tool("write_script", json!({ "path": "X.Y", "source": "z" }))
+        .expect_err("an isError result must surface as an error");
+    assert!(err.contains("bridge exploded"), "{err}");
+    // And an unknown tool on the normal mock errors too.
+    let mut client2 = McpClient::spawn(&mock_studio_command()).unwrap();
+    assert!(client2.call_tool("definitely_not_a_tool", json!({})).is_err());
+}
+
+/// F6: a silent bridge hangs forever no longer — requests time out.
+#[test]
+fn silent_bridge_times_out() {
+    let started = std::time::Instant::now();
+    let res = McpClient::spawn_with_timeout("sleep 5", std::time::Duration::from_secs(1));
+    assert!(res.is_err(), "a bridge that never answers cannot connect");
+    let err = res.err().unwrap();
+    assert!(err.contains("did not answer"), "{err}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(4),
+        "the timeout fired promptly: {:?}",
+        started.elapsed()
+    );
+}
+
+/// F7: a playtest verdict outside the documented format is "unproven",
+/// never a pass — and never misread as a failure either. The loose
+/// plain-text shape "Playtest passed. 0 failures, 0 errors." used to be
+/// substring-matched as a FAILURE.
+#[test]
+fn playtest_verdict_must_be_in_documented_format() {
+    let script = vec![
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Leaderboard", "skill": "leaderboard" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "must never be reached" }).to_string(),
+    ];
+    let command = format!("env MOCK_PLAYTEST_TEXT=1 {}", mock_studio_command());
+    let (mut agent, _stub) = agent_with_mock_command(script, command);
+    let err = agent
+        .run_ask("chat-1", "add a leaderboard")
+        .expect_err("an unreadable verdict cannot be called a pass");
+    assert!(
+        err.message.contains("verdict could not be read"),
+        "failure names the format problem: {}", err.message
+    );
+    let thread = err.thread.join("\n");
+    assert!(
+        thread.contains("not in the documented format"),
+        "thread states the verdict was unproven: {thread}"
+    );
+    assert!(
+        !thread.contains("Playtest passed."),
+        "the loose text was never narrated as a pass: {thread}"
+    );
+}
+
+/// Mut-A (checks finder): every revert test used to start from an empty
+/// tree, so restoring PRE-EXISTING content was unproven. Here ask 2
+/// overwrites a script, deletes an instance and creates another;
+/// revert must restore the exact originals. Ask 3 deletes a script;
+/// revert must bring it back.
+#[test]
+fn revert_restores_preexisting_content_exactly() {
+    let ask1 = vec![
+        json!({ "skill": "round_manager", "args": { "create_round": true } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.RoundManager", "skill": "round_manager" } }).to_string(),
+        json!({ "tool": "create_instance", "args": { "class_name": "SpawnLocation", "name": "SpawnPad", "parent": "Workspace", "properties": { "Anchored": true } } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Round manager and spawn pad in." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(ask1);
+    agent.run_ask("chat-1", "set up the round").expect("ask 1 completes");
+    let original_source = openro_rs::skills::generate("round_manager", &json!({ "create_round": true })).unwrap();
+
+    // A second ask against the same agent + bridge, new stub script.
+    let ask2 = vec![
+        json!({ "skill": "day_night", "args": { "cycle_minutes": 3 } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.RoundManager", "skill": "day_night" } }).to_string(),
+        json!({ "tool": "delete_instance", "args": { "path": "Workspace.SpawnPad" } }).to_string(),
+        json!({ "tool": "create_instance", "args": { "class_name": "Part", "name": "NewPad", "parent": "Workspace", "properties": {} } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Changed things." }).to_string(),
+    ];
+    let stub2 = start_stub_model(ask2);
+    agent.model = ModelClient::new(
+        stub2.base_url.clone(),
+        "deepseek-v4.1-flash".to_string(),
+        Some("test-key-not-real".to_string()),
+    );
+    agent.run_ask("chat-1", "change things").expect("ask 2 completes");
+    let tree = agent.place_tree().unwrap();
+    assert!(tree["scripts"]["ServerScriptService.RoundManager"].as_str().unwrap().contains("ClockTime"), "ask 2 overwrote the script");
+    assert!(tree["instances"].get("Workspace.SpawnPad").is_none(), "ask 2 deleted the pad");
+
+    let restored = agent.revert_chat("chat-1").expect("revert of ask 2 works");
+    assert_eq!(restored.len(), 3, "all three changes reverted: {restored:?}");
+    let tree = agent.place_tree().unwrap();
+    assert_eq!(
+        tree["scripts"]["ServerScriptService.RoundManager"].as_str().unwrap(),
+        original_source,
+        "the overwritten script is restored byte-for-byte"
+    );
+    let pad = &tree["instances"]["Workspace.SpawnPad"];
+    assert_eq!(pad["class_name"], json!("SpawnLocation"), "the deleted instance is restored: {tree}");
+    assert_eq!(pad["properties"]["Anchored"], json!(true), "with its original properties");
+    assert!(tree["instances"].get("Workspace.NewPad").is_none(), "the created instance is removed");
+
+    // Ask 3: delete_script as a model step, then revert restores it.
+    let ask3 = vec![
+        json!({ "tool": "delete_script", "args": { "path": "ServerScriptService.RoundManager" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Deleted the round manager." }).to_string(),
+    ];
+    let stub3 = start_stub_model(ask3);
+    agent.model = ModelClient::new(
+        stub3.base_url.clone(),
+        "deepseek-v4.1-flash".to_string(),
+        Some("test-key-not-real".to_string()),
+    );
+    agent.run_ask("chat-1", "delete the round manager").expect("ask 3 completes");
+    let tree = agent.place_tree().unwrap();
+    assert!(tree["scripts"].get("ServerScriptService.RoundManager").is_none(), "script deleted");
+    agent.revert_chat("chat-1").expect("revert of ask 3 works");
+    let tree = agent.place_tree().unwrap();
+    assert_eq!(
+        tree["scripts"]["ServerScriptService.RoundManager"].as_str().unwrap(),
+        original_source,
+        "the deleted script is restored byte-for-byte"
+    );
+}
+
+/// F4 (capability): the required-tool check covers the instance tools,
+/// not just the four the old check named.
+#[test]
+fn bridge_missing_an_instance_tool_refuses_honestly() {
+    let script = vec![json!({ "done": true, "summary": "x" }).to_string()];
+    let command = format!("env MOCK_DROP=create_instance {}", mock_studio_command());
+    let (mut agent, _stub) = agent_with_mock_command(script, command);
+    let err = agent
+        .run_ask("chat-1", "add a spawn pad")
+        .expect_err("a bridge without create_instance cannot build");
+    assert!(err.message.contains("create_instance"), "refusal names the missing tool: {}", err.message);
+    assert!(err.message.contains("does not offer"), "{}", err.message);
+}
+
+/// Lens HIGH: Revert with nothing waiting fabricated "Reverted the
+/// last change set." — persisted into the thread, repeatably.
+#[test]
+fn http_revert_with_nothing_waiting_is_honest() {
+    let (agent, _stub) = agent_with_script(vec![]);
+    let port = start_server(Some(agent));
+    let (status, body) = http_request(port, "POST", "/api/revert", Some(""));
+    assert_eq!(status, 200, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["ok"], false, "nothing-to-revert is not a success: {body}");
+    let (status, body) = http_request(port, "POST", "/api/revert", Some(""));
+    assert_eq!(status, 200);
+    let (_, body) = http_request(port, "GET", "/api/thread", None);
+    assert!(body.contains("Nothing to revert"), "thread states it plainly: {body}");
+    assert!(
+        !body.contains("Reverted the last change set."),
+        "no fabricated revert in the thread: {body}"
+    );
+}
+
+/// F9: change sets belong to their chat — reverting in another chat
+/// finds nothing, and the owning chat's set survives.
+#[test]
+fn http_revert_is_per_chat() {
+    let script = vec![
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Leaderboard", "skill": "leaderboard" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Leaderboard added." }).to_string(),
+    ];
+    let (agent, _stub) = agent_with_script(script);
+    let port = start_server(Some(agent));
+    let (status, body) = http_request(
+        port,
+        "POST",
+        "/api/chat",
+        Some(&json!({ "message": "add a leaderboard" }).to_string()),
+    );
+    assert_eq!(status, 200, "{body}");
+    // A second chat becomes active; revert there finds nothing.
+    let (status, _) = http_request(port, "POST", "/api/chats", Some("{}"));
+    assert_eq!(status, 201);
+    let (status, body) = http_request(port, "POST", "/api/revert", Some(""));
+    assert_eq!(status, 200);
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["ok"], false, "the other chat has nothing to revert: {body}");
+    let (_, body) = http_request(port, "GET", "/api/thread", None);
+    assert!(body.contains("Nothing to revert"), "chat 2's thread tells its own truth: {body}");
+    // Back in the first chat, its change set is intact and reverts.
+    let (_, body) = http_request(port, "GET", "/api/chats", None);
+    let chats: Value = serde_json::from_str(&body).unwrap();
+    let first_id = chats["chats"][0]["id"].as_str().unwrap().to_string();
+    let (status, _) = http_request(
+        port,
+        "POST",
+        "/api/chats/select",
+        Some(&json!({ "id": first_id }).to_string()),
+    );
+    assert_eq!(status, 200);
+    let (status, body) = http_request(port, "POST", "/api/revert", Some(""));
+    assert_eq!(status, 200, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["ok"], true, "the owning chat reverts: {body}");
+    let (_, body) = http_request(port, "GET", "/api/place-tree", None);
+    let tree: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(tree["scripts"], json!({}), "the script is gone after the revert");
+}
+
+/// Lens MEDIUM: the user's message (and the refusal) used to vanish in
+/// the no-key state — nothing was persisted. Both now stay in the
+/// thread. A mid-ask failure's lines persist too.
+#[test]
+fn http_refused_and_failed_asks_stay_in_the_thread() {
+    // No agent at all (no key): the exchange is recorded.
+    let port = start_server(None);
+    let (status, _) = http_request(
+        port,
+        "POST",
+        "/api/chat",
+        Some(&json!({ "message": "make a lava obby with checkpoints" }).to_string()),
+    );
+    assert_eq!(status, 503);
+    let (_, body) = http_request(port, "GET", "/api/thread", None);
+    assert!(body.contains("You: make a lava obby with checkpoints"), "the ask persists: {body}");
+    assert!(body.contains("no model key configured"), "the refusal persists: {body}");
+
+    // A model that never produces a valid step: the ask fails honestly
+    // and the thread keeps the exchange.
+    let garbage: Vec<String> = (0..16).map(|_| "this is not json at all".to_string()).collect();
+    let (agent, _stub) = agent_with_script(garbage);
+    let port = start_server(Some(agent));
+    let (status, _) = http_request(
+        port,
+        "POST",
+        "/api/chat",
+        Some(&json!({ "message": "build something" }).to_string()),
+    );
+    assert_eq!(status, 502);
+    let (_, body) = http_request(port, "GET", "/api/thread", None);
+    assert!(body.contains("You: build something"), "the ask persists: {body}");
+    assert!(body.contains("did not finish within"), "the failure persists: {body}");
+}
+
+/// F11 + lens pins: the game name is escaped in the page; the faint
+/// text values meet AA contrast in both themes.
+#[test]
+fn shell_escapes_game_name_and_meets_contrast() {
+    let html = openro_rs::server::render_page("<script>alert(1)</script>", false, false);
+    assert!(html.contains("&lt;script&gt;alert(1)"), "game name is escaped");
+    assert!(!html.contains("<title>OpenRO — <script>"), "no raw injection into the title");
+    assert!(html.contains("--faint: #8e8ea5"), "dark faint meets AA on the dark surfaces");
+    assert!(html.contains("--faint: #62627a"), "light faint meets AA on the light surfaces");
+    assert!(html.contains("no-studio-banner"), "the no-Studio state gets a banner, not just a chip");
+    assert!(html.contains("chat-btn"), "chat list items are real buttons");
 }

@@ -66,17 +66,25 @@ fn main() {
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "mock-studio", "version": "0.1.0" }
             }),
-            "tools/list" => json!({
-                "tools": [
-                    { "name": "get_place_tree", "description": "List scripts and instances in the place" },
-                    { "name": "write_script", "description": "Create or overwrite a script" },
-                    { "name": "delete_script", "description": "Delete a script" },
-                    { "name": "create_instance", "description": "Create an instance (class, name, parent, properties)" },
-                    { "name": "delete_instance", "description": "Delete an instance" },
-                    { "name": "playtest", "description": "Run the place" },
-                    { "name": "get_console", "description": "Read the console output" }
-                ]
-            }),
+            "tools/list" => {
+                // MOCK_DROP=<tool> simulates a bridge that lacks a tool.
+                let drop = std::env::var("MOCK_DROP").unwrap_or_default();
+                let all = [
+                    ("get_place_tree", "List scripts and instances in the place"),
+                    ("write_script", "Create or overwrite a script"),
+                    ("delete_script", "Delete a script"),
+                    ("create_instance", "Create an instance (class, name, parent, properties)"),
+                    ("delete_instance", "Delete an instance"),
+                    ("playtest", "Run the place"),
+                    ("get_console", "Read the console output"),
+                ];
+                let tools: Vec<Value> = all
+                    .iter()
+                    .filter(|(name, _)| *name != drop)
+                    .map(|(name, desc)| json!({ "name": name, "description": desc }))
+                    .collect();
+                json!({ "tools": tools })
+            }
             "tools/call" => {
                 let name = request
                     .pointer("/params/name")
@@ -116,6 +124,20 @@ fn text_result(text: String) -> Value {
     })
 }
 
+/// A tool failure, reported the way a real MCP server reports it:
+/// `isError: true`. (This fixture used to return errors as successful
+/// text with an "error" key — which taught the client to swallow them.)
+fn error_result(text: String) -> Value {
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": true
+    })
+}
+
+fn bad_path(path: &str) -> bool {
+    path.is_empty() || path.split('.').any(|seg| seg.is_empty() || seg == "..")
+}
+
 fn tool_call(
     name: &str,
     args: &Value,
@@ -123,19 +145,32 @@ fn tool_call(
     instances: &mut BTreeMap<String, Value>,
     console: &mut String,
 ) -> Value {
+    // MOCK_ERR_TOOLS=1: every tool call fails, like a broken bridge.
+    if std::env::var("MOCK_ERR_TOOLS").is_ok() {
+        return error_result(format!("bridge exploded: {name}"));
+    }
+    // A dropped tool (MOCK_DROP) errors when called, like a real bridge.
+    if std::env::var("MOCK_DROP").map(|d| d == name).unwrap_or(false) {
+        return error_result(format!("unknown tool {name}"));
+    }
     match name {
         "get_place_tree" => {
             text_result(json!({ "scripts": scripts, "instances": instances }).to_string())
         }
         "write_script" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if bad_path(path) {
+                return error_result(format!("invalid script path: {path}"));
+            }
             let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
             scripts.insert(path.to_string(), source.to_string());
             text_result(json!({ "ok": true, "path": path }).to_string())
         }
         "delete_script" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            scripts.remove(path);
+            if scripts.remove(path).is_none() {
+                return error_result(format!("no script at {path}"));
+            }
             text_result(json!({ "ok": true, "path": path }).to_string())
         }
         "create_instance" => {
@@ -144,6 +179,14 @@ fn tool_call(
             let parent = args.get("parent").and_then(|v| v.as_str()).unwrap_or("");
             let properties = args.get("properties").cloned().unwrap_or(json!({}));
             let path = format!("{parent}.{inst_name}");
+            if bad_path(&path) {
+                return error_result(format!("invalid instance path: {path}"));
+            }
+            // Strict, like a real place: creating over an existing
+            // instance is an error, not a silent overwrite.
+            if instances.contains_key(&path) {
+                return error_result(format!("instance already exists at {path}"));
+            }
             instances.insert(
                 path.clone(),
                 json!({ "class_name": class_name, "properties": properties }),
@@ -152,7 +195,9 @@ fn tool_call(
         }
         "delete_instance" => {
             let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            instances.remove(path);
+            if instances.remove(path).is_none() {
+                return error_result(format!("no instance at {path}"));
+            }
             text_result(json!({ "ok": true, "path": path }).to_string())
         }
         "playtest" => {
@@ -166,24 +211,29 @@ fn tool_call(
                 .values()
                 .any(|s| s.contains("workspace.SpawnPad"));
             let has_spawn = instances.contains_key("Workspace.SpawnPad");
-            if references_round && !creates_round {
-                *console = FAIL_CONSOLE.to_string();
-                text_result(
-                    json!({ "status": "failed", "console": FAIL_CONSOLE }).to_string(),
-                )
+            let (passed, msg) = if references_round && !creates_round {
+                (false, FAIL_CONSOLE)
             } else if references_spawn && !has_spawn {
-                *console = SPAWN_FAIL_CONSOLE.to_string();
-                text_result(
-                    json!({ "status": "failed", "console": SPAWN_FAIL_CONSOLE }).to_string(),
-                )
+                (false, SPAWN_FAIL_CONSOLE)
             } else {
-                *console = OK_CONSOLE.to_string();
-                text_result(
-                    json!({ "status": "passed", "console": OK_CONSOLE }).to_string(),
-                )
+                (true, OK_CONSOLE)
+            };
+            *console = msg.to_string();
+            // MOCK_PLAYTEST_TEXT=1: verdict as loose plain text, the
+            // shape that used to fool the client's substring heuristic.
+            if std::env::var("MOCK_PLAYTEST_TEXT").is_ok() {
+                return text_result(if passed {
+                    "Playtest passed. 0 failures, 0 errors.".to_string()
+                } else {
+                    format!("Playtest failed. {msg}")
+                });
             }
+            text_result(
+                json!({ "status": if passed { "passed" } else { "failed" }, "console": msg })
+                    .to_string(),
+            )
         }
         "get_console" => text_result(console.clone()),
-        other => text_result(json!({ "error": format!("unknown tool {other}") }).to_string()),
+        other => error_result(format!("unknown tool {other}")),
     }
 }

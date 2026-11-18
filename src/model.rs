@@ -17,16 +17,22 @@ pub struct ModelClient {
     model_id: String,
     api_key: Option<String>,
     session_id: String,
+    agent: ureq::Agent,
 }
 
 impl ModelClient {
     pub fn new(base_url: String, model_id: String, api_key: Option<String>) -> Self {
         let session_id = format!("openro-{}-{}", std::process::id(), session_nonce());
+        // A hung model endpoint must not hang the ask forever.
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(60))
+            .build();
         ModelClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             model_id,
             api_key: api_key.filter(|k| !k.trim().is_empty()),
             session_id,
+            agent,
         }
     }
 
@@ -62,7 +68,9 @@ impl ModelClient {
         };
         let url = format!("{}/chat/completions", self.base_url);
         let body = json!({ "model": self.model_id, "messages": messages });
-        let response = ureq::post(&url)
+        let response = self
+            .agent
+            .post(&url)
             .set("Authorization", &format!("Bearer {key}"))
             .set("x-opencode-session", &self.session_id)
             .set("User-Agent", USER_AGENT)

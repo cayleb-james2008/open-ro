@@ -5,12 +5,30 @@
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{channel, Receiver};
+use std::time::Duration;
+
+/// How long one bridge request may take before it is declared wedged.
+/// A silent bridge used to hang the agent forever (blocking read, no
+/// timeout anywhere); `OPENRO_BRIDGE_TIMEOUT_SECS` overrides for tests
+/// and slow real servers.
+fn request_timeout() -> Duration {
+    let secs = std::env::var("OPENRO_BRIDGE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|s| *s >= 1)
+        .unwrap_or(30);
+    Duration::from_secs(secs)
+}
 
 pub struct McpClient {
     child: Child,
     stdin: BufWriter<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
+    /// Lines from the bridge's stdout, delivered by a reader thread so
+    /// requests can time out instead of blocking forever.
+    lines: Receiver<String>,
+    timeout: Duration,
     next_id: i64,
     /// Tool names the server advertised via `tools/list` at connect.
     tools: Vec<String>,
@@ -24,6 +42,11 @@ impl McpClient {
     /// Spawn the server command (whitespace-split: program + args) and run
     /// the MCP initialize handshake.
     pub fn spawn(command: &str) -> Result<McpClient, String> {
+        Self::spawn_with_timeout(command, request_timeout())
+    }
+
+    /// Spawn with an explicit per-request timeout.
+    pub fn spawn_with_timeout(command: &str, timeout: Duration) -> Result<McpClient, String> {
         let mut parts = command.split_whitespace();
         let program = parts
             .next()
@@ -37,11 +60,28 @@ impl McpClient {
             .spawn()
             .map_err(|e| format!("failed to spawn Studio MCP server '{program}': {e}"))?;
         let stdin = BufWriter::new(child.stdin.take().expect("stdin piped"));
-        let stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
+        let stdout = child.stdout.take().expect("stdout piped");
+        let (tx, rx) = channel::<String>();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if tx.send(line.clone()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
         let mut client = McpClient {
             child,
             stdin,
-            stdout,
+            lines: rx,
+            timeout,
             next_id: 1,
             tools: Vec::new(),
             tools_known: false,
@@ -124,15 +164,20 @@ impl McpClient {
             "method": method,
             "params": params,
         }))?;
+        let timeout = self.timeout;
         loop {
-            let mut line = String::new();
-            let n = self
-                .stdout
-                .read_line(&mut line)
-                .map_err(|e| format!("read from Studio MCP server: {e}"))?;
-            if n == 0 {
-                return Err("Studio MCP server closed its stdout".to_string());
-            }
+            let line = match self.lines.recv_timeout(timeout) {
+                Ok(l) => l,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(format!(
+                        "Studio MCP server did not answer '{method}' within {}s — the bridge looks wedged",
+                        timeout.as_secs()
+                    ));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("Studio MCP server closed its stdout".to_string());
+                }
+            };
             let value: Value = match serde_json::from_str(line.trim()) {
                 Ok(v) => v,
                 Err(_) => continue, // skip non-JSON noise lines
@@ -156,6 +201,12 @@ impl McpClient {
     }
 
     /// Call one MCP tool; returns the text of its first content block.
+    ///
+    /// A tool-level failure is an Err here, never a success string: the
+    /// MCP `isError` flag is honoured, and so is an `{"error": ...}`
+    /// JSON payload (some bridges report failures that way). Before
+    /// this check existed, a bridge error was returned as Ok text and
+    /// the agent narrated work that never happened.
     pub fn call_tool(&mut self, name: &str, arguments: Value) -> Result<String, String> {
         let result = self.request(
             "tools/call",
@@ -165,6 +216,15 @@ impl McpClient {
             .pointer("/content/0/text")
             .and_then(|t| t.as_str())
             .ok_or_else(|| format!("tool {name} returned no text content: {result}"))?;
+        if result.get("isError").and_then(|v| v.as_bool()) == Some(true) {
+            return Err(format!("Studio bridge error in {name}: {text}"));
+        }
+        if let Ok(payload) = serde_json::from_str::<Value>(text) {
+            if let Some(err) = payload.get("error") {
+                let msg = err.as_str().unwrap_or("tool error");
+                return Err(format!("Studio bridge error in {name}: {msg}"));
+            }
+        }
         Ok(text.to_string())
     }
 
