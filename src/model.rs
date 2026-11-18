@@ -75,15 +75,15 @@ impl ModelClient {
             .set("x-opencode-session", &self.session_id)
             .set("User-Agent", USER_AGENT)
             .send_json(body)
-            .map_err(|e| format!("model request failed: {e}"))?;
+            .map_err(|e| format!("The model did not answer, so nothing was built. Wait a minute and send it again. (Details: {e})"))?;
         let value: Value = response
             .into_json()
-            .map_err(|e| format!("model response was not JSON: {e}"))?;
+            .map_err(|e| format!("The model sent back something OpenRO could not read, so nothing was built. Send it again. (Details: {e})"))?;
         value
             .pointer("/choices/0/message/content")
             .and_then(|c| c.as_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| "model response had no choices[0].message.content".to_string())
+            .ok_or_else(|| "The model sent back an empty answer, so nothing was built. Send it again. (Details: no message content)".to_string())
     }
 }
 

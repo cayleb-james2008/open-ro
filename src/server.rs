@@ -752,7 +752,7 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                 Some(agent) => match agent.revert_chat(&chat_id) {
                     Ok(restored) => {
                         shared.append_lines_to(&chat_id, &[format!(
-                            "OpenRO: Reverted {} change(s) in this chat.",
+                            "OpenRO: Undid the last build: {} change(s) put back.",
                             restored.len()
                         )]);
                         respond_json(

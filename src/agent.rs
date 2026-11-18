@@ -917,6 +917,7 @@ impl Agent {
                         .unwrap_or_else(|| format!("(could not read the console: {e})")),
                 };
                 transcript.push(format!("console after failed playtest: {console}"));
+                thread.push(format!("Console from the failed test run: {console}"));
                 Ok(PlaytestOutcome::Failed(
                     format!(
                         "tool_result: playtest FAILED. Actual console output: {console}\n\
