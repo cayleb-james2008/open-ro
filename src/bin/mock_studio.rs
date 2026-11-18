@@ -26,6 +26,13 @@
 //!        `StarterGui.GameGui: OpenROShopBuy RemoteEvent was never created in ReplicatedStorage`
 //!      if any written script waits on `WaitForChild("OpenROShopBuy")`
 //!      but no written script creates a RemoteEvent.
+//!   6. playtest FAILS with console error
+//!        `ServerScriptService.Shop: no leaderstats exists for the shop to charge`
+//!      if any written script creates a RemoteEvent (the shop) but no
+//!      written script CREATES leaderstats (`Name = "leaderstats"` —
+//!      a currency or leaderboard script; the shop itself only looks
+//!      the folder up) — a shop with nothing to charge is dead on
+//!      arrival.
 //!   Otherwise the playtest PASSES and `get_console` returns an OK line.
 //!
 //! The place tree holds scripts AND instances:
@@ -43,6 +50,7 @@ const CHECKPOINT_FAIL_CONSOLE: &str =
     "Workspace.Checkpoints is not a valid member of Workspace \"Workspace\"";
 const DATASTORE_FAIL_CONSOLE: &str = "ServerScriptService.Currency: DataStore save failed: BindToClose was never bound — balances would be lost at shutdown";
 const SHOP_FAIL_CONSOLE: &str = "StarterGui.GameGui: OpenROShopBuy RemoteEvent was never created in ReplicatedStorage — the shop button has nothing to fire";
+const SHOP_NO_CURRENCY_CONSOLE: &str = "ServerScriptService.Shop: no leaderstats exists for the shop to charge — add a currency or leaderboard first";
 const OK_CONSOLE: &str = "Playtest OK: all scripts ran without errors";
 
 fn main() {
@@ -259,6 +267,9 @@ fn tool_call(
             let creates_remote = scripts
                 .values()
                 .any(|s| s.contains("Instance.new(\"RemoteEvent\")"));
+            let has_leaderstats = scripts
+                .values()
+                .any(|s| s.contains("Name = \"leaderstats\""));
             let (passed, msg) = if references_round && !creates_round {
                 (false, FAIL_CONSOLE)
             } else if references_spawn && !has_spawn {
@@ -269,6 +280,8 @@ fn tool_call(
                 (false, DATASTORE_FAIL_CONSOLE)
             } else if waits_remote && !creates_remote {
                 (false, SHOP_FAIL_CONSOLE)
+            } else if creates_remote && !has_leaderstats {
+                (false, SHOP_NO_CURRENCY_CONSOLE)
             } else {
                 (true, OK_CONSOLE)
             };

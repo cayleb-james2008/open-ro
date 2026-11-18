@@ -587,9 +587,13 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                         // The ask's own lines and its failure both join
                         // the persisted thread — the chat tells the
                         // truth about what happened, and the change set
-                        // stays revertable in this chat.
+                        // stays revertable in this chat. Skills it did
+                        // land still count as built for the pitch
+                        // engine: the scripts are in the place even
+                        // though the ask failed.
                         shared.append_lines_to(&chat_id, &f.thread);
                         shared.append_lines_to(&chat_id, &[format!("OpenRO: {}", f.message)]);
+                        shared.note_built(&chat_id, &f.skills_used);
                         let status = if f.message.contains("no model key configured")
                             || f.message.contains("Studio not connected")
                             || f.message.contains("does not offer")
@@ -654,6 +658,38 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
             // The tap is the user's words for this build — recorded
             // first, like a typed ask, so a refused build never loses it.
             shared.append_lines_to(&chat_id, &[format!("You: Build this — {}", idea.title)]);
+            // Prerequisites are enforced HERE, not just at pitch time:
+            // an idea whose `needs` are not in the game yet would build
+            // something dead on arrival (a shop with no currency to
+            // charge), so the build refuses honestly and names what is
+            // missing — a direct API call gets the same answer the
+            // pitch engine would have given by never offering it.
+            let missing: Vec<&str> = {
+                let state = shared.ideas.lock().unwrap();
+                let built: &[String] = state
+                    .get(&chat_id)
+                    .map(|s| s.built.as_slice())
+                    .unwrap_or(&[]);
+                idea.needs
+                    .iter()
+                    .filter(|n| !built.iter().any(|b| b == *n))
+                    .cloned()
+                    .collect()
+            };
+            if !missing.is_empty() {
+                let error = format!(
+                    "“{}” needs {} first — I won't build it until that's in the game, or it would arrive dead.",
+                    idea.title,
+                    missing.join(", ")
+                );
+                shared.append_lines_to(&chat_id, &[format!("OpenRO: {error}")]);
+                respond_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": error }),
+                );
+                return Ok(());
+            }
             let mut guard = shared.agent.lock().unwrap();
             match guard.as_mut() {
                 None => {
@@ -692,6 +728,7 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                     Err(f) => {
                         shared.append_lines_to(&chat_id, &f.thread);
                         shared.append_lines_to(&chat_id, &[format!("OpenRO: {}", f.message)]);
+                        shared.note_built(&chat_id, &f.skills_used);
                         let status = if f.message.contains("Studio not connected")
                             || f.message.contains("does not offer")
                         {
