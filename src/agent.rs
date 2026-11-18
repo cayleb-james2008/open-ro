@@ -97,6 +97,11 @@ pub struct AskFailure {
     pub message: String,
     pub thread: Vec<String>,
     pub transcript: Vec<String>,
+    /// Skills that generated before the failure. A failed build can
+    /// still have landed scripts in the place, so the server records
+    /// these as built — otherwise the pitch engine re-offers systems
+    /// the game already (partly) has.
+    pub skills_used: Vec<String>,
 }
 
 /// One checkpointed change: a script's previous source and the state
@@ -114,6 +119,16 @@ enum Change {
 }
 
 impl Change {
+    /// True when this change left the path exactly as it found it
+    /// (created then deleted, or rewritten with identical content) —
+    /// a plan made only of these built nothing, whatever it claims.
+    fn is_net_zero(&self) -> bool {
+        match self {
+            Change::Script(_, prev, post) => prev == post,
+            Change::Instance(_, prev, post) => prev == post,
+        }
+    }
+
     fn to_json(&self) -> Value {
         match self {
             Change::Script(path, prev, post) => json!({
@@ -334,6 +349,7 @@ impl Agent {
             message: format!("unknown idea: {idea_id}"),
             thread: Vec::new(),
             transcript: Vec::new(),
+            skills_used: Vec::new(),
         })?;
         self.run_plan(chat_id, idea.title, &idea.plan)
     }
@@ -373,20 +389,23 @@ impl Agent {
     ) -> Result<RunOutcome, AskFailure> {
         let mut thread: Vec<String> = Vec::new();
         let mut transcript: Vec<String> = Vec::new();
-        let fail = |message: String, thread: &Vec<String>, transcript: &Vec<String>| AskFailure {
+        let mut skills_used: Vec<String> = Vec::new();
+        let fail = |message: String,
+                    thread: &Vec<String>,
+                    transcript: &Vec<String>,
+                    skills_used: &Vec<String>| AskFailure {
             message,
             thread: thread.clone(),
             transcript: transcript.clone(),
+            skills_used: skills_used.clone(),
         };
         if self.studio.is_none() {
             return Err(fail(
                 "Studio not connected: set OPENRO_MCP_COMMAND to a Studio MCP server".to_string(),
-                &thread,
-                &transcript,
-            ));
+                &thread, &transcript, &skills_used));
         }
         if let Err(e) = self.check_bridge_capabilities() {
-            return Err(fail(e, &thread, &transcript));
+            return Err(fail(e, &thread, &transcript, &skills_used));
         }
         self.generated.clear();
         self.last_skill = None;
@@ -395,7 +414,6 @@ impl Agent {
                 .to_string(),
         );
         transcript.push(format!("built-in plan: {label} ({} steps)", steps.len()));
-        let mut skills_used: Vec<String> = Vec::new();
         let mut writes: HashMap<String, String> = HashMap::new();
         let mut changes_made = 0usize;
         let mut unproven_changes = false;
@@ -424,9 +442,7 @@ impl Agent {
                                 "my built-in plan for “{label}” failed its playtest — nothing \
                                  is called done. Console output: {console}"
                             ),
-                            &thread,
-                            &transcript,
-                        ));
+                            &thread, &transcript, &skills_used));
                     }
                     Ok(PlaytestOutcome::Unreadable(_, raw)) => {
                         return Err(fail(
@@ -435,11 +451,9 @@ impl Agent {
                                  could not be read as a verdict ({raw}) — the build counts \
                                  as unproven, not done"
                             ),
-                            &thread,
-                            &transcript,
-                        ));
+                            &thread, &transcript, &skills_used));
                     }
-                    Err(e) => return Err(fail(e, &thread, &transcript)),
+                    Err(e) => return Err(fail(e, &thread, &transcript, &skills_used)),
                 }
             };
         }
@@ -452,9 +466,7 @@ impl Agent {
                     Err(e) => {
                         return Err(fail(
                             format!("built-in plan stopped at the {skill} skill: {e}"),
-                            &thread,
-                            &transcript,
-                        ))
+                            &thread, &transcript, &skills_used))
                     }
                 }
                 continue;
@@ -480,9 +492,7 @@ impl Agent {
                         Err(e) => {
                             return Err(fail(
                                 format!("built-in plan stopped at write_script: {e}"),
-                                &thread,
-                                &transcript,
-                            ))
+                                &thread, &transcript, &skills_used))
                         }
                     }
                     continue;
@@ -500,18 +510,14 @@ impl Agent {
                     Err(e) => {
                         return Err(fail(
                             format!("built-in plan stopped at {tool}: {e}"),
-                            &thread,
-                            &transcript,
-                        ))
+                            &thread, &transcript, &skills_used))
                     }
                 }
                 continue;
             }
             return Err(fail(
                 format!("built-in plan held an unreadable step: {step}"),
-                &thread,
-                &transcript,
-            ));
+                &thread, &transcript, &skills_used));
         }
 
         if changes_made == 0 {
@@ -520,13 +526,26 @@ impl Agent {
                     "my built-in plan for “{label}” made no changes — the plan is broken, \
                      and I won't pretend otherwise"
                 ),
-                &thread,
-                &transcript,
-            ));
+                &thread, &transcript, &skills_used));
         }
         if unproven_changes {
             plan_playtest!();
             debug_assert!(!unproven_changes);
+        }
+        // A plan whose changes cancel out (created then deleted,
+        // rewritten identically) built nothing — the model path flags
+        // the equivalent claim with a factual line; a plan is held to
+        // the same standard and fails honestly instead.
+        if self.current_changes.iter().all(|c| c.is_net_zero()) {
+            return Err(fail(
+                format!(
+                    "my built-in plan for “{label}” left the game exactly as it found it — \
+                     nothing was actually built, and I won't call it built"
+                ),
+                &thread,
+                &transcript,
+                &skills_used,
+            ));
         }
         let summary = format!("Built “{label}” — playtest passed.");
         thread.push(format!("OpenRO: {summary}"));
@@ -542,27 +561,28 @@ impl Agent {
     fn run_ask_inner(&mut self, ask: &str) -> Result<RunOutcome, AskFailure> {
         let mut thread: Vec<String> = Vec::new();
         let mut transcript: Vec<String> = Vec::new();
-        let fail = |message: String, thread: &Vec<String>, transcript: &Vec<String>| AskFailure {
+        let mut skills_used: Vec<String> = Vec::new();
+        let fail = |message: String,
+                    thread: &Vec<String>,
+                    transcript: &Vec<String>,
+                    skills_used: &Vec<String>| AskFailure {
             message,
             thread: thread.clone(),
             transcript: transcript.clone(),
+            skills_used: skills_used.clone(),
         };
         if !self.model.is_configured() {
             return Err(fail(
                 "no model key configured: set OPENRO_MODEL_API_KEY to enable chat".to_string(),
-                &thread,
-                &transcript,
-            ));
+                &thread, &transcript, &skills_used));
         }
         if self.studio.is_none() {
             return Err(fail(
                 "Studio not connected: set OPENRO_MCP_COMMAND to a Studio MCP server".to_string(),
-                &thread,
-                &transcript,
-            ));
+                &thread, &transcript, &skills_used));
         }
         if let Err(e) = self.check_bridge_capabilities() {
-            return Err(fail(e, &thread, &transcript));
+            return Err(fail(e, &thread, &transcript, &skills_used));
         }
         self.generated.clear();
         self.last_skill = None;
@@ -572,7 +592,6 @@ impl Agent {
         ];
         let mut summary: Option<String> = None;
         let mut failed_playtests = 0usize;
-        let mut skills_used: Vec<String> = Vec::new();
         let mut writes: HashMap<String, String> = HashMap::new();
         let mut last_failed_console: Option<String> = None;
         // Changes no passing playtest has covered yet (the done gate),
@@ -584,7 +603,7 @@ impl Agent {
         for _ in 0..MAX_STEPS {
             let content = match self.model.chat(&messages) {
                 Ok(c) => c,
-                Err(e) => return Err(fail(e, &thread, &transcript)),
+                Err(e) => return Err(fail(e, &thread, &transcript, &skills_used)),
             };
             messages.push(json!({ "role": "assistant", "content": content }));
             transcript.push(format!("model step: {content}"));
@@ -668,9 +687,7 @@ impl Agent {
                                         "playtest still failing after {failed_playtests} attempts — \
                                          I could not get this build to pass. Last console output: {console}"
                                     ),
-                                    &thread,
-                                    &transcript,
-                                ));
+                                    &thread, &transcript, &skills_used));
                             }
                             messages.push(json!({ "role": "user", "content": note }));
                         }
@@ -686,13 +703,11 @@ impl Agent {
                                          the bridge must return {{\"status\": \"passed\"}} or {{\"status\": \"failed\"}}. \
                                          Last playtest result: {raw}"
                                     ),
-                                    &thread,
-                                    &transcript,
-                                ));
+                                    &thread, &transcript, &skills_used));
                             }
                             messages.push(json!({ "role": "user", "content": note }));
                         }
-                        Err(e) => return Err(fail(e, &thread, &transcript)),
+                        Err(e) => return Err(fail(e, &thread, &transcript, &skills_used)),
                     }
                     continue;
                 }
@@ -756,9 +771,7 @@ impl Agent {
             }),
             None => Err(fail(
                 format!("agent loop did not finish within {MAX_STEPS} steps"),
-                &thread,
-                &transcript,
-            )),
+                &thread, &transcript, &skills_used)),
         }
     }
 

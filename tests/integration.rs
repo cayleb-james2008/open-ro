@@ -1801,6 +1801,12 @@ fn ideas_engine_pitches_by_context() {
     let follow = openro_rs::ideas::ideas_for(&built);
     assert!(follow.iter().any(|i| i.id == "add-shop"), "the shop pitch unlocks once money exists: {:?}", follow.iter().map(|i| i.id).collect::<Vec<_>>());
     assert!(follow.iter().all(|i| !i.skills.contains(&"currency")), "built skills are not re-pitched");
+    // A half-built idea is still pitched (building it completes the
+    // missing piece) — a shop without its GUI does not strand the
+    // GUI forever once the shop's prerequisite (currency) is in.
+    let half = vec!["currency".to_string(), "shop".to_string()];
+    let follow_half = openro_rs::ideas::ideas_for(&half);
+    assert!(follow_half.iter().any(|i| i.id == "add-shop"), "a shop without its GUI still pitches the shop idea: {:?}", follow_half.iter().map(|i| i.id).collect::<Vec<_>>());
     // Everything built → nothing left to pitch (no empty promises).
     let all: Vec<String> = ["currency", "shop", "game_gui", "checkpoints", "soundtrack", "day_night", "kill_brick"]
         .iter()
@@ -1894,4 +1900,97 @@ fn ideas_state_survives_a_restart() {
     let (_, thread_after) = http_request(port2, "GET", "/api/thread", None);
     assert_eq!(thread_after, thread_before, "no duplicate pitch lines across the restart");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// Thermonuclear dispositions (18 Nov 2026): composition honesty —
+// prerequisites enforced at build time, the shop's playtest gate, a
+// net-zero plan is not a build, and failed asks still teach the
+// pitch engine what landed.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn shop_without_currency_fails_the_playtest() {
+    // The mock's composition rule: a shop with no leaderstats behind
+    // it is dead on arrival, and the playtest says so — on the model
+    // path too, not just for built-in plans.
+    let script = vec![
+        json!({ "skill": "shop", "args": { "item_name": "Speed Coil", "price": 100, "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Shop", "skill": "shop" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "skill": "currency", "args": { "currency": "Coins", "bind_close": true } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Currency", "skill": "currency" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Shop added, backed by saved currency; playtest passes." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    let outcome = agent
+        .run_ask("chat-1", "add a shop selling a Speed Coil")
+        .expect("the repair (adding currency) converges");
+    let transcript = outcome.transcript.join("\n");
+    assert!(transcript.contains("no leaderstats exists for the shop to charge"), "the composition failure was the real console error: {transcript}");
+    assert!(transcript.contains("repair attempt 1"), "the repair is recorded: {transcript}");
+}
+
+#[test]
+fn plan_net_zero_is_not_called_built() {
+    let (mut agent, _stub) = agent_with_script(vec![]);
+    let plan = vec![
+        json!({ "tool": "create_instance", "args": { "class_name": "Part", "name": "Tmp", "parent": "Workspace", "properties": {} } }),
+        json!({ "tool": "delete_instance", "args": { "path": "Workspace.Tmp" } }),
+    ];
+    let err = agent
+        .run_plan("chat-1", "probe", &plan)
+        .expect_err("a plan that cancels itself out built nothing");
+    assert!(err.message.contains("exactly as it found it"), "the failure is honest about the net-zero outcome: {}", err.message);
+    // The (empty) change set still reverts cleanly — nothing was left behind.
+    let tree = agent.place_tree().unwrap();
+    assert_eq!(tree["instances"], json!({}), "nothing lingers in the place");
+}
+
+#[test]
+fn http_build_refuses_when_prerequisite_missing() {
+    let (agent, _stub) = agent_with_script(vec![]);
+    let port = start_server(Some(agent));
+    // add-shop declares needs: [currency]; on an empty game the build
+    // refuses by name instead of building a shop that can never sell.
+    let (status, body) = http_request(
+        port,
+        "POST",
+        "/api/ideas/build",
+        Some(&json!({ "id": "add-shop" }).to_string()),
+    );
+    assert_eq!(status, 400, "the build refuses: {body}");
+    assert!(body.contains("currency"), "the refusal names the missing prerequisite: {body}");
+    let (_, thread) = http_request(port, "GET", "/api/thread", None);
+    assert!(thread.contains("needs currency first"), "the refusal is in the record: {thread}");
+    let (_, tree_body) = http_request(port, "GET", "/api/place-tree", None);
+    assert!(tree_body.contains("\"scripts\":{}"), "nothing was built: {tree_body}");
+}
+
+#[test]
+fn failed_ask_still_teaches_the_pitch_engine() {
+    // The ask fails (currency generated without its shutdown save,
+    // three times) — but the currency script IS in the place, so the
+    // pitch engine must treat currency as built: it unlocks the shop
+    // pitch and does not re-offer currency itself.
+    let mut script = Vec::new();
+    for _ in 0..3 {
+        script.push(json!({ "skill": "currency", "args": { "currency": "Coins", "bind_close": false } }).to_string());
+        script.push(json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Currency", "use_generated": true } }).to_string());
+        script.push(json!({ "tool": "playtest", "args": {} }).to_string());
+    }
+    let (agent, _stub) = agent_with_script(script);
+    let port = start_server(Some(agent));
+    let (status, _) = http_request(
+        port,
+        "POST",
+        "/api/chat",
+        Some(&json!({ "message": "add money that saves" }).to_string()),
+    );
+    assert_eq!(status, 502, "the ask fails honestly");
+    let (status, body) = http_request(port, "POST", "/api/ideas", Some("{}"));
+    assert_eq!(status, 200);
+    assert!(body.contains("add-shop"), "the shop pitch unlocks from the landed currency: {body}");
+    assert!(!body.contains("add-currency"), "currency is not re-pitched — it landed, even in a failed ask: {body}");
 }

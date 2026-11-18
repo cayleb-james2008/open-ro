@@ -310,8 +310,9 @@ pub fn find(id: &str) -> Option<Idea> {
 
 /// The ideas to pitch for a chat whose game has `built` skills in it:
 /// on an empty game, the opening complete games; otherwise up to three
-/// follow-ups whose prerequisites are built and whose own skills are
-/// not built yet.
+/// follow-ups whose prerequisites are all built and at least one of
+/// whose skills is not built yet (a half-built idea is still pitched —
+/// building it completes the missing piece rather than stranding it).
 pub fn ideas_for(built: &[String]) -> Vec<Idea> {
     if built.is_empty() {
         return opening_ideas();
@@ -323,7 +324,7 @@ pub fn ideas_for(built: &[String]) -> Vec<Idea> {
                 && idea
                     .skills
                     .iter()
-                    .all(|s| !built.iter().any(|b| b == s))
+                    .any(|s| !built.iter().any(|b| b == s))
         })
         .take(3)
         .collect()
