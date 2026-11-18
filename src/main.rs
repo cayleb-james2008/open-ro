@@ -10,6 +10,7 @@
 //!   OPENRO_MODEL_API_KEY   bearer key (unset = honest no-key state)
 //!   OPENRO_MCP_COMMAND     Studio MCP server command (unset = not connected)
 //!   OPENRO_GAME_NAME       default "Untitled Game"
+//!   OPENRO_DATA_DIR        default "openro-data" (chats persist there)
 //!   OPENRO_PORT            default 8077
 
 use openro_rs::agent::Agent;
@@ -47,7 +48,10 @@ fn main() {
     let listener = TcpListener::bind(("127.0.0.1", port))
         .unwrap_or_else(|e| panic!("bind 127.0.0.1:{port}: {e}"));
     eprintln!("openro: serving http://127.0.0.1:{port}");
-    let shared = Shared::new(Some(agent), game_name);
+    let data_dir = std::env::var("OPENRO_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("openro-data"));
+    let shared = Shared::with_data_dir(Some(agent), game_name, data_dir);
     if let Err(e) = serve(listener, shared) {
         eprintln!("openro: server error: {e}");
         std::process::exit(1);
