@@ -38,7 +38,7 @@ fn main() {
             None
         }
     };
-    let agent = Agent::new(model, studio);
+    let mut agent = Agent::new(model, studio);
     let game_name = std::env::var("OPENRO_GAME_NAME")
         .unwrap_or_else(|_| "Untitled Game".to_string());
     let port: u16 = std::env::var("OPENRO_PORT")
@@ -51,6 +51,9 @@ fn main() {
     let data_dir = std::env::var("OPENRO_DATA_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("openro-data"));
+    // Change sets persist next to the chats, so a restart does not
+    // silently orphan every revert.
+    agent.set_changes_file(data_dir.join("changes.json"));
     let shared = Shared::with_data_dir(Some(agent), game_name, data_dir);
     if let Err(e) = serve(listener, shared) {
         eprintln!("openro: server error: {e}");

@@ -70,12 +70,25 @@ pub fn registry() -> Vec<SkillDef> {
 /// default: a model typo must change nothing quietly. (Absent args
 /// still take their documented defaults.)
 fn arg_i64(args: &Value, name: &str, default: i64) -> Result<i64, String> {
-    match args.get(name) {
-        None => Ok(default),
+    arg_i64_min(args, name, default, i64::MIN)
+}
+
+/// An integer arg with a floor: type validation alone let
+/// `cycle_minutes: 0` generate a division by zero in the Luau and a
+/// negative `damage` generate a healing brick.
+fn arg_i64_min(args: &Value, name: &str, default: i64, min: i64) -> Result<i64, String> {
+    let v = match args.get(name) {
+        None => default,
         Some(v) => v
             .as_i64()
-            .ok_or_else(|| format!("skill arg '{name}' must be an integer, got: {v}")),
+            .ok_or_else(|| format!("skill arg '{name}' must be an integer, got: {v}"))?,
+    };
+    if v < min {
+        return Err(format!(
+            "skill arg '{name}' must be at least {min}, got: {v}"
+        ));
     }
+    Ok(v)
 }
 
 fn arg_bool(args: &Value, name: &str, default: bool) -> Result<bool, String> {
@@ -90,10 +103,20 @@ fn arg_bool(args: &Value, name: &str, default: bool) -> Result<bool, String> {
 fn arg_string(args: &Value, name: &str, default: &str) -> Result<String, String> {
     match args.get(name) {
         None => Ok(default.to_string()),
-        Some(v) => v
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| format!("skill arg '{name}' must be a string, got: {v}")),
+        Some(v) => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| format!("skill arg '{name}' must be a string, got: {v}"))?;
+            // String args land inside generated Luau literals; control
+            // characters (a raw NUL sailed through once) are refused
+            // here rather than escaped char-by-char downstream.
+            if s.chars().any(|c| c.is_control()) {
+                return Err(format!(
+                    "skill arg '{name}' must not contain control characters"
+                ));
+            }
+            Ok(s.to_string())
+        }
     }
 }
 
@@ -122,15 +145,15 @@ pub fn generate(skill: &str, args: &Value) -> Result<String, String> {
         }
         "leaderboard" => {
             let currency = arg_string(args, "currency", "Coins")?;
-            let start_amount = arg_i64(args, "start_amount", 0)?;
+            let start_amount = arg_i64_min(args, "start_amount", 0, 0)?;
             run_skill(def.source, def.entry, (currency, start_amount))
         }
         "day_night" => {
-            let cycle_minutes = arg_i64(args, "cycle_minutes", 10)?;
+            let cycle_minutes = arg_i64_min(args, "cycle_minutes", 10, 1)?;
             run_skill(def.source, def.entry, (cycle_minutes,))
         }
         "kill_brick" => {
-            let damage = arg_i64(args, "damage", 100)?;
+            let damage = arg_i64_min(args, "damage", 100, 1)?;
             run_skill(def.source, def.entry, (damage,))
         }
         "spawn_link" => {

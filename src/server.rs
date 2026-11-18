@@ -427,9 +427,10 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
             match guard.as_mut() {
                 Some(agent) => match agent.revert_chat(&chat_id) {
                     Ok(restored) => {
-                        shared.append_lines(&[
-                            "OpenRO: Reverted the last change set.".to_string(),
-                        ]);
+                        shared.append_lines(&[format!(
+                            "OpenRO: Reverted {} change(s) in this chat.",
+                            restored.len()
+                        )]);
                         respond_json(
                             &mut stream,
                             "200 OK",
@@ -449,11 +450,19 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                             &json!({ "ok": false, "error": e }),
                         );
                     }
-                    Err(e) => respond_json(
-                        &mut stream,
-                        "502 Bad Gateway",
-                        &json!({ "ok": false, "error": e }),
-                    ),
+                    Err(e) => {
+                        // A failed revert is part of the chat's record
+                        // too — never a silent API-only error. The set
+                        // is kept, and the line says so.
+                        shared.append_lines(&[format!(
+                            "OpenRO: Revert did not finish: {e}"
+                        )]);
+                        respond_json(
+                            &mut stream,
+                            "502 Bad Gateway",
+                            &json!({ "ok": false, "error": e }),
+                        );
+                    }
                 },
                 None => respond_json(
                     &mut stream,
@@ -730,7 +739,7 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
     try {{
       const r = await fetch('/api/revert', {{ method: 'POST' }});
       const data = await r.json();
-      if (data.ok) addLine('OpenRO: Reverted the last change set.');
+      if (data.ok) addLine('OpenRO: Reverted ' + data.restored.length + ' change(s) in this chat.');
       else if (data.error === 'nothing to revert') addLine('OpenRO: Nothing to revert — no change set is waiting in this chat.');
       else addLine('OpenRO: ' + data.error);
     }} catch (err) {{

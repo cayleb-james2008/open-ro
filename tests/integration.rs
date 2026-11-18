@@ -1021,3 +1021,252 @@ fn shell_escapes_game_name_and_meets_contrast() {
     assert!(html.contains("no-studio-banner"), "the no-Studio state gets a banner, not just a chip");
     assert!(html.contains("chat-btn"), "chat list items are real buttons");
 }
+
+// ---------------------------------------------------------------------------
+// Regression tests from thermonuclear review ROUND 2.
+// ---------------------------------------------------------------------------
+
+/// H1: a vacuous playtest (nothing changed, so nothing to break) used
+/// to suppress the empty-handed claim flag — a clean false "done".
+#[test]
+fn vacuous_playtest_does_not_excuse_a_build_claim() {
+    let script = vec![
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Built the leaderboard and added coins for you." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    let outcome = agent
+        .run_ask("chat-1", "build me a leaderboard")
+        .expect("the ask completes (with the flag in the thread)");
+    let thread = outcome.thread.join("\n");
+    assert!(
+        thread.contains("claims building work, but this ask made no changes"),
+        "a build claim with zero changes must be flagged even after a playtest: {thread}"
+    );
+    let tree = agent.place_tree().unwrap();
+    assert_eq!(tree["scripts"], json!({}), "nothing was built");
+}
+
+/// L1: the flag must not accuse honest negations.
+#[test]
+fn honest_negation_is_not_flagged_as_a_build_claim() {
+    let script = vec![
+        json!({ "done": true, "summary": "Nothing was built or added — the game already had a leaderboard." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    let outcome = agent
+        .run_ask("chat-1", "does the game have a leaderboard?")
+        .expect("the ask completes");
+    let thread = outcome.thread.join("\n");
+    assert!(
+        !thread.contains("claims building work"),
+        "an honest negation must not be flagged: {thread}"
+    );
+}
+
+/// H3: a failed tool call must not poison the change set — the
+/// checkpoint is recorded only after the change succeeds.
+#[test]
+fn failed_tool_call_does_not_poison_the_change_set() {
+    let script = vec![
+        json!({ "tool": "delete_script", "args": { "path": "ServerScriptService.Ghost" } }).to_string(),
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Leaderboard", "skill": "leaderboard" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Leaderboard added." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    agent
+        .run_ask("chat-1", "remove the ghost script and add a leaderboard")
+        .expect("the ask completes honestly despite the failed delete");
+    let restored = agent
+        .revert_chat("chat-1")
+        .expect("revert must not trip over a change that never happened");
+    assert_eq!(restored.len(), 1, "only the real change reverts: {restored:?}");
+    let tree = agent.place_tree().unwrap();
+    assert_eq!(tree["scripts"], json!({}), "the leaderboard is reverted away");
+}
+
+/// H2: revert is failure-atomic and state-checked — when another chat
+/// already achieved part of the goal state, revert still succeeds,
+/// and a failed revert would keep its set for a retry.
+#[test]
+fn revert_survives_cross_chat_interference() {
+    let script = vec![
+        // Chat A: create the pad and its checker script.
+        json!({ "tool": "create_instance", "args": { "class_name": "SpawnLocation", "name": "SpawnPad", "parent": "Workspace", "properties": {} } }).to_string(),
+        json!({ "skill": "spawn_link", "args": { "instance_name": "SpawnPad" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.SpawnChecker", "skill": "spawn_link" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Spawn pad placed and checked." }).to_string(),
+        // Chat B: remove both again.
+        json!({ "tool": "delete_instance", "args": { "path": "Workspace.SpawnPad" } }).to_string(),
+        json!({ "tool": "delete_script", "args": { "path": "ServerScriptService.SpawnChecker" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Removed the spawn pad and its checker." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    agent.run_ask("chat-a", "add a spawn pad").expect("chat A completes");
+    agent.run_ask("chat-b", "remove the spawn pad").expect("chat B completes");
+    // A's revert targets state B already achieved (both absent):
+    // that is success, not an error — and it must not consume B's set.
+    agent
+        .revert_chat("chat-a")
+        .expect("reverting to an already-achieved state succeeds");
+    // B's revert then restores the pad and the script for real.
+    let restored = agent.revert_chat("chat-b").expect("chat B reverts");
+    assert_eq!(restored.len(), 2, "both of B's changes restore: {restored:?}");
+    let tree = agent.place_tree().unwrap();
+    assert!(
+        tree["instances"].get("Workspace.SpawnPad").is_some(),
+        "the pad is back: {tree}"
+    );
+    assert!(
+        tree["scripts"].get("ServerScriptService.SpawnChecker").is_some(),
+        "the checker script is back: {tree}"
+    );
+}
+
+/// M4: change sets form a per-chat STACK — a second change-making ask
+/// must not silently orphan the first ask's changes; each ask's set
+/// stays revertable, most recent first.
+#[test]
+fn change_sets_stack_across_asks_in_one_chat() {
+    let script = vec![
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Leaderboard", "skill": "leaderboard" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Leaderboard added." }).to_string(),
+        json!({ "skill": "day_night", "args": { "cycle_minutes": 5 } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.DayNight", "skill": "day_night" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Day/night added." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    agent.run_ask("chat-1", "add a leaderboard").expect("ask 1 completes");
+    agent.run_ask("chat-1", "add day/night").expect("ask 2 completes");
+    // First revert pops ask 2's set only.
+    let restored = agent.revert_chat("chat-1").expect("revert of ask 2 works");
+    assert_eq!(restored.len(), 1, "ask 2's change reverts: {restored:?}");
+    let tree = agent.place_tree().unwrap();
+    assert!(tree["scripts"].get("ServerScriptService.DayNight").is_none(), "day/night gone");
+    assert!(tree["scripts"].get("ServerScriptService.Leaderboard").is_some(), "ask 1's work is untouched");
+    // Second revert pops ask 1's set — it was never discarded.
+    let restored = agent.revert_chat("chat-1").expect("revert of ask 1 works");
+    assert_eq!(restored.len(), 1);
+    let tree = agent.place_tree().unwrap();
+    assert_eq!(tree["scripts"], json!({}), "everything is reverted");
+    assert!(agent.revert_chat("chat-1").is_err(), "the stack is empty now");
+}
+
+/// M1: a healthy payload carrying "error": null is not a bridge error.
+#[test]
+fn null_error_field_is_a_healthy_payload() {
+    let command = format!("env MOCK_NULL_ERROR=1 {}", mock_studio_command());
+    let script = vec![
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Leaderboard", "skill": "leaderboard" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Leaderboard added." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_mock_command(script, command);
+    agent
+        .run_ask("chat-1", "add a leaderboard")
+        .expect("a bridge whose payloads carry error:null must work end to end");
+}
+
+/// M2: a get_console failure after a failed verdict must not abort
+/// the repair loop — the console embedded in the verdict is used.
+#[test]
+fn console_outage_does_not_abort_the_repair_loop() {
+    let command = format!("env MOCK_ERR_CONSOLE=1 {}", mock_studio_command());
+    let script = vec![
+        json!({ "skill": "spawn_link", "args": { "instance_name": "SpawnPad" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.SpawnChecker", "skill": "spawn_link" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "tool": "create_instance", "args": { "class_name": "SpawnLocation", "name": "SpawnPad", "parent": "Workspace", "properties": {} } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Created the missing spawn pad; playtest passes." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_mock_command(script, command);
+    let outcome = agent
+        .run_ask("chat-1", "link the spawn pad")
+        .expect("the repair loop survives a console outage");
+    assert_eq!(outcome.summary, "Created the missing spawn pad; playtest passes.");
+}
+
+/// L2/L5: skill args reject control characters and out-of-range
+/// numbers instead of generating broken Luau.
+#[test]
+fn skill_args_reject_control_chars_and_bad_ranges() {
+    assert!(
+        openro_rs::skills::generate("leaderboard", &json!({ "currency": "Co\u{0}ins" })).is_err(),
+        "a NUL in the currency must be refused"
+    );
+    assert!(
+        openro_rs::skills::generate("day_night", &json!({ "cycle_minutes": 0 })).is_err(),
+        "cycle_minutes 0 would divide by zero in the Luau"
+    );
+    assert!(
+        openro_rs::skills::generate("kill_brick", &json!({ "damage": -5 })).is_err(),
+        "negative damage would heal"
+    );
+    assert!(
+        openro_rs::skills::generate("leaderboard", &json!({ "start_amount": -1 })).is_err(),
+        "negative start amount is out of range"
+    );
+    // And the valid edges still generate.
+    assert!(openro_rs::skills::generate("day_night", &json!({ "cycle_minutes": 1 })).is_ok());
+    assert!(openro_rs::skills::generate("kill_brick", &json!({ "damage": 1 })).is_ok());
+}
+
+/// L4: create_instance names are validated before the bridge sees them.
+#[test]
+fn create_instance_rejects_bad_names_before_the_bridge() {
+    let script = vec![
+        json!({ "tool": "create_instance", "args": { "class_name": "Part", "name": "Bad/Name", "parent": "Workspace", "properties": {} } }).to_string(),
+        json!({ "done": true, "summary": "Understood." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    let outcome = agent
+        .run_ask("chat-1", "make a part")
+        .expect("the ask completes with the error fed back");
+    let transcript = outcome.transcript.join("\n");
+    assert!(
+        transcript.contains("single non-empty name"),
+        "the bad name is refused by the agent's own validation: {transcript}"
+    );
+    let tree = agent.place_tree().unwrap();
+    assert_eq!(tree["instances"], json!({}), "nothing reached the place");
+}
+
+/// L3: change sets persist across a restart (same data file), so a
+/// pre-restart change is still revertable afterwards.
+#[test]
+fn change_sets_survive_a_restart() {
+    let dir = std::env::temp_dir().join(format!("openro-changes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let changes_file = dir.join("changes.json");
+    let script = vec![
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Leaderboard", "skill": "leaderboard" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Leaderboard added." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    agent.set_changes_file(changes_file.clone());
+    agent.run_ask("chat-1", "add a leaderboard").expect("ask completes");
+    assert!(changes_file.exists(), "the change set is written to disk");
+    drop(agent);
+    // A fresh agent (fresh bridge, empty place) loads the set; the
+    // state-checked revert treats the already-absent script as
+    // restored rather than erroring.
+    let (mut agent2, _stub2) = agent_with_script(vec![]);
+    agent2.set_changes_file(changes_file);
+    let restored = agent2
+        .revert_chat("chat-1")
+        .expect("the pre-restart change set is still revertable");
+    assert_eq!(restored.len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
