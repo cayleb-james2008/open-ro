@@ -772,13 +772,20 @@ impl Agent {
                 let prev = self.prev_instance(&path)?;
                 self.studio_mut()?
                     .call_tool("create_instance", args.clone())?;
-                // The state this ask leaves: the record the bridge now
-                // holds for the new instance.
-                let post = json!({
-                    "class_name": class_name,
-                    "properties": args.get("properties").cloned().unwrap_or(json!({})),
-                });
-                self.record_instance(&path, prev, Some(post));
+                // The state this ask leaves is the record the BRIDGE
+                // holds, read back from the tree — never a record
+                // fabricated from the ask's args. A real place adds
+                // its own default properties to every instance; an
+                // args-shaped post would make every legitimate
+                // instance revert refuse forever against it.
+                let post = match self.prev_instance_current(&path) {
+                    Ok(Some(record)) => Some(record),
+                    _ => Some(json!({
+                        "class_name": class_name,
+                        "properties": args.get("properties").cloned().unwrap_or(json!({})),
+                    })),
+                };
+                self.record_instance(&path, prev, post);
                 transcript.push(format!("tool create_instance {path} ({class_name})"));
                 thread.push(format!("Created {path} ({class_name})."));
                 Ok(format!("tool_result: create_instance {path} succeeded."))
@@ -1057,15 +1064,20 @@ enum PlaytestOutcome {
 /// accusation — the line states what the ask did (nothing), and the
 /// reader judges the summary against it.
 fn claims_building(summary: &str) -> bool {
-    const CLAIMS: [&str; 13] = [
+    const CLAIMS: [&str; 16] = [
         "built", "created", "wrote", "added", "placed", "generated", "constructed",
-        "installed", "made", "shipped", "implemented", "assembled", "wired",
+        "installed", "made", "shipped", "implemented", "assembled", "wired", "spawned",
+        "fixed", "repaired",
     ];
     const SUPPRESSORS: [&str; 14] = [
         "nothing", "not", "no", "never", "didn't", "didnt", "wasn't", "wasnt", "haven't",
         "havent", "isn't", "isnt", "already", "couldn't",
     ];
-    for sentence in summary.split(|c| matches!(c, '.' | '!' | '?' | '\n')) {
+    // Normalise curly apostrophes first: models emit them routinely,
+    // and a U+2019 inside "wasn't" would otherwise split the token
+    // and smuggle the claim past its own suppressor.
+    let summary = summary.replace('\u{2019}', "'");
+    for sentence in summary.split(|c| matches!(c, '.' | '!' | '?' | '\n' | ';')) {
         let tokens: Vec<String> = sentence
             .to_lowercase()
             .split(|c: char| !c.is_alphanumeric() && c != '\'')

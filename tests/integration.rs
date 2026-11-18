@@ -1513,3 +1513,75 @@ fn outcome_lines_follow_the_ask_not_the_active_chat() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// Regression tests from thermonuclear review ROUND 4.
+// ---------------------------------------------------------------------------
+
+/// A9: the instance `post` state is read back from the place, so a
+/// bridge that adds its own default properties does not make every
+/// legitimate instance revert refuse forever.
+#[test]
+fn instance_revert_survives_bridge_owned_defaults() {
+    let command = format!("env MOCK_INST_EXTRA=1 {}", mock_studio_command());
+    let script = vec![
+        json!({ "tool": "create_instance", "args": { "class_name": "SpawnLocation", "name": "SpawnPad", "parent": "Workspace", "properties": { "Anchored": true } } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Spawn pad placed." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_mock_command(script, command);
+    agent.run_ask("chat-1", "add a spawn pad").expect("ask completes");
+    let tree = agent.place_tree().unwrap();
+    assert_eq!(
+        tree["instances"]["Workspace.SpawnPad"]["properties"]["BridgeDefault"],
+        json!(true),
+        "the bridge added its own default property: {tree}"
+    );
+    let restored = agent
+        .revert_chat("chat-1")
+        .expect("reverting what the ask left — bridge defaults included — must succeed");
+    assert_eq!(restored.len(), 1);
+    let tree = agent.place_tree().unwrap();
+    assert_eq!(tree["instances"], json!({}), "the instance is reverted away");
+}
+
+/// Round-4 (C): chats.json gets the same strict loading as
+/// changes.json — a malformed entry backs the whole file up instead
+/// of being silently dropped and overwritten by the next save.
+#[test]
+fn malformed_chats_file_is_backed_up_at_startup() {
+    let dir = std::env::temp_dir().join(format!("openro-chats-bad-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad = "{\"chats\": [{\"title\": \"T\", \"lines\": [\"You: hi\"]}], \"active\": \"x\"}";
+    std::fs::write(dir.join("chats.json"), bad).unwrap();
+    let port = start_server_with_data(None, dir.clone());
+    let (status, _) = http_request(port, "GET", "/api/chats", None);
+    assert_eq!(status, 200, "the server still starts");
+    let bak = dir.join("chats.json.bak");
+    assert!(bak.exists(), "the malformed file is preserved as a backup");
+    assert_eq!(std::fs::read_to_string(&bak).unwrap(), bad);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round-4 (B) edges: curly apostrophes are normalised before the
+/// suppressor check; semicolons end sentences; spawned/fixed count.
+#[test]
+fn claim_flag_curly_apostrophes_and_semicolons() {
+    let cases: Vec<(&str, bool)> = vec![
+        ("It wasn\u{2019}t built by me.", false),
+        ("Nothing changed in the place; I built the leaderboard anyway.", true),
+        ("I spawned the pad and fixed the leaderboard.", true),
+    ];
+    for (summary, should_flag) in cases {
+        let script = vec![json!({ "done": true, "summary": summary }).to_string()];
+        let (mut agent, _stub) = agent_with_script(script);
+        let outcome = agent.run_ask("chat-1", "do the thing").expect("ask completes");
+        let thread = outcome.thread.join("\n");
+        assert_eq!(
+            thread.contains("Note — this ask made no changes to the game."),
+            should_flag,
+            "summary {summary:?} should_flag={should_flag}: {thread}"
+        );
+    }
+}
