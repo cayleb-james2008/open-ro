@@ -23,3 +23,16 @@
 - M4: a second change-making ask silently replaced the first ask's set. FIXED: sets form a per-chat stack; revert pops the most recent set; earlier sets stay revertable. Pinned.
 - L2: control characters passed into generated Luau. FIXED: string skill args reject control characters in Rust validation. L5: numeric ranges — cycle_minutes >= 1, damage >= 1, start_amount >= 0 enforced. L4: create_instance name fully validated (non-empty, no dots/separators/control) + composed path checked. L3: change sets persist to changes.json beside chats.json (loaded at startup, saved on change). All pinned.
 - Verify fix-round-3b: 36/36 green.
+
+## Review round 3 (thermonuclear, fresh context) — verdict: NOT DONE → fixed
+- F1 HIGH: claim flag failed both directions (4-token negation window, 6-verb list). REBUILT: sentence-scoped check (suppressors never bleed across sentences), 13 claim verbs, suppressors incl. "already" for pre-existing work; the flag is now a factual ledger line ("this ask made no changes to the game"), not an accusation. Pinned with a 6-case both-directions battery.
+- F2 HIGH: revert's state check was existence-only — reverting chat A silently deleted chat B's newer work at the same path. FIXED: every Change now records prev AND post (the state the ask left); restore proceeds only when current == post (restore prev) or current == prev (already done); anything else refuses, naming the divergence, set kept. Two cross-chat reverts converge in stack order. Pinned.
+- F3 HIGH: the server filed an ask's outcome lines into whichever chat was ACTIVE at finish time. FIXED: chat_id is captured before the ask runs; all its lines (user, narration, failure, revert results) go through append_lines_to(chat_id). Pinned with a slow-stub mid-ask chat switch over HTTP.
+- F4 MED: error OBJECTS counted unconditionally ({"code": 0} beside a passing verdict aborted asks) with a fabricated "tool error" message — contradicting round 2's own ledger claim. FIXED: an object counts only with a non-empty message. Mock gained MOCK_ERR_CODE_ONLY; pinned.
+- F5 MED: corrupt changes.json silently dropped, next save overwrote it. FIXED: strict load — any parse/shape/entry failure backs the whole file up (first-free suffix, shared helper with chats) and starts empty; chats.json got the same treatment.
+- F6 MED: malformed entries coerced (numeric prev → "was absent" → destructive revert; instance records fabricated class Part). FIXED: from_json is strict (wrong type = invalid entry = whole file backed up per F5); restore errors on a record without a class name instead of fabricating one. Pinned.
+- F7 LOW: class_name unvalidated. FIXED: same rule family as name. Pinned.
+- F8 LOW: numeric ceilings absent (i64::MAX generated unrepresentable Luau). FIXED: ranged args (cycle_minutes 1..=10080, damage 1..=100000, start_amount 0..=1e9); dead arg_i64 removed (build warning-clean). Pinned.
+- F9 LOW: README understated the bridge (5 tools) and skills (1). FIXED in-repo; the staged replacement README builds on the corrected text.
+- Holds verified by the reviewer: H3 checkpoint discipline, H2 failure-atomicity, M2 worst case, M4 stack LIFO + persistence fidelity.
+- Verify fix-round-4b: 43/43 green.
