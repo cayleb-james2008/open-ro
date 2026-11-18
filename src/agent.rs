@@ -547,7 +547,9 @@ impl Agent {
                 &skills_used,
             ));
         }
-        let summary = format!("Built “{label}” — playtest passed.");
+        /* The verdict band directly above already states the pass —
+           the summary names the build, once (elevation checker note). */
+        let summary = format!("Built “{label}”.");
         thread.push(format!("OpenRO: {summary}"));
         transcript.push(format!("plan done: {summary}"));
         Ok(RunOutcome {
