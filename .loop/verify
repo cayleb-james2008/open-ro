@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Ultra-loop kit: run every hermetic check, cheapest first.
+# Usage: bash .loop/verify <label>
+set -u
+LABEL="${1:-run}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+export PATH="$HOME/.local/rust/bin:$HOME/.rust/bin:$PATH"
+OUT=".loop/runs/$LABEL"
+mkdir -p "$OUT"
+FAILURES=""
+
+run_check() {
+  local name="$1"; shift
+  echo "== $name ==" >> "$OUT/log.txt"
+  timeout 900 "$@" >> "$OUT/log.txt" 2>&1
+  local code=$?
+  echo "exit=$code" >> "$OUT/log.txt"
+  if [ $code -ne 0 ]; then
+    FAILURES="$FAILURES $name"
+  fi
+  return $code
+}
+
+: > "$OUT/log.txt"
+run_check build cargo build
+run_check tests cargo test
+
+if [ -n "$FAILURES" ]; then
+  echo "verify[$LABEL]: FAILING:$FAILURES (log: $OUT/log.txt)"
+  exit 1
+fi
+TESTS_LINE=$(grep -E "test result:" "$OUT/log.txt" | tail -3 | tr '\n' ';')
+echo "verify[$LABEL]: build ok; tests ok; $TESTS_LINE"
+exit 0
