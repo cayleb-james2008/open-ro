@@ -279,7 +279,7 @@ fn ideas_json(ideas: &[crate::ideas::Idea]) -> Value {
     Value::Array(
         ideas
             .iter()
-            .map(|i| json!({ "id": i.id, "title": i.title, "pitch": i.pitch }))
+            .map(|i| json!({ "id": i.id, "title": i.title, "pitch": i.pitch, "skills": i.skills }))
             .collect(),
     )
 }
@@ -835,15 +835,15 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
     } else {
         "Studio not connected"
     };
-    let chip_class = if studio_connected { "chip on" } else { "chip off" };
+    let chip_class = if studio_connected { "on" } else { "off" };
     // Both blockers get a banner of the same weight, each naming its
     // fix — the no-Studio state used to be a lone 12px chip.
     let mut banners = String::new();
     if !model_configured {
-        banners.push_str("<div class=\"banner\" id=\"no-key-banner\">no model key configured — set OPENRO_MODEL_API_KEY to enable chat</div>");
+        banners.push_str("<div class=\"banner\" id=\"no-key-banner\"><span><strong>Chat is off: no model key configured.</strong> Ask whoever runs OpenRO to set OPENRO_MODEL_API_KEY, then restart it.</span></div>");
     }
     if !studio_connected {
-        banners.push_str("<div class=\"banner\" id=\"no-studio-banner\">Studio not connected — set OPENRO_MCP_COMMAND to a Studio MCP server; OpenRO cannot build until one is connected</div>");
+        banners.push_str("<div class=\"banner\" id=\"no-studio-banner\"><span><strong>Studio not connected.</strong> OpenRO cannot build until Roblox Studio is connected. Set OPENRO_MCP_COMMAND to a Studio MCP server, then restart.</span></div>");
     }
     let can_build = model_configured && studio_connected;
     // The game name is the only operator-supplied value: it is escaped,
