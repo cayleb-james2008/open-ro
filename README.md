@@ -22,16 +22,27 @@ Fresh codebase (17 Nov 2026 restart), built apart from the original app.
 - **Studio bridge:** an MCP client speaking JSON-RPC 2.0 over stdio to a
   child process named by `OPENRO_MCP_COMMAND` (a real Roblox Studio MCP
   server drops in unchanged). Tools used: `get_place_tree`,
-  `write_script`, `delete_script`, `playtest`, `get_console`.
-- **Rune drives code generation:** the Luau code-generation skill lives
-  in an embedded Rune script (`src/round_manager.rn`) and is executed on
-  a Rune VM by the agent loop to produce the Luau it applies.
+  `write_script`, `delete_script`, `create_instance`, `delete_instance`,
+  `playtest`, `get_console` — all seven are required up front; a bridge
+  missing one is refused honestly before any ask runs.
+- **Rune drives code generation:** five Luau code-generation skills —
+  `round_manager`, `leaderboard`, `day_night`, `kill_brick`, `spawn_link`
+  — each an embedded Rune script (`src/*.rn`) executed on a Rune VM.
+  The registry is the single source for both the system prompt and
+  dispatch; Luau comes only from skills, never from hand-written model
+  output. Skill arguments are type-, range- and content-validated in
+  Rust before a script runs.
 - **Agent loop:** the model replies with JSON steps —
   `{"skill": ...}`, `{"tool": ...}`, or `{"done": true, "summary": ...}`.
-  Before the first write to a path in an ask, the previous content (or
-  absence) is checkpointed; `POST /api/revert` restores the last change
-  set in one click. On a failed playtest the loop fetches the actual
-  console output, feeds it back to the model, and repairs autonomously.
+  Each ask's changes are checkpointed (previous state recorded only
+  after a change succeeds) into a per-chat stack of change sets,
+  persisted to `changes.json`; `POST /api/revert` pops the most recent
+  set and restores it — identity-checked, so a path changed by anyone
+  else since the ask is refused, never silently overwritten. A `done`
+  is refused while changes are unproven by a playtest. On a failed
+  playtest the loop fetches the actual console output, feeds it back
+  to the model, and repairs autonomously (bounded attempts, honest
+  give-up).
 
 ## Test fixture
 

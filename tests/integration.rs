@@ -1040,8 +1040,8 @@ fn vacuous_playtest_does_not_excuse_a_build_claim() {
         .expect("the ask completes (with the flag in the thread)");
     let thread = outcome.thread.join("\n");
     assert!(
-        thread.contains("claims building work, but this ask made no changes"),
-        "a build claim with zero changes must be flagged even after a playtest: {thread}"
+        thread.contains("Note — this ask made no changes to the game."),
+        "a build claim with zero changes must get the ledger line even after a playtest: {thread}"
     );
     let tree = agent.place_tree().unwrap();
     assert_eq!(tree["scripts"], json!({}), "nothing was built");
@@ -1059,8 +1059,8 @@ fn honest_negation_is_not_flagged_as_a_build_claim() {
         .expect("the ask completes");
     let thread = outcome.thread.join("\n");
     assert!(
-        !thread.contains("claims building work"),
-        "an honest negation must not be flagged: {thread}"
+        !thread.contains("made no changes to the game"),
+        "an honest negation must not get the ledger line: {thread}"
     );
 }
 
@@ -1268,5 +1268,248 @@ fn change_sets_survive_a_restart() {
         .revert_chat("chat-1")
         .expect("the pre-restart change set is still revertable");
     assert_eq!(restored.len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// Regression tests from thermonuclear review ROUND 3.
+// ---------------------------------------------------------------------------
+
+/// F1: the claim check is sentence-scoped with suppressors — honest
+/// negations and pre-existing-work reports stay clean in every
+/// position, and synonyms / cross-sentence tricks do not dodge it.
+#[test]
+fn claim_flag_sentence_scoped_both_directions() {
+    let cases: Vec<(&str, bool)> = vec![
+        ("I built nothing.", false),
+        ("Nothing at all in this place was built by me.", false),
+        ("The leaderboard was already built before you asked.", false),
+        ("Constructed the leaderboard and installed the spawn pad.", true),
+        ("No problems were found. Built the leaderboard from scratch.", true),
+        ("I made a leaderboard for you.", true),
+    ];
+    for (summary, should_flag) in cases {
+        let script = vec![json!({ "done": true, "summary": summary }).to_string()];
+        let (mut agent, _stub) = agent_with_script(script);
+        let outcome = agent
+            .run_ask("chat-1", "do the thing")
+            .expect("the ask completes");
+        let thread = outcome.thread.join("\n");
+        assert_eq!(
+            thread.contains("Note — this ask made no changes to the game."),
+            should_flag,
+            "summary {summary:?} should_flag={should_flag}: {thread}"
+        );
+    }
+}
+
+/// F2: revert is identity-checked — it must REFUSE to destroy another
+/// chat's newer work at the same path, and the two reverts then
+/// converge in stack order.
+#[test]
+fn revert_refuses_to_destroy_another_chats_newer_work() {
+    let script = vec![
+        // Chat A writes Shared from the leaderboard skill.
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Shared", "skill": "leaderboard" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Leaderboard in." }).to_string(),
+        // Chat B overwrites the same path with day/night.
+        json!({ "skill": "day_night", "args": { "cycle_minutes": 5 } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Shared", "skill": "day_night" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Day/night in." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    agent.run_ask("chat-a", "add a leaderboard").expect("A completes");
+    agent.run_ask("chat-b", "add day/night instead").expect("B completes");
+    // A's revert must refuse: the path now holds B's work.
+    let err = agent
+        .revert_chat("chat-a")
+        .expect_err("reverting A over B's newer work must refuse");
+    assert!(err.contains("has changed since this ask"), "the refusal names the divergence: {err}");
+    let tree = agent.place_tree().unwrap();
+    let shared = tree["scripts"]["ServerScriptService.Shared"].as_str().unwrap();
+    assert!(shared.contains("ClockTime"), "B's work is intact: {shared}");
+    // B reverts first (restoring A's content), then A can revert.
+    agent.revert_chat("chat-b").expect("B reverts");
+    let tree = agent.place_tree().unwrap();
+    let shared = tree["scripts"]["ServerScriptService.Shared"].as_str().unwrap();
+    assert!(shared.contains("leaderstats"), "A's content is restored: {shared}");
+    agent.revert_chat("chat-a").expect("A reverts now");
+    let tree = agent.place_tree().unwrap();
+    assert_eq!(tree["scripts"], json!({}), "both reverts converge to the original empty tree");
+}
+
+/// F4: an error object with a code but no message is a healthy
+/// payload, not a bridge error.
+#[test]
+fn error_object_without_a_message_is_healthy() {
+    let command = format!("env MOCK_ERR_CODE_ONLY=1 {}", mock_studio_command());
+    let script = vec![
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Leaderboard", "skill": "leaderboard" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Leaderboard added." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_mock_command(script, command);
+    agent
+        .run_ask("chat-1", "add a leaderboard")
+        .expect("a passing verdict with error:{code:0} must be accepted");
+}
+
+/// F5/F6: a corrupt or malformed changes.json is backed up and starts
+/// empty — never silently dropped, never coerced into a destructive
+/// revert.
+#[test]
+fn corrupt_changes_file_is_backed_up_never_coerced() {
+    let dir = std::env::temp_dir().join(format!("openro-changes-bad-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Case 1: unparseable.
+    let f1 = dir.join("changes.json");
+    std::fs::write(&f1, "{not json at all").unwrap();
+    let (mut agent, _stub) = agent_with_script(vec![]);
+    agent.set_changes_file(f1.clone());
+    assert!(dir.join("changes.json.bak").exists(), "unparseable file is backed up");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("changes.json.bak")).unwrap(),
+        "{not json at all"
+    );
+    assert!(agent.revert_chat("chat-1").is_err(), "nothing to revert from a corrupt file");
+    // Case 2: a malformed entry (numeric prev) — the whole file is
+    // treated as corrupt rather than coercing prev to "was absent".
+    let f2 = dir.join("changes2.json");
+    std::fs::write(
+        &f2,
+        "{\"chat-1\": [[{\"kind\": \"script\", \"path\": \"ServerScriptService.X\", \"prev\": 12345, \"post\": null}]]}",
+    )
+    .unwrap();
+    let (mut agent2, _stub2) = agent_with_script(vec![]);
+    agent2.set_changes_file(f2.clone());
+    assert!(dir.join("changes2.json.bak").exists(), "a malformed entry backs the file up");
+    assert!(
+        agent2.revert_chat("chat-1").is_err(),
+        "no destructive revert is built from an unreadable record"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// F7: class_name is validated like name.
+#[test]
+fn create_instance_rejects_bad_class_names() {
+    let script = vec![
+        json!({ "tool": "create_instance", "args": { "class_name": "Pa\u{1}rt", "name": "Thing", "parent": "Workspace", "properties": {} } }).to_string(),
+        json!({ "done": true, "summary": "Understood." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    let outcome = agent.run_ask("chat-1", "make a thing").expect("ask completes");
+    let transcript = outcome.transcript.join("\n");
+    assert!(
+        transcript.contains("class_name must be"),
+        "the bad class name is refused by the agent: {transcript}"
+    );
+}
+
+/// F8: numeric ceilings — absurd values are refused, sane edges pass.
+#[test]
+fn skill_args_reject_absurd_magnitudes() {
+    assert!(openro_rs::skills::generate("day_night", &json!({ "cycle_minutes": i64::MAX })).is_err());
+    assert!(openro_rs::skills::generate("kill_brick", &json!({ "damage": i64::MAX })).is_err());
+    assert!(openro_rs::skills::generate("leaderboard", &json!({ "start_amount": i64::MAX })).is_err());
+    assert!(openro_rs::skills::generate("day_night", &json!({ "cycle_minutes": 10_080 })).is_ok());
+    assert!(openro_rs::skills::generate("kill_brick", &json!({ "damage": 100_000 })).is_ok());
+}
+
+/// F3: an ask's outcome lines are filed into the chat the ask ran in,
+/// even if the user switches chats while it runs. (Slow stub: the
+/// first model reply is delayed so the switch lands mid-ask.)
+#[test]
+fn outcome_lines_follow_the_ask_not_the_active_chat() {
+    // Slow stub model: same shape as start_stub_model, with a delay
+    // before the first reply.
+    let script = vec![
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Leaderboard", "skill": "leaderboard" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Leaderboard added." }).to_string(),
+    ];
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let stub_port = listener.local_addr().unwrap().port();
+    let queue = Arc::new(Mutex::new(std::collections::VecDeque::from(script)));
+    std::thread::spawn(move || {
+        let mut first = true;
+        for stream in listener.incoming() {
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let (_head, _body) = read_http_request(&mut stream);
+            if first {
+                first = false;
+                std::thread::sleep(std::time::Duration::from_millis(600));
+            }
+            let reply = queue
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| json!({ "done": true, "summary": "stub queue empty" }).to_string());
+            let payload = json!({
+                "choices": [{ "message": { "role": "assistant", "content": reply } }]
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                payload.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    let model = ModelClient::new(
+        format!("http://127.0.0.1:{stub_port}"),
+        "deepseek-v4.1-flash".to_string(),
+        Some("test-key-not-real".to_string()),
+    );
+    let studio = McpClient::spawn(&mock_studio_command()).unwrap();
+    let agent = Agent::new(model, Some(studio));
+    let dir = std::env::temp_dir().join(format!("openro-f3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let port = start_server_with_data(Some(agent), dir.clone());
+
+    // The ask runs in the default (first) chat, in a background thread.
+    let ask_thread = std::thread::spawn(move || {
+        http_request(port, "POST", "/api/chat", Some("{\"message\": \"add a leaderboard\"}"))
+    });
+    // Mid-ask, the user creates and switches to a second chat.
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let (status, _) = http_request(port, "POST", "/api/chats", Some("{}"));
+    assert_eq!(status, 201, "chat creation returns 201");
+    let (status, body) = ask_thread.join().unwrap();
+    assert_eq!(status, 200, "the ask completes: {body}");
+
+    // Chat 2 (currently active) must NOT hold the build narration.
+    let (_, thread2) = http_request(port, "GET", "/api/thread", None);
+    assert!(
+        !thread2.contains("Leaderboard added"),
+        "the outcome must not leak into the chat switched to mid-ask: {thread2}"
+    );
+    // Switch back to chat 1: the whole exchange is there.
+    let (_, chats_body) = http_request(port, "GET", "/api/chats", None);
+    let chats: Value = serde_json::from_str(&chats_body).unwrap();
+    let first_id = chats["chats"][0]["id"].as_str().unwrap().to_string();
+    let (status, _) = http_request(
+        port,
+        "POST",
+        "/api/chats/select",
+        Some(&format!("{{\"id\": \"{first_id}\"}}")),
+    );
+    assert_eq!(status, 200);
+    let (_, thread1) = http_request(port, "GET", "/api/thread", None);
+    assert!(
+        thread1.contains("You: add a leaderboard") && thread1.contains("Leaderboard added"),
+        "chat 1 holds its own exchange end to end: {thread1}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

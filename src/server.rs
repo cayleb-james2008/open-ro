@@ -112,10 +112,19 @@ impl Shared {
     /// Append lines to the active chat; the first "You: ..." line of a
     /// fresh chat becomes its title.
     pub fn append_lines(&self, lines: &[String]) {
+        let active = self.active_chat.lock().unwrap().clone();
+        self.append_lines_to(&active, lines);
+    }
+
+    /// Append lines to a SPECIFIC chat. An ask's outcome lines belong
+    /// to the chat the ask ran in — appending to whichever chat is
+    /// active when a long ask finishes files the build narration (and
+    /// the failure) into the wrong chat while the change set sits in
+    /// the right one.
+    pub fn append_lines_to(&self, chat_id: &str, lines: &[String]) {
         {
             let mut chats = self.chats.lock().unwrap();
-            let active = self.active_chat.lock().unwrap();
-            if let Some(chat) = chats.iter_mut().find(|c| c.id == *active) {
+            if let Some(chat) = chats.iter_mut().find(|c| c.id == chat_id) {
                 if chat.title == "New chat" {
                     if let Some(first) = lines.iter().find(|l| l.starts_with("You: ")) {
                         let ask = first.trim_start_matches("You: ");
@@ -159,9 +168,39 @@ impl Shared {
     }
 }
 
+/// Move a corrupt state file aside to the first free backup name so
+/// its bytes survive for inspection instead of being overwritten by
+/// the next save.
+pub fn backup_corrupt(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut candidate = path.with_extension("json.bak");
+    let mut n = 2;
+    while candidate.exists() {
+        candidate = path.with_extension(format!("json.bak{n}"));
+        n += 1;
+    }
+    std::fs::rename(path, &candidate).ok()?;
+    eprintln!(
+        "openro: {} was corrupt; backed up to {} and starting fresh",
+        path.display(),
+        candidate.display()
+    );
+    Some(candidate)
+}
+
 fn load_chats(dir: &PathBuf) -> Option<(Vec<Chat>, String)> {
-    let text = std::fs::read_to_string(dir.join("chats.json")).ok()?;
-    let v: Value = serde_json::from_str(&text).ok()?;
+    let path = dir.join("chats.json");
+    let text = std::fs::read_to_string(&path).ok()?;
+    let parsed = serde_json::from_str::<Value>(&text);
+    let shape_ok = parsed
+        .as_ref()
+        .map(|v| v.get("chats").map(|c| c.is_array()).unwrap_or(false))
+        .unwrap_or(false);
+    if !shape_ok {
+        // Corrupt (unparseable or wrong shape): preserve the bytes.
+        let _ = backup_corrupt(&path);
+        return None;
+    }
+    let v = parsed.ok()?;
     let mut chats = Vec::new();
     for item in v["chats"].as_array()? {
         let id = item["id"].as_str()?.to_string();
@@ -366,17 +405,21 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                 );
                 return Ok(());
             }
+            // The chat this ask belongs to is fixed NOW, before the
+            // ask runs: every line it produces — the user's words,
+            // the narration, the failure — is filed into THIS chat,
+            // even if the user switches chats while it runs.
+            let chat_id = shared.active_chat.lock().unwrap().clone();
             // The user's words are recorded FIRST, before the ask runs:
             // a refused or failed ask must never silently lose them
             // (the no-key path used to record nothing at all, so the
             // exchange vanished on reload).
-            shared.append_lines(&[format!("You: {message}")]);
-            let chat_id = shared.active_chat.lock().unwrap().clone();
+            shared.append_lines_to(&chat_id, &[format!("You: {message}")]);
             let mut guard = shared.agent.lock().unwrap();
             match guard.as_mut() {
                 None => {
                     let error = "no model key configured: set OPENRO_MODEL_API_KEY to enable chat";
-                    shared.append_lines(&[format!("OpenRO: {error}")]);
+                    shared.append_lines_to(&chat_id, &[format!("OpenRO: {error}")]);
                     respond_json(
                         &mut stream,
                         "503 Service Unavailable",
@@ -385,7 +428,7 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                 }
                 Some(agent) => match agent.run_ask(&chat_id, &message) {
                     Ok(outcome) => {
-                        shared.append_lines(&outcome.thread);
+                        shared.append_lines_to(&chat_id, &outcome.thread);
                         respond_json(
                             &mut stream,
                             "200 OK",
@@ -402,8 +445,8 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                         // the persisted thread — the chat tells the
                         // truth about what happened, and the change set
                         // stays revertable in this chat.
-                        shared.append_lines(&f.thread);
-                        shared.append_lines(&[format!("OpenRO: {}", f.message)]);
+                        shared.append_lines_to(&chat_id, &f.thread);
+                        shared.append_lines_to(&chat_id, &[format!("OpenRO: {}", f.message)]);
                         let status = if f.message.contains("no model key configured")
                             || f.message.contains("Studio not connected")
                             || f.message.contains("does not offer")
@@ -427,7 +470,7 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
             match guard.as_mut() {
                 Some(agent) => match agent.revert_chat(&chat_id) {
                     Ok(restored) => {
-                        shared.append_lines(&[format!(
+                        shared.append_lines_to(&chat_id, &[format!(
                             "OpenRO: Reverted {} change(s) in this chat.",
                             restored.len()
                         )]);
@@ -440,7 +483,7 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                     Err(e) if e == crate::agent::NOTHING_TO_REVERT => {
                         // A normal state, stated plainly — never the
                         // fabricated "Reverted the last change set."
-                        shared.append_lines(&[
+                        shared.append_lines_to(&chat_id, &[
                             "OpenRO: Nothing to revert — no change set is waiting in this chat."
                                 .to_string(),
                         ]);
@@ -454,7 +497,7 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                         // A failed revert is part of the chat's record
                         // too — never a silent API-only error. The set
                         // is kept, and the line says so.
-                        shared.append_lines(&[format!(
+                        shared.append_lines_to(&chat_id, &[format!(
                             "OpenRO: Revert did not finish: {e}"
                         )]);
                         respond_json(

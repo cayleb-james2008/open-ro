@@ -93,39 +93,71 @@ pub struct AskFailure {
     pub transcript: Vec<String>,
 }
 
-/// One checkpointed change: a script's previous source, or an
-/// instance's previous record (`{"class_name": ..., "properties": ...}`).
-/// `None` means the path did not exist before this ask.
+/// One checkpointed change: a script's previous source and the state
+/// this ask LEFT it in, or an instance's previous record
+/// (`{"class_name": ..., "properties": ...}`) and its left state.
+/// `None` means the path did not exist at that point. The left state
+/// is what makes revert safe: restore only proceeds when the place
+/// still holds exactly what the ask left (or already holds the
+/// previous state) — a path changed by anyone else since is refused,
+/// never silently overwritten.
 #[derive(Clone)]
 enum Change {
-    Script(String, Option<String>),
-    Instance(String, Option<Value>),
+    Script(String, Option<String>, Option<String>),
+    Instance(String, Option<Value>, Option<Value>),
 }
 
 impl Change {
     fn to_json(&self) -> Value {
         match self {
-            Change::Script(path, prev) => json!({
+            Change::Script(path, prev, post) => json!({
                 "kind": "script", "path": path,
                 "prev": prev.clone().map(Value::String).unwrap_or(Value::Null),
+                "post": post.clone().map(Value::String).unwrap_or(Value::Null),
             }),
-            Change::Instance(path, prev) => json!({
+            Change::Instance(path, prev, post) => json!({
                 "kind": "instance", "path": path,
                 "prev": prev.clone().unwrap_or(Value::Null),
+                "post": post.clone().unwrap_or(Value::Null),
             }),
         }
     }
 
+    /// Strict: a field of the wrong type makes the entry INVALID
+    /// (None) — never coerced. (A numeric `prev` once coerced to
+    /// "was absent", and a revert deleted a real script on the
+    /// authority of an unreadable record.)
     fn from_json(v: &Value) -> Option<Change> {
         let path = v.get("path")?.as_str()?.to_string();
+        fn script_state(v: &Value, key: &str) -> Option<Option<String>> {
+            match v.get(key)? {
+                Value::Null => Some(None),
+                Value::String(s) => Some(Some(s.clone())),
+                _ => None,
+            }
+        }
+        fn instance_state(v: &Value, key: &str) -> Option<Option<Value>> {
+            match v.get(key)? {
+                Value::Null => Some(None),
+                Value::Object(o) => {
+                    // A record without a string class_name is not a
+                    // record — restoring from it would fabricate one.
+                    o.get("class_name").filter(|c| c.is_string())?;
+                    Some(Some(Value::Object(o.clone())))
+                }
+                _ => None,
+            }
+        }
         match v.get("kind")?.as_str()? {
             "script" => Some(Change::Script(
                 path,
-                v.get("prev").and_then(|p| p.as_str()).map(|s| s.to_string()),
+                script_state(v, "prev")?,
+                script_state(v, "post")?,
             )),
             "instance" => Some(Change::Instance(
                 path,
-                v.get("prev").filter(|p| !p.is_null()).cloned(),
+                instance_state(v, "prev")?,
+                instance_state(v, "post")?,
             )),
             _ => None,
         }
@@ -166,27 +198,40 @@ impl Agent {
     }
 
     /// Persist change sets to `path` (loaded now, saved on change), so
-    /// a restart does not silently orphan every revert.
+    /// a restart does not silently orphan every revert. Loading is
+    /// strict and loud: an unparseable file, a wrong shape, or ANY
+    /// malformed entry backs the whole file up and starts empty —
+    /// a partially-read change set is worse than none, because a
+    /// revert acting on coerced records can destroy real work.
     pub fn set_changes_file(&mut self, path: std::path::PathBuf) {
         if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                if let Some(obj) = v.as_object() {
-                    for (chat, stack) in obj {
-                        if let Some(sets) = stack.as_array() {
-                            let stack: Vec<Vec<Change>> = sets
-                                .iter()
-                                .filter_map(|set| {
-                                    set.as_array().map(|items| {
-                                        items.iter().filter_map(Change::from_json).collect()
-                                    })
-                                })
-                                .filter(|set: &Vec<Change>| !set.is_empty())
-                                .collect();
-                            if !stack.is_empty() {
-                                self.changes_by_chat.insert(chat.clone(), stack);
-                            }
+            let loaded = (|| -> Option<HashMap<String, Vec<Vec<Change>>>> {
+                let v: Value = serde_json::from_str(&text).ok()?;
+                let obj = v.as_object()?;
+                let mut out = HashMap::new();
+                for (chat, stack) in obj {
+                    let sets = stack.as_array()?;
+                    let mut parsed_stack = Vec::new();
+                    for set in sets {
+                        let items = set.as_array()?;
+                        let mut parsed_set = Vec::new();
+                        for item in items {
+                            parsed_set.push(Change::from_json(item)?);
+                        }
+                        if !parsed_set.is_empty() {
+                            parsed_stack.push(parsed_set);
                         }
                     }
+                    if !parsed_stack.is_empty() {
+                        out.insert(chat.clone(), parsed_stack);
+                    }
+                }
+                Some(out)
+            })();
+            match loaded {
+                Some(map) => self.changes_by_chat = map,
+                None => {
+                    let _ = crate::server::backup_corrupt(&path);
                 }
             }
         }
@@ -352,14 +397,13 @@ impl Agent {
                     .to_string();
                 thread.push(format!("OpenRO: {s}"));
                 // A vacuous playtest (nothing changed, so nothing to
-                // break) does NOT excuse a build claim: the flag fires
-                // on zero changes, full stop. The claim check itself is
-                // token-based with a negation lookback, so honest
-                // negations ("nothing was built") are not accused.
+                // break) does NOT excuse a build claim: when the
+                // summary claims building work but the ask changed
+                // nothing, the thread gains a factual ledger line —
+                // what the ask did (nothing) — next to the claim.
                 if changes_made == 0 && claims_building(&s) {
                     thread.push(
-                        "OpenRO: Note — that summary claims building work, but this ask made no changes."
-                            .to_string(),
+                        "OpenRO: Note — this ask made no changes to the game.".to_string(),
                     );
                 }
                 transcript.push(format!("done: {s}"));
@@ -546,8 +590,8 @@ impl Agent {
         // set with changes that never happened when the call failed.
         let prev = self.prev_script(&path)?;
         self.studio_mut()?
-            .call_tool("write_script", json!({ "path": path, "source": source }))?;
-        self.record_script(&path, prev);
+            .call_tool("write_script", json!({ "path": path, "source": source.clone() }))?;
+        self.record_script(&path, prev, Some(source.clone()));
         transcript.push(format!("tool write_script {path} ({} bytes)", source.len()));
         thread.push(format!("Wrote {path}."));
         let mut note = format!("tool_result: write_script {path} succeeded. Next, playtest.");
@@ -686,7 +730,7 @@ impl Agent {
                 let prev = self.prev_script(&path)?;
                 self.studio_mut()?
                     .call_tool("delete_script", json!({ "path": path }))?;
-                self.record_script(&path, prev);
+                self.record_script(&path, prev, None);
                 transcript.push(format!("tool delete_script {path}"));
                 Ok(format!("tool_result: delete_script {path} succeeded."))
             }
@@ -713,13 +757,28 @@ impl Agent {
                         "create_instance name must be a single non-empty name without dots, separators or control characters, got: {name}"
                     ));
                 }
+                if class_name.is_empty()
+                    || class_name
+                        .chars()
+                        .any(|c| c == '.' || c == '/' || c == '\\' || c.is_control())
+                {
+                    return Err(format!(
+                        "create_instance class_name must be a single class name without separators or control characters, got: {class_name}"
+                    ));
+                }
                 check_path(&parent)?;
                 let path = format!("{parent}.{name}");
                 check_path(&path)?;
                 let prev = self.prev_instance(&path)?;
                 self.studio_mut()?
                     .call_tool("create_instance", args.clone())?;
-                self.record_instance(&path, prev);
+                // The state this ask leaves: the record the bridge now
+                // holds for the new instance.
+                let post = json!({
+                    "class_name": class_name,
+                    "properties": args.get("properties").cloned().unwrap_or(json!({})),
+                });
+                self.record_instance(&path, prev, Some(post));
                 transcript.push(format!("tool create_instance {path} ({class_name})"));
                 thread.push(format!("Created {path} ({class_name})."));
                 Ok(format!("tool_result: create_instance {path} succeeded."))
@@ -734,7 +793,7 @@ impl Agent {
                 let prev = self.prev_instance(&path)?;
                 self.studio_mut()?
                     .call_tool("delete_instance", json!({ "path": path }))?;
-                self.record_instance(&path, prev);
+                self.record_instance(&path, prev, None);
                 transcript.push(format!("tool delete_instance {path}"));
                 thread.push(format!("Deleted {path}."));
                 Ok(format!("tool_result: delete_instance {path} succeeded."))
@@ -759,7 +818,7 @@ impl Agent {
     /// new ask's prev must come from the tree as it is now.
     fn recorded_prev_script(&self, path: &str) -> Option<Option<String>> {
         self.current_changes.iter().find_map(|c| match c {
-            Change::Script(p, prev) if p == path => Some(prev.clone()),
+            Change::Script(p, prev, _) if p == path => Some(prev.clone()),
             _ => None,
         })
     }
@@ -776,17 +835,26 @@ impl Agent {
             .map(|s| s.to_string()))
     }
 
-    fn record_script(&mut self, path: &str, prev: Option<String>) {
-        if self.recorded_prev_script(path).is_some() {
-            return;
+    /// Record a successful change: the first touch of a path in an
+    /// ask fixes its `prev`; every touch updates the `post` (the
+    /// state the ask most recently left), which is what a later
+    /// revert compares the live place against.
+    fn record_script(&mut self, path: &str, prev: Option<String>, post: Option<String>) {
+        for c in self.current_changes.iter_mut() {
+            if let Change::Script(p, _, existing_post) = c {
+                if p == path {
+                    *existing_post = post;
+                    return;
+                }
+            }
         }
         self.current_changes
-            .push(Change::Script(path.to_string(), prev));
+            .push(Change::Script(path.to_string(), prev, post));
     }
 
     fn recorded_prev_instance(&self, path: &str) -> Option<Option<Value>> {
         self.current_changes.iter().find_map(|c| match c {
-            Change::Instance(p, prev) if p == path => Some(prev.clone()),
+            Change::Instance(p, prev, _) if p == path => Some(prev.clone()),
             _ => None,
         })
     }
@@ -804,12 +872,17 @@ impl Agent {
             .cloned())
     }
 
-    fn record_instance(&mut self, path: &str, prev: Option<Value>) {
-        if self.recorded_prev_instance(path).is_some() {
-            return;
+    fn record_instance(&mut self, path: &str, prev: Option<Value>, post: Option<Value>) {
+        for c in self.current_changes.iter_mut() {
+            if let Change::Instance(p, _, existing_post) = c {
+                if p == path {
+                    *existing_post = post;
+                    return;
+                }
+            }
         }
         self.current_changes
-            .push(Change::Instance(path.to_string(), prev));
+            .push(Change::Instance(path.to_string(), prev, post));
     }
 
     /// Restore one chat's change set: rewrite previous content, delete
@@ -836,7 +909,7 @@ impl Agent {
         let mut restored = Vec::new();
         for change in changes.iter().rev() {
             let path = match change {
-                Change::Script(p, _) | Change::Instance(p, _) => p.clone(),
+                Change::Script(p, _, _) | Change::Instance(p, _, _) => p.clone(),
             };
             if let Err(e) = self.restore_one(change) {
                 return Err(format!(
@@ -859,55 +932,84 @@ impl Agent {
         Ok(restored)
     }
 
-    /// Restore a single change, checking current state first so an
-    /// already-achieved goal state counts as restored.
+    /// Restore a single change. Identity-checked, not just
+    /// existence-checked: the restore proceeds only when the place
+    /// still holds exactly what this ask left (restore to prev), or
+    /// already holds prev (nothing to do). Anything else means the
+    /// path was changed by someone else after the ask — another chat,
+    /// a hand edit in Studio — and revert REFUSES rather than
+    /// silently destroying work it does not own.
     fn restore_one(&mut self, change: &Change) -> Result<(), String> {
         match change {
-            Change::Script(path, prev) => match prev {
-                Some(source) => {
-                    self.studio_mut()?.call_tool(
-                        "write_script",
-                        json!({ "path": path, "source": source }),
-                    )?;
-                    Ok(())
+            Change::Script(path, prev, post) => {
+                let current = self.prev_script_current(path)?;
+                if current == *prev {
+                    return Ok(()); // already at the previous state
                 }
-                None => {
-                    if self.prev_script_current(path)?.is_some() {
+                if current != *post {
+                    return Err(format!(
+                        "{path} has changed since this ask — it no longer holds what the ask \
+                         left, so reverting would destroy work this chat does not own"
+                    ));
+                }
+                match prev {
+                    Some(source) => {
+                        self.studio_mut()?.call_tool(
+                            "write_script",
+                            json!({ "path": path, "source": source }),
+                        )?;
+                    }
+                    None => {
                         self.studio_mut()?
                             .call_tool("delete_script", json!({ "path": path }))?;
                     }
-                    Ok(())
                 }
-            },
-            Change::Instance(path, prev) => match prev {
-                Some(record) => {
-                    let (parent, name) = match path.rsplit_once('.') {
-                        Some((p, n)) => (p.to_string(), n.to_string()),
-                        None => (String::new(), path.clone()),
-                    };
-                    if self.prev_instance_current(path)?.is_some() {
+                Ok(())
+            }
+            Change::Instance(path, prev, post) => {
+                let current = self.prev_instance_current(path)?;
+                if current == *prev {
+                    return Ok(());
+                }
+                if current != *post {
+                    return Err(format!(
+                        "{path} has changed since this ask — it no longer holds what the ask \
+                         left, so reverting would destroy work this chat does not own"
+                    ));
+                }
+                match prev {
+                    Some(record) => {
+                        let (parent, name) = match path.rsplit_once('.') {
+                            Some((p, n)) => (p.to_string(), n.to_string()),
+                            None => (String::new(), path.clone()),
+                        };
+                        let class_name = record
+                            .get("class_name")
+                            .and_then(|c| c.as_str())
+                            .ok_or_else(|| {
+                                format!("the change record for {path} is unreadable (no class name)")
+                            })?;
+                        if current.is_some() {
+                            self.studio_mut()?
+                                .call_tool("delete_instance", json!({ "path": path }))?;
+                        }
+                        self.studio_mut()?.call_tool(
+                            "create_instance",
+                            json!({
+                                "class_name": class_name,
+                                "name": name,
+                                "parent": parent,
+                                "properties": record.get("properties").cloned().unwrap_or(json!({})),
+                            }),
+                        )?;
+                    }
+                    None => {
                         self.studio_mut()?
                             .call_tool("delete_instance", json!({ "path": path }))?;
                     }
-                    self.studio_mut()?.call_tool(
-                        "create_instance",
-                        json!({
-                            "class_name": record.get("class_name").cloned().unwrap_or(json!("Part")),
-                            "name": name,
-                            "parent": parent,
-                            "properties": record.get("properties").cloned().unwrap_or(json!({})),
-                        }),
-                    )?;
-                    Ok(())
                 }
-                None => {
-                    if self.prev_instance_current(path)?.is_some() {
-                        self.studio_mut()?
-                            .call_tool("delete_instance", json!({ "path": path }))?;
-                    }
-                    Ok(())
-                }
-            },
+                Ok(())
+            }
         }
     }
 
@@ -947,27 +1049,34 @@ enum PlaytestOutcome {
     Unreadable(String, String),
 }
 
-/// Does this summary claim building work? Token-based (so "padded"
-/// does not trip "added") with a negation lookback (so "nothing was
-/// built" is not accused of claiming a build).
+/// Does this summary claim building work? Sentence-scoped: a claim
+/// verb in a sentence with no suppressor (negation, or "already" for
+/// pre-existing work) counts; suppressors in OTHER sentences do not
+/// bleed across the boundary. Token-based, so "padded" never trips
+/// "added". The flag this drives is a factual ledger line, not an
+/// accusation — the line states what the ask did (nothing), and the
+/// reader judges the summary against it.
 fn claims_building(summary: &str) -> bool {
-    const CLAIMS: [&str; 6] = ["built", "created", "wrote", "added", "placed", "generated"];
-    const NEGATIONS: [&str; 12] = [
-        "nothing", "not", "no", "never", "didn't", "didnt", "wasn't", "wasnt", "haven't",
-        "havent", "isn't", "isnt",
+    const CLAIMS: [&str; 13] = [
+        "built", "created", "wrote", "added", "placed", "generated", "constructed",
+        "installed", "made", "shipped", "implemented", "assembled", "wired",
     ];
-    let tokens: Vec<String> = summary
-        .to_lowercase()
-        .split(|c: char| !c.is_alphanumeric() && c != '\'')
-        .filter(|t| !t.is_empty())
-        .map(|t| t.to_string())
-        .collect();
-    for (i, tok) in tokens.iter().enumerate() {
-        if CLAIMS.contains(&tok.as_str()) {
-            let window = &tokens[i.saturating_sub(4)..i];
-            if !window.iter().any(|w| NEGATIONS.contains(&w.as_str())) {
-                return true;
-            }
+    const SUPPRESSORS: [&str; 14] = [
+        "nothing", "not", "no", "never", "didn't", "didnt", "wasn't", "wasnt", "haven't",
+        "havent", "isn't", "isnt", "already", "couldn't",
+    ];
+    for sentence in summary.split(|c| matches!(c, '.' | '!' | '?' | '\n')) {
+        let tokens: Vec<String> = sentence
+            .to_lowercase()
+            .split(|c: char| !c.is_alphanumeric() && c != '\'')
+            .filter(|t| !t.is_empty())
+            .map(|t| t.to_string())
+            .collect();
+        if tokens.iter().any(|t| SUPPRESSORS.contains(&t.as_str())) {
+            continue;
+        }
+        if tokens.iter().any(|t| CLAIMS.contains(&t.as_str())) {
+            return true;
         }
     }
     false

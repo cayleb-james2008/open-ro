@@ -69,23 +69,27 @@ pub fn registry() -> Vec<SkillDef> {
 /// A present-but-wrong-typed argument is an error, never a silent
 /// default: a model typo must change nothing quietly. (Absent args
 /// still take their documented defaults.)
-fn arg_i64(args: &Value, name: &str, default: i64) -> Result<i64, String> {
-    arg_i64_min(args, name, default, i64::MIN)
-}
-
-/// An integer arg with a floor: type validation alone let
+/// An integer arg with a range: type validation alone let
 /// `cycle_minutes: 0` generate a division by zero in the Luau and a
-/// negative `damage` generate a healing brick.
-fn arg_i64_min(args: &Value, name: &str, default: i64, min: i64) -> Result<i64, String> {
+/// negative `damage` generate a healing brick — and the unbounded top
+/// end let i64::MAX generate literals Luau doubles / IntValues
+/// cannot represent (a permanently frozen day cycle).
+fn arg_i64_range(
+    args: &Value,
+    name: &str,
+    default: i64,
+    min: i64,
+    max: i64,
+) -> Result<i64, String> {
     let v = match args.get(name) {
         None => default,
         Some(v) => v
             .as_i64()
             .ok_or_else(|| format!("skill arg '{name}' must be an integer, got: {v}"))?,
     };
-    if v < min {
+    if v < min || v > max {
         return Err(format!(
-            "skill arg '{name}' must be at least {min}, got: {v}"
+            "skill arg '{name}' must be between {min} and {max}, got: {v}"
         ));
     }
     Ok(v)
@@ -145,15 +149,17 @@ pub fn generate(skill: &str, args: &Value) -> Result<String, String> {
         }
         "leaderboard" => {
             let currency = arg_string(args, "currency", "Coins")?;
-            let start_amount = arg_i64_min(args, "start_amount", 0, 0)?;
+            let start_amount = arg_i64_range(args, "start_amount", 0, 0, 1_000_000_000)?;
             run_skill(def.source, def.entry, (currency, start_amount))
         }
         "day_night" => {
-            let cycle_minutes = arg_i64_min(args, "cycle_minutes", 10, 1)?;
+            // A full cycle longer than a week of real time is not a
+            // day/night cycle.
+            let cycle_minutes = arg_i64_range(args, "cycle_minutes", 10, 1, 10_080)?;
             run_skill(def.source, def.entry, (cycle_minutes,))
         }
         "kill_brick" => {
-            let damage = arg_i64_min(args, "damage", 100, 1)?;
+            let damage = arg_i64_range(args, "damage", 100, 1, 100_000)?;
             run_skill(def.source, def.entry, (damage,))
         }
         "spawn_link" => {
