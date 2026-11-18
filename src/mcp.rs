@@ -12,6 +12,12 @@ pub struct McpClient {
     stdin: BufWriter<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     next_id: i64,
+    /// Tool names the server advertised via `tools/list` at connect.
+    tools: Vec<String>,
+    /// False when the server did not answer `tools/list` at all — its
+    /// capabilities are then unknown, and the agent must not refuse an
+    /// ask on a guess.
+    tools_known: bool,
 }
 
 impl McpClient {
@@ -37,9 +43,42 @@ impl McpClient {
             stdin,
             stdout,
             next_id: 1,
+            tools: Vec::new(),
+            tools_known: false,
         };
         client.initialize()?;
+        client.discover_tools();
         Ok(client)
+    }
+
+    /// Fetch the server's tool list (`tools/list`). Best-effort: a server
+    /// that does not answer leaves `tools_known` false.
+    fn discover_tools(&mut self) {
+        if let Ok(result) = self.request("tools/list", json!({})) {
+            if let Some(items) = result.get("tools").and_then(|t| t.as_array()) {
+                self.tools = items
+                    .iter()
+                    .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                    .collect();
+                self.tools_known = true;
+            }
+        }
+    }
+
+    /// The tools the server advertised at connect (empty when unknown).
+    pub fn tools(&self) -> &[String] {
+        &self.tools
+    }
+
+    /// Whether `name` is usable: advertised, or the server's list is
+    /// unknown (then the call itself will tell us).
+    pub fn has_tool(&self, name: &str) -> bool {
+        !self.tools_known || self.tools.iter().any(|t| t == name)
+    }
+
+    /// Whether the server's capabilities are known at all.
+    pub fn tools_known(&self) -> bool {
+        self.tools_known
     }
 
     /// Spawn from `OPENRO_MCP_COMMAND`; `Ok(None)` when it is not set.

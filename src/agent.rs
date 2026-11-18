@@ -3,34 +3,59 @@
 //! One user ask runs a model-driven loop. The model replies with exactly
 //! one JSON step at a time:
 //!   {"skill": "<rune skill>", "args": {...}}            — generate Luau
-//!   {"tool": "write_script"|"playtest"|"get_console"|"get_place_tree"|
-//!            "delete_script", "args": {...}}            — Studio bridge
+//!   {"tool": "write_script"|"delete_script"|"create_instance"|
+//!            "delete_instance"|"playtest"|"get_console"|
+//!            "get_place_tree", "args": {...}}           — Studio bridge
 //!   {"done": true, "summary": "..."}                    — finish
 //!
-//! Before the first write to a path in an ask, the loop checkpoints that
-//! path's previous content (or its absence); `revert_last` restores the
-//! whole change set of the last ask. On a failed playtest the loop fetches
-//! the actual console output and feeds it back to the model so it can
-//! repair autonomously.
+//! Before the first change to a path in an ask, the loop checkpoints
+//! that path's previous state (script source, instance record, or its
+//! absence); `revert_last` restores the whole change set of the last
+//! ask. On a failed playtest the loop fetches the actual console output
+//! and feeds it back to the model so it can repair autonomously; repair
+//! attempts are counted, a byte-identical rewrite of a failing script
+//! is called out to the model, and after MAX_REPAIRS failed playtests
+//! the ask ends in an honest failure naming the console output.
 
 use crate::mcp::McpClient;
 use crate::model::ModelClient;
 use crate::skills;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 const MAX_STEPS: usize = 16;
+const MAX_REPAIRS: usize = 3;
 
-const SYSTEM_PROMPT: &str = "You are OpenRO, a proactive creative agent that builds Roblox games. \
+/// The system prompt, generated from the skill registry so the model is
+/// told exactly the skills that exist, with their real parameters.
+pub fn system_prompt() -> String {
+    let mut skill_lines = String::new();
+    for def in skills::registry() {
+        skill_lines.push_str(&format!(
+            "- {{\"skill\": \"{}\", \"args\": {}}} — {}\n",
+            def.name, def.params, def.description
+        ));
+    }
+    format!(
+        "You are OpenRO, a proactive creative agent that builds Roblox games. \
 The user describes a game change in plain English and you build it. \
-Reply with exactly ONE JSON object per turn, no prose outside the JSON. Steps: \
-{\"skill\": \"round_manager\", \"args\": {\"create_round\": true|false}} generates the RoundManager Luau script; \
-{\"tool\": \"write_script\", \"args\": {\"path\": \"ServerScriptService.RoundManager\", \"use_generated\": true}} writes the last generated script; \
-{\"tool\": \"playtest\", \"args\": {}} runs the game; \
-{\"tool\": \"get_console\", \"args\": {}} reads the console; \
-{\"tool\": \"get_place_tree\", \"args\": {}} lists scripts; \
-{\"done\": true, \"summary\": \"...\"} finishes. \
-Always playtest after writing, and repair from the console output until the playtest passes.";
+Reply with exactly ONE JSON object per turn, no prose outside the JSON.\n\n\
+SKILLS — each call generates Luau by running a Rune skill; write the result with write_script:\n{skill_lines}\n\
+TOOLS (the Studio bridge):\n\
+- {{\"tool\": \"write_script\", \"args\": {{\"path\": \"ServerScriptService.Name\", \"skill\": \"<skill name>\"}}}} writes a generated script (or pass \"source\" directly, or \"use_generated\": true for the most recent skill result)\n\
+- {{\"tool\": \"create_instance\", \"args\": {{\"class_name\": \"SpawnLocation\", \"name\": \"SpawnPad\", \"parent\": \"Workspace\", \"properties\": {{...}}}}}} creates a place instance\n\
+- {{\"tool\": \"delete_instance\", \"args\": {{\"path\": \"Workspace.SpawnPad\"}}}} deletes an instance\n\
+- {{\"tool\": \"delete_script\", \"args\": {{\"path\": \"ServerScriptService.Name\"}}}} deletes a script\n\
+- {{\"tool\": \"playtest\", \"args\": {{}}}} runs the game\n\
+- {{\"tool\": \"get_console\", \"args\": {{}}}} reads the console\n\
+- {{\"tool\": \"get_place_tree\", \"args\": {{}}}} lists the place's scripts and instances\n\
+- {{\"done\": true, \"summary\": \"...\"}} finishes.\n\n\
+Always playtest after writing, and repair from the console output until the playtest passes. \
+Look at the place tree before changing things you did not create."
+    )
+}
 
+#[derive(Debug)]
 pub struct RunOutcome {
     pub summary: String,
     /// Plain-words lines for the chat thread, produced by this ask.
@@ -39,14 +64,25 @@ pub struct RunOutcome {
     pub transcript: Vec<String>,
 }
 
+/// One checkpointed change: a script's previous source, or an
+/// instance's previous record (`{"class_name": ..., "properties": ...}`).
+/// `None` means the path did not exist before this ask.
+enum Change {
+    Script(String, Option<String>),
+    Instance(String, Option<Value>),
+}
+
 pub struct Agent {
     pub model: ModelClient,
     pub studio: Option<McpClient>,
-    last_generated: Option<String>,
-    /// Change set of the last completed ask: (path, previous source or None).
-    last_changes: Vec<(String, Option<String>)>,
+    /// Luau generated by each skill during this ask, by skill name — a
+    /// second generation never overwrites an unwritten first one.
+    generated: HashMap<String, String>,
+    last_skill: Option<String>,
+    /// Change set of the last completed ask.
+    last_changes: Vec<Change>,
     /// Change set being accumulated by the ask currently running.
-    current_changes: Vec<(String, Option<String>)>,
+    current_changes: Vec<Change>,
 }
 
 impl Agent {
@@ -54,7 +90,8 @@ impl Agent {
         Agent {
             model,
             studio,
-            last_generated: None,
+            generated: HashMap::new(),
+            last_skill: None,
             last_changes: Vec::new(),
             current_changes: Vec::new(),
         }
@@ -65,6 +102,26 @@ impl Agent {
             Some(s) => s.is_alive(),
             None => false,
         }
+    }
+
+    /// Refuse honestly when the connected bridge is known to lack a tool
+    /// the agent cannot build without.
+    fn check_bridge_capabilities(&self) -> Result<(), String> {
+        let Some(studio) = &self.studio else {
+            return Ok(());
+        };
+        if !studio.tools_known() {
+            return Ok(());
+        }
+        for required in ["write_script", "playtest", "get_console", "get_place_tree"] {
+            if !studio.has_tool(required) {
+                return Err(format!(
+                    "Studio bridge does not offer the '{required}' tool — this bridge cannot build. \
+                     Connect a Studio MCP server that offers write_script, playtest, get_console and get_place_tree."
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub fn run_ask(&mut self, ask: &str) -> Result<RunOutcome, String> {
@@ -80,14 +137,20 @@ impl Agent {
                     .to_string(),
             );
         }
+        self.check_bridge_capabilities()?;
         self.current_changes.clear();
+        self.generated.clear();
+        self.last_skill = None;
         let mut thread = vec![format!("You: {ask}")];
         let mut transcript: Vec<String> = Vec::new();
         let mut messages = vec![
-            json!({ "role": "system", "content": SYSTEM_PROMPT }),
+            json!({ "role": "system", "content": system_prompt() }),
             json!({ "role": "user", "content": ask }),
         ];
         let mut summary: Option<String> = None;
+        let mut failed_playtests = 0usize;
+        let mut writes: HashMap<String, String> = HashMap::new();
+        let mut last_failed_console: Option<String> = None;
 
         for _ in 0..MAX_STEPS {
             let content = self.model.chat(&messages)?;
@@ -109,15 +172,69 @@ impl Agent {
 
             if let Some(skill) = step.get("skill").and_then(|v| v.as_str()) {
                 let args = step.get("args").cloned().unwrap_or(json!({}));
-                let note = self.run_skill(skill, &args, &mut transcript, &mut thread)?;
-                messages.push(json!({ "role": "user", "content": note }));
+                match self.run_skill(skill, &args, &mut transcript, &mut thread) {
+                    Ok(note) => messages.push(json!({ "role": "user", "content": note })),
+                    Err(e) => {
+                        transcript.push(format!("skill {skill} error: {e}"));
+                        messages.push(json!({
+                            "role": "user",
+                            "content": format!("skill_result: error: {e}. Choose a different step.")
+                        }));
+                    }
+                }
                 continue;
             }
 
             if let Some(tool) = step.get("tool").and_then(|v| v.as_str()) {
                 let args = step.get("args").cloned().unwrap_or(json!({}));
-                let note = self.run_tool(tool, &args, &mut transcript, &mut thread)?;
-                messages.push(json!({ "role": "user", "content": note }));
+                if tool == "playtest" {
+                    match self.run_playtest(&mut transcript, &mut thread)? {
+                        PlaytestOutcome::Passed(note) => {
+                            messages.push(json!({ "role": "user", "content": note }));
+                        }
+                        PlaytestOutcome::Failed(note, console) => {
+                            failed_playtests += 1;
+                            last_failed_console = Some(console.clone());
+                            transcript.push(format!(
+                                "repair attempt {failed_playtests}: playtest failed"
+                            ));
+                            if failed_playtests >= MAX_REPAIRS {
+                                // Keep the change set revertable, then
+                                // fail honestly with the console text.
+                                self.last_changes =
+                                    std::mem::take(&mut self.current_changes);
+                                return Err(format!(
+                                    "playtest still failing after {failed_playtests} attempts — \
+                                     I could not get this build to pass. Last console output: {console}"
+                                ));
+                            }
+                            messages.push(json!({ "role": "user", "content": note }));
+                        }
+                    }
+                    continue;
+                }
+                if tool == "write_script" {
+                    let note = self.run_write_script(
+                        &args,
+                        &mut transcript,
+                        &mut thread,
+                        &mut writes,
+                        last_failed_console.as_deref(),
+                    )?;
+                    messages.push(json!({ "role": "user", "content": note }));
+                    continue;
+                }
+                match self.run_tool(tool, &args, &mut transcript, &mut thread) {
+                    Ok(note) => messages.push(json!({ "role": "user", "content": note })),
+                    Err(e) if e.starts_with("unknown tool:") => {
+                        transcript.push(format!("tool error: {e}"));
+                        messages.push(json!({
+                            "role": "user",
+                            "content": format!("tool_result: error: {e}. Choose a different step.")
+                        }));
+                    }
+                    Err(e) => return Err(e),
+                }
                 continue;
             }
 
@@ -147,26 +264,128 @@ impl Agent {
         transcript: &mut Vec<String>,
         thread: &mut Vec<String>,
     ) -> Result<String, String> {
-        match skill {
-            "round_manager" => {
-                let create_round = args
-                    .get("create_round")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                // The Luau is produced by executing the Rune skill.
-                let source = skills::generate_round_manager(create_round)?;
+        // The Luau is produced by executing the skill's Rune script.
+        let source = skills::generate(skill, args)?;
+        let args_note = args
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        transcript.push(format!(
+            "skill {skill} (Rune) {args_note} generated {} bytes of Luau",
+            source.len()
+        ));
+        thread.push(format!("Generated the {skill} script."));
+        self.generated.insert(skill.to_string(), source.clone());
+        self.last_skill = Some(skill.to_string());
+        Ok(format!(
+            "skill_result: the {skill} Rune skill generated this Luau source:\n{source}\n\
+             Next, write it with {{\"tool\":\"write_script\",\"args\":{{\"path\":\"<where it belongs>\",\"skill\":\"{skill}\"}}}} and then playtest."
+        ))
+    }
+
+    fn run_write_script(
+        &mut self,
+        args: &Value,
+        transcript: &mut Vec<String>,
+        thread: &mut Vec<String>,
+        writes: &mut HashMap<String, String>,
+        last_failed_console: Option<&str>,
+    ) -> Result<String, String> {
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or("write_script needs args.path")?
+            .to_string();
+        let source = self.resolve_source(args)?;
+        self.checkpoint_script(&path)?;
+        self.studio_mut()?
+            .call_tool("write_script", json!({ "path": path, "source": source }))?;
+        transcript.push(format!("tool write_script {path} ({} bytes)", source.len()));
+        thread.push(format!("Wrote {path}."));
+        let mut note = format!("tool_result: write_script {path} succeeded. Next, playtest.");
+        // A byte-identical rewrite of a version that just failed cannot
+        // fix anything — tell the model so, with the console text.
+        if let (Some(prev), Some(console)) = (writes.get(&path), last_failed_console) {
+            if *prev == source {
                 transcript.push(format!(
-                    "skill round_manager (Rune) create_round={create_round} generated {} bytes of Luau",
-                    source.len()
+                    "note: write_script {path} was byte-identical to the failing version"
                 ));
-                thread.push("Generated the RoundManager script.".to_string());
-                self.last_generated = Some(source.clone());
-                Ok(format!(
-                    "skill_result: the round_manager Rune skill generated this Luau source:\n{source}\n\
-                     Next, write it with {{\"tool\":\"write_script\",\"args\":{{\"path\":\"ServerScriptService.RoundManager\",\"use_generated\":true}}}} and then playtest."
-                ))
+                note = format!(
+                    "tool_result: write_script {path} succeeded — but this source is byte-identical \
+                     to the version that just failed the playtest with: {console}\n\
+                     Rewriting the same source cannot change the result. Change something material \
+                     (create what it references, or generate it differently), then playtest again."
+                );
             }
-            other => Err(format!("unknown skill: {other}")),
+        }
+        writes.insert(path, source);
+        Ok(note)
+    }
+
+    /// Resolve the source for a write_script step: an explicit source,
+    /// a named skill's generated source, or the most recent generation.
+    fn resolve_source(&self, args: &Value) -> Result<String, String> {
+        if let Some(s) = args.get("source").and_then(|v| v.as_str()) {
+            return Ok(s.to_string());
+        }
+        if let Some(name) = args.get("skill").and_then(|v| v.as_str()) {
+            return self
+                .generated
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("no generated source for skill '{name}' — run the skill first"));
+        }
+        match args.get("use_generated") {
+            Some(Value::String(name)) => self
+                .generated
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("no generated source for skill '{name}' — run the skill first")),
+            Some(Value::Bool(true)) => {
+                let name = self
+                    .last_skill
+                    .as_ref()
+                    .ok_or("write_script needs args.source or a prior skill result")?;
+                self.generated
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| "generated source missing".to_string())
+            }
+            _ => Err("write_script needs args.source, args.skill, or a prior skill result".to_string()),
+        }
+    }
+
+    fn run_playtest(
+        &mut self,
+        transcript: &mut Vec<String>,
+        thread: &mut Vec<String>,
+    ) -> Result<PlaytestOutcome, String> {
+        let text = self.studio_mut()?.call_tool("playtest", json!({}))?;
+        transcript.push(format!("tool playtest -> {text}"));
+        if playtest_failed(&text) {
+            thread.push("Playtest failed — reading the console and repairing.".to_string());
+            // Feed the ACTUAL console output back to the model.
+            let console = self.studio_mut()?.call_tool("get_console", json!({}))?;
+            transcript.push(format!("console after failed playtest: {console}"));
+            Ok(PlaytestOutcome::Failed(
+                format!(
+                    "tool_result: playtest FAILED. Actual console output: {console}\n\
+                     Repair the game from that console output (for example regenerate the \
+                     script so it creates what it references, or create the missing instance), \
+                     apply the fix, and playtest again."
+                ),
+                console,
+            ))
+        } else {
+            thread.push("Playtest passed.".to_string());
+            Ok(PlaytestOutcome::Passed(format!(
+                "tool_result: playtest PASSED ({text}). You may finish with done."
+            )))
         }
     }
 
@@ -178,60 +397,54 @@ impl Agent {
         thread: &mut Vec<String>,
     ) -> Result<String, String> {
         match tool {
-            "write_script" => {
-                let path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .ok_or("write_script needs args.path")?
-                    .to_string();
-                let source = match args.get("source").and_then(|v| v.as_str()) {
-                    Some(s) => s.to_string(),
-                    None => self
-                        .last_generated
-                        .clone()
-                        .ok_or("write_script needs args.source or a prior skill result")?,
-                };
-                self.checkpoint(&path)?;
-                self.studio_mut()?
-                    .call_tool("write_script", json!({ "path": path, "source": source }))?;
-                transcript.push(format!("tool write_script {path} ({} bytes)", source.len()));
-                thread.push(format!("Wrote {path}."));
-                Ok(format!(
-                    "tool_result: write_script {path} succeeded. Next, playtest."
-                ))
-            }
             "delete_script" => {
                 let path = args
                     .get("path")
                     .and_then(|v| v.as_str())
                     .ok_or("delete_script needs args.path")?
                     .to_string();
-                self.checkpoint(&path)?;
+                self.checkpoint_script(&path)?;
                 self.studio_mut()?
                     .call_tool("delete_script", json!({ "path": path }))?;
                 transcript.push(format!("tool delete_script {path}"));
                 Ok(format!("tool_result: delete_script {path} succeeded."))
             }
-            "playtest" => {
-                let text = self.studio_mut()?.call_tool("playtest", json!({}))?;
-                transcript.push(format!("tool playtest -> {text}"));
-                let failed = playtest_failed(&text);
-                if failed {
-                    thread.push("Playtest failed — reading the console and repairing.".to_string());
-                    // Feed the ACTUAL console output back to the model.
-                    let console = self.studio_mut()?.call_tool("get_console", json!({}))?;
-                    transcript.push(format!("console after failed playtest: {console}"));
-                    Ok(format!(
-                        "tool_result: playtest FAILED. Actual console output: {console}\n\
-                         Repair the game from that console output (for example regenerate the \
-                         script so it creates what it references), write it again, and playtest again."
-                    ))
-                } else {
-                    thread.push("Playtest passed.".to_string());
-                    Ok(format!(
-                        "tool_result: playtest PASSED ({text}). You may finish with done."
-                    ))
-                }
+            "create_instance" => {
+                let class_name = args
+                    .get("class_name")
+                    .and_then(|v| v.as_str())
+                    .ok_or("create_instance needs args.class_name")?
+                    .to_string();
+                let name = args
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or("create_instance needs args.name")?
+                    .to_string();
+                let parent = args
+                    .get("parent")
+                    .and_then(|v| v.as_str())
+                    .ok_or("create_instance needs args.parent")?
+                    .to_string();
+                let path = format!("{parent}.{name}");
+                self.checkpoint_instance(&path)?;
+                self.studio_mut()?
+                    .call_tool("create_instance", args.clone())?;
+                transcript.push(format!("tool create_instance {path} ({class_name})"));
+                thread.push(format!("Created {path} ({class_name})."));
+                Ok(format!("tool_result: create_instance {path} succeeded."))
+            }
+            "delete_instance" => {
+                let path = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or("delete_instance needs args.path")?
+                    .to_string();
+                self.checkpoint_instance(&path)?;
+                self.studio_mut()?
+                    .call_tool("delete_instance", json!({ "path": path }))?;
+                transcript.push(format!("tool delete_instance {path}"));
+                thread.push(format!("Deleted {path}."));
+                Ok(format!("tool_result: delete_instance {path} succeeded."))
             }
             "get_console" | "get_place_tree" => {
                 let text = self.studio_mut()?.call_tool(tool, json!({}))?;
@@ -242,10 +455,14 @@ impl Agent {
         }
     }
 
-    /// Record the previous content of `path` (or its absence) the first
+    /// Record the previous source of `path` (or its absence) the first
     /// time this ask touches it.
-    fn checkpoint(&mut self, path: &str) -> Result<(), String> {
-        if self.current_changes.iter().any(|(p, _)| p == path) {
+    fn checkpoint_script(&mut self, path: &str) -> Result<(), String> {
+        if self
+            .current_changes
+            .iter()
+            .any(|c| matches!(c, Change::Script(p, _) if p == path))
+        {
             return Ok(());
         }
         let tree = self.studio_mut()?.get_place_tree()?;
@@ -254,32 +471,78 @@ impl Agent {
             .and_then(|s| s.get(path))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        self.current_changes.push((path.to_string(), prev));
+        self.current_changes.push(Change::Script(path.to_string(), prev));
         Ok(())
     }
 
-    /// Restore the last ask's change set: rewrite previous content, delete
-    /// scripts the ask created. Returns the restored paths.
+    /// Record the previous instance record at `path` (or its absence)
+    /// the first time this ask touches it.
+    fn checkpoint_instance(&mut self, path: &str) -> Result<(), String> {
+        if self
+            .current_changes
+            .iter()
+            .any(|c| matches!(c, Change::Instance(p, _) if p == path))
+        {
+            return Ok(());
+        }
+        let tree = self.studio_mut()?.get_place_tree()?;
+        let prev = tree
+            .pointer("/instances")
+            .and_then(|s| s.get(path))
+            .cloned();
+        self.current_changes.push(Change::Instance(path.to_string(), prev));
+        Ok(())
+    }
+
+    /// Restore the last ask's change set: rewrite previous content,
+    /// delete what the ask created — scripts and instances alike.
+    /// Returns the restored paths.
     pub fn revert_last(&mut self) -> Result<Vec<String>, String> {
         if self.studio.is_none() {
             return Err("Studio not connected: nothing to revert".to_string());
         }
         let changes = std::mem::take(&mut self.last_changes);
         let mut restored = Vec::new();
-        for (path, prev) in changes.iter().rev() {
-            match prev {
-                Some(source) => {
-                    self.studio_mut()?.call_tool(
-                        "write_script",
-                        json!({ "path": path, "source": source }),
-                    )?;
-                }
-                None => {
-                    self.studio_mut()?
-                        .call_tool("delete_script", json!({ "path": path }))?;
-                }
+        for change in changes.iter().rev() {
+            match change {
+                Change::Script(path, prev) => match prev {
+                    Some(source) => {
+                        self.studio_mut()?.call_tool(
+                            "write_script",
+                            json!({ "path": path, "source": source }),
+                        )?;
+                    }
+                    None => {
+                        self.studio_mut()?
+                            .call_tool("delete_script", json!({ "path": path }))?;
+                    }
+                },
+                Change::Instance(path, prev) => match prev {
+                    Some(record) => {
+                        let (parent, name) = match path.rsplit_once('.') {
+                            Some((p, n)) => (p.to_string(), n.to_string()),
+                            None => (String::new(), path.clone()),
+                        };
+                        self.studio_mut()?.call_tool(
+                            "create_instance",
+                            json!({
+                                "class_name": record.get("class_name").cloned().unwrap_or(json!("Part")),
+                                "name": name,
+                                "parent": parent,
+                                "properties": record.get("properties").cloned().unwrap_or(json!({})),
+                            }),
+                        )?;
+                    }
+                    None => {
+                        self.studio_mut()?
+                            .call_tool("delete_instance", json!({ "path": path }))?;
+                    }
+                },
             }
-            restored.push(path.clone());
+            restored.push(match change {
+                Change::Script(p, _) => p.clone(),
+                Change::Instance(p, _) => p.clone(),
+            });
         }
         Ok(restored)
     }
@@ -293,6 +556,11 @@ impl Agent {
             .as_mut()
             .ok_or_else(|| "Studio not connected".to_string())
     }
+}
+
+enum PlaytestOutcome {
+    Passed(String),
+    Failed(String, String),
 }
 
 fn parse_step(content: &str) -> Result<Value, String> {
