@@ -1994,3 +1994,271 @@ fn failed_ask_still_teaches_the_pitch_engine() {
     assert!(body.contains("add-shop"), "the shop pitch unlocks from the landed currency: {body}");
     assert!(!body.contains("add-currency"), "currency is not re-pitched — it landed, even in a failed ask: {body}");
 }
+
+// ---------------------------------------------------------------------------
+// Round 5 maker fixes: honest refusals, remembered failures, pruned undo,
+// same-site guard, request limits, recovered-store reporting.
+// ---------------------------------------------------------------------------
+
+/// Plain HTTP exchange with exact header bytes (for Origin / Host /
+/// Content-Type cases the typed helper cannot express). Returns the
+/// status and the body after the header block.
+fn http_raw(port: u16, request: &str, body: &[u8]) -> (u16, String) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let _ = stream.write_all(request.as_bytes());
+    let _ = stream.write_all(body);
+    let mut raw = Vec::new();
+    let _ = stream.read_to_end(&mut raw);
+    let raw = String::from_utf8_lossy(&raw).to_string();
+    let status: u16 = raw.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let body_out = raw.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
+    (status, body_out)
+}
+
+/// R1: an ask whose only step failed is refused in plain words; the
+/// model's "Built" summary is not the result and never reaches the thread.
+#[test]
+fn zero_change_ask_after_a_failed_step_is_refused_plainly() {
+    let script = vec![
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins", "start_amount": 2000000000u64 } }).to_string(),
+        json!({ "done": true, "summary": "Built the leaderboard." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    let outcome = agent
+        .run_ask("chat-1", "build me a leaderboard")
+        .expect("the ask ends with a refusal, not a loop error");
+    assert!(outcome.refused, "a zero-change ask with a failed step is refused");
+    assert!(outcome.summary.contains("nothing in your game changed"), "plain refusal: {}", outcome.summary);
+    assert!(outcome.summary.contains("'start_amount' must be between 0 and 1000000000"), "the failure is named: {}", outcome.summary);
+    let thread = outcome.thread.join("\n");
+    assert!(!thread.contains("Built the leaderboard."), "the success claim is not shown: {thread}");
+}
+
+/// R1 (HTTP): the refusal answers ok:false and no pitch follows it.
+#[test]
+fn http_refused_ask_is_not_ok_and_gets_no_pitch() {
+    let script = vec![
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins", "start_amount": 2000000000u64 } }).to_string(),
+        json!({ "done": true, "summary": "Built the leaderboard." }).to_string(),
+    ];
+    let (agent, _stub) = agent_with_script(script);
+    let port = start_server(Some(agent));
+    let (status, body) = http_request(
+        port,
+        "POST",
+        "/api/chat",
+        Some(&json!({ "message": "build me a leaderboard" }).to_string()),
+    );
+    assert_eq!(status, 502, "refused: {body}");
+    assert!(body.contains("\"ok\":false") && body.contains("nothing in your game changed"), "ok:false with the plain reason: {body}");
+    let (_, thread) = http_request(port, "GET", "/api/thread", None);
+    assert!(!thread.contains("That landed"), "no pitch after a refusal: {thread}");
+    assert!(!thread.contains("Built the leaderboard."), "no success line: {thread}");
+}
+
+/// R1(b): a playtest after a write that never happened is not run, so a
+/// vacuous place cannot pass.
+#[test]
+fn vacuous_playtest_is_not_run_and_never_passes() {
+    let script = vec![
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService..Leaderboard", "skill": "leaderboard" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Built the round game." }).to_string(),
+    ];
+    let (mut agent, _stub) = agent_with_script(script);
+    let outcome = agent
+        .run_ask("chat-1", "build the round game")
+        .expect("the ask ends with a refusal");
+    assert!(outcome.refused, "nothing was written, so the claim is refused");
+    let thread = outcome.thread.join("\n");
+    assert!(!thread.contains("Playtest passed."), "no pass for an empty place: {thread}");
+    assert!(thread.contains("Playtest not run"), "the playtest is reported as not run: {thread}");
+    let transcript = outcome.transcript.join("\n");
+    assert!(!transcript.contains("tool playtest ->"), "the bridge playtest was never called: {transcript}");
+}
+
+/// R2a + R2b: a failed playtest is remembered per chat — the next ask's
+/// "done" is refused and names the failed run; the give-up message says
+/// which script was left and that Undo last build undoes it.
+#[test]
+fn failed_playtest_is_remembered_for_the_next_ask() {
+    let mut script = vec![
+        json!({ "skill": "shop", "args": { "item_name": "Speed Coil", "price": 100, "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Shop", "skill": "shop" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+    ];
+    // Ask one: "done" is refused each time, so it runs out of its 40 steps.
+    for _ in 0..37 {
+        script.push(json!({ "done": true, "summary": "Shop is in and it works." }).to_string());
+    }
+    // Ask two's first step: a claim of success over the failed game.
+    script.push(json!({ "done": true, "summary": "Round is running (second try)." }).to_string());
+    let (mut agent, _stub) = agent_with_script(script);
+    let first = agent
+        .run_ask("chat-1", "add a shop selling a Speed Coil")
+        .expect_err("the ask gives up");
+    assert!(first.message.contains("did not finish within 40 steps"), "{}", first.message);
+    assert!(first.message.contains("ServerScriptService.Shop"), "the left script is named: {}", first.message);
+    assert!(first.message.contains("its last test run failed"), "the failed run is said: {}", first.message);
+    assert!(first.message.contains("Undo last build undoes it"), "the undo pointer: {}", first.message);
+
+    let second = agent
+        .run_ask("chat-1", "is it working now?")
+        .expect_err("a success claim over a failed game is refused");
+    assert!(second.message.contains("last test run of your game failed"), "{}", second.message);
+    assert!(second.message.contains("Undo last build"), "{}", second.message);
+    assert!(!second.thread.join("\n").contains("second try"), "the success claim is not shown");
+}
+
+/// R2c: a failed built-in idea points at Undo last build.
+#[test]
+fn failed_idea_build_points_at_undo() {
+    let (mut agent, _stub) = agent_with_script(vec![]);
+    let err = agent
+        .build_idea("chat-1", "add-shop")
+        .expect_err("a shop with no currency fails its playtest");
+    assert!(err.message.contains("failed its playtest"), "{}", err.message);
+    assert!(err.message.contains("Undo last build undoes what it changed"), "the undo pointer: {}", err.message);
+}
+
+/// R3: after Undo last build the reverted currency no longer counts, so
+/// the shop gate refuses by name instead of building a shop that fails.
+#[test]
+fn undo_forgets_the_reverted_currency_for_the_shop_gate() {
+    let (agent, _stub) = agent_with_script(vec![]);
+    let port = start_server(Some(agent));
+    let (status, body) = http_request(port, "POST", "/api/ideas/build", Some(&json!({ "id": "add-currency" }).to_string()));
+    assert_eq!(status, 200, "currency builds: {body}");
+    let (status, body) = http_request(port, "POST", "/api/revert", None);
+    assert_eq!(status, 200, "undo works: {body}");
+    let (status, body) = http_request(port, "POST", "/api/ideas/build", Some(&json!({ "id": "add-shop" }).to_string()));
+    assert_eq!(status, 400, "the shop is refused after its currency was undone: {body}");
+    assert!(body.contains("needs currency first"), "the plain missing-prerequisite message: {body}");
+}
+
+/// R4: a foreign Origin on a state-changing request is refused; nothing changes.
+#[test]
+fn foreign_origin_post_is_refused_and_changes_nothing() {
+    let port = start_server(None);
+    let body = json!({ "message": "hi" }).to_string();
+    let request = format!(
+        "POST /api/chats HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://evil.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let (status, reply) = http_raw(port, &request, body.as_bytes());
+    assert_eq!(status, 403, "refused: {reply}");
+    assert!(reply.contains("cross-origin"), "plain JSON refusal: {reply}");
+    let (_, chats) = http_request(port, "GET", "/api/chats", None);
+    let count = serde_json::from_str::<Value>(&chats).unwrap()["chats"].as_array().unwrap().len();
+    assert_eq!(count, 1, "no chat was created: {chats}");
+}
+
+/// R4: the same-origin page's POST is accepted.
+#[test]
+fn same_origin_post_is_accepted() {
+    let port = start_server(None);
+    let request = format!(
+        "POST /api/chats HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nSec-Fetch-Site: same-origin\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n"
+    );
+    let (status, reply) = http_raw(port, &request, b"{}");
+    assert_eq!(status, 201, "same origin accepted: {reply}");
+}
+
+/// R4: a text/plain POST (a form-style cross-site request) never reaches a handler.
+#[test]
+fn text_plain_post_is_refused() {
+    let port = start_server(None);
+    let body = json!({ "message": "make a lava obby" }).to_string();
+    let request = format!(
+        "POST /api/chat HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let (status, reply) = http_raw(port, &request, body.as_bytes());
+    assert_eq!(status, 415, "refused: {reply}");
+    let (_, thread) = http_request(port, "GET", "/api/thread", None);
+    assert!(!thread.contains("make a lava obby"), "the ask never reached the chat: {thread}");
+}
+
+/// R4: a request addressed to a foreign host name is refused.
+#[test]
+fn foreign_host_is_refused() {
+    let port = start_server(None);
+    let request = "GET /api/status HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n";
+    let (status, reply) = http_raw(port, request, b"");
+    assert_eq!(status, 403, "refused: {reply}");
+}
+
+/// R4: an oversized body gets a plain 413 JSON answer, not an empty reply.
+#[test]
+fn oversized_body_gets_a_plain_413() {
+    let port = start_server(None);
+    let body = "a".repeat(1_100_000);
+    let request = format!(
+        "POST /api/chat HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let (status, reply) = http_raw(port, &request, body.as_bytes());
+    assert_eq!(status, 413, "answered: {reply}");
+    assert!(reply.contains("too large"), "plain words: {reply}");
+}
+
+/// R4: handler threads are capped; a connection beyond the cap gets a
+/// plain 503 instead of a thread that can be parked forever.
+#[test]
+fn idle_connections_are_capped_with_a_plain_503() {
+    let port = start_server(None);
+    // Idle sockets: they send nothing, so each holds a handler slot.
+    let idle: Vec<TcpStream> = (0..80).map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap()).collect();
+    let (status, reply) = http_request(port, "GET", "/api/status", None);
+    assert_eq!(status, 503, "beyond the cap: {reply}");
+    assert!(reply.contains("busy"), "plain words: {reply}");
+    drop(idle);
+}
+
+/// R4: a client that sends nothing is dropped after the read timeout.
+#[test]
+fn stalled_client_is_dropped_by_the_read_timeout() {
+    let port = start_server(None);
+    let mut stalled = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stalled.set_read_timeout(Some(std::time::Duration::from_secs(20))).unwrap();
+    let started = std::time::Instant::now();
+    let mut buf = Vec::new();
+    let _ = stalled.read_to_end(&mut buf);
+    assert!(started.elapsed() < std::time::Duration::from_secs(15), "closed by the server, not left open");
+    assert!(buf.is_empty(), "no reply to a request never sent");
+}
+
+/// R5: the status endpoint names the set-aside backup, and is empty normally.
+#[test]
+fn status_names_a_set_aside_store() {
+    let dir = std::env::temp_dir().join(format!("openro-status-recovered-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("chats.json"), "{\"chats\": [{\"id\": \"c1\", \"lines\": [\"You: hi\"]").unwrap();
+    let port = start_server_with_data(None, dir.clone());
+    let (_, body) = http_request(port, "GET", "/api/status", None);
+    let status: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(status["store_recovered"], json!(["chats.json.bak"]), "the backup is named: {body}");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let clean = std::env::temp_dir().join(format!("openro-status-clean-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&clean);
+    let port = start_server_with_data(None, clean.clone());
+    let (_, body) = http_request(port, "GET", "/api/status", None);
+    let status: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(status["store_recovered"], json!([]), "empty normally: {body}");
+    let _ = std::fs::remove_dir_all(&clean);
+}
+
+/// R5: the page names the set-aside file in a dismissible banner, and
+/// shows no banner when nothing was set aside.
+#[test]
+fn recovered_banner_names_the_file_and_is_dismissible() {
+    let html = openro_rs::server::render_page_with("Round Arena", true, true, &["chats.json.bak".to_string()]);
+    assert!(html.contains("id=\"recovered-banner\""), "the banner is rendered");
+    assert!(html.contains("<code>chats.json.bak</code>"), "the banner names the backup file");
+    assert!(html.contains("data-dismiss=\"recovered-banner\""), "the banner has a dismiss control");
+    let clean = openro_rs::server::render_page_with("Round Arena", true, true, &[]);
+    assert!(!clean.contains("recovered-banner"), "no banner when nothing was set aside");
+}
