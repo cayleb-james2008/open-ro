@@ -39,7 +39,9 @@ use crate::skills;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-const MAX_STEPS: usize = 16;
+/// 40 steps: a one-shot complete game (many skills, instances, a
+/// playtest, repairs) legitimately needs more than a one-script ask.
+const MAX_STEPS: usize = 40;
 const MAX_REPAIRS: usize = 3;
 
 /// Returned by `revert_chat` when the chat has no change set waiting.
@@ -81,6 +83,10 @@ pub struct RunOutcome {
     pub thread: Vec<String>,
     /// Step-by-step record of what the loop did (skills, tools, console).
     pub transcript: Vec<String>,
+    /// Skills that generated Luau during this run — the server feeds
+    /// these to the creativity engine, so follow-up pitches know what
+    /// the game already has.
+    pub skills_used: Vec<String>,
 }
 
 /// A failed ask, carrying the thread and transcript lines produced
@@ -321,6 +327,218 @@ impl Agent {
         result
     }
 
+    /// Build one of the creativity engine's ideas by id: the idea's
+    /// built-in plan runs through `run_plan`.
+    pub fn build_idea(&mut self, chat_id: &str, idea_id: &str) -> Result<RunOutcome, AskFailure> {
+        let idea = crate::ideas::find(idea_id).ok_or_else(|| AskFailure {
+            message: format!("unknown idea: {idea_id}"),
+            thread: Vec::new(),
+            transcript: Vec::new(),
+        })?;
+        self.run_plan(chat_id, idea.title, &idea.plan)
+    }
+
+    /// Run a built-in plan (from the creativity engine) deterministically:
+    /// the same step machinery as a model ask — skills generate, tools
+    /// apply, changes checkpoint — but no model is consulted, and the
+    /// thread says so. The done gate is identical: the plan is only
+    /// called built when a playtest has passed since its last change;
+    /// a failed playtest ends the build in an honest failure naming
+    /// the console output, change set still revertable. Change-set
+    /// harvesting matches `run_ask`: whatever the plan changed belongs
+    /// to the chat, on every exit path.
+    pub fn run_plan(
+        &mut self,
+        chat_id: &str,
+        label: &str,
+        steps: &[Value],
+    ) -> Result<RunOutcome, AskFailure> {
+        self.current_changes.clear();
+        let result = self.run_plan_inner(label, steps);
+        let harvested = std::mem::take(&mut self.current_changes);
+        if !harvested.is_empty() {
+            self.changes_by_chat
+                .entry(chat_id.to_string())
+                .or_default()
+                .push(harvested);
+            self.save_changes();
+        }
+        result
+    }
+
+    fn run_plan_inner(
+        &mut self,
+        label: &str,
+        steps: &[Value],
+    ) -> Result<RunOutcome, AskFailure> {
+        let mut thread: Vec<String> = Vec::new();
+        let mut transcript: Vec<String> = Vec::new();
+        let fail = |message: String, thread: &Vec<String>, transcript: &Vec<String>| AskFailure {
+            message,
+            thread: thread.clone(),
+            transcript: transcript.clone(),
+        };
+        if self.studio.is_none() {
+            return Err(fail(
+                "Studio not connected: set OPENRO_MCP_COMMAND to a Studio MCP server".to_string(),
+                &thread,
+                &transcript,
+            ));
+        }
+        if let Err(e) = self.check_bridge_capabilities() {
+            return Err(fail(e, &thread, &transcript));
+        }
+        self.generated.clear();
+        self.last_skill = None;
+        thread.push(
+            "OpenRO: Building it now — these are my built-in steps, no model call involved."
+                .to_string(),
+        );
+        transcript.push(format!("built-in plan: {label} ({} steps)", steps.len()));
+        let mut skills_used: Vec<String> = Vec::new();
+        let mut writes: HashMap<String, String> = HashMap::new();
+        let mut changes_made = 0usize;
+        let mut unproven_changes = false;
+
+        // One playtest, plan semantics: a pass clears the done gate; a
+        // failure ends the build honestly (a built-in plan has no
+        // repairer — the failure names the console and the changes
+        // stay revertable).
+        macro_rules! plan_playtest {
+            () => {
+                match self.run_playtest(&mut transcript, &mut thread) {
+                    Ok(PlaytestOutcome::Passed(_)) => {
+                        unproven_changes = false;
+                    }
+                    Ok(PlaytestOutcome::Failed(_, console)) => {
+                        // run_playtest narrated "reading the console
+                        // and repairing" — a plan does not repair, so
+                        // correct the line before it misleads.
+                        if let Some(last) = thread.last_mut() {
+                            if last.starts_with("Playtest failed") {
+                                *last = "Playtest failed.".to_string();
+                            }
+                        }
+                        return Err(fail(
+                            format!(
+                                "my built-in plan for “{label}” failed its playtest — nothing \
+                                 is called done. Console output: {console}"
+                            ),
+                            &thread,
+                            &transcript,
+                        ));
+                    }
+                    Ok(PlaytestOutcome::Unreadable(_, raw)) => {
+                        return Err(fail(
+                            format!(
+                                "my built-in plan for “{label}” got a playtest result that \
+                                 could not be read as a verdict ({raw}) — the build counts \
+                                 as unproven, not done"
+                            ),
+                            &thread,
+                            &transcript,
+                        ));
+                    }
+                    Err(e) => return Err(fail(e, &thread, &transcript)),
+                }
+            };
+        }
+
+        for step in steps {
+            if let Some(skill) = step.get("skill").and_then(|v| v.as_str()) {
+                let args = step.get("args").cloned().unwrap_or(json!({}));
+                match self.run_skill(skill, &args, &mut transcript, &mut thread) {
+                    Ok(_) => skills_used.push(skill.to_string()),
+                    Err(e) => {
+                        return Err(fail(
+                            format!("built-in plan stopped at the {skill} skill: {e}"),
+                            &thread,
+                            &transcript,
+                        ))
+                    }
+                }
+                continue;
+            }
+            if let Some(tool) = step.get("tool").and_then(|v| v.as_str()) {
+                let args = step.get("args").cloned().unwrap_or(json!({}));
+                if tool == "playtest" {
+                    plan_playtest!();
+                    continue;
+                }
+                if tool == "write_script" {
+                    match self.run_write_script(
+                        &args,
+                        &mut transcript,
+                        &mut thread,
+                        &mut writes,
+                        None,
+                    ) {
+                        Ok(_) => {
+                            changes_made += 1;
+                            unproven_changes = true;
+                        }
+                        Err(e) => {
+                            return Err(fail(
+                                format!("built-in plan stopped at write_script: {e}"),
+                                &thread,
+                                &transcript,
+                            ))
+                        }
+                    }
+                    continue;
+                }
+                match self.run_tool(tool, &args, &mut transcript, &mut thread) {
+                    Ok(_) => {
+                        if matches!(
+                            tool,
+                            "delete_script" | "create_instance" | "delete_instance"
+                        ) {
+                            changes_made += 1;
+                            unproven_changes = true;
+                        }
+                    }
+                    Err(e) => {
+                        return Err(fail(
+                            format!("built-in plan stopped at {tool}: {e}"),
+                            &thread,
+                            &transcript,
+                        ))
+                    }
+                }
+                continue;
+            }
+            return Err(fail(
+                format!("built-in plan held an unreadable step: {step}"),
+                &thread,
+                &transcript,
+            ));
+        }
+
+        if changes_made == 0 {
+            return Err(fail(
+                format!(
+                    "my built-in plan for “{label}” made no changes — the plan is broken, \
+                     and I won't pretend otherwise"
+                ),
+                &thread,
+                &transcript,
+            ));
+        }
+        if unproven_changes {
+            plan_playtest!();
+            debug_assert!(!unproven_changes);
+        }
+        let summary = format!("Built “{label}” — playtest passed.");
+        thread.push(format!("OpenRO: {summary}"));
+        transcript.push(format!("plan done: {summary}"));
+        Ok(RunOutcome {
+            summary,
+            thread,
+            transcript,
+            skills_used,
+        })
+    }
+
     fn run_ask_inner(&mut self, ask: &str) -> Result<RunOutcome, AskFailure> {
         let mut thread: Vec<String> = Vec::new();
         let mut transcript: Vec<String> = Vec::new();
@@ -354,6 +572,7 @@ impl Agent {
         ];
         let mut summary: Option<String> = None;
         let mut failed_playtests = 0usize;
+        let mut skills_used: Vec<String> = Vec::new();
         let mut writes: HashMap<String, String> = HashMap::new();
         let mut last_failed_console: Option<String> = None;
         // Changes no passing playtest has covered yet (the done gate),
@@ -414,7 +633,10 @@ impl Agent {
             if let Some(skill) = step.get("skill").and_then(|v| v.as_str()) {
                 let args = step.get("args").cloned().unwrap_or(json!({}));
                 match self.run_skill(skill, &args, &mut transcript, &mut thread) {
-                    Ok(note) => messages.push(json!({ "role": "user", "content": note })),
+                    Ok(note) => {
+                        skills_used.push(skill.to_string());
+                        messages.push(json!({ "role": "user", "content": note }));
+                    }
                     Err(e) => {
                         transcript.push(format!("skill {skill} error: {e}"));
                         messages.push(json!({
@@ -530,6 +752,7 @@ impl Agent {
                 summary,
                 thread,
                 transcript,
+                skills_used,
             }),
             None => Err(fail(
                 format!("agent loop did not finish within {MAX_STEPS} steps"),
