@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenRO — __GAME_NAME__</title>
+<meta name="description" content="OpenRO builds your Roblox game from a plain description, shows each build step, and can undo the last build.">
+<title>OpenRO: __GAME_NAME__</title>
 <script>
   try {
     var t = localStorage.getItem('openro-theme');
@@ -11,153 +12,354 @@
   } catch (e) { /* dark stays the default */ }
 </script>
 <style>
-/* hallmark-rune · app: openro · vernacular: playful creative studio · nav: chat rail (the list is the work) · signature: build timeline · tokens: hr-template v1 (OpenRO anchor row, radii fork 8/12/16) · critique: weakest State coverage — fixed in this pass with a real thread-load error state */
+  /* Hallmark · app screen · genre modern-minimal · scope app · theme: none dealt, tokens written by hand from the owner brief · spacing on the 4px grid, measured by the render probe */
+  /* Tokens: every colour, face, radius and duration is declared here.
+     Dark is the default; light is a full second theme, not a different product. */
   :root {
     color-scheme: dark;
-    --bg: #121218; --panel: #1a1a23; --panel-2: #23232f; --field: #14141c;
-    --ink: #eeeef3; --muted: #a7a7ba; --faint: #8e8ea5; --rule: #2c2c3a;
-    --accent: #2f6fed; --accent-hover: #2a62d4; --accent-ink: #ffffff;
-    --ok: #7ee2a0; --ok-bg: #173d24; --warn: #f2d38a; --warn-bg: #3a2f10;
-    --err: #f09393; --err-bg: #3d1717;
-    --font-body: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
-    --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    --text-meta: 11px; --text-label: 12px; --text-small: 13px; --text-dense: 14px;
-    --text-body: 15px; --text-title: 18px; --text-screen: 20px; --text-display: 24px;
-    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px; --sp-7: 48px;
-    --r-control: 8px; --r-card: 12px; --r-panel: 16px; --r-chip: 999px;
-    --dur-micro: 120ms; --dur-short: 200ms; --dur-panel: 280ms;
+    --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --canvas: #0c0d10; --side: #111217; --surface: #16181e; --raised: #1f222a; --track: #1a1d24; --hairline: #272b35;
+    --ink: #eceef2; --ink-2: #a9afbd; --faint: #8e8ea5;
+    --primary: #eceef2; --primary-hover: #ffffff; --on-primary: #0c0d10;
+    --ok: #6fd9ac; --ok-bg: rgba(77, 194, 150, 0.14);
+    --warn: #f5c46a; --warn-bg: rgba(245, 165, 36, 0.14);
+    --bad: #f29a9a; --bad-bg: rgba(224, 96, 96, 0.16);
+    --r-sm: 6px; --r-control: 8px; --r-card: 10px; --r-panel: 14px; --r-pill: 999px;
+    --dur-micro: 120ms; --dur-short: 200ms; --dur-panel: 260ms;
     --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.45);
+    --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --scrim: rgba(0, 0, 0, 0.45);
   }
   [data-theme="light"] {
     color-scheme: light;
-    --bg: #f4f4f8; --panel: #ffffff; --panel-2: #e9e9f1; --field: #ffffff;
-    --ink: #1d1d26; --muted: #5b5b70; --faint: #62627a; --rule: #d8d8e2;
-    --accent: #2459c4; --accent-hover: #1e4dab; --accent-ink: #ffffff;
-    --ok: #1c6b34; --ok-bg: #e2f2e6; --warn: #7a4b12; --warn-bg: #fdf3e3;
-    --err: #9c2222; --err-bg: #fbe7e7;
-  }
-  * { box-sizing: border-box; }
-  html, body { overflow-x: clip; }
-  body { margin: 0; font-family: var(--font-body); background: var(--bg); color: var(--ink); display: flex; height: 100vh; font-size: var(--text-body); line-height: 1.55; }
-  ::selection { background: var(--accent); color: var(--accent-ink); }
-  html { scrollbar-color: var(--rule) transparent; caret-color: var(--accent); }
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  button { font: inherit; }
-  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  #sidebar { width: 264px; flex: 0 0 264px; background: var(--panel); border-right: 1px solid var(--rule); display: flex; flex-direction: column; padding: var(--sp-4); gap: var(--sp-3); min-height: 0; }
-  #sidebar h1 { font-size: var(--text-screen); margin: 0; font-weight: 600; letter-spacing: -0.01em; }
-  #game-name { color: var(--muted); font-size: var(--text-small); }
-  #new-chat { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: var(--r-control); padding: var(--sp-2) var(--sp-3); min-height: 44px; cursor: pointer; font-weight: 600; }
-  #new-chat:hover { background: var(--accent-hover); }
-  #chat-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 48px; display: flex; flex-direction: column; gap: var(--sp-1); }
-  #chat-list li { margin: 0; }
-  .chat-btn { display: block; width: 100%; text-align: left; background: none; border: 0; padding: var(--sp-2) var(--sp-3); min-height: 44px; border-radius: var(--r-control); color: var(--muted); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--text-dense); }
-  .chat-btn:hover { color: var(--ink); }
-  .chat-btn.active { background: var(--panel-2); color: var(--ink); }
-  .chip { display: flex; align-items: center; justify-content: center; gap: var(--sp-2); font-size: var(--text-label); padding: var(--sp-2) var(--sp-3); min-height: 32px; border-radius: var(--r-chip); }
-  .chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; flex: none; }
-  .chip.on { background: var(--ok-bg); color: var(--ok); }
-  .chip.on::before { background: var(--ok); }
-  .chip.off { background: var(--err-bg); color: var(--err); }
-  .chip.off::before { background: var(--err); }
-  #settings { border-top: 1px solid var(--rule); padding-top: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
-  #settings h2 { font-size: var(--text-small); font-weight: 600; color: var(--muted); margin: 0; }
-  .set-row { display: flex; align-items: center; gap: var(--sp-2); }
-  .set-row .set-name { font-size: var(--text-small); color: var(--muted); flex: 1; }
-  .theme-btn { background: var(--panel-2); border: 1px solid var(--rule); color: var(--muted); border-radius: var(--r-chip); padding: var(--sp-1) var(--sp-3); min-height: 44px; font-size: var(--text-small); cursor: pointer; }
-  .theme-btn[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
-  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-  .banner { background: var(--warn-bg); color: var(--warn); padding: var(--sp-3) var(--sp-4); font-size: var(--text-small); }
-  #thread { flex: 1; overflow-y: auto; padding: var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-3); }
-  .msg { max-width: 75ch; line-height: 1.55; white-space: pre-wrap; word-wrap: break-word; border-radius: var(--r-card); padding: var(--sp-3) var(--sp-4); }
-  .msg.user { background: var(--panel-2); align-self: flex-end; }
-  .msg.assistant { background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r-panel); align-self: flex-start; }
-  .msg.idea { background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: var(--r-panel); align-self: flex-start; }
-  /* the build timeline: the agent's steps as one ledger rail, the
-     playtest verdicts as the weighted bands the vernacular calls for */
-  .msg.step { background: transparent; color: var(--muted); font-family: var(--font-mono); font-size: var(--text-small); align-self: stretch; max-width: none; padding: var(--sp-1) var(--sp-4) var(--sp-1) var(--sp-6); position: relative; }
-  .msg.step::before { content: ""; position: absolute; left: 13px; top: 0; bottom: 0; width: 2px; background: var(--rule); }
-  .msg.step::after { content: ""; position: absolute; left: 10px; top: 12px; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
-  .msg.step.verdict-ok, .msg.step.verdict-bad { font-family: var(--font-body); font-size: var(--text-body); font-weight: 600; padding: var(--sp-3) var(--sp-4); border-radius: var(--r-card); }
-  .msg.step.verdict-ok { background: var(--ok-bg); color: var(--ok); }
-  .msg.step.verdict-bad { background: var(--err-bg); color: var(--err); }
-  .msg.step.verdict-ok::before, .msg.step.verdict-ok::after, .msg.step.verdict-bad::before, .msg.step.verdict-bad::after { content: none; }
-  .empty { color: var(--muted); background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r-panel); text-align: center; margin: 12vh auto 0; max-width: 55ch; padding: var(--sp-5); line-height: 1.6; }
-  .thread-error { color: var(--err); background: var(--err-bg); border-radius: var(--r-card); padding: var(--sp-3) var(--sp-4); max-width: 75ch; }
-  #ideas { border-top: 1px solid var(--rule); padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
-  #ideas[hidden] { display: none; }
-  .ideas-label { font-size: var(--text-label); font-weight: 600; color: var(--muted); }
-  .idea-btns { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
-  .idea-card { background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: var(--r-card); padding: var(--sp-3); display: flex; align-items: center; gap: var(--sp-3); max-width: 340px; flex: 1 1 240px; }
-  .idea-title { font-weight: 600; flex: 1; }
-  .idea-btn { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: var(--r-control); padding: var(--sp-2) var(--sp-4); min-height: 44px; font-weight: 600; cursor: pointer; align-self: flex-start; }
-  .idea-btn:hover { background: var(--accent-hover); }
-  .idea-btn:disabled { opacity: 0.45; cursor: default; }
-  #composer { display: flex; gap: var(--sp-2); padding: var(--sp-3); border-top: 1px solid var(--rule); }
-  #composer input { flex: 1; min-width: 0; background: var(--field); color: var(--ink); border: 1px solid var(--rule); border-radius: var(--r-control); padding: var(--sp-3); min-height: 44px; font-size: var(--text-body); }
-  #composer button { border: 0; border-radius: var(--r-control); padding: var(--sp-2) var(--sp-4); min-height: 44px; cursor: pointer; font-weight: 600; display: inline-flex; align-items: center; gap: var(--sp-2); }
-  #send { background: var(--accent); color: var(--accent-ink); }
-  #send:hover { background: var(--accent-hover); }
-  #composer button:disabled { opacity: 0.45; cursor: default; }
-  #revert { background: var(--panel); color: var(--ink); border: 1px solid var(--rule); }
-  #revert svg { width: 16px; height: 16px; flex: none; }
-  @media (max-width: 760px) {
-    body { flex-direction: column; }
-    #sidebar { width: 100%; flex: none; border-right: 0; border-bottom: 1px solid var(--rule); padding: var(--sp-3); gap: var(--sp-2); }
-    #chat-list { flex-direction: row; overflow-x: auto; overflow-y: hidden; flex: none; min-height: 44px; }
-    #chat-list li { flex: none; }
-    .chat-btn { min-height: 44px; }
-    #settings { flex-direction: row; align-items: center; }
-    #settings h2 { display: none; }
-    .set-row { flex: 1; }
-    #thread { padding: var(--sp-4); }
-    #composer { flex-wrap: wrap; }
-    #composer input { flex: 1 1 100%; }
-    #composer button { flex: 1; justify-content: center; }
+    --canvas: #f1f2f5; --side: #ffffff; --surface: #ffffff; --raised: #f6f7f9; --track: #eceef2; --hairline: #dfe2e8;
+    --ink: #15171c; --ink-2: #4e5565; --faint: #62627a;
+    --primary: #15171c; --primary-hover: #2a2e38; --on-primary: #ffffff;
+    --ok: #1c7a4f; --ok-bg: #e3f4ec;
+    --warn: #7a4b06; --warn-bg: #fdf1dc;
+    --bad: #a3271f; --bad-bg: #fbe6e4;
+    --shadow-float: 0 12px 32px rgba(16, 24, 40, 0.14);
+    --shadow-raised: 0 1px 2px rgba(16, 24, 40, 0.08);
+    --scrim: rgba(16, 24, 40, 0.3);
   }
   @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+    *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { overflow-x: clip; }
+  body { margin: 0; height: 100vh; height: 100dvh; display: flex; background: var(--canvas); color: var(--ink); font-family: var(--font-sans); font-size: 15px; line-height: 1.55; }
+  [hidden] { display: none !important; }
+  :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  ::selection { background: var(--ink); color: var(--canvas); }
+  button, input { font: inherit; color: inherit; }
+  h1, h2, h3 { text-wrap: balance; }
+  p { margin: 0; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .ic { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .ic-sm { width: 16px; height: 16px; }
+  .muted { color: var(--ink-2); font-size: 13px; }
+
+  /* controls: answer hover, press and focus; no shadow except on a raised pill */
+  .btn { min-height: 44px; padding: 0 12px; border-radius: var(--r-control); border: 1px solid var(--hairline); background: var(--raised); color: var(--ink); display: inline-flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; font-size: 14px; font-weight: 500; white-space: nowrap; transition: background-color var(--dur-micro) ease, border-color var(--dur-micro) ease, color var(--dur-micro) ease, transform var(--dur-micro) var(--ease-out); }
+  .btn:hover { border-color: var(--faint); }
+  .btn:active { transform: scale(0.97); }
+  .btn-primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+  .btn-primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+  .btn-quiet { background: transparent; border-color: transparent; color: var(--ink-2); }
+  .btn-quiet:hover { background: var(--track); border-color: transparent; color: var(--ink); }
+  .btn:disabled, .btn-primary:disabled { background: var(--track); color: var(--faint); border-color: var(--hairline); cursor: default; transform: none; }
+
+  /* sidebar */
+  #sidebar { width: 264px; flex: none; background: var(--side); border-right: 1px solid var(--hairline); display: flex; flex-direction: column; gap: 12px; padding: 16px; min-height: 0; }
+  .brand { display: flex; align-items: center; gap: 8px; padding: 4px 4px 8px; min-width: 0; }
+  .logo { width: 34px; height: 34px; border-radius: var(--r-control); background: var(--primary); color: var(--on-primary); display: grid; place-items: center; flex: none; }
+  .brand-text { min-width: 0; }
+  #sidebar h1 { font-size: 16px; font-weight: 500; margin: 0; line-height: 1.25; }
+  #game-name { font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #new-chat { width: 100%; justify-content: flex-start; }
+  #chat-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 0; }
+  #chat-list li { margin: 0; }
+  .chat-btn { display: block; width: 100%; min-height: 44px; padding: 0 8px; border: 0; border-radius: var(--r-control); background: none; color: var(--ink-2); text-align: left; cursor: pointer; font-size: 14px; line-height: 44px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background-color var(--dur-micro) ease, color var(--dur-micro) ease, transform var(--dur-micro) var(--ease-out); }
+  .chat-btn:hover { background: var(--track); color: var(--ink); }
+  .chat-btn:active { transform: scale(0.99); }
+  .chat-btn[aria-current="true"] { background: var(--raised); color: var(--ink); font-weight: 500; box-shadow: var(--shadow-raised); }
+  .skel { background: var(--track); border-radius: var(--r-control); animation: breathe 1.4s ease-in-out infinite; }
+  #settings { border-top: 1px solid var(--hairline); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+  #settings h2 { font-size: 13px; font-weight: 500; color: var(--ink-2); margin: 0; }
+  .set-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .set-name { font-size: 14px; color: var(--ink-2); }
+  .segmented { display: inline-flex; background: var(--track); border-radius: var(--r-pill); padding: 0; }
+  .theme-btn { min-height: 44px; padding: 0 12px; border: 0; border-radius: var(--r-pill); background: transparent; color: var(--ink-2); cursor: pointer; font-size: 13px; transition: background-color var(--dur-short) var(--ease-out), color var(--dur-short) var(--ease-out), box-shadow var(--dur-short) var(--ease-out); }
+  .theme-btn:hover { color: var(--ink); }
+  .theme-btn[aria-pressed="true"] { background: var(--raised); color: var(--ink); box-shadow: var(--shadow-raised); }
+  .theme-btn:active { transform: scale(0.97); }
+
+  /* header strip */
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .top { height: 56px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 24px; border-bottom: 1px solid var(--hairline); }
+  #chat-title { font-size: 16px; font-weight: 500; margin: 0; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #menu-btn { display: none; width: 44px; padding: 0; }
+  .chip { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 12px; border-radius: var(--r-pill); font-size: 13px; white-space: nowrap; flex: none; }
+  .chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
+  .chip.on { background: var(--ok-bg); color: var(--ok); }
+  .chip.off { background: var(--bad-bg); color: var(--bad); }
+  .banner { display: flex; gap: 8px; align-items: flex-start; padding: 12px 24px; background: var(--warn-bg); color: var(--ink); font-size: 14px; border-bottom: 1px solid var(--hairline); }
+  .banner strong { font-weight: 500; color: var(--warn); }
+
+  /* thread */
+  #thread { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+  #thread > * { flex: none; width: 100%; max-width: 760px; margin: 0 auto; }
+  .welcome { padding: 16px 0 4px; }
+  .welcome h2 { font-size: 24px; font-weight: 500; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .welcome p { color: var(--ink-2); max-width: 60ch; }
+  .row { display: flex; gap: 8px; align-items: flex-start; min-width: 0; }
+  .row.user { justify-content: flex-end; }
+  .avatar { width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--hairline); background: var(--track); display: grid; place-items: center; flex: none; }
+  .bubble { max-width: min(100%, 600px); padding: 8px 12px; border: 1px solid var(--hairline); border-radius: var(--r-panel); background: var(--surface); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .row.user .bubble { background: var(--raised); border-top-right-radius: 4px; max-width: min(84%, 560px); }
+  .bubble.bad { background: var(--bad-bg); border-color: transparent; color: var(--bad); }
+  .bubble.bad strong { font-weight: 500; }
+  .fresh { animation: rise var(--dur-short) var(--ease-out) both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  @keyframes breathe { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+
+  /* idea cards: the pitch is the agent speaking first */
+  .ideas-block { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .idea-card { background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-panel); padding: 16px; display: flex; flex-direction: column; gap: 8px; min-width: 0; transition: border-color var(--dur-short) ease; }
+  .idea-card:hover { border-color: var(--faint); }
+  .idea-card h3 { margin: 0; font-size: 17px; font-weight: 500; overflow-wrap: anywhere; }
+  .idea-card p { color: var(--ink-2); font-size: 14px; }
+  .adds-label { font-size: 12px; color: var(--ink-2); margin-top: 0; }
+  .adds { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+  .adds li { font-size: 12px; padding: 4px 8px; border-radius: var(--r-pill); background: var(--track); color: var(--ink-2); }
+  .idea-card .btn { margin-top: auto; width: 100%; }
+
+  /* build timeline: one card per ask, a row per step, verdict bands */
+  .build { background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-panel); overflow: hidden; }
+  .build-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; padding: 0 16px; font-size: 13px; color: var(--ink-2); }
+  .steps { list-style: none; margin: 0; padding: 0; }
+  .step { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 8px 16px; border-top: 1px solid var(--hairline); }
+  .step-icon { width: 28px; height: 28px; border-radius: var(--r-sm); background: var(--track); color: var(--ink-2); display: grid; place-items: center; }
+  .step-label { font-size: 14px; overflow-wrap: anywhere; }
+  .step-result { font-size: 12px; color: var(--ink-2); padding-top: 4px; white-space: nowrap; }
+  .step details { margin-top: 4px; }
+  .step summary { font-size: 12px; color: var(--faint); cursor: pointer; border-radius: var(--r-sm); display: inline-block; min-height: 24px; line-height: 24px; }
+  .step summary:hover { color: var(--ink); }
+  .step pre { margin: 4px 0 0; font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .verdict { display: flex; gap: 12px; align-items: flex-start; padding: 12px 16px; border-top: 1px solid var(--hairline); }
+  .verdict .ic { margin-top: 0; }
+  .verdict strong { display: block; font-size: 16px; font-weight: 500; }
+  .verdict p { font-size: 14px; color: var(--ink); margin-top: 0; }
+  .verdict.ok { background: var(--ok-bg); }
+  .verdict.ok strong, .verdict.ok .ic { color: var(--ok); }
+  .verdict.bad { background: var(--bad-bg); }
+  .verdict.bad strong, .verdict.bad .ic { color: var(--bad); }
+  .verdict.warn { background: var(--warn-bg); }
+  .verdict.warn strong, .verdict.warn .ic { color: var(--warn); }
+  .working { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 14px; }
+  .dots { display: inline-flex; gap: 4px; }
+  .dots span { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-2); animation: pulse 1.2s ease-in-out infinite; }
+  .dots span:nth-child(2) { animation-delay: 0.15s; }
+  .dots span:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes pulse { 0%, 100% { opacity: 0.25; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1); } }
+  .thread-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; background: var(--bad-bg); color: var(--bad); border-radius: var(--r-panel); padding: 16px; }
+  .thread-error p { color: var(--ink); }
+
+  /* dock: next ideas, undo confirm, composer pinned to the bottom */
+  .dock { flex: none; border-top: 1px solid var(--hairline); background: var(--canvas); }
+  .dock-inner { max-width: 760px; margin: 0 auto; padding: 12px 24px 16px; display: flex; flex-direction: column; gap: 8px; }
+  #ideas { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  #ideas[hidden] { display: none; }
+  .ideas-label { font-size: 13px; color: var(--ink-2); margin-right: 4px; }
+  .idea-chip { min-height: 44px; padding: 0 12px; border-radius: var(--r-pill); border: 1px solid var(--hairline); background: var(--surface); color: var(--ink); cursor: pointer; font-size: 14px; display: inline-flex; align-items: center; gap: 4px; transition: background-color var(--dur-micro) ease, border-color var(--dur-micro) ease, transform var(--dur-micro) var(--ease-out); }
+  .idea-chip:hover { background: var(--raised); border-color: var(--faint); }
+  .idea-chip:active { transform: scale(0.97); }
+  .idea-chip:disabled { background: var(--track); color: var(--faint); cursor: default; transform: none; }
+  #undo-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-card); }
+  #undo-confirm p { flex: 1 1 240px; font-size: 14px; color: var(--ink-2); }
+  #composer { display: flex; gap: 8px; align-items: stretch; }
+  #composer input { flex: 1; min-width: 0; min-height: 44px; padding: 0 12px; background: var(--surface); color: var(--ink); border: 1px solid var(--hairline); border-radius: var(--r-control); font-size: 15px; transition: border-color var(--dur-micro) ease; }
+  #composer input::placeholder { color: var(--faint); }
+  #composer input:hover { border-color: var(--faint); }
+  #composer .btn { min-width: 44px; }
+  #revert svg { width: 16px; height: 16px; }
+
+  /* right panel: the real place, collapsible, wide screens only */
+  #place-panel { width: 280px; flex: none; background: var(--side); border-left: 1px solid var(--hairline); display: flex; flex-direction: column; min-height: 0; }
+  #place-panel.collapsed { width: auto; }
+  .place-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 56px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--hairline); }
+  #place-panel.collapsed .place-head { border-bottom: 0; }
+  .place-head h2 { font-size: 15px; font-weight: 500; margin: 0; }
+  #place-toggle { min-width: 44px; min-height: 44px; border: 0; border-radius: var(--r-control); background: none; color: var(--ink-2); cursor: pointer; display: grid; place-items: center; transition: background-color var(--dur-micro) ease, color var(--dur-micro) ease, transform var(--dur-micro) var(--ease-out); }
+  #place-toggle:hover { background: var(--track); color: var(--ink); }
+  #place-toggle:active { transform: scale(0.94); }
+  #place-toggle .ic { transition: transform var(--dur-short) var(--ease-out); }
+  #place-panel.collapsed #place-toggle .ic { transform: rotate(-90deg); }
+  #place-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 16px; }
+  #place-panel.collapsed #place-body { display: none; }
+  .place-section h3 { display: flex; justify-content: space-between; margin: 0 0 4px; font-size: 13px; font-weight: 500; color: var(--ink-2); }
+  .place-section h3 span { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .place-list { list-style: none; margin: 0; padding: 0; }
+  .place-list li { font-family: var(--font-mono); font-size: 13px; color: var(--ink-2); padding: 4px 8px; border-radius: var(--r-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: background-color var(--dur-micro) ease; }
+  .place-list li:hover { background: var(--track); color: var(--ink); }
+  .place-empty { font-size: 14px; color: var(--ink-2); }
+  .place-skel { display: grid; gap: 8px; }
+  .place-skel span { height: 28px; border-radius: var(--r-sm); }
+
+  #scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 25; }
+
+  /* 390px phone: the sidebar becomes a menu sheet, the composer stays pinned */
+  @media (max-width: 1099px) { #place-panel { display: none; } }
+  @media (max-width: 759px) {
+    #sidebar { position: fixed; top: 0; bottom: 0; left: 0; width: min(86vw, 300px); z-index: 30; transform: translateX(-104%); transition: transform var(--dur-panel) var(--ease-out); box-shadow: var(--shadow-float); background: var(--side); }
+    body.menu-open #sidebar { transform: none; }
+    #menu-btn { display: inline-flex; }
+    .top { padding: 0 12px; gap: 8px; }
+    .banner { padding: 12px 16px; }
+    #thread { padding: 16px; gap: 12px; }
+    .welcome h2 { font-size: 21px; }
+    .dock-inner { padding: 8px 12px 12px; }
+    #composer { flex-wrap: wrap; }
+    #composer input { flex-basis: 100%; }
+    #composer .btn { flex: 1 1 0; }
+    #undo-confirm { flex-direction: column; align-items: stretch; }
+    #undo-confirm .btn { width: 100%; }
+    .chip { padding: 0 8px; }
   }
 </style>
 </head>
 <body>
-  <aside id="sidebar">
-    <h1>OpenRO</h1>
-    <div id="game-name">__GAME_NAME__</div>
-    <button id="new-chat" type="button">New chat</button>
-    <ul id="chat-list"></ul>
-    <div id="status-chip" class="__CHIP_CLASS__">__CHIP__</div>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h9a7 7 0 0 1 0 14h-3"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 24 24"><path d="M7 3.5h7l5 5v12H7z"/><path d="M14 3.5v5h5M9.5 13l-1.5 2 1.5 2M14.5 13l1.5 2-1.5 2"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M12 3.5l7.5 4.3v8.4L12 20.5l-7.5-4.3V7.8z"/><path d="M4.5 7.8L12 12l7.5-4.2M12 12v8.5"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M10 9l5 3-5 3z"/></symbol>
+    <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.5 6.2a4 4 0 0 0 4.9 5.2L12 18.8 8.2 15l7.6-7.6z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 12.5h9l1-12.5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v4.5M12 15.8v.2"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+  </svg>
+
+  <aside id="sidebar" aria-label="Chats and settings">
+    <div class="brand">
+      <span class="logo"><svg class="ic" aria-hidden="true"><use href="#i-spark"/></svg></span>
+      <div class="brand-text">
+        <h1>OpenRO</h1>
+        <div id="game-name">__GAME_NAME__</div>
+      </div>
+    </div>
+    <button id="new-chat" class="btn" type="button"><svg class="ic ic-sm" aria-hidden="true"><use href="#i-plus"/></svg>New chat</button>
+    <nav aria-label="Your chats">
+      <ul id="chat-list">
+        <li><div class="skel" style="height:44px"></div></li>
+      </ul>
+    </nav>
     <div id="settings">
       <h2>Settings</h2>
       <div class="set-row">
         <span class="set-name">Appearance</span>
-        <button class="theme-btn" type="button" data-set-theme="dark" aria-pressed="true">Dark</button>
-        <button class="theme-btn" type="button" data-set-theme="light" aria-pressed="false">Light</button>
+        <div class="segmented" role="group" aria-label="Appearance">
+          <button class="theme-btn" type="button" data-set-theme="dark" aria-pressed="true">Dark</button>
+          <button class="theme-btn" type="button" data-set-theme="light" aria-pressed="false">Light</button>
+        </div>
       </div>
     </div>
   </aside>
+  <div id="scrim" hidden></div>
+
   <main>
+    <header class="top">
+      <button id="menu-btn" class="btn btn-quiet" type="button" aria-controls="sidebar" aria-expanded="false" aria-label="Open the menu">
+        <svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg>
+      </button>
+      <h2 id="chat-title">New chat</h2>
+      <span id="status-chip" class="chip __CHIP_CLASS__" role="status">__CHIP__</span>
+    </header>
     __KEY_BANNER__
-    <div id="thread" aria-live="polite"></div>
-    <div id="ideas" hidden>
-      <span class="ideas-label">OpenRO can build this now</span>
-      <div class="idea-btns" id="idea-btns"></div>
+    <div id="thread" aria-live="polite" aria-busy="true">
+      <div class="skel" style="height:72px"></div>
+      <div class="skel" style="height:120px"></div>
     </div>
-    <form id="composer">
-      <label class="sr-only" for="composer-input">Describe the game</label>
-      <input id="composer-input" type="text" placeholder="Describe the game…" autocomplete="off">
-      <button id="revert" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 9h9a7 7 0 0 1 0 14h-3" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>Revert</button>
-      <button id="send" type="submit">Send</button>
-    </form>
+    <div class="dock">
+      <div class="dock-inner">
+        <div id="ideas" hidden>
+          <span class="ideas-label">Next ideas</span>
+          <div class="idea-btns" id="idea-btns"></div>
+        </div>
+        <div id="undo-confirm" role="group" aria-label="Undo the last build" hidden>
+          <p>Undo the last build? Your game goes back to how it was before that build.</p>
+          <button id="undo-no" class="btn btn-quiet" type="button">Keep it</button>
+          <button id="undo-yes" class="btn btn-primary" type="button">Undo last build</button>
+        </div>
+        <form id="composer">
+          <label class="sr-only" for="composer-input">Describe your game</label>
+          <input id="composer-input" type="text" placeholder="Describe your game, for example: a lava obby with coins" autocomplete="off">
+          <button id="revert" class="btn" type="button" aria-expanded="false" aria-controls="undo-confirm"><svg class="ic" aria-hidden="true"><use href="#i-undo"/></svg>Undo last build</button>
+          <button id="send" class="btn btn-primary" type="submit"><svg class="ic ic-sm" aria-hidden="true"><use href="#i-send"/></svg>Send</button>
+        </form>
+      </div>
+    </div>
   </main>
+
+  <aside id="place-panel" class="" aria-label="In your game">
+    <div class="place-head">
+      <h2>In your game</h2>
+      <button id="place-toggle" type="button" aria-expanded="true" aria-controls="place-body" aria-label="Collapse In your game"><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button>
+    </div>
+    <div id="place-body">
+      <div class="place-skel" aria-hidden="true"><span class="skel"></span><span class="skel"></span></div>
+    </div>
+  </aside>
+
 <script>
-  const thread = document.getElementById('thread');
-  const chatList = document.getElementById('chat-list');
+  const $ = (id) => document.getElementById(id);
+  const thread = $('thread');
+  const chatList = $('chat-list');
   const rootEl = document.documentElement;
   const CAN_BUILD = __CAN_BUILD__;
   const STUDIO = __STUDIO_CONNECTED__;
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const IDEA_PREFIX = 'OpenRO: Idea — ';
+  const DASH = /\s—\s/g;
+  const ADDS = {
+    spawn_link: 'Spawn point', checkpoints: 'Checkpoints', kill_brick: 'Lava that burns',
+    currency: 'Coins that save', day_night: 'Day and night', shop: 'A shop', game_gui: 'A game screen',
+    round_manager: 'Rounds', leaderboard: 'Leaderboard', soundtrack: 'Music',
+  };
+  const CLASSES = { SpawnLocation: 'spawn point', Part: 'block' };
+  const state = {
+    lines: [], ideas: [], local: [], pendingUser: '', busy: false,
+    threadError: false, loaded: false, shown: 0, undoOpen: false,
+  };
 
-  /* appearance — the settings toggle; the choice persists on this device */
+  /* small builders: every piece of user or model text goes in as textContent */
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  }
+  function icon(name, cls) {
+    const s = document.createElementNS(SVG_NS, 'svg');
+    s.setAttribute('class', 'ic' + (cls ? ' ' + cls : ''));
+    s.setAttribute('aria-hidden', 'true');
+    const u = document.createElementNS(SVG_NS, 'use');
+    u.setAttribute('href', '#i-' + name);
+    s.appendChild(u);
+    return s;
+  }
+  function plain(s) { return s.replace(DASH, ', '); }
+
+  /* appearance: the segmented control; the choice persists on this device */
   const themeBtns = document.querySelectorAll('.theme-btn');
   function syncThemeBtns() {
     const cur = rootEl.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
@@ -171,183 +373,423 @@
   }));
   syncThemeBtns();
 
-  function lineClass(text) {
-    if (text.startsWith('You: ')) return 'msg user';
-    if (text.startsWith('OpenRO: Idea — ')) return 'msg idea';
-    if (text.startsWith('OpenRO: ')) return 'msg assistant';
-    if (text === 'Playtest passed.') return 'msg step verdict-ok';
-    if (text.startsWith('Playtest failed')) return 'msg step verdict-bad';
-    return 'msg step';
+  /* phone menu sheet */
+  const menuBtn = $('menu-btn');
+  const scrim = $('scrim');
+  function setMenu(open) {
+    document.body.classList.toggle('menu-open', open);
+    menuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    scrim.hidden = !open;
   }
-  function addLine(text) {
-    const empty = thread.querySelector('.empty');
-    if (empty) empty.remove();
-    const err = thread.querySelector('.thread-error');
-    if (err) err.remove();
-    const div = document.createElement('div');
-    div.className = lineClass(text);
-    div.textContent = text;
-    thread.appendChild(div);
-    thread.scrollTop = thread.scrollHeight;
+  menuBtn.addEventListener('click', () => setMenu(!document.body.classList.contains('menu-open')));
+  scrim.addEventListener('click', () => { setMenu(false); menuBtn.focus(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && document.body.classList.contains('menu-open')) { setMenu(false); menuBtn.focus(); }
+  });
+
+  /* the place panel: collapsible, wide screens only */
+  const placePanel = $('place-panel');
+  const placeToggle = $('place-toggle');
+  placeToggle.addEventListener('click', () => {
+    const collapsed = placePanel.classList.toggle('collapsed');
+    placeToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    placeToggle.setAttribute('aria-label', collapsed ? 'Expand In your game' : 'Collapse In your game');
+  });
+
+  /* thread lines are plain text from the server; classify them into the thread's rows */
+  function classify(line) {
+    if (line.startsWith('You: ')) return { kind: 'user', text: line.slice(5) };
+    if (line.startsWith(IDEA_PREFIX)) {
+      const rest = line.slice(IDEA_PREFIX.length);
+      const i = rest.indexOf(': ');
+      return { kind: 'idea', title: i < 0 ? rest : rest.slice(0, i), pitch: i < 0 ? '' : rest.slice(i + 2) };
+    }
+    if (line.startsWith('OpenRO: ')) return { kind: 'agent', text: plain(line.slice(8)) };
+    if (line === 'Playtest passed.') return { kind: 'verdict', tone: 'ok', raw: line };
+    if (line.startsWith('Playtest failed')) return { kind: 'verdict', tone: 'bad', raw: line };
+    if (line.startsWith('Playtest result was not')) return { kind: 'verdict', tone: 'warn', raw: line };
+    return { kind: 'step', raw: line };
   }
-  function showEmpty() {
-    /* The empty state must not promise, in the present tense, work the
-       current screen cannot do (no key / no Studio). */
-    thread.innerHTML = CAN_BUILD
-      ? '<div class="empty">Describe the game you want — OpenRO builds it in Studio and playtests it before calling it done.</div>'
-      : '<div class="empty">Describe the game you want. To build it, OpenRO needs a model key and a Studio connection — see the notes above.</div>';
+  function stepInfo(raw) {
+    let m = raw.match(/^Wrote (.+)\.$/);
+    if (m) return { icon: 'doc', label: 'Saved the script ' + m[1].split('.').pop(), result: 'Saved' };
+    m = raw.match(/^Generated the (.+) script\.$/);
+    if (m) return { icon: 'doc', label: 'Wrote the ' + m[1].replace(/_/g, ' ') + ' code', result: 'Written' };
+    m = raw.match(/^Created (.+) \((.+)\)\.$/);
+    if (m) return { icon: 'box', label: 'Added ' + m[1].split('.').pop() + ' (' + (CLASSES[m[2]] || m[2].toLowerCase()) + ')', result: 'Added' };
+    m = raw.match(/^Deleted (.+)\.$/);
+    if (m) return { icon: 'trash', label: 'Removed ' + m[1].split('.').pop(), result: 'Removed' };
+    return { icon: 'check', label: plain(raw), result: 'Done' };
   }
-  function showThreadError() {
-    /* The error state: the conversation did not load, and the screen
-       says so — it never dresses an outage up as an empty chat. */
-    thread.innerHTML = '<div class="thread-error">Could not load the conversation — the OpenRO server did not answer. Reload to try again.</div>';
+  function verdictBlock(item) {
+    const v = el('div', 'verdict ' + item.tone);
+    if (item.tone === 'ok') {
+      v.appendChild(icon('check'));
+      const body = el('div');
+      body.appendChild(el('strong', '', 'Passed'));
+      body.appendChild(el('p', '', 'The test run played through with no errors.'));
+      v.appendChild(body);
+    } else if (item.tone === 'bad') {
+      v.appendChild(icon('x'));
+      const body = el('div');
+      body.appendChild(el('strong', '', 'Failed'));
+      body.appendChild(el('p', '', 'The test run found a problem. OpenRO is reading the error and repairing your game.'));
+      v.appendChild(body);
+    } else {
+      v.appendChild(icon('alert'));
+      const body = el('div');
+      body.appendChild(el('strong', '', 'Not proven yet'));
+      body.appendChild(el('p', '', 'The test run result could not be read, so this build counts as unproven. OpenRO will test again.'));
+      v.appendChild(body);
+    }
+    const det = el('details');
+    det.appendChild(el('summary', '', 'Details'));
+    det.appendChild(el('pre', '', item.raw));
+    v.lastChild.appendChild(det);
+    return v;
   }
+  function userRow(text, fresh) {
+    const row = el('div', 'row user' + (fresh ? ' fresh' : ''));
+    row.appendChild(el('div', 'bubble', text));
+    return row;
+  }
+  function agentRow(text, fresh, bad) {
+    const row = el('div', 'row' + (fresh ? ' fresh' : ''));
+    const av = el('span', 'avatar');
+    av.appendChild(icon('spark', 'ic-sm'));
+    row.appendChild(av);
+    row.appendChild(el('div', 'bubble' + (bad ? ' bad' : ''), text));
+    return row;
+  }
+  function welcome() {
+    const s = el('section', 'welcome');
+    s.appendChild(el('h2', '', 'What do you want to make?'));
+    s.appendChild(el('p', '', CAN_BUILD
+      ? 'Pick one of these ideas, or describe your own game in the box below. OpenRO builds it in Studio and runs a test before it says it is done.'
+      : 'Pick an idea or describe your own game below. To build it, OpenRO needs a model key and a Studio connection. See the notice above.'));
+    return s;
+  }
+  function ideaRecord(title) {
+    return state.ideas.find((i) => i.title === title) || null;
+  }
+  function ideaCard(title, pitch, fresh) {
+    const rec = ideaRecord(title);
+    const card = el('article', 'idea-card' + (fresh ? ' fresh' : ''));
+    card.appendChild(el('h3', '', title));
+    card.appendChild(el('p', '', plain(rec ? rec.pitch : pitch)));
+    if (rec && rec.skills && rec.skills.length) {
+      card.appendChild(el('span', 'adds-label', 'What it adds'));
+      const list = el('ul', 'adds');
+      [...new Set(rec.skills.map((s) => ADDS[s] || s.replace(/_/g, ' ')))].forEach((t) => list.appendChild(el('li', '', t)));
+      card.appendChild(list);
+    }
+    if (rec) {
+      const b = el('button', 'btn btn-primary', 'Build this');
+      b.type = 'button';
+      b.disabled = !STUDIO || state.busy;
+      if (!STUDIO) b.setAttribute('aria-describedby', 'no-studio-banner');
+      b.addEventListener('click', () => buildIdea(rec, b));
+      card.appendChild(b);
+    } else {
+      card.appendChild(el('p', 'muted', 'Not on offer right now.'));
+    }
+    return card;
+  }
+  function stepRow(raw) {
+    const info = stepInfo(raw);
+    const li = el('li', 'step');
+    const ic = el('span', 'step-icon');
+    ic.appendChild(icon(info.icon, 'ic-sm'));
+    li.appendChild(ic);
+    const body = el('div');
+    body.appendChild(el('div', 'step-label', info.label));
+    const det = el('details');
+    det.appendChild(el('summary', '', 'Details'));
+    det.appendChild(el('pre', '', raw));
+    body.appendChild(det);
+    li.appendChild(body);
+    li.appendChild(el('span', 'step-result', info.result));
+    return li;
+  }
+  /* one build card per run of steps; verdict bands sit between the step lists in order */
+  function buildCard(fresh) {
+    const card = el('section', 'build' + (fresh ? ' fresh' : ''));
+    card.appendChild(el('div', 'build-head', 'What OpenRO did'));
+    return card;
+  }
+
+  /* the thread: a fresh render from the server's lines, plus this screen's own notices */
+  function renderThread() {
+    const items = state.lines.map(classify);
+    const hasUser = items.some((i) => i.kind === 'user') || !!state.pendingUser;
+    const hasBuild = items.some((i) => i.kind === 'step' || i.kind === 'verdict');
+    const fresh = (i) => state.loaded && i >= state.shown;
+    thread.textContent = '';
+    thread.setAttribute('aria-busy', 'false');
+    if (state.threadError) {
+      const err = el('div', 'thread-error');
+      err.appendChild(el('strong', '', 'Could not load the conversation.'));
+      err.appendChild(el('p', '', 'The OpenRO server did not answer. Try again, or reload the page.'));
+      const retry = el('button', 'btn', 'Try again');
+      retry.type = 'button';
+      retry.addEventListener('click', () => refreshAll());
+      err.appendChild(retry);
+      thread.appendChild(err);
+      return;
+    }
+    if (!hasUser && !hasBuild) thread.appendChild(welcome());
+    let group = null;
+    let groupKind = '';
+    items.forEach((it, i) => {
+      const kind = it.kind === 'step' || it.kind === 'verdict' ? 'build' : it.kind === 'idea' ? 'idea' : '';
+      if (kind !== groupKind) { group = null; groupKind = kind; }
+      if (kind === 'build') {
+        if (!group) { group = buildCard(fresh(i)); thread.appendChild(group); }
+        if (it.kind === 'verdict') { group.appendChild(verdictBlock(it)); return; }
+        let ol = group.lastElementChild && group.lastElementChild.tagName === 'OL' ? group.lastElementChild : null;
+        if (!ol) { ol = el('ol', 'steps'); group.appendChild(ol); }
+        ol.appendChild(stepRow(it.raw));
+        return;
+      }
+      if (kind === 'idea') {
+        if (!group) { group = el('div', 'ideas-block'); thread.appendChild(group); }
+        group.appendChild(ideaCard(it.title, it.pitch, fresh(i)));
+        return;
+      }
+      if (it.kind === 'user') thread.appendChild(userRow(it.text, fresh(i)));
+      else if (it.kind === 'agent') thread.appendChild(agentRow(it.text, fresh(i), /could not|did not|not connected|no model/i.test(it.text)));
+      else thread.appendChild(agentRow(it.raw, fresh(i), false));
+    });
+    state.local.forEach((n) => thread.appendChild(agentRow(n.text, true, n.bad)));
+    if (state.pendingUser) thread.appendChild(userRow(state.pendingUser, true));
+    if (state.busy) {
+      const w = el('div', 'working');
+      w.setAttribute('role', 'status');
+      const dots = el('span', 'dots');
+      for (let k = 0; k < 3; k++) dots.appendChild(el('span'));
+      w.appendChild(dots);
+      w.appendChild(el('span', '', 'OpenRO is working on it. A build can take a minute or two.'));
+      thread.appendChild(w);
+    }
+    /* a conversation scrolls to its latest line; a fresh chat keeps its heading and ideas in view */
+    if (hasUser || hasBuild || state.busy || state.pendingUser) thread.scrollTop = thread.scrollHeight;
+    state.shown = items.length;
+    state.loaded = true;
+    renderChips(items);
+  }
+  function renderChips(items) {
+    const box = $('ideas');
+    const has = items.some((i) => i.kind === 'user' || i.kind === 'step' || i.kind === 'verdict');
+    const list = $('idea-btns');
+    list.textContent = '';
+    if (!has || !state.ideas.length) { box.hidden = true; return; }
+    box.hidden = false;
+    state.ideas.forEach((idea) => {
+      const b = el('button', 'idea-chip');
+      b.type = 'button';
+      b.appendChild(icon('plus', 'ic-sm'));
+      b.appendChild(el('span', '', idea.title));
+      b.disabled = !STUDIO || state.busy;
+      if (!STUDIO) b.title = 'Connect Studio to build this';
+      b.addEventListener('click', () => buildIdea(idea, b));
+      list.appendChild(b);
+    });
+  }
+
   async function refreshThread() {
     try {
       const r = await fetch('/api/thread');
       if (!r.ok) throw new Error('thread');
       const data = await r.json();
-      thread.innerHTML = '';
-      if (!data.thread.length) { showEmpty(); return; }
-      data.thread.forEach(addLine);
+      state.lines = data.thread;
+      state.threadError = false;
     } catch (err) {
-      if (!thread.children.length) showThreadError();
+      if (!state.lines.length) state.threadError = true;
     }
+    renderThread();
   }
+
+  /* chat list: the chats are real buttons; the list keeps its last good state on failure */
   async function refreshChats() {
     try {
       const r = await fetch('/api/chats');
       if (!r.ok) throw new Error('chats');
       const data = await r.json();
-      chatList.innerHTML = '';
+      chatList.textContent = '';
       for (const c of data.chats) {
         const li = document.createElement('li');
-        /* A real <button>: chat switching is keyboard-reachable. */
-        const btn = document.createElement('button');
+        const btn = el('button', 'chat-btn', c.title || 'New chat');
         btn.type = 'button';
-        btn.className = 'chat-btn' + (c.id === data.active ? ' active' : '');
-        btn.textContent = c.title || 'New chat';
+        if (c.id === data.active) {
+          btn.setAttribute('aria-current', 'true');
+          $('chat-title').textContent = c.title || 'New chat';
+        }
         btn.addEventListener('click', async () => {
           try {
             const sr = await fetch('/api/chats/select', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: c.id }) });
             if (!sr.ok) throw new Error('select');
           } catch (err) {
-            addLine('OpenRO: Could not switch chats — the server did not answer.');
+            notice('Could not switch chats. The server did not answer.', true);
             return;
           }
+          setMenu(false);
           await refreshChats();
-          await refreshThread();
-          await refreshIdeas();
+          await refreshAll();
         });
         li.appendChild(btn);
         chatList.appendChild(li);
       }
     } catch (err) { /* the list keeps its last good state */ }
   }
-  /* the proactive pitch: idea cards for what fits this game now.
-     The pitch itself is spoken into the thread by the server; these
-     cards are the one-tap way to say "build that one". */
-  const ideasBar = document.getElementById('ideas');
-  const ideaBtns = document.getElementById('idea-btns');
-  function renderIdeaButtons(ideas) {
-    ideaBtns.innerHTML = '';
-    if (!ideas || !ideas.length) { ideasBar.hidden = true; return; }
-    ideasBar.hidden = false;
-    for (const idea of ideas) {
-      const card = document.createElement('div');
-      card.className = 'idea-card';
-      const title = document.createElement('div');
-      title.className = 'idea-title';
-      title.textContent = idea.title;
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'idea-btn';
-      b.textContent = 'Build this';
-      b.disabled = !STUDIO;
-      b.addEventListener('click', () => buildIdea(idea, b));
-      /* The card is the action, not a second copy of the pitch: the
-         full pitch line sits in the thread directly above this bar
-         (elevation checker note — no verbatim duplication). */
-      card.appendChild(title);
-      card.appendChild(b);
-      ideaBtns.appendChild(card);
-    }
-  }
+
+  /* ideas: the pitch lands in the thread; the same set feeds the cards and the chips */
   async function refreshIdeas() {
     try {
       const r = await fetch('/api/ideas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       if (!r.ok) return;
       const data = await r.json();
-      renderIdeaButtons(data.ideas);
+      state.ideas = data.ideas || [];
       if (data.pitched_new) await refreshThread();
-    } catch (err) { /* the bar keeps its last good state */ }
+      else renderThread();
+    } catch (err) { /* the cards keep their last good state */ }
   }
+
+  function notice(text, bad) {
+    state.local.push({ text, bad: !!bad });
+    renderThread();
+  }
+  function setBusy(on) {
+    state.busy = on;
+    $('send').disabled = on;
+    $('revert').disabled = on;
+  }
+
   async function buildIdea(idea, btn) {
+    state.local = [];
     btn.disabled = true;
     btn.textContent = 'Building…';
+    setBusy(true);
+    renderThread();
     try {
       const r = await fetch('/api/ideas/build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: idea.id }) });
       const data = await r.json();
-      if (!data.ok) { addLine('OpenRO: ' + data.error); }
-      else if (data.ideas) { renderIdeaButtons(data.ideas); }
+      if (!data.ok) notice(data.error, true);
+      else if (data.ideas) state.ideas = data.ideas;
     } catch (err) {
-      addLine('OpenRO: Could not reach the OpenRO server.');
+      notice('Could not reach the OpenRO server.', true);
     }
-    await refreshThread();
-    await refreshChats();
-    await refreshIdeas();
+    setBusy(false);
+    await refreshAll();
   }
-  document.getElementById('composer').addEventListener('submit', async (e) => {
+
+  /* the composer: the ask is shown at once and the build shows as it runs */
+  $('composer').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const input = document.getElementById('composer-input');
-    const send = document.getElementById('send');
+    const input = $('composer-input');
     const message = input.value.trim();
     if (!message) return;
     input.value = '';
-    addLine('You: ' + message);
-    send.disabled = true;
-    send.textContent = 'Building…';
+    state.local = [];
+    state.pendingUser = message;
+    setBusy(true);
+    renderThread();
     try {
       const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }) });
       const data = await r.json();
-      if (!data.ok) { addLine('OpenRO: ' + data.error); }
-      else { await refreshThread(); }
+      if (!data.ok) notice(data.error, true);
     } catch (err) {
-      addLine('OpenRO: Could not reach the OpenRO server.');
+      notice('Could not reach the OpenRO server.', true);
     }
-    send.disabled = false;
-    send.textContent = 'Send';
-    await refreshChats();
-    await refreshIdeas();
+    state.pendingUser = '';
+    setBusy(false);
+    await refreshAll();
     input.focus();
   });
-  document.getElementById('revert').addEventListener('click', async () => {
+
+  /* undo last build: a secondary control with a confirm step */
+  const undoBox = $('undo-confirm');
+  const revertBtn = $('revert');
+  function setUndo(open) {
+    state.undoOpen = open;
+    undoBox.hidden = !open;
+    revertBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) $('undo-yes').focus();
+  }
+  revertBtn.addEventListener('click', () => setUndo(!state.undoOpen));
+  $('undo-no').addEventListener('click', () => { setUndo(false); revertBtn.focus(); });
+  $('undo-yes').addEventListener('click', async () => {
+    setUndo(false);
+    state.local = [];
+    setBusy(true);
     try {
       const r = await fetch('/api/revert', { method: 'POST' });
       const data = await r.json();
-      if (data.ok) addLine('OpenRO: Reverted ' + data.restored.length + ' change(s) in this chat.');
-      else if (data.error === 'nothing to revert') addLine('OpenRO: Nothing to revert — no change set is waiting in this chat.');
-      else addLine('OpenRO: ' + data.error);
+      if (data.ok) notice('Undid the last build. ' + data.restored.length + ' change(s) were put back.');
+      else if (data.error === 'nothing to revert') notice('Nothing to undo. No build is waiting to be undone in this chat.');
+      else notice(data.error, true);
     } catch (err) {
-      addLine('OpenRO: Could not reach the OpenRO server.');
+      notice('Could not reach the OpenRO server.', true);
     }
+    setBusy(false);
+    await refreshAll();
+    revertBtn.focus();
   });
-  document.getElementById('new-chat').addEventListener('click', async () => {
+
+  /* In your game: the real place tree from the server */
+  async function refreshPlace() {
+    const body = $('place-body');
+    try {
+      const r = await fetch('/api/place-tree');
+      if (!r.ok) throw new Error('place');
+      const tree = await r.json();
+      const scripts = Object.keys(tree.scripts || {});
+      const parts = Object.keys(tree.instances || {});
+      body.textContent = '';
+      if (!scripts.length && !parts.length) {
+        body.appendChild(el('p', 'place-empty', 'Nothing built yet. When OpenRO builds something, its scripts and parts show here.'));
+        return;
+      }
+      const section = (title, names) => {
+        const s = el('section', 'place-section');
+        const h = el('h3', '', title);
+        h.appendChild(el('span', '', String(names.length)));
+        s.appendChild(h);
+        const ul = el('ul', 'place-list');
+        names.forEach((n) => { const li = el('li', '', n); li.title = n; ul.appendChild(li); });
+        s.appendChild(ul);
+        return s;
+      };
+      if (scripts.length) body.appendChild(section('Scripts', scripts));
+      if (parts.length) body.appendChild(section('Parts', parts));
+    } catch (err) {
+      body.textContent = '';
+      body.appendChild(el('p', 'place-empty', 'Could not read your game. Check that Studio is connected, then try again.'));
+    }
+  }
+
+  $('new-chat').addEventListener('click', async () => {
     try {
       const r = await fetch('/api/chats', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       if (!r.ok) throw new Error('new chat');
     } catch (err) {
-      addLine('OpenRO: Could not reach the OpenRO server.');
+      notice('Could not reach the OpenRO server.', true);
       return;
     }
+    setMenu(false);
+    state.local = [];
+    state.shown = 0;
+    await refreshChats();
+    await refreshAll();
+    $('composer-input').focus();
+  });
+
+  async function refreshAll() {
     await refreshChats();
     await refreshThread();
     await refreshIdeas();
-    document.getElementById('composer-input').focus();
-  });
-  refreshChats();
-  refreshThread();
-  refreshIdeas();
+    await refreshPlace();
+  }
+  refreshAll();
 </script>
 </body>
 </html>
