@@ -1,27 +1,190 @@
 //! Hand-rolled minimal HTTP over `std::net::TcpListener` serving the
 //! embedded web UI (plain HTML/CSS/JS string constants — no framework,
 //! no build step) plus the JSON API the UI and tests use.
+//!
+//! Chats are multiple and persistent: when the server is built with a
+//! data dir (`Shared::with_data_dir`), every chat and its thread lines
+//! are saved to `chats.json` there on every change and reloaded at
+//! start, so a restart loses nothing.
 
 use crate::agent::Agent;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+#[derive(Clone)]
+pub struct Chat {
+    pub id: String,
+    pub title: String,
+    pub lines: Vec<String>,
+}
+
+static CHAT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn new_chat_id() -> String {
+    let n = CHAT_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("chat-{millis}-{n}")
+}
+
+fn default_chat() -> Chat {
+    Chat {
+        id: new_chat_id(),
+        title: "New chat".to_string(),
+        lines: Vec::new(),
+    }
+}
 
 pub struct Shared {
     pub agent: Mutex<Option<Agent>>,
-    pub thread: Mutex<Vec<String>>,
+    pub chats: Mutex<Vec<Chat>>,
+    pub active_chat: Mutex<String>,
     pub game_name: String,
+    pub data_dir: Option<PathBuf>,
 }
 
 impl Shared {
+    /// In-memory server (tests, ephemeral runs): chats are not saved.
     pub fn new(agent: Option<Agent>, game_name: String) -> Arc<Shared> {
+        let chat = default_chat();
+        let active = chat.id.clone();
         Arc::new(Shared {
             agent: Mutex::new(agent),
-            thread: Mutex::new(Vec::new()),
+            chats: Mutex::new(vec![chat]),
+            active_chat: Mutex::new(active),
             game_name,
+            data_dir: None,
         })
     }
+
+    /// Persistent server: chats load from (and save to) `chats.json`
+    /// inside `data_dir`.
+    pub fn with_data_dir(agent: Option<Agent>, game_name: String, data_dir: PathBuf) -> Arc<Shared> {
+        let _ = std::fs::create_dir_all(&data_dir);
+        let (chats, active) = load_chats(&data_dir).unwrap_or_else(|| {
+            let chat = default_chat();
+            let active = chat.id.clone();
+            (vec![chat], active)
+        });
+        Arc::new(Shared {
+            agent: Mutex::new(agent),
+            chats: Mutex::new(chats),
+            active_chat: Mutex::new(active),
+            game_name,
+            data_dir: Some(data_dir),
+        })
+    }
+
+    fn save(&self) {
+        let Some(dir) = &self.data_dir else { return };
+        let chats = self.chats.lock().unwrap();
+        let active = self.active_chat.lock().unwrap();
+        let v = json!({
+            "chats": chats.iter().map(|c| json!({
+                "id": c.id, "title": c.title, "lines": c.lines,
+            })).collect::<Vec<_>>(),
+            "active": *active,
+        });
+        let path = dir.join("chats.json");
+        let tmp = dir.join("chats.json.tmp");
+        if std::fs::write(&tmp, v.to_string()).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+
+    /// The active chat's thread lines.
+    pub fn thread_lines(&self) -> Vec<String> {
+        let chats = self.chats.lock().unwrap();
+        let active = self.active_chat.lock().unwrap();
+        chats
+            .iter()
+            .find(|c| c.id == *active)
+            .map(|c| c.lines.clone())
+            .unwrap_or_default()
+    }
+
+    /// Append lines to the active chat; the first "You: ..." line of a
+    /// fresh chat becomes its title.
+    pub fn append_lines(&self, lines: &[String]) {
+        {
+            let mut chats = self.chats.lock().unwrap();
+            let active = self.active_chat.lock().unwrap();
+            if let Some(chat) = chats.iter_mut().find(|c| c.id == *active) {
+                if chat.title == "New chat" {
+                    if let Some(first) = lines.iter().find(|l| l.starts_with("You: ")) {
+                        let ask = first.trim_start_matches("You: ");
+                        chat.title = ask.chars().take(48).collect();
+                    }
+                }
+                chat.lines.extend(lines.iter().cloned());
+            }
+        }
+        self.save();
+    }
+
+    pub fn create_chat(&self) -> Chat {
+        let chat = default_chat();
+        {
+            let mut chats = self.chats.lock().unwrap();
+            chats.push(chat.clone());
+            let mut active = self.active_chat.lock().unwrap();
+            *active = chat.id.clone();
+        }
+        self.save();
+        chat
+    }
+
+    pub fn select_chat(&self, id: &str) -> bool {
+        let exists = self.chats.lock().unwrap().iter().any(|c| c.id == id);
+        if exists {
+            *self.active_chat.lock().unwrap() = id.to_string();
+            self.save();
+        }
+        exists
+    }
+
+    pub fn chats_json(&self) -> Value {
+        let chats = self.chats.lock().unwrap();
+        let active = self.active_chat.lock().unwrap();
+        json!({
+            "chats": chats.iter().map(|c| json!({ "id": c.id, "title": c.title })).collect::<Vec<_>>(),
+            "active": *active,
+        })
+    }
+}
+
+fn load_chats(dir: &PathBuf) -> Option<(Vec<Chat>, String)> {
+    let text = std::fs::read_to_string(dir.join("chats.json")).ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    let mut chats = Vec::new();
+    for item in v["chats"].as_array()? {
+        let id = item["id"].as_str()?.to_string();
+        let title = item["title"].as_str().unwrap_or("New chat").to_string();
+        let lines: Vec<String> = item["lines"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| l.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        chats.push(Chat { id, title, lines });
+    }
+    if chats.is_empty() {
+        return None;
+    }
+    let active = v["active"]
+        .as_str()
+        .filter(|a| chats.iter().any(|c| &c.id == a))
+        .unwrap_or(&chats[0].id)
+        .to_string();
+    Some((chats, active))
 }
 
 pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> {
@@ -134,8 +297,35 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
             );
         }
         ("GET", "/api/thread") => {
-            let thread = shared.thread.lock().unwrap().clone();
-            respond_json(&mut stream, "200 OK", &json!({ "thread": thread }));
+            respond_json(
+                &mut stream,
+                "200 OK",
+                &json!({ "thread": shared.thread_lines() }),
+            );
+        }
+        ("GET", "/api/chats") => {
+            respond_json(&mut stream, "200 OK", &shared.chats_json());
+        }
+        ("POST", "/api/chats") => {
+            let chat = shared.create_chat();
+            respond_json(
+                &mut stream,
+                "201 Created",
+                &json!({ "id": chat.id, "title": chat.title }),
+            );
+        }
+        ("POST", "/api/chats/select") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let id = body.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            if shared.select_chat(id) {
+                respond_json(&mut stream, "200 OK", &json!({ "ok": true }));
+            } else {
+                respond_json(
+                    &mut stream,
+                    "404 Not Found",
+                    &json!({ "ok": false, "error": "chat not found" }),
+                );
+            }
         }
         ("GET", "/api/place-tree") => {
             let mut guard = shared.agent.lock().unwrap();
@@ -180,11 +370,7 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                 ),
                 Some(agent) => match agent.run_ask(&message) {
                     Ok(outcome) => {
-                        shared
-                            .thread
-                            .lock()
-                            .unwrap()
-                            .extend(outcome.thread.iter().cloned());
+                        shared.append_lines(&outcome.thread);
                         respond_json(
                             &mut stream,
                             "200 OK",
@@ -216,11 +402,9 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
             match guard.as_mut() {
                 Some(agent) => match agent.revert_last() {
                     Ok(restored) => {
-                        shared
-                            .thread
-                            .lock()
-                            .unwrap()
-                            .push("OpenRO: Reverted the last change set.".to_string());
+                        shared.append_lines(&[
+                            "OpenRO: Reverted the last change set.".to_string(),
+                        ]);
                         respond_json(
                             &mut stream,
                             "200 OK",
@@ -241,8 +425,12 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
             }
         }
         ("POST", "/api/new-chat") => {
-            shared.thread.lock().unwrap().clear();
-            respond_json(&mut stream, "200 OK", &json!({ "ok": true }));
+            let chat = shared.create_chat();
+            respond_json(
+                &mut stream,
+                "200 OK",
+                &json!({ "ok": true, "id": chat.id }),
+            );
         }
         _ => respond_json(
             &mut stream,
@@ -261,9 +449,10 @@ fn status_flags(shared: &Shared) -> (bool, bool) {
     }
 }
 
-/// The single-page shell: left sidebar (chat list + New chat + the game's
-/// name), one scrolling thread, one composer row pinned at the bottom, and
-/// ONE status chip reflecting the real bridge state.
+/// The single-page shell: left sidebar (the game's chats + New chat +
+/// the game's name + settings), one scrolling thread, one composer row
+/// pinned at the bottom, and ONE status chip reflecting the real bridge
+/// state. Light + dark themes; dark is the default.
 pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bool) -> String {
     let chip = if studio_connected {
         "Studio connected"
@@ -278,31 +467,83 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
             .to_string()
     };
     format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
+        r##"<!DOCTYPE html>
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenRO — {game_name}</title>
+<script>
+  try {{
+    var t = localStorage.getItem('openro-theme');
+    if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+  }} catch (e) {{ /* dark stays the default */ }}
+</script>
 <style>
+  :root {{
+    color-scheme: dark;
+    --bg: #101014; --panel: #1b1b22; --sidebar: #17171d; --ink: #eeeeee;
+    --muted: #9a9aad; --faint: #76768a; --rule: #2a2a33;
+    --accent: #2f6fed; --accent-hover: #2a62d4;
+    --user-bubble: #23232e; --field: #1b1b22;
+    --ok-bg: #173d24; --ok-ink: #7ee2a0; --bad-bg: #3d1717; --bad-ink: #f09393;
+    --warn-bg: #3a2f10; --warn-ink: #f2d38a;
+  }}
+  [data-theme="light"] {{
+    color-scheme: light;
+    --bg: #f6f6f4; --panel: #ffffff; --sidebar: #ececea; --ink: #1d1d22;
+    --muted: #5d5d6b; --faint: #76768a; --rule: #d9d9d4;
+    --accent: #2459c4; --accent-hover: #1e4dab;
+    --user-bubble: #e6e6e1; --field: #ffffff;
+    --ok-bg: #e2f2e6; --ok-ink: #1c6b34; --bad-bg: #fbe7e7; --bad-ink: #9c2222;
+    --warn-bg: #fdf3e3; --warn-ink: #7a4b12;
+  }}
   * {{ box-sizing: border-box; }}
-  body {{ margin: 0; font-family: system-ui, sans-serif; background: #101014; color: #eee; display: flex; height: 100vh; }}
-  #sidebar {{ width: 260px; flex: 0 0 260px; background: #17171d; border-right: 1px solid #2a2a33; display: flex; flex-direction: column; padding: 16px; gap: 12px; }}
-  #sidebar h1 {{ font-size: 18px; margin: 0; }}
-  #game-name {{ color: #9a9aad; font-size: 13px; }}
-  #new-chat {{ background: #2f6fed; color: #fff; border: 0; border-radius: 8px; padding: 9px; cursor: pointer; }}
-  #chat-list {{ list-style: none; margin: 0; padding: 0; font-size: 14px; }}
-  #chat-list li {{ padding: 7px 9px; border-radius: 6px; background: #20202a; }}
-  .chip {{ margin-top: auto; font-size: 12px; padding: 6px 10px; border-radius: 999px; text-align: center; }}
-  .chip.on {{ background: #173d24; color: #7ee2a0; }}
-  .chip.off {{ background: #3d1717; color: #f09393; }}
+  body {{ margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--ink); display: flex; height: 100vh; font-size: 15px; }}
+  ::selection {{ background: var(--accent); color: #fff; }}
+  :focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
+  button {{ font: inherit; }}
+  .sr-only {{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }}
+  #sidebar {{ width: 264px; flex: 0 0 264px; background: var(--sidebar); border-right: 1px solid var(--rule); display: flex; flex-direction: column; padding: 16px; gap: 12px; min-height: 0; }}
+  #sidebar h1 {{ font-size: 18px; margin: 0; font-weight: 600; }}
+  #game-name {{ color: var(--muted); font-size: 13px; }}
+  #new-chat {{ background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 10px; cursor: pointer; font-weight: 600; }}
+  #new-chat:hover {{ background: var(--accent-hover); }}
+  #chat-list {{ list-style: none; margin: 0; padding: 0; font-size: 14px; overflow-y: auto; flex: 1; min-height: 48px; display: flex; flex-direction: column; gap: 4px; }}
+  #chat-list li {{ padding: 8px 10px; border-radius: 6px; color: var(--muted); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  #chat-list li:hover {{ color: var(--ink); }}
+  #chat-list li.active {{ background: var(--panel); color: var(--ink); }}
+  .chip {{ font-size: 12px; padding: 6px 10px; border-radius: 999px; text-align: center; }}
+  .chip.on {{ background: var(--ok-bg); color: var(--ok-ink); }}
+  .chip.off {{ background: var(--bad-bg); color: var(--bad-ink); }}
+  #settings {{ border-top: 1px solid var(--rule); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }}
+  #settings h2 {{ font-size: 12px; font-weight: 600; color: var(--faint); margin: 0; text-transform: uppercase; letter-spacing: 0.08em; }}
+  .set-row {{ display: flex; align-items: center; gap: 8px; }}
+  .set-row .set-name {{ font-size: 13px; color: var(--muted); flex: 1; }}
+  .theme-btn {{ background: none; border: 1px solid var(--rule); color: var(--muted); border-radius: 999px; padding: 4px 12px; font-size: 13px; cursor: pointer; }}
+  .theme-btn[aria-pressed="true"] {{ background: var(--ink); color: var(--bg); border-color: var(--ink); }}
   main {{ flex: 1; display: flex; flex-direction: column; min-width: 0; }}
-  .banner {{ background: #3a2f10; color: #f2d38a; padding: 9px 14px; font-size: 13px; }}
-  #thread {{ flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px; }}
-  .msg {{ max-width: 75ch; line-height: 1.45; white-space: pre-wrap; }}
-  #composer {{ display: flex; gap: 8px; padding: 12px; border-top: 1px solid #2a2a33; }}
-  #composer input {{ flex: 1; background: #1b1b22; color: #eee; border: 1px solid #33333f; border-radius: 8px; padding: 10px; }}
-  #composer button {{ background: #2f6fed; color: #fff; border: 0; border-radius: 8px; padding: 10px 16px; cursor: pointer; }}
-  #revert {{ background: #33333f !important; }}
+  .banner {{ background: var(--warn-bg); color: var(--warn-ink); padding: 10px 16px; font-size: 13px; }}
+  #thread {{ flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 10px; }}
+  .msg {{ max-width: 75ch; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; border-radius: 10px; padding: 10px 14px; }}
+  .msg.user {{ background: var(--user-bubble); align-self: flex-end; }}
+  .msg.assistant {{ background: var(--panel); border: 1px solid var(--rule); align-self: flex-start; }}
+  .msg.step {{ background: transparent; color: var(--muted); font-size: 13px; align-self: flex-start; padding: 2px 14px; }}
+  .msg.step.verdict-ok {{ color: var(--ok-ink); font-weight: 600; }}
+  .msg.step.verdict-bad {{ color: var(--bad-ink); font-weight: 600; }}
+  .empty {{ color: var(--faint); text-align: center; margin-top: 12vh; line-height: 1.6; }}
+  #composer {{ display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--rule); }}
+  #composer input {{ flex: 1; background: var(--field); color: var(--ink); border: 1px solid var(--rule); border-radius: 8px; padding: 10px; font-size: 15px; }}
+  #composer button {{ background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 10px 16px; cursor: pointer; font-weight: 600; }}
+  #composer button:disabled {{ opacity: 0.45; cursor: default; }}
+  #revert {{ background: var(--panel) !important; color: var(--ink) !important; border: 1px solid var(--rule) !important; }}
+  @media (max-width: 760px) {{
+    body {{ flex-direction: column; }}
+    #sidebar {{ width: 100%; flex: none; max-height: 44vh; border-right: 0; border-bottom: 1px solid var(--rule); }}
+  }}
+  @media (prefers-reduced-motion: reduce) {{
+    * {{ scroll-behavior: auto !important; transition: none !important; }}
+  }}
 </style>
 </head>
 <body>
@@ -310,13 +551,22 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
     <h1>OpenRO</h1>
     <div id="game-name">{game_name}</div>
     <button id="new-chat" type="button">New chat</button>
-    <ul id="chat-list"><li>Current chat</li></ul>
+    <ul id="chat-list"></ul>
     <div id="status-chip" class="{chip_class}">{chip}</div>
+    <div id="settings">
+      <h2>Settings</h2>
+      <div class="set-row">
+        <span class="set-name">Appearance</span>
+        <button class="theme-btn" type="button" data-set-theme="dark" aria-pressed="true">Dark</button>
+        <button class="theme-btn" type="button" data-set-theme="light" aria-pressed="false">Light</button>
+      </div>
+    </div>
   </aside>
   <main>
     {key_banner}
     <div id="thread" aria-live="polite"></div>
     <form id="composer">
+      <label class="sr-only" for="composer-input">Describe the game</label>
       <input id="composer-input" type="text" placeholder="Describe the game…" autocomplete="off">
       <button id="revert" type="button">Revert</button>
       <button id="send" type="submit">Send</button>
@@ -324,30 +574,87 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
   </main>
 <script>
   const thread = document.getElementById('thread');
+  const chatList = document.getElementById('chat-list');
+  const rootEl = document.documentElement;
+
+  /* appearance — the settings toggle; the choice persists on this device */
+  const themeBtns = document.querySelectorAll('.theme-btn');
+  function syncThemeBtns() {{
+    const cur = rootEl.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+    themeBtns.forEach((b) => b.setAttribute('aria-pressed', b.getAttribute('data-set-theme') === cur ? 'true' : 'false'));
+  }}
+  themeBtns.forEach((b) => b.addEventListener('click', () => {{
+    const next = b.getAttribute('data-set-theme');
+    rootEl.setAttribute('data-theme', next);
+    try {{ localStorage.setItem('openro-theme', next); }} catch (e) {{}}
+    syncThemeBtns();
+  }}));
+  syncThemeBtns();
+
+  function lineClass(text) {{
+    if (text.startsWith('You: ')) return 'msg user';
+    if (text.startsWith('OpenRO: ')) return 'msg assistant';
+    if (text === 'Playtest passed.') return 'msg step verdict-ok';
+    if (text.startsWith('Playtest failed')) return 'msg step verdict-bad';
+    return 'msg step';
+  }}
   function addLine(text) {{
+    const empty = thread.querySelector('.empty');
+    if (empty) empty.remove();
     const div = document.createElement('div');
-    div.className = 'msg';
+    div.className = lineClass(text);
     div.textContent = text;
     thread.appendChild(div);
     thread.scrollTop = thread.scrollHeight;
+  }}
+  function showEmpty() {{
+    thread.innerHTML = '<div class="empty">Describe the game you want — OpenRO builds it in Studio and playtests it before calling it done.</div>';
   }}
   async function refreshThread() {{
     const r = await fetch('/api/thread');
     const data = await r.json();
     thread.innerHTML = '';
+    if (!data.thread.length) {{ showEmpty(); return; }}
     data.thread.forEach(addLine);
+  }}
+  async function refreshChats() {{
+    const r = await fetch('/api/chats');
+    const data = await r.json();
+    chatList.innerHTML = '';
+    for (const c of data.chats) {{
+      const li = document.createElement('li');
+      li.textContent = c.title || 'New chat';
+      if (c.id === data.active) li.className = 'active';
+      li.onclick = async () => {{
+        await fetch('/api/chats/select', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{ id: c.id }}) }});
+        await refreshChats();
+        await refreshThread();
+      }};
+      chatList.appendChild(li);
+    }}
   }}
   document.getElementById('composer').addEventListener('submit', async (e) => {{
     e.preventDefault();
     const input = document.getElementById('composer-input');
+    const send = document.getElementById('send');
     const message = input.value.trim();
     if (!message) return;
     input.value = '';
     addLine('You: ' + message);
-    const r = await fetch('/api/chat', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{ message }}) }});
-    const data = await r.json();
-    if (!data.ok) {{ addLine('OpenRO: ' + data.error); return; }}
-    await refreshThread();
+    send.disabled = true;
+    send.textContent = 'Building…';
+    try {{
+      const r = await fetch('/api/chat', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{ message }}) }});
+      const data = await r.json();
+      if (!data.ok) {{ addLine('OpenRO: ' + data.error); }}
+      else {{ await refreshThread(); }}
+    }} catch (err) {{
+      addLine('OpenRO: Could not reach the OpenRO server.');
+    }}
+    send.disabled = false;
+    send.textContent = 'Send';
+    await refreshChats();
+    input.focus();
   }});
   document.getElementById('revert').addEventListener('click', async () => {{
     const r = await fetch('/api/revert', {{ method: 'POST' }});
@@ -355,12 +662,15 @@ pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bo
     addLine(data.ok ? 'OpenRO: Reverted the last change set.' : 'OpenRO: ' + data.error);
   }});
   document.getElementById('new-chat').addEventListener('click', async () => {{
-    await fetch('/api/new-chat', {{ method: 'POST' }});
-    thread.innerHTML = '';
+    await fetch('/api/chats', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: '{{}}' }});
+    await refreshChats();
+    await refreshThread();
+    document.getElementById('composer-input').focus();
   }});
+  refreshChats();
   refreshThread();
 </script>
 </body>
-</html>"#
+</html>"##
     )
 }

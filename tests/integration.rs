@@ -548,3 +548,93 @@ fn missing_bridge_tool_refuses_honestly() {
     assert!(err.contains("write_script"), "refusal names the missing tool: {err}");
     assert!(err.contains("does not offer"), "refusal is honest about the bridge: {err}");
 }
+
+#[test]
+fn shell_has_themes_and_settings() {
+    let port = start_server(None);
+    let (status, html) = http_request(port, "GET", "/", None);
+    assert_eq!(status, 200);
+    assert!(html.contains("data-theme=\"dark\""), "dark is the default theme");
+    assert!(html.contains("[data-theme=\"light\"]"), "a light theme must be defined");
+    assert!(html.contains("id=\"settings\""), "settings area missing");
+    assert!(html.contains("Appearance"), "appearance toggle missing from settings");
+    assert!(html.contains("openro-theme"), "theme choice must persist via localStorage");
+    assert!(html.contains(":focus-visible"), "keyboard focus must be visible");
+    assert!(html.contains("for=\"composer-input\""), "composer input must be labelled");
+    assert!(!html.contains("linear-gradient"), "no hue gradients (unslop gate)");
+}
+
+fn start_server_with_data(agent: Option<Agent>, data_dir: std::path::PathBuf) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let shared = Shared::with_data_dir(agent, "Round Arena".to_string(), data_dir);
+    std::thread::spawn(move || {
+        let _ = serve(listener, shared);
+    });
+    port
+}
+
+#[test]
+fn chats_persist_across_restart_and_switch() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target/test-data")
+        .join(format!("chats-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let data_dir = root.join("openro-data");
+
+    // First run: one full ask in the default chat.
+    let stub = start_stub_model(scenario_script());
+    let model = ModelClient::new(
+        stub.base_url.clone(),
+        "deepseek-v4.1-flash".to_string(),
+        Some("test-key-not-real".to_string()),
+    );
+    let studio = McpClient::spawn(&mock_studio_command()).unwrap();
+    let agent = Agent::new(model, Some(studio));
+    let port = start_server_with_data(Some(agent), data_dir.clone());
+
+    let (status, body) = http_request(
+        port,
+        "POST",
+        "/api/chat",
+        Some(&json!({ "message": "add a round manager that starts the round" }).to_string()),
+    );
+    assert_eq!(status, 200, "chat succeeds: {body}");
+
+    // A second, empty chat.
+    let (status, body) = http_request(port, "POST", "/api/chats", Some("{}"));
+    assert_eq!(status, 201, "create chat: {body}");
+    let second: Value = serde_json::from_str(&body).unwrap();
+    let second_id = second["id"].as_str().unwrap().to_string();
+    let (status, body) = http_request(port, "GET", "/api/thread", None);
+    assert_eq!(status, 200);
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["thread"], json!([]), "the new chat starts empty: {body}");
+
+    // "Restart": a fresh server over the same data dir.
+    let port2 = start_server_with_data(None, data_dir.clone());
+    let (status, body) = http_request(port2, "GET", "/api/chats", None);
+    assert_eq!(status, 200);
+    let v: Value = serde_json::from_str(&body).unwrap();
+    let chats = v["chats"].as_array().expect("chats list");
+    assert_eq!(chats.len(), 2, "both chats survive the restart: {body}");
+    assert!(
+        chats.iter().any(|c| c["title"].as_str().unwrap_or("").contains("round manager")),
+        "the first chat is titled from its ask: {body}"
+    );
+    let first_id = chats[0]["id"].as_str().unwrap().to_string();
+    assert_ne!(first_id, second_id);
+
+    // Switch back to the first chat: its whole thread is still there.
+    let (status, _) = http_request(
+        port2,
+        "POST",
+        "/api/chats/select",
+        Some(&json!({ "id": first_id }).to_string()),
+    );
+    assert_eq!(status, 200);
+    let (status, body) = http_request(port2, "GET", "/api/thread", None);
+    assert_eq!(status, 200);
+    assert!(body.contains("playtest passes"), "first chat's thread persisted: {body}");
+    assert!(body.contains("You: add a round manager"), "the ask itself persisted: {body}");
+}
