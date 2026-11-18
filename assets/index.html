@@ -122,6 +122,11 @@
   .row.user .bubble { background: var(--raised); border-top-right-radius: 4px; max-width: min(84%, 560px); }
   .bubble.bad { background: var(--bad-bg); border-color: transparent; color: var(--bad); }
   .bubble.bad strong { font-weight: 500; }
+  .bubble-details { margin-top: 8px; }
+  .bubble-details summary { font-size: 12px; color: var(--ink-2); cursor: pointer; display: inline-block; min-height: 24px; line-height: 24px; border-radius: var(--r-sm); }
+  .bubble-details summary:hover { color: var(--ink); }
+  .bubble-details pre { margin: 4px 0 0; font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .bubble.bad .bubble-details summary, .bubble.bad .bubble-details pre { color: var(--bad); }
   .fresh { animation: rise var(--dur-short) var(--ease-out) both; }
   @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   @keyframes breathe { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
@@ -153,6 +158,9 @@
   .verdict .ic { margin-top: 0; }
   .verdict strong { display: block; font-size: 16px; font-weight: 500; }
   .verdict p { font-size: 14px; color: var(--ink); margin-top: 0; }
+  .verdict > div, .step > div, .build, .idea-card, .bubble { min-width: 0; }
+  .verdict p, .verdict strong, .step-label, .step pre { overflow-wrap: anywhere; }
+  .verdict pre { margin: 8px 0 0; font-family: var(--font-mono); font-size: 12px; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
   .verdict.ok { background: var(--ok-bg); }
   .verdict.ok strong, .verdict.ok .ic { color: var(--ok); }
   .verdict.bad { background: var(--bad-bg); }
@@ -203,7 +211,7 @@
   .place-section h3 { display: flex; justify-content: space-between; margin: 0 0 4px; font-size: 13px; font-weight: 500; color: var(--ink-2); }
   .place-section h3 span { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
   .place-list { list-style: none; margin: 0; padding: 0; }
-  .place-list li { font-family: var(--font-mono); font-size: 13px; color: var(--ink-2); padding: 4px 8px; border-radius: var(--r-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: background-color var(--dur-micro) ease; }
+  .place-list li { font-family: var(--font-mono); font-size: 13px; color: var(--ink-2); padding: 4px 8px; border-radius: var(--r-sm); overflow-wrap: anywhere; transition: background-color var(--dur-micro) ease; }
   .place-list li:hover { background: var(--track); color: var(--ink); }
   .place-empty { font-size: 14px; color: var(--ink-2); }
   .place-skel { display: grid; gap: 8px; }
@@ -328,6 +336,12 @@
   const CAN_BUILD = __CAN_BUILD__;
   const STUDIO = __STUDIO_CONNECTED__;
   const SVG_NS = 'http://www.w3.org/2000/svg';
+  const CONSOLE_PREFIX = 'Console from the failed test run: ';
+  /* server errors that are config problems: the plain sentence goes on the thread, the raw line behind Details */
+  const PLAIN_ERRORS = [
+    { re: /^no model key/, say: 'Chat is off: no model key is set, so OpenRO cannot answer. Ask whoever runs OpenRO to add a model key, then restart it.' },
+    { re: /^Studio not connected/, say: 'Studio is not connected, so nothing can be built. Open Roblox Studio with the OpenRO connection running, then send again.' },
+  ];
   const IDEA_PREFIX = 'OpenRO: Idea — ';
   const DASH = /\s—\s/g;
   const ADDS = {
@@ -405,6 +419,7 @@
       return { kind: 'idea', title: i < 0 ? rest : rest.slice(0, i), pitch: i < 0 ? '' : rest.slice(i + 2) };
     }
     if (line.startsWith('OpenRO: ')) return { kind: 'agent', text: plain(line.slice(8)) };
+    if (line.startsWith(CONSOLE_PREFIX)) return { kind: 'console', text: line.slice(CONSOLE_PREFIX.length), raw: line };
     if (line === 'Playtest passed.') return { kind: 'verdict', tone: 'ok', raw: line };
     if (line.startsWith('Playtest failed')) return { kind: 'verdict', tone: 'bad', raw: line };
     if (line.startsWith('Playtest result was not')) return { kind: 'verdict', tone: 'warn', raw: line };
@@ -458,7 +473,19 @@
     const av = el('span', 'avatar');
     av.appendChild(icon('spark', 'ic-sm'));
     row.appendChild(av);
-    row.appendChild(el('div', 'bubble' + (bad ? ' bad' : ''), text));
+    const bubble = el('div', 'bubble' + (bad ? ' bad' : ''));
+    const known = PLAIN_ERRORS.find((e) => e.re.test(text));
+    const cut = text.indexOf(' (Details: ');
+    const plainText = known ? known.say : cut < 0 ? text : text.slice(0, cut);
+    const raw = known ? text : cut < 0 ? '' : text.slice(cut + 11, -1);
+    bubble.appendChild(el('span', '', plainText));
+    if (raw) {
+      const det = el('details', 'bubble-details');
+      det.appendChild(el('summary', '', 'Details'));
+      det.appendChild(el('pre', '', raw));
+      bubble.appendChild(det);
+    }
+    row.appendChild(bubble);
     return row;
   }
   function welcome() {
@@ -483,16 +510,18 @@
       [...new Set(rec.skills.map((s) => ADDS[s] || s.replace(/_/g, ' ')))].forEach((t) => list.appendChild(el('li', '', t)));
       card.appendChild(list);
     }
+    const b = el('button', 'btn btn-primary', 'Build this');
+    b.type = 'button';
     if (rec) {
-      const b = el('button', 'btn btn-primary', 'Build this');
-      b.type = 'button';
       b.disabled = !STUDIO || state.busy;
       if (!STUDIO) b.setAttribute('aria-describedby', 'no-studio-banner');
       b.addEventListener('click', () => buildIdea(rec, b));
-      card.appendChild(b);
     } else {
-      card.appendChild(el('p', 'muted', 'Not on offer right now.'));
+      b.disabled = true;
     }
+    card.appendChild(b);
+    if (rec && !STUDIO) card.appendChild(el('p', 'muted', 'Connect Studio to build this. The banner above says how.'));
+    if (!rec) card.appendChild(el('p', 'muted', 'Already in your game, or not on offer now. The next ideas above are the ones you can build.'));
     return card;
   }
   function stepRow(raw) {
@@ -540,12 +569,18 @@
     if (!hasUser && !hasBuild) thread.appendChild(welcome());
     let group = null;
     let groupKind = '';
+    let lastVerdict = null;
     items.forEach((it, i) => {
-      const kind = it.kind === 'step' || it.kind === 'verdict' ? 'build' : it.kind === 'idea' ? 'idea' : '';
+      const kind = it.kind === 'step' || it.kind === 'verdict' || it.kind === 'console' ? 'build' : it.kind === 'idea' ? 'idea' : '';
       if (kind !== groupKind) { group = null; groupKind = kind; }
       if (kind === 'build') {
         if (!group) { group = buildCard(fresh(i)); thread.appendChild(group); }
-        if (it.kind === 'verdict') { group.appendChild(verdictBlock(it)); return; }
+        if (it.kind === 'console') {
+          const pre = lastVerdict && lastVerdict.querySelector('pre');
+          if (pre) pre.textContent = 'Console output from the test run:\n' + it.text;
+          return;
+        }
+        if (it.kind === 'verdict') { lastVerdict = verdictBlock(it); group.appendChild(lastVerdict); return; }
         let ol = group.lastElementChild && group.lastElementChild.tagName === 'OL' ? group.lastElementChild : null;
         if (!ol) { ol = el('ol', 'steps'); group.appendChild(ol); }
         ol.appendChild(stepRow(it.raw));
@@ -695,10 +730,9 @@
     renderThread();
     try {
       const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }) });
-      const data = await r.json();
-      if (!data.ok) notice(data.error, true);
+      await r.json();
     } catch (err) {
-      notice('Could not reach the OpenRO server.', true);
+      notice('Could not reach the OpenRO server. Check that it is running, then send again.', true);
     }
     state.pendingUser = '';
     setBusy(false);
@@ -755,7 +789,7 @@
         h.appendChild(el('span', '', String(names.length)));
         s.appendChild(h);
         const ul = el('ul', 'place-list');
-        names.forEach((n) => { const li = el('li', '', n); li.title = n; ul.appendChild(li); });
+        names.forEach((n) => { const li = el('li', '', n.replace(/\./g, '.\u200b')); li.title = n; ul.appendChild(li); });
         s.appendChild(ul);
         return s;
       };
