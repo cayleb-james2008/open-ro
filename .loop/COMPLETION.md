@@ -92,7 +92,27 @@ mock Studio, 46/46 tests, sealed exam 12/12 (`.loop/REPORT.md`).
 
 ## Build log
 
-(to be filled as rounds land)
+- Functionality round (maker): creativity engine (`src/ideas.rs`,
+  /api/ideas + /api/ideas/build, per-chat built/pitched state, pitch
+  lines in the persisted thread, idea buttons in the shell); 5 new
+  Rune skills (currency, shop, game_gui, checkpoints, soundtrack —
+  10 total); 3 new mock playtest rules (DataStore/BindToClose,
+  shop RemoteEvent, checkpoints folder); MAX_STEPS 16 → 40 (garbage
+  test now feeds 40 replies); 6 new integration tests. 52/52.
+  Commit 209bfa0.
+- Fresh-context checker: **PASS-WITH-NOTES** (report:
+  `.loop/runs/completion-checker-functionality.md`). Scope exact;
+  all five claims verified live incl. adversarial probes (injection
+  through every new string arg; source-arg refusal on the plan path).
+  One defect reproduced (probe C): creativity state was memory-only —
+  a restart re-pitched the opening games into a chat that had built
+  one, duplicating pitch lines in the persisted thread.
+- Fix: creativity state persists to `ideas.json` (strict load +
+  whole-file backup on corruption, same discipline as chats/changes);
+  regression test `ideas_state_survives_a_restart`. 53/53.
+- Sealed exam extended maker-side: O13 (one-shot complete game with
+  repair), O14 (proactivity + built-in plan, zero model calls).
+  14 checks total; run recorded below.
 
 ## Weakest remaining point
 
