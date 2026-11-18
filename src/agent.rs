@@ -96,9 +96,40 @@ pub struct AskFailure {
 /// One checkpointed change: a script's previous source, or an
 /// instance's previous record (`{"class_name": ..., "properties": ...}`).
 /// `None` means the path did not exist before this ask.
+#[derive(Clone)]
 enum Change {
     Script(String, Option<String>),
     Instance(String, Option<Value>),
+}
+
+impl Change {
+    fn to_json(&self) -> Value {
+        match self {
+            Change::Script(path, prev) => json!({
+                "kind": "script", "path": path,
+                "prev": prev.clone().map(Value::String).unwrap_or(Value::Null),
+            }),
+            Change::Instance(path, prev) => json!({
+                "kind": "instance", "path": path,
+                "prev": prev.clone().unwrap_or(Value::Null),
+            }),
+        }
+    }
+
+    fn from_json(v: &Value) -> Option<Change> {
+        let path = v.get("path")?.as_str()?.to_string();
+        match v.get("kind")?.as_str()? {
+            "script" => Some(Change::Script(
+                path,
+                v.get("prev").and_then(|p| p.as_str()).map(|s| s.to_string()),
+            )),
+            "instance" => Some(Change::Instance(
+                path,
+                v.get("prev").filter(|p| !p.is_null()).cloned(),
+            )),
+            _ => None,
+        }
+    }
 }
 
 pub struct Agent {
@@ -108,10 +139,17 @@ pub struct Agent {
     /// second generation never overwrites an unwritten first one.
     generated: HashMap<String, String>,
     last_skill: Option<String>,
-    /// Change sets of the most recent change-making ask, per chat id.
-    changes_by_chat: HashMap<String, Vec<Change>>,
+    /// Change sets per chat id, as a STACK: each change-making ask
+    /// pushes its own set, and revert pops the most recent one. (A
+    /// single-slot map used to silently replace the previous ask's
+    /// set, leaving its changes unrevertable forever; merging instead
+    /// would break per-ask prev state — each set's checkpoints are the
+    /// place as it was when THAT ask started.)
+    changes_by_chat: HashMap<String, Vec<Vec<Change>>>,
     /// Change set being accumulated by the ask currently running.
     current_changes: Vec<Change>,
+    /// Where change sets persist across restarts, when set.
+    changes_path: Option<std::path::PathBuf>,
 }
 
 impl Agent {
@@ -123,6 +161,57 @@ impl Agent {
             last_skill: None,
             changes_by_chat: HashMap::new(),
             current_changes: Vec::new(),
+            changes_path: None,
+        }
+    }
+
+    /// Persist change sets to `path` (loaded now, saved on change), so
+    /// a restart does not silently orphan every revert.
+    pub fn set_changes_file(&mut self, path: std::path::PathBuf) {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                if let Some(obj) = v.as_object() {
+                    for (chat, stack) in obj {
+                        if let Some(sets) = stack.as_array() {
+                            let stack: Vec<Vec<Change>> = sets
+                                .iter()
+                                .filter_map(|set| {
+                                    set.as_array().map(|items| {
+                                        items.iter().filter_map(Change::from_json).collect()
+                                    })
+                                })
+                                .filter(|set: &Vec<Change>| !set.is_empty())
+                                .collect();
+                            if !stack.is_empty() {
+                                self.changes_by_chat.insert(chat.clone(), stack);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.changes_path = Some(path);
+    }
+
+    fn save_changes(&self) {
+        let Some(path) = &self.changes_path else { return };
+        let mut obj = serde_json::Map::new();
+        for (chat, stack) in &self.changes_by_chat {
+            obj.insert(
+                chat.clone(),
+                Value::Array(
+                    stack
+                        .iter()
+                        .map(|set| {
+                            Value::Array(set.iter().map(Change::to_json).collect())
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, Value::Object(obj).to_string()).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
         }
     }
 
@@ -178,7 +267,11 @@ impl Agent {
         let result = self.run_ask_inner(ask);
         let harvested = std::mem::take(&mut self.current_changes);
         if !harvested.is_empty() {
-            self.changes_by_chat.insert(chat_id.to_string(), harvested);
+            self.changes_by_chat
+                .entry(chat_id.to_string())
+                .or_default()
+                .push(harvested);
+            self.save_changes();
         }
         result
     }
@@ -219,11 +312,10 @@ impl Agent {
         let mut writes: HashMap<String, String> = HashMap::new();
         let mut last_failed_console: Option<String> = None;
         // Changes no passing playtest has covered yet (the done gate),
-        // and whether this ask changed or proved anything at all (the
-        // claim flag on an empty-handed "done").
+        // and whether this ask changed anything at all (the claim flag
+        // on an empty-handed "done").
         let mut unproven_changes = false;
         let mut changes_made = 0usize;
-        let mut playtest_passed = false;
 
         for _ in 0..MAX_STEPS {
             let content = match self.model.chat(&messages) {
@@ -259,17 +351,16 @@ impl Agent {
                     .unwrap_or("Done.")
                     .to_string();
                 thread.push(format!("OpenRO: {s}"));
-                if changes_made == 0 && !playtest_passed {
-                    let lower = s.to_lowercase();
-                    let claims_building = ["built", "created", "wrote", "added", "placed", "generated"]
-                        .iter()
-                        .any(|w| lower.contains(w));
-                    if claims_building {
-                        thread.push(
-                            "OpenRO: Note — that summary claims building work, but this ask made no changes and ran no playtest."
-                                .to_string(),
-                        );
-                    }
+                // A vacuous playtest (nothing changed, so nothing to
+                // break) does NOT excuse a build claim: the flag fires
+                // on zero changes, full stop. The claim check itself is
+                // token-based with a negation lookback, so honest
+                // negations ("nothing was built") are not accused.
+                if changes_made == 0 && claims_building(&s) {
+                    thread.push(
+                        "OpenRO: Note — that summary claims building work, but this ask made no changes."
+                            .to_string(),
+                    );
                 }
                 transcript.push(format!("done: {s}"));
                 summary = Some(s);
@@ -297,7 +388,6 @@ impl Agent {
                     match self.run_playtest(&mut transcript, &mut thread) {
                         Ok(PlaytestOutcome::Passed(note)) => {
                             unproven_changes = false;
-                            playtest_passed = true;
                             messages.push(json!({ "role": "user", "content": note }));
                         }
                         Ok(PlaytestOutcome::Failed(note, console)) => {
@@ -451,9 +541,13 @@ impl Agent {
             .to_string();
         check_path(&path)?;
         let source = self.resolve_source(args)?;
-        self.checkpoint_script(&path)?;
+        // Checkpoint AFTER the bridge call succeeds: recording the
+        // previous state before the attempt used to poison the change
+        // set with changes that never happened when the call failed.
+        let prev = self.prev_script(&path)?;
         self.studio_mut()?
             .call_tool("write_script", json!({ "path": path, "source": source }))?;
+        self.record_script(&path, prev);
         transcript.push(format!("tool write_script {path} ({} bytes)", source.len()));
         thread.push(format!("Wrote {path}."));
         let mut note = format!("tool_result: write_script {path} succeeded. Next, playtest.");
@@ -524,8 +618,22 @@ impl Agent {
         match playtest_verdict(&text) {
             Verdict::Failed => {
                 thread.push("Playtest failed — reading the console and repairing.".to_string());
-                // Feed the ACTUAL console output back to the model.
-                let console = self.studio_mut()?.call_tool("get_console", json!({}))?;
+                // Feed the ACTUAL console output back to the model. A
+                // console-fetch failure must not abort the repair loop
+                // (it once turned one failed playtest into a dead ask):
+                // fall back to the console embedded in the playtest
+                // result itself, or say plainly it is unavailable.
+                let console = match self.studio_mut()?.call_tool("get_console", json!({})) {
+                    Ok(c) => c,
+                    Err(e) => serde_json::from_str::<Value>(&text)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("console")
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .unwrap_or_else(|| format!("(could not read the console: {e})")),
+                };
                 transcript.push(format!("console after failed playtest: {console}"));
                 Ok(PlaytestOutcome::Failed(
                     format!(
@@ -575,9 +683,10 @@ impl Agent {
                     .ok_or("delete_script needs args.path")?
                     .to_string();
                 check_path(&path)?;
-                self.checkpoint_script(&path)?;
+                let prev = self.prev_script(&path)?;
                 self.studio_mut()?
                     .call_tool("delete_script", json!({ "path": path }))?;
+                self.record_script(&path, prev);
                 transcript.push(format!("tool delete_script {path}"));
                 Ok(format!("tool_result: delete_script {path} succeeded."))
             }
@@ -597,16 +706,20 @@ impl Agent {
                     .and_then(|v| v.as_str())
                     .ok_or("create_instance needs args.parent")?
                     .to_string();
-                if name.contains('.') {
+                if name.is_empty()
+                    || name.chars().any(|c| c == '.' || c == '/' || c == '\\' || c.is_control())
+                {
                     return Err(format!(
-                        "create_instance name must be a single name without dots, got: {name}"
+                        "create_instance name must be a single non-empty name without dots, separators or control characters, got: {name}"
                     ));
                 }
                 check_path(&parent)?;
                 let path = format!("{parent}.{name}");
-                self.checkpoint_instance(&path)?;
+                check_path(&path)?;
+                let prev = self.prev_instance(&path)?;
                 self.studio_mut()?
                     .call_tool("create_instance", args.clone())?;
+                self.record_instance(&path, prev);
                 transcript.push(format!("tool create_instance {path} ({class_name})"));
                 thread.push(format!("Created {path} ({class_name})."));
                 Ok(format!("tool_result: create_instance {path} succeeded."))
@@ -618,9 +731,10 @@ impl Agent {
                     .ok_or("delete_instance needs args.path")?
                     .to_string();
                 check_path(&path)?;
-                self.checkpoint_instance(&path)?;
+                let prev = self.prev_instance(&path)?;
                 self.studio_mut()?
                     .call_tool("delete_instance", json!({ "path": path }))?;
+                self.record_instance(&path, prev);
                 transcript.push(format!("tool delete_instance {path}"));
                 thread.push(format!("Deleted {path}."));
                 Ok(format!("tool_result: delete_instance {path} succeeded."))
@@ -634,108 +748,186 @@ impl Agent {
         }
     }
 
-    /// Record the previous source of `path` (or its absence) the first
-    /// time this ask touches it.
-    fn checkpoint_script(&mut self, path: &str) -> Result<(), String> {
-        if self
-            .current_changes
-            .iter()
-            .any(|c| matches!(c, Change::Script(p, _) if p == path))
-        {
-            return Ok(());
+    /// The previous source of `path` (or None if absent), read WITHOUT
+    /// recording anything. Callers record it only after the change
+    /// itself succeeds — a failed tool call must never enter the
+    /// change set.
+    /// The previous state of a script path recorded by THIS ask.
+    /// Outer None = not recorded by this ask; inner None = recorded
+    /// as absent. Stored sets from earlier asks are never consulted:
+    /// their checkpoints describe the place before THOSE asks, and a
+    /// new ask's prev must come from the tree as it is now.
+    fn recorded_prev_script(&self, path: &str) -> Option<Option<String>> {
+        self.current_changes.iter().find_map(|c| match c {
+            Change::Script(p, prev) if p == path => Some(prev.clone()),
+            _ => None,
+        })
+    }
+
+    fn prev_script(&mut self, path: &str) -> Result<Option<String>, String> {
+        if let Some(prev) = self.recorded_prev_script(path) {
+            return Ok(prev);
         }
         let tree = self.studio_mut()?.get_place_tree()?;
-        let prev = tree
+        Ok(tree
             .pointer("/scripts")
             .and_then(|s| s.get(path))
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        self.current_changes.push(Change::Script(path.to_string(), prev));
-        Ok(())
+            .map(|s| s.to_string()))
     }
 
-    /// Record the previous instance record at `path` (or its absence)
-    /// the first time this ask touches it.
-    fn checkpoint_instance(&mut self, path: &str) -> Result<(), String> {
-        if self
-            .current_changes
-            .iter()
-            .any(|c| matches!(c, Change::Instance(p, _) if p == path))
-        {
-            return Ok(());
+    fn record_script(&mut self, path: &str, prev: Option<String>) {
+        if self.recorded_prev_script(path).is_some() {
+            return;
+        }
+        self.current_changes
+            .push(Change::Script(path.to_string(), prev));
+    }
+
+    fn recorded_prev_instance(&self, path: &str) -> Option<Option<Value>> {
+        self.current_changes.iter().find_map(|c| match c {
+            Change::Instance(p, prev) if p == path => Some(prev.clone()),
+            _ => None,
+        })
+    }
+
+    /// The previous instance record at `path` (or None if absent),
+    /// read without recording.
+    fn prev_instance(&mut self, path: &str) -> Result<Option<Value>, String> {
+        if let Some(prev) = self.recorded_prev_instance(path) {
+            return Ok(prev);
         }
         let tree = self.studio_mut()?.get_place_tree()?;
-        let prev = tree
+        Ok(tree
             .pointer("/instances")
             .and_then(|s| s.get(path))
-            .cloned();
-        self.current_changes.push(Change::Instance(path.to_string(), prev));
-        Ok(())
+            .cloned())
+    }
+
+    fn record_instance(&mut self, path: &str, prev: Option<Value>) {
+        if self.recorded_prev_instance(path).is_some() {
+            return;
+        }
+        self.current_changes
+            .push(Change::Instance(path.to_string(), prev));
     }
 
     /// Restore one chat's change set: rewrite previous content, delete
-    /// what the ask created — scripts and instances alike. Returns the
+    /// what the asks created — scripts and instances alike. Returns the
     /// restored paths. An empty (or absent) set is NOTHING_TO_REVERT,
     /// never a fabricated success.
+    ///
+    /// The restore is failure-atomic and idempotent: the set is only
+    /// consumed once EVERY entry is restored, and each restore first
+    /// checks the current state — restoring an already-absent instance
+    /// to absent is success, not an error. A failed revert keeps its
+    /// set, so it can be retried and converges.
     pub fn revert_chat(&mut self, chat_id: &str) -> Result<Vec<String>, String> {
         if self.studio.is_none() {
             return Err("Studio not connected: nothing to revert".to_string());
         }
-        let changes = match self.changes_by_chat.remove(chat_id) {
-            Some(c) if !c.is_empty() => c,
-            _ => return Err(NOTHING_TO_REVERT.to_string()),
+        let changes = match self.changes_by_chat.get(chat_id) {
+            Some(stack) => match stack.last() {
+                Some(c) if !c.is_empty() => c.clone(),
+                _ => return Err(NOTHING_TO_REVERT.to_string()),
+            },
+            None => return Err(NOTHING_TO_REVERT.to_string()),
         };
         let mut restored = Vec::new();
         for change in changes.iter().rev() {
-            match change {
-                Change::Script(path, prev) => match prev {
-                    Some(source) => {
-                        self.studio_mut()?.call_tool(
-                            "write_script",
-                            json!({ "path": path, "source": source }),
-                        )?;
-                    }
-                    None => {
+            let path = match change {
+                Change::Script(p, _) | Change::Instance(p, _) => p.clone(),
+            };
+            if let Err(e) = self.restore_one(change) {
+                return Err(format!(
+                    "revert stopped at {path}: {e} — {} change(s) were restored, the rest are \
+                     untouched, and the change set is kept so revert can be tried again",
+                    restored.len()
+                ));
+            }
+            restored.push(path);
+        }
+        // Success: pop this ask's set. Earlier asks' sets stay on the
+        // stack, still revertable.
+        if let Some(stack) = self.changes_by_chat.get_mut(chat_id) {
+            stack.pop();
+            if stack.is_empty() {
+                self.changes_by_chat.remove(chat_id);
+            }
+        }
+        self.save_changes();
+        Ok(restored)
+    }
+
+    /// Restore a single change, checking current state first so an
+    /// already-achieved goal state counts as restored.
+    fn restore_one(&mut self, change: &Change) -> Result<(), String> {
+        match change {
+            Change::Script(path, prev) => match prev {
+                Some(source) => {
+                    self.studio_mut()?.call_tool(
+                        "write_script",
+                        json!({ "path": path, "source": source }),
+                    )?;
+                    Ok(())
+                }
+                None => {
+                    if self.prev_script_current(path)?.is_some() {
                         self.studio_mut()?
                             .call_tool("delete_script", json!({ "path": path }))?;
                     }
-                },
-                Change::Instance(path, prev) => match prev {
-                    Some(record) => {
-                        let (parent, name) = match path.rsplit_once('.') {
-                            Some((p, n)) => (p.to_string(), n.to_string()),
-                            None => (String::new(), path.clone()),
-                        };
-                        // Restore = replace whatever is there now with
-                        // the previous record. Create-on-existing is an
-                        // error on a strict bridge, so delete first
-                        // (a missing instance is fine — the create is
-                        // the step that must succeed).
-                        let _ = self
-                            .studio_mut()?
-                            .call_tool("delete_instance", json!({ "path": path }));
-                        self.studio_mut()?.call_tool(
-                            "create_instance",
-                            json!({
-                                "class_name": record.get("class_name").cloned().unwrap_or(json!("Part")),
-                                "name": name,
-                                "parent": parent,
-                                "properties": record.get("properties").cloned().unwrap_or(json!({})),
-                            }),
-                        )?;
-                    }
-                    None => {
+                    Ok(())
+                }
+            },
+            Change::Instance(path, prev) => match prev {
+                Some(record) => {
+                    let (parent, name) = match path.rsplit_once('.') {
+                        Some((p, n)) => (p.to_string(), n.to_string()),
+                        None => (String::new(), path.clone()),
+                    };
+                    if self.prev_instance_current(path)?.is_some() {
                         self.studio_mut()?
                             .call_tool("delete_instance", json!({ "path": path }))?;
                     }
-                },
-            }
-            restored.push(match change {
-                Change::Script(p, _) => p.clone(),
-                Change::Instance(p, _) => p.clone(),
-            });
+                    self.studio_mut()?.call_tool(
+                        "create_instance",
+                        json!({
+                            "class_name": record.get("class_name").cloned().unwrap_or(json!("Part")),
+                            "name": name,
+                            "parent": parent,
+                            "properties": record.get("properties").cloned().unwrap_or(json!({})),
+                        }),
+                    )?;
+                    Ok(())
+                }
+                None => {
+                    if self.prev_instance_current(path)?.is_some() {
+                        self.studio_mut()?
+                            .call_tool("delete_instance", json!({ "path": path }))?;
+                    }
+                    Ok(())
+                }
+            },
         }
-        Ok(restored)
+    }
+
+    /// Current state reads for the revert path (no recorded-history
+    /// shortcuts — the place as it is NOW).
+    fn prev_script_current(&mut self, path: &str) -> Result<Option<String>, String> {
+        let tree = self.studio_mut()?.get_place_tree()?;
+        Ok(tree
+            .pointer("/scripts")
+            .and_then(|s| s.get(path))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()))
+    }
+
+    fn prev_instance_current(&mut self, path: &str) -> Result<Option<Value>, String> {
+        let tree = self.studio_mut()?.get_place_tree()?;
+        Ok(tree
+            .pointer("/instances")
+            .and_then(|s| s.get(path))
+            .cloned())
     }
 
     pub fn place_tree(&mut self) -> Result<Value, String> {
@@ -753,6 +945,32 @@ enum PlaytestOutcome {
     Passed(String),
     Failed(String, String),
     Unreadable(String, String),
+}
+
+/// Does this summary claim building work? Token-based (so "padded"
+/// does not trip "added") with a negation lookback (so "nothing was
+/// built" is not accused of claiming a build).
+fn claims_building(summary: &str) -> bool {
+    const CLAIMS: [&str; 6] = ["built", "created", "wrote", "added", "placed", "generated"];
+    const NEGATIONS: [&str; 12] = [
+        "nothing", "not", "no", "never", "didn't", "didnt", "wasn't", "wasnt", "haven't",
+        "havent", "isn't", "isnt",
+    ];
+    let tokens: Vec<String> = summary
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string())
+        .collect();
+    for (i, tok) in tokens.iter().enumerate() {
+        if CLAIMS.contains(&tok.as_str()) {
+            let window = &tokens[i.saturating_sub(4)..i];
+            if !window.iter().any(|w| NEGATIONS.contains(&w.as_str())) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn parse_step(content: &str) -> Result<Value, String> {

@@ -220,9 +220,22 @@ impl McpClient {
             return Err(format!("Studio bridge error in {name}: {text}"));
         }
         if let Ok(payload) = serde_json::from_str::<Value>(text) {
-            if let Some(err) = payload.get("error") {
-                let msg = err.as_str().unwrap_or("tool error");
-                return Err(format!("Studio bridge error in {name}: {msg}"));
+            // An `error` key is a bridge error only when it carries an
+            // actual message: a string, or an object with one. A null
+            // error field next to a valid result is a healthy payload
+            // shape (several bridges emit it) and must not be refused.
+            match payload.get("error") {
+                Some(Value::String(s)) if !s.is_empty() => {
+                    return Err(format!("Studio bridge error in {name}: {s}"));
+                }
+                Some(Value::Object(o)) => {
+                    let msg = o
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("tool error");
+                    return Err(format!("Studio bridge error in {name}: {msg}"));
+                }
+                _ => {}
             }
         }
         Ok(text.to_string())

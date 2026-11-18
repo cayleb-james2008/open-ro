@@ -153,6 +153,11 @@ fn tool_call(
     if std::env::var("MOCK_DROP").map(|d| d == name).unwrap_or(false) {
         return error_result(format!("unknown tool {name}"));
     }
+    // MOCK_ERR_CONSOLE=1: only get_console fails (a console subsystem
+    // outage while playtests themselves still answer).
+    if name == "get_console" && std::env::var("MOCK_ERR_CONSOLE").is_ok() {
+        return error_result("console subsystem exploded".to_string());
+    }
     match name {
         "get_place_tree" => {
             text_result(json!({ "scripts": scripts, "instances": instances }).to_string())
@@ -227,6 +232,14 @@ fn tool_call(
                 } else {
                     format!("Playtest failed. {msg}")
                 });
+            }
+            // MOCK_NULL_ERROR=1: healthy payloads that also carry an
+            // "error": null field, as several real bridges emit.
+            if std::env::var("MOCK_NULL_ERROR").is_ok() {
+                return text_result(
+                    json!({ "status": if passed { "passed" } else { "failed" }, "console": msg, "error": null })
+                        .to_string(),
+                );
             }
             text_result(
                 json!({ "status": if passed { "passed" } else { "failed" }, "console": msg })
