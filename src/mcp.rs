@@ -228,12 +228,18 @@ impl McpClient {
                 Some(Value::String(s)) if !s.is_empty() => {
                     return Err(format!("Studio bridge error in {name}: {s}"));
                 }
+                // An object counts ONLY when it carries a non-empty
+                // message — {"code": 0} beside a passing verdict is a
+                // healthy shape, and inventing a "tool error" message
+                // for it would fabricate a failure.
                 Some(Value::Object(o)) => {
-                    let msg = o
+                    if let Some(msg) = o
                         .get("message")
                         .and_then(|m| m.as_str())
-                        .unwrap_or("tool error");
-                    return Err(format!("Studio bridge error in {name}: {msg}"));
+                        .filter(|m| !m.is_empty())
+                    {
+                        return Err(format!("Studio bridge error in {name}: {msg}"));
+                    }
                 }
                 _ => {}
             }

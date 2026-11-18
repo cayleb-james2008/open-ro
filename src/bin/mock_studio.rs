@@ -233,6 +233,15 @@ fn tool_call(
                     format!("Playtest failed. {msg}")
                 });
             }
+            // MOCK_ERR_CODE_ONLY=1: a passing verdict carrying an
+            // error OBJECT with a code but no message — a healthy
+            // shape some bridges emit.
+            if std::env::var("MOCK_ERR_CODE_ONLY").is_ok() {
+                return text_result(
+                    json!({ "status": "passed", "console": msg, "error": { "code": 0 } })
+                        .to_string(),
+                );
+            }
             // MOCK_NULL_ERROR=1: healthy payloads that also carry an
             // "error": null field, as several real bridges emit.
             if std::env::var("MOCK_NULL_ERROR").is_ok() {
