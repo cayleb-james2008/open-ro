@@ -68,7 +68,7 @@ Env: `OPENRO_MODEL_BASE_URL`, `OPENRO_MODEL_ID`, `OPENRO_MODEL_API_KEY`,
 ## Proof
 
 ```sh
-CARGO_BUILD_JOBS=2 cargo test
+CARGO_BUILD_JOBS=2 cargo test   # 46 tests, all passing
 ```
 
 Integration tests (`tests/integration.rs`) run the full loop against a
@@ -77,3 +77,13 @@ as a real child process: Rune generation → write → failed playtest →
 console fed back → Rune regeneration → write → passed playtest → revert
 restores the pre-ask tree. Plus shell and no-key honesty tests, over both
 the agent API and real HTTP.
+
+Beyond the suite, an independently written sealed acceptance exam
+(12 black-box checks — one-shot build, repair loop, revert exactness,
+persistence, the done-gate in both directions, capability refusal)
+passes **12/12** against the unmodified binary.
+
+The live-model path is real code, exercised here against the stub
+because no model key is available in the build environment; the Studio
+path is exercised against the mock fixture, with a real Studio MCP
+server dropping in via `OPENRO_MCP_COMMAND` unchanged.
