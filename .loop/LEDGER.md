@@ -36,3 +36,9 @@
 - F9 LOW: README understated the bridge (5 tools) and skills (1). FIXED in-repo; the staged replacement README builds on the corrected text.
 - Holds verified by the reviewer: H3 checkpoint discipline, H2 failure-atomicity, M2 worst case, M4 stack LIFO + persistence fidelity.
 - Verify fix-round-4b: 43/43 green.
+
+## Review round 4 (confirmation, fresh context) — verdict: NOT DONE → fixed; loop converged
+- A (identity revert): everything passed except A9 MED — instance `post` was fabricated from the ask's args, so a bridge that adds its own default properties (any real place) would make every instance revert refuse forever. FIXED: post is read back from the tree after a successful create (args-shaped record only as fallback). Mock gained MOCK_INST_EXTRA; pinned.
+- B (claim check): PASS WITH NOTES. Fixed here: curly apostrophes normalised (U+2019 split "wasn't" and smuggled claims past suppressors), semicolons end sentences, spawned/fixed/repaired added to the verb list. Remaining edges are LOW noise on a factual line (idiom false negatives like "set up"; "I already built it" dodging on "already"; "I made sure…" flagged) — accepted and recorded; the line states a fact, it does not accuse.
+- C (round-3 fixes): all verified except chats.json — F5's "same treatment" was half true: entry-level malformation (missing id, non-array lines) was silently dropped and the next save destroyed the original. FIXED: strict entry-level loading (id must be a string, lines an array of strings, title a string when present); any violation backs the whole file up. Pinned.
+- Verify fix-round-5: 46/46 green. Remaining known items are LOW/accepted (capability strictness stance, claim-line idiom noise) — no material findings open.
