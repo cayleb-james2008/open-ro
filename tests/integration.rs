@@ -1860,3 +1860,38 @@ fn http_ideas_pitch_and_build() {
     );
     assert_eq!(status, 404);
 }
+
+#[test]
+fn ideas_state_survives_a_restart() {
+    // Regression (completion checker, probe C): the creativity state
+    // used to be memory-only, so a restart re-pitched the OPENING
+    // games into a chat that had already built one, duplicating pitch
+    // lines in the persisted thread. It now persists with the chats.
+    let dir = std::env::temp_dir().join(format!("openro-ideas-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (agent, _stub) = agent_with_script(vec![]);
+    let port = start_server_with_data(Some(agent), dir.clone());
+    let (status, _) = http_request(port, "POST", "/api/ideas", Some("{}"));
+    assert_eq!(status, 200);
+    let (status, body) = http_request(
+        port,
+        "POST",
+        "/api/ideas/build",
+        Some(&json!({ "id": "obby-starter" }).to_string()),
+    );
+    assert_eq!(status, 200, "the build succeeds: {body}");
+    let (_, thread_before) = http_request(port, "GET", "/api/thread", None);
+    assert!(dir.join("ideas.json").exists(), "creativity state is persisted next to the chats");
+    // Restart on the same data dir (fresh agent, fresh mock place).
+    let (agent2, _stub2) = agent_with_script(vec![]);
+    let port2 = start_server_with_data(Some(agent2), dir.clone());
+    let (status, body) = http_request(port2, "POST", "/api/ideas", Some("{}"));
+    assert_eq!(status, 200);
+    assert!(body.contains("\"pitched_new\":false"), "no re-pitch after the restart: {body}");
+    assert!(!body.contains("obby-starter"), "the opening games are not offered again: {body}");
+    assert!(body.contains("add-shop"), "the follow-up context survived the restart: {body}");
+    let (_, thread_after) = http_request(port2, "GET", "/api/thread", None);
+    assert_eq!(thread_after, thread_before, "no duplicate pitch lines across the restart");
+    let _ = std::fs::remove_dir_all(&dir);
+}

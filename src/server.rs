@@ -83,13 +83,14 @@ impl Shared {
             let active = chat.id.clone();
             (vec![chat], active)
         });
+        let ideas = load_ideas(&data_dir);
         Arc::new(Shared {
             agent: Mutex::new(agent),
             chats: Mutex::new(chats),
             active_chat: Mutex::new(active),
             game_name,
             data_dir: Some(data_dir),
-            ideas: Mutex::new(std::collections::HashMap::new()),
+            ideas: Mutex::new(ideas),
         })
     }
 
@@ -184,10 +185,15 @@ impl Shared {
     pub fn note_built(&self, chat_id: &str, skills: &[String]) {
         let mut state = self.ideas.lock().unwrap();
         let entry = state.entry(chat_id.to_string()).or_default();
+        let mut changed = false;
         for s in skills {
             if !entry.built.contains(s) {
                 entry.built.push(s.clone());
+                changed = true;
             }
+        }
+        if changed {
+            self.persist_ideas(&state);
         }
     }
 
@@ -204,8 +210,68 @@ impl Shared {
             return (ideas, Vec::new());
         }
         entry.pitched = ids;
+        self.persist_ideas(&state);
         let lines = crate::ideas::pitch_lines(&ideas, intro);
         (ideas, lines)
+    }
+
+    /// Save the creativity state next to the chats (same directory,
+    /// same tmp-then-rename discipline). Without this, a restart
+    /// forgot what each game had built and re-pitched the opening
+    /// games into chats that had long since built them.
+    fn persist_ideas(&self, state: &std::collections::HashMap<String, ChatIdeas>) {
+        let Some(dir) = &self.data_dir else { return };
+        let v = json!({
+            "chats": state.iter().map(|(id, s)| json!({
+                "id": id, "built": s.built, "pitched": s.pitched,
+            })).collect::<Vec<_>>(),
+        });
+        let path = dir.join("ideas.json");
+        let tmp = dir.join("ideas.json.tmp");
+        if std::fs::write(&tmp, v.to_string()).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+}
+
+/// Load the persisted creativity state. Strict, like the chats and
+/// changes loaders: any malformed entry makes the whole file corrupt
+/// — backed up, never partially read (a half-remembered context
+/// would pitch games the place already has, or skip ones it needs).
+fn load_ideas(dir: &PathBuf) -> std::collections::HashMap<String, ChatIdeas> {
+    let path = dir.join("ideas.json");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    let strict = (|| -> Option<std::collections::HashMap<String, ChatIdeas>> {
+        let v: Value = serde_json::from_str(&text).ok()?;
+        let mut out = std::collections::HashMap::new();
+        for item in v.get("chats")?.as_array()? {
+            let id = item.get("id")?.as_str()?.to_string();
+            let strings = |key: &str| -> Option<Vec<String>> {
+                item.get(key)?
+                    .as_array()?
+                    .iter()
+                    .map(|s| s.as_str().map(|x| x.to_string()))
+                    .collect()
+            };
+            out.insert(
+                id,
+                ChatIdeas {
+                    built: strings("built")?,
+                    pitched: strings("pitched")?,
+                },
+            );
+        }
+        Some(out)
+    })();
+    match strict {
+        Some(map) => map,
+        None => {
+            let _ = backup_corrupt(&path);
+            std::collections::HashMap::new()
+        }
     }
 }
 
