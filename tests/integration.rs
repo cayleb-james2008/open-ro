@@ -2625,3 +2625,45 @@ fn restart_without_a_staged_update_is_refused() {
     assert_eq!(status, 409, "{body}");
     assert!(body.contains("no update is waiting"), "{body}");
 }
+
+/// `built_titles` (added to POST /api/ideas for "Already in your game"): present, an array of the
+/// titles this chat has built, and the old fields (`ok`, `ideas`, `pitched_new`) keep their names and types.
+#[test]
+fn ideas_reply_keeps_old_fields_and_adds_built_titles() {
+    let port = start_server(None);
+    let (status, body) = http_request(port, "POST", "/api/ideas", Some("{}"));
+    assert_eq!(status, 200, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["ok"], json!(true), "old field ok unchanged: {body}");
+    assert!(v["ideas"].is_array(), "old field ideas unchanged: {body}");
+    assert!(v["pitched_new"].is_boolean(), "old field pitched_new unchanged: {body}");
+    assert_eq!(v["built_titles"], json!([]), "a fresh chat has built nothing: {body}");
+}
+
+/// Once every skill of an idea is built in the active chat, its title is listed in `built_titles_for`
+/// (and so in the reply); an idea with a skill still missing is not.
+#[test]
+fn built_titles_lists_only_fully_built_ideas() {
+    let dir = std::env::temp_dir().join(format!("openro-built-titles-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let shared = Shared::with_data_dir(None, "Round Arena".to_string(), dir.clone());
+    let chat = shared.chats_json()["active"].as_str().unwrap().to_string();
+    let catalogue = openro_rs::ideas::catalogue();
+    let full = catalogue
+        .iter()
+        .find(|i| i.skills.len() > 1)
+        .expect("the catalogue has an idea with more than one skill");
+    let skills: Vec<String> = full.skills.iter().map(|s| s.to_string()).collect();
+    assert!(shared.built_titles_for(&chat).is_empty(), "nothing built yet");
+    shared.note_built(&chat, &skills[..skills.len() - 1]);
+    assert!(
+        !shared.built_titles_for(&chat).contains(&full.title.to_string()),
+        "a partly built idea is not listed"
+    );
+    shared.note_built(&chat, &skills[skills.len() - 1..]);
+    assert!(
+        shared.built_titles_for(&chat).contains(&full.title.to_string()),
+        "a fully built idea is listed by its title"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
