@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from "react";
-import { motion } from "motion/react";
+import { MotionConfig } from "motion/react";
 import { Toaster, toast } from "sonner";
 import { Drawer } from "vaul";
-import { Menu, Plus, Undo2, Send, Sparkles, Sun, Moon, PanelRight } from "lucide-react";
-import { TextureButton } from "@/components/ui/texture-button";
-import { Key } from "./app/Key";
+import { Menu, Plus, Undo2, Send, Sparkles, Sun, Moon, PanelRight, RefreshCw } from "lucide-react";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { AnimatedBackground } from "@/components/ui/animated-background";
@@ -12,11 +10,14 @@ import { MorphingDialog, MorphingDialogTrigger, MorphingDialogContainer, Morphin
 import { Pill } from "@/components/kibo-ui/pill";
 import { open } from "@/motion";
 import { read, post, RELEASES_URL, SEND_FAILED, type Chat, type ChatList, type Idea, type Place } from "./app/data";
-import { ThreadBody, Welcome } from "./app/Thread";
+import { ThreadBody, IdeaTile } from "./app/Thread";
 import { PartsShelf, StudioChip } from "./app/Shelf";
+import { Key } from "./app/Key";
+import { useUpdate, UpdateStrip } from "./app/Update";
 
 type Pending = { message?: string; build?: string; undo?: boolean };
 type Notice = { text: string; bad?: boolean; user?: boolean };
+type ShellWindow = Window & { openroSetTheme?: (t: string) => void };
 
 const noticeKey = (id: string) => "openro-notices:" + id;
 const draftKey = (id: string) => "openro-draft:" + id;
@@ -43,12 +44,11 @@ const useMedia = (q: string) => {
 /** Server-filled values from the shell (the Rust server replaces the placeholders before serving). */
 function readShell() {
   const s = document.getElementById("server-state");
-  const banners = document.getElementById("server-banners");
   return {
     gameName: s?.dataset.gameName || "",
     canBuild: s?.dataset.canBuild === "true",
     studio: s?.dataset.studio === "true",
-    bannerHtml: banners?.innerHTML || "",
+    bannerHtml: document.getElementById("server-banners")?.innerHTML || "",
   };
 }
 
@@ -58,7 +58,7 @@ export function App() {
   const setTheme = (t: "light" | "dark") => {
     setThemeState(t);
     document.documentElement.setAttribute("data-theme", t);
-    try { localStorage.setItem("openro-theme", t); } catch { /* the choice lasts this visit only */ }
+    (window as ShellWindow).openroSetTheme?.(t);
   };
   const phone = useMedia("(max-width: 759px)");
   const narrow = useMedia("(max-width: 1099px)");
@@ -67,6 +67,7 @@ export function App() {
   const [lines, setLines] = useState<string[]>([]);
   const [threadError, setThreadError] = useState(false);
   const [ideas, setIdeas] = useState<Idea[]>([]);
+  const [builtTitles, setBuiltTitles] = useState<string[]>([]);
   const [place, setPlace] = useState<Place | null | "error">(null);
   const [inflight, setInflight] = useState<Record<string, Pending>>({});
   const [, bump] = useState(0);
@@ -74,17 +75,17 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [shelfOpen, setShelfOpen] = useState(false);
   const [shelfCollapsed, setShelfCollapsed] = useState(false);
+  const [studioOk, setStudioOk] = useState(shell.studio);
+  const [modelOk, setModelOk] = useState(shell.canBuild || !shell.studio);
   const [version, setVersion] = useState("");
-  const shownRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const update = useUpdate();
 
   const activeId = chats?.active ?? "";
   const notices: Notice[] = activeId ? slotRead<Notice[]>(noticeKey(activeId), []) : [];
   const busy = Object.keys(inflight).length > 0;
   const building = activeId ? inflight[activeId] : undefined;
-  const buildingTitle = building?.build;
-  const studioOk = shell.studio;
-  const canBuild = shell.canBuild;
+  const canBuild = studioOk && modelOk;
   const builtCount = place && place !== "error" ? Object.keys(place.scripts || {}).length + Object.keys(place.instances || {}).length : null;
   const undoState = !chats ? "loading" : busy || place === null ? "busy" : place === "error" ? "unknown" : !studioOk ? "nostudio" : !chats.can_undo ? "nothing" : "ok";
   const undoReason = undoState === "nostudio" ? "Connect Studio to see what is built" : undoState === "nothing" || (builtCount === 0 && undoState !== "ok") ? "Nothing built yet" : "";
@@ -106,10 +107,7 @@ export function App() {
   });
 
   const refreshChats = useCallback(async () => {
-    try {
-      const data = await read<ChatList>("/api/chats");
-      setChats(data);
-    } catch { /* the list keeps its last good state */ }
+    try { setChats(await read<ChatList>("/api/chats")); } catch { /* the list keeps its last good state */ }
   }, []);
   const refreshThread = useCallback(async () => {
     try {
@@ -117,15 +115,14 @@ export function App() {
       setLines(data.thread);
       setThreadError(false);
     } catch {
-      if (!lines.length) setThreadError(true);
+      setThreadError(true);
     }
-    shownRef.current = 0;
-    bump((x) => x + 1);
-  }, [lines.length]);
+  }, []);
   const refreshIdeas = useCallback(async () => {
     try {
-      const data = await post<{ ideas?: Idea[]; pitched_new?: boolean }>("/api/ideas", {});
+      const data = await post<{ ideas?: Idea[]; pitched_new?: boolean; built_titles?: string[] }>("/api/ideas", {});
       setIdeas(data.ideas || []);
+      setBuiltTitles(data.built_titles || []);
       if (data.pitched_new) await refreshThread();
     } catch { /* the cards keep their last good state */ }
   }, [refreshThread]);
@@ -142,10 +139,26 @@ export function App() {
   useEffect(() => {
     void refreshAll();
     read<{ version: string }>("/api/version").then((v) => setVersion(v.version)).catch(() => {});
-    // The old page's one timer: the chat list and thread keep their last good state between actions.
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Undo confirm and menu are modal; a switch of chat moves the unsent text with the person.
+  // A conversation scrolls to its latest line (the old page did this on every thread update).
+  const threadRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = threadRef.current;
+    if (el && (lines.some((l) => l.startsWith("You: ")) || building)) el.scrollTop = el.scrollHeight;
+  }, [lines, building]);
+
+  const checkStudio = async () => {
+    try {
+      const s = await read<{ studio_connected: boolean; model_configured: boolean }>("/api/status");
+      if (s.studio_connected && !studioOk) toast.success("Studio reconnected");
+      setStudioOk(s.studio_connected);
+      setModelOk(s.model_configured);
+    } catch {
+      toast.error("Could not reach the OpenRO server.");
+    }
+  };
+
   const switchChat = async (id: string) => {
     if (id === activeId) return;
     try {
@@ -171,7 +184,6 @@ export function App() {
       return;
     }
     setMenuOpen(false);
-    shownRef.current = 0;
     await refreshAll();
     inputRef.current?.focus();
   };
@@ -189,6 +201,13 @@ export function App() {
     end(chatId);
     if (failure) addNotice(chatId, { text: failure, bad: true });
     await refreshAll();
+    // The tile that was pressed may have been re-rendered: focus goes back to its key, else to the box.
+    await new Promise((r) => setTimeout(r, 60));
+    const a = document.activeElement;
+    if (!a || a === document.body) {
+      const t = document.querySelector<HTMLButtonElement>(`[data-focus-key="idea:${CSS.escape(idea.title)}"]`);
+      if (t && !t.disabled) t.focus(); else inputRef.current?.focus();
+    }
   };
 
   const send = async (e: FormEvent) => {
@@ -241,21 +260,32 @@ export function App() {
     await refreshAll();
   };
 
+  // The confirm's "Yes, undo it" is marked in the markup; the dialog's own close button keeps the Keep it path.
+  // Escape inside the confirm returns focus to the Undo key (the dialog keeps the Tab cycle itself).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || !document.activeElement?.closest("[data-undo-dialog]")) return;
+      setTimeout(() => {
+        const undoKey = [...document.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Undo");
+        undoKey?.focus();
+      }, 80);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
   const onUndoClick = (e: MouseEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).closest("[data-undo-yes]")) void undoNow();
   };
-
-  // The server's notices: a dismiss button hides its own banner (the old page's behaviour, without a per-id key).
+  // The server's notices: a dismiss button hides its own banner.
   const onBannerClick = (e: MouseEvent<HTMLDivElement>) => {
-    const b = (e.target as HTMLElement).closest("[data-dismiss]");
-    const banner = b?.closest<HTMLElement>(".banner");
+    const banner = (e.target as HTMLElement).closest("[data-dismiss]")?.closest<HTMLElement>(".banner");
     if (banner) banner.hidden = true;
   };
 
   const rail = (
     <nav aria-label="Chats and settings" className="flex h-full min-h-0 flex-col gap-3 bg-surface p-4 text-ink">
       <div className="flex min-w-0 items-center gap-3 px-1 pb-2 pt-1">
-        <span className="grid size-10 flex-none place-items-center rounded-card bg-blue text-blue-fg shadow-primary"><Sparkles className="size-5" strokeWidth={1.5} aria-hidden /></span>
+        <span className="grid size-10 flex-none place-items-center rounded-card bg-blue text-blue-fg shadow-[0_3px_0_var(--key-edge)]"><Sparkles className="size-5" strokeWidth={1.5} aria-hidden /></span>
         <div className="min-w-0">
           <h1 className="font-heading text-title tracking-display font-semibold leading-tight">OpenRO</h1>
           <div className="truncate text-sm text-ink-2">{shell.gameName}</div>
@@ -280,7 +310,7 @@ export function App() {
                   data-id={c.id}
                   aria-current={c.id === activeId ? "true" : undefined}
                   onClick={() => switchChat(c.id)}
-                  className="flex min-h-11 w-full cursor-pointer items-center gap-2 rounded-card px-3 text-left text-ui text-ink-2 outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-blue data-[checked=true]:font-medium data-[checked=true]:text-ink"
+                  className="chat-btn flex min-h-11 w-full cursor-pointer items-center gap-2 rounded-card px-3 text-left text-ui text-ink-2 outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-focus data-[checked=true]:font-medium data-[checked=true]:text-ink"
                 >
                   <span className="min-w-0 flex-1 truncate">{c.title || "New chat"}</span>
                   {inflight[c.id] && <span className="flex-none text-sm text-ink-2">working</span>}
@@ -291,157 +321,185 @@ export function App() {
         </AnimatedBackground>
       </div>
       <div className="flex flex-col gap-3 border-t border-hairline pt-3">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="text-sm text-ink-2">Appearance</span>
           <SegmentedControl aria-label="Appearance">
-            <SegmentedControlItem data-checked={theme === "light" ? "" : undefined} aria-pressed={theme === "light"} onClick={() => setTheme("light")} className="gap-1.5">
+            <SegmentedControlItem data-checked={theme === "light" ? "" : undefined} aria-pressed={theme === "light"} onClick={() => setTheme("light")} className="!h-11 gap-1.5">
               <Sun className="size-4" strokeWidth={1.5} aria-hidden />Light
             </SegmentedControlItem>
-            <SegmentedControlItem data-checked={theme === "dark" ? "" : undefined} aria-pressed={theme === "dark"} onClick={() => setTheme("dark")} className="gap-1.5">
+            <SegmentedControlItem data-checked={theme === "dark" ? "" : undefined} aria-pressed={theme === "dark"} onClick={() => setTheme("dark")} className="!h-11 gap-1.5">
               <Moon className="size-4" strokeWidth={1.5} aria-hidden />Dark
             </SegmentedControlItem>
           </SegmentedControl>
         </div>
-        <a href={`${RELEASES_URL}${version}`} target="_blank" rel="noopener" className="self-start rounded-sm">
-          <Pill className="bg-track text-sm text-ink-2">OpenRO {version}</Pill>
+        <a href={update.snap?.release_url || `${RELEASES_URL}${version}`} target="_blank" rel="noopener" className="inline-flex min-h-11 items-center self-start rounded-chip px-1 text-sm text-ink-2 outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-focus">
+          OpenRO {version}<span className="sr-only"> (opens in a new tab)</span>
         </a>
       </div>
     </nav>
   );
 
-  const shelfContent = <PartsShelf place={place} error={place === "error"} />;
-
   return (
-    <div className="flex h-dvh min-h-0 w-full overflow-hidden bg-canvas text-ink">
-      {!phone && <div className="w-[264px] flex-none border-r border-hairline">{rail}</div>}
-      <Drawer.Root open={menuOpen && phone} onOpenChange={setMenuOpen} direction="left">
-        <Drawer.Portal>
-          <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/20" />
-          <Drawer.Content aria-describedby={undefined} className="fixed inset-y-0 left-0 z-50 w-[min(86vw,300px)] outline-none">
-            <Drawer.Title className="sr-only">Chats and settings</Drawer.Title>
-            {rail}
-          </Drawer.Content>
-        </Drawer.Portal>
-      </Drawer.Root>
+    <MotionConfig reducedMotion="user">
+      <div className="flex h-dvh min-h-0 w-full overflow-hidden text-ink" data-app="openro">
+        <a className="skip" href="#composer-input">Skip to message box</a>
+        {!phone && <div className="w-[264px] flex-none border-r border-hairline">{rail}</div>}
+        <Drawer.Root open={menuOpen && phone} onOpenChange={setMenuOpen} direction="left">
+          <Drawer.Portal>
+            <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/20" />
+            <Drawer.Content className="fixed inset-y-0 left-0 z-50 w-[min(86vw,300px)] outline-none">
+              <Drawer.Title className="sr-only">Chats and settings</Drawer.Title>
+              {rail}
+            </Drawer.Content>
+          </Drawer.Portal>
+        </Drawer.Root>
 
-      <main className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-10 flex h-14 flex-none items-center gap-3 border-b border-hairline bg-canvas px-4 md:px-6">
-          {phone && (
-            <button type="button" onClick={() => setMenuOpen(true)} aria-label="Open the menu" aria-expanded={menuOpen} className="grid size-11 cursor-pointer place-items-center rounded-sm text-icon outline-none hover:bg-track focus-visible:ring-2 focus-visible:ring-blue">
-              <Menu className="size-5" strokeWidth={1.5} aria-hidden />
-            </button>
-          )}
-          <h2 className="min-w-0 flex-1 truncate font-heading text-title tracking-display font-semibold">{activeTitle}</h2>
-          {chats && <StudioChip connected={studioOk} />}
-          {narrow && (
-            <Drawer.Root open={shelfOpen} onOpenChange={setShelfOpen}>
-              <Drawer.Trigger asChild>
-                <button type="button" aria-label="In your game" className="grid size-11 flex-none cursor-pointer place-items-center rounded-card border border-hairline bg-surface outline-none hover:bg-track focus-visible:ring-2 focus-visible:ring-blue">
-                  <PanelRight className="size-5" strokeWidth={1.5} aria-hidden />
-                </button>
-              </Drawer.Trigger>
-              <Drawer.Portal>
-                <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/20" />
-                <Drawer.Content className="fixed inset-x-0 bottom-0 z-50 flex max-h-[80dvh] flex-col rounded-t-panel border-t border-hairline bg-board outline-none">
-                  <Drawer.Handle className="mx-auto mt-3 h-1.5 w-10 rounded-full bg-track" />
-                  <Drawer.Title className="sr-only">In your game</Drawer.Title>
-                  <div className="min-h-0 flex-1 overflow-y-auto">{shelfContent}</div>
-                </Drawer.Content>
-              </Drawer.Portal>
-            </Drawer.Root>
-          )}
-        </header>
-
-        <div className="server-banners" onClick={onBannerClick} dangerouslySetInnerHTML={{ __html: shell.bannerHtml }} />
-
-        <div id="thread" aria-live="polite" aria-busy={!chats} className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex w-full max-w-[760px] flex-col gap-4 p-4 md:p-6">
-            {threadError ? (
-              <div className="flex flex-col items-start gap-3 rounded-panel bg-pill-pro-bg p-4 text-pill-pro-fg">
-                <strong className="font-heading font-semibold">Could not load the conversation.</strong>
-                <p className="text-ink">The OpenRO server did not answer. Try again, or reload the page.</p>
-                <Key onClick={() => void refreshAll()}>Try again</Key>
-              </div>
-            ) : (
-              <>
-                {!lines.some((l) => l.startsWith("You: ") || l.startsWith("Playtest") || l.startsWith("Wrote ") || l.startsWith("Generated ")) && !building?.message && <Welcome canBuild={canBuild} />}
-                <ThreadBody
-                  lines={lines}
-                  notices={notices}
-                  pending={building}
-                  ideas={ideas}
-                  canBuild={canBuild && studioOk}
-                  busy={busy}
-                  buildingIdea={buildingTitle}
-                  freshFrom={shownRef.current}
-                  onBuild={buildIdea}
-                />
-              </>
+        <main className="flex min-w-0 flex-1 flex-col">
+          <header className="sticky top-0 z-10 flex min-h-14 flex-none flex-wrap items-center gap-x-3 gap-y-2 border-b border-hairline bg-canvas px-4 py-2 md:px-6">
+            {phone && (
+              <button type="button" onClick={() => setMenuOpen(true)} aria-label="Open the menu" aria-expanded={menuOpen} className="grid size-11 flex-none cursor-pointer place-items-center rounded-sm text-icon outline-none hover:bg-track focus-visible:ring-2 focus-visible:ring-focus">
+                <Menu className="size-5" strokeWidth={1.5} aria-hidden />
+              </button>
             )}
-          </div>
-        </div>
-
-        <div className="flex-none border-t border-hairline bg-canvas">
-          <div className="mx-auto flex w-full max-w-[760px] flex-col gap-3 p-4 md:px-6 md:pb-5">
-            {ideas.length > 0 && lines.some((l) => l.startsWith("You: ") || l.startsWith("Wrote ") || l.startsWith("Playtest")) && (
-              <div id="ideas" className="flex flex-wrap items-center gap-2">
-                <span className="mr-1 text-sm text-ink-2">Next ideas</span>
-                {ideas.map((idea) => (
-                  <button key={idea.id} type="button" disabled={!canBuild || busy} onClick={() => buildIdea(idea)} aria-label={`Build ${idea.title}`} className="inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-chip border border-hairline bg-surface px-3 text-sm text-ink outline-none transition-colors hover:bg-raised focus-visible:ring-2 focus-visible:ring-blue disabled:cursor-default disabled:text-disabled">
-                    <Plus className="size-3.5" strokeWidth={1.5} aria-hidden />{idea.title}
+            <h2 className="min-w-0 flex-1 truncate font-heading text-title tracking-display font-semibold">{activeTitle}</h2>
+            {narrow && (
+              <Drawer.Root open={shelfOpen} onOpenChange={setShelfOpen}>
+                <Drawer.Trigger asChild>
+                  <button type="button" aria-label="In your game" className="grid size-11 flex-none cursor-pointer place-items-center rounded-card border border-hairline bg-surface outline-none hover:bg-track focus-visible:ring-2 focus-visible:ring-focus">
+                    <PanelRight className="size-5" strokeWidth={1.5} aria-hidden />
                   </button>
-                ))}
-              </div>
+                </Drawer.Trigger>
+                <Drawer.Portal>
+                  <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/20" />
+                  <Drawer.Content className="fixed inset-x-0 bottom-0 z-50 flex max-h-[80dvh] flex-col rounded-t-panel border-t border-hairline bg-board outline-none">
+                    <Drawer.Handle className="mx-auto mt-3 h-1.5 w-10 rounded-full bg-track" />
+                    <Drawer.Title className="sr-only">In your game</Drawer.Title>
+                    <div className="min-h-0 flex-1 overflow-y-auto">
+                      <PartsShelf place={place} error={place === "error"} />
+                    </div>
+                  </Drawer.Content>
+                </Drawer.Portal>
+              </Drawer.Root>
             )}
-            {undoReason && <p id="undo-reason" className="self-end text-sm text-ink-2">Undo: {undoReason.toLowerCase()}</p>}
-            <form id="composer" onSubmit={send} className="grid gap-2 sm:flex sm:items-stretch">
-              <InputGroup className="min-w-0 sm:flex-1">
-                <InputGroupInput
-                  ref={inputRef}
-                  id="composer-input"
-                  aria-label="Describe your game"
-                  placeholder="Describe your game, for example: a lava obby with coins"
-                  autoComplete="off"
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                />
-                <InputGroupAddon align="inline-end">
-                  <MorphingDialog transition={open}>
-                    <MorphingDialogTrigger thing="undo" blocked={!canUndo} aria-describedby="undo-reason" aria-label="Undo the last build" className="inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-sm px-3 text-sm text-ink-2 outline-none hover:bg-track hover:text-ink focus-visible:ring-2 focus-visible:ring-blue disabled:cursor-default disabled:text-disabled">
-                      <Undo2 className="size-4" strokeWidth={1.5} aria-hidden />Undo
-                    </MorphingDialogTrigger>
-                    <MorphingDialogContainer>
-                      <MorphingDialogContent className="relative w-[min(420px,calc(100vw-32px))] rounded-dialog border border-hairline bg-surface p-5 text-ink shadow-lift">
-                        <div onClick={onUndoClick} className="flex flex-col gap-4">
-                          <div>
-                            <MorphingDialogTitle className="font-heading text-title font-semibold">Undo the last build?</MorphingDialogTitle>
-                            <MorphingDialogDescription className="mt-1 text-ui text-ink-2">Your game goes back to how it was before that build.</MorphingDialogDescription>
-                          </div>
-                          <div className="flex flex-wrap justify-end gap-2">
-                            <MorphingDialogClose className="inline-flex min-h-11 cursor-pointer items-center rounded-card border border-hairline bg-surface px-4 text-ui text-ink outline-none focus-visible:ring-2 focus-visible:ring-blue">Keep it</MorphingDialogClose>
-                            <MorphingDialogClose data-undo-yes className="inline-flex min-h-11 cursor-pointer items-center rounded-card bg-ink-button px-4 text-ui font-medium text-ink-button-fg outline-none focus-visible:ring-2 focus-visible:ring-blue">Yes, undo it</MorphingDialogClose>
-                          </div>
-                        </div>
-                      </MorphingDialogContent>
-                    </MorphingDialogContainer>
-                  </MorphingDialog>
-                </InputGroupAddon>
-              </InputGroup>
-              <Key type="submit" disabled={busy || !text.trim()} className="w-full px-4 sm:w-auto sm:flex-none">
-                <Send className="size-4" strokeWidth={1.5} aria-hidden />Send
-              </Key>
-            </form>
-          </div>
-        </div>
-      </main>
+            <div className="order-last flex w-full flex-wrap items-center gap-2 sm:order-none sm:w-auto">
+              {chats && <StudioChip connected={studioOk} />}
+              {chats && !studioOk && (
+                <button type="button" onClick={() => void checkStudio()} className="inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-sm px-2 text-sm text-ink outline-none hover:bg-track focus-visible:ring-2 focus-visible:ring-focus">
+                  <RefreshCw className="size-4" strokeWidth={1.5} aria-hidden />Check again
+                </button>
+              )}
+            </div>
+          </header>
 
-      {!narrow && (
-        <div className="flex-none border-l border-hairline" style={{ width: shelfCollapsed ? "auto" : 300 }}>
-          <PartsShelf place={place} error={place === "error"} collapsed={shelfCollapsed} onToggle={() => setShelfCollapsed((c) => !c)} />
-        </div>
-      )}
-      <Toaster position="bottom-right" theme={theme} />
-    </div>
+          <div className="server-banners" onClick={onBannerClick} dangerouslySetInnerHTML={{ __html: shell.bannerHtml }} />
+          {update.show || update.canCheck ? <UpdateStrip u={update} version={version} /> : null}
+
+          <div id="thread" ref={threadRef} aria-live="polite" aria-busy={!chats} className="min-h-0 flex-1 overflow-y-auto">
+            <div className="mx-auto flex w-full max-w-[760px] flex-col gap-4 p-4 md:p-6">
+              {threadError ? (
+                <div className="card-stock flex flex-col items-start gap-3 p-4">
+                  <strong className="font-heading font-semibold text-pill-pro-fg">Could not load the conversation.</strong>
+                  <p className="text-ink">The OpenRO server did not answer. Try again, or reload the page.</p>
+                  <Key onClick={() => void refreshAll()}>Try again</Key>
+                </div>
+              ) : (
+                <>
+                  {!lines.some((l) => l.startsWith("You: ")) && !building?.message && (
+                    <section className="flex flex-col gap-3 pb-2 pt-4">
+                      <h2 className="font-heading text-display tracking-display text-ink">What do you want to make?</h2>
+                      <p className="max-w-[60ch] text-ui text-ink-2">
+                        {canBuild
+                          ? "Pick one of these ideas, or describe your own game in the box below. OpenRO builds it in Roblox Studio and runs a test before it says it is done."
+                          : "Pick an idea or describe your own game below. To build it, OpenRO needs a model key and a Roblox Studio connection. See the notice above."}
+                      </p>
+                      <p className="text-sm text-ink-2">Roblox Studio is where your game lives; OpenRO needs it open to build and test.</p>
+                    </section>
+                  )}
+                  <ThreadBody
+                    lines={lines}
+                    notices={notices}
+                    pending={building}
+                    ideas={ideas}
+                    builtTitles={builtTitles}
+                    canBuild={canBuild}
+                    busy={busy}
+                    buildingIdea={building?.build}
+                    freshFrom={0}
+                    onBuild={buildIdea}
+                  />
+                  {!lines.some((l) => l.startsWith("You: ")) && ideas.length > 0 && !building && (
+                    <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] items-stretch gap-4">
+                      {ideas.map((i) => <IdeaTile key={i.id} idea={i} canBuild={canBuild} busy={busy} building={false} onBuild={() => buildIdea(i)} />)}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="torn flex-none bg-raised">
+            <div className="mx-auto flex w-full max-w-[760px] flex-col gap-3 px-4 pb-4 pt-5 md:px-6 md:pb-5">
+              {ideas.length > 0 && lines.some((l) => l.startsWith("You: ") || l.startsWith("Wrote ") || l.startsWith("Playtest")) && (
+                <div id="ideas" className="flex flex-wrap items-center gap-2">
+                  <span className="mr-1 text-sm text-ink-2">Next ideas</span>
+                  {ideas.map((idea) => (
+                    <button key={idea.id} type="button" disabled={!canBuild || busy} onClick={() => buildIdea(idea)} aria-label={`Build ${idea.title}`} data-focus-key={`idea:${idea.title}`} className="inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-chip border border-hairline bg-surface px-3 text-sm text-ink outline-none transition-colors hover:bg-canvas focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-default disabled:text-disabled">
+                      <Plus className="size-3.5" strokeWidth={1.5} aria-hidden />{idea.title}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {undoReason && <p id="undo-reason" className="self-end text-sm text-ink-2">Undo: {undoReason.toLowerCase()}</p>}
+              <form id="composer" onSubmit={send} className="grid gap-2 sm:flex sm:items-stretch">
+                <InputGroup className="min-w-0 sm:flex-1">
+                  <InputGroupInput
+                    ref={inputRef}
+                    id="composer-input"
+                    aria-label="Describe your game"
+                    placeholder="Describe your game, for example: a lava obby with coins"
+                    className="[&_input]:!h-11 [&_input]:!leading-11"
+                    autoComplete="off"
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                  />
+                  <InputGroupAddon align="inline-end">
+                    <MorphingDialog transition={open}>
+                      <MorphingDialogTrigger thing="undo" blocked={!canUndo} aria-describedby="undo-reason" aria-label="Undo the last build" className="inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-sm px-3 text-sm text-ink-2 outline-none hover:bg-track hover:text-ink focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-default disabled:text-disabled">
+                        <Undo2 className="size-4" strokeWidth={1.5} aria-hidden />Undo
+                      </MorphingDialogTrigger>
+                      <MorphingDialogContainer>
+                        <MorphingDialogContent className="relative w-full max-w-[420px] rounded-dialog border border-hairline bg-surface p-5 text-ink shadow-lift">
+                          <div onClick={onUndoClick} data-undo-dialog className="flex flex-col gap-4">
+                            <div>
+                              <MorphingDialogTitle className="font-heading text-title font-semibold">Undo the last build?</MorphingDialogTitle>
+                              <MorphingDialogDescription className="mt-1 text-ui text-ink-2">Your game goes back to how it was before that build.</MorphingDialogDescription>
+                            </div>
+                            <div className="flex flex-wrap justify-end gap-2">
+                              <MorphingDialogClose aria-label="Keep it" className="static inline-flex min-h-11 cursor-pointer items-center rounded-card border border-hairline bg-surface px-4 text-ui text-ink outline-none hover:bg-raised focus-visible:ring-2 focus-visible:ring-focus">Keep it</MorphingDialogClose>
+                              <MorphingDialogClose data-undo-yes aria-label="Yes, undo it" className="static inline-flex min-h-11 cursor-pointer items-center rounded-card bg-blue px-4 text-ui font-medium text-blue-fg shadow-[0_3px_0_var(--key-edge)] outline-none focus-visible:ring-2 focus-visible:ring-focus">Yes, undo it</MorphingDialogClose>
+                            </div>
+                          </div>
+                        </MorphingDialogContent>
+                      </MorphingDialogContainer>
+                    </MorphingDialog>
+                  </InputGroupAddon>
+                </InputGroup>
+                <Key type="submit" disabled={busy || !text.trim()} className="w-full px-4 sm:w-auto">
+                  <Send className="size-4" strokeWidth={1.5} aria-hidden />Send
+                </Key>
+              </form>
+            </div>
+          </div>
+        </main>
+
+        {!narrow && (
+          <div className="flex-none border-l border-hairline" style={{ width: shelfCollapsed ? "auto" : 300 }}>
+            <PartsShelf place={place} error={place === "error"} collapsed={shelfCollapsed} onToggle={() => setShelfCollapsed((c) => !c)} />
+          </div>
+        )}
+        <Toaster position="bottom-right" theme={theme} />
+      </div>
+    </MotionConfig>
   );
 }
 

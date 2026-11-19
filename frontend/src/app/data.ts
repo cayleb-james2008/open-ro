@@ -26,7 +26,9 @@ const IDEA_PREFIX = "OpenRO: Idea — ";
 const CONSOLE_PREFIX = "Console from the failed test run: ";
 const DASH = /\s—\s/g;
 export const plain = (s: string) => s.replace(DASH, ", ");
-export const ERROR_LIKE = /error|could not|did not|not connected|no model|refused|failed/i;
+// Thread lines the server writes for a failure (src/server.rs: "OpenRO: {error}" and "OpenRO: {f.message}").
+// The built-in opening line ("Building it now ... no model call involved") is information, not a failure.
+export const FAILURE = /^(?:OpenRO: )?(?:could not|did not|not connected|studio not connected|studio bridge error|no model key|revert did not|chat not found|empty message|unknown idea|.*\b(?:failed|refused)\b)/i;
 
 export type Row =
   | { kind: "user"; text: string }
@@ -90,5 +92,3 @@ export function agentText(text: string, bad: boolean, whole = false): { plain: s
 }
 
 export const SEND_FAILED = "That did not go through. Nothing was built. Your message is back in the box.";
-export const plainError = (e: unknown) =>
-  e instanceof TypeError ? "Could not reach OpenRO. Is it running?" : (e instanceof Error && e.message) || "Something went wrong. Try again.";
