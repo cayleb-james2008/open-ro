@@ -526,6 +526,7 @@
     const b = el('button', 'btn btn-primary', 'Build this');
     b.type = 'button';
     b.setAttribute('data-focus-key', 'idea:' + title);
+    b.setAttribute('aria-label', 'Build ' + title);
     if (rec) {
       b.disabled = !STUDIO || state.busy;
       if (!STUDIO) b.setAttribute('aria-describedby', 'no-studio-banner');
@@ -640,6 +641,7 @@
       b.appendChild(icon('plus', 'ic-sm'));
       b.appendChild(el('span', '', idea.title));
       b.setAttribute('data-focus-key', 'idea:' + idea.title);
+      b.setAttribute('aria-label', 'Build ' + idea.title);
       b.disabled = !STUDIO || state.busy;
       if (!STUDIO) b.title = 'Connect Studio to build this';
       b.addEventListener('click', () => buildIdea(idea, b));
