@@ -880,6 +880,39 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn updating_through_the_real_github_api_refuses_every_other_host() {
+        // The rule must be wired in, not only exist: with the default API, an update whose
+        // files are anywhere but GitHub is refused before any request, and nothing changes.
+        let dir = tmp("ghonly");
+        let exe = fake_exe(&dir, "0.2.0");
+        let before = std::fs::read(&exe).unwrap();
+        let cfg = Config {
+            bin: "openro-rs",
+            current: "0.2.0",
+            repo: "o/r".to_string(),
+            api: DEFAULT_API.to_string(),
+            mode: Mode::Notify,
+            exe: exe.clone(),
+            allow_dev: false,
+            may_apply: true,
+        };
+        let rel = Release {
+            version: "0.3.0".into(),
+            url: String::new(),
+            notes: String::new(),
+            asset_name: asset_name("openro-rs"),
+            asset_url: "http://127.0.0.1:1/dl/a".into(),
+            asset_size: None,
+            sums_url: Some("http://127.0.0.1:1/dl/SHA256SUMS".into()),
+            digest: None,
+        };
+        let e = install(&cfg, &rel).unwrap_err();
+        assert!(e.contains("refusing to fetch"), "{e}");
+        assert_eq!(std::fs::read(&exe).unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn two_simultaneous_applies_install_once_and_both_succeed() {
         let dir = tmp("race");
         let exe = fake_exe(&dir, "0.2.0");
