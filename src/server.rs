@@ -62,11 +62,19 @@ pub struct Shared {
     pub store_recovered: Vec<String>,
     /// Connection handler threads running now (capped per server).
     pub active_handlers: AtomicUsize,
+    /// Chats whose change-set stack is non-empty (Undo has something to do).
+    /// The agent keeps this current, so polling never waits on a running ask.
+    pub undoable: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl Shared {
     /// In-memory server (tests, ephemeral runs): chats are not saved.
     pub fn new(agent: Option<Agent>, game_name: String) -> Arc<Shared> {
+        let mut agent = agent;
+        let undoable = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        if let Some(a) = agent.as_mut() {
+            a.attach_undo_sink(Arc::clone(&undoable));
+        }
         let chat = default_chat();
         let active = chat.id.clone();
         Arc::new(Shared {
@@ -78,6 +86,7 @@ impl Shared {
             ideas: Mutex::new(std::collections::HashMap::new()),
             store_recovered: Vec::new(),
             active_handlers: AtomicUsize::new(0),
+            undoable,
         })
     }
 
@@ -85,6 +94,11 @@ impl Shared {
     /// inside `data_dir`.
     pub fn with_data_dir(agent: Option<Agent>, game_name: String, data_dir: PathBuf) -> Arc<Shared> {
         let _ = std::fs::create_dir_all(&data_dir);
+        let mut agent = agent;
+        let undoable = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        if let Some(a) = agent.as_mut() {
+            a.attach_undo_sink(Arc::clone(&undoable));
+        }
         let mut recovered = agent.as_ref().map(|a| a.recovered.clone()).unwrap_or_default();
         let (chats, active) = load_chats(&data_dir, &mut recovered).unwrap_or_else(|| {
             let chat = default_chat();
@@ -101,6 +115,7 @@ impl Shared {
             ideas: Mutex::new(ideas),
             store_recovered: recovered,
             active_handlers: AtomicUsize::new(0),
+            undoable,
         })
     }
 
@@ -638,7 +653,11 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
             );
         }
         ("GET", "/api/chats") => {
-            respond_json(&mut stream, "200 OK", &shared.chats_json());
+            // can_undo: the active chat has a change set Undo can take back.
+            let mut body = shared.chats_json();
+            let active = shared.active_chat.lock().unwrap().clone();
+            body["can_undo"] = json!(shared.undoable.lock().unwrap().contains(&active));
+            respond_json(&mut stream, "200 OK", &body);
         }
         ("POST", "/api/chats") => {
             let chat = shared.create_chat();
@@ -848,11 +867,7 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
                     .collect()
             };
             if !missing.is_empty() {
-                let error = format!(
-                    "“{}” needs {} first — I won't build it until that's in the game, or it would arrive dead.",
-                    idea.title,
-                    missing.join(", ")
-                );
+                let error = crate::agent::prerequisite_sentence(idea.title, missing[0]);
                 shared.append_lines_to(&chat_id, &[format!("OpenRO: {error}")]);
                 respond_json(
                     &mut stream,

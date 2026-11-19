@@ -234,6 +234,8 @@ pub struct Agent {
     proof_path: Option<std::path::PathBuf>,
     /// Backup file names written when a corrupt changes file was set aside.
     pub recovered: Vec<String>,
+    /// Shared set of chats with a non-empty change-set stack (for the page's Undo).
+    undo_sink: Option<std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>>,
 }
 
 impl Agent {
@@ -249,6 +251,7 @@ impl Agent {
             proof_by_chat: HashMap::new(),
             proof_path: None,
             recovered: Vec::new(),
+            undo_sink: None,
         }
     }
 
@@ -290,6 +293,7 @@ impl Agent {
             }
         }
         self.changes_path = Some(path);
+        self.sync_undo();
         // A chat with change sets but no saved verdict (proof file corrupt
         // or missing) is unproven until a passing playtest: conservative.
         self.proof_by_chat = load_proof(&proof_path, &mut self.recovered);
@@ -328,6 +332,27 @@ impl Agent {
         if std::fs::write(&tmp, Value::Object(obj).to_string()).is_ok() {
             let _ = std::fs::rename(&tmp, path);
         }
+    }
+
+    /// Keep the shared Undo set in step with the change-set stacks.
+    pub fn attach_undo_sink(
+        &mut self,
+        sink: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    ) {
+        self.undo_sink = Some(sink);
+        self.sync_undo();
+    }
+
+    fn sync_undo(&self) {
+        let Some(sink) = &self.undo_sink else { return };
+        let mut set = sink.lock().unwrap();
+        set.clear();
+        set.extend(
+            self.changes_by_chat
+                .iter()
+                .filter(|(_, stack)| !stack.is_empty())
+                .map(|(chat, _)| chat.clone()),
+        );
     }
 
     fn save_proof(&self) {
@@ -428,6 +453,7 @@ impl Agent {
                 .or_default()
                 .push(ChangeSet { changes: harvested, skills });
             self.save_changes();
+            self.sync_undo();
         }
     }
 
@@ -623,7 +649,7 @@ impl Agent {
                     Ok(_) => skills_used.push(skill.to_string()),
                     Err(e) => {
                         return Err(fail(
-                            format!("built-in plan stopped at the {skill} skill: {e}"),
+                            format!("my built-in plan for “{label}” stopped while generating a step: {e}"),
                             &thread, &transcript, &skills_used))
                     }
                 }
@@ -684,7 +710,7 @@ impl Agent {
                     Err(e) => {
                         transcript.push(format!("bridge detail: {e}"));
                         return Err(fail(
-                            format!("built-in plan stopped at {tool}: {}", plain_bridge(&e)),
+                            format!("my built-in plan for “{label}” stopped while saving to the game: {}", plain_bridge(&e)),
                             &thread, &transcript, &skills_used))
                     }
                 }
@@ -902,7 +928,7 @@ impl Agent {
                         messages.push(json!({ "role": "user", "content": note }));
                     }
                     Err(e) => {
-                        problems.push(format!("the {skill} step failed: {e}"));
+                        problems.push(format!("a building step failed: {e}"));
                         transcript.push(format!("skill {skill} error: {e}"));
                         messages.push(json!({
                             "role": "user",
@@ -1012,7 +1038,7 @@ impl Agent {
                         messages.push(json!({ "role": "user", "content": note }));
                     }
                     Err(e) => {
-                        problems.push(format!("the {tool} step failed: {e}"));
+                        problems.push(format!("a game step failed: {e}"));
                         transcript.push(format!("tool error: {e}"));
                         messages.push(json!({
                             "role": "user",
@@ -1078,7 +1104,7 @@ impl Agent {
             "skill {skill} (Rune) {args_note} generated {} bytes of Luau",
             source.len()
         ));
-        thread.push(format!("Generated the {skill} script."));
+        thread.push("Generated the script for that part.".to_string());
         self.generated.insert(skill.to_string(), source.clone());
         self.last_skill = Some(skill.to_string());
         Ok(format!(
@@ -1147,14 +1173,14 @@ impl Agent {
                 .generated
                 .get(name)
                 .cloned()
-                .ok_or_else(|| format!("no generated source for skill '{name}' — run the skill first"));
+                .ok_or_else(|| "no generated source for that part yet — run its step first".to_string());
         }
         match args.get("use_generated") {
             Some(Value::String(name)) => self
                 .generated
                 .get(name)
                 .cloned()
-                .ok_or_else(|| format!("no generated source for skill '{name}' — run the skill first")),
+                .ok_or_else(|| "no generated source for that part yet — run its step first".to_string()),
             Some(Value::Bool(true)) => {
                 let name = self
                     .last_skill
@@ -1486,6 +1512,7 @@ impl Agent {
         }
         self.save_proof();
         self.save_changes();
+        self.sync_undo();
         Ok(restored)
     }
 
@@ -1703,20 +1730,29 @@ fn load_proof(path: &std::path::Path, recovered: &mut Vec<String>) -> HashMap<St
     }
 }
 
-/// The user's sentence for a step refused because its prerequisite skill
-/// was undone: the display names of the two ideas, never the skill names.
+/// The display name of the idea that adds a skill (e.g. "Money that saves"
+/// for currency). Internal skill ids never reach the user through this.
+pub fn idea_title_for_skill(sk: &str) -> String {
+    let all = crate::ideas::catalogue();
+    let id = format!("add-{sk}");
+    all.iter()
+        .find(|i| i.id == id.as_str())
+        .or_else(|| all.iter().find(|i| i.skills.contains(&sk)))
+        .map(|i| i.title.to_string())
+        .unwrap_or_else(|| "That".to_string())
+}
+
+/// The one plain refusal used on every path (chat asks and idea buttons)
+/// when a build needs a prerequisite the game does not have.
+pub fn prerequisite_sentence(blocked_title: &str, need_skill: &str) -> String {
+    let needed = idea_title_for_skill(need_skill);
+    format!("{blocked_title} needs \"{needed}\" first. Build \"{needed}\" first, then ask again.")
+}
+
+/// The user's sentence for a chat-path step refused because its
+/// prerequisite skill was undone: the display names, never skill ids.
 fn plain_prerequisite(skill: &str, need: &str) -> String {
-    let title = |sk: &str| {
-        let all = crate::ideas::catalogue();
-        let id = format!("add-{sk}");
-        all.iter()
-            .find(|i| i.id == id.as_str())
-            .or_else(|| all.iter().find(|i| i.skills.contains(&sk)))
-            .map(|i| i.title.to_string())
-            .unwrap_or_else(|| sk.to_string())
-    };
-    let (blocked, needed) = (title(skill), title(need));
-    format!("{blocked} needs \"{needed}\" first. Build \"{needed}\" first, then ask again.")
+    prerequisite_sentence(&idea_title_for_skill(skill), need)
 }
 
 /// A plain sentence for a Studio refusal; the raw text goes to the transcript.

@@ -1961,9 +1961,9 @@ fn http_build_refuses_when_prerequisite_missing() {
         Some(&json!({ "id": "add-shop" }).to_string()),
     );
     assert_eq!(status, 400, "the build refuses: {body}");
-    assert!(body.contains("currency"), "the refusal names the missing prerequisite: {body}");
+    assert!(body.contains("Money that saves"), "the refusal names the missing prerequisite by its display name: {body}");
     let (_, thread) = http_request(port, "GET", "/api/thread", None);
-    assert!(thread.contains("needs currency first"), "the refusal is in the record: {thread}");
+    assert!(thread.contains("A shop for the money needs \\\"Money that saves\\\" first"), "the refusal is in the record: {thread}");
     let (_, tree_body) = http_request(port, "GET", "/api/place-tree", None);
     assert!(tree_body.contains("\"scripts\":{}"), "nothing was built: {tree_body}");
 }
@@ -2134,7 +2134,7 @@ fn undo_forgets_the_reverted_currency_for_the_shop_gate() {
     assert_eq!(status, 200, "undo works: {body}");
     let (status, body) = http_request(port, "POST", "/api/ideas/build", Some(&json!({ "id": "add-shop" }).to_string()));
     assert_eq!(status, 400, "the shop is refused after its currency was undone: {body}");
-    assert!(body.contains("needs currency first"), "the plain missing-prerequisite message: {body}");
+    assert!(body.contains("Money that saves"), "the plain missing-prerequisite message: {body}");
 }
 
 /// R4: a foreign Origin on a state-changing request is refused; nothing changes.
@@ -2482,4 +2482,72 @@ fn corrupt_proof_file_makes_a_changed_chat_unproven() {
     let clean = agent2.run_ask("chat-2", "anything?").expect("a chat with no changes stays clean");
     assert!(!clean.refused);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// Round 4 maker fixes (RR4, RR5).
+// ---------------------------------------------------------------------------
+
+const SHOP_REFUSAL: &str = "A shop for the money needs \"Money that saves\" first. Build \"Money that saves\" first, then ask again.";
+
+/// RR4: the shop idea button refuses with the plain sentence, no skill id.
+#[test]
+fn idea_button_refusal_is_the_plain_sentence() {
+    let (agent, _stub) = agent_with_script(vec![]);
+    let port = start_server(Some(agent));
+    let (status, body) = http_request(port, "POST", "/api/ideas/build", Some(&json!({ "id": "add-shop" }).to_string()));
+    assert_eq!(status, 400, "refused: {body}");
+    let error = serde_json::from_str::<Value>(&body).unwrap()["error"].as_str().unwrap().to_string();
+    assert_eq!(error, SHOP_REFUSAL);
+    assert!(!error.contains("currency"), "no internal skill id: {error}");
+}
+
+/// RR4: the chat path refuses the shop with the same plain sentence.
+/// Everything goes over HTTP so the asks share the server's active chat.
+#[test]
+fn ask_path_refusal_matches_the_button_sentence() {
+    let (agent, _stub) = agent_with_script(vec![
+        json!({ "skill": "currency", "args": { "currency": "Coins", "bind_close": true } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Currency", "skill": "currency" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Money is in." }).to_string(),
+        json!({ "skill": "shop", "args": { "item_name": "Speed Coil", "price": 100, "currency": "Coins" } }).to_string(),
+        json!({ "done": true, "summary": "Shop added." }).to_string(),
+    ]);
+    let port = start_server(Some(agent));
+    let (status, _) = http_request(port, "POST", "/api/chat", Some(&json!({ "message": "add money that saves" }).to_string()));
+    assert_eq!(status, 200);
+    let (status, _) = http_request(port, "POST", "/api/revert", None);
+    assert_eq!(status, 200);
+    let (status, body) = http_request(port, "POST", "/api/chat", Some(&json!({ "message": "add a shop" }).to_string()));
+    assert_eq!(status, 502, "refused: {body}");
+    let error = serde_json::from_str::<Value>(&body).unwrap()["error"].as_str().unwrap().to_string();
+    assert_eq!(error, SHOP_REFUSAL);
+    let (_, thread) = http_request(port, "GET", "/api/thread", None);
+    assert!(!thread.contains("skill shop"), "the internal text is not in the chat: {thread}");
+    assert!(!thread.contains("Shop added."), "no success claim: {thread}");
+}
+
+/// RR5: the chats endpoint (polled for the active chat) says whether that
+/// chat has anything to undo, and it tracks builds and undos.
+#[test]
+fn chats_report_can_undo_for_the_active_chat() {
+    let (agent, _stub) = agent_with_script(vec![
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Leaderboard", "skill": "leaderboard" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Leaderboard added." }).to_string(),
+    ]);
+    let port = start_server(Some(agent));
+    let can_undo = |port| {
+        let (_, body) = http_request(port, "GET", "/api/chats", None);
+        serde_json::from_str::<Value>(&body).unwrap()["can_undo"].clone()
+    };
+    assert_eq!(can_undo(port), json!(false), "a fresh chat has nothing to undo");
+    let (status, _) = http_request(port, "POST", "/api/chat", Some(&json!({ "message": "add a leaderboard" }).to_string()));
+    assert_eq!(status, 200);
+    assert_eq!(can_undo(port), json!(true), "the build can be undone");
+    let (status, _) = http_request(port, "POST", "/api/revert", None);
+    assert_eq!(status, 200);
+    assert_eq!(can_undo(port), json!(false), "nothing left to undo");
 }
