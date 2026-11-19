@@ -1,0 +1,395 @@
+/* house-frontend tokens: the ONE source for colour, radius, shadow, spacing and type.
+ *
+ * Look: the "Square UI" kit, as measured and written down in
+ *   skill/references/square-ui-spec.md   (called SPEC below; the owner's notes and numbers, no kit artwork)
+ * Light is the default. Dark is selected by [data-theme="dark"], or by the system
+ * preference when no data-theme attribute is set on <html>.
+ *
+ * Source labels, used beside every value (the same words square-ui-spec.md uses):
+ *   MEASURED   read from the kit pictures by square-ui-spec.md (that file marks them "M")
+ *   ESTIMATED  1x CSS size derived from 2x-3x exports, +/- 1px (square-ui-spec.md marks them "E")
+ *   DERIVED    chosen here from the measured set; no kit picture shows it
+ *   OWNER      the owner's own rule, which overrides the kit where they differ
+ *
+ * OWNER type rule (2026-11-10, "TOO SMALL" about 8 to 13px text): body text is never
+ * below 14px and nothing a person reads is below 12px. square-ui-spec.md lists 11px labels and
+ * 9px kbd text; they are raised to 12px here and marked OWNER.
+ *
+ * Imported by starter/src/index.css (as ../../references/tokens.css) after `@import "tailwindcss"`.
+ */
+
+/* ---------- 1. Light theme (default) ---------- */
+:root {
+  color-scheme: light;
+
+  /* Surfaces: three-tone stack */
+  --canvas: #f0f2f5;     /* page behind the shell. MEASURED */
+  --board: #f5f7fa;      /* board / selected row / hover tint. MEASURED */
+  --surface: #ffffff;    /* cards, shell, chrome. MEASURED */
+  --hairline: #e3e7eb;   /* 1px lines. MEASURED (readers sampled #e2e7ed, #e7eaed, #eceff5; one picked) */
+  --track: #eceff5;      /* segmented track, count chip, neutral disc. MEASURED */
+  --raised: #ffffff;     /* active segment pill, raised on the track. MEASURED (white raised pill on a grey track) */
+
+  /* Text roles */
+  --ink: #13151a;        /* primary text. MEASURED (never #000) */
+  --ink-2: #616a81;      /* secondary text. MEASURED #697289, darkened for 4.5 to 1 on --track */
+  --ink-3: #6c717f;      /* placeholder, section label. DERIVED, CHANGED FROM THE KIT'S MEASURED GREY (owner to confirm, reconcile.md item 13): the kit's #858c9d measured 3.37:1 on white and 3.14 on --board, under the 4.5 the small-text gate asks for (gates.md section 3). Darkened in proportion to #6c717f, the lightest step that reaches 4.5 on --board: 4.54 there, 4.88 on white. Use for placeholder and labels only */
+  --icon: #828a9d;       /* icon stroke. MEASURED */
+  --disabled: #c3c7ce;   /* disabled. MEASURED */
+
+  /* Accent: the only solid colour on a screen */
+  --blue: #1562fc;       /* MEASURED (samples #1461fc to #1b64fa) */
+  --blue-fg: #ffffff;    /* text on blue. DERIVED */
+  --blue-hover: #0f52d6; /* one step darker for hover/press. ESTIMATED (SPEC: hover not shown) */
+  --blue-soft: #e8f0ff;  /* selected-row tint, 8% blue on white. DERIVED */
+  --ink-button: #14161b; /* near-black button. MEASURED (#14161b to #20242b; disagreement noted in SPEC) */
+  --ink-button-fg: #ffffff; /* DERIVED */
+
+  /* Status dots (8px) */
+  --dot-green: #4dc296;  /* MEASURED */
+  --dot-blue: var(--blue); /* MEASURED (= accent) */
+  --dot-red: #bd411d;    /* red-orange. MEASURED */
+  --dot-clay: #c58e76;   /* MEASURED */
+  --dot-amber: #f5a524;  /* away / waiting. ESTIMATED */
+  --dot-online: #31b88a; /* avatar online. MEASURED */
+  --unread: #d13143;     /* unread / notification dot, error. MEASURED */
+
+  /* Tag pills: fill + same-hue text, no border */
+  --tag-plan-bg: #faf4df;    --tag-plan-fg: #bd411d;    /* Planning, Sales. MEASURED */
+  --tag-ops-bg: #dcf3f5;     --tag-ops-fg: #1a56d6;    /* Operations. MEASURED #1a6cf2, darkened for 4.5 to 1 */
+  --tag-design-bg: #f5e6f8;  --tag-design-fg: #bb2b74;  /* Design. MEASURED */
+  --tag-research-bg: #f1e9fb; --tag-research-fg: #6e1ed8; /* UI/UX, Research: fg MEASURED, fill DERIVED (SPEC gives the Design fill #f5e6f8 for both) */
+  --tag-mint-bg: #dcf3ee;    --tag-mint-fg: #087565;    /* App, Marketing: fg MEASURED #097c6d then darkened for 4.5 to 1, fill ESTIMATED (SPEC: "mint-ish") */
+  --tag-dev-bg: #efddde;     --tag-dev-fg: #84255e;     /* Development. MEASURED */
+  --tag-neutral-bg: #eceff5; --tag-neutral-fg: #333642; /* CRM, Feedback. MEASURED */
+  --tag-sky-bg: #e3eefe;     --tag-sky-fg: #1a56d6;     /* Social media: light blue on blue. ESTIMATED (SPEC: "E"), fg darkened for 4.5 to 1 */
+
+  /* Status pills */
+  --pill-active-bg: #dcf7e9;   --pill-active-fg: #087d58;   /* Active, New. MEASURED */
+  --pill-pro-bg: #f8e2ef;      --pill-pro-fg: #903632;      /* Pro. MEASURED */
+  --pill-inactive-bg: #ecedef; --pill-inactive-fg: #454751; /* Inactive. MEASURED */
+  --pill-warn-bg: #fdf0d3;     --pill-warn-fg: #8a5a00;     /* Waiting. DERIVED (amber dot, readable text) */
+
+  /* Initial avatars: fill + text. MEASURED */
+  --av-rose-bg: #f7dada;  --av-rose-fg: #903632;
+  --av-violet-bg: #e4e2fb; --av-violet-fg: #5520b8;
+  --av-sky-bg: #cfedf8;   --av-sky-fg: #1a56d6;
+  --av-grey-bg: #e2e7ed;  --av-grey-fg: #454751;
+
+  /* Shadows. Diffuse ones only on floating things. */
+  --elev-shell: 0 40px 100px rgba(16, 24, 40, 0.1);  /* ESTIMATED */
+  --elev-card: 0 1px 2px rgba(16, 24, 40, 0.04);      /* ESTIMATED */
+  --elev-raised: 0 1px 2px rgba(16, 24, 40, 0.08);    /* raised segment / secondary button. ESTIMATED */
+  --elev-lift: 0 9px 24px rgba(16, 24, 40, 0.12);     /* dragged card, menus. ESTIMATED */
+  --elev-primary: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 1px 2px rgba(21, 98, 252, 0.35); /* blue button: inner top highlight, blue-tinted shadow. ESTIMATED */
+
+  /* Names the shadcn-style libraries read (COSS UI, Kibo UI, Cult UI) */
+  --background: var(--surface);
+  --foreground: var(--ink);
+  --card: var(--surface);
+  --card-foreground: var(--ink);
+  --popover: var(--surface);
+  --popover-foreground: var(--ink);
+  --primary: var(--blue);
+  --primary-foreground: var(--blue-fg);
+  --secondary: var(--board);
+  --secondary-foreground: var(--ink);
+  --muted: var(--track);
+  --muted-foreground: var(--ink-2);
+  --accent: var(--board);
+  --accent-foreground: var(--ink);
+  --destructive: var(--unread);
+  --destructive-foreground: #b4232f; /* readable red text on a pale red wash. DERIVED */
+  --border: var(--hairline);
+  --input: var(--hairline);
+  --ring: var(--blue);
+  --info: var(--blue);          --info-foreground: #1a56d6;     /* DERIVED from accent */
+  --success: var(--dot-online); --success-foreground: #067a54;  /* text on the COSS success badge. DERIVED, CHANGED 2026-11-10 from the Active pill text #087d58 (MEASURED), which is 4.49:1 on the badge fill (success at 8% over white) and failed the render check's contrast sweep; #067a54 is 4.68:1 */
+  --warning: var(--dot-amber);  --warning-foreground: #8a5a00;  /* DERIVED */
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--blue);
+  --sidebar-primary-foreground: var(--blue-fg);
+  --sidebar-accent: var(--board);
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border: var(--hairline);
+  --sidebar-ring: var(--blue);
+}
+
+/* ---------- 2. Dark theme: DERIVED column of square-ui-spec.md (no dark Square screen was seen) ---------- */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #0e1013;      /* DERIVED (SPEC dark column) */
+  --board: #12151a;       /* DERIVED (SPEC dark column) */
+  --surface: #181b21;     /* DERIVED (SPEC dark column) */
+  --hairline: #272b34;    /* DERIVED (SPEC dark column). Hairlines carry separation instead of shadows. */
+  --track: #20242c;       /* DERIVED (SPEC dark column) */
+  --raised: #2d323c;      /* DERIVED: the active pill must be LIGHTER than the track in dark, as white is on light */
+  --ink: #eceef2;         /* DERIVED (SPEC dark column) */
+  --ink-2: #9aa1b2;       /* DERIVED (SPEC dark column) */
+  --ink-3: #80889a;       /* DERIVED: one step lighter than the icon grey #7c8496 so the placeholder keeps 4.5:1 on the search field, which is --surface under a 32% lighter fill (#1d2027), not on #181b21 alone */
+  --icon: #7c8496;        /* DERIVED (SPEC dark column) */
+  --disabled: #4a505c;    /* DERIVED */
+  --blue: #4a86ff;        /* DERIVED (SPEC dark column) */
+  --blue-fg: #0b1220;     /* DERIVED: dark text on the lighter dark-mode blue */
+  --blue-hover: #6b9bff;  /* DERIVED */
+  --blue-soft: rgba(74, 134, 255, 0.14); /* DERIVED */
+  --ink-button: #eceef2;  /* DERIVED: the near-black button inverts to a light one */
+  --ink-button-fg: #14161b; /* DERIVED */
+
+  --dot-green: #4dc296;   /* MEASURED value kept: reads on dark */
+  --dot-red: #e0603a;     /* DERIVED: lifted for dark */
+  --dot-clay: #c58e76;    /* MEASURED value kept */
+  --dot-amber: #f5a524;   /* ESTIMATED value kept */
+  --dot-online: #31b88a;  /* MEASURED value kept */
+  --unread: #ef5a6b;      /* DERIVED: lifted for dark */
+
+  /* Tags: hue at about 16% alpha on the surface, with lightened text (SPEC dark rule). All DERIVED. */
+  --tag-plan-bg: rgba(232, 115, 76, 0.16);    --tag-plan-fg: #f08c63;
+  --tag-ops-bg: rgba(74, 134, 255, 0.16);     --tag-ops-fg: #86adff;
+  --tag-design-bg: rgba(224, 92, 160, 0.16);  --tag-design-fg: #f08cc0;
+  --tag-research-bg: rgba(150, 100, 240, 0.16); --tag-research-fg: #b99cf7;
+  --tag-mint-bg: rgba(40, 190, 165, 0.16);    --tag-mint-fg: #55d3bb;
+  --tag-dev-bg: rgba(200, 80, 140, 0.16);     --tag-dev-fg: #e68fbd;
+  --tag-neutral-bg: rgba(255, 255, 255, 0.08); --tag-neutral-fg: #c3c8d4;
+  --tag-sky-bg: rgba(74, 134, 255, 0.16);     --tag-sky-fg: #86adff;
+
+  --pill-active-bg: rgba(49, 184, 138, 0.16);   --pill-active-fg: #56d8a9;
+  --pill-pro-bg: rgba(224, 92, 160, 0.16);      --pill-pro-fg: #f0959c;
+  --pill-inactive-bg: rgba(255, 255, 255, 0.08); --pill-inactive-fg: #b4b9c6;
+  --pill-warn-bg: rgba(245, 165, 36, 0.16);     --pill-warn-fg: #f5bd5a;
+
+  --av-rose-bg: rgba(232, 110, 110, 0.2);  --av-rose-fg: #f2a3a0;
+  --av-violet-bg: rgba(130, 110, 240, 0.22); --av-violet-fg: #b9aef8;
+  --av-sky-bg: rgba(74, 170, 230, 0.2);    --av-sky-fg: #8cc9f0;
+  --av-grey-bg: rgba(255, 255, 255, 0.1);  --av-grey-fg: #c3c8d4;
+
+  /* Dark uses hairlines, not shadows (SPEC); lift is kept only for floating layers. */
+  --elev-shell: 0 40px 100px rgba(0, 0, 0, 0.5);
+  --elev-card: 0 0 #0000;
+  --elev-raised: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --elev-lift: 0 9px 24px rgba(0, 0, 0, 0.5);
+  --elev-primary: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+
+  --destructive-foreground: #f2848f;
+  --info-foreground: #86adff;
+  --success-foreground: #56d8a9;
+  --warning-foreground: #f5bd5a;
+}
+
+/* Same dark values when the system prefers dark and no theme attribute has been set. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --canvas: #0e1013;
+    --board: #12151a;
+    --surface: #181b21;
+    --hairline: #272b34;
+    --track: #20242c;
+    --raised: #2d323c;
+    --ink: #eceef2;
+    --ink-2: #9aa1b2;
+    --ink-3: #80889a;
+    --icon: #7c8496;
+    --disabled: #4a505c;
+    --blue: #4a86ff;
+    --blue-fg: #0b1220;
+    --blue-hover: #6b9bff;
+    --blue-soft: rgba(74, 134, 255, 0.14);
+    --ink-button: #eceef2;
+    --ink-button-fg: #14161b;
+    --dot-red: #e0603a;
+    --unread: #ef5a6b;
+    --tag-plan-bg: rgba(232, 115, 76, 0.16);    --tag-plan-fg: #f08c63;
+    --tag-ops-bg: rgba(74, 134, 255, 0.16);     --tag-ops-fg: #86adff;
+    --tag-design-bg: rgba(224, 92, 160, 0.16);  --tag-design-fg: #f08cc0;
+    --tag-research-bg: rgba(150, 100, 240, 0.16); --tag-research-fg: #b99cf7;
+    --tag-mint-bg: rgba(40, 190, 165, 0.16);    --tag-mint-fg: #55d3bb;
+    --tag-dev-bg: rgba(200, 80, 140, 0.16);     --tag-dev-fg: #e68fbd;
+    --tag-neutral-bg: rgba(255, 255, 255, 0.08); --tag-neutral-fg: #c3c8d4;
+    --tag-sky-bg: rgba(74, 134, 255, 0.16);     --tag-sky-fg: #86adff;
+    --pill-active-bg: rgba(49, 184, 138, 0.16);   --pill-active-fg: #56d8a9;
+    --pill-pro-bg: rgba(224, 92, 160, 0.16);      --pill-pro-fg: #f0959c;
+    --pill-inactive-bg: rgba(255, 255, 255, 0.08); --pill-inactive-fg: #b4b9c6;
+    --pill-warn-bg: rgba(245, 165, 36, 0.16);     --pill-warn-fg: #f5bd5a;
+    --av-rose-bg: rgba(232, 110, 110, 0.2);  --av-rose-fg: #f2a3a0;
+    --av-violet-bg: rgba(130, 110, 240, 0.22); --av-violet-fg: #b9aef8;
+    --av-sky-bg: rgba(74, 170, 230, 0.2);    --av-sky-fg: #8cc9f0;
+    --av-grey-bg: rgba(255, 255, 255, 0.1);  --av-grey-fg: #c3c8d4;
+    --elev-shell: 0 40px 100px rgba(0, 0, 0, 0.5);
+    --elev-card: 0 0 #0000;
+    --elev-raised: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --elev-lift: 0 9px 24px rgba(0, 0, 0, 0.5);
+    --elev-primary: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    --destructive-foreground: #f2848f;
+    --info-foreground: #86adff;
+    --success-foreground: #56d8a9;
+    --warning-foreground: #f5bd5a;
+  }
+}
+
+/* ---------- 3. Non-colour tokens (same in both themes) ---------- */
+/* Literal values live in @theme (not inline), so Tailwind both emits the variable on :root
+   and builds the utility from it: rounded-shell, font-sans, and so on. */
+@theme {
+  /* Radii. Nest them: inner is always smaller than outer. */
+  --radius-shell: 40px;    /* the one white shell. ESTIMATED */
+  --radius-panel: 24px;    /* panels (24-28). ESTIMATED */
+  --radius-dialog: 20px;   /* dialog. ESTIMATED */
+  --radius-card: 9px;      /* ticket card (8-9). ESTIMATED */
+  --radius-segment: 6px;   /* active segment pill. ESTIMATED */
+  --radius-chip: 6px;      /* count chip, kbd chip. ESTIMATED */
+  --radius-menu: 28px;     /* menu outer; rows 14. ESTIMATED */
+
+  /* Spacing: 4px unit. ESTIMATED; common values 4, 8, 12, 16, 20, 24 */
+  --spacing: 0.25rem;
+
+  /* Fonts. The names --font-sans, --font-mono and --font-heading are required by COSS UI. */
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; /* OWNER: Geist for all text (the kit uses an Inter-style sans; the owner's font wins) */
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace; /* OWNER: ids, model names, times, counts and every figure that must line up */
+  --font-heading: var(--font-sans);
+}
+
+:root {
+  --radius: 10px;          /* control base: input/button 9-10. ESTIMATED. rounded-sm|md|lg|xl derive from it (6/8/10/14) */
+}
+
+/* Motion: the same numbers as starter/src/motion.ts (scripts/motion-source.mjs checks they match). Tailwind takes them as
+   duration-(--dur-press) and ease-(--ease-house); a literal duration-200, delay-75 or ease-out in screen code fails the source check.
+   Each value's source is in references/motion.md. */
+:root {
+  --dur-press: 120ms;      /* press feedback on a flat control. motion.md section 4 (tap 120 ms) */
+  --dur-reveal: 150ms;     /* a status line, a menu or a tooltip appearing. motion.md sections 3 (Tremor hover card 150 ms) and 4 (menus 150 to 250 ms) */
+  --dur-swap: 200ms;       /* one thing replacing another. motion.md section 4 (swap 200 ms) */
+  --dur-enter: 250ms;      /* something entering. motion.md section 4 (enter 250 ms) */
+  --dur-sheet: 350ms;      /* a sheet or panel travelling. motion.md section 4 (sheet 350 ms) */
+  --ease-house: cubic-bezier(0.23, 1, 0.32, 1); /* the one easing for CSS written by hand. motion.md section 4 */
+}
+
+/* ---------- 4. Tailwind v4 theme mapping ---------- */
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
+    @slot;
+  }
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-board: var(--board);
+  --color-surface: var(--surface);
+  --color-hairline: var(--hairline);
+  --color-track: var(--track);
+  --color-raised: var(--raised);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-icon: var(--icon);
+  --color-disabled: var(--disabled);
+  --color-blue: var(--blue);
+  --color-blue-fg: var(--blue-fg);
+  --color-blue-hover: var(--blue-hover);
+  --color-blue-soft: var(--blue-soft);
+  --color-ink-button: var(--ink-button);
+  --color-ink-button-fg: var(--ink-button-fg);
+  --color-dot-green: var(--dot-green);
+  --color-dot-red: var(--dot-red);
+  --color-dot-clay: var(--dot-clay);
+  --color-dot-amber: var(--dot-amber);
+  --color-dot-online: var(--dot-online);
+  --color-unread: var(--unread);
+  --color-tag-plan-bg: var(--tag-plan-bg);       --color-tag-plan-fg: var(--tag-plan-fg);
+  --color-tag-ops-bg: var(--tag-ops-bg);         --color-tag-ops-fg: var(--tag-ops-fg);
+  --color-tag-design-bg: var(--tag-design-bg);   --color-tag-design-fg: var(--tag-design-fg);
+  --color-tag-research-bg: var(--tag-research-bg); --color-tag-research-fg: var(--tag-research-fg);
+  --color-tag-mint-bg: var(--tag-mint-bg);       --color-tag-mint-fg: var(--tag-mint-fg);
+  --color-tag-dev-bg: var(--tag-dev-bg);         --color-tag-dev-fg: var(--tag-dev-fg);
+  --color-tag-neutral-bg: var(--tag-neutral-bg); --color-tag-neutral-fg: var(--tag-neutral-fg);
+  --color-tag-sky-bg: var(--tag-sky-bg);         --color-tag-sky-fg: var(--tag-sky-fg);
+  --color-pill-active-bg: var(--pill-active-bg);     --color-pill-active-fg: var(--pill-active-fg);
+  --color-pill-pro-bg: var(--pill-pro-bg);           --color-pill-pro-fg: var(--pill-pro-fg);
+  --color-pill-inactive-bg: var(--pill-inactive-bg); --color-pill-inactive-fg: var(--pill-inactive-fg);
+  --color-pill-warn-bg: var(--pill-warn-bg);         --color-pill-warn-fg: var(--pill-warn-fg);
+  --color-av-rose-bg: var(--av-rose-bg);     --color-av-rose-fg: var(--av-rose-fg);
+  --color-av-violet-bg: var(--av-violet-bg); --color-av-violet-fg: var(--av-violet-fg);
+  --color-av-sky-bg: var(--av-sky-bg);       --color-av-sky-fg: var(--av-sky-fg);
+  --color-av-grey-bg: var(--av-grey-bg);     --color-av-grey-fg: var(--av-grey-fg);
+
+  /* shadcn-style names used by COSS UI / Kibo UI / Cult UI source */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* radii: `rounded-sm|md|lg|xl` follow --radius (10px): 6 / 8 / 10 / 14 */
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* shadows: `shadow-shell|card|raised|lift|primary` (Tailwind's own shadow-sm..lg stay as they are) */
+  --shadow-shell: var(--elev-shell);
+  --shadow-card: var(--elev-card);
+  --shadow-raised: var(--elev-raised);
+  --shadow-lift: var(--elev-lift);
+  --shadow-primary: var(--elev-primary);
+
+  /* type */
+  --text-xs: 12px;          --text-xs--line-height: 16px;   /* tags, descriptions, kbd, labels. OWNER minimum (SPEC 11px raised) */
+  --text-sm: 14px;          --text-sm--line-height: 20px;   /* body, rows, tabs. OWNER minimum for body */
+  --text-ui: 15px;          --text-ui--line-height: 22px;   /* row labels, card titles. ESTIMATED (14-16) */
+  --text-base: 16px;        --text-base--line-height: 24px; /* ESTIMATED */
+  --text-title: 20px;       --text-title--line-height: 28px; /* page / dialog titles. ESTIMATED */
+  --text-stat: 28px;        --text-stat--line-height: 34px;  /* stat numbers. DERIVED (kit shows 36-52px only on marketing) */
+  --tracking-label: 0.04em;                                  /* uppercase labels (+0.04 to 0.06em). ESTIMATED */
+}
+
+/* ---------- 5. Base ---------- */
+@layer base {
+  * {
+    border-color: var(--hairline);
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 14px;       /* OWNER: body never below 14px */
+    line-height: 20px;
+    font-weight: 400;      /* app UI uses only 400 and 500. MEASURED */
+    -webkit-font-smoothing: antialiased;
+  }
+  ::placeholder {
+    color: var(--ink-3);
+  }
+}
