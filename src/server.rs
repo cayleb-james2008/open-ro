@@ -62,6 +62,10 @@ pub struct Shared {
     pub store_recovered: Vec<String>,
     /// Connection handler threads running now (capped per server).
     pub active_handlers: AtomicUsize,
+    /// The self-updater (checks GitHub only when asked, or from `main`).
+    pub updater: Arc<crate::update::Updater>,
+    /// Asks, idea builds and reverts in flight: a restart waits for them.
+    pub busy: AtomicUsize,
     /// Chats whose change-set stack is non-empty (Undo has something to do).
     /// The agent keeps this current, so polling never waits on a running ask.
     pub undoable: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
@@ -71,6 +75,7 @@ impl Shared {
     /// In-memory server (tests, ephemeral runs): chats are not saved.
     pub fn new(agent: Option<Agent>, game_name: String) -> Arc<Shared> {
         let mut agent = agent;
+        let updater = crate::update::Updater::from_env("OPENRO", "openro-rs", env!("CARGO_PKG_VERSION"), "cayleb-james2008/open-ro", true);
         let undoable = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         if let Some(a) = agent.as_mut() {
             a.attach_undo_sink(Arc::clone(&undoable));
@@ -87,6 +92,8 @@ impl Shared {
             store_recovered: Vec::new(),
             active_handlers: AtomicUsize::new(0),
             undoable,
+            updater,
+            busy: AtomicUsize::new(0),
         })
     }
 
@@ -94,6 +101,7 @@ impl Shared {
     /// inside `data_dir`.
     pub fn with_data_dir(agent: Option<Agent>, game_name: String, data_dir: PathBuf) -> Arc<Shared> {
         let _ = std::fs::create_dir_all(&data_dir);
+        let updater = crate::update::Updater::from_env("OPENRO", "openro-rs", env!("CARGO_PKG_VERSION"), "cayleb-james2008/open-ro", true);
         let mut agent = agent;
         let undoable = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         if let Some(a) = agent.as_mut() {
@@ -116,6 +124,8 @@ impl Shared {
             store_recovered: recovered,
             active_handlers: AtomicUsize::new(0),
             undoable,
+            updater,
+            busy: AtomicUsize::new(0),
         })
     }
 
@@ -412,6 +422,22 @@ const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Largest request body the API accepts (chat asks are small JSON).
 const MAX_BODY_BYTES: usize = 1_048_576;
 
+/// Counts one ask, idea build or revert in flight for as long as it lives.
+struct BusyGuard<'a>(&'a AtomicUsize);
+
+impl<'a> BusyGuard<'a> {
+    fn new(counter: &'a AtomicUsize) -> BusyGuard<'a> {
+        counter.fetch_add(1, Ordering::SeqCst);
+        BusyGuard(counter)
+    }
+}
+
+impl Drop for BusyGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Holds one handler slot for the life of its thread.
 struct HandlerSlot(Arc<Shared>);
 
@@ -632,6 +658,56 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
             );
             respond(&mut stream, "200 OK", "text/html; charset=utf-8", &html);
         }
+        ("GET", "/api/version") => respond_json(
+            &mut stream,
+            "200 OK",
+            &json!({ "name": "openro-rs", "version": env!("CARGO_PKG_VERSION") }),
+        ),
+        ("GET", "/api/update") => respond_json(&mut stream, "200 OK", &shared.updater.snapshot()),
+        ("POST", "/api/update/check") => respond_json(&mut stream, "200 OK", &shared.updater.check_now()),
+        ("POST", "/api/update/apply") | ("POST", "/api/update/restart") => {
+            // Replacing the program is for whoever sits at this machine: a
+            // loopback Host only, whatever OPENRO_ALLOWED_HOSTS names.
+            if !host_allowed(&req.host, &[]) {
+                respond_json(
+                    &mut stream,
+                    "403 Forbidden",
+                    &json!({ "ok": false, "error": "updating is only allowed from this machine, not through another address" }),
+                );
+                return Ok(());
+            }
+            if path == "/api/update/apply" {
+                match shared.updater.apply() {
+                    Ok(v) => {
+                        let mut snap = shared.updater.snapshot();
+                        snap["applied"] = json!(v);
+                        respond_json(&mut stream, "200 OK", &snap);
+                    }
+                    Err(e) => respond_json(&mut stream, "409 Conflict", &json!({ "ok": false, "error": e })),
+                }
+            } else if !shared.updater.snapshot()["staged"].is_string() {
+                respond_json(
+                    &mut stream,
+                    "409 Conflict",
+                    &json!({ "ok": false, "error": "no update is waiting for a restart" }),
+                );
+            } else if shared.busy.load(Ordering::SeqCst) > 0 {
+                respond_json(
+                    &mut stream,
+                    "409 Conflict",
+                    &json!({ "ok": false, "error": "an ask is still running; restart when it has finished" }),
+                );
+            } else {
+                respond_json(&mut stream, "200 OK", &json!({ "restarting": true }));
+                let up = Arc::clone(&shared.updater);
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    if let Err(e) = up.restart() {
+                        eprintln!("openro-rs: restart failed: {e}");
+                    }
+                });
+            }
+        }
         ("GET", "/api/status") => {
             let (studio_connected, model_configured) = status_flags(shared);
             respond_json(
@@ -641,6 +717,7 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
                     "studio_connected": studio_connected,
                     "model_configured": model_configured,
                     "game_name": shared.game_name,
+                    "version": env!("CARGO_PKG_VERSION"),
                     "store_recovered": shared.store_recovered,
                 }),
             );
@@ -699,6 +776,7 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
             }
         }
         ("POST", "/api/chat") => {
+            let _busy = BusyGuard::new(&shared.busy);
             let body: Value =
                 serde_json::from_slice(&req.body).unwrap_or(json!({}));
             let message = body
@@ -827,6 +905,7 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
             );
         }
         ("POST", "/api/ideas/build") => {
+            let _busy = BusyGuard::new(&shared.busy);
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
             let id = body
                 .get("id")
@@ -932,6 +1011,7 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
             }
         }
         ("POST", "/api/revert") => {
+            let _busy = BusyGuard::new(&shared.busy);
             let chat_id = shared.active_chat.lock().unwrap().clone();
             let mut guard = shared.agent.lock().unwrap();
             let reverted = guard.as_ref().map(|a| a.top_skills(&chat_id)).unwrap_or_default();

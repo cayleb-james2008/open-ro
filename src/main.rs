@@ -20,6 +20,10 @@ use openro_rs::server::{serve, Shared};
 use std::net::TcpListener;
 
 fn main() {
+    if std::env::args().nth(1).as_deref().is_some_and(|a| a == "--version" || a == "-V") {
+        println!("openro-rs {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     let model = ModelClient::from_env();
     if !model.is_configured() {
         eprintln!("openro: no model key configured (OPENRO_MODEL_API_KEY unset) — chat will refuse honestly");
@@ -55,6 +59,8 @@ fn main() {
     // silently orphan every revert.
     agent.set_changes_file(data_dir.join("changes.json"));
     let shared = Shared::with_data_dir(Some(agent), game_name, data_dir);
+    // Only the real binary checks GitHub in the background; tests never do.
+    shared.updater.start_background();
     if let Err(e) = serve(listener, shared) {
         eprintln!("openro: server error: {e}");
         std::process::exit(1);
