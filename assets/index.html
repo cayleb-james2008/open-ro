@@ -596,7 +596,7 @@
       else if (it.kind === 'agent') thread.appendChild(agentRow(it.text, fresh(i), /could not|did not|not connected|no model/i.test(it.text)));
       else thread.appendChild(agentRow(it.raw, fresh(i), false));
     });
-    state.local.forEach((n) => thread.appendChild(agentRow(n.text, true, n.bad)));
+    state.local.forEach((n) => thread.appendChild(n.user ? userRow(n.text, true) : agentRow(n.text, true, n.bad)));
     if (state.pendingUser) thread.appendChild(userRow(state.pendingUser, true));
     if (state.busy) {
       const w = el('div', 'working');
@@ -718,7 +718,10 @@
     await refreshAll();
   }
 
-  /* the composer: the ask is shown at once and the build shows as it runs */
+  /* the composer: the ask is shown at once and the build shows as it runs.
+     A send that does not go through keeps the words: the user line stays,
+     a plain error sits under it, and the text goes back in the box. */
+  const SEND_FAILED = 'That did not go through. Nothing was built. Your message is back in the box.';
   $('composer').addEventListener('submit', async (e) => {
     e.preventDefault();
     const input = $('composer-input');
@@ -729,20 +732,26 @@
     state.pendingUser = message;
     setBusy(true);
     renderThread();
+    let failure = null;
     try {
       const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }) });
       const data = await r.json().catch(() => ({}));
-      /* the server refused the message before it reached the chat: say why, and keep the words */
-      if (r.status === 403 || r.status === 413 || r.status === 415) {
-        input.value = message;
-        notice(data.error || 'OpenRO did not take that message.', true);
-      }
+      /* refused before it reached the chat (too large, wrong type, forbidden): the server's own words */
+      if (r.status === 403 || r.status === 413 || r.status === 415) failure = data.error || 'OpenRO did not take that message.';
+      else if (r.status >= 500 && !data.ok) failure = SEND_FAILED;
     } catch (err) {
-      notice('Could not reach the OpenRO server. Check that it is running, then send again.', true);
+      failure = SEND_FAILED;
     }
     state.pendingUser = '';
     setBusy(false);
     await refreshAll();
+    /* if the server recorded the words, its own thread lines already tell the story */
+    if (failure && !state.lines.includes('You: ' + message)) {
+      state.local.push({ text: message, user: true });
+      state.local.push({ text: failure, bad: true });
+      input.value = message;
+      renderThread();
+    }
     input.focus();
   });
 
