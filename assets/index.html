@@ -52,6 +52,8 @@
   html, body { overflow-x: clip; }
   body { margin: 0; height: 100vh; height: 100dvh; display: flex; background: var(--canvas); color: var(--ink); font-family: var(--font-sans); font-size: 15px; line-height: 1.55; }
   [hidden] { display: none !important; }
+  .skip { position: absolute; left: 8px; top: 8px; z-index: 60; min-height: 44px; display: inline-flex; align-items: center; padding: 0 16px; border-radius: var(--r-control); background: var(--surface); color: var(--ink); border: 1px solid var(--field-edge); font-size: 14px; text-decoration: none; transform: translateY(-200%); transition: transform var(--dur-short) var(--ease-out); }
+  .skip:focus { transform: none; }
   :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
   ::selection { background: var(--ink); color: var(--canvas); }
   button, input { font: inherit; color: inherit; }
@@ -247,6 +249,7 @@
 </style>
 </head>
 <body>
+  <a class="skip" href="#composer-input">Skip to message box</a>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
     <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
@@ -522,6 +525,7 @@
     }
     const b = el('button', 'btn btn-primary', 'Build this');
     b.type = 'button';
+    b.setAttribute('data-focus-key', 'idea:' + title);
     if (rec) {
       b.disabled = !STUDIO || state.busy;
       if (!STUDIO) b.setAttribute('aria-describedby', 'no-studio-banner');
@@ -571,7 +575,8 @@
       err.appendChild(el('p', '', 'The OpenRO server did not answer. Try again, or reload the page.'));
       const retry = el('button', 'btn', 'Try again');
       retry.type = 'button';
-      retry.addEventListener('click', () => refreshAll());
+      retry.setAttribute('data-focus-key', 'retry');
+      retry.addEventListener('click', async () => { await refreshAll(); restoreFocus('retry'); });
       err.appendChild(retry);
       thread.appendChild(err);
       return;
@@ -634,6 +639,7 @@
       b.type = 'button';
       b.appendChild(icon('plus', 'ic-sm'));
       b.appendChild(el('span', '', idea.title));
+      b.setAttribute('data-focus-key', 'idea:' + idea.title);
       b.disabled = !STUDIO || state.busy;
       if (!STUDIO) b.title = 'Connect Studio to build this';
       b.addEventListener('click', () => buildIdea(idea, b));
@@ -715,7 +721,16 @@
     b.title = state.built === 0 ? 'Nothing built yet' : state.built === null ? 'Connect Studio to see what is built' : '';
   }
 
+  /* after a re-render the trigger is a new node: focus its successor, else the composer */
+  function restoreFocus(key) {
+    const a = document.activeElement;
+    if (a && a !== document.body) return;
+    const t = key ? document.querySelector('[data-focus-key="' + CSS.escape(key) + '"]') : null;
+    if (t && !t.disabled) t.focus(); else $('composer-input').focus();
+  }
+
   async function buildIdea(idea, btn) {
+    const key = btn.getAttribute('data-focus-key');
     state.local = [];
     btn.disabled = true;
     btn.textContent = 'Building…';
@@ -731,6 +746,7 @@
     }
     setBusy(false);
     await refreshAll();
+    restoreFocus(key);
   }
 
   /* the composer: the ask is shown at once and the build shows as it runs.
