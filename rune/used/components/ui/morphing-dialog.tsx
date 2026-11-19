@@ -397,7 +397,8 @@ function MorphingDialogClose({
   children,
   className,
   variants,
-}: MorphingDialogCloseProps) {
+  ...rest
+}: MorphingDialogCloseProps & React.ComponentPropsWithoutRef<'button'>) {
   const { setIsOpen, uniqueId } = useMorphingDialog();
 
   const handleClose = useCallback(() => {
@@ -406,9 +407,10 @@ function MorphingDialogClose({
 
   return (
     <motion.button
+      {...(rest as object)}
       onClick={handleClose}
       type='button'
-      aria-label='Close dialog'
+      aria-label={rest['aria-label'] ?? 'Close dialog'}
       key={`dialog-close-${uniqueId}`}
       className={cn('absolute top-6 right-6', className)}
       initial='initial'
