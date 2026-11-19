@@ -18,6 +18,8 @@ const LIB = [
 ];
 const lib = (rel) => LIB.find(([re]) => re.test(rel)) || [null, "House frontend starter", "owner's"];
 const find = (base, id) => { for (const e of exts) { const p = path.join(base, id + e); if (fs.existsSync(p) && fs.statSync(p).isFile()) return p; } return null; };
+// Parts edited in rune/used (see rune/used/LOCAL-EDITS.md): the copy must not overwrite them.
+const LOCAL = new Set(fs.existsSync(path.join(used, "LOCAL-EDITS.md")) ? [...fs.readFileSync(path.join(used, "LOCAL-EDITS.md"), "utf8").matchAll(/`(components\/[^`]+|[^`]+\.tsx?)`/g)].map((m) => m[1]) : []);
 const seen = new Map(); // rel path in rune/used -> importers
 const queue = [];
 const walkSrc = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walkSrc(path.join(d, e.name)) : /\.(tsx?|css)$/.test(e.name) ? [path.join(d, e.name)] : []));
@@ -34,7 +36,8 @@ while (queue.length) {
   seen.set(rel, new Set([by]));
   const dest = path.join(used, rel);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.copyFileSync(src, dest);
+  if (!LOCAL.has(rel)) fs.copyFileSync(src, dest);
+  else console.log("kept local edit", rel);
   for (const sub of importsOf(src)) queue.push([sub, "rune/used/" + rel]);
   for (const sub of relImportsOf(src)) queue.push([path.resolve(path.dirname(src), sub), "rune/used/" + rel]);
 }
