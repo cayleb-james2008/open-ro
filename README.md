@@ -1,5 +1,8 @@
 # OpenRO (Rust + Rune)
 
+[![latest release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases)
+
+
 You describe the game, it builds it. OpenRO is a proactive creative agent
 in a plain chat window. It builds a Roblox game in Roblox Studio through a
 Studio MCP bridge, and it can one-shot a complete game.
@@ -124,6 +127,50 @@ Environment:
 - `OPENRO_BRIDGE_TIMEOUT_SECS`: per-request bridge timeout
 - `OPENRO_GAME_NAME`, `OPENRO_PORT` (default 8077), `OPENRO_DATA_DIR`
 - `OPENRO_ALLOWED_HOSTS`: extra Host names to answer (see above)
+- `OPENRO_UPDATE_MODE`, `OPENRO_UPDATE_REPO`, `OPENRO_UPDATE_API`,
+  `OPENRO_UPDATE_DEV` (see "Versions and updates")
+
+## Versions and updates
+
+**Releasing:** bump `version` in `Cargo.toml`, add a `## X.Y.Z - date` entry to `CHANGELOG.md`, and merge to `main`. `.github/workflows/release.yml` sees the new version, builds every platform and publishes the GitHub Release `vX.Y.Z` with the binaries and `SHA256SUMS`; a push that does not change the version publishes nothing, and a new version without a changelog entry fails the workflow. Pushing a `vX.Y.Z` tag by hand does the same.
+
+The version is printed by `openro-rs --version` (or `-V`), reported by
+`GET /api/version` and `GET /api/status`, and every release is tagged
+`vX.Y.Z` with a changelog entry in `CHANGELOG.md`. Merging a new version to `main` (or pushing a tag) runs
+`.github/workflows/release.yml`: it builds `openro-rs` for each platform (the
+mock Studio binaries are test fixtures and are not released), checks that the
+tag matches `Cargo.toml`, writes a `SHA256SUMS` file, and publishes the GitHub
+Release.
+
+The updater (`src/update.rs`) asks the newest GitHub release of
+`cayleb-james2008/open-ro` whether a newer version exists. The first check is
+30 seconds after start, then every 6 hours; only the `openro-rs` binary does
+this, and tests never call out.
+
+- `GET /api/update` shows the state without contacting GitHub. Its fields are
+  `name`, `current`, `mode`, `repo`, `platform`, `checked_at`, `available`,
+  `latest`, `notes`, `release_url`, `error`, `staged`, `can_apply` and
+  `dev_build`.
+- `POST /api/update/check` asks GitHub now.
+- `POST /api/update/apply` downloads the release binary for this platform,
+  checks its SHA-256 against `SHA256SUMS`, runs it with `--version` to confirm
+  it reports the expected version, and only then replaces the running file.
+  The new build runs after a restart. Any failed step leaves the installed
+  program untouched.
+- `POST /api/update/restart` starts the staged build. It is refused with 409
+  when nothing is staged and while an ask, idea build or revert is running.
+
+Apply and restart are refused unless the request's Host is loopback
+(`localhost`, `127.0.0.1`, `[::1]`); `OPENRO_ALLOWED_HOSTS` does not permit
+them. A cargo-built binary (under `target/`) is never replaced unless
+`OPENRO_UPDATE_DEV=1`.
+
+| Variable | Default |
+| --- | --- |
+| `OPENRO_UPDATE_MODE` | `notify` (check and tell); `auto` also downloads and installs (a restart is still yours to start); `off` never contacts GitHub |
+| `OPENRO_UPDATE_REPO` | `cayleb-james2008/open-ro` |
+| `OPENRO_UPDATE_API` | `https://api.github.com` (plain http only for a loopback address) |
+| `OPENRO_UPDATE_DEV` | unset; `1` allows replacing a cargo-built binary (tests) |
 
 ## Test fixture
 
@@ -139,7 +186,7 @@ when none of these fire.
 ## Tests
 
 ```sh
-CARGO_BUILD_JOBS=2 cargo test   # 85 tests, all passing (tests/integration.rs)
+CARGO_BUILD_JOBS=2 cargo test   # 98 tests, all passing: 10 in src/update.rs, 88 in tests/integration.rs
 ```
 
 The integration tests run the full loop against a stub model server (through

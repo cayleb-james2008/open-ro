@@ -52,6 +52,20 @@
   html, body { overflow-x: clip; }
   body { margin: 0; height: 100vh; height: 100dvh; display: flex; background: var(--canvas); color: var(--ink); font-family: var(--font-sans); font-size: 15px; line-height: 1.55; }
   [hidden] { display: none !important; }
+  /* version and updates: plain, quiet; the banner is a slim row above the thread, in the flow, never over the composer */
+  .version-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+  #version-link { font-size: 13px; color: var(--ink-2); min-height: 44px; display: inline-flex; align-items: center; text-decoration: none; }
+  #version-link:hover { color: var(--ink); text-decoration: underline; }
+  #check-updates { min-height: 44px; font-size: 13px; padding: 0 12px; }
+  .check-result { flex-basis: 100%; font-size: 13px; color: var(--ink-2); margin: 0; overflow-wrap: anywhere; }
+  .update-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 24px; background: var(--raised); border-bottom: 1px solid var(--hairline); font-size: 14px; flex: none; }
+  .upd-text { flex: 1 1 260px; min-width: 0; }
+  .upd-title { font-weight: 500; margin: 0; overflow-wrap: anywhere; }
+  .upd-notes { color: var(--ink-2); font-size: 13px; margin: 2px 0 0; overflow-wrap: anywhere; }
+  .upd-err { color: var(--bad); }
+  .upd-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .upd-actions .btn { min-height: 44px; text-decoration: none; }
+  @media (max-width: 759px) { .update-banner { padding: 12px 16px; } }
   .skip { position: absolute; left: 8px; top: 8px; z-index: 60; min-height: 44px; display: inline-flex; align-items: center; padding: 0 16px; border-radius: var(--r-control); background: var(--surface); color: var(--ink); border: 1px solid var(--field-edge); font-size: 14px; text-decoration: none; transform: translateY(-200%); transition: transform var(--dur-short) var(--ease-out); }
   .skip:focus { transform: none; }
   :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
@@ -298,6 +312,11 @@
           <button class="theme-btn" type="button" data-set-theme="light" aria-pressed="false">Light</button>
         </div>
       </div>
+      <div class="version-row" id="version-row">
+        <a id="version-link" href="https://github.com/cayleb-james2008/open-ro/releases" target="_blank" rel="noopener">OpenRO<span class="sr-only"> (opens in a new tab)</span></a>
+        <button class="btn btn-quiet" type="button" id="check-updates">Check for updates</button>
+        <p id="check-result" class="check-result" aria-live="polite"></p>
+      </div>
     </div>
   </aside>
   <div id="scrim" hidden></div>
@@ -311,6 +330,15 @@
       <span id="status-chip" class="chip __CHIP_CLASS__" role="status">Roblox __CHIP__</span>
     </header>
     __KEY_BANNER__
+    <section id="update-banner" class="update-banner" role="region" aria-label="OpenRO update" hidden>
+      <div class="upd-text">
+        <p id="upd-title" class="upd-title"></p>
+        <p id="upd-notes" class="upd-notes" hidden></p>
+        <p id="upd-hint" class="upd-notes" hidden></p>
+      </div>
+      <div id="upd-actions" class="upd-actions"></div>
+    </section>
+    <p id="upd-live" class="sr-only" role="status" aria-live="polite"></p>
     <div id="thread" aria-live="polite" aria-busy="true">
       <div class="skel" style="height:72px"></div>
       <div class="skel" style="height:120px"></div>
@@ -1007,6 +1035,205 @@
   document.querySelectorAll('[data-dismiss]').forEach((b) => {
     b.addEventListener('click', () => { b.closest('.banner').hidden = true; });
   });
+  /* ---------------- version and updates ----------------------------
+     The server checks GitHub in the background; this page only asks it what it knows. */
+  const RELEASES_URL = 'https://github.com/cayleb-james2008/open-ro/releases/tag/v';
+  const DISMISS_KEY = 'openro-update-dismissed';
+  const CHECK_EVERY_MS = 30 * 60 * 1000;
+  const updBanner = $('update-banner');
+  const updTitle = $('upd-title');
+  const updNotes = $('upd-notes');
+  const updHint = $('upd-hint');
+  const updLive = $('upd-live');
+  const updActions = $('upd-actions');
+  const checkBtn = $('check-updates');
+  const checkResult = $('check-result');
+  let updateSnap = null;
+  let justInstalled = '';
+
+  function plainError(e) {
+    if (e && e.name === 'TypeError') return 'Could not reach OpenRO. Is it running?';
+    return (e && e.message) || 'Something went wrong. Try again.';
+  }
+  function firstLine(text) {
+    return String(text || '').split('\n').map((l) => l.trim()).find((l) => l) || '';
+  }
+  function dismissedFor() { try { return localStorage.getItem(DISMISS_KEY) || ''; } catch (e) { return ''; } }
+  function rememberDismiss(v) { try { localStorage.setItem(DISMISS_KEY, v); } catch (e) {} }
+  function checkedWords(secs) {
+    if (!secs) return 'not yet';
+    const mins = Math.round((Date.now() - secs * 1000) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + ' min ago';
+    return Math.round(mins / 60) + ' h ago';
+  }
+  function announce(text) { updLive.textContent = text; }
+  function showHint(text, bad) {
+    updHint.textContent = text;
+    updHint.hidden = !text;
+    updHint.classList.toggle('upd-err', !!bad);
+  }
+  function actionButton(label, cls, onClick) {
+    const b = el('button', 'btn ' + (cls || ''), label);
+    b.type = 'button';
+    b.addEventListener('click', () => onClick(b));
+    return b;
+  }
+  function actionLink(label, href) {
+    const a = el('a', 'btn', label);
+    a.href = href;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.appendChild(el('span', 'sr-only', ' (opens in a new tab)'));
+    return a;
+  }
+  function resultLine(s) {
+    if (s.mode === 'off') return 'Update checks are turned off on this OpenRO.';
+    if (s.error) return s.error;
+    if (s.staged) return 'Version ' + s.staged + ' is installed. Restart to use it.';
+    if (s.available) return 'Version ' + s.latest + ' is available.';
+    if (!s.checked_at) return 'Not checked yet.';
+    return 'You are on the newest version (checked ' + checkedWords(s.checked_at) + ').';
+  }
+
+  function renderBanner() {
+    const s = updateSnap;
+    updActions.textContent = '';
+    updNotes.hidden = true; updNotes.textContent = '';
+    showHint('', false);
+    let show = false;
+    if (s && s.staged) {
+      show = true;
+      updTitle.textContent = justInstalled || ('Version ' + s.staged + ' is installed. Restart to use it.');
+      updActions.appendChild(actionButton('Restart now', 'btn-primary', restartNow));
+    } else if (s && s.available && s.latest && dismissedFor() !== s.latest) {
+      show = true;
+      updTitle.textContent = 'A new version of OpenRO is ready: ' + s.latest;
+      if (s.notes) { updNotes.textContent = firstLine(s.notes); updNotes.hidden = false; }
+      if (s.can_apply) {
+        updActions.appendChild(actionButton('Update now', 'btn-primary', applyNow));
+      } else {
+        showHint(s.dev_build ? 'Update OpenRO from the terminal.' : 'Update from the computer OpenRO runs on.', false);
+      }
+      updActions.appendChild(actionLink("What's new", s.release_url || (RELEASES_URL + s.latest)));
+      updActions.appendChild(actionButton('Dismiss', 'btn-quiet', () => { rememberDismiss(s.latest); renderBanner(); }));
+    }
+    updBanner.hidden = !show;
+  }
+
+  function renderState(s) {
+    updateSnap = s;
+    if (!s.staged) justInstalled = '';
+    renderBanner();
+    checkBtn.hidden = s.mode === 'off';
+    checkResult.textContent = resultLine(s);
+  }
+
+  async function loadVersion() {
+    try {
+      const r = await fetch('/api/version', { cache: 'no-store' });
+      if (!r.ok) return;
+      const v = await r.json();
+      const link = $('version-link');
+      link.firstChild.textContent = 'OpenRO ' + v.version;
+      link.href = RELEASES_URL + v.version;
+    } catch (e) { /* the line keeps its plain name when the server does not answer */ }
+  }
+
+  async function loadUpdate() {
+    try {
+      const r = await fetch('/api/update', { cache: 'no-store' });
+      if (!r.ok) return;
+      renderState(await r.json());
+    } catch (e) { /* best effort: the page says nothing it cannot verify */ }
+  }
+
+  async function checkNow() {
+    checkBtn.disabled = true;
+    checkResult.textContent = 'Checking…';
+    try {
+      const r = await fetch('/api/update/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const s = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(s.error || 'The check did not finish. Try again later.');
+      renderState(s);
+    } catch (e) {
+      checkResult.textContent = plainError(e);
+    }
+    checkBtn.disabled = false;
+  }
+  checkBtn.addEventListener('click', checkNow);
+
+  async function applyNow(btn) {
+    const latest = updateSnap ? updateSnap.latest : '';
+    btn.disabled = true;
+    btn.textContent = 'Downloading and checking...';
+    updTitle.textContent = 'Downloading and checking...';
+    announce('Downloading and checking...');
+    try {
+      const r = await fetch('/api/update/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'The update did not install. Try again later.');
+      justInstalled = 'Installed ' + latest + '. Restart to use it.';
+      renderState(Object.assign({}, data, { staged: data.staged || latest }));
+      announce(justInstalled);
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = 'Update now';
+      updTitle.textContent = 'A new version of OpenRO is ready: ' + latest;
+      showHint(plainError(e), true);
+      announce(plainError(e));
+    }
+  }
+
+  async function restartNow(btn) {
+    btn.disabled = true;
+    btn.textContent = 'Restarting…';
+    announce('Restarting…');
+    try {
+      const r = await fetch('/api/update/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const data = await r.json().catch(() => ({}));
+      /* the server's own words, e.g. an ask still running: shown as they are */
+      if (!r.ok) throw new Error(data.error || 'OpenRO could not restart.');
+    } catch (e) {
+      /* the server may already be going down: a dropped connection is the restart itself */
+      if (!(e && e.name === 'TypeError')) {
+        btn.disabled = false;
+        btn.textContent = 'Restart now';
+        showHint(plainError(e), true);
+        announce(plainError(e));
+        return;
+      }
+    }
+    waitForReturn();
+  }
+
+  /* Poll the version every second for up to a minute, then reload on the new process. */
+  function waitForReturn() {
+    const started = Date.now();
+    updTitle.textContent = 'Restarting…';
+    showHint('', false);
+    announce('Restarting…');
+    const tick = async () => {
+      if (Date.now() - started > 60000) {
+        renderBanner();
+        updTitle.textContent = 'OpenRO did not come back within a minute.';
+        showHint('Start OpenRO again, then reload this page.', true);
+        announce('OpenRO did not come back within a minute. Start OpenRO again, then reload this page.');
+        return;
+      }
+      try {
+        const r = await fetch('/api/version', { cache: 'no-store' });
+        if (r.ok) { location.reload(); return; }
+      } catch (e) { /* still restarting */ }
+      setTimeout(tick, 1000);
+    };
+    setTimeout(tick, 1000);
+  }
+
+  loadVersion();
+  loadUpdate();
+  setInterval(loadUpdate, CHECK_EVERY_MS);
+
   syncUndo();
   refreshAll();
 </script>
