@@ -510,7 +510,7 @@
     row.appendChild(el('div', 'bubble', text));
     return row;
   }
-  function agentRow(text, fresh, bad) {
+  function agentRow(text, fresh, bad, whole) {
     const row = el('div', 'row' + (fresh ? ' fresh' : ''));
     const av = el('span', 'avatar');
     av.appendChild(icon('spark', 'ic-sm'));
@@ -524,6 +524,7 @@
     let raw = '';
     if (known) { plainText = known.say; raw = text; }
     else if (cut >= 0) { plainText = text.slice(0, cut); raw = text.slice(cut + 11, -1); }
+    else if (whole) { plainText = text; }
     else if (bad && sentence) { plainText = sentence[1]; raw = sentence[2]; }
     else if (bad && /:\s/.test(text)) { plainText = 'OpenRO could not finish that step. The details are below.'; raw = text; }
     bubble.appendChild(el('span', '', plainText));
@@ -647,7 +648,7 @@
       else if (it.kind === 'agent') thread.appendChild(agentRow(it.text, fresh(i), ERROR_LIKE.test(it.text)));
       else thread.appendChild(agentRow(it.raw, fresh(i), ERROR_LIKE.test(it.raw)));
     });
-    state.local.forEach((n) => thread.appendChild(n.user ? userRow(n.text, true) : agentRow(n.text, true, n.bad)));
+    state.local.forEach((n) => thread.appendChild(n.user ? userRow(n.text, true) : agentRow(n.text, true, n.bad, true)));
     if (state.pendingUser) thread.appendChild(userRow(state.pendingUser, true));
     if (state.busy) {
       const w = el('div', 'working');
