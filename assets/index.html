@@ -374,7 +374,7 @@
   const state = {
     lines: [], ideas: [], inflight: {}, busy: false, chats: [], activeId: null,
     threadError: false, loaded: false, shown: 0, undoOpen: false,
-    built: null,
+    built: undefined, canUndo: false,
   };
 
   /* small builders: every piece of user or model text goes in as textContent */
@@ -753,6 +753,9 @@
       const from = state.activeId;
       state.chats = data.chats;
       state.activeId = data.active;
+      /* Undo is offered exactly when the active chat has a change set to take back */
+      state.canUndo = data.can_undo === true;
+      syncUndo();
       const current = data.chats.find((c) => c.id === data.active);
       $('chat-title').textContent = (current && current.title) || 'New chat';
       if (from !== data.active) moveDraft(from, data.active);
@@ -816,12 +819,12 @@
     syncUndo();
     renderChatList();
   }
-  /* Undo is offered only when the game has something built (the place tree says so) */
+  /* Undo is enabled only when the active chat can take a change set back (can_undo) and Studio answers */
   function syncUndo() {
     const b = $('revert');
-    b.disabled = state.busy || state.built === null || state.built === 0;
+    b.disabled = state.busy || state.built === null || !state.canUndo;
     /* the reason is visible text beside the button, not only a tooltip */
-    const reason = state.busy ? '' : state.built === 0 ? 'Nothing built yet' : state.built === null ? 'Connect Studio to see what is built' : '';
+    const reason = state.busy || state.built === undefined ? '' : state.built === null ? 'Connect Studio to see what is built' : !state.canUndo ? 'Nothing built yet' : '';
     const r = $('undo-reason');
     r.textContent = reason;
     r.hidden = !reason;
