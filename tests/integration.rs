@@ -563,12 +563,13 @@ fn shell_has_themes_and_settings() {
     let port = start_server(None);
     let (status, html) = http_request(port, "GET", "/", None);
     assert_eq!(status, 200);
-    assert!(html.contains("data-theme=\"dark\""), "dark is the default theme");
-    assert!(html.contains("[data-theme=\"light\"]"), "a light theme must be defined");
-    assert!(html.contains("id=\"settings\""), "settings area missing");
+    // Native theme is LIGHT (art file, 19 Nov round 2); dark is a full second theme.
+    assert!(html.contains("data-theme=\"light\""), "light is the default theme");
+    assert!(html.contains("[data-theme=light]"), "a light theme must be defined (the bundle is minified: no attribute quotes)");
+    assert!(html.contains("openroSetTheme"), "the theme setter is in the shipped shell");
     assert!(html.contains("Appearance"), "appearance toggle missing from settings");
-    assert!(html.contains("localStorage.setItem('openro-theme'"), "the toggle must SAVE the theme choice");
-    assert!(html.contains("localStorage.getItem('openro-theme')"), "the page must READ the saved theme choice");
+    assert!(html.contains("localStorage.setItem(\"openro-theme\""), "the toggle must SAVE the theme choice");
+    assert!(html.contains("localStorage.getItem(\"openro-theme\")"), "the page must READ the saved theme choice");
     assert!(html.contains(":focus-visible"), "keyboard focus must be visible");
     assert!(html.contains("for=\"composer-input\""), "composer input must be labelled");
     assert!(!html.contains("linear-gradient"), "no hue gradients (unslop gate)");
