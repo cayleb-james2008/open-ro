@@ -1,0 +1,72 @@
+name: release
+
+# Pushing a tag like v0.2.0 builds the binary for each platform and publishes a
+# GitHub Release with the binaries and a SHA256SUMS file. The running app reads
+# that release to offer (or install) the update; see "Versions and updates".
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, ext: '' }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, ext: '' }
+          - { os: macos-latest, target: aarch64-apple-darwin, ext: '' }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, ext: '.exe' }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      BIN: openro-rs
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag must match the crate version
+        run: |
+          crate="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          test "v$crate" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $crate"; exit 1; }
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }} && rustup default stable
+      - name: Build
+        # Only the app binary: the mock Studio binaries are test fixtures.
+        run: cargo build --release --locked --bin "$BIN" --target ${{ matrix.target }}
+      - name: Stage and check the asset
+        run: |
+          mkdir dist
+          cp "target/${{ matrix.target }}/release/${BIN}${{ matrix.ext }}" "dist/${BIN}-${{ matrix.target }}${{ matrix.ext }}"
+          out="$("dist/${BIN}-${{ matrix.target }}${{ matrix.ext }}" --version)"
+          echo "$out"
+          case "$out" in *"${GITHUB_REF_NAME#v}"*) ;; *) echo "binary does not report the tagged version"; exit 1;; esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BIN }}-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums and notes
+        run: |
+          test -n "$(ls dist)" || { echo "no build succeeded"; exit 1; }
+          (cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS)
+          ver="${GITHUB_REF_NAME#v}"
+          awk -v v="$ver" '$0 ~ "^## \\[?"v"\\]?" {f=1; next} /^## / {f=0} f' CHANGELOG.md > notes.md
+          test -s notes.md || echo "Release $ver." > notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "openro-rs $GITHUB_REF_NAME" --notes-file notes.md
