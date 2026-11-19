@@ -277,14 +277,14 @@ fn http_shell_and_no_key_honesty() {
     let port = start_server(None);
     let (status, html) = http_request(port, "GET", "/", None);
     assert_eq!(status, 200);
-    assert!(html.contains("id=\"sidebar\""), "shell has a sidebar");
-    assert!(html.contains("id=\"chat-list\""), "sidebar has the chat list");
+    assert!(html.contains("data-app=\"openro\""), "shell carries the app marker");
+    assert!(html.contains("chat-list"), "the shipped page has the chat list");
     assert!(html.contains("New chat"), "sidebar has New chat");
     assert!(html.contains("Round Arena"), "sidebar shows the game's name");
-    assert!(html.contains("id=\"thread\""), "shell has one thread");
-    assert!(html.contains("id=\"composer\""), "shell has the composer row");
+    assert!(html.contains("id:`thread`"), "the shipped page has one thread");
+    assert!(html.contains("id:`composer`"), "the shipped page has the composer row");
     assert!(
-        html.contains("id=\"status-chip\"") && html.contains("Studio not connected"),
+        html.contains("data-chip=\"Studio not connected\"") && html.contains("Studio not connected"),
         "status chip honestly reports the bridge state"
     );
     assert!(
