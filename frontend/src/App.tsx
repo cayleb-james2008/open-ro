@@ -9,7 +9,7 @@ import { AnimatedBackground } from "@/components/ui/animated-background";
 import { MorphingDialog, MorphingDialogTrigger, MorphingDialogContainer, MorphingDialogContent, MorphingDialogTitle, MorphingDialogDescription, MorphingDialogClose } from "@/components/ui/morphing-dialog";
 import { Pill } from "@/components/kibo-ui/pill";
 import { open } from "@/motion";
-import { read, post, RELEASES_URL, SEND_FAILED, type Chat, type ChatList, type Idea, type Place } from "./app/data";
+import { read, post, SEND_FAILED, type Chat, type ChatList, type Idea, type Place } from "./app/data";
 import { ThreadBody, IdeaTile } from "./app/Thread";
 import { PartsShelf, StudioChip } from "./app/Shelf";
 import { Key } from "./app/Key";
@@ -332,9 +332,17 @@ export function App() {
             </SegmentedControlItem>
           </SegmentedControl>
         </div>
-        <a href={update.snap?.release_url || `${RELEASES_URL}${version}`} target="_blank" rel="noopener" className="inline-flex min-h-11 items-center self-start rounded-chip px-1 text-sm text-ink-2 outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-focus">
-          OpenRO {version}<span className="sr-only"> (opens in a new tab)</span>
-        </a>
+        <div className="flex min-h-11 items-center justify-between gap-2 text-sm text-ink-2">
+          <span className="min-w-0 truncate">OpenRO {version} · {update.busy === "check" ? "Checking…" : update.show && update.snap?.staged ? "Installed, restart to use it" : update.show ? "Update available" : update.snap?.checked_at ? "Up to date" : "Not checked yet"}</span>
+          {update.show && update.dismissed && update.snap?.available && (
+            <button type="button" onClick={() => update.showAgain()} className="inline-flex min-h-11 flex-none cursor-pointer items-center rounded-sm px-2 text-ink outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus">Show update</button>
+          )}
+          {update.canCheck && (
+            <button type="button" aria-label="Check for updates" onClick={() => void update.check()} disabled={update.busy !== ""} className="grid size-11 flex-none cursor-pointer place-items-center rounded-sm text-icon outline-none transition-[color,background-color] hover:bg-track hover:text-ink focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-default">
+              <RefreshCw className="size-4" strokeWidth={1.5} aria-hidden />
+            </button>
+          )}
+        </div>
       </div>
     </nav>
   );
@@ -392,7 +400,7 @@ export function App() {
           </header>
 
           <div className="server-banners" onClick={onBannerClick} dangerouslySetInnerHTML={{ __html: shell.bannerHtml }} />
-          {update.show || update.canCheck ? <UpdateStrip u={update} version={version} /> : null}
+          {update.show && <UpdateStrip u={update} />}
 
           <div id="thread" ref={threadRef} aria-live="polite" aria-busy={!chats} className="min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto flex w-full max-w-[760px] flex-col gap-4 p-4 md:p-6">
@@ -405,7 +413,7 @@ export function App() {
               ) : (
                 <>
                   {!lines.some((l) => l.startsWith("You: ")) && !building?.message && (
-                    <section className="flex flex-col gap-3 pb-2 pt-4">
+                    <section className="flex flex-col gap-4 pb-4 pt-8">
                       <h2 className="font-heading text-display tracking-display text-ink">What do you want to make?</h2>
                       <p className="max-w-[60ch] text-ui text-ink-2">
                         {canBuild
@@ -438,18 +446,18 @@ export function App() {
           </div>
 
           <div className="torn flex-none bg-raised">
-            <div className="mx-auto flex w-full max-w-[760px] flex-col gap-3 px-4 pb-4 pt-5 md:px-6 md:pb-5">
+            <div className="mx-auto flex w-full max-w-[760px] flex-col gap-2 px-3 pb-3 pt-4 md:gap-3 md:px-6 md:pb-5 md:pt-5">
               {ideas.length > 0 && lines.some((l) => l.startsWith("You: ") || l.startsWith("Wrote ") || l.startsWith("Playtest")) && (
                 <div id="ideas" className="flex flex-wrap items-center gap-2">
                   <span className="mr-1 text-sm text-ink-2">Next ideas</span>
                   {ideas.map((idea) => (
-                    <button key={idea.id} type="button" disabled={!canBuild || busy} onClick={() => buildIdea(idea)} aria-label={`Build ${idea.title}`} data-focus-key={`idea:${idea.title}`} className="inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-chip border border-hairline bg-surface px-3 text-sm text-ink outline-none transition-colors hover:bg-canvas focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-default disabled:text-disabled">
+                    <button key={idea.id} type="button" disabled={!canBuild || busy} onClick={() => buildIdea(idea)} aria-label={`Build ${idea.title}`} data-focus-key={`idea:${idea.title}`} className="inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-chip border border-hairline bg-surface px-3 text-sm text-ink outline-none transition-[color,background-color] hover:bg-canvas focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-default disabled:text-disabled">
                       <Plus className="size-3.5" strokeWidth={1.5} aria-hidden />{idea.title}
                     </button>
                   ))}
                 </div>
               )}
-              {undoReason && <p id="undo-reason" className="self-end text-sm text-ink-2">Undo: {undoReason.toLowerCase()}</p>}
+              {undoReason && <p id="undo-reason" className="self-end text-sm text-ink-2">{undoReason}</p>}
               <form id="composer" onSubmit={send} className="grid gap-2 sm:flex sm:items-stretch">
                 <InputGroup className="min-w-0 sm:flex-1">
                   <InputGroupInput

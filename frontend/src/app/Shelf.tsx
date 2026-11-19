@@ -30,7 +30,7 @@ export function PartsShelf({ place, error, collapsed, onToggle }: { place: Place
         <h2 className="font-heading text-ui font-semibold">In your game</h2>
         {onToggle && (
           <button type="button" onClick={onToggle} aria-expanded={!collapsed} aria-label={collapsed ? "Expand In your game" : "Collapse In your game"}
-            className="grid size-11 cursor-pointer place-items-center rounded-sm text-icon outline-none transition-colors hover:bg-track hover:text-ink focus-visible:ring-2 focus-visible:ring-focus">
+            className="grid size-11 cursor-pointer place-items-center rounded-sm text-icon outline-none transition-[color,background-color] hover:bg-track hover:text-ink focus-visible:ring-2 focus-visible:ring-focus">
             <ChevronDown className={`size-4 transition-transform duration-(--dur-swap) ease-(--ease-house) ${collapsed ? "-rotate-90" : ""}`} strokeWidth={1.5} aria-hidden />
           </button>
         )}
@@ -67,18 +67,16 @@ function Section({ title, names }: { title: string; names: string[] }) {
           const { name, kind } = niceName(n);
           const { Icon } = kind;
           return (
-            <li key={n} className="card-stock p-3">
+            <li key={n} className="card-stock px-2.5 py-2">
               <Expandable expandDirection="vertical" expandBehavior="push">
                 {({ isExpanded }) => (
                   <>
                     <div className="flex items-center gap-2">
-                      <span className={`grid size-8 flex-none place-items-center rounded-sm ${kind.cls}`}><Icon className="size-4" strokeWidth={1.5} aria-hidden /></span>
-                      <span className="min-w-0 flex-1 break-words text-ui font-medium">{name}</span>
-                    </div>
-                    <div className="mt-1 flex items-center justify-between gap-2">
-                      <Pill className={`text-sm ${kind.cls}`}>{kind.label}</Pill>
-                      <ExpandableTrigger aria-expanded={isExpanded} aria-label={`Details for ${name}`} className="inline-flex min-h-11 cursor-pointer items-center gap-1 rounded-sm text-sm text-ink-3 outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-focus">
-                        Details<ChevronDown className={`size-4 transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`} strokeWidth={1.5} aria-hidden />
+                      <span className={`grid size-7 flex-none place-items-center rounded-sm ${kind.cls}`}><Icon className="size-4" strokeWidth={1.5} aria-hidden /></span>
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium">{name}</span>
+                      <Pill className={`flex-none text-xs ${kind.cls}`}>{kind.label}</Pill>
+                      <ExpandableTrigger aria-expanded={isExpanded} aria-label={`Details for ${name}`} className="inline-flex min-h-11 min-w-11 flex-none cursor-pointer items-center justify-center rounded-sm text-ink-3 outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-focus">
+                        <ChevronDown className={`size-4 transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`} strokeWidth={1.5} aria-hidden />
                       </ExpandableTrigger>
                     </div>
                     {isExpanded && <code className="mt-2 block break-all font-mono text-sm text-ink-2">{n}</code>}

@@ -5,6 +5,8 @@
   --board: oklch(91% 0.022 95);
   --surface: oklch(98.8% 0.007 95);
   --hairline: oklch(87% 0.016 95);
+  /* Field edge: 3:1 or better against the surface (Hallmark 40). */
+  --input: oklch(62% 0.018 95);
   --track: oklch(91% 0.022 95);
   --raised: oklch(99.5% 0.005 95);
   --ink: oklch(20% 0.014 255);
@@ -40,6 +42,7 @@
   --board: oklch(18% 0.022 255);
   --surface: oklch(21% 0.022 255);
   --hairline: oklch(31% 0.025 255);
+  --input: oklch(55% 0.02 255);
   --track: oklch(26% 0.024 255);
   --raised: oklch(29% 0.024 255);
   --ink: oklch(97% 0.012 95);
