@@ -448,12 +448,12 @@ const ExpandableCard = React.forwardRef<HTMLDivElement, ExpandableCardProps>(
             "ring-border/50 ring-1",
             "max-w-[calc(100%-1rem)] sm:max-w-[calc(100%-2rem)] md:max-w-[calc(100%-4rem)]",
             "mx-auto w-full",
-            "transition-all duration-300 ease-in-out"
+            "transition-[opacity,transform] duration-300 ease-in-out"
           )}
         >
           {/* Nested divs purely for styling and layout (the shadow ring around the card) */}
           <div className="grid grid-cols-1 rounded-lg p-1 shadow-md sm:rounded-xl sm:p-1.5 md:rounded-[2rem] md:p-2">
-            <div className="dark:bg-muted ring-border/50 rounded-md bg-white p-2 shadow-xl ring-1 sm:rounded-lg sm:p-3 md:rounded-3xl md:p-4">
+            <div className="ring-border/50 rounded-md bg-surface text-ink p-2 shadow-xl ring-1 sm:rounded-lg sm:p-3 md:rounded-3xl md:p-4">
               <div className="h-full w-full overflow-hidden">
                 {/* Ref for measuring content dimensions (so we can let framer know to animate into the dimensions) */}
                 <div ref={measureRef} className="flex h-full flex-col">

@@ -99,7 +99,7 @@ const ProgressCircle = React.forwardRef<SVGSVGElement, ProgressCircleProps>(
             fill="transparent"
             stroke=""
             strokeLinecap="round"
-            className={cx("transition-colors ease-linear", background())}
+            className={cx("transition-[color,background-color] ease-linear", background())}
           />
           {safeValue >= 0 ? (
             <circle
@@ -113,7 +113,7 @@ const ProgressCircle = React.forwardRef<SVGSVGElement, ProgressCircleProps>(
               stroke=""
               strokeLinecap="round"
               className={cx(
-                "transition-colors ease-linear",
+                "transition-[color,background-color] ease-linear",
                 circle(),
                 showAnimation &&
                   "transform-gpu transition-[stroke-dashoffset] duration-300 ease-in-out motion-reduce:transition-none",
