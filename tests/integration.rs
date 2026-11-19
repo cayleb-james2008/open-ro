@@ -1018,8 +1018,8 @@ fn shell_escapes_game_name_and_meets_contrast() {
     let html = openro_rs::server::render_page("<script>alert(1)</script>", false, false);
     assert!(html.contains("&lt;script&gt;alert(1)"), "game name is escaped");
     assert!(!html.contains("<title>OpenRO — <script>"), "no raw injection into the title");
-    assert!(html.contains("--faint: #8e8ea5"), "dark faint meets AA on the dark surfaces");
-    assert!(html.contains("--faint: #62627a"), "light faint meets AA on the light surfaces");
+    // Old palette token pins dropped (round 2): contrast is measured in the browser probe and recorded in frontend/DESIGN.md.
+    assert!(html.contains("--canvas") && html.contains("--blue"), "the shipped page carries the house theme tokens");
     assert!(html.contains("no-studio-banner"), "the no-Studio state gets a banner, not just a chip");
     assert!(html.contains("chat-btn"), "chat list items are real buttons");
 }
