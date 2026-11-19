@@ -260,8 +260,6 @@ impl Agent {
     /// revert acting on coerced records can destroy real work.
     pub fn set_changes_file(&mut self, path: std::path::PathBuf) {
         let proof_path = path.with_file_name("proof.json");
-        self.proof_by_chat = load_proof(&proof_path, &mut self.recovered);
-        self.proof_path = Some(proof_path);
         if let Ok(text) = std::fs::read_to_string(&path) {
             let loaded = (|| -> Option<HashMap<String, Vec<ChangeSet>>> {
                 let v: Value = serde_json::from_str(&text).ok()?;
@@ -292,6 +290,19 @@ impl Agent {
             }
         }
         self.changes_path = Some(path);
+        // A chat with change sets but no saved verdict (proof file corrupt
+        // or missing) is unproven until a passing playtest: conservative.
+        self.proof_by_chat = load_proof(&proof_path, &mut self.recovered);
+        for (chat, stack) in &self.changes_by_chat {
+            if !stack.is_empty() {
+                self.proof_by_chat.entry(chat.clone()).or_insert(Proof {
+                    unproven: true,
+                    ..Proof::default()
+                });
+            }
+        }
+        self.proof_path = Some(proof_path);
+        self.save_proof();
     }
 
     fn save_changes(&self) {
@@ -468,12 +479,18 @@ impl Agent {
         let result = self.run_plan_inner(chat_id, label, steps);
         // Every failed idea build says Undo last build when any of its
         // changes landed (the playtest message already says it).
+        // The pointer only when this plan's own changes landed; a try that
+        // added nothing must not send the user to undo the previous build.
         let result = match result {
-            Err(mut f) if !self.current_changes.is_empty() && !f.message.contains("Undo last build") => {
+            Err(mut f) if !f.message.contains("Undo last build") && !f.message.contains("Nothing from this try") => {
                 if !f.message.ends_with('.') {
                     f.message.push('.');
                 }
-                f.message.push_str(" Undo last build undoes what it changed.");
+                if self.current_changes.iter().any(|c| !c.is_net_zero()) {
+                    f.message.push_str(" Undo last build undoes what it changed.");
+                } else {
+                    f.message.push_str(" Nothing from this try was added to your game.");
+                }
                 Err(f)
             }
             other => other,
@@ -769,6 +786,8 @@ impl Agent {
         // Plain-words reasons for each step that failed in this ask, and
         // the last script this ask wrote (named when the ask gives up).
         let mut problems: Vec<String> = Vec::new();
+        // The user-facing sentence when a prerequisite gate refused a step.
+        let mut gate_sentence: Option<String> = None;
         let mut last_written: Option<String> = None;
 
         for _ in 0..MAX_STEPS {
@@ -808,10 +827,13 @@ impl Agent {
                 // refused in plain words: its own summary is not the
                 // result, and no pitch follows it.
                 if changes_made == 0 && !problems.is_empty() {
-                    let message = format!(
-                        "I could not build that, so nothing in your game changed. What went wrong: {}.",
-                        problems.join("; ")
-                    );
+                    let message = match &gate_sentence {
+                        Some(sentence) => sentence.clone(),
+                        None => format!(
+                            "I could not build that, so nothing in your game changed. What went wrong: {}.",
+                            problems.join("; ")
+                        ),
+                    };
                     thread.push(format!("OpenRO: {message}"));
                     transcript.push("done refused: nothing changed and a step failed".to_string());
                     return Ok(RunOutcome {
@@ -835,10 +857,13 @@ impl Agent {
                         None => "changes to your game have not passed a test run yet".to_string(),
                     };
                     transcript.push("done refused: the place is not proven".to_string());
+                    let tail = if changes_made > 0 {
+                        "Undo last build puts the game back as it was before that build."
+                    } else {
+                        "Nothing from this try was added to your game."
+                    };
                     return Err(fail(
-                        format!(
-                            "I can't call this done: {why}. Undo last build puts the game back as it was before that build."
-                        ),
+                        format!("I can't call this done: {why}. {tail}"),
                         &thread, &transcript, &skills_used));
                 }
                 // A vacuous playtest (nothing changed, so nothing to
@@ -864,6 +889,7 @@ impl Agent {
                     let msg = format!("{skill} needs {need} first, and {need} was undone. Build {need} first, then {skill}");
                     transcript.push(format!("skill {skill} refused: {msg}"));
                     problems.push(msg.clone());
+                    gate_sentence = Some(plain_prerequisite(skill, &need));
                     messages.push(json!({
                         "role": "user",
                         "content": format!("skill_result: error: {msg} Choose a different step.")
@@ -1675,6 +1701,22 @@ fn load_proof(path: &std::path::Path, recovered: &mut Vec<String>) -> HashMap<St
             HashMap::new()
         }
     }
+}
+
+/// The user's sentence for a step refused because its prerequisite skill
+/// was undone: the display names of the two ideas, never the skill names.
+fn plain_prerequisite(skill: &str, need: &str) -> String {
+    let title = |sk: &str| {
+        let all = crate::ideas::catalogue();
+        let id = format!("add-{sk}");
+        all.iter()
+            .find(|i| i.id == id.as_str())
+            .or_else(|| all.iter().find(|i| i.skills.contains(&sk)))
+            .map(|i| i.title.to_string())
+            .unwrap_or_else(|| sk.to_string())
+    };
+    let (blocked, needed) = (title(skill), title(need));
+    format!("{blocked} needs \"{needed}\" first. Build \"{needed}\" first, then ask again.")
 }
 
 /// A plain sentence for a Studio refusal; the raw text goes to the transcript.

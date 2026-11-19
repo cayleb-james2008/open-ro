@@ -2107,7 +2107,7 @@ fn failed_playtest_is_remembered_for_the_next_ask() {
         .run_ask("chat-1", "is it working now?")
         .expect_err("a success claim over a failed game is refused");
     assert!(second.message.contains("last test run of your game failed"), "{}", second.message);
-    assert!(second.message.contains("Undo last build"), "{}", second.message);
+    assert!(second.message.contains("Nothing from this try was added to your game"), "{}", second.message);
     assert!(!second.thread.join("\n").contains("second try"), "the success claim is not shown");
 }
 
@@ -2376,7 +2376,110 @@ fn ask_path_refuses_a_shop_whose_currency_was_undone() {
     agent.set_changes_file(dir.join("changes.json"));
     let outcome = agent.run_ask("chat-1", "add a shop").expect("the ask ends as a refusal");
     assert!(outcome.refused, "the shop is refused: {outcome:?}");
-    assert!(outcome.summary.contains("currency"), "the refusal names the missing currency: {}", outcome.summary);
+    assert!(outcome.summary.contains("Money that saves"), "the refusal names the missing currency: {}", outcome.summary);
     assert!(!outcome.thread.join("\n").contains("Shop added."), "no success claim over the refusal");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// Round 3 maker fixes (RR1-RR3).
+// ---------------------------------------------------------------------------
+
+/// RR1: a refused try that added nothing never points at Undo last build
+/// (that would undo the previous build); it says nothing from this try landed.
+#[test]
+fn refused_try_with_no_landed_change_does_not_point_at_undo() {
+    let dir = std::env::temp_dir().join(format!("openro-rr1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut script = vec![
+        json!({ "skill": "shop", "args": { "item_name": "Speed Coil", "price": 100, "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Shop", "skill": "shop" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+    ];
+    for _ in 0..37 {
+        script.push(json!({ "done": true, "summary": "Shop is in." }).to_string());
+    }
+    script.push(json!({ "done": true, "summary": "Shop works now." }).to_string());
+    let (mut agent, _stub) = agent_with_script(script);
+    agent.set_changes_file(dir.join("changes.json"));
+    agent.run_ask("chat-1", "add a shop").expect_err("the failed build gives up");
+    let err = agent.run_ask("chat-1", "is it working?").expect_err("refused");
+    assert!(!err.message.contains("Undo last build"), "no undo pointer when this try added nothing: {}", err.message);
+    assert!(err.message.contains("Nothing from this try was added to your game"), "{}", err.message);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// RR1 (plan): a rebuild whose changes cancel out says nothing landed.
+#[test]
+fn plan_that_changed_nothing_says_nothing_from_this_try_landed() {
+    let (mut agent, _stub) = agent_with_script(vec![]);
+    let plan = vec![
+        json!({ "tool": "create_instance", "args": { "class_name": "Part", "name": "Tmp", "parent": "Workspace", "properties": {} } }),
+        json!({ "tool": "delete_instance", "args": { "path": "Workspace.Tmp" } }),
+    ];
+    let err = agent.run_plan("chat-1", "probe", &plan).expect_err("net zero");
+    assert!(!err.message.contains("Undo last build"), "{}", err.message);
+    assert!(err.message.contains("Nothing from this try was added to your game"), "{}", err.message);
+}
+
+/// RR2: the refused shop's user message is the plain sentence only; the
+/// internal skill text stays in the transcript.
+#[test]
+fn refused_shop_user_message_is_plain() {
+    let dir = std::env::temp_dir().join(format!("openro-rr2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (mut agent, _stub) = agent_with_script(vec![
+        json!({ "skill": "currency", "args": { "currency": "Coins", "bind_close": true } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Currency", "skill": "currency" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Money is in." }).to_string(),
+    ]);
+    agent.set_changes_file(dir.join("changes.json"));
+    agent.run_ask("chat-1", "add money that saves").expect("currency lands");
+    agent.revert_chat("chat-1").expect("undo");
+    drop(agent);
+    let (mut agent, _stub2) = agent_with_script(vec![
+        json!({ "skill": "shop", "args": { "item_name": "Speed Coil", "price": 100, "currency": "Coins" } }).to_string(),
+        json!({ "done": true, "summary": "Shop added." }).to_string(),
+    ]);
+    agent.set_changes_file(dir.join("changes.json"));
+    let outcome = agent.run_ask("chat-1", "add a shop").expect("refused as a plain outcome");
+    assert!(outcome.refused);
+    assert_eq!(
+        outcome.summary,
+        "A shop for the money needs \"Money that saves\" first. Build \"Money that saves\" first, then ask again."
+    );
+    assert!(outcome.transcript.join("\n").contains("skill shop refused"), "the internal text is in the transcript");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// RR3: a corrupt proof file with a chat that has change sets treats the
+/// chat as unproven; a chat without changes stays clean.
+#[test]
+fn corrupt_proof_file_makes_a_changed_chat_unproven() {
+    let dir = std::env::temp_dir().join(format!("openro-rr3-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (mut agent, _stub) = agent_with_script(vec![
+        json!({ "skill": "leaderboard", "args": { "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Leaderboard", "skill": "leaderboard" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Leaderboard added." }).to_string(),
+    ]);
+    agent.set_changes_file(dir.join("changes.json"));
+    agent.run_ask("chat-1", "add a leaderboard").expect("ask completes");
+    drop(agent);
+    std::fs::write(dir.join("proof.json"), "{\"chat-1\": 7").unwrap();
+    let (mut agent2, _s) = agent_with_script(vec![
+        json!({ "done": true, "summary": "All good." }).to_string(),
+        json!({ "done": true, "summary": "All good." }).to_string(),
+    ]);
+    agent2.set_changes_file(dir.join("changes.json"));
+    let err = agent2.run_ask("chat-1", "is it working?").expect_err("a changed chat is not proven");
+    assert!(err.message.contains("have not passed a test run yet"), "{}", err.message);
+    let clean = agent2.run_ask("chat-2", "anything?").expect("a chat with no changes stays clean");
+    assert!(!clean.refused);
     let _ = std::fs::remove_dir_all(&dir);
 }
