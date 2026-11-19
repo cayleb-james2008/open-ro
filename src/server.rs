@@ -245,10 +245,6 @@ impl Shared {
         }
     }
 
-    /// The ideas to pitch for a chat right now, and the thread lines
-    /// for the pitch — non-empty only when this set is NEW for the
-    /// chat (the context changed since the last pitch). A pitch is
-    /// spoken once per context, never repeated into the record.
     /// Titles of the ideas this chat has already built (every skill built): the page says "Already in your game" for them.
     pub fn built_titles_for(&self, chat_id: &str) -> Vec<String> {
         let state = self.ideas.lock().unwrap();
@@ -260,6 +256,10 @@ impl Shared {
             .collect()
     }
 
+    /// The ideas to pitch for a chat right now, and the thread lines
+    /// for the pitch — non-empty only when this set is NEW for the
+    /// chat (the context changed since the last pitch). A pitch is
+    /// spoken once per context, never repeated into the record.
     pub fn pitch_for(&self, chat_id: &str, intro: &str) -> (Vec<crate::ideas::Idea>, Vec<String>) {
         let mut state = self.ideas.lock().unwrap();
         let entry = state.entry(chat_id.to_string()).or_default();
