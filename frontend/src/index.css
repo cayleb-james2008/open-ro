@@ -1,0 +1,55 @@
+@import "tailwindcss";
+/* Tokens: the house roles (tokens.css), then this app's Hallmark theme values (theme.css), then its fonts. */
+@import "./tokens.css";
+@import "./theme.css";
+@import "./fonts.css";
+@source "../../rune/used";
+
+/* Tremor Raw animation block (documented install step: paste its @theme into globals.css).
+   Only the hover-card/tooltip entries that Tracker uses are kept. */
+@theme {
+  --animate-slide-down-and-fade: slideDownAndFade 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-slide-up-and-fade: slideUpAndFade 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-slide-left-and-fade: slideLeftAndFade 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-slide-right-and-fade: slideRightAndFade 150ms cubic-bezier(0.16, 1, 0.3, 1);
+
+  @keyframes slideDownAndFade {
+    from { opacity: 0; transform: translateY(-6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes slideUpAndFade {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes slideLeftAndFade {
+    from { opacity: 0; transform: translateX(6px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes slideRightAndFade {
+    from { opacity: 0; transform: translateX(-6px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+}
+
+/* Vaul ignores prefers-reduced-motion: its sheet and overlay travel with CSS *animations* (slideFromBottom,
+   slideToBottom, fadeIn, fadeOut) and a transform transition. The earlier override here (until 2026-11-10)
+   matched [vaul-drawer], an attribute vaul 1.x does not set (it sets data-vaul-drawer), and cut only the
+   transition, so the 500 ms slide kept running. Both durations are cut on the real attributes. */
+@media (prefers-reduced-motion: reduce) {
+  [data-vaul-drawer], [data-vaul-overlay] { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* Server notices (no model key, Studio not connected, a recovered file): the server writes their markup into the shell. */
+html, body, #root { height: 100%; }
+.server-banners:empty, .server-banners [hidden] { display: none; }
+.server-banners .banner { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 12px 24px; background: var(--warn-bg); color: var(--ink); font-size: 14px; border-bottom: 1px solid var(--hairline); }
+.server-banners .banner strong { font-weight: 600; color: var(--warn); }
+.server-banners .banner .btn { min-height: 44px; padding: 0 12px; border-radius: 14px; border: 1px solid var(--hairline); background: var(--surface); color: var(--ink); font: inherit; cursor: pointer; }
+.server-banners .banner .btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.server-banners code { font-family: var(--font-mono); font-size: 13px; }
+
+/* Display size for the empty-state greeting (Hum display face at a step above --text-title). */
+@theme {
+  --text-display: 36px;
+  --text-display--line-height: 40px;
+}
