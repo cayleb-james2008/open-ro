@@ -1,5 +1,6 @@
+/*! Hallmark · app screen · genre modern-minimal · scope app · theme Hum (native light, dark second) · critique: paper grain, card-stock rims, one torn edge; no gradients on the page */
 @import "tailwindcss";
-/* Tokens: the house roles (tokens.css), then this app's Hallmark theme values (theme.css), then its fonts. */
+/* Tokens: the house roles (tokens.css), then this app's Hum theme values (theme.css), then its fonts. */
 @import "./tokens.css";
 @import "./theme.css";
 @import "./fonts.css";
@@ -12,44 +13,90 @@
   --animate-slide-up-and-fade: slideUpAndFade 150ms cubic-bezier(0.16, 1, 0.3, 1);
   --animate-slide-left-and-fade: slideLeftAndFade 150ms cubic-bezier(0.16, 1, 0.3, 1);
   --animate-slide-right-and-fade: slideRightAndFade 150ms cubic-bezier(0.16, 1, 0.3, 1);
-
-  @keyframes slideDownAndFade {
-    from { opacity: 0; transform: translateY(-6px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  @keyframes slideUpAndFade {
-    from { opacity: 0; transform: translateY(6px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  @keyframes slideLeftAndFade {
-    from { opacity: 0; transform: translateX(6px); }
-    to { opacity: 1; transform: translateX(0); }
-  }
-  @keyframes slideRightAndFade {
-    from { opacity: 0; transform: translateX(-6px); }
-    to { opacity: 1; transform: translateX(0); }
-  }
+  @keyframes slideDownAndFade { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes slideUpAndFade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes slideLeftAndFade { from { opacity: 0; transform: translateX(6px); } to { opacity: 1; transform: translateX(0); } }
+  @keyframes slideRightAndFade { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: translateX(0); } }
 }
 
-/* Vaul ignores prefers-reduced-motion: its sheet and overlay travel with CSS *animations* (slideFromBottom,
-   slideToBottom, fadeIn, fadeOut) and a transform transition. The earlier override here (until 2026-11-10)
-   matched [vaul-drawer], an attribute vaul 1.x does not set (it sets data-vaul-drawer), and cut only the
-   transition, so the 500 ms slide kept running. Both durations are cut on the real attributes. */
+/* Vaul ignores prefers-reduced-motion: its sheet and overlay travel with CSS animations. Cut both on its real attributes. */
 @media (prefers-reduced-motion: reduce) {
   [data-vaul-drawer], [data-vaul-overlay] { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
 
-/* Server notices (no model key, Studio not connected, a recovered file): the server writes their markup into the shell. */
+/* Display size for the greeting (Hum display face, a step above --text-title). */
+@theme {
+  --text-display: 36px;
+  --text-display--line-height: 40px;
+}
+
+/* ---- Paper (round 2). Every value below comes from a token; the grain is one SVG per theme. ---- */
+:root {
+  /* Lower-edge rim of card stock: the hairline pushed toward ink. */
+  --rim: color-mix(in oklab, var(--hairline) 82%, var(--ink) 18%);
+  /* Shadow tone for the soft paper lift. */
+  --paper-shadow: color-mix(in oklab, var(--ink) 26%, transparent);
+  /* The pear key's lower edge (darker pear) and its lit top line. */
+  --key-edge: color-mix(in oklab, var(--blue) 70%, var(--ink) 30%);
+  --key-lit: color-mix(in oklab, var(--surface) 55%, var(--blue));
+  /* Paper grain: fractal noise at about 5% opacity (dark ink speckle on light paper, light speckle on night paper). */
+  --grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.11  0 0 0 0 0.12  0 0 0 0 0.16  0 0 0 1 0'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='.06'/></svg>");
+  --radius-card: 20px;
+  /* Focus ring: ink-blue, 3:1 or better on the cream surfaces. */
+  --focus: oklch(42% 0.15 250);
+}
+:root[data-theme="dark"] {
+  --focus: oklch(80% 0.11 250);
+}
+:root[data-theme="dark"] {
+  --grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.95  0 0 0 0 0.95  0 0 0 0 0.9  0 0 0 1 0'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='.04'/></svg>");
+}
+body {
+  background-color: var(--canvas);
+  background-image: var(--grain);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  margin: 0;
+}
 html, body, #root { height: 100%; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+html, body { overflow-x: clip; }
+@theme inline {
+  --color-focus: var(--focus);
+}
+
+/* A card of card stock: a 2px lower rim in a darker paper tone, and the soft paper shadow. */
+.card-stock {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  box-shadow: 0 2px 0 var(--rim), 0 14px 22px -18px var(--paper-shadow);
+}
+
+/* One torn edge on the composer strip: a static polygon, no gradient. */
+.torn {
+  clip-path: polygon(0 12px, 3% 5px, 8% 10px, 14% 3px, 21% 9px, 30% 2px, 37% 8px, 45% 3px, 52% 10px, 60% 4px, 68% 9px, 76% 2px, 83% 8px, 90% 3px, 96% 9px, 100% 5px, 100% 100%, 0 100%);
+  margin-top: -12px;
+  padding-top: 0;
+}
+
+/* Skip link: hidden until it takes focus. */
+.skip { position: absolute; left: 8px; top: 8px; z-index: 60; min-height: 44px; display: inline-flex; align-items: center; padding: 0 16px; border-radius: 14px; background: var(--surface); color: var(--ink); border: 1px solid var(--hairline); font-size: 14px; transform: translateY(-200%); }
+.skip:focus { transform: none; }
+
+/* Server notices (no model key, Studio not connected, a recovered file): the server writes their markup into the shell. */
 .server-banners:empty, .server-banners [hidden] { display: none; }
 .server-banners .banner { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 12px 24px; background: var(--warn-bg); color: var(--ink); font-size: 14px; border-bottom: 1px solid var(--hairline); }
 .server-banners .banner strong { font-weight: 600; color: var(--warn); }
 .server-banners .banner .btn { min-height: 44px; padding: 0 12px; border-radius: 14px; border: 1px solid var(--hairline); background: var(--surface); color: var(--ink); font: inherit; cursor: pointer; }
-.server-banners .banner .btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.server-banners .banner .btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+html, body { overflow-x: clip; }
+@theme inline {
+  --color-focus: var(--focus);
+}
 .server-banners code { font-family: var(--font-mono); font-size: 13px; }
 
-/* Display size for the empty-state greeting (Hum display face at a step above --text-title). */
-@theme {
-  --text-display: 36px;
-  --text-display--line-height: 40px;
+/* Reduced motion: every transition and animation in the page is cut to an instant change. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }
