@@ -730,16 +730,18 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
                     }
                     Ok(outcome) => {
                         shared.append_lines_to(&chat_id, &outcome.thread);
-                        // The agent speaks next, unprompted: record
-                        // what the game now has and pitch the follow-up
-                        // set for the new context (once per context).
-                        shared.note_built(&chat_id, &outcome.skills_used);
-                        let (_, pitch) = shared.pitch_for(
-                            &chat_id,
-                            "OpenRO: That landed. Next, I could add:",
-                        );
-                        if !pitch.is_empty() {
-                            shared.append_lines_to(&chat_id, &pitch);
+                        // Only an ask that really changed the game records
+                        // what it built and pitches the follow-up set (once
+                        // per context). A zero-change ask gets no pitch.
+                        if outcome.changed {
+                            shared.note_built(&chat_id, &outcome.skills_used);
+                            let (_, pitch) = shared.pitch_for(
+                                &chat_id,
+                                "OpenRO: That landed. Next, I could add:",
+                            );
+                            if !pitch.is_empty() {
+                                shared.append_lines_to(&chat_id, &pitch);
+                            }
                         }
                         respond_json(
                             &mut stream,
