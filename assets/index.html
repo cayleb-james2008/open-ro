@@ -85,6 +85,9 @@
   #chat-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 0; }
   #chat-list li { margin: 0; }
   .chat-btn { display: block; width: 100%; min-height: 44px; padding: 0 8px; border: 0; border-radius: var(--r-control); background: none; color: var(--ink-2); text-align: left; cursor: pointer; font-size: 14px; line-height: 44px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background-color var(--dur-micro) ease, color var(--dur-micro) ease, transform var(--dur-micro) var(--ease-out); }
+  .chat-btn { display: flex; align-items: center; gap: 8px; line-height: 1.3; }
+  .chat-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-flag { flex: none; font-size: 12px; color: var(--ink-2); }
   .chat-btn:hover { background: var(--track); color: var(--ink); }
   .chat-btn:active { transform: scale(0.99); }
   .chat-btn[aria-current="true"] { background: var(--raised); color: var(--ink); font-weight: 500; box-shadow: var(--shadow-raised); }
@@ -364,7 +367,7 @@
   const CLASSES = { SpawnLocation: 'spawn point', Part: 'block' };
   const PLACE_KIND = { ServerScriptService: 'server script', ServerStorage: 'stored script', StarterGui: 'screen', StarterPlayer: 'player script', ReplicatedStorage: 'shared script', Workspace: 'in the world' };
   const state = {
-    lines: [], ideas: [], local: [], pendingUser: '', busy: false,
+    lines: [], ideas: [], inflight: {}, busy: false, chats: [], activeId: null,
     threadError: false, loaded: false, shown: 0, undoOpen: false,
     built: null,
   };
@@ -386,6 +389,42 @@
     return s;
   }
   function plain(s) { return s.replace(DASH, ', '); }
+
+  /* per-chat slots, kept for the session: a request's notices and an unsent draft belong to the chat it came from */
+  const noticeKey = (id) => 'openro-notices:' + id;
+  const draftKey = (id) => 'openro-draft:' + id;
+  function slotRead(key, fallback) {
+    try { const v = sessionStorage.getItem(key); return v === null ? fallback : JSON.parse(v); } catch (e) { return fallback; }
+  }
+  function slotWrite(key, value) {
+    try {
+      if (value === '' || (Array.isArray(value) && !value.length)) sessionStorage.removeItem(key);
+      else sessionStorage.setItem(key, JSON.stringify(value));
+    } catch (e) { /* storage refused: the notice still shows in its chat while it is open */ }
+  }
+  const readNotices = (id) => slotRead(noticeKey(id), []);
+  const readDraft = (id) => slotRead(draftKey(id), '');
+  /* a notice is drawn only in the chat it belongs to; elsewhere it waits in that chat's slot */
+  function addNotice(chatId, item) {
+    slotWrite(noticeKey(chatId), [...readNotices(chatId), item]);
+    if (chatId === state.activeId) renderThread();
+  }
+  function notice(text, bad, chatId) { addNotice(chatId || state.activeId, { text, bad: !!bad }); }
+  function clearNotices(chatId) { slotWrite(noticeKey(chatId), ''); }
+  /* unsent text goes back to its own chat: into the box if that chat is open and the box is empty, else its draft */
+  function returnText(chatId, text) {
+    const input = $('composer-input');
+    if (chatId === state.activeId && !input.value.trim()) input.value = text;
+    else slotWrite(draftKey(chatId), text);
+  }
+  /* switching chats: the open box is kept for the chat it was typed in; the new chat's draft comes back */
+  function moveDraft(from, to) {
+    const input = $('composer-input');
+    if (from !== null) slotWrite(draftKey(from), input.value.trim() ? input.value : '');
+    const d = readDraft(to);
+    if (d) { input.value = d; slotWrite(draftKey(to), ''); }
+    else if (from !== null) input.value = '';
+  }
 
   /* appearance: the segmented control; the choice persists on this device */
   const themeBtns = document.querySelectorAll('.theme-btn');
@@ -602,7 +641,8 @@
   /* the thread: a fresh render from the server's lines, plus this screen's own notices */
   function renderThread() {
     const items = state.lines.map(classify);
-    const hasUser = items.some((i) => i.kind === 'user') || !!state.pendingUser;
+    const pend = state.inflight[state.activeId];
+    const hasUser = items.some((i) => i.kind === 'user') || !!(pend && pend.message);
     const hasBuild = items.some((i) => i.kind === 'step' || i.kind === 'verdict');
     const fresh = (i) => state.loaded && i >= state.shown;
     thread.textContent = '';
@@ -648,9 +688,9 @@
       else if (it.kind === 'agent') thread.appendChild(agentRow(it.text, fresh(i), ERROR_LIKE.test(it.text)));
       else thread.appendChild(agentRow(it.raw, fresh(i), ERROR_LIKE.test(it.raw)));
     });
-    state.local.forEach((n) => thread.appendChild(n.user ? userRow(n.text, true) : agentRow(n.text, true, n.bad, true)));
-    if (state.pendingUser) thread.appendChild(userRow(state.pendingUser, true));
-    if (state.busy) {
+    readNotices(state.activeId).forEach((n) => thread.appendChild(n.user ? userRow(n.text, true) : agentRow(n.text, true, n.bad, true)));
+    if (pend && pend.message) thread.appendChild(userRow(pend.message, true));
+    if (pend) {
       const w = el('div', 'working');
       w.setAttribute('role', 'status');
       const dots = el('span', 'dots');
@@ -660,7 +700,7 @@
       thread.appendChild(w);
     }
     /* a conversation scrolls to its latest line; a fresh chat keeps its heading and ideas in view */
-    if (hasUser || hasBuild || state.busy || state.pendingUser) thread.scrollTop = thread.scrollHeight;
+    if (hasUser || hasBuild || pend) thread.scrollTop = thread.scrollHeight;
     state.shown = items.length;
     state.loaded = true;
     renderChips(items);
@@ -705,31 +745,40 @@
       const r = await fetch('/api/chats');
       if (!r.ok) throw new Error('chats');
       const data = await r.json();
-      chatList.textContent = '';
-      for (const c of data.chats) {
-        const li = document.createElement('li');
-        const btn = el('button', 'chat-btn', c.title || 'New chat');
-        btn.type = 'button';
-        if (c.id === data.active) {
-          btn.setAttribute('aria-current', 'true');
-          $('chat-title').textContent = c.title || 'New chat';
-        }
-        btn.addEventListener('click', async () => {
-          try {
-            const sr = await fetch('/api/chats/select', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: c.id }) });
-            if (!sr.ok) throw new Error('select');
-          } catch (err) {
-            notice('Could not switch chats. The server did not answer.', true);
-            return;
-          }
-          setMenu(false);
-          await refreshChats();
-          await refreshAll();
-        });
-        li.appendChild(btn);
-        chatList.appendChild(li);
-      }
+      const from = state.activeId;
+      state.chats = data.chats;
+      state.activeId = data.active;
+      const current = data.chats.find((c) => c.id === data.active);
+      $('chat-title').textContent = (current && current.title) || 'New chat';
+      if (from !== data.active) moveDraft(from, data.active);
+      renderChatList();
     } catch (err) { /* the list keeps its last good state */ }
+  }
+  function renderChatList() {
+    chatList.textContent = '';
+    for (const c of state.chats) {
+      const li = document.createElement('li');
+      const btn = el('button', 'chat-btn');
+      btn.type = 'button';
+      btn.appendChild(el('span', 'chat-title', c.title || 'New chat'));
+      if (state.inflight[c.id]) btn.appendChild(el('span', 'chat-flag', 'working'));
+      if (c.id === state.activeId) btn.setAttribute('aria-current', 'true');
+      btn.addEventListener('click', () => switchChat(c.id));
+      li.appendChild(btn);
+      chatList.appendChild(li);
+    }
+  }
+  async function switchChat(id) {
+    try {
+      const sr = await fetch('/api/chats/select', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+      if (!sr.ok) throw new Error('select');
+    } catch (err) {
+      notice('Could not switch chats. The server did not answer.', true);
+      return;
+    }
+    setMenu(false);
+    await refreshChats();
+    await refreshAll();
   }
 
   /* ideas: the pitch lands in the thread; the same set feeds the cards and the chips */
@@ -744,14 +793,23 @@
     } catch (err) { /* the cards keep their last good state */ }
   }
 
-  function notice(text, bad) {
-    state.local.push({ text, bad: !!bad });
-    renderThread();
+  /* a request is tied to the chat it started in; the controls follow whether anything is in flight */
+  function beginRequest(chatId, pending) {
+    clearNotices(chatId);
+    state.inflight[chatId] = pending || {};
+    setBusy();
+    if (chatId === state.activeId) renderThread();
   }
-  function setBusy(on) {
-    state.busy = on;
-    $('send').disabled = on;
+  function endRequest(chatId) {
+    delete state.inflight[chatId];
+    setBusy();
+    if (chatId === state.activeId) renderThread();
+  }
+  function setBusy() {
+    state.busy = Object.keys(state.inflight).length > 0;
+    $('send').disabled = state.busy;
     syncUndo();
+    renderChatList();
   }
   /* Undo is offered only when the game has something built (the place tree says so) */
   function syncUndo() {
@@ -770,58 +828,54 @@
 
   async function buildIdea(idea, btn) {
     const key = btn.getAttribute('data-focus-key');
-    state.local = [];
-    btn.disabled = true;
-    btn.textContent = 'Building…';
-    setBusy(true);
-    renderThread();
+    const chatId = state.activeId;
+    beginRequest(chatId, { build: idea.title });
+    let failure = null;
     try {
       const r = await fetch('/api/ideas/build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: idea.id }) });
       const data = await r.json();
-      if (!data.ok) notice(data.error, true);
-      else if (data.ideas) state.ideas = data.ideas;
+      if (!data.ok) failure = data.error;
     } catch (err) {
-      notice('Could not reach the OpenRO server.', true);
+      failure = 'Could not reach the OpenRO server.';
     }
-    setBusy(false);
+    endRequest(chatId);
+    if (failure) notice(failure, true, chatId);
     await refreshAll();
-    restoreFocus(key);
+    if (chatId === state.activeId) restoreFocus(key);
   }
 
   /* the composer: the ask is shown at once and the build shows as it runs.
-     A send that does not go through keeps the words: the user line stays,
-     a plain error sits under it, and the text goes back in the box. */
+     A send that does not go through keeps the words in its own chat: the user line stays,
+     a plain error sits under it, and the text goes back to the box (or that chat's draft). */
   const SEND_FAILED = 'That did not go through. Nothing was built. Your message is back in the box.';
   $('composer').addEventListener('submit', async (e) => {
     e.preventDefault();
     const input = $('composer-input');
     const message = input.value.trim();
     if (!message) return;
+    const chatId = state.activeId;
     input.value = '';
-    state.local = [];
-    state.pendingUser = message;
-    setBusy(true);
-    renderThread();
+    beginRequest(chatId, { message });
     let failure = null;
     try {
       const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }) });
-      const data = await r.json().catch(() => ({}));
+      const text = await r.text();
+      let data = {};
+      try { data = JSON.parse(text); } catch (err) { /* not JSON: a proxy or a crash answered */ }
       /* refused before it reached the chat (too large, wrong type, forbidden): the server's own words */
       if (r.status === 403 || r.status === 413 || r.status === 415) failure = data.error || 'OpenRO did not take that message.';
-      else if (r.status >= 500 && !data.ok) failure = SEND_FAILED;
+      /* 502 and 503 mean the server recorded the words and its own thread lines tell the story */
+      else if (!r.ok && !((r.status === 502 || r.status === 503) && data.ok === false)) failure = SEND_FAILED;
     } catch (err) {
       failure = SEND_FAILED;
     }
-    state.pendingUser = '';
-    setBusy(false);
-    await refreshAll();
-    /* if the server recorded the words, its own thread lines already tell the story */
-    if (failure && !state.lines.includes('You: ' + message)) {
-      state.local.push({ text: message, user: true });
-      state.local.push({ text: failure, bad: true });
-      input.value = message;
-      renderThread();
+    endRequest(chatId);
+    if (failure) {
+      addNotice(chatId, { text: message, user: true });
+      addNotice(chatId, { text: failure, bad: true });
+      returnText(chatId, message);
     }
+    await refreshAll();
     input.focus();
   });
 
@@ -838,18 +892,22 @@
   $('undo-no').addEventListener('click', () => { setUndo(false); revertBtn.focus(); });
   $('undo-yes').addEventListener('click', async () => {
     setUndo(false);
-    state.local = [];
-    setBusy(true);
+    const chatId = state.activeId;
+    beginRequest(chatId, { undo: true });
+    let msg = null;
+    let bad = false;
     try {
       const r = await fetch('/api/revert', { method: 'POST' });
       const data = await r.json();
-      if (data.ok) notice('Undid the last build. ' + data.restored.length + ' change(s) were put back.');
-      else if (data.error === 'nothing to revert') notice('Nothing to undo. No build is waiting to be undone in this chat.');
-      else notice(data.error, true);
+      if (data.ok) msg = 'Undid the last build. ' + data.restored.length + ' change(s) were put back.';
+      else if (data.error === 'nothing to revert') msg = 'Nothing to undo. No build is waiting to be undone in this chat.';
+      else { msg = data.error; bad = true; }
     } catch (err) {
-      notice('Could not reach the OpenRO server.', true);
+      msg = 'Could not reach the OpenRO server.';
+      bad = true;
     }
-    setBusy(false);
+    endRequest(chatId);
+    if (msg) notice(msg, bad, chatId);
     await refreshAll();
     (revertBtn.disabled ? $('composer-input') : revertBtn).focus();
   });
@@ -910,7 +968,6 @@
       return;
     }
     setMenu(false);
-    state.local = [];
     state.shown = 0;
     await refreshChats();
     await refreshAll();
