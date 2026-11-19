@@ -350,9 +350,11 @@
   /* server errors that are config problems: the plain sentence goes on the thread, the raw line behind Details */
   const PLAIN_ERRORS = [
     { re: /^no model key/, say: 'Chat is off: no model key is set, so OpenRO cannot answer. Ask whoever runs OpenRO to add a model key, then restart it.' },
+    { re: /^Studio bridge error/, say: 'Roblox Studio refused that change, so OpenRO stopped and added nothing. Send it again to retry, or ask for something smaller.' },
     { re: /^Studio not connected/, say: 'Studio is not connected, so nothing can be built. Open Roblox Studio with the OpenRO connection running, then send again.' },
   ];
   const IDEA_PREFIX = 'OpenRO: Idea — ';
+  const ERROR_LIKE = /error|could not|did not|not connected|no model|refused|failed/i;
   const DASH = /\s—\s/g;
   const ADDS = {
     spawn_link: 'Spawn point', checkpoints: 'Checkpoints', kill_brick: 'Lava that burns',
@@ -516,8 +518,14 @@
     const bubble = el('div', 'bubble' + (bad ? ' bad' : ''));
     const known = PLAIN_ERRORS.find((e) => e.re.test(text));
     const cut = text.indexOf(' (Details: ');
-    const plainText = known ? known.say : cut < 0 ? text : text.slice(0, cut);
-    const raw = known ? text : cut < 0 ? '' : text.slice(cut + 11, -1);
+    /* a server error: its first sentence is the plain message; the rest sits behind Details */
+    const sentence = text.match(/^(.+?[.!?])\s+(.+)$/s);
+    let plainText = text;
+    let raw = '';
+    if (known) { plainText = known.say; raw = text; }
+    else if (cut >= 0) { plainText = text.slice(0, cut); raw = text.slice(cut + 11, -1); }
+    else if (bad && sentence) { plainText = sentence[1]; raw = sentence[2]; }
+    else if (bad && /:\s/.test(text)) { plainText = 'OpenRO could not finish that step. The details are below.'; raw = text; }
     bubble.appendChild(el('span', '', plainText));
     if (raw) {
       const det = el('details', 'bubble-details');
@@ -636,8 +644,8 @@
         return;
       }
       if (it.kind === 'user') thread.appendChild(userRow(it.text, fresh(i)));
-      else if (it.kind === 'agent') thread.appendChild(agentRow(it.text, fresh(i), /could not|did not|not connected|no model/i.test(it.text)));
-      else thread.appendChild(agentRow(it.raw, fresh(i), false));
+      else if (it.kind === 'agent') thread.appendChild(agentRow(it.text, fresh(i), ERROR_LIKE.test(it.text)));
+      else thread.appendChild(agentRow(it.raw, fresh(i), ERROR_LIKE.test(it.raw)));
     });
     state.local.forEach((n) => thread.appendChild(n.user ? userRow(n.text, true) : agentRow(n.text, true, n.bad)));
     if (state.pendingUser) thread.appendChild(userRow(state.pendingUser, true));
