@@ -399,19 +399,47 @@
   }));
   syncThemeBtns();
 
-  /* phone menu sheet */
+  /* phone menu sheet: a modal while open. It takes focus, Tab stays inside it,
+     the page behind is inert, Escape or the scrim closes it and returns focus to the menu button. */
   const menuBtn = $('menu-btn');
   const scrim = $('scrim');
-  function setMenu(open) {
+  const sidebar = $('sidebar');
+  const mainRegion = document.querySelector('main');
+  const phoneLayout = window.matchMedia('(max-width: 759px)');
+  function sheetFocusables() {
+    return [...sidebar.querySelectorAll('button, a[href], input, [tabindex]:not([tabindex="-1"])')].filter((e) => !e.disabled && e.offsetParent !== null);
+  }
+  function setMenu(open, opts) {
+    if (open === document.body.classList.contains('menu-open')) return;
     document.body.classList.toggle('menu-open', open);
     menuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     scrim.hidden = !open;
+    mainRegion.inert = open;
+    if (open) {
+      sidebar.setAttribute('role', 'dialog');
+      sidebar.setAttribute('aria-modal', 'true');
+      sheetFocusables()[0].focus();
+    } else {
+      sidebar.removeAttribute('role');
+      sidebar.removeAttribute('aria-modal');
+      if (!opts || opts.returnFocus !== false) menuBtn.focus();
+    }
   }
   menuBtn.addEventListener('click', () => setMenu(!document.body.classList.contains('menu-open')));
-  scrim.addEventListener('click', () => { setMenu(false); menuBtn.focus(); });
+  scrim.addEventListener('click', () => setMenu(false));
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && document.body.classList.contains('menu-open')) { setMenu(false); menuBtn.focus(); }
+    if (!document.body.classList.contains('menu-open')) return;
+    if (e.key === 'Escape') { e.preventDefault(); setMenu(false); return; }
+    if (e.key !== 'Tab') return;
+    const f = sheetFocusables();
+    const first = f[0];
+    const last = f[f.length - 1];
+    const inside = sidebar.contains(document.activeElement);
+    if (e.shiftKey && (!inside || document.activeElement === first)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (!inside || document.activeElement === last)) { e.preventDefault(); first.focus(); }
   });
+  /* leaving the phone layout with the sheet open closes it: no dim over the desktop app */
+  phoneLayout.addEventListener('change', (e) => { if (!e.matches) setMenu(false, { returnFocus: false }); });
 
   /* the place panel: collapsible, wide screens only */
   const placePanel = $('place-panel');
