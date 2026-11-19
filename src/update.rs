@@ -210,7 +210,15 @@ pub fn parse_release(v: &Value, bin: &str) -> Result<Release, String> {
         .map(|d| d.to_ascii_lowercase());
     Ok(Release {
         version,
-        url: v["html_url"].as_str().unwrap_or("").to_string(),
+        // the page puts this in a link: only a web address may become one (never javascript:, data:, file:)
+        url: v["html_url"]
+            .as_str()
+            .filter(|u| {
+                let u = u.to_ascii_lowercase();
+                u.starts_with("https://") || u.starts_with("http://")
+            })
+            .unwrap_or("")
+            .to_string(),
         notes: v["body"].as_str().unwrap_or("").chars().take(4000).collect(),
         asset_name: want,
         asset_url,
@@ -492,16 +500,31 @@ fn file_name(p: &Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "app".to_string())
 }
 
+/// Starts the command, retrying the one transient failure "Text file busy": a fork elsewhere
+/// in this process can still hold a freshly written file open for a moment. Any other error
+/// is returned at once.
+fn spawn_retrying_busy(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    let mut tries = 0;
+    loop {
+        match cmd.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 20 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            r => return r,
+        }
+    }
+}
+
 /// Runs the downloaded file with `--version` and requires the expected version
 /// in its output, so a wrong or damaged build is never swapped in.
 fn prove_version(staged: &Path, version: &str) -> Result<(), String> {
-    let mut child = std::process::Command::new(staged)
-        .arg("--version")
+    let mut cmd = std::process::Command::new(staged);
+    cmd.arg("--version")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("the downloaded file does not run on this machine: {e}"))?;
+        .stdin(std::process::Stdio::null());
+    let mut child = spawn_retrying_busy(&mut cmd).map_err(|e| format!("the downloaded file does not run on this machine: {e}"))?;
     let start = std::time::Instant::now();
     loop {
         match child.try_wait() {
@@ -616,6 +639,20 @@ mod tests {
         assert!(parse_release(&json!({"tag_name": "weekly", "assets": []}), "openro-rs").is_err());
     }
 
+    #[test]
+    fn the_release_page_link_is_only_ever_an_http_or_https_url() {
+        let name = asset_name("openro-rs");
+        let with = |u: Value| {
+            let v = json!({"tag_name": "v0.3.0", "html_url": u, "assets": [{"name": name, "browser_download_url": "https://x/a"}]});
+            parse_release(&v, "openro-rs").unwrap().url
+        };
+        assert_eq!(with(json!("https://github.com/o/r/releases/tag/v0.3.0")), "https://github.com/o/r/releases/tag/v0.3.0");
+        for bad in ["javascript:alert(1)", "JaVaScRiPt:alert(1)", "data:text/html,<b>x</b>", "file:///etc/passwd", "//evil.example/x", " https://x", "u"] {
+            assert_eq!(with(json!(bad)), "", "{bad} must not reach the page as a link");
+        }
+        assert_eq!(with(json!(7)), "");
+    }
+
     // ---- a mock GitHub: releases/latest, SHA256SUMS and the binary asset
 
     struct Mock {
@@ -700,6 +737,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_is_briefly_still_open_for_writing_is_retried_not_refused() {
+        // exec of a file somebody still holds open for writing fails with "Text file busy";
+        // a fork elsewhere in the process can cause that for a moment after the download is written
+        let dir = tmp("busy");
+        let p = fake_exe(&dir, "0.3.0");
+        let writer = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            drop(writer);
+        });
+        prove_version(&p, "0.3.0").expect("a busy file is retried, not refused");
     }
 
     #[cfg(unix)]
