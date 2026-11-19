@@ -2262,3 +2262,121 @@ fn recovered_banner_names_the_file_and_is_dismissible() {
     let clean = openro_rs::server::render_page_with("Round Arena", true, true, &[]);
     assert!(!clean.contains("recovered-banner"), "no banner when nothing was set aside");
 }
+
+// ---------------------------------------------------------------------------
+// Round 2 maker fixes (RB1-RB4).
+// ---------------------------------------------------------------------------
+
+/// RB1: a zero-change ask with no step error keeps its ok, but gets no
+/// pitch, and the "nothing changed" note comes before the model's claim.
+#[test]
+fn zero_change_ask_gets_no_pitch_and_the_note_comes_first() {
+    let (agent, _stub) = agent_with_script(vec![
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Built the leaderboard." }).to_string(),
+    ]);
+    let port = start_server(Some(agent));
+    let (status, body) = http_request(port, "POST", "/api/chat", Some(&json!({ "message": "add a leaderboard" }).to_string()));
+    assert_eq!(status, 200, "the zero-change error-free ask keeps ok: {body}");
+    let (_, thread) = http_request(port, "GET", "/api/thread", None);
+    assert!(!thread.contains("That landed"), "no pitch after a zero-change ask: {thread}");
+    let note = thread.find("made no changes to the game").expect("the note is there");
+    let claim = thread.find("Built the leaderboard.").expect("the model's text is kept");
+    assert!(note < claim, "the note comes before the model's text: {thread}");
+}
+
+/// RB2: a failed playtest's verdict survives a restart (a new Agent from
+/// the same data dir), and a corrupt proof file starts empty and is recorded.
+#[test]
+fn failed_playtest_verdict_survives_a_restart() {
+    let dir = std::env::temp_dir().join(format!("openro-proof-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut script = vec![
+        json!({ "skill": "shop", "args": { "item_name": "Speed Coil", "price": 100, "currency": "Coins" } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Shop", "skill": "shop" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+    ];
+    for _ in 0..37 {
+        script.push(json!({ "done": true, "summary": "Shop is in." }).to_string());
+    }
+    let (mut agent, _stub) = agent_with_script(script);
+    agent.set_changes_file(dir.join("changes.json"));
+    agent.run_ask("chat-1", "add a shop").expect_err("the failed build gives up");
+    drop(agent);
+
+    let (mut agent2, _stub2) = agent_with_script(vec![json!({ "done": true, "summary": "Round is running." }).to_string()]);
+    agent2.set_changes_file(dir.join("changes.json"));
+    let err = agent2
+        .run_ask("chat-1", "is it working now?")
+        .expect_err("a done over the failed game is refused after a restart");
+    assert!(err.message.contains("last test run of your game failed"), "{}", err.message);
+    drop(agent2);
+
+    // A corrupt proof file starts empty and is recorded as recovered.
+    std::fs::write(dir.join("proof.json"), "{\"chat-1\": 7").unwrap();
+    let (mut agent3, _stub3) = agent_with_script(vec![json!({ "done": true, "summary": "Nothing to change." }).to_string()]);
+    agent3.set_changes_file(dir.join("changes.json"));
+    assert!(agent3.recovered.contains(&"proof.json.bak".to_string()), "recorded: {:?}", agent3.recovered);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// RB3(a): an idea step that creates an instance already in the place with
+/// the same class is skipped, not a bridge failure.
+#[test]
+fn plan_skips_an_instance_that_already_exists() {
+    let (mut agent, _stub) = agent_with_script(vec![]);
+    let plan = vec![
+        json!({ "tool": "create_instance", "args": { "class_name": "Part", "name": "SpawnPad", "parent": "Workspace", "properties": {} } }),
+        json!({ "tool": "create_instance", "args": { "class_name": "Part", "name": "SpawnPad", "parent": "Workspace", "properties": {} } }),
+    ];
+    agent.run_plan("chat-1", "spawn pad", &plan).expect("the second create is skipped, the plan completes");
+    let again = agent.run_plan("chat-1", "spawn pad again", &plan).expect_err("nothing new to add");
+    assert!(again.message.contains("already in your game"), "plain words: {}", again.message);
+    assert!(!again.message.contains("Studio bridge error"), "no raw bridge text: {}", again.message);
+}
+
+/// RB3(b): a plan that fails after a change says so in plain words and
+/// points at Undo; the raw bridge text stays in the transcript.
+#[test]
+fn plan_failure_after_a_change_points_at_undo_in_plain_words() {
+    let (mut agent, _stub) = agent_with_script(vec![]);
+    let plan = vec![
+        json!({ "tool": "create_instance", "args": { "class_name": "Part", "name": "SpawnPad", "parent": "Workspace", "properties": {} } }),
+        json!({ "tool": "delete_instance", "args": { "path": "Workspace.Missing" } }),
+    ];
+    let err = agent.run_plan("chat-1", "broken", &plan).expect_err("the delete of a missing part fails");
+    assert!(err.message.contains("Undo last build"), "the undo pointer: {}", err.message);
+    assert!(!err.message.contains("Studio bridge error"), "no raw bridge text in the message: {}", err.message);
+    assert!(err.transcript.join("\n").contains("Studio bridge error"), "the raw text is kept in the transcript");
+}
+
+/// RB3(c): after Undo, an ask for a shop is refused by name while its
+/// currency is missing, instead of landing a shop that cannot charge.
+/// Both agents share one data dir, so the undo record is the saved one.
+#[test]
+fn ask_path_refuses_a_shop_whose_currency_was_undone() {
+    let dir = std::env::temp_dir().join(format!("openro-undo-gate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (mut agent, _stub) = agent_with_script(vec![
+        json!({ "skill": "currency", "args": { "currency": "Coins", "bind_close": true } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Currency", "skill": "currency" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Money that saves is in." }).to_string(),
+    ]);
+    agent.set_changes_file(dir.join("changes.json"));
+    agent.run_ask("chat-1", "add money that saves").expect("currency lands");
+    agent.revert_chat("chat-1").expect("undo");
+    drop(agent);
+    let (mut agent, _stub2) = agent_with_script(vec![
+        json!({ "skill": "shop", "args": { "item_name": "Speed Coil", "price": 100, "currency": "Coins" } }).to_string(),
+        json!({ "done": true, "summary": "Shop added." }).to_string(),
+    ]);
+    agent.set_changes_file(dir.join("changes.json"));
+    let outcome = agent.run_ask("chat-1", "add a shop").expect("the ask ends as a refusal");
+    assert!(outcome.refused, "the shop is refused: {outcome:?}");
+    assert!(outcome.summary.contains("currency"), "the refusal names the missing currency: {}", outcome.summary);
+    assert!(!outcome.thread.join("\n").contains("Shop added."), "no success claim over the refusal");
+    let _ = std::fs::remove_dir_all(&dir);
+}
