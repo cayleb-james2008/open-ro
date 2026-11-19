@@ -211,8 +211,14 @@
   .place-section h3 { display: flex; justify-content: space-between; margin: 0 0 4px; font-size: 13px; font-weight: 500; color: var(--ink-2); }
   .place-section h3 span { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
   .place-list { list-style: none; margin: 0; padding: 0; }
-  .place-list li { font-family: var(--font-mono); font-size: 13px; color: var(--ink-2); padding: 4px 8px; border-radius: var(--r-sm); overflow-wrap: anywhere; transition: background-color var(--dur-micro) ease; }
-  .place-list li:hover { background: var(--track); color: var(--ink); }
+  .place-list li { font-size: 14px; color: var(--ink); padding: 8px; border-radius: var(--r-sm); overflow-wrap: anywhere; transition: background-color var(--dur-micro) ease; }
+  .place-list li:hover { background: var(--track); }
+  .place-name { display: block; font-weight: 500; }
+  .place-kind { display: block; font-size: 12px; color: var(--ink-2); }
+  .place-list details { margin-top: 4px; }
+  .place-list summary { font-size: 12px; color: var(--faint); cursor: pointer; display: inline-block; min-height: 24px; line-height: 24px; }
+  .place-list code { display: block; margin-top: 2px; font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); overflow-wrap: anywhere; }
+  .welcome-studio { margin-top: 8px; font-size: 14px; color: var(--ink-2); }
   .place-empty { font-size: 14px; color: var(--ink-2); }
   .place-skel { display: grid; gap: 8px; }
   .place-skel span { height: 28px; border-radius: var(--r-sm); }
@@ -291,7 +297,7 @@
         <svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg>
       </button>
       <h2 id="chat-title">New chat</h2>
-      <span id="status-chip" class="chip __CHIP_CLASS__" role="status">__CHIP__</span>
+      <span id="status-chip" class="chip __CHIP_CLASS__" role="status">Roblox __CHIP__</span>
     </header>
     __KEY_BANNER__
     <div id="thread" aria-live="polite" aria-busy="true">
@@ -307,12 +313,12 @@
         <div id="undo-confirm" role="group" aria-label="Undo the last build" hidden>
           <p>Undo the last build? Your game goes back to how it was before that build.</p>
           <button id="undo-no" class="btn btn-quiet" type="button">Keep it</button>
-          <button id="undo-yes" class="btn btn-primary" type="button">Undo last build</button>
+          <button id="undo-yes" class="btn btn-primary" type="button">Yes, undo it</button>
         </div>
         <form id="composer">
           <label class="sr-only" for="composer-input">Describe your game</label>
           <input id="composer-input" type="text" placeholder="Describe your game, for example: a lava obby with coins" autocomplete="off">
-          <button id="revert" class="btn" type="button" aria-expanded="false" aria-controls="undo-confirm"><svg class="ic" aria-hidden="true"><use href="#i-undo"/></svg>Undo last build</button>
+          <button id="revert" class="btn" type="button" aria-expanded="false" aria-controls="undo-confirm" aria-label="Undo the last build" disabled><svg class="ic" aria-hidden="true"><use href="#i-undo"/></svg>Undo…</button>
           <button id="send" class="btn btn-primary" type="submit"><svg class="ic ic-sm" aria-hidden="true"><use href="#i-send"/></svg>Send</button>
         </form>
       </div>
@@ -351,9 +357,11 @@
     round_manager: 'Rounds', leaderboard: 'Leaderboard', soundtrack: 'Music',
   };
   const CLASSES = { SpawnLocation: 'spawn point', Part: 'block' };
+  const PLACE_KIND = { ServerScriptService: 'server script', ServerStorage: 'stored script', StarterGui: 'screen', StarterPlayer: 'player script', ReplicatedStorage: 'shared script', Workspace: 'in the world' };
   const state = {
     lines: [], ideas: [], local: [], pendingUser: '', busy: false,
     threadError: false, loaded: false, shown: 0, undoOpen: false,
+    built: null,
   };
 
   /* small builders: every piece of user or model text goes in as textContent */
@@ -493,8 +501,9 @@
     const s = el('section', 'welcome');
     s.appendChild(el('h2', '', 'What do you want to make?'));
     s.appendChild(el('p', '', CAN_BUILD
-      ? 'Pick one of these ideas, or describe your own game in the box below. OpenRO builds it in Studio and runs a test before it says it is done.'
-      : 'Pick an idea or describe your own game below. To build it, OpenRO needs a model key and a Studio connection. See the notice above.'));
+      ? 'Pick one of these ideas, or describe your own game in the box below. OpenRO builds it in Roblox Studio and runs a test before it says it is done.'
+      : 'Pick an idea or describe your own game below. To build it, OpenRO needs a model key and a Roblox Studio connection. See the notice above.'));
+    s.appendChild(el('p', 'welcome-studio', 'Roblox Studio is where your game lives; OpenRO needs it open to build and test.'));
     return s;
   }
   function ideaRecord(title) {
@@ -697,7 +706,13 @@
   function setBusy(on) {
     state.busy = on;
     $('send').disabled = on;
-    $('revert').disabled = on;
+    syncUndo();
+  }
+  /* Undo is offered only when the game has something built (the place tree says so) */
+  function syncUndo() {
+    const b = $('revert');
+    b.disabled = state.busy || state.built === null || state.built === 0;
+    b.title = state.built === 0 ? 'Nothing built yet' : state.built === null ? 'Connect Studio to see what is built' : '';
   }
 
   async function buildIdea(idea, btn) {
@@ -781,7 +796,7 @@
     }
     setBusy(false);
     await refreshAll();
-    revertBtn.focus();
+    (revertBtn.disabled ? $('composer-input') : revertBtn).focus();
   });
 
   /* In your game: the real place tree from the server */
@@ -793,6 +808,8 @@
       const tree = await r.json();
       const scripts = Object.keys(tree.scripts || {});
       const parts = Object.keys(tree.instances || {});
+      state.built = scripts.length + parts.length;
+      syncUndo();
       body.textContent = '';
       if (!scripts.length && !parts.length) {
         body.appendChild(el('p', 'place-empty', 'Nothing built yet. When OpenRO builds something, its scripts and parts show here.'));
@@ -804,13 +821,26 @@
         h.appendChild(el('span', '', String(names.length)));
         s.appendChild(h);
         const ul = el('ul', 'place-list');
-        names.forEach((n) => { const li = el('li', '', n.replace(/\./g, '.\u200b')); li.title = n; ul.appendChild(li); });
+        names.forEach((n) => {
+          /* the plain name first; the raw path sits behind Details */
+          const parts = n.split('.');
+          const li = el('li');
+          li.appendChild(el('span', 'place-name', parts[parts.length - 1].replace(/([a-z])([A-Z])/g, '$1 $2')));
+          li.appendChild(el('span', 'place-kind', PLACE_KIND[parts[0]] || 'part'));
+          const det = el('details');
+          det.appendChild(el('summary', '', 'Details'));
+          det.appendChild(el('code', '', n));
+          li.appendChild(det);
+          ul.appendChild(li);
+        });
         s.appendChild(ul);
         return s;
       };
       if (scripts.length) body.appendChild(section('Scripts', scripts));
       if (parts.length) body.appendChild(section('Parts', parts));
     } catch (err) {
+      state.built = null;
+      syncUndo();
       body.textContent = '';
       body.appendChild(el('p', 'place-empty', 'Could not read your game. Check that Studio is connected, then try again.'));
     }
@@ -841,6 +871,7 @@
   document.querySelectorAll('[data-dismiss]').forEach((b) => {
     b.addEventListener('click', () => { b.closest('.banner').hidden = true; });
   });
+  syncUndo();
   refreshAll();
 </script>
 </body>
