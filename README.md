@@ -1,5 +1,8 @@
 # OpenRO (Rust + Rune)
 
+[![latest release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases)
+
+
 You describe the game, it builds it. OpenRO is a proactive creative agent
 in a plain chat window. It builds a Roblox game in Roblox Studio through a
 Studio MCP bridge, and it can one-shot a complete game.
@@ -129,9 +132,11 @@ Environment:
 
 ## Versions and updates
 
+**Releasing:** bump `version` in `Cargo.toml`, add a `## X.Y.Z - date` entry to `CHANGELOG.md`, and merge to `main`. `.github/workflows/release.yml` sees the new version, builds every platform and publishes the GitHub Release `vX.Y.Z` with the binaries and `SHA256SUMS`; a push that does not change the version publishes nothing, and a new version without a changelog entry fails the workflow. Pushing a `vX.Y.Z` tag by hand does the same.
+
 The version is printed by `openro-rs --version` (or `-V`), reported by
 `GET /api/version` and `GET /api/status`, and every release is tagged
-`vX.Y.Z` with a changelog entry in `CHANGELOG.md`. Pushing a tag runs
+`vX.Y.Z` with a changelog entry in `CHANGELOG.md`. Merging a new version to `main` (or pushing a tag) runs
 `.github/workflows/release.yml`: it builds `openro-rs` for each platform (the
 mock Studio binaries are test fixtures and are not released), checks that the
 tag matches `Cargo.toml`, writes a `SHA256SUMS` file, and publishes the GitHub
