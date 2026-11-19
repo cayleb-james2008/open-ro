@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -57,11 +57,24 @@ pub struct Shared {
     pub game_name: String,
     pub data_dir: Option<PathBuf>,
     pub ideas: Mutex<std::collections::HashMap<String, ChatIdeas>>,
+    /// Backup file names of saved state that was corrupt at startup and
+    /// was set aside (empty normally).
+    pub store_recovered: Vec<String>,
+    /// Connection handler threads running now (capped per server).
+    pub active_handlers: AtomicUsize,
+    /// Chats whose change-set stack is non-empty (Undo has something to do).
+    /// The agent keeps this current, so polling never waits on a running ask.
+    pub undoable: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl Shared {
     /// In-memory server (tests, ephemeral runs): chats are not saved.
     pub fn new(agent: Option<Agent>, game_name: String) -> Arc<Shared> {
+        let mut agent = agent;
+        let undoable = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        if let Some(a) = agent.as_mut() {
+            a.attach_undo_sink(Arc::clone(&undoable));
+        }
         let chat = default_chat();
         let active = chat.id.clone();
         Arc::new(Shared {
@@ -71,6 +84,9 @@ impl Shared {
             game_name,
             data_dir: None,
             ideas: Mutex::new(std::collections::HashMap::new()),
+            store_recovered: Vec::new(),
+            active_handlers: AtomicUsize::new(0),
+            undoable,
         })
     }
 
@@ -78,12 +94,18 @@ impl Shared {
     /// inside `data_dir`.
     pub fn with_data_dir(agent: Option<Agent>, game_name: String, data_dir: PathBuf) -> Arc<Shared> {
         let _ = std::fs::create_dir_all(&data_dir);
-        let (chats, active) = load_chats(&data_dir).unwrap_or_else(|| {
+        let mut agent = agent;
+        let undoable = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        if let Some(a) = agent.as_mut() {
+            a.attach_undo_sink(Arc::clone(&undoable));
+        }
+        let mut recovered = agent.as_ref().map(|a| a.recovered.clone()).unwrap_or_default();
+        let (chats, active) = load_chats(&data_dir, &mut recovered).unwrap_or_else(|| {
             let chat = default_chat();
             let active = chat.id.clone();
             (vec![chat], active)
         });
-        let ideas = load_ideas(&data_dir);
+        let ideas = load_ideas(&data_dir, &mut recovered);
         Arc::new(Shared {
             agent: Mutex::new(agent),
             chats: Mutex::new(chats),
@@ -91,6 +113,9 @@ impl Shared {
             game_name,
             data_dir: Some(data_dir),
             ideas: Mutex::new(ideas),
+            store_recovered: recovered,
+            active_handlers: AtomicUsize::new(0),
+            undoable,
         })
     }
 
@@ -180,6 +205,19 @@ impl Shared {
         })
     }
 
+    /// A revert took back the skills of the set it undid: they are no
+    /// longer in the place, so the prerequisite gate stops counting
+    /// them. A skill another remaining set still holds stays counted.
+    pub fn forget_built(&self, chat_id: &str, reverted: &[String], kept: &[String]) {
+        let mut state = self.ideas.lock().unwrap();
+        let Some(entry) = state.get_mut(chat_id) else { return };
+        let before = entry.built.len();
+        entry.built.retain(|s| !reverted.contains(s) || kept.contains(s));
+        if entry.built.len() != before {
+            self.persist_ideas(&state);
+        }
+    }
+
     /// Record skills a finished run used, so the creativity engine
     /// knows what this chat's game already has.
     pub fn note_built(&self, chat_id: &str, skills: &[String]) {
@@ -238,7 +276,7 @@ impl Shared {
 /// changes loaders: any malformed entry makes the whole file corrupt
 /// — backed up, never partially read (a half-remembered context
 /// would pitch games the place already has, or skip ones it needs).
-fn load_ideas(dir: &PathBuf) -> std::collections::HashMap<String, ChatIdeas> {
+fn load_ideas(dir: &PathBuf, recovered: &mut Vec<String>) -> std::collections::HashMap<String, ChatIdeas> {
     let path = dir.join("ideas.json");
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
@@ -269,7 +307,7 @@ fn load_ideas(dir: &PathBuf) -> std::collections::HashMap<String, ChatIdeas> {
     match strict {
         Some(map) => map,
         None => {
-            let _ = backup_corrupt(&path);
+            set_aside(&path, recovered);
             std::collections::HashMap::new()
         }
     }
@@ -279,9 +317,17 @@ fn ideas_json(ideas: &[crate::ideas::Idea]) -> Value {
     Value::Array(
         ideas
             .iter()
-            .map(|i| json!({ "id": i.id, "title": i.title, "pitch": i.pitch }))
+            .map(|i| json!({ "id": i.id, "title": i.title, "pitch": i.pitch, "skills": i.skills }))
             .collect(),
     )
+}
+
+/// Back up a corrupt state file and remember its backup name, so the
+/// page can tell the operator what was set aside.
+fn set_aside(path: &std::path::Path, recovered: &mut Vec<String>) {
+    if let Some(bak) = backup_corrupt(path) {
+        recovered.push(bak.file_name().unwrap_or_default().to_string_lossy().into_owned());
+    }
 }
 
 /// Move a corrupt state file aside to the first free backup name so
@@ -303,7 +349,7 @@ pub fn backup_corrupt(path: &std::path::Path) -> Option<std::path::PathBuf> {
     Some(candidate)
 }
 
-fn load_chats(dir: &PathBuf) -> Option<(Vec<Chat>, String)> {
+fn load_chats(dir: &PathBuf, recovered: &mut Vec<String>) -> Option<(Vec<Chat>, String)> {
     let path = dir.join("chats.json");
     let text = std::fs::read_to_string(&path).ok()?;
     let parsed = serde_json::from_str::<Value>(&text);
@@ -313,7 +359,7 @@ fn load_chats(dir: &PathBuf) -> Option<(Vec<Chat>, String)> {
         .unwrap_or(false);
     if !shape_ok {
         // Corrupt (unparseable or wrong shape): preserve the bytes.
-        let _ = backup_corrupt(&path);
+        set_aside(&path, recovered);
         return None;
     }
     let v = parsed.ok()?;
@@ -343,7 +389,7 @@ fn load_chats(dir: &PathBuf) -> Option<(Vec<Chat>, String)> {
     let chats = match strict {
         Some(c) => c,
         None => {
-            let _ = backup_corrupt(&path);
+            set_aside(&path, recovered);
             return None;
         }
     };
@@ -358,17 +404,58 @@ fn load_chats(dir: &PathBuf) -> Option<(Vec<Chat>, String)> {
     Some((chats, active))
 }
 
+/// Handler threads allowed at once. Asks hold their thread for minutes,
+/// so the cap is generous; beyond it a connection gets a plain 503.
+const MAX_HANDLERS: usize = 64;
+/// How long one read or write on a connection may stall before it is dropped.
+const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Largest request body the API accepts (chat asks are small JSON).
+const MAX_BODY_BYTES: usize = 1_048_576;
+
+/// Holds one handler slot for the life of its thread.
+struct HandlerSlot(Arc<Shared>);
+
+impl Drop for HandlerSlot {
+    fn drop(&mut self) {
+        self.0.active_handlers.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> {
+    // Extra host names this server answers to, beyond this machine's own.
+    let allowed: Arc<Vec<String>> = Arc::new(
+        std::env::var("OPENRO_ALLOWED_HOSTS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|h| h.trim().to_string())
+            .filter(|h| !h.is_empty())
+            .collect(),
+    );
     for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let shared = Arc::clone(&shared);
-                std::thread::spawn(move || {
-                    let _ = handle(stream, &shared);
-                });
-            }
-            Err(_) => continue,
+        let Ok(mut stream) = stream else { continue };
+        let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+        let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+        if shared.active_handlers.load(Ordering::SeqCst) >= MAX_HANDLERS {
+            // Answered off the accept loop: a silent client must not
+            // stall the connections queued behind it.
+            std::thread::spawn(move || {
+                respond_json(
+                    &mut stream,
+                    "503 Service Unavailable",
+                    &json!({ "ok": false, "error": "OpenRO is busy with other requests. Try again in a moment." }),
+                );
+                let _ = stream.read(&mut [0u8; 8192]);
+            });
+            continue;
         }
+        shared.active_handlers.fetch_add(1, Ordering::SeqCst);
+        let slot = HandlerSlot(Arc::clone(&shared));
+        let shared = Arc::clone(&shared);
+        let allowed = Arc::clone(&allowed);
+        std::thread::spawn(move || {
+            let _slot = slot;
+            let _ = handle(stream, &shared, &allowed);
+        });
     }
     Ok(())
 }
@@ -377,6 +464,11 @@ struct Request {
     method: String,
     path: String,
     body: Vec<u8>,
+    host: String,
+    origin: String,
+    sec_fetch_site: String,
+    content_type: String,
+    content_length: usize,
 }
 
 fn read_request(stream: &mut TcpStream) -> Option<Request> {
@@ -401,31 +493,97 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
     let mut lines = head.lines();
     let first = lines.next()?;
     let mut parts = first.split_whitespace();
-    let method = parts.next()?.to_string();
-    let path = parts.next()?.to_string();
-    let mut content_length = 0usize;
+    let mut req = Request {
+        method: parts.next()?.to_string(),
+        path: parts.next()?.to_string(),
+        body: Vec::new(),
+        host: String::new(),
+        origin: String::new(),
+        sec_fetch_site: String::new(),
+        content_type: String::new(),
+        content_length: 0,
+    };
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
-            if k.trim().eq_ignore_ascii_case("content-length") {
-                content_length = v.trim().parse().unwrap_or(0);
+            let v = v.trim();
+            match k.trim().to_ascii_lowercase().as_str() {
+                "content-length" => req.content_length = v.parse().unwrap_or(0),
+                "host" => req.host = v.to_string(),
+                "origin" => req.origin = v.to_string(),
+                "sec-fetch-site" => req.sec_fetch_site = v.to_ascii_lowercase(),
+                "content-type" => req.content_type = v.to_ascii_lowercase(),
+                _ => {}
             }
         }
     }
-    // Bodies are small JSON; a request claiming a huge one is dropped
-    // rather than waited on forever.
-    if content_length > 1_048_576 {
-        return None;
+    // An oversized body is not read at all: handle answers 413.
+    if req.content_length > MAX_BODY_BYTES {
+        return Some(req);
     }
     let mut body = buf[header_end..].to_vec();
-    while body.len() < content_length {
+    while body.len() < req.content_length {
         let n = stream.read(&mut chunk).ok()?;
         if n == 0 {
             break;
         }
         body.extend_from_slice(&chunk[..n]);
     }
-    body.truncate(content_length);
-    Some(Request { method, path, body })
+    body.truncate(req.content_length);
+    req.body = body;
+    Some(req)
+}
+
+/// Lower-cased host name of a Host or Origin authority, without port.
+fn host_name(authority: &str) -> String {
+    let a = authority.trim().to_ascii_lowercase();
+    if a.starts_with('[') {
+        return a.split(']').next().map(|h| format!("{h}]")).unwrap_or_default();
+    }
+    a.split(':').next().unwrap_or("").to_string()
+}
+
+fn host_allowed(host: &str, allowed: &[String]) -> bool {
+    let name = host_name(host);
+    ["localhost", "127.0.0.1", "[::1]"].contains(&name.as_str())
+        || allowed.iter().any(|a| host_name(a) == name)
+}
+
+/// Why a request is refused before it reaches a handler, as (status,
+/// plain-words message); None when it may proceed. A foreign Host is
+/// refused outright (a rebinding page cannot read the API); a
+/// state-changing request is refused when it is cross-site, when its
+/// Origin is not this server's own authority, or when its body is not
+/// JSON (a plain form post from another page cannot send one).
+fn refusal(req: &Request, allowed: &[String]) -> Option<(&'static str, &'static str)> {
+    if !host_allowed(&req.host, allowed) {
+        return Some(("403 Forbidden", "This OpenRO server only answers requests addressed to this machine. Open it at http://127.0.0.1 instead."));
+    }
+    if req.content_length > MAX_BODY_BYTES {
+        return Some(("413 Payload Too Large", "That message is too large (over 1 MB). Send a shorter one."));
+    }
+    let changes_state = matches!(req.method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
+    if !changes_state {
+        return None;
+    }
+    if req.content_length > 0 && !req.content_type.starts_with("application/json") {
+        return Some(("415 Unsupported Media Type", "OpenRO takes JSON requests only. The page sends them; a plain form post is refused."));
+    }
+    let origin_authority = req
+        .origin
+        .split("://")
+        .nth(1)
+        .unwrap_or(req.origin.as_str())
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !req.origin.is_empty() && origin_authority != req.host.trim().to_ascii_lowercase() {
+        return Some(("403 Forbidden", "cross-origin requests are refused"));
+    }
+    if req.sec_fetch_site == "cross-site" {
+        return Some(("403 Forbidden", "cross-origin requests are refused"));
+    }
+    None
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -447,17 +605,31 @@ fn respond_json(stream: &mut TcpStream, status: &str, value: &Value) {
     respond(stream, status, "application/json", &value.to_string());
 }
 
-fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
+fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io::Result<()> {
     let req = match read_request(&mut stream) {
         Some(r) => r,
         None => return Ok(()),
     };
+    if let Some((status, message)) = refusal(&req, allowed) {
+        respond_json(&mut stream, status, &json!({ "ok": false, "error": message }));
+        if req.content_length > MAX_BODY_BYTES {
+            // The body was never read: take it (bounded by its declared
+            // length) so closing does not reset the 413 before it arrives.
+            drain_unread(&mut stream, req.content_length.min(4 * MAX_BODY_BYTES));
+        }
+        return Ok(());
+    }
     let path = req.path.split('?').next().unwrap_or("/").to_string();
 
     match (req.method.as_str(), path.as_str()) {
         ("GET", "/") => {
             let (studio_connected, model_configured) = status_flags(shared);
-            let html = render_page(&shared.game_name, studio_connected, model_configured);
+            let html = render_page_with(
+                &shared.game_name,
+                studio_connected,
+                model_configured,
+                &shared.store_recovered,
+            );
             respond(&mut stream, "200 OK", "text/html; charset=utf-8", &html);
         }
         ("GET", "/api/status") => {
@@ -469,6 +641,7 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                     "studio_connected": studio_connected,
                     "model_configured": model_configured,
                     "game_name": shared.game_name,
+                    "store_recovered": shared.store_recovered,
                 }),
             );
         }
@@ -480,7 +653,11 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
             );
         }
         ("GET", "/api/chats") => {
-            respond_json(&mut stream, "200 OK", &shared.chats_json());
+            // can_undo: the active chat has a change set Undo can take back.
+            let mut body = shared.chats_json();
+            let active = shared.active_chat.lock().unwrap().clone();
+            body["can_undo"] = json!(shared.undoable.lock().unwrap().contains(&active));
+            respond_json(&mut stream, "200 OK", &body);
         }
         ("POST", "/api/chats") => {
             let chat = shared.create_chat();
@@ -559,18 +736,31 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                     );
                 }
                 Some(agent) => match agent.run_ask(&chat_id, &message) {
+                    Ok(outcome) if outcome.refused => {
+                        // Refused, not built: the plain reason is the
+                        // answer, the model's success claim is not shown,
+                        // and no pitch follows.
+                        shared.append_lines_to(&chat_id, &outcome.thread);
+                        respond_json(
+                            &mut stream,
+                            "502 Bad Gateway",
+                            &json!({ "ok": false, "error": outcome.summary }),
+                        );
+                    }
                     Ok(outcome) => {
                         shared.append_lines_to(&chat_id, &outcome.thread);
-                        // The agent speaks next, unprompted: record
-                        // what the game now has and pitch the follow-up
-                        // set for the new context (once per context).
-                        shared.note_built(&chat_id, &outcome.skills_used);
-                        let (_, pitch) = shared.pitch_for(
-                            &chat_id,
-                            "OpenRO: That landed. Next, I could add:",
-                        );
-                        if !pitch.is_empty() {
-                            shared.append_lines_to(&chat_id, &pitch);
+                        // Only an ask that really changed the game records
+                        // what it built and pitches the follow-up set (once
+                        // per context). A zero-change ask gets no pitch.
+                        if outcome.changed {
+                            shared.note_built(&chat_id, &outcome.skills_used);
+                            let (_, pitch) = shared.pitch_for(
+                                &chat_id,
+                                "OpenRO: That landed. Next, I could add:",
+                            );
+                            if !pitch.is_empty() {
+                                shared.append_lines_to(&chat_id, &pitch);
+                            }
                         }
                         respond_json(
                             &mut stream,
@@ -677,11 +867,7 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
                     .collect()
             };
             if !missing.is_empty() {
-                let error = format!(
-                    "“{}” needs {} first — I won't build it until that's in the game, or it would arrive dead.",
-                    idea.title,
-                    missing.join(", ")
-                );
+                let error = crate::agent::prerequisite_sentence(idea.title, missing[0]);
                 shared.append_lines_to(&chat_id, &[format!("OpenRO: {error}")]);
                 respond_json(
                     &mut stream,
@@ -748,11 +934,13 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
         ("POST", "/api/revert") => {
             let chat_id = shared.active_chat.lock().unwrap().clone();
             let mut guard = shared.agent.lock().unwrap();
+            let reverted = guard.as_ref().map(|a| a.top_skills(&chat_id)).unwrap_or_default();
             match guard.as_mut() {
                 Some(agent) => match agent.revert_chat(&chat_id) {
                     Ok(restored) => {
+                        shared.forget_built(&chat_id, &reverted, &agent.chat_skills(&chat_id));
                         shared.append_lines_to(&chat_id, &[format!(
-                            "OpenRO: Reverted {} change(s) in this chat.",
+                            "OpenRO: Undid the last build: {} change(s) put back.",
                             restored.len()
                         )]);
                         respond_json(
@@ -804,6 +992,17 @@ fn handle(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Read and discard up to `budget` bytes the client is still sending.
+fn drain_unread(stream: &mut TcpStream, mut budget: usize) {
+    let mut chunk = [0u8; 8192];
+    while budget > 0 {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => budget = budget.saturating_sub(n),
+        }
+    }
+}
+
 fn status_flags(shared: &Shared) -> (bool, bool) {
     let mut guard = shared.agent.lock().unwrap();
     match guard.as_mut() {
@@ -811,6 +1010,9 @@ fn status_flags(shared: &Shared) -> (bool, bool) {
         None => (false, false),
     }
 }
+
+/// The single-page UI (assets/index.html); values are substituted in render_page.
+const INDEX_HTML: &str = include_str!("../assets/index.html");
 
 /// The single-page shell: left sidebar (the game's chats + New chat +
 /// the game's name + settings), one scrolling thread, one composer row
@@ -827,379 +1029,49 @@ fn esc_html(s: &str) -> String {
 }
 
 pub fn render_page(game_name: &str, studio_connected: bool, model_configured: bool) -> String {
-    let game_name = esc_html(game_name);
+    render_page_with(game_name, studio_connected, model_configured, &[])
+}
+
+/// The page, with the names of any saved files that were set aside at
+/// startup (each gets a calm, dismissible banner).
+pub fn render_page_with(
+    game_name: &str,
+    studio_connected: bool,
+    model_configured: bool,
+    recovered: &[String],
+) -> String {
     let chip = if studio_connected {
         "Studio connected"
     } else {
         "Studio not connected"
     };
-    let chip_class = if studio_connected { "chip on" } else { "chip off" };
+    let chip_class = if studio_connected { "on" } else { "off" };
     // Both blockers get a banner of the same weight, each naming its
     // fix — the no-Studio state used to be a lone 12px chip.
     let mut banners = String::new();
     if !model_configured {
-        banners.push_str("<div class=\"banner\" id=\"no-key-banner\">no model key configured — set OPENRO_MODEL_API_KEY to enable chat</div>");
+        banners.push_str("<div class=\"banner\" id=\"no-key-banner\"><span><strong>Chat is off: no model key configured.</strong> Ask whoever runs OpenRO to set OPENRO_MODEL_API_KEY, then restart it.</span></div>");
     }
     if !studio_connected {
-        banners.push_str("<div class=\"banner\" id=\"no-studio-banner\">Studio not connected — set OPENRO_MCP_COMMAND to a Studio MCP server; OpenRO cannot build until one is connected</div>");
+        banners.push_str("<div class=\"banner\" id=\"no-studio-banner\"><span><strong>Studio not connected.</strong> OpenRO cannot build until Roblox Studio is connected. Set OPENRO_MCP_COMMAND to a Studio MCP server, then restart.</span></div>");
     }
-    let key_banner = banners;
+    if !recovered.is_empty() {
+        let names: Vec<String> = recovered.iter().map(|n| format!("<code>{}</code>", esc_html(n))).collect();
+        banners.push_str(&format!(
+            "<div class=\"banner\" id=\"recovered-banner\" role=\"status\"><span><strong>Some saved data could not be read.</strong> It was set aside as {} in your data folder, and OpenRO started fresh with it. The original file is kept there.</span><button class=\"btn btn-quiet\" type=\"button\" data-dismiss=\"recovered-banner\">Dismiss</button></div>",
+            names.join(", ")
+        ));
+    }
     let can_build = model_configured && studio_connected;
-    format!(
-        r##"<!DOCTYPE html>
-<html lang="en" data-theme="dark">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenRO — {game_name}</title>
-<script>
-  try {{
-    var t = localStorage.getItem('openro-theme');
-    if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
-  }} catch (e) {{ /* dark stays the default */ }}
-</script>
-<style>
-/* hallmark-rune · app: openro · vernacular: playful creative studio · nav: chat rail (the list is the work) · signature: build timeline · tokens: hr-template v1 (OpenRO anchor row, radii fork 8/12/16) · critique: weakest State coverage — fixed in this pass with a real thread-load error state */
-  :root {{
-    color-scheme: dark;
-    --bg: #121218; --panel: #1a1a23; --panel-2: #23232f; --field: #14141c;
-    --ink: #eeeef3; --muted: #a7a7ba; --faint: #8e8ea5; --rule: #2c2c3a;
-    --accent: #2f6fed; --accent-hover: #2a62d4; --accent-ink: #ffffff;
-    --ok: #7ee2a0; --ok-bg: #173d24; --warn: #f2d38a; --warn-bg: #3a2f10;
-    --err: #f09393; --err-bg: #3d1717;
-    --font-body: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
-    --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    --text-meta: 11px; --text-label: 12px; --text-small: 13px; --text-dense: 14px;
-    --text-body: 15px; --text-title: 18px; --text-screen: 20px; --text-display: 24px;
-    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px; --sp-7: 48px;
-    --r-control: 8px; --r-card: 12px; --r-panel: 16px; --r-chip: 999px;
-    --dur-micro: 120ms; --dur-short: 200ms; --dur-panel: 280ms;
-    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-  }}
-  [data-theme="light"] {{
-    color-scheme: light;
-    --bg: #f4f4f8; --panel: #ffffff; --panel-2: #e9e9f1; --field: #ffffff;
-    --ink: #1d1d26; --muted: #5b5b70; --faint: #62627a; --rule: #d8d8e2;
-    --accent: #2459c4; --accent-hover: #1e4dab; --accent-ink: #ffffff;
-    --ok: #1c6b34; --ok-bg: #e2f2e6; --warn: #7a4b12; --warn-bg: #fdf3e3;
-    --err: #9c2222; --err-bg: #fbe7e7;
-  }}
-  * {{ box-sizing: border-box; }}
-  html, body {{ overflow-x: clip; }}
-  body {{ margin: 0; font-family: var(--font-body); background: var(--bg); color: var(--ink); display: flex; height: 100vh; font-size: var(--text-body); line-height: 1.55; }}
-  ::selection {{ background: var(--accent); color: var(--accent-ink); }}
-  html {{ scrollbar-color: var(--rule) transparent; caret-color: var(--accent); }}
-  :focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
-  button {{ font: inherit; }}
-  .sr-only {{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }}
-  #sidebar {{ width: 264px; flex: 0 0 264px; background: var(--panel); border-right: 1px solid var(--rule); display: flex; flex-direction: column; padding: var(--sp-4); gap: var(--sp-3); min-height: 0; }}
-  #sidebar h1 {{ font-size: var(--text-screen); margin: 0; font-weight: 600; letter-spacing: -0.01em; }}
-  #game-name {{ color: var(--muted); font-size: var(--text-small); }}
-  #new-chat {{ background: var(--accent); color: var(--accent-ink); border: 0; border-radius: var(--r-control); padding: var(--sp-2) var(--sp-3); min-height: 44px; cursor: pointer; font-weight: 600; }}
-  #new-chat:hover {{ background: var(--accent-hover); }}
-  #chat-list {{ list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 48px; display: flex; flex-direction: column; gap: var(--sp-1); }}
-  #chat-list li {{ margin: 0; }}
-  .chat-btn {{ display: block; width: 100%; text-align: left; background: none; border: 0; padding: var(--sp-2) var(--sp-3); min-height: 44px; border-radius: var(--r-control); color: var(--muted); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--text-dense); }}
-  .chat-btn:hover {{ color: var(--ink); }}
-  .chat-btn.active {{ background: var(--panel-2); color: var(--ink); }}
-  .chip {{ display: flex; align-items: center; justify-content: center; gap: var(--sp-2); font-size: var(--text-label); padding: var(--sp-2) var(--sp-3); min-height: 32px; border-radius: var(--r-chip); }}
-  .chip::before {{ content: ""; width: 8px; height: 8px; border-radius: 50%; flex: none; }}
-  .chip.on {{ background: var(--ok-bg); color: var(--ok); }}
-  .chip.on::before {{ background: var(--ok); }}
-  .chip.off {{ background: var(--err-bg); color: var(--err); }}
-  .chip.off::before {{ background: var(--err); }}
-  #settings {{ border-top: 1px solid var(--rule); padding-top: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }}
-  #settings h2 {{ font-size: var(--text-small); font-weight: 600; color: var(--muted); margin: 0; }}
-  .set-row {{ display: flex; align-items: center; gap: var(--sp-2); }}
-  .set-row .set-name {{ font-size: var(--text-small); color: var(--muted); flex: 1; }}
-  .theme-btn {{ background: var(--panel-2); border: 1px solid var(--rule); color: var(--muted); border-radius: var(--r-chip); padding: var(--sp-1) var(--sp-3); min-height: 44px; font-size: var(--text-small); cursor: pointer; }}
-  .theme-btn[aria-pressed="true"] {{ background: var(--ink); color: var(--bg); border-color: var(--ink); }}
-  main {{ flex: 1; display: flex; flex-direction: column; min-width: 0; }}
-  .banner {{ background: var(--warn-bg); color: var(--warn); padding: var(--sp-3) var(--sp-4); font-size: var(--text-small); }}
-  #thread {{ flex: 1; overflow-y: auto; padding: var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-3); }}
-  .msg {{ max-width: 75ch; line-height: 1.55; white-space: pre-wrap; word-wrap: break-word; border-radius: var(--r-card); padding: var(--sp-3) var(--sp-4); }}
-  .msg.user {{ background: var(--panel-2); align-self: flex-end; }}
-  .msg.assistant {{ background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r-panel); align-self: flex-start; }}
-  .msg.idea {{ background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: var(--r-panel); align-self: flex-start; }}
-  /* the build timeline: the agent's steps as one ledger rail, the
-     playtest verdicts as the weighted bands the vernacular calls for */
-  .msg.step {{ background: transparent; color: var(--muted); font-family: var(--font-mono); font-size: var(--text-small); align-self: stretch; max-width: none; padding: var(--sp-1) var(--sp-4) var(--sp-1) var(--sp-6); position: relative; }}
-  .msg.step::before {{ content: ""; position: absolute; left: 13px; top: 0; bottom: 0; width: 2px; background: var(--rule); }}
-  .msg.step::after {{ content: ""; position: absolute; left: 10px; top: 12px; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }}
-  .msg.step.verdict-ok, .msg.step.verdict-bad {{ font-family: var(--font-body); font-size: var(--text-body); font-weight: 600; padding: var(--sp-3) var(--sp-4); border-radius: var(--r-card); }}
-  .msg.step.verdict-ok {{ background: var(--ok-bg); color: var(--ok); }}
-  .msg.step.verdict-bad {{ background: var(--err-bg); color: var(--err); }}
-  .msg.step.verdict-ok::before, .msg.step.verdict-ok::after, .msg.step.verdict-bad::before, .msg.step.verdict-bad::after {{ content: none; }}
-  .empty {{ color: var(--muted); background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r-panel); text-align: center; margin: 12vh auto 0; max-width: 55ch; padding: var(--sp-5); line-height: 1.6; }}
-  .thread-error {{ color: var(--err); background: var(--err-bg); border-radius: var(--r-card); padding: var(--sp-3) var(--sp-4); max-width: 75ch; }}
-  #ideas {{ border-top: 1px solid var(--rule); padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }}
-  #ideas[hidden] {{ display: none; }}
-  .ideas-label {{ font-size: var(--text-label); font-weight: 600; color: var(--muted); }}
-  .idea-btns {{ display: flex; flex-wrap: wrap; gap: var(--sp-2); }}
-  .idea-card {{ background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--accent); border-radius: var(--r-card); padding: var(--sp-3); display: flex; align-items: center; gap: var(--sp-3); max-width: 340px; flex: 1 1 240px; }}
-  .idea-title {{ font-weight: 600; flex: 1; }}
-  .idea-btn {{ background: var(--accent); color: var(--accent-ink); border: 0; border-radius: var(--r-control); padding: var(--sp-2) var(--sp-4); min-height: 44px; font-weight: 600; cursor: pointer; align-self: flex-start; }}
-  .idea-btn:hover {{ background: var(--accent-hover); }}
-  .idea-btn:disabled {{ opacity: 0.45; cursor: default; }}
-  #composer {{ display: flex; gap: var(--sp-2); padding: var(--sp-3); border-top: 1px solid var(--rule); }}
-  #composer input {{ flex: 1; min-width: 0; background: var(--field); color: var(--ink); border: 1px solid var(--rule); border-radius: var(--r-control); padding: var(--sp-3); min-height: 44px; font-size: var(--text-body); }}
-  #composer button {{ border: 0; border-radius: var(--r-control); padding: var(--sp-2) var(--sp-4); min-height: 44px; cursor: pointer; font-weight: 600; display: inline-flex; align-items: center; gap: var(--sp-2); }}
-  #send {{ background: var(--accent); color: var(--accent-ink); }}
-  #send:hover {{ background: var(--accent-hover); }}
-  #composer button:disabled {{ opacity: 0.45; cursor: default; }}
-  #revert {{ background: var(--panel); color: var(--ink); border: 1px solid var(--rule); }}
-  #revert svg {{ width: 16px; height: 16px; flex: none; }}
-  @media (max-width: 760px) {{
-    body {{ flex-direction: column; }}
-    #sidebar {{ width: 100%; flex: none; border-right: 0; border-bottom: 1px solid var(--rule); padding: var(--sp-3); gap: var(--sp-2); }}
-    #chat-list {{ flex-direction: row; overflow-x: auto; overflow-y: hidden; flex: none; min-height: 44px; }}
-    #chat-list li {{ flex: none; }}
-    .chat-btn {{ min-height: 44px; }}
-    #settings {{ flex-direction: row; align-items: center; }}
-    #settings h2 {{ display: none; }}
-    .set-row {{ flex: 1; }}
-    #thread {{ padding: var(--sp-4); }}
-    #composer {{ flex-wrap: wrap; }}
-    #composer input {{ flex: 1 1 100%; }}
-    #composer button {{ flex: 1; justify-content: center; }}
-  }}
-  @media (prefers-reduced-motion: reduce) {{
-    *, *::before, *::after {{ animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }}
-  }}
-</style>
-</head>
-<body>
-  <aside id="sidebar">
-    <h1>OpenRO</h1>
-    <div id="game-name">{game_name}</div>
-    <button id="new-chat" type="button">New chat</button>
-    <ul id="chat-list"></ul>
-    <div id="status-chip" class="{chip_class}">{chip}</div>
-    <div id="settings">
-      <h2>Settings</h2>
-      <div class="set-row">
-        <span class="set-name">Appearance</span>
-        <button class="theme-btn" type="button" data-set-theme="dark" aria-pressed="true">Dark</button>
-        <button class="theme-btn" type="button" data-set-theme="light" aria-pressed="false">Light</button>
-      </div>
-    </div>
-  </aside>
-  <main>
-    {key_banner}
-    <div id="thread" aria-live="polite"></div>
-    <div id="ideas" hidden>
-      <span class="ideas-label">OpenRO can build this now</span>
-      <div class="idea-btns" id="idea-btns"></div>
-    </div>
-    <form id="composer">
-      <label class="sr-only" for="composer-input">Describe the game</label>
-      <input id="composer-input" type="text" placeholder="Describe the game…" autocomplete="off">
-      <button id="revert" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 9h9a7 7 0 0 1 0 14h-3" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>Revert</button>
-      <button id="send" type="submit">Send</button>
-    </form>
-  </main>
-<script>
-  const thread = document.getElementById('thread');
-  const chatList = document.getElementById('chat-list');
-  const rootEl = document.documentElement;
-  const CAN_BUILD = {can_build};
-  const STUDIO = {studio_connected};
-
-  /* appearance — the settings toggle; the choice persists on this device */
-  const themeBtns = document.querySelectorAll('.theme-btn');
-  function syncThemeBtns() {{
-    const cur = rootEl.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
-    themeBtns.forEach((b) => b.setAttribute('aria-pressed', b.getAttribute('data-set-theme') === cur ? 'true' : 'false'));
-  }}
-  themeBtns.forEach((b) => b.addEventListener('click', () => {{
-    const next = b.getAttribute('data-set-theme');
-    rootEl.setAttribute('data-theme', next);
-    try {{ localStorage.setItem('openro-theme', next); }} catch (e) {{}}
-    syncThemeBtns();
-  }}));
-  syncThemeBtns();
-
-  function lineClass(text) {{
-    if (text.startsWith('You: ')) return 'msg user';
-    if (text.startsWith('OpenRO: Idea — ')) return 'msg idea';
-    if (text.startsWith('OpenRO: ')) return 'msg assistant';
-    if (text === 'Playtest passed.') return 'msg step verdict-ok';
-    if (text.startsWith('Playtest failed')) return 'msg step verdict-bad';
-    return 'msg step';
-  }}
-  function addLine(text) {{
-    const empty = thread.querySelector('.empty');
-    if (empty) empty.remove();
-    const err = thread.querySelector('.thread-error');
-    if (err) err.remove();
-    const div = document.createElement('div');
-    div.className = lineClass(text);
-    div.textContent = text;
-    thread.appendChild(div);
-    thread.scrollTop = thread.scrollHeight;
-  }}
-  function showEmpty() {{
-    /* The empty state must not promise, in the present tense, work the
-       current screen cannot do (no key / no Studio). */
-    thread.innerHTML = CAN_BUILD
-      ? '<div class="empty">Describe the game you want — OpenRO builds it in Studio and playtests it before calling it done.</div>'
-      : '<div class="empty">Describe the game you want. To build it, OpenRO needs a model key and a Studio connection — see the notes above.</div>';
-  }}
-  function showThreadError() {{
-    /* The error state: the conversation did not load, and the screen
-       says so — it never dresses an outage up as an empty chat. */
-    thread.innerHTML = '<div class="thread-error">Could not load the conversation — the OpenRO server did not answer. Reload to try again.</div>';
-  }}
-  async function refreshThread() {{
-    try {{
-      const r = await fetch('/api/thread');
-      if (!r.ok) throw new Error('thread');
-      const data = await r.json();
-      thread.innerHTML = '';
-      if (!data.thread.length) {{ showEmpty(); return; }}
-      data.thread.forEach(addLine);
-    }} catch (err) {{
-      if (!thread.children.length) showThreadError();
-    }}
-  }}
-  async function refreshChats() {{
-    try {{
-      const r = await fetch('/api/chats');
-      if (!r.ok) throw new Error('chats');
-      const data = await r.json();
-      chatList.innerHTML = '';
-      for (const c of data.chats) {{
-        const li = document.createElement('li');
-        /* A real <button>: chat switching is keyboard-reachable. */
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'chat-btn' + (c.id === data.active ? ' active' : '');
-        btn.textContent = c.title || 'New chat';
-        btn.addEventListener('click', async () => {{
-          try {{
-            const sr = await fetch('/api/chats/select', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{ id: c.id }}) }});
-            if (!sr.ok) throw new Error('select');
-          }} catch (err) {{
-            addLine('OpenRO: Could not switch chats — the server did not answer.');
-            return;
-          }}
-          await refreshChats();
-          await refreshThread();
-          await refreshIdeas();
-        }});
-        li.appendChild(btn);
-        chatList.appendChild(li);
-      }}
-    }} catch (err) {{ /* the list keeps its last good state */ }}
-  }}
-  /* the proactive pitch: idea cards for what fits this game now.
-     The pitch itself is spoken into the thread by the server; these
-     cards are the one-tap way to say "build that one". */
-  const ideasBar = document.getElementById('ideas');
-  const ideaBtns = document.getElementById('idea-btns');
-  function renderIdeaButtons(ideas) {{
-    ideaBtns.innerHTML = '';
-    if (!ideas || !ideas.length) {{ ideasBar.hidden = true; return; }}
-    ideasBar.hidden = false;
-    for (const idea of ideas) {{
-      const card = document.createElement('div');
-      card.className = 'idea-card';
-      const title = document.createElement('div');
-      title.className = 'idea-title';
-      title.textContent = idea.title;
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'idea-btn';
-      b.textContent = 'Build this';
-      b.disabled = !STUDIO;
-      b.addEventListener('click', () => buildIdea(idea, b));
-      /* The card is the action, not a second copy of the pitch: the
-         full pitch line sits in the thread directly above this bar
-         (elevation checker note — no verbatim duplication). */
-      card.appendChild(title);
-      card.appendChild(b);
-      ideaBtns.appendChild(card);
-    }}
-  }}
-  async function refreshIdeas() {{
-    try {{
-      const r = await fetch('/api/ideas', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: '{{}}' }});
-      if (!r.ok) return;
-      const data = await r.json();
-      renderIdeaButtons(data.ideas);
-      if (data.pitched_new) await refreshThread();
-    }} catch (err) {{ /* the bar keeps its last good state */ }}
-  }}
-  async function buildIdea(idea, btn) {{
-    btn.disabled = true;
-    btn.textContent = 'Building…';
-    try {{
-      const r = await fetch('/api/ideas/build', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{ id: idea.id }}) }});
-      const data = await r.json();
-      if (!data.ok) {{ addLine('OpenRO: ' + data.error); }}
-      else if (data.ideas) {{ renderIdeaButtons(data.ideas); }}
-    }} catch (err) {{
-      addLine('OpenRO: Could not reach the OpenRO server.');
-    }}
-    await refreshThread();
-    await refreshChats();
-    await refreshIdeas();
-  }}
-  document.getElementById('composer').addEventListener('submit', async (e) => {{
-    e.preventDefault();
-    const input = document.getElementById('composer-input');
-    const send = document.getElementById('send');
-    const message = input.value.trim();
-    if (!message) return;
-    input.value = '';
-    addLine('You: ' + message);
-    send.disabled = true;
-    send.textContent = 'Building…';
-    try {{
-      const r = await fetch('/api/chat', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{ message }}) }});
-      const data = await r.json();
-      if (!data.ok) {{ addLine('OpenRO: ' + data.error); }}
-      else {{ await refreshThread(); }}
-    }} catch (err) {{
-      addLine('OpenRO: Could not reach the OpenRO server.');
-    }}
-    send.disabled = false;
-    send.textContent = 'Send';
-    await refreshChats();
-    await refreshIdeas();
-    input.focus();
-  }});
-  document.getElementById('revert').addEventListener('click', async () => {{
-    try {{
-      const r = await fetch('/api/revert', {{ method: 'POST' }});
-      const data = await r.json();
-      if (data.ok) addLine('OpenRO: Reverted ' + data.restored.length + ' change(s) in this chat.');
-      else if (data.error === 'nothing to revert') addLine('OpenRO: Nothing to revert — no change set is waiting in this chat.');
-      else addLine('OpenRO: ' + data.error);
-    }} catch (err) {{
-      addLine('OpenRO: Could not reach the OpenRO server.');
-    }}
-  }});
-  document.getElementById('new-chat').addEventListener('click', async () => {{
-    try {{
-      const r = await fetch('/api/chats', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: '{{}}' }});
-      if (!r.ok) throw new Error('new chat');
-    }} catch (err) {{
-      addLine('OpenRO: Could not reach the OpenRO server.');
-      return;
-    }}
-    await refreshChats();
-    await refreshThread();
-    await refreshIdeas();
-    document.getElementById('composer-input').focus();
-  }});
-  refreshChats();
-  refreshThread();
-  refreshIdeas();
-</script>
-</body>
-</html>"##
-    )
+    // The game name is the only operator-supplied value: it is escaped,
+    // and substituted last so no other token can ever match inside it.
+    INDEX_HTML
+        .replace("__KEY_BANNER__", &banners)
+        .replace("__CHIP_CLASS__", chip_class)
+        .replace("__CHIP__", chip)
+        .replace("__CAN_BUILD__", &can_build.to_string())
+        .replace("__STUDIO_CONNECTED__", &studio_connected.to_string())
+        .replace("__GAME_NAME__", &esc_html(game_name))
 }
 
 /* hallmark-rune override log — OpenRO elevation (18 Nov 2026)

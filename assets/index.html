@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="OpenRO builds your Roblox game from a plain description, shows each build step, and can undo the last build.">
+<title>OpenRO: __GAME_NAME__</title>
+<script>
+  try {
+    var t = localStorage.getItem('openro-theme');
+    if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+  } catch (e) { /* dark stays the default */ }
+</script>
+<style>
+  /* Hallmark · app screen · genre modern-minimal · scope app · theme: none dealt, tokens written by hand from the owner brief · spacing on the 4px grid, measured by the render probe */
+  /* Tokens: every colour, face, radius and duration is declared here.
+     Dark is the default; light is a full second theme, not a different product. */
+  :root {
+    color-scheme: dark;
+    --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --canvas: #0c0d10; --side: #111217; --surface: #16181e; --raised: #1f222a; --track: #1a1d24; --hairline: #272b35; --field-edge: #6b7384;
+    --ink: #eceef2; --ink-2: #a9afbd; --faint: #8e8ea5;
+    --primary: #eceef2; --primary-hover: #ffffff; --on-primary: #0c0d10;
+    --ok: #6fd9ac; --ok-bg: rgba(77, 194, 150, 0.14);
+    --warn: #f5c46a; --warn-bg: rgba(245, 165, 36, 0.14);
+    --bad: #f29a9a; --bad-bg: rgba(224, 96, 96, 0.16);
+    --r-sm: 6px; --r-control: 8px; --r-card: 10px; --r-panel: 14px; --r-pill: 999px;
+    --dur-micro: 120ms; --dur-short: 200ms; --dur-panel: 260ms;
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --shadow-float: 0 12px 32px rgba(0, 0, 0, 0.45);
+    --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --scrim: rgba(0, 0, 0, 0.45);
+  }
+  [data-theme="light"] {
+    color-scheme: light;
+    --canvas: #f1f2f5; --side: #ffffff; --surface: #ffffff; --raised: #f6f7f9; --track: #eceef2; --hairline: #dfe2e8; --field-edge: #8a90a0;
+    --ink: #15171c; --ink-2: #4e5565; --faint: #62627a;
+    --primary: #15171c; --primary-hover: #2a2e38; --on-primary: #ffffff;
+    --ok: #1c7a4f; --ok-bg: #e3f4ec;
+    --warn: #7a4b06; --warn-bg: #fdf1dc;
+    --bad: #a3271f; --bad-bg: #fbe6e4;
+    --shadow-float: 0 12px 32px rgba(16, 24, 40, 0.14);
+    --shadow-raised: 0 1px 2px rgba(16, 24, 40, 0.08);
+    --scrim: rgba(16, 24, 40, 0.3);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { overflow-x: clip; }
+  body { margin: 0; height: 100vh; height: 100dvh; display: flex; background: var(--canvas); color: var(--ink); font-family: var(--font-sans); font-size: 15px; line-height: 1.55; }
+  [hidden] { display: none !important; }
+  .skip { position: absolute; left: 8px; top: 8px; z-index: 60; min-height: 44px; display: inline-flex; align-items: center; padding: 0 16px; border-radius: var(--r-control); background: var(--surface); color: var(--ink); border: 1px solid var(--field-edge); font-size: 14px; text-decoration: none; transform: translateY(-200%); transition: transform var(--dur-short) var(--ease-out); }
+  .skip:focus { transform: none; }
+  :focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  ::selection { background: var(--ink); color: var(--canvas); }
+  button, input { font: inherit; color: inherit; }
+  h1, h2, h3 { text-wrap: balance; }
+  p { margin: 0; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .ic { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .ic-sm { width: 16px; height: 16px; }
+  .muted { color: var(--ink-2); font-size: 13px; }
+
+  /* controls: answer hover, press and focus; no shadow except on a raised pill */
+  .btn { min-height: 44px; padding: 0 12px; border-radius: var(--r-control); border: 1px solid var(--hairline); background: var(--raised); color: var(--ink); display: inline-flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; font-size: 14px; font-weight: 500; white-space: nowrap; transition: background-color var(--dur-micro) ease, border-color var(--dur-micro) ease, color var(--dur-micro) ease, transform var(--dur-micro) var(--ease-out); }
+  .btn:hover { border-color: var(--faint); }
+  .btn:active { transform: scale(0.97); }
+  .btn-primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+  .btn-primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+  .btn-quiet { background: transparent; border-color: transparent; color: var(--ink-2); }
+  .btn-quiet:hover { background: var(--track); border-color: transparent; color: var(--ink); }
+  .btn:disabled, .btn-primary:disabled { background: var(--track); color: var(--faint); border-color: var(--hairline); cursor: default; transform: none; }
+
+  /* sidebar */
+  #sidebar { width: 264px; flex: none; background: var(--side); border-right: 1px solid var(--hairline); display: flex; flex-direction: column; gap: 12px; padding: 16px; min-height: 0; }
+  .brand { display: flex; align-items: center; gap: 8px; padding: 4px 4px 8px; min-width: 0; }
+  .logo { width: 34px; height: 34px; border-radius: var(--r-control); background: var(--primary); color: var(--on-primary); display: grid; place-items: center; flex: none; }
+  .brand-text { min-width: 0; }
+  #sidebar h1 { font-size: 16px; font-weight: 500; margin: 0; line-height: 1.25; }
+  #game-name { font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #new-chat { width: 100%; justify-content: flex-start; }
+  #chat-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 0; }
+  #chat-list li { margin: 0; }
+  .chat-btn { display: block; width: 100%; min-height: 44px; padding: 0 8px; border: 0; border-radius: var(--r-control); background: none; color: var(--ink-2); text-align: left; cursor: pointer; font-size: 14px; line-height: 44px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background-color var(--dur-micro) ease, color var(--dur-micro) ease, transform var(--dur-micro) var(--ease-out); }
+  .chat-btn { display: flex; align-items: center; gap: 8px; line-height: 1.3; }
+  .chat-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-flag { flex: none; font-size: 12px; color: var(--ink-2); }
+  .chat-btn:hover { background: var(--track); color: var(--ink); }
+  .chat-btn:active { transform: scale(0.99); }
+  .chat-btn[aria-current="true"] { background: var(--raised); color: var(--ink); font-weight: 500; box-shadow: var(--shadow-raised); }
+  .skel { background: var(--track); border-radius: var(--r-control); animation: breathe 1.4s ease-in-out infinite; }
+  #settings { border-top: 1px solid var(--hairline); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+  #settings h2 { font-size: 13px; font-weight: 500; color: var(--ink-2); margin: 0; }
+  .set-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .set-name { font-size: 14px; color: var(--ink-2); }
+  .segmented { display: inline-flex; background: var(--track); border-radius: var(--r-pill); padding: 0; }
+  .theme-btn { min-height: 44px; padding: 0 12px; border: 0; border-radius: var(--r-pill); background: transparent; color: var(--ink-2); cursor: pointer; font-size: 13px; transition: background-color var(--dur-short) var(--ease-out), color var(--dur-short) var(--ease-out), box-shadow var(--dur-short) var(--ease-out); }
+  .theme-btn:hover { color: var(--ink); }
+  .theme-btn[aria-pressed="true"] { background: var(--raised); color: var(--ink); box-shadow: var(--shadow-raised); }
+  .theme-btn:active { transform: scale(0.97); }
+
+  /* header strip */
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .top { position: sticky; top: 0; z-index: 2; height: 56px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 24px; background: var(--canvas); border-bottom: 1px solid var(--hairline); }
+  #chat-title { font-size: 16px; font-weight: 500; margin: 0; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #menu-btn { display: none; width: 44px; padding: 0; }
+  .chip { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 12px; border-radius: var(--r-pill); font-size: 13px; white-space: nowrap; flex: none; }
+  .chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
+  .chip.on { background: var(--ok-bg); color: var(--ok); }
+  .chip.off { background: var(--bad-bg); color: var(--bad); }
+  .banner { display: flex; gap: 8px; align-items: flex-start; padding: 12px 24px; background: var(--warn-bg); color: var(--ink); font-size: 14px; border-bottom: 1px solid var(--hairline); }
+  .banner strong { font-weight: 500; color: var(--warn); }
+
+  /* thread */
+  #thread { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+  #thread > * { flex: none; width: 100%; max-width: 760px; margin: 0 auto; }
+  .welcome { padding: 16px 0 4px; }
+  .welcome h2 { font-size: 24px; font-weight: 500; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .welcome p { color: var(--ink-2); max-width: 60ch; }
+  .row { display: flex; gap: 8px; align-items: flex-start; min-width: 0; }
+  .row.user { justify-content: flex-end; }
+  .avatar { width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--hairline); background: var(--track); display: grid; place-items: center; flex: none; }
+  .bubble { max-width: min(100%, 600px); padding: 8px 12px; border: 1px solid var(--hairline); border-radius: var(--r-panel); background: var(--surface); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .row.user .bubble { background: var(--raised); border-top-right-radius: 4px; max-width: min(84%, 560px); }
+  .bubble.bad { background: var(--bad-bg); border-color: transparent; color: var(--bad); }
+  .bubble.bad strong { font-weight: 500; }
+  .bubble-details { margin-top: 8px; }
+  .bubble-details summary { font-size: 12px; color: var(--ink-2); cursor: pointer; display: inline-block; min-height: 24px; line-height: 24px; border-radius: var(--r-sm); }
+  .bubble-details summary:hover { color: var(--ink); }
+  .bubble-details pre { margin: 4px 0 0; font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .bubble.bad .bubble-details summary, .bubble.bad .bubble-details pre { color: var(--bad); }
+  .fresh { animation: rise var(--dur-short) var(--ease-out) both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  @keyframes breathe { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+
+  /* idea cards: the pitch is the agent speaking first */
+  .ideas-block { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .idea-card { background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-panel); padding: 16px; display: flex; flex-direction: column; gap: 8px; min-width: 0; transition: border-color var(--dur-short) ease; }
+  .idea-card:hover { border-color: var(--faint); }
+  .idea-card h3 { margin: 0; font-size: 17px; font-weight: 500; overflow-wrap: anywhere; }
+  .idea-card p { color: var(--ink-2); font-size: 14px; }
+  .adds-label { font-size: 12px; color: var(--ink-2); margin-top: 0; }
+  .adds { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+  .adds li { font-size: 12px; padding: 4px 8px; border-radius: var(--r-pill); background: var(--track); color: var(--ink-2); }
+  .idea-card .btn { margin-top: auto; width: 100%; }
+
+  /* build timeline: one card per ask, a row per step, verdict bands */
+  .build { background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-panel); overflow: hidden; }
+  .build-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; padding: 0 16px; font-size: 13px; color: var(--ink-2); }
+  .steps { list-style: none; margin: 0; padding: 0; }
+  .step { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 8px 16px; border-top: 1px solid var(--hairline); }
+  .step-icon { width: 28px; height: 28px; border-radius: var(--r-sm); background: var(--track); color: var(--ink-2); display: grid; place-items: center; }
+  .step-label { font-size: 14px; overflow-wrap: anywhere; }
+  .step-result { font-size: 12px; color: var(--ink-2); padding-top: 4px; white-space: nowrap; }
+  .step details { margin-top: 4px; }
+  .step summary { font-size: 12px; color: var(--faint); cursor: pointer; border-radius: var(--r-sm); display: inline-block; min-height: 24px; line-height: 24px; }
+  .step summary:hover { color: var(--ink); }
+  .step pre { margin: 4px 0 0; font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .verdict { display: flex; gap: 12px; align-items: flex-start; padding: 12px 16px; border-top: 1px solid var(--hairline); }
+  .verdict .ic { margin-top: 0; }
+  .verdict strong { display: block; font-size: 16px; font-weight: 500; }
+  .verdict p { font-size: 14px; color: var(--ink); margin-top: 0; }
+  .verdict > div, .step > div, .build, .idea-card, .bubble { min-width: 0; }
+  .verdict p, .verdict strong, .step-label, .step pre { overflow-wrap: anywhere; }
+  .verdict pre { margin: 8px 0 0; font-family: var(--font-mono); font-size: 12px; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .verdict.ok { background: var(--ok-bg); }
+  .verdict.ok strong, .verdict.ok .ic { color: var(--ok); }
+  .verdict.bad { background: var(--bad-bg); }
+  .verdict.bad strong, .verdict.bad .ic { color: var(--bad); }
+  .verdict.warn { background: var(--warn-bg); }
+  .verdict.warn strong, .verdict.warn .ic { color: var(--warn); }
+  .working { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 14px; }
+  .dots { display: inline-flex; gap: 4px; }
+  .dots span { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-2); animation: pulse 1.2s ease-in-out infinite; }
+  .dots span:nth-child(2) { animation-delay: 0.15s; }
+  .dots span:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes pulse { 0%, 100% { opacity: 0.25; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1); } }
+  .thread-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; background: var(--bad-bg); color: var(--bad); border-radius: var(--r-panel); padding: 16px; }
+  .thread-error p { color: var(--ink); }
+
+  /* dock: next ideas, undo confirm, composer pinned to the bottom */
+  .dock { flex: none; border-top: 1px solid var(--hairline); background: var(--canvas); }
+  .dock-inner { max-width: 760px; margin: 0 auto; padding: 12px 24px 16px; display: flex; flex-direction: column; gap: 8px; }
+  #ideas { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  #ideas[hidden] { display: none; }
+  .ideas-label { font-size: 13px; color: var(--ink-2); margin-right: 4px; }
+  .idea-chip { min-height: 44px; padding: 0 12px; border-radius: var(--r-pill); border: 1px solid var(--hairline); background: var(--surface); color: var(--ink); cursor: pointer; font-size: 14px; display: inline-flex; align-items: center; gap: 4px; transition: background-color var(--dur-micro) ease, border-color var(--dur-micro) ease, transform var(--dur-micro) var(--ease-out); }
+  .idea-chip:hover { background: var(--raised); border-color: var(--faint); }
+  .idea-chip:active { transform: scale(0.97); }
+  .idea-chip:disabled { background: var(--track); color: var(--faint); cursor: default; transform: none; }
+  #undo-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-card); }
+  #undo-confirm p { flex: 1 1 240px; font-size: 14px; color: var(--ink-2); }
+  #composer { display: flex; gap: 8px; align-items: stretch; }
+  #composer input { flex: 1; min-width: 0; min-height: 44px; padding: 0 12px; background: var(--surface); color: var(--ink); border: 1px solid var(--field-edge); border-radius: var(--r-control); font-size: 15px; transition: border-color var(--dur-micro) ease; }
+  #composer input::placeholder { color: var(--faint); }
+  #composer input:hover { border-color: var(--faint); }
+  #composer .btn { min-width: 44px; }
+  #revert svg { width: 16px; height: 16px; }
+  .undo-group { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .undo-reason { font-size: 12px; color: var(--ink-2); white-space: nowrap; }
+
+  /* right panel: the real place, collapsible, wide screens only */
+  #place-panel { width: 280px; flex: none; background: var(--side); border-left: 1px solid var(--hairline); display: flex; flex-direction: column; min-height: 0; }
+  #place-panel.collapsed { width: auto; }
+  .place-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 56px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--hairline); }
+  #place-panel.collapsed .place-head { border-bottom: 0; }
+  .place-head h2 { font-size: 15px; font-weight: 500; margin: 0; }
+  #place-toggle { min-width: 44px; min-height: 44px; border: 0; border-radius: var(--r-control); background: none; color: var(--ink-2); cursor: pointer; display: grid; place-items: center; transition: background-color var(--dur-micro) ease, color var(--dur-micro) ease, transform var(--dur-micro) var(--ease-out); }
+  #place-toggle:hover { background: var(--track); color: var(--ink); }
+  #place-toggle:active { transform: scale(0.94); }
+  #place-toggle .ic { transition: transform var(--dur-short) var(--ease-out); }
+  #place-panel.collapsed #place-toggle .ic { transform: rotate(-90deg); }
+  #place-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 16px; }
+  #place-panel.collapsed #place-body { display: none; }
+  .place-section h3 { display: flex; justify-content: space-between; margin: 0 0 4px; font-size: 13px; font-weight: 500; color: var(--ink-2); }
+  .place-section h3 span { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .place-list { list-style: none; margin: 0; padding: 0; }
+  .place-list li { font-size: 14px; color: var(--ink); padding: 8px; border-radius: var(--r-sm); overflow-wrap: anywhere; transition: background-color var(--dur-micro) ease; }
+  .place-list li:hover { background: var(--track); }
+  .place-name { display: block; font-weight: 500; }
+  .place-kind { display: block; font-size: 12px; color: var(--ink-2); }
+  .place-list details { margin-top: 4px; }
+  .place-list summary { font-size: 12px; color: var(--faint); cursor: pointer; display: inline-block; min-height: 24px; line-height: 24px; }
+  .place-list code { display: block; margin-top: 2px; font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); overflow-wrap: anywhere; }
+  .welcome-studio { margin-top: 8px; font-size: 14px; color: var(--ink-2); }
+  .place-empty { font-size: 14px; color: var(--ink-2); }
+  .place-skel { display: grid; gap: 8px; }
+  .place-skel span { height: 28px; border-radius: var(--r-sm); }
+
+  #scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 25; }
+
+  /* 390px phone: the sidebar becomes a menu sheet, the composer stays pinned */
+  @media (max-width: 1099px) { #place-panel { display: none; } }
+  @media (max-width: 759px) {
+    #sidebar { position: fixed; top: 0; bottom: 0; left: 0; width: min(86vw, 300px); z-index: 30; display: none; background: var(--side); box-shadow: var(--shadow-float); }
+    body.menu-open #sidebar { display: flex; animation: slide-in var(--dur-panel) var(--ease-out); }
+    @keyframes slide-in { from { transform: translateX(-100%); } to { transform: none; } }
+    #menu-btn { display: inline-flex; }
+    .top { padding: 0 12px; gap: 8px; }
+    .banner { padding: 12px 16px; }
+    #thread { padding: 16px; gap: 12px; }
+    .welcome h2 { font-size: 21px; }
+    .dock-inner { padding: 8px 12px 12px; }
+    #composer { flex-wrap: wrap; }
+    #composer input { flex-basis: 100%; }
+    #composer .btn { flex: 1 1 0; }
+    #composer .undo-group { flex: 0 0 auto; }
+    #composer .undo-group .btn { flex: none; }
+    #undo-confirm { flex-direction: column; align-items: stretch; }
+    #undo-confirm .btn { width: 100%; }
+    #undo-confirm p { flex: none; }
+    .chip { padding: 0 8px; }
+  }
+</style>
+</head>
+<body>
+  <a class="skip" href="#composer-input">Skip to message box</a>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h9a7 7 0 0 1 0 14h-3"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 24 24"><path d="M7 3.5h7l5 5v12H7z"/><path d="M14 3.5v5h5M9.5 13l-1.5 2 1.5 2M14.5 13l1.5 2-1.5 2"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M12 3.5l7.5 4.3v8.4L12 20.5l-7.5-4.3V7.8z"/><path d="M4.5 7.8L12 12l7.5-4.2M12 12v8.5"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M10 9l5 3-5 3z"/></symbol>
+    <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.5 6.2a4 4 0 0 0 4.9 5.2L12 18.8 8.2 15l7.6-7.6z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 12.5h9l1-12.5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v4.5M12 15.8v.2"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+  </svg>
+
+  <aside id="sidebar" aria-label="Chats and settings">
+    <div class="brand">
+      <span class="logo"><svg class="ic" aria-hidden="true"><use href="#i-spark"/></svg></span>
+      <div class="brand-text">
+        <h1>OpenRO</h1>
+        <div id="game-name">__GAME_NAME__</div>
+      </div>
+    </div>
+    <button id="new-chat" class="btn" type="button"><svg class="ic ic-sm" aria-hidden="true"><use href="#i-plus"/></svg>New chat</button>
+    <nav aria-label="Your chats">
+      <ul id="chat-list">
+        <li><div class="skel" style="height:44px"></div></li>
+      </ul>
+    </nav>
+    <div id="settings">
+      <h2>Settings</h2>
+      <div class="set-row">
+        <span class="set-name">Appearance</span>
+        <div class="segmented" role="group" aria-label="Appearance">
+          <button class="theme-btn" type="button" data-set-theme="dark" aria-pressed="true">Dark</button>
+          <button class="theme-btn" type="button" data-set-theme="light" aria-pressed="false">Light</button>
+        </div>
+      </div>
+    </div>
+  </aside>
+  <div id="scrim" hidden></div>
+
+  <main>
+    <header class="top">
+      <button id="menu-btn" class="btn btn-quiet" type="button" aria-controls="sidebar" aria-expanded="false" aria-label="Open the menu">
+        <svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg>
+      </button>
+      <h2 id="chat-title">New chat</h2>
+      <span id="status-chip" class="chip __CHIP_CLASS__" role="status">Roblox __CHIP__</span>
+    </header>
+    __KEY_BANNER__
+    <div id="thread" aria-live="polite" aria-busy="true">
+      <div class="skel" style="height:72px"></div>
+      <div class="skel" style="height:120px"></div>
+    </div>
+    <div class="dock">
+      <div class="dock-inner">
+        <div id="ideas" hidden>
+          <span class="ideas-label">Next ideas</span>
+          <div class="idea-btns" id="idea-btns"></div>
+        </div>
+        <div id="undo-confirm" role="group" aria-label="Undo the last build" hidden>
+          <p>Undo the last build? Your game goes back to how it was before that build.</p>
+          <button id="undo-no" class="btn btn-quiet" type="button">Keep it</button>
+          <button id="undo-yes" class="btn btn-primary" type="button">Yes, undo it</button>
+        </div>
+        <form id="composer">
+          <label class="sr-only" for="composer-input">Describe your game</label>
+          <input id="composer-input" type="text" placeholder="Describe your game, for example: a lava obby with coins" autocomplete="off">
+          <span class="undo-group"><button id="revert" class="btn" type="button" aria-expanded="false" aria-controls="undo-confirm" aria-label="Undo the last build" aria-describedby="undo-reason" disabled><svg class="ic" aria-hidden="true"><use href="#i-undo"/></svg>Undo</button><span id="undo-reason" class="undo-reason" hidden></span></span>
+          <button id="send" class="btn btn-primary" type="submit"><svg class="ic ic-sm" aria-hidden="true"><use href="#i-send"/></svg>Send</button>
+        </form>
+      </div>
+    </div>
+  </main>
+
+  <aside id="place-panel" class="" aria-label="In your game">
+    <div class="place-head">
+      <h2>In your game</h2>
+      <button id="place-toggle" type="button" aria-expanded="true" aria-controls="place-body" aria-label="Collapse In your game"><svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg></button>
+    </div>
+    <div id="place-body">
+      <div class="place-skel" aria-hidden="true"><span class="skel"></span><span class="skel"></span></div>
+    </div>
+  </aside>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const thread = $('thread');
+  const chatList = $('chat-list');
+  const rootEl = document.documentElement;
+  const CAN_BUILD = __CAN_BUILD__;
+  const STUDIO = __STUDIO_CONNECTED__;
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const CONSOLE_PREFIX = 'Console from the failed test run: ';
+  /* server errors that are config problems: the plain sentence goes on the thread, the raw line behind Details */
+  const PLAIN_ERRORS = [
+    { re: /^no model key/, say: 'Chat is off: no model key is set, so OpenRO cannot answer. Ask whoever runs OpenRO to add a model key, then restart it.' },
+    { re: /^Studio bridge error/, say: 'Roblox Studio refused that change, so OpenRO stopped and added nothing. Send it again to retry, or ask for something smaller.' },
+    { re: /^Studio not connected/, say: 'Studio is not connected, so nothing can be built. Open Roblox Studio with the OpenRO connection running, then send again.' },
+  ];
+  const IDEA_PREFIX = 'OpenRO: Idea — ';
+  const ERROR_LIKE = /error|could not|did not|not connected|no model|refused|failed/i;
+  const DASH = /\s—\s/g;
+  const ADDS = {
+    spawn_link: 'Spawn point', checkpoints: 'Checkpoints', kill_brick: 'Lava that burns',
+    currency: 'Coins that save', day_night: 'Day and night', shop: 'A shop', game_gui: 'A game screen',
+    round_manager: 'Rounds', leaderboard: 'Leaderboard', soundtrack: 'Music',
+  };
+  const CLASSES = { SpawnLocation: 'spawn point', Part: 'block' };
+  const PLACE_KIND = { ServerScriptService: 'server script', ServerStorage: 'stored script', StarterGui: 'screen', StarterPlayer: 'player script', ReplicatedStorage: 'shared script', Workspace: 'in the world' };
+  const state = {
+    lines: [], ideas: [], inflight: {}, busy: false, chats: [], activeId: null,
+    threadError: false, loaded: false, shown: 0, undoOpen: false,
+    built: undefined, canUndo: false,
+  };
+
+  /* small builders: every piece of user or model text goes in as textContent */
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  }
+  function icon(name, cls) {
+    const s = document.createElementNS(SVG_NS, 'svg');
+    s.setAttribute('class', 'ic' + (cls ? ' ' + cls : ''));
+    s.setAttribute('aria-hidden', 'true');
+    const u = document.createElementNS(SVG_NS, 'use');
+    u.setAttribute('href', '#i-' + name);
+    s.appendChild(u);
+    return s;
+  }
+  function plain(s) { return s.replace(DASH, ', '); }
+
+  /* per-chat slots, kept for the session: a request's notices and an unsent draft belong to the chat it came from */
+  const noticeKey = (id) => 'openro-notices:' + id;
+  const draftKey = (id) => 'openro-draft:' + id;
+  function slotRead(key, fallback) {
+    try { const v = sessionStorage.getItem(key); return v === null ? fallback : JSON.parse(v); } catch (e) { return fallback; }
+  }
+  function slotWrite(key, value) {
+    try {
+      if (value === '' || (Array.isArray(value) && !value.length)) sessionStorage.removeItem(key);
+      else sessionStorage.setItem(key, JSON.stringify(value));
+    } catch (e) { /* storage refused: the notice still shows in its chat while it is open */ }
+  }
+  const readNotices = (id) => slotRead(noticeKey(id), []);
+  const readDraft = (id) => slotRead(draftKey(id), '');
+  /* a notice is drawn only in the chat it belongs to; elsewhere it waits in that chat's slot */
+  function addNotice(chatId, item) {
+    slotWrite(noticeKey(chatId), [...readNotices(chatId), item]);
+    if (chatId === state.activeId) renderThread();
+  }
+  function notice(text, bad, chatId) { addNotice(chatId || state.activeId, { text, bad: !!bad }); }
+  function clearNotices(chatId) { slotWrite(noticeKey(chatId), ''); }
+  /* unsent text goes back to its own chat: into the box if that chat is open and the box is empty, else its draft */
+  function returnText(chatId, text) {
+    const input = $('composer-input');
+    if (chatId === state.activeId && !input.value.trim()) input.value = text;
+    else slotWrite(draftKey(chatId), text);
+  }
+  /* switching chats: the open box is kept for the chat it was typed in; the new chat's draft comes back */
+  function moveDraft(from, to) {
+    const input = $('composer-input');
+    if (from !== null) slotWrite(draftKey(from), input.value.trim() ? input.value : '');
+    const d = readDraft(to);
+    if (d) { input.value = d; slotWrite(draftKey(to), ''); }
+    else if (from !== null) input.value = '';
+  }
+
+  /* appearance: the segmented control; the choice persists on this device */
+  const themeBtns = document.querySelectorAll('.theme-btn');
+  function syncThemeBtns() {
+    const cur = rootEl.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+    themeBtns.forEach((b) => b.setAttribute('aria-pressed', b.getAttribute('data-set-theme') === cur ? 'true' : 'false'));
+  }
+  themeBtns.forEach((b) => b.addEventListener('click', () => {
+    const next = b.getAttribute('data-set-theme');
+    rootEl.setAttribute('data-theme', next);
+    try { localStorage.setItem('openro-theme', next); } catch (e) {}
+    syncThemeBtns();
+  }));
+  syncThemeBtns();
+
+  /* phone menu sheet: a modal while open. It takes focus, Tab stays inside it,
+     the page behind is inert, Escape or the scrim closes it and returns focus to the menu button. */
+  const menuBtn = $('menu-btn');
+  const scrim = $('scrim');
+  const sidebar = $('sidebar');
+  const mainRegion = document.querySelector('main');
+  const phoneLayout = window.matchMedia('(max-width: 759px)');
+  function sheetFocusables() {
+    return [...sidebar.querySelectorAll('button, a[href], input, [tabindex]:not([tabindex="-1"])')].filter((e) => !e.disabled && e.offsetParent !== null);
+  }
+  function setMenu(open, opts) {
+    if (open === document.body.classList.contains('menu-open')) return;
+    document.body.classList.toggle('menu-open', open);
+    menuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    scrim.hidden = !open;
+    mainRegion.inert = open;
+    if (open) {
+      sidebar.setAttribute('role', 'dialog');
+      sidebar.setAttribute('aria-modal', 'true');
+      sheetFocusables()[0].focus();
+    } else {
+      sidebar.removeAttribute('role');
+      sidebar.removeAttribute('aria-modal');
+      if (!opts || opts.returnFocus !== false) menuBtn.focus();
+    }
+  }
+  menuBtn.addEventListener('click', () => setMenu(!document.body.classList.contains('menu-open')));
+  scrim.addEventListener('click', () => setMenu(false));
+  document.addEventListener('keydown', (e) => {
+    if (!document.body.classList.contains('menu-open')) return;
+    if (e.key === 'Escape') { e.preventDefault(); setMenu(false); return; }
+    if (e.key !== 'Tab') return;
+    const f = sheetFocusables();
+    const first = f[0];
+    const last = f[f.length - 1];
+    const inside = sidebar.contains(document.activeElement);
+    if (e.shiftKey && (!inside || document.activeElement === first)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (!inside || document.activeElement === last)) { e.preventDefault(); first.focus(); }
+  });
+  /* leaving the phone layout with the sheet open closes it: no dim over the desktop app */
+  phoneLayout.addEventListener('change', (e) => { if (!e.matches) setMenu(false, { returnFocus: false }); });
+
+  /* the place panel: collapsible, wide screens only */
+  const placePanel = $('place-panel');
+  const placeToggle = $('place-toggle');
+  placeToggle.addEventListener('click', () => {
+    const collapsed = placePanel.classList.toggle('collapsed');
+    placeToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    placeToggle.setAttribute('aria-label', collapsed ? 'Expand In your game' : 'Collapse In your game');
+  });
+
+  /* thread lines are plain text from the server; classify them into the thread's rows */
+  function classify(line) {
+    if (line.startsWith('You: ')) return { kind: 'user', text: line.slice(5) };
+    if (line.startsWith(IDEA_PREFIX)) {
+      const rest = line.slice(IDEA_PREFIX.length);
+      const i = rest.indexOf(': ');
+      return { kind: 'idea', title: i < 0 ? rest : rest.slice(0, i), pitch: i < 0 ? '' : rest.slice(i + 2) };
+    }
+    if (line.startsWith('OpenRO: ')) return { kind: 'agent', text: plain(line.slice(8)) };
+    if (line.startsWith(CONSOLE_PREFIX)) return { kind: 'console', text: line.slice(CONSOLE_PREFIX.length), raw: line };
+    if (line === 'Playtest passed.') return { kind: 'verdict', tone: 'ok', raw: line };
+    if (line.startsWith('Playtest failed')) return { kind: 'verdict', tone: 'bad', raw: line };
+    if (line.startsWith('Playtest result was not')) return { kind: 'verdict', tone: 'warn', raw: line };
+    return { kind: 'step', raw: line };
+  }
+  function stepInfo(raw) {
+    let m = raw.match(/^Wrote (.+)\.$/);
+    if (m) return { icon: 'doc', label: 'Saved the script ' + m[1].split('.').pop(), result: 'Saved' };
+    m = raw.match(/^Generated the (.+) script\.$/);
+    if (m) return { icon: 'doc', label: 'Wrote the ' + m[1].replace(/_/g, ' ') + ' code', result: 'Written' };
+    m = raw.match(/^Created (.+) \((.+)\)\.$/);
+    if (m) return { icon: 'box', label: 'Added ' + m[1].split('.').pop() + ' (' + (CLASSES[m[2]] || m[2].toLowerCase()) + ')', result: 'Added' };
+    m = raw.match(/^Deleted (.+)\.$/);
+    if (m) return { icon: 'trash', label: 'Removed ' + m[1].split('.').pop(), result: 'Removed' };
+    return { icon: 'check', label: plain(raw), result: 'Done' };
+  }
+  function verdictBlock(item) {
+    const v = el('div', 'verdict ' + item.tone);
+    if (item.tone === 'ok') {
+      v.appendChild(icon('check'));
+      const body = el('div');
+      body.appendChild(el('strong', '', 'Passed'));
+      body.appendChild(el('p', '', 'The test run played through with no errors.'));
+      v.appendChild(body);
+    } else if (item.tone === 'bad') {
+      v.appendChild(icon('x'));
+      const body = el('div');
+      body.appendChild(el('strong', '', 'Failed'));
+      body.appendChild(el('p', '', 'The test run found a problem. OpenRO is reading the error and repairing your game.'));
+      v.appendChild(body);
+    } else {
+      v.appendChild(icon('alert'));
+      const body = el('div');
+      body.appendChild(el('strong', '', 'Not proven yet'));
+      body.appendChild(el('p', '', 'The test run result could not be read, so this build counts as unproven. OpenRO will test again.'));
+      v.appendChild(body);
+    }
+    const det = el('details');
+    det.appendChild(el('summary', '', 'Details'));
+    det.appendChild(el('pre', '', item.raw));
+    v.lastChild.appendChild(det);
+    return v;
+  }
+  function userRow(text, fresh) {
+    const row = el('div', 'row user' + (fresh ? ' fresh' : ''));
+    row.appendChild(el('div', 'bubble', text));
+    return row;
+  }
+  function agentRow(text, fresh, bad, whole) {
+    const row = el('div', 'row' + (fresh ? ' fresh' : ''));
+    const av = el('span', 'avatar');
+    av.appendChild(icon('spark', 'ic-sm'));
+    row.appendChild(av);
+    const bubble = el('div', 'bubble' + (bad ? ' bad' : ''));
+    const known = PLAIN_ERRORS.find((e) => e.re.test(text));
+    const cut = text.indexOf(' (Details: ');
+    /* a server error: its first sentence is the plain message; the rest sits behind Details */
+    const sentence = text.match(/^(.+?[.!?])\s+(.+)$/s);
+    let plainText = text;
+    let raw = '';
+    if (known) { plainText = known.say; raw = text; }
+    else if (cut >= 0) { plainText = text.slice(0, cut); raw = text.slice(cut + 11, -1); }
+    else if (whole) { plainText = text; }
+    else if (bad && sentence) { plainText = sentence[1]; raw = sentence[2]; }
+    else if (bad && /:\s/.test(text)) { plainText = 'OpenRO could not finish that step. The details are below.'; raw = text; }
+    bubble.appendChild(el('span', '', plainText));
+    if (raw) {
+      const det = el('details', 'bubble-details');
+      det.appendChild(el('summary', '', 'Details'));
+      det.appendChild(el('pre', '', raw));
+      bubble.appendChild(det);
+    }
+    row.appendChild(bubble);
+    return row;
+  }
+  function welcome() {
+    const s = el('section', 'welcome');
+    s.appendChild(el('h2', '', 'What do you want to make?'));
+    s.appendChild(el('p', '', CAN_BUILD
+      ? 'Pick one of these ideas, or describe your own game in the box below. OpenRO builds it in Roblox Studio and runs a test before it says it is done.'
+      : 'Pick an idea or describe your own game below. To build it, OpenRO needs a model key and a Roblox Studio connection. See the notice above.'));
+    s.appendChild(el('p', 'welcome-studio', 'Roblox Studio is where your game lives; OpenRO needs it open to build and test.'));
+    return s;
+  }
+  function ideaRecord(title) {
+    return state.ideas.find((i) => i.title === title) || null;
+  }
+  function ideaCard(title, pitch, fresh) {
+    const rec = ideaRecord(title);
+    const card = el('article', 'idea-card' + (fresh ? ' fresh' : ''));
+    card.appendChild(el('h3', '', title));
+    card.appendChild(el('p', '', plain(rec ? rec.pitch : pitch)));
+    if (rec && rec.skills && rec.skills.length) {
+      card.appendChild(el('span', 'adds-label', 'What it adds'));
+      const list = el('ul', 'adds');
+      [...new Set(rec.skills.map((s) => ADDS[s] || s.replace(/_/g, ' ')))].forEach((t) => list.appendChild(el('li', '', t)));
+      card.appendChild(list);
+    }
+    const b = el('button', 'btn btn-primary', 'Build this');
+    b.type = 'button';
+    b.setAttribute('data-focus-key', 'idea:' + title);
+    b.setAttribute('aria-label', 'Build ' + title);
+    if (rec) {
+      b.disabled = !STUDIO || state.busy;
+      if (!STUDIO) b.setAttribute('aria-describedby', 'no-studio-banner');
+      b.addEventListener('click', () => buildIdea(rec, b));
+    } else {
+      b.disabled = true;
+    }
+    card.appendChild(b);
+    if (rec && !STUDIO) card.appendChild(el('p', 'muted', 'Connect Studio to build this. The banner above says how.'));
+    if (!rec) card.appendChild(el('p', 'muted', 'Already in your game, or not on offer now. The next ideas above are the ones you can build.'));
+    return card;
+  }
+  function stepRow(raw) {
+    const info = stepInfo(raw);
+    const li = el('li', 'step');
+    const ic = el('span', 'step-icon');
+    ic.appendChild(icon(info.icon, 'ic-sm'));
+    li.appendChild(ic);
+    const body = el('div');
+    body.appendChild(el('div', 'step-label', info.label));
+    const det = el('details');
+    det.appendChild(el('summary', '', 'Details'));
+    det.appendChild(el('pre', '', raw));
+    body.appendChild(det);
+    li.appendChild(body);
+    li.appendChild(el('span', 'step-result', info.result));
+    return li;
+  }
+  /* one build card per run of steps; verdict bands sit between the step lists in order */
+  function buildCard(fresh) {
+    const card = el('section', 'build' + (fresh ? ' fresh' : ''));
+    card.appendChild(el('div', 'build-head', 'What OpenRO did'));
+    return card;
+  }
+
+  /* the thread: a fresh render from the server's lines, plus this screen's own notices */
+  function renderThread() {
+    const items = state.lines.map(classify);
+    const pend = state.inflight[state.activeId];
+    const hasUser = items.some((i) => i.kind === 'user') || !!(pend && pend.message);
+    const hasBuild = items.some((i) => i.kind === 'step' || i.kind === 'verdict');
+    const fresh = (i) => state.loaded && i >= state.shown;
+    thread.textContent = '';
+    thread.setAttribute('aria-busy', 'false');
+    if (state.threadError) {
+      const err = el('div', 'thread-error');
+      err.appendChild(el('strong', '', 'Could not load the conversation.'));
+      err.appendChild(el('p', '', 'The OpenRO server did not answer. Try again, or reload the page.'));
+      const retry = el('button', 'btn', 'Try again');
+      retry.type = 'button';
+      retry.setAttribute('data-focus-key', 'retry');
+      retry.addEventListener('click', async () => { await refreshAll(); restoreFocus('retry'); });
+      err.appendChild(retry);
+      thread.appendChild(err);
+      return;
+    }
+    if (!hasUser && !hasBuild) thread.appendChild(welcome());
+    let group = null;
+    let groupKind = '';
+    let lastVerdict = null;
+    items.forEach((it, i) => {
+      const kind = it.kind === 'step' || it.kind === 'verdict' || it.kind === 'console' ? 'build' : it.kind === 'idea' ? 'idea' : '';
+      if (kind !== groupKind) { group = null; groupKind = kind; }
+      if (kind === 'build') {
+        if (!group) { group = buildCard(fresh(i)); thread.appendChild(group); }
+        if (it.kind === 'console') {
+          const pre = lastVerdict && lastVerdict.querySelector('pre');
+          if (pre) pre.textContent = 'Console output from the test run:\n' + it.text;
+          return;
+        }
+        if (it.kind === 'verdict') { lastVerdict = verdictBlock(it); group.appendChild(lastVerdict); return; }
+        let ol = group.lastElementChild && group.lastElementChild.tagName === 'OL' ? group.lastElementChild : null;
+        if (!ol) { ol = el('ol', 'steps'); group.appendChild(ol); }
+        ol.appendChild(stepRow(it.raw));
+        return;
+      }
+      if (kind === 'idea') {
+        if (!group) { group = el('div', 'ideas-block'); thread.appendChild(group); }
+        group.appendChild(ideaCard(it.title, it.pitch, fresh(i)));
+        return;
+      }
+      if (it.kind === 'user') thread.appendChild(userRow(it.text, fresh(i)));
+      else if (it.kind === 'agent') thread.appendChild(agentRow(it.text, fresh(i), ERROR_LIKE.test(it.text)));
+      else thread.appendChild(agentRow(it.raw, fresh(i), ERROR_LIKE.test(it.raw)));
+    });
+    readNotices(state.activeId).forEach((n) => thread.appendChild(n.user ? userRow(n.text, true) : agentRow(n.text, true, n.bad, true)));
+    if (pend && pend.message) thread.appendChild(userRow(pend.message, true));
+    if (pend) {
+      const w = el('div', 'working');
+      w.setAttribute('role', 'status');
+      const dots = el('span', 'dots');
+      for (let k = 0; k < 3; k++) dots.appendChild(el('span'));
+      w.appendChild(dots);
+      w.appendChild(el('span', '', 'OpenRO is working on it. A build can take a minute or two.'));
+      thread.appendChild(w);
+    }
+    /* a conversation scrolls to its latest line; a fresh chat keeps its heading and ideas in view */
+    if (hasUser || hasBuild || pend) thread.scrollTop = thread.scrollHeight;
+    state.shown = items.length;
+    state.loaded = true;
+    renderChips(items);
+  }
+  function renderChips(items) {
+    const box = $('ideas');
+    const has = items.some((i) => i.kind === 'user' || i.kind === 'step' || i.kind === 'verdict');
+    const list = $('idea-btns');
+    list.textContent = '';
+    if (!has || !state.ideas.length) { box.hidden = true; return; }
+    box.hidden = false;
+    state.ideas.forEach((idea) => {
+      const b = el('button', 'idea-chip');
+      b.type = 'button';
+      b.appendChild(icon('plus', 'ic-sm'));
+      b.appendChild(el('span', '', idea.title));
+      b.setAttribute('data-focus-key', 'idea:' + idea.title);
+      b.setAttribute('aria-label', 'Build ' + idea.title);
+      b.disabled = !STUDIO || state.busy;
+      if (!STUDIO) b.title = 'Connect Studio to build this';
+      b.addEventListener('click', () => buildIdea(idea, b));
+      list.appendChild(b);
+    });
+  }
+
+  async function refreshThread() {
+    try {
+      const r = await fetch('/api/thread');
+      if (!r.ok) throw new Error('thread');
+      const data = await r.json();
+      state.lines = data.thread;
+      state.threadError = false;
+    } catch (err) {
+      if (!state.lines.length) state.threadError = true;
+    }
+    renderThread();
+  }
+
+  /* chat list: the chats are real buttons; the list keeps its last good state on failure */
+  async function refreshChats() {
+    try {
+      const r = await fetch('/api/chats');
+      if (!r.ok) throw new Error('chats');
+      const data = await r.json();
+      const from = state.activeId;
+      state.chats = data.chats;
+      state.activeId = data.active;
+      /* Undo is offered exactly when the active chat has a change set to take back */
+      state.canUndo = data.can_undo === true;
+      syncUndo();
+      const current = data.chats.find((c) => c.id === data.active);
+      $('chat-title').textContent = (current && current.title) || 'New chat';
+      if (from !== data.active) moveDraft(from, data.active);
+      renderChatList();
+    } catch (err) { /* the list keeps its last good state */ }
+  }
+  function renderChatList() {
+    chatList.textContent = '';
+    for (const c of state.chats) {
+      const li = document.createElement('li');
+      const btn = el('button', 'chat-btn');
+      btn.type = 'button';
+      btn.appendChild(el('span', 'chat-title', c.title || 'New chat'));
+      if (state.inflight[c.id]) btn.appendChild(el('span', 'chat-flag', 'working'));
+      if (c.id === state.activeId) btn.setAttribute('aria-current', 'true');
+      btn.addEventListener('click', () => switchChat(c.id));
+      li.appendChild(btn);
+      chatList.appendChild(li);
+    }
+  }
+  async function switchChat(id) {
+    try {
+      const sr = await fetch('/api/chats/select', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+      if (!sr.ok) throw new Error('select');
+    } catch (err) {
+      notice('Could not switch chats. The server did not answer.', true);
+      return;
+    }
+    setMenu(false);
+    await refreshChats();
+    await refreshAll();
+  }
+
+  /* ideas: the pitch lands in the thread; the same set feeds the cards and the chips */
+  async function refreshIdeas() {
+    try {
+      const r = await fetch('/api/ideas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      if (!r.ok) return;
+      const data = await r.json();
+      state.ideas = data.ideas || [];
+      if (data.pitched_new) await refreshThread();
+      else renderThread();
+    } catch (err) { /* the cards keep their last good state */ }
+  }
+
+  /* a request is tied to the chat it started in; the controls follow whether anything is in flight */
+  function beginRequest(chatId, pending) {
+    clearNotices(chatId);
+    state.inflight[chatId] = pending || {};
+    setBusy();
+    if (chatId === state.activeId) renderThread();
+  }
+  function endRequest(chatId) {
+    delete state.inflight[chatId];
+    setBusy();
+    if (chatId === state.activeId) renderThread();
+  }
+  function setBusy() {
+    state.busy = Object.keys(state.inflight).length > 0;
+    $('send').disabled = state.busy;
+    syncUndo();
+    renderChatList();
+  }
+  /* Undo is enabled only when the active chat can take a change set back (can_undo) and Studio answers */
+  function syncUndo() {
+    const b = $('revert');
+    b.disabled = state.busy || state.built === null || !state.canUndo;
+    /* the reason is visible text beside the button, not only a tooltip */
+    const reason = state.busy || state.built === undefined ? '' : state.built === null ? 'Connect Studio to see what is built' : !state.canUndo ? 'Nothing built yet' : '';
+    const r = $('undo-reason');
+    r.textContent = reason;
+    r.hidden = !reason;
+    b.title = reason;
+  }
+
+  /* after a re-render the trigger is a new node: focus its successor, else the composer */
+  function restoreFocus(key) {
+    const a = document.activeElement;
+    if (a && a !== document.body) return;
+    const t = key ? document.querySelector('[data-focus-key="' + CSS.escape(key) + '"]') : null;
+    if (t && !t.disabled) t.focus(); else $('composer-input').focus();
+  }
+
+  async function buildIdea(idea, btn) {
+    const key = btn.getAttribute('data-focus-key');
+    const chatId = state.activeId;
+    beginRequest(chatId, { build: idea.title });
+    let failure = null;
+    try {
+      const r = await fetch('/api/ideas/build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: idea.id }) });
+      const data = await r.json();
+      if (!data.ok) failure = data.error;
+    } catch (err) {
+      failure = 'Could not reach the OpenRO server.';
+    }
+    endRequest(chatId);
+    if (failure) notice(failure, true, chatId);
+    await refreshAll();
+    if (chatId === state.activeId) restoreFocus(key);
+  }
+
+  /* the composer: the ask is shown at once and the build shows as it runs.
+     A send that does not go through keeps the words in its own chat: the user line stays,
+     a plain error sits under it, and the text goes back to the box (or that chat's draft). */
+  const SEND_FAILED = 'That did not go through. Nothing was built. Your message is back in the box.';
+  $('composer').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = $('composer-input');
+    const message = input.value.trim();
+    if (!message) return;
+    const chatId = state.activeId;
+    input.value = '';
+    beginRequest(chatId, { message });
+    let failure = null;
+    try {
+      const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }) });
+      const text = await r.text();
+      let data = {};
+      try { data = JSON.parse(text); } catch (err) { /* not JSON: a proxy or a crash answered */ }
+      /* refused before it reached the chat (too large, wrong type, forbidden): the server's own words */
+      if (r.status === 403 || r.status === 413 || r.status === 415) failure = data.error || 'OpenRO did not take that message.';
+      /* 502 and 503 mean the server recorded the words and its own thread lines tell the story */
+      else if (!r.ok && !((r.status === 502 || r.status === 503) && data.ok === false)) failure = SEND_FAILED;
+    } catch (err) {
+      failure = SEND_FAILED;
+    }
+    endRequest(chatId);
+    if (failure) {
+      addNotice(chatId, { text: message, user: true });
+      addNotice(chatId, { text: failure, bad: true });
+      returnText(chatId, message);
+    }
+    await refreshAll();
+    input.focus();
+  });
+
+  /* undo last build: a secondary control with a confirm step */
+  const undoBox = $('undo-confirm');
+  const revertBtn = $('revert');
+  function setUndo(open) {
+    state.undoOpen = open;
+    undoBox.hidden = !open;
+    revertBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) $('undo-no').focus();
+  }
+  /* while the confirm is open: Escape cancels back to the Undo button; Tab stays between its two buttons */
+  document.addEventListener('keydown', (e) => {
+    if (!state.undoOpen) return;
+    if (e.key === 'Escape') { e.preventDefault(); setUndo(false); revertBtn.focus(); return; }
+    if (e.key !== 'Tab') return;
+    const first = $('undo-no');
+    const last = $('undo-yes');
+    const a = document.activeElement;
+    if (e.shiftKey && (a === first || !undoBox.contains(a))) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (a === last || !undoBox.contains(a))) { e.preventDefault(); first.focus(); }
+  });
+  revertBtn.addEventListener('click', () => setUndo(!state.undoOpen));
+  $('undo-no').addEventListener('click', () => { setUndo(false); revertBtn.focus(); });
+  $('undo-yes').addEventListener('click', async () => {
+    setUndo(false);
+    const chatId = state.activeId;
+    beginRequest(chatId, { undo: true });
+    let msg = null;
+    let bad = false;
+    try {
+      const r = await fetch('/api/revert', { method: 'POST' });
+      const data = await r.json();
+      if (data.ok) msg = 'Undid the last build. ' + data.restored.length + ' change(s) were put back.';
+      else if (data.error === 'nothing to revert') msg = 'Nothing to undo. No build is waiting to be undone in this chat.';
+      else { msg = data.error; bad = true; }
+    } catch (err) {
+      msg = 'Could not reach the OpenRO server.';
+      bad = true;
+    }
+    endRequest(chatId);
+    if (msg) notice(msg, bad, chatId);
+    await refreshAll();
+    (revertBtn.disabled ? $('composer-input') : revertBtn).focus();
+  });
+
+  /* In your game: the real place tree from the server */
+  async function refreshPlace() {
+    const body = $('place-body');
+    try {
+      const r = await fetch('/api/place-tree');
+      if (!r.ok) throw new Error('place');
+      const tree = await r.json();
+      const scripts = Object.keys(tree.scripts || {});
+      const parts = Object.keys(tree.instances || {});
+      state.built = scripts.length + parts.length;
+      syncUndo();
+      body.textContent = '';
+      if (!scripts.length && !parts.length) {
+        body.appendChild(el('p', 'place-empty', 'Nothing built yet. When OpenRO builds something, its scripts and parts show here.'));
+        return;
+      }
+      const section = (title, names) => {
+        const s = el('section', 'place-section');
+        const h = el('h3', '', title);
+        h.appendChild(el('span', '', String(names.length)));
+        s.appendChild(h);
+        const ul = el('ul', 'place-list');
+        names.forEach((n) => {
+          /* the plain name first; the raw path sits behind Details */
+          const parts = n.split('.');
+          const li = el('li');
+          li.appendChild(el('span', 'place-name', parts[parts.length - 1].replace(/([a-z])([A-Z])/g, '$1 $2')));
+          li.appendChild(el('span', 'place-kind', PLACE_KIND[parts[0]] || 'part'));
+          const det = el('details');
+          det.appendChild(el('summary', '', 'Details'));
+          det.appendChild(el('code', '', n));
+          li.appendChild(det);
+          ul.appendChild(li);
+        });
+        s.appendChild(ul);
+        return s;
+      };
+      if (scripts.length) body.appendChild(section('Scripts', scripts));
+      if (parts.length) body.appendChild(section('Parts', parts));
+    } catch (err) {
+      state.built = null;
+      syncUndo();
+      body.textContent = '';
+      body.appendChild(el('p', 'place-empty', 'Could not read your game. Check that Studio is connected, then try again.'));
+    }
+  }
+
+  $('new-chat').addEventListener('click', async () => {
+    try {
+      const r = await fetch('/api/chats', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      if (!r.ok) throw new Error('new chat');
+    } catch (err) {
+      notice('Could not reach the OpenRO server.', true);
+      return;
+    }
+    setMenu(false);
+    state.shown = 0;
+    await refreshChats();
+    await refreshAll();
+    $('composer-input').focus();
+  });
+
+  async function refreshAll() {
+    await refreshChats();
+    await refreshThread();
+    await refreshIdeas();
+    await refreshPlace();
+  }
+  document.querySelectorAll('[data-dismiss]').forEach((b) => {
+    b.addEventListener('click', () => { b.closest('.banner').hidden = true; });
+  });
+  syncUndo();
+  refreshAll();
+</script>
+</body>
+</html>
