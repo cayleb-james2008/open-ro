@@ -2551,3 +2551,24 @@ fn chats_report_can_undo_for_the_active_chat() {
     assert_eq!(status, 200);
     assert_eq!(can_undo(port), json!(false), "nothing left to undo");
 }
+
+/// OH1: OPENRO_ALLOWED_HOSTS admits exactly the listed host names (with or
+/// without a port); loopback names are always accepted; anything else is 403.
+#[test]
+fn allowed_hosts_list_admits_only_listed_names() {
+    std::env::set_var("OPENRO_ALLOWED_HOSTS", "lab.example:9000, other.example");
+    let port = start_server(None);
+    let status_for = |host: &str| {
+        let request = format!("GET /api/status HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+        http_raw(port, &request, b"").0
+    };
+    assert_eq!(status_for("lab.example"), 200, "a listed name without a port");
+    assert_eq!(status_for("lab.example:8077"), 200, "a listed name with any port");
+    assert_eq!(status_for("other.example"), 200, "a second listed name");
+    assert_eq!(status_for("127.0.0.1"), 200, "loopback is always accepted");
+    assert_eq!(status_for("localhost:8077"), 200, "localhost is always accepted");
+    assert_eq!(status_for("[::1]:8077"), 200, "IPv6 loopback is always accepted");
+    assert_eq!(status_for("evil.example"), 403, "an unlisted name is refused");
+    assert_eq!(status_for("x.lab.example"), 403, "a subdomain is not the listed name");
+    std::env::remove_var("OPENRO_ALLOWED_HOSTS");
+}
