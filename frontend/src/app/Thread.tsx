@@ -10,7 +10,7 @@ export function WorkingLine({ children }: { children: string }) {
     </p>
   );
 }
-import { Check, X, AlertTriangle, FileText, Box, Trash2, Sparkles } from "lucide-react";
+import { Check, X, AlertTriangle, FileText, Box, Trash2, Sparkles, ChevronDown } from "lucide-react";
 import { Key } from "./Key";
 import { Expandable, ExpandableTrigger } from "@/components/ui/expandable";
 import { Pill } from "@/components/kibo-ui/pill";
@@ -69,7 +69,9 @@ export function IdeaTile({ idea, canBuild, busy, building, unavailable, onBuild 
           <div className="flex flex-col items-start gap-1">
             <p className={`text-ui text-ink-2 ${isExpanded ? "" : "line-clamp-4"}`}>{pitch}</p>
             {pitch.length > 160 && (
-              <ExpandableTrigger aria-expanded={isExpanded} aria-label={isExpanded ? `Less about ${idea.title}` : `More about ${idea.title}`} className="inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded-sm px-1 text-sm text-ink-2 outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-focus">{isExpanded ? "Less" : "More"}</ExpandableTrigger>
+              <ExpandableTrigger aria-expanded={isExpanded} aria-label={`${isExpanded ? "Show less" : "Read more"} about ${idea.title}`} className="inline-flex min-h-11 cursor-pointer items-center gap-1 rounded-chip border border-hairline bg-surface px-3 text-sm font-medium text-ink outline-none hover:bg-raised focus-visible:ring-2 focus-visible:ring-focus">
+                {isExpanded ? "Show less" : "Read more"}<ChevronDown className={`size-4 transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`} strokeWidth={1.5} aria-hidden />
+              </ExpandableTrigger>
             )}
           </div>
         )}

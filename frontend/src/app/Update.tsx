@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { read, post, RELEASES_URL } from "./data";
+import { toast } from "sonner";
+import { X } from "lucide-react";
+import { read, post } from "./data";
 import { Key } from "./Key";
 
 export type Snap = {
@@ -56,7 +58,9 @@ export function useUpdate() {
     setBusy("check"); setError(null); setCheckNote("Checking…");
     try {
       const s = await post<Snap & { error?: string }>("/api/update/check", {});
-      setSnap(s); setCheckNote(s.error ? "" : resultLine(s));
+      setSnap(s);
+      if (s.error) toast.error(plainUpdateError(s.error)); else toast.success(resultLine(s));
+      setCheckNote(s.error ? "" : resultLine(s));
     } catch (e) {
       setCheckNote(plainUpdateError(String(e)));
     }
@@ -107,81 +111,37 @@ export function useUpdate() {
   };
   const showAgain = () => { try { localStorage.removeItem(DISMISS_KEY); } catch { /* ignore */ } setDismissed(""); };
 
-  const show = !!snap && (!!snap.staged || (!!snap.available && !!snap.latest && dismissed !== snap.latest));
+  const show = (!!snap && (!!snap.staged || (!!snap.available && !!snap.latest && dismissed !== snap.latest))) || !!error || busy === "apply" || busy === "restart" || returning;
   return { snap, busy, error, checkNote, returning, check, apply, restart, dismiss, showAgain, show, dismissed, canCheck: isLocalHost() && snap?.mode !== "off" };
 }
 
-/** The strip above the thread: result, one action, plain errors, focus kept on the line that changed. */
-export function UpdateStrip({ u, version }: { u: ReturnType<typeof useUpdate>; version: string }) {
+/** The slim update line: shown only when an update is available, installing, installed or failed (COMMON.md). One line, dismissible. */
+export function UpdateStrip({ u }: { u: ReturnType<typeof useUpdate>; version?: string }) {
   const statusRef = useRef<HTMLParagraphElement>(null);
   const restartRef = useRef<HTMLButtonElement>(null);
-  const showRef = useRef<HTMLButtonElement>(null);
-  const [focusNext, setFocusNext] = useState<"status" | "restart" | "show" | "">("");
-  useEffect(() => {
-    if (focusNext === "status") statusRef.current?.focus();
-    if (focusNext === "restart") restartRef.current?.focus();
-    if (focusNext === "show") showRef.current?.focus();
-    if (focusNext) setFocusNext("");
-  }, [focusNext]);
-
   const s = u.snap;
   const local = isLocalHost();
   const staged = s?.staged;
-  const title = staged ? `Version ${staged} is installed. Restart to use it.` : `A new version of OpenRO is ready: ${s?.latest ?? ""}`;
-  const hint = s?.dev_build
-    ? "This is a developer copy, so it does not update itself. Install a released version to get updates."
-    : "To update, open OpenRO on the computer it runs on.";
-
+  const busy = u.busy === "apply" || u.busy === "restart" || u.returning;
+  const failed = !!u.error;
+  const text = busy
+    ? (u.busy === "restart" || u.returning ? "Restarting…" : "Downloading and checking…")
+    : failed ? u.error!.plain
+    : staged ? `Version ${staged} is installed. Restart to use it.`
+    : `Version ${s?.latest ?? ""} is ready to install.`;
+  const canApply = local && !!s?.can_apply && !staged;
   return (
-    <>
-      <div className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 px-4 text-sm text-ink-2 md:px-6">
-        {u.canCheck && (
-          <button type="button" onClick={() => void u.check()} disabled={u.busy !== ""} className="inline-flex min-h-11 cursor-pointer items-center rounded-sm px-1 text-ink-2 outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-default">
-            Check for updates
-          </button>
-        )}
-        <span className="min-w-0 break-words" role="status" aria-live="polite">{u.checkNote}</span>
-        {!u.show && u.dismissed && s?.available && (
-          <button ref={showRef} type="button" onClick={() => { u.showAgain(); setFocusNext("status"); }} className="inline-flex min-h-11 cursor-pointer items-center rounded-sm px-1 text-ink underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus">Show update</button>
-        )}
-        {s?.release_url || version ? (
-          <a href={s?.release_url || `${RELEASES_URL}${version}`} target="_blank" rel="noopener" className="ml-auto inline-flex min-h-11 items-center text-ink-2 outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-focus">Release notes<span className="sr-only"> (opens in a new tab)</span></a>
-        ) : null}
-      </div>
-      {u.show && s && (
-        <section aria-label="OpenRO update" className="mx-4 mb-3 flex flex-col gap-2 rounded-card card-stock p-4 md:mx-6">
-          <p ref={statusRef} tabIndex={-1} className="font-medium outline-none">{u.busy === "apply" ? "Downloading and checking..." : u.busy === "restart" || u.returning ? "Restarting…" : title}</p>
-          {!staged && !u.error && (
-            <p className="text-sm text-ink-2">{s.can_apply && local ? "Update now downloads it, checks it, and replaces this app. Restart to start using it." : hint}</p>
-          )}
-          {s.notes && (
-            <details className="text-sm text-ink-2">
-              <summary className="inline-flex min-h-11 cursor-pointer items-center outline-none hover:text-ink">What's new</summary>
-              <p className="whitespace-pre-wrap break-words">{s.notes.split("\n").find((l) => l.trim()) ? s.notes : ""}</p>
-            </details>
-          )}
-          {u.error && (
-            <div className="flex flex-col gap-1 text-sm text-pill-pro-fg">
-              <p>{u.error.plain}</p>
-              {u.error.raw && <details><summary className="cursor-pointer text-ink-2">Details</summary><pre className="whitespace-pre-wrap break-words font-mono text-xs">{u.error.raw}</pre></details>}
-            </div>
-          )}
-          <div className="flex flex-wrap gap-2">
-            {staged && (
-              <Key ref={restartRef} onClick={() => void u.restart()} disabled={u.busy !== ""}>{u.busy === "restart" ? "Restarting…" : "Restart now"}</Key>
-            )}
-            {!staged && s.can_apply && local && (
-              <Key onClick={() => { setFocusNext("status"); void u.apply(); }} disabled={u.busy !== ""}>{u.busy === "apply" ? "Downloading and checking..." : u.error ? "Try again" : "Update now"}</Key>
-            )}
-            {!staged && s.latest && (
-              <a href={s.release_url || `${RELEASES_URL}${s.latest}`} target="_blank" rel="noopener" className="inline-flex min-h-11 items-center rounded-card border border-hairline bg-surface px-4 text-ui text-ink outline-none hover:bg-raised focus-visible:ring-2 focus-visible:ring-focus">What's new<span className="sr-only"> (opens in a new tab)</span></a>
-            )}
-            {!staged && (
-              <button type="button" onClick={() => { if (s.latest) u.dismiss(s.latest); setFocusNext("show"); }} className="inline-flex min-h-11 cursor-pointer items-center rounded-card px-4 text-ui text-ink-2 outline-none hover:bg-track hover:text-ink focus-visible:ring-2 focus-visible:ring-focus">Dismiss</button>
-            )}
-          </div>
-        </section>
+    <section aria-label="OpenRO update" className="mx-4 mt-3 flex min-h-11 items-center gap-2 rounded-card card-stock py-1 pl-4 pr-1 text-sm md:mx-6">
+      <p ref={statusRef} tabIndex={-1} role="status" aria-live="polite" className="min-w-0 flex-1 truncate outline-none">{text}</p>
+      {!busy && failed && <Key onClick={() => u.error?.retry()}>Try again</Key>}
+      {!busy && !failed && staged && <Key ref={restartRef} onClick={() => void u.restart()}>Restart now</Key>}
+      {!busy && !failed && !staged && canApply && <Key onClick={() => void u.apply()}>Update now</Key>}
+      {!busy && !failed && !staged && !canApply && <span className="shrink-0 text-ink-2">{s?.dev_build ? "Developer copy" : "Update on this computer"}</span>}
+      {!busy && !staged && (
+        <button type="button" aria-label="Dismiss update" onClick={() => { if (s?.latest) u.dismiss(s.latest); }} className="grid size-11 flex-none cursor-pointer place-items-center rounded-sm text-icon outline-none hover:bg-track hover:text-ink focus-visible:ring-2 focus-visible:ring-focus">
+          <X className="size-4" strokeWidth={1.5} aria-hidden />
+        </button>
       )}
-    </>
+    </section>
   );
 }

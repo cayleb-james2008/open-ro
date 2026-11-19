@@ -18,6 +18,15 @@
  * Imported by starter/src/index.css (as ../../references/tokens.css) after `@import "tailwindcss"`.
  */
 
+/* Hallmark floor: Tailwind's default palette and shadow literals are reset here, so no default colour or shadow value is emitted.
+   Every colour the app uses is a role token below (this file's own @theme inline). */
+@theme {
+  --color-*: initial;
+  --shadow-*: initial;
+  --inset-shadow-*: initial;
+  --drop-shadow-*: initial;
+}
+
 /* ---------- 1. Light theme (default) ---------- */
 :root {
   color-scheme: light;
