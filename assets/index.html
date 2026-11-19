@@ -886,8 +886,19 @@
     state.undoOpen = open;
     undoBox.hidden = !open;
     revertBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open) $('undo-yes').focus();
+    if (open) $('undo-no').focus();
   }
+  /* while the confirm is open: Escape cancels back to the Undo button; Tab stays between its two buttons */
+  document.addEventListener('keydown', (e) => {
+    if (!state.undoOpen) return;
+    if (e.key === 'Escape') { e.preventDefault(); setUndo(false); revertBtn.focus(); return; }
+    if (e.key !== 'Tab') return;
+    const first = $('undo-no');
+    const last = $('undo-yes');
+    const a = document.activeElement;
+    if (e.shiftKey && (a === first || !undoBox.contains(a))) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (a === last || !undoBox.contains(a))) { e.preventDefault(); first.focus(); }
+  });
   revertBtn.addEventListener('click', () => setUndo(!state.undoOpen));
   $('undo-no').addEventListener('click', () => { setUndo(false); revertBtn.focus(); });
   $('undo-yes').addEventListener('click', async () => {
