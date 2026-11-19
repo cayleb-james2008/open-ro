@@ -249,6 +249,17 @@ impl Shared {
     /// for the pitch — non-empty only when this set is NEW for the
     /// chat (the context changed since the last pitch). A pitch is
     /// spoken once per context, never repeated into the record.
+    /// Titles of the ideas this chat has already built (every skill built): the page says "Already in your game" for them.
+    pub fn built_titles_for(&self, chat_id: &str) -> Vec<String> {
+        let state = self.ideas.lock().unwrap();
+        let built = state.get(chat_id).map(|e| e.built.clone()).unwrap_or_default();
+        crate::ideas::catalogue()
+            .into_iter()
+            .filter(|i| !i.skills.is_empty() && i.skills.iter().all(|s| built.iter().any(|b| b == s)))
+            .map(|i| i.title.to_string())
+            .collect()
+    }
+
     pub fn pitch_for(&self, chat_id: &str, intro: &str) -> (Vec<crate::ideas::Idea>, Vec<String>) {
         let mut state = self.ideas.lock().unwrap();
         let entry = state.entry(chat_id.to_string()).or_default();
@@ -900,6 +911,7 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
                 &json!({
                     "ok": true,
                     "ideas": ideas_json(&ideas),
+                    "built_titles": shared.built_titles_for(&chat_id),
                     "pitched_new": !lines.is_empty(),
                 }),
             );
