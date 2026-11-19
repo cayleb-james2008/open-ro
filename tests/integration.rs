@@ -2556,6 +2556,7 @@ fn chats_report_can_undo_for_the_active_chat() {
 /// without a port); loopback names are always accepted; anything else is 403.
 #[test]
 fn allowed_hosts_list_admits_only_listed_names() {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var("OPENRO_ALLOWED_HOSTS", "lab.example:9000, other.example");
     let port = start_server(None);
     let status_for = |host: &str| {
@@ -2571,4 +2572,55 @@ fn allowed_hosts_list_admits_only_listed_names() {
     assert_eq!(status_for("evil.example"), 403, "an unlisted name is refused");
     assert_eq!(status_for("x.lab.example"), 403, "a subdomain is not the listed name");
     std::env::remove_var("OPENRO_ALLOWED_HOSTS");
+}
+
+/// Serialises the tests that set process environment variables.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Version and update endpoints: the running build is named, and nothing is
+/// fetched from GitHub until a check is asked for.
+#[test]
+fn version_and_update_endpoints_report_the_build_and_fetch_nothing() {
+    let port = start_server(None);
+    let (status, body) = http_request(port, "GET", "/api/version", None);
+    assert_eq!(status, 200, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!((v["name"].clone(), v["version"].clone()), (json!("openro-rs"), json!(env!("CARGO_PKG_VERSION"))));
+    let (_, body) = http_request(port, "GET", "/api/status", None);
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["version"], json!(env!("CARGO_PKG_VERSION")));
+    let (status, body) = http_request(port, "GET", "/api/update", None);
+    assert_eq!(status, 200, "{body}");
+    let u: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(u["current"], json!(env!("CARGO_PKG_VERSION")));
+    assert_eq!((u["mode"].clone(), u["available"].clone(), u["checked_at"].clone(), u["latest"].clone(), u["staged"].clone()), (json!("notify"), json!(false), Value::Null, Value::Null, Value::Null));
+    let mut keys: Vec<&str> = u.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec!["available", "can_apply", "checked_at", "current", "dev_build", "error", "latest", "mode", "name", "notes", "platform", "release_url", "repo", "staged"]
+    );
+}
+
+/// Apply and restart are for this machine only. A foreign Host is refused
+/// before anything else, and no allowed-host name changes that.
+#[test]
+fn apply_and_restart_are_refused_from_another_host() {
+    let port = start_server(None);
+    for path in ["/api/update/apply", "/api/update/restart"] {
+        let request = format!(
+            "POST {path} HTTP/1.1\r\nHost: lan-desk.local:{port}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n"
+        );
+        let (status, body) = http_raw(port, &request, b"{}");
+        assert_eq!(status, 403, "{path}: {body}");
+        assert!(body.contains("this machine"), "{path}: {body}");
+    }
+}
+
+/// Restart with no update staged is a plain 409, never a restart.
+#[test]
+fn restart_without_a_staged_update_is_refused() {
+    let port = start_server(None);
+    let (status, body) = http_request(port, "POST", "/api/update/restart", Some("{}"));
+    assert_eq!(status, 409, "{body}");
+    assert!(body.contains("no update is waiting"), "{body}");
 }
