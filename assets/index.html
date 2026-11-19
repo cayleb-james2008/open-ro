@@ -199,6 +199,8 @@
   #composer input:hover { border-color: var(--faint); }
   #composer .btn { min-width: 44px; }
   #revert svg { width: 16px; height: 16px; }
+  .undo-group { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .undo-reason { font-size: 12px; color: var(--ink-2); white-space: nowrap; }
 
   /* right panel: the real place, collapsible, wide screens only */
   #place-panel { width: 280px; flex: none; background: var(--side); border-left: 1px solid var(--hairline); display: flex; flex-direction: column; min-height: 0; }
@@ -245,6 +247,9 @@
     #composer { flex-wrap: wrap; }
     #composer input { flex-basis: 100%; }
     #composer .btn { flex: 1 1 0; }
+    #composer .undo-group { flex: 1 1 0; }
+    #composer .undo-group .btn { flex: none; }
+    .undo-reason { white-space: normal; }
     #undo-confirm { flex-direction: column; align-items: stretch; }
     #undo-confirm .btn { width: 100%; }
     .chip { padding: 0 8px; }
@@ -324,7 +329,7 @@
         <form id="composer">
           <label class="sr-only" for="composer-input">Describe your game</label>
           <input id="composer-input" type="text" placeholder="Describe your game, for example: a lava obby with coins" autocomplete="off">
-          <button id="revert" class="btn" type="button" aria-expanded="false" aria-controls="undo-confirm" aria-label="Undo the last build" disabled><svg class="ic" aria-hidden="true"><use href="#i-undo"/></svg>Undo…</button>
+          <span class="undo-group"><button id="revert" class="btn" type="button" aria-expanded="false" aria-controls="undo-confirm" aria-label="Undo the last build" aria-describedby="undo-reason" disabled><svg class="ic" aria-hidden="true"><use href="#i-undo"/></svg>Undo</button><span id="undo-reason" class="undo-reason" hidden></span></span>
           <button id="send" class="btn btn-primary" type="submit"><svg class="ic ic-sm" aria-hidden="true"><use href="#i-send"/></svg>Send</button>
         </form>
       </div>
@@ -815,7 +820,12 @@
   function syncUndo() {
     const b = $('revert');
     b.disabled = state.busy || state.built === null || state.built === 0;
-    b.title = state.built === 0 ? 'Nothing built yet' : state.built === null ? 'Connect Studio to see what is built' : '';
+    /* the reason is visible text beside the button, not only a tooltip */
+    const reason = state.busy ? '' : state.built === 0 ? 'Nothing built yet' : state.built === null ? 'Connect Studio to see what is built' : '';
+    const r = $('undo-reason');
+    r.textContent = reason;
+    r.hidden = !reason;
+    b.title = reason;
   }
 
   /* after a re-render the trigger is a new node: focus its successor, else the composer */
