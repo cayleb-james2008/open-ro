@@ -79,6 +79,7 @@ export function App() {
   const [modelOk, setModelOk] = useState(shell.canBuild || !shell.studio);
   const [version, setVersion] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const menuKeyRef = useRef<HTMLButtonElement>(null);
   const update = useUpdate();
 
   const activeId = chats?.active ?? "";
@@ -285,7 +286,7 @@ export function App() {
   const rail = (
     <nav aria-label="Chats and settings" className="flex h-full min-h-0 flex-col gap-3 bg-surface p-4 text-ink">
       <div className="flex min-w-0 items-center gap-3 px-1 pb-2 pt-1">
-        <span className="grid size-10 flex-none place-items-center rounded-card bg-blue text-blue-fg shadow-[0_3px_0_var(--key-edge)]"><Sparkles className="size-5" strokeWidth={1.5} aria-hidden /></span>
+        <span className="grid size-10 flex-none place-items-center rounded-card bg-ink-button text-ink-button-fg"><Sparkles className="size-5" strokeWidth={1.5} aria-hidden /></span>
         <div className="min-w-0">
           <h1 className="font-heading text-title tracking-display font-semibold leading-tight">OpenRO</h1>
           <div className="truncate text-sm text-ink-2">{shell.gameName}</div>
@@ -298,7 +299,7 @@ export function App() {
         <AnimatedBackground
           defaultValue={activeId}
           onValueChange={(id) => id && id !== activeId && switchChat(id)}
-          className="rounded-card bg-track"
+          className="rounded-card bg-blue-soft"
           transition={open}
           enableHover={false}
         >
@@ -352,10 +353,10 @@ export function App() {
       <div className="flex h-dvh min-h-0 w-full overflow-hidden text-ink" data-app="openro">
         <a className="skip" href="#composer-input">Skip to message box</a>
         {!phone && <div className="w-[264px] flex-none border-r border-hairline">{rail}</div>}
-        <Drawer.Root open={menuOpen && phone} onOpenChange={setMenuOpen} direction="left">
+        <Drawer.Root open={menuOpen && phone} onOpenChange={setMenuOpen} direction="left" autoFocus>
           <Drawer.Portal>
             <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/20" />
-            <Drawer.Content className="fixed inset-y-0 left-0 z-50 w-[min(86vw,300px)] outline-none">
+            <Drawer.Content onCloseAutoFocus={(e) => { e.preventDefault(); menuKeyRef.current?.focus(); }} className="fixed inset-y-0 left-0 z-50 w-[min(86vw,300px)] outline-none">
               <Drawer.Title className="sr-only">Chats and settings</Drawer.Title>
               {rail}
             </Drawer.Content>
@@ -365,13 +366,13 @@ export function App() {
         <main className="flex min-w-0 flex-1 flex-col">
           <header className="sticky top-0 z-10 flex min-h-14 flex-none flex-wrap items-center gap-x-3 gap-y-2 border-b border-hairline bg-canvas px-4 py-2 md:px-6">
             {phone && (
-              <button type="button" onClick={() => setMenuOpen(true)} aria-label="Open the menu" aria-expanded={menuOpen} className="grid size-11 flex-none cursor-pointer place-items-center rounded-sm text-icon outline-none hover:bg-track focus-visible:ring-2 focus-visible:ring-focus">
+              <button ref={menuKeyRef} type="button" onClick={() => setMenuOpen(true)} aria-label="Open the menu" aria-expanded={menuOpen} className="grid size-11 flex-none cursor-pointer place-items-center rounded-sm text-icon outline-none hover:bg-track focus-visible:ring-2 focus-visible:ring-focus">
                 <Menu className="size-5" strokeWidth={1.5} aria-hidden />
               </button>
             )}
             <h2 className="min-w-0 flex-1 truncate font-heading text-title tracking-display font-semibold">{activeTitle}</h2>
             {narrow && (
-              <Drawer.Root open={shelfOpen} onOpenChange={setShelfOpen}>
+              <Drawer.Root open={shelfOpen} onOpenChange={setShelfOpen} autoFocus>
                 <Drawer.Trigger asChild>
                   <button type="button" aria-label="In your game" className="grid size-11 flex-none cursor-pointer place-items-center rounded-card border border-hairline bg-surface outline-none hover:bg-track focus-visible:ring-2 focus-visible:ring-focus">
                     <PanelRight className="size-5" strokeWidth={1.5} aria-hidden />
