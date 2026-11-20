@@ -1,0 +1,103 @@
+/* Hum for openro, on the shared Anthropic/owner palette (_fe/palette-claude.css). Every colour role below is a palette value
+ * or a value derived from one (the derivation is noted in DESIGN.md "Colour scheme"). Names are the house role names, so the
+ * copied library parts take the palette without edits. Fonts, radii, grain, rims, the torn edge and stamps are not colour and
+ * stay as they were. Clay (--blue) marks only the keys, the current selection and the focus ring; state colours mark state only. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --canvas: #f5f4ee;
+  --board: #eeede5;
+  --surface: #fdfcfa;
+  --hairline: #e3e1d6;
+  /* Field edge: 3:1 or better against the surface (3.43:1). */
+  --input: #8a897f;
+  --track: #ebe9df;
+  --raised: #fefefc;
+  --ink: #141413;
+  --ink-2: #4d4c47;
+  --ink-3: #66655e;
+  --icon: #7d7c75;
+  --disabled: #b0aea5;
+  /* Clay: the one primary key, the selection tint, the focus ring (darker clay for the ring: 5.6:1 on surface). */
+  --blue: #d97757; --blue-fg: #141413; --blue-hover: #cc6a49; --blue-soft: #f6e3d9;
+  --ink-button: #141413; --ink-button-fg: #faf9f5;
+  /* Palette blue, sage and red: instrument, state and failure. */
+  --dot-green: #788c5d; --dot-blue: #6a9bcc; --dot-red: #c4483a; --dot-clay: #d97757; --dot-amber: #c99a3e; --dot-online: #788c5d; --unread: #c4483a;
+  --tag-plan-bg: oklch(94% .04 40); --tag-plan-fg: oklch(36% .10 40);
+  --tag-ops-bg: oklch(94% .04 250); --tag-ops-fg: oklch(36% .10 250);
+  --tag-design-bg: oklch(94% .04 10); --tag-design-fg: oklch(36% .10 10);
+  --tag-research-bg: oklch(94% .04 300); --tag-research-fg: oklch(36% .10 300);
+  --tag-mint-bg: oklch(94% .04 130); --tag-mint-fg: oklch(36% .10 130);
+  --tag-dev-bg: oklch(94% .04 85); --tag-dev-fg: oklch(36% .10 85);
+  --tag-neutral-bg: oklch(94% .015 90); --tag-neutral-fg: oklch(36% .03 90);
+  --tag-sky-bg: oklch(94% .04 250); --tag-sky-fg: oklch(36% .10 250);
+  --pill-active-bg: oklch(94% .04 130); --pill-active-fg: oklch(36% .10 130);
+  --pill-pro-bg: oklch(94% .04 25); --pill-pro-fg: #9a2f24;
+  --pill-warn-bg: oklch(94% .05 85); --pill-warn-fg: oklch(38% .10 85);
+  --pill-inactive-bg: #ebe9df; --pill-inactive-fg: #4d4c47;
+  --av-rose-bg: oklch(94% .04 10); --av-rose-fg: oklch(36% .10 10);
+  --av-violet-bg: oklch(94% .04 300); --av-violet-fg: oklch(36% .10 300);
+  --av-sky-bg: oklch(94% .04 250); --av-sky-fg: oklch(36% .10 250);
+  --av-grey-bg: oklch(94% .015 90); --av-grey-fg: oklch(36% .03 90);
+  --elev-shell: 0 40px 100px rgba(20, 20, 19, 0.10);
+  --elev-card: 0 1px 2px rgba(20, 20, 19, 0.05);
+  --elev-raised: 0 1px 2px rgba(20, 20, 19, 0.08);
+  --elev-lift: 0 10px 28px rgba(20, 20, 19, 0.12);
+  /* The key's lower edge: the darker clay token, 3px, flat (no blur, no gradient). */
+  --elev-primary: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 3px 0 #cc6a49;
+  --destructive-foreground: #9a2f24; --info-foreground: #3b6896; --success-foreground: #4f6038; --warning-foreground: #7a5a14;
+  --warn: #7a5a14; --warn-bg: #f7f0dc;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #141413;
+  --board: #1c1c1a;
+  --surface: #1f1e1c;
+  --hairline: #33322f;
+  /* Field edge: 3:1 or better against the surface (3.5:1). */
+  --input: #77766e;
+  --track: #262523;
+  --raised: #2a2926;
+  --ink: #faf9f5;
+  --ink-2: #c8c7bd;
+  --ink-3: #9d9c92;
+  --icon: #8c8b82;
+  --disabled: #5b5a55;
+  --blue: #d97757; --blue-fg: #141413; --blue-hover: #cc6a49; --blue-soft: #3a2a22;
+  --ink-button: #faf9f5; --ink-button-fg: #141413;
+  --dot-green: #8fa86d; --dot-blue: #7fb0e0; --dot-red: #e0675a; --dot-clay: #d97757; --dot-amber: #d9a84a; --dot-online: #8fa86d; --unread: #e0675a;
+  --tag-plan-bg: oklch(28% .04 40); --tag-plan-fg: oklch(84% .10 40);
+  --tag-ops-bg: oklch(28% .04 250); --tag-ops-fg: oklch(84% .10 250);
+  --tag-design-bg: oklch(28% .04 10); --tag-design-fg: oklch(84% .10 10);
+  --tag-research-bg: oklch(28% .04 300); --tag-research-fg: oklch(84% .10 300);
+  --tag-mint-bg: oklch(28% .04 130); --tag-mint-fg: oklch(84% .10 130);
+  --tag-dev-bg: oklch(28% .04 85); --tag-dev-fg: oklch(84% .10 85);
+  --tag-neutral-bg: oklch(28% .01 90); --tag-neutral-fg: oklch(84% .02 90);
+  --tag-sky-bg: oklch(28% .04 250); --tag-sky-fg: oklch(84% .10 250);
+  --pill-active-bg: oklch(28% .04 130); --pill-active-fg: oklch(84% .10 130);
+  --pill-pro-bg: oklch(28% .05 25); --pill-pro-fg: #f0988e;
+  --pill-warn-bg: oklch(28% .05 85); --pill-warn-fg: oklch(86% .10 85);
+  --pill-inactive-bg: #262523; --pill-inactive-fg: #c8c7bd;
+  --av-rose-bg: oklch(28% .04 10); --av-rose-fg: oklch(84% .10 10);
+  --av-violet-bg: oklch(28% .04 300); --av-violet-fg: oklch(84% .10 300);
+  --av-sky-bg: oklch(28% .04 250); --av-sky-fg: oklch(84% .10 250);
+  --av-grey-bg: oklch(28% .01 90); --av-grey-fg: oklch(84% .02 90);
+  --elev-shell: 0 40px 100px rgba(10, 10, 9, 0.5);
+  --elev-card: 0 1px 2px rgba(10, 10, 9, 0.4);
+  --elev-raised: 0 1px 2px rgba(10, 10, 9, 0.5);
+  --elev-lift: 0 12px 28px rgba(10, 10, 9, 0.55);
+  --elev-primary: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 3px 0 #cc6a49;
+  --destructive-foreground: #f0988e; --info-foreground: #9cc3e8; --success-foreground: #a9c188; --warning-foreground: #e7c277;
+  --warn: #e7c277; --warn-bg: #2e2818;
+}
+:root {
+  /* Hum: type voice, radii and the heading recipe (Hallmark theme values) */
+  --font-sans: "Chillax", ui-rounded, ui-sans-serif, sans-serif;
+  --font-heading: "Chillax", ui-rounded, ui-sans-serif, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, monospace;
+  --radius-shell: 32px; --radius-panel: 24px; --radius-dialog: 24px; --radius-card: 20px;
+  --radius-segment: 14px; --radius-chip: 999px; --radius-menu: 20px; --radius: 14px;
+  --display-weight: 600; --tracking-display: -0.03em;
+}
+h1, h2, h3, .font-heading { font-family: var(--font-heading); font-weight: var(--display-weight); letter-spacing: var(--tracking-display); }
+.num, .mono, [data-measured] { font-family: var(--font-mono); font-variant-numeric: tabular-nums ; }
+::selection { background: color-mix(in oklab, var(--blue) 28%, transparent); }
