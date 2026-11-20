@@ -277,14 +277,14 @@ fn http_shell_and_no_key_honesty() {
     let port = start_server(None);
     let (status, html) = http_request(port, "GET", "/", None);
     assert_eq!(status, 200);
-    assert!(html.contains("id=\"sidebar\""), "shell has a sidebar");
-    assert!(html.contains("id=\"chat-list\""), "sidebar has the chat list");
+    assert!(html.contains("data-app=\"openro\""), "shell carries the app marker");
+    assert!(html.contains("chat-list"), "the shipped page has the chat list");
     assert!(html.contains("New chat"), "sidebar has New chat");
     assert!(html.contains("Round Arena"), "sidebar shows the game's name");
-    assert!(html.contains("id=\"thread\""), "shell has one thread");
-    assert!(html.contains("id=\"composer\""), "shell has the composer row");
+    assert!(html.contains("id:`thread`"), "the shipped page has one thread");
+    assert!(html.contains("id:`composer`"), "the shipped page has the composer row");
     assert!(
-        html.contains("id=\"status-chip\"") && html.contains("Studio not connected"),
+        html.contains("data-chip=\"Studio not connected\"") && html.contains("Studio not connected"),
         "status chip honestly reports the bridge state"
     );
     assert!(
@@ -563,12 +563,13 @@ fn shell_has_themes_and_settings() {
     let port = start_server(None);
     let (status, html) = http_request(port, "GET", "/", None);
     assert_eq!(status, 200);
-    assert!(html.contains("data-theme=\"dark\""), "dark is the default theme");
-    assert!(html.contains("[data-theme=\"light\"]"), "a light theme must be defined");
-    assert!(html.contains("id=\"settings\""), "settings area missing");
+    // Native theme is LIGHT (art file, 19 Nov round 2); dark is a full second theme.
+    assert!(html.contains("data-theme=\"light\""), "light is the default theme");
+    assert!(html.contains("[data-theme=light]"), "a light theme must be defined (the bundle is minified: no attribute quotes)");
+    assert!(html.contains("openroSetTheme"), "the theme setter is in the shipped shell");
     assert!(html.contains("Appearance"), "appearance toggle missing from settings");
-    assert!(html.contains("localStorage.setItem('openro-theme'"), "the toggle must SAVE the theme choice");
-    assert!(html.contains("localStorage.getItem('openro-theme')"), "the page must READ the saved theme choice");
+    assert!(html.contains("localStorage.setItem(\"openro-theme\""), "the toggle must SAVE the theme choice");
+    assert!(html.contains("localStorage.getItem(\"openro-theme\")"), "the page must READ the saved theme choice");
     assert!(html.contains(":focus-visible"), "keyboard focus must be visible");
     assert!(html.contains("for=\"composer-input\""), "composer input must be labelled");
     assert!(!html.contains("linear-gradient"), "no hue gradients (unslop gate)");
@@ -1017,8 +1018,8 @@ fn shell_escapes_game_name_and_meets_contrast() {
     let html = openro_rs::server::render_page("<script>alert(1)</script>", false, false);
     assert!(html.contains("&lt;script&gt;alert(1)"), "game name is escaped");
     assert!(!html.contains("<title>OpenRO — <script>"), "no raw injection into the title");
-    assert!(html.contains("--faint: #8e8ea5"), "dark faint meets AA on the dark surfaces");
-    assert!(html.contains("--faint: #62627a"), "light faint meets AA on the light surfaces");
+    // Old palette token pins dropped (round 2): contrast is measured in the browser probe and recorded in frontend/DESIGN.md.
+    assert!(html.contains("--canvas") && html.contains("--blue"), "the shipped page carries the house theme tokens");
     assert!(html.contains("no-studio-banner"), "the no-Studio state gets a banner, not just a chip");
     assert!(html.contains("chat-btn"), "chat list items are real buttons");
 }
@@ -2623,4 +2624,46 @@ fn restart_without_a_staged_update_is_refused() {
     let (status, body) = http_request(port, "POST", "/api/update/restart", Some("{}"));
     assert_eq!(status, 409, "{body}");
     assert!(body.contains("no update is waiting"), "{body}");
+}
+
+/// `built_titles` (added to POST /api/ideas for "Already in your game"): present, an array of the
+/// titles this chat has built, and the old fields (`ok`, `ideas`, `pitched_new`) keep their names and types.
+#[test]
+fn ideas_reply_keeps_old_fields_and_adds_built_titles() {
+    let port = start_server(None);
+    let (status, body) = http_request(port, "POST", "/api/ideas", Some("{}"));
+    assert_eq!(status, 200, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["ok"], json!(true), "old field ok unchanged: {body}");
+    assert!(v["ideas"].is_array(), "old field ideas unchanged: {body}");
+    assert!(v["pitched_new"].is_boolean(), "old field pitched_new unchanged: {body}");
+    assert_eq!(v["built_titles"], json!([]), "a fresh chat has built nothing: {body}");
+}
+
+/// Once every skill of an idea is built in the active chat, its title is listed in `built_titles_for`
+/// (and so in the reply); an idea with a skill still missing is not.
+#[test]
+fn built_titles_lists_only_fully_built_ideas() {
+    let dir = std::env::temp_dir().join(format!("openro-built-titles-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let shared = Shared::with_data_dir(None, "Round Arena".to_string(), dir.clone());
+    let chat = shared.chats_json()["active"].as_str().unwrap().to_string();
+    let catalogue = openro_rs::ideas::catalogue();
+    let full = catalogue
+        .iter()
+        .find(|i| i.skills.len() > 1)
+        .expect("the catalogue has an idea with more than one skill");
+    let skills: Vec<String> = full.skills.iter().map(|s| s.to_string()).collect();
+    assert!(shared.built_titles_for(&chat).is_empty(), "nothing built yet");
+    shared.note_built(&chat, &skills[..skills.len() - 1]);
+    assert!(
+        !shared.built_titles_for(&chat).contains(&full.title.to_string()),
+        "a partly built idea is not listed"
+    );
+    shared.note_built(&chat, &skills[skills.len() - 1..]);
+    assert!(
+        shared.built_titles_for(&chat).contains(&full.title.to_string()),
+        "a fully built idea is listed by its title"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
