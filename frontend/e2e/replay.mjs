@@ -29,6 +29,20 @@ for (const w of [1440, 390]) {
   { const thread = ['You: Build this — Lava Obby', 'OpenRO: Building it now — these are my built-in steps, no model call involved.', 'Wrote ServerScriptService.' + LONG + '.', 'Playtest failed: ' + LONG]
     const { ctx, p } = await page(w, BASE, [['**/api/thread', r => json(r, { thread })]])
     ok(`openro ${w}: long unbroken playtest text stays in the card`, (await clipped(p)) === 0 && (await textOverflow(p, 'section[aria-labelledby=stage-title] p, section[aria-labelledby=stage-title] li')) === 0); await p.screenshot({ path: `${OUT}/openro-long-${w}.png` }); await ctx.close() }
+  // the counts read how many changes the last build made and how many pieces the game has: one of each, and a four-digit game
+  const built = ['You: Build this — Lava Obby', 'OpenRO: Building it now — these are my built-in steps, no model call involved.', 'Wrote ServerScriptService.Only.', 'Playtest passed.', 'OpenRO: Built “Lava Obby”.']
+  const ideas = r => r.request().method() === 'POST' ? json(r, { ideas: [], built_titles: ['Lava Obby'] }) : r.continue()
+  const stage = (p, i) => p.locator('nav[aria-label="Quest stages"] button').nth(i).click().then(() => p.waitForTimeout(500))
+  // what a person reads: the count (its screen-reader text) and the words after it, and whether they sit on one line
+  const reading = (p, t) => p.getByText(t).first().evaluate(e => { const cs = getComputedStyle(e); const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4; const own = [...e.childNodes].filter(c => c.nodeType === 3).map(c => c.textContent).join('').replace(/\s+/g, ' ').trim(); return { oneLine: e.getBoundingClientRect().height < lh * 1.6, text: ((e.querySelector('.sr-only')?.textContent ?? '') + ' ' + own).trim() } }).catch(() => null)
+  { const { ctx, p } = await page(w, BASE, [['**/api/thread', r => json(r, { thread: built })], ['**/api/ideas', ideas], ['**/api/place-tree', r => json(r, { scripts: { 'ServerScriptService.Only': '-- x' }, instances: {} })]])
+    await stage(p, 2); const one = await reading(p, 'change made in Studio')
+    await stage(p, 4); const piece = await reading(p, 'piece in your game')
+    ok(`openro ${w}: one change and one piece read in the singular, on their line`, !p.errs.length && one?.text === '1 change made in Studio' && one.oneLine && piece?.text === '1 piece in your game' && piece.oneLine, p.errs.join('|') + ' ' + JSON.stringify({ one, piece })); await ctx.close() }
+  { const many = Object.fromEntries(Array.from({ length: 1234 }, (_, i) => ['Workspace.Part' + i, {}]))
+    const { ctx, p } = await page(w, BASE, [['**/api/thread', r => json(r, { thread: built })], ['**/api/ideas', ideas], ['**/api/place-tree', r => json(r, { scripts: {}, instances: many })]])
+    await stage(p, 4); const big = await reading(p, 'pieces in your game')
+    ok(`openro ${w}: a four-digit piece count stays on its line and in the card`, !p.errs.length && big?.text === '1234 pieces in your game' && big.oneLine && (await clipped(p)) === 0, p.errs.join('|') + ' ' + JSON.stringify(big)); await p.screenshot({ path: `${OUT}/openro-bigcount-${w}.png` }); await ctx.close() }
 }
 await b.close()
 report('replay', res)
