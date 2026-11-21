@@ -20,7 +20,7 @@ const STAGES = [
   { name: "Share", Icon: Share2 },
 ];
 // An idea's pitch leads with its one-line summary before the colon; the tile shows that, the Describe stage the whole pitch.
-const gist = (pitch: string) => { const p = plain(pitch); const i = p.indexOf(": "); return i > 0 ? p.slice(0, i) : p; };
+const gist = (pitch: string | undefined) => { const p = plain(pitch ?? ""); const i = p.indexOf(": "); return i > 0 ? p.slice(0, i) : p; };
 const nameOf = (path: string) => (path.split(".").pop() || path).replace(/([a-z])([A-Z])/g, "$1 $2");
 
 type Attempt = {
@@ -49,7 +49,7 @@ function lastAttempt(lines: string[]): Attempt | null {
 }
 
 function Chips({ items }: { items: string[] }) {
-  return <ul className="flex flex-wrap gap-1.5">{items.map((s) => <li key={s} className="rounded-chip bg-track px-2.5 py-1 text-sm text-ink">{s}</li>)}</ul>;
+  return <ul className="flex flex-wrap gap-1.5">{items.map((s) => <li key={s} className="max-w-full rounded-chip bg-track px-2.5 py-1 text-sm text-ink [overflow-wrap:anywhere]">{s}</li>)}</ul>;
 }
 
 function Stamp({ tone, children }: { tone: "ok" | "bad" | "warn"; children: ReactNode }) {
@@ -131,8 +131,8 @@ export function Quest({ lines, ideas, builtTitles, place, pending, canBuild, can
         {stage === 1 && picked && (
           <>
             <h2 id="stage-title" className="font-heading text-display tracking-display">{picked.title}</h2>
-            <p className="text-ui text-ink-2">{plain(picked.pitch)}</p>
-            <div><p className="mb-2 text-sm text-ink-2">What it adds</p><Chips items={picked.skills.map((s) => ADDS[s] ?? s.replace(/_/g, " "))} /></div>
+            <p className="text-ui text-ink-2 [overflow-wrap:anywhere]">{plain(picked.pitch ?? "")}</p>
+            <div><p className="mb-2 text-sm text-ink-2">What it adds</p><Chips items={(picked.skills ?? []).map((s) => ADDS[s] ?? s.replace(/_/g, " "))} /></div>
             {why && <p className="text-sm text-ink-2">{why}</p>}
             <div className="flex flex-wrap items-center justify-between gap-3">
               <button type="button" onClick={() => setPicked(null)} className="min-h-11 cursor-pointer rounded-card px-3 text-ui text-ink-2 outline-none hover:bg-track hover:text-ink focus-visible:ring-2 focus-visible:ring-focus">Pick another</button>
@@ -173,7 +173,7 @@ export function Quest({ lines, ideas, builtTitles, place, pending, canBuild, can
                   <>
                     <p className="text-ui text-ink-2"><SlidingNumber value={a.changes.length} /> {a.changes.length === 1 ? "change" : "changes"} made in Studio</p>
                     <ol className="grid gap-1.5 text-ui text-ink">
-                      {a.changes.map((c, i) => <li key={i} className="flex items-start gap-2"><Check className="mt-1 size-4 flex-none text-success-foreground" strokeWidth={2} aria-hidden />{stepInfo(c).label}</li>)}
+                      {a.changes.map((c, i) => <li key={i} className="flex min-w-0 items-start gap-2 [overflow-wrap:anywhere]"><Check className="mt-1 size-4 flex-none text-success-foreground" strokeWidth={2} aria-hidden />{stepInfo(c).label}</li>)}
                     </ol>
                   </>
                 )}
@@ -187,7 +187,7 @@ export function Quest({ lines, ideas, builtTitles, place, pending, canBuild, can
             <h2 id="stage-title" className="font-heading text-display tracking-display">Playtest</h2>
             <div className="flex flex-col items-start gap-3">
               <Stamp tone={a.verdict.tone}>{a.verdict.tone === "ok" ? "Passed" : a.verdict.tone === "bad" ? "Failed" : "Not proven yet"}</Stamp>
-              <p className="text-ui text-ink-2">{a.verdict.tone === "ok" ? "The test run played through with no errors." : a.verdict.tone === "bad" ? plain(a.verdict.raw) : "The test result could not be read, so this build counts as unproven."}</p>
+              <p className="text-ui text-ink-2 [overflow-wrap:anywhere]">{a.verdict.tone === "ok" ? "The test run played through with no errors." : a.verdict.tone === "bad" ? plain(a.verdict.raw) : "The test result could not be read, so this build counts as unproven."}</p>
               {a.console.length > 0 && <pre className="max-h-40 w-full overflow-auto whitespace-pre-wrap break-words rounded-card bg-track p-3 font-mono text-sm text-ink">{a.console.join("\n")}</pre>}
             </div>
             {parts && parts.length > 0 && <div><p className="mb-2 text-sm text-ink-2">In your game now</p><Chips items={parts.map(nameOf)} /></div>}
