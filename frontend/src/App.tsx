@@ -10,7 +10,9 @@ import { MorphingDialog, MorphingDialogTrigger, MorphingDialogContainer, Morphin
 import { Pill } from "@/components/kibo-ui/pill";
 import { open } from "@/motion";
 import { read, post, SEND_FAILED, type Chat, type ChatList, type Idea, type Place } from "./app/data";
-import { ThreadBody, IdeaTile } from "./app/Thread";
+import { ThreadBody } from "./app/Thread";
+import { Quest } from "./app/Quest";
+import { Expandable, ExpandableContent, ExpandableTrigger } from "@/components/ui/expandable";
 import { PartsShelf, StudioChip } from "./app/Shelf";
 import { Key } from "./app/Key";
 import { useUpdate, UpdateStrip } from "./app/Update";
@@ -79,6 +81,7 @@ export function App() {
   const [modelOk, setModelOk] = useState(shell.canBuild || !shell.studio);
   const [version, setVersion] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const menuKeyRef = useRef<HTMLButtonElement>(null);
   const update = useUpdate();
 
   const activeId = chats?.active ?? "";
@@ -141,12 +144,10 @@ export function App() {
     read<{ version: string }>("/api/version").then((v) => setVersion(v.version)).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // A conversation scrolls to its latest line (the old page did this on every thread update).
   const threadRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = threadRef.current;
-    if (el && (lines.some((l) => l.startsWith("You: ")) || building)) el.scrollTop = el.scrollHeight;
-  }, [lines, building]);
+  const cantBuildWhy = !studioOk ? "Building needs Roblox Studio open with the OpenRO connection. Use Check again at the top once it is open."
+    : !modelOk ? "Building needs a model key. Ask whoever runs OpenRO to add one, then restart it." : "";
+  const lastBad = [...notices].reverse().find((n) => n.bad)?.text ?? null;
 
   const checkStudio = async () => {
     try {
@@ -285,7 +286,7 @@ export function App() {
   const rail = (
     <nav aria-label="Chats and settings" className="flex h-full min-h-0 flex-col gap-3 bg-surface p-4 text-ink">
       <div className="flex min-w-0 items-center gap-3 px-1 pb-2 pt-1">
-        <span className="grid size-10 flex-none place-items-center rounded-card bg-blue text-blue-fg shadow-[0_3px_0_var(--key-edge)]"><Sparkles className="size-5" strokeWidth={1.5} aria-hidden /></span>
+        <span className="grid size-10 flex-none place-items-center rounded-card bg-ink-button text-ink-button-fg"><Sparkles className="size-5" strokeWidth={1.5} aria-hidden /></span>
         <div className="min-w-0">
           <h1 className="font-heading text-title tracking-display font-semibold leading-tight">OpenRO</h1>
           <div className="truncate text-sm text-ink-2">{shell.gameName}</div>
@@ -298,7 +299,7 @@ export function App() {
         <AnimatedBackground
           defaultValue={activeId}
           onValueChange={(id) => id && id !== activeId && switchChat(id)}
-          className="rounded-card bg-track"
+          className="rounded-card bg-blue-soft"
           transition={open}
           enableHover={false}
         >
@@ -352,10 +353,10 @@ export function App() {
       <div className="flex h-dvh min-h-0 w-full overflow-hidden text-ink" data-app="openro">
         <a className="skip" href="#composer-input">Skip to message box</a>
         {!phone && <div className="w-[264px] flex-none border-r border-hairline">{rail}</div>}
-        <Drawer.Root open={menuOpen && phone} onOpenChange={setMenuOpen} direction="left">
+        <Drawer.Root open={menuOpen && phone} onOpenChange={setMenuOpen} direction="left" autoFocus>
           <Drawer.Portal>
             <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/20" />
-            <Drawer.Content className="fixed inset-y-0 left-0 z-50 w-[min(86vw,300px)] outline-none">
+            <Drawer.Content onCloseAutoFocus={(e) => { e.preventDefault(); menuKeyRef.current?.focus(); }} className="fixed inset-y-0 left-0 z-50 w-[min(86vw,300px)] outline-none">
               <Drawer.Title className="sr-only">Chats and settings</Drawer.Title>
               {rail}
             </Drawer.Content>
@@ -365,13 +366,13 @@ export function App() {
         <main className="flex min-w-0 flex-1 flex-col">
           <header className="sticky top-0 z-10 flex min-h-14 flex-none flex-wrap items-center gap-x-3 gap-y-2 border-b border-hairline bg-canvas px-4 py-2 md:px-6">
             {phone && (
-              <button type="button" onClick={() => setMenuOpen(true)} aria-label="Open the menu" aria-expanded={menuOpen} className="grid size-11 flex-none cursor-pointer place-items-center rounded-sm text-icon outline-none hover:bg-track focus-visible:ring-2 focus-visible:ring-focus">
+              <button ref={menuKeyRef} type="button" onClick={() => setMenuOpen(true)} aria-label="Open the menu" aria-expanded={menuOpen} className="grid size-11 flex-none cursor-pointer place-items-center rounded-sm text-icon outline-none hover:bg-track focus-visible:ring-2 focus-visible:ring-focus">
                 <Menu className="size-5" strokeWidth={1.5} aria-hidden />
               </button>
             )}
             <h2 className="min-w-0 flex-1 truncate font-heading text-title tracking-display font-semibold">{activeTitle}</h2>
             {narrow && (
-              <Drawer.Root open={shelfOpen} onOpenChange={setShelfOpen}>
+              <Drawer.Root open={shelfOpen} onOpenChange={setShelfOpen} autoFocus>
                 <Drawer.Trigger asChild>
                   <button type="button" aria-label="In your game" className="grid size-11 flex-none cursor-pointer place-items-center rounded-card border border-hairline bg-surface outline-none hover:bg-track focus-visible:ring-2 focus-visible:ring-focus">
                     <PanelRight className="size-5" strokeWidth={1.5} aria-hidden />
@@ -412,33 +413,26 @@ export function App() {
                 </div>
               ) : (
                 <>
-                  {!lines.some((l) => l.startsWith("You: ")) && !building?.message && (
-                    <section className="flex flex-col gap-4 pb-4 pt-8">
-                      <h2 className="font-heading text-display tracking-display text-ink">What do you want to make?</h2>
-                      <p className="max-w-[60ch] text-ui text-ink-2">
-                        {canBuild
-                          ? "Pick one of these ideas, or describe your own game in the box below. OpenRO builds it in Roblox Studio and runs a test before it says it is done."
-                          : "Pick an idea or describe your own game below. To build it, OpenRO needs a model key and a Roblox Studio connection. See the notice above."}
-                      </p>
-                      <p className="text-sm text-ink-2">Roblox Studio is where your game lives; OpenRO needs it open to build and test.</p>
-                    </section>
-                  )}
-                  <ThreadBody
-                    lines={lines}
-                    notices={notices}
-                    pending={building}
-                    ideas={ideas}
-                    builtTitles={builtTitles}
-                    canBuild={canBuild}
-                    busy={busy}
-                    buildingIdea={building?.build}
-                    freshFrom={0}
-                    onBuild={buildIdea}
-                  />
-                  {!lines.some((l) => l.startsWith("You: ")) && ideas.length > 0 && !building && (
-                    <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] items-stretch gap-4">
-                      {ideas.map((i) => <IdeaTile key={i.id} idea={i} canBuild={canBuild} busy={busy} building={false} onBuild={() => buildIdea(i)} />)}
-                    </div>
+                  <Quest lines={lines} ideas={ideas} builtTitles={builtTitles} place={place} pending={building} canBuild={canBuild} cantBuildWhy={cantBuildWhy}
+                    busy={busy} lastBad={lastBad} onBuild={buildIdea} onDescribe={() => inputRef.current?.focus()} />
+                  {(lines.some((l) => l.startsWith("You: ")) || notices.length > 0) && (
+                    <Expandable expandDirection="vertical" expandBehavior="push" className="mx-auto w-full max-w-[640px] shrink-0">
+                      {({ isExpanded }: { isExpanded: boolean }) => (
+                        <>
+                          <ExpandableTrigger aria-expanded={isExpanded} aria-controls="conversation"
+                            className="flex min-h-11 w-full cursor-pointer items-center justify-between gap-3 rounded-card border border-hairline bg-surface px-4 text-left text-ui text-ink outline-none hover:bg-raised focus-visible:ring-2 focus-visible:ring-focus">
+                            <span>The whole conversation</span>
+                            <span className="text-sm text-ink-2">{isExpanded ? "Hide" : "Show"}</span>
+                          </ExpandableTrigger>
+                          <ExpandableContent preset="fade">
+                            <div id="conversation" className="mt-4 flex flex-col gap-4">
+                              <ThreadBody lines={lines} notices={notices} pending={building} ideas={ideas} builtTitles={builtTitles} canBuild={canBuild}
+                                busy={busy} buildingIdea={building?.build} freshFrom={lines.length} onBuild={buildIdea} />
+                            </div>
+                          </ExpandableContent>
+                        </>
+                      )}
+                    </Expandable>
                   )}
                 </>
               )}
@@ -447,16 +441,6 @@ export function App() {
 
           <div className="torn flex-none bg-raised">
             <div className="mx-auto flex w-full max-w-[760px] flex-col gap-2 px-3 pb-3 pt-4 md:gap-3 md:px-6 md:pb-5 md:pt-5">
-              {ideas.length > 0 && lines.some((l) => l.startsWith("You: ") || l.startsWith("Wrote ") || l.startsWith("Playtest")) && (
-                <div id="ideas" className="flex flex-wrap items-center gap-2">
-                  <span className="mr-1 text-sm text-ink-2">Next ideas</span>
-                  {ideas.map((idea) => (
-                    <button key={idea.id} type="button" disabled={!canBuild || busy} onClick={() => buildIdea(idea)} aria-label={`Build ${idea.title}`} data-focus-key={`idea:${idea.title}`} className="inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-chip border border-hairline bg-surface px-3 text-sm text-ink outline-none transition-[color,background-color] hover:bg-canvas focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-default disabled:text-disabled">
-                      <Plus className="size-3.5" strokeWidth={1.5} aria-hidden />{idea.title}
-                    </button>
-                  ))}
-                </div>
-              )}
               {undoReason && <p id="undo-reason" className="self-end text-sm text-ink-2">{undoReason}</p>}
               <form id="composer" onSubmit={send} className="grid gap-2 sm:flex sm:items-stretch">
                 <InputGroup className="min-w-0 sm:flex-1">

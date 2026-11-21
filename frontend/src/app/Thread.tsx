@@ -5,7 +5,7 @@ export function WorkingLine({ children }: { children: string }) {
   const reduce = useReducedMotion();
   return (
     <p role="status" className="flex items-center gap-2 text-ui text-ink-2">
-      <motion.span aria-hidden className="size-2.5 flex-none rounded-full bg-blue" animate={reduce ? undefined : { opacity: [0.35, 1, 0.35] }} transition={{ repeat: Infinity, duration: 1.4 }} />
+      <motion.span aria-hidden className="size-2.5 flex-none rounded-full bg-dot-blue" animate={reduce ? undefined : { opacity: [0.35, 1, 0.35] }} transition={{ repeat: Infinity, duration: 1.4 }} />
       {children}
     </p>
   );
@@ -34,7 +34,7 @@ export function AgentBubble({ text, bad, whole, fresh }: { text: string; bad?: b
   const { plain: say, raw } = agentText(text, !!bad, !!whole);
   return (
     <motion.div initial={fresh ? { opacity: 0, y: 4 } : false} animate={{ opacity: 1, y: 0 }} transition={reveal} className="flex items-start gap-3">
-      <span className="grid size-8 flex-none place-items-center rounded-full bg-blue text-blue-fg shadow-[0_2px_0_var(--key-edge)]" aria-hidden><Sparkles className="size-4" strokeWidth={1.5} /></span>
+      <span className="grid size-8 flex-none place-items-center rounded-full bg-track text-ink" aria-hidden><Sparkles className="size-4" strokeWidth={1.5} /></span>
       <div className={`card-stock min-w-0 p-4 text-ui ${bad ? "border-transparent bg-pill-pro-bg text-pill-pro-fg" : "text-ink"}`}>
         <span className="break-words">{say}</span>
         {raw && (
@@ -150,7 +150,7 @@ export function BuildTray({ rows, working = false }: { rows: Row[]; working?: bo
 
 function Stamp({ label, done }: { label: string; done: boolean }) {
   return (
-    <motion.span layout transition={layout} className={`inline-flex h-8 items-center gap-1.5 rounded-chip px-3 text-sm font-medium ${done ? "bg-blue-soft text-ink" : "bg-track text-ink-3"}`}>
+    <motion.span layout transition={layout} className={`inline-flex h-8 items-center gap-1.5 rounded-chip px-3 text-sm font-medium ${done ? "bg-pill-active-bg text-pill-active-fg" : "bg-track text-ink-3"}`}>
       {done && <Check className="size-3.5" strokeWidth={2} aria-hidden />}
       {label}
     </motion.span>

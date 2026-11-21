@@ -73,8 +73,10 @@ function Section({ title, names }: { title: string; names: string[] }) {
                   <>
                     <div className="flex items-center gap-2">
                       <span className={`grid size-7 flex-none place-items-center rounded-sm ${kind.cls}`}><Icon className="size-4" strokeWidth={1.5} aria-hidden /></span>
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium">{name}</span>
-                      <Pill className={`flex-none text-xs ${kind.cls}`}>{kind.label}</Pill>
+                      <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
+                        <span className="w-full truncate text-sm font-medium">{name}</span>
+                        <Pill className={`text-xs ${kind.cls}`}>{kind.label}</Pill>
+                      </span>
                       <ExpandableTrigger aria-expanded={isExpanded} aria-label={`Details for ${name}`} className="inline-flex min-h-11 min-w-11 flex-none cursor-pointer items-center justify-center rounded-sm text-ink-3 outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-focus">
                         <ChevronDown className={`size-4 transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`} strokeWidth={1.5} aria-hidden />
                       </ExpandableTrigger>
