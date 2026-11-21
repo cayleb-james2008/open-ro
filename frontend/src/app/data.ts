@@ -76,7 +76,7 @@ export const ADDS: Record<string, string> = {
 // Server errors that are config problems: the plain sentence shows, the raw line sits behind Details.
 const PLAIN_ERRORS = [
   { re: /^no model key/, say: "Chat is off: no model key is set, so OpenRO cannot answer. Ask whoever runs OpenRO to add a model key, then restart it." },
-  { re: /^Studio bridge error/, say: "Roblox Studio refused that change, so OpenRO stopped and added nothing. Send it again to retry, or ask for something smaller." },
+  { re: /^Studio bridge error/, say: "Roblox Studio refused a step, so OpenRO stopped there. Steps before it may have landed: the conversation lists them, and Undo takes the build back. Send it again to retry, or ask for something smaller." },
   { re: /^Studio not connected/, say: "Studio is not connected, so nothing can be built. Open Roblox Studio with the OpenRO connection running, then send again." },
 ];
 export function agentText(text: string, bad: boolean, whole = false): { plain: string; raw: string } {
