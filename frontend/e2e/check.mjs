@@ -4,7 +4,7 @@
 import { build, start, stop, results, BASE, E2E, OUT } from './fixture.mjs'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
-const EXPECT = { gate: 45, replay: 6 }
+const EXPECT = { gate: 53, replay: 10 }
 const args = new Set(process.argv.slice(2))
 await stop() // anything an interrupted run left behind
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => stop().finally(() => process.exit(130)))

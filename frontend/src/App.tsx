@@ -454,7 +454,7 @@ export function App() {
                     value={text}
                     onChange={(e) => setText(e.target.value)}
                   />
-                  <InputGroupAddon align="inline-end">
+                  <InputGroupAddon align="inline-end" className="has-[>button]:me-0 pe-0.5">
                     <MorphingDialog transition={open}>
                       <MorphingDialogTrigger thing="undo" blocked={!canUndo} aria-describedby="undo-reason" aria-label="Undo the last build" className="inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-sm px-3 text-sm text-ink-2 outline-none hover:bg-track hover:text-ink focus-visible:ring-2 focus-visible:ring-focus disabled:cursor-default disabled:text-disabled">
                         <Undo2 className="size-4" strokeWidth={1.5} aria-hidden />Undo

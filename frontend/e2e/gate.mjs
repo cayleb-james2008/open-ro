@@ -113,6 +113,20 @@ await reset()
 await fetch(BASE + 'api/ideas', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
 await fetch(BASE + 'api/ideas/build', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'obby-starter' }) })
 await measureAll('built')
+// the Undo box and the change/piece counts on a built game, at every width (both were seen breaking in the pictures)
+const lineOf = (p, text) => p.getByText(text).first().evaluate(e => { const cs = getComputedStyle(e); const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4; return { h: Math.round(e.getBoundingClientRect().height), lh: Math.round(lh) } }).catch(() => null)
+for (const [vn, w, h] of [['1440', 1440, 900], ['768', 768, 1024], ['390', 390, 844], ['320', 320, 640]]) {
+  const { ctx, p } = await open(w, h)
+  await p.goto(BASE); await ready(p); await p.waitForTimeout(700)
+  const c = await p.evaluate(() => { const g = document.querySelector('#composer-input').closest('[data-slot=input-group]'); const a = g.querySelector('[data-slot=input-group-addon]'); return { over: g.scrollWidth - g.clientWidth, addonRight: Math.round(a.getBoundingClientRect().right), groupRight: Math.round(g.getBoundingClientRect().right) } })
+  ok(`composer ${vn}: Undo stays inside its box`, c.over <= 0 && c.addonRight <= c.groupRight, JSON.stringify(c))
+  await p.locator('nav[aria-label="Quest stages"] button').nth(2).click(); await p.waitForTimeout(500)
+  const ch = await lineOf(p, 'changes made in Studio')
+  await p.locator('nav[aria-label="Quest stages"] button').nth(4).click(); await p.waitForTimeout(500)
+  const pc = await lineOf(p, 'pieces in your game')
+  ok(`counts ${vn}: the change and piece counts stay on their line`, !!ch && !!pc && ch.h < ch.lh * 1.6 && pc.h < pc.lh * 1.6, JSON.stringify({ ch, pc }))
+  await ctx.close()
+}
 // failure, offline Studio, thread error
 await reset()
 {

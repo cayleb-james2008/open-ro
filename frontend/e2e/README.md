@@ -2,8 +2,8 @@
 
 `npm run check:ui`, run from `frontend/`, builds the frontend and the binaries, including `mock_studio`, which stands in for Roblox Studio. It then starts Open-Ro on free ports with a fresh game and a stub model (`fixtures/stub-model.mjs` replays `fixtures/replies.json`), and runs two scripts, each on fresh data:
 
-- `gate.mjs`: the Quest gate, 45 checks. It measures a fresh game and a built one at 1440, 768, 390 and 320 px in light and dark. It then walks the quest (pick, build, playtest, share, conversation, undo, new chat), the failed build, offline Studio and thread error states, the phone drawers, console errors and reduced motion.
-- `replay.mjs`: worst-case data fed in through `page.route` mocks, 6 checks.
+- `gate.mjs`: the Quest gate, 53 checks. It measures a fresh game and a built one at 1440, 768, 390 and 320 px in light and dark. It then walks the quest (pick, build, playtest, share, conversation, undo, new chat), the failed build, offline Studio and thread error states, the phone drawers, console errors and reduced motion.
+- `replay.mjs`: worst-case data fed in through `page.route` mocks, 10 checks.
 
 The check fails unless every check passes and each script ran its full count. It stops everything it started, also when interrupted.
 

@@ -171,7 +171,7 @@ export function Quest({ lines, ideas, builtTitles, place, pending, canBuild, can
                 )}
                 {!lastBad && a && a.changes.length > 0 && (
                   <>
-                    <p className="text-ui text-ink-2"><SlidingNumber value={a.changes.length} /> {a.changes.length === 1 ? "change" : "changes"} made in Studio</p>
+                    <div className="flex items-baseline gap-1.5 text-ui text-ink-2"><SlidingNumber value={a.changes.length} />{`${a.changes.length === 1 ? "change" : "changes"} made in Studio`}</div>
                     <ol className="grid gap-1.5 text-ui text-ink">
                       {a.changes.map((c, i) => <li key={i} className="flex min-w-0 items-start gap-2 [overflow-wrap:anywhere]"><Check className="mt-1 size-4 flex-none text-success-foreground" strokeWidth={2} aria-hidden />{stepInfo(c).label}</li>)}
                     </ol>
@@ -202,7 +202,7 @@ export function Quest({ lines, ideas, builtTitles, place, pending, canBuild, can
               <>
                 <p className="text-ui text-ink-2">What you have built so far:</p>
                 <ul className="flex flex-wrap gap-2">{builtTitles.map((t) => <li key={t}><Stamp tone="ok">{t}</Stamp></li>)}</ul>
-                {parts && <p className="text-sm text-ink-2"><SlidingNumber value={parts.length} /> {parts.length === 1 ? "piece" : "pieces"} in your game</p>}
+                {parts && <div className="flex items-baseline gap-1.5 text-sm text-ink-2"><SlidingNumber value={parts.length} />{`${parts.length === 1 ? "piece" : "pieces"} in your game`}</div>}
                 <p className="rounded-card bg-track p-3 text-ui text-ink">{summary}</p>
               </>
             ) : <p className="text-ui text-ink-2">Nothing built yet. Build an idea first and it shows here.</p>}
