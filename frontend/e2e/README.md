@@ -9,7 +9,7 @@ The check fails unless every check passes and each script ran its full count. It
 
 Setup, once:
 
-- `npm install`. `npm ci` fails on this branch because `package-lock.json` is out of sync with `package.json` (`react-is` is missing from the lock) in `frontend/`. Playwright is the frontend's own `playwright-core` devDependency.
+- `npm ci` (or `npm install`). Playwright is the frontend's own `playwright-core` devDependency.
 - A Rust toolchain with this crate's dependencies already fetched (`cargo build --offline` must work).
 - Chrome for Testing 151 at `~/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome` (what `npx playwright@1.62.0 install chromium` puts there). To use another Chromium build, set `E2E_CHROME` to its path.
 
