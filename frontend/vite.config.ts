@@ -47,6 +47,9 @@ function singleFile(): Plugin {
       // Hallmark: the stamp is the first line of the page CSS (the lint reads that line); Tailwind's fixed #fff ring offset becomes the surface token.
       html = html.replace(/<style>/, "<style>/* Hallmark · app screen · genre modern-minimal · scope app · theme Hum (native light, dark second) · critique: paper grain, card-stock rims, one torn edge, no gradients on the page */\n");
       html = html.replace(/--tw-ring-offset-color:\s*#fff\b/g, "--tw-ring-offset-color:var(--surface)");
+      // The bare `transition` utility comes only from motion prop names in source, never from an element of this page;
+      // Tailwind merges the core rule into the override, which would fade focus rings (Hallmark 15). Drop the rule.
+      html = html.replace(/\.transition\{[^}]*\}/g, "");
       const out = path.resolve(root, "../assets/index.html");
       fs.writeFileSync(out, html);
       console.log(`single file: ${out} (${(html.length / 1024).toFixed(0)} kB)`);
