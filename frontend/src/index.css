@@ -3,6 +3,8 @@
 /* The two notes quote class names as text; they are not markup and must not generate CSS. */
 @source not "../../rune/used/LOCAL-EDITS.md";
 @source not "../DESIGN.md";
+/* The UI checks in ../e2e quote class names in selectors and style overrides; they are not markup. */
+@source not "../e2e";
 /* A bare `transition` word in the copied parts (a prop name) would generate the core utility, which animates box-shadow and so fades a focus ring (Hallmark 15). This override keeps the utility to colour, outline-free properties. */
 @utility transition {
   transition-property: color, background-color, border-color, opacity, transform;

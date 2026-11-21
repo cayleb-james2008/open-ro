@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "sync-used": "node scripts/sync-used.mjs"
+    "sync-used": "node scripts/sync-used.mjs",
+    "check:ui": "node e2e/check.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
