@@ -93,6 +93,7 @@ pub fn probe_local_gateways() -> Vec<DetectedGateway> {
     found
 }
 
+#[derive(Clone)]
 pub struct ModelClient {
     base_url: String,
     model_id: String,

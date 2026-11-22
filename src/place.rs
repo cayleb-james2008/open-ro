@@ -12,10 +12,13 @@
 use crate::luau_check::{self, AnalysisReport, Diagnostic, VALID_SERVICES};
 use crate::mcp::McpClient;
 use crate::skills;
+use crate::studio_plugin::StudioPluginBridge;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
 /// Maximum depth of the bounded in-memory Undo / Redo history stacks.
 pub const MAX_HISTORY_DEPTH: usize = 64;
@@ -24,10 +27,21 @@ const MAX_SCRIPT_BYTES: usize = 512 * 1024;
 /// Canonical Place DataModel alias (`Place::from_rbxlx_xml(&str) -> Result<Place, String>`).
 pub type Place = LocalPlace;
 
-/// Unified backend for either a live Roblox Studio MCP bridge or the built-in
+fn plugin_timeout() -> Duration {
+    let secs = std::env::var("OPENRO_BRIDGE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|s| *s >= 1)
+        .unwrap_or(15);
+    Duration::from_secs(secs)
+}
+
+/// Unified backend for either a live Roblox Studio MCP bridge, a connected
+/// Companion Studio Plugin (`OpenRoCompanion.lua`), or the built-in
 /// persistent Local Place Engine.
 pub enum PlaceBackend {
     Mcp(McpClient),
+    Plugin(Arc<StudioPluginBridge>),
     Local(LocalPlace),
 }
 
@@ -35,6 +49,7 @@ impl PlaceBackend {
     pub fn is_alive(&mut self) -> bool {
         match self {
             PlaceBackend::Mcp(c) => c.is_alive(),
+            PlaceBackend::Plugin(p) => p.is_connected(),
             PlaceBackend::Local(_) => true,
         }
     }
@@ -42,13 +57,32 @@ impl PlaceBackend {
     pub fn tools_known(&self) -> bool {
         match self {
             PlaceBackend::Mcp(c) => c.tools_known(),
-            PlaceBackend::Local(_) => true,
+            PlaceBackend::Plugin(_) | PlaceBackend::Local(_) => true,
         }
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
         match self {
             PlaceBackend::Mcp(c) => c.has_tool(name),
+            PlaceBackend::Plugin(_) => matches!(
+                name,
+                "get_place_tree"
+                    | "write_script"
+                    | "write_luau"
+                    | "delete_script"
+                    | "create_instance"
+                    | "delete_instance"
+                    | "playtest"
+                    | "get_console"
+                    | "get_console_output"
+                    | "execute_luau"
+                    | "start_stop_play"
+                    | "search_game_tree"
+                    | "inspect_instance"
+                    | "script_read"
+                    | "script_grep"
+                    | "multi_edit"
+            ),
             PlaceBackend::Local(_) => matches!(
                 name,
                 "get_place_tree"
@@ -65,6 +99,14 @@ impl PlaceBackend {
     pub fn call_tool(&mut self, name: &str, arguments: Value) -> Result<String, String> {
         match self {
             PlaceBackend::Mcp(c) => c.call_tool(name, arguments),
+            PlaceBackend::Plugin(p) => {
+                let val = p.execute_command(name, arguments, plugin_timeout())?;
+                if let Some(s) = val.as_str() {
+                    Ok(s.to_string())
+                } else {
+                    Ok(val.to_string())
+                }
+            }
             PlaceBackend::Local(p) => p.call_tool(name, arguments),
         }
     }
@@ -72,6 +114,17 @@ impl PlaceBackend {
     pub fn get_place_tree(&mut self) -> Result<Value, String> {
         match self {
             PlaceBackend::Mcp(c) => c.get_place_tree(),
+            PlaceBackend::Plugin(p) => {
+                let val = p.execute_command("get_place_tree", json!({}), plugin_timeout())?;
+                if val.is_object() {
+                    Ok(val)
+                } else if let Some(s) = val.as_str() {
+                    serde_json::from_str(s)
+                        .map_err(|e| format!("plugin get_place_tree returned non-JSON: {e}"))
+                } else {
+                    Ok(json!({ "instances": {}, "scripts": {} }))
+                }
+            }
             PlaceBackend::Local(p) => Ok(p.tree_json()),
         }
     }
@@ -79,13 +132,14 @@ impl PlaceBackend {
     pub fn mode_name(&self) -> &'static str {
         match self {
             PlaceBackend::Mcp(_) => "studio_mcp",
+            PlaceBackend::Plugin(_) => "studio_plugin",
             PlaceBackend::Local(_) => "local_place",
         }
     }
 
     pub fn rbxlx_path(&self) -> Option<PathBuf> {
         match self {
-            PlaceBackend::Mcp(_) => None,
+            PlaceBackend::Mcp(_) | PlaceBackend::Plugin(_) => None,
             PlaceBackend::Local(p) => p.rbxlx_path(),
         }
     }
@@ -456,7 +510,7 @@ impl LocalPlace {
             "spawn" | "spawnlocation" | "spawn_pad" => "spawn",
             "jump_pad" | "jumppad" => "jump_pad",
             "kill_brick" | "killbrick" | "lava" => "kill_brick",
-            "card_billboard" | "cardbillboard" | "billboard" => "card_billboard",
+            "card_billboard" | "cardbillboard" | "billboard" | "decal_board" | "decalboard" => "card_billboard",
             other => {
                 return Err(format!(
                     "unknown part preset '{other}' (expected block, sphere, cylinder, spawn, jump_pad, kill_brick, or card_billboard)"

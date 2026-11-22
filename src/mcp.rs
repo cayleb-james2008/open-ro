@@ -206,6 +206,8 @@ pub struct McpClient {
     datamodel_type: String,
     /// Monotonic counter used to construct `capture_id` for `screen_capture`.
     capture_seq: u64,
+    /// Optional frame captured during translated official-MCP `playtest`.
+    last_playtest_frame: Option<StudioFrame>,
 }
 
 impl McpClient {
@@ -309,6 +311,7 @@ impl McpClient {
             studio_id: None,
             datamodel_type: "Edit".to_string(),
             capture_seq: 0,
+            last_playtest_frame: None,
         };
         client.initialize()?;
         client.discover_tools();
@@ -352,6 +355,25 @@ impl McpClient {
     /// unknown (then the call itself will tell us).
     pub fn has_tool(&self, name: &str) -> bool {
         !self.tools_known || self.tools.iter().any(|t| t == name)
+    }
+
+    /// True only when `tools/list` succeeded AND explicitly advertised `name`.
+    pub fn has_exact_tool(&self, name: &str) -> bool {
+        self.tools_known && self.tools.iter().any(|t| t == name)
+    }
+
+    /// True when the connected MCP server exposes the official Studio MCP execution
+    /// set (`execute_luau` + `start_stop_play` + `get_console_output`), enabling
+    /// transparent translation of legacy place/script/playtest operations.
+    pub fn has_official_bridge(&self) -> bool {
+        self.has_exact_tool("execute_luau")
+            && self.has_exact_tool("start_stop_play")
+            && self.has_exact_tool("get_console_output")
+    }
+
+    /// Consume the most recent frame captured inside a translated official `playtest`.
+    pub fn take_last_playtest_frame(&mut self) -> Option<StudioFrame> {
+        self.last_playtest_frame.take()
     }
 
     /// Whether the server's capabilities are known at all.
@@ -569,10 +591,71 @@ impl McpClient {
 
     /// Call one MCP tool; returns the text of its first content block.
     ///
+    /// When connected to an official Roblox Studio MCP server (`execute_luau`,
+    /// `start_stop_play`, `get_console_output`) that does not advertise legacy
+    /// tool names (`get_place_tree`, `write_script`, `write_luau`, `create_instance`,
+    /// `delete_instance`, `delete_script`, `playtest`, `get_console`), transparently
+    /// translates those operations onto the official Studio MCP tools.
+    ///
     /// A tool-level failure is an Err here, never a success string: the
     /// MCP `isError` flag is honoured, and so is an `{"error": ...}`
     /// JSON payload (some bridges report failures that way).
     pub fn call_tool(&mut self, name: &str, arguments: Value) -> Result<String, String> {
+        if self.tools_known && !self.has_exact_tool(name) {
+            match name {
+                "get_place_tree" if self.has_exact_tool("execute_luau") => {
+                    return self.get_place_tree().map(|v| v.to_string());
+                }
+                "write_script" | "write_luau" if self.has_exact_tool("execute_luau") => {
+                    let path = arguments
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| format!("{name} requires string path"))?;
+                    let source = arguments
+                        .get("source")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| format!("{name} requires string source"))?;
+                    return self.official_write_script(path, source);
+                }
+                "delete_script" | "delete_instance" if self.has_exact_tool("execute_luau") => {
+                    let path = arguments
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| format!("{name} requires string path"))?;
+                    return self.official_delete_instance(path);
+                }
+                "create_instance" if self.has_exact_tool("execute_luau") => {
+                    let class_name = arguments
+                        .get("class_name")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| "create_instance requires string class_name".to_string())?;
+                    let inst_name = arguments
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| "create_instance requires string name".to_string())?;
+                    let parent = arguments
+                        .get("parent")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| "create_instance requires string parent".to_string())?;
+                    let props = arguments
+                        .get("properties")
+                        .cloned()
+                        .unwrap_or_else(|| json!({}));
+                    return self.official_create_instance(class_name, inst_name, parent, &props);
+                }
+                "playtest" if self.has_exact_tool("start_stop_play") => {
+                    return self.official_playtest();
+                }
+                "get_console" if self.has_exact_tool("get_console_output") => {
+                    return self.get_console_output().map(|lines| lines.join("\n"));
+                }
+                _ => {}
+            }
+        }
+        self.call_tool_raw(name, arguments)
+    }
+
+    fn call_tool_raw(&mut self, name: &str, arguments: Value) -> Result<String, String> {
         let result = self.request(
             "tools/call",
             json!({ "name": name, "arguments": arguments }),
@@ -1043,12 +1126,13 @@ impl McpClient {
     }
 
     /// The place tree as JSON: `{ "scripts": { "<path>": "<source>", ... }, "instances": { ... } }`.
-    /// Uses `get_place_tree` when advertised (e.g. `mock_studio`), and falls back cleanly
-    /// to a read-only `execute_luau` DataModel snapshot when attached to official Roblox
-    /// `StudioMCP.exe` so the Studio Explorer & 3D Viewport sync live with real Studio.
+    /// Uses `get_place_tree` when advertised (e.g. `mock_studio`), and translates cleanly
+    /// to a bounded read-only `execute_luau` DataModel walk across 7 Roblox services
+    /// (`Workspace`, `ServerScriptService`, `ReplicatedStorage`, `StarterGui`, `StarterPlayer`,
+    /// `Lighting`, `SoundService`) when attached to official Roblox Studio MCP.
     pub fn get_place_tree(&mut self) -> Result<Value, String> {
         if self.has_tool("get_place_tree") {
-            let text = self.call_tool("get_place_tree", json!({}))?;
+            let text = self.call_tool_raw("get_place_tree", json!({}))?;
             return serde_json::from_str(&text)
                 .map_err(|e| format!("get_place_tree returned non-JSON text: {e}"));
         }
@@ -1070,17 +1154,17 @@ local function fullPath(inst)
     end
     return table.concat(parts, ".")
 end
-for _, svcName in ipairs({"ServerScriptService", "ReplicatedStorage", "StarterGui", "StarterPlayer", "Workspace"}) do
+for _, svcName in ipairs({"Workspace", "ServerScriptService", "ReplicatedStorage", "StarterGui", "StarterPlayer", "Lighting", "SoundService"}) do
     local okSvc, svc = pcall(function() return game:GetService(svcName) end)
     if okSvc and svc then
         for _, d in ipairs(svc:GetDescendants()) do
-            if d:IsA("LuaSourceContainer") and scount < 80 then
+            if d:IsA("LuaSourceContainer") and scount < 160 then
                 local okSrc, src = pcall(function() return d.Source end)
                 if okSrc and type(src) == "string" then
                     scripts[fullPath(d)] = src
                     scount += 1
                 end
-            elseif svcName == "Workspace" and d:IsA("BasePart") and icount < 250 then
+            elseif d:IsA("BasePart") and icount < 350 then
                 local c = d.Color
                 instances[fullPath(d)] = {
                     class_name = d.ClassName,
@@ -1090,7 +1174,24 @@ for _, svcName in ipairs({"ServerScriptService", "ReplicatedStorage", "StarterGu
                         Color = {math.round(c.R * 255), math.round(c.G * 255), math.round(c.B * 255)},
                         Anchored = d.Anchored,
                         Material = d.Material.Name,
+                        Transparency = math.round(d.Transparency * 100) / 100,
+                        CanCollide = d.CanCollide,
                     },
+                }
+                icount += 1
+            elseif (d:IsA("Model") or d:IsA("Folder") or d:IsA("RemoteEvent") or d:IsA("RemoteFunction") or d:IsA("Tool") or d:IsA("Atmosphere") or d:IsA("Sky") or d:IsA("Sound") or d:IsA("ScreenGui") or d:IsA("Decal") or d:IsA("SurfaceGui") or d:IsA("ImageLabel") or d:IsA("PointLight")) and icount < 350 then
+                local props = {}
+                if d:IsA("Sound") then
+                    props.SoundId = d.SoundId
+                    props.Volume = d.Volume
+                elseif d:IsA("Decal") then
+                    props.Texture = d.Texture
+                elseif d:IsA("ImageLabel") then
+                    props.Image = d.Image
+                end
+                instances[fullPath(d)] = {
+                    class_name = d.ClassName,
+                    properties = props,
                 }
                 icount += 1
             end
@@ -1101,32 +1202,16 @@ return "OPENRO_TREE:" .. HttpService:JSONEncode({ scripts = scripts, instances =
 "#;
         match self.execute_luau(luau) {
             Ok(val) => {
+                if val.get("scripts").is_some() && val.get("instances").is_some() {
+                    return Ok(val);
+                }
                 let raw = val
                     .get("output")
                     .or_else(|| val.get("result"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let json_str = if let Some(idx) = raw.find("OPENRO_TREE:") {
-                    raw[idx + "OPENRO_TREE:".len()..].trim()
-                } else {
-                    raw.trim()
-                };
-                if let Ok(parsed) = serde_json::from_str::<Value>(json_str) {
-                    if parsed.is_object() {
-                        return Ok(parsed);
-                    }
-                }
-                // Handle quoted JSON strings returned by StudioMCP `return`
-                if let Ok(unquoted) = serde_json::from_str::<String>(json_str) {
-                    let inner = unquoted
-                        .strip_prefix("OPENRO_TREE:")
-                        .unwrap_or(&unquoted)
-                        .trim();
-                    if let Ok(parsed) = serde_json::from_str::<Value>(inner) {
-                        if parsed.is_object() {
-                            return Ok(parsed);
-                        }
-                    }
+                if let Some(parsed) = parse_openro_tree_payload(raw) {
+                    return Ok(parsed);
                 }
                 Ok(json!({ "scripts": {}, "instances": {} }))
             }
@@ -1141,9 +1226,372 @@ return "OPENRO_TREE:" .. HttpService:JSONEncode({ scripts = scripts, instances =
         }
     }
 
+    /// Write a script via official `execute_luau` using collision-proof Luau long-bracket
+    /// string literal escaping (`[=[...]=]` with dynamically scaled `=` depth), creating
+    /// intermediate folders if needed, and setting a `ChangeHistoryService` undo waypoint.
+    pub fn official_write_script(&mut self, path: &str, source: &str) -> Result<String, String> {
+        let luau = build_write_script_luau(path, source)?;
+        self.execute_luau(&luau)?;
+        Ok(json!({ "ok": true, "path": path }).to_string())
+    }
+
+    /// Create or update an instance via official `execute_luau` + `ChangeHistoryService:SetWaypoint`.
+    pub fn official_create_instance(
+        &mut self,
+        class_name: &str,
+        name: &str,
+        parent: &str,
+        properties: &Value,
+    ) -> Result<String, String> {
+        let luau = build_create_instance_luau(class_name, name, parent, properties)?;
+        self.execute_luau(&luau)?;
+        Ok(json!({ "ok": true, "path": format!("{parent}.{name}") }).to_string())
+    }
+
+    /// Delete an instance or script at `path` via official `execute_luau` + `SetWaypoint`.
+    pub fn official_delete_instance(&mut self, path: &str) -> Result<String, String> {
+        let luau = build_delete_instance_luau(path)?;
+        self.execute_luau(&luau)?;
+        Ok(json!({ "ok": true, "path": path }).to_string())
+    }
+
+    /// Run a real Roblox Studio playtest via official tools:
+    /// `start_stop_play("start_play")` -> brief settle -> `get_console_output()` +
+    /// optional `screen_capture()` -> `start_stop_play("stop")` -> `{"status", "console"}`.
+    pub fn official_playtest(&mut self) -> Result<String, String> {
+        let start_res = self.start_stop_play("start_play");
+        if let Err(e) = start_res {
+            return Ok(json!({
+                "status": "failed",
+                "console": format!("playtest start error: {e}"),
+            })
+            .to_string());
+        }
+        let settle_ms = std::env::var("OPENRO_PLAYTEST_SETTLE_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(150)
+            .min(5_000);
+        if settle_ms > 0 {
+            std::thread::sleep(Duration::from_millis(settle_ms));
+        }
+        let lines = self.get_console_output().unwrap_or_default();
+        if self.has_exact_tool("screen_capture") {
+            if let Ok(frame) = self.screen_capture() {
+                self.last_playtest_frame = Some(frame);
+            }
+        }
+        let _ = self.start_stop_play("stop");
+        let has_error = lines.iter().any(|l| console_line_is_error(l));
+        let console = lines.join("\n");
+        Ok(json!({
+            "status": if has_error { "failed" } else { "passed" },
+            "console": console,
+        })
+        .to_string())
+    }
+
     pub fn is_alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
+}
+
+/// Encode any arbitrary UTF-8 string as a collision-proof Luau long-bracket literal
+/// (`[=[...]=]`, dynamically increasing `=` depth until guaranteed non-colliding).
+/// Preserves leading newlines verbatim by prepending a synthetic newline that Luau strips.
+pub fn luau_long_string(s: &str) -> String {
+    let payload = if s.starts_with('\n') || s.starts_with('\r') {
+        format!("\n{s}")
+    } else {
+        s.to_string()
+    };
+    let mut depth = 1usize;
+    loop {
+        let eq = "=".repeat(depth);
+        let close = format!("]{eq}]");
+        let combined = format!("{payload}{close}");
+        if combined.find(&close) == Some(payload.len()) {
+            return format!("[{eq}[{payload}{close}");
+        }
+        depth += 1;
+    }
+}
+
+/// Encode a short identifier or string as a safely escaped Luau double-quoted string literal.
+pub fn luau_quoted_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => {}
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Build the official-MCP `execute_luau` snippet that writes `source` into `path`,
+/// creating missing intermediate Folders and recording a `ChangeHistoryService` waypoint.
+pub fn build_write_script_luau(path: &str, source: &str) -> Result<String, String> {
+    let segs: Vec<&str> = path.split('.').collect();
+    if segs.len() < 2 || segs.iter().any(|s| s.is_empty() || *s == "..") {
+        return Err(format!("invalid script path '{path}'"));
+    }
+    let root = segs[0];
+    let script_name = *segs.last().unwrap();
+    let folders = &segs[1..segs.len() - 1];
+    let class_name = if root == "StarterGui" || root == "StarterPlayer" {
+        "LocalScript"
+    } else if root == "ReplicatedStorage" {
+        "ModuleScript"
+    } else {
+        "Script"
+    };
+
+    let mut code = format!(
+        "local ChangeHistoryService = game:GetService(\"ChangeHistoryService\")\n\
+         local cur = game:GetService({})\n",
+        luau_quoted_string(root)
+    );
+    for folder in folders {
+        let q = luau_quoted_string(folder);
+        code.push_str(&format!(
+            "local nxt = cur:FindFirstChild({q})\n\
+             if not nxt then\n\
+                 nxt = Instance.new(\"Folder\")\n\
+                 nxt.Name = {q}\n\
+                 nxt.Parent = cur\n\
+             end\n\
+             cur = nxt\n"
+        ));
+    }
+    let q_name = luau_quoted_string(script_name);
+    let q_class = luau_quoted_string(class_name);
+    let src_lit = luau_long_string(source);
+    code.push_str(&format!(
+        "local target = cur:FindFirstChild({q_name})\n\
+         if not target or not target:IsA(\"LuaSourceContainer\") then\n\
+             if target then target:Destroy() end\n\
+             target = Instance.new({q_class})\n\
+             target.Name = {q_name}\n\
+             target.Parent = cur\n\
+         end\n\
+         target.Source = {src_lit}\n\
+         pcall(function() ChangeHistoryService:SetWaypoint(\"OpenRO edit\") end)\n\
+         return \"OPENRO_OK\"\n"
+    ));
+    Ok(code)
+}
+
+/// Build the official-MCP `execute_luau` snippet that creates/updates an instance + properties.
+pub fn build_create_instance_luau(
+    class_name: &str,
+    name: &str,
+    parent: &str,
+    properties: &Value,
+) -> Result<String, String> {
+    let segs: Vec<&str> = parent.split('.').collect();
+    if segs.is_empty() || segs.iter().any(|s| s.is_empty() || *s == "..") {
+        return Err(format!("invalid parent path '{parent}'"));
+    }
+    let root = segs[0];
+    let mut code = format!(
+        "local ChangeHistoryService = game:GetService(\"ChangeHistoryService\")\n\
+         local cur = game:GetService({})\n",
+        luau_quoted_string(root)
+    );
+    for folder in &segs[1..] {
+        let q = luau_quoted_string(folder);
+        code.push_str(&format!(
+            "local nxt = cur:FindFirstChild({q})\n\
+             if not nxt then\n\
+                 nxt = Instance.new(\"Folder\")\n\
+                 nxt.Name = {q}\n\
+                 nxt.Parent = cur\n\
+             end\n\
+             cur = nxt\n"
+        ));
+    }
+    let q_name = luau_quoted_string(name);
+    let q_class = luau_quoted_string(class_name);
+    code.push_str(&format!(
+        "local inst = cur:FindFirstChild({q_name})\n\
+         if not inst or inst.ClassName ~= {q_class} then\n\
+             inst = Instance.new({q_class})\n\
+             inst.Name = {q_name}\n\
+             inst.Parent = cur\n\
+         end\n"
+    ));
+    if let Some(map) = properties.as_object() {
+        for (k, v) in map {
+            if !k
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                || k.is_empty()
+            {
+                continue;
+            }
+            if let Some(expr) = property_value_to_luau(k, v) {
+                code.push_str(&format!("pcall(function() inst.{k} = {expr} end)\n"));
+            }
+        }
+    }
+    code.push_str(
+        "pcall(function() ChangeHistoryService:SetWaypoint(\"OpenRO edit\") end)\n\
+         return \"OPENRO_OK\"\n",
+    );
+    Ok(code)
+}
+
+/// Build the official-MCP `execute_luau` snippet that deletes an instance or script at `path`.
+pub fn build_delete_instance_luau(path: &str) -> Result<String, String> {
+    let segs: Vec<&str> = path.split('.').collect();
+    if segs.len() < 2 || segs.iter().any(|s| s.is_empty() || *s == "..") {
+        return Err(format!("invalid path '{path}'"));
+    }
+    let mut code = format!(
+        "local ChangeHistoryService = game:GetService(\"ChangeHistoryService\")\n\
+         local cur = game:GetService({})\n",
+        luau_quoted_string(segs[0])
+    );
+    for seg in &segs[1..] {
+        code.push_str(&format!(
+            "if cur then cur = cur:FindFirstChild({}) end\n",
+            luau_quoted_string(seg)
+        ));
+    }
+    code.push_str(
+        "if cur then\n\
+             cur:Destroy()\n\
+             pcall(function() ChangeHistoryService:SetWaypoint(\"OpenRO edit\") end)\n\
+         end\n\
+         return \"OPENRO_OK\"\n",
+    );
+    Ok(code)
+}
+
+fn property_value_to_luau(key: &str, val: &Value) -> Option<String> {
+    match key {
+        "Position" | "Size" | "Orientation" => {
+            let v = parse_vec3_json(val)?;
+            Some(format!("Vector3.new({}, {}, {})", v[0], v[1], v[2]))
+        }
+        "Color" => {
+            if let Some(arr) = val.as_array() {
+                if arr.len() >= 3 {
+                    let r = arr[0].as_f64()?;
+                    let g = arr[1].as_f64()?;
+                    let b = arr[2].as_f64()?;
+                    if (0.0..=1.0).contains(&r)
+                        && (0.0..=1.0).contains(&g)
+                        && (0.0..=1.0).contains(&b)
+                        && (r > 0.0 || g > 0.0 || b > 0.0)
+                        && (r <= 1.0 && g <= 1.0 && b <= 1.0)
+                        && (r.fract() != 0.0 || g.fract() != 0.0 || b.fract() != 0.0)
+                    {
+                        return Some(format!("Color3.new({r}, {g}, {b})"));
+                    }
+                    return Some(format!(
+                        "Color3.fromRGB({}, {}, {})",
+                        r.clamp(0.0, 255.0).round() as u8,
+                        g.clamp(0.0, 255.0).round() as u8,
+                        b.clamp(0.0, 255.0).round() as u8
+                    ));
+                }
+            }
+            if let Some(hex) = val.as_str() {
+                let clean = hex.trim();
+                if clean.starts_with('#') && clean.len() == 7 {
+                    return Some(format!("Color3.fromHex({})", luau_quoted_string(clean)));
+                }
+            }
+            None
+        }
+        "BrickColor" => val
+            .as_str()
+            .map(|s| format!("BrickColor.new({})", luau_quoted_string(s))),
+        "Material" => val.as_str().and_then(|s| {
+            let clean = s.trim().strip_prefix("Enum.Material.").unwrap_or(s.trim());
+            if clean.chars().all(|c| c.is_ascii_alphanumeric()) && !clean.is_empty() {
+                Some(format!("Enum.Material.{clean}"))
+            } else {
+                None
+            }
+        }),
+        "Shape" => val.as_str().and_then(|s| {
+            let clean = s.trim().strip_prefix("Enum.PartType.").unwrap_or(s.trim());
+            if clean.chars().all(|c| c.is_ascii_alphanumeric()) && !clean.is_empty() {
+                Some(format!("Enum.PartType.{clean}"))
+            } else {
+                None
+            }
+        }),
+        _ => match val {
+            Value::Bool(b) => Some(if *b { "true" } else { "false" }.to_string()),
+            Value::Number(n) => Some(n.to_string()),
+            Value::String(s) => Some(luau_quoted_string(s)),
+            _ => None,
+        },
+    }
+}
+
+fn parse_openro_tree_payload(raw: &str) -> Option<Value> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let slice = if let Some(idx) = trimmed.find("OPENRO_TREE:") {
+        trimmed[idx + "OPENRO_TREE:".len()..].trim()
+    } else {
+        trimmed
+    };
+    if let Ok(parsed) = serde_json::from_str::<Value>(slice) {
+        if parsed.is_object() {
+            return Some(parsed);
+        }
+    }
+    // Handle quoted JSON strings returned by StudioMCP `return`
+    if let Ok(unquoted) = serde_json::from_str::<String>(trimmed) {
+        let inner = if let Some(idx) = unquoted.find("OPENRO_TREE:") {
+            unquoted[idx + "OPENRO_TREE:".len()..].trim()
+        } else {
+            unquoted.trim()
+        };
+        if let Ok(parsed) = serde_json::from_str::<Value>(inner) {
+            if parsed.is_object() {
+                return Some(parsed);
+            }
+        }
+    }
+    // Fallback: locate JSON object directly after OPENRO_TREE: even with trailing output lines
+    if let Some(brace) = slice.find('{') {
+        let mut de = serde_json::Deserializer::from_str(&slice[brace..]).into_iter::<Value>();
+        if let Some(Ok(v)) = de.next() {
+            if v.is_object() {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+fn console_line_is_error(line: &str) -> bool {
+    let low = line.to_ascii_lowercase();
+    if low.contains("0 errors") || low.contains("0 error(s)") {
+        return false;
+    }
+    low.contains("[error]")
+        || low.contains("syntax error")
+        || low.contains("runtime error")
+        || low.contains("attempt to ")
+        || low.contains("is not a valid member")
+        || low.contains("error:")
 }
 
 fn strip_prefix_ascii_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
@@ -1231,5 +1679,52 @@ impl Drop for McpClient {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn luau_long_string_avoids_bracket_collisions_and_preserves_leading_newline() {
+        let tricky = "local a = [=[nested]=]\nlocal b = [==[deeper]==]\n-- ends with ]=";
+        let encoded = luau_long_string(tricky);
+        assert!(encoded.starts_with("[===[") && encoded.ends_with("]===]"), "got: {encoded}");
+
+        let with_nl = "\nprint('first line blank')";
+        let enc_nl = luau_long_string(with_nl);
+        assert!(enc_nl.starts_with("[=[\n\nprint("), "got: {enc_nl}");
+
+        // Generated write_script, create_instance, and delete_instance Luau snippets must be valid Luau.
+        let w = build_write_script_luau("ServerScriptService.Systems.Sprint", tricky).unwrap();
+        assert!(w.contains("ChangeHistoryService:SetWaypoint"));
+        assert_eq!(
+            crate::luau_check::analyze_source("ServerScriptService.GenWrite", &w).error_count(),
+            0,
+            "write_script Luau must parse cleanly: {w}"
+        );
+
+        let c = build_create_instance_luau(
+            "Part",
+            "JumpPad",
+            "Workspace.Arena",
+            &json!({ "Position": [0, 4, 8], "Size": [8, 1, 8], "Color": "#3CB371", "Anchored": true, "Material": "Neon" }),
+        )
+        .unwrap();
+        assert!(c.contains("ChangeHistoryService:SetWaypoint"));
+        assert_eq!(
+            crate::luau_check::analyze_source("ServerScriptService.GenCreate", &c).error_count(),
+            0,
+            "create_instance Luau must parse cleanly: {c}"
+        );
+
+        let d = build_delete_instance_luau("Workspace.Arena.JumpPad").unwrap();
+        assert!(d.contains("Destroy()"));
+        assert_eq!(
+            crate::luau_check::analyze_source("ServerScriptService.GenDelete", &d).error_count(),
+            0,
+            "delete_instance Luau must parse cleanly: {d}"
+        );
     }
 }

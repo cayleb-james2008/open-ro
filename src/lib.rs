@@ -17,5 +17,6 @@ pub mod skills;
 pub mod snapshots;
 pub mod sse;
 pub mod studio_embed;
+pub mod studio_plugin;
 pub mod studio_stream;
 pub mod update;
