@@ -19,10 +19,9 @@ use std::time::{Duration, Instant};
 /// of an OpenAI-compatible HTTP endpoint.
 pub const AGY_BASE_URL: &str = "agy://antigravity";
 pub const AGY_DEFAULT_MODEL: &str = "gemini-4-hydrogen-high";
-const AGY_DEFAULT_BIN: &str =
-    "/home/cayleb/.local/share/mise/installs/antigravity-cli/latest/agy";
+const AGY_MISE_REL: &str = ".local/share/mise/installs/antigravity-cli/latest";
 /// Linux caps one argv string at 128 KiB; stay safely under it.
-const AGY_MAX_PROMPT_BYTES: usize = 110_000;
+const AGY_MAX_PROMPT_BYTES: usize = 96_000;
 /// agy must act as a pure text model: every tool class is denied, so a model
 /// that tries to write a file, run a command or open a URL is refused by agy
 /// itself, whatever the prompt says.
@@ -116,28 +115,47 @@ pub fn is_agy_url(url: &str) -> bool {
     url.trim().starts_with("agy://")
 }
 
-/// Path of the agy binary: `OPENRO_AGY_BIN`, the installed default, else `agy`
-/// on PATH.
+/// Path of the agy binary: `OPENRO_AGY_BIN`, then `$HOME/.local/share/mise/.../agy`,
+/// then `agy` (`agy.exe`/`agy.cmd` on Windows) on `PATH`.
 pub fn agy_bin() -> PathBuf {
     if let Some(p) = std::env::var("OPENRO_AGY_BIN").ok().filter(|s| !s.trim().is_empty()) {
         return PathBuf::from(p.trim());
     }
-    let default = PathBuf::from(AGY_DEFAULT_BIN);
-    if default.exists() {
-        default
+    let names: &[&str] = if cfg!(windows) {
+        &["agy.exe", "agy.cmd", "agy"]
     } else {
-        PathBuf::from("agy")
+        &["agy"]
+    };
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let mise_dir = PathBuf::from(home).join(AGY_MISE_REL);
+        for name in names {
+            let candidate = mise_dir.join(name);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
     }
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            for name in names {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
+        }
+    }
+    PathBuf::from(names[0])
 }
 
 /// True when the agy binary can be started (cheap check, no model call).
 pub fn agy_available() -> bool {
     let bin = agy_bin();
     if bin.components().count() > 1 {
-        bin.exists()
+        bin.is_file()
     } else {
         std::env::var_os("PATH")
-            .map(|paths| std::env::split_paths(&paths).any(|d| d.join(&bin).exists()))
+            .map(|paths| std::env::split_paths(&paths).any(|d| d.join(&bin).is_file()))
             .unwrap_or(false)
     }
 }
@@ -279,6 +297,58 @@ fn run_agy_models(bin: &PathBuf) -> Vec<AgyModel> {
     }
 }
 
+/// Compact an older turn's large script/file body so multi-file builds stay
+/// well below Linux's 128 KiB single-argv limit without losing recent turns.
+fn compact_older_message(role: &str, content: &str) -> String {
+    if content.len() <= 2_200 {
+        return content.to_string();
+    }
+    if role == "assistant" {
+        if let Ok(mut v) = serde_json::from_str::<Value>(content.trim()) {
+            let mut trimmed = false;
+            let trim_obj = |obj: &mut serde_json::Map<String, Value>, flag: &mut bool| {
+                for key in ["content", "source", "code", "script"] {
+                    if let Some(s) = obj.get(key).and_then(|x| x.as_str()) {
+                        if s.len() > 600 {
+                            let head: String = s.chars().take(240).collect();
+                            obj.insert(
+                                key.to_string(),
+                                json!(format!("{head}... [omitted {} bytes from earlier turn]", s.len())),
+                            );
+                            *flag = true;
+                        }
+                    }
+                }
+            };
+            if let Some(args) = v.get_mut("args").and_then(|x| x.as_object_mut()) {
+                trim_obj(args, &mut trimmed);
+            }
+            if let Some(steps) = v.get_mut("steps").and_then(|x| x.as_array_mut()) {
+                for st in steps {
+                    if let Some(args) = st.get_mut("args").and_then(|x| x.as_object_mut()) {
+                        trim_obj(args, &mut trimmed);
+                    }
+                }
+            }
+            if trimmed {
+                return v.to_string();
+            }
+        }
+    }
+    let head: String = content.chars().take(1_200).collect();
+    let tail: String = content
+        .chars()
+        .rev()
+        .take(400)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{head}
+[...omitted {} bytes from earlier turn; re-read file if needed...]
+{tail}", content.len())
+}
+
 /// Flatten an OpenAI-style conversation into one agy prompt.
 pub fn flatten_messages(messages: &[Value]) -> String {
     let text_of = |m: &Value| match m.get("content") {
@@ -286,15 +356,30 @@ pub fn flatten_messages(messages: &[Value]) -> String {
         Some(Value::Null) | None => String::new(),
         Some(other) => other.to_string(),
     };
+    let keep_recent_from = messages.len().saturating_sub(4);
     let mut out = String::from(AGY_TEXT_ONLY);
-    for m in messages {
+    for (idx, m) in messages.iter().enumerate() {
         let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
-        let content = text_of(m);
+        let raw = text_of(m);
+        let content = if role == "system" || role == "developer" || idx >= keep_recent_from {
+            raw
+        } else {
+            compact_older_message(role, &raw)
+        };
         match role {
-            "system" | "developer" => out.push_str(&format!("[System Instructions]\n{content}\n\n")),
-            "user" => out.push_str(&format!("User: {content}\n\n")),
-            "assistant" => out.push_str(&format!("Assistant: {content}\n\n")),
-            other => out.push_str(&format!("{other}: {content}\n\n")),
+            "system" | "developer" => out.push_str(&format!("[System Instructions]
+{content}
+
+")),
+            "user" => out.push_str(&format!("User: {content}
+
+")),
+            "assistant" => out.push_str(&format!("Assistant: {content}
+
+")),
+            other => out.push_str(&format!("{other}: {content}
+
+")),
         }
     }
     out.push_str("Assistant:");
@@ -363,11 +448,9 @@ pub fn parse_agy_stream(lines: &[String]) -> AgyOutcome {
         }
     }
     if let Some(e) = error {
-        if response.is_none() && deltas.trim().is_empty() {
-            let message = explain_agy_error(&e);
-            record_agy_issue(&e, &message);
-            return AgyOutcome::Error(message);
-        }
+        let message = explain_agy_error(&e);
+        record_agy_issue(&e, &message);
+        return AgyOutcome::Error(message);
     }
     let text = response.unwrap_or(deltas);
     if text.trim().is_empty() {
@@ -614,6 +697,7 @@ impl ModelClient {
             .arg(&self.model_id)
             .arg("--output-format")
             .arg("stream-json")
+            .arg("--disable-slash-commands")
             .arg("--settings")
             .arg(AGY_DENY_SETTINGS)
             .current_dir(&self.agy_dir)

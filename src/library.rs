@@ -1453,7 +1453,8 @@ static PACK_SPECS: [PackSpec; 8] = [
         skill_markdown: "- Always fetch services with `game:GetService(...)` and set `Instance.Parent` last after configuring properties.\n\
 - Never trust client RemoteEvent arguments: validate types, finiteness, allowlisted IDs, ownership, and per-player cooldowns strictly on the server.\n\
 - Guard every `DataStoreService` call in `pcall`, prefer `UpdateAsync`, load on `PlayerAdded`, and save on `PlayerRemoving` + `game:BindToClose`.\n\
-- When Studio MCP is attached, inspect the live tree with `search_game_tree`/`inspect_instance`, edit via `multi_edit`, verify with `start_stop_play` + `get_console_output`, and capture proof frames with `screen_capture`.",
+- When Studio MCP is attached, inspect the live tree with `search_game_tree`/`inspect_instance`, edit via `multi_edit`, verify with `start_stop_play` + `get_console_output`, and capture proof frames with `screen_capture`.\n\
+- **3D & VFX Guardrails:** `PartType.Cylinder` runs along its LOCAL X axis — upright pillars/columns MUST set `Size = Vector3.new(height, diameter, diameter)` and rotate `CFrame.Angles(0, 0, math.rad(90))` (never unrotated `[d, h, d]`). Keep mobile `StreamingEnabled` budgets strict: `<= 20,000` tris/mesh, `<= 40` active `ParticleEmitter`s, `<= 12` non-shadow lights. Clean up every transient VFX/Part/Sound via `Debris:AddItem` or an object pool (zero leaks in loops). Respect a `FlashEnabled` / reduced-motion Settings toggle on full-screen flashes and camera shakes.",
     },
     PackSpec {
         id: "blender-3d-pipeline",
@@ -1476,9 +1477,9 @@ static PACK_SPECS: [PackSpec; 8] = [
         ],
         env_vars: &["OPENRO_BLENDER_PATH"],
         skill_summary: "Headless Blender 3D mesh generation, sRGB albedo vs Non-Color roughness/normal maps, Principled BSDF export, and Roblox scale conventions.",
-        skill_markdown: "- Use `POST /api/tools/blender/generate` (`torii_gate`, `card_pedestal`, `colosseum_arch`, `cauldron`, `crystal_obelisk`) for clean triangulated `.obj` props and preview PNGs.\n\
-- Keep basecolor/albedo textures in `sRGB` and roughness/metallic/normal/AO maps in `Non-Color`.\n\
-- Map texture atlases by normalized UV rectangle rather than stretching a full atlas across one face, and key alpha decals with `BLEND` or `CLIP`.",
+        skill_markdown: "- Generate custom stylized Roblox props with `blender_generate` / `mesh_generate` (structured description or Blender Python `bpy` script) into `<project>/assets/meshes/` with smart-UV unwrap, baked diffuse colour x AO PNG texture, optional `_glow` mesh, 2-angle previews, and `assets/meshes/manifest.json` (stud bbox, triangle count `<= 20,000`, and named anchors).\n\
+- Wire meshes in Luau as manifest-driven `MeshPart` proxies reading stud dimensions/anchors from `assets/meshes/manifest.json` and `rbxassetid://` entries from `src/shared/AssetIds.luau` — never grey untextured fallback slabs.\n\
+- Keep basecolor/albedo textures in `sRGB` and roughness/metallic/normal/AO maps in `Non-Color`. Map texture atlases by normalized UV rectangle and key alpha decals with `BLEND` or `CLIP`.",
     },
     PackSpec {
         id: "roblox-market-taste",
@@ -1531,7 +1532,7 @@ static PACK_SPECS: [PackSpec; 8] = [
         ],
         env_vars: &["GEMINI_API_KEY", "OPENAI_API_KEY"],
         skill_summary: "Generate textures, icons, decals, and high-fidelity stylized character art with Gemini Nano Banana or OpenAI Image using iconic title/epithet display names.",
-        skill_markdown: "- Use `gemini-2.5-flash-image` (Nano Banana) or `gpt-image-1` for game textures, icons, decals, and stylized character art.\n\
+        skill_markdown: "- Default to `reference_search` (shared browser action references saved to gitignored `art/references/`) followed by `art_generate` (ChatGPT shared browser default, single-line prompt with eye-level / neutral three-quarter framing, never low-angle phrases, never Higgsfield Soul Cinema; Gemini and OpenAI optional).\n\
 - **Stylized Fan-Art Visual Fidelity Rule:** Generated fan-art MUST actually look like and be unmistakably recognizable as the original character (faithful hair, eyes, expression, outfit silhouette, weapon/stance, and signature elemental aura).\n\
 - **Title-Epithet Naming Rule:** Display names MUST replace trademarked proper names with the character's iconic title/epithet (e.g., `Joyful Pirate`, `Six-Eyes Sorcerer`, `Shadow Monarch`, `Nine-Tail Shinobi`, `Thunder Flash Blade`, `Steel Alchemist`, `Gravity Ronin`, `Golden Ascended Warrior`).\n\
 - Save generated assets through `AssetManager` so SHA-256 manifests and Roblox `Decal`/`ImageLabel` bindings stay synchronized.",

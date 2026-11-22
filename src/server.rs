@@ -122,6 +122,9 @@ pub struct Shared {
     pub teamwork: Arc<crate::teamwork::TeamworkManager>,
     /// Active loopback listen port recorded when `serve()` binds.
     pub bound_port: AtomicU16,
+    /// Persistent FIFO Run Queue + Plan->Execute checkpoints (`data_dir/runs/`).
+    pub runs: Arc<crate::agent::runs::RunStore>,
+    runs_worker_started: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Clone, Default)]
@@ -197,6 +200,8 @@ impl Shared {
             studio_plugin,
             teamwork: crate::teamwork::TeamworkManager::in_memory(),
             bound_port: AtomicU16::new(4040),
+            runs: crate::agent::runs::RunStore::in_memory(),
+            runs_worker_started: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -239,6 +244,7 @@ impl Shared {
         recovered.append(&mut proposal_store.recovered);
         // Ensure persistent game-assets directory is initialized on startup.
         let _ = crate::assets::AssetManager::open(&data_dir);
+        let runs = crate::agent::runs::RunStore::open(&data_dir);
         let assets_root = data_dir.clone();
         let projects = Mutex::new(crate::projects::ProjectStore::load(Some(&data_dir)));
         let teamwork = crate::teamwork::TeamworkManager::open(data_dir.clone());
@@ -274,6 +280,8 @@ impl Shared {
             studio_plugin,
             teamwork,
             bound_port: AtomicU16::new(4040),
+            runs,
+            runs_worker_started: std::sync::atomic::AtomicBool::new(false),
         });
         shared.teamwork.resume_pending_runs(&shared);
         shared
@@ -892,6 +900,199 @@ fn respond_json(stream: &mut TcpStream, status: &str, value: &Value) {
     respond(stream, status, "application/json", &value.to_string());
 }
 
+/// Resolve `(project_root, project_id)` from explicit request fields or `shared.projects`.
+fn resolve_project_for_agent(
+    shared: &Shared,
+    req_project_id: Option<&str>,
+    req_project_root: Option<&str>,
+) -> (Option<PathBuf>, Option<String>) {
+    if let Some(pr) = req_project_root.filter(|s| !s.trim().is_empty()) {
+        return (Some(PathBuf::from(pr.trim())), req_project_id.map(String::from));
+    }
+    let store = shared.projects.lock().unwrap();
+    if let Some(id) = req_project_id.filter(|s| !s.trim().is_empty()) {
+        if let Some(r) = store.find(id.trim()) {
+            return (Some(r.dir), Some(r.id));
+        }
+    }
+    if let Some(active) = store.active.as_deref() {
+        if let Some(r) = store.find(active) {
+            return (Some(r.dir), Some(r.id));
+        }
+    }
+    (None, None)
+}
+
+fn invoke_opencloud_tool(
+    shared: &Shared,
+    method: &str,
+    path: &str,
+    body: &Value,
+) -> Result<Value, String> {
+    let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+    let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+    let resolver = |id: &str| resolve_project_dir(shared, id);
+    let ctx = crate::opencloud::Ctx {
+        data_dir,
+        store,
+        resolve: &resolver,
+        active_project: shared.active_project_dir(),
+    };
+    let reply = crate::opencloud::route(&ctx, method, path, "", body)
+        .ok_or_else(|| format!("asset endpoint '{method} {path}' not available"))?;
+    match reply {
+        crate::opencloud::Reply::Json(code, val) => {
+            if code >= 400 || val.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+                let err = val
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .unwrap_or_else(|| format!("HTTP {code}: {val}"));
+                Err(err)
+            } else {
+                Ok(val)
+            }
+        }
+        crate::opencloud::Reply::Bytes(mime, bytes) => {
+            Ok(json!({ "ok": true, "mime": mime, "bytes": bytes.len() }))
+        }
+    }
+}
+
+/// Bind the active project + real `openro-core` & `openro-assets` tool hooks onto `agent`.
+fn sync_agent_project(
+    shared: &Arc<Shared>,
+    agent: &mut Agent,
+    req_project_id: Option<&str>,
+    req_project_root: Option<&str>,
+) {
+    let (root, id) = resolve_project_for_agent(shared, req_project_id, req_project_root);
+    if root.is_some() {
+        agent.set_project(root, id);
+    }
+    if agent.hooks.project_list.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.project_list = Some(Arc::new(move |_args| {
+            let store = srv.projects.lock().unwrap();
+            let list: Vec<Value> = store.list().iter().map(crate::projects::summary).collect();
+            Ok(json!({ "ok": true, "active": store.active, "projects": list }))
+        }));
+    }
+    if agent.hooks.reference_search.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.reference_search = Some(Arc::new(move |args| {
+            invoke_opencloud_tool(&srv, "POST", "/api/art/references/search", args)
+        }));
+    }
+    if agent.hooks.art_generate.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.art_generate = Some(Arc::new(move |args| {
+            invoke_opencloud_tool(&srv, "POST", "/api/art/generate", args)
+        }));
+    }
+    if agent.hooks.image_process.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.image_process = Some(Arc::new(move |args| {
+            invoke_opencloud_tool(&srv, "POST", "/api/art/process", args)
+        }));
+    }
+    if agent.hooks.art_pack_card.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.art_pack_card = Some(Arc::new(move |args| {
+            invoke_opencloud_tool(&srv, "POST", "/api/art/pack-card", args)
+        }));
+    }
+    if agent.hooks.assets_upload.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.assets_upload = Some(Arc::new(move |args| {
+            let pid = args
+                .get("project_id")
+                .or_else(|| args.get("project"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .or_else(|| srv.projects.lock().unwrap().active.clone())
+                .ok_or_else(|| "assets_upload needs an active project or args.project_id".to_string())?;
+            invoke_opencloud_tool(&srv, "POST", &format!("/api/projects/{pid}/assets/upload"), args)
+        }));
+    }
+    if agent.hooks.mesh_generate.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.mesh_generate = Some(Arc::new(move |args| {
+            let proj = args
+                .get("project")
+                .and_then(|v| v.as_str())
+                .and_then(|id| resolve_project_dir(&srv, id))
+                .or_else(|| srv.active_project_dir());
+            if args.get("parts").is_some() || args.get("script").is_some() {
+                crate::mesh::generate_for_project(&srv.assets_root, proj.as_deref(), args, None)
+            } else {
+                crate::library::generate_blender_mesh(
+                    proj.as_deref().unwrap_or(&srv.assets_root),
+                    args,
+                    None,
+                )
+            }
+        }));
+    }
+    if agent.hooks.audio_generate.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.audio_generate = Some(Arc::new(move |args| {
+            let proj = args
+                .get("project")
+                .and_then(|v| v.as_str())
+                .and_then(|id| resolve_project_dir(&srv, id))
+                .or_else(|| srv.active_project_dir());
+            crate::audio_synth::generate_audio_asset_for_project(
+                &srv.assets_root,
+                proj.as_deref(),
+                args,
+            )
+        }));
+    }
+}
+
+fn ensure_run_worker(shared: &Arc<Shared>) {
+    if shared
+        .runs_worker_started
+        .compare_exchange(
+            false,
+            true,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return;
+    }
+    let srv = Arc::clone(shared);
+    std::thread::spawn(move || loop {
+        let (run_id, cancel) = srv.runs.pop_next();
+        let _busy = BusyGuard::new(&srv.busy);
+        let mut guard = srv.agent.lock().unwrap();
+        match guard.as_mut() {
+            Some(agent) => {
+                sync_agent_project(&srv, agent, None, None);
+                crate::agent::runs::RunStore::execute_run(&srv.runs, &run_id, cancel, agent);
+            }
+            None => {
+                srv.runs.update(&run_id, |r| {
+                    r.status = crate::agent::runs::RunStatus::Failed;
+                    r.error = Some("No model configured on server.".to_string());
+                });
+                srv.runs.finish_active(&run_id);
+            }
+        }
+        drop(guard);
+        if let Some(done) = srv.runs.get(&run_id) {
+            if let Some(summary) = done.summary {
+                srv.append_lines_to(&done.chat_id, &[format!("OpenRO: {summary}")]);
+            } else if let Some(err) = done.error {
+                srv.append_lines_to(&done.chat_id, &[format!("OpenRO: {err}")]);
+            }
+        }
+    });
+}
+
 fn handle(
     mut stream: TcpStream,
     shared: &Arc<Shared>,
@@ -1478,6 +1679,90 @@ fn handle(
                 ),
             }
         }
+        ("GET", "/api/runs") => {
+            if !host_allowed(&req.host, &[]) {
+                respond_json(&mut stream, "403 Forbidden", &json!({ "ok": false, "error": "runs are only accessible from this machine (loopback)" }));
+                return Ok(());
+            }
+            respond_json(&mut stream, "200 OK", &shared.runs.list_json());
+        }
+        ("POST", "/api/runs") => {
+            if !host_allowed(&req.host, &[]) {
+                respond_json(&mut stream, "403 Forbidden", &json!({ "ok": false, "error": "runs are only accessible from this machine (loopback)" }));
+                return Ok(());
+            }
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let message = body.get("message").or_else(|| body.get("ask")).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            if message.is_empty() {
+                respond_json(&mut stream, "400 Bad Request", &json!({ "ok": false, "error": "empty message" }));
+                return Ok(());
+            }
+            let chat_id = body
+                .get("chat_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| shared.active_chat.lock().unwrap().clone());
+            let mode = body.get("mode").and_then(|v| v.as_str()).unwrap_or("plan_execute").to_string();
+            let project_id = body.get("project_id").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+            let explicit_root = body.get("project_root").and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+            let (resolved_dir, resolved_id) = resolve_project_for_agent(shared, project_id.as_deref(), explicit_root.as_deref());
+            let project_id = resolved_id.or(project_id);
+            let project_root = resolved_dir.map(|d| d.to_string_lossy().to_string());
+            let max_steps = body.get("max_steps").and_then(|v| v.as_u64()).unwrap_or(40) as usize;
+            shared.append_lines_to(&chat_id, &[format!("You: {message}")]);
+            let run = shared.runs.enqueue(crate::agent::runs::EnqueueRun {
+                chat_id,
+                ask: message,
+                mode,
+                project_id,
+                project_root,
+                max_steps,
+            });
+            ensure_run_worker(shared);
+            respond_json(&mut stream, "202 Accepted", &json!({ "ok": true, "run_id": run.run_id, "run": run.detail_json() }));
+        }
+        ("GET", p) if p.starts_with("/api/runs/") && !p["/api/runs/".len()..].contains('/') => {
+            if !host_allowed(&req.host, &[]) {
+                respond_json(&mut stream, "403 Forbidden", &json!({ "ok": false, "error": "runs are only accessible from this machine (loopback)" }));
+                return Ok(());
+            }
+            let id = &p["/api/runs/".len()..];
+            match shared.runs.get(id) {
+                Some(run) => respond_json(&mut stream, "200 OK", &json!({ "ok": true, "run": run.detail_json() })),
+                None => respond_json(&mut stream, "404 Not Found", &json!({ "ok": false, "error": format!("unknown run '{id}'") })),
+            }
+        }
+        ("POST", p) if p.starts_with("/api/runs/") && p.ends_with("/resume") => {
+            if !host_allowed(&req.host, &[]) {
+                respond_json(&mut stream, "403 Forbidden", &json!({ "ok": false, "error": "runs are only accessible from this machine (loopback)" }));
+                return Ok(());
+            }
+            let id = &p["/api/runs/".len()..p.len() - "/resume".len()];
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let hint = body.get("hint").and_then(|v| v.as_str()).map(String::from);
+            match shared.runs.resume(id, hint) {
+                Ok(run) => {
+                    ensure_run_worker(shared);
+                    respond_json(&mut stream, "202 Accepted", &json!({ "ok": true, "run_id": run.run_id, "run": run.detail_json() }));
+                }
+                Err(e) => {
+                    let st = if e.contains("unknown run") { "404 Not Found" } else { "409 Conflict" };
+                    respond_json(&mut stream, st, &json!({ "ok": false, "error": e }));
+                }
+            }
+        }
+        ("POST", p) if p.starts_with("/api/runs/") && p.ends_with("/cancel") => {
+            if !host_allowed(&req.host, &[]) {
+                respond_json(&mut stream, "403 Forbidden", &json!({ "ok": false, "error": "runs are only accessible from this machine (loopback)" }));
+                return Ok(());
+            }
+            let id = &p["/api/runs/".len()..p.len() - "/cancel".len()];
+            match shared.runs.cancel(id) {
+                Ok(run) => respond_json(&mut stream, "200 OK", &json!({ "ok": true, "run_id": run.run_id, "run": run.detail_json() })),
+                Err(e) => respond_json(&mut stream, "404 Not Found", &json!({ "ok": false, "error": e })),
+            }
+        }
         ("GET", "/api/models") => {
             if !host_allowed(&req.host, &[]) {
                 respond_json(
@@ -1781,12 +2066,49 @@ fn handle(
             // the narration, the failure — is filed into THIS chat,
             // even if the user switches chats while it runs.
             let chat_id = shared.active_chat.lock().unwrap().clone();
-            // The user's words are recorded FIRST, before the ask runs:
-            // a refused or failed ask must never silently lose them
-            // (the no-key path used to record nothing at all, so the
-            // exchange vanished on reload).
             shared.append_lines_to(&chat_id, &[format!("You: {message}")]);
+            let req_project_root = body
+                .get("project_root")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let req_project_id = body
+                .get("project_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            if body.get("async").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let run_mode = body
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("plan_execute")
+                    .to_string();
+                let max_steps = body.get("max_steps").and_then(|v| v.as_u64()).unwrap_or(40) as usize;
+                let (resolved_dir, resolved_id) = resolve_project_for_agent(
+                    shared,
+                    req_project_id.as_deref(),
+                    req_project_root.as_deref(),
+                );
+                let run = shared.runs.enqueue(crate::agent::runs::EnqueueRun {
+                    chat_id,
+                    ask: message,
+                    mode: run_mode,
+                    project_id: resolved_id.or(req_project_id),
+                    project_root: resolved_dir.map(|d| d.to_string_lossy().to_string()),
+                    max_steps,
+                });
+                ensure_run_worker(shared);
+                respond_json(
+                    &mut stream,
+                    "202 Accepted",
+                    &json!({ "ok": true, "async": true, "run_id": run.run_id, "run": run.detail_json() }),
+                );
+                return Ok(());
+            }
             let mut guard = shared.agent.lock().unwrap();
+            if let Some(agent) = guard.as_mut() {
+                sync_agent_project(shared, agent, req_project_id.as_deref(), req_project_root.as_deref());
+            }
             match guard.as_mut() {
                 None => {
                     let error = "no model key configured: set OPENRO_MODEL_API_KEY to enable chat";
@@ -1997,11 +2319,37 @@ fn handle(
             }
         }
         ("POST", "/api/ideas") => {
-            // The proactive pitch: which ideas fit this chat's game
-            // right now. A new set is also spoken into the thread (the
-            // agent talking first is part of the chat's record); a set
-            // already pitched is returned silently for the buttons.
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
             let chat_id = shared.active_chat.lock().unwrap().clone();
+            let has_custom_prompt = body
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .is_some_and(|p| !p.trim().is_empty());
+            let has_custom_project = body
+                .get("project_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|p| !p.trim().is_empty())
+                || shared.active_project_dir().is_some()
+                || shared
+                    .agent
+                    .try_lock()
+                    .ok()
+                    .and_then(|g| g.as_ref().and_then(|a| a.effective_project_root()))
+                    .is_some();
+            if has_custom_prompt || has_custom_project {
+                respond_json(
+                    &mut stream,
+                    "200 OK",
+                    &json!({
+                        "ok": true,
+                        "ideas": [],
+                        "built_titles": shared.built_titles_for(&chat_id),
+                        "pitched_new": false,
+                        "custom_project": true,
+                    }),
+                );
+                return Ok(());
+            }
             let intro = if shared.thread_lines().is_empty() {
                 "OpenRO: While you think — here are games I can build for you right now, in one go:"
             } else {
