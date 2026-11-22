@@ -473,13 +473,13 @@ export function SettingsDialog({
                 </>
               )}
 
-              {/* Card Art Image Generation (Gemini Nano Banana / OpenAI Images) */}
+              {/* Game Asset & Texture Image Generation (Gemini Nano Banana / OpenAI Images) */}
               {cfg && (
-                <section aria-label="Card art image generation" className="flex flex-col gap-3 rounded-card border border-hairline bg-board/50 p-3.5">
+                <section aria-label="Game asset image generation" className="flex flex-col gap-3 rounded-card border border-hairline bg-board/50 p-3.5">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
                       <ImageIcon className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
-                      <h3 className="text-sm font-medium text-ink">Card Art Image Generation</h3>
+                      <h3 className="text-sm font-medium text-ink">Game Asset &amp; Texture Generation</h3>
                     </div>
                     <Pill className="bg-tag-research-bg px-2 py-0.5 font-mono text-xs text-tag-research-fg">
                       {cfg.has_gemini_api_key || cfg.has_gemini_key || cfg.has_openai_image_api_key
@@ -489,7 +489,7 @@ export function SettingsDialog({
                   </div>
 
                   <p className="text-xs leading-relaxed text-ink-2">
-                    8 Nano Banana anime card portraits are already bundled. Add a Google Gemini (Nano Banana) or OpenAI Image key here to generate additional custom cards on demand.
+                    Optional Google Gemini (Nano Banana) or OpenAI Image API key for generating custom decals, icons, badges, and stylized character textures for any Roblox game (install the Image Generation Studio pack in Tool Library to unlock).
                   </p>
 
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">

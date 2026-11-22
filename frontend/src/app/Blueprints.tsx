@@ -1,11 +1,10 @@
 import { motion, useReducedMotion } from "motion/react";
-import { Check, Hammer, Layers, Palette, Sparkles } from "lucide-react";
+import { Check, Hammer, Layers } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
 import { instant, press } from "@/motion";
 import { ADDS, blueprintMeta, plain, type Idea } from "./data";
-import { APEX_CARDS, type CardAssetRecord } from "./cardCatalog";
 
 export function BlueprintCard({
   idea,
@@ -97,104 +96,6 @@ export function BlueprintCard({
         )}
       </div>
     </motion.article>
-  );
-}
-
-export function FeaturedApexBanner({
-  assets,
-  built,
-  canBuild,
-  busy,
-  building,
-  onBuildApex,
-  onOpenArtStudio,
-}: {
-  assets: CardAssetRecord[];
-  built: boolean;
-  canBuild: boolean;
-  busy: boolean;
-  building: boolean;
-  onBuildApex: () => void;
-  onOpenArtStudio: () => void;
-}) {
-  const showcase = (assets.length > 0 ? assets : APEX_CARDS).slice(0, 4);
-
-  return (
-    <section
-      aria-label="Featured Untitled Anime Card Game Blueprint"
-      className="rounded-card border border-hairline bg-surface p-3"
-    >
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge className="border-transparent bg-tag-plan-bg px-2 py-0.5 text-xs font-medium text-tag-plan-fg">
-              Featured v0.9.0 Flagship
-            </Badge>
-            <span className="rounded-chip bg-board px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2">
-              6 systems · {assets.length || APEX_CARDS.length} anime cards
-            </span>
-          </div>
-
-          <div className="min-w-0">
-            <h3 className="text-ui font-medium text-ink">
-              Untitled Anime Card Game
-            </h3>
-            <p className="mt-0.5 text-sm leading-snug text-ink-2">
-              Sunlit floating archipelago with sculpted Torii Summon Shrine, Fusion Weather Storms, 4v4 Chain Overdrive clashes, Living Lead-Card Guardian Aura, and 50-floor boss tower.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 pt-0.5">
-            {built ? (
-              <div className="inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-pill-active-bg px-3 py-1.5 text-xs font-medium text-pill-active-fg">
-                <Check className="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden />
-                <span>Untitled Anime Card Game active in this place</span>
-              </div>
-            ) : (
-              <Button
-                variant="default"
-                size="sm"
-                loading={building}
-                disabled={!canBuild || busy}
-                onClick={onBuildApex}
-                aria-label="Build Untitled Anime Card Game in Studio"
-                className="max-md:min-h-11"
-              >
-                <Sparkles className="size-4" strokeWidth={1.5} aria-hidden />
-                Build Untitled Anime Card Game
-              </Button>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onOpenArtStudio}
-              aria-label="Open Card Art Studio"
-              className="max-md:min-h-11"
-            >
-              <Palette className="size-4" strokeWidth={1.5} aria-hidden />
-              Card Art Studio ({assets.length || APEX_CARDS.length})
-            </Button>
-          </div>
-        </div>
-
-        {/* 4 real Nano Banana 3:4 card art portraits */}
-        <div className="grid shrink-0 grid-cols-4 gap-1.5 lg:w-[236px]" aria-label="Featured card illustrations">
-          {showcase.map((card) => (
-            <div
-              key={card.card_id}
-              className="group relative aspect-[3/4] overflow-hidden rounded-lg border border-hairline bg-board"
-              title={`${card.title} (${card.rarity} · ${card.element})`}
-            >
-              <img
-                src={card.image_url}
-                alt={card.title}
-                className="h-full w-full object-cover"
-              />
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
   );
 }
 

@@ -25,6 +25,7 @@ import type {
   InstanceEditPayload,
   PartPreset,
   Place,
+  ProjectAssetRecord,
   StudioActionEvent,
   StudioEmbedStatus,
   StudioKeyboardInputPayload,
@@ -33,18 +34,9 @@ import type {
   StudioToolName,
   StudioToolResult,
 } from "./data";
-import { CardBattlerStage } from "./CardBattlerStage";
-import { APEX_CARDS, type CardAssetRecord } from "./cardCatalog";
 import { StudioViewport3D } from "./StudioViewport3D";
 
 export type ViewportTab = "studio-3d" | "embedded-studio" | "playable";
-
-function isCardBattlerPlace(place: Place): boolean {
-  const keys = [...Object.keys(place.scripts || {}), ...Object.keys(place.instances || {})].join(" ");
-  return /cardgacha|cardbattle|towerprogression|deckbuilder|potionsweather|cardgallery|rollpedestal|cardbillboard|bossshrine|towergate/i.test(
-    keys,
-  );
-}
 
 type CameraMode = "top-down" | "side-view";
 
@@ -163,20 +155,17 @@ function parseWorld(place: Place): ParsedWorld {
   const hasWeather = /WeatherCycle|Atmosphere|Rain/i.test(leafNames + " " + allSrc);
   const hasDropper = /Dropper|Conveyor|TycoonDropper/i.test(leafNames + " " + allSrc);
 
-  const isCardWorld = isCardBattlerPlace(place);
-  const themeLabel = isCardWorld
-    ? "Untitled Anime Card Game"
-    : /\b(ice|frost)/i.test(leafNames)
-      ? "Ice Parkour"
-      : /\blava/i.test(leafNames)
-        ? "Lava Obby"
-        : hasDropper || shopItem
-          ? "Tycoon"
-          : /\b(round|arena|sword)/i.test(leafNames)
-            ? "Combat Arena"
-            : hasWeather || hasDayNight
-              ? "Live World"
-              : "Roblox Place";
+  const themeLabel = /\b(ice|frost)/i.test(leafNames)
+    ? "Ice Parkour"
+    : /\blava/i.test(leafNames)
+      ? "Lava Obby"
+      : hasDropper || shopItem
+        ? "Tycoon"
+        : /\b(round|arena|sword)/i.test(leafNames)
+          ? "Combat Arena"
+          : hasWeather || hasDayNight
+            ? "Live World"
+            : "Roblox Place";
 
   const objects: StageObj[] = [];
   let cursorX = 112;
@@ -398,7 +387,6 @@ export function StagePreview({
   selectedPath,
   onSelectPart,
   assets,
-  onOpenArtStudio,
   studioMode = "local_place",
   studioActions = [],
   hasLiveFrame = false,
@@ -427,8 +415,7 @@ export function StagePreview({
   theme: "light" | "dark";
   selectedPath?: string | null;
   onSelectPart?: (path: string) => void;
-  assets?: CardAssetRecord[];
-  onOpenArtStudio?: () => void;
+  assets?: ProjectAssetRecord[];
   studioMode?: StudioMode;
   studioActions?: StudioActionEvent[];
   hasLiveFrame?: boolean;
@@ -454,7 +441,6 @@ export function StagePreview({
   onInvokeStudioTool?: (tool: StudioToolName, args: Record<string, unknown>) => Promise<StudioToolResult>;
 }) {
   const reduce = useReducedMotion();
-  const isCardWorld = useMemo(() => isCardBattlerPlace(place), [place]);
   const [viewportTab, setViewportTab] = useState<ViewportTab>(() => requestedTab || "studio-3d");
   useEffect(() => {
     if (requestedTab) setViewportTab(requestedTab);
@@ -989,7 +975,7 @@ export function StagePreview({
     hitboxesRef.current = hitboxes;
   }, [cameraMode, clockHour, selectedPath, theme, world]);
 
-  const showingPlayable2D = viewportTab === "playable" && !isCardWorld;
+  const showingPlayable2D = viewportTab === "playable";
 
   // 60fps requestAnimationFrame loop (only runs when 2D Playable Obby/Platformer stage is visible)
   useEffect(() => {
@@ -1095,9 +1081,7 @@ export function StagePreview({
                     ? "Roblox Studio 3D Viewport"
                     : viewportTab === "embedded-studio"
                       ? "Embedded Roblox Studio"
-                      : isCardWorld
-                        ? "Playable Card Battler Stage"
-                        : "Playable Stage"}
+                      : "Playable Stage"}
                 </span>
                 <Pill className="bg-tag-sky-bg px-2 py-0.5 text-xs text-tag-sky-fg">{world.themeLabel}</Pill>
                 {showingPlayable2D && world.hasCheckpoints > 0 && (
@@ -1219,7 +1203,7 @@ export function StagePreview({
                     mode={viewportTab}
                     place={place}
                     theme={theme}
-                    assets={assets && assets.length > 0 ? assets : APEX_CARDS}
+                    assets={assets ?? []}
                     selectedPath={selectedPath}
                     studioMode={studioMode}
                     actions={studioActions}
@@ -1244,13 +1228,6 @@ export function StagePreview({
                     onSendMouseInput={onSendMouseInput}
                     onSendKeyboardInput={onSendKeyboardInput}
                     onInvokeStudioTool={onInvokeStudioTool}
-                  />
-                </div>
-              ) : isCardWorld ? (
-                <div className="p-3">
-                  <CardBattlerStage
-                    assets={assets && assets.length > 0 ? assets : APEX_CARDS}
-                    onOpenArtStudio={onOpenArtStudio}
                   />
                 </div>
               ) : (
