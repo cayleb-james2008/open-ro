@@ -1594,7 +1594,7 @@ export function StudioViewport3D({
         : "Local Studio 3D";
 
   return (
-    <div data-studio-viewport-3d className="flex flex-col gap-2.5">
+    <div data-studio-viewport-3d className="flex min-w-0 flex-col gap-2.5 overflow-hidden">
       {/* Studio Ribbon Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-hairline bg-board/55 px-2.5 py-2">
         <div className="flex flex-wrap items-center gap-1">
@@ -1736,10 +1736,10 @@ export function StudioViewport3D({
             </div>
 
             {selectedPart ? (
-              <div className="flex flex-wrap items-center gap-1">
-                <span className="inline-flex items-center gap-1 font-mono text-xs text-ink">
-                  <Crosshair className="size-3 text-blue" strokeWidth={1.5} aria-hidden />
-                  {selectedPart.name}
+              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
+                <span className="inline-flex min-w-0 max-w-[14rem] items-center gap-1 truncate font-mono text-xs text-ink">
+                  <Crosshair className="size-3 shrink-0 text-blue" strokeWidth={1.5} aria-hidden />
+                  <span className="truncate">{selectedPart.name}</span>
                 </span>
                 {tool === "rotate" ? (
                   <>
@@ -1768,7 +1768,7 @@ export function StudioViewport3D({
                 )}
               </div>
             ) : (
-              <span className="truncate text-xs text-ink-2">
+              <span className="min-w-0 max-w-full truncate text-xs text-ink-2">
                 Drag to orbit · Shift+drag pan · Wheel zoom · Click any 3D part to edit
               </span>
             )}
@@ -1885,19 +1885,19 @@ export function StudioViewport3D({
               <ExpandableContent preset="fade">
                 <div
                   data-studio-console
-                  className="max-h-40 overflow-y-auto border-t border-hairline bg-surface p-2"
+                  className="max-h-40 overflow-x-hidden overflow-y-auto border-t border-hairline bg-surface p-2"
                 >
                   {filteredActions.length === 0 ? (
                     <p className="px-2 py-2 text-xs text-ink-2">
                       No Studio events in this filter yet. Build a blueprint or click Playtest to stream live actions.
                     </p>
                   ) : (
-                    <ul className="flex flex-col gap-1" aria-label="Live agent Studio actions">
+                    <ul className="flex min-w-0 flex-col gap-1" aria-label="Live agent Studio actions">
                       {filteredActions.map((ev) => {
                         const badge = actionPrefix(ev.kind);
                         const clickable = Boolean(ev.path && (ev.path.startsWith("Workspace.") || ev.path.includes(".")));
                         return (
-                          <li key={`${ev.seq}-${ev.kind}-${ev.path}`}>
+                          <li key={`${ev.seq}-${ev.kind}-${ev.path}`} className="min-w-0">
                             <Button
                               variant="ghost"
                               size="xs"
@@ -1905,7 +1905,7 @@ export function StudioViewport3D({
                                 focusAgentOnAction(ev);
                                 if (clickable) onSelectPart?.(ev.path);
                               }}
-                              className="h-auto w-full justify-between gap-2 rounded-sm px-2 py-1 text-left font-normal hover:bg-board/60 max-md:min-h-11"
+                              className="h-auto w-full min-w-0 justify-between gap-2 overflow-hidden rounded-sm px-2 py-1 text-left font-normal hover:bg-board/60 max-md:min-h-11"
                             >
                               <span className="flex min-w-0 flex-1 items-center gap-2">
                                 <span className="shrink-0 font-mono text-xs tabular-nums text-ink-3">
@@ -1921,7 +1921,7 @@ export function StudioViewport3D({
                                 </span>
                               </span>
                               {ev.path && (
-                                <span className="hidden shrink-0 font-mono text-xs text-ink-3 sm:inline">
+                                <span className="hidden max-w-[14rem] shrink-0 truncate font-mono text-xs text-ink-3 sm:inline">
                                   {ev.path}
                                 </span>
                               )}

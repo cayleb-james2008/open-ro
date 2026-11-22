@@ -524,7 +524,7 @@ dependencies = [
 
 [[package]]
 name = "openro-rs"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "rune",
  "serde_json",
