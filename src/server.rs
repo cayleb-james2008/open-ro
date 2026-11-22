@@ -90,12 +90,27 @@ pub struct Shared {
     status_cache: Mutex<StatusInfo>,
     /// Game art assets metadata & in-memory blob fallback (`data_dir/game-assets/`).
     pub game_assets: Mutex<GameAssetsIndex>,
+    /// Directly embedded Roblox Studio host lifecycle manager (`src/studio_embed.rs`).
+    pub studio_embed: Mutex<crate::studio_embed::StudioEmbedManager>,
+    /// Built-in Developer Skill & Connection Library manager (`data_dir/library.json`).
+    pub library: Mutex<crate::library::LibraryManager>,
+    /// Root directory for library/mesh/audio assets (equals `data_dir` or an ephemeral dir).
+    pub assets_root: PathBuf,
 }
 
 #[derive(Clone, Default)]
 pub struct GameAssetsIndex {
     pub mem_assets: Vec<crate::assets::AssetMetadata>,
     pub mem_blobs: std::collections::HashMap<String, Vec<u8>>,
+}
+
+static EPHEMERAL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn make_ephemeral_assets_root() -> PathBuf {
+    let seq = EPHEMERAL_SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("openro-mem-{}-{seq}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 impl Shared {
@@ -108,11 +123,15 @@ impl Shared {
         let events = Arc::new(BuildEventHub::new());
         let initial_mode = agent.as_ref().map(|a| a.studio_mode_tag()).unwrap_or("local_place");
         let studio_stream = Arc::new(StudioStreamHub::new(initial_mode));
+        let assets_root = make_ephemeral_assets_root();
+        let library = crate::library::LibraryManager::open(&assets_root);
+        let lib_prompt = library.active_skill_prompt();
         if let Some(a) = agent.as_mut() {
             a.attach_undo_sink(Arc::clone(&undoable));
             a.attach_redo_sink(Arc::clone(&redoable));
             a.attach_events(Arc::clone(&events));
             a.attach_studio_stream(Arc::clone(&studio_stream));
+            a.set_library_prompt(lib_prompt);
         }
         let initial_status = extract_status_from_agent(agent.as_mut());
         let chat = default_chat();
@@ -136,6 +155,9 @@ impl Shared {
             studio_stream,
             status_cache: Mutex::new(initial_status),
             game_assets: Mutex::new(GameAssetsIndex::default()),
+            studio_embed: Mutex::new(crate::studio_embed::StudioEmbedManager::new()),
+            library: Mutex::new(library),
+            assets_root,
         })
     }
 
@@ -150,11 +172,14 @@ impl Shared {
         let events = Arc::new(BuildEventHub::new());
         let initial_mode = agent.as_ref().map(|a| a.studio_mode_tag()).unwrap_or("local_place");
         let studio_stream = Arc::new(StudioStreamHub::new(initial_mode));
+        let library = crate::library::LibraryManager::open(&data_dir);
+        let lib_prompt = library.active_skill_prompt();
         if let Some(a) = agent.as_mut() {
             a.attach_undo_sink(Arc::clone(&undoable));
             a.attach_redo_sink(Arc::clone(&redoable));
             a.attach_events(Arc::clone(&events));
             a.attach_studio_stream(Arc::clone(&studio_stream));
+            a.set_library_prompt(lib_prompt);
         }
         let initial_status = extract_status_from_agent(agent.as_mut());
         let mut recovered = agent.as_ref().map(|a| a.recovered.clone()).unwrap_or_default();
@@ -169,6 +194,7 @@ impl Shared {
         recovered.append(&mut snap_store.recovered);
         // Ensure persistent game-assets directory is initialized on startup.
         let _ = crate::assets::AssetManager::open(&data_dir);
+        let assets_root = data_dir.clone();
         Arc::new(Shared {
             agent: Mutex::new(agent),
             chats: Mutex::new(chats),
@@ -188,6 +214,9 @@ impl Shared {
             studio_stream,
             status_cache: Mutex::new(initial_status),
             game_assets: Mutex::new(GameAssetsIndex::default()),
+            studio_embed: Mutex::new(crate::studio_embed::StudioEmbedManager::new()),
+            library: Mutex::new(library),
+            assets_root,
         })
     }
 
@@ -928,12 +957,25 @@ fn handle(
         }
     }
 
-    // Parameterized game art asset routes: GET /api/assets/manifest, GET|DELETE /api/assets/:file
+    // Parameterized game art, Blender mesh, and audio asset routes:
+    // GET /api/assets/manifest, GET /api/assets/meshes/:file, GET /api/assets/audio/:file, GET|DELETE /api/assets/:file
     if let Some(raw_file) = path.strip_prefix("/api/assets/") {
         if !raw_file.is_empty() {
             if req.method == "GET" && raw_file == "manifest" {
                 handle_assets_manifest(&mut stream, shared);
                 return Ok(());
+            }
+            if let Some(mesh_file) = raw_file.strip_prefix("meshes/") {
+                if req.method == "GET" && !mesh_file.is_empty() {
+                    handle_mesh_asset_file(&mut stream, shared, mesh_file);
+                    return Ok(());
+                }
+            }
+            if let Some(audio_file) = raw_file.strip_prefix("audio/") {
+                if req.method == "GET" && !audio_file.is_empty() {
+                    handle_audio_asset_file(&mut stream, shared, audio_file);
+                    return Ok(());
+                }
             }
             if req.method == "GET" {
                 handle_asset_file(&mut stream, shared, raw_file);
@@ -1065,11 +1107,42 @@ fn handle(
         ("POST", "/api/studio/mcp/disconnect") => {
             handle_studio_mcp_disconnect(&mut stream, shared, &req);
         }
+        ("GET", "/api/studio/embed/status") => {
+            handle_studio_embed_status(&mut stream, shared);
+        }
+        ("POST", "/api/studio/embed/launch") => {
+            handle_studio_embed_launch(&mut stream, shared, &req);
+        }
+        ("POST", "/api/studio/embed/stop") => {
+            handle_studio_embed_stop(&mut stream, shared, &req);
+        }
         ("POST", "/api/studio/input/mouse") => {
             handle_studio_input_mouse(&mut stream, shared, &req);
         }
         ("POST", "/api/studio/input/keyboard") => {
             handle_studio_input_keyboard(&mut stream, shared, &req);
+        }
+        ("GET", "/api/library") => {
+            let body = shared.library.lock().unwrap().list_json();
+            respond_json(&mut stream, "200 OK", &body);
+        }
+        ("POST", "/api/library/install") => {
+            handle_library_install(&mut stream, shared, &req);
+        }
+        ("POST", "/api/library/uninstall") => {
+            handle_library_uninstall(&mut stream, shared, &req);
+        }
+        ("POST", "/api/library/configure") => {
+            handle_library_configure(&mut stream, shared, &req);
+        }
+        ("POST", "/api/library/test") => {
+            handle_library_test(&mut stream, shared, &req);
+        }
+        ("POST", "/api/tools/blender/generate") => {
+            handle_tools_blender_generate(&mut stream, shared, &req);
+        }
+        ("POST", "/api/tools/audio/generate") => {
+            handle_tools_audio_generate(&mut stream, shared, &req);
         }
         ("GET", "/api/build/events") => {
             let since = query_param(query, "since")
@@ -1317,6 +1390,8 @@ fn handle(
             let active = shared.active_chat.lock().unwrap().clone();
             let can_undo = shared.undoable.lock().unwrap().contains(&active);
             let can_redo = shared.redoable.lock().unwrap().contains(&active);
+            let embed_state = shared.studio_embed.lock().unwrap().state();
+            let active_lib_tools = shared.library.lock().unwrap().active_tools();
             respond_json(
                 &mut stream,
                 "200 OK",
@@ -1334,7 +1409,11 @@ fn handle(
                     "studio_stream": true,
                     "studio_embed": true,
                     "studio_mjpeg": true,
+                    "library_api": true,
+                    "embedded_running": embed_state.embedded || embed_state.mcp_connected,
+                    "studio_id": embed_state.studio_id,
                     "studio_tools": crate::agent::OFFICIAL_STUDIO_MCP_TOOLS,
+                    "active_library_tools": active_lib_tools,
                     "ide_api": true,
                     "ide_v080": true,
                     "rojo_export": true,
@@ -3134,6 +3213,11 @@ fn handle_studio_mcp_connect(stream: &mut TcpStream, shared: &Shared, req: &Requ
             return;
         }
     };
+    shared
+        .studio_embed
+        .lock()
+        .unwrap()
+        .sync_from_client(&mcp, Some(cmd.clone()));
 
     let (frame_seq, frame_meta) = {
         let mut guard = shared.agent.lock().unwrap();
@@ -3213,6 +3297,11 @@ fn handle_studio_mcp_disconnect(stream: &mut TcpStream, shared: &Shared, req: &R
             &json!({ "ok": false, "error": "a build or playtest is currently running; disconnect once it finishes" }),
         );
         return;
+    }
+
+    {
+        let mut mgr = shared.studio_embed.lock().unwrap();
+        let _ = crate::studio_embed::stop_embedded_studio(&mut mgr);
     }
 
     let local_place = match &shared.data_dir {
@@ -3527,6 +3616,465 @@ fn handle_studio_tool(stream: &mut TcpStream, shared: &Shared, req: &Request, to
                     "error": e,
                 }),
             );
+        }
+    }
+}
+
+fn build_embed_status_payload(shared: &Shared) -> Value {
+    let state = shared.studio_embed.lock().unwrap().state();
+    let info = status_info(shared);
+    let detect = crate::studio_embed::detect_studio_environment();
+    let frame_seq = shared.studio_stream.latest_frame_seq();
+    let studio_mode = shared.studio_stream.studio_mode();
+    let available_tools = match shared.agent.try_lock() {
+        Ok(guard) => guard
+            .as_ref()
+            .map(Agent::available_studio_tools)
+            .unwrap_or_default(),
+        Err(_) => state.tools.clone(),
+    };
+    let running = state.embedded || state.mcp_connected || studio_mode == "live_mcp";
+    let simple_state = if running {
+        "running"
+    } else if state.last_error.is_some() {
+        "error"
+    } else {
+        "idle"
+    };
+    let mut obj = state.to_json();
+    if let Some(map) = obj.as_object_mut() {
+        map.insert("ok".to_string(), json!(true));
+        map.insert("running".to_string(), json!(running));
+        map.insert("state".to_string(), json!(simple_state));
+        map.insert("studio_mode".to_string(), json!(studio_mode));
+        map.insert("studio_connected".to_string(), json!(info.studio_connected));
+        map.insert("vinegar_installed".to_string(), json!(detect.studio_installed));
+        map.insert("xvfb_installed".to_string(), json!(detect.xvfb_available));
+        map.insert("windows_studio_path".to_string(), json!(detect.studio_exe));
+        map.insert("has_live_frame".to_string(), json!(frame_seq > 0));
+        map.insert("frame_seq".to_string(), json!(frame_seq));
+        map.insert("stream_url".to_string(), json!("/api/studio/stream.mjpg"));
+        map.insert("frame_url".to_string(), json!("/api/studio/frame"));
+        map.insert("available_tools".to_string(), json!(available_tools));
+    }
+    obj
+}
+
+fn handle_studio_embed_status(stream: &mut TcpStream, shared: &Shared) {
+    respond_json(stream, "200 OK", &build_embed_status_payload(shared));
+}
+
+fn handle_studio_embed_launch(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "launching Embedded Roblox Studio is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    if shared.busy.load(Ordering::SeqCst) > 0 {
+        respond_json(
+            stream,
+            "409 Conflict",
+            &json!({ "ok": false, "error": "a build or playtest is currently running; launch Studio once it finishes" }),
+        );
+        return;
+    }
+    let body: Value = if req.body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_json(
+                    stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": "invalid JSON body for Studio embed launch" }),
+                );
+                return;
+            }
+        }
+    };
+    let cfg = match crate::studio_embed::EmbedConfig::from_json(&body) {
+        Ok(c) => c,
+        Err(e) => {
+            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
+            return;
+        }
+    };
+
+    let launch_res = {
+        let mut mgr = shared.studio_embed.lock().unwrap();
+        crate::studio_embed::launch_embedded_studio(&mut mgr, cfg)
+    };
+
+    match launch_res {
+        Ok((_embed_state, mcp)) => {
+            let (frame_seq, frame_meta, available_tools) = {
+                let mut guard = shared.agent.lock().unwrap();
+                match guard.as_mut() {
+                    Some(agent) => {
+                        agent.studio = Some(PlaceBackend::Mcp(mcp));
+                        agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
+                        let mut ev = StudioActionInput::new(
+                            StudioActionKind::CameraFocus,
+                            "Embedded Roblox Studio live session attached",
+                        );
+                        ev.path = "Workspace.CurrentCamera".to_string();
+                        ev.class_name = "Camera".to_string();
+                        shared.studio_stream.record_action(ev);
+                        let captured = agent.capture_studio_frame().ok();
+                        let tools = agent.available_studio_tools();
+                        *shared.status_cache.lock().unwrap() = extract_status_from_agent(Some(agent));
+                        (
+                            captured.as_ref().map(|f| f.seq).unwrap_or(0),
+                            captured.as_ref().map(|f| f.meta_json()),
+                            tools,
+                        )
+                    }
+                    None => {
+                        let model = ModelClient::new(
+                            DEFAULT_BASE_URL.to_string(),
+                            DEFAULT_MODEL_ID.to_string(),
+                            None,
+                        );
+                        let mut agent = Agent::with_backend(model, Some(PlaceBackend::Mcp(mcp)));
+                        if let Some(dir) = &shared.data_dir {
+                            agent.set_changes_file(dir.join("changes.json"));
+                        }
+                        agent.attach_undo_sink(Arc::clone(&shared.undoable));
+                        agent.attach_redo_sink(Arc::clone(&shared.redoable));
+                        agent.attach_events(Arc::clone(&shared.events));
+                        agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
+                        let lib_prompt = shared.library.lock().unwrap().active_skill_prompt();
+                        agent.set_library_prompt(lib_prompt);
+                        let captured = agent.capture_studio_frame().ok();
+                        let tools = agent.available_studio_tools();
+                        *shared.status_cache.lock().unwrap() = extract_status_from_agent(Some(&mut agent));
+                        *guard = Some(agent);
+                        (
+                            captured.as_ref().map(|f| f.seq).unwrap_or(0),
+                            captured.as_ref().map(|f| f.meta_json()),
+                            tools,
+                        )
+                    }
+                }
+            };
+            let status_obj = build_embed_status_payload(shared);
+            respond_json(
+                stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "running": true,
+                    "connected": true,
+                    "studio_connected": true,
+                    "workspace_mode": "studio_mcp",
+                    "studio_mode": "live_mcp",
+                    "has_live_frame": frame_seq > 0,
+                    "frame_seq": frame_seq,
+                    "frame": frame_meta,
+                    "stream_url": "/api/studio/stream.mjpg",
+                    "frame_url": "/api/studio/frame",
+                    "available_tools": available_tools,
+                    "status": status_obj,
+                }),
+            );
+        }
+        Err(e) => {
+            let status_obj = build_embed_status_payload(shared);
+            respond_json(
+                stream,
+                "502 Bad Gateway",
+                &json!({
+                    "ok": false,
+                    "running": false,
+                    "connected": false,
+                    "studio_mode": shared.studio_stream.studio_mode(),
+                    "error": e,
+                    "status": status_obj,
+                }),
+            );
+        }
+    }
+}
+
+fn handle_studio_embed_stop(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "stopping Embedded Roblox Studio is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    if shared.busy.load(Ordering::SeqCst) > 0 {
+        respond_json(
+            stream,
+            "409 Conflict",
+            &json!({ "ok": false, "error": "a build or playtest is currently running; stop Studio once it finishes" }),
+        );
+        return;
+    }
+
+    {
+        let mut mgr = shared.studio_embed.lock().unwrap();
+        let _ = crate::studio_embed::stop_embedded_studio(&mut mgr);
+    }
+
+    let local_place = match &shared.data_dir {
+        Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
+        None => LocalPlace::in_memory(shared.game_name.clone()),
+    };
+    {
+        let mut guard = shared.agent.lock().unwrap();
+        if let Some(agent) = guard.as_mut() {
+            agent.studio = Some(PlaceBackend::Local(local_place));
+            agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
+            *shared.status_cache.lock().unwrap() = extract_status_from_agent(Some(agent));
+        }
+    }
+
+    let mut ev = StudioActionInput::new(
+        StudioActionKind::CameraFocus,
+        "Stopped Embedded Roblox Studio — returned to Local Studio 3D",
+    );
+    ev.path = "Workspace.CurrentCamera".to_string();
+    ev.class_name = "Camera".to_string();
+    shared.studio_stream.record_action(ev);
+
+    let status_obj = build_embed_status_payload(shared);
+    respond_json(
+        stream,
+        "200 OK",
+        &json!({
+            "ok": true,
+            "running": false,
+            "connected": false,
+            "studio_connected": true,
+            "workspace_mode": "local_place",
+            "studio_mode": "local_place",
+            "status": status_obj,
+        }),
+    );
+}
+
+fn respond_library_error(stream: &mut TcpStream, err: crate::library::LibraryError) {
+    let status = match err.status {
+        400 => "400 Bad Request",
+        404 => "404 Not Found",
+        _ => "500 Internal Server Error",
+    };
+    respond_json(stream, status, &json!({ "ok": false, "error": err.message }));
+}
+
+fn sync_agent_library_prompt(shared: &Shared) {
+    let prompt = shared.library.lock().unwrap().active_skill_prompt();
+    if let Ok(mut guard) = shared.agent.lock() {
+        if let Some(agent) = guard.as_mut() {
+            agent.set_library_prompt(prompt);
+        }
+    }
+}
+
+fn handle_library_install(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "installing library packs is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    let body: Value = match serde_json::from_slice::<Value>(&req.body) {
+        Ok(v) => v,
+        Err(_) => {
+            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+            return;
+        }
+    };
+    let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let res = shared.library.lock().unwrap().install(id);
+    match res {
+        Ok(v) => {
+            sync_agent_library_prompt(shared);
+            respond_json(stream, "200 OK", &v);
+        }
+        Err(e) => respond_library_error(stream, e),
+    }
+}
+
+fn handle_library_uninstall(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "uninstalling library packs is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    let body: Value = match serde_json::from_slice::<Value>(&req.body) {
+        Ok(v) => v,
+        Err(_) => {
+            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+            return;
+        }
+    };
+    let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let res = shared.library.lock().unwrap().uninstall(id);
+    match res {
+        Ok(v) => {
+            sync_agent_library_prompt(shared);
+            respond_json(stream, "200 OK", &v);
+        }
+        Err(e) => respond_library_error(stream, e),
+    }
+}
+
+fn handle_library_configure(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "configuring library packs is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    let body: Value = match serde_json::from_slice::<Value>(&req.body) {
+        Ok(v) => v,
+        Err(_) => {
+            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+            return;
+        }
+    };
+    let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let res = shared.library.lock().unwrap().configure(id, &body);
+    match res {
+        Ok(v) => {
+            sync_agent_library_prompt(shared);
+            respond_json(stream, "200 OK", &v);
+        }
+        Err(e) => respond_library_error(stream, e),
+    }
+}
+
+fn handle_library_test(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "testing library packs is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    let body: Value = match serde_json::from_slice::<Value>(&req.body) {
+        Ok(v) => v,
+        Err(_) => {
+            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+            return;
+        }
+    };
+    let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let res = shared.library.lock().unwrap().test_pack(id);
+    match res {
+        Ok(v) => respond_json(stream, "200 OK", &v),
+        Err(e) => respond_library_error(stream, e),
+    }
+}
+
+fn handle_tools_blender_generate(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "generating Blender 3D meshes is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    let body: Value = if req.body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+                return;
+            }
+        }
+    };
+    let blender_override = body
+        .get("binary_path")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    match crate::library::generate_blender_mesh(
+        &shared.assets_root,
+        &body,
+        blender_override.as_deref(),
+    ) {
+        Ok(v) => respond_json(stream, "200 OK", &v),
+        Err(e) => respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e })),
+    }
+}
+
+fn handle_tools_audio_generate(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "generating audio assets is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    let body: Value = if req.body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+                return;
+            }
+        }
+    };
+    match crate::audio_synth::generate_audio_asset(&shared.assets_root, &body) {
+        Ok(v) => respond_json(stream, "200 OK", &v),
+        Err(e) => respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e })),
+    }
+}
+
+fn handle_mesh_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &str) {
+    match crate::library::read_mesh_asset(&shared.assets_root, raw_file) {
+        Ok((bytes, mime)) => {
+            respond_bytes(stream, "200 OK", mime, "public, max-age=3600", &bytes);
+        }
+        Err(e) => {
+            let status = if e.contains("escapes") {
+                "403 Forbidden"
+            } else if e.contains("not found") {
+                "404 Not Found"
+            } else {
+                "400 Bad Request"
+            };
+            respond_json(stream, status, &json!({ "ok": false, "error": e }));
+        }
+    }
+}
+
+fn handle_audio_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &str) {
+    match crate::audio_synth::read_audio_asset(&shared.assets_root, raw_file) {
+        Ok(bytes) => {
+            respond_bytes(stream, "200 OK", "audio/wav", "public, max-age=3600", &bytes);
+        }
+        Err(e) => {
+            let status = if e.contains("escapes") {
+                "403 Forbidden"
+            } else if e.contains("not found") {
+                "404 Not Found"
+            } else {
+                "400 Bad Request"
+            };
+            respond_json(stream, status, &json!({ "ok": false, "error": e }));
         }
     }
 }
