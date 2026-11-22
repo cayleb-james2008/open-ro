@@ -310,17 +310,29 @@ impl ProjectStore {
         if dir.exists() {
             return Err(format!("a folder named '{folder}' already exists there"));
         }
-        for d in ["src/server", "src/client", "src/shared"] {
+        for d in ["src/server", "src/client", "src/shared/Config"] {
             std::fs::create_dir_all(dir.join(d)).map_err(|e| format!("create {d}: {e}"))?;
         }
         let rojo = json!({
             "name": name,
             "tree": {
                 "$className": "DataModel",
-                "ReplicatedStorage": { "Shared": { "$path": "src/shared" } },
-                "ServerScriptService": { "Server": { "$path": "src/server" } },
+                "$ignoreUnknownInstances": true,
+                "ReplicatedStorage": {
+                    "$ignoreUnknownInstances": true,
+                    "Shared": { "$path": "src/shared" }
+                },
+                "ServerScriptService": {
+                    "$ignoreUnknownInstances": true,
+                    "Server": { "$path": "src/server" }
+                },
                 "StarterPlayer": {
-                    "StarterPlayerScripts": { "$className": "StarterPlayerScripts", "Client": { "$path": "src/client" } }
+                    "$ignoreUnknownInstances": true,
+                    "StarterPlayerScripts": {
+                        "$className": "StarterPlayerScripts",
+                        "$ignoreUnknownInstances": true,
+                        "Client": { "$path": "src/client" }
+                    }
                 }
             }
         });
@@ -328,8 +340,16 @@ impl ProjectStore {
         write(DEFAULT_ROJO_FILE, serde_json::to_string_pretty(&rojo).unwrap() + "\n")?;
         write("src/server/Main.server.luau", "print(\"server ready\")\n".into())?;
         write("src/client/Main.client.luau", "print(\"client ready\")\n".into())?;
-        write("src/shared/Config.luau", "return {}\n".into())?;
-        write(".gitignore", "build/\n.openro/\nart/references/\nrefs/\n".into())?;
+        write("src/shared/Config/init.luau", "return {}\n".into())?;
+        write("selene.toml", "std = \"roblox\"\n".into())?;
+        write(
+            "stylua.toml",
+            "syntax = \"Luau\"\ncolumn_width = 120\nline_endings = \"Unix\"\nindent_type = \"Tabs\"\nindent_width = 4\nquote_style = \"AutoPreferDouble\"\n".into(),
+        )?;
+        write(
+            ".gitignore",
+            "build/\n.openro/\nart/references/\nart/previews/\nrefs/\n*.rbxl\n*.rbxlx\n".into(),
+        )?;
         let manifest = json!({
             "version": 1, "name": name, "rojoProject": DEFAULT_ROJO_FILE,
             "universeId": universe, "placeId": place, "products": [],
@@ -1367,10 +1387,21 @@ pub fn check_project(dir: &Path) -> Result<Value, String> {
     });
 
     let targets = luau_target_dirs(dir);
+    // Scope selene to Roblox game source (`src/`, plus `ui/` if present) so Lune tooling
+    // under `tools/` is not rejected against the `roblox` standard library (#33).
+    let selene_targets: Vec<String> = if dir.join("src").is_dir() {
+        let mut st = vec!["src".to_string()];
+        if dir.join("ui").is_dir() {
+            st.push("ui".to_string());
+        }
+        st
+    } else {
+        targets.clone()
+    };
     let selene_json = match find_tool("selene", "OPENRO_SELENE") {
         Some(bin) => {
             let mut args = vec!["--no-summary".to_string()];
-            args.extend(targets.iter().cloned());
+            args.extend(selene_targets.iter().cloned());
             match run_bounded(&bin, dir, &args, 60) {
                 Ok((code, timed_out, ms, out, err)) => json!({
                     "available": true,

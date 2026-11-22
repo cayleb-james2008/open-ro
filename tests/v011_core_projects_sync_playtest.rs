@@ -536,7 +536,7 @@ fn project_check_and_run_lune() {
     assert_eq!(chk["luau"]["passed"], json!(false));
     assert!(chk["luau"]["errors"].as_u64().unwrap() > 0);
 
-    // Fix it -> luau passes
+    // Fix it + add src/shared/Config/Rarities.luau using Luau `+=` (proves #33 selene roblox std + #34 no Config collision)
     api_json(
         port,
         "POST",
@@ -546,9 +546,29 @@ fn project_check_and_run_lune() {
             "content": "local function ok()\n\treturn 1\nend\nreturn ok\n"
         })),
     );
+    api_json(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/file"),
+        Some(json!({
+            "path": "src/shared/Config/Rarities.luau",
+            "content": "local total = 0\nfor i = 1, 3 do\n\ttotal += i\nend\nreturn { total = total }\n"
+        })),
+    );
     let (code, chk) = api_json(port, "POST", &format!("/api/projects/{id}/check"), Some(json!({})));
     assert_eq!(code, 200);
-    assert_eq!(chk["luau"]["passed"], json!(true));
+    assert_eq!(chk["luau"]["passed"], json!(true), "luau failed: {chk}");
+    assert_eq!(chk["selene"]["passed"], json!(true), "selene failed: {chk}");
+    assert_eq!(chk["stylua"]["passed"], json!(true), "stylua failed: {chk}");
+    assert_eq!(chk["passed"], json!(true), "overall check failed: {chk}");
+
+    let (code, b) = api_json(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/build"),
+        Some(json!({ "engine": "auto" })),
+    );
+    assert_eq!(code, 200, "build failed with Config/Rarities.luau: {b}");
 
     // If lune is installed, exercise /run-lune end to end
     if projects::find_tool("lune", "OPENRO_LUNE").is_some() {
@@ -1146,6 +1166,231 @@ fn empty_studio_mcp_falls_back_to_local_place_and_auto_plugin_pref() {
     assert_eq!(code, 200);
     assert_eq!(lc["already_connected"], json!(true));
     assert_eq!(lc["ready"], json!(true));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn place_tree_and_config_never_block_while_agent_mutex_is_held_and_config_validates_keys() {
+    let root = temp_dir("gap31-32");
+    let data = root.join("data");
+    let mut local = openro_rs::place::LocalPlace::open(data.clone(), "Gap31".into());
+    local.replace_tree(&json!({
+        "scripts": { "ServerScriptService.Boot": "print('hi')" },
+        "instances": {}
+    }));
+    let agent = Agent::with_local_place(
+        ModelClient::new("http://127.0.0.1:0".into(), "test".into(), None),
+        local,
+    );
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let shared = Shared::with_data_dir(Some(agent), "Gap31".to_string(), data);
+    let shared_srv = std::sync::Arc::clone(&shared);
+    std::thread::spawn(move || {
+        let _ = serve(listener, shared_srv);
+    });
+
+    // Warm the cached place tree
+    let (code, t0) = api_json(port, "GET", "/api/place-tree", None);
+    assert_eq!(code, 200);
+    assert!(t0["scripts"]["ServerScriptService.Boot"].is_string());
+
+    // Hold shared.agent mutex to simulate a long /api/chat model turn (#31)
+    let hold_guard = shared.agent.lock().unwrap();
+    let started = std::time::Instant::now();
+    let (code, t_busy) = api_json(port, "GET", "/api/place-tree", None);
+    let (code_cfg, cfg_busy) = api_json(port, "GET", "/api/config", None);
+    let elapsed = started.elapsed();
+    drop(hold_guard);
+
+    assert_eq!(code, 200);
+    assert_eq!(t_busy["cached"], json!(true));
+    assert_eq!(t_busy["busy"], json!(true));
+    assert!(t_busy["scripts"]["ServerScriptService.Boot"].is_string());
+    assert_eq!(code_cfg, 200);
+    assert_eq!(cfg_busy["ok"], json!(true));
+    assert!(
+        elapsed < std::time::Duration::from_millis(500),
+        "reads blocked while agent mutex held: {elapsed:?}"
+    );
+
+    // #32: active_backend alias works, unknown keys fail with 400
+    let (code, res) = api_json(
+        port,
+        "POST",
+        "/api/config",
+        Some(json!({ "active_backend": "local_place" })),
+    );
+    assert_eq!(code, 200);
+    assert_eq!(res["workspace_mode"], json!("local_place"));
+    assert_eq!(res["active_backend"], json!("local_place"));
+
+    let (code, err) = api_json(
+        port,
+        "POST",
+        "/api/config",
+        Some(json!({ "not_a_real_setting": true })),
+    );
+    assert_eq!(code, 400);
+    assert!(err["error"]
+        .as_str()
+        .unwrap()
+        .contains("unknown setting key 'not_a_real_setting'"));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn embed_status_detection_helpers_and_attach_existing_studio() {
+    // 1. Unit checks for display normalization & running-studio parser (#118)
+    assert_eq!(
+        openro_rs::studio_embed::normalize_x11_display_env(":99.0"),
+        Some(":99".to_string())
+    );
+    assert_eq!(
+        openro_rs::studio_embed::normalize_x11_display_env(":0"),
+        Some(":0".to_string())
+    );
+    assert_eq!(openro_rs::studio_embed::normalize_x11_display_env(""), None);
+    assert_eq!(
+        openro_rs::studio_embed::normalize_x11_display_env("invalid"),
+        None
+    );
+
+    let parsed = openro_rs::studio_embed::parse_running_studios(&json!({
+        "studios": [
+            { "studio_id": "studio-abc", "place_name": "UACG Lobby", "active_datamodel": "Edit" },
+            { "studio_id": "" }
+        ]
+    }));
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0]["studio_id"], json!("studio-abc"));
+    assert_eq!(parsed[0]["place_name"], json!("UACG Lobby"));
+    assert_eq!(parsed[0]["datamodel_type"], json!("Edit"));
+
+    // 2. Server embed status + attach existing studio without spawning duplicate (#118)
+    let root = temp_dir("embed-attach");
+    let data = root.join("data");
+    let port = start_server(None, data);
+
+    let (code, st) = api_json(port, "GET", "/api/studio/embed/status", None);
+    assert_eq!(code, 200);
+    assert_eq!(st["ok"], json!(true));
+    assert!(st["studio_running"].is_boolean());
+    assert!(st["already_logged_in"].is_boolean());
+    assert!(st["running_studios"].is_array());
+    assert_eq!(st["awaiting_signin"], json!(false));
+
+    // Loopback guard on /api/studio/embed/attach
+    let (evil_code, _, _) = http_req(
+        port,
+        "POST",
+        "/api/studio/embed/attach",
+        "evil.example:8077",
+        Some("{}"),
+    );
+    assert_eq!(evil_code, 403);
+
+    // Attach to existing mock_studio immediately (zero Studio process spawned)
+    let (code, att) = api_json(
+        port,
+        "POST",
+        "/api/studio/embed/attach",
+        Some(json!({ "mcp_command": mock_studio_command() })),
+    );
+    assert_eq!(code, 200, "embed/attach failed: {att}");
+    assert_eq!(att["ok"], json!(true));
+    assert_eq!(att["running"], json!(true));
+    assert_eq!(att["connected"], json!(true));
+    assert_eq!(att["awaiting_signin"], json!(false));
+    assert_eq!(att["phase"], json!("connected"));
+    assert_eq!(att["status"]["already_logged_in"], json!(true));
+    assert!(att["status"]["studio_pid"].is_null());
+    assert!(
+        att["status"]["running_studios"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "expected non-empty running_studios after attach: {att}"
+    );
+
+    let (code, stopped) = api_json(port, "POST", "/api/studio/embed/stop", Some(json!({})));
+    assert_eq!(code, 200);
+    assert_eq!(stopped["running"], json!(false));
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn embed_live_auth_streams_awaiting_signin_and_auto_promotes_on_login() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_dir("embed-live-auth");
+    let data = root.join("data");
+    let marker = root.join("signed_in.flag");
+    let wrapper = root.join("studio_auth_mock.sh");
+    let mock_bin = env!("CARGO_BIN_EXE_mock_studio");
+    let script = format!(
+        "#!/bin/sh\nif [ ! -f '{}' ]; then\n  export MOCK_NO_STUDIOS=1\nfi\nexec '{}'\n",
+        marker.display(),
+        mock_bin
+    );
+    std::fs::write(&wrapper, script).expect("write wrapper");
+    let mut perms = std::fs::metadata(&wrapper).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&wrapper, perms).unwrap();
+
+    let port = start_server(None, data);
+
+    // 1. Before sign-in (marker absent): /embed/attach returns 200 awaiting_signin (never 502)
+    let (code, resp) = api_json(
+        port,
+        "POST",
+        "/api/studio/embed/attach",
+        Some(json!({ "mcp_command": wrapper.to_string_lossy() })),
+    );
+    assert_eq!(code, 200, "expected 200 awaiting_signin: {resp}");
+    assert_eq!(resp["ok"], json!(true));
+    assert_eq!(resp["running"], json!(true));
+    assert_eq!(resp["connected"], json!(false));
+    assert_eq!(resp["awaiting_signin"], json!(true));
+    assert_eq!(resp["phase"], json!("awaiting_signin"));
+    assert_eq!(resp["status"]["state"], json!("awaiting_signin"));
+    assert_eq!(resp["status"]["phase"], json!("awaiting_signin"));
+    assert_eq!(resp["status"]["mcp_connected"], json!(false));
+    assert_eq!(resp["stream_url"], json!("/api/studio/stream.mjpg"));
+
+    // 2. Simulate user finishing sign-in / opening a place -> background poller auto-attaches MCP
+    std::fs::write(&marker, "logged-in").expect("write sign-in marker");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+    let mut promoted = None;
+    while std::time::Instant::now() < deadline {
+        let (st_code, st) = api_json(port, "GET", "/api/studio/embed/status", None);
+        if st_code == 200 && st["phase"] == json!("connected") && st["mcp_connected"] == json!(true)
+        {
+            promoted = Some(st);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(120));
+    }
+    let st = promoted.expect("background MCP auto-attacher did not promote awaiting_signin -> connected");
+    assert_eq!(st["state"], json!("running"));
+    assert_eq!(st["awaiting_signin"], json!(false));
+    assert_eq!(st["already_logged_in"], json!(true));
+    assert_eq!(st["studio_id"], json!("mock-studio-01"));
+    assert_eq!(st["has_live_frame"], json!(true));
+    assert!(
+        st["running_studios"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "expected running_studios populated after auto-attach: {st}"
+    );
+
+    // 3. Stop cleans up session cleanly
+    let (code, stopped) = api_json(port, "POST", "/api/studio/embed/stop", Some(json!({})));
+    assert_eq!(code, 200);
+    assert_eq!(stopped["running"], json!(false));
 
     let _ = std::fs::remove_dir_all(&root);
 }
