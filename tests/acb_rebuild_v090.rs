@@ -173,6 +173,8 @@ fn rebuilt_anime_card_battles_apex_rbxlx_and_assets_are_studio_grade_and_zero_er
         "hall_of_legends",
         "boss_colosseum_pvp",
         "tower_cauldron",
+        "playtest_reveal",
+        "playtest_battle",
         "playtest_view",
     ] {
         let png = std::fs::read(root.join(format!("studio-captures/{cap}.png")))
@@ -180,4 +182,22 @@ fn rebuilt_anime_card_battles_apex_rbxlx_and_assets_are_studio_grade_and_zero_er
         assert!(png.len() > 50_000, "{cap}.png should be full Studio frame ({}B)", png.len());
         assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"), "{cap}.png valid PNG");
     }
+
+    // 7. Verify canonical renamed project directory examples/untitled-anime-card-game/
+    let untitled = Path::new("examples/untitled-anime-card-game");
+    assert!(untitled.join("TASTE-DOSSIER.md").is_file(), "missing TASTE-DOSSIER.md");
+    assert!(untitled.join("README.md").is_file(), "missing untitled README.md");
+    assert!(untitled.join("asset-manifest.json").is_file(), "missing untitled asset-manifest.json");
+    let untitled_xml = std::fs::read_to_string(untitled.join("UntitledAnimeCardGame.rbxlx"))
+        .expect("UntitledAnimeCardGame.rbxlx exists");
+    let untitled_place = Place::from_rbxlx_xml(&untitled_xml).expect("untitled .rbxlx imports cleanly");
+    let untitled_report = analyze_place(untitled_place.scripts(), untitled_place.instances());
+    assert!(
+        untitled_report.is_ok() && untitled_report.warning_count() == 0,
+        "untitled place failed static Luau prover: {:?}",
+        untitled_report.diagnostics
+    );
+    assert!(card_db.contains("Crimson Eclipse") && card_db.contains("Celestial Tempest"));
+    assert!(place.scripts()["ServerScriptService.BattleEngine"].contains("Overdrive"));
+    assert!(place.scripts()["ServerScriptService.GameCore"].contains("EquippedGuardianAura"));
 }

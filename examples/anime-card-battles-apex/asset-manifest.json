@@ -1,12 +1,12 @@
 {
   "schema": "openro-asset-manifest-v1",
-  "game": "Anime Card Battles: Rebirth \u2014 Apex Edition",
+  "game": "Untitled Anime Card Game",
   "ok": true,
   "asset_count": 8,
   "assets": [
     {
       "card_id": "blood-moon-gravity-ronin",
-      "title": "Blood-Moon Gravity Ronin",
+      "title": "Gravity Ronin",
       "rarity": "Epic",
       "element": "Shadow",
       "atk": 330,
@@ -29,7 +29,7 @@
     },
     {
       "card_id": "crimson-sea-captain",
-      "title": "Crimson Sea Captain",
+      "title": "Joyful Pirate",
       "rarity": "Mythic",
       "element": "Crimson",
       "atk": 545,
@@ -52,7 +52,7 @@
     },
     {
       "card_id": "eclipse-arcane-alchemist",
-      "title": "Eclipse Arcane Alchemist",
+      "title": "Steel Alchemist",
       "rarity": "Rare",
       "element": "Arcane",
       "atk": 230,
@@ -75,7 +75,7 @@
     },
     {
       "card_id": "infinity-void-sorcerer",
-      "title": "Infinity Void Sorcerer",
+      "title": "Six-Eyes Sorcerer",
       "rarity": "Mythic",
       "element": "Arcane",
       "atk": 560,
@@ -98,7 +98,7 @@
     },
     {
       "card_id": "nine-tail-ember-shinobi",
-      "title": "Nine-Tail Ember Shinobi",
+      "title": "Nine-Tail Shinobi",
       "rarity": "Mythic",
       "element": "Solar",
       "atk": 555,
@@ -121,7 +121,7 @@
     },
     {
       "card_id": "shadow-sovereign",
-      "title": "Shadow Sovereign",
+      "title": "Shadow Monarch",
       "rarity": "Mythic",
       "element": "Shadow",
       "atk": 585,
@@ -144,7 +144,7 @@
     },
     {
       "card_id": "supernova-ascended-striker",
-      "title": "Supernova Ascended Striker",
+      "title": "Golden Ascended Warrior",
       "rarity": "Secret",
       "element": "Solar",
       "atk": 760,
@@ -167,7 +167,7 @@
     },
     {
       "card_id": "thunder-flash-ronin",
-      "title": "Thunder Flash Ronin",
+      "title": "Thunder Flash Blade",
       "rarity": "Legendary",
       "element": "Storm",
       "atk": 420,
@@ -256,5 +256,5 @@
       "sha256": "b65374f43aec8e012110ede26c49057e066c7e36b4766784ca1ef1a60862da6f"
     }
   ],
-  "part_count": 204
+  "part_count": 215
 }

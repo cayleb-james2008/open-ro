@@ -1,7 +1,8 @@
 -- ApexClientHUD.client.luau (StarterPlayer.StarterPlayerScripts.ApexClientHUD)
--- Complete anime-arcade Client HUD: Top Status & Raid Bar, Bottom Roll/Auto/Fast Dock + Pity,
+-- Complete anime-arcade Client HUD for Untitled Anime Card Game:
+-- Top Status & Raid Bar, Bottom Roll/Auto/Fast Dock + Pity,
 -- Animated Gacha Summon Cutscene, 4-Slot Visual Deck + 24-Card Index + Trait/Charm Forge,
--- Potions/Upgrades/Codes Drawer, and Animated 4v4 Battle Clash Board (1x/2x/3x speed).
+-- Potions/Upgrades/Codes Drawer, and Animated 4v4 Battle Clash Board w/ CHAIN OVERDRIVE.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -107,13 +108,13 @@ local function makeButton(parent, name, text, size, pos, bg, textColor)
 end
 
 -- Remove duplicate GUI if hot-reloaded
-local oldGui = playerGui:FindFirstChild("ApexCardBattlesHUD")
+local oldGui = playerGui:FindFirstChild("UntitledAnimeCardHud") or playerGui:FindFirstChild("ApexCardBattlesHUD")
 if oldGui then
     oldGui:Destroy()
 end
 
 local rootGui = Instance.new("ScreenGui")
-rootGui.Name = "ApexCardBattlesHUD"
+rootGui.Name = "UntitledAnimeCardHud"
 rootGui.ResetOnSpawn = false
 rootGui.IgnoreGuiInset = false
 rootGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
@@ -149,18 +150,18 @@ local battleSpeed = 1
 local battlePlaying = false
 
 -- ======================== TOP BAR & RAID BANNER ========================
-local topBar = makeFrame(rootGui, "TopStatusBar", UDim2.new(0.96, 0, 0, 58), UDim2.new(0.02, 0, 0, 8), PAL.bg, 0.12)
+local topBar = makeFrame(rootGui, "TopStatusBar", UDim2.new(0.96, 0, 0, 58), UDim2.new(0.02, 0, 0, 8), PAL.bg, 0.10)
 addCorner(topBar, 12)
 addStroke(topBar, PAL.stroke, 1.5)
 
-local coinsLbl = makeLabel(topBar, "CoinsLbl", "Coins: 450", UDim2.new(0.14, 0, 0.72, 0), UDim2.new(0.01, 0, 0.14, 0), PAL.gold, Enum.TextXAlignment.Left)
-local shardsLbl = makeLabel(topBar, "ShardsLbl", "Shards: 35", UDim2.new(0.12, 0, 0.72, 0), UDim2.new(0.155, 0, 0.14, 0), PAL.cyan, Enum.TextXAlignment.Left)
-local luckLbl = makeLabel(topBar, "LuckLbl", "Luck: 1.00x", UDim2.new(0.12, 0, 0.72, 0), UDim2.new(0.28, 0, 0.14, 0), PAL.emerald, Enum.TextXAlignment.Left)
-local levelLbl = makeLabel(topBar, "LevelLbl", "Lv.1 | Power: 0", UDim2.new(0.17, 0, 0.72, 0), UDim2.new(0.405, 0, 0.14, 0), PAL.text, Enum.TextXAlignment.Left)
+local coinsLbl = makeLabel(topBar, "CoinsLbl", "Coins: 450", UDim2.new(0.13, 0, 0.72, 0), UDim2.new(0.01, 0, 0.14, 0), PAL.gold, Enum.TextXAlignment.Left)
+local shardsLbl = makeLabel(topBar, "ShardsLbl", "Shards: 35", UDim2.new(0.11, 0, 0.72, 0), UDim2.new(0.145, 0, 0.14, 0), PAL.cyan, Enum.TextXAlignment.Left)
+local luckLbl = makeLabel(topBar, "LuckLbl", "Luck: 1.00x", UDim2.new(0.11, 0, 0.72, 0), UDim2.new(0.26, 0, 0.14, 0), PAL.emerald, Enum.TextXAlignment.Left)
+local levelLbl = makeLabel(topBar, "LevelLbl", "Lv.1 | Power: 0", UDim2.new(0.19, 0, 0.72, 0), UDim2.new(0.375, 0, 0.14, 0), PAL.text, Enum.TextXAlignment.Left)
 
-local weatherBadge = makeFrame(topBar, "WeatherBadge", UDim2.new(0.19, 0, 0.76, 0), UDim2.new(0.585, 0, 0.12, 0), PAL.card, 0)
+local weatherBadge = makeFrame(topBar, "WeatherBadge", UDim2.new(0.21, 0, 0.76, 0), UDim2.new(0.57, 0, 0.12, 0), PAL.card, 0)
 addCorner(weatherBadge, 8)
-addStroke(weatherBadge, PAL.cyan, 1)
+local weatherStroke = addStroke(weatherBadge, PAL.cyan, 1.2)
 local weatherLbl = makeLabel(weatherBadge, "WeatherText", "Clear (1.0x)", UDim2.new(0.94, 0, 0.85, 0), UDim2.new(0.03, 0, 0.08, 0), PAL.cyan, Enum.TextXAlignment.Center)
 
 local raidBtn = makeButton(topBar, "RaidBarBtn", "Raid in 45s", UDim2.new(0.20, 0, 0.76, 0), UDim2.new(0.79, 0, 0.12, 0), Color3.fromRGB(127, 29, 29), PAL.text)
@@ -217,6 +218,11 @@ addStroke(tabBattleBtn, PAL.gold, 1.5)
 -- ======================== DRAWER PANELS ========================
 local activeDrawer = nil
 local drawers = {}
+local modalOpen = { cutscene = false }
+
+local function syncDockVisibility()
+    bottomDock.Visible = (activeDrawer == nil) and (not modalOpen.cutscene)
+end
 
 local function makeDrawer(name: string, titleText: string)
     local panel = makeFrame(rootGui, name, UDim2.new(0.84, 0, 0.68, 0), UDim2.new(0.08, 0, 0.13, 0), PAL.bg, 0.04)
@@ -232,6 +238,7 @@ local function makeDrawer(name: string, titleText: string)
         playSfx("ui_click")
         panel.Visible = false
         activeDrawer = nil
+        syncDockVisibility()
     end)
 
     local body = makeFrame(panel, "Body", UDim2.new(0.96, 0, 1, -56), UDim2.new(0.02, 0, 0, 50), PAL.bg, 1)
@@ -250,6 +257,7 @@ local function toggleDrawer(name: string)
             d.Visible = false
         end
     end
+    syncDockVisibility()
 end
 
 -- ------------------------ 1. DECK & 24-CARD INDEX DRAWER ------------------------
@@ -581,6 +589,20 @@ cutInBanner.Visible = false
 local cutInLbl = makeLabel(cutInBanner, "CutInText", "", UDim2.new(0.94, 0, 0.85, 0), UDim2.new(0.03, 0, 0.08, 0), PAL.gold)
 cutInLbl.ZIndex = 13
 
+local overdriveActive = false
+local overdriveBtn = makeButton(arenaStage, "OverdriveBtn", "CHAIN OVERDRIVE! [SPACE] (+35% DUAL FINISHER)", UDim2.new(0.76, 0, 0, 46), UDim2.new(0.12, 0, 0.86, 0), Color3.fromRGB(220, 38, 38), PAL.gold)
+addStroke(overdriveBtn, PAL.gold, 2.5)
+overdriveBtn.ZIndex = 16
+overdriveBtn.Visible = false
+overdriveBtn.MouseButton1Click:Connect(function()
+    if overdriveActive then
+        overdriveActive = false
+        overdriveBtn.Visible = false
+        playSfx("mythic_fanfare")
+        battleEvent:FireServer("Overdrive")
+    end
+end)
+
 local slotWidgets = { left = {}, right = {} }
 
 local function buildArenaSlots(side: string, teamData)
@@ -610,7 +632,9 @@ local function buildArenaSlots(side: string, teamData)
 
         local hpBg = makeFrame(card, "HpBg", UDim2.new(0.74, 0, 0.22, 0), UDim2.new(0.22, 0, 0.70, 0), Color3.fromRGB(30, 35, 50), 0)
         addCorner(hpBg, 5)
-        local hpFill = makeFrame(hpBg, "HpFill", UDim2.new(1, 0, 1, 0), UDim2.new(0, 0, 0, 0), PAL.emerald, 0)
+        local startRatio = math.clamp(u.hp / math.max(1, u.max_hp), 0, 1)
+        local hpFill = makeFrame(hpBg, "HpFill", UDim2.new(startRatio, 0, 1, 0), UDim2.new(0, 0, 0, 0), PAL.emerald, 0)
+        hpFill.Visible = startRatio > 0
         addCorner(hpFill, 5)
         local hpTxt = makeLabel(hpBg, "HpTxt", u.hp .. "/" .. u.max_hp, UDim2.new(1, 0, 1, 0), UDim2.new(0, 0, 0, 0), Color3.fromRGB(255, 255, 255))
 
@@ -640,50 +664,54 @@ local function spawnBattlePopup(targetSlot, text: string, color: Color3)
 end
 
 -- ======================== GACHA SUMMON CUTSCENE OVERLAY ========================
-local cutscene = makeFrame(rootGui, "GachaCutscene", UDim2.new(1, 0, 1, 0), UDim2.new(0, 0, 0, 0), Color3.fromRGB(6, 8, 16), 0.18)
-cutscene.ZIndex = 20
+local cutscene = makeFrame(rootGui, "GachaCutscene", UDim2.new(1, 0, 1, 0), UDim2.new(0, 0, 0, 0), Color3.fromRGB(8, 12, 24), 0.25)
+cutscene.ZIndex = 30
 cutscene.Visible = false
 
 local shockwave = makeFrame(cutscene, "Shockwave", UDim2.new(0, 80, 0, 80), UDim2.new(0.5, -40, 0.5, -40), PAL.gold, 0.3)
 addCorner(shockwave, 999)
-shockwave.ZIndex = 21
+shockwave.ZIndex = 31
 
 local revealCard = makeFrame(cutscene, "RevealCard", UDim2.new(0, 290, 0, 420), UDim2.new(0.5, -145, 0.5, -210), PAL.card, 0)
 addCorner(revealCard, 16)
 local revealStroke = addStroke(revealCard, PAL.gold, 3)
-revealCard.ZIndex = 22
+revealCard.ZIndex = 32
 
 local revealImg = Instance.new("ImageLabel")
 revealImg.Size = UDim2.new(0.90, 0, 0.62, 0)
 revealImg.Position = UDim2.new(0.05, 0, 0.04, 0)
 revealImg.BackgroundTransparency = 1
 revealImg.ScaleType = Enum.ScaleType.Crop
-revealImg.ZIndex = 23
+revealImg.ZIndex = 33
 addCorner(revealImg, 10)
 revealImg.Parent = revealCard
 
 local revealRarLbl = makeLabel(revealCard, "RarLbl", "MYTHIC", UDim2.new(0.9, 0, 0.07, 0), UDim2.new(0.05, 0, 0.67, 0), PAL.gold)
-revealRarLbl.ZIndex = 23
+revealRarLbl.ZIndex = 33
 local revealTitleLbl = makeLabel(revealCard, "TitleLbl", "Card Name", UDim2.new(0.9, 0, 0.09, 0), UDim2.new(0.05, 0, 0.74, 0), PAL.text)
-revealTitleLbl.ZIndex = 23
+revealTitleLbl.ZIndex = 33
 local revealStatsLbl = makeLabel(revealCard, "StatsLbl", "ATK 500 | HP 1600 | SPD 94", UDim2.new(0.9, 0, 0.07, 0), UDim2.new(0.05, 0, 0.83, 0), PAL.muted)
-revealStatsLbl.ZIndex = 23
+revealStatsLbl.ZIndex = 33
 local keepBtn = makeButton(revealCard, "KeepBtn", "KEEP & CONTINUE", UDim2.new(0.44, 0, 0.08, 0), UDim2.new(0.04, 0, 0.91, 0), PAL.emerald)
-keepBtn.ZIndex = 24
+keepBtn.ZIndex = 34
 local equipRevealedBtn = makeButton(revealCard, "EquipBtn", "EQUIP NOW", UDim2.new(0.44, 0, 0.08, 0), UDim2.new(0.52, 0, 0.91, 0), PAL.accent)
-equipRevealedBtn.ZIndex = 24
+equipRevealedBtn.ZIndex = 34
 
 local lastRevealedId = nil
 keepBtn.MouseButton1Click:Connect(function()
     playSfx("ui_click")
+    modalOpen.cutscene = false
     cutscene.Visible = false
+    syncDockVisibility()
 end)
 equipRevealedBtn.MouseButton1Click:Connect(function()
     playSfx("ui_click")
     if lastRevealedId then
         coreAction:FireServer("equip", lastRevealedId)
     end
+    modalOpen.cutscene = false
     cutscene.Visible = false
+    syncDockVisibility()
 end)
 
 local function playSummonCutscene(payload)
@@ -700,7 +728,9 @@ local function playSummonCutscene(payload)
     revealTitleLbl.Text = payload.title .. (if payload.isNew then " [NEW!]" else "")
     revealStatsLbl.Text = "ATK " .. payload.atk .. " | HP " .. payload.hp .. " | " .. payload.skillName
 
+    modalOpen.cutscene = true
     cutscene.Visible = true
+    syncDockVisibility()
     shockwave.Size = UDim2.new(0, 60, 0, 60)
     shockwave.Position = UDim2.new(0.5, -30, 0.5, -30)
     shockwave.BackgroundColor3 = rar.color
@@ -773,8 +803,13 @@ end)
 
 UserInputService.InputBegan:Connect(function(input, gp)
     if gp then return end
-    if input.KeyCode == Enum.KeyCode.R then
+    if input.KeyCode == Enum.KeyCode.R and (not modalOpen.cutscene) then
         rollFunction:InvokeServer("fast_roll", currentState.selectedPack)
+    elseif input.KeyCode == Enum.KeyCode.Space and overdriveActive then
+        overdriveActive = false
+        overdriveBtn.Visible = false
+        playSfx("mythic_fanfare")
+        battleEvent:FireServer("Overdrive")
     end
 end)
 
@@ -802,12 +837,20 @@ end)
 
 weatherRaidEvent.OnClientEvent:Connect(function(kind, payload)
     if kind == "weather_changed" and typeof(payload) == "table" then
-        weatherLbl.Text = payload.id .. " (" .. payload.luckMult .. "x)"
+        local isFusion = (payload.fusion == true)
+        weatherLbl.Text = (if isFusion then "FUSION: " else "") .. payload.id .. " (" .. payload.luckMult .. "x)"
+        weatherLbl.TextColor3 = if isFusion then PAL.gold else PAL.cyan
+        weatherStroke.Color = if isFusion then PAL.gold else PAL.cyan
+        weatherBadge.BackgroundColor3 = if isFusion then Color3.fromRGB(108, 28, 42) else PAL.card
         showToast(payload.banner)
     elseif kind == "raid_started" and typeof(payload) == "table" then
         showToast("WORLD RAID SPAWNED: " .. payload.name .. "!")
     elseif kind == "sync" and typeof(payload) == "table" and payload.weather then
-        weatherLbl.Text = payload.weather.id .. " (" .. payload.weather.luckMult .. "x)"
+        local isFusion = (payload.weather.fusion == true)
+        weatherLbl.Text = (if isFusion then "FUSION: " else "") .. payload.weather.id .. " (" .. payload.weather.luckMult .. "x)"
+        weatherLbl.TextColor3 = if isFusion then PAL.gold else PAL.cyan
+        weatherStroke.Color = if isFusion then PAL.gold else PAL.cyan
+        weatherBadge.BackgroundColor3 = if isFusion then Color3.fromRGB(108, 28, 42) else PAL.card
     end
 end)
 
@@ -863,9 +906,28 @@ stateSync.OnClientEvent:Connect(function(st)
 end)
 
 battleEvent.OnClientEvent:Connect(function(kind, data)
+    if kind == "overdrive_window" and typeof(data) == "table" then
+        if activeDrawer ~= "Battle" then
+            toggleDrawer("Battle")
+        end
+        overdriveActive = true
+        overdriveBtn.Visible = true
+        local pairNames = data.pair or {}
+        overdriveBtn.Text = "CHAIN OVERDRIVE! [SPACE] (" .. tostring(pairNames[1] or "Lead") .. " x " .. tostring(pairNames[2] or "Ally") .. " +35%)"
+        roundTitleLbl.Text = tostring(data.title or "4v4 Clash") .. " — PRESS [SPACE] FOR CHAIN OVERDRIVE!"
+        task.delay(tonumber(data.duration) or 1.6, function()
+            if overdriveActive then
+                overdriveActive = false
+                overdriveBtn.Visible = false
+            end
+        end)
+        return
+    end
     if kind ~= "clash_replay" or typeof(data) ~= "table" then
         return
     end
+    overdriveActive = false
+    overdriveBtn.Visible = false
     battlePlaying = true
     if activeDrawer ~= "Battle" then
         toggleDrawer("Battle")
@@ -880,6 +942,14 @@ battleEvent.OnClientEvent:Connect(function(kind, data)
             if ev.type == "RoundStart" then
                 roundTitleLbl.Text = data.title .. " — Round " .. tostring(ev.round)
                 task.wait(stepDelay * 0.7)
+            elseif ev.type == "OverdriveBurst" then
+                cutInLbl.Text = "CHAIN OVERDRIVE! " .. tostring(ev.title or "DUAL") .. " (+" .. tostring(ev.bonusPct or 35) .. "% FINISHER!)"
+                cutInBanner.BackgroundColor3 = PAL.crimson
+                cutInBanner.Visible = true
+                playSfx("mythic_fanfare")
+                task.wait(stepDelay * 1.45)
+                cutInBanner.Visible = false
+                cutInBanner.BackgroundColor3 = PAL.accent
             elseif ev.type == "SkillTrigger" then
                 cutInLbl.Text = ev.title .. ": " .. ev.skill .. "!"
                 cutInBanner.Visible = true
@@ -897,6 +967,7 @@ battleEvent.OnClientEvent:Connect(function(kind, data)
                 local w = slotWidgets[ev.side] and slotWidgets[ev.side][ev.slot]
                 if w then
                     local ratio = math.clamp(ev.hp / math.max(1, ev.max_hp), 0, 1)
+                    w.hpFill.Visible = ratio > 0
                     w.hpFill.Size = UDim2.new(ratio, 0, 1, 0)
                     w.hpTxt.Text = ev.hp .. "/" .. ev.max_hp .. (if (ev.shield or 0) > 0 then (" [+" .. ev.shield .. "]") else "")
                     local tag = if ev.isCrit then " CRIT!" elseif ev.tag and #ev.tag > 0 then (" " .. ev.tag) else ""
@@ -910,6 +981,7 @@ battleEvent.OnClientEvent:Connect(function(kind, data)
                 local w = slotWidgets[ev.side] and slotWidgets[ev.side][ev.slot]
                 if w then
                     local ratio = math.clamp(ev.hp / math.max(1, ev.max_hp), 0, 1)
+                    w.hpFill.Visible = ratio > 0
                     w.hpFill.Size = UDim2.new(ratio, 0, 1, 0)
                     w.hpTxt.Text = ev.hp .. "/" .. ev.max_hp
                     spawnBattlePopup(w, "+" .. tostring(ev.amount) .. " HEAL", PAL.emerald)

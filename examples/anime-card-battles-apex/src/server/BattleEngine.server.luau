@@ -28,6 +28,7 @@ local raidDamageBindable = ServerStorage:WaitForChild("ApexRaidDamage")
 local rng = Random.new()
 local lastReq = {}
 local activeLocks = {}
+local overdriveState = {}
 
 local function makeUnit(raw, side: string, slot: number)
     return {
@@ -247,6 +248,9 @@ local function runMatch(player: Player, mode: string, argVal: number?)
         return out
     end
 
+    local initialLeft = serializeTeam(leftTeam)
+    local initialRight = serializeTeam(rightTeam)
+
     -- Round-start passives
     for _, u in ipairs(leftTeam) do
         if u.skillKind == "Mirror Shield" then
@@ -263,6 +267,7 @@ local function runMatch(player: Player, mode: string, argVal: number?)
     end
 
     local totalRaidDmg = 0
+    local overdriveDone = false
     local maxRounds = 12
     for round = 1, maxRounds do
         local aliveLeft = livingUnits(leftTeam)
@@ -272,6 +277,67 @@ local function runMatch(player: Player, mode: string, argVal: number?)
         end
 
         pushEvent({ type = "RoundStart", round = round })
+
+        -- Taste Twist: CHAIN OVERDRIVE interactive timing burst before Round 2
+        if round == 2 and not overdriveDone then
+            overdriveDone = true
+            local leadA = aliveLeft[1]
+            local leadB = aliveLeft[2] or aliveLeft[1]
+            overdriveState[player] = "open"
+            battleEvent:FireClient(player, "overdrive_window", {
+                title = title,
+                duration = 1.6,
+                pair = { leadA.title, leadB.title },
+            })
+            local deadline = os.clock() + 1.6
+            while player.Parent and overdriveState[player] == "open" and os.clock() < deadline do
+                task.wait(0.05)
+            end
+            local didTrigger = (overdriveState[player] == "triggered")
+            overdriveState[player] = nil
+            if didTrigger then
+                local dualDmg = math.max(50, math.floor((leadA.atk + leadB.atk * 0.65) * 1.35))
+                pushEvent({
+                    type = "OverdriveBurst",
+                    title = leadA.title .. " x " .. leadB.title,
+                    bonusPct = 35,
+                    slotA = leadA.slot,
+                    slotB = leadB.slot,
+                })
+                pushEvent({ type = "Lunge", side = "left", slot = leadA.slot, targetSide = "right", targetSlot = aliveRight[1].slot })
+                if leadB.slot ~= leadA.slot then
+                    pushEvent({ type = "Lunge", side = "left", slot = leadB.slot, targetSide = "right", targetSlot = aliveRight[1].slot })
+                end
+                for _, foe in ipairs(livingUnits(rightTeam)) do
+                    local actual = dualDmg
+                    if foe.shield > 0 then
+                        local absorbed = math.min(foe.shield, actual)
+                        foe.shield = foe.shield - absorbed
+                        actual = actual - absorbed
+                    end
+                    foe.hp = math.max(0, foe.hp - actual)
+                    totalRaidDmg = totalRaidDmg + dualDmg
+                    pushEvent({
+                        type = "Damage",
+                        side = foe.side,
+                        slot = foe.slot,
+                        amount = dualDmg,
+                        isCrit = true,
+                        tag = "OVERDRIVE +35%!",
+                        hp = foe.hp,
+                        max_hp = foe.max_hp,
+                        shield = foe.shield,
+                    })
+                    if foe.hp <= 0 then
+                        pushEvent({ type = "KO", side = foe.side, slot = foe.slot, title = foe.title })
+                    end
+                end
+                aliveRight = livingUnits(rightTeam)
+                if #aliveRight == 0 then
+                    break
+                end
+            end
+        end
 
         local order = {}
         for _, u in ipairs(aliveLeft) do table.insert(order, u) end
@@ -479,26 +545,33 @@ local function runMatch(player: Player, mode: string, argVal: number?)
     battleEvent:FireClient(player, "clash_replay", {
         mode = mode,
         title = title,
-        leftTeam = serializeTeam(leftTeam),
-        rightTeam = serializeTeam(rightTeam),
+        leftTeam = initialLeft,
+        rightTeam = initialRight,
         events = events,
         won = leftWon,
         coins = grantedCoins,
         shards = grantedShards,
     })
 
+    overdriveState[player] = nil
     activeLocks[player] = nil
 end
 
 battleEvent.OnServerEvent:Connect(function(player, mode, argVal)
+    if typeof(mode) ~= "string" then
+        return
+    end
+    if mode == "Overdrive" then
+        if overdriveState[player] == "open" then
+            overdriveState[player] = "triggered"
+        end
+        return
+    end
     local now = os.clock()
     if lastReq[player] and (now - lastReq[player]) < 0.8 then
         return
     end
     lastReq[player] = now
-    if typeof(mode) ~= "string" then
-        return
-    end
     local numArg = if typeof(argVal) == "number" and argVal == argVal then argVal else nil
     task.spawn(runMatch, player, mode, numArg)
 end)
@@ -506,4 +579,5 @@ end)
 Players.PlayerRemoving:Connect(function(player)
     lastReq[player] = nil
     activeLocks[player] = nil
+    overdriveState[player] = nil
 end)

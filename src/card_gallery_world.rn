@@ -17,14 +17,14 @@ local SHOWCASE_COUNT = ${showcase_count}
 local ENABLE_HOLOGRAMS = ${holo_lit}
 
 local SHOWCASE_CARDS = {
-    { id = "supernova-ascended-striker", title = "Supernova Ascended Striker", rarity = "Secret",    odds = "1/50,000", color = Color3.fromRGB(255, 196, 60) },
-    { id = "infinity-void-sorcerer",     title = "Infinity Void Sorcerer",     rarity = "Mythic",    odds = "1/3,500",  color = Color3.fromRGB(235, 83, 42) },
-    { id = "shadow-sovereign",           title = "Shadow Sovereign",           rarity = "Mythic",    odds = "1/3,500",  color = Color3.fromRGB(235, 83, 42) },
-    { id = "crimson-sea-captain",        title = "Crimson Sea Captain",        rarity = "Mythic",    odds = "1/3,500",  color = Color3.fromRGB(235, 83, 42) },
-    { id = "nine-tail-ember-shinobi",    title = "Nine-Tail Ember Shinobi",    rarity = "Mythic",    odds = "1/3,500",  color = Color3.fromRGB(249, 115, 22) },
-    { id = "thunder-flash-ronin",        title = "Thunder Flash Ronin",        rarity = "Legendary", odds = "1/400",    color = Color3.fromRGB(56, 189, 248) },
-    { id = "blood-moon-gravity-ronin",   title = "Blood-Moon Gravity Ronin",   rarity = "Epic",      odds = "1/60",     color = Color3.fromRGB(192, 38, 211) },
-    { id = "eclipse-arcane-alchemist",   title = "Eclipse Arcane Alchemist",   rarity = "Rare",      odds = "1/12",     color = Color3.fromRGB(52, 211, 153) },
+    { id = "supernova-ascended-striker", title = "Golden Ascended Warrior", rarity = "Secret",    odds = "1/50,000", color = Color3.fromRGB(255, 196, 60) },
+    { id = "infinity-void-sorcerer",     title = "Six-Eyes Sorcerer",       rarity = "Mythic",    odds = "1/3,500",  color = Color3.fromRGB(235, 83, 42) },
+    { id = "shadow-sovereign",           title = "Shadow Monarch",          rarity = "Mythic",    odds = "1/3,500",  color = Color3.fromRGB(235, 83, 42) },
+    { id = "crimson-sea-captain",        title = "Joyful Pirate",           rarity = "Mythic",    odds = "1/3,500",  color = Color3.fromRGB(235, 83, 42) },
+    { id = "nine-tail-ember-shinobi",    title = "Nine-Tail Shinobi",       rarity = "Mythic",    odds = "1/3,500",  color = Color3.fromRGB(249, 115, 22) },
+    { id = "thunder-flash-ronin",        title = "Thunder Flash Blade",     rarity = "Legendary", odds = "1/400",    color = Color3.fromRGB(56, 189, 248) },
+    { id = "blood-moon-gravity-ronin",   title = "Gravity Ronin",           rarity = "Epic",      odds = "1/60",     color = Color3.fromRGB(192, 38, 211) },
+    { id = "eclipse-arcane-alchemist",   title = "Steel Alchemist",         rarity = "Rare",      odds = "1/12",     color = Color3.fromRGB(52, 211, 153) },
 }
 `;
     let build = if create_structures {
@@ -89,19 +89,33 @@ local function addBillboard(parent, text, color, offsetY)
     bb.Parent = parent
 end
 
--- 1. Full Lighting Rig (Sky, Atmosphere, Bloom, SunRays, ColorCorrection)
+-- 1. Full Sunlit Anime Lighting Rig (ClockTime 13.5, Cerulean Sky, Atmosphere, Bloom, SunRays, ColorCorrection)
+Lighting.ClockTime = 13.5
+Lighting.Brightness = 2.8
+Lighting.Ambient = Color3.fromRGB(165, 195, 230)
+Lighting.OutdoorAmbient = Color3.fromRGB(190, 215, 240)
 if not Lighting:FindFirstChildOfClass("Sky") then
     local sky = Instance.new("Sky")
     sky.Name = "ApexSky"
     sky.StarCount = 3500
     sky.Parent = Lighting
 end
+if not Lighting:FindFirstChildOfClass("Atmosphere") then
+    local atmo = Instance.new("Atmosphere")
+    atmo.Name = "ApexAtmosphere"
+    atmo.Density = 0.16
+    atmo.Offset = 0.25
+    atmo.Color = Color3.fromRGB(185, 230, 255)
+    atmo.Decay = Color3.fromRGB(125, 185, 245)
+    atmo.Haze = 0.45
+    atmo.Parent = Lighting
+end
 if not Lighting:FindFirstChildOfClass("BloomEffect") then
     local bloom = Instance.new("BloomEffect")
     bloom.Name = "ApexBloom"
-    bloom.Intensity = 0.85
-    bloom.Size = 24
-    bloom.Threshold = 1.1
+    bloom.Intensity = 0.45
+    bloom.Size = 18
+    bloom.Threshold = 1.4
     bloom.Parent = Lighting
 end
 if not Lighting:FindFirstChildOfClass("SunRaysEffect") then
@@ -114,74 +128,76 @@ end
 if not Lighting:FindFirstChildOfClass("ColorCorrectionEffect") then
     local cc = Instance.new("ColorCorrectionEffect")
     cc.Name = "ApexColorCorrection"
-    cc.Contrast = 0.12
-    cc.Saturation = 0.18
+    cc.Brightness = 0.05
+    cc.Contrast = 0.08
+    cc.Saturation = 0.22
     cc.Parent = Lighting
 end
 
--- 2. Celestial Arena Island Courtyard, Koi Moat & Stone Bridges
-makePart(lobby, "IslandBaseTier1", Vector3.new(168, 4, 168), CFrame.new(0, -2, 0), Color3.fromRGB(24, 30, 48), Enum.Material.Slate)
-makePart(lobby, "SpawnCourtyard", Vector3.new(96, 1.6, 96), CFrame.new(0, 0.8, 0), Color3.fromRGB(35, 43, 66), Enum.Material.Marble)
-makePart(lobby, "CenterEmblemFloor", Vector3.new(34, 0.4, 34), CFrame.new(0, 1.8, 0), Color3.fromRGB(26, 33, 54), Enum.Material.SmoothPlastic)
+-- 2. Sunlit Floating Archipelago Courtyard, Cliff Undersides, Koi Moat & Stone Bridges
+makePart(lobby, "IslandBaseTier1", Vector3.new(176, 4.2, 176), CFrame.new(0, -2, 0), Color3.fromRGB(74, 222, 128), Enum.Material.Grass)
+makePart(lobby, "CliffTierUpper", Vector3.new(144, 6.4, 144), CFrame.new(0, -7.2, 0), Color3.fromRGB(166, 138, 100), Enum.Material.Rock)
+makePart(lobby, "SpawnCourtyard", Vector3.new(96, 1.6, 96), CFrame.new(0, 0.8, 0), Color3.fromRGB(245, 239, 230), Enum.Material.Marble)
+makePart(lobby, "CenterEmblemFloor", Vector3.new(34, 0.4, 34), CFrame.new(0, 1.8, 0), Color3.fromRGB(231, 222, 200), Enum.Material.Marble)
 for idx, pos in ipairs({ Vector3.new(-40, 8, -40), Vector3.new(40, 8, -40), Vector3.new(-40, 8, 40), Vector3.new(40, 8, 40) }) do
-    local pil = makePart(lobby, "CornerPillar" .. idx, Vector3.new(3.5, 12, 3.5), CFrame.new(pos), Color3.fromRGB(51, 65, 85), Enum.Material.Marble, Enum.PartType.Cylinder)
-    local orb = makePart(lobby, "CornerOrb" .. idx, Vector3.new(3.2, 3.2, 3.2), CFrame.new(pos + Vector3.new(0, 7, 0)), Color3.fromRGB(168, 85, 247), Enum.Material.Neon, Enum.PartType.Ball)
-    addLight(orb, Color3.fromRGB(168, 85, 247), 1.8, 28)
+    local pil = makePart(lobby, "CornerPillar" .. idx, Vector3.new(3.5, 12, 3.5), CFrame.new(pos), Color3.fromRGB(245, 239, 230), Enum.Material.Marble, Enum.PartType.Cylinder)
+    local orb = makePart(lobby, "CornerOrb" .. idx, Vector3.new(3.2, 3.2, 3.2), CFrame.new(pos + Vector3.new(0, 7, 0)), Color3.fromRGB(56, 189, 248), Enum.Material.Neon, Enum.PartType.Ball)
+    addLight(orb, Color3.fromRGB(56, 189, 248), 1.3, 24)
 end
-makePart(lobby, "KoiMoatNorth", Vector3.new(124, 0.6, 14), CFrame.new(0, 0.4, -55), Color3.fromRGB(14, 165, 233), Enum.Material.Glass, Enum.PartType.Block, false, 0.35)
-makePart(lobby, "KoiMoatSouth", Vector3.new(124, 0.6, 10), CFrame.new(0, 0.4, 52), Color3.fromRGB(14, 165, 233), Enum.Material.Glass, Enum.PartType.Block, false, 0.35)
-makePart(lobby, "NorthBridgeDeck", Vector3.new(12, 1, 36), CFrame.new(0, 2, -44), Color3.fromRGB(43, 52, 80), Enum.Material.Marble)
-makePart(lobby, "SouthBridgeDeck", Vector3.new(16, 1, 30), CFrame.new(0, 2, 44), Color3.fromRGB(43, 52, 80), Enum.Material.Marble)
-makePart(lobby, "EastBridgeDeck", Vector3.new(36, 1, 12), CFrame.new(44, 2, -14), Color3.fromRGB(43, 52, 80), Enum.Material.Marble)
-makePart(lobby, "WestBridgeDeck", Vector3.new(36, 1, 12), CFrame.new(-44, 2, -14), Color3.fromRGB(43, 52, 80), Enum.Material.Marble)
+makePart(lobby, "KoiMoatNorth", Vector3.new(124, 0.6, 14), CFrame.new(0, 0.4, -55), Color3.fromRGB(34, 211, 238), Enum.Material.Glass, Enum.PartType.Block, false, 0.22)
+makePart(lobby, "KoiMoatSouth", Vector3.new(124, 0.6, 10), CFrame.new(0, 0.4, 52), Color3.fromRGB(34, 211, 238), Enum.Material.Glass, Enum.PartType.Block, false, 0.22)
+makePart(lobby, "NorthBridgeDeck", Vector3.new(12, 1, 36), CFrame.new(0, 2, -44), Color3.fromRGB(237, 228, 211), Enum.Material.Marble)
+makePart(lobby, "SouthBridgeDeck", Vector3.new(16, 1, 30), CFrame.new(0, 2, 44), Color3.fromRGB(237, 228, 211), Enum.Material.Marble)
+makePart(lobby, "EastBridgeDeck", Vector3.new(36, 1, 12), CFrame.new(44, 2, -14), Color3.fromRGB(237, 228, 211), Enum.Material.Marble)
+makePart(lobby, "WestBridgeDeck", Vector3.new(36, 1, 12), CFrame.new(-44, 2, -14), Color3.fromRGB(237, 228, 211), Enum.Material.Marble)
 
--- 3. Japanese Torii Summon Shrine
-local rollPedestal = makePart(lobby, "RollPedestal", Vector3.new(12, 1, 12), CFrame.new(0, 3.8, -61), Color3.fromRGB(79, 124, 240), Enum.Material.Neon, Enum.PartType.Cylinder)
-addLight(rollPedestal, Color3.fromRGB(56, 189, 248), 2.2, 32)
-addBillboard(rollPedestal, "JAPANESE TORII SUMMON SHRINE", Color3.fromRGB(255, 196, 60), 9)
-makePart(lobby, "ToriiPillarL", Vector3.new(2.4, 16.5, 2.4), CFrame.new(-9.5, 13.5, -71), Color3.fromRGB(200, 40, 32), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
-makePart(lobby, "ToriiPillarR", Vector3.new(2.4, 16.5, 2.4), CFrame.new(9.5, 13.5, -71), Color3.fromRGB(200, 40, 32), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
-makePart(lobby, "ToriiNukiBeam", Vector3.new(25, 1.4, 1.4), CFrame.new(0, 17.5, -71), Color3.fromRGB(200, 40, 32), Enum.Material.SmoothPlastic)
-makePart(lobby, "ToriiKasagiTop", Vector3.new(28, 1.6, 2.8), CFrame.new(0, 22.8, -71), Color3.fromRGB(21, 25, 36), Enum.Material.Slate)
-local holoRing = makePart(lobby, "HoloRing", Vector3.new(10, 0.7, 10), CFrame.new(0, 12.5, -71), Color3.fromRGB(56, 189, 248), Enum.Material.Neon, Enum.PartType.Block, false)
-makePart(lobby, "SummonLightBeam", Vector3.new(4.5, 30, 4.5), CFrame.new(0, 18, -71), Color3.fromRGB(56, 189, 248), Enum.Material.Neon, Enum.PartType.Cylinder, false, 0.58)
+-- 3. Japanese Torii Summon Shrine (Translucent Light Beam = 0.76)
+local rollPedestal = makePart(lobby, "RollPedestal", Vector3.new(12, 1, 12), CFrame.new(0, 3.8, -61), Color3.fromRGB(56, 189, 248), Enum.Material.Neon, Enum.PartType.Cylinder)
+addLight(rollPedestal, Color3.fromRGB(56, 189, 248), 1.5, 28)
+addBillboard(rollPedestal, "JAPANESE TORII SUMMON SHRINE", Color3.fromRGB(255, 196, 60), 23.5)
+makePart(lobby, "ToriiPillarL", Vector3.new(2.4, 16.5, 2.4), CFrame.new(-9.5, 13.5, -71), Color3.fromRGB(220, 38, 38), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
+makePart(lobby, "ToriiPillarR", Vector3.new(2.4, 16.5, 2.4), CFrame.new(9.5, 13.5, -71), Color3.fromRGB(220, 38, 38), Enum.Material.SmoothPlastic, Enum.PartType.Cylinder)
+makePart(lobby, "ToriiNukiBeam", Vector3.new(25, 1.4, 1.4), CFrame.new(0, 17.5, -71), Color3.fromRGB(220, 38, 38), Enum.Material.SmoothPlastic)
+makePart(lobby, "ToriiKasagiTop", Vector3.new(28, 1.6, 2.8), CFrame.new(0, 22.8, -71), Color3.fromRGB(41, 32, 27), Enum.Material.Wood)
+local holoRing = makePart(lobby, "HoloRing", Vector3.new(10, 0.7, 10), CFrame.new(0, 12.5, -71), Color3.fromRGB(56, 189, 248), Enum.Material.Neon, Enum.PartType.Block, false, 0.35)
+makePart(lobby, "SummonLightBeam", Vector3.new(4.0, 30, 4.0), CFrame.new(0, 18, -71), Color3.fromRGB(125, 211, 252), Enum.Material.Neon, Enum.PartType.Cylinder, false, 0.76)
 
 -- 4. Boss Raid Colosseum, Infinite Tower Spire, Alchemist Pavilion & 4v4 PvP Arena
-makePart(lobby, "ColosseumFloor", Vector3.new(46, 2, 46), CFrame.new(80, 1.4, -18), Color3.fromRGB(39, 32, 48), Enum.Material.Slate)
-local bossShrine = makePart(lobby, "BossRaidShrine", Vector3.new(18, 10, 6), CFrame.new(80, 7.5, -36), Color3.fromRGB(224, 83, 42), Enum.Material.Slate)
-addBillboard(bossShrine, "BOSS RAID COLOSSEUM", Color3.fromRGB(239, 68, 68), 8.5)
+makePart(lobby, "ColosseumFloor", Vector3.new(46, 2, 46), CFrame.new(80, 1.4, -18), Color3.fromRGB(230, 213, 184), Enum.Material.Sand)
+local bossShrine = makePart(lobby, "BossRaidShrine", Vector3.new(18, 10, 6), CFrame.new(80, 7.5, -36), Color3.fromRGB(194, 65, 12), Enum.Material.Marble)
+addBillboard(bossShrine, "BOSS RAID COLOSSEUM", Color3.fromRGB(239, 68, 68), 11.5)
 makePart(lobby, "ChampionStatue", Vector3.new(5, 11, 3), CFrame.new(80, 9.5, -24), Color3.fromRGB(250, 204, 21), Enum.Material.Metal)
 
-local towerPortal = makePart(lobby, "TowerPortalGate", Vector3.new(7.5, 38, 7.5), CFrame.new(-80, 21, -18), Color3.fromRGB(56, 189, 248), Enum.Material.Neon, Enum.PartType.Cylinder)
-addBillboard(towerPortal, "INFINITE TOWER SPIRE", Color3.fromRGB(56, 189, 248), 21)
+local towerPortal = makePart(lobby, "TowerPortalGate", Vector3.new(7.5, 38, 7.5), CFrame.new(-80, 21, -18), Color3.fromRGB(56, 189, 248), Enum.Material.Neon, Enum.PartType.Cylinder, true, 0.42)
+addBillboard(towerPortal, "INFINITE TOWER SPIRE", Color3.fromRGB(56, 189, 248), 22)
 for s = 1, 12 do
     local ang = math.rad(s * 30)
-    makePart(lobby, "SpiralStep" .. s, Vector3.new(5, 0.9, 3.2), CFrame.new(-80 + math.cos(ang) * 9, 2 + s * 2.4, -18 + math.sin(ang) * 9) * CFrame.Angles(0, -ang, 0), Color3.fromRGB(99, 102, 241), Enum.Material.Neon)
+    makePart(lobby, "SpiralStep" .. s, Vector3.new(5, 0.9, 3.2), CFrame.new(-80 + math.cos(ang) * 9, 2 + s * 2.4, -18 + math.sin(ang) * 9) * CFrame.Angles(0, -ang, 0), Color3.fromRGB(129, 140, 248), Enum.Material.Neon)
 end
 
-local potionStand = makePart(lobby, "PotionAlchemistStand", Vector3.new(34, 2, 34), CFrame.new(-74, 1.4, 30), Color3.fromRGB(33, 51, 46), Enum.Material.WoodPlanks)
+local potionStand = makePart(lobby, "PotionAlchemistStand", Vector3.new(34, 2, 34), CFrame.new(-74, 1.4, 30), Color3.fromRGB(154, 91, 37), Enum.Material.WoodPlanks)
 local cauldron = makePart(lobby, "AlchemistCauldron", Vector3.new(6.5, 4.5, 6.5), CFrame.new(-78, 5, 30), Color3.fromRGB(52, 211, 153), Enum.Material.Neon, Enum.PartType.Cylinder)
 addBillboard(cauldron, "ALCHEMIST POTION & TRAIT FORGE", Color3.fromRGB(52, 211, 153), 5)
 
-makePart(lobby, "DuelArenaStage", Vector3.new(46, 2, 36), CFrame.new(76, 1.4, 30), Color3.fromRGB(30, 38, 61), Enum.Material.Marble)
+makePart(lobby, "DuelArenaStage", Vector3.new(46, 2, 36), CFrame.new(76, 1.4, 30), Color3.fromRGB(241, 245, 249), Enum.Material.Marble)
 local clashCenter = makePart(lobby, "ClashCenterPlatform", Vector3.new(12, 0.8, 12), CFrame.new(76, 2.7, 30), Color3.fromRGB(250, 204, 21), Enum.Material.Neon, Enum.PartType.Cylinder)
-addBillboard(clashCenter, "4v4 PVP & CLASH ARENA", Color3.fromRGB(250, 204, 21), 6.5)
+addBillboard(clashCenter, "4v4 PVP & CLASH ARENA", Color3.fromRGB(250, 204, 21), 8.5)
 for slot = 1, 4 do
     local zOff = 19.5 + (slot - 1) * 7
-    makePart(lobby, "LeftStagePad" .. slot, Vector3.new(5, 0.7, 5), CFrame.new(60, 2.7, zOff), Color3.fromRGB(56, 189, 248), Enum.Material.Neon)
-    makePart(lobby, "RightStagePad" .. slot, Vector3.new(5, 0.7, 5), CFrame.new(92, 2.7, zOff), Color3.fromRGB(239, 68, 68), Enum.Material.Neon)
+    makePart(lobby, "LeftStagePad" .. slot, Vector3.new(5, 0.7, 5), CFrame.new(60, 2.7, zOff), Color3.fromRGB(37, 99, 235), Enum.Material.Neon)
+    makePart(lobby, "RightStagePad" .. slot, Vector3.new(5, 0.7, 5), CFrame.new(92, 2.7, zOff), Color3.fromRGB(220, 38, 38), Enum.Material.Neon)
 end
 
 -- Cherry-Blossom Lantern Trees
 for tidx, tpos in ipairs({ Vector3.new(-31, 6, -31), Vector3.new(31, 6, -31), Vector3.new(-31, 6, 31), Vector3.new(31, 6, 31) }) do
-    makePart(lobby, "SakuraTrunk" .. tidx, Vector3.new(2.2, 9, 2.2), CFrame.new(tpos), Color3.fromRGB(92, 58, 33), Enum.Material.Wood, Enum.PartType.Cylinder)
+    makePart(lobby, "SakuraTrunk" .. tidx, Vector3.new(2.2, 9, 2.2), CFrame.new(tpos), Color3.fromRGB(110, 68, 38), Enum.Material.Wood, Enum.PartType.Cylinder)
     makePart(lobby, "SakuraCanopy" .. tidx, Vector3.new(9, 6, 9), CFrame.new(tpos + Vector3.new(0, 5.8, 0)), Color3.fromRGB(244, 114, 182), Enum.Material.SmoothPlastic, Enum.PartType.Ball)
     local lant = makePart(lobby, "SakuraLantern" .. tidx, Vector3.new(1.4, 1.8, 1.4), CFrame.new(tpos + Vector3.new(0, 2.2, -2.5)), Color3.fromRGB(251, 191, 36), Enum.Material.Neon)
     addLight(lant, Color3.fromRGB(251, 191, 36), 1.5, 24)
 end
 
 -- 5. Hall of Legends 3D Card Showcases (Decal + SurfaceGui ImageLabel + Particle + Light + Billboard + Highlight)
-local boardWall = makePart(lobby, "LeaderboardWall", Vector3.new(30, 12.5, 2.2), CFrame.new(0, 9, 77), Color3.fromRGB(20, 26, 41), Enum.Material.SmoothPlastic)
+local boardWall = makePart(lobby, "LeaderboardWall", Vector3.new(34, 13.0, 2.2), CFrame.new(0, 15.5, 79), Color3.fromRGB(30, 41, 59), Enum.Material.SmoothPlastic)
 local galleryFolder = lobby:FindFirstChild("CardShowcases")
 if not galleryFolder then
     galleryFolder = Instance.new("Folder")
