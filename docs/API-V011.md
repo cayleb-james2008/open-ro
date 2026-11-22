@@ -210,6 +210,8 @@ runtime-only, ID-verified gated, and non-persistent in `.rbxlx`. Real Studio tex
     - `studio_display`: `string | null` (actual X11 `DISPLAY` of running Studio on Linux, e.g. `":0"`, `":1"`, `":99"`; `null` on Windows/macOS)
     - `already_logged_in`: `bool` (`true` when `running_studios` is non-empty or live MCP is connected)
     - `place_open`: `bool` (`true` only when passive `get_studio_state` confirms a place is actually open; `false` when Studio is on the Start Page with `"Place is not open"` / `mode: "Unavailable"`)
+    - `transferred`: `bool` (`true` when Studio was transferred into OpenRO's embedded `:99` viewport)
+    - `can_transfer`: `bool` (`true` when host Studio is installed and eligible for zero-manual-step transfer)
     - `guidance`: plain user guidance (shows `"Studio is on the Start Page — open a blank Baseplate to sync/playtest."` when `already_logged_in && !place_open`)
     - `running_studios`: `[{ studio_id, place_name, datamodel_type, place_open, studio_state }]`
     - `phase`: `"idle" | "starting" | "awaiting_signin" | "connected" | "stopped" | "error"`
@@ -219,9 +221,15 @@ runtime-only, ID-verified gated, and non-persistent in `.rbxlx`. Real Studio tex
     - `x11grab_active`: `bool`, `mcp_connected`: `bool`, `studio_id`: `string | null`
     - `stream_url`: `"/api/studio/stream.mjpg"`, `frame_url`: `"/api/studio/frame"`, `has_live_frame`: `bool`, `frame_seq`: `u64`
     - `detection`: `{ platform, studio_installed, studio_running, studio_display, already_logged_in, place_open, running_studios, xvfb_available, display_ready, studio_exe, mcp_command, guidance }`
-- `POST /api/projects/{id}/open-in-studio` (loopback-only; body `{ rebuild?: true, engine?: "auto"|"rojo"|"builtin", display?: ":0"|":99", dry_run?: false }`):
-  - Builds the project's `.rbxlx` (or reuses the latest built `.rbxlx` when `rebuild: false` and it exists) and opens it directly in Roblox Studio (Linux Vinegar `flatpak run --filesystem=... --file-forwarding org.vinegarhq.Vinegar @@ <rbxlx> @@`, Windows `RobloxStudioBeta.exe`, macOS `open -a RobloxStudio`, or `OPENRO_OPEN_STUDIO_CMD` test hook) so developers never hit a blind Start Page error.
-  - Returns `200 { ok, project_id, build_id, rebuilt, rbxlx_path, rbxlx_rel, launched, dry_run, pid, display, platform, command, message }`.
+- `POST /api/studio/embed/transfer` (loopback-only; body `{ project_id?: string, place_file?: string, display?: ":99", width?: 1440, height?: 900, transfer?: true, rebuild?: true, wait_secs?: 45 }`) (#51):
+  - Resolves the specified/active project's built `.rbxlx` (or synthesizes a minimal blank Baseplate `.rbxlx` if no build exists yet).
+  - On Linux Flatpak Vinegar, stages a copy into Vinegar's writable prefix `$HOME/.var/app/org.vinegarhq.Vinegar/data/vinegar/prefixes/studio/drive_c/users/<user>/Documents/OpenRO/<slug>.rbxlx` (`C:\users\<user>\Documents\OpenRO\<slug>.rbxlx`), cleanly stops any Start-Page Vinegar (`flatpak kill org.vinegarhq.Vinegar`, never touching `Xvfb :99`), launches Vinegar on `DISPLAY=:99` reusing the signed-in prefix with the Wine path, starts 12 FPS `x11grab` MJPEG + X11 mouse/keyboard pass-through immediately, and polls `StudioMCP` until `place_open: true` (`Edit` mode).
+  - If desktop Studio already has an open place (`place_open: true`) and `transfer: false`, preserves the open desktop place and attaches live MCP + `screen_capture` pump without killing desktop Studio.
+  - Returns `200 { ok, running, connected, transferred, attached_existing, place_open, phase, awaiting_signin, studio_connected, x11grab_active, studio_id, display, rbxlx_path, staged_path, windows_path, has_live_frame, frame_seq, stream_url, frame_url, available_tools, status, message }`.
+- `POST /api/projects/{id}/open-in-studio` (loopback-only; body `{ rebuild?: true, engine?: "auto"|"rojo"|"builtin", display?: ":99", dry_run?: false, transfer?: bool, wait_secs?: 45 }`) (#47, #50, #51):
+  - Builds the project's `.rbxlx` (or reuses the latest built `.rbxlx` when `rebuild: false`, or synthesizes a blank Baseplate if no build can run) and seamlessly opens/transfers into Embedded Studio (`:99` when Studio is closed or on Start Page; preserves open desktop place unless `transfer: true`).
+  - Supports `dry_run: true` and `OPENRO_OPEN_STUDIO_CMD` test hook. Returns the transfer fields plus `project_id`, `build_id`, `rebuilt`, `rbxlx_rel`, `launched`, `dry_run`, `already_running`, `command`.
+- `POST /api/projects/{id}/{sync,sync/diff,playtest}`: accept `auto_open?: true` (default `true`); automatically transfer/open the project's `.rbxlx` when host Studio is installed & signed in with `place_open: false` (`auto_open: false` opts out).
 - `POST /api/studio/embed/attach` (loopback-only; body `{}` or `{ display?, mcp_command? }`):
   - Grabs an **already-running** Roblox Studio without ever spawning a duplicate Studio process (`launch_studio_process = false`).
   - On Linux, detects the running Studio's real X11 `DISPLAY` and resolution and immediately starts the 12 FPS `ffmpeg x11grab` MJPEG stream on `/api/studio/stream.mjpg`.

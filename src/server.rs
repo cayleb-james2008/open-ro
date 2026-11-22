@@ -1454,6 +1454,9 @@ fn handle(
         ("POST", "/api/studio/embed/attach") => {
             handle_studio_embed_launch(&mut stream, shared, &req, true);
         }
+        ("POST", "/api/studio/embed/transfer") => {
+            handle_studio_embed_transfer(&mut stream, shared, &req);
+        }
         ("POST", "/api/studio/launch-and-continue") => {
             handle_studio_launch_and_continue(&mut stream, shared, &req);
         }
@@ -3995,44 +3998,67 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
         crate::studio_plugin::set_auto_install_pref(shared.data_dir.as_deref(), auto_plugin)?;
     }
 
+    let backend_changed = body.get("workspace_mode").is_some()
+        || body.get("active_backend").is_some()
+        || body.get("mcp_command").is_some();
+    let has_existing_backend = shared
+        .agent
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|a| a.studio.is_some());
+
     let desired_mode = cfg.workspace_mode.as_deref().unwrap_or("auto");
-    let new_backend: Option<PlaceBackend> = match desired_mode {
-        "local_place" => {
-            let place = match &shared.data_dir {
-                Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
-                None => LocalPlace::in_memory(shared.game_name.clone()),
-            };
-            Some(PlaceBackend::Local(place))
-        }
-        "studio_mcp" => {
-            let cmd = cfg
-                .mcp_command
-                .clone()
-                .or_else(McpClient::detect_vinegar_studio_mcp)
-                .ok_or_else(|| {
-                    "No Studio MCP command set and Roblox Studio (Vinegar) is not running.".to_string()
-                })?;
-            let mut client = McpClient::spawn(&cmd)?;
-            if !client.has_live_studio() {
-                return Err(
-                    "Roblox Studio is not signed in or has no open place yet. Sign in and open a place in Roblox Studio, then try again."
-                        .to_string(),
-                );
+    let new_backend: Option<Option<PlaceBackend>> = if !backend_changed && has_existing_backend {
+        // Keep the existing connected Studio / LocalPlace backend untouched when only
+        // model/provider/API keys/Open Cloud settings changed (prevents 60s MCP re-spawns).
+        None
+    } else {
+        Some(match desired_mode {
+            "local_place" => {
+                let place = match &shared.data_dir {
+                    Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
+                    None => LocalPlace::in_memory(shared.game_name.clone()),
+                };
+                Some(PlaceBackend::Local(place))
             }
-            Some(PlaceBackend::Mcp(client))
-        }
-        _ => {
-            // "auto": explicit mcp_command -> running Vinegar with live open place -> Local Place Engine (#24)
-            let mcp_try = cfg
-                .mcp_command
-                .clone()
-                .or_else(McpClient::detect_vinegar_studio_mcp);
-            if let Some(cmd) = mcp_try {
-                match McpClient::spawn(&cmd) {
-                    Ok(mut client) => {
-                        if client.has_live_studio() {
-                            Some(PlaceBackend::Mcp(client))
-                        } else {
+            "studio_mcp" => {
+                let cmd = cfg
+                    .mcp_command
+                    .clone()
+                    .or_else(McpClient::detect_vinegar_studio_mcp)
+                    .ok_or_else(|| {
+                        "No Studio MCP command set and Roblox Studio (Vinegar) is not running.".to_string()
+                    })?;
+                let mut client = McpClient::spawn(&cmd)?;
+                if !client.has_live_studio() {
+                    return Err(
+                        "Roblox Studio is not signed in or has no open place yet. Sign in and open a place in Roblox Studio, then try again."
+                            .to_string(),
+                    );
+                }
+                Some(PlaceBackend::Mcp(client))
+            }
+            _ => {
+                // "auto": explicit mcp_command -> running Vinegar with live open place -> Local Place Engine (#24)
+                let mcp_try = cfg
+                    .mcp_command
+                    .clone()
+                    .or_else(McpClient::detect_vinegar_studio_mcp);
+                if let Some(cmd) = mcp_try {
+                    match McpClient::spawn_with_timeout(&cmd, std::time::Duration::from_secs(4)) {
+                        Ok(mut client) => {
+                            if client.has_live_studio() {
+                                Some(PlaceBackend::Mcp(client))
+                            } else {
+                                let place = match &shared.data_dir {
+                                    Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
+                                    None => LocalPlace::in_memory(shared.game_name.clone()),
+                                };
+                                Some(PlaceBackend::Local(place))
+                            }
+                        }
+                        Err(_) => {
                             let place = match &shared.data_dir {
                                 Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
                                 None => LocalPlace::in_memory(shared.game_name.clone()),
@@ -4040,22 +4066,15 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
                             Some(PlaceBackend::Local(place))
                         }
                     }
-                    Err(_) => {
-                        let place = match &shared.data_dir {
-                            Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
-                            None => LocalPlace::in_memory(shared.game_name.clone()),
-                        };
-                        Some(PlaceBackend::Local(place))
-                    }
+                } else {
+                    let place = match &shared.data_dir {
+                        Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
+                        None => LocalPlace::in_memory(shared.game_name.clone()),
+                    };
+                    Some(PlaceBackend::Local(place))
                 }
-            } else {
-                let place = match &shared.data_dir {
-                    Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
-                    None => LocalPlace::in_memory(shared.game_name.clone()),
-                };
-                Some(PlaceBackend::Local(place))
             }
-        }
+        })
     };
 
     let mut new_model = ModelClient::new(base_url, model_id, cfg.api_key.clone());
@@ -4073,12 +4092,14 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
         match guard.as_mut() {
             Some(agent) => {
                 agent.model = new_model;
-                agent.studio = new_backend;
+                if let Some(backend) = new_backend {
+                    agent.studio = backend;
+                }
                 agent.attach_events(Arc::clone(&shared.events));
                 agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
             }
             None => {
-                let mut agent = Agent::with_backend(new_model, new_backend);
+                let mut agent = Agent::with_backend(new_model, new_backend.flatten());
                 if let Some(dir) = &shared.data_dir {
                     agent.set_changes_file(dir.join("changes.json"));
                 }
@@ -4505,28 +4526,29 @@ fn handle_studio_input_mouse(stream: &mut TcpStream, shared: &Shared, req: &Requ
         return;
     }
 
-    // While Embedded Studio is streaming X11 on the Sign-In / QR screen (before MCP attaches),
-    // forward clicks/moves directly to the X11 display so users can sign in inside OpenRO (#35).
-    let x11_target = shared.studio_embed.try_lock().ok().and_then(|g| {
+    // While Embedded Studio is streaming X11 (before MCP attaches or on Start Page),
+    // forward clicks/moves directly to the X11 display so users can interact inside OpenRO (#35, #51).
+    let x11_info = shared.studio_embed.try_lock().ok().and_then(|g| {
         let st = g.state();
-        if st.x11grab_active && !st.mcp_connected {
-            st.display.map(|d| (d, st.resolution))
+        if st.x11grab_active {
+            st.display.map(|d| (d, st.resolution, !st.mcp_connected || !st.place_open))
         } else {
             None
         }
     });
-    if let Some((disp, res)) = x11_target {
-        let button = body
-            .get("button")
-            .or_else(|| body.get("mouse_button"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("left");
-        let delta_y = body
-            .get("delta_y")
-            .or_else(|| body.get("deltaY"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        match crate::studio_embed::send_x11_mouse(&disp, res, &action, x, y, button, delta_y) {
+    let button = body
+        .get("button")
+        .or_else(|| body.get("mouse_button"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("left")
+        .to_string();
+    let delta_y = body
+        .get("delta_y")
+        .or_else(|| body.get("deltaY"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    if let Some((ref disp, res, true)) = x11_info {
+        match crate::studio_embed::send_x11_mouse(disp, res, &action, x, y, &button, delta_y) {
             Ok(result) => {
                 if let Ok(mut mgr) = shared.studio_embed.try_lock() {
                     mgr.record_input(format!("x11 mouse {action} ({x:.2}, {y:.2})"));
@@ -4584,6 +4606,33 @@ fn handle_studio_input_mouse(stream: &mut TcpStream, shared: &Shared, req: &Requ
             );
         }
         Err(e) => {
+            // When embedded x11grab is active and MCP user_mouse_input isn't available in Edit mode,
+            // fall back transparently to X11 input on :99 so embedded viewport clicks always work (#51).
+            if let Some((disp, res, _)) = x11_info {
+                drop(guard);
+                if let Ok(result) =
+                    crate::studio_embed::send_x11_mouse(&disp, res, &action, x, y, &button, delta_y)
+                {
+                    if let Ok(mut mgr) = shared.studio_embed.try_lock() {
+                        mgr.record_input(format!("x11 mouse {action} ({x:.2}, {y:.2})"));
+                    }
+                    let fseq = shared.studio_stream.latest_frame_seq();
+                    respond_json(
+                        stream,
+                        "200 OK",
+                        &json!({
+                            "ok": true,
+                            "action": action,
+                            "transport": "x11",
+                            "studio_mode": shared.studio_stream.studio_mode(),
+                            "frame_seq": fseq,
+                            "has_live_frame": fseq > 0,
+                            "result": result,
+                        }),
+                    );
+                    return;
+                }
+            }
             let status = if e.contains("requires a connected live Roblox Studio")
                 || e.contains("Studio not connected")
             {
@@ -4648,27 +4697,34 @@ fn handle_studio_input_keyboard(stream: &mut TcpStream, shared: &Shared, req: &R
         .unwrap_or(if has_text { "type" } else { "press" })
         .to_string();
 
-    // While Embedded Studio is streaming X11 on the Sign-In / QR screen (before MCP attaches),
-    // forward keystrokes/text directly into the X11 display so users can sign in inside OpenRO (#35).
-    let x11_target = shared.studio_embed.try_lock().ok().and_then(|g| {
+    // While Embedded Studio is streaming X11 (before MCP attaches or on Start Page),
+    // forward keystrokes/text directly into the X11 display so users can interact inside OpenRO (#35, #51).
+    let x11_info = shared.studio_embed.try_lock().ok().and_then(|g| {
         let st = g.state();
-        if st.x11grab_active && !st.mcp_connected {
-            st.display
+        if st.x11grab_active {
+            st.display.map(|d| (d, !st.mcp_connected || !st.place_open))
         } else {
             None
         }
     });
-    if let Some(disp) = x11_target {
-        let key = body
-            .get("key")
-            .or_else(|| body.get("key_code"))
-            .or_else(|| body.get("code"))
-            .and_then(|v| v.as_str());
-        let text = body
-            .get("text")
-            .or_else(|| body.get("text_inputs"))
-            .and_then(|v| v.as_str());
-        match crate::studio_embed::send_x11_keyboard(&disp, &action, key, text) {
+    let key_str = body
+        .get("key")
+        .or_else(|| body.get("key_code"))
+        .or_else(|| body.get("code"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let text_str = body
+        .get("text")
+        .or_else(|| body.get("text_inputs"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    if let Some((ref disp, true)) = x11_info {
+        match crate::studio_embed::send_x11_keyboard(
+            disp,
+            &action,
+            key_str.as_deref(),
+            text_str.as_deref(),
+        ) {
             Ok(result) => {
                 if let Ok(mut mgr) = shared.studio_embed.try_lock() {
                     mgr.record_input(format!("x11 keyboard {action}"));
@@ -4726,6 +4782,34 @@ fn handle_studio_input_keyboard(stream: &mut TcpStream, shared: &Shared, req: &R
             );
         }
         Err(e) => {
+            if let Some((disp, _)) = x11_info {
+                drop(guard);
+                if let Ok(result) = crate::studio_embed::send_x11_keyboard(
+                    &disp,
+                    &action,
+                    key_str.as_deref(),
+                    text_str.as_deref(),
+                ) {
+                    if let Ok(mut mgr) = shared.studio_embed.try_lock() {
+                        mgr.record_input(format!("x11 keyboard {action}"));
+                    }
+                    let fseq = shared.studio_stream.latest_frame_seq();
+                    respond_json(
+                        stream,
+                        "200 OK",
+                        &json!({
+                            "ok": true,
+                            "action": action,
+                            "transport": "x11",
+                            "studio_mode": shared.studio_stream.studio_mode(),
+                            "frame_seq": fseq,
+                            "has_live_frame": fseq > 0,
+                            "result": result,
+                        }),
+                    );
+                    return;
+                }
+            }
             let status = if e.contains("requires a connected live Roblox Studio")
                 || e.contains("Studio not connected")
             {
@@ -4890,6 +4974,8 @@ fn build_embed_status_payload(shared: &Shared) -> Value {
             "studio_display": detect.studio_display,
             "already_logged_in": detect.already_logged_in,
             "place_open": detect.place_open,
+            "transferred": false,
+            "can_transfer": detect.studio_installed,
             "guidance": detect.guidance,
             "running_studios": detect.running_studios,
             "vinegar_installed": detect.studio_installed,
@@ -4967,6 +5053,8 @@ fn build_embed_status_payload(shared: &Shared) -> Value {
         map.insert("studio_display".to_string(), json!(studio_display));
         map.insert("already_logged_in".to_string(), json!(already_logged_in));
         map.insert("place_open".to_string(), json!(place_open));
+        map.insert("transferred".to_string(), json!(state.transferred));
+        map.insert("can_transfer".to_string(), json!(detect.studio_installed));
         map.insert("guidance".to_string(), json!(guidance));
         map.insert("running_studios".to_string(), json!(running_studios));
         map.insert("vinegar_installed".to_string(), json!(detect.studio_installed));
@@ -5202,6 +5290,37 @@ fn handle_studio_embed_launch(
         if cfg.mcp_command.is_none() {
             cfg.mcp_command = shared.config.lock().unwrap().mcp_command.clone();
         }
+    } else if body.get("transfer").and_then(|v| v.as_bool()) == Some(true)
+        || (cfg.place_file.is_some() && cfg.mcp_command.is_none())
+    {
+        let opts = crate::studio_embed::TransferOptions {
+            display: cfg.display,
+            width: cfg.width,
+            height: cfg.height,
+            place_file: cfg.place_file,
+            force_transfer: body.get("transfer").and_then(|v| v.as_bool()).unwrap_or(false),
+            wait_secs: (cfg.startup_timeout_ms / 1000).clamp(3, 90),
+            mcp_command: cfg.mcp_command,
+        };
+        match perform_studio_embed_transfer(shared, opts) {
+            Ok(payload) => respond_json(stream, "200 OK", &payload),
+            Err((status, msg)) => {
+                let status_obj = build_embed_status_payload(shared);
+                respond_json(
+                    stream,
+                    status,
+                    &json!({
+                        "ok": false,
+                        "running": false,
+                        "connected": false,
+                        "awaiting_signin": false,
+                        "error": msg,
+                        "status": status_obj,
+                    }),
+                );
+            }
+        }
+        return;
     }
 
     let (launch_res, stop_flag) = {
@@ -5292,6 +5411,287 @@ fn handle_studio_embed_launch(
                     "awaiting_signin": false,
                     "studio_mode": shared.studio_stream.studio_mode(),
                     "error": e,
+                    "status": status_obj,
+                }),
+            );
+        }
+    }
+}
+
+/// Shared execution core for `POST /api/studio/embed/transfer`, `POST /api/projects/{id}/open-in-studio`,
+/// and `auto_open` in `sync`/`playtest` (#51).
+pub(crate) fn perform_studio_embed_transfer(
+    shared: &Arc<Shared>,
+    opts: crate::studio_embed::TransferOptions,
+) -> Result<Value, (&'static str, String)> {
+    let (res, stop_flag) = {
+        let mut mgr = shared.studio_embed.lock().unwrap();
+        let res = crate::studio_embed::transfer_to_embedded_studio(
+            &mut mgr,
+            opts,
+            Some(Arc::clone(&shared.studio_stream)),
+        );
+        let flag = mgr.stop_flag();
+        (res, flag)
+    };
+    invalidate_embed_detect_cache(shared);
+
+    let tr = res.map_err(|e| ("502 Bad Gateway", e))?;
+    match tr.outcome {
+        crate::studio_embed::EmbedLaunchOutcome::Connected(embed_state, mcp) => {
+            let (mcp_frame_seq, frame_meta, available_tools) = attach_embed_mcp_client(shared, *mcp);
+            if !embed_state.x11grab_active {
+                spawn_mcp_screen_capture_pump(Arc::clone(shared), stop_flag);
+            } else if shared.studio_stream.latest_frame_seq() == 0 {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(400);
+                while shared.studio_stream.latest_frame_seq() == 0
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+            }
+            let frame_seq = mcp_frame_seq.max(shared.studio_stream.latest_frame_seq());
+            let status_obj = build_embed_status_payload(shared);
+            let msg = if tr.transferred {
+                "Roblox Studio transferred into OpenRO's embedded viewport with your place open."
+            } else if tr.attached_existing {
+                "Attached to your running Roblox Studio place."
+            } else {
+                "Roblox Studio is open and connected."
+            };
+            Ok(json!({
+                "ok": true,
+                "running": true,
+                "connected": true,
+                "transferred": tr.transferred,
+                "attached_existing": tr.attached_existing,
+                "already_running": tr.attached_existing,
+                "launched": !tr.attached_existing,
+                "dry_run": false,
+                "awaiting_signin": false,
+                "place_open": embed_state.place_open,
+                "phase": "connected",
+                "studio_connected": true,
+                "studio_id": embed_state.studio_id,
+                "display": embed_state.display,
+                "workspace_mode": "studio_mcp",
+                "studio_mode": "live_mcp",
+                "x11grab_active": embed_state.x11grab_active,
+                "has_live_frame": frame_seq > 0,
+                "frame_seq": frame_seq,
+                "frame": frame_meta,
+                "rbxlx_path": tr.rbxlx_path,
+                "staged_path": tr.staged_path,
+                "windows_path": tr.windows_path,
+                "command": tr.command,
+                "stream_url": "/api/studio/stream.mjpg",
+                "frame_url": "/api/studio/frame",
+                "available_tools": available_tools,
+                "message": msg,
+                "status": status_obj,
+            }))
+        }
+        crate::studio_embed::EmbedLaunchOutcome::StreamingAwaitingAuth { state, mcp_cmd } => {
+            spawn_embed_mcp_auto_attacher(Arc::clone(shared), mcp_cmd, stop_flag);
+            if state.x11grab_active && shared.studio_stream.latest_frame_seq() == 0 {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(400);
+                while shared.studio_stream.latest_frame_seq() == 0
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+            }
+            let frame_seq = shared.studio_stream.latest_frame_seq();
+            let status_obj = build_embed_status_payload(shared);
+            Ok(json!({
+                "ok": true,
+                "running": true,
+                "connected": false,
+                "transferred": tr.transferred,
+                "attached_existing": false,
+                "already_running": false,
+                "launched": true,
+                "dry_run": false,
+                "awaiting_signin": true,
+                "place_open": false,
+                "phase": "awaiting_signin",
+                "studio_connected": false,
+                "studio_id": Value::Null,
+                "display": state.display,
+                "studio_mode": "awaiting_signin",
+                "x11grab_active": state.x11grab_active,
+                "has_live_frame": frame_seq > 0,
+                "frame_seq": frame_seq,
+                "rbxlx_path": tr.rbxlx_path,
+                "staged_path": tr.staged_path,
+                "windows_path": tr.windows_path,
+                "command": tr.command,
+                "stream_url": "/api/studio/stream.mjpg",
+                "frame_url": "/api/studio/frame",
+                "message": "Studio viewport is streaming live on the embedded display — sign in or wait for the place to finish loading; OpenRO attaches MCP automatically.",
+                "status": status_obj,
+            }))
+        }
+    }
+}
+
+fn handle_studio_embed_transfer(stream: &mut TcpStream, shared: &Arc<Shared>, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "transferring Embedded Roblox Studio is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    if shared.busy.load(Ordering::SeqCst) > 0 {
+        respond_json(
+            stream,
+            "409 Conflict",
+            &json!({ "ok": false, "error": "a build or playtest is currently running; transfer Studio once it finishes" }),
+        );
+        return;
+    }
+    let body: Value = if req.body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_json(
+                    stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": "invalid JSON body for Studio embed transfer" }),
+                );
+                return;
+            }
+        }
+    };
+    let display = match body.get("display").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) {
+        Some(d) => match crate::studio_embed::validate_x11_display(d) {
+            Ok(valid) => valid,
+            Err(e) => {
+                respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
+                return;
+            }
+        },
+        None => crate::studio_embed::DEFAULT_EMBED_DISPLAY.to_string(),
+    };
+    let width = body
+        .get("width")
+        .and_then(|v| v.as_u64())
+        .map(|w| (w as u32).clamp(320, 3840))
+        .unwrap_or(crate::studio_embed::DEFAULT_EMBED_WIDTH);
+    let height = body
+        .get("height")
+        .and_then(|v| v.as_u64())
+        .map(|h| (h as u32).clamp(200, 2160))
+        .unwrap_or(crate::studio_embed::DEFAULT_EMBED_HEIGHT);
+    let force_transfer = body.get("transfer").and_then(|v| v.as_bool()).unwrap_or(true);
+    let rebuild = body.get("rebuild").and_then(|v| v.as_bool()).unwrap_or(true);
+    let wait_secs = body
+        .get("wait_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(45)
+        .clamp(1, 90);
+    let mcp_command = body
+        .get("mcp_command")
+        .or_else(|| body.get("command"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+
+    // Resolve place_file: explicit place_file -> specified/active project build -> synthesized blank Baseplate.
+    let mut place_file: Option<PathBuf> = None;
+    if let Some(raw_pf) = body
+        .get("place_file")
+        .or_else(|| body.get("rbxlx_path"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if raw_pf.contains('\0') || raw_pf.contains('\n') || raw_pf.contains('\r') {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "place_file must not contain control characters" }),
+            );
+            return;
+        }
+        let p = PathBuf::from(raw_pf);
+        if p.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "place_file must not contain '..' traversal segments" }),
+            );
+            return;
+        }
+        place_file = Some(p);
+    } else {
+        let proj_ref = {
+            let store = shared.projects.lock().unwrap();
+            if let Some(pid) = body.get("project_id").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
+                store.find(pid)
+            } else {
+                store.active.as_deref().and_then(|aid| store.find(aid))
+            }
+        };
+        if let Some(r) = proj_ref {
+            let existing = if !rebuild {
+                crate::projects::builds(&r.dir).into_iter().find_map(|rec| {
+                    let rel = rec.get("path")?.as_str()?;
+                    let full = crate::projects::safe_join(&r.dir, rel).ok()?;
+                    full.is_file().then_some(full)
+                })
+            } else {
+                None
+            };
+            place_file = existing.or_else(|| {
+                crate::projects::build(&r.dir, "auto", None)
+                    .ok()
+                    .and_then(|rec| {
+                        let rel = rec.get("path")?.as_str()?;
+                        crate::projects::safe_join(&r.dir, rel).ok()
+                    })
+            });
+        }
+        if place_file.is_none() {
+            let base_dir = shared
+                .data_dir
+                .clone()
+                .unwrap_or_else(|| std::env::temp_dir().join("openro-baseplates"));
+            if let Ok(bp) = crate::studio_embed::ensure_blank_baseplate_rbxlx(&base_dir, &shared.game_name) {
+                place_file = Some(bp);
+            }
+        }
+    }
+
+    let opts = crate::studio_embed::TransferOptions {
+        display,
+        width,
+        height,
+        place_file,
+        force_transfer,
+        wait_secs,
+        mcp_command,
+    };
+    match perform_studio_embed_transfer(shared, opts) {
+        Ok(payload) => respond_json(stream, "200 OK", &payload),
+        Err((status, msg)) => {
+            let status_obj = build_embed_status_payload(shared);
+            respond_json(
+                stream,
+                status,
+                &json!({
+                    "ok": false,
+                    "running": false,
+                    "connected": false,
+                    "awaiting_signin": false,
+                    "error": msg,
                     "status": status_obj,
                 }),
             );
