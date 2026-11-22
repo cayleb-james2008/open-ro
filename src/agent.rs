@@ -1356,8 +1356,8 @@ impl Agent {
     ) -> Result<String, String> {
         self.emit_event(
             "compiling_rune",
-            "Compiling Rune",
-            &format!("Executing Rune skill '{skill}'"),
+            "Generating Luau",
+            &format!("Generating Luau for '{skill}'"),
             Some(skill),
             None,
             35,

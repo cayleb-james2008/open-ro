@@ -68,7 +68,7 @@ export function SystemLibrary({
                 <Layers className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
                 <h3 className="text-ui font-medium text-ink">Game Systems Library</h3>
                 <Pill className="bg-tag-sky-bg px-2 py-0.5 font-mono text-xs tabular-nums text-tag-sky-fg">
-                  22 Rune systems
+                  22 Game Systems
                 </Pill>
                 {installedCount > 0 && (
                   <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-active-fg">

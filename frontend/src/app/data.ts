@@ -379,7 +379,7 @@ export const ADDS: Record<string, string> = {
 
 export const BUILD_PHASES: Array<{ id: BuildPhaseId; label: string }> = [
   { id: "planning", label: "Planning" },
-  { id: "compiling", label: "Compiling Rune" },
+  { id: "compiling", label: "Generating Luau" },
   { id: "checking", label: "Static Luau Check" },
   { id: "playtest", label: "Playtest Proof" },
 ];
@@ -415,11 +415,11 @@ export function subscribeBuildStream(
   let es: EventSource | null = null;
   const timers: number[] = [];
 
-  onPhase({ phase: "planning", label: "Planning", detail: "Reading place DataModel & selecting Rune skills", progress: 18 });
+  onPhase({ phase: "planning", label: "Planning", detail: "Reading place DataModel & selecting game systems", progress: 18 });
 
   const scheduleFallback = () => {
     const steps: Array<[number, BuildStreamPhase]> = [
-      [320, { phase: "compiling", label: "Compiling Rune", detail: "Running deterministic Rune Luau generators", progress: 48 }],
+      [320, { phase: "compiling", label: "Generating Luau", detail: "Running verified Luau game-system generators", progress: 48 }],
       [780, { phase: "checking", label: "Static Luau Check", detail: "Verifying syntax, blocks & DataModel cross-references", progress: 74 }],
       [1350, { phase: "playtest", label: "Playtest Proof", detail: "Running live Studio playtest & console check", progress: 92 }],
     ];
