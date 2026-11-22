@@ -263,20 +263,20 @@ fn v090_embedded_studio_mjpeg_input_passthrough_and_all_13_mcp_tools() {
 fn v090_library_packs_blender_mesh_and_wav_audio_api() {
     let port = start_local_server("Library & Media Tools v0.9.0");
 
-    // 1. GET /api/library returns 4 pre-installed defaults + 5 installable packs (9 total)
+    // 1. GET /api/library returns 3 universal pre-installed defaults + 5 installable packs (8 total)
     let (st, lib) = http_json(port, "GET", "/api/library", "");
     assert_eq!(st, 200, "GET /api/library failed: {lib}");
     assert_eq!(lib["ok"], json!(true));
     let packs = lib["packs"].as_array().unwrap();
-    assert_eq!(packs.len(), 9, "expected 9 library packs: {lib}");
+    assert_eq!(packs.len(), 8, "expected 8 library packs: {lib}");
     let defaults = packs
         .iter()
         .filter(|p| p["default_installed"] == json!(true))
         .count();
-    assert_eq!(defaults, 4);
+    assert_eq!(defaults, 3);
     assert!(
         packs.iter().any(|p| p["id"] == json!("roblox-market-taste") && p["default_installed"] == json!(true)),
-        "roblox-market-taste must be pre-installed as the 4th default pack: {lib}"
+        "roblox-market-taste must be pre-installed as the 3rd universal default pack: {lib}"
     );
 
     // 2. Non-loopback refused 403 on library install & media tools
@@ -411,18 +411,18 @@ fn v090_market_taste_api_niche_guards_and_prompt_injection() {
         let _ = serve(listener, srv_shared);
     });
 
-    // 1. GET /api/status exposes market_taste_api & active_niche
+    // 1. GET /api/status exposes market_taste_api & active_niche ("top-trending" default across all 8 genres)
     let (st, status) = http_json(port, "GET", "/api/status", "");
     assert_eq!(st, 200);
     assert_eq!(status["market_taste_api"], json!(true));
-    assert_eq!(status["active_niche"], json!("anime-rng-cards"));
+    assert_eq!(status["active_niche"], json!("top-trending"));
 
-    // 2. GET /api/market-taste returns all 8 niches + full 8-dimension Taste Dossier + automatic twists
+    // 2. GET /api/market-taste returns top-trending + all 8 niches (9 total) + full 8-dimension Taste Dossier
     let (st, mt) = http_json(port, "GET", "/api/market-taste", "");
     assert_eq!(st, 200, "GET /api/market-taste failed: {mt}");
     assert_eq!(mt["ok"], json!(true));
-    assert_eq!(mt["active_niche"], json!("anime-rng-cards"));
-    assert_eq!(mt["niches"].as_array().unwrap().len(), 8);
+    assert_eq!(mt["active_niche"], json!("top-trending"));
+    assert_eq!(mt["niches"].as_array().unwrap().len(), 9);
     assert!(mt["niche"]["taste_dossier"].is_object());
     assert!(mt["niche"]["automatic_twists"].as_array().unwrap().len() >= 3);
     assert!(mt["niche"]["anti_slop_rules"].as_array().unwrap().len() >= 3);
@@ -431,7 +431,7 @@ fn v090_market_taste_api_niche_guards_and_prompt_injection() {
     let (st, mt_q) = http_json(port, "GET", "/api/market-taste?niche=viral-sim-tycoon", "");
     assert_eq!(st, 200);
     assert_eq!(mt_q["selected_niche"], json!("viral-sim-tycoon"));
-    assert_eq!(mt_q["active_niche"], json!("anime-rng-cards"));
+    assert_eq!(mt_q["active_niche"], json!("top-trending"));
 
     let (st_bad, _) = http_json(port, "GET", "/api/market-taste?niche=not-a-niche", "");
     assert_eq!(st_bad, 400);

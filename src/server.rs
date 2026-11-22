@@ -1422,7 +1422,13 @@ fn handle(
             let active = shared.active_chat.lock().unwrap().clone();
             let can_undo = shared.undoable.lock().unwrap().contains(&active);
             let can_redo = shared.redoable.lock().unwrap().contains(&active);
-            let embed_state = shared.studio_embed.lock().unwrap().state();
+            let (embed_running, embed_studio_id) = match shared.studio_embed.try_lock() {
+                Ok(guard) => {
+                    let st = guard.state();
+                    (st.embedded, st.studio_id)
+                }
+                Err(_) => (false, None),
+            };
             let active_lib_tools = shared.library.lock().unwrap().active_tools();
             let active_niche = shared.market_taste.lock().unwrap().active_niche().to_string();
             respond_json(
@@ -1445,8 +1451,8 @@ fn handle(
                     "library_api": true,
                     "market_taste_api": true,
                     "active_niche": active_niche,
-                    "embedded_running": embed_state.embedded,
-                    "studio_id": embed_state.studio_id,
+                    "embedded_running": embed_running,
+                    "studio_id": embed_studio_id,
                     "studio_tools": crate::agent::OFFICIAL_STUDIO_MCP_TOOLS,
                     "active_library_tools": active_lib_tools,
                     "ide_api": true,
@@ -3695,11 +3701,29 @@ fn invalidate_library_cache(shared: &Shared) {
 }
 
 fn build_embed_status_payload(shared: &Shared) -> Value {
-    let state = shared.studio_embed.lock().unwrap().state();
     let info = status_info(shared);
     let detect = cached_embed_detection(shared);
     let frame_seq = shared.studio_stream.latest_frame_seq();
     let studio_mode = shared.studio_stream.studio_mode();
+    let Some(state) = shared.studio_embed.try_lock().ok().map(|g| g.state()) else {
+        return json!({
+            "ok": true,
+            "running": false,
+            "embedded": false,
+            "state": "launching",
+            "phase": "starting",
+            "studio_mode": studio_mode,
+            "studio_connected": info.studio_connected,
+            "vinegar_installed": detect.studio_installed,
+            "xvfb_installed": detect.xvfb_available,
+            "windows_studio_path": detect.studio_exe,
+            "has_live_frame": frame_seq > 0,
+            "frame_seq": frame_seq,
+            "stream_url": "/api/studio/stream.mjpg",
+            "frame_url": "/api/studio/frame",
+            "available_tools": crate::agent::OFFICIAL_STUDIO_MCP_TOOLS,
+        });
+    };
     let available_tools = match shared.agent.try_lock() {
         Ok(guard) => guard
             .as_ref()
@@ -3784,7 +3808,11 @@ fn handle_studio_embed_launch(stream: &mut TcpStream, shared: &Shared, req: &Req
 
     let launch_res = {
         let mut mgr = shared.studio_embed.lock().unwrap();
-        crate::studio_embed::launch_embedded_studio(&mut mgr, cfg)
+        crate::studio_embed::launch_embedded_studio_with_hub(
+            &mut mgr,
+            cfg,
+            Some(Arc::clone(&shared.studio_stream)),
+        )
     };
     invalidate_embed_detect_cache(shared);
 
