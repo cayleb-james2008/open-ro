@@ -15,11 +15,12 @@ use openro_rs::mcp::{
     OFFICIAL_STUDIO_TOOLS,
 };
 use openro_rs::studio_embed::{
-    find_windows_roblox_paths, format_mjpeg_part, forward_keyboard, forward_mouse,
-    launch_embedded_studio, normalize_roblox_keycode, stop_embedded_studio,
+    extract_jpeg_frames, find_windows_roblox_paths, format_mjpeg_part, forward_keyboard,
+    forward_mouse, launch_embedded_studio, normalize_roblox_keycode, stop_embedded_studio,
     translate_keyboard_payload, translate_mouse_payload, validate_x11_display, EmbedConfig,
-    StudioEmbedManager,
+    StudioEmbedManager, DEFAULT_STARTUP_TIMEOUT_MS,
 };
+use openro_rs::studio_stream::{StudioFrame, StudioStreamHub};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -302,9 +303,50 @@ fn windows_roblox_path_scanner_and_x11_display_validation() {
         );
     }
 
-    // EmbedConfig rejects control characters in mcp_command
+    // EmbedConfig defaults (60s startup timeout), place_file parsing, and rejection of traversal/control chars
+    assert_eq!(DEFAULT_STARTUP_TIMEOUT_MS, 60_000);
+    let pf_cfg = EmbedConfig::from_json(&json!({
+        "place_file": "/home/cayleb/game.rbxlx"
+    }))
+    .expect("valid place_file");
+    assert_eq!(
+        pf_cfg.place_file,
+        Some(PathBuf::from("/home/cayleb/game.rbxlx"))
+    );
+    assert!(EmbedConfig::from_json(&json!({ "place_file": "../escape.rbxlx" })).is_err());
     assert!(EmbedConfig::from_json(&json!({ "mcp_command": "foo\nbar" })).is_err());
     assert!(EmbedConfig::from_json(&json!({ "mcp_command": "foo\0bar" })).is_err());
+
+    // Real-time x11grab MJPEG JPEG SOI/EOI extractor across split chunks + hub.push_frame
+    let mut stream_buf = Vec::new();
+    stream_buf.extend_from_slice(b"--ffmpeg\r\nContent-type: image/jpeg\r\n\r\n\xFF\xD8\xFF\xE0AAAA");
+    assert!(
+        extract_jpeg_frames(&mut stream_buf).is_empty(),
+        "incomplete frame stays buffered"
+    );
+    stream_buf.extend_from_slice(b"BBBB\xFF\xD9--ffmpeg\r\n\xFF\xD8\xFF\xE0CCCC\xFF\xD9\xFF");
+    let extracted = extract_jpeg_frames(&mut stream_buf);
+    assert_eq!(extracted.len(), 2);
+    assert_eq!(extracted[0], b"\xFF\xD8\xFF\xE0AAAABBBB\xFF\xD9");
+    assert_eq!(extracted[1], b"\xFF\xD8\xFF\xE0CCCC\xFF\xD9");
+    assert_eq!(stream_buf, b"\xFF"); // trailing 0xFF preserved across chunk boundary!
+
+    let hub = StudioStreamHub::new("live_mcp");
+    let pushed = hub.push_frame(StudioFrame {
+        seq: 0,
+        ts_ms: 1234,
+        mime: "image/jpeg".to_string(),
+        bytes: extracted[0].clone(),
+        width: 1440,
+        height: 900,
+        source: "x11grab_mjpeg".to_string(),
+    });
+    assert_eq!(pushed.seq, 1);
+    assert_eq!(hub.latest_frame_seq(), 1);
+    assert!(
+        hub.snapshot_actions().is_empty(),
+        "push_frame must NOT flood the 500-event agent action timeline"
+    );
 
     // Synthetic Windows %LOCALAPPDATA%\Roblox\Versions\version-* tree
     let tmp = temp_test_dir("win-roblox");

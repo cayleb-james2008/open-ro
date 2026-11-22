@@ -26,13 +26,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub const DEFAULT_MARKET_API_URL: &str =
     "https://apis.roblox.com/explore-api/v1/get-sorts?sessionId=openro-taste";
 
-/// Default active niche when no user selection has been persisted yet.
-pub const DEFAULT_ACTIVE_NICHE: &str = "anime-rng-cards";
+/// Default active niche when no user selection has been persisted yet (general Top-Trending across all 8 genres).
+pub const DEFAULT_ACTIVE_NICHE: &str = "top-trending";
 
 /// Date stamp of the embedded deep-research chart baseline.
 pub const BASELINE_DATE: &str = "2026-11-22";
 
-/// Canonical list of all 8 profitable Roblox niches.
+/// Canonical list of all 8 specific profitable Roblox niches (plus `"top-trending"` all-genre overview).
 pub const MARKET_NICHE_IDS: &[&str] = &[
     "anime-rng-cards",
     "viral-sim-tycoon",
@@ -163,19 +163,28 @@ pub fn all_niche_profiles() -> &'static [NicheProfile] {
 
 pub fn find_niche_profile(niche: &str) -> Option<&'static NicheProfile> {
     let id = normalize_niche_id(niche).ok()?;
+    if id == "top-trending" {
+        return Some(&TOP_TRENDING_PROFILE);
+    }
     NICHE_PROFILES.iter().find(|p| p.id == id)
 }
 
-/// Normalize a niche identifier (strictly validating against the 8 canonical niches).
+/// Normalize a niche identifier (accepting `"top-trending"` all-genre overview or any of the 8 niches).
 pub fn normalize_niche_id(raw: &str) -> Result<&'static str, String> {
     let norm = raw.trim().to_ascii_lowercase().replace([' ', '_'], "-");
+    if matches!(
+        norm.as_str(),
+        "top-trending" | "all" | "general" | "trending" | "all-genres"
+    ) {
+        return Ok("top-trending");
+    }
     for &id in MARKET_NICHE_IDS {
         if norm == id {
             return Ok(id);
         }
     }
     Err(format!(
-        "unknown market niche '{raw}' (expected one of: {})",
+        "unknown market niche '{raw}' (expected 'top-trending' or one of: {})",
         MARKET_NICHE_IDS.join(", ")
     ))
 }
@@ -1116,19 +1125,27 @@ impl MarketTasteStore {
         research_roblox_game(&self.data_dir, place_or_universe_id, niche_hint)
     }
 
-    /// Return ranked games for `niche_id`: live Explore hits first, supplemented by verified
-    /// baseline benchmarks when fewer than 4 live hits matched that niche.
+    /// Return ranked games for `niche_id` (or across ALL 8 genres when `niche_id == "top-trending"`):
+    /// live Explore hits first, supplemented by verified baseline benchmarks when needed.
     pub fn games_for_niche(&self, niche_id: &str) -> Vec<MarketGame> {
-        let mut out: Vec<MarketGame> = self
-            .live_games
-            .iter()
-            .filter(|g| g.niche == niche_id)
-            .cloned()
-            .collect();
+        let mut out: Vec<MarketGame> = if niche_id == "top-trending" {
+            self.live_games.clone()
+        } else {
+            self.live_games
+                .iter()
+                .filter(|g| g.niche == niche_id)
+                .cloned()
+                .collect()
+        };
         out.sort_by(|a, b| b.ccu.cmp(&a.ccu).then_with(|| a.name.cmp(&b.name)));
 
-        if out.len() < 4 {
-            let baseline = baseline_games_for_niche(niche_id);
+        let min_entries = if niche_id == "top-trending" { 8 } else { 4 };
+        if out.len() < min_entries {
+            let baseline = if niche_id == "top-trending" {
+                baseline_all_games()
+            } else {
+                baseline_games_for_niche(niche_id)
+            };
             for bg in baseline {
                 let dup = out.iter().any(|existing| {
                     (bg.universe_id > 0 && existing.universe_id == bg.universe_id)
@@ -1160,8 +1177,8 @@ impl MarketTasteStore {
             "baseline_nov_2026"
         };
 
-        let niches_summary: Vec<Value> = NICHE_PROFILES
-            .iter()
+        let niches_summary: Vec<Value> = std::iter::once(&TOP_TRENDING_PROFILE)
+            .chain(NICHE_PROFILES.iter())
             .map(|p| {
                 let ng = self.games_for_niche(p.id);
                 let top_ccu = ng.first().map(|g| g.ccu).unwrap_or(0);
@@ -1254,7 +1271,14 @@ pub fn prompt_section(active_niche: Option<&str>) -> String {
         .unwrap_or(DEFAULT_ACTIVE_NICHE);
     let profile = find_niche_profile(id)
         .unwrap_or_else(|| find_niche_profile(DEFAULT_ACTIVE_NICHE).unwrap());
-    let games = baseline_games_for_niche(profile.id);
+    let games = if profile.id == "top-trending" {
+        let mut all = baseline_all_games();
+        all.sort_by(|a, b| b.ccu.cmp(&a.ccu).then_with(|| a.name.cmp(&b.name)));
+        all.truncate(12);
+        all
+    } else {
+        baseline_games_for_niche(profile.id)
+    };
     format_prompt_section(profile, &games, "Verified Roblox Chart Baseline (Nov 2026)")
 }
 
@@ -1665,6 +1689,66 @@ fn baseline_games_for_niche(niche_id: &str) -> Vec<MarketGame> {
         .filter(|g| g.niche == niche_id)
         .collect()
 }
+
+static TOP_TRENDING_PROFILE: NicheProfile = NicheProfile {
+    id: "top-trending",
+    name: "Top Trending (All 8 Genres)",
+    tagline: "Cross-genre Roblox chart synthesis covering live top-trending, up-and-coming, and top-playing-now hits.",
+    craft_bar: "Ship top-trending Roblox quality across ANY genre the user asks for: cohesive sunlit/stylized 3D architecture with clear landmarks, Blender-silhouetted hero props, non-overlapping tactile HUDs, crisp TweenService juice & sound cadence, 100% server-authoritative economy/combat, and 5-second first-touch joy.",
+    gameplay_loop: &[
+        "5-to-10-second First-Touch Hook: deliver an immediate, tactile core action right from spawn with zero menu wall",
+        "Escalating Core Loop: clear action -> instant visual/audio reward -> meaningful upgrade/unlock -> social showcase",
+        "Timed World Beats: 10-to-15-minute server-wide events (weather shifts, meteor drops, raid portals, chaos rounds) creating shared peaks",
+        "Deep Meta Loop: persistent DataStore progression, leaderstats, collection milestones, and replayable co-op or PvP modes",
+    ],
+    ui_ux_style: &[
+        "Clean, non-overlapping HUD hierarchy with high contrast, crisp iconography, and 80%+ unobstructed 3D viewport",
+        "Auto-hide or dim bottom action bars whenever a modal or dramatic reward reveal opens",
+        "Mobile-safe 44px+ touch targets and concise readable stats across desktop, tablet, and phone screens",
+    ],
+    animations_and_juice: &[
+        "TweenService spring/Quint easing on every button, reward pop, door, and world upgrade",
+        "Micro hitstop, subtle camera punch, floating feedback numbers, and translucent particle bursts on key actions",
+        "Smooth dynamic Lighting & Atmosphere transitions when switching time of day or triggering server events",
+    ],
+    model_and_world_3d_style: &[
+        "Cohesive, inviting sunlit worlds by default (`ClockTime = 13.5`, crisp sky & balanced Atmosphere) — NEVER flat black/gray baseplates or opaque neon slabs in daylight",
+        "Layered elevation, distinct visual landmarks, stylized color palettes, and translucent VFX (`Transparency = 0.65..0.8`) so 3D architecture shines",
+        "Clean hero prop silhouettes (Blender `.obj` or multi-part assemblies) grounded firmly with zero Z-fighting or floating seams",
+    ],
+    audio_cadence: &[
+        "Crisp UI confirmation clicks (`ui_click.wav`) paired with distinct reward chimes (`level_up.wav` / `summon_roll.wav`)",
+        "Punchy action/impact SFX (`battle_crit.wav`) synced tightly to visual hit frames and animations",
+        "Grand fanfare stings (`mythic_fanfare.wav`) reserved for rare milestones so highs feel truly earned",
+    ],
+    monetization_loops: &[
+        "Fair Speed/Multiplier/VIP Quality-of-Life Gamepasses that accelerate fun without walling core gameplay",
+        "Social-Flex Server Boost Dev Products (global luck/weather/event triggers rewarding the whole lobby)",
+        "Cosmetic Skins, Trails, Emotes, Titles & Private Friend Server passes",
+    ],
+    retention_hooks: &[
+        "Daily login streak + visible pity/milestone progress bars giving a concrete reason to return tomorrow",
+        "Timed server-wide events and rotating shops/challenges creating natural session rhythms",
+        "Co-op friend bonuses, leaderstats prestige badges, and social showcase hubs",
+    ],
+    anti_slop_guardrails: &[
+        "Never ship a bare gray baseplate, dark neon-box room, or broken overlapping HUD",
+        "Never trust client RemoteEvent amounts, damage, or positions — validate all gameplay strictly on the server",
+        "Always wrap DataStoreService in pcall + UpdateAsync + game:BindToClose so player progress is never lost",
+        "Every build must pass OpenRO's Static Luau Prover and Playtest with zero runtime or syntax errors",
+    ],
+    automatic_twists: &[
+        "ACTIVE TIMING BURST: weave a crisp skill-timing or combo window into the core loop so active play beats passive AFK",
+        "DYNAMIC SERVER WORLD EVENTS: pair core progression with visible sky/lighting/physics shifts that transform the hub every 10 minutes",
+        "SOCIAL SHOWCASE IDENTITY: display each player's rarest unlock, streak crown, or custom emblem visibly in the 3D hub",
+    ],
+    quality_boosts: &[
+        "Cohesive sunlit landmark hub with clear spawn sightlines guiding players into the core loop within 5 seconds",
+        "Non-overlapping modal/HUD layering + TweenService spring animations + matched procedural .wav SFX",
+        "Zero-slop server-authoritative Luau architecture verified end-to-end with DataStore persistence",
+    ],
+    pitch_prompt: "Build a top-trending, high-retention Roblox experience tailored to live player demand: a cohesive sunlit stylized 3D hub with strong landmarks and Blender-grade silhouettes, a juicy 5-second first-touch core loop with an Active Timing Burst twist, timed Dynamic Server World Events shifting lighting & rewards, crisp non-overlapping HUD with TweenService juice and procedural .wav SFX, fair VIP/cosmetic monetization hooks, and server-authoritative DataStore persistence.",
+};
 
 static NICHE_PROFILES: [NicheProfile; 8] = [
     NicheProfile {
