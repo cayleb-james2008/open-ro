@@ -11,4 +11,5 @@ pub mod server;
 pub mod skills;
 pub mod snapshots;
 pub mod sse;
+pub mod studio_stream;
 pub mod update;
