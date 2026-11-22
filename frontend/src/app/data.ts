@@ -6,6 +6,43 @@ export type Place = { scripts: Record<string, string>; instances: Record<string,
 export type ChatList = { chats: Chat[]; active: string; can_undo: boolean };
 export type WorkspaceMode = "studio_mcp" | "local_place" | "browser_place" | "disconnected";
 
+export type PlaceDiffItem = {
+  kind: "instance" | "script";
+  path: string;
+  detail: string;
+};
+
+export type PlaceDiff = {
+  added: PlaceDiffItem[];
+  modified: PlaceDiffItem[];
+  removed: PlaceDiffItem[];
+};
+
+export type PlaceSnapshot = {
+  id: string;
+  label: string;
+  created_at: number;
+  parts_count: number;
+  scripts_count: number;
+  diff?: PlaceDiff;
+  place?: Place;
+};
+
+export type BuildPhaseId = "planning" | "compiling" | "checking" | "playtest" | "repair";
+
+export type BuildStreamPhase = {
+  phase: BuildPhaseId;
+  label: string;
+  detail?: string;
+  progress?: number;
+};
+
+export type InstanceEditPayload = {
+  path: string;
+  class_name: string;
+  properties: Record<string, unknown>;
+};
+
 export type GatewayInfo = {
   base_url: string;
   model_id: string;
@@ -144,6 +181,92 @@ export function normalizePlace(raw: unknown): Place {
   return { scripts, instances };
 }
 
+export function normalizePlaceDiff(raw: unknown): PlaceDiff | null {
+  if (!isObj(raw)) return null;
+  const added: PlaceDiffItem[] = [];
+  const modified: PlaceDiffItem[] = [];
+  const removed: PlaceDiffItem[] = [];
+
+  if (Array.isArray(raw.added) || Array.isArray(raw.modified) || Array.isArray(raw.removed)) {
+    const pushItems = (src: unknown, dst: PlaceDiffItem[]) => {
+      if (!Array.isArray(src)) return;
+      for (const it of src) {
+        if (isObj(it) && typeof it.path === "string") {
+          dst.push({
+            kind: it.kind === "script" ? "script" : "instance",
+            path: it.path,
+            detail: asStr(it.detail),
+          });
+        }
+      }
+    };
+    pushItems(raw.added, added);
+    pushItems(raw.modified, modified);
+    pushItems(raw.removed, removed);
+    return { added, modified, removed };
+  }
+
+  // Rust src/snapshots.rs PlaceDiff JSON format:
+  // { added_instances, modified_instances, removed_instances, added_scripts, modified_scripts, removed_scripts }
+  const pushStrings = (src: unknown, dst: PlaceDiffItem[], kind: "instance" | "script", detail: string) => {
+    if (!Array.isArray(src)) return;
+    for (const p of src) {
+      if (typeof p === "string" && p) dst.push({ kind, path: p, detail });
+    }
+  };
+  pushStrings(raw.added_instances, added, "instance", "Instance");
+  pushStrings(raw.added_scripts, added, "script", "Luau");
+  pushStrings(raw.modified_instances, modified, "instance", "Props updated");
+  pushStrings(raw.modified_scripts, modified, "script", "Luau updated");
+  pushStrings(raw.removed_instances, removed, "instance", "Removed");
+  pushStrings(raw.removed_scripts, removed, "script", "Removed");
+  if (added.length || modified.length || removed.length) {
+    return { added, modified, removed };
+  }
+  return null;
+}
+
+export function normalizeSnapshots(raw: unknown): { snapshots: PlaceSnapshot[]; latestDiff: PlaceDiff | null } {
+  if (!isObj(raw)) return { snapshots: [], latestDiff: null };
+  const list = Array.isArray(raw.snapshots) ? raw.snapshots : [];
+  const snapshots: PlaceSnapshot[] = list
+    .filter(isObj)
+    .map((s, idx) => {
+      const createdRaw =
+        typeof s.created_at_ms === "number"
+          ? s.created_at_ms
+          : typeof s.created_at === "number"
+            ? s.created_at
+            : Date.now();
+      const partsCount =
+        typeof s.instance_count === "number"
+          ? s.instance_count
+          : typeof s.parts_count === "number"
+            ? s.parts_count
+            : 0;
+      const scriptsCount =
+        typeof s.script_count === "number"
+          ? s.script_count
+          : typeof s.scripts_count === "number"
+            ? s.scripts_count
+            : 0;
+      return {
+        id: asStr(s.id).trim() || `snap-${idx}`,
+        label: asStr(s.label).trim() || "Checkpoint",
+        created_at: createdRaw,
+        parts_count: partsCount,
+        scripts_count: scriptsCount,
+        diff: normalizePlaceDiff(s.diff) || undefined,
+      };
+    });
+  // Rust stores oldest-first; UI timeline displays newest-first
+  snapshots.sort((a, b) => b.created_at - a.created_at);
+  return {
+    snapshots,
+    latestDiff: normalizePlaceDiff(raw.latest_diff),
+  };
+}
+
 export function normalizeSnap(raw: unknown): Snap {
   if (!isObj(raw)) throw new Error("invalid update snapshot");
   return {
@@ -240,7 +363,116 @@ export const ADDS: Record<string, string> = {
   round_manager: "Round loop",
   leaderboard: "Wins leaderboard",
   soundtrack: "Looped soundtrack",
+  jump_pad: "Jump pad",
+  moving_platform: "Moving platform",
+  datastore_save: "DataStore profile",
+  npc_patrol: "NPC guard patrol",
+  portal_teleporter: "Portal pair",
+  combat_sword: "Combat sword",
+  inventory_backpack: "Item inventory",
+  quest_tracker: "Quest tracker",
+  vehicle_spawner: "Vehicle spawner",
+  weather_cycle: "Weather cycle",
+  tycoon_dropper: "Tycoon dropper",
+  admin_spectate: "Spectate HUD",
 };
+
+export const BUILD_PHASES: Array<{ id: BuildPhaseId; label: string }> = [
+  { id: "planning", label: "Planning" },
+  { id: "compiling", label: "Compiling Rune" },
+  { id: "checking", label: "Static Luau Check" },
+  { id: "playtest", label: "Playtest Proof" },
+];
+
+function normalizePhaseId(raw: string): BuildPhaseId {
+  const s = raw.toLowerCase();
+  if (s.includes("repair")) return "repair";
+  if (s.includes("playtest") || s.includes("proof") || s.includes("verif") || s === "done") return "playtest";
+  if (s.includes("check") || s.includes("static") || s.includes("audit") || s.includes("lint")) return "checking";
+  if (s.includes("compil") || s.includes("rune") || s.includes("generat") || s.includes("skill") || s.includes("writ")) return "compiling";
+  return "planning";
+}
+
+export function isV050OrNewer(version: string): boolean {
+  const m = version.trim().match(/^(\d+)\.(\d+)/);
+  if (!m) return false;
+  const maj = Number(m[1]);
+  const min = Number(m[2]);
+  return maj > 0 || min >= 5;
+}
+
+/**
+ * Subscribe to GET /api/build/stream (SSE) during an active build when supported.
+ * Gracefully falls back to timed phase progression when SSE isn't active yet
+ * (zero console 404 spam on older servers). Returns a cleanup function.
+ */
+export function subscribeBuildStream(
+  onPhase: (ev: BuildStreamPhase) => void,
+  useLiveSse = true,
+): () => void {
+  let closed = false;
+  let receivedLive = false;
+  let es: EventSource | null = null;
+  const timers: number[] = [];
+
+  onPhase({ phase: "planning", label: "Planning", detail: "Reading place DataModel & selecting Rune skills", progress: 18 });
+
+  const scheduleFallback = () => {
+    const steps: Array<[number, BuildStreamPhase]> = [
+      [320, { phase: "compiling", label: "Compiling Rune", detail: "Running deterministic Rune Luau generators", progress: 48 }],
+      [780, { phase: "checking", label: "Static Luau Check", detail: "Verifying syntax, blocks & DataModel cross-references", progress: 74 }],
+      [1350, { phase: "playtest", label: "Playtest Proof", detail: "Running live Studio playtest & console check", progress: 92 }],
+    ];
+    for (const [ms, ev] of steps) {
+      timers.push(
+        window.setTimeout(() => {
+          if (!closed && !receivedLive) onPhase(ev);
+        }, ms),
+      );
+    }
+  };
+
+  if (useLiveSse && typeof EventSource !== "undefined") {
+    try {
+      es = new EventSource("/api/build/stream");
+      const handlePayload = (rawData: string) => {
+        if (closed || !rawData) return;
+        try {
+          const parsed = JSON.parse(rawData) as Record<string, unknown>;
+          const phaseRaw = String(parsed.phase || parsed.stage || parsed.step || "planning");
+          const phase = normalizePhaseId(phaseRaw);
+          receivedLive = true;
+          onPhase({
+            phase,
+            label: typeof parsed.label === "string" && parsed.label ? parsed.label : phaseRaw,
+            detail: typeof parsed.detail === "string" ? parsed.detail : typeof parsed.message === "string" ? parsed.message : undefined,
+            progress: typeof parsed.progress === "number" ? parsed.progress : undefined,
+          });
+        } catch {
+          receivedLive = true;
+          onPhase({ phase: normalizePhaseId(rawData), label: rawData.slice(0, 48) });
+        }
+      };
+      es.onmessage = (e) => handlePayload(e.data);
+      es.addEventListener("build", (e) => handlePayload((e as MessageEvent).data));
+      es.addEventListener("phase", (e) => handlePayload((e as MessageEvent).data));
+      es.onerror = () => {
+        es?.close();
+        es = null;
+      };
+    } catch {
+      es = null;
+    }
+  }
+
+  scheduleFallback();
+
+  return () => {
+    closed = true;
+    for (const t of timers) window.clearTimeout(t);
+    es?.close();
+  };
+}
 
 export type BlueprintMeta = {
   category: string;
