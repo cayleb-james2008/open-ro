@@ -199,7 +199,21 @@ await reset()
   ok('Explorer item Expandable shows full Roblox DataModel path', (await shelf.innerText()).includes('Workspace.SpawnPad'))
   await p.getByRole('button', { name: 'Clear Explorer filter' }).click()
 
-  // Copy game summary button visible without scroll trap
+  // Verify Light/Dark is tucked inside Settings (NOT on the main rail/bar)
+  ok('Light/Dark switch is not cluttering main rail before opening Settings', (await p.getByRole('button', { name: 'Dark', exact: true }).count()) === 0)
+
+  // Verify full Luau source viewer + Copy Luau in Explorer
+  await p.getByRole('button', { name: 'Hierarchy details for Checkpoints' }).click()
+  await p.waitForTimeout(250)
+  ok('Explorer expands full Luau source and Copy Luau button', (await shelf.innerText()).includes('Players.PlayerAdded') && (await shelf.getByRole('button', { name: 'Copy Luau for Checkpoints' }).isVisible()))
+
+  // Export .rbxlx + Copy game summary pinned visible without scroll trap
+  const exportBox = await shelf.getByRole('button', { name: 'Export .rbxlx' }).boundingBox()
+  ok('Export .rbxlx is pinned visible in viewport', Boolean(exportBox && exportBox.y + exportBox.height <= 900))
+  const rbxlxRes = await fetch(BASE + 'api/export/rbxlx')
+  const rbxlxXml = await rbxlxRes.text()
+  ok('GET /api/export/rbxlx returns genuine Roblox XML', rbxlxRes.status === 200 && rbxlxXml.includes('<roblox ') && rbxlxXml.includes('version="4"') && rbxlxXml.includes('<Item class="Script"'))
+
   const copyBox = await shelf.getByRole('button', { name: 'Copy game summary' }).boundingBox()
   ok('Copy game summary is pinned visible in viewport', Boolean(copyBox && copyBox.y + copyBox.height <= 900))
   await shelf.getByRole('button', { name: 'Copy game summary' }).click()
@@ -208,12 +222,21 @@ await reset()
   ok('clipboard holds full Studio summary', /My Roblox game has Lava Obby.*, 7 pieces in all/.test(clipText), clipText)
   await p.screenshot({ path: `${OUT}/built-desktop-1440-light.png` })
 
-  // Switch to Dark theme on desktop and capture
+  // Switch to Dark theme inside Settings MorphingDialog and capture
+  await p.getByRole('button', { name: 'Settings' }).click()
+  await p.waitForSelector('[data-settings-dialog]', { timeout: 4000 })
   await p.getByRole('button', { name: 'Dark', exact: true }).click()
   await p.waitForTimeout(300)
-  ok('desktop SegmentedControl switches to dark theme', await p.evaluate(() => document.documentElement.dataset.theme) === 'dark')
+  ok('Settings SegmentedControl switches to dark theme', await p.evaluate(() => document.documentElement.dataset.theme) === 'dark')
+  await p.keyboard.press('Escape')
+  await p.waitForTimeout(300)
+  ok('Escape closes Settings dialog', (await p.locator('[data-settings-dialog]').count()) === 0)
   await p.screenshot({ path: `${OUT}/built-desktop-1440-dark.png` })
+  await p.getByRole('button', { name: 'Settings' }).click()
+  await p.waitForSelector('[data-settings-dialog]', { timeout: 4000 })
   await p.getByRole('button', { name: 'Light', exact: true }).click()
+  await p.keyboard.press('Escape')
+  await p.waitForTimeout(300)
 
   // Custom prompt send via Enter key
   await p.locator('#composer-input').fill('add a coin leaderboard and day cycle')
@@ -293,12 +316,19 @@ for (const [vn, w, h] of [['1440', 1440, 900], ['768', 768, 1024], ['390', 390, 
   await p.getByRole('button', { name: 'Open the menu' }).click()
   await p.waitForTimeout(500)
   ok('mobile 390: Left Rail Vaul drawer opens', await p.getByRole('button', { name: 'New chat' }).first().isVisible())
-  await p.getByRole('button', { name: 'Dark', exact: true }).click()
-  await p.waitForTimeout(250)
-  ok('mobile 390: Dark mode switch updates data-theme in drawer', await p.evaluate(() => document.documentElement.dataset.theme) === 'dark')
   await p.keyboard.press('Escape')
   await p.waitForTimeout(500)
   ok('mobile 390: Escape closes menu drawer and returns focus to Open the menu', await p.evaluate(() => document.activeElement?.getAttribute('aria-label')) === 'Open the menu')
+
+  await p.getByRole('button', { name: 'Open the menu' }).click()
+  await p.waitForTimeout(500)
+  await p.getByRole('button', { name: 'Settings' }).click()
+  await p.waitForSelector('[data-settings-dialog]', { timeout: 4000 })
+  await p.getByRole('button', { name: 'Dark', exact: true }).click()
+  await p.waitForTimeout(250)
+  ok('mobile 390: Dark mode switch updates data-theme inside Settings', await p.evaluate(() => document.documentElement.dataset.theme) === 'dark')
+  await p.keyboard.press('Escape')
+  await p.waitForTimeout(350)
 
   await p.getByRole('button', { name: 'In your game' }).click()
   await p.waitForTimeout(550)
@@ -321,10 +351,10 @@ await reset()
     const html = (await res.text()).replace('data-studio="true"', 'data-studio="false"').replace('data-can-build="true"', 'data-can-build="false"')
     r.fulfill({ response: res, body: html })
   })
-  await p.route('**/api/status', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ studio_connected: studioUp, model_configured: true, version: '0.3.0' }) }))
+  await p.route('**/api/status', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ studio_connected: studioUp, model_configured: true, workspace_mode: studioUp ? 'studio_mcp' : 'disconnected', version: '0.4.0' }) }))
   await p.goto(BASE); await ready(p); await p.waitForTimeout(500)
 
-  ok('offline Studio: Build in Studio disabled with plain reason', await p.getByRole('button', { name: 'Build Lava Obby in Studio' }).isDisabled() && (await p.locator('section[aria-labelledby=stage-title]').innerText()).includes('Building needs Roblox Studio'))
+  ok('offline Studio: Build in Studio disabled with plain reason', await p.getByRole('button', { name: 'Build Lava Obby in Studio' }).isDisabled() && (await p.locator('section[aria-labelledby=stage-title]').innerText()).includes('Roblox Studio MCP connected'))
   ok('offline Studio: Check again button offered', await p.getByRole('button', { name: 'Check again' }).count() === 1)
 
   studioUp = true

@@ -4,6 +4,33 @@ export type Idea = { id: string; title: string; pitch: string; skills: string[] 
 export type PlaceInstance = { class_name?: string; properties?: Record<string, unknown> };
 export type Place = { scripts: Record<string, string>; instances: Record<string, PlaceInstance> };
 export type ChatList = { chats: Chat[]; active: string; can_undo: boolean };
+export type WorkspaceMode = "studio_mcp" | "local_place" | "browser_place" | "disconnected";
+
+export type GatewayInfo = {
+  base_url: string;
+  model_id: string;
+  label: string;
+};
+
+export type ConfigSnap = {
+  base_url: string;
+  model_id: string;
+  has_api_key: boolean;
+  api_key_masked: string | null;
+  model_configured: boolean;
+  is_loopback_model: boolean;
+  studio_connected: boolean;
+  workspace_mode: string;
+  active_backend: WorkspaceMode;
+  mcp_command: string;
+  vinegar_detected: boolean;
+  vinegar_mcp_path: string | null;
+  rbxlx_path: string | null;
+  detected_gateways: GatewayInfo[];
+  web_engine?: boolean;
+  web_mode?: "browser" | "byok" | "local_server";
+  local_server_url?: string;
+};
 
 export type Snap = {
   current?: string;

@@ -129,6 +129,37 @@ impl McpClient {
         }
     }
 
+    /// Passively detect a running Vinegar Flatpak Roblox Studio instance with
+    /// `/home/<user>/.local/bin/roblox-studio-mcp` installed. NEVER launches
+    /// Vinegar or downloads anything.
+    pub fn detect_vinegar_studio_mcp() -> Option<String> {
+        let home = std::env::var("HOME").ok()?;
+        let candidate = std::path::PathBuf::from(home).join(".local/bin/roblox-studio-mcp");
+        if !candidate.is_file() {
+            return None;
+        }
+        let ps = Command::new("flatpak")
+            .args(["ps", "--columns=instance,application"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !ps.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&ps.stdout);
+        let running = stdout.lines().any(|line| {
+            let mut parts = line.split_whitespace();
+            let _inst = parts.next();
+            parts.next() == Some("org.vinegarhq.Vinegar")
+        });
+        if running {
+            Some(candidate.to_string_lossy().into_owned())
+        } else {
+            None
+        }
+    }
+
     fn initialize(&mut self) -> Result<(), String> {
         let result = self.request(
             "initialize",

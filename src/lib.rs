@@ -1,7 +1,9 @@
 pub mod agent;
+pub mod config;
 pub mod ideas;
-pub mod update;
 pub mod mcp;
 pub mod model;
+pub mod place;
 pub mod server;
 pub mod skills;
+pub mod update;

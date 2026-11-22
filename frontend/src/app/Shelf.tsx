@@ -5,6 +5,7 @@ import {
   Box,
   ChevronDown,
   Copy,
+  Download,
   FileCode,
   FolderTree,
   Layers,
@@ -20,7 +21,7 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/in
 import { Expandable, ExpandableContent, ExpandableTrigger } from "@/components/ui/expandable";
 import { SlidingNumber } from "@/components/ui/sliding-number";
 import { Pill, PillIndicator, PillStatus } from "@/components/kibo-ui/pill";
-import type { Place, PlaceInstance } from "./data";
+import type { Place, PlaceInstance, WorkspaceMode } from "./data";
 
 type KindInfo = { label: string; service: string; Icon: typeof FileCode; cls: string };
 
@@ -30,6 +31,8 @@ const KINDS: Record<string, KindInfo> = {
   StarterGui: { label: "screen GUI", service: "StarterGui", Icon: Monitor, cls: "bg-tag-design-bg text-tag-design-fg" },
   StarterPlayer: { label: "player script", service: "StarterPlayer", Icon: User, cls: "bg-tag-research-bg text-tag-research-fg" },
   ReplicatedStorage: { label: "shared module", service: "ReplicatedStorage", Icon: Layers, cls: "bg-tag-ops-bg text-tag-ops-fg" },
+  Lighting: { label: "lighting", service: "Lighting", Icon: Layers, cls: "bg-tag-dev-bg text-tag-dev-fg" },
+  SoundService: { label: "audio", service: "SoundService", Icon: Layers, cls: "bg-tag-research-bg text-tag-research-fg" },
   Workspace: { label: "in the world", service: "Workspace", Icon: Box, cls: "bg-tag-mint-bg text-tag-mint-fg" },
 };
 
@@ -40,7 +43,10 @@ export type ExplorerEntry = {
   name: string;
   kind: KindInfo;
   detail: string;
+  rawCopy: string;
+  copyLabel: string;
   metaChip?: string;
+  isScript: boolean;
 };
 
 const PART_SCRIPT_KIND: KindInfo = { label: "part script", service: "Workspace", Icon: FileCode, cls: "bg-tag-sky-bg text-tag-sky-fg" };
@@ -53,22 +59,32 @@ function parsePath(path: string, isScript = false): { name: string; kind: KindIn
   return { name: spaced, kind: KINDS[segs[0]] ?? FALLBACK_KIND };
 }
 
-function formatInstanceDetail(path: string, inst?: PlaceInstance): { detail: string; metaChip?: string } {
+function formatInstanceDetail(path: string, inst?: PlaceInstance): { detail: string; rawCopy: string; metaChip?: string } {
   const cls = inst?.class_name || "Instance";
   const props = inst?.properties ? Object.entries(inst.properties) : [];
   const propLines = props.length
     ? "\n" + props.map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join("\n")
     : "";
-  return { detail: `${path} (${cls})${propLines}`, metaChip: cls };
+  const full = `${path} (${cls})${propLines}`;
+  return { detail: full, rawCopy: full, metaChip: cls };
 }
 
-function formatScriptDetail(path: string, source: string): { detail: string; metaChip: string } {
-  const lines = source ? source.trim().split("\n") : [];
-  const preview = lines.slice(0, 8).join("\n");
+function formatScriptDetail(path: string, source: string): { detail: string; rawCopy: string; metaChip: string } {
+  const clean = source ? source.trim() : "";
+  const lineCount = clean ? clean.split("\n").length : 0;
   return {
-    detail: preview ? `${path}\n\n${preview}${lines.length > 8 ? "\n-- …" : ""}` : path,
-    metaChip: `${Math.max(1, lines.length)}L Luau`,
+    detail: clean ? `-- ${path}\n${clean}` : `-- ${path}`,
+    rawCopy: clean || `-- ${path}`,
+    metaChip: `${Math.max(1, lineCount)}L Luau`,
   };
+}
+
+function slugName(gameName: string): string {
+  const slug = (gameName || "openro-place")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${slug || "openro-place"}.rbxlx`;
 }
 
 export function buildGameSummary(gameName: string, builtTitles: string[], place: Place | null | "error"): string {
@@ -98,6 +114,7 @@ export function PartsShelf({
   answerAttr?: boolean;
 }) {
   const [query, setQuery] = useState("");
+  const [exporting, setExporting] = useState(false);
   const q = query.trim().toLowerCase();
 
   const { workspaceEntries, scriptEntries, total } = useMemo(() => {
@@ -106,13 +123,13 @@ export function PartsShelf({
     }
     const instEntries: ExplorerEntry[] = Object.entries(place.instances || {}).map(([p, inst]) => {
       const { name, kind } = parsePath(p);
-      const { detail, metaChip } = formatInstanceDetail(p, inst);
-      return { path: p, name, kind, detail, metaChip };
+      const { detail, rawCopy, metaChip } = formatInstanceDetail(p, inst);
+      return { path: p, name, kind, detail, rawCopy, copyLabel: "Copy props", metaChip, isScript: false };
     });
     const scrEntries: ExplorerEntry[] = Object.entries(place.scripts || {}).map(([p, src]) => {
       const { name, kind } = parsePath(p, true);
-      const { detail, metaChip } = formatScriptDetail(p, src);
-      return { path: p, name, kind, detail, metaChip };
+      const { detail, rawCopy, metaChip } = formatScriptDetail(p, src);
+      return { path: p, name, kind, detail, rawCopy, copyLabel: "Copy Luau", metaChip, isScript: true };
     });
     return {
       workspaceEntries: instEntries,
@@ -138,6 +155,32 @@ export function PartsShelf({
       () => toast.success("Copied the game summary"),
       () => toast.error("Could not copy automatically. Select the text instead."),
     );
+  };
+
+  const exportRbxlx = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const r = await fetch("/api/export/rbxlx", { cache: "no-store" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const xml = await r.text();
+      if (!xml.includes("<roblox")) throw new Error("unexpected XML payload");
+      const filename = slugName(gameName);
+      const blob = new Blob([xml], { type: "application/xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast.success(`Exported ${filename}`);
+    } catch {
+      toast.error("Could not export .rbxlx right now.");
+    } finally {
+      setExporting(false);
+    }
   };
 
   if (collapsed) {
@@ -231,7 +274,7 @@ export function PartsShelf({
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-3">
         {error ? (
           <p className="rounded-card border border-hairline bg-board p-3 text-sm text-pill-pro-fg">
-            Could not read your game place tree. Check that Roblox Studio is connected, then use Check again.
+            Could not read your game place tree. Check your Studio or Local Place connection in Settings, then use Check again.
           </p>
         ) : !place ? (
           <div className="grid gap-2" aria-label="Loading Studio Explorer">
@@ -240,7 +283,7 @@ export function PartsShelf({
           </div>
         ) : total === 0 ? (
           <div className="rounded-card border border-hairline bg-board p-3.5 text-sm leading-relaxed text-ink-2">
-            No parts or scripts in your Studio place yet. Build a blueprint or send a prompt and your Workspace instances and Luau scripts appear here.
+            No parts or scripts in your place yet. Build a blueprint or describe any game below and your Workspace instances and Luau scripts appear here ready to inspect or export as .rbxlx.
           </div>
         ) : filteredWorkspace.length === 0 && filteredScripts.length === 0 ? (
           <div className="rounded-card border border-hairline bg-board p-3 text-sm text-ink-2">
@@ -258,7 +301,16 @@ export function PartsShelf({
         )}
       </div>
 
-      <div className="flex-none border-t border-hairline bg-surface p-3">
+      <div className="flex flex-none flex-col gap-2 border-t border-hairline bg-surface p-3">
+        <Button
+          variant="default"
+          disabled={total === 0 || error || exporting}
+          onClick={() => void exportRbxlx()}
+          className="w-full justify-center max-md:min-h-11"
+        >
+          <Download className="size-3.5" strokeWidth={1.5} aria-hidden />
+          {exporting ? "Exporting…" : "Export .rbxlx"}
+        </Button>
         <Button
           variant="outline"
           disabled={!summary}
@@ -274,9 +326,15 @@ export function PartsShelf({
 }
 
 function ExplorerGroup({ title, entries }: { title: string; entries: ExplorerEntry[] }) {
-  // For huge 1000+ part stress tests (replay.mjs), render the first 60 rows cleanly + count summary so DOM stays instant!
   const visible = entries.slice(0, 60);
   const hiddenCount = entries.length - visible.length;
+
+  const copyEntry = (entry: ExplorerEntry) => {
+    navigator.clipboard.writeText(entry.rawCopy).then(
+      () => toast.success(`Copied ${entry.name}`),
+      () => toast.error("Could not copy automatically."),
+    );
+  };
 
   return (
     <section className="flex flex-col gap-2">
@@ -320,9 +378,24 @@ function ExplorerGroup({ title, entries }: { title: string; entries: ExplorerEnt
                       </ExpandableTrigger>
                     </div>
                     <ExpandableContent preset="fade">
-                      <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-all rounded-sm border border-hairline bg-surface p-2 font-mono text-xs text-ink-2">
-                        {entry.detail}
-                      </pre>
+                      <div className="mt-2 flex flex-col gap-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <code className="min-w-0 truncate font-mono text-xs text-ink-2">{entry.path}</code>
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            onClick={() => copyEntry(entry)}
+                            aria-label={`${entry.copyLabel} for ${entry.name}`}
+                            className="shrink-0 text-ink-2 hover:text-ink max-md:min-h-11"
+                          >
+                            <Copy className="size-3" strokeWidth={1.5} aria-hidden />
+                            {entry.copyLabel}
+                          </Button>
+                        </div>
+                        <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all rounded-sm border border-hairline bg-surface p-2 font-mono text-xs leading-relaxed text-ink">
+                          {entry.detail}
+                        </pre>
+                      </div>
                     </ExpandableContent>
                   </>
                 )}
@@ -341,12 +414,25 @@ function ExplorerGroup({ title, entries }: { title: string; entries: ExplorerEnt
   );
 }
 
-export function StudioChip({ connected }: { connected: boolean }) {
+export function StudioChip({
+  connected,
+  workspaceMode = "studio_mcp",
+}: {
+  connected: boolean;
+  workspaceMode?: WorkspaceMode;
+}) {
+  const label = !connected
+    ? "Studio not connected"
+    : workspaceMode === "local_place"
+      ? "Local Place ready"
+      : workspaceMode === "browser_place"
+        ? "Browser Place ready"
+        : "Studio connected";
   return (
     <Pill className={`px-2.5 py-1 text-xs font-medium ${connected ? "bg-pill-active-bg text-pill-active-fg" : "bg-pill-pro-bg text-pill-pro-fg"}`}>
       <PillStatus className="border-transparent">
         <PillIndicator variant={connected ? "success" : "error"} />
-        <span>{connected ? "Studio connected" : "Studio not connected"}</span>
+        <span>{label}</span>
       </PillStatus>
     </Pill>
   );
