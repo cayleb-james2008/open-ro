@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ChevronDown, ListTodo, Play, RotateCcw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -70,18 +70,26 @@ export function AgentRunsPanel({
   const [hint, setHint] = useState("");
   const [busy, setBusy] = useState("");
   const prevActiveRef = useState<{ id: string | null }>({ id: null })[0];
+  const onRunFinishedRef = useRef(onRunFinished);
+  onRunFinishedRef.current = onRunFinished;
+  const unavailableRef = useRef(false);
 
   const refresh = useCallback(async () => {
+    if (unavailableRef.current) return;
     const r = await call<{ active_run_id?: string | null; runs?: AgentRun[] }>("/api/runs");
-    if (r.httpStatus === 404) { setAvailable(false); return; }
+    if (r.httpStatus === 404) {
+      unavailableRef.current = true;
+      setAvailable(false);
+      return;
+    }
     if (!r.ok) return;
     setAvailable(true);
     const list = r.runs ?? [];
     setRuns(list);
-    if (prevActiveRef.id && !r.active_run_id) onRunFinished?.();
+    if (prevActiveRef.id && !r.active_run_id) onRunFinishedRef.current?.();
     prevActiveRef.id = r.active_run_id ?? null;
     setSelectedId((cur) => (cur && list.some((x) => x.run_id === cur) ? cur : r.active_run_id ?? list[0]?.run_id ?? null));
-  }, [onRunFinished, prevActiveRef]);
+  }, [prevActiveRef]);
 
   const loadDetail = useCallback(async (id: string | null) => {
     if (!id) { setDetail(null); return; }
@@ -170,7 +178,7 @@ export function AgentRunsPanel({
                 <ChevronDown className={`ml-auto size-3.5 text-ink-2 motion-safe:transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`} strokeWidth={1.5} aria-hidden />
               </ExpandableTrigger>
               {composerText.trim() && (
-                <Button variant="outline" size="xs" disabled={busy === "queue"} onClick={() => void queueRun()} className="max-md:min-h-11">
+                <Button variant="outline" size="xs" disabled={busy === "queue"} onClick={() => void queueRun()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">
                   <Play className="size-3" strokeWidth={1.5} aria-hidden />Queue plan
                 </Button>
               )}
