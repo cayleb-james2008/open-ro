@@ -4276,7 +4276,7 @@ fn plain_bridge(e: &str) -> String {
     }
 }
 
-fn parse_step(content: &str) -> Result<Value, String> {
+pub fn parse_step(content: &str) -> Result<Value, String> {
     // Strip optional <think>...</think> reasoning prefixes emitted by reasoning models.
     let mut cleaned = content.trim();
     while let Some(after_open) = cleaned.strip_prefix("<think>") {
