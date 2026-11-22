@@ -34,6 +34,13 @@ const WEATHER_CYCLE_RN: &str = include_str!("weather_cycle.rn");
 const TYCOON_DROPPER_RN: &str = include_str!("tycoon_dropper.rn");
 const ADMIN_SPECTATE_RN: &str = include_str!("admin_spectate.rn");
 
+const CARD_GACHA_ROLLER_RN: &str = include_str!("card_gacha_roller.rn");
+const DECK_BUILDER_RN: &str = include_str!("deck_builder.rn");
+const CARD_BATTLE_ARENA_RN: &str = include_str!("card_battle_arena.rn");
+const TOWER_PROGRESSION_RN: &str = include_str!("tower_progression.rn");
+const POTIONS_WEATHER_RN: &str = include_str!("potions_weather.rn");
+const CARD_GALLERY_WORLD_RN: &str = include_str!("card_gallery_world.rn");
+
 pub struct SkillDef {
     pub name: &'static str,
     pub title: &'static str,
@@ -294,15 +301,81 @@ pub fn registry() -> Vec<SkillDef> {
             source: ADMIN_SPECTATE_RN,
             entry: "generate_admin_spectate",
         },
+        SkillDef {
+            name: "card_gacha_roller",
+            title: "Card Gacha Roller",
+            category: "Economy",
+            description: "a CardGachaRoller script (ServerScriptService): server-authoritative card roller across 7 rarity tiers (Common to Secret) and 5 foil border variants (Normal, Shiny, Gold, Rainbow, Void) with luck, weather, potion multipliers, pity counter, and fast/auto roll RemoteFunction",
+            params: "{\"base_luck_pct\": int, \"pity_threshold\": int, \"fast_roll_ms\": int, \"enable_borders\": bool}",
+            default_path: "ServerScriptService.CardGachaRoller",
+            default_args: "{\"base_luck_pct\": 100, \"pity_threshold\": 50, \"fast_roll_ms\": 350, \"enable_borders\": true}",
+            source: CARD_GACHA_ROLLER_RN,
+            entry: "generate_card_gacha_roller",
+        },
+        SkillDef {
+            name: "deck_builder",
+            title: "Deck Builder & Rebirth",
+            category: "Persistence",
+            description: "a DeckBuilder script (ServerScriptService): 6-slot active card deck, Collection Index team bonuses, duplicate Star Fusion rank-ups, Rebirth Ascension multipliers, Auto-Equip Best, and pcall-guarded DataStore persistence with BindToClose",
+            params: "{\"deck_slots\": int, \"fusion_cost\": int, \"rebirth_floor\": int, \"store_name\": string, \"bind_close\": bool}",
+            default_path: "ServerScriptService.DeckBuilder",
+            default_args: "{\"deck_slots\": 6, \"fusion_cost\": 3, \"rebirth_floor\": 10, \"store_name\": \"OpenROApexDecks_v1\", \"bind_close\": true}",
+            source: DECK_BUILDER_RN,
+            entry: "generate_deck_builder",
+        },
+        SkillDef {
+            name: "card_battle_arena",
+            title: "Tactical Card Battle Arena",
+            category: "Combat",
+            description: "a CardBattleArena script (ServerScriptService): tactical and auto turn-based 3v3/6-card combat arena with 5 Elemental Synergies (Flame, Void, Storm, Shadow, Arcane), Speed initiative, Ultimate Burst Gauge, Active Counter/Interrupt timing, Crit/Shield/Stun/Burn status effects, and multi-phase Impossible Boss Raids",
+            params: "{\"team_size\": int, \"ultimate_charge_max\": int, \"counter_window_ms\": int, \"boss_hp_scale\": int}",
+            default_path: "ServerScriptService.CardBattleArena",
+            default_args: "{\"team_size\": 4, \"ultimate_charge_max\": 100, \"counter_window_ms\": 800, \"boss_hp_scale\": 4}",
+            source: CARD_BATTLE_ARENA_RN,
+            entry: "generate_card_battle_arena",
+        },
+        SkillDef {
+            name: "tower_progression",
+            title: "Endless Anime Tower",
+            category: "Movement",
+            description: "a TowerProgression script (ServerScriptService): 50-floor Endless Anime Tower with 5 themed World Portals in Workspace, boss milestone rewards, and a persistent OrderedDataStore global Tower Leaderboard",
+            params: "{\"max_floors\": int, \"world_count\": int, \"base_reward\": int, \"store_name\": string, \"bind_close\": bool}",
+            default_path: "ServerScriptService.TowerProgression",
+            default_args: "{\"max_floors\": 50, \"world_count\": 5, \"base_reward\": 120, \"store_name\": \"OpenROTowerBoard_v1\", \"bind_close\": true}",
+            source: TOWER_PROGRESSION_RN,
+            entry: "generate_tower_progression",
+        },
+        SkillDef {
+            name: "potions_weather",
+            title: "Potions, Weather & Codes",
+            category: "World",
+            description: "a PotionsWeather script (ServerScriptService): dynamic server weather events (Solar Flare, Void Eclipse, Thunderstorm, Blood Moon) with Lighting/Atmosphere tweens, craftable Luck and Speed potions, and server-validated redeemable codes (REBIRTH, APEX2026, LUCKBOOST)",
+            params: "{\"weather_cycle_seconds\": int, \"luck_potion_cost\": int, \"speed_potion_cost\": int, \"enable_codes\": bool}",
+            default_path: "ServerScriptService.PotionsWeather",
+            default_args: "{\"weather_cycle_seconds\": 90, \"luck_potion_cost\": 150, \"speed_potion_cost\": 120, \"enable_codes\": true}",
+            source: POTIONS_WEATHER_RN,
+            entry: "generate_potions_weather",
+        },
+        SkillDef {
+            name: "card_gallery_world",
+            title: "3D Card Gallery Lobby",
+            category: "UI",
+            description: "a CardGalleryWorld script (ServerScriptService): builds the 3D Studio Lobby with Spawn Courtyard, Holographic Roll Pedestal, 3D Card Showcase Billboards (Decal and ImageLabel art slots), Tower Portal Gate, Boss Raid Shrine, Potion Alchemist Stand, and live Leaderboard Wall",
+            params: "{\"lobby_name\": string, \"showcase_count\": int, \"enable_holograms\": bool, \"create_structures\": bool}",
+            default_path: "ServerScriptService.CardGalleryWorld",
+            default_args: "{\"lobby_name\": \"ApexLobby\", \"showcase_count\": 8, \"enable_holograms\": true, \"create_structures\": true}",
+            source: CARD_GALLERY_WORLD_RN,
+            entry: "generate_card_gallery_world",
+        },
     ]
 }
 
-/// Find a registered skill definition by name.
+/// Find a registered game system definition by name.
 pub fn find(name: &str) -> Option<SkillDef> {
     registry().into_iter().find(|d| d.name == name)
 }
 
-/// JSON catalog of all 22 registered skills for HTTP endpoints and UI Blueprint Library browsing.
+/// JSON catalog of all 28 registered game systems for HTTP endpoints and UI Blueprint Library browsing.
 pub fn catalog_json() -> Value {
     let items: Vec<Value> = registry()
         .into_iter()
@@ -636,6 +709,90 @@ pub fn generate(skill: &str, args: &Value) -> Result<String, String> {
                 def.source,
                 def.entry,
                 (remote_name, cycle_interval, allow_all_players),
+            )
+        }
+        "card_gacha_roller" => {
+            let base_luck_pct = arg_i64_range(args, "base_luck_pct", 100, 100, 1_000)?;
+            let pity_threshold = arg_i64_range(args, "pity_threshold", 50, 10, 500)?;
+            let fast_roll_ms = arg_i64_range(args, "fast_roll_ms", 350, 100, 3_000)?;
+            let enable_borders = arg_bool(args, "enable_borders", true)?;
+            run_skill(
+                def.source,
+                def.entry,
+                (base_luck_pct, pity_threshold, fast_roll_ms, enable_borders),
+            )
+        }
+        "deck_builder" => {
+            let deck_slots = arg_i64_range(args, "deck_slots", 6, 3, 6)?;
+            let fusion_cost = arg_i64_range(args, "fusion_cost", 3, 2, 10)?;
+            let rebirth_floor = arg_i64_range(args, "rebirth_floor", 10, 5, 100)?;
+            let store_name = arg_string(args, "store_name", "OpenROApexDecks_v1")?;
+            let bind_close = arg_bool(args, "bind_close", true)?;
+            run_skill(
+                def.source,
+                def.entry,
+                (deck_slots, fusion_cost, rebirth_floor, store_name, bind_close),
+            )
+        }
+        "card_battle_arena" => {
+            let team_size = arg_i64_range(args, "team_size", 4, 3, 6)?;
+            let ultimate_charge_max = arg_i64_range(args, "ultimate_charge_max", 100, 50, 200)?;
+            let counter_window_ms = arg_i64_range(args, "counter_window_ms", 800, 250, 2_000)?;
+            let boss_hp_scale = arg_i64_range(args, "boss_hp_scale", 4, 1, 20)?;
+            run_skill(
+                def.source,
+                def.entry,
+                (
+                    team_size,
+                    ultimate_charge_max,
+                    counter_window_ms,
+                    boss_hp_scale,
+                ),
+            )
+        }
+        "tower_progression" => {
+            let max_floors = arg_i64_range(args, "max_floors", 50, 10, 200)?;
+            let world_count = arg_i64_range(args, "world_count", 5, 3, 10)?;
+            let base_reward = arg_i64_range(args, "base_reward", 120, 50, 10_000)?;
+            let store_name = arg_string(args, "store_name", "OpenROTowerBoard_v1")?;
+            let bind_close = arg_bool(args, "bind_close", true)?;
+            run_skill(
+                def.source,
+                def.entry,
+                (max_floors, world_count, base_reward, store_name, bind_close),
+            )
+        }
+        "potions_weather" => {
+            let weather_cycle_seconds =
+                arg_i64_range(args, "weather_cycle_seconds", 90, 15, 600)?;
+            let luck_potion_cost = arg_i64_range(args, "luck_potion_cost", 150, 10, 100_000)?;
+            let speed_potion_cost = arg_i64_range(args, "speed_potion_cost", 120, 10, 100_000)?;
+            let enable_codes = arg_bool(args, "enable_codes", true)?;
+            run_skill(
+                def.source,
+                def.entry,
+                (
+                    weather_cycle_seconds,
+                    luck_potion_cost,
+                    speed_potion_cost,
+                    enable_codes,
+                ),
+            )
+        }
+        "card_gallery_world" => {
+            let lobby_name = arg_identifier(args, "lobby_name", "ApexLobby")?;
+            let showcase_count = arg_i64_range(args, "showcase_count", 8, 4, 12)?;
+            let enable_holograms = arg_bool(args, "enable_holograms", true)?;
+            let create_structures = arg_bool(args, "create_structures", true)?;
+            run_skill(
+                def.source,
+                def.entry,
+                (
+                    lobby_name,
+                    showcase_count,
+                    enable_holograms,
+                    create_structures,
+                ),
             )
         }
         _ => unreachable!("registry and dispatch are kept in step"),

@@ -188,6 +188,140 @@ pub fn opening_ideas() -> Vec<Idea> {
             skills: vec!["round_manager", "leaderboard", "spawn_link", "kill_brick"],
             needs: vec![],
         },
+        Idea {
+            id: "anime-card-battles-apex",
+            title: "Anime Card Battles: Rebirth — Apex Edition",
+            pitch: "A complete anime card-battler Roblox experience: 7-tier foil gacha \
+                    rolling with pity & weather luck, 6-slot Star Fusion & Rebirth decks, \
+                    tactical 5-element turn-based combat with Ultimate Bursts & Active \
+                    Counters, a 50-floor Endless Tower with 5 World Portals, dynamic \
+                    Potions/Weather/Codes, and a 3D Card Gallery Studio Lobby.",
+            plan: vec![
+                spawn_pad(),
+                instance(
+                    "Part",
+                    "RollPedestal",
+                    "Workspace",
+                    json!({
+                        "Anchored": true,
+                        "CanCollide": true,
+                        "Position": [0, 1.5, -14],
+                        "Size": [10, 2, 10],
+                        "Color": "#4F7CF0",
+                        "Material": "Neon"
+                    }),
+                ),
+                instance(
+                    "Part",
+                    "TowerPortal",
+                    "Workspace",
+                    json!({
+                        "Anchored": true,
+                        "CanCollide": true,
+                        "Position": [-28, 7.5, -24],
+                        "Size": [12, 14, 2],
+                        "Color": "#38BDF8",
+                        "Material": "Neon"
+                    }),
+                ),
+                instance(
+                    "Part",
+                    "BossRaidShrine",
+                    "Workspace",
+                    json!({
+                        "Anchored": true,
+                        "CanCollide": true,
+                        "Position": [28, 5.5, -24],
+                        "Size": [12, 10, 8],
+                        "Color": "#E0532A",
+                        "Material": "Slate"
+                    }),
+                ),
+                instance(
+                    "Part",
+                    "PotionStand",
+                    "Workspace",
+                    json!({
+                        "Anchored": true,
+                        "CanCollide": true,
+                        "Position": [-28, 3, 12],
+                        "Size": [10, 5, 6],
+                        "Color": "#3CB371",
+                        "Material": "WoodPlanks"
+                    }),
+                ),
+                skill(
+                    "leaderboard",
+                    json!({ "currency": "Coins", "start_amount": 250 }),
+                ),
+                write("ServerScriptService.Leaderboard", "leaderboard"),
+                skill(
+                    "datastore_save",
+                    json!({ "store_name": "OpenROApexEconomy_v1", "stat_name": "Coins", "default_value": 250, "autosave_seconds": 60, "bind_close": true }),
+                ),
+                write("ServerScriptService.DataStoreSave", "datastore_save"),
+                skill(
+                    "shop",
+                    json!({ "item_name": "Lucky Charm", "price": 250, "currency": "Coins" }),
+                ),
+                write("ServerScriptService.Shop", "shop"),
+                skill(
+                    "game_gui",
+                    json!({ "title": "Anime Card Battles: Apex", "button_label": "Buy Lucky Charm (250)", "currency": "Coins" }),
+                ),
+                write("StarterGui.GameGui", "game_gui"),
+                skill(
+                    "soundtrack",
+                    json!({ "sound_id": 0, "volume": 6, "looped": true }),
+                ),
+                write("ServerScriptService.Soundtrack", "soundtrack"),
+                skill(
+                    "card_gacha_roller",
+                    json!({ "base_luck_pct": 100, "pity_threshold": 50, "fast_roll_ms": 350, "enable_borders": true }),
+                ),
+                write("ServerScriptService.CardGachaRoller", "card_gacha_roller"),
+                skill(
+                    "deck_builder",
+                    json!({ "deck_slots": 6, "fusion_cost": 3, "rebirth_floor": 10, "store_name": "OpenROApexDecks_v1", "bind_close": true }),
+                ),
+                write("ServerScriptService.DeckBuilder", "deck_builder"),
+                skill(
+                    "card_battle_arena",
+                    json!({ "team_size": 4, "ultimate_charge_max": 100, "counter_window_ms": 800, "boss_hp_scale": 4 }),
+                ),
+                write("ServerScriptService.CardBattleArena", "card_battle_arena"),
+                skill(
+                    "tower_progression",
+                    json!({ "max_floors": 50, "world_count": 5, "base_reward": 120, "store_name": "OpenROTowerBoard_v1", "bind_close": true }),
+                ),
+                write("ServerScriptService.TowerProgression", "tower_progression"),
+                skill(
+                    "potions_weather",
+                    json!({ "weather_cycle_seconds": 90, "luck_potion_cost": 150, "speed_potion_cost": 120, "enable_codes": true }),
+                ),
+                write("ServerScriptService.PotionsWeather", "potions_weather"),
+                skill(
+                    "card_gallery_world",
+                    json!({ "lobby_name": "ApexLobby", "showcase_count": 8, "enable_holograms": true, "create_structures": true }),
+                ),
+                write("ServerScriptService.CardGalleryWorld", "card_gallery_world"),
+                playtest(),
+            ],
+            skills: vec![
+                "leaderboard",
+                "datastore_save",
+                "shop",
+                "game_gui",
+                "soundtrack",
+                "card_gacha_roller",
+                "deck_builder",
+                "card_battle_arena",
+                "tower_progression",
+                "potions_weather",
+                "card_gallery_world",
+            ],
+            needs: vec![],
+        },
     ]
 }
 
@@ -509,6 +643,102 @@ fn feature_ideas() -> Vec<Idea> {
                 playtest(),
             ],
             skills: vec!["admin_spectate"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-card-gacha-roller",
+            title: "Card gacha roller & foil borders",
+            pitch: "Add a 7-tier card roller (Common to Secret) with Foil/Shiny/Gold/Rainbow/Void \
+                    borders, pity guarantees, and fast/auto rolling.",
+            plan: vec![
+                skill(
+                    "card_gacha_roller",
+                    json!({ "base_luck_pct": 100, "pity_threshold": 50, "fast_roll_ms": 350, "enable_borders": true }),
+                ),
+                write("ServerScriptService.CardGachaRoller", "card_gacha_roller"),
+                playtest(),
+            ],
+            skills: vec!["card_gacha_roller"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-deck-builder",
+            title: "6-slot deck builder & Star Fusion",
+            pitch: "Give players persistent 6-slot card decks, Collection Index bonuses, \
+                    duplicate Star Fusion rank-ups, Auto-Equip Best, and Rebirth Ascension.",
+            plan: vec![
+                skill(
+                    "deck_builder",
+                    json!({ "deck_slots": 6, "fusion_cost": 3, "rebirth_floor": 10, "store_name": "OpenROApexDecks_v1", "bind_close": true }),
+                ),
+                write("ServerScriptService.DeckBuilder", "deck_builder"),
+                playtest(),
+            ],
+            skills: vec!["deck_builder"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-card-battle-arena",
+            title: "Tactical card battle arena & boss raids",
+            pitch: "Add tactical and auto turn-based card combat with 5 Elemental Synergies, \
+                    Ultimate Burst Gauges, Active Counter timing, and multi-phase Raid Bosses.",
+            plan: vec![
+                skill(
+                    "card_battle_arena",
+                    json!({ "team_size": 4, "ultimate_charge_max": 100, "counter_window_ms": 800, "boss_hp_scale": 4 }),
+                ),
+                write("ServerScriptService.CardBattleArena", "card_battle_arena"),
+                playtest(),
+            ],
+            skills: vec!["card_battle_arena"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-tower-progression",
+            title: "50-floor Endless Anime Tower",
+            pitch: "Build a 50-floor progression tower across 5 themed World Portals with \
+                    boss milestone bonuses and a persistent global Tower Leaderboard.",
+            plan: vec![
+                skill(
+                    "tower_progression",
+                    json!({ "max_floors": 50, "world_count": 5, "base_reward": 120, "store_name": "OpenROTowerBoard_v1", "bind_close": true }),
+                ),
+                write("ServerScriptService.TowerProgression", "tower_progression"),
+                playtest(),
+            ],
+            skills: vec!["tower_progression"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-potions-weather",
+            title: "Server weather, potions & codes",
+            pitch: "Add Solar Flare, Void Eclipse, Thunderstorm, and Blood Moon weather \
+                    events, craftable Luck & Speed potions, and redeemable reward codes.",
+            plan: vec![
+                skill(
+                    "potions_weather",
+                    json!({ "weather_cycle_seconds": 90, "luck_potion_cost": 150, "speed_potion_cost": 120, "enable_codes": true }),
+                ),
+                write("ServerScriptService.PotionsWeather", "potions_weather"),
+                playtest(),
+            ],
+            skills: vec!["potions_weather"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-card-gallery-world",
+            title: "3D Card Gallery Studio Lobby",
+            pitch: "Construct the full 3D card-battler courtyard with Holographic Roll \
+                    Pedestal, 3D Card Showcase Billboards, Tower Gate, Boss Shrine, and Leaderboard Wall.",
+            plan: vec![
+                skill(
+                    "card_gallery_world",
+                    json!({ "lobby_name": "ApexLobby", "showcase_count": 8, "enable_holograms": true, "create_structures": true }),
+                ),
+                write("ServerScriptService.CardGalleryWorld", "card_gallery_world"),
+                playtest(),
+            ],
+            skills: vec!["card_gallery_world"],
             needs: vec![],
         },
     ]
