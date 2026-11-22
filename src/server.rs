@@ -946,6 +946,14 @@ fn handle(
         }
     }
 
+    // Parameterized official Roblox Studio MCP tool route: POST /api/studio/tools/:tool
+    if let Some(tool_name) = path.strip_prefix("/api/studio/tools/") {
+        if !tool_name.is_empty() && req.method == "POST" {
+            handle_studio_tool(&mut stream, shared, &req, tool_name);
+            return Ok(());
+        }
+    }
+
     match (req.method.as_str(), path.as_str()) {
         ("GET", "/api/art-knowledge") => {
             respond_json(&mut stream, "200 OK", &crate::art_knowledge::summary_json());
@@ -1056,6 +1064,12 @@ fn handle(
         }
         ("POST", "/api/studio/mcp/disconnect") => {
             handle_studio_mcp_disconnect(&mut stream, shared, &req);
+        }
+        ("POST", "/api/studio/input/mouse") => {
+            handle_studio_input_mouse(&mut stream, shared, &req);
+        }
+        ("POST", "/api/studio/input/keyboard") => {
+            handle_studio_input_keyboard(&mut stream, shared, &req);
         }
         ("GET", "/api/build/events") => {
             let since = query_param(query, "since")
@@ -1318,6 +1332,9 @@ fn handle(
                     "sse_build_stream": true,
                     "assets_api": true,
                     "studio_stream": true,
+                    "studio_embed": true,
+                    "studio_mjpeg": true,
+                    "studio_tools": crate::agent::OFFICIAL_STUDIO_MCP_TOOLS,
                     "ide_api": true,
                     "ide_v080": true,
                     "rojo_export": true,
@@ -1869,7 +1886,7 @@ fn handle_import_rbxlx(stream: &mut TcpStream, shared: &Shared, req: &Request) {
             }
         }
     } else {
-        let body: Value = match serde_json::from_slice(&req.body) {
+        let body: Value = match serde_json::from_slice::<Value>(&req.body) {
             Ok(v) => v,
             Err(_) => {
                 respond_json(
@@ -3233,6 +3250,287 @@ fn handle_studio_mcp_disconnect(stream: &mut TcpStream, shared: &Shared, req: &R
     );
 }
 
+fn handle_studio_input_mouse(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "forwarding Studio mouse input is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    let body: Value = match serde_json::from_slice::<Value>(&req.body) {
+        Ok(v) if v.is_object() => v,
+        _ => {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "invalid JSON body for mouse input" }),
+            );
+            return;
+        }
+    };
+    let action = body
+        .get("action")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("click")
+        .to_string();
+    const VALID_ACTIONS: [&str; 8] = [
+        "click",
+        "move",
+        "down",
+        "up",
+        "drag",
+        "wheel",
+        "double_click",
+        "right_click",
+    ];
+    if !VALID_ACTIONS.contains(&action.as_str()) {
+        respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": format!("unsupported mouse action '{action}'") }),
+        );
+        return;
+    }
+    let x = body.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let y = body.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    if !x.is_finite() || !y.is_finite() {
+        respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": "mouse coordinates x and y must be finite numbers" }),
+        );
+        return;
+    }
+
+    let chat_id = shared.active_chat.lock().unwrap().clone();
+    let mut guard = shared.agent.lock().unwrap();
+    let Some(agent) = guard.as_mut() else {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({ "ok": false, "error": "Studio not connected" }),
+        );
+        return;
+    };
+    match agent.invoke_studio_tool(&chat_id, "user_mouse_input", body) {
+        Ok((result, frame_seq)) => {
+            let fseq = frame_seq.unwrap_or_else(|| shared.studio_stream.latest_frame_seq());
+            respond_json(
+                stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "action": action,
+                    "studio_mode": agent.studio_mode_tag(),
+                    "frame_seq": fseq,
+                    "has_live_frame": fseq > 0,
+                    "result": result,
+                }),
+            );
+        }
+        Err(e) => {
+            let status = if e.contains("requires a connected live Roblox Studio")
+                || e.contains("Studio not connected")
+            {
+                "503 Service Unavailable"
+            } else {
+                "502 Bad Gateway"
+            };
+            respond_json(
+                stream,
+                status,
+                &json!({
+                    "ok": false,
+                    "studio_mode": shared.studio_stream.studio_mode(),
+                    "error": e,
+                }),
+            );
+        }
+    }
+}
+
+fn handle_studio_input_keyboard(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "forwarding Studio keyboard input is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    let body: Value = match serde_json::from_slice::<Value>(&req.body) {
+        Ok(v) if v.is_object() => v,
+        _ => {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "invalid JSON body for keyboard input" }),
+            );
+            return;
+        }
+    };
+    let has_key = body
+        .get("key")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
+    let has_text = body
+        .get("text")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty());
+    if !has_key && !has_text {
+        respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": "keyboard input requires non-empty 'key' or 'text'" }),
+        );
+        return;
+    }
+    let action = body
+        .get("action")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(if has_text { "type" } else { "press" })
+        .to_string();
+
+    let chat_id = shared.active_chat.lock().unwrap().clone();
+    let mut guard = shared.agent.lock().unwrap();
+    let Some(agent) = guard.as_mut() else {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({ "ok": false, "error": "Studio not connected" }),
+        );
+        return;
+    };
+    match agent.invoke_studio_tool(&chat_id, "user_keyboard_input", body) {
+        Ok((result, frame_seq)) => {
+            let fseq = frame_seq.unwrap_or_else(|| shared.studio_stream.latest_frame_seq());
+            respond_json(
+                stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "action": action,
+                    "studio_mode": agent.studio_mode_tag(),
+                    "frame_seq": fseq,
+                    "has_live_frame": fseq > 0,
+                    "result": result,
+                }),
+            );
+        }
+        Err(e) => {
+            let status = if e.contains("requires a connected live Roblox Studio")
+                || e.contains("Studio not connected")
+            {
+                "503 Service Unavailable"
+            } else {
+                "502 Bad Gateway"
+            };
+            respond_json(
+                stream,
+                status,
+                &json!({
+                    "ok": false,
+                    "studio_mode": shared.studio_stream.studio_mode(),
+                    "error": e,
+                }),
+            );
+        }
+    }
+}
+
+fn handle_studio_tool(stream: &mut TcpStream, shared: &Shared, req: &Request, tool: &str) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "calling Studio MCP tools directly is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    if !crate::agent::is_official_studio_tool(tool) {
+        respond_json(
+            stream,
+            "404 Not Found",
+            &json!({
+                "ok": false,
+                "error": format!("unknown or disallowed Studio tool '{tool}'"),
+                "allowed_tools": crate::agent::OFFICIAL_STUDIO_MCP_TOOLS,
+            }),
+        );
+        return;
+    }
+    let body: Value = if req.body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_json(
+                    stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": "invalid JSON object body for Studio tool arguments" }),
+                );
+                return;
+            }
+        }
+    };
+
+    let chat_id = shared.active_chat.lock().unwrap().clone();
+    let mut guard = shared.agent.lock().unwrap();
+    let Some(agent) = guard.as_mut() else {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({ "ok": false, "error": "Studio not connected" }),
+        );
+        return;
+    };
+    match agent.invoke_studio_tool(&chat_id, tool, body) {
+        Ok((result, frame_seq)) => {
+            let fseq = frame_seq.unwrap_or_else(|| shared.studio_stream.latest_frame_seq());
+            respond_json(
+                stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "tool": tool,
+                    "studio_mode": agent.studio_mode_tag(),
+                    "frame_seq": fseq,
+                    "has_live_frame": fseq > 0,
+                    "result": result,
+                }),
+            );
+        }
+        Err(e) => {
+            let status = if e.contains("requires a connected live Roblox Studio")
+                || e.contains("Studio not connected")
+            {
+                "503 Service Unavailable"
+            } else if e.contains("requires ") || e.contains("no script at") || e.contains("no instance") {
+                "400 Bad Request"
+            } else {
+                "502 Bad Gateway"
+            };
+            respond_json(
+                stream,
+                status,
+                &json!({
+                    "ok": false,
+                    "tool": tool,
+                    "studio_mode": shared.studio_stream.studio_mode(),
+                    "error": e,
+                }),
+            );
+        }
+    }
+}
+
 fn all_stored_assets(shared: &Shared) -> Vec<crate::assets::AssetMetadata> {
     if let Some(dir) = &shared.data_dir {
         crate::assets::AssetManager::open(dir).list()
@@ -3482,7 +3780,7 @@ fn handle_assets_upload(stream: &mut TcpStream, shared: &Shared, req: &Request, 
         };
         (name, req.body.clone(), meta)
     } else {
-        let body: Value = match serde_json::from_slice(&req.body) {
+        let body: Value = match serde_json::from_slice::<Value>(&req.body) {
             Ok(v) => v,
             Err(_) => {
                 respond_json(
