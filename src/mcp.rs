@@ -1042,11 +1042,103 @@ impl McpClient {
         self.call_tool_json("user_keyboard_input", json!({ "actions": actions }))
     }
 
-    /// The place tree as JSON: `{ "scripts": { "<path>": "<source>", ... } }`.
+    /// The place tree as JSON: `{ "scripts": { "<path>": "<source>", ... }, "instances": { ... } }`.
+    /// Uses `get_place_tree` when advertised (e.g. `mock_studio`), and falls back cleanly
+    /// to a read-only `execute_luau` DataModel snapshot when attached to official Roblox
+    /// `StudioMCP.exe` so the Studio Explorer & 3D Viewport sync live with real Studio.
     pub fn get_place_tree(&mut self) -> Result<Value, String> {
-        let text = self.call_tool("get_place_tree", json!({}))?;
-        serde_json::from_str(&text)
-            .map_err(|e| format!("get_place_tree returned non-JSON text: {e}"))
+        if self.has_tool("get_place_tree") {
+            let text = self.call_tool("get_place_tree", json!({}))?;
+            return serde_json::from_str(&text)
+                .map_err(|e| format!("get_place_tree returned non-JSON text: {e}"));
+        }
+        if !self.has_tool("execute_luau") {
+            return Ok(json!({ "scripts": {}, "instances": {} }));
+        }
+        let luau = r#"
+local HttpService = game:GetService("HttpService")
+local scripts = {}
+local instances = {}
+local icount = 0
+local scount = 0
+local function fullPath(inst)
+    local parts = {}
+    local cur = inst
+    while cur and cur ~= game do
+        table.insert(parts, 1, cur.Name)
+        cur = cur.Parent
+    end
+    return table.concat(parts, ".")
+end
+for _, svcName in ipairs({"ServerScriptService", "ReplicatedStorage", "StarterGui", "StarterPlayer", "Workspace"}) do
+    local okSvc, svc = pcall(function() return game:GetService(svcName) end)
+    if okSvc and svc then
+        for _, d in ipairs(svc:GetDescendants()) do
+            if d:IsA("LuaSourceContainer") and scount < 80 then
+                local okSrc, src = pcall(function() return d.Source end)
+                if okSrc and type(src) == "string" then
+                    scripts[fullPath(d)] = src
+                    scount += 1
+                end
+            elseif svcName == "Workspace" and d:IsA("BasePart") and icount < 250 then
+                local c = d.Color
+                instances[fullPath(d)] = {
+                    class_name = d.ClassName,
+                    properties = {
+                        Position = {math.round(d.Position.X * 100) / 100, math.round(d.Position.Y * 100) / 100, math.round(d.Position.Z * 100) / 100},
+                        Size = {math.round(d.Size.X * 100) / 100, math.round(d.Size.Y * 100) / 100, math.round(d.Size.Z * 100) / 100},
+                        Color = {math.round(c.R * 255), math.round(c.G * 255), math.round(c.B * 255)},
+                        Anchored = d.Anchored,
+                        Material = d.Material.Name,
+                    },
+                }
+                icount += 1
+            end
+        end
+    end
+end
+return "OPENRO_TREE:" .. HttpService:JSONEncode({ scripts = scripts, instances = instances })
+"#;
+        match self.execute_luau(luau) {
+            Ok(val) => {
+                let raw = val
+                    .get("output")
+                    .or_else(|| val.get("result"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let json_str = if let Some(idx) = raw.find("OPENRO_TREE:") {
+                    raw[idx + "OPENRO_TREE:".len()..].trim()
+                } else {
+                    raw.trim()
+                };
+                if let Ok(parsed) = serde_json::from_str::<Value>(json_str) {
+                    if parsed.is_object() {
+                        return Ok(parsed);
+                    }
+                }
+                // Handle quoted JSON strings returned by StudioMCP `return`
+                if let Ok(unquoted) = serde_json::from_str::<String>(json_str) {
+                    let inner = unquoted
+                        .strip_prefix("OPENRO_TREE:")
+                        .unwrap_or(&unquoted)
+                        .trim();
+                    if let Ok(parsed) = serde_json::from_str::<Value>(inner) {
+                        if parsed.is_object() {
+                            return Ok(parsed);
+                        }
+                    }
+                }
+                Ok(json!({ "scripts": {}, "instances": {} }))
+            }
+            Err(e) => {
+                let low = e.to_ascii_lowercase();
+                if low.contains("place is not open") || low.contains("no roblox studio") {
+                    Ok(json!({ "scripts": {}, "instances": {} }))
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     pub fn is_alive(&mut self) -> bool {
