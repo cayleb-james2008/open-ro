@@ -206,16 +206,50 @@ def rounded_mask(img, radius):
     out.putalpha(ImageChops.darker(img.getchannel("A"), m))
     return out
 
-def draw_shapes(img, shapes):
+def parse_wh(op, op_name):
+    if "size" in op and op["size"] is not None:
+        sz = op["size"]
+        if not (isinstance(sz, (list, tuple)) and len(sz) == 2):
+            fail(f"op '{op_name}': 'size' must be [width, height].")
+        w, h = int(sz[0]), int(sz[1])
+    elif "width" in op and "height" in op:
+        w, h = int(op["width"]), int(op["height"])
+    else:
+        fail(f"op '{op_name}' requires 'width' and 'height' (or 'size': [width, height]).")
+    if w <= 0 or h <= 0 or w > 8192 or h > 8192:
+        fail(f"op '{op_name}': dimensions {w}x{h} out of range (1..8192).")
+    return w, h
+
+VALID_SHAPES = ("rect", "rounded_rect", "ellipse", "ring", "polygon", "star", "gradient")
+
+def draw_shapes(img, op):
+    shapes = op.get("shapes")
+    if shapes is None:
+        if op.get("kind") is not None or op.get("shape") is not None:
+            shapes = [op]
+        else:
+            fail("op 'draw' requires 'shapes': [{kind|shape, ...}] or a flat {shape|kind, box|points|cx, fill|stroke, ...} object.")
+    if not isinstance(shapes, list) or len(shapes) == 0:
+        fail("op 'draw' drew 0 shapes; provide at least one shape in 'shapes' (or flat 'shape'/'kind').")
     img = img.convert("RGBA")
     w, h = img.size
     ss = 2
     layer = Image.new("RGBA", (w * ss, h * ss), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    for s in shapes:
-        kind = str(s.get("kind") or "rect").lower()
-        fill = parse_color(s.get("fill")) if s.get("fill") is not None else None
-        stroke = parse_color(s.get("stroke")) if s.get("stroke") is not None else None
+    drawn = 0
+    for idx, s in enumerate(shapes):
+        if not isinstance(s, dict):
+            fail(f"op 'draw' shape[{idx}] must be an object.")
+        raw_kind = s.get("kind") if s.get("kind") is not None else s.get("shape")
+        if not raw_kind:
+            fail(f"op 'draw' shape[{idx}] missing 'kind' (or 'shape'); expected one of: {', '.join(VALID_SHAPES)}.")
+        kind = str(raw_kind).strip().lower()
+        if kind not in VALID_SHAPES:
+            fail(f"op 'draw' shape[{idx}] unknown kind '{kind}'; expected one of: {', '.join(VALID_SHAPES)}.")
+        fill_raw = s.get("fill") if s.get("fill") is not None else (s.get("color") if kind != "ring" else None)
+        stroke_raw = s.get("stroke") if s.get("stroke") is not None else (s.get("color") if kind == "ring" else None)
+        fill = parse_color(fill_raw) if fill_raw is not None else None
+        stroke = parse_color(stroke_raw) if stroke_raw is not None else None
         sw = int(s.get("stroke_width", 0)) * ss
         if kind == "gradient":
             c1 = parse_color(s.get("from"), (30, 34, 52, 255))
@@ -230,16 +264,26 @@ def draw_shapes(img, shapes):
                     d.line([(i, 0), (i, gh)], fill=col)
                 else:
                     d.line([(0, i), (gw, i)], fill=col)
+            drawn += 1
         elif kind == "rect":
+            if fill is None and stroke is None:
+                fail(f"op 'draw' shape[{idx}] ('rect') needs 'fill' or 'stroke' (or 'color').")
             box = [int(v * ss) for v in s.get("box", [0, 0, w, h])]
             d.rectangle(box, fill=fill, outline=stroke, width=sw)
+            drawn += 1
         elif kind == "rounded_rect":
+            if fill is None and stroke is None:
+                fail(f"op 'draw' shape[{idx}] ('rounded_rect') needs 'fill' or 'stroke' (or 'color').")
             box = [int(v * ss) for v in s.get("box", [0, 0, w, h])]
             rad = int(s.get("radius", 12)) * ss
             d.rounded_rectangle(box, radius=rad, fill=fill, outline=stroke, width=sw)
+            drawn += 1
         elif kind == "ellipse":
+            if fill is None and stroke is None:
+                fail(f"op 'draw' shape[{idx}] ('ellipse') needs 'fill' or 'stroke' (or 'color').")
             box = [int(v * ss) for v in s.get("box", [0, 0, w, h])]
             d.ellipse(box, fill=fill, outline=stroke, width=sw)
+            drawn += 1
         elif kind == "ring":
             box = [int(v * ss) for v in s.get("box", [0, 0, w, h])]
             thickness = max(2, int(s.get("thickness", 12))) * ss
@@ -249,10 +293,13 @@ def draw_shapes(img, shapes):
                 d.rounded_rectangle(box, radius=rad, outline=col, width=thickness)
             else:
                 d.rectangle(box, outline=col, width=thickness)
+            drawn += 1
         elif kind == "polygon":
             pts = [(int(p[0] * ss), int(p[1] * ss)) for p in s.get("points", [])]
-            if len(pts) >= 3:
-                d.polygon(pts, fill=fill, outline=stroke)
+            if len(pts) < 3:
+                fail(f"op 'draw' shape[{idx}] ('polygon') requires at least 3 [x,y] points.")
+            d.polygon(pts, fill=fill, outline=stroke)
+            drawn += 1
         elif kind == "star":
             cx, cy = float(s.get("cx", w / 2)) * ss, float(s.get("cy", h / 2)) * ss
             r_out = float(s.get("outer_r", min(w, h) * 0.42)) * ss
@@ -264,6 +311,9 @@ def draw_shapes(img, shapes):
                 r = r_out if i % 2 == 0 else r_in
                 pts.append((cx + math.cos(ang) * r, cy + math.sin(ang) * r))
             d.polygon(pts, fill=fill, outline=stroke)
+            drawn += 1
+    if drawn == 0:
+        fail("op 'draw' drew 0 shapes; expected shapes: [{kind|shape, ...}].")
     layer = layer.resize((w, h), Image.Resampling.LANCZOS)
     return Image.alpha_composite(img, layer)
 
@@ -377,12 +427,14 @@ def main():
         img = Image.open(req["input_abs"]).convert("RGBA")
 
     for op in req.get("ops", []):
-        name = str(op.get("op") or "").lower()
+        name = str(op.get("op") or "").strip().lower()
         if name == "canvas":
-            w, h = int(op.get("width", 256)), int(op.get("height", 256))
+            w, h = parse_wh(op, "canvas")
             img = Image.new("RGBA", (w, h), parse_color(op.get("color"), (0, 0, 0, 0)))
         elif name == "contact_sheet":
             inputs = op.get("resolved_inputs") or []
+            if not inputs:
+                fail("op 'contact_sheet' requires a non-empty 'inputs' list.")
             cols = max(1, int(op.get("columns", 4)))
             cw, ch = [int(x) for x in op.get("cell_size", [256, 256])]
             bg = parse_color(op.get("bg"), (18, 22, 34, 255))
@@ -399,12 +451,15 @@ def main():
                 img.paste(fitted, (x + (cw - fitted.width) // 2, y + lbl + (ch - fitted.height) // 2), fitted)
                 if item.get("label"):
                     d.text((x + 4, y + 4), str(item["label"]), fill=(235, 240, 255, 255))
+        elif name not in ("cover_resize", "resize", "crop", "remove_bg", "rounded_mask", "draw", "composite", "quantize", "compress"):
+            fail(f"unknown image op '{name}'; expected one of: canvas, draw, cover_resize, resize, crop, remove_bg, rounded_mask, composite, quantize, compress, contact_sheet.")
         elif img is None:
             fail(f"op '{name}' requires an 'input' image or an earlier 'canvas' op.")
         elif name == "cover_resize":
-            img = cover_resize(img, int(op["width"]), int(op["height"]), str(op.get("anchor") or "center"))
+            w, h = parse_wh(op, "cover_resize")
+            img = cover_resize(img, w, h, str(op.get("anchor") or "center"))
         elif name == "resize":
-            w, h = int(op["width"]), int(op["height"])
+            w, h = parse_wh(op, "resize")
             if str(op.get("fit") or "stretch") == "contain":
                 fitted = ImageOps.contain(img, (w, h), Image.Resampling.LANCZOS)
                 canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -413,14 +468,15 @@ def main():
             else:
                 img = img.resize((w, h), Image.Resampling.LANCZOS)
         elif name == "crop":
-            x, y, w, h = int(op.get("x", 0)), int(op.get("y", 0)), int(op["width"]), int(op["height"])
+            w, h = parse_wh(op, "crop")
+            x, y = int(op.get("x", 0)), int(op.get("y", 0))
             img = img.crop((x, y, x + w, y + h))
         elif name == "remove_bg":
             img = remove_bg(img, op)
         elif name == "rounded_mask":
             img = rounded_mask(img, int(op.get("radius", 16)))
         elif name == "draw":
-            img = draw_shapes(img, op.get("shapes") or [])
+            img = draw_shapes(img, op)
         elif name == "composite":
             for layer in op.get("resolved_layers") or []:
                 ov = Image.open(layer["abs"]).convert("RGBA")
@@ -438,8 +494,6 @@ def main():
             img = img.quantize(colors=colors, method=Image.Quantize.FASTOCTREE).convert("RGBA")
         elif name == "compress":
             max_bytes = int(op.get("max_bytes", max_bytes))
-        else:
-            fail(f"unknown image op '{name}'")
 
     if img is None:
         fail("No input image or canvas op provided.")
