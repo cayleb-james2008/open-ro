@@ -89,7 +89,7 @@ pub struct Shared {
 
 #[derive(Clone, Default)]
 pub struct GameAssetsIndex {
-    pub items: Vec<Value>,
+    pub mem_assets: Vec<crate::assets::AssetMetadata>,
     pub mem_blobs: std::collections::HashMap<String, Vec<u8>>,
 }
 
@@ -150,7 +150,8 @@ impl Shared {
         let cfg = RuntimeConfig::load(&data_dir);
         let mut snap_store = SnapshotStore::open(&data_dir);
         recovered.append(&mut snap_store.recovered);
-        let loaded_assets = load_game_assets(&data_dir);
+        // Ensure persistent game-assets directory is initialized on startup.
+        let _ = crate::assets::AssetManager::open(&data_dir);
         Arc::new(Shared {
             agent: Mutex::new(agent),
             chats: Mutex::new(chats),
@@ -167,7 +168,7 @@ impl Shared {
             snapshots: Mutex::new(snap_store),
             events,
             status_cache: Mutex::new(initial_status),
-            game_assets: Mutex::new(loaded_assets),
+            game_assets: Mutex::new(GameAssetsIndex::default()),
         })
     }
 
@@ -844,11 +845,19 @@ fn handle(
         }
     }
 
-    // Parameterized game art asset route: GET /api/assets/:file
-    if req.method == "GET" {
-        if let Some(raw_file) = path.strip_prefix("/api/assets/") {
-            if !raw_file.is_empty() {
+    // Parameterized game art asset routes: GET /api/assets/manifest, GET|DELETE /api/assets/:file
+    if let Some(raw_file) = path.strip_prefix("/api/assets/") {
+        if !raw_file.is_empty() {
+            if req.method == "GET" && raw_file == "manifest" {
+                handle_assets_manifest(&mut stream, shared);
+                return Ok(());
+            }
+            if req.method == "GET" {
                 handle_asset_file(&mut stream, shared, raw_file);
+                return Ok(());
+            }
+            if req.method == "DELETE" {
+                handle_asset_delete(&mut stream, shared, raw_file);
                 return Ok(());
             }
         }
@@ -856,7 +865,7 @@ fn handle(
 
     match (req.method.as_str(), path.as_str()) {
         ("GET", "/api/art-knowledge") => {
-            respond_json(&mut stream, "200 OK", &art_knowledge_json());
+            respond_json(&mut stream, "200 OK", &crate::art_knowledge::summary_json());
         }
         ("GET", "/api/assets") => {
             handle_assets_list(&mut stream, shared);
@@ -976,24 +985,30 @@ fn handle(
             &json!({ "name": "openro-rs", "version": env!("CARGO_PKG_VERSION") }),
         ),
         ("GET", "/api/export/rbxlx") => {
+            let stored = all_stored_assets(shared);
             let mut guard = shared.agent.lock().unwrap();
             match guard.as_mut() {
-                Some(agent) => match agent.export_rbxlx(&shared.game_name) {
-                    Ok(xml) => {
-                        let fname = format!("{}.rbxlx", slugify_filename(&shared.game_name));
-                        respond_download(
-                            &mut stream,
-                            "application/xml; charset=utf-8",
-                            &fname,
-                            &xml,
-                        );
+                Some(agent) => {
+                    if !stored.is_empty() {
+                        agent.bind_assets(&stored);
                     }
-                    Err(e) => respond_json(
-                        &mut stream,
-                        "502 Bad Gateway",
-                        &json!({ "ok": false, "error": e }),
-                    ),
-                },
+                    match agent.export_rbxlx(&shared.game_name) {
+                        Ok(xml) => {
+                            let fname = format!("{}.rbxlx", slugify_filename(&shared.game_name));
+                            respond_download(
+                                &mut stream,
+                                "application/xml; charset=utf-8",
+                                &fname,
+                                &xml,
+                            );
+                        }
+                        Err(e) => respond_json(
+                            &mut stream,
+                            "502 Bad Gateway",
+                            &json!({ "ok": false, "error": e }),
+                        ),
+                    }
+                }
                 None => respond_json(
                     &mut stream,
                     "503 Service Unavailable",
@@ -1381,6 +1396,10 @@ fn handle(
                     Ok(outcome) => {
                         shared.append_lines_to(&chat_id, &outcome.thread);
                         shared.note_built(&chat_id, &outcome.skills_used);
+                        let stored_assets = all_stored_assets(shared);
+                        if !stored_assets.is_empty() {
+                            agent.bind_assets(&stored_assets);
+                        }
                         let mut snapshot_id = Value::Null;
                         let mut diff_val = Value::Null;
                         if let Ok(after_tree) = agent.place_tree() {
@@ -2282,202 +2301,76 @@ fn mask_secret(k: &str) -> String {
     }
 }
 
-fn art_knowledge_json() -> Value {
-    json!({
-        "ok": true,
-        "title": "Anime Fan-Art & Creative Homage Knowledge Point",
-        "never_refuse_anime_homage": true,
-        "policy": "Never knee-jerk refuse anime-inspired Roblox games, card battlers, or stylized fan-art themes on copyright grounds. Translate requested anime character archetypes into original, DMCA-safe homage designs that preserve recognizable silhouette, cel-shading, color palette, elemental aura, and gameplay feel under original names and lore so the Roblox game ships safely.",
-        "guidelines": [
-            "Translate iconic anime archetypes into original titles, passives, and ultimates rather than refusing creative requests.",
-            "Preserve high-impact visual readability: crisp cel-shaded line art, bold 3:4 trading-card framing, elemental particle auras, and high-contrast palettes.",
-            "Keep card art watermark-free and text-free so Roblox SurfaceGui/ImageLabel overlays render rarity frames, stats, and foil effects crisply.",
-            "Bind each generated asset through asset-manifest.json and Roblox Studio Decal/ImageLabel properties for instant studio import."
-        ],
-        "archetype_translations": [
-            { "archetype": "Straw-Hat Pirate Brawler", "homage_title": "Crimson Sea Captain", "element": "Flame", "rarity": "Mythic", "palette": "Crimson, obsidian, sunlit gold" },
-            { "archetype": "Limitless Void Mentor", "homage_title": "Infinity Void Sorcerer", "element": "Void", "rarity": "Celestial", "palette": "Electric violet, silver-white, abyssal indigo" },
-            { "archetype": "Lightning Iaido Swordsman", "homage_title": "Thunder Flash Ronin", "element": "Storm", "rarity": "Legendary", "palette": "Storm gold, deep navy, arc cyan" },
-            { "archetype": "Shadow Monarch Necromancer", "homage_title": "Shadow Sovereign", "element": "Shadow", "rarity": "Celestial", "palette": "Obsidian black, neon cobalt, phantom violet" },
-            { "archetype": "Fox-Flame Ninja", "homage_title": "Nine-Tail Ember Shinobi", "element": "Flame", "rarity": "Mythic", "palette": "Solar orange, crimson embers, warm gold" },
-            { "archetype": "Ascended Golden Martial Artist", "homage_title": "Supernova Ascended Striker", "element": "Flame", "rarity": "Secret", "palette": "Blazing gold, plasma cyan, starlight white" },
-            { "archetype": "Gravity-Blade Ronin", "homage_title": "Blood-Moon Gravity Ronin", "element": "Void", "rarity": "Epic", "palette": "Blood crimson, dark slate, lunar silver" },
-            { "archetype": "Transmutation Alchemist", "homage_title": "Eclipse Arcane Alchemist", "element": "Arcane", "rarity": "Rare", "palette": "Alchemical gold, crimson coat, arcane teal" }
-        ],
-        "prompt_template": "High-craft modern anime cel-shaded trading card illustration (3:4 portrait), dynamic heroic pose, bold inked contours, glowing {element} elemental aura, dramatic rim lighting, original stylized homage character '{title}' ({rarity} tier), no text, no watermark, no borders, clean studio quality."
-    })
-}
-
-fn game_assets_dir(shared: &Shared) -> Option<PathBuf> {
-    shared.data_dir.as_ref().map(|d| d.join("game-assets"))
-}
-
-fn load_game_assets(data_dir: &std::path::Path) -> GameAssetsIndex {
-    let manifest_path = data_dir.join("game-assets").join("manifest.json");
-    let Ok(text) = std::fs::read_to_string(&manifest_path) else {
-        return GameAssetsIndex::default();
-    };
-    let Ok(v) = serde_json::from_str::<Value>(&text) else {
-        return GameAssetsIndex::default();
-    };
-    let items = v
-        .get("assets")
-        .and_then(|a| a.as_array())
-        .cloned()
-        .unwrap_or_default();
-    GameAssetsIndex {
-        items,
-        mem_blobs: std::collections::HashMap::new(),
-    }
-}
-
-fn persist_game_assets_manifest(dir: &std::path::Path, items: &[Value]) {
-    let _ = std::fs::create_dir_all(dir);
-    let path = dir.join("manifest.json");
-    let tmp = dir.join("manifest.json.tmp");
-    let body = json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "assets": items,
-    });
-    if let Ok(text) = serde_json::to_string_pretty(&body) {
-        if std::fs::write(&tmp, text).is_ok() {
-            let _ = std::fs::rename(&tmp, &path);
-        }
-    }
-}
-
-/// Strictly validate an asset filename against path traversal, NUL bytes,
-/// leading dots, directory separators, and unsupported extensions.
-fn validate_asset_filename(raw: &str) -> Result<String, String> {
-    if raw.is_empty() || raw.len() > 128 {
-        return Err("asset filename must be 1..=128 characters".to_string());
-    }
-    if raw.contains('/')
-        || raw.contains('\\')
-        || raw.contains("..")
-        || raw.contains('\0')
-        || raw.contains('%')
-        || raw.starts_with('.')
-    {
-        return Err("invalid asset filename (path traversal or special characters rejected)".to_string());
-    }
-    if !raw
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-    {
-        return Err("asset filename may only contain ASCII letters, digits, '-', '_', and '.'".to_string());
-    }
-    let lower = raw.to_ascii_lowercase();
-    if !(lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".webp")) {
-        return Err("asset filename must end with .png, .jpg, .jpeg, or .webp".to_string());
-    }
-    Ok(raw.to_string())
-}
-
-fn detect_image_mime(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
-    if bytes.len() >= 8 && bytes[..8] == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A] {
-        return Some(("image/png", "png"));
-    }
-    if bytes.len() >= 3 && bytes[..3] == [0xFF, 0xD8, 0xFF] {
-        return Some(("image/jpeg", "jpg"));
-    }
-    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        return Some(("image/webp", "webp"));
-    }
-    None
-}
-
-fn mime_for_asset_name(name: &str) -> &'static str {
-    let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".png") {
-        "image/png"
-    } else if lower.ends_with(".webp") {
-        "image/webp"
+fn all_stored_assets(shared: &Shared) -> Vec<crate::assets::AssetMetadata> {
+    if let Some(dir) = &shared.data_dir {
+        crate::assets::AssetManager::open(dir).list()
     } else {
-        "image/jpeg"
+        shared.game_assets.lock().unwrap().mem_assets.clone()
     }
 }
 
-fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
-    let trimmed = input.trim();
-    let payload = if let Some((_, after)) = trimmed.split_once("base64,") {
-        after
-    } else {
-        trimmed
-    };
-    let mut out = Vec::with_capacity((payload.len() * 3) / 4);
-    let mut buf: u32 = 0;
-    let mut bits: u32 = 0;
-    for b in payload.bytes() {
-        if b.is_ascii_whitespace() {
-            continue;
-        }
-        if b == b'=' {
-            break;
-        }
-        let val = match b {
-            b'A'..=b'Z' => (b - b'A') as u32,
-            b'a'..=b'z' => (b - b'a' + 26) as u32,
-            b'0'..=b'9' => (b - b'0' + 52) as u32,
-            b'+' | b'-' => 62,
-            b'/' | b'_' => 63,
-            _ => return Err("invalid base64 character in image payload".to_string()),
-        };
-        buf = (buf << 6) | val;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push(((buf >> bits) & 0xFF) as u8);
+fn bind_stored_assets_to_agent(shared: &Shared) {
+    let assets = all_stored_assets(shared);
+    if assets.is_empty() {
+        return;
+    }
+    if let Ok(mut guard) = shared.agent.lock() {
+        if let Some(agent) = guard.as_mut() {
+            agent.bind_assets(&assets);
         }
     }
-    if out.is_empty() {
-        return Err("empty image payload after base64 decoding".to_string());
-    }
-    Ok(out)
 }
 
 fn handle_assets_list(stream: &mut TcpStream, shared: &Shared) {
-    let idx = shared.game_assets.lock().unwrap();
-    let dir_str = game_assets_dir(shared).map(|p| p.display().to_string());
+    let assets = all_stored_assets(shared);
+    let items: Vec<Value> = assets.iter().map(crate::assets::AssetMetadata::to_json).collect();
+    let dir_str = shared
+        .data_dir
+        .as_ref()
+        .map(|d| d.join("game-assets").display().to_string());
     respond_json(
         stream,
         "200 OK",
         &json!({
             "ok": true,
-            "count": idx.items.len(),
-            "assets": idx.items,
+            "count": items.len(),
+            "assets": items,
             "assets_dir": dir_str,
         }),
     );
 }
 
+fn handle_assets_manifest(stream: &mut TcpStream, shared: &Shared) {
+    let assets = all_stored_assets(shared);
+    let mut manifest = crate::assets::build_asset_manifest_json(&shared.game_name, &assets);
+    if let Some(obj) = manifest.as_object_mut() {
+        obj.insert("ok".to_string(), json!(true));
+    }
+    respond_json(stream, "200 OK", &manifest);
+}
+
 fn handle_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &str) {
-    let safe_name = match validate_asset_filename(raw_file) {
+    let safe_name = match crate::assets::sanitize_filename(raw_file) {
         Ok(s) => s,
         Err(e) => {
             respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
             return;
         }
     };
-    if let Some(dir) = game_assets_dir(shared) {
-        let candidate = dir.join(&safe_name);
-        if let (Ok(canon_dir), Ok(canon_file)) = (std::fs::canonicalize(&dir), std::fs::canonicalize(&candidate)) {
-            if !canon_file.starts_with(&canon_dir) {
-                respond_json(
-                    stream,
-                    "403 Forbidden",
-                    &json!({ "ok": false, "error": "asset path escapes game-assets directory" }),
-                );
+    if let Some(dir) = &shared.data_dir {
+        let mgr = crate::assets::AssetManager::open(dir);
+        match mgr.read_bytes(&safe_name) {
+            Ok((bytes, mime)) => {
+                respond_bytes(stream, "200 OK", mime, "public, max-age=3600", &bytes);
                 return;
             }
-            if let Ok(bytes) = std::fs::read(&canon_file) {
-                respond_bytes(
-                    stream,
-                    "200 OK",
-                    mime_for_asset_name(&safe_name),
-                    "public, max-age=3600",
-                    &bytes,
-                );
+            Err(e) => {
+                let status = if e.contains("escapes") {
+                    "403 Forbidden"
+                } else {
+                    "404 Not Found"
+                };
+                respond_json(stream, status, &json!({ "ok": false, "error": e }));
                 return;
             }
         }
@@ -2487,7 +2380,7 @@ fn handle_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &str) {
         respond_bytes(
             stream,
             "200 OK",
-            mime_for_asset_name(&safe_name),
+            crate::assets::mime_for_filename(&safe_name),
             "public, max-age=3600",
             bytes,
         );
@@ -2500,92 +2393,134 @@ fn handle_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &str) {
     );
 }
 
-fn store_uploaded_asset(
-    shared: &Shared,
-    safe_name: &str,
-    bytes: &[u8],
-    meta: Value,
-) -> Result<Value, String> {
-    let (mime, _) = detect_image_mime(bytes)
-        .ok_or_else(|| "uploaded bytes are not a valid PNG, JPEG, or WebP image".to_string())?;
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let stem = safe_name.rsplit_once('.').map(|(a, _)| a).unwrap_or(safe_name);
-    let card_id = meta
-        .get("card_id")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or(stem)
-        .to_string();
-    let title = meta
-        .get("title")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or(&card_id)
-        .to_string();
-
-    if let Some(dir) = game_assets_dir(shared) {
-        std::fs::create_dir_all(&dir).map_err(|e| format!("create game-assets dir: {e}"))?;
-        let dest = dir.join(safe_name);
-        let tmp = dir.join(format!("{safe_name}.tmp"));
-        std::fs::write(&tmp, bytes).map_err(|e| format!("write asset: {e}"))?;
-        std::fs::rename(&tmp, &dest).map_err(|e| format!("commit asset: {e}"))?;
-    }
-
-    let record = json!({
-        "filename": safe_name,
-        "url": format!("/api/assets/{safe_name}"),
-        "mime": mime,
-        "bytes": bytes.len(),
-        "card_id": card_id,
-        "title": title,
-        "rarity": meta.get("rarity").and_then(|v| v.as_str()).unwrap_or("Epic"),
-        "odds": meta.get("odds").and_then(|v| v.as_str()).unwrap_or("1 in 32"),
-        "element": meta.get("element").and_then(|v| v.as_str()).unwrap_or("Flame"),
-        "atk": meta.get("atk").and_then(|v| v.as_u64()).unwrap_or(300),
-        "hp": meta.get("hp").and_then(|v| v.as_u64()).unwrap_or(1100),
-        "speed": meta.get("speed").and_then(|v| v.as_u64()).unwrap_or(85),
-        "passive": meta.get("passive").and_then(|v| v.as_str()).unwrap_or(""),
-        "ultimate": meta.get("ultimate").and_then(|v| v.as_str()).unwrap_or(""),
-        "prompt": meta.get("prompt").and_then(|v| v.as_str()).unwrap_or(""),
-        "source": meta.get("source").and_then(|v| v.as_str()).unwrap_or("upload"),
-        "created_at_ms": now_ms,
-    });
-
-    {
-        let mut idx = shared.game_assets.lock().unwrap();
-        idx.items
-            .retain(|it| it.get("filename").and_then(|f| f.as_str()) != Some(safe_name));
-        idx.items.push(record.clone());
-        if shared.data_dir.is_none() {
-            idx.mem_blobs.insert(safe_name.to_string(), bytes.to_vec());
-        } else if let Some(dir) = game_assets_dir(shared) {
-            persist_game_assets_manifest(&dir, &idx.items);
+fn handle_asset_delete(stream: &mut TcpStream, shared: &Shared, raw_file: &str) {
+    let safe_name = match crate::assets::sanitize_filename(raw_file) {
+        Ok(s) => s,
+        Err(e) => {
+            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
+            return;
         }
-    }
+    };
+    let deleted = if let Some(dir) = &shared.data_dir {
+        match crate::assets::AssetManager::open(dir).delete(&safe_name) {
+            Ok(d) => d,
+            Err(e) => {
+                respond_json(stream, "500 Internal Server Error", &json!({ "ok": false, "error": e }));
+                return;
+            }
+        }
+    } else {
+        let mut idx = shared.game_assets.lock().unwrap();
+        let before = idx.mem_assets.len();
+        idx.mem_assets.retain(|a| a.filename != safe_name);
+        idx.mem_blobs.remove(&safe_name).is_some() || idx.mem_assets.len() != before
+    };
+    respond_json(
+        stream,
+        if deleted { "200 OK" } else { "404 Not Found" },
+        &json!({ "ok": deleted, "filename": safe_name }),
+    );
+}
+
+fn save_asset_and_bind(
+    shared: &Shared,
+    raw_filename: &str,
+    bytes: &[u8],
+    input: crate::assets::AssetMetadataInput,
+) -> Result<crate::assets::AssetMetadata, String> {
+    let meta = if let Some(dir) = &shared.data_dir {
+        crate::assets::AssetManager::open(dir).save_bytes(raw_filename, bytes, input)?
+    } else {
+        let filename = crate::assets::sanitize_filename(raw_filename)?;
+        let (mime_type, _) = crate::assets::detect_image_mime(bytes)?;
+        let stem = filename
+            .rsplit_once('.')
+            .map(|(a, _)| a)
+            .unwrap_or(&filename);
+        let card_id = input
+            .card_id
+            .as_deref()
+            .map(crate::assets::sanitize_card_id)
+            .unwrap_or_else(|| crate::assets::sanitize_card_id(stem));
+        let guide = crate::art_knowledge::anime_archetypes()
+            .iter()
+            .find(|a| a.card_id == card_id);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let meta = crate::assets::AssetMetadata {
+            card_id: card_id.clone(),
+            title: input.title.unwrap_or_else(|| {
+                guide
+                    .map(|g| g.homage_title.to_string())
+                    .unwrap_or_else(|| stem.replace(['-', '_'], " "))
+            }),
+            rarity: input
+                .rarity
+                .unwrap_or_else(|| guide.map(|g| g.rarity).unwrap_or("Rare").to_string()),
+            element: input
+                .element
+                .unwrap_or_else(|| guide.map(|g| g.element).unwrap_or("Flame").to_string()),
+            atk: input.atk.unwrap_or_else(|| guide.map(|g| g.atk).unwrap_or(280)),
+            hp: input.hp.unwrap_or_else(|| guide.map(|g| g.hp).unwrap_or(1050)),
+            speed: input
+                .speed
+                .unwrap_or_else(|| guide.map(|g| g.speed).unwrap_or(85)),
+            odds: input
+                .odds
+                .unwrap_or_else(|| guide.map(|g| g.odds).unwrap_or("1 in 32").to_string()),
+            passive: input
+                .passive
+                .unwrap_or_else(|| guide.map(|g| g.passive).unwrap_or("").to_string()),
+            ultimate: input
+                .ultimate
+                .unwrap_or_else(|| guide.map(|g| g.ultimate).unwrap_or("").to_string()),
+            prompt: input
+                .prompt
+                .unwrap_or_else(|| guide.map(|g| g.art_prompt).unwrap_or("").to_string()),
+            source: input.source.unwrap_or_else(|| "upload".to_string()),
+            filename: filename.clone(),
+            mime_type: mime_type.to_string(),
+            bytes: bytes.len(),
+            sha256: String::new(),
+            created_at_ms: now_ms,
+            roblox_asset_id: input.roblox_asset_id,
+        };
+        let mut idx = shared.game_assets.lock().unwrap();
+        idx.mem_assets.retain(|a| a.filename != filename);
+        idx.mem_assets.push(meta.clone());
+        idx.mem_blobs.insert(filename, bytes.to_vec());
+        meta
+    };
+
+    bind_stored_assets_to_agent(shared);
+
     let chat_id = shared.active_chat.lock().unwrap().clone();
     shared.events.publish(
         "asset",
         chat_id,
         "done",
         "Card Art Uploaded",
-        format!("Stored {safe_name} ({} bytes)", bytes.len()),
+        format!("Stored {} ({} bytes)", meta.filename, meta.bytes),
         None,
-        Some(format!("/api/assets/{safe_name}")),
+        Some(format!("/api/assets/{}", meta.filename)),
         100,
     );
-    Ok(record)
+    Ok(meta)
 }
 
 fn handle_assets_upload(stream: &mut TcpStream, shared: &Shared, req: &Request, query: &str) {
     let is_raw_image = req.content_type.starts_with("image/png")
         || req.content_type.starts_with("image/jpeg")
         || req.content_type.starts_with("image/webp");
-    let (raw_name, bytes, meta) = if is_raw_image {
+    let (raw_name, bytes, input) = if is_raw_image {
         let name = query_param(query, "filename").unwrap_or("card-art.png").to_string();
-        (name, req.body.clone(), json!({ "source": "upload" }))
+        let meta = crate::assets::AssetMetadataInput {
+            source: Some("upload".to_string()),
+            ..Default::default()
+        };
+        (name, req.body.clone(), meta)
     } else {
         let body: Value = match serde_json::from_slice(&req.body) {
             Ok(v) => v,
@@ -2610,29 +2545,26 @@ fn handle_assets_upload(stream: &mut TcpStream, shared: &Shared, req: &Request, 
             .or_else(|| body.get("base64"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let decoded = match decode_base64(b64) {
+        let decoded = match crate::assets::decode_base64(b64) {
             Ok(d) => d,
             Err(e) => {
                 respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
                 return;
             }
         };
-        (raw_name, decoded, body)
+        (raw_name, decoded, crate::assets::AssetMetadataInput::from_json(&body))
     };
 
-    let safe_name = match validate_asset_filename(&raw_name) {
-        Ok(s) => s,
-        Err(e) => {
-            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
-            return;
-        }
-    };
-
-    match store_uploaded_asset(shared, &safe_name, &bytes, meta) {
-        Ok(record) => respond_json(
+    match save_asset_and_bind(shared, &raw_name, &bytes, input) {
+        Ok(meta) => respond_json(
             stream,
             "201 Created",
-            &json!({ "ok": true, "asset": record }),
+            &json!({
+                "ok": true,
+                "file": meta.filename,
+                "url": format!("/api/assets/{}", meta.filename),
+                "asset": meta.to_json(),
+            }),
         ),
         Err(e) => respond_json(
             stream,
@@ -2664,25 +2596,23 @@ fn handle_assets_generate(stream: &mut TcpStream, shared: &Shared, raw_body: &[u
     let element = body
         .get("element")
         .and_then(|v| v.as_str())
-        .unwrap_or("Flame");
+        .unwrap_or("Flame")
+        .to_string();
     let rarity = body
         .get("rarity")
         .and_then(|v| v.as_str())
-        .unwrap_or("Mythic");
+        .unwrap_or("Mythic")
+        .to_string();
     let prompt = body
         .get("prompt")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(String::from)
-        .unwrap_or_else(|| {
-            format!(
-                "High-craft modern anime cel-shaded trading card illustration (3:4 portrait), dynamic heroic pose, bold inked contours, glowing {element} elemental aura, dramatic rim lighting, original stylized homage character '{title}' ({rarity} tier), no text, no watermark, no borders."
-            )
-        });
+        .unwrap_or_else(|| crate::art_knowledge::build_homage_prompt(&title, &element, &rarity, ""));
 
     let cfg = shared.config.lock().unwrap().clone();
-    let provider = body
+    let requested_provider = body
         .get("provider")
         .and_then(|v| v.as_str())
         .or(cfg.image_provider.as_deref())
@@ -2694,8 +2624,8 @@ fn handle_assets_generate(stream: &mut TcpStream, shared: &Shared, raw_body: &[u
         .openai_image_api_key
         .or_else(|| std::env::var("OPENAI_API_KEY").ok().filter(|s| !s.trim().is_empty()));
 
-    let use_gemini = matches!(provider, "gemini" | "auto") && gemini_key.is_some();
-    let use_openai = !use_gemini && matches!(provider, "openai" | "auto") && openai_key.is_some();
+    let use_gemini = matches!(requested_provider, "gemini" | "nano-banana" | "auto") && gemini_key.is_some();
+    let use_openai = !use_gemini && matches!(requested_provider, "openai" | "openai-image" | "auto") && openai_key.is_some();
 
     if !use_gemini && !use_openai {
         respond_json(
@@ -2711,84 +2641,86 @@ fn handle_assets_generate(stream: &mut TcpStream, shared: &Shared, raw_body: &[u
         return;
     }
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(60))
-        .build();
-    let img_res: Result<(Vec<u8>, &'static str), String> = if use_gemini {
-        let key = gemini_key.unwrap();
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key={key}"
-        );
-        let req_body = json!({
-            "contents": [{ "parts": [{ "text": prompt }] }],
-            "generationConfig": { "responseModalities": ["IMAGE"] }
-        });
-        match agent.post(&url).send_json(req_body) {
-            Ok(resp) => match resp.into_json::<Value>() {
-                Ok(val) => {
-                    let b64 = val
-                        .pointer("/candidates/0/content/parts")
-                        .and_then(|p| p.as_array())
-                        .and_then(|arr| {
-                            arr.iter().find_map(|item| {
-                                item.pointer("/inlineData/data")
-                                    .or_else(|| item.pointer("/inline_data/data"))
-                                    .and_then(|d| d.as_str())
-                            })
-                        });
-                    match b64 {
-                        Some(s) => decode_base64(s).map(|b| (b, "gemini-api")),
-                        None => Err("Gemini Image API returned no inline image bytes".to_string()),
-                    }
-                }
-                Err(e) => Err(format!("could not parse Gemini response: {e}")),
-            },
-            Err(e) => Err(format!("Gemini Image API request failed: {e}")),
+    let raw_model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let normalized_model = raw_model.and_then(|m| {
+        if m.starts_with("gemini-nano-banana") {
+            None
+        } else {
+            Some(m.to_string())
         }
-    } else {
-        let key = openai_key.unwrap();
-        let req_body = json!({
-            "model": "gpt-image-1",
-            "prompt": prompt,
-            "size": "1024x1536",
-            "response_format": "b64_json"
-        });
-        match agent
-            .post("https://api.openai.com/v1/images/generations")
-            .set("Authorization", &format!("Bearer {key}"))
-            .send_json(req_body)
-        {
-            Ok(resp) => match resp.into_json::<Value>() {
-                Ok(val) => match val.pointer("/data/0/b64_json").and_then(|d| d.as_str()) {
-                    Some(s) => decode_base64(s).map(|b| (b, "openai-image")),
-                    None => Err("OpenAI Images API returned no b64_json data".to_string()),
-                },
-                Err(e) => Err(format!("could not parse OpenAI Images response: {e}")),
-            },
-            Err(e) => Err(format!("OpenAI Images API request failed: {e}")),
-        }
+    });
+
+    let req = crate::assets::GenerateImageRequest {
+        provider: if use_gemini { "gemini" } else { "openai" }.to_string(),
+        card_id: body
+            .get("card_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&title)
+            .to_string(),
+        title,
+        rarity,
+        element,
+        atk: body.get("atk").and_then(|v| v.as_i64()).unwrap_or(420),
+        hp: body.get("hp").and_then(|v| v.as_i64()).unwrap_or(1480),
+        speed: body.get("speed").and_then(|v| v.as_i64()).unwrap_or(92),
+        passive: body
+            .get("passive")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        ultimate: body
+            .get("ultimate")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        prompt: prompt.clone(),
+        model: normalized_model,
+        api_key: if use_gemini { gemini_key } else { openai_key },
+        base_url: None,
     };
 
-    match img_res {
-        Ok((bytes, source_tag)) => {
-            let ext = detect_image_mime(&bytes).map(|(_, e)| e).unwrap_or("png");
-            let slug = slugify_filename(&title);
-            let safe_name = format!("{slug}.{ext}");
-            let mut meta = body;
-            meta["source"] = json!(source_tag);
-            meta["prompt"] = json!(prompt);
-            match store_uploaded_asset(shared, &safe_name, &bytes, meta) {
-                Ok(record) => respond_json(
-                    stream,
-                    "201 Created",
-                    &json!({ "ok": true, "asset": record }),
-                ),
-                Err(e) => respond_json(
-                    stream,
-                    "502 Bad Gateway",
-                    &json!({ "ok": false, "error": e }),
-                ),
-            }
+    let Some(dir) = &shared.data_dir else {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({
+                "ok": false,
+                "error": "image generation requires a persistent OpenRO data directory",
+                "homage_prompt": prompt,
+            }),
+        );
+        return;
+    };
+
+    let mgr = crate::assets::AssetManager::open(dir);
+    match mgr.generate_image(&req) {
+        Ok(meta) => {
+            bind_stored_assets_to_agent(shared);
+            let chat_id = shared.active_chat.lock().unwrap().clone();
+            shared.events.publish(
+                "asset",
+                chat_id,
+                "done",
+                "Card Art Generated",
+                format!("Generated {} ({} bytes)", meta.filename, meta.bytes),
+                None,
+                Some(format!("/api/assets/{}", meta.filename)),
+                100,
+            );
+            respond_json(
+                stream,
+                "201 Created",
+                &json!({
+                    "ok": true,
+                    "file": meta.filename,
+                    "url": format!("/api/assets/{}", meta.filename),
+                    "asset": meta.to_json(),
+                }),
+            );
         }
         Err(e) => respond_json(
             stream,
