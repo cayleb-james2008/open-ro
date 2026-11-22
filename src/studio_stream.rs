@@ -640,4 +640,111 @@ impl StudioStreamHub {
             }
         }
     }
+
+    /// Serve a live `multipart/x-mixed-replace` MJPEG/MPNG viewport stream
+    /// (`GET /api/studio/stream.mjpg`) suitable for native `<img src="/api/studio/stream.mjpg">`.
+    /// Emits the current frame immediately when present, pushes every subsequent
+    /// `store_frame` update via `Condvar` with zero busy-spinning, includes
+    /// `X-Studio-Frame-Seq` on the response and each part, and shares the strict
+    /// `MAX_STUDIO_SSE_CLIENTS` concurrency cap.
+    pub fn serve_mjpeg(
+        self: &Arc<Self>,
+        mut stream: TcpStream,
+        max_frames: Option<usize>,
+    ) -> Result<(), String> {
+        let _sub = self.subscribe(0)?;
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+        let _ = stream.set_nodelay(true);
+
+        let initial_seq = self.latest_frame_seq();
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Content-Type: multipart/x-mixed-replace; boundary=openro-frame\r\n\
+             Cache-Control: no-store, no-cache, must-revalidate\r\n\
+             Pragma: no-cache\r\n\
+             X-Studio-Frame-Seq: {initial_seq}\r\n\
+             X-Accel-Buffering: no\r\n\
+             Connection: close\r\n\r\n"
+        );
+        if stream.write_all(headers.as_bytes()).is_err() || stream.flush().is_err() {
+            return Ok(());
+        }
+
+        let write_part = |s: &mut TcpStream, frame: &StudioFrame| -> bool {
+            let part_head = format!(
+                "--openro-frame\r\n\
+                 Content-Type: {}\r\n\
+                 Content-Length: {}\r\n\
+                 X-Studio-Frame-Seq: {}\r\n\r\n",
+                frame.mime,
+                frame.bytes.len(),
+                frame.seq
+            );
+            s.write_all(part_head.as_bytes()).is_ok()
+                && s.write_all(&frame.bytes).is_ok()
+                && s.write_all(b"\r\n").is_ok()
+                && s.flush().is_ok()
+        };
+
+        let mut last_seq = 0u64;
+        let mut sent = 0usize;
+        if let Some(frame) = self.latest_frame() {
+            if !write_part(&mut stream, &frame) {
+                return Ok(());
+            }
+            last_seq = frame.seq;
+            sent += 1;
+            if max_frames.is_some_and(|m| sent >= m) {
+                let _ = stream.write_all(b"--openro-frame--\r\n");
+                let _ = stream.flush();
+                return Ok(());
+            }
+        }
+
+        let mut idle_waits = 0usize;
+        loop {
+            let next_frame = {
+                let mut st = self.state.lock().unwrap();
+                if st.closed {
+                    return Ok(());
+                }
+                let has_newer = st.latest_frame.as_ref().is_some_and(|f| f.seq > last_seq);
+                if !has_newer {
+                    let (guard, _) = self
+                        .notify
+                        .wait_timeout(st, Duration::from_secs(2))
+                        .unwrap();
+                    st = guard;
+                }
+                if st.closed {
+                    return Ok(());
+                }
+                st.latest_frame
+                    .as_ref()
+                    .filter(|f| f.seq > last_seq)
+                    .cloned()
+            };
+
+            if let Some(frame) = next_frame {
+                idle_waits = 0;
+                if !write_part(&mut stream, &frame) {
+                    return Ok(());
+                }
+                last_seq = frame.seq;
+                sent += 1;
+                if max_frames.is_some_and(|m| sent >= m) {
+                    let _ = stream.write_all(b"--openro-frame--\r\n");
+                    let _ = stream.flush();
+                    return Ok(());
+                }
+            } else {
+                idle_waits += 1;
+                if max_frames.is_some() && idle_waits >= 2 {
+                    let _ = stream.write_all(b"--openro-frame--\r\n");
+                    let _ = stream.flush();
+                    return Ok(());
+                }
+            }
+        }
+    }
 }
