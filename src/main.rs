@@ -34,14 +34,39 @@ fn env_flag(key: &str) -> bool {
 }
 
 fn main() {
-    if std::env::args()
-        .nth(1)
-        .as_deref()
-        .is_some_and(|a| a == "--version" || a == "-V")
+    let cli_args: Vec<String> = std::env::args().collect();
+    if cli_args
+        .iter()
+        .skip(1)
+        .any(|a| a == "--version" || a == "-V")
     {
         println!("openro-rs {}", env!("CARGO_PKG_VERSION"));
         return;
     }
+    if cli_args.iter().skip(1).any(|a| a == "--help" || a == "-h") {
+        println!(
+            "openro-rs {} — Roblox Game Builder Studio Workbench\n\n\
+             Usage: openro-rs [OPTIONS]\n\n\
+             Options:\n  \
+             --port <PORT>     Listen port (default: $OPENRO_PORT or 8077)\n  \
+             --no-open         Start server without opening a desktop app window\n  \
+             --headless        Alias for --no-open (headless/CI mode)\n  \
+             -V, --version     Print version and exit\n  \
+             -h, --help        Print help and exit",
+            env!("CARGO_PKG_VERSION")
+        );
+        return;
+    }
+
+    let cli_port: Option<u16> = cli_args
+        .windows(2)
+        .find(|w| w[0] == "--port")
+        .and_then(|w| w[1].parse().ok())
+        .or_else(|| {
+            cli_args
+                .iter()
+                .find_map(|a| a.strip_prefix("--port=").and_then(|v| v.parse().ok()))
+        });
 
     let data_dir = env_nonempty("OPENRO_DATA_DIR")
         .map(std::path::PathBuf::from)
@@ -156,20 +181,31 @@ fn main() {
         other => Agent::with_backend(model, other),
     };
 
-    let port: u16 = std::env::var("OPENRO_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
+    let port: u16 = cli_port
+        .or_else(|| std::env::var("OPENRO_PORT").ok().and_then(|p| p.parse().ok()))
         .unwrap_or(8077);
     let listener = TcpListener::bind(("127.0.0.1", port))
         .unwrap_or_else(|e| panic!("bind 127.0.0.1:{port}: {e}"));
-    eprintln!("openro: serving http://127.0.0.1:{port}");
+    let url = format!("http://127.0.0.1:{port}");
+    eprintln!("openro: serving {url}");
 
     // Change sets persist next to the chats, so a restart does not
     // silently orphan every revert.
     agent.set_changes_file(data_dir.join("changes.json"));
-    let shared = Shared::with_data_dir(Some(agent), game_name, data_dir);
+    let shared = Shared::with_data_dir(Some(agent), game_name, data_dir.clone());
     // Only the real binary checks GitHub in the background; tests never do.
     shared.updater.start_background();
+
+    // Launch chromeless standalone desktop app window on Linux/Windows/macOS
+    // unless --no-open / --headless / OPENRO_NO_OPEN=1 / CI / headless display.
+    let desktop_outcome = openro_rs::desktop::launch_desktop_window(&url, &data_dir, &cli_args);
+    if desktop_outcome.launched {
+        eprintln!(
+            "openro: launched desktop window ({})",
+            desktop_outcome.reason
+        );
+    }
+
     if let Err(e) = serve(listener, shared) {
         eprintln!("openro: server error: {e}");
         std::process::exit(1);

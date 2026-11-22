@@ -284,6 +284,8 @@ pub struct Agent {
     /// Active build correlation id & chat id for SSE phase updates.
     active_build_id: String,
     active_build_chat: String,
+    /// Dynamic skill prompt block injected from installed Tool & Skill Library packs.
+    library_prompt: String,
 }
 
 impl Agent {
@@ -317,6 +319,18 @@ impl Agent {
             studio_stream: None,
             active_build_id: String::new(),
             active_build_chat: String::new(),
+            library_prompt: String::new(),
+        }
+    }
+
+    pub fn set_library_prompt(&mut self, prompt: String) {
+        self.library_prompt = prompt;
+    }
+
+    pub fn studio_id(&self) -> Option<String> {
+        match &self.studio {
+            Some(PlaceBackend::Mcp(mcp)) => mcp.studio_id().map(String::from),
+            _ => None,
         }
     }
 
@@ -1077,12 +1091,16 @@ impl Agent {
                     return Ok((val, fseq));
                 }
 
-                let raw_text = match self.studio.as_mut() {
-                    Some(PlaceBackend::Mcp(mcp)) => mcp.call_tool(tool, args_obj.clone())?,
+                let parsed = match self.studio.as_mut() {
+                    Some(PlaceBackend::Mcp(mcp)) => match tool {
+                        "user_mouse_input" => crate::studio_embed::forward_mouse(mcp, &args_obj)?,
+                        "user_keyboard_input" => {
+                            crate::studio_embed::forward_keyboard(mcp, &args_obj)?
+                        }
+                        _ => mcp.call_official_tool(tool, args_obj.clone())?,
+                    },
                     _ => return Err("Studio not connected".to_string()),
                 };
-                let parsed = serde_json::from_str::<Value>(&raw_text)
-                    .unwrap_or_else(|_| json!({ "text": raw_text }));
 
                 let captures_frame = matches!(
                     tool,
@@ -2068,8 +2086,13 @@ impl Agent {
         }
         self.generated.clear();
         self.last_skill = None;
+        let full_system = if self.library_prompt.trim().is_empty() {
+            system_prompt()
+        } else {
+            format!("{}\n\n{}", system_prompt(), self.library_prompt)
+        };
         let mut messages = vec![
-            json!({ "role": "system", "content": system_prompt() }),
+            json!({ "role": "system", "content": full_system }),
             json!({ "role": "user", "content": ask }),
         ];
         let mut summary: Option<String> = None;
