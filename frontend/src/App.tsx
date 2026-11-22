@@ -10,11 +10,11 @@ import {
   type MouseEvent,
 } from "react";
 import { MotionConfig } from "motion/react";
+import * as Popover from "@radix-ui/react-popover";
 import { Toaster, toast } from "sonner";
 import { Drawer } from "vaul";
 import {
   Blocks,
-  Box,
   Command,
   Download,
   ExternalLink,
@@ -24,19 +24,17 @@ import {
   FolderKanban,
   Ship as ShipIcon,
   Users,
-  History,
   Menu,
   MessageSquare,
   Monitor,
+  MoreHorizontal,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
   Play,
-  Plug,
   Plus,
-  RefreshCw,
   Search,
   SlidersHorizontal,
   Sparkles,
@@ -48,7 +46,6 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/in
 import { Kbd } from "@/components/ui/kbd";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { AnimatedBackground } from "@/components/ui/animated-background";
-import { SlidingNumber } from "@/components/ui/sliding-number";
 import {
   MorphingDialog,
   MorphingDialogClose,
@@ -124,7 +121,17 @@ import { SettingsDialog } from "./app/SettingsDialog";
 import { useShip } from "./app/ship/useShip";
 import { ProjectsRail } from "./app/ship/ProjectsRail";
 import { ShipPanel } from "./app/ship/ShipPanel";
+import { call as apiCall } from "./app/ship/api";
+import { StartupWizard, ONBOARDING_KEY } from "./app/StartupWizard";
+import { SwarmSidebarFeed } from "./app/SwarmSidebarFeed";
 import { TeamworkPanel } from "./app/teamwork/TeamworkPanel";
+import {
+  createRun as createSwarmRun,
+  getRun as getSwarmRun,
+  postToBoard as postSwarmBoard,
+  stopRun as stopSwarmRun,
+  type TeamworkSnapshot,
+} from "./app/teamwork/api";
 import { AgentRunsPanel } from "./app/AgentRunsPanel";
 import { LeftExplorerTree, StudioChip } from "./app/Shelf";
 import { SnapshotsDialog } from "./app/SnapshotsDialog";
@@ -266,9 +273,24 @@ export function App() {
       return false;
     }
   });
+  const [wizardOpen, setWizardOpen] = useState(() => {
+    if (isBrowserEngine) return false;
+    try {
+      const qs = new URLSearchParams(window.location.search);
+      if (qs.get("settings") === "1") return false;
+      return localStorage.getItem(ONBOARDING_KEY) !== "1";
+    } catch {
+      return false;
+    }
+  });
 
   // RoPilot Copilot Modes, Proposals & Diffs
-  const [composerMode, setComposerMode] = useState<ComposerMode>("agent");
+  const [composerMode, setComposerMode] = useState<ComposerMode>(() =>
+    isBrowserEngine ? "agent" : "swarm",
+  );
+  const [activeSwarmId, setActiveSwarmId] = useState<string | null>(null);
+  const [activeSwarmSnap, setActiveSwarmSnap] = useState<TeamworkSnapshot | null>(null);
+  const [runsRefreshSignal, setRunsRefreshSignal] = useState(0);
   const [reviewDiffs, setReviewDiffs] = useState(false);
   const [reasoning, setReasoning] = useState<ReasoningLevel>("medium");
   const [contextPaths, setContextPaths] = useState<string[]>([]);
@@ -1271,7 +1293,96 @@ export function App() {
 
   const send = (e: FormEvent) => {
     e.preventDefault();
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    if (composerMode === "swarm" && !isBrowserEngine) {
+      void sendSwarmPrompt(trimmed);
+      return;
+    }
     void submitPromptText(text, true);
+  };
+
+  const sendSwarmPrompt = async (goal: string) => {
+    setText("");
+    if (activeSwarmId && activeSwarmSnap?.run.status === "running") {
+      const posted = await postSwarmBoard(activeSwarmId, `@coordinator ${goal}`);
+      if (!posted.ok) {
+        toast.error(posted.error || "Could not send message to Swarm.");
+        setText(goal);
+        return;
+      }
+      const detail = await getSwarmRun(activeSwarmId);
+      if (detail.ok && detail.run) {
+        setActiveSwarmSnap({
+          run: detail.run,
+          roster: detail.roster ?? [],
+          tasks: detail.tasks ?? [],
+          claims: detail.claims ?? [],
+          board: detail.board ?? [],
+        });
+      }
+      inputRef.current?.focus();
+      return;
+    }
+    const created = await createSwarmRun({
+      goal,
+      ...(ship.activeId ? { project_id: ship.activeId } : {}),
+    });
+    if (!created.ok || !created.run?.id) {
+      toast.error(created.error || "Could not start Swarm.");
+      setText(goal);
+      return;
+    }
+    const runId = created.run.id;
+    setActiveSwarmId(runId);
+    const detail = await getSwarmRun(runId);
+    if (detail.ok && detail.run) {
+      setActiveSwarmSnap({
+        run: detail.run,
+        roster: detail.roster ?? [],
+        tasks: detail.tasks ?? [],
+        claims: detail.claims ?? [],
+        board: detail.board ?? [],
+      });
+    }
+    inputRef.current?.focus();
+  };
+
+  const handleStopSwarm = async () => {
+    if (!activeSwarmId) return;
+    const stopped = await stopSwarmRun(activeSwarmId);
+    if (!stopped.ok) {
+      toast.error(stopped.error || "Could not stop Swarm.");
+      return;
+    }
+    const detail = await getSwarmRun(activeSwarmId);
+    if (detail.ok && detail.run) {
+      setActiveSwarmSnap({
+        run: detail.run,
+        roster: detail.roster ?? [],
+        tasks: detail.tasks ?? [],
+        claims: detail.claims ?? [],
+        board: detail.board ?? [],
+      });
+    }
+  };
+
+  const handleQueuePlan = async (goal: string) => {
+    const msg = goal.trim();
+    if (!msg) return;
+    const res = await apiCall<{ run_id?: string }>("/api/runs", {
+      message: msg,
+      chat_id: activeId || undefined,
+      mode: "plan_execute",
+      project_id: ship.activeId || undefined,
+    });
+    if (!res.ok) {
+      toast.error(res.error || "Could not queue background plan.");
+      return;
+    }
+    setText("");
+    setRunsRefreshSignal((n) => n + 1);
+    toast.success("Queued background plan");
   };
 
   const undoNow = async () => {
@@ -1977,6 +2088,39 @@ export function App() {
     }
   };
 
+  const handleAttachEmbed = async () => {
+    if (!v090Ready) {
+      toast.error("Connecting live Studio requires OpenRO desktop server.");
+      return;
+    }
+    setEmbedStatus((prev) => ({ ...prev, state: "launching", error: null }));
+    try {
+      const res = await apiCall<Record<string, unknown>>("/api/studio/embed/attach", {});
+      if (res.httpStatus === 404) {
+        await handleLaunchEmbed();
+        return;
+      }
+      if (res.ok) {
+        const norm = normalizeEmbedStatus(res.status ?? res);
+        setEmbedStatus(norm);
+        if (norm.mcp_connected || norm.phase === "connected") {
+          setStudioOk(true);
+          setStudioMode("live_mcp");
+          setWorkspaceMode("studio_mcp");
+          toast.success("Connected to Roblox Studio");
+        } else if (norm.phase === "awaiting_signin") {
+          toast("Sign in inside Studio to connect");
+        }
+        void refreshStudioActions(true);
+        void refreshPlace();
+        return;
+      }
+      await handleLaunchEmbed();
+    } catch {
+      await handleLaunchEmbed();
+    }
+  };
+
   const handleLaunchEmbed = async (command?: string) => {
     if (!v090Ready) {
       toast.error("Embedded Roblox Studio requires OpenRO desktop server.");
@@ -2282,8 +2426,6 @@ export function App() {
         <ProjectsRail ship={ship} studioOk={studioOk} />
       ) : leftDockTab === "explorer" ? (
         <LeftExplorerTree
-          gameName={shell.gameName}
-          builtTitles={builtTitles}
           place={place}
           error={place === "error"}
           selectedPath={selectedPath}
@@ -2292,16 +2434,11 @@ export function App() {
           studioSelection={pluginStatus.selection}
           buildDiff={buildDiff}
           serverDiagnostics={serverDiagnostics}
-          snapshotCount={snapshots.length}
           syncing={syncingPlace}
           onSelectPart={handleSelectPartAndInspect}
           onOpenScript={(p) => handleOpenScriptInCodeDiff(p)}
           onAttachContext={handleToggleContextPath}
           onRefreshPlace={() => void refreshPlace()}
-          onOpenSnapshots={() => {
-            setMenuOpen(false);
-            setSnapshotsOpen(true);
-          }}
         />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-2">
@@ -2384,7 +2521,7 @@ export function App() {
                       >
                         <span className="min-w-0 flex-1 truncate text-xs">{c.title || "New chat"}</span>
                         {inflight[c.id] && (
-                          <Pill className="bg-surface px-1.5 py-0 font-mono text-xs text-ink">working</Pill>
+                          <Pill className="bg-surface px-1.5 py-0 text-xs text-ink">working</Pill>
                         )}
                       </Button>
                     </li>
@@ -2393,50 +2530,11 @@ export function App() {
               </AnimatedBackground>
             )}
           </div>
-
-          <div className="flex items-center gap-1.5 border-t border-hairline pt-2">
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() => {
-                setMenuOpen(false);
-                setSnapshotsOpen(true);
-              }}
-              className="flex-1 justify-center bg-board/50 max-md:min-h-11"
-            >
-              <History className="size-3.5" strokeWidth={1.5} aria-hidden />
-              <span>Snapshots</span>
-            </Button>
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() => {
-                setMenuOpen(false);
-                setPaletteOpen(true);
-              }}
-              className="justify-center bg-board/50 max-md:min-h-11"
-            >
-              <Kbd className="px-1 font-mono text-xs">⌘K</Kbd>
-            </Button>
-          </div>
         </div>
       )}
 
-      {/* Compact Left Dock Bottom Footer: Connection, Tool Library, Studio Plugin, Settings */}
+      {/* Slim 2-Row Left Dock Footer */}
       <div className="flex flex-none flex-col gap-1.5 border-t border-hairline pt-2">
-        <div
-          data-answers="2"
-          className="flex items-center justify-between gap-1.5 rounded-card border border-hairline bg-board/55 px-2 py-1.5"
-        >
-          <StudioChip connected={studioOk} workspaceMode={workspaceMode} />
-          {!studioOk && (
-            <Button variant="outline" size="xs" onClick={() => void checkStudio()} className="bg-surface max-md:min-h-11">
-              <RefreshCw className="size-3" strokeWidth={1.5} aria-hidden />
-              Check
-            </Button>
-          )}
-        </div>
-
         <div className="grid grid-cols-2 gap-1.5">
           <Button
             variant="outline"
@@ -2447,84 +2545,49 @@ export function App() {
               void refreshLibrary();
               void refreshMarketTaste();
             }}
-            aria-label="Open Tool and Skill Library"
-            className="justify-between bg-board/50 px-2 font-normal text-ink hover:bg-board max-md:min-h-11"
+            aria-label="Open Tool Library"
+            className="justify-start gap-1.5 bg-board/50 px-2 font-normal text-ink hover:bg-board max-md:min-h-11"
           >
-            <span className="inline-flex min-w-0 items-center gap-1">
-              <Package className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
-              <span className="truncate">Tools</span>
-            </span>
-            <span className="font-mono text-xs tabular-nums text-ink-3">
-              {librarySnap.packs.filter((p) => p.installed).length}/{librarySnap.packs.length}
-            </span>
+            <Package className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
+            <span className="truncate">Tools</span>
           </Button>
-
           <Button
             variant="outline"
             size="xs"
+            aria-label="Settings"
             onClick={() => {
               setMenuOpen(false);
-              setPluginDialogOpen(true);
-              void refreshPluginStatus(true);
+              setSettingsOpen(true);
             }}
-            aria-label="Open Roblox Studio Companion Plugin"
-            className="justify-between bg-board/50 px-2 font-normal text-ink hover:bg-board max-md:min-h-11"
+            className="justify-start gap-1.5 bg-board/60 px-2 font-medium text-ink hover:bg-board max-md:min-h-11"
           >
-            <span className="inline-flex min-w-0 items-center gap-1">
-              <Plug className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
-              <span className="truncate">Plugin</span>
-            </span>
-            <span
-              className={`font-mono text-xs ${
-                pluginStatus.connected ? "text-pill-active-fg" : "text-ink-3"
-              }`}
-            >
-              {pluginStatus.connected ? "Live" : "Setup"}
-            </span>
+            <SlidersHorizontal className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
+            <span className="truncate">Settings</span>
           </Button>
         </div>
 
-        <Button
-          variant="outline"
-          size="xs"
-          aria-label="Settings"
-          onClick={() => {
-            setMenuOpen(false);
-            setSettingsOpen(true);
-          }}
-          className="w-full justify-between bg-board/60 px-2 font-medium text-ink hover:bg-board max-md:min-h-11"
-        >
-          <span className="inline-flex min-w-0 items-center gap-1.5">
-            <SlidersHorizontal className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
-            <span className="truncate">Settings</span>
-          </span>
-          <span className="truncate font-mono text-xs text-ink-3">
-            {activeModelLabel ||
-              (workspaceMode === "studio_mcp"
-                ? "Studio MCP"
-                : workspaceMode === "plugin"
-                  ? "Plugin"
-                  : workspaceMode === "local_place"
-                    ? "Local"
-                    : workspaceMode === "browser_place"
-                      ? "Browser"
-                      : "Offline")}
-          </span>
-        </Button>
-
         <div className="flex items-center justify-between gap-2 px-0.5 text-xs text-ink-3">
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={() => {
+              setMenuOpen(false);
+              setWizardOpen(true);
+            }}
+            aria-label="Studio connection setup"
+            className="h-auto p-0 hover:bg-transparent"
+          >
+            <StudioChip connected={studioOk} workspaceMode={workspaceMode} />
+          </Button>
           <a
             href={RELEASES_URL + (version || "0.10.0")}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex min-h-7 items-center gap-1 rounded-sm font-mono text-xs text-ink-2 outline-none hover:text-ink hover:underline max-md:min-h-11"
+            className="inline-flex min-h-7 items-center gap-1 rounded-sm text-xs text-ink-2 outline-none hover:text-ink hover:underline active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-50 max-md:min-h-11"
           >
-            <span>OpenRO v{version || "0.10.0"}</span>
+            <span>OpenRO v<span className="font-mono">{version || "0.10.0"}</span></span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
-          <span className="truncate text-right text-xs">
-            {update.snap?.available ? `${update.snap.latest} avail` : "Studio IDE"}
-          </span>
         </div>
       </div>
     </nav>
@@ -2554,23 +2617,25 @@ export function App() {
 
           <SegmentedControl aria-label="Center Studio workspace tab" size="sm" className="max-w-full flex-wrap">
             <SegmentedControlItem
-              data-checked={centerTab === "embedded-studio" ? "" : undefined}
-              aria-pressed={centerTab === "embedded-studio"}
-              onClick={() => setCenterTab("embedded-studio")}
+              data-checked={centerTab === "embedded-studio" || centerTab === "studio-3d" ? "" : undefined}
+              aria-pressed={centerTab === "embedded-studio" || centerTab === "studio-3d"}
+              onClick={() => setCenterTab(isBrowserEngine ? "studio-3d" : "embedded-studio")}
               className="gap-1 max-md:!h-11 max-md:px-2"
             >
               <Monitor className="size-3.5" strokeWidth={1.5} aria-hidden />
-              <span>Embedded Studio</span>
+              <span>Studio</span>
             </SegmentedControlItem>
-            <SegmentedControlItem
-              data-checked={centerTab === "studio-3d" ? "" : undefined}
-              aria-pressed={centerTab === "studio-3d"}
-              onClick={() => setCenterTab("studio-3d")}
-              className="gap-1 max-md:!h-11 max-md:px-2"
-            >
-              <Box className="size-3.5" strokeWidth={1.5} aria-hidden />
-              <span>Studio 3D</span>
-            </SegmentedControlItem>
+            {!isBrowserEngine && (
+              <SegmentedControlItem
+                data-checked={centerTab === "teamwork" ? "" : undefined}
+                aria-pressed={centerTab === "teamwork"}
+                onClick={() => setCenterTab("teamwork")}
+                className="gap-1 max-md:!h-11 max-md:px-2"
+              >
+                <Users className="size-3.5" strokeWidth={1.5} aria-hidden />
+                <span>Swarm</span>
+              </SegmentedControlItem>
+            )}
             <SegmentedControlItem
               data-checked={centerTab === "code-diff" ? "" : undefined}
               aria-pressed={centerTab === "code-diff"}
@@ -2578,7 +2643,7 @@ export function App() {
               className="gap-1 max-md:!h-11 max-md:px-2"
             >
               <FileDiff className="size-3.5" strokeWidth={1.5} aria-hidden />
-              <span>Code &amp; Diff</span>
+              <span>Code</span>
               {pendingProposalCount > 0 && (
                 <span className="rounded-chip bg-blue px-1.5 py-0 font-mono text-xs tabular-nums text-blue-fg">
                   {pendingProposalCount}
@@ -2596,17 +2661,6 @@ export function App() {
                 <span>Ship</span>
               </SegmentedControlItem>
             )}
-            {!isBrowserEngine && (
-              <SegmentedControlItem
-                data-checked={centerTab === "teamwork" ? "" : undefined}
-                aria-pressed={centerTab === "teamwork"}
-                onClick={() => setCenterTab("teamwork")}
-                className="gap-1 max-md:!h-11 max-md:px-2"
-              >
-                <Users className="size-3.5" strokeWidth={1.5} aria-hidden />
-                <span>Teamwork</span>
-              </SegmentedControlItem>
-            )}
           </SegmentedControl>
         </div>
 
@@ -2619,7 +2673,7 @@ export function App() {
               data-top-quota-issue
               className="border-hairline bg-pill-warn-bg text-pill-warn-fg hover:bg-pill-warn-bg max-md:min-h-11"
             >
-              <span>{antigravityIssue.resets_in ? `Quota · resets in ${antigravityIssue.resets_in}` : antigravityIssue.message}</span>
+              <span>{antigravityIssue.resets_in ? `Quota (${antigravityIssue.resets_in})` : antigravityIssue.message}</span>
             </Button>
           )}
           <Button
@@ -2628,57 +2682,71 @@ export function App() {
             disabled={totalPieces === 0}
             onClick={() => void handleRunStudioPlaytest()}
             aria-label="Run Studio playtest"
-            title="Run Studio Playtest"
-            className="bg-surface max-md:min-h-11"
+            title="Play"
+            className="bg-surface max-md:min-h-11 max-md:min-w-11"
           >
             <Play className="size-3.5" strokeWidth={1.5} aria-hidden />
-            <span className="hidden 2xl:inline">Playtest</span>
+            <span className="hidden sm:inline">Play</span>
           </Button>
-          <Button
-            variant="outline"
-            size="xs"
-            disabled={totalPieces === 0}
-            onClick={() => void handleExportRbxlx()}
-            aria-label="Export .rbxlx"
-            title="Export game.rbxlx"
-            className="bg-surface max-md:min-h-11"
-          >
-            <Download className="size-3.5" strokeWidth={1.5} aria-hidden />
-            <span className="hidden sm:inline">.rbxlx</span>
-          </Button>
-          <Button
-            variant="outline"
-            size="xs"
-            disabled={totalPieces === 0}
-            onClick={() => void handleDownloadShipPack()}
-            aria-label="Download Studio and Rojo Ship Pack (.zip)"
-            title="Download Rojo Ship Pack (.zip)"
-            className="bg-surface max-md:min-h-11"
-          >
-            <FolderArchive className="size-3.5" strokeWidth={1.5} aria-hidden />
-            <span className="hidden 2xl:inline">Rojo .zip</span>
-          </Button>
-          <Button
-            variant="outline"
-            size="xs"
-            onClick={() => fileInputRef.current?.click()}
-            aria-label="Import .rbxlx"
-            title="Import .rbxlx XML"
-            className="bg-surface max-md:min-h-11"
-          >
-            <Upload className="size-3.5" strokeWidth={1.5} aria-hidden />
-            <span className="hidden 2xl:inline">Import</span>
-          </Button>
+          <Popover.Root>
+            <Popover.Trigger asChild>
+              <Button
+                variant="outline"
+                size="icon-sm"
+                aria-label="Project export and import menu"
+                className="shrink-0 bg-surface max-md:size-11"
+              >
+                <MoreHorizontal className="size-4" strokeWidth={1.5} aria-hidden />
+              </Button>
+            </Popover.Trigger>
+            <Popover.Portal>
+              <Popover.Content
+                align="end"
+                sideOffset={6}
+                className="z-50 flex w-44 flex-col gap-1 rounded-card border border-hairline bg-surface p-1.5 shadow-lift"
+              >
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={totalPieces === 0}
+                  onClick={() => void handleExportRbxlx()}
+                  className="w-full justify-start gap-2"
+                >
+                  <Download className="size-3.5" strokeWidth={1.5} aria-hidden />
+                  <span>Export .rbxlx</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={totalPieces === 0}
+                  onClick={() => void handleDownloadShipPack()}
+                  className="w-full justify-start gap-2"
+                >
+                  <FolderArchive className="size-3.5" strokeWidth={1.5} aria-hidden />
+                  <span>Rojo .zip</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full justify-start gap-2"
+                >
+                  <Upload className="size-3.5" strokeWidth={1.5} aria-hidden />
+                  <span>Import .rbxlx</span>
+                </Button>
+              </Popover.Content>
+            </Popover.Portal>
+          </Popover.Root>
           {!narrow && rightDockCollapsed && (
             <Button
               variant="outline"
               size="xs"
               onClick={() => setRightDockCollapsed(false)}
-              aria-label="Expand Copilot panel"
+              aria-label="Expand Agent sidebar"
               className="bg-surface"
             >
               <PanelRightOpen className="size-3.5" strokeWidth={1.5} aria-hidden />
-              <span>Copilot</span>
+              <span>Agent</span>
             </Button>
           )}
         </div>
@@ -2701,6 +2769,7 @@ export function App() {
             frameSeq={frameSeq}
             actions={studioActions}
             onLaunchEmbed={handleLaunchEmbed}
+            onAttachEmbed={handleAttachEmbed}
             onStopEmbed={handleStopEmbed}
             onRefreshEmbedStatus={() => void refreshEmbedStatus(true)}
             onCaptureFrame={handleCaptureStudioFrame}
@@ -2709,6 +2778,7 @@ export function App() {
             onSendMouseInput={handleSendMouseInput}
             onSendKeyboardInput={handleSendKeyboardInput}
             onInvokeStudioTool={handleInvokeStudioTool}
+            onOpen3DPreview={() => setCenterTab("studio-3d")}
           />
         ) : centerTab === "studio-3d" ? (
           <StudioViewport3D
@@ -2785,14 +2855,14 @@ export function App() {
     </main>
   );
 
-  // Right Docked RoPilot Copilot Panel
+  // Right Docked Prompt-First Agent Sidebar
   const rightCopilot = (
     <aside
-      aria-label="OpenRO Copilot"
+      aria-label="OpenRO Agent"
       data-ropilot-copilot
       className="flex h-full min-h-0 flex-col bg-surface text-ink"
     >
-      {/* Copilot Header */}
+      {/* Agent Header */}
       <div className="flex min-h-11 flex-none items-center justify-between gap-2 border-b border-hairline px-3 py-1.5">
         <div className="flex min-w-0 items-center gap-2">
           <Sparkles className="size-4 shrink-0 text-blue" strokeWidth={1.5} aria-hidden />
@@ -2800,29 +2870,19 @@ export function App() {
             {activeTitle}
           </h2>
           {pendingProposalCount > 0 && (
-            <Pill className="bg-pill-warn-bg px-1.5 py-0 font-mono text-xs tabular-nums text-pill-warn-fg">
-              {pendingProposalCount} diff
+            <Pill className="bg-pill-warn-bg px-1.5 py-0 text-xs text-pill-warn-fg">
+              <span className="font-mono tabular-nums">{pendingProposalCount}</span> diff
             </Pill>
           )}
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
-          <Button
-            variant="outline"
-            size="xs"
-            onClick={() => setStartersOpen(true)}
-            aria-label="Open Starters and 28 Game Systems"
-            className="bg-board/55 max-md:min-h-11"
-          >
-            <Sparkles className="size-3.5 text-blue" strokeWidth={1.5} aria-hidden />
-            <span>Starters</span>
-          </Button>
           {!narrow && (
             <Button
               variant="ghost"
               size="icon-xs"
               onClick={() => setRightDockCollapsed(true)}
-              aria-label="Collapse Copilot panel"
+              aria-label="Collapse Agent sidebar"
               className="size-7 text-ink-2 hover:text-ink"
             >
               <PanelRightClose className="size-3.5" strokeWidth={1.5} aria-hidden />
@@ -2831,14 +2891,25 @@ export function App() {
         </div>
       </div>
 
-      {/* Scrollable Copilot Feed */}
+      {/* Scrollable Feed */}
       <div
         id="thread"
         ref={threadRef}
         aria-live="polite"
         aria-busy={!chats && !chatsError}
-        className="min-h-0 flex-1 overflow-y-auto p-3"
+        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3"
       >
+        {activeSwarmId && (
+          <SwarmSidebarFeed
+            runId={activeSwarmId}
+            initial={activeSwarmSnap}
+            onOpenFullSwarm={() => {
+              setCenterTab("teamwork");
+              setMobilePane("studio");
+            }}
+          />
+        )}
+
         {threadError ? (
           <div role="alert" className="flex flex-col items-start gap-2.5 rounded-card border border-hairline bg-board p-3.5">
             <strong className="text-sm font-medium text-pill-pro-fg">Could not load conversation.</strong>
@@ -2847,92 +2918,60 @@ export function App() {
               Try again
             </Button>
           </div>
-        ) : !hasConversation && proposals.length === 0 ? (
-          <div className="flex flex-col gap-3">
-            <section
-              aria-label="OpenRO Studio Copilot welcome"
-              className="flex flex-col gap-2.5 rounded-card border border-hairline bg-board/50 p-3.5"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-medium text-ink">Studio Copilot ready</span>
-                <Pill className="bg-surface px-2 py-0 font-mono text-xs text-ink-2">
-                  <SlidingNumber value={totalPieces} /> pieces
-                </Pill>
-              </div>
-              <p className="text-xs leading-relaxed text-ink-2">
-                Describe any Roblox system, mechanic, or UI change below. Attach scripts with <code className="font-mono text-ink">@</code> from Explorer, switch to <strong className="font-medium text-ink">Plan</strong> or toggle <strong className="font-medium text-ink">Review diffs</strong> to inspect unified hunks before applying to Studio, or use <strong className="font-medium text-ink">Ask</strong> for read-only explanations.
-              </p>
-
-              <div className="flex flex-col gap-1.5 pt-1">
-                <Button
-                  variant="outline"
-                  size="xs"
-                  onClick={() => setStartersOpen(true)}
-                  className="w-full justify-between bg-surface text-left max-md:min-h-11"
-                >
-                  <span className="inline-flex items-center gap-1.5 font-medium text-ink">
-                    <Sparkles className="size-3.5 text-blue" strokeWidth={1.5} aria-hidden />
-                    Browse Starters &amp; 28 Game Systems
-                  </span>
-                  <span className="font-mono text-xs text-ink-3">Open</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  onClick={() => {
-                    setText("Build a lava obby with 4 checkpoints, jump pads, and coin leaderstats");
-                    inputRef.current?.focus();
-                  }}
-                  className="w-full justify-start bg-surface text-left font-normal text-ink-2 hover:text-ink max-md:min-h-11"
-                >
-                  <span className="truncate">&ldquo;Build a lava obby with 4 checkpoints &amp; coins&rdquo;</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  onClick={() => {
-                    setComposerMode("plan");
-                    setText("Add a server-authoritative coin shop with a speed coil upgrade");
-                    inputRef.current?.focus();
-                  }}
-                  className="w-full justify-start bg-surface text-left font-normal text-ink-2 hover:text-ink max-md:min-h-11"
-                >
-                  <span className="truncate">&ldquo;Plan a coin shop with reviewable script diffs&rdquo;</span>
-                </Button>
-              </div>
-            </section>
+        ) : !hasConversation && proposals.length === 0 && !activeSwarmId ? (
+          <div className="mt-auto flex flex-wrap gap-1.5" data-prompt-chips>
+            {[
+              { label: "Anime card game", prompt: "Build a polished anime card battle game with packs, equip deck, and NPC fights" },
+              { label: "Obby with coins", prompt: "Build an obby with 4 checkpoints, jump pads, and coin leaderstats" },
+              { label: "Boss arena", prompt: "Build a boss fight arena with melee sword, health bar, and wave phases" },
+            ].map((chip) => (
+              <Button
+                key={chip.label}
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setText(chip.prompt);
+                  inputRef.current?.focus();
+                }}
+                className="bg-board/60 text-xs font-normal text-ink-2 hover:text-ink max-md:min-h-11"
+              >
+                {chip.label}
+              </Button>
+            ))}
           </div>
         ) : (
-          <ThreadFeed
-            lines={lines}
-            notices={notices}
-            pending={building}
-            ideas={ideas}
-            builtTitles={builtTitles}
-            canBuild={canBuild}
-            busy={busy}
-            buildingIdea={building?.build}
-            freshFrom={lines.length}
-            lastTriedIdea={lastTriedIdea}
-            buildPhase={buildPhase}
-            latestFileDiffs={latestFileDiffs}
-            proposals={proposals}
-            capturedFrameUrl={hasLiveFrame && frameSeq > 0 ? `/api/studio/frame?seq=${frameSeq}` : null}
-            onBuild={(idea) => void buildIdea(idea)}
-            onOpenScriptDiff={(p) => handleOpenScriptInCodeDiff(p)}
-            onInspectProposal={(pid, scriptPath) => {
-              setActiveProposalId(pid);
-              if (scriptPath) setSelectedScriptPath(scriptPath);
-              setCenterTab("code-diff");
-              setMobilePane("studio");
-            }}
-            onApplyProposal={(pid) => void handleApplyProposal(pid)}
-            onRejectProposal={(pid) => void handleRejectProposal(pid)}
-          />
+          (hasConversation || proposals.length > 0) && (
+            <ThreadFeed
+              lines={lines}
+              notices={notices}
+              pending={building}
+              ideas={ideas}
+              builtTitles={builtTitles}
+              canBuild={canBuild}
+              busy={busy}
+              buildingIdea={building?.build}
+              freshFrom={lines.length}
+              lastTriedIdea={lastTriedIdea}
+              buildPhase={buildPhase}
+              latestFileDiffs={latestFileDiffs}
+              proposals={proposals}
+              capturedFrameUrl={hasLiveFrame && frameSeq > 0 ? `/api/studio/frame?seq=${frameSeq}` : null}
+              onBuild={(idea) => void buildIdea(idea)}
+              onOpenScriptDiff={(p) => handleOpenScriptInCodeDiff(p)}
+              onInspectProposal={(pid, scriptPath) => {
+                setActiveProposalId(pid);
+                if (scriptPath) setSelectedScriptPath(scriptPath);
+                setCenterTab("code-diff");
+                setMobilePane("studio");
+              }}
+              onApplyProposal={(pid) => void handleApplyProposal(pid)}
+              onRejectProposal={(pid) => void handleRejectProposal(pid)}
+            />
+          )
         )}
       </div>
 
-      {/* Background Plan-Execute Run Queue & Checkpoints */}
+      {/* Background Plan-Execute Run Queue & Checkpoints (hidden when empty) */}
       {!isBrowserEngine && (
         <AgentRunsPanel
           chatId={activeId}
@@ -2940,17 +2979,19 @@ export function App() {
           composerText={text}
           onClearComposer={() => setText("")}
           onRunFinished={() => void refreshAll()}
+          refreshSignal={runsRefreshSignal}
         />
       )}
 
-      {/* Docked OpenRO Composer */}
+      {/* Docked Prompt-First Composer */}
       <CopilotComposer
         text={text}
         onTextChange={setText}
         inputRef={inputRef}
         busy={busy}
+        swarmRunning={activeSwarmSnap?.run.status === "running"}
+        onStopSwarm={() => void handleStopSwarm()}
         canUndo={canUndo}
-        undoReason={undoReason}
         place={place}
         contextPaths={contextPaths}
         pluginSelection={pluginStatus.selection}
@@ -2963,15 +3004,14 @@ export function App() {
         reasoning={reasoning}
         onReasoningChange={setReasoning}
         modelLabel={activeModelLabel}
+        onModelSelected={(label) => {
+          setActiveModelLabel(label);
+          setModelOk(true);
+        }}
         onOpenSettings={() => setSettingsOpen(true)}
         onSubmit={send}
         onConfirmUndo={() => void undoNow()}
-        showUpdateAvailable={update.isDismissedAvailable}
-        showUpdateRef={showUpdateRef}
-        onShowUpdateAgain={() => update.showAgain()}
-        canCheckUpdate={update.canCheck}
-        checkingUpdate={update.busy !== ""}
-        onCheckUpdate={() => void update.check()}
+        onQueuePlan={isBrowserEngine ? undefined : () => void handleQueuePlan(text)}
       />
     </aside>
   );
@@ -3230,6 +3270,14 @@ export function App() {
           compactLabel={activeModelLabel}
           showTrigger={false}
           onOpenCloudChanged={() => void ship.refreshCloud()}
+          onOpenSnapshots={() => setSnapshotsOpen(true)}
+          onOpenPluginSetup={() => {
+            setPluginDialogOpen(true);
+            void refreshPluginStatus(true);
+          }}
+          onOpenWizard={() => setWizardOpen(true)}
+          canCheckUpdate={update.canCheck}
+          onCheckUpdate={() => void update.check()}
           onApplied={({ studioConnected, modelConfigured, workspaceMode: nextMode, modelId: nextModelId, antigravityIssue: nextIssue }) => {
             setStudioOk(studioConnected);
             setModelOk(modelConfigured);
@@ -3250,6 +3298,24 @@ export function App() {
               if (noKey) noKey.hidden = true;
             }
           }}
+        />
+        <StartupWizard
+          open={wizardOpen}
+          onOpenChange={setWizardOpen}
+          studioOk={studioOk}
+          onApplied={({ studioConnected, modelConfigured, workspaceMode: nextMode, modelId: nextModelId }) => {
+            setStudioOk(studioConnected);
+            setModelOk(modelConfigured);
+            setWorkspaceMode(nextMode);
+            if (nextModelId) {
+              setActiveModelLabel(nextModelId.trim().split("/").pop() || nextModelId.trim());
+            }
+            if (studioConnected) {
+              void refreshPlace();
+              void refreshEmbedStatus(true);
+            }
+          }}
+          onDoneFocusComposer={() => inputRef.current?.focus()}
         />
         <Toaster position="bottom-right" theme={theme} />
       </div>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Check, Cpu, Globe, Image as ImageIcon, KeyRound, Laptop, Moon, RefreshCw, Server, SlidersHorizontal, Sparkles, Sun, X } from "lucide-react";
+import { Check, Cpu, Globe, History, Image as ImageIcon, KeyRound, Laptop, Moon, Plug, RefreshCw, Rocket, Server, SlidersHorizontal, Sparkles, Sun, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
@@ -28,6 +28,11 @@ export function SettingsDialog({
   workspaceMode,
   showTrigger = true,
   onOpenCloudChanged,
+  onOpenSnapshots,
+  onOpenPluginSetup,
+  onOpenWizard,
+  canCheckUpdate,
+  onCheckUpdate,
 }: {
   theme: "light" | "dark";
   onThemeChange: (t: "light" | "dark") => void;
@@ -44,6 +49,11 @@ export function SettingsDialog({
   workspaceMode: WorkspaceMode;
   showTrigger?: boolean;
   onOpenCloudChanged?: () => void;
+  onOpenSnapshots?: () => void;
+  onOpenPluginSetup?: () => void;
+  onOpenWizard?: () => void;
+  canCheckUpdate?: boolean;
+  onCheckUpdate?: () => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -290,7 +300,7 @@ export function SettingsDialog({
                       <Globe className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
                       <h3 className="text-sm font-medium text-ink">Execution Engine</h3>
                     </div>
-                    <Pill className="bg-tag-mint-bg px-2 py-0.5 font-mono text-xs text-tag-mint-fg">IndexedDB persisted</Pill>
+                    <Pill className="bg-tag-mint-bg px-2 py-0.5 text-xs text-tag-mint-fg">IndexedDB persisted</Pill>
                   </div>
 
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -741,6 +751,34 @@ export function SettingsDialog({
                           Clear saved OpenAI Image key
                         </Button>
                       </div>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {(onOpenSnapshots || onOpenPluginSetup || onOpenWizard || canCheckUpdate) && (
+                <section aria-label="Workspace tools" className="flex flex-col gap-2.5 rounded-card border border-hairline bg-board/50 p-3.5">
+                  <span className="text-sm font-medium text-ink">Workspace &amp; Tools</span>
+                  <div className="flex flex-wrap gap-2">
+                    {onOpenSnapshots && (
+                      <Button variant="outline" size="sm" onClick={() => { onOpenChange(false); onOpenSnapshots(); }} className="bg-surface max-md:min-h-11">
+                        <History className="size-3.5" strokeWidth={1.5} aria-hidden />Snapshots
+                      </Button>
+                    )}
+                    {onOpenPluginSetup && (
+                      <Button variant="outline" size="sm" onClick={() => { onOpenChange(false); onOpenPluginSetup(); }} className="bg-surface max-md:min-h-11">
+                        <Plug className="size-3.5" strokeWidth={1.5} aria-hidden />Plugin Setup
+                      </Button>
+                    )}
+                    {onOpenWizard && (
+                      <Button variant="outline" size="sm" onClick={() => { onOpenChange(false); onOpenWizard(); }} className="bg-surface max-md:min-h-11">
+                        <Rocket className="size-3.5" strokeWidth={1.5} aria-hidden />Setup Guide
+                      </Button>
+                    )}
+                    {canCheckUpdate && onCheckUpdate && (
+                      <Button variant="outline" size="sm" onClick={() => { onOpenChange(false); onCheckUpdate(); }} className="bg-surface max-md:min-h-11">
+                        <RefreshCw className="size-3.5" strokeWidth={1.5} aria-hidden />Check updates
+                      </Button>
                     )}
                   </div>
                 </section>
