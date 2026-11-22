@@ -268,13 +268,13 @@ pub struct Task {
 
 impl Task {
     pub fn is_game_code(&self) -> bool {
-        if self.kind == TaskKind::GameCode {
-            return true;
-        }
-        self.claimed_files
+        let has_files = !self.claimed_files.is_empty() || !self.written_files.is_empty();
+        let touches_runtime_code = self
+            .claimed_files
             .iter()
             .chain(self.written_files.iter())
-            .any(|p| p.starts_with("src/") || p.starts_with("ui/"))
+            .any(|p| p.starts_with("src/") || p.starts_with("ui/"));
+        touches_runtime_code || (self.kind == TaskKind::GameCode && !has_files)
     }
 
     pub fn is_lune_tool(&self) -> bool {
@@ -461,6 +461,12 @@ impl AgentRecord {
     }
 
     fn from_persisted_json(v: &Value) -> Option<Self> {
+        let mut messages = v
+            .get("messages")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default();
+        compact_agent_history(&mut messages);
         Some(AgentRecord {
             name: v.get("name")?.as_str()?.to_string(),
             role: v.get("role")?.as_str()?.to_string(),
@@ -482,11 +488,7 @@ impl AgentRecord {
             updated_at_ms: v.get("updated_at_ms").and_then(|x| x.as_u64()).unwrap_or(0),
             generation: 1,
             parked_at_seq: None,
-            messages: v
-                .get("messages")
-                .and_then(|x| x.as_array())
-                .cloned()
-                .unwrap_or_default(),
+            messages,
         })
     }
 }
@@ -2524,7 +2526,7 @@ fn run_agent_wake_cycle(
         if is_cancelled(handle, agent_name, gen) {
             return Ok(());
         }
-        let (model_client, messages_snapshot, pending_cursor, turn_num) = {
+        let (model_client, messages_snapshot, pending_cursor, turn_num, pushed_board_msg) = {
             let mut st = handle.state.lock().unwrap();
             let Some(idx) = st.agent_index(agent_name) else { return Ok(()) };
             if st.roster[idx].killed || st.roster[idx].generation != gen {
@@ -2532,19 +2534,46 @@ fn run_agent_wake_cycle(
             }
             st.roster[idx].parked_at_seq = None;
             let head_seq = st.board.latest_seq();
-            let prompt_block = build_wake_update(&st, idx);
             if st.roster[idx].messages.is_empty() {
                 let sys = build_role_system_prompt(&st, idx);
                 st.roster[idx].messages.push(json!({ "role": "system", "content": sys }));
             }
-            if !prompt_block.is_empty() {
-                st.roster[idx].messages.push(json!({ "role": "user", "content": prompt_block }));
-            } else if st.roster[idx].messages.last().and_then(|m| m.get("role").and_then(|r| r.as_str())) != Some("user") {
-                st.roster[idx].messages.push(json!({
+            compact_agent_history(&mut st.roster[idx].messages);
+
+            let board_update = build_board_wake_update(&st, idx);
+            let pushed_board_msg = if let Some(msg) = board_update {
+                st.roster[idx].messages.push(json!({ "role": "user", "content": msg }));
+                true
+            } else {
+                false
+            };
+
+            let live_tasks = build_live_tasks_block(&st, idx);
+            let mut msgs = st.roster[idx].messages.clone();
+            if let Some(tasks_text) = live_tasks {
+                if msgs.last().and_then(|m| m.get("role").and_then(|r| r.as_str())) == Some("user") {
+                    if let Some(last) = msgs.last_mut() {
+                        let prev = last.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                        let combined = if prev.is_empty() {
+                            tasks_text
+                        } else {
+                            format!("{prev}\n\n{tasks_text}")
+                        };
+                        last["content"] = Value::String(combined);
+                    }
+                } else {
+                    msgs.push(json!({
+                        "role": "user",
+                        "content": format!("{tasks_text}\n\nContinue your assigned work and reply with one JSON step.")
+                    }));
+                }
+            } else if msgs.last().and_then(|m| m.get("role").and_then(|r| r.as_str())) != Some("user") {
+                msgs.push(json!({
                     "role": "user",
                     "content": "Continue your assigned work and reply with one JSON step."
                 }));
             }
+
             let agent_model = st.roster[idx].model_id.clone();
             let sandbox_base = shared
                 .data_dir
@@ -2553,7 +2582,6 @@ fn run_agent_wake_cycle(
                 .join("agy-sandbox");
             let sandbox = sandbox_base.join(format!("{}-{}", st.id, agent_name));
             let client = resolve_model_client(shared, Some(&agent_model)).with_agy_dir(sandbox);
-            let msgs = st.roster[idx].messages.clone();
             let turn = st.roster[idx].turns + 1;
             st.append_trace(
                 agent_name,
@@ -2562,7 +2590,7 @@ fn run_agent_wake_cycle(
                 "Sending model turn",
                 json!({ "cursor_seq": head_seq, "message_count": msgs.len() }),
             );
-            (client, msgs, head_seq, turn)
+            (client, msgs, head_seq, turn, pushed_board_msg)
         };
 
         let permit = handle
@@ -2607,10 +2635,12 @@ fn run_agent_wake_cycle(
                         let (max_c, _, _, _) = handle.scheduler.snapshot();
                         st.save_run_file(max_c, &q);
                         st.emit_event("quota", json!({ "ts_ms": now_ms(), "quota": q.to_json() }));
-                        // Roll back the unsent prompt turn so retry re-uses clean history.
-                        if let Some(idx) = st.agent_index(agent_name) {
-                            if st.roster[idx].messages.last().and_then(|m| m.get("role").and_then(|r| r.as_str())) == Some("user") {
-                                st.roster[idx].messages.pop();
+                        // Roll back the unsent board-wake turn so retry re-uses clean history.
+                        if pushed_board_msg {
+                            if let Some(idx) = st.agent_index(agent_name) {
+                                if st.roster[idx].messages.last().and_then(|m| m.get("role").and_then(|r| r.as_str())) == Some("user") {
+                                    st.roster[idx].messages.pop();
+                                }
                             }
                         }
                     }
@@ -2631,6 +2661,7 @@ fn run_agent_wake_cycle(
                 st.roster[idx].last_error = None;
                 st.roster[idx].updated_at_ms = now_ms();
                 st.roster[idx].messages.push(json!({ "role": "assistant", "content": reply }));
+                compact_agent_history(&mut st.roster[idx].messages);
                 st.append_trace(
                     agent_name,
                     turn_num,
@@ -2733,6 +2764,7 @@ fn run_agent_wake_cycle(
                 st.roster[idx]
                     .messages
                     .push(json!({ "role": "user", "content": combined }));
+                compact_agent_history(&mut st.roster[idx].messages);
                 st.save_agent_file(agent_name);
             }
             handle.notify_all();
@@ -2820,7 +2852,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
     let role_rules = match a.role.as_str() {
         "coordinator" => concat!(
             "You are the Teamwork coordinator.\n",
-            "Split the goal into concrete non-overlapping tasks with `create_task` (specify owner, verifier, kind, and non-overlapping `files`).\n",
+            "Split the goal into concrete non-overlapping tasks with `create_task` (specify owner, verifier, kind, and non-overlapping `files`); spread tasks across all available workers in parallel instead of stacking everything onto one worker.\n",
             "Call `finish_run` once all tasks are `done`.\n",
             "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, finish_run."
         ),
@@ -2834,6 +2866,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
         "researcher" => concat!(
             "You are the Teamwork researcher/designer.\n",
             "Use `research_roblox_game` (`target` = Roblox URL or place/universe ID -> saves dossier & thumbs in `refs/<universeId>/`), `web_search`, `web_fetch`, `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_update_manifest`.\n",
+            "Budget <=3 research turns before writing deliverables (`web_fetch` is capped cleanly).\n",
             "Claim every file you write (`project_write_file` auto-claims onto your active task), then call `submit_task` to hand off to `@verifier`."
         ),
         _ => concat!(
@@ -2865,17 +2898,20 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
     )
 }
 
-fn build_wake_update(st: &RunState, idx: usize) -> String {
-    let a = &st.roster[idx];
-    let unread = st.board.since(a.cursor_seq);
-    let mut parts = Vec::new();
-    if !unread.is_empty() {
-        let lines: Vec<String> = unread
-            .iter()
-            .map(|m| format!("#{} {}: {}", m.seq, m.author, m.text))
-            .collect();
-        parts.push(format!("New board messages:\n{}", lines.join("\n")));
+fn build_board_wake_update(st: &RunState, idx: usize) -> Option<String> {
+    let unread = st.board.since(st.roster[idx].cursor_seq);
+    if unread.is_empty() {
+        return None;
     }
+    let lines: Vec<String> = unread
+        .iter()
+        .map(|m| format!("#{} {}: {}", m.seq, m.author, m.text))
+        .collect();
+    Some(format!("New board messages:\n{}", lines.join("\n")))
+}
+
+fn build_live_tasks_block(st: &RunState, idx: usize) -> Option<String> {
+    let a = &st.roster[idx];
     let relevant_tasks: Vec<String> = st
         .tasks
         .iter()
@@ -2896,10 +2932,211 @@ fn build_wake_update(st: &RunState, idx: usize) -> String {
             )
         })
         .collect();
-    if !relevant_tasks.is_empty() {
-        parts.push(format!("Tasks:\n{}", relevant_tasks.join("\n")));
+    if relevant_tasks.is_empty() {
+        None
+    } else {
+        Some(format!("Tasks:\n{}", relevant_tasks.join("\n")))
     }
-    parts.join("\n\n")
+}
+
+fn single_line_truncate(s: &str, max_chars: usize) -> String {
+    let flat: String = s
+        .chars()
+        .map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c })
+        .collect();
+    let trimmed = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+    if trimmed.chars().count() <= max_chars {
+        trimmed
+    } else {
+        let head: String = trimmed.chars().take(max_chars).collect();
+        format!("{head}...")
+    }
+}
+
+fn summarize_tool_result_line(line: &str) -> String {
+    let Some(rest) = line.strip_prefix("tool_result (") else {
+        return single_line_truncate(line, 100);
+    };
+    let Some((tool, after)) = rest.split_once(')') else {
+        return single_line_truncate(line, 100);
+    };
+    if let Some(err) = after.strip_prefix(" error:") {
+        return format!("{tool}: err({})", single_line_truncate(err.trim(), 90));
+    }
+    let payload = after.strip_prefix(':').unwrap_or(after).trim();
+    if let Ok(val) = serde_json::from_str::<Value>(payload) {
+        let mut meta = Vec::new();
+        for k in ["path", "url", "target", "task_id", "id"] {
+            if let Some(s) = val.get(k).and_then(|v| v.as_str()) {
+                meta.push(format!("{k}={}", single_line_truncate(s, 60)));
+            }
+        }
+        if let Some(n) = val.get("count").and_then(|v| v.as_u64()) {
+            meta.push(format!("count={n}"));
+        }
+        if let Some(p) = val.get("passed").and_then(|v| v.as_bool()) {
+            meta.push(format!("passed={p}"));
+        }
+        if let Some(b) = val.get("bytes").and_then(|v| v.as_u64()) {
+            meta.push(format!("bytes={b}"));
+        }
+        if !meta.is_empty() {
+            return format!("{tool}: ok ({})", meta.join(", "));
+        }
+    }
+    format!("{tool}: ok ({})", single_line_truncate(payload, 80))
+}
+
+fn compact_step_args_obj(step: &mut serde_json::Map<String, Value>) -> bool {
+    let tool = step
+        .get("tool")
+        .and_then(|v| v.as_str())
+        .unwrap_or("tool")
+        .to_string();
+    let Some(args) = step.get_mut("args").and_then(|v| v.as_object_mut()) else {
+        return false;
+    };
+    let path_hint = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("<file>")
+        .to_string();
+    let mut changed = false;
+    for key in ["content", "source", "code", "script"] {
+        if let Some(s) = args.get(key).and_then(|v| v.as_str()) {
+            if s.len() > 200 {
+                args.insert(
+                    key.to_string(),
+                    json!(format!(
+                        "[compacted {tool} {key} ({} bytes) for {path_hint}]",
+                        s.len()
+                    )),
+                );
+                changed = true;
+            }
+        }
+    }
+    if let Some(edits) = args.get("edits").and_then(|v| v.as_array()) {
+        let bytes = serde_json::to_string(edits).map(|s| s.len()).unwrap_or(0);
+        if bytes > 240 {
+            args.insert(
+                "edits".to_string(),
+                json!(format!(
+                    "[compacted {} edit(s) ({bytes} bytes) on {path_hint}]",
+                    edits.len()
+                )),
+            );
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Compact `tool_result` entries and large `project_write_file` / step args older
+/// than the last 2 assistant turns to crisp 1-line summaries so `agents/<name>.json`
+/// and model prompts stay lean across multi-turn Teamwork runs.
+fn compact_agent_history(messages: &mut [Value]) {
+    if messages.len() <= 1 {
+        return;
+    }
+    let asst_indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(i, m)| *i > 0 && m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+        .map(|(i, _)| i)
+        .collect();
+    if asst_indices.len() <= 2 {
+        return;
+    }
+    let cutoff = asst_indices[asst_indices.len() - 2];
+    for m in &mut messages[1..cutoff] {
+        let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        let Some(raw) = m.get("content").and_then(|v| v.as_str()).map(String::from) else {
+            continue;
+        };
+        if raw.starts_with("[compacted ") {
+            continue;
+        }
+        if role == "assistant" {
+            if let Ok(mut val) = serde_json::from_str::<Value>(raw.trim()) {
+                let mut changed = false;
+                if let Some(obj) = val.as_object_mut() {
+                    if compact_step_args_obj(obj) {
+                        changed = true;
+                    }
+                    if let Some(steps) = obj.get_mut("steps").and_then(|v| v.as_array_mut()) {
+                        for st in steps {
+                            if let Some(so) = st.as_object_mut() {
+                                if compact_step_args_obj(so) {
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                let one_line = val.to_string();
+                if changed || (raw.contains('\n') && one_line.len() <= raw.len()) {
+                    m["content"] = Value::String(one_line);
+                }
+            } else if raw.len() > 300 || raw.contains('\n') {
+                m["content"] = Value::String(format!(
+                    "[compacted assistant ({} bytes): {}]",
+                    raw.len(),
+                    single_line_truncate(&raw, 160)
+                ));
+            }
+            continue;
+        }
+        if role == "user" {
+            let content = if let Some(pos) = raw.find("\n\nTasks:\n") {
+                raw[..pos].to_string()
+            } else {
+                raw
+            };
+            if content.starts_with("Tasks:\n") {
+                m["content"] = Value::String("[compacted task snapshot]".to_string());
+            } else if content.starts_with("tool_result (") {
+                let summaries: Vec<String> = content
+                    .lines()
+                    .filter(|l| l.starts_with("tool_result ("))
+                    .map(summarize_tool_result_line)
+                    .collect();
+                let line = if summaries.is_empty() {
+                    format!(
+                        "[compacted tool_result ({} bytes): {}]",
+                        content.len(),
+                        single_line_truncate(&content, 160)
+                    )
+                } else {
+                    format!(
+                        "[compacted tool_result ({} bytes): {}]",
+                        content.len(),
+                        single_line_truncate(&summaries.join("; "), 260)
+                    )
+                };
+                m["content"] = Value::String(line);
+            } else if content.starts_with("skill_result:") {
+                m["content"] = Value::String(format!(
+                    "[compacted skill_result ({} bytes): {}]",
+                    content.len(),
+                    single_line_truncate(&content, 140)
+                ));
+            } else if content.starts_with("Step parse error:") && content.len() > 220 {
+                m["content"] = Value::String(format!(
+                    "[compacted parse error: {}]",
+                    single_line_truncate(&content, 140)
+                ));
+            } else if content.len() > 1_200 {
+                m["content"] = Value::String(format!(
+                    "[compacted update ({} bytes): {}]",
+                    content.len(),
+                    single_line_truncate(&content, 200)
+                ));
+            } else if content.len() != m["content"].as_str().map(str::len).unwrap_or(0) {
+                m["content"] = Value::String(content);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3043,7 +3280,13 @@ fn tool_create_task(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Resu
         .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
         .unwrap_or_default();
     let mut norm_files = Vec::new();
+    let mut stripped_manifest = false;
     for f in &files_raw {
+        let peek = normalize_rel_path(&st.project_dir, f, false)?;
+        if peek == "openro.project.json" {
+            stripped_manifest = true;
+            continue;
+        }
         let nf = normalize_rel_path(&st.project_dir, f, true)?;
         if let Some(conflict) = st.claims.get(&nf) {
             return Err(format!(
@@ -3133,7 +3376,10 @@ fn tool_create_task(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Resu
             },
         );
     }
-    let out = task.to_json();
+    let mut out = task.to_json();
+    if stripped_manifest {
+        out["note"] = json!("stripped openro.project.json from files; use project_update_manifest instead");
+    }
     st.tasks.push(task);
     if st.roster[o_idx].current_task_id.is_none() {
         st.roster[o_idx].current_task_id = Some(id.clone());
@@ -3280,6 +3526,26 @@ fn tool_submit_task(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Resu
     st.tasks[t_idx].updated_at_ms = ts;
     let verifier = st.tasks[t_idx].verifier.clone();
     let title = st.tasks[t_idx].title.clone();
+    let owner = st.tasks[t_idx].owner.clone();
+    if let Some(o_idx) = st.agent_index(&owner) {
+        if st.roster[o_idx].current_task_id.as_deref() == Some(task_id.as_str()) {
+            st.roster[o_idx].current_task_id = st
+                .tasks
+                .iter()
+                .find(|t| {
+                    t.owner.eq_ignore_ascii_case(&owner)
+                        && matches!(t.status, TaskStatus::InProgress | TaskStatus::ChangesRequested)
+                })
+                .or_else(|| {
+                    st.tasks.iter().find(|t| {
+                        t.owner.eq_ignore_ascii_case(&owner)
+                            && t.id != task_id
+                            && t.status.holds_claims()
+                    })
+                })
+                .map(|t| t.id.clone());
+        }
+    }
     let out = st.tasks[t_idx].to_json();
     st.save_tasks_file();
     st.emit_event("task", json!({ "ts_ms": ts, "task": out.clone() }));
@@ -3544,6 +3810,24 @@ fn resolve_caller_task_id(
     }
     if let Some(idx) = st.agent_index(caller) {
         if let Some(tid) = &st.roster[idx].current_task_id {
+            if st.task_index(tid).is_some_and(|i| {
+                matches!(
+                    st.tasks[i].status,
+                    TaskStatus::InProgress | TaskStatus::ChangesRequested
+                )
+            }) {
+                return Ok(tid.clone());
+            }
+        }
+    }
+    if let Some(t) = st.tasks.iter().find(|t| {
+        t.owner.eq_ignore_ascii_case(caller)
+            && matches!(t.status, TaskStatus::InProgress | TaskStatus::ChangesRequested)
+    }) {
+        return Ok(t.id.clone());
+    }
+    if let Some(idx) = st.agent_index(caller) {
+        if let Some(tid) = &st.roster[idx].current_task_id {
             if st.task_index(tid).is_some_and(|i| st.tasks[i].status.holds_claims()) {
                 return Ok(tid.clone());
             }
@@ -3575,7 +3859,11 @@ fn tool_project_grep(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, Str
         .get("query")
         .and_then(|v| v.as_str())
         .ok_or("project_grep requires args.query")?;
-    let dir = args.get("dir").and_then(|v| v.as_str()).unwrap_or("");
+    let dir = args
+        .get("dir")
+        .or_else(|| args.get("path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let max_matches = args
         .get("max_matches")
         .and_then(|v| v.as_u64())
@@ -3602,15 +3890,19 @@ fn tool_research_roblox_game(handle: &Arc<RunHandle>, args: &Value) -> Result<Va
     crate::market_taste::research_roblox_game_to_project(&project_dir, &target, niche)
 }
 
+fn resolve_web_fetch_max_chars(args: &Value) -> usize {
+    args.get("max_chars")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(6_000)
+        .clamp(512, 10_000) as usize
+}
+
 fn tool_web_fetch(args: &Value) -> Result<Value, String> {
     let url = args
         .get("url")
         .and_then(|v| v.as_str())
         .ok_or("web_fetch requires args.url")?;
-    let max_chars = args
-        .get("max_chars")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(12_000) as usize;
+    let max_chars = resolve_web_fetch_max_chars(args);
     crate::market_taste::web_fetch(url, max_chars)
 }
 
@@ -3625,7 +3917,11 @@ fn tool_web_search(args: &Value) -> Result<Value, String> {
 
 fn tool_project_files(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
     let project_dir = handle.state.lock().unwrap().project_dir.clone();
-    let rel = args.get("dir").and_then(|v| v.as_str()).unwrap_or("");
+    let rel = args
+        .get("dir")
+        .or_else(|| args.get("path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let target = if rel.trim().is_empty() || rel.trim() == "." {
         project_dir.clone()
     } else {
@@ -3686,6 +3982,23 @@ fn ensure_write_claim(
     norm_path: &str,
     explicit_task: Option<&str>,
 ) -> Result<String, String> {
+    // Route edits directly to the active task owned by the same agent holding the claim,
+    // avoiding self-claim conflicts when one agent owns multiple active tasks (#41).
+    if let Some(existing) = st.claims.get(norm_path).cloned() {
+        if existing.owner.eq_ignore_ascii_case(caller) {
+            let active = st
+                .task_index(&existing.task_id)
+                .is_some_and(|i| st.tasks[i].status.holds_claims());
+            if active {
+                return Ok(existing.task_id);
+            }
+        }
+        return Err(format!(
+            "file claim conflict: '{}' is owned by task {} (owner: {})",
+            norm_path, existing.task_id, existing.owner
+        ));
+    }
+
     let task_id = resolve_caller_task_id(st, caller, explicit_task)?;
     let t_idx = st
         .task_index(&task_id)
@@ -3699,29 +4012,20 @@ fn ensure_write_claim(
     if !st.tasks[t_idx].status.holds_claims() {
         return Err(format!("task '{}' is {}", task_id, st.tasks[t_idx].status.as_str()));
     }
-    if let Some(existing) = st.claims.get(norm_path) {
-        if existing.task_id != task_id {
-            return Err(format!(
-                "file claim conflict: '{}' is owned by task {} (owner: {})",
-                norm_path, existing.task_id, existing.owner
-            ));
-        }
-    } else {
-        // Auto-claim onto the caller's active task when unclaimed.
-        let ts = now_ms();
-        let owner = st.tasks[t_idx].owner.clone();
-        st.claims.insert(
-            norm_path.to_string(),
-            FileClaim {
-                path: norm_path.to_string(),
-                task_id: task_id.clone(),
-                owner,
-                claimed_at_ms: ts,
-            },
-        );
-        if !st.tasks[t_idx].claimed_files.contains(&norm_path.to_string()) {
-            st.tasks[t_idx].claimed_files.push(norm_path.to_string());
-        }
+    // Auto-claim onto the caller's active task when unclaimed.
+    let ts = now_ms();
+    let owner = st.tasks[t_idx].owner.clone();
+    st.claims.insert(
+        norm_path.to_string(),
+        FileClaim {
+            path: norm_path.to_string(),
+            task_id: task_id.clone(),
+            owner,
+            claimed_at_ms: ts,
+        },
+    );
+    if !st.tasks[t_idx].claimed_files.contains(&norm_path.to_string()) {
+        st.tasks[t_idx].claimed_files.push(norm_path.to_string());
     }
     Ok(task_id)
 }
@@ -4279,6 +4583,18 @@ mod tests {
         assert!(!lune_only.is_game_code());
         assert!(lune_only.is_lune_tool());
 
+        // #44: explicit GameCode kind with non-empty docs/tools files still skips Studio playtest
+        let lune_mislabeled = mk(TaskKind::GameCode, &["docs/ECONOMY.md", "tools/econ-sim/sim.luau"]);
+        assert!(!lune_mislabeled.is_game_code());
+        assert!(lune_mislabeled.is_lune_tool());
+
+        let docs_mislabeled = mk(TaskKind::GameCode, &["docs/GDD.md"]);
+        assert!(!docs_mislabeled.is_game_code());
+        assert!(!docs_mislabeled.is_lune_tool());
+
+        let empty_code = mk(TaskKind::GameCode, &[]);
+        assert!(empty_code.is_game_code());
+
         let ui_code = mk(TaskKind::Other, &["ui/Shop.luau"]);
         assert!(ui_code.is_game_code());
         assert!(!ui_code.is_lune_tool());
@@ -4290,5 +4606,66 @@ mod tests {
         let mixed = mk(TaskKind::Other, &["tools/sim.luau", "src/server/Main.server.luau"]);
         assert!(mixed.is_game_code());
         assert!(!mixed.is_lune_tool());
+    }
+
+    #[test]
+    fn history_compaction_and_web_fetch_cap() {
+        assert_eq!(resolve_web_fetch_max_chars(&json!({})), 6_000);
+        assert_eq!(resolve_web_fetch_max_chars(&json!({ "max_chars": 50_000 })), 10_000);
+        assert_eq!(resolve_web_fetch_max_chars(&json!({ "max_chars": 100 })), 512);
+        assert_eq!(resolve_web_fetch_max_chars(&json!({ "max_chars": 4_000 })), 4_000);
+
+        let big_doc = "X".repeat(2_000);
+        let big_web = "W".repeat(8_000);
+        let recent_doc = "R".repeat(2_000);
+        let mut msgs = vec![
+            json!({ "role": "system", "content": "sys" }),
+            json!({ "role": "user", "content": "New board messages:\n#1 sys: go\n\nTasks:\n- t1" }),
+            json!({
+                "role": "assistant",
+                "content": json!({
+                    "tool": "project_write_file",
+                    "args": { "path": "docs/OLD.md", "content": big_doc }
+                }).to_string()
+            }),
+            json!({
+                "role": "user",
+                "content": format!("tool_result (web_fetch): {{\"ok\":true,\"url\":\"https://example.com\",\"text\":\"{big_web}\"}}")
+            }),
+            json!({
+                "role": "assistant",
+                "content": json!({
+                    "tool": "project_write_file",
+                    "args": { "path": "docs/MID.md", "content": recent_doc }
+                }).to_string()
+            }),
+            json!({ "role": "user", "content": "tool_result (project_write_file): {\"path\":\"docs/MID.md\"}" }),
+            json!({ "role": "assistant", "content": "{\"done\":true,\"summary\":\"finished\"}" }),
+        ];
+
+        compact_agent_history(&mut msgs);
+
+        let compacted_board = msgs[1]["content"].as_str().unwrap();
+        assert!(!compacted_board.contains("Tasks:\n"), "{compacted_board}");
+
+        let old_asst = msgs[2]["content"].as_str().unwrap();
+        assert!(!old_asst.contains(&"X".repeat(500)), "{old_asst}");
+        assert!(old_asst.contains("compacted"), "{old_asst}");
+        assert!(!old_asst.contains('\n'), "{old_asst}");
+
+        let old_tool_res = msgs[3]["content"].as_str().unwrap();
+        assert!(old_tool_res.starts_with("[compacted tool_result"), "{old_tool_res}");
+        assert!(old_tool_res.contains("web_fetch"), "{old_tool_res}");
+        assert!(!old_tool_res.contains('\n'), "{old_tool_res}");
+        assert!(old_tool_res.len() < 400, "{old_tool_res}");
+
+        // Last 2 assistant turns remain uncompacted.
+        assert!(msgs[4]["content"].as_str().unwrap().contains(&recent_doc));
+        assert!(msgs[5]["content"].as_str().unwrap().starts_with("tool_result (project_write_file):"));
+
+        // Running compaction again is idempotent.
+        let snapshot = msgs.clone();
+        compact_agent_history(&mut msgs);
+        assert_eq!(msgs, snapshot);
     }
 }
