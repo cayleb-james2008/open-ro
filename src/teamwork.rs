@@ -6,19 +6,21 @@
 //! - Quota-aware concurrency scheduler (`max_concurrency` default 3, agy quota backoff + reset display)
 //! - Human posts, stop/resume, per-agent kill/restart, per-agent trace, and SSE board events
 
+use crate::agent::parse_step;
 use crate::board::{now_ms, Board, BoardKind, BoardMessage};
+use crate::model::{model_from_config, ModelClient, AGY_DEFAULT_MODEL};
 use crate::place::PlaceBackend;
 use crate::server::Shared;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 pub const MAX_TEAMWORK_SSE_CLIENTS: usize = 32;
 const MAX_SSE_RING: usize = 256;
@@ -26,11 +28,6 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const DEFAULT_MAX_CONCURRENCY: usize = 2;
 const MAX_AGENT_STEPS_PER_WAKE: usize = 24;
 const MAX_FILE_BYTES: usize = 1_048_576;
-const AGY_DEFAULT_BIN: &str =
-    "/home/cayleb/.local/share/mise/installs/antigravity-cli/latest/agy";
-const AGY_DEFAULT_MODEL: &str = "gemini-4-hydrogen-high";
-const AGY_MAX_PROMPT_BYTES: usize = 110_000;
-const AGY_DENY_SETTINGS: &str = r#"{"permissions":{"deny":["write_file(*)","read_file(*)","command(*)","mcp(*)","read_url(*)","execute_url(*)","download_url(*)"]}}"#;
 
 const DEFAULT_ROLES: [&str; 4] = ["researcher", "builder", "art", "verifier"];
 const ERROR_HINTS: [&str; 5] = [
@@ -568,23 +565,24 @@ impl StudioLeaseLock {
     where
         F: Fn() -> bool,
     {
-        let mut guard = self.holder.lock().unwrap();
         loop {
             if cancelled() {
                 return Err("cancelled while waiting for internal Studio lease".to_string());
             }
+            let guard = self.holder.lock().unwrap();
             if guard.is_none() {
+                let mut g = guard;
                 let info = StudioLeaseInfo {
                     holder_agent: agent.to_string(),
                     task_id,
                     operation: operation.to_string(),
                     acquired_at_ms: now_ms(),
                 };
-                *guard = Some(info);
+                *g = Some(info);
                 return Ok(StudioLeaseGuard { lock: Arc::clone(self) });
             }
             let (g, _) = self.cv.wait_timeout(guard, Duration::from_millis(80)).unwrap();
-            guard = g;
+            drop(g);
         }
     }
 }
@@ -683,9 +681,12 @@ impl QuotaScheduler {
     where
         F: Fn() -> bool,
     {
-        let mut st = self.inner.lock().unwrap();
         loop {
-            if st.stopped || cancelled() {
+            if cancelled() {
+                return Err("run or agent stopped".to_string());
+            }
+            let mut st = self.inner.lock().unwrap();
+            if st.stopped {
                 return Err("run or agent stopped".to_string());
             }
             if st.quota.active {
@@ -694,7 +695,7 @@ impl QuotaScheduler {
                     if now < until {
                         let wait = Duration::from_millis((until - now).min(150));
                         let (g, _) = self.cv.wait_timeout(st, wait).unwrap();
-                        st = g;
+                        drop(g);
                         continue;
                     }
                 }
@@ -715,7 +716,7 @@ impl QuotaScheduler {
                 .cv
                 .wait_timeout(st, Duration::from_millis(100))
                 .unwrap();
-            st = g;
+            drop(g);
         }
     }
 }
@@ -1807,8 +1808,8 @@ fn create_run(shared: &Arc<Shared>, body: &Value) -> TeamworkReply {
         Err(e) => return TeamworkReply::err("400 Bad Request", e),
     };
 
-    let model_cfg = resolve_model_config(shared, body.get("model_id").and_then(|v| v.as_str()));
-    if !model_cfg.is_configured() {
+    let model_client = resolve_model_client(shared, body.get("model_id").and_then(|v| v.as_str()));
+    if !model_client.is_configured() {
         return TeamworkReply::err(
             "503 Service Unavailable",
             "No model is configured for Teamwork. Set Gemini 4 Hydrogen (agy) or an API key in Settings.",
@@ -1828,7 +1829,7 @@ fn create_run(shared: &Arc<Shared>, body: &Value) -> TeamworkReply {
         return TeamworkReply::err("500 Internal Server Error", format!("create teamwork dir: {e}"));
     }
 
-    let roster = match build_initial_roster(&run_id, body.get("roles"), &model_cfg.model_id) {
+    let roster = match build_initial_roster(&run_id, body.get("roles"), model_client.model_id()) {
         Ok(r) => r,
         Err(e) => return TeamworkReply::err("400 Bad Request", e),
     };
@@ -1854,8 +1855,8 @@ fn create_run(shared: &Arc<Shared>, body: &Value) -> TeamworkReply {
         project_dir,
         storage_dir,
         status: RunStatus::Running,
-        model_id: model_cfg.model_id,
-        provider: model_cfg.provider_tag,
+        model_id: model_client.model_id().to_string(),
+        provider: model_client.provider().to_string(),
         created_at_ms: ts,
         updated_at_ms: ts,
         board,
@@ -2029,9 +2030,9 @@ fn get_run(shared: &Arc<Shared>, id: &str, since_seq: u64) -> TeamworkReply {
     let Some(h) = shared.teamwork.get(id) else {
         return TeamworkReply::err("404 Not Found", format!("unknown teamwork run '{id}'"));
     };
-    let st = h.state.lock().unwrap();
     let (max_c, active_c, peak_c, quota) = h.scheduler.snapshot();
     let lease = shared.teamwork.studio_lease();
+    let st = h.state.lock().unwrap();
     TeamworkReply::json(
         "200 OK",
         st.detail_json(max_c, active_c, peak_c, &quota, lease.as_ref(), since_seq),
@@ -2391,349 +2392,12 @@ fn slug_simple(name: &str) -> String {
     out.trim_end_matches('-').to_string()
 }
 
-#[derive(Clone)]
-struct ResolvedModel {
-    provider_tag: String,
-    base_url: String,
-    model_id: String,
-    api_key: Option<String>,
-    agy_bin: Option<PathBuf>,
-    sandbox_root: PathBuf,
-}
-
-impl ResolvedModel {
-    fn is_agy(&self) -> bool {
-        self.provider_tag == "antigravity" || self.base_url.starts_with("agy://")
+fn resolve_model_client(shared: &Shared, override_model: Option<&str>) -> ModelClient {
+    let mut cfg = shared.config.lock().unwrap().clone();
+    if let Some(m) = override_model.map(str::trim).filter(|s| !s.is_empty()) {
+        cfg.model_id = Some(m.to_string());
     }
-
-    fn is_configured(&self) -> bool {
-        if self.is_agy() {
-            return self.agy_bin.as_ref().is_some_and(|p| p.exists())
-                || find_agy_bin().is_some();
-        }
-        let client = crate::model::ModelClient::new(
-            self.base_url.clone(),
-            self.model_id.clone(),
-            self.api_key.clone(),
-        );
-        client.is_configured()
-    }
-}
-
-fn find_agy_bin() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("OPENRO_AGY_BIN") {
-        let t = p.trim();
-        if !t.is_empty() {
-            let pb = PathBuf::from(t);
-            if pb.exists() {
-                return Some(pb);
-            }
-        }
-    }
-    let def = PathBuf::from(AGY_DEFAULT_BIN);
-    if def.exists() {
-        return Some(def);
-    }
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|d| d.join("agy"))
-            .find(|p| p.exists())
-    })
-}
-
-fn resolve_model_config(shared: &Shared, override_model: Option<&str>) -> ResolvedModel {
-    let cfg = shared.config.lock().unwrap().clone();
-    let env_base = std::env::var("OPENRO_MODEL_BASE_URL")
-        .ok()
-        .filter(|s| !s.trim().is_empty());
-    let env_model = std::env::var("OPENRO_MODEL_ID")
-        .ok()
-        .filter(|s| !s.trim().is_empty());
-    let env_key = std::env::var("OPENRO_MODEL_API_KEY")
-        .ok()
-        .filter(|s| !s.trim().is_empty());
-    let no_agy = std::env::var("OPENRO_NO_AGY")
-        .ok()
-        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-    let sandbox_root = shared
-        .data_dir
-        .clone()
-        .unwrap_or_else(|| shared.assets_root.clone())
-        .join("agy-sandbox");
-
-    let custom_model = override_model
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from);
-
-    if let Some(base) = env_base.or_else(|| cfg.base_url.clone()) {
-        if base.starts_with("agy://") {
-            return ResolvedModel {
-                provider_tag: "antigravity".into(),
-                base_url: base,
-                model_id: custom_model
-                    .or(env_model)
-                    .or(cfg.model_id)
-                    .unwrap_or_else(|| AGY_DEFAULT_MODEL.to_string()),
-                api_key: None,
-                agy_bin: find_agy_bin(),
-                sandbox_root,
-            };
-        }
-        return ResolvedModel {
-            provider_tag: "openai".into(),
-            base_url: base,
-            model_id: custom_model
-                .or(env_model)
-                .or(cfg.model_id)
-                .unwrap_or_else(|| crate::model::DEFAULT_MODEL_ID.to_string()),
-            api_key: env_key.or(cfg.api_key),
-            agy_bin: None,
-            sandbox_root,
-        };
-    }
-
-    if !no_agy {
-        if let Some(bin) = find_agy_bin() {
-            return ResolvedModel {
-                provider_tag: "antigravity".into(),
-                base_url: "agy://antigravity".into(),
-                model_id: custom_model
-                    .or(env_model)
-                    .or(cfg.model_id)
-                    .unwrap_or_else(|| AGY_DEFAULT_MODEL.to_string()),
-                api_key: None,
-                agy_bin: Some(bin),
-                sandbox_root,
-            };
-        }
-    }
-
-    if let Some(agent_model) = shared
-        .agent
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|a| (a.model.base_url().to_string(), a.model.model_id().to_string(), a.model.is_configured()))
-    {
-        if agent_model.2 {
-            return ResolvedModel {
-                provider_tag: "openai".into(),
-                base_url: agent_model.0,
-                model_id: custom_model.unwrap_or(agent_model.1),
-                api_key: env_key.or(cfg.api_key),
-                agy_bin: None,
-                sandbox_root,
-            };
-        }
-    }
-
-    ResolvedModel {
-        provider_tag: "openai".into(),
-        base_url: crate::model::DEFAULT_BASE_URL.into(),
-        model_id: custom_model
-            .or(env_model)
-            .or(cfg.model_id)
-            .unwrap_or_else(|| crate::model::DEFAULT_MODEL_ID.to_string()),
-        api_key: env_key.or(cfg.api_key),
-        agy_bin: None,
-        sandbox_root,
-    }
-}
-
-fn invoke_model(
-    cfg: &ResolvedModel,
-    agent_sandbox: &Path,
-    model_override: Option<&str>,
-    messages: &[Value],
-) -> Result<String, String> {
-    let model_id = model_override
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&cfg.model_id);
-    if cfg.is_agy() {
-        let bin = cfg
-            .agy_bin
-            .clone()
-            .or_else(find_agy_bin)
-            .ok_or_else(|| "Antigravity (agy) binary is not installed".to_string())?;
-        return call_agy(&bin, agent_sandbox, model_id, messages);
-    }
-    let client = crate::model::ModelClient::new(
-        cfg.base_url.clone(),
-        model_id.to_string(),
-        cfg.api_key.clone(),
-    );
-    client.chat(messages)
-}
-
-fn call_agy(
-    bin: &Path,
-    sandbox: &Path,
-    model_id: &str,
-    messages: &[Value],
-) -> Result<String, String> {
-    let _ = std::fs::create_dir_all(sandbox);
-    let prompt = flatten_messages_for_agy(messages);
-    let timeout_secs = std::env::var("OPENRO_AGY_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(600);
-    let mut child = Command::new(bin)
-        .arg("-p")
-        .arg(&prompt)
-        .arg("--model")
-        .arg(model_id)
-        .arg("--output-format")
-        .arg("stream-json")
-        .arg("--settings")
-        .arg(AGY_DENY_SETTINGS)
-        .current_dir(sandbox)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Antigravity could not start: {e}"))?;
-
-    let stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
-    let err_thread = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stderr.read_to_string(&mut s);
-        s
-    });
-    let (tx, rx) = mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    let mut lines = Vec::new();
-    loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        match rx.recv_timeout(left) {
-            Ok(l) => lines.push(l),
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("agy timed out after {timeout_secs}s"));
-            }
-        }
-    }
-    let status = child.wait().ok();
-    let stderr_text = err_thread.join().unwrap_or_default();
-    parse_agy_lines(&lines, status.and_then(|s| s.code()), &stderr_text)
-}
-
-fn flatten_messages_for_agy(messages: &[Value]) -> String {
-    let mut out = String::from(
-        "[Text-only mode]\nYou are an OpenRO Teamwork agent. You have no external shell/filesystem tools: respond with ONE JSON object per turn matching your tool schema.\n\n",
-    );
-    for m in messages {
-        let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
-        let content = m
-            .get("content")
-            .and_then(|c| c.as_str())
-            .map(String::from)
-            .unwrap_or_else(|| m.get("content").map(ToString::to_string).unwrap_or_default());
-        match role {
-            "system" | "developer" => out.push_str(&format!("[System Instructions]\n{content}\n\n")),
-            "user" => out.push_str(&format!("User: {content}\n\n")),
-            "assistant" => out.push_str(&format!("Assistant: {content}\n\n")),
-            other => out.push_str(&format!("{other}: {content}\n\n")),
-        }
-    }
-    out.push_str("Assistant:");
-    if out.len() <= AGY_MAX_PROMPT_BYTES {
-        return out;
-    }
-    let mut h = AGY_MAX_PROMPT_BYTES * 35 / 100;
-    while !out.is_char_boundary(h) {
-        h -= 1;
-    }
-    let mut t = out.len() - (AGY_MAX_PROMPT_BYTES - h - 200);
-    while !out.is_char_boundary(t) {
-        t += 1;
-    }
-    format!("{}\n\n[... truncated ...]\n\n{}", &out[..h], &out[t..])
-}
-
-fn parse_agy_lines(lines: &[String], exit_code: Option<i32>, stderr_text: &str) -> Result<String, String> {
-    let mut deltas = String::new();
-    let mut response: Option<String> = None;
-    let mut err: Option<String> = None;
-    for line in lines {
-        let Ok(evt) = serde_json::from_str::<Value>(line.trim()) else { continue };
-        match evt.get("event").and_then(|e| e.as_str()) {
-            Some("step_update") => {
-                if let Some(d) = evt.pointer("/step_update/text_delta").and_then(|v| v.as_str()) {
-                    deltas.push_str(d);
-                }
-            }
-            Some("result") => {
-                let r = &evt["result"];
-                let st = r.get("status").and_then(|v| v.as_str()).unwrap_or("");
-                if let Some(e) = r.get("error").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
-                    err = Some(e.trim().to_string());
-                } else if st.eq_ignore_ascii_case("ERROR") {
-                    err = Some("the model returned an ERROR status".to_string());
-                }
-                if let Some(t) = r.get("response").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
-                    response = Some(t.to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-    if let Some(e) = err {
-        if response.is_none() && deltas.trim().is_empty() {
-            return Err(e);
-        }
-    }
-    let text = response.unwrap_or(deltas);
-    if text.trim().is_empty() {
-        let tail: String = stderr_text.trim().chars().take(240).collect();
-        if !tail.is_empty() {
-            Err(format!("agy exited {exit_code:?}: {tail}"))
-        } else {
-            Err("The model returned an empty response.".to_string())
-        }
-    } else {
-        Ok(text)
-    }
-}
-
-fn parse_step_json(content: &str) -> Result<Value, String> {
-    let mut cleaned = content.trim();
-    while let Some(after) = cleaned.strip_prefix("<think>") {
-        if let Some(end) = after.find("</think>") {
-            cleaned = after[end + "</think>".len()..].trim();
-        } else {
-            break;
-        }
-    }
-    if let Ok(v) = serde_json::from_str::<Value>(cleaned) {
-        if v.is_object() {
-            return Ok(v);
-        }
-    }
-    let mut scan = cleaned;
-    while let Some(start) = scan.find('{') {
-        let slice = &scan[start..];
-        let mut de = serde_json::Deserializer::from_str(slice).into_iter::<Value>();
-        if let Some(Ok(v)) = de.next() {
-            if v.is_object() {
-                return Ok(v);
-            }
-        }
-        scan = &slice[1..];
-    }
-    Err(format!("model reply was not a JSON step: {content}"))
+    model_from_config(&cfg, shared.data_dir.as_deref())
 }
 
 // ---------------------------------------------------------------------------
@@ -2862,7 +2526,7 @@ fn run_agent_wake_cycle(
         if is_cancelled(handle, agent_name, gen) {
             return Ok(());
         }
-        let (model_cfg, agent_model, sandbox, messages_snapshot, pending_cursor, turn_num, run_id) = {
+        let (model_client, messages_snapshot, pending_cursor, turn_num, run_id) = {
             let mut st = handle.state.lock().unwrap();
             let Some(idx) = st.agent_index(agent_name) else { return Ok(()) };
             if st.roster[idx].killed || st.roster[idx].generation != gen {
@@ -2883,9 +2547,14 @@ fn run_agent_wake_cycle(
                     "content": "Continue your assigned work and reply with one JSON step."
                 }));
             }
-            let cfg = resolve_model_config(shared, Some(&st.model_id));
             let agent_model = st.roster[idx].model_id.clone();
-            let sandbox = cfg.sandbox_root.join(format!("{}-{}", st.id, agent_name));
+            let sandbox_base = shared
+                .data_dir
+                .clone()
+                .unwrap_or_else(|| shared.assets_root.clone())
+                .join("agy-sandbox");
+            let sandbox = sandbox_base.join(format!("{}-{}", st.id, agent_name));
+            let client = resolve_model_client(shared, Some(&agent_model)).with_agy_dir(sandbox);
             let msgs = st.roster[idx].messages.clone();
             let turn = st.roster[idx].turns + 1;
             let run_id = st.id.clone();
@@ -2896,14 +2565,14 @@ fn run_agent_wake_cycle(
                 "Sending model turn",
                 json!({ "cursor_seq": head_seq, "message_count": msgs.len() }),
             );
-            (cfg, agent_model, sandbox, msgs, head_seq, turn, run_id)
+            (client, msgs, head_seq, turn, run_id)
         };
 
         let permit = handle
             .scheduler
             .acquire(|| is_cancelled(handle, agent_name, gen))
             .map_err(|_| String::new())?;
-        let reply_res = invoke_model(&model_cfg, &sandbox, Some(&agent_model), &messages_snapshot);
+        let reply_res = model_client.chat(&messages_snapshot);
         drop(permit);
 
         if is_cancelled(handle, agent_name, gen) {
@@ -2976,7 +2645,7 @@ fn run_agent_wake_cycle(
             }
         }
 
-        let step = match parse_step_json(&reply) {
+        let step = match parse_step(&reply) {
             Ok(s) => {
                 parse_failures = 0;
                 s
