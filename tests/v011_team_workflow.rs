@@ -955,3 +955,155 @@ fn lune_tool_task_bypasses_studio_playtest_and_verifies_via_run_lune() {
 
     shared.teamwork.shutdown();
 }
+
+#[test]
+fn research_and_grep_tools_enforce_ssrf_and_execute_cleanly() {
+    let dir = scratch_dir("research-grep");
+    let data_dir = dir.join("data");
+    let proj_dir = dir.join("proj");
+    std::fs::create_dir_all(proj_dir.join("src/shared")).unwrap();
+    std::fs::write(
+        proj_dir.join("src/shared/Rates.luau"),
+        "return { MythicRate = 0.001 }\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(&data_dir).unwrap();
+    write_projects_index(&data_dir, &proj_dir);
+
+    let per_role: Arc<Mutex<std::collections::HashMap<String, usize>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let pr = Arc::clone(&per_role);
+    let stub = start_dynamic_stub(move |body, _| {
+        let req: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        let msgs = req["messages"].as_array().unwrap();
+        let sys = msgs[0]["content"].as_str().unwrap_or("");
+        let role = if sys.contains("[Agent: coordinator]") {
+            "coordinator"
+        } else if sys.contains("[Agent: researcher]") {
+            assert!(
+                sys.contains("research_roblox_game")
+                    && sys.contains("web_search")
+                    && sys.contains("web_fetch")
+                    && sys.contains("project_grep"),
+                "researcher prompt missing research tools: {sys}"
+            );
+            "researcher"
+        } else {
+            "verifier"
+        };
+        let step = {
+            let mut m = pr.lock().unwrap();
+            let e = m.entry(role.to_string()).or_insert(0);
+            *e += 1;
+            *e
+        };
+        if role == "coordinator" {
+            return match step {
+                1 => json!({
+                    "steps": [{
+                        "tool": "create_task",
+                        "args": { "id": "t1", "owner": "researcher", "title": "Audit rates & refs", "kind": "research", "files": ["docs/research.md"] }
+                    }],
+                    "done": true,
+                    "summary": "dispatched research"
+                }),
+                _ => {
+                    let all_text = msgs.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
+                    if all_text.contains("Verified task t1") {
+                        json!({ "tool": "finish_run", "args": { "summary": "research tools verified" } })
+                    } else {
+                        json!({ "done": true, "summary": "waiting" })
+                    }
+                }
+            };
+        }
+        if role == "researcher" {
+            return match step {
+                // Step 1: project_grep succeeds, then web_fetch SSRF error aborts batch
+                1 => json!({
+                    "steps": [
+                        { "tool": "project_grep", "args": { "query": "MythicRate", "dir": "src" } },
+                        { "tool": "web_fetch", "args": { "url": "http://127.0.0.1:8080/secret" } }
+                    ]
+                }),
+                // Step 2: verify empty web_search rejects cleanly
+                2 => json!({ "tool": "web_search", "args": { "query": "   " } }),
+                // Step 3: verify research_roblox_game rejects missing target cleanly
+                3 => json!({ "tool": "research_roblox_game", "args": {} }),
+                // Step 4: write findings and submit
+                4 => json!({
+                    "steps": [
+                        { "tool": "project_write_file", "args": { "path": "docs/research.md", "content": "Found MythicRate = 0.001 in src/shared/Rates.luau\n" } },
+                        { "tool": "submit_task", "args": { "task_id": "t1", "summary": "wrote research dossier" } }
+                    ],
+                    "done": true,
+                    "summary": "research submitted"
+                }),
+                _ => json!({ "done": true, "summary": "parked" }),
+            };
+        }
+        let all_text = msgs.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
+        if all_text.contains("Task t1 (")
+            && !msgs.iter().any(|m| m["role"] == "assistant" && m["content"].as_str().unwrap_or("").contains("\"t1\""))
+        {
+            return json!({ "tool": "verify_task", "args": { "task_id": "t1", "passed": true, "notes": "verified research doc" } });
+        }
+        json!({ "done": true, "summary": "verified" })
+    });
+
+    let (port, shared) = boot_server(data_dir, None);
+    let (st, _) = http(
+        port,
+        "POST",
+        "/api/config",
+        Some(&json!({ "base_url": stub.base_url, "model_id": "stub-model" })),
+    );
+    assert_eq!(st, 200);
+
+    let (st, created) = http(
+        port,
+        "POST",
+        "/api/teamwork",
+        Some(&json!({ "goal": "Verify research_roblox_game, web_search, web_fetch, project_grep", "roles": ["researcher", "verifier"], "max_concurrency": 2 })),
+    );
+    assert_eq!(st, 201, "{created}");
+    let run_id = created["run"]["id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut detail = Value::Null;
+    while Instant::now() < deadline {
+        let (_, d) = http(port, "GET", &format!("/api/teamwork/{run_id}"), None);
+        detail = d;
+        if detail["run"]["status"] == "completed" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    assert_eq!(detail["run"]["status"], "completed", "{detail}");
+
+    let (_, tr) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/researcher/trace"), None);
+    let trace = tr["trace"].as_array().unwrap();
+    assert!(trace.iter().any(|e| {
+        e["kind"] == "tool_result"
+            && e["data"]["tool"] == "project_grep"
+            && e["data"]["ok"] == true
+            && e["data"]["result"]["count"] == 1
+    }), "{trace:?}");
+    assert!(trace.iter().any(|e| {
+        e["kind"] == "tool_result"
+            && e["data"]["tool"] == "web_fetch"
+            && e["data"]["ok"] == false
+    }), "{trace:?}");
+    assert!(trace.iter().any(|e| {
+        e["kind"] == "tool_result"
+            && e["data"]["tool"] == "web_search"
+            && e["data"]["ok"] == false
+    }), "{trace:?}");
+    assert!(trace.iter().any(|e| {
+        e["kind"] == "tool_result"
+            && e["data"]["tool"] == "research_roblox_game"
+            && e["data"]["ok"] == false
+    }), "{trace:?}");
+
+    shared.teamwork.shutdown();
+}
