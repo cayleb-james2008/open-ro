@@ -647,9 +647,10 @@ fn research_roblox_game_synthesizes_8_dim_taste_dossier_and_persists_files() {
     assert!(saved_md.is_file());
     let md = std::fs::read_to_string(&saved_md).expect("read TASTE-DOSSIER.md");
     assert!(md.contains("Anime Card Battles: Rebirth"));
-    assert!(md.contains("CHAIN OVERDRIVE"));
-    assert!(md.contains("FUSION WEATHER STORMS"));
-    assert!(md.contains("sunlit anime floating archipelago"));
+    assert!(md.contains("server-authoritative"));
+    assert!(md.contains("Anti-Slop Rules"));
+    assert!(!md.contains("CHAIN OVERDRIVE"));
+    assert!(!md.contains("Torii Shrine"));
     assert!(!md.contains("Rune"));
 
     let _ = std::fs::remove_dir_all(&tmp);

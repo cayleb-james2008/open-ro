@@ -129,9 +129,7 @@ fn distill_prompt_for_local_model(raw: &str, max_chars: usize) -> String {
             || t.starts_with("8. ")
             || t.starts_with("- **Twist")
             || t.starts_with("- Anti-Slop")
-            || t.contains("roblox-market-taste")
-            || t.contains("Chain Overdrive")
-            || t.contains("Fusion Weather");
+            || t.contains("roblox-market-taste");
         if !high_signal {
             continue;
         }
@@ -189,7 +187,7 @@ pub fn system_prompt() -> String {
     format!(
         "You are OpenRO, a RoPilot-grade Roblox Studio Copilot agent that builds and edits complete Roblox games. \
 The user describes a game change in plain English and you inspect, author, and verify it. \
-Reply with exactly ONE JSON object per turn, no prose outside the JSON.\n\n\
+Reply with exactly ONE JSON object per turn, no prose outside the JSON. You may batch multiple tool calls in one turn with {{\"steps\": [{{\"tool\": \"...\", \"args\": {{...}}}}, ...], \"done\": true, \"summary\": \"...\"}} (aborts on first error).\n\n\
 VERIFIED GAME-SYSTEM SKILLS (instant battle-tested Roblox systems):\n{skill_lines}\n\
 STUDIO & WHOLE-GAME TOOLS:\n\
 - {{\"tool\": \"write_script\", \"args\": {{\"path\": \"ServerScriptService.Name\", \"skill\": \"<skill name>\"}}}} writes a generated skill script (\"use_generated\": true writes the most recent skill result)\n\
@@ -208,14 +206,81 @@ STUDIO & WHOLE-GAME TOOLS:\n\
 - {{\"tool\": \"screen_capture\", \"args\": {{}}}} captures the live Studio 3D viewport\n\
 - {{\"tool\": \"start_stop_play\", \"args\": {{\"mode\": \"start_play|run_server|stop\"}}}} controls live Studio play mode\n\
 - {{\"tool\": \"user_mouse_input\", \"args\": {{\"action\": \"click\", \"x\": 0.5, \"y\": 0.5}}}} and {{\"tool\": \"user_keyboard_input\", \"args\": {{\"key\": \"W\"}}}} send live input to Studio\n\
-- {{\"tool\": \"blender_generate\", \"args\": {{\"preset\": \"torii_gate|card_pedestal|colosseum_arch|cauldron|crystal_obelisk\", \"name\": \"ShrineGate\"}}}} generates a 3D .obj mesh + preview\n\
-- {{\"tool\": \"audio_generate\", \"args\": {{\"preset\": \"summon_roll|mythic_fanfare|battle_crit|potion_drink|ui_click|level_up\", \"name\": \"CritSfx\"}}}} synthesizes a 44.1kHz WAV SFX\n\
+\nPROJECT FILE, BUILD & VERIFICATION TOOLS (for Rojo projects on disk):\n\
+- {{\"tool\": \"project_list\", \"args\": {{}}}} lists workspace projects\n\
+- {{\"tool\": \"project_files\", \"args\": {{\"dir\": \"src\"}}}} lists files/dirs inside the active project\n\
+- {{\"tool\": \"project_read_file\", \"args\": {{\"path\": \"src/shared/Config.luau\", \"start_line\": 1, \"end_line\": 200}}}} reads a project file\n\
+- {{\"tool\": \"project_write_file\", \"args\": {{\"path\": \"src/server/Main.server.luau\", \"content\": \"...\"}}}} writes a project file (auto-checked by Static Luau Prover)\n\
+- {{\"tool\": \"project_edit_file\", \"args\": {{\"path\": \"src/server/Main.server.luau\", \"edits\": [{{\"old\": \"...\", \"new\": \"...\"}}]}}}} atomic multi-hunk edit (auto-checked)\n\
+- {{\"tool\": \"project_delete_file\", \"args\": {{\"path\": \"src/old.luau\"}}}} deletes a project file\n\
+- {{\"tool\": \"project_grep\", \"args\": {{\"query\": \"RemoteEvent\", \"dir\": \"src\"}}}} searches across project files\n\
+- {{\"tool\": \"project_update_manifest\", \"args\": {{\"patch\": {{\"assets\": {{\"authorised\": [\"art/cards/**\"]}}}}}}}} safely updates openro.project.json (cannot auto-approve product prices)\n\
+- {{\"tool\": \"project_check\", \"args\": {{}}}} runs selene, stylua --check, and static Luau checks across the project\n\
+- {{\"tool\": \"project_run_lune\", \"args\": {{\"script\": \"tools/sim.luau\"}}}} runs a project-relative Lune test/sim script with timeout\n\
+- {{\"tool\": \"project_build\", \"args\": {{\"engine\": \"auto\"}}}} builds the project to .rbxlx\n\
+- {{\"tool\": \"project_sync\", \"args\": {{\"prune\": false}}}} one-way syncs the project to Studio\n\
+- {{\"tool\": \"project_playtest\", \"args\": {{\"sync_first\": true, \"suite\": \"playtest/suite.json\"}}}} runs the Playtest Runner (checks, screenshots, console errors)\n\n\
+RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
+- {{\"tool\": \"research_roblox_game\", \"args\": {{\"target\": \"<place/universe id or URL>\"}}}} fetches real Roblox metadata & thumbnails into refs/<universeId>/\n\
+- {{\"tool\": \"web_search\", \"args\": {{\"query\": \"...\", \"limit\": 5}}}} and {{\"tool\": \"web_fetch\", \"args\": {{\"url\": \"https://...\"}}}} read-only public web research\n\
+- {{\"tool\": \"reference_search\", \"args\": {{\"query\": \"...\", \"character\": \"...\", \"show\": \"...\"}}}} gathers action reference shots into gitignored art/references/\n\
+- {{\"tool\": \"art_generate\", \"args\": {{\"prompt\": \"single-line eye-level three-quarter prompt\", \"out_path\": \"art/cards/x/art.png\", \"references\": [\"art/references/...\"]}}}} generates art (ChatGPT shared browser default; never Higgsfield)\n\
+- {{\"tool\": \"image_process\", \"args\": {{\"input\": \"...\", \"output\": \"...\", \"ops\": [...]}}}} crops/resizes/composites/removes background on PNGs\n\
+- {{\"tool\": \"art_pack_card\", \"args\": {{\"card_id\": \"...\"}}}} packs card art/icon/full variants + contact sheet\n\
+- {{\"tool\": \"mesh_generate\", \"args\": {{\"name\": \"PropName\", \"description\": \"...\", \"script\": \"...\"}}}} (alias `blender_generate`) generates smart-UV AO-baked .obj + PNG + manifest.json (<=20k tris) into assets/meshes/\n\
+- {{\"tool\": \"audio_generate\", \"args\": {{\"name\": \"SfxName\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}}}} synthesizes 44.1kHz WAV into assets/audio/\n\
+- {{\"tool\": \"assets_upload\", \"args\": {{\"paths\": [\"art/cards/x/art.png\"]}}}} uploads authorised assets via Open Cloud into assets.lock.json\n\
 - {{\"tool\": \"playtest\", \"args\": {{}}}} runs static + live playtest verification\n\
 - {{\"done\": true, \"summary\": \"...\"}} finishes.\n\n\
-Workflow (ONE JSON object per turn): For standard systems, call {{\"skill\": \"<name>\", \"args\": {{...}}}} then write_script; \
-for custom mechanics or modifications, inspect with script_read/search_game_tree and edit with write_luau or multi_edit; \
-then ALWAYS call {{\"tool\": \"playtest\", \"args\": {{}}}} to verify before {{\"done\": true, \"summary\": \"...\"}}.\n\
-Repair from console or Static Luau Prover diagnostics until the playtest passes.\n\n{}",
+3D, VFX & UI GUARDRAILS:\n\
+- PartType.Cylinder runs along its LOCAL X axis: upright columns/pillars MUST set Size = Vector3.new(height, diameter, diameter) with CFrame.Angles(0, 0, math.rad(90)).\n\
+- Mobile StreamingEnabled budgets: <=20,000 tris/mesh, <=40 active ParticleEmitters, <=12 non-shadow lights. Clean up every transient VFX/Part/Sound via Debris:AddItem or pooling.\n\
+- Respect Settings-only Light/Dark theme and FlashEnabled/ReducedMotion toggles; wire meshes via assets/meshes/manifest.json + src/shared/AssetIds.luau.\n\n\
+Workflow (ONE JSON object per turn): When a Rojo project is active, read docs/files with project_files/project_read_file/project_grep, author with project_write_file/project_edit_file, lint with project_check/project_run_lune, then sync & verify with project_sync/project_playtest before {{\"done\": true, \"summary\": \"...\"}}. For place-only builds, use skills/write_luau/multi_edit and playtest. Repair every lint or console error until verification passes.\n\n{}",
+        crate::art_knowledge::prompt_guidance()
+    )
+}
+
+/// Lean, high-signal system prompt used when an active Rojo project is open:
+/// drops legacy v0.9 canned skill essays to cut argv/token size by ~70% and
+/// enables batched `steps` execution (multiple tool actions per model turn).
+pub fn project_system_prompt() -> String {
+    format!(
+        "You are OpenRO, a Roblox Studio AI IDE agent working on an active Rojo project on disk. \
+Reply with ONLY one JSON object per turn — no prose outside the JSON.\n\n\
+BATCHED STEPS (RECOMMENDED — saves turns and quota):\n\
+You may execute multiple actions in one turn using:\n\
+{{\"steps\": [{{\"tool\": \"...\", \"args\": {{...}}}}, ...], \"done\": true, \"summary\": \"...\"}}\n\
+Steps run in order and abort immediately on the first error (returning all completed results plus the error). \
+Omit \"done\" if you need to inspect tool results before continuing. Single-step {{\"tool\": \"...\", \"args\": {{...}}}} and {{\"done\": true, \"summary\": \"...\"}} also work.\n\n\
+PROJECT FILE & BUILD TOOLS:\n\
+- project_list {{}}\n\
+- project_files {{\"dir\": \"src\"}}\n\
+- project_read_file {{\"path\": \"src/...\", \"start_line\": 1, \"end_line\": 200}}\n\
+- project_write_file {{\"path\": \"src/server/Main.server.luau\", \"content\": \"...\"}} (auto-checked by Static Luau Prover)\n\
+- project_edit_file {{\"path\": \"src/...\", \"edits\": [{{\"old\": \"...\", \"new\": \"...\"}}]}} (atomic multi-hunk edit)\n\
+- project_delete_file {{\"path\": \"src/old.luau\"}}\n\
+- project_grep {{\"query\": \"RemoteEvent\", \"dir\": \"src\"}}\n\
+- project_update_manifest {{\"patch\": {{...}}}} (safely updates openro.project.json; cannot auto-approve product prices)\n\
+- project_check {{}} (runs selene, stylua --check, static Luau checks)\n\
+- project_run_lune {{\"script\": \"tools/sim.luau\"}} (timeout-bounded Lune execution)\n\
+- project_build {{\"engine\": \"auto\"}} (.rbxlx build)\n\
+- project_sync {{\"prune\": false}} (one-way push sync to Studio)\n\
+- project_playtest {{\"sync_first\": true, \"suite\": \"playtest/suite.json\"}} (Playtest Runner checks, screenshots, console errors)\n\n\
+RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
+- research_roblox_game {{\"target\": \"<URL or place/universe ID>\"}} (real Roblox API facts + thumbs -> refs/<universeId>/)\n\
+- web_search {{\"query\": \"...\", \"limit\": 5}} / web_fetch {{\"url\": \"https://...\"}}\n\
+- reference_search {{\"query\": \"...\", \"character\": \"...\", \"show\": \"...\"}} (action references -> art/references/)\n\
+- art_generate {{\"prompt\": \"single-line eye-level neutral three-quarter prompt\", \"out_path\": \"art/cards/x/art.png\", \"references\": [...]}} (ChatGPT shared browser default; never Higgsfield)\n\
+- image_process {{\"input\": \"...\", \"output\": \"...\", \"ops\": [...]}} / art_pack_card {{\"card_id\": \"...\"}}\n\
+- mesh_generate {{\"name\": \"Prop\", \"description\": \"...\", \"script\": \"...\"}} (smart-UV AO-baked .obj + PNG + manifest.json <=20k tris -> assets/meshes/)\n\
+- audio_generate {{\"name\": \"Sfx\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}} (-> assets/audio/)\n\
+- assets_upload {{\"paths\": [...]}} (authorised Open Cloud upload -> assets.lock.json)\n\n\
+3D, VFX & UI GUARDRAILS:\n\
+- PartType.Cylinder runs along LOCAL X: upright pillars MUST set Size = Vector3.new(height, diameter, diameter) + CFrame.Angles(0, 0, math.rad(90)).\n\
+- Mobile StreamingEnabled budgets: <=20,000 tris/mesh, <=40 active ParticleEmitters, <=12 non-shadow lights. Clean up transient VFX/Parts/Sounds via Debris:AddItem or pooling.\n\
+- Enforce Settings-only Light/Dark theme and FlashEnabled/ReducedMotion toggles; wire meshes/art via assets/meshes/manifest.json and src/shared/AssetIds.luau.\n\
+- Batch related file writes together, then run project_check / project_run_lune and project_playtest (sync_first: true) before finishing.\n\n{}",
         crate::art_knowledge::prompt_guidance()
     )
 }
@@ -397,6 +462,40 @@ pub struct Agent {
     market_dossier_prompt: String,
     /// Root directory for generated 3D meshes (`blender_generate`) and `.wav` SFX (`audio_generate`).
     assets_root: Option<std::path::PathBuf>,
+    /// Active Rojo project root directory & id (for project-aware context and tools).
+    pub project_root: Option<std::path::PathBuf>,
+    pub project_id: Option<String>,
+    /// Pluggable hooks connecting `openro-core` (sync/playtest/build/check/lune)
+    /// and `openro-assets` (reference_search/art_generate/image_process/mesh/audio/upload).
+    pub hooks: AgentHooks,
+    /// Optional cooperative cancel flag checked between model steps.
+    cancel_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Optional per-step progress callback `(step_number, summary_line)`.
+    step_sink: Option<StepSink>,
+    /// Optional override for maximum agent steps in long runs.
+    max_steps_override: Option<usize>,
+}
+
+pub type HookFn = Arc<dyn Fn(&Value) -> Result<Value, String> + Send + Sync>;
+pub type StepSink = Arc<dyn Fn(usize, &str) + Send + Sync>;
+
+/// Optional callbacks injected by the server (or Teamwork) to route agent
+/// tools through `openro-core` and `openro-assets` without tight coupling.
+#[derive(Clone, Default)]
+pub struct AgentHooks {
+    pub project_list: Option<HookFn>,
+    pub project_build: Option<HookFn>,
+    pub project_sync: Option<HookFn>,
+    pub project_playtest: Option<HookFn>,
+    pub project_check: Option<HookFn>,
+    pub project_run_lune: Option<HookFn>,
+    pub reference_search: Option<HookFn>,
+    pub art_generate: Option<HookFn>,
+    pub image_process: Option<HookFn>,
+    pub art_pack_card: Option<HookFn>,
+    pub mesh_generate: Option<HookFn>,
+    pub audio_generate: Option<HookFn>,
+    pub assets_upload: Option<HookFn>,
 }
 
 impl Agent {
@@ -433,7 +532,46 @@ impl Agent {
             library_prompt: String::new(),
             market_dossier_prompt: String::new(),
             assets_root: None,
+            project_root: None,
+            project_id: None,
+            hooks: AgentHooks::default(),
+            cancel_flag: None,
+            step_sink: None,
+            max_steps_override: None,
         }
+    }
+
+    pub fn set_project(&mut self, root: Option<std::path::PathBuf>, id: Option<String>) {
+        self.project_root = root;
+        self.project_id = id;
+    }
+
+    pub fn effective_project_root(&self) -> Option<std::path::PathBuf> {
+        if let Some(root) = &self.project_root {
+            if root.is_dir() {
+                return Some(root.clone());
+            }
+        }
+        std::env::var("OPENRO_PROJECT_DIR")
+            .ok()
+            .map(|s| std::path::PathBuf::from(s.trim()))
+            .filter(|p| p.is_dir())
+    }
+
+    pub fn set_hooks(&mut self, hooks: AgentHooks) {
+        self.hooks = hooks;
+    }
+
+    pub fn set_cancel_flag(&mut self, flag: Option<Arc<std::sync::atomic::AtomicBool>>) {
+        self.cancel_flag = flag;
+    }
+
+    pub fn set_step_sink(&mut self, sink: Option<StepSink>) {
+        self.step_sink = sink;
+    }
+
+    pub fn set_max_steps_override(&mut self, max_steps: Option<usize>) {
+        self.max_steps_override = max_steps;
     }
 
     pub fn set_assets_root(&mut self, root: std::path::PathBuf) {
@@ -465,8 +603,11 @@ impl Agent {
     /// is never truncated by a small context window; remote/frontier models receive the
     /// complete unabridged dossier.
     pub fn effective_system_prompt(&self) -> String {
+        if self.effective_project_root().is_some() {
+            return project_system_prompt();
+        }
         let mut out = system_prompt();
-        let compact = self.model.is_loopback();
+        let compact = self.model.is_loopback() && !self.model.is_antigravity();
         if !self.library_prompt.trim().is_empty() {
             out.push_str("\n\n");
             if compact {
@@ -2517,18 +2658,22 @@ impl Agent {
         }
 
         // Inject compact Whole-Game Context Summary + requested context_paths on turn 1.
-        let compact = self.model.is_loopback();
-        let turn1_user = match self.place_tree().ok() {
-            Some(tree) => {
-                let ctx = build_whole_game_context(&tree, &opts.context_paths, compact);
-                if ctx.is_empty() {
-                    ask.to_string()
-                } else {
-                    format!("{ask}\n\n{ctx}")
-                }
+        let compact = self.model.is_loopback() && !self.model.is_antigravity();
+        let mut turn1_parts = vec![ask.to_string()];
+        if let Some(proj_root) = self.effective_project_root() {
+            let budget = if compact { 2_400 } else { 14_000 };
+            let pctx = build_project_context(&proj_root, ask, &opts.context_paths, budget);
+            if !pctx.is_empty() {
+                turn1_parts.push(pctx);
             }
-            None => ask.to_string(),
-        };
+        }
+        if let Ok(tree) = self.place_tree() {
+            let ctx = build_whole_game_context(&tree, &opts.context_paths, compact);
+            if !ctx.is_empty() {
+                turn1_parts.push(ctx);
+            }
+        }
+        let turn1_user = turn1_parts.join("\n\n");
 
         let mut messages = vec![
             json!({ "role": "system", "content": full_system }),
@@ -2550,7 +2695,21 @@ impl Agent {
         let mut gate_sentence: Option<String> = None;
         let mut last_written: Option<String> = None;
 
-        for _ in 0..MAX_STEPS {
+        let step_limit = self.max_steps_override.unwrap_or(MAX_STEPS).clamp(4, 120);
+        let mut consecutive_parse_errors = 0usize;
+        for step_idx in 0..step_limit {
+            if self
+                .cancel_flag
+                .as_ref()
+                .is_some_and(|f| f.load(std::sync::atomic::Ordering::SeqCst))
+            {
+                return Err(fail(
+                    "Run was cancelled.".to_string(),
+                    &thread,
+                    &transcript,
+                    &skills_used,
+                ));
+            }
             let content = match self.model.chat(&messages) {
                 Ok(c) => c,
                 Err(e) => return Err(fail(e, &thread, &transcript, &skills_used)),
@@ -2558,25 +2717,279 @@ impl Agent {
             messages.push(json!({ "role": "assistant", "content": content }));
             transcript.push(format!("model step: {content}"));
             let step = match parse_step(&content) {
-                Ok(s) => s,
+                Ok(s) => {
+                    consecutive_parse_errors = 0;
+                    s
+                }
                 Err(e) => {
-                    transcript.push(format!("unparseable model step: {e}"));
+                    consecutive_parse_errors += 1;
+                    transcript.push(format!("unparseable model step ({consecutive_parse_errors}): {e}"));
+                    if consecutive_parse_errors >= 4 {
+                        return Err(fail(
+                            format!("The model did not finish within {consecutive_parse_errors} attempts (repeatedly sent invalid JSON steps). Last error: {e}"),
+                            &thread,
+                            &transcript,
+                            &skills_used,
+                        ));
+                    }
                     messages.push(json!({
                         "role": "user",
-                        "content": format!("That step could not be read: {e}. Reply with exactly one JSON step: a skill, a tool, or done.")
+                        "content": format!(
+                            "Format error: {e}. Reply with ONLY one valid JSON object on a single message — no prose or markdown outside the JSON — e.g. {{\"tool\":\"project_read_file\",\"args\":{{\"path\":\"...\"}}}} or {{\"done\":true,\"summary\":\"...\"}}."
+                        )
                     }));
                     continue;
                 }
             };
+            if let Some(sink) = &self.step_sink {
+                let label = step
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .map(|t| format!("tool:{t}"))
+                    .or_else(|| step.get("skill").and_then(|v| v.as_str()).map(|k| format!("skill:{k}")))
+                    .unwrap_or_else(|| if step.get("done").and_then(|v| v.as_bool()) == Some(true) { "done".to_string() } else { "step".to_string() });
+                sink(step_idx + 1, &label);
+            }
 
-            if step.get("done").and_then(|d| d.as_bool()) == Some(true) {
-                if unproven_changes && !staged && !read_only {
-                    transcript.push("done refused: changes are unproven by a playtest".to_string());
+            if let Some(batch) = step.get("steps").and_then(|v| v.as_array()) {
+                if batch.is_empty() {
                     messages.push(json!({
                         "role": "user",
-                        "content": "You changed the game but no playtest has passed since the last change. Run a playtest before finishing — OpenRO only calls work done once it is proven."
+                        "content": "Empty steps array. Provide at least one tool/skill step or {\"done\": true, \"summary\": \"...\"}."
                     }));
                     continue;
+                }
+                let mut results: Vec<String> = Vec::new();
+                let mut batch_failed = false;
+                for (b_idx, sub) in batch.iter().take(24).enumerate() {
+                    if self
+                        .cancel_flag
+                        .as_ref()
+                        .is_some_and(|f| f.load(std::sync::atomic::Ordering::SeqCst))
+                    {
+                        return Err(fail("Run was cancelled.".to_string(), &thread, &transcript, &skills_used));
+                    }
+                    let Some(tool) = sub.get("tool").and_then(|v| v.as_str()) else {
+                        results.push(format!("step[{b_idx}] error: missing 'tool' string"));
+                        batch_failed = true;
+                        break;
+                    };
+                    let args = sub.get("args").cloned().unwrap_or(json!({}));
+                    if read_only && !is_read_only_tool(tool) {
+                        results.push(format!("step[{b_idx}] {tool} refused: ask mode is read-only"));
+                        batch_failed = true;
+                        break;
+                    }
+                    match tool {
+                        "write_luau" => match self.run_write_luau(
+                            &args,
+                            &mut transcript,
+                            &mut thread,
+                            &mut writes,
+                            last_failed_console.as_deref(),
+                        ) {
+                            Ok(note) => {
+                                changes_made += 1;
+                                unproven_changes = true;
+                                self.note_change(chat_id);
+                                last_written = args.get("path").and_then(|v| v.as_str()).map(String::from);
+                                results.push(format!("step[{b_idx}] {note}"));
+                            }
+                            Err(e) => {
+                                problems.push(format!("batch step {b_idx} ({tool}) failed: {e}"));
+                                results.push(format!("step[{b_idx}] error: {e}"));
+                                batch_failed = true;
+                                break;
+                            }
+                        },
+                        "multi_edit" => match self.run_multi_edit(
+                            &args,
+                            &mut transcript,
+                            &mut thread,
+                            &mut writes,
+                            last_failed_console.as_deref(),
+                        ) {
+                            Ok(note) => {
+                                changes_made += 1;
+                                unproven_changes = true;
+                                self.note_change(chat_id);
+                                last_written = args.get("path").and_then(|v| v.as_str()).map(String::from);
+                                results.push(format!("step[{b_idx}] {note}"));
+                            }
+                            Err(e) => {
+                                problems.push(format!("batch step {b_idx} ({tool}) failed: {e}"));
+                                results.push(format!("step[{b_idx}] error: {e}"));
+                                batch_failed = true;
+                                break;
+                            }
+                        },
+                        "playtest" => match self.run_playtest(&mut transcript, &mut thread) {
+                            Ok(PlaytestOutcome::Passed(note)) => {
+                                unproven_changes = false;
+                                self.record_verdict(chat_id, &PlaytestOutcome::Passed(note.clone()));
+                                results.push(format!("step[{b_idx}] {note}"));
+                            }
+                            Ok(PlaytestOutcome::Failed(_note, console)) => {
+                                failed_playtests += 1;
+                                last_failed_console = Some(console.clone());
+                                self.record_verdict(chat_id, &PlaytestOutcome::Failed("failed".to_string(), console.clone()));
+                                if failed_playtests >= MAX_REPAIRS {
+                                    return Err(fail(
+                                        format!("playtest still failing after {failed_playtests} attempts. Console: {console}"),
+                                        &thread,
+                                        &transcript,
+                                        &skills_used,
+                                    ));
+                                }
+                                results.push(format!("step[{b_idx}] playtest FAILED: {console}"));
+                                batch_failed = true;
+                                break;
+                            }
+                            Ok(PlaytestOutcome::Unreadable(_note, raw)) => {
+                                results.push(format!("step[{b_idx}] playtest unreadable: {raw}"));
+                                batch_failed = true;
+                                break;
+                            }
+                            Err(e) => {
+                                results.push(format!("step[{b_idx}] playtest error: {e}"));
+                                batch_failed = true;
+                                break;
+                            }
+                        },
+                        "project_playtest" => match self.run_project_playtest(&args, &mut transcript, &mut thread) {
+                            Ok((true, note)) => {
+                                unproven_changes = false;
+                                self.record_verdict(chat_id, &PlaytestOutcome::Passed(note.clone()));
+                                results.push(format!("step[{b_idx}] {note}"));
+                            }
+                            Ok((false, console)) => {
+                                failed_playtests += 1;
+                                last_failed_console = Some(console.clone());
+                                self.record_verdict(chat_id, &PlaytestOutcome::Failed("failed".to_string(), console.clone()));
+                                if failed_playtests >= MAX_REPAIRS {
+                                    return Err(fail(
+                                        format!("project_playtest still failing after {failed_playtests} attempts. Console/check output: {console}"),
+                                        &thread,
+                                        &transcript,
+                                        &skills_used,
+                                    ));
+                                }
+                                results.push(format!("step[{b_idx}] project_playtest FAILED: {console}"));
+                                batch_failed = true;
+                                break;
+                            }
+                            Err(e) => {
+                                results.push(format!("step[{b_idx}] project_playtest error: {e}"));
+                                batch_failed = true;
+                                break;
+                            }
+                        },
+                        other => match self.run_tool(other, &args, &mut transcript, &mut thread) {
+                            Ok(note) => {
+                                if matches!(
+                                    other,
+                                    "delete_script"
+                                        | "create_instance"
+                                        | "delete_instance"
+                                        | "project_write_file"
+                                        | "project_edit_file"
+                                        | "project_delete_file"
+                                        | "project_update_manifest"
+                                ) {
+                                    changes_made += 1;
+                                    let path_arg = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                                    let needs_playtest = !matches!(other, "project_update_manifest")
+                                        && (matches!(other, "delete_script" | "create_instance" | "delete_instance")
+                                            || path_arg.ends_with(".luau")
+                                            || path_arg.ends_with(".lua")
+                                            || path_arg == "default.project.json");
+                                    if needs_playtest {
+                                        unproven_changes = true;
+                                        self.note_change(chat_id);
+                                    }
+                                } else if matches!(
+                                    other,
+                                    "art_generate"
+                                        | "image_process"
+                                        | "art_pack_card"
+                                        | "mesh_generate"
+                                        | "blender_generate"
+                                        | "audio_generate"
+                                        | "assets_upload"
+                                ) {
+                                    changes_made += 1;
+                                }
+                                results.push(format!("step[{b_idx}] {note}"));
+                            }
+                            Err(e) => {
+                                problems.push(format!("batch step {b_idx} ({other}) failed: {e}"));
+                                transcript.push(format!("batch step {b_idx} ({other}) error: {e}"));
+                                results.push(format!("step[{b_idx}] {other} error: {e} (remaining steps in batch aborted)"));
+                                batch_failed = true;
+                                break;
+                            }
+                        },
+                    }
+                }
+                let wants_done = step.get("done").and_then(|d| d.as_bool()) == Some(true);
+                if batch_failed || !wants_done {
+                    messages.push(json!({
+                        "role": "user",
+                        "content": format!("batch_results:\n{}", results.join("\n"))
+                    }));
+                    continue;
+                }
+                // All steps in the batch succeeded AND the model also set `"done": true` — fall through to the done gate!
+            }
+            if step.get("done").and_then(|d| d.as_bool()) == Some(true) {
+                if unproven_changes && !staged && !read_only {
+                    if self.effective_project_root().is_some() {
+                        match self.run_project_playtest(
+                            &json!({ "sync_first": true }),
+                            &mut transcript,
+                            &mut thread,
+                        ) {
+                            Ok((true, _note)) => {
+                                self.record_verdict(chat_id, &PlaytestOutcome::Passed("ok".to_string()));
+                            }
+                            Ok((false, console)) => {
+                                failed_playtests += 1;
+                                last_failed_console = Some(console.clone());
+                                self.record_verdict(
+                                    chat_id,
+                                    &PlaytestOutcome::Failed("failed".to_string(), console.clone()),
+                                );
+                                if failed_playtests >= MAX_REPAIRS {
+                                    return Err(fail(
+                                        format!("auto-verify playtest still failing after {failed_playtests} attempts. Console/check output: {console}"),
+                                        &thread,
+                                        &transcript,
+                                        &skills_used,
+                                    ));
+                                }
+                                messages.push(json!({
+                                    "role": "user",
+                                    "content": format!("Auto-verify Playtest Runner failed before finishing. Fix these errors and re-verify:\n{console}")
+                                }));
+                                continue;
+                            }
+                            Err(e) => {
+                                transcript.push(format!("auto-verify unavailable: {e}"));
+                                messages.push(json!({
+                                    "role": "user",
+                                    "content": format!("Automatic project playtest failed to run ({e}). Run project_check or project_playtest before finishing.")
+                                }));
+                                continue;
+                            }
+                        }
+                    } else {
+                        transcript.push("done refused: changes are unproven by a playtest".to_string());
+                        messages.push(json!({
+                            "role": "user",
+                            "content": "You changed the game but no playtest has passed since the last change. Run a playtest before finishing — OpenRO only calls work done once it is proven."
+                        }));
+                        continue;
+                    }
                 }
                 let s = step
                     .get("summary")
@@ -2888,15 +3301,79 @@ impl Agent {
                     }
                     continue;
                 }
+                if tool == "project_playtest" {
+                    match self.run_project_playtest(&args, &mut transcript, &mut thread) {
+                        Ok((true, note)) => {
+                            unproven_changes = false;
+                            self.record_verdict(chat_id, &PlaytestOutcome::Passed(note.clone()));
+                            messages.push(json!({ "role": "user", "content": note }));
+                        }
+                        Ok((false, console)) => {
+                            failed_playtests += 1;
+                            last_failed_console = Some(console.clone());
+                            self.record_verdict(
+                                chat_id,
+                                &PlaytestOutcome::Failed("project_playtest failed".to_string(), console.clone()),
+                            );
+                            transcript.push(format!("repair attempt {failed_playtests}: project_playtest failed"));
+                            if failed_playtests >= MAX_REPAIRS {
+                                return Err(fail(
+                                    format!("project_playtest still failing after {failed_playtests} attempts. Console/check output: {console}"),
+                                    &thread,
+                                    &transcript,
+                                    &skills_used,
+                                ));
+                            }
+                            messages.push(json!({
+                                "role": "user",
+                                "content": format!("tool_result: project_playtest FAILED. Inspect the errors below, repair the scripts/files, and re-run project_playtest:\n{console}")
+                            }));
+                        }
+                        Err(e) => {
+                            problems.push(format!("project playtest failed: {e}"));
+                            transcript.push(format!("tool project_playtest error: {e}"));
+                            messages.push(json!({
+                                "role": "user",
+                                "content": format!("tool_result: error: {e}")
+                            }));
+                        }
+                    }
+                    continue;
+                }
                 match self.run_tool(tool, &args, &mut transcript, &mut thread) {
                     Ok(note) => {
                         if matches!(
                             tool,
-                            "delete_script" | "create_instance" | "delete_instance"
+                            "delete_script"
+                                | "create_instance"
+                                | "delete_instance"
+                                | "project_write_file"
+                                | "project_edit_file"
+                                | "project_delete_file"
+                                | "project_update_manifest"
                         ) {
                             changes_made += 1;
-                            unproven_changes = true;
-                            self.note_change(chat_id);
+                            let path_arg = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                            let needs_playtest = !matches!(tool, "project_update_manifest")
+                                && (matches!(tool, "delete_script" | "create_instance" | "delete_instance")
+                                    || path_arg.ends_with(".luau")
+                                    || path_arg.ends_with(".lua")
+                                    || path_arg == "default.project.json");
+                            if needs_playtest {
+                                unproven_changes = true;
+                                self.note_change(chat_id);
+                            }
+                        } else if matches!(
+                            tool,
+                            "art_generate"
+                                | "image_process"
+                                | "art_pack_card"
+                                | "mesh_generate"
+                                | "blender_generate"
+                                | "audio_generate"
+                                | "assets_upload"
+                        ) {
+                            changes_made += 1;
                         }
                         messages.push(json!({ "role": "user", "content": note }));
                     }
@@ -3593,21 +4070,277 @@ impl Agent {
                 transcript.push(format!("tool {tool} -> {text}"));
                 Ok(format!("tool_result: {tool}: {text}"))
             }
-            "blender_generate" => {
-                let root = self.effective_assets_root();
-                let res = crate::library::generate_blender_mesh(&root, args, None)?;
+            "project_list" => {
+                let res = if let Some(hook) = &self.hooks.project_list {
+                    hook(args)?
+                } else if let Some(root) = self.effective_project_root() {
+                    json!({
+                        "ok": true,
+                        "active": self.project_id,
+                        "projects": [{
+                            "id": self.project_id.clone().unwrap_or_else(|| "active".to_string()),
+                            "path": root.to_string_lossy(),
+                        }]
+                    })
+                } else {
+                    json!({ "ok": true, "active": null, "projects": [] })
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool project_list -> {text}"));
+                Ok(format!("tool_result: project_list: {text}"))
+            }
+            "project_files" => {
+                let root = self.require_project_root()?;
+                let dir = args.get("dir").and_then(|v| v.as_str()).unwrap_or("");
+                let res = project_files_list(&root, dir)?;
+                let text = res.to_string();
+                transcript.push(format!("tool project_files({dir}) -> {} entries", res["entries"].as_array().map(|a| a.len()).unwrap_or(0)));
+                Ok(format!("tool_result: project_files: {text}"))
+            }
+            "project_read_file" => {
+                let root = self.require_project_root()?;
+                let rel = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or("project_read_file needs args.path")?;
+                let start = args.get("start_line").and_then(|v| v.as_u64()).map(|n| n as usize);
+                let end = args.get("end_line").and_then(|v| v.as_u64()).map(|n| n as usize);
+                let res = project_read_file(&root, rel, start, end)?;
+                let text = res.to_string();
+                transcript.push(format!("tool project_read_file {rel} ({} bytes)", res["bytes"]));
+                Ok(format!("tool_result: project_read_file: {text}"))
+            }
+            "project_write_file" => {
+                let root = self.require_project_root()?;
+                let rel = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or("project_write_file needs args.path")?;
+                let content = args
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or("project_write_file needs args.content")?;
+                let expect = args.get("expect_sha256").and_then(|v| v.as_str());
+                let res = project_write_file(&root, rel, content, expect)?;
+                let text = res.to_string();
+                transcript.push(format!("tool project_write_file {rel} ({} bytes)", res["bytes"]));
+                thread.push(format!("Wrote project file {rel}."));
+                Ok(format!("tool_result: project_write_file: {text}"))
+            }
+            "project_edit_file" => {
+                let root = self.require_project_root()?;
+                let rel = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or("project_edit_file needs args.path")?;
+                let edits = args
+                    .get("edits")
+                    .and_then(|v| v.as_array())
+                    .ok_or("project_edit_file needs args.edits array")?;
+                let expect = args.get("expect_sha256").and_then(|v| v.as_str());
+                let res = project_edit_file(&root, rel, edits, expect)?;
+                let text = res.to_string();
+                transcript.push(format!("tool project_edit_file {rel} ({} edits)", res["edits"]));
+                thread.push(format!("Edited project file {rel}."));
+                Ok(format!("tool_result: project_edit_file: {text}"))
+            }
+            "project_delete_file" => {
+                let root = self.require_project_root()?;
+                let rel = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .ok_or("project_delete_file needs args.path")?;
+                let res = project_delete_file(&root, rel)?;
+                let text = res.to_string();
+                transcript.push(format!("tool project_delete_file {rel}"));
+                thread.push(format!("Deleted project file {rel}."));
+                Ok(format!("tool_result: project_delete_file: {text}"))
+            }
+            "project_grep" => {
+                let root = self.require_project_root()?;
+                let query = args
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or("project_grep needs args.query")?;
+                let dir = args.get("dir").and_then(|v| v.as_str()).unwrap_or("");
+                let max_m = args.get("max_matches").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+                let res = project_grep_files(&root, query, dir, max_m)?;
+                let text = res.to_string();
+                transcript.push(format!("tool project_grep({query}) -> {} matches", res["count"]));
+                Ok(format!("tool_result: project_grep: {text}"))
+            }
+            "project_update_manifest" => {
+                let root = self.require_project_root()?;
+                let patch = args.get("patch").unwrap_or(args);
+                let res = project_update_manifest_safe(&root, patch)?;
+                let text = res.to_string();
+                transcript.push("tool project_update_manifest succeeded".to_string());
+                thread.push("Updated openro.project.json manifest (prices remain unapproved until owner approval).".to_string());
+                Ok(format!("tool_result: project_update_manifest: {text}"))
+            }
+            "project_check" => {
+                let res = if let Some(hook) = &self.hooks.project_check {
+                    hook(args)?
+                } else {
+                    let root = self.require_project_root()?;
+                    project_check_local(&root)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool project_check -> passed={}", res["passed"]));
+                Ok(format!("tool_result: project_check: {text}"))
+            }
+            "project_run_lune" => {
+                let res = if let Some(hook) = &self.hooks.project_run_lune {
+                    hook(args)?
+                } else {
+                    let root = self.require_project_root()?;
+                    project_run_lune_local(&root, args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool project_run_lune -> exit={}", res["exit_code"]));
+                Ok(format!("tool_result: project_run_lune: {text}"))
+            }
+            "project_build" => {
+                let res = if let Some(hook) = &self.hooks.project_build {
+                    hook(args)?
+                } else {
+                    let root = self.require_project_root()?;
+                    project_build_local(&root, args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool project_build -> {text}"));
+                thread.push("Built project .rbxlx.".to_string());
+                Ok(format!("tool_result: project_build: {text}"))
+            }
+            "project_sync" => {
+                let res = if let Some(hook) = &self.hooks.project_sync {
+                    hook(args)?
+                } else {
+                    let root = self.require_project_root()?;
+                    self.project_sync_local(&root, args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool project_sync -> {text}"));
+                thread.push("Synced project files to Studio.".to_string());
+                Ok(format!("tool_result: project_sync: {text}"))
+            }
+            "research_roblox_game" => {
+                let target = args
+                    .get("target")
+                    .or_else(|| args.get("url"))
+                    .or_else(|| args.get("place_id"))
+                    .or_else(|| args.get("universe_id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or("research_roblox_game needs args.target (Roblox game URL, place ID, or universe ID)")?;
+                let niche = args.get("niche").and_then(|v| v.as_str());
+                let res = if let Some(proj) = self.effective_project_root() {
+                    crate::market_taste::research_roblox_game_to_project(&proj, target, niche)?
+                } else {
+                    let root = self.effective_assets_root();
+                    crate::market_taste::research_roblox_game(&root, target, niche)?
+                };
+                let name = res.get("name").and_then(|v| v.as_str()).unwrap_or(target);
+                let text = res.to_string();
+                transcript.push(format!("tool research_roblox_game({target}) -> {name}"));
+                thread.push(format!("Researched Roblox game {name}."));
+                Ok(format!("tool_result: research_roblox_game: {text}"))
+            }
+            "web_fetch" => {
+                let url = args
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .ok_or("web_fetch needs args.url")?;
+                let max_chars = args.get("max_chars").and_then(|v| v.as_u64()).unwrap_or(12_000) as usize;
+                let res = crate::market_taste::web_fetch(url, max_chars)?;
+                let text = res.to_string();
+                transcript.push(format!("tool web_fetch({url}) -> {} bytes", res["bytes"]));
+                Ok(format!("tool_result: web_fetch: {text}"))
+            }
+            "web_search" => {
+                let query = args
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or("web_search needs args.query")?;
+                let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(6) as usize;
+                let res = crate::market_taste::web_search(query, limit)?;
+                let text = res.to_string();
+                transcript.push(format!("tool web_search({query}) -> {} results", res["count"]));
+                Ok(format!("tool_result: web_search: {text}"))
+            }
+            "reference_search" => {
+                let hook = self.hooks.reference_search.as_ref().ok_or(
+                    "reference_search tool is not connected on this server instance yet (needs openro-assets hook).",
+                )?;
+                let res = hook(args)?;
+                let text = res.to_string();
+                transcript.push(format!("tool reference_search -> {text}"));
+                Ok(format!("tool_result: reference_search: {text}"))
+            }
+            "art_generate" => {
+                let hook = self.hooks.art_generate.as_ref().ok_or(
+                    "art_generate tool is not connected on this server instance yet (needs openro-assets hook).",
+                )?;
+                let res = hook(args)?;
+                let text = res.to_string();
+                transcript.push(format!("tool art_generate -> {text}"));
+                thread.push("Generated artwork.".to_string());
+                Ok(format!("tool_result: art_generate: {text}"))
+            }
+            "image_process" => {
+                let hook = self.hooks.image_process.as_ref().ok_or(
+                    "image_process tool is not connected on this server instance yet (needs openro-assets hook).",
+                )?;
+                let res = hook(args)?;
+                let text = res.to_string();
+                transcript.push(format!("tool image_process -> {text}"));
+                Ok(format!("tool_result: image_process: {text}"))
+            }
+            "art_pack_card" => {
+                let hook = self.hooks.art_pack_card.as_ref().ok_or(
+                    "art_pack_card tool is not connected on this server instance yet (needs openro-assets hook).",
+                )?;
+                let res = hook(args)?;
+                let text = res.to_string();
+                transcript.push(format!("tool art_pack_card -> {text}"));
+                Ok(format!("tool_result: art_pack_card: {text}"))
+            }
+            "assets_upload" => {
+                let hook = self.hooks.assets_upload.as_ref().ok_or(
+                    "assets_upload tool is not connected on this server instance yet (configure Open Cloud in Settings).",
+                )?;
+                let res = hook(args)?;
+                let text = res.to_string();
+                transcript.push(format!("tool assets_upload -> {text}"));
+                thread.push("Uploaded authorised assets to Roblox Open Cloud.".to_string());
+                Ok(format!("tool_result: assets_upload: {text}"))
+            }
+            "blender_generate" | "mesh_generate" => {
+                let res = if let Some(hook) = &self.hooks.mesh_generate {
+                    hook(args)?
+                } else {
+                    let root = self
+                        .effective_project_root()
+                        .unwrap_or_else(|| self.effective_assets_root());
+                    crate::library::generate_blender_mesh(&root, args, None)?
+                };
                 let text = res.to_string();
                 let name = res
                     .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("3D mesh");
-                transcript.push(format!("tool blender_generate -> {text}"));
+                transcript.push(format!("tool {tool} -> {text}"));
                 thread.push(format!("Generated 3D mesh {name}."));
-                Ok(format!("tool_result: blender_generate: {text}"))
+                Ok(format!("tool_result: {tool}: {text}"))
             }
             "audio_generate" => {
-                let root = self.effective_assets_root();
-                let res = crate::audio_synth::generate_audio_asset(&root, args)?;
+                let res = if let Some(hook) = &self.hooks.audio_generate {
+                    hook(args)?
+                } else {
+                    let root = self
+                        .effective_project_root()
+                        .unwrap_or_else(|| self.effective_assets_root());
+                    crate::audio_synth::generate_audio_asset(&root, args)?
+                };
                 let text = res.to_string();
                 let name = res
                     .get("name")
@@ -4277,7 +5010,6 @@ fn plain_bridge(e: &str) -> String {
 }
 
 pub fn parse_step(content: &str) -> Result<Value, String> {
-    // Strip optional <think>...</think> reasoning prefixes emitted by reasoning models.
     let mut cleaned = content.trim();
     while let Some(after_open) = cleaned.strip_prefix("<think>") {
         if let Some(end_idx) = after_open.find("</think>") {
@@ -4286,25 +5018,120 @@ pub fn parse_step(content: &str) -> Result<Value, String> {
             break;
         }
     }
-    // Try direct JSON parse first.
+    if let Some(rest) = cleaned.strip_prefix("```") {
+        let after_lang = rest.find('\n').map(|i| &rest[i + 1..]).unwrap_or(rest);
+        if let Some(end) = after_lang.rfind("```") {
+            cleaned = after_lang[..end].trim();
+        }
+    }
     if let Ok(v) = serde_json::from_str::<Value>(cleaned) {
         if v.is_object() {
             return Ok(v);
         }
     }
-    // Extract the first balanced JSON object (handles ```json fences and trailing text/steps).
-    let mut scan = cleaned;
+    if let Some(v) = scan_first_json_object(cleaned) {
+        return Ok(v);
+    }
+    let repaired = repair_llm_json(cleaned);
+    if let Ok(v) = serde_json::from_str::<Value>(&repaired) {
+        if v.is_object() {
+            return Ok(v);
+        }
+    }
+    if let Some(v) = scan_first_json_object(&repaired) {
+        return Ok(v);
+    }
+    let preview: String = content.trim().chars().take(240).collect();
+    Err(format!("model reply was not a JSON step: {preview}"))
+}
+
+fn scan_first_json_object(text: &str) -> Option<Value> {
+    let mut scan = text;
     while let Some(start) = scan.find('{') {
         let slice = &scan[start..];
         let mut de = serde_json::Deserializer::from_str(slice).into_iter::<Value>();
         if let Some(Ok(v)) = de.next() {
             if v.is_object() {
-                return Ok(v);
+                return Some(v);
             }
         }
         scan = &slice[1..];
     }
-    Err(format!("model reply was not a JSON step: {content}"))
+    None
+}
+
+fn repair_llm_json(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len() + 32);
+    let mut in_str = false;
+    let mut esc = false;
+    for ch in raw.chars() {
+        if in_str {
+            if esc {
+                out.push(ch);
+                esc = false;
+                continue;
+            }
+            match ch {
+                '\\' => {
+                    out.push(ch);
+                    esc = true;
+                }
+                '"' => {
+                    out.push(ch);
+                    in_str = false;
+                }
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => {}
+                c => out.push(c),
+            }
+        } else {
+            if ch == '"' {
+                in_str = true;
+            }
+            out.push(ch);
+        }
+    }
+    let chars: Vec<char> = out.chars().collect();
+    let mut clean = String::with_capacity(out.len());
+    let mut in_s = false;
+    let mut e = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_s {
+            clean.push(c);
+            if e {
+                e = false;
+            } else if c == '\\' {
+                e = true;
+            } else if c == '"' {
+                in_s = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            in_s = true;
+            clean.push(c);
+            i += 1;
+            continue;
+        }
+        if c == ',' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < chars.len() && (chars[j] == '}' || chars[j] == ']') {
+                i += 1;
+                continue;
+            }
+        }
+        clean.push(c);
+        i += 1;
+    }
+    clean
 }
 
 /// Extract optional inline Rune skill parameters passed inside a combined
@@ -4395,6 +5222,16 @@ fn is_read_only_tool(tool: &str) -> bool {
             | "get_console"
             | "list_roblox_studios"
             | "get_studio_state"
+            | "project_list"
+            | "project_files"
+            | "project_read_file"
+            | "project_grep"
+            | "project_check"
+            | "project_run_lune"
+            | "research_roblox_game"
+            | "web_fetch"
+            | "web_search"
+            | "reference_search"
     )
 }
 
@@ -4511,4 +5348,1376 @@ fn build_whole_game_context(tree: &Value, context_paths: &[String], compact: boo
     }
 
     out
+}
+
+// ============================================================================
+// P1: Project-aware context, safe project file tools, project verification,
+// and Plan -> Execute long runs with checkpoints, resume & FIFO run queue.
+// ============================================================================
+
+impl Agent {
+    fn require_project_root(&self) -> Result<std::path::PathBuf, String> {
+        self.effective_project_root().ok_or_else(|| {
+            "No active Rojo project is open. Open or create a project first (or pass project_root)."
+                .to_string()
+        })
+    }
+
+    fn project_sync_local(&mut self, root: &std::path::Path, args: &Value) -> Result<Value, String> {
+        let prune = args.get("prune").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        // When a live Studio MCP bridge is attached, use openro-core's real chunked push-sync directly (zero deadlock).
+        if let Some(PlaceBackend::Mcp(mcp)) = self.studio.as_mut() {
+            let manifest = crate::projects::manifest(root)?;
+            let rojo = manifest["rojoProject"]
+                .as_str()
+                .unwrap_or(crate::projects::DEFAULT_ROJO_FILE)
+                .to_string();
+            let tree = crate::projects::load_tree(root, &rojo)?;
+            let flat = crate::studio_sync::ordered(tree.flatten());
+            let d = crate::studio_sync::diff(mcp, &flat)?;
+            if dry_run {
+                return Ok(json!({
+                    "ok": true,
+                    "dry_run": true,
+                    "changes": d.changes.len(),
+                    "extra": d.extra.len(),
+                    "chunks": d.chunks,
+                }));
+            }
+            let a = crate::studio_sync::apply(mcp, &flat, &d, prune)?;
+            let after = crate::studio_sync::diff(mcp, &flat)?;
+            let remaining = after.changes.len() + if prune { after.extra.len() } else { 0 };
+            return Ok(json!({
+                "ok": a.errors.is_empty() && remaining == 0,
+                "applied": { "created": a.created, "updated": a.updated, "deleted": a.deleted },
+                "errors": a.errors,
+                "chunks": d.chunks + a.chunks + after.chunks,
+                "verify": { "remaining": remaining, "extra": after.extra.len() },
+            }));
+        }
+        let src = root.join("src");
+        let mut synced = 0usize;
+        let mut errors = Vec::new();
+        if src.is_dir() {
+            let mut files = Vec::new();
+            collect_project_files(root, &src, &mut files, 400);
+            for rel in files {
+                if !(rel.ends_with(".luau") || rel.ends_with(".lua")) {
+                    continue;
+                }
+                let Some(place_path) = rojo_rel_to_place_path(&rel) else {
+                    continue;
+                };
+                if let Ok(source) = std::fs::read_to_string(root.join(&rel)) {
+                    if let Ok(studio) = self.studio_mut() {
+                        match studio.call_tool(
+                            "write_script",
+                            json!({ "path": place_path, "source": source }),
+                        ) {
+                            Ok(_) => synced += 1,
+                            Err(e) => errors.push(format!("{rel}: {e}")),
+                        }
+                    }
+                }
+            }
+        }
+        Ok(json!({
+            "ok": errors.is_empty(),
+            "synced_scripts": synced,
+            "errors": errors,
+        }))
+    }
+
+    fn run_project_playtest(
+        &mut self,
+        args: &Value,
+        transcript: &mut Vec<String>,
+        thread: &mut Vec<String>,
+    ) -> Result<(bool, String), String> {
+        if let Some(hook) = &self.hooks.project_playtest {
+            let res = hook(args)?;
+            let passed = res.get("passed").and_then(|v| v.as_bool()).unwrap_or(false);
+            let errors = res
+                .pointer("/console/errors")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            let failed_checks = res
+                .get("checks")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter(|c| c.get("passed").and_then(|p| p.as_bool()) == Some(false))
+                        .map(|c| {
+                            format!(
+                                "check '{}' failed: {}",
+                                c.get("name").and_then(|n| n.as_str()).unwrap_or("?"),
+                                c.get("error")
+                                    .and_then(|e| e.as_str())
+                                    .unwrap_or("assertion mismatch")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            transcript.push(format!("tool project_playtest -> passed={passed}"));
+            if passed {
+                thread.push("Project playtest passed.".to_string());
+                Ok((true, format!("tool_result: project_playtest PASSED: {res}")))
+            } else {
+                thread.push("Project playtest found issues — repairing.".to_string());
+                let detail = [errors, failed_checks]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let summary = if detail.is_empty() { res.to_string() } else { detail };
+                Ok((false, summary))
+            }
+        } else {
+            let root = self.require_project_root()?;
+            let check = project_check_local(&root)?;
+            if check.get("passed").and_then(|v| v.as_bool()) == Some(false) {
+                let err_text = check.to_string();
+                transcript.push(format!("tool project_playtest (check failed) -> {err_text}"));
+                return Ok((false, err_text));
+            }
+            if args.get("sync_first").and_then(|v| v.as_bool()).unwrap_or(true) {
+                let _ = self.project_sync_local(&root, &json!({}));
+            }
+            if self.studio.is_some() {
+                match self.run_playtest(transcript, thread)? {
+                    PlaytestOutcome::Passed(note) => Ok((true, note)),
+                    PlaytestOutcome::Failed(_note, console) => Ok((false, console)),
+                    PlaytestOutcome::Unreadable(_note, raw) => Ok((false, raw)),
+                }
+            } else {
+                transcript.push("tool project_playtest (static check passed, no Studio attached)".to_string());
+                thread.push("Project static checks passed.".to_string());
+                Ok((true, format!("tool_result: project_playtest (static): {check}")))
+            }
+        }
+    }
+}
+
+fn rojo_rel_to_place_path(rel: &str) -> Option<String> {
+    let clean = rel.trim_start_matches("./");
+    let stem = clean
+        .strip_suffix(".server.luau")
+        .or_else(|| clean.strip_suffix(".client.luau"))
+        .or_else(|| clean.strip_suffix(".luau"))
+        .or_else(|| clean.strip_suffix(".lua"))?;
+    let rest = if let Some(r) = stem.strip_prefix("src/server/") {
+        format!("ServerScriptService.{}", r.replace('/', "."))
+    } else if let Some(r) = stem.strip_prefix("src/client/") {
+        format!("StarterPlayer.StarterPlayerScripts.{}", r.replace('/', "."))
+    } else if let Some(r) = stem.strip_prefix("src/shared/") {
+        format!("ReplicatedStorage.{}", r.replace('/', "."))
+    } else if let Some(r) = stem.strip_prefix("ui/") {
+        format!("StarterGui.{}", r.replace('/', "."))
+    } else {
+        return None;
+    };
+    Some(rest)
+}
+
+fn is_hidden_or_blocked_segment(seg: &str) -> bool {
+    seg == ".git"
+        || seg == ".openro"
+        || seg == "node_modules"
+        || seg == "target"
+        || seg.eq_ignore_ascii_case(".env")
+        || seg.to_ascii_lowercase().starts_with(".env.")
+}
+
+pub fn project_safe_path(
+    root: &std::path::Path,
+    rel: &str,
+    for_write: bool,
+) -> Result<(String, std::path::PathBuf), String> {
+    let trimmed = rel.trim().replace('\\', "/");
+    let trimmed = trimmed.trim_start_matches("./");
+    if trimmed.is_empty() || trimmed.starts_with('/') || trimmed.contains('\0') {
+        return Err(format!("invalid project-relative path '{rel}'"));
+    }
+    let mut parts = Vec::new();
+    for seg in trimmed.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        }
+        if seg == ".." || seg.contains(':') || is_hidden_or_blocked_segment(seg) {
+            return Err(format!("forbidden path segment '{seg}' in '{rel}'"));
+        }
+        parts.push(seg);
+    }
+    if parts.is_empty() {
+        return Err(format!("empty project-relative path '{rel}'"));
+    }
+    let norm = parts.join("/");
+    if for_write {
+        if norm == "openro.project.json" {
+            return Err(
+                "openro.project.json cannot be overwritten directly; use project_update_manifest"
+                    .to_string(),
+            );
+        }
+        if parts[0] == "build" || norm.ends_with(".lock.json") {
+            return Err(format!("'{norm}' is managed by OpenRO and cannot be written directly"));
+        }
+    }
+    let canon_root = std::fs::canonicalize(root)
+        .map_err(|e| format!("project root '{}' unavailable: {e}", root.display()))?;
+    let full = canon_root.join(&norm);
+    let mut probe = full.as_path();
+    while !probe.exists() {
+        match probe.parent() {
+            Some(p) => probe = p,
+            None => break,
+        }
+    }
+    let canon_probe = std::fs::canonicalize(probe)
+        .map_err(|e| format!("cannot resolve path '{norm}': {e}"))?;
+    if !canon_probe.starts_with(&canon_root) {
+        return Err(format!("path '{rel}' escapes project root"));
+    }
+    Ok((norm, full))
+}
+
+fn sha256_hex_bytes(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn collect_project_files(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<String>,
+    cap: usize,
+) {
+    if out.len() >= cap {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<_> = rd.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        if out.len() >= cap {
+            break;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if is_hidden_or_blocked_segment(&name) || name == "build" || name == "references" {
+            continue;
+        }
+        let path = entry.path();
+        if let Ok(meta) = entry.metadata() {
+            if meta.is_dir() {
+                collect_project_files(root, &path, out, cap);
+            } else if meta.is_file() {
+                if let Ok(rel) = path.strip_prefix(root) {
+                    out.push(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+    }
+}
+
+pub fn build_project_context(
+    root: &std::path::Path,
+    ask: &str,
+    explicit_paths: &[String],
+    max_chars: usize,
+) -> String {
+    let mut all_files = Vec::new();
+    collect_project_files(root, root, &mut all_files, 240);
+    if all_files.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from("[Active Project Context]\n");
+    out.push_str(&format!("Project files ({} shown):\n", all_files.len().min(120)));
+    for f in all_files.iter().take(120) {
+        out.push_str(&format!("- {f}\n"));
+    }
+
+    let keywords: Vec<String> = ask
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|w| w.len() >= 3)
+        .map(String::from)
+        .collect();
+
+    let mut scored: Vec<(i32, String)> = Vec::new();
+    for f in &all_files {
+        let lower = f.to_ascii_lowercase();
+        let is_text = lower.ends_with(".luau")
+            || lower.ends_with(".lua")
+            || lower.ends_with(".md")
+            || lower.ends_with(".json")
+            || lower.ends_with(".toml");
+        if !is_text {
+            continue;
+        }
+        let mut score = 0i32;
+        if explicit_paths.iter().any(|p| p == f) {
+            score += 200;
+        }
+        if lower == "openro.project.json" || lower == "default.project.json" {
+            score += 120;
+        } else if lower.starts_with("docs/") && lower.ends_with(".md") {
+            score += 70;
+        } else if lower == "readme.md"
+            || lower == "playtest/suite.json"
+            || lower == "assets/meshes/manifest.json"
+            || lower == "assets.lock.json"
+        {
+            score += 55;
+        }
+        for kw in &keywords {
+            if lower.contains(kw) {
+                score += 35;
+            }
+        }
+        if score > 0 {
+            scored.push((score, f.clone()));
+        }
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+
+    for (_score, rel) in scored.into_iter().take(12) {
+        if out.len() + 256 >= max_chars {
+            break;
+        }
+        let Ok(text) = std::fs::read_to_string(root.join(&rel)) else {
+            continue;
+        };
+        let remaining = max_chars.saturating_sub(out.len()).min(2_600);
+        let snippet: String = text.chars().take(remaining).collect();
+        out.push_str(&format!("\n--- {rel} ---\n{snippet}"));
+        if text.chars().count() > remaining {
+            out.push_str("\n[...truncated — call project_read_file for full contents...]");
+        }
+        out.push('\n');
+    }
+    out
+}
+
+pub fn project_files_list(root: &std::path::Path, dir: &str) -> Result<Value, String> {
+    let target = if dir.trim().is_empty() || dir.trim() == "." {
+        std::fs::canonicalize(root).map_err(|e| format!("project root unavailable: {e}"))?
+    } else {
+        project_safe_path(root, dir, false)?.1
+    };
+    if !target.is_dir() {
+        return Err(format!("'{dir}' is not a directory"));
+    }
+    let canon_root = std::fs::canonicalize(root).map_err(|e| format!("project root: {e}"))?;
+    let mut entries = Vec::new();
+    let rd = std::fs::read_dir(&target).map_err(|e| format!("read dir: {e}"))?;
+    let mut items: Vec<_> = rd.flatten().collect();
+    items.sort_by_key(|e| e.file_name());
+    for entry in items {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if is_hidden_or_blocked_segment(&name) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        let path = entry.path();
+        let rel = path
+            .strip_prefix(&canon_root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        entries.push(json!({
+            "path": rel,
+            "type": if meta.is_dir() { "dir" } else { "file" },
+            "bytes": if meta.is_file() { meta.len() } else { 0 },
+        }));
+    }
+    Ok(json!({ "ok": true, "dir": dir, "entries": entries }))
+}
+
+pub fn project_read_file(
+    root: &std::path::Path,
+    rel: &str,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+) -> Result<Value, String> {
+    let (norm, full) = project_safe_path(root, rel, false)?;
+    let meta = std::fs::metadata(&full).map_err(|e| format!("read '{norm}': {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("'{norm}' is not a file"));
+    }
+    if meta.len() > 1024 * 1024 {
+        return Err(format!("'{norm}' exceeds 1 MB text read cap ({} bytes)", meta.len()));
+    }
+    let bytes = std::fs::read(&full).map_err(|e| format!("read '{norm}': {e}"))?;
+    let sha = sha256_hex_bytes(&bytes);
+    let text = String::from_utf8(bytes).map_err(|_| format!("'{norm}' is not valid UTF-8 text"))?;
+    let lines: Vec<&str> = text.lines().collect();
+    let total_lines = lines.len();
+    let content = match (start_line, end_line) {
+        (None, None) => text,
+        _ => {
+            let s = start_line.unwrap_or(1).max(1);
+            let e = end_line.unwrap_or(total_lines).min(total_lines);
+            if s > e || total_lines == 0 {
+                String::new()
+            } else {
+                lines[s - 1..e].join("\n")
+            }
+        }
+    };
+    Ok(json!({
+        "ok": true,
+        "path": norm,
+        "bytes": meta.len(),
+        "total_lines": total_lines,
+        "sha256": sha,
+        "content": content,
+    }))
+}
+
+pub fn project_write_file(
+    root: &std::path::Path,
+    rel: &str,
+    content: &str,
+    expect_sha256: Option<&str>,
+) -> Result<Value, String> {
+    let (norm, full) = project_safe_path(root, rel, true)?;
+    if content.len() > MAX_LUAU_BYTES * 2 {
+        return Err(format!("file '{norm}' exceeds 1 MB write cap"));
+    }
+    let created = !full.exists();
+    if let Some(expected) = expect_sha256 {
+        if !created {
+            let cur = std::fs::read(&full).map_err(|e| format!("read existing '{norm}': {e}"))?;
+            let actual = sha256_hex_bytes(&cur);
+            if actual != expected {
+                return Err(format!(
+                    "conflict on '{norm}': expected sha256 {expected}, found {actual}"
+                ));
+            }
+        }
+    }
+    let mut luau_diagnostics = Value::Null;
+    if norm.ends_with(".luau") || norm.ends_with(".lua") {
+        let luau_path = rojo_rel_to_place_path(&norm).unwrap_or_else(|| "ReplicatedStorage.Module".to_string());
+        let report = crate::luau_check::analyze_source(&luau_path, content);
+        let errs = report.errors();
+        luau_diagnostics = report.to_json();
+        if !errs.is_empty() {
+            return Err(format!(
+                "Static Luau Prover refused '{norm}': {}",
+                errs.join("; ")
+            ));
+        }
+    }
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create dir for '{norm}': {e}"))?;
+    }
+    let tmp = full.with_extension("openro.tmp");
+    std::fs::write(&tmp, content.as_bytes()).map_err(|e| format!("write '{norm}': {e}"))?;
+    std::fs::rename(&tmp, &full).map_err(|e| format!("commit '{norm}': {e}"))?;
+    Ok(json!({
+        "ok": true,
+        "path": norm,
+        "created": created,
+        "bytes": content.len(),
+        "sha256": sha256_hex_bytes(content.as_bytes()),
+        "luau_diagnostics": luau_diagnostics,
+    }))
+}
+
+pub fn project_edit_file(
+    root: &std::path::Path,
+    rel: &str,
+    edits: &[Value],
+    expect_sha256: Option<&str>,
+) -> Result<Value, String> {
+    if edits.is_empty() {
+        return Err("project_edit_file requires a non-empty edits array".to_string());
+    }
+    let (norm, full) = project_safe_path(root, rel, true)?;
+    let bytes = std::fs::read(&full).map_err(|e| format!("read '{norm}': {e}"))?;
+    if let Some(expected) = expect_sha256 {
+        let actual = sha256_hex_bytes(&bytes);
+        if actual != expected {
+            return Err(format!(
+                "conflict on '{norm}': expected sha256 {expected}, found {actual}"
+            ));
+        }
+    }
+    let mut text = String::from_utf8(bytes).map_err(|_| format!("'{norm}' is not UTF-8"))?;
+    for (idx, edit) in edits.iter().enumerate() {
+        let old = edit
+            .get("old")
+            .or_else(|| edit.get("old_str"))
+            .or_else(|| edit.get("old_string"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("edit #{idx} missing 'old' string"))?;
+        let new = edit
+            .get("new")
+            .or_else(|| edit.get("new_str"))
+            .or_else(|| edit.get("new_string"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("edit #{idx} missing 'new' string"))?;
+        if old.is_empty() {
+            return Err(format!("edit #{idx} 'old' string must not be empty"));
+        }
+        let matches = text.matches(old).count();
+        if matches == 0 {
+            return Err(format!("edit #{idx} target not found in '{norm}' (nothing written)"));
+        }
+        if matches > 1 {
+            return Err(format!(
+                "edit #{idx} target matched {matches} times in '{norm}' — provide more surrounding context (nothing written)"
+            ));
+        }
+        text = text.replacen(old, new, 1);
+    }
+    let mut res = project_write_file(root, &norm, &text, None)?;
+    res["edits"] = json!(edits.len());
+    Ok(res)
+}
+
+pub fn project_delete_file(root: &std::path::Path, rel: &str) -> Result<Value, String> {
+    let (norm, full) = project_safe_path(root, rel, true)?;
+    if !full.is_file() {
+        return Err(format!("file '{norm}' does not exist"));
+    }
+    std::fs::remove_file(&full).map_err(|e| format!("delete '{norm}': {e}"))?;
+    Ok(json!({ "ok": true, "path": norm, "deleted": true }))
+}
+
+pub fn project_grep_files(
+    root: &std::path::Path,
+    query: &str,
+    dir: &str,
+    max_matches: usize,
+) -> Result<Value, String> {
+    if query.is_empty() {
+        return Err("project_grep query must not be empty".to_string());
+    }
+    let start_dir = if dir.trim().is_empty() || dir.trim() == "." {
+        std::fs::canonicalize(root).map_err(|e| format!("project root: {e}"))?
+    } else {
+        project_safe_path(root, dir, false)?.1
+    };
+    let canon_root = std::fs::canonicalize(root).map_err(|e| format!("project root: {e}"))?;
+    let mut files = Vec::new();
+    collect_project_files(&canon_root, &start_dir, &mut files, 500);
+    let cap = max_matches.clamp(1, 200);
+    let mut matches = Vec::new();
+    for rel in files {
+        if matches.len() >= cap {
+            break;
+        }
+        let Ok(meta) = std::fs::metadata(canon_root.join(&rel)) else { continue };
+        if meta.len() > 512 * 1024 {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(canon_root.join(&rel)) else { continue };
+        for (i, line) in text.lines().enumerate() {
+            if line.contains(query) {
+                let preview: String = line.trim().chars().take(180).collect();
+                matches.push(json!({ "path": rel, "line": i + 1, "text": preview }));
+                if matches.len() >= cap {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(json!({ "ok": true, "query": query, "count": matches.len(), "matches": matches }))
+}
+
+pub fn project_update_manifest_safe(
+    root: &std::path::Path,
+    patch: &Value,
+) -> Result<Value, String> {
+    let current = crate::projects::manifest(root)?;
+    let merged = crate::projects::merge_manifest_for_actor(&current, patch, false)?;
+    crate::projects::write_manifest(root, &merged)?;
+    Ok(json!({ "ok": true, "manifest": merged }))
+}
+
+pub fn project_check_local(root: &std::path::Path) -> Result<Value, String> {
+    crate::projects::check_project(root)
+}
+
+pub fn project_run_lune_local(root: &std::path::Path, args: &Value) -> Result<Value, String> {
+    let script = args
+        .get("script")
+        .or_else(|| args.get("path"))
+        .and_then(|v| v.as_str())
+        .ok_or("project_run_lune needs args.script")?;
+    let timeout_secs = args
+        .get("timeout_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(30)
+        .clamp(1, 60);
+    let extra: Vec<String> = args
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).take(32).collect())
+        .unwrap_or_default();
+    crate::projects::run_lune(root, script, &extra, timeout_secs)
+}
+
+pub fn project_build_local(root: &std::path::Path, args: &Value) -> Result<Value, String> {
+    let engine = args.get("engine").and_then(|v| v.as_str()).unwrap_or("auto");
+    let out_rel = args.get("out").and_then(|v| v.as_str());
+    crate::projects::build(root, engine, out_rel)
+}
+
+/// Persistent FIFO Run Queue + Plan -> Execute Checkpoints + Resume (Gap #5).
+pub mod runs {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Condvar, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn now_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum RunStatus {
+        Queued,
+        Planning,
+        Running,
+        Paused,
+        Completed,
+        Failed,
+        Cancelled,
+    }
+
+    impl RunStatus {
+        pub fn as_str(&self) -> &'static str {
+            match self {
+                RunStatus::Queued => "queued",
+                RunStatus::Planning => "planning",
+                RunStatus::Running => "running",
+                RunStatus::Paused => "paused",
+                RunStatus::Completed => "completed",
+                RunStatus::Failed => "failed",
+                RunStatus::Cancelled => "cancelled",
+            }
+        }
+        pub fn parse(s: &str) -> Self {
+            match s {
+                "queued" => RunStatus::Queued,
+                "planning" => RunStatus::Planning,
+                "running" => RunStatus::Running,
+                "paused" => RunStatus::Paused,
+                "completed" => RunStatus::Completed,
+                "failed" => RunStatus::Failed,
+                "cancelled" => RunStatus::Cancelled,
+                _ => RunStatus::Paused,
+            }
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct PlanPhase {
+        pub id: String,
+        pub title: String,
+        pub goal: String,
+        pub files: Vec<String>,
+        pub status: String,
+        pub summary: Option<String>,
+    }
+
+    impl PlanPhase {
+        pub fn to_json(&self) -> Value {
+            json!({
+                "id": self.id,
+                "title": self.title,
+                "goal": self.goal,
+                "files": self.files,
+                "status": self.status,
+                "summary": self.summary,
+            })
+        }
+        pub fn from_json(v: &Value) -> Option<Self> {
+            Some(PlanPhase {
+                id: v.get("id")?.as_str()?.to_string(),
+                title: v.get("title")?.as_str()?.to_string(),
+                goal: v.get("goal").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                files: v
+                    .get("files")
+                    .and_then(|x| x.as_array())
+                    .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+                    .unwrap_or_default(),
+                status: v.get("status").and_then(|x| x.as_str()).unwrap_or("pending").to_string(),
+                summary: v.get("summary").and_then(|x| x.as_str()).map(String::from),
+            })
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct AgentRun {
+        pub run_id: String,
+        pub chat_id: String,
+        pub project_id: Option<String>,
+        pub project_root: Option<String>,
+        pub ask: String,
+        pub mode: String,
+        pub status: RunStatus,
+        pub plan: Vec<PlanPhase>,
+        pub current_phase: usize,
+        pub step: usize,
+        pub max_steps: usize,
+        pub checkpoint_seq: u64,
+        pub summary: Option<String>,
+        pub error: Option<String>,
+        pub quota_reset_in: Option<String>,
+        pub resume_hint: Option<String>,
+        pub thread: Vec<String>,
+        pub transcript: Vec<String>,
+        pub created_at_ms: u64,
+        pub updated_at_ms: u64,
+    }
+
+    impl AgentRun {
+        pub fn summary_json(&self) -> Value {
+            let done_phases = self.plan.iter().filter(|p| p.status == "done").count();
+            json!({
+                "run_id": self.run_id,
+                "chat_id": self.chat_id,
+                "project_id": self.project_id,
+                "ask": self.ask,
+                "mode": self.mode,
+                "status": self.status.as_str(),
+                "phases_total": self.plan.len(),
+                "phases_done": done_phases,
+                "current_phase": self.current_phase,
+                "step": self.step,
+                "max_steps": self.max_steps,
+                "checkpoint_seq": self.checkpoint_seq,
+                "summary": self.summary,
+                "error": self.error,
+                "quota_reset_in": self.quota_reset_in,
+                "created_at_ms": self.created_at_ms,
+                "updated_at_ms": self.updated_at_ms,
+            })
+        }
+
+        pub fn detail_json(&self) -> Value {
+            json!({
+                "run_id": self.run_id,
+                "chat_id": self.chat_id,
+                "project_id": self.project_id,
+                "project_root": self.project_root,
+                "ask": self.ask,
+                "mode": self.mode,
+                "status": self.status.as_str(),
+                "plan": self.plan.iter().map(PlanPhase::to_json).collect::<Vec<_>>(),
+                "current_phase": self.current_phase,
+                "step": self.step,
+                "max_steps": self.max_steps,
+                "checkpoint_seq": self.checkpoint_seq,
+                "summary": self.summary,
+                "error": self.error,
+                "quota_reset_in": self.quota_reset_in,
+                "resume_hint": self.resume_hint,
+                "thread": self.thread,
+                "transcript": self.transcript,
+                "created_at_ms": self.created_at_ms,
+                "updated_at_ms": self.updated_at_ms,
+            })
+        }
+
+        pub fn from_json(v: &Value) -> Option<Self> {
+            Some(AgentRun {
+                run_id: v.get("run_id")?.as_str()?.to_string(),
+                chat_id: v.get("chat_id").and_then(|x| x.as_str()).unwrap_or("default").to_string(),
+                project_id: v.get("project_id").and_then(|x| x.as_str()).map(String::from),
+                project_root: v.get("project_root").and_then(|x| x.as_str()).map(String::from),
+                ask: v.get("ask")?.as_str()?.to_string(),
+                mode: v.get("mode").and_then(|x| x.as_str()).unwrap_or("plan_execute").to_string(),
+                status: RunStatus::parse(v.get("status").and_then(|x| x.as_str()).unwrap_or("paused")),
+                plan: v
+                    .get("plan")
+                    .and_then(|x| x.as_array())
+                    .map(|a| a.iter().filter_map(PlanPhase::from_json).collect())
+                    .unwrap_or_default(),
+                current_phase: v.get("current_phase").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+                step: v.get("step").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+                max_steps: v.get("max_steps").and_then(|x| x.as_u64()).unwrap_or(40) as usize,
+                checkpoint_seq: v.get("checkpoint_seq").and_then(|x| x.as_u64()).unwrap_or(0),
+                summary: v.get("summary").and_then(|x| x.as_str()).map(String::from),
+                error: v.get("error").and_then(|x| x.as_str()).map(String::from),
+                quota_reset_in: v.get("quota_reset_in").and_then(|x| x.as_str()).map(String::from),
+                resume_hint: v.get("resume_hint").and_then(|x| x.as_str()).map(String::from),
+                thread: v
+                    .get("thread")
+                    .and_then(|x| x.as_array())
+                    .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+                    .unwrap_or_default(),
+                transcript: v
+                    .get("transcript")
+                    .and_then(|x| x.as_array())
+                    .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+                    .unwrap_or_default(),
+                created_at_ms: v.get("created_at_ms").and_then(|x| x.as_u64()).unwrap_or(0),
+                updated_at_ms: v.get("updated_at_ms").and_then(|x| x.as_u64()).unwrap_or(0),
+            })
+        }
+    }
+
+    pub struct EnqueueRun {
+        pub chat_id: String,
+        pub ask: String,
+        pub mode: String,
+        pub project_id: Option<String>,
+        pub project_root: Option<String>,
+        pub max_steps: usize,
+    }
+
+    struct Inner {
+        runs: HashMap<String, AgentRun>,
+        order: Vec<String>,
+        queue: VecDeque<String>,
+        active: Option<String>,
+        cancels: HashMap<String, Arc<AtomicBool>>,
+        seq: u64,
+    }
+
+    pub struct RunStore {
+        dir: Option<PathBuf>,
+        inner: Mutex<Inner>,
+        wake: Condvar,
+    }
+
+    impl RunStore {
+        pub fn in_memory() -> Arc<Self> {
+            Arc::new(RunStore {
+                dir: None,
+                inner: Mutex::new(Inner {
+                    runs: HashMap::new(),
+                    order: Vec::new(),
+                    queue: VecDeque::new(),
+                    active: None,
+                    cancels: HashMap::new(),
+                    seq: 0,
+                }),
+                wake: Condvar::new(),
+            })
+        }
+
+        pub fn open(data_dir: &Path) -> Arc<Self> {
+            let runs_dir = data_dir.join("runs");
+            let _ = std::fs::create_dir_all(&runs_dir);
+            let mut runs = HashMap::new();
+            let mut list: Vec<(u64, String)> = Vec::new();
+            if let Ok(rd) = std::fs::read_dir(&runs_dir) {
+                for entry in rd.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                        continue;
+                    }
+                    let Ok(text) = std::fs::read_to_string(&path) else { continue };
+                    let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
+                    let Some(mut run) = AgentRun::from_json(&v) else { continue };
+                    if matches!(
+                        run.status,
+                        RunStatus::Queued | RunStatus::Planning | RunStatus::Running
+                    ) {
+                        run.status = RunStatus::Paused;
+                        run.error = Some(
+                            "Interrupted by server restart — ready to resume from last checkpoint."
+                                .to_string(),
+                        );
+                        run.updated_at_ms = now_ms();
+                        let _ = persist_run(&runs_dir, &run);
+                    }
+                    list.push((run.created_at_ms, run.run_id.clone()));
+                    runs.insert(run.run_id.clone(), run);
+                }
+            }
+            list.sort_by(|a, b| b.0.cmp(&a.0));
+            let order = list.into_iter().map(|(_, id)| id).collect();
+            Arc::new(RunStore {
+                dir: Some(runs_dir),
+                inner: Mutex::new(Inner {
+                    runs,
+                    order,
+                    queue: VecDeque::new(),
+                    active: None,
+                    cancels: HashMap::new(),
+                    seq: 0,
+                }),
+                wake: Condvar::new(),
+            })
+        }
+
+        pub fn enqueue(&self, req: EnqueueRun) -> AgentRun {
+            let mut g = self.inner.lock().unwrap();
+            g.seq += 1;
+            let now = now_ms();
+            let run_id = format!("run-{now}-{}", g.seq);
+            let run = AgentRun {
+                run_id: run_id.clone(),
+                chat_id: req.chat_id,
+                project_id: req.project_id,
+                project_root: req.project_root,
+                ask: req.ask,
+                mode: if req.mode.trim().is_empty() {
+                    "plan_execute".to_string()
+                } else {
+                    req.mode
+                },
+                status: RunStatus::Queued,
+                plan: Vec::new(),
+                current_phase: 0,
+                step: 0,
+                max_steps: req.max_steps.clamp(4, 120),
+                checkpoint_seq: 1,
+                summary: None,
+                error: None,
+                quota_reset_in: None,
+                resume_hint: None,
+                thread: Vec::new(),
+                transcript: Vec::new(),
+                created_at_ms: now,
+                updated_at_ms: now,
+            };
+            if let Some(dir) = &self.dir {
+                let _ = persist_run(dir, &run);
+            }
+            g.runs.insert(run_id.clone(), run.clone());
+            g.order.insert(0, run_id.clone());
+            g.queue.push_back(run_id.clone());
+            g.cancels.insert(run_id, Arc::new(AtomicBool::new(false)));
+            self.wake.notify_one();
+            run
+        }
+
+        pub fn list_json(&self) -> Value {
+            let g = self.inner.lock().unwrap();
+            let runs: Vec<Value> = g
+                .order
+                .iter()
+                .filter_map(|id| g.runs.get(id).map(AgentRun::summary_json))
+                .collect();
+            json!({
+                "ok": true,
+                "active_run_id": g.active,
+                "queued": g.queue.len(),
+                "runs": runs,
+            })
+        }
+
+        pub fn get(&self, run_id: &str) -> Option<AgentRun> {
+            self.inner.lock().unwrap().runs.get(run_id).cloned()
+        }
+
+        pub fn resume(&self, run_id: &str, hint: Option<String>) -> Result<AgentRun, String> {
+            let mut g = self.inner.lock().unwrap();
+            let run = g
+                .runs
+                .get_mut(run_id)
+                .ok_or_else(|| format!("unknown run '{run_id}'"))?;
+            if matches!(
+                run.status,
+                RunStatus::Queued | RunStatus::Planning | RunStatus::Running
+            ) {
+                return Err(format!("run '{run_id}' is already {}", run.status.as_str()));
+            }
+            if run.status == RunStatus::Completed {
+                return Err(format!("run '{run_id}' is already completed"));
+            }
+            run.status = RunStatus::Queued;
+            run.error = None;
+            run.quota_reset_in = None;
+            run.resume_hint = hint.filter(|h| !h.trim().is_empty());
+            run.checkpoint_seq += 1;
+            run.updated_at_ms = now_ms();
+            let cloned = run.clone();
+            if let Some(dir) = &self.dir {
+                let _ = persist_run(dir, &cloned);
+            }
+            g.cancels
+                .insert(run_id.to_string(), Arc::new(AtomicBool::new(false)));
+            g.queue.push_back(run_id.to_string());
+            self.wake.notify_one();
+            Ok(cloned)
+        }
+
+        pub fn cancel(&self, run_id: &str) -> Result<AgentRun, String> {
+            let mut g = self.inner.lock().unwrap();
+            if !g.runs.contains_key(run_id) {
+                return Err(format!("unknown run '{run_id}'"));
+            }
+            if let Some(flag) = g.cancels.get(run_id) {
+                flag.store(true, Ordering::SeqCst);
+            }
+            g.queue.retain(|id| id != run_id);
+            let cloned = {
+                let run = g.runs.get_mut(run_id).unwrap();
+                if matches!(
+                    run.status,
+                    RunStatus::Queued | RunStatus::Planning | RunStatus::Running | RunStatus::Paused
+                ) {
+                    run.status = RunStatus::Cancelled;
+                    run.error = Some("Cancelled by user.".to_string());
+                    run.checkpoint_seq += 1;
+                    run.updated_at_ms = now_ms();
+                }
+                run.clone()
+            };
+            if let Some(dir) = &self.dir {
+                let _ = persist_run(dir, &cloned);
+            }
+            Ok(cloned)
+        }
+
+        pub fn pop_next(&self) -> (String, Arc<AtomicBool>) {
+            let mut g = self.inner.lock().unwrap();
+            loop {
+                if let Some(id) = g.queue.pop_front() {
+                    if let Some(run) = g.runs.get(&id) {
+                        if run.status == RunStatus::Queued {
+                            g.active = Some(id.clone());
+                            let flag = g
+                                .cancels
+                                .entry(id.clone())
+                                .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+                                .clone();
+                            return (id, flag);
+                        }
+                    }
+                    continue;
+                }
+                g = self.wake.wait(g).unwrap();
+            }
+        }
+
+        pub fn update<F: FnOnce(&mut AgentRun)>(&self, run_id: &str, f: F) {
+            let mut g = self.inner.lock().unwrap();
+            if let Some(run) = g.runs.get_mut(run_id) {
+                f(run);
+                run.checkpoint_seq += 1;
+                run.updated_at_ms = now_ms();
+                if let Some(dir) = &self.dir {
+                    let _ = persist_run(dir, run);
+                }
+            }
+        }
+
+        pub fn finish_active(&self, run_id: &str) {
+            let mut g = self.inner.lock().unwrap();
+            if g.active.as_deref() == Some(run_id) {
+                g.active = None;
+            }
+        }
+
+        pub fn execute_run(
+            store: &Arc<RunStore>,
+            run_id: &str,
+            cancel: Arc<AtomicBool>,
+            agent: &mut Agent,
+        ) {
+            let Some(initial) = store.get(run_id) else {
+                store.finish_active(run_id);
+                return;
+            };
+            let prev_root = agent.project_root.clone();
+            let prev_id = agent.project_id.clone();
+            if let Some(pr) = &initial.project_root {
+                agent.set_project(Some(PathBuf::from(pr)), initial.project_id.clone());
+            }
+            agent.set_cancel_flag(Some(Arc::clone(&cancel)));
+            agent.set_max_steps_override(Some(initial.max_steps));
+
+            let store_step = Arc::clone(store);
+            let rid_step = run_id.to_string();
+            agent.set_step_sink(Some(Arc::new(move |step_n, label| {
+                store_step.update(&rid_step, |r| {
+                    r.step = step_n;
+                    r.transcript.push(format!("checkpoint step {step_n}: {label}"));
+                });
+            })));
+
+            let mut plan = initial.plan.clone();
+            if plan.is_empty() {
+                if initial.mode == "plan_execute" {
+                    store.update(run_id, |r| {
+                        r.status = RunStatus::Planning;
+                        r.thread.push("OpenRO: Planning phases for this run...".to_string());
+                    });
+                    match generate_plan_phases(agent, &initial.ask) {
+                        Ok(phases) if !phases.is_empty() => plan = phases,
+                        Ok(_) => {
+                            plan = vec![PlanPhase {
+                                id: "phase-1".to_string(),
+                                title: "Execute request".to_string(),
+                                goal: initial.ask.clone(),
+                                files: Vec::new(),
+                                status: "pending".to_string(),
+                                summary: None,
+                            }];
+                        }
+                        Err(e) => {
+                            let quota = crate::model::agy_last_issue()
+                                .filter(|i| i.kind == "quota")
+                                .and_then(|i| i.resets_in);
+                            let status = if quota.is_some() {
+                                RunStatus::Paused
+                            } else {
+                                RunStatus::Failed
+                            };
+                            store.update(run_id, |r| {
+                                r.status = status;
+                                r.error = Some(e.clone());
+                                r.quota_reset_in = quota;
+                            });
+                            restore_agent(agent, prev_root, prev_id);
+                            store.finish_active(run_id);
+                            return;
+                        }
+                    }
+                } else {
+                    plan = vec![PlanPhase {
+                        id: "phase-1".to_string(),
+                        title: "Execute request".to_string(),
+                        goal: initial.ask.clone(),
+                        files: Vec::new(),
+                        status: "pending".to_string(),
+                        summary: None,
+                    }];
+                }
+                store.update(run_id, |r| {
+                    r.plan = plan.clone();
+                    r.status = RunStatus::Running;
+                });
+            } else {
+                store.update(run_id, |r| {
+                    r.status = RunStatus::Running;
+                    r.thread.push(format!(
+                        "OpenRO: Resuming run at phase {}/{}.",
+                        r.current_phase + 1,
+                        r.plan.len()
+                    ));
+                });
+            }
+
+            let start_idx = initial.current_phase;
+            let mut completed_notes: Vec<String> = plan
+                .iter()
+                .take(start_idx)
+                .filter_map(|p| p.summary.as_ref().map(|s| format!("- {}: {s}", p.title)))
+                .collect();
+
+            for idx in start_idx..plan.len() {
+                if cancel.load(Ordering::SeqCst) {
+                    store.update(run_id, |r| {
+                        r.status = RunStatus::Cancelled;
+                        r.current_phase = idx;
+                    });
+                    restore_agent(agent, prev_root, prev_id);
+                    store.finish_active(run_id);
+                    return;
+                }
+                let phase = plan[idx].clone();
+                if phase.status == "done" {
+                    continue;
+                }
+                store.update(run_id, |r| {
+                    r.current_phase = idx;
+                    if let Some(p) = r.plan.get_mut(idx) {
+                        p.status = "running".to_string();
+                    }
+                });
+
+                let mut phase_prompt = if plan.len() == 1 {
+                    initial.ask.clone()
+                } else {
+                    format!(
+                        "Overall goal: {}\n\nExecute Phase {}/{} — {}: {}",
+                        initial.ask,
+                        idx + 1,
+                        plan.len(),
+                        phase.title,
+                        phase.goal
+                    )
+                };
+                if !completed_notes.is_empty() {
+                    phase_prompt.push_str("\n\nCompleted earlier phases:\n");
+                    phase_prompt.push_str(&completed_notes.join("\n"));
+                }
+                if let Some(hint) = &initial.resume_hint {
+                    phase_prompt.push_str(&format!("\n\nResume guidance: {hint}"));
+                }
+
+                let opts = AskOptions {
+                    mode: AskMode::parse(&initial.mode),
+                    reasoning: "high".to_string(),
+                    context_paths: phase.files.clone(),
+                    review_diffs: false,
+                };
+
+                match agent.run_ask_with_options(&initial.chat_id, &phase_prompt, opts) {
+                    Ok(outcome) => {
+                        completed_notes.push(format!("- {}: {}", phase.title, outcome.summary));
+                        store.update(run_id, |r| {
+                            if let Some(p) = r.plan.get_mut(idx) {
+                                p.status = "done".to_string();
+                                p.summary = Some(outcome.summary.clone());
+                            }
+                            r.current_phase = idx + 1;
+                            r.thread.extend(outcome.thread);
+                            r.transcript.extend(outcome.transcript);
+                        });
+                    }
+                    Err(fail) => {
+                        let cancelled = cancel.load(Ordering::SeqCst)
+                            || fail.message.to_ascii_lowercase().contains("cancelled");
+                        let quota_reset = crate::model::agy_last_issue()
+                            .filter(|i| i.kind == "quota")
+                            .and_then(|i| i.resets_in);
+                        let is_quota = quota_reset.is_some()
+                            || fail.message.to_ascii_lowercase().contains("out of quota");
+                        let next_status = if cancelled {
+                            RunStatus::Cancelled
+                        } else if is_quota {
+                            RunStatus::Paused
+                        } else {
+                            RunStatus::Failed
+                        };
+                        store.update(run_id, |r| {
+                            if let Some(p) = r.plan.get_mut(idx) {
+                                p.status = if is_quota || cancelled {
+                                    "pending".to_string()
+                                } else {
+                                    "failed".to_string()
+                                };
+                            }
+                            r.current_phase = idx;
+                            r.status = next_status;
+                            r.error = Some(fail.message.clone());
+                            r.quota_reset_in = quota_reset;
+                            r.thread.extend(fail.thread);
+                            r.transcript.extend(fail.transcript);
+                        });
+                        restore_agent(agent, prev_root, prev_id);
+                        store.finish_active(run_id);
+                        return;
+                    }
+                }
+            }
+
+            let final_summary = if completed_notes.is_empty() {
+                "Run completed.".to_string()
+            } else {
+                completed_notes.join("\n")
+            };
+            store.update(run_id, |r| {
+                r.status = RunStatus::Completed;
+                r.summary = Some(final_summary);
+                r.error = None;
+                r.quota_reset_in = None;
+            });
+            restore_agent(agent, prev_root, prev_id);
+            store.finish_active(run_id);
+        }
+    }
+
+    fn restore_agent(
+        agent: &mut Agent,
+        prev_root: Option<PathBuf>,
+        prev_id: Option<String>,
+    ) {
+        agent.set_project(prev_root, prev_id);
+        agent.set_cancel_flag(None);
+        agent.set_step_sink(None);
+        agent.set_max_steps_override(None);
+    }
+
+    fn persist_run(dir: &Path, run: &AgentRun) -> Result<(), String> {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create runs dir: {e}"))?;
+        let path = dir.join(format!("{}.json", run.run_id));
+        let tmp = dir.join(format!("{}.json.tmp", run.run_id));
+        let body = serde_json::to_string_pretty(&run.detail_json())
+            .map_err(|e| format!("serialize run: {e}"))?;
+        std::fs::write(&tmp, body.as_bytes()).map_err(|e| format!("write run: {e}"))?;
+        std::fs::rename(&tmp, &path).map_err(|e| format!("commit run: {e}"))?;
+        Ok(())
+    }
+
+    fn generate_plan_phases(agent: &Agent, ask: &str) -> Result<Vec<PlanPhase>, String> {
+        let mut user_msg = format!(
+            "Break the request below into 1 to 6 small, concrete, sequential execution phases for a Roblox project.\n\
+             Reply with ONLY one JSON object: {{\"plan\": [{{\"id\": \"phase-1\", \"title\": \"...\", \"goal\": \"...\", \"files\": [\"src/...\"]}}]}}.\n\nRequest: {ask}"
+        );
+        if let Some(root) = agent.effective_project_root() {
+            let pctx = build_project_context(&root, ask, &[], 6_000);
+            if !pctx.is_empty() {
+                user_msg.push_str("\n\n");
+                user_msg.push_str(&pctx);
+            }
+        }
+        let msgs = vec![
+            json!({
+                "role": "system",
+                "content": "You are OpenRO's build planner. Output ONLY valid JSON matching {\"plan\":[{\"id\":\"phase-1\",\"title\":\"...\",\"goal\":\"...\",\"files\":[...]}]}."
+            }),
+            json!({ "role": "user", "content": user_msg }),
+        ];
+        let raw = agent.model.chat(&msgs)?;
+        let parsed = parse_step(&raw)?;
+        let mut phases = Vec::new();
+        if let Some(arr) = parsed.get("plan").and_then(|v| v.as_array()) {
+            for (i, item) in arr.iter().take(8).enumerate() {
+                let title = item
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Build step")
+                    .trim()
+                    .to_string();
+                let goal = item
+                    .get("goal")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&title)
+                    .trim()
+                    .to_string();
+                let id = item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .unwrap_or_else(|| format!("phase-{}", i + 1));
+                let files = item
+                    .get("files")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                phases.push(PlanPhase {
+                    id,
+                    title,
+                    goal,
+                    files,
+                    status: "pending".to_string(),
+                    summary: None,
+                });
+            }
+        }
+        Ok(phases)
+    }
 }
