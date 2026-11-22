@@ -292,17 +292,29 @@ print("imported ok")]]></ProtectedString>
         assert_eq!(st, 400, "bad XML must return 400 for {bad:?}, got {st}: {err_body}");
     }
 
-    // 6. Verify GET /api/skills, GET /api/place/diff, and GET/POST /api/luau/check.
+    // 6. Verify GET /api/skills (all 22 Rune skills), POST /api/skills/build, and GET/POST /api/luau/check.
     let (st, _, skills_body) = http_req(port, "GET", "/api/skills", "application/json", None);
     assert_eq!(st, 200);
     let skills_v: Value = serde_json::from_str(&skills_body).unwrap();
-    assert!(skills_v["count"].as_u64().unwrap() >= 10);
+    assert_eq!(skills_v["count"], json!(22));
+
+    let skill_build = json!({ "skill": "jump_pad" }).to_string();
+    let (st, _, sb_body) = http_req(
+        port,
+        "POST",
+        "/api/skills/build",
+        "application/json",
+        Some(skill_build.as_bytes()),
+    );
+    assert_eq!(st, 200, "skill build jump_pad failed: {sb_body}");
+    let sb_v: Value = serde_json::from_str(&sb_body).unwrap();
+    assert!(sb_v["snapshot_id"].is_string());
 
     let (st, _, check_body) = http_req(port, "GET", "/api/luau/check", "application/json", None);
     assert_eq!(st, 200);
     let check_v: Value = serde_json::from_str(&check_body).unwrap();
     assert_eq!(check_v["passed"], json!(true));
-    assert_eq!(check_v["scripts_checked"], json!(1));
+    assert_eq!(check_v["scripts_checked"], json!(2));
 
     let bad_luau = json!({ "source": "while true do\n  print('hang')\n" }).to_string();
     let (st, _, bad_check) = http_req(
@@ -316,6 +328,60 @@ print("imported ok")]]></ProtectedString>
     let bad_v: Value = serde_json::from_str(&bad_check).unwrap();
     assert_eq!(bad_v["passed"], json!(false));
     assert!(bad_v["error_count"].as_u64().unwrap() >= 1);
+
+    // 7. Scale round-trip: import 500 instances + 50 scripts over HTTP and verify <1s + clean Luau check.
+    let mut big_instances = serde_json::Map::new();
+    for i in 0..500 {
+        big_instances.insert(
+            format!("Workspace.Platform_{i:03}"),
+            json!({
+                "class_name": "Part",
+                "properties": {
+                    "Position": [(i % 25) * 12, 4, (i / 25) * 12],
+                    "Size": [8, 1, 8],
+                    "Color": [59, 108, 226],
+                    "Anchored": true
+                }
+            }),
+        );
+    }
+    let mut big_scripts = serde_json::Map::new();
+    for i in 0..50 {
+        big_scripts.insert(
+            format!("ServerScriptService.System_{i:02}"),
+            json!(format!(
+                "local Players = game:GetService(\"Players\")\nlocal ID = {i}\nPlayers.PlayerAdded:Connect(function(p) print(p.Name, ID) end)\n"
+            )),
+        );
+    }
+    let big_xml = openro_rs::place::serialize_rbxlx(
+        "Mega Scale Place",
+        &json!({ "instances": big_instances, "scripts": big_scripts }),
+    );
+    let t0 = std::time::Instant::now();
+    let (st, _, mega_imp) = http_req(
+        port,
+        "POST",
+        "/api/import/rbxlx",
+        "application/xml",
+        Some(big_xml.as_bytes()),
+    );
+    let imp_ms = t0.elapsed().as_millis();
+    assert_eq!(st, 200, "500-instance/50-script import failed: {mega_imp}");
+    let mega_v: Value = serde_json::from_str(&mega_imp).unwrap();
+    assert_eq!(mega_v["instance_count"], json!(500));
+    assert_eq!(mega_v["script_count"], json!(50));
+    assert!(imp_ms < 2000, "mega import took too long: {imp_ms}ms");
+
+    let (st, _, mega_exp) = http_req(port, "GET", "/api/export/rbxlx", "application/json", None);
+    assert_eq!(st, 200);
+    assert!(mega_exp.contains("Platform_499") && mega_exp.contains("System_49"));
+
+    let (st, _, mega_check) = http_req(port, "GET", "/api/luau/check", "application/json", None);
+    assert_eq!(st, 200);
+    let mc: Value = serde_json::from_str(&mega_check).unwrap();
+    assert_eq!(mc["passed"], json!(true));
+    assert_eq!(mc["scripts_checked"], json!(50));
 
     // Verify snapshots persisted cleanly to disk.
     assert!(dir.join("snapshots.json").is_file());

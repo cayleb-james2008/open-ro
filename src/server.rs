@@ -884,27 +884,20 @@ fn handle(
             handle_place_instance(&mut stream, shared, &req.body);
         }
         ("GET", "/api/skills") => {
-            let skills_list: Vec<Value> = crate::skills::registry()
-                .into_iter()
-                .map(|def| {
-                    json!({
-                        "name": def.name,
-                        "title": title_for_skill(def.name),
-                        "category": category_for_skill(def.name),
-                        "description": def.description,
-                        "params": def.params,
-                    })
-                })
-                .collect();
+            let catalog = crate::skills::catalog_json();
+            let count = catalog.as_array().map(|a| a.len()).unwrap_or(0);
             respond_json(
                 &mut stream,
                 "200 OK",
                 &json!({
                     "ok": true,
-                    "count": skills_list.len(),
-                    "skills": skills_list,
+                    "count": count,
+                    "skills": catalog,
                 }),
             );
+        }
+        ("POST", "/api/skills/build") => {
+            handle_skill_build(&mut stream, shared, &req.body);
         }
         ("GET", "/api/luau/check") | ("POST", "/api/luau/check") => {
             handle_luau_check(&mut stream, shared, req.method == "POST", &req.body);
@@ -1759,6 +1752,113 @@ fn handle_place_instance(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8
     }
 }
 
+fn handle_skill_build(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8]) {
+    let _busy = BusyGuard::new(&shared.busy);
+    let body: Value = match serde_json::from_slice(raw_body) {
+        Ok(v) => v,
+        Err(_) => {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "invalid JSON body" }),
+            );
+            return;
+        }
+    };
+    let name = body
+        .get("skill")
+        .or_else(|| body.get("name"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or("");
+    let Some(def) = crate::skills::find(name) else {
+        respond_json(
+            stream,
+            "404 Not Found",
+            &json!({ "ok": false, "error": format!("unknown skill: {name}") }),
+        );
+        return;
+    };
+    let skill_args = body
+        .get("args")
+        .filter(|v| v.is_object())
+        .cloned()
+        .unwrap_or_else(|| serde_json::from_str(def.default_args).unwrap_or_else(|_| json!({})));
+    let script_path = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(def.default_path);
+    let chat_id = shared.active_chat.lock().unwrap().clone();
+    shared.append_lines_to(&chat_id, &[format!("You: Add system — {}", def.title)]);
+
+    let steps = vec![
+        json!({ "skill": def.name, "args": skill_args }),
+        json!({ "tool": "write_script", "args": { "path": script_path, "skill": def.name } }),
+        json!({ "tool": "playtest", "args": {} }),
+    ];
+
+    let mut guard = shared.agent.lock().unwrap();
+    let Some(agent) = guard.as_mut() else {
+        let error = "Studio not connected: set OPENRO_MCP_COMMAND to a Studio MCP server";
+        shared.append_lines_to(&chat_id, &[format!("OpenRO: {error}")]);
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({ "ok": false, "error": error }),
+        );
+        return;
+    };
+    let before_tree = agent.place_tree().ok();
+    match agent.run_plan(&chat_id, def.title, &steps) {
+        Ok(outcome) => {
+            shared.append_lines_to(&chat_id, &outcome.thread);
+            shared.note_built(&chat_id, &outcome.skills_used);
+            let mut snapshot_id = Value::Null;
+            let mut diff_val = Value::Null;
+            if let Ok(after_tree) = agent.place_tree() {
+                let explicit = before_tree
+                    .as_ref()
+                    .map(|b| compute_diff(b, &after_tree));
+                let snap = shared.snapshots.lock().unwrap().record(
+                    format!("System: {}", def.title),
+                    "skill",
+                    Some(chat_id.clone()),
+                    after_tree,
+                    explicit,
+                );
+                snapshot_id = json!(snap.id);
+                diff_val = snap.diff.to_json();
+            }
+            respond_json(
+                stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "skill": def.name,
+                    "title": def.title,
+                    "path": script_path,
+                    "summary": outcome.summary,
+                    "thread": outcome.thread,
+                    "snapshot_id": snapshot_id,
+                    "diff": diff_val,
+                }),
+            );
+        }
+        Err(f) => {
+            shared.append_lines_to(&chat_id, &f.thread);
+            shared.append_lines_to(&chat_id, &[format!("OpenRO: {}", f.message)]);
+            shared.note_built(&chat_id, &f.skills_used);
+            respond_json(
+                stream,
+                "502 Bad Gateway",
+                &json!({ "ok": false, "error": f.message }),
+            );
+        }
+    }
+}
+
 fn handle_luau_check(stream: &mut TcpStream, shared: &Shared, is_post: bool, raw_body: &[u8]) {
     let tree = if is_post && !raw_body.is_empty() {
         let body: Value = match serde_json::from_slice(raw_body) {
@@ -1799,82 +1899,27 @@ fn handle_luau_check(stream: &mut TcpStream, shared: &Shared, is_post: bool, raw
         }
     };
 
-    let scripts = tree
-        .get("scripts")
-        .and_then(|v| v.as_object())
-        .cloned()
-        .unwrap_or_default();
-    let mut diagnostics = Vec::new();
-    let mut error_count = 0usize;
-    let mut warning_count = 0usize;
-    for (path, val) in &scripts {
-        let src = val.as_str().unwrap_or("");
-        if let Err(err) = crate::place::check_luau_syntax(src) {
-            error_count += 1;
-            diagnostics.push(json!({
-                "path": path,
-                "severity": "error",
-                "code": "LUAU_SYNTAX",
-                "message": err,
-            }));
-        }
-        if src.contains("while true do") && !src.contains("wait(") {
-            warning_count += 1;
-            diagnostics.push(json!({
-                "path": path,
-                "severity": "warning",
-                "code": "UNYIELDED_LOOP",
-                "message": "while true do loop appears to be missing task.wait()",
-            }));
-        }
-        if src.contains("DataStoreService") && !src.contains("pcall") {
-            warning_count += 1;
-            diagnostics.push(json!({
-                "path": path,
-                "severity": "warning",
-                "code": "UNGUARDED_DATASTORE",
-                "message": "DataStoreService access should be wrapped in pcall()",
-            }));
-        }
-    }
-    respond_json(
-        stream,
-        "200 OK",
-        &json!({
-            "ok": true,
-            "passed": error_count == 0,
-            "scripts_checked": scripts.len(),
-            "error_count": error_count,
-            "warning_count": warning_count,
-            "diagnostics": diagnostics,
-        }),
-    );
-}
-
-fn title_for_skill(name: &str) -> String {
-    name.split('_')
-        .filter(|s| !s.is_empty())
-        .map(|w| {
-            let mut ch = w.chars();
-            match ch.next() {
-                Some(first) => format!("{}{}", first.to_uppercase(), ch.as_str()),
-                None => String::new(),
+    let mut scripts_map = std::collections::BTreeMap::new();
+    if let Some(obj) = tree.get("scripts").and_then(|v| v.as_object()) {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                scripts_map.insert(k.clone(), s.to_string());
             }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn category_for_skill(name: &str) -> &'static str {
-    match name {
-        "checkpoints" | "jump_pad" | "moving_platform" | "portal_teleporter" | "vehicle_spawner" | "spawn_link" => "Movement",
-        "currency" | "leaderboard" | "shop" | "tycoon_dropper" => "Economy",
-        "kill_brick" | "combat_sword" | "npc_patrol" | "round_manager" => "Combat",
-        "day_night" | "weather_cycle" | "soundtrack" => "World",
-        "datastore_save" | "inventory_backpack" | "quest_tracker" => "Persistence",
-        "game_gui" | "admin_spectate" => "UI",
-        _ => "Core",
+        }
     }
+    let mut instances_map = std::collections::BTreeMap::new();
+    if let Some(obj) = tree.get("instances").and_then(|v| v.as_object()) {
+        for (k, v) in obj {
+            instances_map.insert(k.clone(), v.clone());
+        }
+    }
+
+    let report = crate::luau_check::analyze_place(&scripts_map, &instances_map);
+    let mut out = report.to_json();
+    out["passed"] = json!(report.is_ok());
+    out["ok"] = json!(true);
+    out["scripts_checked"] = json!(scripts_map.len());
+    respond_json(stream, "200 OK", &out);
 }
 
 /// Read and discard up to `budget` bytes the client is still sending.
