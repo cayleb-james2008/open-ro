@@ -1,5 +1,7 @@
-// Real in-browser Roblox Studio engine installer for OpenRO v0.7.0 standalone web builds.
+// Real in-browser Roblox Studio IDE engine installer for OpenRO v0.8.0 standalone web builds.
 // Features:
+//  - Co-Building 3D Roblox Studio IDE (+ Add Part, Duplicate, Delete, Undo/Redo, Live Luau Editor)
+//  - Genuine client-side Studio & Rojo Ship Pack (.zip) builder (GET /api/export/bundle)
 //  - Embedded Realtime 3D Roblox Studio Viewport & Live Agent Building Stream (/api/studio/stream)
 //  - All 28 parametric Roblox game-system Luau compilers (including 6 Card-Battler systems)
 //  - Static Luau analyzer & cross-reference playtest prover (POST /api/studio/playtest)
@@ -10,6 +12,7 @@
 //  - One-click Connect to Local openro-rs (http://127.0.0.1:8077)
 import { computePlaceDiff } from "../src/app/luauAudit";
 import { GAME_SYSTEMS } from "../src/app/systems";
+import { buildRojoShipPackZip } from "../src/app/zipBuilder";
 import type { CardAssetRecord } from "../src/app/cardCatalog";
 import type { PlaceDiff, PlaceSnapshot, StudioActionEvent, StudioActionKind } from "../src/app/data";
 import {
@@ -38,6 +41,7 @@ type ChatSession = {
   builtSkills: string[];
   place: PlaceState;
   undoStack: Array<{ changes: ChangeEntry[]; skills: string[] }>;
+  redoStack: Array<{ changes: ChangeEntry[]; skills: string[] }>;
   snapshots: StoredSnapshot[];
   studioActions: StudioActionEvent[];
 };
@@ -232,6 +236,7 @@ function defaultState(): EngineState {
         builtSkills: [],
         place: { scripts: {}, instances: {} },
         undoStack: [],
+        redoStack: [],
         snapshots: [],
         studioActions: [],
       },
@@ -414,6 +419,7 @@ function executePlan(
 
   if (changes.length > 0) {
     chat.undoStack.push({ changes, skills: [...skillsTag] });
+    chat.redoStack = [];
     recordSnapshot(chat, snapLabel, beforePlace);
   }
   for (const sk of skillsTag) {
@@ -566,9 +572,10 @@ export function installWebEngine() {
     const chat = state.chats[state.active] || Object.values(state.chats)[0];
     if (!Array.isArray(chat.snapshots)) chat.snapshots = [];
     if (!Array.isArray(chat.studioActions)) chat.studioActions = [];
+    if (!Array.isArray(chat.redoStack)) chat.redoStack = [];
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "0.7.0" });
+      return jsonResponse({ name: "openro-rs", version: "0.8.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -579,10 +586,11 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "0.7.0",
+        version: "0.8.0",
         sse_build_stream: true,
         studio_stream: true,
         assets_api: true,
+        ide_api: true,
         skills_count: GAME_SYSTEMS.length,
         store_recovered: [],
       });
@@ -647,6 +655,27 @@ export function installWebEngine() {
         console: verdict.console,
         errors: verdict.errors.length,
         diagnostics: verdict.diagnostics,
+      });
+    }
+    if (method === "POST" && u.pathname === "/api/studio/mcp/connect") {
+      return jsonResponse(
+        {
+          ok: false,
+          connected: false,
+          studio_mode: "browser_place",
+          error:
+            "Live Roblox Studio MCP bridge requires a local openro-rs desktop server. Switch to Connect Local Server in Settings (http://127.0.0.1:8077) to attach Roblox Studio MCP.",
+        },
+        503,
+      );
+    }
+    if (method === "POST" && u.pathname === "/api/studio/mcp/disconnect") {
+      return jsonResponse({
+        ok: true,
+        connected: false,
+        studio_connected: true,
+        workspace_mode: "browser_place",
+        studio_mode: "browser_place",
       });
     }
     if (method === "GET" && u.pathname === "/api/art-knowledge") {
@@ -822,7 +851,7 @@ export function installWebEngine() {
     if (method === "GET" && u.pathname === "/api/update") {
       return jsonResponse({
         name: "openro-rs",
-        current: "0.7.0",
+        current: "0.8.0",
         mode: "off",
         available: false,
         can_apply: false,
@@ -920,6 +949,7 @@ export function installWebEngine() {
         chats: Object.values(state.chats).map((c) => ({ id: c.id, title: c.title })),
         active: state.active,
         can_undo: chat.undoStack.length > 0,
+        can_redo: chat.redoStack.length > 0,
       });
     }
     if (method === "POST" && u.pathname === "/api/chats") {
@@ -931,6 +961,7 @@ export function installWebEngine() {
         builtSkills: [],
         place: { scripts: {}, instances: {} },
         undoStack: [],
+        redoStack: [],
         snapshots: [],
         studioActions: [],
       };
@@ -965,6 +996,7 @@ export function installWebEngine() {
       const next: PlaceInstance = { class_name: className, properties: props };
       chat.place.instances[path] = next;
       chat.undoStack.push({ changes: [{ kind: "instance", path, prev, post: JSON.parse(JSON.stringify(next)) }], skills: [] });
+      chat.redoStack = [];
       recordSnapshot(chat, `Edited ${path.split(".").pop() || path}`, before);
       recordStudioAction(state, chat, {
         kind: "part_updated",
@@ -976,7 +1008,234 @@ export function installWebEngine() {
         summary: `Updated ${path} transform & properties`,
       });
       persist();
-      return jsonResponse({ ok: true, path, instance: next });
+      return jsonResponse({ ok: true, path, instance: next, can_undo: chat.undoStack.length > 0, can_redo: false });
+    }
+    if (method === "POST" && u.pathname === "/api/place/create") {
+      const preset = typeof body.preset === "string" ? body.preset.trim().toLowerCase() : "block";
+      const parent = typeof body.parent === "string" && body.parent.trim() ? body.parent.trim() : "Workspace";
+      const existing = chat.place.instances;
+      const pickUnique = (base: string) => {
+        if (!(`${parent}.${base}` in existing)) return base;
+        for (let i = 2; i < 500; i++) {
+          if (!(`${parent}.${base}${i}` in existing)) return `${base}${i}`;
+        }
+        return `${base}${Date.now() % 1000}`;
+      };
+      const defaultBase =
+        preset === "sphere"
+          ? "SpherePart"
+          : preset === "cylinder"
+            ? "CylinderPillar"
+            : preset === "spawn"
+              ? "SpawnLocation"
+              : preset === "jump_pad"
+                ? "JumpPad"
+                : preset === "kill_brick"
+                  ? "KillBrick"
+                  : preset === "card_billboard"
+                    ? "CardBillboard"
+                    : "StudioBlock";
+      const rawName = typeof body.name === "string" && body.name.trim() ? body.name.trim() : defaultBase;
+      const safeName = rawName.replace(/[^A-Za-z0-9_]/g, "") || defaultBase;
+      const name = `${parent}.${safeName}` in existing ? pickUnique(safeName) : safeName;
+      const path = `${parent}.${name}`;
+      const className =
+        typeof body.class_name === "string" && body.class_name.trim()
+          ? body.class_name.trim()
+          : preset === "spawn"
+            ? "SpawnLocation"
+            : "Part";
+      const bodyProps =
+        body.properties && typeof body.properties === "object" && !Array.isArray(body.properties)
+          ? { ...(body.properties as Record<string, unknown>) }
+          : {};
+      const offsetX = (Object.keys(existing).length % 5 - 2) * 8;
+      const offsetZ = 10 + Math.floor(Object.keys(existing).length / 5) * 6;
+      const pos = propVec3(body.position) || propVec3(bodyProps.Position) || [offsetX, preset === "card_billboard" ? 7 : 2, offsetZ];
+      const size =
+        propVec3(body.size) ||
+        propVec3(bodyProps.Size) ||
+        (preset === "sphere"
+          ? [6, 6, 6]
+          : preset === "cylinder"
+            ? [6, 10, 6]
+            : preset === "spawn"
+              ? [8, 1, 8]
+              : preset === "card_billboard"
+                ? [7, 10, 1]
+                : [8, 4, 8]);
+      const color =
+        typeof body.color === "string" && body.color.trim()
+          ? body.color.trim()
+          : typeof bodyProps.Color === "string" && bodyProps.Color.trim()
+            ? bodyProps.Color.trim()
+            : preset === "jump_pad"
+              ? "#24946E"
+              : preset === "kill_brick"
+                ? "#DF522D"
+                : preset === "spawn"
+                  ? "#2D68DF"
+                  : preset === "sphere"
+                    ? "#3B82F6"
+                    : preset === "cylinder"
+                      ? "#D49B26"
+                      : "#8B939E";
+      const props: Record<string, unknown> = {
+        Anchored: true,
+        Material: preset === "jump_pad" || preset === "kill_brick" ? "Neon" : "SmoothPlastic",
+        ...(preset === "sphere" ? { Shape: "Ball" } : preset === "cylinder" ? { Shape: "Cylinder" } : {}),
+        ...bodyProps,
+        Position: pos,
+        Size: size,
+        Color: color,
+      };
+      const before = clonePlace(chat.place);
+      const next: PlaceInstance = { class_name: className, properties: props };
+      chat.place.instances[path] = next;
+      chat.undoStack.push({ changes: [{ kind: "instance", path, prev: null, post: JSON.parse(JSON.stringify(next)) }], skills: [] });
+      chat.redoStack = [];
+      recordSnapshot(chat, `Added ${name}`, before);
+      recordStudioAction(state, chat, {
+        kind: "part_created",
+        path,
+        class_name: className,
+        position: pos,
+        size,
+        color,
+        summary: `Inserted ${path} (${className})`,
+      });
+      persist();
+      return jsonResponse(
+        { ok: true, path, class_name: className, properties: props, can_undo: chat.undoStack.length > 0, can_redo: false },
+        201,
+      );
+    }
+    if (method === "POST" && u.pathname === "/api/place/duplicate") {
+      const srcPath = typeof body.path === "string" ? body.path.trim() : "";
+      const src = srcPath ? chat.place.instances[srcPath] : undefined;
+      if (!src) return jsonResponse({ ok: false, error: `instance not found: ${srcPath}` }, 404);
+      const offset = propVec3(body.offset) || [4, 0, 4];
+      const segs = srcPath.split(".");
+      const leaf = segs.pop() || "Part";
+      const parent = segs.join(".") || "Workspace";
+      let dupName = `${leaf}Copy`;
+      for (let i = 2; i < 500 && `${parent}.${dupName}` in chat.place.instances; i++) {
+        dupName = `${leaf}Copy${i}`;
+      }
+      const dupPath = `${parent}.${dupName}`;
+      const clonedProps: Record<string, unknown> = JSON.parse(JSON.stringify(src.properties || {}));
+      const oldPos = propVec3(clonedProps.Position) || [0, 2, 0];
+      const nextPos: [number, number, number] = [oldPos[0] + offset[0], oldPos[1] + offset[1], oldPos[2] + offset[2]];
+      clonedProps.Position = nextPos;
+      const before = clonePlace(chat.place);
+      const next: PlaceInstance = { class_name: src.class_name, properties: clonedProps };
+      chat.place.instances[dupPath] = next;
+      chat.undoStack.push({ changes: [{ kind: "instance", path: dupPath, prev: null, post: JSON.parse(JSON.stringify(next)) }], skills: [] });
+      chat.redoStack = [];
+      recordSnapshot(chat, `Duplicated ${leaf}`, before);
+      recordStudioAction(state, chat, {
+        kind: "part_created",
+        path: dupPath,
+        class_name: src.class_name,
+        position: nextPos,
+        size: propVec3(clonedProps.Size),
+        color: typeof clonedProps.Color === "string" ? clonedProps.Color : null,
+        summary: `Duplicated ${srcPath} → ${dupPath}`,
+      });
+      persist();
+      return jsonResponse(
+        {
+          ok: true,
+          path: dupPath,
+          new_path: dupPath,
+          source_path: srcPath,
+          class_name: src.class_name,
+          properties: clonedProps,
+          can_undo: chat.undoStack.length > 0,
+          can_redo: false,
+        },
+        201,
+      );
+    }
+    if (method === "POST" && u.pathname === "/api/place/delete") {
+      const targetPath = typeof body.path === "string" ? body.path.trim() : "";
+      if (!targetPath) return jsonResponse({ ok: false, error: "missing path" }, 400);
+      const hasInst = targetPath in chat.place.instances;
+      const hasScr = targetPath in chat.place.scripts;
+      if (!hasInst && !hasScr) return jsonResponse({ ok: false, error: `not found: ${targetPath}` }, 404);
+      const before = clonePlace(chat.place);
+      const changes: ChangeEntry[] = [];
+      if (hasInst) {
+        const prev = JSON.parse(JSON.stringify(chat.place.instances[targetPath])) as PlaceInstance;
+        delete chat.place.instances[targetPath];
+        changes.push({ kind: "instance", path: targetPath, prev, post: null });
+      }
+      if (hasScr) {
+        const prev = chat.place.scripts[targetPath];
+        delete chat.place.scripts[targetPath];
+        changes.push({ kind: "script", path: targetPath, prev, post: null });
+      }
+      chat.undoStack.push({ changes, skills: [] });
+      chat.redoStack = [];
+      recordSnapshot(chat, `Deleted ${targetPath.split(".").pop() || targetPath}`, before);
+      recordStudioAction(state, chat, {
+        kind: "part_updated",
+        path: targetPath,
+        class_name: hasInst ? "Part" : "Script",
+        summary: `Deleted ${targetPath}`,
+      });
+      persist();
+      return jsonResponse({ ok: true, deleted: targetPath, path: targetPath, can_undo: chat.undoStack.length > 0, can_redo: false });
+    }
+    if (method === "POST" && u.pathname === "/api/place/script") {
+      const scriptPath = typeof body.path === "string" ? body.path.trim() : "";
+      const source = typeof body.source === "string" ? body.source : "";
+      if (!scriptPath) return jsonResponse({ ok: false, error: "missing script path" }, 400);
+      const before = clonePlace(chat.place);
+      const prev = chat.place.scripts[scriptPath] ?? null;
+      chat.place.scripts[scriptPath] = source;
+      chat.undoStack.push({ changes: [{ kind: "script", path: scriptPath, prev, post: source }], skills: [] });
+      chat.redoStack = [];
+      const diagnostics = analyzePlaceLuau(chat.place);
+      const scriptDiags = diagnostics.filter((d) => d.path === scriptPath);
+      const errCount = scriptDiags.filter((d) => d.severity === "error").length;
+      const warnCount = scriptDiags.filter((d) => d.severity === "warning").length;
+      recordSnapshot(chat, `Edited ${scriptPath.split(".").pop() || scriptPath}`, before);
+      recordStudioAction(state, chat, {
+        kind: "script_written",
+        path: scriptPath,
+        class_name: scriptPath.startsWith("StarterGui.") ? "LocalScript" : "Script",
+        summary: `Saved ${scriptPath} (${source.split("\n").length} lines · ${errCount} err, ${warnCount} warn)`,
+        code_snippet: source.split("\n").slice(0, 3).join("\n"),
+      });
+      persist();
+      return jsonResponse({
+        ok: true,
+        path: scriptPath,
+        passed: errCount === 0,
+        errors: errCount,
+        error_count: errCount,
+        warnings: warnCount,
+        warning_count: warnCount,
+        diagnostics: scriptDiags,
+        can_undo: chat.undoStack.length > 0,
+        can_redo: false,
+      });
+    }
+    if (method === "GET" && u.pathname === "/api/export/bundle") {
+      const zipBytes = buildRojoShipPackZip({
+        gameName: chat.title === "New chat" ? "OpenRO Studio Place" : chat.title,
+        place: chat.place,
+        assets: state.customAssets || [],
+        diagnostics: analyzePlaceLuau(chat.place),
+      });
+      return new Response(zipBytes.buffer as ArrayBuffer, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/zip",
+          "Content-Disposition": 'attachment; filename="openro-rojo-ship-pack.zip"',
+        },
+      });
     }
     if (method === "GET" && u.pathname === "/api/export/rbxlx") {
       const xml = serializeRbxlx(chat.title === "New chat" ? "OpenRO Place" : chat.title, chat.place);
@@ -1022,7 +1281,10 @@ export function installWebEngine() {
         ),
       };
       if (chat.title === "New chat") chat.title = parsed.gameName || filename.replace(/\.rbxlx$/i, "");
-      if (changes.length > 0) chat.undoStack.push({ changes, skills: [] });
+      if (changes.length > 0) {
+        chat.undoStack.push({ changes, skills: [] });
+        chat.redoStack = [];
+      }
       const snap = recordSnapshot(chat, `Imported ${filename}`, before);
       const verdict = validatePlace(chat.place);
       chat.lines.push(`You: Import ${filename}`);
@@ -1220,6 +1482,7 @@ export function installWebEngine() {
       }
       const remainingSkills = new Set(chat.undoStack.flatMap((u) => u.skills));
       chat.builtSkills = chat.builtSkills.filter((sk) => remainingSkills.has(sk));
+      chat.redoStack.push(top);
       recordSnapshot(chat, "Undo revert", before);
       recordStudioAction(state, chat, {
         kind: "reverted",
@@ -1229,7 +1492,49 @@ export function installWebEngine() {
       });
       chat.lines.push(`OpenRO: Undid the last build: ${restored.length} change(s) put back.`);
       persist();
-      return jsonResponse({ ok: true, restored });
+      return jsonResponse({
+        ok: true,
+        restored,
+        can_undo: chat.undoStack.length > 0,
+        can_redo: chat.redoStack.length > 0,
+      });
+    }
+    if (method === "POST" && u.pathname === "/api/redo") {
+      const top = chat.redoStack.pop();
+      if (!top) {
+        return jsonResponse({ ok: false, error: "nothing to redo", can_undo: chat.undoStack.length > 0, can_redo: false });
+      }
+      const before = clonePlace(chat.place);
+      const restored: string[] = [];
+      for (const ch of top.changes) {
+        if (ch.kind === "script") {
+          if (ch.post === null) delete chat.place.scripts[ch.path];
+          else chat.place.scripts[ch.path] = ch.post;
+        } else {
+          if (ch.post === null) delete chat.place.instances[ch.path];
+          else chat.place.instances[ch.path] = ch.post;
+        }
+        restored.push(ch.path);
+      }
+      chat.undoStack.push(top);
+      for (const sk of top.skills) {
+        if (!chat.builtSkills.includes(sk)) chat.builtSkills.push(sk);
+      }
+      recordSnapshot(chat, "Redo action", before);
+      recordStudioAction(state, chat, {
+        kind: "restored",
+        path: restored[0] || "Workspace",
+        class_name: "Place",
+        summary: `Redid ${restored.length} Studio change(s)`,
+      });
+      chat.lines.push(`OpenRO: Redid ${restored.length} Studio change(s).`);
+      persist();
+      return jsonResponse({
+        ok: true,
+        restored,
+        can_undo: chat.undoStack.length > 0,
+        can_redo: chat.redoStack.length > 0,
+      });
     }
 
     return jsonResponse({ ok: false, error: "not found" }, 404);
