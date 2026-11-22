@@ -400,7 +400,7 @@ export function EmbeddedStudioPanel({
               size="icon-xs"
               aria-label="Refresh embedded Studio status"
               onClick={() => void onRefreshEmbedStatus()}
-              className="text-ink-2 hover:text-ink max-md:size-11"
+              className="text-ink-2 hover:text-ink max-md:size-11 max-md:min-w-11 max-md:shrink-0"
             >
               <RefreshCw className="size-3" strokeWidth={1.5} aria-hidden />
             </Button>

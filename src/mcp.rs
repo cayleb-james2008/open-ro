@@ -1165,7 +1165,7 @@ local function fullPath(inst)
     end
     return table.concat(parts, ".")
 end
-for _, svcName in ipairs({"Workspace", "ServerScriptService", "ReplicatedStorage", "StarterGui", "StarterPlayer", "Lighting", "SoundService"}) do
+for _, svcName in ipairs({"ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterGui", "StarterPlayer", "Lighting", "SoundService", "Workspace"}) do
     local okSvc, svc = pcall(function() return game:GetService(svcName) end)
     if okSvc and svc then
         for _, d in ipairs(svc:GetDescendants()) do
@@ -1189,7 +1189,7 @@ for _, svcName in ipairs({"Workspace", "ServerScriptService", "ReplicatedStorage
                     }
                     icount += 1
                     budget += #p + 210
-                elseif d:IsA("Model") or d:IsA("Folder") or d:IsA("RemoteEvent") or d:IsA("RemoteFunction") or d:IsA("Tool") or d:IsA("Atmosphere") or d:IsA("Sky") or d:IsA("Sound") or d:IsA("ScreenGui") or d:IsA("Decal") or d:IsA("SurfaceGui") or d:IsA("ImageLabel") or d:IsA("PointLight") then
+                elseif d:IsA("Model") or d:IsA("Folder") or d:IsA("RemoteEvent") or d:IsA("RemoteFunction") or d:IsA("ValueBase") or d:IsA("Tool") or d:IsA("Atmosphere") or d:IsA("Sky") or d:IsA("Sound") or d:IsA("ScreenGui") or d:IsA("Decal") or d:IsA("SurfaceGui") or d:IsA("ImageLabel") or d:IsA("PointLight") then
                     local p = fullPath(d)
                     local props = {}
                     if d:IsA("Sound") then
@@ -1274,7 +1274,7 @@ local function fullPath(inst)
     end
     return table.concat(parts, ".")
 end
-for _, svcName in ipairs({{"Workspace", "ServerScriptService", "ReplicatedStorage", "StarterGui", "StarterPlayer", "Lighting", "SoundService"}}) do
+for _, svcName in ipairs({{"ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterGui", "StarterPlayer", "Lighting", "SoundService", "Workspace"}}) do
     local okSvc, svc = pcall(function() return game:GetService(svcName) end)
     if okSvc and svc then
         for _, d in ipairs(svc:GetDescendants()) do
@@ -1840,6 +1840,20 @@ mod tests {
             crate::luau_check::analyze_source("ServerScriptService.GenDelete", &d).error_count(),
             0,
             "delete_instance Luau must parse cleanly: {d}"
+        );
+    }
+
+    #[test]
+    fn place_tree_walk_prioritizes_structural_services_before_workspace() {
+        let src = include_str!("mcp.rs");
+        let expected_order = r#"{"ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterGui", "StarterPlayer", "Lighting", "SoundService", "Workspace"}"#;
+        assert!(
+            src.contains(expected_order),
+            "Phase 1 place-tree walk must visit ReplicatedStorage/ServerStorage before Workspace"
+        );
+        assert!(
+            src.contains(r#"d:IsA("ValueBase")"#),
+            "Phase 1 place-tree walk must include ValueBase nodes (e.g. ReplicatedStorage.State.*)"
         );
     }
 }
