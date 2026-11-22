@@ -4,6 +4,21 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 0.6.0 - 2026-11-22
+
+- **28 Verified Roblox Game Systems (+6 Anime Card-Battler Systems, `src/skills.rs`, `src/ideas.rs`):**
+  - Added six composable, server-authoritative card-battler systems passing the Static Luau Prover with `0` errors / `0` warnings: `card_gacha_roller` (7 rarities, 5 foil borders, luck/weather/potion/rebirth multipliers, pity & auto-roll), `deck_builder` (6-slot deck, collection bonuses, 1★–5★ fusion, rebirth & `pcall`-guarded DataStore persistence), `card_battle_arena` (5-element synergy wheel, turn order, Ultimate Burst Gauge, Active Counter/Interrupt timing, Impossible Boss raids), `tower_progression` (50-floor Endless Tower across 5 themed worlds + persistent `OrderedDataStore` leaderboard), `potions_weather` (server weather lighting cycles, craftable potions, promo codes), and `card_gallery_world` (3D Studio Lobby with showcase pedestals, `Decal` + `SurfaceGui` `ImageLabel` bindings, tower gate, boss shrine, and leaderboard wall).
+  - Registered the flagship **`anime-card-battles-apex`** (*Anime Card Battles: Rebirth — Apex Edition*) starter blueprint composing all 6 card systems alongside `leaderboard`, `datastore_save`, `shop`, `game_gui`, `soundtrack`, and 3D lobby parts, plus 6 standalone card-battler feature ideas.
+- **Anime Fan-Art & Creative Homage Knowledge Point (`src/art_knowledge.rs`, `GET /api/art-knowledge`):**
+  - Built-in creative homage policy injected directly into the agent system prompt so OpenRO never knee-jerk refuses anime-inspired Roblox game concepts, instead translating iconic archetypes into original DMCA-safe cel-shaded characters, balanced kits, and watermark-free trading-card art prompts.
+- **Game Art Asset Manager & `.rbxlx` `Decal`/`ImageLabel` Bindings (`src/assets.rs`, `src/place.rs`):**
+  - Persistent `data_dir/game-assets/` manager with strict filename sanitization, PNG/JPEG/WebP magic-byte verification, symlink-escape containment, atomic manifest persistence, live Google Gemini (Nano Banana) / OpenAI Image generation (failing honestly with `503` setup guidance when unconfigured), `GET /api/assets`, `GET|DELETE /api/assets/:file`, `GET /api/assets/manifest`, `POST /api/assets/upload`, and `POST /api/assets/generate`.
+  - Upgraded `.rbxlx` XML serializer/parser (`src/place.rs`) to emit and losslessly round-trip `<Content name="Texture"><url>...</url></Content>`, `<Content name="Image"><url>...</url></Content>`, and `<token name="Face">`, automatically binding uploaded card art into `Workspace.CardGallery` on upload, blueprint build, and `.rbxlx` export.
+- **Card Art & Asset Studio + Playable Anime Card Battles Stage (`frontend/`):**
+  - Added the **Card Art & Asset Studio** dialog (`Card Gallery`, `Upload & Generate`, `Anime Style Guide`), **Card Art Image Generation** keys inside Settings (`Model, Studio & Appearance`), a Featured Apex landing showcase, and a fully playable in-workbench **Anime Card Battles: Rebirth — Apex Edition** stage (`Roll Pack`, `Deck & Fusion`, `Boss & Tower Arena`, plus `3D Lobby Map` view) backed by 8 real high-craft anime card illustrations — mirrored 1-to-1 in the standalone browser web bundle.
+- **End-to-End Flagship Example (`examples/anime-card-battles-apex/`):**
+  - Shipped a complete Roblox Studio export (`AnimeCardBattlesApex.rbxlx` + `asset-manifest.json` + 8 bound card illustrations) built end-to-end exclusively through `openro-rs 0.6.0`.
+
 ## 0.5.1 - 2026-11-22
 
 - **Clear Professional UI Terminology:** Replaced internal engine wording across the Studio Workbench UI, live SSE build progress labels (`Generating Luau`), standalone browser web bundle (`22 Game Systems`, `Studio Workbench`), and `README.md` with clear, standard Roblox Studio terminology while keeping all 22 embedded game-system generators, APIs, and `.rbxlx` fidelity 100% intact.
