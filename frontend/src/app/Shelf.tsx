@@ -1,27 +1,42 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
+  AlertTriangle,
   Archive,
   Box,
+  Check,
   ChevronDown,
   Copy,
   Download,
   FileCode,
+  FileDiff,
   FolderTree,
+  History,
   Layers,
   Monitor,
   PanelRightClose,
   PanelRightOpen,
+  Save,
   Search,
+  ShieldCheck,
+  Upload,
   User,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Expandable, ExpandableContent, ExpandableTrigger } from "@/components/ui/expandable";
 import { SlidingNumber } from "@/components/ui/sliding-number";
 import { Pill, PillIndicator, PillStatus } from "@/components/kibo-ui/pill";
-import type { Place, PlaceInstance, WorkspaceMode } from "./data";
+import type {
+  InstanceEditPayload,
+  Place,
+  PlaceDiff,
+  PlaceInstance,
+  WorkspaceMode,
+} from "./data";
+import { analyzePlaceLuau, tokenizeLuauLine, type LuauDiagnostic, type LuauTokenKind } from "./luauAudit";
 
 type KindInfo = { label: string; service: string; Icon: typeof FileCode; cls: string };
 
@@ -37,19 +52,29 @@ const KINDS: Record<string, KindInfo> = {
 };
 
 const FALLBACK_KIND: KindInfo = { label: "instance", service: "Workspace", Icon: Box, cls: "bg-board text-ink-2" };
+const PART_SCRIPT_KIND: KindInfo = { label: "part script", service: "Workspace", Icon: FileCode, cls: "bg-tag-sky-bg text-tag-sky-fg" };
+
+const TOKEN_CLS: Record<LuauTokenKind, string> = {
+  comment: "text-ink-3",
+  string: "text-tag-mint-fg",
+  keyword: "font-medium text-tag-research-fg",
+  global: "text-tag-ops-fg",
+  number: "text-tag-plan-fg",
+  plain: "text-ink",
+};
 
 export type ExplorerEntry = {
   path: string;
   name: string;
   kind: KindInfo;
-  detail: string;
   rawCopy: string;
   copyLabel: string;
   metaChip?: string;
   isScript: boolean;
+  source?: string;
+  instance?: PlaceInstance;
+  diagnostics: LuauDiagnostic[];
 };
-
-const PART_SCRIPT_KIND: KindInfo = { label: "part script", service: "Workspace", Icon: FileCode, cls: "bg-tag-sky-bg text-tag-sky-fg" };
 
 function parsePath(path: string, isScript = false): { name: string; kind: KindInfo } {
   const segs = path.split(".");
@@ -59,24 +84,11 @@ function parsePath(path: string, isScript = false): { name: string; kind: KindIn
   return { name: spaced, kind: KINDS[segs[0]] ?? FALLBACK_KIND };
 }
 
-function formatInstanceDetail(path: string, inst?: PlaceInstance): { detail: string; rawCopy: string; metaChip?: string } {
-  const cls = inst?.class_name || "Instance";
-  const props = inst?.properties ? Object.entries(inst.properties) : [];
-  const propLines = props.length
-    ? "\n" + props.map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join("\n")
-    : "";
-  const full = `${path} (${cls})${propLines}`;
-  return { detail: full, rawCopy: full, metaChip: cls };
-}
-
-function formatScriptDetail(path: string, source: string): { detail: string; rawCopy: string; metaChip: string } {
-  const clean = source ? source.trim() : "";
-  const lineCount = clean ? clean.split("\n").length : 0;
-  return {
-    detail: clean ? `-- ${path}\n${clean}` : `-- ${path}`,
-    rawCopy: clean || `-- ${path}`,
-    metaChip: `${Math.max(1, lineCount)}L Luau`,
-  };
+function readVec3(val: unknown, fallback: [number, number, number]): [number, number, number] {
+  if (Array.isArray(val) && val.length >= 3 && val.every((n) => typeof n === "number" && Number.isFinite(n))) {
+    return [val[0], val[1], val[2]];
+  }
+  return fallback;
 }
 
 function slugName(gameName: string): string {
@@ -96,6 +108,179 @@ export function buildGameSummary(gameName: string, builtTitles: string[], place:
   return `My Roblox game has ${titlePart}, ${total} ${total === 1 ? "piece" : "pieces"} in all (${parts.length} Workspace ${parts.length === 1 ? "part" : "parts"}, ${scripts.length} Luau ${scripts.length === 1 ? "script" : "scripts"}), built and playtested with OpenRO.`;
 }
 
+function LuauCodeView({ source }: { source: string }) {
+  const lines = useMemo(() => (source ? source.replace(/\r\n/g, "\n").split("\n") : ["-- empty"]), [source]);
+  return (
+    <div
+      className="max-h-60 overflow-auto rounded-sm border border-hairline bg-surface p-2 font-mono text-xs leading-relaxed"
+      aria-label="Syntax-highlighted Luau source"
+    >
+      <table className="w-full border-collapse">
+        <tbody>
+          {lines.map((line, i) => (
+            <tr key={i}>
+              <td className="select-none pe-2.5 text-right align-top font-mono text-xs tabular-nums text-ink-3">
+                {i + 1}
+              </td>
+              <td className="whitespace-pre-wrap break-all align-top text-ink">
+                {line.length === 0 ? (
+                  " "
+                ) : (
+                  tokenizeLuauLine(line).map((tok, j) => (
+                    <span key={j} className={TOKEN_CLS[tok.kind]}>
+                      {tok.text}
+                    </span>
+                  ))
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function InstancePropertyEditor({
+  path,
+  instance,
+  onSave,
+}: {
+  path: string;
+  instance: PlaceInstance;
+  onSave?: (payload: InstanceEditPayload) => Promise<void>;
+}) {
+  const props = instance.properties || {};
+  const initPos = readVec3(props.Position, [0, 1, 0]);
+  const initSize = readVec3(props.Size, instance.class_name === "SpawnLocation" ? [8, 1, 8] : [10, 1, 10]);
+  const initColor = typeof props.Color === "string" && props.Color.trim() ? props.Color.trim() : "#A3A2A5";
+  const initAnchored = props.Anchored !== false;
+
+  const [pos, setPos] = useState<[string, string, string]>([String(initPos[0]), String(initPos[1]), String(initPos[2])]);
+  const [size, setSize] = useState<[string, string, string]>([String(initSize[0]), String(initSize[1]), String(initSize[2])]);
+  const [color, setColor] = useState(initColor);
+  const [anchored, setAnchored] = useState(initAnchored);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const p = readVec3(instance.properties?.Position, [0, 1, 0]);
+    const s = readVec3(instance.properties?.Size, instance.class_name === "SpawnLocation" ? [8, 1, 8] : [10, 1, 10]);
+    setPos([String(p[0]), String(p[1]), String(p[2])]);
+    setSize([String(s[0]), String(s[1]), String(s[2])]);
+    setColor(typeof instance.properties?.Color === "string" ? instance.properties.Color : "#A3A2A5");
+    setAnchored(instance.properties?.Anchored !== false);
+  }, [instance]);
+
+  const handleSave = async () => {
+    if (!onSave || saving) return;
+    setSaving(true);
+    try {
+      const parseTuple = (t: [string, string, string], fb: [number, number, number]): [number, number, number] => [
+        Number.isFinite(Number(t[0])) ? Number(t[0]) : fb[0],
+        Number.isFinite(Number(t[1])) ? Number(t[1]) : fb[1],
+        Number.isFinite(Number(t[2])) ? Number(t[2]) : fb[2],
+      ];
+      await onSave({
+        path,
+        class_name: instance.class_name || "Part",
+        properties: {
+          ...(instance.properties || {}),
+          Position: parseTuple(pos, initPos),
+          Size: parseTuple(size, initSize),
+          Color: /^#[0-9a-fA-F]{6}$/.test(color.trim()) ? color.trim().toUpperCase() : initColor,
+          Anchored: anchored,
+        },
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2 rounded-sm border border-hairline bg-surface p-2.5 text-xs">
+      <div className="flex flex-col gap-1">
+        <span className="font-medium text-ink-2">Position (X, Y, Z)</span>
+        <div className="grid grid-cols-3 gap-1.5">
+          {(["X", "Y", "Z"] as const).map((axis, idx) => (
+            <Input
+              key={axis}
+              value={pos[idx]}
+              onChange={(e) => {
+                const next: [string, string, string] = [...pos];
+                next[idx] = e.target.value;
+                setPos(next);
+              }}
+              aria-label={`${path} Position ${axis}`}
+              className="h-7 font-mono text-xs tabular-nums"
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <span className="font-medium text-ink-2">Size (X, Y, Z)</span>
+        <div className="grid grid-cols-3 gap-1.5">
+          {(["X", "Y", "Z"] as const).map((axis, idx) => (
+            <Input
+              key={axis}
+              value={size[idx]}
+              onChange={(e) => {
+                const next: [string, string, string] = [...size];
+                next[idx] = e.target.value;
+                setSize(next);
+              }}
+              aria-label={`${path} Size ${axis}`}
+              className="h-7 font-mono text-xs tabular-nums"
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <label className="flex min-w-0 flex-1 items-center gap-1.5 font-medium text-ink-2">
+          <span>Color</span>
+          <span
+            className="size-4 flex-none rounded-sm border border-hairline"
+            style={{ backgroundColor: /^#[0-9a-fA-F]{6}$/.test(color) ? color : "#A3A2A5" }}
+            aria-hidden
+          />
+          <Input
+            value={color}
+            onChange={(e) => setColor(e.target.value)}
+            aria-label={`${path} Color hex`}
+            className="h-7 w-24 font-mono text-xs"
+          />
+        </label>
+
+        <Button
+          variant={anchored ? "default" : "outline"}
+          size="xs"
+          aria-pressed={anchored}
+          aria-label={`Toggle Anchored for ${path}`}
+          onClick={() => setAnchored((v) => !v)}
+          className="max-md:min-h-11"
+        >
+          {anchored ? "Anchored" : "Unanchored"}
+        </Button>
+      </div>
+
+      {onSave && (
+        <Button
+          variant="outline"
+          size="xs"
+          disabled={saving}
+          onClick={() => void handleSave()}
+          aria-label={`Save properties for ${path}`}
+          className="w-full justify-center max-md:min-h-11"
+        >
+          <Save className="size-3" strokeWidth={1.5} aria-hidden />
+          {saving ? "Saving…" : "Save properties"}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 export function PartsShelf({
   gameName,
   builtTitles,
@@ -104,6 +289,14 @@ export function PartsShelf({
   collapsed,
   onToggle,
   answerAttr,
+  selectedPath,
+  onSelectPath,
+  onSaveInstance,
+  onImportClick,
+  onOpenSnapshots,
+  snapshotCount = 0,
+  buildDiff,
+  serverDiagnostics,
 }: {
   gameName: string;
   builtTitles: string[];
@@ -112,31 +305,95 @@ export function PartsShelf({
   collapsed?: boolean;
   onToggle?: () => void;
   answerAttr?: boolean;
+  selectedPath?: string | null;
+  onSelectPath?: (path: string | null) => void;
+  onSaveInstance?: (payload: InstanceEditPayload) => Promise<void>;
+  onImportClick?: () => void;
+  onOpenSnapshots?: () => void;
+  snapshotCount?: number;
+  buildDiff?: PlaceDiff | null;
+  serverDiagnostics?: LuauDiagnostic[];
 }) {
   const [query, setQuery] = useState("");
   const [exporting, setExporting] = useState(false);
   const q = query.trim().toLowerCase();
 
-  const { workspaceEntries, scriptEntries, total } = useMemo(() => {
+  const diagnostics = useMemo(() => {
+    if (!place || place === "error") return [] as LuauDiagnostic[];
+    const local = analyzePlaceLuau(place);
+    if (!serverDiagnostics || serverDiagnostics.length === 0) return local;
+    const seen = new Set(local.map((d) => `${d.path}:${d.line}:${d.code}`));
+    const merged = [...local];
+    for (const sd of serverDiagnostics) {
+      const k = `${sd.path}:${sd.line}:${sd.code}`;
+      if (!seen.has(k)) merged.push(sd);
+    }
+    return merged;
+  }, [place, serverDiagnostics]);
+
+  const diagByPath = useMemo(() => {
+    const m = new Map<string, LuauDiagnostic[]>();
+    for (const d of diagnostics) {
+      const list = m.get(d.path) || [];
+      list.push(d);
+      m.set(d.path, list);
+    }
+    return m;
+  }, [diagnostics]);
+
+  const { workspaceEntries, scriptEntries, total, errCount, warnCount } = useMemo(() => {
     if (!place || place === "error") {
-      return { workspaceEntries: [] as ExplorerEntry[], scriptEntries: [] as ExplorerEntry[], total: 0 };
+      return {
+        workspaceEntries: [] as ExplorerEntry[],
+        scriptEntries: [] as ExplorerEntry[],
+        total: 0,
+        errCount: 0,
+        warnCount: 0,
+      };
     }
     const instEntries: ExplorerEntry[] = Object.entries(place.instances || {}).map(([p, inst]) => {
       const { name, kind } = parsePath(p);
-      const { detail, rawCopy, metaChip } = formatInstanceDetail(p, inst);
-      return { path: p, name, kind, detail, rawCopy, copyLabel: "Copy props", metaChip, isScript: false };
+      const cls = inst?.class_name || "Instance";
+      const props = inst?.properties ? Object.entries(inst.properties) : [];
+      const propLines = props.length ? "\n" + props.map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join("\n") : "";
+      return {
+        path: p,
+        name,
+        kind,
+        rawCopy: `${p} (${cls})${propLines}`,
+        copyLabel: "Copy props",
+        metaChip: cls,
+        isScript: false,
+        instance: inst,
+        diagnostics: diagByPath.get(p) || [],
+      };
     });
     const scrEntries: ExplorerEntry[] = Object.entries(place.scripts || {}).map(([p, src]) => {
       const { name, kind } = parsePath(p, true);
-      const { detail, rawCopy, metaChip } = formatScriptDetail(p, src);
-      return { path: p, name, kind, detail, rawCopy, copyLabel: "Copy Luau", metaChip, isScript: true };
+      const clean = src ? src.trim() : "";
+      const lineCount = clean ? clean.split("\n").length : 0;
+      return {
+        path: p,
+        name,
+        kind,
+        rawCopy: clean || `-- ${p}`,
+        copyLabel: "Copy Luau",
+        metaChip: `${Math.max(1, lineCount)}L Luau`,
+        isScript: true,
+        source: clean,
+        diagnostics: diagByPath.get(p) || [],
+      };
     });
+    const errs = diagnostics.filter((d) => d.severity === "error").length;
+    const warns = diagnostics.filter((d) => d.severity === "warning").length;
     return {
       workspaceEntries: instEntries,
       scriptEntries: scrEntries,
       total: instEntries.length + scrEntries.length,
+      errCount: errs,
+      warnCount: warns,
     };
-  }, [place]);
+  }, [diagByPath, diagnostics, place]);
 
   const filteredWorkspace = useMemo(
     () => (q ? workspaceEntries.filter((e) => `${e.name} ${e.path} ${e.kind.label} ${e.metaChip ?? ""}`.toLowerCase().includes(q)) : workspaceEntries),
@@ -148,6 +405,7 @@ export function PartsShelf({
   );
 
   const summary = useMemo(() => buildGameSummary(gameName, builtTitles, place), [gameName, builtTitles, place]);
+  const diffTotal = buildDiff ? buildDiff.added.length + buildDiff.modified.length + buildDiff.removed.length : 0;
 
   const copySummary = () => {
     if (!summary) return;
@@ -227,21 +485,35 @@ export function PartsShelf({
           </div>
         </div>
 
-        {onToggle && (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={onToggle}
-            aria-label="Collapse In your game"
-            className="max-md:size-11"
-          >
-            <PanelRightClose className="size-4" strokeWidth={1.5} aria-hidden />
-          </Button>
-        )}
+        <div className="flex items-center gap-1">
+          {onOpenSnapshots && (
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={onOpenSnapshots}
+              aria-label="Open version snapshots"
+              className="gap-1 text-ink-2 hover:text-ink max-md:min-h-11"
+            >
+              <History className="size-3.5" strokeWidth={1.5} aria-hidden />
+              {snapshotCount > 0 && <span className="font-mono text-xs tabular-nums">{snapshotCount}</span>}
+            </Button>
+          )}
+          {onToggle && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onToggle}
+              aria-label="Collapse In your game"
+              className="max-md:size-11"
+            >
+              <PanelRightClose className="size-4" strokeWidth={1.5} aria-hidden />
+            </Button>
+          )}
+        </div>
       </div>
 
       {total > 0 && !error && (
-        <div className="flex-none border-b border-hairline px-3 py-2.5">
+        <div className="flex flex-none flex-col gap-2 border-b border-hairline px-3 py-2.5">
           <InputGroup className="bg-board/50">
             <InputGroupAddon align="inline-start" className="ps-2.5">
               <Search className="size-3.5 text-icon" strokeWidth={1.5} aria-hidden />
@@ -268,10 +540,106 @@ export function PartsShelf({
               </InputGroupAddon>
             )}
           </InputGroup>
+
+          {/* Static Luau Audit Summary Badge */}
+          {scriptEntries.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-1.5 text-xs">
+              <span className="inline-flex items-center gap-1 text-ink-2">
+                <ShieldCheck className="size-3.5 text-icon" strokeWidth={1.5} aria-hidden />
+                Static Luau Audit
+              </span>
+              {errCount === 0 && warnCount === 0 ? (
+                <Pill className="bg-pill-active-bg px-2 py-0 font-mono text-xs text-pill-active-fg">
+                  <Check className="size-3" strokeWidth={2} aria-hidden />
+                  Clean
+                </Pill>
+              ) : (
+                <div className="flex items-center gap-1">
+                  {errCount > 0 && (
+                    <Pill className="bg-pill-pro-bg px-1.5 py-0 font-mono text-xs tabular-nums text-pill-pro-fg">
+                      {errCount} err
+                    </Pill>
+                  )}
+                  {warnCount > 0 && (
+                    <Pill className="bg-pill-warn-bg px-1.5 py-0 font-mono text-xs tabular-nums text-pill-warn-fg">
+                      {warnCount} warn
+                    </Pill>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-3">
+        {/* Expandable Build Diff on latest build */}
+        {buildDiff && diffTotal > 0 && (
+          <section aria-label="Latest Build Diff" className="rounded-card border border-hairline bg-board/50 px-2.5 py-2">
+            <Expandable expandDirection="vertical" expandBehavior="push">
+              {({ isExpanded }) => (
+                <>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <FileDiff className="size-3.5 flex-none text-icon" strokeWidth={1.5} aria-hidden />
+                      <span className="truncate text-xs font-medium text-ink">Latest Build Diff</span>
+                      <div className="flex items-center gap-1">
+                        {buildDiff.added.length > 0 && (
+                          <span className="rounded-chip bg-pill-active-bg px-1.5 py-0 font-mono text-xs tabular-nums text-pill-active-fg">
+                            +{buildDiff.added.length}
+                          </span>
+                        )}
+                        {buildDiff.modified.length > 0 && (
+                          <span className="rounded-chip bg-pill-warn-bg px-1.5 py-0 font-mono text-xs tabular-nums text-pill-warn-fg">
+                            ~{buildDiff.modified.length}
+                          </span>
+                        )}
+                        {buildDiff.removed.length > 0 && (
+                          <span className="rounded-chip bg-pill-pro-bg px-1.5 py-0 font-mono text-xs tabular-nums text-pill-pro-fg">
+                            -{buildDiff.removed.length}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <ExpandableTrigger
+                      aria-label={isExpanded ? "Hide build diff" : "Show build diff"}
+                      className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-sm text-ink-2 outline-none hover:bg-surface hover:text-ink md:min-h-7 md:min-w-7"
+                    >
+                      <ChevronDown
+                        className={`size-3.5 transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`}
+                        strokeWidth={1.5}
+                        aria-hidden
+                      />
+                    </ExpandableTrigger>
+                  </div>
+                  <ExpandableContent preset="fade">
+                    <ul className="mt-2 flex max-h-40 flex-col gap-1 overflow-y-auto border-t border-hairline pt-2 font-mono text-xs">
+                      {buildDiff.added.map((it) => (
+                        <li key={`a:${it.path}`} className="flex items-center justify-between gap-2 text-pill-active-fg">
+                          <span className="truncate">+ {it.path}</span>
+                          <span className="shrink-0 text-ink-2">{it.detail}</span>
+                        </li>
+                      ))}
+                      {buildDiff.modified.map((it) => (
+                        <li key={`m:${it.path}`} className="flex items-center justify-between gap-2 text-pill-warn-fg">
+                          <span className="truncate">~ {it.path}</span>
+                          <span className="shrink-0 text-ink-2">{it.detail}</span>
+                        </li>
+                      ))}
+                      {buildDiff.removed.map((it) => (
+                        <li key={`r:${it.path}`} className="flex items-center justify-between gap-2 text-pill-pro-fg">
+                          <span className="truncate">- {it.path}</span>
+                          <span className="shrink-0 text-ink-2">{it.detail}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </ExpandableContent>
+                </>
+              )}
+            </Expandable>
+          </section>
+        )}
+
         {error ? (
           <p className="rounded-card border border-hairline bg-board p-3 text-sm text-pill-pro-fg">
             Could not read your game place tree. Check your Studio or Local Place connection in Settings, then use Check again.
@@ -283,7 +651,7 @@ export function PartsShelf({
           </div>
         ) : total === 0 ? (
           <div className="rounded-card border border-hairline bg-board p-3.5 text-sm leading-relaxed text-ink-2">
-            No parts or scripts in your place yet. Build a blueprint or describe any game below and your Workspace instances and Luau scripts appear here ready to inspect or export as .rbxlx.
+            No parts or scripts in your place yet. Build a blueprint, drag-and-drop a .rbxlx file, or describe any game below.
           </div>
         ) : filteredWorkspace.length === 0 && filteredScripts.length === 0 ? (
           <div className="rounded-card border border-hairline bg-board p-3 text-sm text-ink-2">
@@ -292,25 +660,60 @@ export function PartsShelf({
         ) : (
           <>
             {filteredWorkspace.length > 0 && (
-              <ExplorerGroup title="Workspace Parts" entries={filteredWorkspace} />
+              <ExplorerGroup
+                title="Workspace Parts"
+                entries={filteredWorkspace}
+                selectedPath={selectedPath}
+                onSelectPath={onSelectPath}
+                onSaveInstance={onSaveInstance}
+              />
             )}
             {filteredScripts.length > 0 && (
-              <ExplorerGroup title="Luau Scripts" entries={filteredScripts} />
+              <ExplorerGroup
+                title="Luau Scripts"
+                entries={filteredScripts}
+                selectedPath={selectedPath}
+                onSelectPath={onSelectPath}
+                onSaveInstance={onSaveInstance}
+              />
             )}
           </>
         )}
       </div>
 
       <div className="flex flex-none flex-col gap-2 border-t border-hairline bg-surface p-3">
-        <Button
-          variant="default"
-          disabled={total === 0 || error || exporting}
-          onClick={() => void exportRbxlx()}
-          className="w-full justify-center max-md:min-h-11"
-        >
-          <Download className="size-3.5" strokeWidth={1.5} aria-hidden />
-          {exporting ? "Exporting…" : "Export .rbxlx"}
-        </Button>
+        <div className="grid grid-cols-2 gap-1.5">
+          <Button
+            variant="default"
+            disabled={total === 0 || error || exporting}
+            onClick={() => void exportRbxlx()}
+            className="w-full justify-center max-md:min-h-11"
+          >
+            <Download className="size-3.5" strokeWidth={1.5} aria-hidden />
+            {exporting ? "Exporting…" : "Export .rbxlx"}
+          </Button>
+          {onImportClick ? (
+            <Button
+              variant="outline"
+              onClick={onImportClick}
+              aria-label="Import .rbxlx"
+              className="w-full justify-center max-md:min-h-11"
+            >
+              <Upload className="size-3.5" strokeWidth={1.5} aria-hidden />
+              Import .rbxlx
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              disabled={!summary}
+              onClick={copySummary}
+              className="w-full justify-center max-md:min-h-11"
+            >
+              <Copy className="size-3.5" strokeWidth={1.5} aria-hidden />
+              Copy summary
+            </Button>
+          )}
+        </div>
         <Button
           variant="outline"
           disabled={!summary}
@@ -325,16 +728,161 @@ export function PartsShelf({
   );
 }
 
-function ExplorerGroup({ title, entries }: { title: string; entries: ExplorerEntry[] }) {
-  const visible = entries.slice(0, 60);
-  const hiddenCount = entries.length - visible.length;
+function ExplorerItemRow({
+  entry,
+  isSelected,
+  onSelect,
+  onSaveInstance,
+}: {
+  entry: ExplorerEntry;
+  isSelected: boolean;
+  onSelect?: () => void;
+  onSaveInstance?: (payload: InstanceEditPayload) => Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(isSelected);
+  const itemRef = useRef<HTMLLIElement>(null);
 
-  const copyEntry = (entry: ExplorerEntry) => {
+  useEffect(() => {
+    if (isSelected) {
+      setExpanded(true);
+      itemRef.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [isSelected]);
+
+  const { Icon } = entry.kind;
+  const errN = entry.diagnostics.filter((d) => d.severity === "error").length;
+  const warnN = entry.diagnostics.filter((d) => d.severity === "warning").length;
+
+  const copyEntry = () => {
     navigator.clipboard.writeText(entry.rawCopy).then(
       () => toast.success(`Copied ${entry.name}`),
       () => toast.error("Could not copy automatically."),
     );
   };
+
+  return (
+    <li
+      ref={itemRef}
+      data-explorer-path={entry.path}
+      className={`rounded-card border px-2.5 py-2 transition-[border-color,background-color] duration-(--dur-press) ease-(--ease-house) ${
+        isSelected
+          ? "border-blue bg-blue-soft/60 ring-2 ring-blue/35"
+          : "border-hairline bg-board/45"
+      }`}
+    >
+      <Expandable
+        expandDirection="vertical"
+        expandBehavior="push"
+        expanded={expanded}
+        onToggle={() => {
+          const next = !expanded;
+          setExpanded(next);
+          if (next) onSelect?.();
+        }}
+      >
+        {({ isExpanded }) => (
+          <>
+            <div className="flex items-center gap-2">
+              <span className={`grid size-7 flex-none place-items-center rounded-sm ${entry.kind.cls}`}>
+                <Icon className="size-3.5" strokeWidth={1.5} aria-hidden />
+              </span>
+              <div className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
+                <span className="w-full truncate text-sm font-medium text-ink">{entry.name}</span>
+                <div className="flex flex-wrap items-center gap-1">
+                  <Pill className={`px-1.5 py-0 text-xs ${entry.kind.cls}`}>{entry.kind.label}</Pill>
+                  {entry.metaChip && (
+                    <span className="font-mono text-xs text-ink-3">{entry.metaChip}</span>
+                  )}
+                  {entry.isScript && errN > 0 && (
+                    <Pill className="bg-pill-pro-bg px-1.5 py-0 font-mono text-xs text-pill-pro-fg">
+                      {errN} err
+                    </Pill>
+                  )}
+                  {entry.isScript && errN === 0 && warnN > 0 && (
+                    <Pill className="bg-pill-warn-bg px-1.5 py-0 font-mono text-xs text-pill-warn-fg">
+                      {warnN} warn
+                    </Pill>
+                  )}
+                </div>
+              </div>
+              <ExpandableTrigger
+                aria-label={`Hierarchy details for ${entry.name}`}
+                className="inline-flex min-h-11 min-w-11 flex-none items-center justify-center rounded-sm text-ink-2 outline-none hover:bg-surface hover:text-ink md:min-h-7 md:min-w-7"
+              >
+                <ChevronDown
+                  className={`size-3.5 transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`}
+                  strokeWidth={1.5}
+                  aria-hidden
+                />
+              </ExpandableTrigger>
+            </div>
+            <ExpandableContent preset="fade">
+              <div className="mt-2 flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-2">
+                  <code className="min-w-0 truncate font-mono text-xs text-ink-2">{entry.path}</code>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={copyEntry}
+                    aria-label={`${entry.copyLabel} for ${entry.name}`}
+                    className="shrink-0 text-ink-2 hover:text-ink max-md:min-h-11"
+                  >
+                    <Copy className="size-3" strokeWidth={1.5} aria-hidden />
+                    {entry.copyLabel}
+                  </Button>
+                </div>
+
+                {entry.diagnostics.length > 0 && (
+                  <ul className="flex flex-col gap-1 rounded-sm border border-hairline bg-surface p-2 text-xs">
+                    {entry.diagnostics.map((d, idx) => (
+                      <li
+                        key={idx}
+                        className={`flex items-start gap-1.5 ${
+                          d.severity === "error" ? "text-pill-pro-fg" : "text-pill-warn-fg"
+                        }`}
+                      >
+                        <AlertTriangle className="mt-0.5 size-3 flex-none" strokeWidth={1.5} aria-hidden />
+                        <span className="min-w-0 [overflow-wrap:anywhere]">
+                          <strong className="font-mono font-medium">L{d.line} [{d.code}]</strong> {d.message}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {entry.isScript ? (
+                  <LuauCodeView source={entry.source || `-- ${entry.path}`} />
+                ) : entry.instance ? (
+                  <InstancePropertyEditor path={entry.path} instance={entry.instance} onSave={onSaveInstance} />
+                ) : (
+                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-sm border border-hairline bg-surface p-2 font-mono text-xs text-ink">
+                    {entry.rawCopy}
+                  </pre>
+                )}
+              </div>
+            </ExpandableContent>
+          </>
+        )}
+      </Expandable>
+    </li>
+  );
+}
+
+function ExplorerGroup({
+  title,
+  entries,
+  selectedPath,
+  onSelectPath,
+  onSaveInstance,
+}: {
+  title: string;
+  entries: ExplorerEntry[];
+  selectedPath?: string | null;
+  onSelectPath?: (path: string | null) => void;
+  onSaveInstance?: (payload: InstanceEditPayload) => Promise<void>;
+}) {
+  const visible = entries.slice(0, 60);
+  const hiddenCount = entries.length - visible.length;
 
   return (
     <section className="flex flex-col gap-2">
@@ -346,63 +894,15 @@ function ExplorerGroup({ title, entries }: { title: string; entries: ExplorerEnt
       </div>
 
       <ul className="flex flex-col gap-1.5">
-        {visible.map((entry) => {
-          const { Icon } = entry.kind;
-          return (
-            <li key={entry.path} className="rounded-card border border-hairline bg-board/45 px-2.5 py-2">
-              <Expandable expandDirection="vertical" expandBehavior="push">
-                {({ isExpanded }) => (
-                  <>
-                    <div className="flex items-center gap-2">
-                      <span className={`grid size-7 flex-none place-items-center rounded-sm ${entry.kind.cls}`}>
-                        <Icon className="size-3.5" strokeWidth={1.5} aria-hidden />
-                      </span>
-                      <div className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
-                        <span className="w-full truncate text-sm font-medium text-ink">{entry.name}</span>
-                        <div className="flex flex-wrap items-center gap-1">
-                          <Pill className={`px-1.5 py-0 text-xs ${entry.kind.cls}`}>{entry.kind.label}</Pill>
-                          {entry.metaChip && (
-                            <span className="font-mono text-xs text-ink-3">{entry.metaChip}</span>
-                          )}
-                        </div>
-                      </div>
-                      <ExpandableTrigger
-                        aria-label={`Hierarchy details for ${entry.name}`}
-                        className="inline-flex min-h-11 min-w-11 flex-none items-center justify-center rounded-sm text-ink-2 outline-none hover:bg-surface hover:text-ink md:min-h-7 md:min-w-7"
-                      >
-                        <ChevronDown
-                          className={`size-3.5 transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`}
-                          strokeWidth={1.5}
-                          aria-hidden
-                        />
-                      </ExpandableTrigger>
-                    </div>
-                    <ExpandableContent preset="fade">
-                      <div className="mt-2 flex flex-col gap-1.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <code className="min-w-0 truncate font-mono text-xs text-ink-2">{entry.path}</code>
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            onClick={() => copyEntry(entry)}
-                            aria-label={`${entry.copyLabel} for ${entry.name}`}
-                            className="shrink-0 text-ink-2 hover:text-ink max-md:min-h-11"
-                          >
-                            <Copy className="size-3" strokeWidth={1.5} aria-hidden />
-                            {entry.copyLabel}
-                          </Button>
-                        </div>
-                        <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all rounded-sm border border-hairline bg-surface p-2 font-mono text-xs leading-relaxed text-ink">
-                          {entry.detail}
-                        </pre>
-                      </div>
-                    </ExpandableContent>
-                  </>
-                )}
-              </Expandable>
-            </li>
-          );
-        })}
+        {visible.map((entry) => (
+          <ExplorerItemRow
+            key={entry.path}
+            entry={entry}
+            isSelected={selectedPath === entry.path}
+            onSelect={() => onSelectPath?.(entry.path)}
+            onSaveInstance={onSaveInstance}
+          />
+        ))}
       </ul>
 
       {hiddenCount > 0 && (
