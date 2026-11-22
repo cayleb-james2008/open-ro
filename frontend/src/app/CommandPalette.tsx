@@ -9,12 +9,10 @@ import {
   Layers,
   Monitor,
   Package,
-  Palette,
   Plus,
   Redo2,
   Search,
   SlidersHorizontal,
-  Sparkles,
   Undo2,
   Upload,
   X,
@@ -59,10 +57,8 @@ export function CommandPalette({
   onImportRbxlxClick,
   onOpenSnapshots,
   onOpenSettings,
-  onOpenArtStudio,
   onOpenToolLibrary,
   onOpenEmbeddedStudio,
-  onBuildApex,
   onRunPlaytest,
   onTriggerUndo,
   onTriggerRedo,
@@ -83,10 +79,8 @@ export function CommandPalette({
   onImportRbxlxClick: () => void;
   onOpenSnapshots: () => void;
   onOpenSettings: () => void;
-  onOpenArtStudio: () => void;
   onOpenToolLibrary?: () => void;
   onOpenEmbeddedStudio?: () => void;
-  onBuildApex: () => void;
   onRunPlaytest?: () => void;
   onTriggerUndo: () => void;
   onTriggerRedo?: () => void;
@@ -113,24 +107,6 @@ export function CommandPalette({
 
     // 1. Workbench Actions
     out.push(
-      {
-        kind: "action",
-        id: "act-build-apex",
-        title: "Build Untitled Anime Card Game",
-        subtitle: "One-click 6-system sunlit anime card battler with Torii gacha, Fusion Storms & 4v4 Chain Overdrive",
-        badge: "Flagship",
-        badgeCls: "bg-tag-plan-bg text-tag-plan-fg",
-        onRun: onBuildApex,
-      },
-      {
-        kind: "action",
-        id: "act-art-studio",
-        title: "Open Card Art & Asset Studio",
-        subtitle: "Browse Nano Banana card art, upload custom PNG/WebP artwork, or open the Anime Style Guide",
-        badge: "Art Studio",
-        badgeCls: "bg-tag-research-bg text-tag-research-fg",
-        onRun: onOpenArtStudio,
-      },
       {
         kind: "action",
         id: "act-new-chat",
@@ -302,7 +278,7 @@ export function CommandPalette({
     const q = query.trim().toLowerCase();
     if (!q) return out;
     return out.filter((it) => `${it.title} ${it.subtitle} ${it.badge}`.toLowerCase().includes(q));
-  }, [canRedo, canUndo, onAddBlockPart, onBuildApex, onDownloadShipPack, onExportRbxlx, onImportRbxlxClick, onNewChat, onOpenArtStudio, onOpenEmbeddedStudio, onOpenSettings, onOpenSnapshots, onOpenToolLibrary, onRunPlaytest, onTriggerRedo, onTriggerUndo, place, query]);
+  }, [canRedo, canUndo, onAddBlockPart, onDownloadShipPack, onExportRbxlx, onImportRbxlxClick, onNewChat, onOpenEmbeddedStudio, onOpenSettings, onOpenSnapshots, onOpenToolLibrary, onRunPlaytest, onTriggerRedo, onTriggerUndo, place, query]);
 
   const visible = items.slice(0, 40);
   const clampedIdx = visible.length ? Math.min(activeIdx, visible.length - 1) : 0;
@@ -335,8 +311,6 @@ export function CommandPalette({
     if (item.kind === "part") return Box;
     if (item.kind === "script") return FileCode;
     if (item.kind === "system") return Layers;
-    if (item.id === "act-build-apex") return Sparkles;
-    if (item.id === "act-art-studio") return Palette;
     if (item.id === "act-tool-library") return Package;
     if (item.id === "act-embed-studio") return Monitor;
     if (item.id === "act-export") return Download;
@@ -372,7 +346,7 @@ export function CommandPalette({
               </MorphingDialogClose>
             </div>
             <MorphingDialogDescription className="sr-only">
-              Search 28 Roblox game systems, Explorer parts and scripts, Card Art Studio, and Studio workbench actions.
+              Search 28 Roblox game systems, Explorer parts and scripts, Embedded Studio, Tool Library, and Studio workbench actions.
             </MorphingDialogDescription>
 
             <div className="border-b border-hairline px-4 py-3">

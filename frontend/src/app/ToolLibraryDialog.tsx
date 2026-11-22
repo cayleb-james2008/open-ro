@@ -57,20 +57,20 @@ import {
 type LibraryTab = "installed" | "installable" | "market" | "generators";
 
 const BLENDER_PRESETS = [
-  { id: "torii_gate", label: "Torii Summon Gate", desc: "Dual-pillar Japanese shrine gate scaled to Roblox studs" },
-  { id: "card_pedestal", label: "Card Pedestal", desc: "Illuminated Hall of Legends character display stand" },
-  { id: "colosseum_arch", label: "Boss Colosseum Arch", desc: "Heroic arena archway for the Boss Raid plaza" },
-  { id: "cauldron", label: "Alchemist Cauldron", desc: "Potion & trait forge cauldron pavilion prop" },
-  { id: "crystal_obelisk", label: "Crystal Obelisk", desc: "Floating rarity spire monument for Infinite Tower" },
+  { id: "torii_gate", label: "Shrine Gate", desc: "Dual-pillar stylized archway scaled to Roblox studs" },
+  { id: "card_pedestal", label: "Display Pedestal", desc: "Illuminated showcase pedestal prop for game hubs" },
+  { id: "colosseum_arch", label: "Arena Arch", desc: "Heroic entrance archway for PvP or boss arenas" },
+  { id: "cauldron", label: "Prop Cauldron", desc: "Stylized crafting & alchemy hub prop" },
+  { id: "crystal_obelisk", label: "Crystal Obelisk", desc: "Floating spire landmark for world hubs & checkpoints" },
 ] as const;
 
 const AUDIO_PRESETS = [
-  { id: "summon_roll", label: "Summon Roll", desc: "Ascending crystal chime arpeggio for Torii pack rolls" },
-  { id: "mythic_fanfare", label: "Mythic Fanfare", desc: "Bright heroic chord fanfare for Mythic/Secret pulls" },
-  { id: "battle_crit", label: "Battle Crit", desc: "Punchy harmonic impact hit for 4v4 card clash crits" },
-  { id: "potion_drink", label: "Potion Drink", desc: "Bubbling shimmer rise for Luck/Speed potion buffs" },
+  { id: "summon_roll", label: "Loot Chime", desc: "Ascending crystal chime arpeggio for unlocks & drops" },
+  { id: "mythic_fanfare", label: "Victory Fanfare", desc: "Bright heroic chord fanfare for major milestones" },
+  { id: "battle_crit", label: "Combat Impact", desc: "Punchy harmonic impact hit for melee & ability crits" },
+  { id: "potion_drink", label: "Power-Up Drink", desc: "Bubbling shimmer rise for buffs & pickups" },
   { id: "ui_click", label: "UI Click", desc: "Crisp tactile interface click for Roblox ScreenGuis" },
-  { id: "level_up", label: "Level Up", desc: "Tri-tone victory flourish for Tower floor clears" },
+  { id: "level_up", label: "Level Up", desc: "Tri-tone victory flourish for rank & stage clears" },
 ] as const;
 
 function PackCard({
@@ -370,9 +370,9 @@ export function ToolLibraryDialog({
         place_or_universe_id: q,
         url_or_id: q,
         query: q,
-        niche_hint: activeNiche?.id || "anime-rng-cards",
+        niche_hint: activeNiche?.id || "top-trending",
       });
-      const norm = normalizeResearchResult(raw, activeNiche?.id || "anime-rng-cards");
+      const norm = normalizeResearchResult(raw, activeNiche?.id || "top-trending");
       setResearchRes(norm);
       if (norm.ok) {
         toast.success(`Synthesized 8-dimension Taste Dossier for ${norm.name}`);
@@ -526,7 +526,7 @@ export function ToolLibraryDialog({
             </div>
 
             <MorphingDialogDescription className="sr-only">
-              Manage built-in Roblox Studio, Blender 3D, Anime Fan-Art, Live Roblox Market Taste research, procedural audio SFX, and installable media packs for OpenRO agents.
+              Manage built-in Roblox Studio, Blender 3D, Live Roblox Market Taste research, procedural audio SFX, and installable media packs for OpenRO agents.
             </MorphingDialogDescription>
 
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline bg-board/40 px-4 py-2.5">

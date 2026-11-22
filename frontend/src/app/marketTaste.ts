@@ -78,6 +78,73 @@ export type MarketTasteResearchResult = {
 
 export const BASELINE_MARKET_NICHES: MarketTasteNiche[] = [
   {
+    id: "top-trending",
+    name: "Top Trending (All)",
+    tagline: "Cross-genre Roblox Explore leaders spanning tycoons, social RP, action RPG, co-op horror, PvP arenas, physics sandboxes, survival & RNG.",
+    craft_bar:
+      "Ship top-trending Roblox craft across ANY genre: instant under-10-second core verb right in front of SpawnLocation, sunlit stylized 3D worlds with clean silhouettes (never dark flat baseplates), non-overlapping HUDs, snappy TweenService juice, server-authoritative DataStore saving, and fresh twists.",
+    games: [
+      { name: "Steal An Egg", universe_id: 10563114921, ccu: 963000, like_ratio: 92.4, sort: "top-trending", hook: "Viral raid/steal tycoon loop + rare mutations + timed base locks" },
+      { name: "Brookhaven RP", universe_id: 1686885941, ccu: 564000, like_ratio: 90.4, sort: "top-playing-now", hook: "Zero-friction town houses, vehicles, props & expressive roleplay" },
+      { name: "Throw Food For Animals", universe_id: 10688120401, ccu: 361000, like_ratio: 93.1, sort: "up-and-coming", hook: "Tactile physical throw verb + escalating giant evolutions" },
+      { name: "Blox Fruits", universe_id: 994732206, ccu: 312000, like_ratio: 93.4, sort: "top-playing-now", hook: "Multi-island progression + elemental ability mastery + sea boss raids" },
+      { name: "Dandy's World", universe_id: 5721456859, ccu: 206000, like_ratio: 95.1, sort: "fun-with-friends", hook: "Co-op floor extraction + stylized mascot roster + skill checks" },
+      { name: "RIVALS", universe_id: 6035872082, ccu: 175000, like_ratio: 94.9, sort: "top-playing-now", hook: "Sub-5-second 1v1/2v2 duel queues + crisp parry/hit feedback" },
+    ],
+    gameplay_loop: [
+      "First-10-second rule: spawn directly facing an interactive verb (starter pedestal, duel pad, stunt ramp, quest giver, or shared vehicle)",
+      "Tight 2–5 minute core session cycles that reward skill, exploration, or social coordination with immediate visible upgrades",
+      "Compounding meta-progression (Rebirths, Ranks, Mastery, Unlockable Zones, or Collection Index) persisted safely via DataStoreService",
+    ],
+    ui_ux_style: [
+      "Clean, non-overlapping Roblox ScreenGui: dock controls hide/dim whenever full-screen modals or cutscenes open",
+      "Readable telemetry strip showing currency, active server event countdown, and next milestone without crowding the 3D viewport",
+      "Touch-friendly 44px+ targets & ProximityPrompts so phones, tablets, and desktop play effortlessly",
+    ],
+    animations_and_juice: [
+      "TweenService squash-and-stretch pops, floating damage/income numbers, and crisp 2-frame hitstop on impacts",
+      "Translucent layered VFX (Transparency 0.65–0.8) & ParticleEmitters that highlight silhouettes instead of obscuring them",
+      "Smooth camera framing punches on level-ups, big drops, or round finishes",
+    ],
+    model_and_world_3d_style: [
+      "Vibrant sunlit stylized 3D worlds (emerald grass, warm marble/timber, turquoise water, crisp cerulean sky ClockTime 13.5) — NEVER dark grey/black box slabs in daylight",
+      "Real sculpted Blender 3D landmarks (<6k tris, clean UVs, 1m = 3.57 studs) framing clear player sightlines from SpawnLocation",
+      "Reserve moody dark/crimson Atmosphere strictly for intentional night phases, horror corridors (with warm guide lights), or special storm events",
+    ],
+    audio_cadence: [
+      "Layered tactile SFX feedback (chimes, crisp UI clicks, impactful hits, victory flourishes) synthesized cleanly as PCM16 .wav assets",
+      "Escalating pitch audio on pickup streaks, combos, and milestone unlocks",
+      "Clear audio telegraphs before boss attacks, nightfall, or server-wide events",
+    ],
+    monetization_loops: [
+      "Optional convenience & progression gamepasses (2x Cash/XP, Auto-Collect, VIP Lounge, Private Server) anchored cleanly to the core loop",
+      "Non-pay-to-win cosmetics (trails, finishers, skins, emotes, vehicle wraps) and transparent pity/milestone guarantees",
+      "Server-wide shared boosts (Global Luck/Event triggers) that delight the whole lobby simultaneously",
+    ],
+    retention_hooks: [
+      "Scheduled server-wide events (Golden Rain, Weather Storms, Boss Portals, Chaos Rounds) creating live countdown anticipation",
+      "Visible social flexing in the 3D lobby (leaderboards, aura halos, upgraded bases, showcase pedestals, win-streak crowns)",
+      "Daily quests and milestone badges that persist reliably across sessions via retry + BindToClose DataStore saving",
+    ],
+    anti_slop_rules: [
+      "Never ship empty baseplates, unstyled default grey blocks, or 40-line stub scripts — build a cohesive sunlit 3D world with real systems",
+      "Never stack overlapping HUD buttons over active modals or blind players in pitch-black unlit rooms",
+      "Validate every currency grant, purchase, hit, and roll strictly on the server with rate-limited RemoteEvents",
+    ],
+    automatic_twists: [
+      "DYNAMIC SERVER EVENTS: Every 10–15 minutes trigger a playable server-wide twist (Golden Rain, Storm Surge, Shifting Arena) that transforms the map live",
+      "SKILL TIMING BONUS: Add a crisp timing mechanic (Overdrive burst, Perfect Parry, Bump-Lock counter) rewarding active players with +35% bonus impact",
+      "SOCIAL SHOWCASE PRESENCE: Give every player a visible 3D world flex (upgraded plot landmark, floating companion aura, or streak crown) readable across the hub",
+    ],
+    quality_boosts: [
+      "Sunlit architectural palette + sculpted Blender landmarks replacing flat neon boxes",
+      "Modal-aware non-overlapping HUDs + ProximityPrompt mobile polish",
+      "Server-authoritative Luau with retry/BindToClose DataStore persistence & clean 60Hz cleanup",
+    ],
+    pitch_prompt:
+      "Build a high-craft top-trending Roblox experience with a vibrant sunlit 3D hub, an instant under-10-second core loop right in front of SpawnLocation, snappy TweenService juice and sound cues, a skill-timing bonus mechanic, periodic server-wide map events, clean non-overlapping ScreenGui HUD, and retry DataStore persistence.",
+  },
+  {
     id: "anime-rng-cards",
     name: "Anime RNG & Cards",
     tagline: "Weighted multi-tier gacha summons, foil variants, 4v4 synergy clash, weather storms & boss towers.",
@@ -609,12 +676,12 @@ export function formatCompactNumber(n: number): string {
 
 export function defaultMarketTasteSnapshot(): MarketTasteSnapshot {
   return {
-    active_niche: "anime-rng-cards",
+    active_niche: "top-trending",
     source: "baseline_nov_2026",
     updated_at: "2026-11-22",
     live_supported: false,
     live_games_count: 0,
-    note: "Grounded in Nov 2026 Roblox Explore charts + 8-dimension Craft & Anti-Slop Dossier. Click Refresh Live Roblox Charts on OpenRO desktop to pull live Explore API sorts.",
+    note: "Grounded in Nov 2026 Roblox Explore charts across all 8 genres + 8-dimension Craft & Anti-Slop Dossier. Click Refresh Live Roblox Charts on OpenRO desktop to pull live Explore API sorts.",
     niches: BASELINE_MARKET_NICHES,
   };
 }
@@ -770,7 +837,7 @@ export function normalizeMarketTasteSnapshot(raw: unknown): MarketTasteSnapshot 
 
   const niches = [...byId.values()];
   const rawActive = String(inner.selected_niche ?? inner.active_niche ?? detailedId ?? "").trim();
-  const active = niches.some((n) => n.id === rawActive) ? rawActive : niches[0]?.id || "anime-rng-cards";
+  const active = niches.some((n) => n.id === rawActive) ? rawActive : niches[0]?.id || "top-trending";
   const source = typeof inner.source === "string" && inner.source ? inner.source : fallback.source;
   const liveCount = typeof inner.live_games_count === "number" ? inner.live_games_count : 0;
 
@@ -788,7 +855,7 @@ export function normalizeMarketTasteSnapshot(raw: unknown): MarketTasteSnapshot 
   };
 }
 
-export function normalizeResearchResult(raw: unknown, fallbackNicheId = "anime-rng-cards"): MarketTasteResearchResult {
+export function normalizeResearchResult(raw: unknown, fallbackNicheId = "top-trending"): MarketTasteResearchResult {
   const baseNiche = BASELINE_MARKET_NICHES.find((n) => n.id === fallbackNicheId) ?? BASELINE_MARKET_NICHES[0];
   if (!raw || typeof raw !== "object") {
     return {
