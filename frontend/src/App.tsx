@@ -19,8 +19,8 @@ import {
   ExternalLink,
   FolderTree,
   Menu,
+  Monitor,
   Package,
-  Palette,
   Plus,
   RefreshCw,
   Search,
@@ -54,6 +54,7 @@ import {
   isV070OrNewer,
   isV080OrNewer,
   isV090OrNewer,
+  normalizeAssetList,
   normalizeChatList,
   normalizeEmbedStatus,
   normalizeIdeas,
@@ -76,6 +77,7 @@ import {
   type Place,
   type PlaceDiff,
   type PlaceSnapshot,
+  type ProjectAssetRecord,
   type StudioActionEvent,
   type StudioEmbedStatus,
   type StudioKeyboardInputPayload,
@@ -85,16 +87,7 @@ import {
   type StudioToolResult,
   type WorkspaceMode,
 } from "./app/data";
-import { BlueprintWorkbench, FeaturedApexBanner } from "./app/Blueprints";
-import { CardArtStudio } from "./app/CardArtStudio";
-import {
-  APEX_CARDS,
-  ART_KNOWLEDGE_FALLBACK,
-  normalizeArtKnowledge,
-  normalizeAssetList,
-  type ArtKnowledgeGuide,
-  type CardAssetRecord,
-} from "./app/cardCatalog";
+import { BlueprintWorkbench } from "./app/Blueprints";
 import { CommandPalette } from "./app/CommandPalette";
 import { analyzePlaceLuau, computePlaceDiff, type LuauDiagnostic } from "./app/luauAudit";
 import { parseRbxlxXml, serializeRbxlx } from "./app/rbxlxCodec";
@@ -210,7 +203,6 @@ export function App() {
   const [shelfCollapsed, setShelfCollapsed] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
-  const [artStudioOpen, setArtStudioOpen] = useState(false);
   const [toolLibraryOpen, setToolLibraryOpen] = useState(false);
   const [librarySnap, setLibrarySnap] = useState<LibrarySnapshot>(() => normalizeLibrarySnapshot({}));
   const [marketTaste, setMarketTaste] = useState<MarketTasteSnapshot>(() => defaultMarketTasteSnapshot());
@@ -251,8 +243,7 @@ export function App() {
   const [studioActions, setStudioActions] = useState<StudioActionEvent[]>([]);
   const [hasLiveFrame, setHasLiveFrame] = useState(false);
   const [frameSeq, setFrameSeq] = useState(0);
-  const [cardAssets, setCardAssets] = useState<CardAssetRecord[]>(APEX_CARDS);
-  const [artKnowledge, setArtKnowledge] = useState<ArtKnowledgeGuide>(ART_KNOWLEDGE_FALLBACK);
+  const [projectAssets, setProjectAssets] = useState<ProjectAssetRecord[]>([]);
   const [lastTriedIdea, setLastTriedIdea] = useState<Idea | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [buildPhase, setBuildPhase] = useState<BuildStreamPhase | null>(null);
@@ -452,18 +443,14 @@ export function App() {
     [v050Ready],
   );
 
-  const refreshCardStudio = useCallback(
+  const refreshProjectAssets = useCallback(
     async (forceServer = false) => {
       if (!v060Ready && !forceServer) return;
       try {
-        const [rawAssets, rawKnowledge] = await Promise.all([
-          read("/api/assets").catch(() => null),
-          read("/api/art-knowledge").catch(() => null),
-        ]);
-        if (rawAssets) setCardAssets(normalizeAssetList(rawAssets));
-        if (rawKnowledge) setArtKnowledge(normalizeArtKnowledge(rawKnowledge));
+        const rawAssets = await read("/api/assets").catch(() => null);
+        if (rawAssets) setProjectAssets(normalizeAssetList(rawAssets));
       } catch {
-        /* keep bundled Nano Banana manifest & fallback style guide */
+        /* keep current project asset list */
       }
     },
     [v060Ready],
@@ -602,7 +589,7 @@ export function App() {
       if (nextPlace) void refreshDiagnostics(true);
     }
     if (v060Ready) {
-      void refreshCardStudio(true);
+      void refreshProjectAssets(true);
     }
     if (v070Ready) {
       void refreshStudioActions(true);
@@ -615,7 +602,7 @@ export function App() {
     refreshIdeas,
     refreshSnapshots,
     refreshDiagnostics,
-    refreshCardStudio,
+    refreshProjectAssets,
     refreshStudioActions,
     v050Ready,
     v060Ready,
@@ -649,7 +636,7 @@ export function App() {
           }
           if (isV060OrNewer(v.version)) {
             setV060Ready(true);
-            void refreshCardStudio(true);
+            void refreshProjectAssets(true);
           }
           if (isV070OrNewer(v.version)) {
             setV070Ready(true);
@@ -712,7 +699,7 @@ export function App() {
           (typeof s.version === "string" && isV060OrNewer(s.version))
         ) {
           setV060Ready(true);
-          void refreshCardStudio(true);
+          void refreshProjectAssets(true);
         }
         if (s.studio_stream === true || (typeof s.version === "string" && isV070OrNewer(s.version))) {
           setV070Ready(true);
@@ -1031,16 +1018,6 @@ export function App() {
     await submitPromptText(sys.prompt, false);
   };
 
-  const serverApexIdea = useMemo(
-    () =>
-      ideas.find(
-        (i) =>
-          i.id === "untitled-anime-card-game" ||
-          i.id === "anime-card-battles-apex" ||
-          /untitled anime card game|anime card battles/i.test(i.title),
-      ) || null,
-    [ideas],
-  );
   const workbenchIdeas = useMemo(
     () =>
       ideas.filter(
@@ -1051,47 +1028,6 @@ export function App() {
       ),
     [ideas],
   );
-
-  const buildApexCardBattles = async () => {
-    if (!canBuild || busy) return;
-    const apexIdea: Idea = serverApexIdea || {
-      id: "anime-card-battles-apex",
-      title: "Untitled Anime Card Game",
-      pitch:
-        "Complete sunlit floating-archipelago Roblox anime card battler: Torii Summon Shrine gacha with pity & foils, 4-card deck synergies & star fusion, 4v4 Chain Overdrive boss arena, 50-floor tower & rebirth, 7 weather biomes + Fusion Weather Storms, and Living 3D Lead-Card Guardian Aura.",
-      skills: [
-        "card_gacha_roller",
-        "deck_builder",
-        "card_battle_arena",
-        "tower_progression",
-        "potions_weather",
-        "card_gallery_world",
-      ],
-    };
-    if (v060Ready || serverApexIdea) {
-      await buildIdea(apexIdea);
-      return;
-    }
-    await submitPromptText(
-      "Build Untitled Anime Card Game: a sunlit floating-archipelago anime card battler with Torii Summon Shrine gacha, 4-card deck with star fusion and rebirth, 4v4 Chain Overdrive boss arena, 50-floor tower progression, 7 weather biomes plus Fusion Weather Storms, and Living 3D Lead-Card Guardian Aura.",
-      false,
-    );
-  };
-
-  const handleCardAssetAdded = (asset: CardAssetRecord) => {
-    setCardAssets((prev) => {
-      const rest = prev.filter((a) => a.card_id !== asset.card_id);
-      return [asset, ...rest];
-    });
-  };
-
-  const apexBuilt =
-    builtTitles.some((t) => /anime card battles/i.test(t)) ||
-    Boolean(
-      place &&
-        place !== "error" &&
-        Object.keys(place.scripts || {}).some((k) => /CardGacha|CardBattle|TowerProgression/i.test(k)),
-    );
 
   const send = (e: FormEvent) => {
     e.preventDefault();
@@ -1423,10 +1359,10 @@ export function App() {
           color: "#DF522D",
           properties: { Position: [offsetX, 1, offsetZ], Size: [10, 1.5, 6], Color: "#DF522D", Material: "Neon", Anchored: true },
         };
-      case "card_billboard": {
-        const card = cardAssets[Object.keys(existing).length % Math.max(1, cardAssets.length)] || APEX_CARDS[0];
+      case "decal_board": {
+        const asset = projectAssets[Object.keys(existing).length % Math.max(1, projectAssets.length)];
         return {
-          name: pickName("CardBillboard"),
+          name: pickName("DecalBoard"),
           class_name: "Part",
           position: [offsetX, 7, offsetZ] as [number, number, number],
           size: [7, 10, 1] as [number, number, number],
@@ -1437,8 +1373,8 @@ export function App() {
             Color: "#475569",
             Material: "SmoothPlastic",
             Anchored: true,
-            CardTitle: card?.title || "Apex Card",
-            DecalTexture: card?.image_url || "",
+            DisplayTitle: asset?.title || "Decal Board",
+            DecalTexture: asset?.image_url || "",
           },
         };
       }
@@ -1722,7 +1658,7 @@ export function App() {
         zipBytes = buildRojoShipPackZip({
           gameName: label,
           place: cur,
-          assets: cardAssets,
+          assets: projectAssets,
           diagnostics: analyzePlaceLuau(cur),
         });
       }
@@ -2060,17 +1996,17 @@ export function App() {
           variant="outline"
           onClick={() => {
             setMenuOpen(false);
-            setArtStudioOpen(true);
+            handleOpenEmbeddedStudio();
           }}
-          aria-label="Open Card Art Studio"
+          aria-label="Open Embedded Roblox Studio"
           className="w-full justify-between bg-board/50 font-normal text-ink-2 hover:bg-board hover:text-ink max-md:min-h-11"
         >
           <span className="inline-flex min-w-0 items-center gap-2">
-            <Palette className="size-3.5 flex-none text-icon" strokeWidth={1.5} aria-hidden />
-            <span className="truncate text-sm">Card Art Studio</span>
+            <Monitor className="size-3.5 flex-none text-icon" strokeWidth={1.5} aria-hidden />
+            <span className="truncate text-sm">Embedded Studio</span>
           </span>
           <span className="rounded-chip bg-surface px-1.5 py-0.5 font-mono text-xs tabular-nums text-ink-2">
-            {cardAssets.length}
+            {embedStatus.running ? "Live" : "IDE"}
           </span>
         </Button>
 
@@ -2283,7 +2219,7 @@ export function App() {
                       <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/30" />
                       <Drawer.Content
                         onEscapeKeyDown={(e) => {
-                          if (settingsOpen || paletteOpen || snapshotsOpen || artStudioOpen || toolLibraryOpen) {
+                          if (settingsOpen || paletteOpen || snapshotsOpen || toolLibraryOpen) {
                             e.preventDefault();
                             return;
                           }
@@ -2419,8 +2355,7 @@ export function App() {
                       theme={theme}
                       selectedPath={selectedPath}
                       onSelectPart={handleSelectPartFromStage}
-                      assets={cardAssets}
-                      onOpenArtStudio={() => setArtStudioOpen(true)}
+                      assets={projectAssets}
                       studioMode={studioMode}
                       studioActions={studioActions}
                       hasLiveFrame={hasLiveFrame}
@@ -2455,15 +2390,6 @@ export function App() {
                     buildingTitle={building?.build}
                     onBuild={(idea) => void buildIdea(idea)}
                   />
-                  <FeaturedApexBanner
-                    assets={cardAssets}
-                    built={apexBuilt}
-                    canBuild={canBuild}
-                    busy={busy}
-                    building={Boolean(building?.build && /anime card battles/i.test(building.build))}
-                    onBuildApex={() => void buildApexCardBattles()}
-                    onOpenArtStudio={() => setArtStudioOpen(true)}
-                  />
                   <SystemLibrary
                     place={place}
                     canBuild={canBuild}
@@ -2483,8 +2409,7 @@ export function App() {
                       theme={theme}
                       selectedPath={selectedPath}
                       onSelectPart={handleSelectPartFromStage}
-                      assets={cardAssets}
-                      onOpenArtStudio={() => setArtStudioOpen(true)}
+                      assets={projectAssets}
                       studioMode={studioMode}
                       studioActions={studioActions}
                       hasLiveFrame={hasLiveFrame}
@@ -2713,14 +2638,12 @@ export function App() {
           onImportRbxlxClick={() => fileInputRef.current?.click()}
           onOpenSnapshots={() => setSnapshotsOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
-          onOpenArtStudio={() => setArtStudioOpen(true)}
           onOpenToolLibrary={() => {
             setToolLibraryOpen(true);
             void refreshLibrary();
             void refreshMarketTaste();
           }}
           onOpenEmbeddedStudio={handleOpenEmbeddedStudio}
-          onBuildApex={() => void buildApexCardBattles()}
           onRunPlaytest={() => void handleRunStudioPlaytest()}
           onTriggerUndo={() => void undoNow()}
           onTriggerRedo={() => void handleRedo()}
@@ -2737,16 +2660,6 @@ export function App() {
           onSelectMarketNiche={handleSelectMarketNiche}
           onRefreshMarketTaste={handleRefreshMarketTaste}
           onPitchMarketPrompt={handlePitchMarketPrompt}
-        />
-
-        <CardArtStudio
-          open={artStudioOpen}
-          onOpenChange={setArtStudioOpen}
-          assets={cardAssets}
-          knowledge={artKnowledge}
-          v060Ready={v060Ready}
-          onAssetAdded={handleCardAssetAdded}
-          onOpenSettings={() => setSettingsOpen(true)}
         />
 
         <SnapshotsDialog
