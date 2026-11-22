@@ -212,6 +212,7 @@ pub struct HostStudioDetection {
     pub studio_running: bool,
     pub studio_display: Option<String>,
     pub already_logged_in: bool,
+    pub place_open: bool,
     pub running_studios: Vec<Value>,
     pub xvfb_available: bool,
     pub display_ready: bool,
@@ -228,6 +229,7 @@ impl HostStudioDetection {
             "studio_running": self.studio_running,
             "studio_display": self.studio_display,
             "already_logged_in": self.already_logged_in,
+            "place_open": self.place_open,
             "running_studios": self.running_studios,
             "xvfb_available": self.xvfb_available,
             "display_ready": self.display_ready,
@@ -323,8 +325,93 @@ fn detect_windows_studio_running() -> bool {
         .unwrap_or(false)
 }
 
-/// Extract normalized `[{ studio_id, place_name, datamodel_type }]` records from
-/// a `list_roblox_studios` MCP JSON response.
+/// Determine whether a `get_studio_state` JSON value or error string indicates that
+/// an actual Roblox place is open vs. Studio sitting on the Start Page (#47).
+pub fn infer_place_open_from_state(state_res: Result<&Value, &str>) -> (bool, Option<String>) {
+    match state_res {
+        Err(err) => {
+            let low = err.to_ascii_lowercase();
+            if low.contains("place is not open")
+                || low.contains("no place")
+                || low.contains("unavailable")
+                || low.contains("start page")
+            {
+                (false, Some("Place is not open".to_string()))
+            } else {
+                (true, None)
+            }
+        }
+        Ok(val) => {
+            if val.get("place_open").and_then(|v| v.as_bool()) == Some(false) {
+                let lbl = val
+                    .get("state")
+                    .or_else(|| val.get("mode"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Place is not open")
+                    .to_string();
+                return (false, Some(lbl));
+            }
+            let mode = val
+                .get("mode")
+                .or_else(|| val.get("studio_mode"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            if let Some(m) = mode {
+                if m.eq_ignore_ascii_case("unavailable")
+                    || m.eq_ignore_ascii_case("startpage")
+                    || m.eq_ignore_ascii_case("start_page")
+                    || m.eq_ignore_ascii_case("none")
+                {
+                    let lbl = val
+                        .get("state")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or("Place is not open")
+                        .to_string();
+                    return (false, Some(lbl));
+                }
+            }
+            let active_dm = val
+                .get("active_datamodel")
+                .or_else(|| val.get("datamodel_type"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            if active_dm.is_some_and(|dm| dm.eq_ignore_ascii_case("unavailable")) {
+                return (false, Some("Place is not open".to_string()));
+            }
+            let serialized_low = val.to_string().to_ascii_lowercase();
+            if serialized_low.contains("place is not open")
+                || serialized_low.contains("no place open")
+                || serialized_low.contains("start page")
+            {
+                return (false, Some("Place is not open".to_string()));
+            }
+            if let Some(dms) = val.get("datamodel_types").and_then(|v| v.as_array()) {
+                if dms.is_empty() && active_dm.is_none() {
+                    return (false, Some("Place is not open".to_string()));
+                }
+            }
+            let lbl = mode.or(active_dm).map(String::from);
+            (true, lbl)
+        }
+    }
+}
+
+/// Query an active `McpClient` for whether a Roblox place is open (vs. Start Page) (#47).
+pub fn probe_client_place_open(client: &mut McpClient) -> bool {
+    if !client.has_exact_tool("get_studio_state") {
+        return client.studio_id().is_some();
+    }
+    match client.get_studio_state() {
+        Ok(val) => infer_place_open_from_state(Ok(&val)).0,
+        Err(err) => infer_place_open_from_state(Err(err.as_str())).0,
+    }
+}
+
+/// Extract normalized `[{ studio_id, place_name, datamodel_type, place_open, studio_state }]`
+/// records from a `list_roblox_studios` MCP JSON response (#47, #118).
 pub fn parse_running_studios(val: &Value) -> Vec<Value> {
     let arr = val
         .get("studios")
@@ -348,23 +435,33 @@ pub fn parse_running_studios(val: &Value) -> Vec<Value> {
             .get("place_name")
             .or_else(|| item.get("name"))
             .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .map(String::from);
-        let dm = item
-            .get("active_datamodel")
-            .or_else(|| item.get("datamodel_type"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("Edit")
-            .to_string();
+        let (inferred_open, inferred_state) = infer_place_open_from_state(Ok(item));
+        let dm = if !inferred_open {
+            "Unavailable".to_string()
+        } else {
+            item.get("active_datamodel")
+                .or_else(|| item.get("datamodel_type"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("Edit")
+                .to_string()
+        };
         out.push(json!({
             "studio_id": id,
             "place_name": place_name,
             "datamodel_type": dm,
+            "place_open": inferred_open,
+            "studio_state": inferred_state,
         }));
     }
     out
 }
 
-/// Passively query an MCP command for live open Studio sessions without spawning Studio (#118).
+/// Passively query an MCP command for live Studio sessions and whether a place is open
+/// (`get_studio_state`) without spawning Studio (#47, #118).
 pub fn probe_running_studios(mcp_cmd: &str) -> Vec<Value> {
     if std::env::var("OPENRO_NO_STATUS_MCP_PROBE")
         .ok()
@@ -378,7 +475,39 @@ pub fn probe_running_studios(mcp_cmd: &str) -> Vec<Value> {
     let Ok(val) = client.list_roblox_studios() else {
         return Vec::new();
     };
-    parse_running_studios(&val)
+    let mut studios = parse_running_studios(&val);
+    if !studios.is_empty() && client.has_exact_tool("get_studio_state") {
+        let state_res = client.get_studio_state();
+        let (open, state_label) = match &state_res {
+            Ok(v) => infer_place_open_from_state(Ok(v)),
+            Err(e) => infer_place_open_from_state(Err(e.as_str())),
+        };
+        let active_dm = state_res
+            .as_ref()
+            .ok()
+            .and_then(|v| v.get("active_datamodel"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty());
+        for s in &mut studios {
+            if let Some(map) = s.as_object_mut() {
+                let item_open = map
+                    .get("place_open")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let final_open = item_open && open;
+                map.insert("place_open".to_string(), json!(final_open));
+                if let Some(ref lbl) = state_label {
+                    map.insert("studio_state".to_string(), json!(lbl));
+                }
+                if !final_open {
+                    map.insert("datamodel_type".to_string(), json!("Unavailable"));
+                } else if let Some(dm) = active_dm {
+                    map.insert("datamodel_type".to_string(), json!(dm));
+                }
+            }
+        }
+    }
+    studios
 }
 
 /// Passively detect Roblox Studio & MCP availability across Linux, macOS, and Windows
@@ -421,10 +550,15 @@ fn detect_studio_environment_with_probe(probe_mcp: bool) -> HostStudioDetection 
             Vec::new()
         };
         let already_logged_in = !running_studios.is_empty();
+        let place_open = running_studios
+            .iter()
+            .any(|s| s.get("place_open").and_then(|v| v.as_bool()).unwrap_or(false));
 
-        let guidance = if already_logged_in {
+        let guidance = if already_logged_in && place_open {
             "Found your logged-in Roblox Studio — click 'Grab & Connect' to attach immediately."
                 .to_string()
+        } else if already_logged_in {
+            "Studio is on the Start Page — open a blank Baseplate to sync/playtest.".to_string()
         } else if studio_running && mcp_present {
             "Roblox Studio is running (awaiting sign-in or open place) — click 'Launch & Embed Studio' to stream and sign in live."
                 .to_string()
@@ -442,6 +576,7 @@ fn detect_studio_environment_with_probe(probe_mcp: bool) -> HostStudioDetection 
             studio_running,
             studio_display,
             already_logged_in,
+            place_open,
             running_studios,
             xvfb_available,
             display_ready,
@@ -467,6 +602,7 @@ fn detect_studio_environment_with_probe(probe_mcp: bool) -> HostStudioDetection 
             studio_running,
             studio_display: None,
             already_logged_in: false,
+            place_open: false,
             running_studios: Vec::new(),
             xvfb_available: false,
             display_ready: true,
@@ -509,9 +645,14 @@ fn detect_studio_environment_with_probe(probe_mcp: bool) -> HostStudioDetection 
             Vec::new()
         };
         let already_logged_in = !running_studios.is_empty();
-        let guidance = if already_logged_in {
+        let place_open = running_studios
+            .iter()
+            .any(|s| s.get("place_open").and_then(|v| v.as_bool()).unwrap_or(false));
+        let guidance = if already_logged_in && place_open {
             "Found your logged-in Roblox Studio — click 'Grab & Connect' to attach immediately."
                 .to_string()
+        } else if already_logged_in {
+            "Studio is on the Start Page — open a blank Baseplate to sync/playtest.".to_string()
         } else if studio_running && mcp_command.is_some() {
             "Roblox Studio is running — sign in or open a place to attach MCP.".to_string()
         } else if studio_installed && mcp_command.is_some() {
@@ -531,6 +672,7 @@ fn detect_studio_environment_with_probe(probe_mcp: bool) -> HostStudioDetection 
             studio_running,
             studio_display: None,
             already_logged_in,
+            place_open,
             running_studios,
             xvfb_available: false,
             display_ready: true,
@@ -568,6 +710,7 @@ pub struct StudioEmbedState {
     pub platform: &'static str,
     pub embedded: bool,
     pub mcp_connected: bool,
+    pub place_open: bool,
     pub display: Option<String>,
     pub resolution: [u32; 2],
     pub studio_id: Option<String>,
@@ -596,6 +739,7 @@ impl StudioEmbedState {
             platform: probe.platform,
             embedded: false,
             mcp_connected: false,
+            place_open: false,
             display: if cfg!(unix) {
                 probe
                     .studio_display
@@ -634,6 +778,7 @@ impl StudioEmbedState {
             "platform": self.platform,
             "embedded": self.embedded,
             "mcp_connected": self.mcp_connected,
+            "place_open": self.place_open,
             "display": self.display,
             "resolution": self.resolution,
             "studio_id": self.studio_id,
@@ -728,6 +873,7 @@ impl StudioEmbedManager {
 
     pub fn mark_disconnected(&mut self) {
         self.state.mcp_connected = false;
+        self.state.place_open = false;
         if self.studio_child.is_none() && self.xvfb_child.is_none() && self.ffmpeg_child.is_none() {
             self.state.embedded = false;
             self.state.phase = "idle".to_string();
@@ -736,6 +882,10 @@ impl StudioEmbedManager {
         self.state.tools.clear();
         self.state.official_tools_count = 0;
         self.state.playing = false;
+    }
+
+    pub fn set_place_open(&mut self, open: bool) {
+        self.state.place_open = open;
     }
 
     pub fn set_playing(&mut self, playing: bool) {
@@ -1219,7 +1369,9 @@ pub fn launch_or_attach_live(
             })?;
             manager.state.started_at_ms = Some(now_ms());
             if client.has_live_studio() {
+                let open = probe_client_place_open(&mut client);
                 manager.sync_from_client(&client, Some(explicit_cmd));
+                manager.set_place_open(open);
                 return Ok(EmbedLaunchOutcome::Connected(manager.state(), Box::new(client)));
             }
             // Running at Sign-In / no open place yet -> stay alive in awaiting_signin (#35, #118)
@@ -1366,8 +1518,10 @@ pub fn launch_or_attach_live(
         if (already_running || is_vinegar_flatpak_running()) && Path::new(&mcp_cmd).is_file() {
             if let Ok(mut client) = McpClient::spawn_with_timeout(&mcp_cmd, Duration::from_secs(3)) {
                 if client.has_live_studio() {
+                    let open = probe_client_place_open(&mut client);
                     manager.state.started_at_ms = Some(now_ms());
                     manager.sync_from_client(&client, Some(mcp_cmd));
+                    manager.set_place_open(open);
                     return Ok(EmbedLaunchOutcome::Connected(manager.state(), Box::new(client)));
                 }
             }
@@ -1416,7 +1570,9 @@ pub fn launch_or_attach_live(
             .unwrap_or_default();
         let (state, mut client) = launch_embedded_studio_with_hub(manager, config, hub)?;
         if client.has_live_studio() {
-            Ok(EmbedLaunchOutcome::Connected(state, Box::new(client)))
+            let open = probe_client_place_open(&mut client);
+            manager.set_place_open(open);
+            Ok(EmbedLaunchOutcome::Connected(manager.state(), Box::new(client)))
         } else {
             let cmd = state.mcp_command.clone().unwrap_or(mcp_cmd_fallback);
             manager.state.embedded = true;
@@ -1725,6 +1881,7 @@ pub fn stop_embedded_studio(manager: &mut StudioEmbedManager) -> StudioEmbedStat
     manager.state.phase = "stopped".to_string();
     manager.state.embedded = false;
     manager.state.mcp_connected = false;
+    manager.state.place_open = false;
     manager.state.playing = false;
     manager.state.studio_id = None;
     manager.state.studio_pid = None;
@@ -1734,6 +1891,220 @@ pub fn stop_embedded_studio(manager: &mut StudioEmbedManager) -> StudioEmbedStat
     manager.state.tools.clear();
     manager.state.official_tools_count = 0;
     manager.state()
+}
+
+/// Open a built `.rbxlx` / `.rbxl` place file directly in Roblox Studio so developers never
+/// get stuck on Studio's Start Page (#47). Respects `OPENRO_OPEN_STUDIO_CMD` for tests and
+/// `dry_run: true` to inspect the resolved launch command without spawning anything.
+pub fn open_place_in_studio(
+    rbxlx_path: &Path,
+    display_override: Option<&str>,
+    dry_run: bool,
+) -> Result<Value, String> {
+    if !rbxlx_path.is_file() {
+        return Err(format!(
+            "place file '{}' does not exist (build the project first)",
+            rbxlx_path.display()
+        ));
+    }
+    let abs = std::fs::canonicalize(rbxlx_path).unwrap_or_else(|_| rbxlx_path.to_path_buf());
+    let abs_str = abs.to_string_lossy().into_owned();
+    let platform = current_platform();
+
+    // Test / custom launcher override (`OPENRO_OPEN_STUDIO_CMD`): passed `<abs_path>` as argv[1].
+    if let Ok(override_cmd) = std::env::var("OPENRO_OPEN_STUDIO_CMD") {
+        let trimmed = override_cmd.trim();
+        if !trimmed.is_empty() {
+            let argv = vec![trimmed.to_string(), abs_str.clone()];
+            if dry_run {
+                return Ok(json!({
+                    "launched": false,
+                    "dry_run": true,
+                    "pid": Value::Null,
+                    "display": display_override,
+                    "platform": platform,
+                    "command": argv,
+                }));
+            }
+            let child = Command::new(trimmed)
+                .arg(&abs)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("failed to spawn OPENRO_OPEN_STUDIO_CMD '{trimmed}': {e}"))?;
+            return Ok(json!({
+                "launched": true,
+                "dry_run": false,
+                "pid": child.id(),
+                "display": display_override,
+                "platform": platform,
+                "command": argv,
+            }));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let display = match display_override {
+            Some(d) => validate_x11_display(d)?,
+            None => detect_linux_running_studio_display()
+                .1
+                .or_else(|| {
+                    std::env::var("DISPLAY")
+                        .ok()
+                        .and_then(|d| normalize_x11_display_env(&d))
+                })
+                .unwrap_or_else(|| ":0".to_string()),
+        };
+        let home = std::env::var("HOME").unwrap_or_default();
+        let vinegar_prefix = PathBuf::from(&home).join(".var/app/org.vinegarhq.Vinegar");
+        let flatpak_ok = find_on_path("flatpak").is_some() && vinegar_prefix.exists();
+        let parent_dir = abs.parent().map(|p| p.display().to_string());
+        let mut args = vec!["run".to_string()];
+        if let Some(ref parent) = parent_dir {
+            args.push(format!("--filesystem={parent}"));
+        }
+        args.push("--file-forwarding".to_string());
+        args.push("org.vinegarhq.Vinegar".to_string());
+        args.push("@@".to_string());
+        args.push(abs_str.clone());
+        args.push("@@".to_string());
+        let mut command_vec = vec!["flatpak".to_string()];
+        command_vec.extend(args.iter().cloned());
+
+        if dry_run {
+            return Ok(json!({
+                "launched": false,
+                "dry_run": true,
+                "pid": Value::Null,
+                "display": display,
+                "platform": platform,
+                "studio_installed": flatpak_ok,
+                "command": command_vec,
+            }));
+        }
+        if !flatpak_ok {
+            return Err(
+                "Flatpak org.vinegarhq.Vinegar is not installed; open the built .rbxlx manually in Roblox Studio."
+                    .to_string(),
+            );
+        }
+        let mut cmd = Command::new("flatpak");
+        cmd.args(&args)
+            .env("DISPLAY", &display)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+            if let Some(uid) = current_unix_uid() {
+                cmd.env("XDG_RUNTIME_DIR", format!("/run/user/{uid}"));
+            }
+        }
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to open '{}' in Roblox Studio via Vinegar: {e}", abs.display()))?;
+        Ok(json!({
+            "launched": true,
+            "dry_run": false,
+            "pid": child.id(),
+            "display": display,
+            "platform": platform,
+            "command": command_vec,
+        }))
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = display_override;
+        let studio_app = PathBuf::from("/Applications/RobloxStudio.app");
+        let args = vec![
+            "-a".to_string(),
+            studio_app.to_string_lossy().into_owned(),
+            abs_str.clone(),
+        ];
+        let mut command_vec = vec!["open".to_string()];
+        command_vec.extend(args.iter().cloned());
+        if dry_run {
+            return Ok(json!({
+                "launched": false,
+                "dry_run": true,
+                "pid": Value::Null,
+                "display": Value::Null,
+                "platform": platform,
+                "studio_installed": studio_app.exists(),
+                "command": command_vec,
+            }));
+        }
+        if !studio_app.exists() {
+            return Err(
+                "RobloxStudio.app not found in /Applications; open the built .rbxlx manually."
+                    .to_string(),
+            );
+        }
+        let child = Command::new("open")
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("failed to open '{}' in Roblox Studio: {e}", abs.display()))?;
+        Ok(json!({
+            "launched": true,
+            "dry_run": false,
+            "pid": child.id(),
+            "display": Value::Null,
+            "platform": platform,
+            "command": command_vec,
+        }))
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = display_override;
+        let local_appdata = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        let studio_exe = local_appdata
+            .as_deref()
+            .map(find_windows_roblox_paths)
+            .and_then(|p| p.studio_exe);
+        let exe_str = studio_exe
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "RobloxStudioBeta.exe".to_string());
+        let command_vec = vec![exe_str, abs_str.clone()];
+        if dry_run {
+            return Ok(json!({
+                "launched": false,
+                "dry_run": true,
+                "pid": Value::Null,
+                "display": Value::Null,
+                "platform": platform,
+                "studio_installed": studio_exe.is_some(),
+                "command": command_vec,
+            }));
+        }
+        let Some(exe) = studio_exe else {
+            return Err(
+                "RobloxStudioBeta.exe not found under %LOCALAPPDATA%\\Roblox\\Versions."
+                    .to_string(),
+            );
+        };
+        let child = Command::new(&exe)
+            .arg(&abs)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("failed to open '{}' in RobloxStudioBeta.exe: {e}", abs.display()))?;
+        Ok(json!({
+            "launched": true,
+            "dry_run": false,
+            "pid": child.id(),
+            "display": Value::Null,
+            "platform": platform,
+            "command": command_vec,
+        }))
+    }
 }
 
 /// Translate browser mouse JSON or raw official MCP `actions` into validated

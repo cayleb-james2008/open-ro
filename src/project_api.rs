@@ -100,7 +100,16 @@ pub fn with_studio<T>(shared: &Shared, f: impl FnOnce(&mut McpClient) -> Result<
         return Err(Reply::err("503 Service Unavailable", "Studio not connected"));
     };
     match agent.studio.as_mut() {
-        Some(PlaceBackend::Mcp(m)) => f(m).map_err(|e| Reply::err("502 Bad Gateway", e)),
+        Some(PlaceBackend::Mcp(m)) => f(m).map_err(|e| {
+            let msg = if e.to_ascii_lowercase().contains("place is not open") {
+                format!(
+                    "{e} — Studio is on the Start Page; open a blank Baseplate or call POST /api/projects/{{id}}/open-in-studio first"
+                )
+            } else {
+                e
+            };
+            Reply::err("502 Bad Gateway", msg)
+        }),
         Some(_) => Err(Reply::err(
             "503 Service Unavailable",
             "Sync and playtests need the Roblox Studio MCP bridge; the connected backend does not offer it",
@@ -127,7 +136,7 @@ pub fn route(shared: &Shared, method: &str, full_path: &str, body: &[u8], loopba
         ("GET", [])
             | ("POST", ["workspace"] | ["workspace", "remove"] | ["create"] | ["open"])
             | ("GET", [_])
-            | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "run-lune"])
+            | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "run-lune" | "open-in-studio"])
             | ("POST", [_, "sync", "diff"])
             | ("GET", [_, "builds" | "playtests" | "files" | "file" | "preview"])
             | ("POST", [_, "file"] | [_, "file", "delete"] | [_, "file", "edit"])
@@ -229,6 +238,65 @@ fn dispatch(shared: &Shared, method: &str, segs: &[&str], query: &str, body: &[u
             let _busy = Busy::new(&shared.busy);
             let rec = projects::build(&r.dir, b["engine"].as_str().unwrap_or("auto"), b["out"].as_str()).map_err(Reply::bad)?;
             Ok(Reply::ok(rec))
+        }
+        ("POST", [id, "open-in-studio"]) => {
+            let r = project_of(shared, id)?;
+            shared.projects.lock().unwrap().set_active(&r.id);
+            let b = parse_body(body)?;
+            let _busy = Busy::new(&shared.busy);
+            let rebuild = b.get("rebuild").and_then(|v| v.as_bool()).unwrap_or(true);
+            let dry_run = b.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+            let engine = b["engine"].as_str().unwrap_or("auto");
+            let display_opt = b
+                .get("display")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+
+            // Reuse latest built .rbxlx when rebuild=false and it exists; otherwise build fresh.
+            let existing = if !rebuild {
+                projects::builds(&r.dir).into_iter().find_map(|rec| {
+                    let rel = rec.get("path")?.as_str()?;
+                    let full = projects::safe_join(&r.dir, rel).ok()?;
+                    full.is_file().then_some((rec, full))
+                })
+            } else {
+                None
+            };
+            let (build_rec, rbxlx_full, rebuilt) = match existing {
+                Some((rec, full)) => (rec, full, false),
+                None => {
+                    let rec = projects::build(&r.dir, engine, b["out"].as_str()).map_err(Reply::bad)?;
+                    let rel = rec["path"].as_str().unwrap_or("");
+                    let full = projects::safe_join(&r.dir, rel).map_err(Reply::bad)?;
+                    (rec, full, true)
+                }
+            };
+            let launch = crate::studio_embed::open_place_in_studio(&rbxlx_full, display_opt, dry_run)
+                .map_err(|e| Reply::err("502 Bad Gateway", e))?;
+            crate::server::invalidate_embed_detect_cache(shared);
+            let fname = rbxlx_full
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("place.rbxlx");
+            Ok(Reply::ok(json!({
+                "project_id": r.id,
+                "build_id": build_rec.get("build_id").cloned().unwrap_or(Value::Null),
+                "rebuilt": rebuilt,
+                "rbxlx_path": rbxlx_full.to_string_lossy(),
+                "rbxlx_rel": build_rec.get("path").cloned().unwrap_or(Value::Null),
+                "launched": launch["launched"],
+                "dry_run": launch["dry_run"],
+                "pid": launch["pid"],
+                "display": launch["display"],
+                "platform": launch["platform"],
+                "command": launch["command"],
+                "message": if dry_run {
+                    format!("Dry run: ready to open {fname} in Roblox Studio.")
+                } else {
+                    format!("Opened {fname} in Roblox Studio — wait a few seconds for the place to load, then sync or playtest.")
+                },
+            })))
         }
         ("GET", [id, "builds"]) => {
             let r = project_of(shared, id)?;

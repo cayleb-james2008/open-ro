@@ -194,7 +194,7 @@ install directory (fragile across updates and read-only in Flatpak), and `Editab
 runtime-only, ID-verified gated, and non-persistent in `.rbxlx`. Real Studio textures use uploaded
 `rbxassetid://` entries from `assets.lock.json`.
 
-## 8. Studio connection, live embedded auth & grabbing existing Studio (#24, #29, #35, #118)
+## 8. Studio connection, live embedded auth, Start Page detection & grabbing existing Studio (#24, #29, #35, #47, #118)
 
 - Auto backend (`workspace_mode: "auto"`) only enters `studio_mcp` when `list_roblox_studios`
   returns at least one open Studio place (`studio_id`); otherwise it falls back cleanly to
@@ -209,14 +209,19 @@ runtime-only, ID-verified gated, and non-persistent in `.rbxlx`. Real Studio tex
     - `studio_running`: `bool` (Linux `/proc` scan for `RobloxStudioBeta.exe`/Vinegar, Windows `tasklist`, macOS `pgrep`, or active embedded session)
     - `studio_display`: `string | null` (actual X11 `DISPLAY` of running Studio on Linux, e.g. `":0"`, `":1"`, `":99"`; `null` on Windows/macOS)
     - `already_logged_in`: `bool` (`true` when `running_studios` is non-empty or live MCP is connected)
-    - `running_studios`: `[{ studio_id, place_name, datamodel_type }]`
+    - `place_open`: `bool` (`true` only when passive `get_studio_state` confirms a place is actually open; `false` when Studio is on the Start Page with `"Place is not open"` / `mode: "Unavailable"`)
+    - `guidance`: plain user guidance (shows `"Studio is on the Start Page — open a blank Baseplate to sync/playtest."` when `already_logged_in && !place_open`)
+    - `running_studios`: `[{ studio_id, place_name, datamodel_type, place_open, studio_state }]`
     - `phase`: `"idle" | "starting" | "awaiting_signin" | "connected" | "stopped" | "error"`
     - `state`: `"idle" | "launching" | "awaiting_signin" | "running" | "error"`
     - `awaiting_signin`: `bool` (`phase == "awaiting_signin"`)
     - `running`: `bool` (`true` while streaming in `"awaiting_signin"` or `"connected"`)
     - `x11grab_active`: `bool`, `mcp_connected`: `bool`, `studio_id`: `string | null`
     - `stream_url`: `"/api/studio/stream.mjpg"`, `frame_url`: `"/api/studio/frame"`, `has_live_frame`: `bool`, `frame_seq`: `u64`
-    - `detection`: `{ platform, studio_installed, studio_running, studio_display, already_logged_in, running_studios, xvfb_available, display_ready, studio_exe, mcp_command, guidance }`
+    - `detection`: `{ platform, studio_installed, studio_running, studio_display, already_logged_in, place_open, running_studios, xvfb_available, display_ready, studio_exe, mcp_command, guidance }`
+- `POST /api/projects/{id}/open-in-studio` (loopback-only; body `{ rebuild?: true, engine?: "auto"|"rojo"|"builtin", display?: ":0"|":99", dry_run?: false }`):
+  - Builds the project's `.rbxlx` (or reuses the latest built `.rbxlx` when `rebuild: false` and it exists) and opens it directly in Roblox Studio (Linux Vinegar `flatpak run --filesystem=... --file-forwarding org.vinegarhq.Vinegar @@ <rbxlx> @@`, Windows `RobloxStudioBeta.exe`, macOS `open -a RobloxStudio`, or `OPENRO_OPEN_STUDIO_CMD` test hook) so developers never hit a blind Start Page error.
+  - Returns `200 { ok, project_id, build_id, rebuilt, rbxlx_path, rbxlx_rel, launched, dry_run, pid, display, platform, command, message }`.
 - `POST /api/studio/embed/attach` (loopback-only; body `{}` or `{ display?, mcp_command? }`):
   - Grabs an **already-running** Roblox Studio without ever spawning a duplicate Studio process (`launch_studio_process = false`).
   - On Linux, detects the running Studio's real X11 `DISPLAY` and resolution and immediately starts the 12 FPS `ffmpeg x11grab` MJPEG stream on `/api/studio/stream.mjpg`.
