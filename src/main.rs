@@ -18,7 +18,7 @@
 use openro_rs::agent::Agent;
 use openro_rs::config::RuntimeConfig;
 use openro_rs::mcp::McpClient;
-use openro_rs::model::{probe_local_gateways, ModelClient, DEFAULT_BASE_URL, DEFAULT_MODEL_ID};
+use openro_rs::model::model_from_config;
 use openro_rs::place::{LocalPlace, PlaceBackend};
 use openro_rs::server::{serve, Shared};
 use std::net::TcpListener;
@@ -76,47 +76,16 @@ fn main() {
 
     let game_name = env_nonempty("OPENRO_GAME_NAME").unwrap_or_else(|| "Untitled Game".to_string());
 
-    // 1. Model resolution: explicit env -> saved config.json -> local gateway auto-probe -> fail-closed default
-    let env_base = env_nonempty("OPENRO_MODEL_BASE_URL");
-    let env_model = env_nonempty("OPENRO_MODEL_ID");
-    let env_key = env_nonempty("OPENRO_MODEL_API_KEY");
-    let no_auto_model = env_flag("OPENRO_NO_AUTO_MODEL");
-
-    let model = if env_base.is_some() || env_key.is_some() {
-        ModelClient::new(
-            env_base.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
-            env_model.unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
-            env_key,
-        )
-    } else if saved_cfg.base_url.is_some() || saved_cfg.api_key.is_some() {
-        ModelClient::new(
-            saved_cfg
-                .base_url
-                .clone()
-                .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
-            env_model
-                .or_else(|| saved_cfg.model_id.clone())
-                .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
-            saved_cfg.api_key.clone(),
-        )
-    } else if !no_auto_model {
-        if let Some(gw) = probe_local_gateways().into_iter().next() {
-            eprintln!("openro: auto-connected local model {} @ {}", gw.model_id, gw.base_url);
-            ModelClient::new(gw.base_url, env_model.unwrap_or(gw.model_id), None)
-        } else {
-            ModelClient::new(
-                DEFAULT_BASE_URL.to_string(),
-                env_model.unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
-                None,
-            )
-        }
-    } else {
-        ModelClient::new(
-            DEFAULT_BASE_URL.to_string(),
-            env_model.unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
-            None,
-        )
-    };
+    // 1. Model resolution: env -> saved config -> Antigravity CLI -> local gateway -> default
+    let model = model_from_config(&saved_cfg, Some(&data_dir));
+    if model.is_antigravity() {
+        eprintln!("openro: model {} via Antigravity CLI", model.model_id());
+        std::thread::spawn(|| {
+            let _ = openro_rs::model::agy_models(false);
+        });
+    } else if model.is_loopback() {
+        eprintln!("openro: connected local model {} @ {}", model.model_id(), model.base_url());
+    }
 
     if !model.is_configured() {
         eprintln!(

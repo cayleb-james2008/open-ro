@@ -6,6 +6,8 @@ use std::path::Path;
 
 #[derive(Clone, Debug, Default)]
 pub struct RuntimeConfig {
+    /// `"antigravity"` | `"openai"`
+    pub provider: Option<String>,
     pub base_url: Option<String>,
     pub model_id: Option<String>,
     pub api_key: Option<String>,
@@ -36,6 +38,7 @@ impl RuntimeConfig {
                 .filter(|s| !s.is_empty())
         };
         RuntimeConfig {
+            provider: str_opt("provider"),
             base_url: str_opt("base_url"),
             model_id: str_opt("model_id"),
             api_key: str_opt("api_key"),
@@ -52,6 +55,7 @@ impl RuntimeConfig {
         let path = dir.join("config.json");
         let tmp = dir.join("config.json.tmp");
         let val = json!({
+            "provider": self.provider,
             "base_url": self.base_url,
             "model_id": self.model_id,
             "api_key": self.api_key,
