@@ -3,13 +3,13 @@
 //! - Append-only board persistence under `<project>/.openro/teamwork/<run>/`
 //! - Atomic file-ownership claims (refusing conflicting claims or edits)
 //! - Internal `StudioLease` serializing sync and playtest operations
-//! - Quota-aware concurrency scheduler (`max_concurrency` default 3, agy quota backoff + reset display)
+//! - Quota-aware concurrency scheduler (`max_concurrency` default 2, agy quota backoff + reset display)
 //! - Human posts, stop/resume, per-agent kill/restart, per-agent trace, and SSE board events
 
 use crate::agent::parse_step;
 use crate::board::{now_ms, Board, BoardKind, BoardMessage};
 use crate::model::{model_from_config, ModelClient, AGY_DEFAULT_MODEL};
-use crate::place::PlaceBackend;
+use crate::projects::{self, ProjectRef};
 use crate::server::Shared;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -17,7 +17,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -30,13 +29,6 @@ const MAX_AGENT_STEPS_PER_WAKE: usize = 24;
 const MAX_FILE_BYTES: usize = 1_048_576;
 
 const DEFAULT_ROLES: [&str; 4] = ["researcher", "builder", "art", "verifier"];
-const ERROR_HINTS: [&str; 5] = [
-    "error",
-    "attempt to",
-    "is not a valid member",
-    "stack begin",
-    "failed to",
-];
 
 // ---------------------------------------------------------------------------
 // Core domain enums & records
@@ -2310,66 +2302,42 @@ fn get_agent_trace(shared: &Arc<Shared>, id: &str, raw_name: &str, since: u64) -
 }
 
 // ---------------------------------------------------------------------------
-// Project & Model resolution (pre-rebase adapters; swapped onto openro-core / openro-agent on rebase)
+// Project & Model resolution (delegates to shared.projects + model_from_config)
 // ---------------------------------------------------------------------------
 
 fn resolve_project_target(
     shared: &Shared,
     explicit_id: Option<&str>,
 ) -> Result<(Option<String>, PathBuf), String> {
-    if let Some(dir) = &shared.data_dir {
-        if let Ok(text) = std::fs::read_to_string(dir.join("projects.json")) {
-            if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                let target_id = explicit_id
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .or_else(|| v.get("active").and_then(|a| a.as_str()).map(String::from));
-                if let Some(id) = target_id {
-                    let mut candidates = Vec::new();
-                    if let Some(arr) = v.get("opened").and_then(|x| x.as_array()) {
-                        for p in arr.iter().filter_map(|x| x.as_str()) {
-                            candidates.push(PathBuf::from(p));
-                        }
-                    }
-                    if let Some(arr) = v.get("roots").and_then(|x| x.as_array()) {
-                        for r in arr.iter().filter_map(|x| x.as_str()) {
-                            if let Ok(entries) = std::fs::read_dir(r) {
-                                for e in entries.flatten() {
-                                    if e.path().is_dir() {
-                                        candidates.push(e.path());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    for c in candidates {
-                        let cname = c.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                        if slug_simple(cname) == id {
-                            return Ok((Some(id), c));
-                        }
-                    }
-                    if explicit_id.is_some() {
-                        return Err(format!("unknown project '{id}'"));
-                    }
+    let want = explicit_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    {
+        let store = shared.projects.lock().unwrap();
+        let target_id = want.as_deref().or(store.active.as_deref());
+        if let Some(id) = target_id {
+            if let Some(r) = store.find(id) {
+                return Ok((Some(r.id), r.dir));
+            }
+            for p in &store.opened {
+                let cname = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if projects::slug(cname) == id && p.is_dir() {
+                    return Ok((Some(id.to_string()), p.clone()));
                 }
             }
-        }
-    }
-    if let Some(id) = explicit_id.map(str::trim).filter(|s| !s.is_empty()) {
-        if let Ok(ws) = std::env::var("OPENRO_WORKSPACE") {
-            for r in ws.split(':').filter(|s| !s.trim().is_empty()) {
-                if let Ok(entries) = std::fs::read_dir(r) {
-                    for e in entries.flatten() {
-                        let cname = e.file_name().to_string_lossy().into_owned();
-                        if e.path().is_dir() && slug_simple(&cname) == id {
-                            return Ok((Some(id.to_string()), e.path()));
-                        }
-                    }
-                }
+            if want.is_some() {
+                return Err(format!("unknown project '{id}'"));
             }
         }
-        return Err(format!("unknown project '{id}'"));
+        if let Some(r) = store.list().into_iter().next() {
+            return Ok((Some(r.id), r.dir));
+        }
+        if let Some(p) = store.opened.iter().find(|p| p.is_dir()) {
+            let cname = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            let id = projects::slug(cname);
+            return Ok((if id.is_empty() { None } else { Some(id) }, p.clone()));
+        }
     }
     let fallback = shared
         .data_dir
@@ -2378,18 +2346,6 @@ fn resolve_project_target(
         .join("teamwork-default");
     let _ = std::fs::create_dir_all(&fallback);
     Ok((None, fallback))
-}
-
-fn slug_simple(name: &str) -> String {
-    let mut out = String::new();
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
-        } else if !out.is_empty() && !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    out.trim_end_matches('-').to_string()
 }
 
 fn resolve_model_client(shared: &Shared, override_model: Option<&str>) -> ModelClient {
@@ -2526,7 +2482,7 @@ fn run_agent_wake_cycle(
         if is_cancelled(handle, agent_name, gen) {
             return Ok(());
         }
-        let (model_client, messages_snapshot, pending_cursor, turn_num, run_id) = {
+        let (model_client, messages_snapshot, pending_cursor, turn_num) = {
             let mut st = handle.state.lock().unwrap();
             let Some(idx) = st.agent_index(agent_name) else { return Ok(()) };
             if st.roster[idx].killed || st.roster[idx].generation != gen {
@@ -2557,7 +2513,6 @@ fn run_agent_wake_cycle(
             let client = resolve_model_client(shared, Some(&agent_model)).with_agy_dir(sandbox);
             let msgs = st.roster[idx].messages.clone();
             let turn = st.roster[idx].turns + 1;
-            let run_id = st.id.clone();
             st.append_trace(
                 agent_name,
                 turn,
@@ -2565,7 +2520,7 @@ fn run_agent_wake_cycle(
                 "Sending model turn",
                 json!({ "cursor_seq": head_seq, "message_count": msgs.len() }),
             );
-            (client, msgs, head_seq, turn, run_id)
+            (client, msgs, head_seq, turn)
         };
 
         let permit = handle
@@ -2666,7 +2621,85 @@ fn run_agent_wake_cycle(
             }
         };
 
-        if step.get("done").and_then(|v| v.as_bool()) == Some(true) {
+        let mut batch: Vec<(String, Value)> = Vec::new();
+        if let Some(arr) = step.get("steps").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Some(t) = item.get("tool").and_then(|v| v.as_str()) {
+                    batch.push((
+                        t.to_string(),
+                        item.get("args").cloned().unwrap_or_else(|| json!({})),
+                    ));
+                }
+            }
+        } else if let Some(tool) = step.get("tool").and_then(|v| v.as_str()) {
+            batch.push((
+                tool.to_string(),
+                step.get("args").cloned().unwrap_or_else(|| json!({})),
+            ));
+        }
+
+        let mut batch_ran = false;
+        let mut batch_aborted = false;
+        if !batch.is_empty() {
+            batch_ran = true;
+            let batched = step.get("steps").is_some();
+            let mut results_lines = Vec::with_capacity(batch.len());
+            for (step_idx, (tool, args)) in batch.into_iter().enumerate() {
+                if is_cancelled(handle, agent_name, gen) {
+                    return Ok(());
+                }
+                {
+                    let mut st = handle.state.lock().unwrap();
+                    st.append_trace(
+                        agent_name,
+                        turn_num,
+                        "tool_call",
+                        &format!("Calling {tool}"),
+                        json!({ "tool": tool, "args": args, "step": step_idx + 1 }),
+                    );
+                }
+                let tool_out =
+                    execute_agent_tool(shared, mgr, handle, agent_name, gen, &tool, &args);
+                let ok = tool_out.is_ok();
+                results_lines.push(match &tool_out {
+                    Ok(v) => format!("tool_result ({tool}): {v}"),
+                    Err(e) => format!("tool_result ({tool}) error: {e}"),
+                });
+                let mut st = handle.state.lock().unwrap();
+                st.append_trace(
+                    agent_name,
+                    turn_num,
+                    "tool_result",
+                    &format!("{tool} -> {}", if ok { "ok" } else { "error" }),
+                    json!({ "tool": tool, "ok": ok, "result": tool_out.as_ref().ok(), "error": tool_out.as_ref().err() }),
+                );
+                if !ok {
+                    batch_aborted = true;
+                    break;
+                }
+            }
+            let combined = if batch_aborted && batched {
+                format!(
+                    "{}\n(batched steps aborted on first error)",
+                    results_lines.join("\n")
+                )
+            } else {
+                results_lines.join("\n")
+            };
+            let mut st = handle.state.lock().unwrap();
+            if let Some(idx) = st.agent_index(agent_name) {
+                st.roster[idx]
+                    .messages
+                    .push(json!({ "role": "user", "content": combined }));
+                st.save_agent_file(agent_name);
+            }
+            handle.notify_all();
+            if batch_aborted || step.get("done").and_then(|v| v.as_bool()) != Some(true) {
+                continue;
+            }
+        }
+
+        if !batch_aborted && step.get("done").and_then(|v| v.as_bool()) == Some(true) {
             let summary = step
                 .get("summary")
                 .and_then(|v| v.as_str())
@@ -2719,37 +2752,7 @@ fn run_agent_wake_cycle(
             }
             continue;
         }
-
-        if let Some(tool) = step.get("tool").and_then(|v| v.as_str()) {
-            let args = step.get("args").cloned().unwrap_or_else(|| json!({}));
-            {
-                let mut st = handle.state.lock().unwrap();
-                st.append_trace(
-                    agent_name,
-                    turn_num,
-                    "tool_call",
-                    &format!("Calling {tool}"),
-                    json!({ "tool": tool, "args": args }),
-                );
-            }
-            let tool_out = execute_agent_tool(shared, mgr, handle, &run_id, agent_name, gen, tool, &args);
-            let result_text = match &tool_out {
-                Ok(v) => format!("tool_result ({tool}): {v}"),
-                Err(e) => format!("tool_result ({tool}) error: {e}"),
-            };
-            let mut st = handle.state.lock().unwrap();
-            st.append_trace(
-                agent_name,
-                turn_num,
-                "tool_result",
-                &format!("{tool} -> {}", if tool_out.is_ok() { "ok" } else { "error" }),
-                json!({ "tool": tool, "ok": tool_out.is_ok(), "result": tool_out.as_ref().ok(), "error": tool_out.as_ref().err() }),
-            );
-            if let Some(idx) = st.agent_index(agent_name) {
-                st.roster[idx].messages.push(json!({ "role": "user", "content": result_text }));
-                st.save_agent_file(agent_name);
-            }
-            handle.notify_all();
+        if batch_ran {
             continue;
         }
 
@@ -2758,7 +2761,7 @@ fn run_agent_wake_cycle(
         if let Some(idx) = st.agent_index(agent_name) {
             st.roster[idx].messages.push(json!({
                 "role": "user",
-                "content": "Unrecognized step. Reply with {\"tool\":\"...\",\"args\":{...}} or {\"done\":true,\"summary\":\"...\"}."
+                "content": "Unrecognized step. Reply with {\"tool\":\"...\",\"args\":{...}}, {\"steps\":[...]}, or {\"done\":true,\"summary\":\"...\"}."
             }));
         }
     }
@@ -2781,14 +2784,14 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
         ),
         "verifier" => concat!(
             "You are the Teamwork verifier.\n",
-            "Inspect submitted work (`project_read_file`, `luau_check`, `project_build`).\n",
+            "Inspect submitted work (`project_read_file`, `luau_check`, `project_check`, `project_run_lune`, `project_build`).\n",
             "For game_code tasks (or any `.luau`/`src/` changes), you MUST run `project_playtest` with `{\"task_id\":\"<id>\"}` and confirm 0 console errors BEFORE calling `verify_task` with `passed: true`.\n",
             "If anything fails, call `verify_task` with `passed: false` and clear failure notes."
         ),
         _ => concat!(
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
-            "Use `project_files`, `project_read_file`, `project_write_file`, `project_edit_file`, `luau_check`, `project_build`, `project_sync`, `project_playtest`, `art_generate`, `blender_generate`, `audio_generate`.\n",
+            "Use `project_files`, `project_read_file`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `luau_check`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `art_generate`, `blender_generate`, `audio_generate`.\n",
             "When your task is ready for verification, call `submit_task` to hand it to `@verifier`."
         ),
     };
@@ -2804,7 +2807,8 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
          Roster: {}\n\
          {custom_brief}\n\
          {role_rules}\n\
-         Reply with ONE JSON object per turn: {{\"tool\":\"<name>\",\"args\":{{...}}}} or {{\"done\":true,\"summary\":\"...\"}}.",
+         Note: `project_write_file` / `project_edit_file` automatically claim unclaimed files onto your active task.\n\
+         Prefer batching actions + completion in ONE JSON object per turn: {{\"steps\":[{{\"tool\":\"...\",\"args\":{{...}}}},...],\"done\":true,\"summary\":\"...\"}}, or omit \"done\" to inspect tool outputs next turn; single {{\"tool\":\"<name>\",\"args\":{{...}}}} or {{\"done\":true,\"summary\":\"...\"}} also work.",
         a.role,
         a.name,
         st.goal,
@@ -2859,7 +2863,6 @@ fn execute_agent_tool(
     shared: &Arc<Shared>,
     mgr: &Arc<TeamworkManager>,
     handle: &Arc<RunHandle>,
-    run_id: &str,
     agent_name: &str,
     gen: u64,
     tool: &str,
@@ -2908,10 +2911,13 @@ fn execute_agent_tool(
         "project_edit_file" => tool_project_edit_file(handle, agent_name, args),
         "project_delete_file" => tool_project_delete_file(handle, agent_name, args),
         "luau_check" => tool_luau_check(handle, args),
-        "project_build" => tool_project_build(handle),
+        "project_check" => tool_project_check(handle),
+        "project_run_lune" => tool_project_run_lune(handle, args),
+        "project_update_manifest" => tool_project_update_manifest(handle, args),
+        "project_build" => tool_project_build(handle, args),
         "project_sync" => tool_project_sync(shared, mgr, handle, agent_name, gen, args),
         "project_playtest" => {
-            tool_project_playtest(shared, mgr, handle, run_id, agent_name, gen, args)
+            tool_project_playtest(shared, mgr, handle, agent_name, gen, args)
         }
         "blender_generate" => tool_blender_generate(shared, handle, args),
         "audio_generate" => tool_audio_generate(shared, handle, args),
@@ -3370,9 +3376,9 @@ fn tool_verify_task(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Resu
         Some((st.project_dir.clone(), commit_files, msg, task_id, title))
     };
 
-    // Run git auto-commit outside the state lock.
+    // Run git auto-commit outside the state lock via @openro-core's project git hook.
     let (project_dir, commit_files, commit_msg, task_id, title) = commit_plan.unwrap();
-    let commit_res = git_commit_task(&project_dir, &commit_files, &commit_msg);
+    let commit_res = projects::git_commit(&project_dir, &commit_files, &commit_msg);
 
     let mut st = handle.state.lock().unwrap();
     let mut commit_note = String::new();
@@ -3464,15 +3470,12 @@ fn resolve_caller_task_id(
 // ---------------------------------------------------------------------------
 
 fn tool_project_list(shared: &Shared) -> Value {
-    let mut items = Vec::new();
-    if let Some(dir) = &shared.data_dir {
-        if let Ok(text) = std::fs::read_to_string(dir.join("projects.json")) {
-            if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                items.push(v);
-            }
-        }
-    }
-    json!({ "projects": items })
+    let store = shared.projects.lock().unwrap();
+    let list = store.list();
+    json!({
+        "active": store.active,
+        "projects": list.iter().map(projects::summary).collect::<Vec<_>>(),
+    })
 }
 
 fn tool_project_files(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
@@ -3742,94 +3745,81 @@ fn tool_luau_check(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, Strin
     Ok(rep.to_json())
 }
 
-fn tool_project_build(handle: &Arc<RunHandle>) -> Result<Value, String> {
-    let project_dir = handle.state.lock().unwrap().project_dir.clone();
-    let rojo_file = project_dir.join("default.project.json");
-    if !rojo_file.is_file() {
-        return Err("project has no default.project.json to build".to_string());
+fn project_ref_for_run(handle: &Arc<RunHandle>) -> ProjectRef {
+    let st = handle.state.lock().unwrap();
+    let id = st
+        .project_id
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            st.project_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(projects::slug)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "project".to_string())
+        });
+    ProjectRef {
+        id,
+        dir: st.project_dir.clone(),
     }
-    let out_dir = project_dir.join("build");
-    let _ = std::fs::create_dir_all(&out_dir);
-    let out_path = out_dir.join("project.rbxlx");
-    let out = Command::new("rojo")
-        .arg("build")
-        .arg(&rojo_file)
-        .arg("-o")
-        .arg(&out_path)
-        .output()
-        .map_err(|e| format!("rojo build failed to run: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "rojo build failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    let bytes = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
-    Ok(json!({ "ok": true, "engine": "rojo", "path": "build/project.rbxlx", "bytes": bytes }))
 }
 
-fn collect_luau_scripts(project_dir: &Path) -> Vec<(String, String)> {
-    fn walk(root: &Path, cur: &Path, out: &mut Vec<(String, String)>) {
-        let Ok(entries) = std::fs::read_dir(cur) else { return };
-        let mut sorted: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-        sorted.sort_by_key(|e| e.file_name());
-        for e in sorted {
-            let p = e.path();
-            let fname = e.file_name().to_string_lossy().into_owned();
-            if matches!(fname.as_str(), ".git" | ".openro" | "build") {
-                continue;
-            }
-            if p.is_dir() {
-                walk(root, &p, out);
-                continue;
-            }
-            if !fname.ends_with(".luau") && !fname.ends_with(".lua") {
-                continue;
-            }
-            let Ok(rel) = p.strip_prefix(root) else { continue };
-            let rel_s = rel.to_string_lossy().replace('\\', "/");
-            let Ok(src) = std::fs::read_to_string(&p) else { continue };
-            let studio_path = map_rel_to_studio_path(&rel_s);
-            out.push((studio_path, src));
+fn reply_to_tool_result(res: Result<crate::project_api::Reply, crate::project_api::Reply>) -> Result<Value, String> {
+    match res {
+        Ok(rep) => {
+            let v: Value = serde_json::from_slice(&rep.body)
+                .unwrap_or_else(|_| json!({ "raw": String::from_utf8_lossy(&rep.body).into_owned() }));
+            Ok(v)
+        }
+        Err(rep) => {
+            let v: Value = serde_json::from_slice(&rep.body).unwrap_or(Value::Null);
+            let msg = v
+                .get("error")
+                .and_then(|e| e.as_str())
+                .map(String::from)
+                .unwrap_or_else(|| String::from_utf8_lossy(&rep.body).trim().to_string());
+            Err(msg)
         }
     }
-    let mut out = Vec::new();
-    walk(project_dir, project_dir, &mut out);
-    out
 }
 
-fn map_rel_to_studio_path(rel: &str) -> String {
-    let stem = rel
-        .trim_end_matches(".server.luau")
-        .trim_end_matches(".client.luau")
-        .trim_end_matches(".luau")
-        .trim_end_matches(".lua");
-    if let Some(sub) = stem.strip_prefix("src/server/") {
-        format!("ServerScriptService.{}", sub.replace('/', "."))
-    } else if let Some(sub) = stem.strip_prefix("src/client/") {
-        format!("StarterPlayer.StarterPlayerScripts.{}", sub.replace('/', "."))
-    } else if let Some(sub) = stem.strip_prefix("src/shared/") {
-        format!("ReplicatedStorage.Shared.{}", sub.replace('/', "."))
-    } else if let Some(sub) = stem.strip_prefix("src/") {
-        format!("ReplicatedStorage.{}", sub.replace('/', "."))
-    } else {
-        format!("ReplicatedStorage.{}", stem.replace('/', "."))
-    }
+fn tool_project_build(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let engine = args.get("engine").and_then(|v| v.as_str()).unwrap_or("auto");
+    let out_rel = args.get("out").and_then(|v| v.as_str());
+    projects::build(&project_dir, engine, out_rel)
 }
 
-fn sync_scripts_to_studio(shared: &Shared, project_dir: &Path) -> Result<usize, String> {
-    let scripts = collect_luau_scripts(project_dir);
-    let mut guard = shared.agent.lock().unwrap();
-    let Some(agent) = guard.as_mut() else {
-        return Err("Studio not connected".to_string());
-    };
-    let Some(PlaceBackend::Mcp(mcp)) = agent.studio.as_mut() else {
-        return Err("Sync requires a connected Roblox Studio MCP bridge".to_string());
-    };
-    for (path, src) in &scripts {
-        mcp.call_tool("write_script", json!({ "path": path, "source": src }))?;
-    }
-    Ok(scripts.len())
+fn tool_project_check(handle: &Arc<RunHandle>) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    projects::check_project(&project_dir)
+}
+
+fn tool_project_run_lune(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let script = args
+        .get("script")
+        .or_else(|| args.get("path"))
+        .and_then(|v| v.as_str())
+        .ok_or("project_run_lune requires args.script")?;
+    let run_args: Vec<String> = args
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let timeout = args.get("timeout_secs").and_then(|v| v.as_u64()).unwrap_or(30);
+    projects::run_lune(&project_dir, script, &run_args, timeout)
+}
+
+fn tool_project_update_manifest(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let current = projects::manifest(&project_dir)?;
+    let patch = args.get("patch").unwrap_or(args);
+    // Agents can never self-approve product prices (`allow_price_approval = false`).
+    let merged = projects::merge_manifest_for_actor(&current, patch, false)?;
+    projects::write_manifest(&project_dir, &merged)?;
+    Ok(json!({ "ok": true, "manifest": merged }))
 }
 
 fn tool_project_sync(
@@ -3840,53 +3830,30 @@ fn tool_project_sync(
     gen: u64,
     args: &Value,
 ) -> Result<Value, String> {
-    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let project_ref = project_ref_for_run(handle);
     let task_id = args.get("task_id").and_then(|v| v.as_str()).map(String::from);
+    let prune = args.get("prune").and_then(|v| v.as_bool()).unwrap_or(false);
+    let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
     let _lease = mgr
         .studio_lease
         .acquire(agent_name, task_id, "sync", || is_cancelled(handle, agent_name, gen))?;
     handle.notify_all();
-    let res = sync_scripts_to_studio(shared, &project_dir);
+    let res = reply_to_tool_result(crate::studio_sync::run(shared, &project_ref, prune, dry_run));
     drop(_lease);
     handle.notify_all();
-    let synced = res?;
-    Ok(json!({ "ok": true, "synced_scripts": synced }))
-}
-
-fn is_console_error_line(line: &str) -> bool {
-    let low = line.to_ascii_lowercase();
-    if low.contains("0 errors") || low.contains("no errors") || low.contains("without errors") {
-        return false;
-    }
-    ERROR_HINTS.iter().any(|h| low.contains(h))
-}
-
-fn new_console_lines(before: &[String], after: &[String]) -> Vec<String> {
-    if before.is_empty() {
-        return after.to_vec();
-    }
-    if after.len() >= before.len() && after[..before.len()] == *before {
-        return after[before.len()..].to_vec();
-    }
-    let max_k = before.len().min(after.len());
-    for k in (1..=max_k).rev() {
-        if before[before.len() - k..] == after[..k] {
-            return after[k..].to_vec();
-        }
-    }
-    after.to_vec()
+    res
 }
 
 fn tool_project_playtest(
     shared: &Arc<Shared>,
     mgr: &Arc<TeamworkManager>,
     handle: &Arc<RunHandle>,
-    run_id: &str,
     agent_name: &str,
     gen: u64,
     args: &Value,
 ) -> Result<Value, String> {
-    let (project_dir, target_task_id) = {
+    let (project_ref, target_task_id) = {
         let st = handle.state.lock().unwrap();
         let tid = args
             .get("task_id")
@@ -3902,7 +3869,19 @@ fn tool_project_playtest(
                 st.agent_index(agent_name)
                     .and_then(|i| st.roster[i].current_task_id.clone())
             });
-        (st.project_dir.clone(), tid)
+        let id = st
+            .project_id
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                st.project_dir
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(projects::slug)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "project".to_string())
+            });
+        (ProjectRef { id, dir: st.project_dir.clone() }, tid)
     };
 
     let _lease = mgr.studio_lease.acquire(
@@ -3913,65 +3892,46 @@ fn tool_project_playtest(
     )?;
     handle.notify_all();
 
-    let result = (|| -> Result<(bool, Vec<String>, String, String), String> {
-        if args.get("sync_first").and_then(|v| v.as_bool()).unwrap_or(true) {
-            sync_scripts_to_studio(shared, &project_dir)?;
+    let mut pt_req = json!({
+        "sync_first": args.get("sync_first").and_then(|v| v.as_bool()).unwrap_or(true),
+    });
+    for k in ["mode", "settle_ms", "checks", "screenshots", "allow_errors", "suite", "build_id"] {
+        if let Some(v) = args.get(k) {
+            pt_req[k] = v.clone();
         }
-        let settle_ms = args.get("settle_ms").and_then(|v| v.as_u64()).unwrap_or(50).min(10_000);
-        let mode = args.get("mode").and_then(|v| v.as_str()).unwrap_or("start_play");
-        let mut guard = shared.agent.lock().unwrap();
-        let Some(agent) = guard.as_mut() else {
-            return Err("Studio not connected".to_string());
-        };
-        let Some(PlaceBackend::Mcp(mcp)) = agent.studio.as_mut() else {
-            return Err("Playtest Runner requires a connected Roblox Studio MCP bridge".to_string());
-        };
-        let before_lines = mcp.get_console_output().unwrap_or_default();
-        let start_val = mcp.start_stop_play(mode)?;
-        std::thread::sleep(Duration::from_millis(settle_ms));
-        let after_lines = mcp.get_console_output().unwrap_or_default();
-        let console_lines = new_console_lines(&before_lines, &after_lines);
-        let _ = mcp.start_stop_play("stop");
-
-        let mut errors: Vec<String> = console_lines
-            .iter()
-            .filter(|l| is_console_error_line(l))
-            .cloned()
-            .collect();
-        if start_val.get("status").and_then(|s| s.as_str()) == Some("failed") && errors.is_empty() {
-            if let Some(c) = start_val.get("console").and_then(|v| v.as_str()) {
-                errors.push(c.to_string());
-            } else {
-                errors.push("playtest reported failed".to_string());
-            }
-        }
-        let passed = errors.is_empty();
-        let pt_id = format!("p-{}", now_ms());
-        let summary = if passed {
-            "Playtest passed with 0 console errors".to_string()
-        } else {
-            format!("Playtest failed with {} console error(s): {}", errors.len(), errors.join("; "))
-        };
-        let report_dir = project_dir.join("build/reports/teamwork").join(run_id).join(&pt_id);
-        let _ = write_json_atomic(
-            &report_dir.join("report.json"),
-            &json!({
-                "run_id": pt_id,
-                "team_run": run_id,
-                "task_id": target_task_id,
-                "passed": passed,
-                "console_errors": errors,
-                "console_lines": console_lines,
-                "at_ms": now_ms(),
-            }),
-        );
-        Ok((passed, errors, pt_id, summary))
-    })();
-
+    }
+    let res = reply_to_tool_result(crate::playtest::run(shared, &project_ref, &pt_req));
     drop(_lease);
     handle.notify_all();
 
-    let (passed, errors, pt_id, summary) = result?;
+    let val = res?;
+    let pt_id = val["run_id"].as_str().unwrap_or("").to_string();
+    let mut errors: Vec<String> = val["console"]["errors"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    if let Some(tail) = val["console"]["tail"].as_array() {
+        for line in tail.iter().filter_map(|v| v.as_str()) {
+            let low = line.to_ascii_lowercase();
+            if !low.contains("0 errors")
+                && !low.contains("no errors")
+                && !low.contains("without errors")
+                && (low.contains("save failed:") || low.contains("bindtoclose was never bound"))
+                && !errors.iter().any(|e| e == line)
+            {
+                errors.push(line.to_string());
+            }
+        }
+    }
+    let passed = val["passed"].as_bool().unwrap_or(false) && errors.is_empty();
+    let summary = if passed {
+        "Playtest passed with 0 console errors".to_string()
+    } else if !errors.is_empty() {
+        format!("Playtest failed with {} console error(s): {}", errors.len(), errors.join("; "))
+    } else {
+        "Playtest checks failed".to_string()
+    };
+
     let at_ms = now_ms();
     if let Some(tid) = &target_task_id {
         let mut st = handle.state.lock().unwrap();
@@ -3992,6 +3952,7 @@ fn tool_project_playtest(
         "task_id": target_task_id,
         "passed": passed,
         "console": { "errors": errors },
+        "report": val.get("report").cloned().unwrap_or(Value::Null),
         "summary": summary,
     }))
 }
@@ -4061,101 +4022,6 @@ fn tool_art_generate(
     };
     let meta = mgr.generate_image(&req)?;
     Ok(meta.to_json())
-}
-
-// ---------------------------------------------------------------------------
-// Git auto-commit hook (pre-rebase adapter; delegates to projects::git_commit once merged)
-// ---------------------------------------------------------------------------
-
-pub fn git_commit_task(
-    project_dir: &Path,
-    files: &[String],
-    message: &str,
-) -> Result<Option<String>, String> {
-    let inside = Command::new("git")
-        .arg("-C")
-        .arg(project_dir)
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .output();
-    let Ok(out) = inside else { return Ok(None) };
-    if !out.status.success() || String::from_utf8_lossy(&out.stdout).trim() != "true" {
-        return Ok(None);
-    }
-
-    let mut stage_paths = Vec::new();
-    for raw in files {
-        if let Ok(norm) = normalize_rel_path(project_dir, raw, true) {
-            let full = project_dir.join(&norm);
-            if full.exists() {
-                stage_paths.push(norm);
-            }
-        }
-    }
-    if stage_paths.is_empty() {
-        return Ok(None);
-    }
-
-    let mut add_cmd = Command::new("git");
-    add_cmd.arg("-C").arg(project_dir).arg("add").arg("--");
-    for p in &stage_paths {
-        add_cmd.arg(p);
-    }
-    let add_out = add_cmd
-        .output()
-        .map_err(|e| format!("git add failed: {e}"))?;
-    if !add_out.status.success() {
-        return Err(String::from_utf8_lossy(&add_out.stderr).trim().to_string());
-    }
-
-    let mut diff_cmd = Command::new("git");
-    diff_cmd
-        .arg("-C")
-        .arg(project_dir)
-        .args(["diff", "--cached", "--name-only", "--"]);
-    for p in &stage_paths {
-        diff_cmd.arg(p);
-    }
-    let diff_out = diff_cmd
-        .output()
-        .map_err(|e| format!("git diff --cached failed: {e}"))?;
-    if String::from_utf8_lossy(&diff_out.stdout).trim().is_empty() {
-        return Ok(None);
-    }
-
-    let has_user = Command::new("git")
-        .arg("-C")
-        .arg(project_dir)
-        .args(["config", "user.name"])
-        .output()
-        .is_ok_and(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty());
-
-    let mut commit_cmd = Command::new("git");
-    commit_cmd.arg("-C").arg(project_dir);
-    if !has_user {
-        commit_cmd
-            .args(["-c", "user.name=OpenRO Teamwork"])
-            .args(["-c", "user.email=openro@local"]);
-    }
-    commit_cmd.args(["commit", "-m", message, "--"]);
-    for p in &stage_paths {
-        commit_cmd.arg(p);
-    }
-    let commit_out = commit_cmd
-        .output()
-        .map_err(|e| format!("git commit failed: {e}"))?;
-    if !commit_out.status.success() {
-        return Err(String::from_utf8_lossy(&commit_out.stderr).trim().to_string());
-    }
-
-    let rev = Command::new("git")
-        .arg("-C")
-        .arg(project_dir)
-        .args(["rev-parse", "--short", "HEAD"])
-        .output()
-        .map_err(|e| format!("git rev-parse failed: {e}"))?;
-    Ok(Some(
-        String::from_utf8_lossy(&rev.stdout).trim().to_string(),
-    ))
 }
 
 #[cfg(test)]
