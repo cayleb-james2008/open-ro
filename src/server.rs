@@ -747,11 +747,16 @@ fn respond_bytes_with_headers(
 }
 
 fn respond_download(stream: &mut TcpStream, content_type: &str, filename: &str, body: &str) {
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+    respond_download_bytes(stream, content_type, filename, body.as_bytes());
+}
+
+fn respond_download_bytes(stream: &mut TcpStream, content_type: &str, filename: &str, body: &[u8]) {
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
-    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body);
     let _ = stream.flush();
 }
 
@@ -1014,6 +1019,12 @@ fn handle(
                     &json!({ "ok": false, "passed": false, "error": "Studio not connected" }),
                 ),
             }
+        }
+        ("POST", "/api/studio/mcp/connect") => {
+            handle_studio_mcp_connect(&mut stream, shared, &req);
+        }
+        ("POST", "/api/studio/mcp/disconnect") => {
+            handle_studio_mcp_disconnect(&mut stream, shared, &req);
         }
         ("GET", "/api/build/events") => {
             let since = query_param(query, "since")
@@ -2464,6 +2475,196 @@ fn mask_secret(k: &str) -> String {
         let tail: String = k.chars().skip(n - 4).collect();
         format!("••••{tail}")
     }
+}
+
+fn handle_studio_mcp_connect(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "connecting a live Studio MCP bridge is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    if shared.busy.load(Ordering::SeqCst) > 0 {
+        respond_json(
+            stream,
+            "409 Conflict",
+            &json!({ "ok": false, "error": "a build or playtest is currently running; try connecting once it finishes" }),
+        );
+        return;
+    }
+    let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+    let explicit_cmd = body
+        .get("command")
+        .or_else(|| body.get("mcp_command"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+
+    let cfg_cmd = shared.config.lock().unwrap().mcp_command.clone();
+    let env_cmd = std::env::var("OPENRO_MCP_COMMAND")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let Some(cmd) = explicit_cmd
+        .or(cfg_cmd)
+        .or(env_cmd)
+        .or_else(McpClient::detect_vinegar_studio_mcp)
+    else {
+        respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({
+                "ok": false,
+                "connected": false,
+                "studio_mode": shared.studio_stream.studio_mode(),
+                "error": "No Studio MCP bridge command provided and no running Roblox Studio MCP session was detected. Provide a command (e.g. ~/.local/bin/roblox-studio-mcp) or set OPENRO_MCP_COMMAND.",
+            }),
+        );
+        return;
+    };
+
+    if cmd.contains('\0') || cmd.contains('\n') || cmd.contains('\r') {
+        respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "connected": false, "error": "invalid MCP bridge command" }),
+        );
+        return;
+    }
+
+    let mcp = match McpClient::spawn(&cmd) {
+        Ok(c) => c,
+        Err(e) => {
+            respond_json(
+                stream,
+                "502 Bad Gateway",
+                &json!({
+                    "ok": false,
+                    "connected": false,
+                    "studio_mode": shared.studio_stream.studio_mode(),
+                    "error": format!("Could not connect to Studio MCP bridge '{cmd}': {e}"),
+                }),
+            );
+            return;
+        }
+    };
+
+    let (frame_seq, frame_meta) = {
+        let mut guard = shared.agent.lock().unwrap();
+        match guard.as_mut() {
+            Some(agent) => {
+                agent.studio = Some(PlaceBackend::Mcp(mcp));
+                agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
+                let mut ev = StudioActionInput::new(
+                    StudioActionKind::CameraFocus,
+                    format!("Connected live Roblox Studio MCP bridge ({cmd})"),
+                );
+                ev.path = "Workspace.CurrentCamera".to_string();
+                ev.class_name = "Camera".to_string();
+                shared.studio_stream.record_action(ev);
+                let captured = agent.capture_studio_frame().ok();
+                *shared.status_cache.lock().unwrap() = extract_status_from_agent(Some(agent));
+                (
+                    captured.as_ref().map(|f| f.seq).unwrap_or(0),
+                    captured.as_ref().map(|f| f.meta_json()),
+                )
+            }
+            None => {
+                let model = ModelClient::new(
+                    DEFAULT_BASE_URL.to_string(),
+                    DEFAULT_MODEL_ID.to_string(),
+                    None,
+                );
+                let mut agent = Agent::with_backend(model, Some(PlaceBackend::Mcp(mcp)));
+                if let Some(dir) = &shared.data_dir {
+                    agent.set_changes_file(dir.join("changes.json"));
+                }
+                agent.attach_undo_sink(Arc::clone(&shared.undoable));
+                agent.attach_events(Arc::clone(&shared.events));
+                agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
+                let captured = agent.capture_studio_frame().ok();
+                *shared.status_cache.lock().unwrap() = extract_status_from_agent(Some(&mut agent));
+                *guard = Some(agent);
+                (
+                    captured.as_ref().map(|f| f.seq).unwrap_or(0),
+                    captured.as_ref().map(|f| f.meta_json()),
+                )
+            }
+        }
+    };
+
+    respond_json(
+        stream,
+        "200 OK",
+        &json!({
+            "ok": true,
+            "connected": true,
+            "studio_connected": true,
+            "workspace_mode": "studio_mcp",
+            "studio_mode": "live_mcp",
+            "command": cmd,
+            "has_live_frame": frame_seq > 0,
+            "frame_seq": frame_seq,
+            "frame": frame_meta,
+        }),
+    );
+}
+
+fn handle_studio_mcp_disconnect(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "disconnecting a live Studio MCP bridge is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    if shared.busy.load(Ordering::SeqCst) > 0 {
+        respond_json(
+            stream,
+            "409 Conflict",
+            &json!({ "ok": false, "error": "a build or playtest is currently running; disconnect once it finishes" }),
+        );
+        return;
+    }
+
+    let local_place = match &shared.data_dir {
+        Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
+        None => LocalPlace::in_memory(shared.game_name.clone()),
+    };
+
+    {
+        let mut guard = shared.agent.lock().unwrap();
+        if let Some(agent) = guard.as_mut() {
+            agent.studio = Some(PlaceBackend::Local(local_place));
+            agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
+            *shared.status_cache.lock().unwrap() = extract_status_from_agent(Some(agent));
+        }
+    }
+
+    let mut ev = StudioActionInput::new(
+        StudioActionKind::CameraFocus,
+        "Disconnected live Studio MCP bridge — returned to Local Studio 3D",
+    );
+    ev.path = "Workspace.CurrentCamera".to_string();
+    ev.class_name = "Camera".to_string();
+    shared.studio_stream.record_action(ev);
+
+    respond_json(
+        stream,
+        "200 OK",
+        &json!({
+            "ok": true,
+            "connected": false,
+            "studio_connected": true,
+            "workspace_mode": "local_place",
+            "studio_mode": "local_place",
+        }),
+    );
 }
 
 fn all_stored_assets(shared: &Shared) -> Vec<crate::assets::AssetMetadata> {
