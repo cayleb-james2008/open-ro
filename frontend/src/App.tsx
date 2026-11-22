@@ -51,6 +51,7 @@ import {
   isV050OrNewer,
   isV060OrNewer,
   isV070OrNewer,
+  isV080OrNewer,
   normalizeChatList,
   normalizeIdeas,
   normalizePlace,
@@ -66,6 +67,7 @@ import {
   type ChatList,
   type Idea,
   type InstanceEditPayload,
+  type PartPreset,
   type Place,
   type PlaceDiff,
   type PlaceSnapshot,
@@ -84,8 +86,9 @@ import {
   type CardAssetRecord,
 } from "./app/cardCatalog";
 import { CommandPalette } from "./app/CommandPalette";
-import { computePlaceDiff, type LuauDiagnostic } from "./app/luauAudit";
+import { analyzePlaceLuau, computePlaceDiff, type LuauDiagnostic } from "./app/luauAudit";
 import { parseRbxlxXml, serializeRbxlx } from "./app/rbxlxCodec";
+import { buildRojoShipPackZip } from "./app/zipBuilder";
 import { SettingsDialog } from "./app/SettingsDialog";
 import { PartsShelf, StudioChip } from "./app/Shelf";
 import { SnapshotsDialog } from "./app/SnapshotsDialog";
@@ -207,6 +210,7 @@ export function App() {
   const [v050Ready, setV050Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
   const [v060Ready, setV060Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
   const [v070Ready, setV070Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
+  const [v080Ready, setV080Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
   const [studioMode, setStudioMode] = useState<StudioMode>(() =>
     (window as ShellWindow).__OPENRO_WEB_ENGINE__
       ? "browser_place"
@@ -307,6 +311,7 @@ export function App() {
         ? "Nothing to undo yet"
         : "";
   const canUndo = undoState === "ok";
+  const canRedo = Boolean(chats?.can_redo) && !busy && studioOk;
   const activeTitle = chats?.chats.find((c) => c.id === activeId)?.title || "New chat";
   const hasConversation = useMemo(
     () => lines.some((l) => l.startsWith("You: ")) || notices.length > 0 || Boolean(building),
@@ -511,6 +516,9 @@ export function App() {
             setV070Ready(true);
             void refreshStudioActions(true);
           }
+          if (isV080OrNewer(v.version)) {
+            setV080Ready(true);
+          }
         }
       })
       .catch(() => {});
@@ -523,6 +531,7 @@ export function App() {
       sse_build_stream?: unknown;
       studio_stream?: unknown;
       assets_api?: unknown;
+      ide_api?: unknown;
       skills_count?: unknown;
     }>("/api/status")
       .then((s) => {
@@ -561,6 +570,9 @@ export function App() {
         if (s.studio_stream === true || (typeof s.version === "string" && isV070OrNewer(s.version))) {
           setV070Ready(true);
           void refreshStudioActions(true);
+        }
+        if (s.ide_api === true || (typeof s.version === "string" && isV080OrNewer(s.version))) {
+          setV080Ready(true);
         }
       })
       .catch(() => {});
@@ -624,7 +636,14 @@ export function App() {
     prevLenRef.current = lines.length;
   }, [activeId, lines.length, notices.length, Boolean(building), hasConversation]);
 
-  // Global keyboard shortcuts: Cmd+K / Ctrl+K opens Command Palette; `/` jumps to chat search
+  const ideShortcutRef = useRef<{
+    selectedPath: string | null;
+    canRedo: boolean;
+    duplicate: (path: string) => Promise<void>;
+    redo: () => Promise<void>;
+  } | null>(null);
+
+  // Global keyboard shortcuts: Cmd+K opens Command Palette; Ctrl+D duplicates selected part; Ctrl+Y / Cmd+Shift+Z redoes; `/` jumps to chat search
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -632,9 +651,29 @@ export function App() {
         setPaletteOpen((v) => !v);
         return;
       }
-      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
       const el = e.target as HTMLElement | null;
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      const inEditable = Boolean(el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable));
+      if (!inEditable && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "d") {
+        const cur = ideShortcutRef.current;
+        if (cur?.selectedPath && cur.selectedPath.startsWith("Workspace.")) {
+          e.preventDefault();
+          void cur.duplicate(cur.selectedPath);
+          return;
+        }
+      }
+      if (
+        !inEditable &&
+        (((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "y") ||
+          ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "z"))
+      ) {
+        const cur = ideShortcutRef.current;
+        if (cur?.canRedo) {
+          e.preventDefault();
+          void cur.redo();
+          return;
+        }
+      }
+      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey || inEditable) return;
       e.preventDefault();
       if (!phone && chatSearchRef.current) chatSearchRef.current.focus();
       else inputRef.current?.focus();
@@ -1163,6 +1202,442 @@ export function App() {
     }
   };
 
+  const buildPartPresetSpec = (preset: PartPreset, existing: Record<string, unknown>) => {
+    const pickName = (base: string) => {
+      if (!(`Workspace.${base}` in existing)) return base;
+      for (let i = 2; i < 500; i++) {
+        if (!(`Workspace.${base}${i}` in existing)) return `${base}${i}`;
+      }
+      return `${base}${Date.now() % 1000}`;
+    };
+    const offsetX = (Object.keys(existing).length % 5 - 2) * 8;
+    const offsetZ = 10 + Math.floor(Object.keys(existing).length / 5) * 6;
+    switch (preset) {
+      case "sphere":
+        return {
+          name: pickName("SpherePart"),
+          class_name: "Part",
+          position: [offsetX, 4, offsetZ] as [number, number, number],
+          size: [6, 6, 6] as [number, number, number],
+          color: "#3B82F6",
+          properties: { Position: [offsetX, 4, offsetZ], Size: [6, 6, 6], Color: "#3B82F6", Shape: "Ball", Material: "SmoothPlastic", Anchored: true },
+        };
+      case "cylinder":
+        return {
+          name: pickName("CylinderPillar"),
+          class_name: "Part",
+          position: [offsetX, 5, offsetZ] as [number, number, number],
+          size: [6, 10, 6] as [number, number, number],
+          color: "#D49B26",
+          properties: { Position: [offsetX, 5, offsetZ], Size: [6, 10, 6], Color: "#D49B26", Shape: "Cylinder", Material: "Metal", Anchored: true },
+        };
+      case "spawn":
+        return {
+          name: pickName("SpawnLocation"),
+          class_name: "SpawnLocation",
+          position: [offsetX, 0.5, offsetZ] as [number, number, number],
+          size: [8, 1, 8] as [number, number, number],
+          color: "#2D68DF",
+          properties: { Position: [offsetX, 0.5, offsetZ], Size: [8, 1, 8], Color: "#2D68DF", Material: "SmoothPlastic", Anchored: true },
+        };
+      case "jump_pad":
+        return {
+          name: pickName("JumpPad"),
+          class_name: "Part",
+          position: [offsetX, 1, offsetZ] as [number, number, number],
+          size: [8, 1.5, 8] as [number, number, number],
+          color: "#24946E",
+          properties: { Position: [offsetX, 1, offsetZ], Size: [8, 1.5, 8], Color: "#24946E", Material: "Neon", Anchored: true },
+        };
+      case "kill_brick":
+        return {
+          name: pickName("KillBrick"),
+          class_name: "Part",
+          position: [offsetX, 1, offsetZ] as [number, number, number],
+          size: [10, 1.5, 6] as [number, number, number],
+          color: "#DF522D",
+          properties: { Position: [offsetX, 1, offsetZ], Size: [10, 1.5, 6], Color: "#DF522D", Material: "Neon", Anchored: true },
+        };
+      case "card_billboard": {
+        const card = cardAssets[Object.keys(existing).length % Math.max(1, cardAssets.length)] || APEX_CARDS[0];
+        return {
+          name: pickName("CardBillboard"),
+          class_name: "Part",
+          position: [offsetX, 7, offsetZ] as [number, number, number],
+          size: [7, 10, 1] as [number, number, number],
+          color: "#475569",
+          properties: {
+            Position: [offsetX, 7, offsetZ],
+            Size: [7, 10, 1],
+            Color: "#475569",
+            Material: "SmoothPlastic",
+            Anchored: true,
+            CardTitle: card?.title || "Apex Card",
+            DecalTexture: card?.image_url || "",
+          },
+        };
+      }
+      default:
+        return {
+          name: pickName("StudioBlock"),
+          class_name: "Part",
+          position: [offsetX, 2, offsetZ] as [number, number, number],
+          size: [8, 4, 8] as [number, number, number],
+          color: "#8B939E",
+          properties: { Position: [offsetX, 2, offsetZ], Size: [8, 4, 8], Color: "#8B939E", Shape: "Block", Material: "SmoothPlastic", Anchored: true },
+        };
+    }
+  };
+
+  const handleCreatePart = async (preset: PartPreset) => {
+    const beforePlace = clonePlace(placeRef.current) || { scripts: {}, instances: {} };
+    const spec = buildPartPresetSpec(preset, beforePlace.instances || {});
+    const fallbackPath = `Workspace.${spec.name}`;
+
+    const applyLocal = () => {
+      const updated: Place = {
+        scripts: { ...beforePlace.scripts },
+        instances: {
+          ...beforePlace.instances,
+          [fallbackPath]: { class_name: spec.class_name, properties: spec.properties },
+        },
+      };
+      setPlace(updated);
+      setSelectedPath(fallbackPath);
+      setBuildDiff(computePlaceDiff(beforePlace, updated));
+    };
+
+    if (!v080Ready) {
+      applyLocal();
+      toast.success(`Inserted ${fallbackPath} in Studio 3D`);
+      return;
+    }
+
+    try {
+      const res = await post<{ ok?: boolean; path?: string; error?: string }>("/api/place/create", {
+        preset,
+        name: spec.name,
+        parent: "Workspace",
+        class_name: spec.class_name,
+        position: spec.position,
+        size: spec.size,
+        color: spec.color,
+        properties: spec.properties,
+      });
+      if (res.ok) {
+        const createdPath = typeof res.path === "string" && res.path ? res.path : fallbackPath;
+        setSelectedPath(createdPath);
+        toast.success(`Added ${createdPath} to Workspace`);
+        const afterPlace = await refreshPlace();
+        void refreshChats();
+        void refreshStudioActions(true);
+        void refreshSnapshots(true);
+        if (afterPlace) setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+      } else {
+        toast.error(res.error || "Could not create part.");
+      }
+    } catch {
+      applyLocal();
+      toast.success(`Added ${fallbackPath} locally`);
+    }
+  };
+
+  const handleDuplicatePart = async (path: string) => {
+    const beforePlace = clonePlace(placeRef.current);
+    if (!beforePlace || !beforePlace.instances[path]) return;
+
+    const applyLocal = () => {
+      const src = beforePlace.instances[path];
+      const base = path.replace(/^Workspace\./, "");
+      let dupName = `${base}Copy`;
+      for (let i = 2; i < 500 && `Workspace.${dupName}` in beforePlace.instances; i++) {
+        dupName = `${base}Copy${i}`;
+      }
+      const dupPath = `Workspace.${dupName}`;
+      const pos = Array.isArray(src.properties?.Position) && src.properties.Position.length >= 3
+        ? [Number(src.properties.Position[0]) + 4, Number(src.properties.Position[1]), Number(src.properties.Position[2]) + 4]
+        : [4, 2, 4];
+      const updated: Place = {
+        scripts: { ...beforePlace.scripts },
+        instances: {
+          ...beforePlace.instances,
+          [dupPath]: { class_name: src.class_name, properties: { ...(src.properties || {}), Position: pos } },
+        },
+      };
+      setPlace(updated);
+      setSelectedPath(dupPath);
+      setBuildDiff(computePlaceDiff(beforePlace, updated));
+      return dupPath;
+    };
+
+    if (!v080Ready) {
+      const dupPath = applyLocal();
+      toast.success(`Duplicated to ${dupPath}`);
+      return;
+    }
+
+    try {
+      const res = await post<{ ok?: boolean; path?: string; error?: string }>("/api/place/duplicate", {
+        path,
+        offset: [4, 0, 4],
+      });
+      if (res.ok) {
+        const dupPath = typeof res.path === "string" && res.path ? res.path : path;
+        setSelectedPath(dupPath);
+        toast.success(`Duplicated ${path.split(".").pop() || path} → ${dupPath.split(".").pop() || dupPath}`);
+        const afterPlace = await refreshPlace();
+        void refreshChats();
+        void refreshStudioActions(true);
+        void refreshSnapshots(true);
+        if (afterPlace) setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+      } else {
+        toast.error(res.error || "Could not duplicate part.");
+      }
+    } catch {
+      const dupPath = applyLocal();
+      toast.success(`Duplicated to ${dupPath}`);
+    }
+  };
+
+  const handleDeletePart = async (path: string) => {
+    const beforePlace = clonePlace(placeRef.current);
+    if (!beforePlace || !beforePlace.instances[path]) return;
+
+    const applyLocal = () => {
+      const nextInstances = { ...beforePlace.instances };
+      delete nextInstances[path];
+      const updated: Place = { scripts: { ...beforePlace.scripts }, instances: nextInstances };
+      setPlace(updated);
+      if (selectedPath === path) setSelectedPath(null);
+      setBuildDiff(computePlaceDiff(beforePlace, updated));
+    };
+
+    if (!v080Ready) {
+      applyLocal();
+      toast.success(`Deleted ${path}`);
+      return;
+    }
+
+    try {
+      const res = await post<{ ok?: boolean; error?: string }>("/api/place/delete", { path });
+      if (res.ok) {
+        if (selectedPath === path) setSelectedPath(null);
+        toast.success(`Deleted ${path}`);
+        const afterPlace = await refreshPlace();
+        void refreshChats();
+        void refreshStudioActions(true);
+        void refreshSnapshots(true);
+        if (afterPlace) setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+      } else {
+        toast.error(res.error || "Could not delete part.");
+      }
+    } catch {
+      applyLocal();
+      toast.success(`Deleted ${path} locally`);
+    }
+  };
+
+  const handleSaveScript = async (path: string, source: string) => {
+    const beforePlace = clonePlace(placeRef.current);
+    const localDiags = analyzePlaceLuau({ scripts: { [path]: source }, instances: beforePlace?.instances || {} });
+    const applyLocal = () => {
+      if (!beforePlace) return;
+      const updated: Place = {
+        instances: { ...beforePlace.instances },
+        scripts: { ...beforePlace.scripts, [path]: source },
+      };
+      setPlace(updated);
+      setBuildDiff(computePlaceDiff(beforePlace, updated));
+    };
+
+    if (!v080Ready) {
+      applyLocal();
+      const errs = localDiags.filter((d) => d.severity === "error").length;
+      if (errs > 0) toast.error(`Saved ${path} (${errs} Luau error${errs === 1 ? "" : "s"} flagged)`);
+      else toast.success(`Saved & checked ${path} (0 errors)`);
+      return;
+    }
+
+    try {
+      const res = await post<{
+        ok?: boolean;
+        errors?: number;
+        error_count?: number;
+        warnings?: number;
+        warning_count?: number;
+        diagnostics?: LuauDiagnostic[];
+        error?: string;
+      }>("/api/place/script", { path, source });
+      if (res.ok) {
+        const errs =
+          typeof res.error_count === "number"
+            ? res.error_count
+            : typeof res.errors === "number"
+              ? res.errors
+              : localDiags.filter((d) => d.severity === "error").length;
+        const warns =
+          typeof res.warning_count === "number"
+            ? res.warning_count
+            : typeof res.warnings === "number"
+              ? res.warnings
+              : localDiags.filter((d) => d.severity === "warning").length;
+        if (errs > 0) {
+          toast.error(`Saved ${path.split(".").pop() || path} — ${errs} Luau error${errs === 1 ? "" : "s"} detected`);
+        } else if (warns > 0) {
+          toast.success(`Saved ${path.split(".").pop() || path} — 0 errors, ${warns} warning${warns === 1 ? "" : "s"}`);
+        } else {
+          toast.success(`Saved & checked ${path.split(".").pop() || path} — 0 Luau errors`);
+        }
+        const afterPlace = await refreshPlace();
+        void refreshChats();
+        void refreshDiagnostics(true);
+        void refreshStudioActions(true);
+        void refreshSnapshots(true);
+        if (afterPlace) setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+      } else {
+        toast.error(res.error || "Could not save Luau script.");
+      }
+    } catch {
+      applyLocal();
+      toast.success(`Saved ${path} locally`);
+    }
+  };
+
+  const handleRedo = async () => {
+    const chatId = activeId || "default";
+    const beforePlace = clonePlace(placeRef.current);
+    if (!v080Ready) {
+      toast.error("Redo requires OpenRO v0.8.0.");
+      return;
+    }
+    try {
+      const data = await post<{ ok?: boolean; label?: string; restored?: unknown[]; error?: string }>("/api/redo", {});
+      if (data.ok) {
+        const count = Array.isArray(data.restored) ? data.restored.length : 0;
+        const msg =
+          typeof data.label === "string" && data.label.trim()
+            ? `Redid: ${data.label.trim()}`
+            : count > 0
+              ? `Redid ${count} Studio change(s).`
+              : "Redid the last undone Studio action.";
+        toast.success(msg);
+        addNotice(chatId, { text: msg });
+        const afterPlace = await refreshAll();
+        if (afterPlace) setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+      } else {
+        toast.error(data.error || "Nothing to redo.");
+      }
+    } catch {
+      toast.error("Could not reach /api/redo.");
+    }
+  };
+
+  const handleDownloadShipPack = async () => {
+    const cur = placeRef.current && placeRef.current !== "error" ? placeRef.current : null;
+    if (!cur || (Object.keys(cur.instances || {}).length === 0 && Object.keys(cur.scripts || {}).length === 0)) {
+      toast.error("Build or import a Roblox place before exporting a Ship Pack.");
+      return;
+    }
+    const label = activeTitle && activeTitle !== "New chat" ? activeTitle : shell.gameName;
+    const slug = (label || "openro-ship-pack").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "openro-ship-pack";
+    const isBrowserEngine = Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__);
+
+    try {
+      let zipBytes: Uint8Array | null = null;
+      if (v080Ready && !isBrowserEngine) {
+        const r = await fetch("/api/export/bundle", { cache: "no-store" });
+        if (r.ok) {
+          const buf = new Uint8Array(await r.arrayBuffer());
+          if (buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b) {
+            zipBytes = buf;
+          }
+        }
+      }
+      if (!zipBytes) {
+        zipBytes = buildRojoShipPackZip({
+          gameName: label,
+          place: cur,
+          assets: cardAssets,
+          diagnostics: analyzePlaceLuau(cur),
+        });
+      }
+      const blob = new Blob([zipBytes.buffer as ArrayBuffer], { type: "application/zip" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${slug}-rojo-ship-pack.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast.success(`Downloaded ${slug}-rojo-ship-pack.zip (${Math.max(1, Math.round(zipBytes.length / 1024))} KB)`);
+    } catch {
+      toast.error("Could not build Studio & Rojo Ship Pack (.zip).");
+    }
+  };
+
+  const handleConnectMcp = async (command?: string) => {
+    if (!v080Ready) {
+      toast.error("Live Studio MCP Connect requires OpenRO v0.8.0.");
+      return;
+    }
+    try {
+      const res = await post<{
+        ok?: boolean;
+        connected?: boolean;
+        workspace_mode?: WorkspaceMode;
+        studio_mode?: StudioMode;
+        has_live_frame?: boolean;
+        frame_seq?: number;
+        error?: string;
+      }>("/api/studio/mcp/connect", command ? { command } : {});
+      if (res.ok && res.connected) {
+        setStudioOk(true);
+        setWorkspaceMode(res.workspace_mode || "studio_mcp");
+        setStudioMode(res.studio_mode || "live_mcp");
+        if (typeof res.has_live_frame === "boolean") setHasLiveFrame(res.has_live_frame);
+        if (typeof res.frame_seq === "number") setFrameSeq(res.frame_seq);
+        toast.success("Connected live Roblox Studio MCP bridge");
+        void refreshStudioActions(true);
+        void refreshPlace();
+      } else {
+        toast.error(res.error || "Could not connect to a running Roblox Studio MCP bridge.");
+      }
+    } catch {
+      toast.error("Could not reach /api/studio/mcp/connect.");
+    }
+  };
+
+  const handleDisconnectMcp = async () => {
+    if (!v080Ready) return;
+    try {
+      const res = await post<{
+        ok?: boolean;
+        workspace_mode?: WorkspaceMode;
+        studio_mode?: StudioMode;
+        error?: string;
+      }>("/api/studio/mcp/disconnect", {});
+      if (res.ok) {
+        setWorkspaceMode(res.workspace_mode || "local_place");
+        setStudioMode(res.studio_mode || "local_place");
+        setHasLiveFrame(false);
+        toast.success("Disconnected Studio MCP bridge — returned to Local Studio 3D");
+        void refreshStudioActions(true);
+      } else {
+        toast.error(res.error || "Could not disconnect Studio MCP bridge.");
+      }
+    } catch {
+      toast.error("Could not reach /api/studio/mcp/disconnect.");
+    }
+  };
+
+  ideShortcutRef.current = {
+    selectedPath,
+    canRedo,
+    duplicate: handleDuplicatePart,
+    redo: handleRedo,
+  };
+
   const handleSelectPartFromStage = (path: string) => {
     setSelectedPath(path);
     if (narrow) {
@@ -1391,12 +1866,12 @@ export function App() {
 
         <div className="flex items-center justify-between gap-2 text-xs text-ink-2">
           <a
-            href={RELEASES_URL + (version || "0.7.0")}
+            href={RELEASES_URL + (version || "0.8.0")}
             target="_blank"
             rel="noreferrer"
             className="inline-flex min-h-11 items-center gap-1 rounded-sm px-1 font-mono text-xs text-ink-2 outline-none hover:text-ink hover:underline md:min-h-7"
           >
-            <span>OpenRO v{version || "0.7.0"}</span>
+            <span>OpenRO v{version || "0.8.0"}</span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
           <span className="truncate text-right text-xs text-ink-3">
@@ -1540,6 +2015,11 @@ export function App() {
                           selectedPath={selectedPath}
                           onSelectPath={setSelectedPath}
                           onSaveInstance={handleSaveInstance}
+                          onSaveScript={handleSaveScript}
+                          onDuplicatePart={handleDuplicatePart}
+                          onDeletePart={handleDeletePart}
+                          onRunPlaytest={handleRunStudioPlaytest}
+                          onDownloadShipPack={handleDownloadShipPack}
                           onImportClick={() => fileInputRef.current?.click()}
                           onOpenSnapshots={() => {
                             setShelfOpen(false);
@@ -1641,9 +2121,16 @@ export function App() {
                       hasLiveFrame={hasLiveFrame}
                       frameSeq={frameSeq}
                       building={Boolean(building)}
+                      canRedo={canRedo}
                       onSaveInstance={handleSaveInstance}
+                      onCreatePart={handleCreatePart}
+                      onDuplicatePart={handleDuplicatePart}
+                      onDeletePart={handleDeletePart}
+                      onTriggerRedo={handleRedo}
                       onRunPlaytest={handleRunStudioPlaytest}
                       onCaptureFrame={handleCaptureStudioFrame}
+                      onConnectMcp={handleConnectMcp}
+                      onDisconnectMcp={handleDisconnectMcp}
                     />
                   )}
                   <ThreadFeed
@@ -1818,6 +2305,11 @@ export function App() {
               selectedPath={selectedPath}
               onSelectPath={setSelectedPath}
               onSaveInstance={handleSaveInstance}
+              onSaveScript={handleSaveScript}
+              onDuplicatePart={handleDuplicatePart}
+              onDeletePart={handleDeletePart}
+              onRunPlaytest={handleRunStudioPlaytest}
+              onDownloadShipPack={handleDownloadShipPack}
               onImportClick={() => fileInputRef.current?.click()}
               onOpenSnapshots={() => setSnapshotsOpen(true)}
               snapshotCount={snapshots.length}
@@ -1834,10 +2326,13 @@ export function App() {
           canBuild={canBuild}
           busy={busy}
           canUndo={canUndo}
+          canRedo={canRedo}
           onAddSystem={(sys) => void addSystem(sys)}
           onSelectPath={handleSelectPartFromStage}
           onNewChat={() => void newChat()}
           onExportRbxlx={() => void triggerExportFromPalette()}
+          onDownloadShipPack={() => void handleDownloadShipPack()}
+          onAddBlockPart={() => void handleCreatePart("block")}
           onImportRbxlxClick={() => fileInputRef.current?.click()}
           onOpenSnapshots={() => setSnapshotsOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -1845,6 +2340,7 @@ export function App() {
           onBuildApex={() => void buildApexCardBattles()}
           onRunPlaytest={() => void handleRunStudioPlaytest()}
           onTriggerUndo={() => void undoNow()}
+          onTriggerRedo={() => void handleRedo()}
         />
 
         <CardArtStudio

@@ -3,7 +3,8 @@ export type Chat = { id: string; title: string };
 export type Idea = { id: string; title: string; pitch: string; skills: string[] };
 export type PlaceInstance = { class_name?: string; properties?: Record<string, unknown> };
 export type Place = { scripts: Record<string, string>; instances: Record<string, PlaceInstance> };
-export type ChatList = { chats: Chat[]; active: string; can_undo: boolean };
+export type ChatList = { chats: Chat[]; active: string; can_undo: boolean; can_redo?: boolean };
+export type PartPreset = "block" | "sphere" | "cylinder" | "spawn" | "jump_pad" | "kill_brick" | "card_billboard";
 export type WorkspaceMode = "studio_mcp" | "local_place" | "browser_place" | "disconnected";
 
 export type PlaceDiffItem = {
@@ -139,7 +140,7 @@ export function normalizeChatList(raw: unknown): ChatList {
     });
   const wanted = asStr(raw.active);
   const active = chats.some((c) => c.id === wanted) ? wanted : (chats[0]?.id ?? "");
-  return { chats, active, can_undo: raw.can_undo === true };
+  return { chats, active, can_undo: raw.can_undo === true, can_redo: raw.can_redo === true };
 }
 
 export function normalizeThread(raw: unknown): string[] {
@@ -429,6 +430,14 @@ export function isV070OrNewer(version: string): boolean {
   const maj = Number(m[1]);
   const min = Number(m[2]);
   return maj > 0 || min >= 7;
+}
+
+export function isV080OrNewer(version: string): boolean {
+  const m = version.trim().match(/^(\d+)\.(\d+)/);
+  if (!m) return false;
+  const maj = Number(m[1]);
+  const min = Number(m[2]);
+  return maj > 0 || min >= 8;
 }
 
 export type StudioActionKind =
