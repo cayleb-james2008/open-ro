@@ -4069,7 +4069,7 @@ fn handle_library_test(stream: &mut TcpStream, shared: &Shared, req: &Request) {
 
 fn handle_market_taste_get(stream: &mut TcpStream, shared: &Shared, query: &str) {
     let niche_param = query_param(query, "niche");
-    let canonical_niche = match niche_param.as_deref() {
+    let canonical_niche = match niche_param {
         Some(raw) if !raw.trim().is_empty() => match crate::market_taste::normalize_niche_id(raw) {
             Ok(id) => Some(id),
             Err(msg) => {
