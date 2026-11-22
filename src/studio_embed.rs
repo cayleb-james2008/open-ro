@@ -210,6 +210,9 @@ pub struct HostStudioDetection {
     pub platform: &'static str,
     pub studio_installed: bool,
     pub studio_running: bool,
+    pub studio_display: Option<String>,
+    pub already_logged_in: bool,
+    pub running_studios: Vec<Value>,
     pub xvfb_available: bool,
     pub display_ready: bool,
     pub studio_exe: Option<String>,
@@ -223,6 +226,9 @@ impl HostStudioDetection {
             "platform": self.platform,
             "studio_installed": self.studio_installed,
             "studio_running": self.studio_running,
+            "studio_display": self.studio_display,
+            "already_logged_in": self.already_logged_in,
+            "running_studios": self.running_studios,
             "xvfb_available": self.xvfb_available,
             "display_ready": self.display_ready,
             "studio_exe": self.studio_exe,
@@ -232,24 +238,198 @@ impl HostStudioDetection {
     }
 }
 
-/// Passively detect Roblox Studio & MCP availability on Linux or Windows without launching anything.
+/// Normalize an X11 `DISPLAY` string (e.g. `:99.0` -> `:99`) if valid.
+pub fn normalize_x11_display_env(raw: &str) -> Option<String> {
+    let base = raw.trim().split('.').next().unwrap_or("").trim();
+    validate_x11_display(base).ok()
+}
+
+/// Scan `/proc/<pid>/{cmdline,environ}` on Linux to detect an already-running
+/// `RobloxStudioBeta.exe` / Vinegar process and its actual `DISPLAY` (e.g. `:0`, `:1`, `:99`) (#118).
+#[cfg(target_os = "linux")]
+pub fn detect_linux_running_studio_display() -> (bool, Option<String>) {
+    let mut found_running = false;
+    let mut found_display: Option<String> = None;
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let pid_str = name.to_string_lossy();
+            if !pid_str.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let pdir = entry.path();
+            let Ok(cmd_bytes) = std::fs::read(pdir.join("cmdline")) else {
+                continue;
+            };
+            if cmd_bytes.is_empty() {
+                continue;
+            }
+            let cmd_text = String::from_utf8_lossy(&cmd_bytes);
+            let is_studio = cmd_text.contains("RobloxStudioBeta.exe")
+                || (cmd_text.contains("vinegar") && cmd_text.contains("studio"));
+            if !is_studio {
+                continue;
+            }
+            found_running = true;
+            if let Ok(env_bytes) = std::fs::read(pdir.join("environ")) {
+                for item in env_bytes.split(|b| *b == 0) {
+                    if let Some(val) = item.strip_prefix(b"DISPLAY=") {
+                        if let Some(disp) = normalize_x11_display_env(&String::from_utf8_lossy(val)) {
+                            found_display = Some(disp);
+                            break;
+                        }
+                    }
+                }
+            }
+            if found_display.is_some() {
+                break;
+            }
+        }
+    }
+    if !found_running && is_vinegar_flatpak_running() {
+        found_running = true;
+    }
+    if found_running && found_display.is_none() && x11_socket_exists(DEFAULT_EMBED_DISPLAY) {
+        found_display = Some(DEFAULT_EMBED_DISPLAY.to_string());
+    }
+    (found_running, found_display)
+}
+
+#[cfg(target_os = "macos")]
+fn detect_macos_studio_running() -> bool {
+    Command::new("pgrep")
+        .args(["-x", "RobloxStudio"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn detect_windows_studio_running() -> bool {
+    Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq RobloxStudioBeta.exe", "/NH"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map(|out| {
+            out.status.success()
+                && String::from_utf8_lossy(&out.stdout)
+                    .to_ascii_lowercase()
+                    .contains("robloxstudiobeta.exe")
+        })
+        .unwrap_or(false)
+}
+
+/// Extract normalized `[{ studio_id, place_name, datamodel_type }]` records from
+/// a `list_roblox_studios` MCP JSON response.
+pub fn parse_running_studios(val: &Value) -> Vec<Value> {
+    let arr = val
+        .get("studios")
+        .and_then(|v| v.as_array())
+        .or_else(|| val.as_array());
+    let Some(items) = arr else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let Some(id) = item
+            .get("studio_id")
+            .or_else(|| item.get("id"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let place_name = item
+            .get("place_name")
+            .or_else(|| item.get("name"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let dm = item
+            .get("active_datamodel")
+            .or_else(|| item.get("datamodel_type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("Edit")
+            .to_string();
+        out.push(json!({
+            "studio_id": id,
+            "place_name": place_name,
+            "datamodel_type": dm,
+        }));
+    }
+    out
+}
+
+/// Passively query an MCP command for live open Studio sessions without spawning Studio (#118).
+pub fn probe_running_studios(mcp_cmd: &str) -> Vec<Value> {
+    if std::env::var("OPENRO_NO_STATUS_MCP_PROBE")
+        .ok()
+        .is_some_and(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
+    {
+        return Vec::new();
+    }
+    let Ok(mut client) = McpClient::spawn_with_timeout(mcp_cmd, Duration::from_secs(2)) else {
+        return Vec::new();
+    };
+    let Ok(val) = client.list_roblox_studios() else {
+        return Vec::new();
+    };
+    parse_running_studios(&val)
+}
+
+/// Passively detect Roblox Studio & MCP availability across Linux, macOS, and Windows
+/// without launching anything (#118). When `probe_mcp` is `true` and Studio is running,
+/// performs a short passive `list_roblox_studios` probe (respecting `OPENRO_NO_STATUS_MCP_PROBE=1`).
 pub fn detect_studio_environment() -> HostStudioDetection {
-    #[cfg(unix)]
+    detect_studio_environment_with_probe(true)
+}
+
+/// Fast passive detection without spawning any MCP probe subprocess (used during server startup).
+pub fn detect_studio_environment_fast() -> HostStudioDetection {
+    detect_studio_environment_with_probe(false)
+}
+
+fn detect_studio_environment_with_probe(probe_mcp: bool) -> HostStudioDetection {
+    #[cfg(target_os = "linux")]
     {
         let home = std::env::var("HOME").unwrap_or_default();
         let mcp_wrapper = PathBuf::from(&home).join(".local/bin/roblox-studio-mcp");
         let vinegar_prefix = PathBuf::from(&home).join(".var/app/org.vinegarhq.Vinegar");
         let mcp_present = mcp_wrapper.is_file();
         let xvfb_available = find_on_path("Xvfb").is_some();
-        let display_ready = x11_socket_exists(DEFAULT_EMBED_DISPLAY);
-        let studio_running = is_vinegar_flatpak_running();
+        let (studio_running, studio_display) = detect_linux_running_studio_display();
+        let display_ready = studio_display
+            .as_deref()
+            .is_some_and(x11_socket_exists)
+            || x11_socket_exists(DEFAULT_EMBED_DISPLAY);
         let flatpak_installed = find_on_path("flatpak").is_some() && vinegar_prefix.exists();
+        let mcp_command = if mcp_present {
+            Some(mcp_wrapper.to_string_lossy().into_owned())
+        } else {
+            None
+        };
+        let running_studios = if probe_mcp && studio_running {
+            mcp_command
+                .as_deref()
+                .map(probe_running_studios)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let already_logged_in = !running_studios.is_empty();
 
-        let guidance = if studio_running && mcp_present {
-            "Roblox Studio (Vinegar) is running and ready to attach via roblox-studio-mcp."
+        let guidance = if already_logged_in {
+            "Found your logged-in Roblox Studio — click 'Grab & Connect' to attach immediately."
+                .to_string()
+        } else if studio_running && mcp_present {
+            "Roblox Studio is running (awaiting sign-in or open place) — click 'Launch & Embed Studio' to stream and sign in live."
                 .to_string()
         } else if flatpak_installed && mcp_present {
-            "Click 'Launch & Embed Studio' to start Roblox Studio inside isolated Xvfb :99 and attach live MCP."
+            "Click 'Open My Roblox Studio' to launch using your saved login and attach live MCP."
                 .to_string()
         } else {
             "Install Flatpak org.vinegarhq.Vinegar + ~/.local/bin/roblox-studio-mcp, or connect a custom Studio MCP command."
@@ -260,6 +440,9 @@ pub fn detect_studio_environment() -> HostStudioDetection {
             platform: current_platform(),
             studio_installed: flatpak_installed || studio_running,
             studio_running,
+            studio_display,
+            already_logged_in,
+            running_studios,
             xvfb_available,
             display_ready,
             studio_exe: if flatpak_installed {
@@ -267,12 +450,34 @@ pub fn detect_studio_environment() -> HostStudioDetection {
             } else {
                 None
             },
-            mcp_command: if mcp_present {
-                Some(mcp_wrapper.to_string_lossy().into_owned())
-            } else {
-                None
-            },
+            mcp_command,
             guidance,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = probe_mcp;
+        let studio_app = PathBuf::from("/Applications/RobloxStudio.app");
+        let studio_running = detect_macos_studio_running();
+        let studio_installed = studio_app.exists() || studio_running;
+        HostStudioDetection {
+            platform: current_platform(),
+            studio_installed,
+            studio_running,
+            studio_display: None,
+            already_logged_in: false,
+            running_studios: Vec::new(),
+            xvfb_available: false,
+            display_ready: true,
+            studio_exe: studio_app.exists().then(|| studio_app.to_string_lossy().into_owned()),
+            mcp_command: None,
+            guidance: if studio_running {
+                "Roblox Studio is running on macOS — connect your Studio MCP command to attach."
+                    .to_string()
+            } else {
+                "Open Roblox Studio to attach live MCP.".to_string()
+            },
         }
     }
 
@@ -283,7 +488,8 @@ pub fn detect_studio_environment() -> HostStudioDetection {
             .as_deref()
             .map(find_windows_roblox_paths)
             .unwrap_or_default();
-        let studio_installed = paths.studio_exe.is_some();
+        let studio_running = detect_windows_studio_running();
+        let studio_installed = paths.studio_exe.is_some() || studio_running;
         let mcp_command = paths
             .studio_mcp_exe
             .as_ref()
@@ -294,8 +500,22 @@ pub fn detect_studio_environment() -> HostStudioDetection {
                     .as_ref()
                     .map(|p| format!("cmd /C \"{}\"", p.display()))
             });
-        let guidance = if studio_installed && mcp_command.is_some() {
-            "Native Windows Roblox Studio & StudioMCP.exe detected — click 'Launch & Embed Studio' to connect."
+        let running_studios = if probe_mcp && studio_running {
+            mcp_command
+                .as_deref()
+                .map(probe_running_studios)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let already_logged_in = !running_studios.is_empty();
+        let guidance = if already_logged_in {
+            "Found your logged-in Roblox Studio — click 'Grab & Connect' to attach immediately."
+                .to_string()
+        } else if studio_running && mcp_command.is_some() {
+            "Roblox Studio is running — sign in or open a place to attach MCP.".to_string()
+        } else if studio_installed && mcp_command.is_some() {
+            "Native Windows Roblox Studio & StudioMCP.exe detected — click 'Open My Roblox Studio' to connect."
                 .to_string()
         } else if studio_installed {
             "Roblox Studio detected in %LOCALAPPDATA%\\Roblox\\Versions; enable Studio MCP in Beta Features."
@@ -308,7 +528,10 @@ pub fn detect_studio_environment() -> HostStudioDetection {
         HostStudioDetection {
             platform: current_platform(),
             studio_installed,
-            studio_running: false,
+            studio_running,
+            studio_display: None,
+            already_logged_in,
+            running_studios,
             xvfb_available: false,
             display_ready: true,
             studio_exe: paths.studio_exe.map(|p| p.to_string_lossy().into_owned()),
@@ -367,14 +590,16 @@ pub struct StudioEmbedState {
 
 impl StudioEmbedState {
     pub fn idle() -> Self {
-        let probe = detect_studio_environment();
+        let probe = detect_studio_environment_fast();
         StudioEmbedState {
             phase: "idle".to_string(),
             platform: probe.platform,
             embedded: false,
             mcp_connected: false,
             display: if cfg!(unix) {
-                Some(DEFAULT_EMBED_DISPLAY.to_string())
+                probe
+                    .studio_display
+                    .or_else(|| Some(DEFAULT_EMBED_DISPLAY.to_string()))
             } else {
                 None
             },
@@ -400,6 +625,10 @@ impl StudioEmbedState {
 
     pub fn to_json(&self) -> Value {
         let detection = detect_studio_environment();
+        self.to_json_with_detection(&detection)
+    }
+
+    pub fn to_json_with_detection(&self, detection: &HostStudioDetection) -> Value {
         json!({
             "phase": self.phase,
             "platform": self.platform,
@@ -465,13 +694,32 @@ impl StudioEmbedManager {
 
     /// Synchronize live metadata from an active `McpClient` (e.g. after connect/tool call).
     pub fn sync_from_client(&mut self, client: &McpClient, mcp_command: Option<String>) {
+        self.sync_connected_meta(
+            client.studio_id().map(ToString::to_string),
+            client.datamodel_type().to_string(),
+            client.tools().to_vec(),
+            client.official_tools_available().len(),
+            mcp_command,
+        );
+    }
+
+    /// Atomically mark the embedded session `connected` using pre-extracted MCP metadata
+    /// (called after `PlaceBackend::Mcp` and its initial frame are already attached).
+    pub fn sync_connected_meta(
+        &mut self,
+        studio_id: Option<String>,
+        datamodel_type: String,
+        tools: Vec<String>,
+        official_tools_count: usize,
+        mcp_command: Option<String>,
+    ) {
         self.state.mcp_connected = true;
         self.state.embedded = true;
         self.state.phase = "connected".to_string();
-        self.state.studio_id = client.studio_id().map(ToString::to_string);
-        self.state.datamodel_type = client.datamodel_type().to_string();
-        self.state.tools = client.tools().to_vec();
-        self.state.official_tools_count = client.official_tools_available().len();
+        self.state.studio_id = studio_id;
+        self.state.datamodel_type = datamodel_type;
+        self.state.tools = tools;
+        self.state.official_tools_count = official_tools_count;
         if let Some(cmd) = mcp_command {
             self.state.mcp_command = Some(cmd);
         }
@@ -512,6 +760,12 @@ impl StudioEmbedManager {
 
     pub fn stop(&mut self) -> StudioEmbedState {
         stop_embedded_studio(self)
+    }
+
+    /// Stop flag toggled to `true` whenever `stop()` or `Drop` runs — shared by
+    /// the x11grab frame pump and any background MCP auto-attacher thread (#35).
+    pub fn stop_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.x11grab_stop)
     }
 }
 
@@ -665,6 +919,516 @@ pub fn spawn_x11grab_pump(
         let _ = (hub, valid_display, w, h);
         Err("x11grab MJPEG pump is only supported on Linux/Unix (use MCP screen_capture on Windows)"
             .to_string())
+    }
+}
+
+/// Outcome of `launch_or_attach_live` (#35): either live MCP is already connected, or
+/// the X11 viewport stream (`x11grab` MJPEG) is live immediately while waiting for the
+/// user to sign into Roblox Studio / open a place (with background MCP auto-attach).
+pub enum EmbedLaunchOutcome {
+    Connected(StudioEmbedState, Box<McpClient>),
+    StreamingAwaitingAuth {
+        state: StudioEmbedState,
+        mcp_cmd: String,
+    },
+}
+
+/// Probe the actual width/height of an existing Linux X11 display via `libX11.so.6`
+/// so `x11grab` captures the full Xvfb desktop (e.g. `1440x900`) instead of cropping.
+#[cfg(unix)]
+pub fn probe_x11_resolution(display: &str) -> Option<[u32; 2]> {
+    let valid = validate_x11_display(display).ok()?;
+    let script = r#"
+import ctypes, sys
+x11 = ctypes.CDLL("libX11.so.6")
+x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+x11.XOpenDisplay.restype = ctypes.c_void_p
+x11.XDefaultScreen.argtypes = [ctypes.c_void_p]
+x11.XDefaultScreen.restype = ctypes.c_int
+x11.XDisplayWidth.argtypes = [ctypes.c_void_p, ctypes.c_int]
+x11.XDisplayWidth.restype = ctypes.c_int
+x11.XDisplayHeight.argtypes = [ctypes.c_void_p, ctypes.c_int]
+x11.XDisplayHeight.restype = ctypes.c_int
+x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+dpy = x11.XOpenDisplay(sys.argv[1].encode())
+if not dpy:
+    sys.exit(1)
+scr = x11.XDefaultScreen(dpy)
+w = x11.XDisplayWidth(dpy, scr)
+h = x11.XDisplayHeight(dpy, scr)
+x11.XCloseDisplay(dpy)
+print(f"{w} {h}")
+"#;
+    let out = Command::new("python3")
+        .args(["-c", script, &valid])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut parts = text.split_whitespace();
+    let w: u32 = parts.next()?.parse().ok()?;
+    let h: u32 = parts.next()?.parse().ok()?;
+    if (320..=3840).contains(&w) && (200..=2160).contains(&h) {
+        Some([w, h])
+    } else {
+        None
+    }
+}
+
+#[cfg(not(unix))]
+pub fn probe_x11_resolution(_display: &str) -> Option<[u32; 2]> {
+    None
+}
+
+/// Forward a mouse event directly into an X11 display (`DISPLAY=:99`) via `libX11` + `libXtst`
+/// so users can click buttons or complete Roblox Studio sign-in inside the embedded viewport
+/// even before Studio MCP attaches (#35).
+#[cfg(unix)]
+pub fn send_x11_mouse(
+    display: &str,
+    resolution: [u32; 2],
+    action: &str,
+    x: f64,
+    y: f64,
+    button: &str,
+    delta_y: f64,
+) -> Result<Value, String> {
+    let valid = validate_x11_display(display)?;
+    let w = resolution[0].clamp(320, 3840) as f64;
+    let h = resolution[1].clamp(200, 2160) as f64;
+    let (px, py) = if (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y) && (x > 0.0 || y > 0.0) {
+        ((x * w).round() as i32, (y * h).round() as i32)
+    } else {
+        (x.round() as i32, y.round() as i32)
+    };
+    let px = px.clamp(0, (w as i32) - 1);
+    let py = py.clamp(0, (h as i32) - 1);
+    let btn: u32 = match button {
+        "right" | "2" => 3,
+        "middle" => 2,
+        _ => 1,
+    };
+    let script = r#"
+import ctypes, sys, time
+x11 = ctypes.CDLL("libX11.so.6")
+xtst = ctypes.CDLL("libXtst.so.6")
+x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+x11.XOpenDisplay.restype = ctypes.c_void_p
+x11.XFlush.argtypes = [ctypes.c_void_p]
+x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+xtst.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
+xtst.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+dpy = x11.XOpenDisplay(sys.argv[1].encode())
+if not dpy:
+    sys.stderr.write("cannot open X11 display")
+    sys.exit(1)
+action, px, py, btn, dy = sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]), float(sys.argv[6])
+xtst.XTestFakeMotionEvent(dpy, -1, px, py, 0)
+if action == "click":
+    xtst.XTestFakeButtonEvent(dpy, btn, 1, 0)
+    xtst.XTestFakeButtonEvent(dpy, btn, 0, 0)
+elif action == "double_click":
+    for _ in range(2):
+        xtst.XTestFakeButtonEvent(dpy, btn, 1, 0)
+        xtst.XTestFakeButtonEvent(dpy, btn, 0, 0)
+        x11.XFlush(dpy)
+        time.sleep(0.05)
+elif action == "right_click":
+    xtst.XTestFakeButtonEvent(dpy, 3, 1, 0)
+    xtst.XTestFakeButtonEvent(dpy, 3, 0, 0)
+elif action == "down":
+    xtst.XTestFakeButtonEvent(dpy, btn, 1, 0)
+elif action == "up":
+    xtst.XTestFakeButtonEvent(dpy, btn, 0, 0)
+elif action == "wheel":
+    wb = 4 if dy < 0 else 5
+    steps = max(1, min(6, int(abs(dy) / 80) or 1))
+    for _ in range(steps):
+        xtst.XTestFakeButtonEvent(dpy, wb, 1, 0)
+        xtst.XTestFakeButtonEvent(dpy, wb, 0, 0)
+x11.XFlush(dpy)
+x11.XCloseDisplay(dpy)
+"#;
+    let out = Command::new("python3")
+        .args([
+            "-c",
+            script,
+            &valid,
+            action,
+            &px.to_string(),
+            &py.to_string(),
+            &btn.to_string(),
+            &delta_y.to_string(),
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("X11 mouse pass-through failed: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(format!("X11 mouse pass-through on {valid} failed: {err}"));
+    }
+    Ok(json!({ "ok": true, "transport": "x11", "display": valid, "x": px, "y": py, "action": action }))
+}
+
+#[cfg(not(unix))]
+pub fn send_x11_mouse(
+    _display: &str,
+    _resolution: [u32; 2],
+    _action: &str,
+    _x: f64,
+    _y: f64,
+    _button: &str,
+    _delta_y: f64,
+) -> Result<Value, String> {
+    Err("X11 mouse pass-through is only available on Linux".to_string())
+}
+
+/// Forward a keyboard key press or typed text directly into an X11 display (`DISPLAY=:99`)
+/// via `libX11` + `libXtst` while Studio is awaiting auth/sign-in (#35).
+#[cfg(unix)]
+pub fn send_x11_keyboard(
+    display: &str,
+    action: &str,
+    key: Option<&str>,
+    text: Option<&str>,
+) -> Result<Value, String> {
+    let valid = validate_x11_display(display)?;
+    let script = r#"
+import ctypes, sys
+x11 = ctypes.CDLL("libX11.so.6")
+xtst = ctypes.CDLL("libXtst.so.6")
+x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+x11.XOpenDisplay.restype = ctypes.c_void_p
+x11.XStringToKeysym.argtypes = [ctypes.c_char_p]
+x11.XStringToKeysym.restype = ctypes.c_ulong
+x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+x11.XKeysymToKeycode.restype = ctypes.c_uint
+x11.XFlush.argtypes = [ctypes.c_void_p]
+x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+xtst.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+dpy = x11.XOpenDisplay(sys.argv[1].encode())
+if not dpy:
+    sys.stderr.write("cannot open X11 display")
+    sys.exit(1)
+action, key, text = sys.argv[2], sys.argv[3], sys.argv[4]
+KEY_MAP = {
+    "enter": "Return", "return": "Return", "tab": "Tab", "escape": "Escape", "esc": "Escape",
+    "backspace": "BackSpace", "delete": "Delete", "space": "space", " ": "space",
+    "arrowup": "Up", "up": "Up", "arrowdown": "Down", "down": "Down",
+    "arrowleft": "Left", "left": "Left", "arrowright": "Right", "right": "Right",
+}
+SHIFTED = set('~!@#$%^&*()_+{}|:"<>?')
+CHAR_MAP = {
+    ' ': 'space', '!': 'exclam', '"': 'quotedbl', '#': 'numbersign', '$': 'dollar', '%': 'percent',
+    '&': 'ampersand', "'": 'apostrophe', '(': 'parenleft', ')': 'parenright', '*': 'asterisk',
+    '+': 'plus', ',': 'comma', '-': 'minus', '.': 'period', '/': 'slash', ':': 'colon',
+    ';': 'semicolon', '<': 'less', '=': 'equal', '>': 'greater', '?': 'question', '@': 'at',
+    '[': 'bracketleft', '\\': 'backslash', ']': 'bracketright', '^': 'asciicircum', '_': 'underscore',
+    '`': 'grave', '{': 'braceleft', '|': 'bar', '}': 'braceright', '~': 'asciitilde',
+}
+shift_kc = x11.XKeysymToKeycode(dpy, x11.XStringToKeysym(b"Shift_L"))
+def press_sym(sym_name, need_shift=False, mode="press"):
+    ks = x11.XStringToKeysym(sym_name.encode())
+    if not ks:
+        return
+    kc = x11.XKeysymToKeycode(dpy, ks)
+    if not kc:
+        return
+    if need_shift and shift_kc:
+        xtst.XTestFakeKeyEvent(dpy, shift_kc, 1, 0)
+    if mode in ("press", "down"):
+        xtst.XTestFakeKeyEvent(dpy, kc, 1, 0)
+    if mode in ("press", "up"):
+        xtst.XTestFakeKeyEvent(dpy, kc, 0, 0)
+    if need_shift and shift_kc:
+        xtst.XTestFakeKeyEvent(dpy, shift_kc, 0, 0)
+if text:
+    for ch in text[:256]:
+        if ch == '\n':
+            press_sym("Return")
+        elif ch in CHAR_MAP:
+            press_sym(CHAR_MAP[ch], ch in SHIFTED)
+        elif ch.isupper():
+            press_sym(ch, True)
+        elif ch.isascii() and ch.isprintable():
+            press_sym(ch, False)
+elif key:
+    low = key.strip().lower()
+    sym = KEY_MAP.get(low, CHAR_MAP.get(key, key))
+    need_shift = len(key) == 1 and (key.isupper() or key in SHIFTED)
+    press_sym(sym, need_shift, action if action in ("down", "up") else "press")
+x11.XFlush(dpy)
+x11.XCloseDisplay(dpy)
+"#;
+    let out = Command::new("python3")
+        .args([
+            "-c",
+            script,
+            &valid,
+            action,
+            key.unwrap_or(""),
+            text.unwrap_or(""),
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("X11 keyboard pass-through failed: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(format!("X11 keyboard pass-through on {valid} failed: {err}"));
+    }
+    Ok(json!({ "ok": true, "transport": "x11", "display": valid, "action": action }))
+}
+
+#[cfg(not(unix))]
+pub fn send_x11_keyboard(
+    _display: &str,
+    _action: &str,
+    _key: Option<&str>,
+    _text: Option<&str>,
+) -> Result<Value, String> {
+    Err("X11 keyboard pass-through is only available on Linux".to_string())
+}
+
+/// Launch or attach to Roblox Studio and start streaming the viewport **immediately**
+/// even while Studio is on the Sign-In / QR screen (before MCP attaches) (#35, #118).
+/// Never spawns a duplicate Studio when one is already running; detects its real X11
+/// `DISPLAY` automatically.
+pub fn launch_or_attach_live(
+    manager: &mut StudioEmbedManager,
+    mut config: EmbedConfig,
+    hub: Option<Arc<StudioStreamHub>>,
+) -> Result<EmbedLaunchOutcome, String> {
+    // Direct non-launch MCP command mode (e.g. mock_studio in E2E/CI tests or custom bridge)
+    if let Some(explicit_cmd) = config.mcp_command.clone() {
+        if !config.launch_studio_process {
+            manager.x11grab_stop.store(true, Ordering::SeqCst);
+            if let Some(mut prev) = manager.ffmpeg_child.take() {
+                let _ = prev.kill();
+                let _ = prev.wait();
+            }
+            manager.x11grab_stop = Arc::new(AtomicBool::new(false));
+            manager.state.ffmpeg_pid = None;
+            manager.state.x11grab_active = false;
+            let mut client = McpClient::spawn(&explicit_cmd).inspect_err(|e| {
+                manager.state.phase = "error".to_string();
+                manager.state.last_error = Some(e.clone());
+            })?;
+            manager.state.started_at_ms = Some(now_ms());
+            if client.has_live_studio() {
+                manager.sync_from_client(&client, Some(explicit_cmd));
+                return Ok(EmbedLaunchOutcome::Connected(manager.state(), Box::new(client)));
+            }
+            // Running at Sign-In / no open place yet -> stay alive in awaiting_signin (#35, #118)
+            manager.state.embedded = true;
+            manager.state.mcp_connected = false;
+            manager.state.phase = "awaiting_signin".to_string();
+            manager.state.studio_id = None;
+            manager.state.mcp_command = Some(explicit_cmd.clone());
+            manager.state.last_error = None;
+            return Ok(EmbedLaunchOutcome::StreamingAwaitingAuth {
+                state: manager.state(),
+                mcp_cmd: explicit_cmd,
+            });
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        #[cfg(target_os = "linux")]
+        let (already_running, detected_display) = detect_linux_running_studio_display();
+        #[cfg(not(target_os = "linux"))]
+        let (already_running, detected_display) = (is_vinegar_flatpak_running(), None::<String>);
+
+        if !config.launch_studio_process
+            && !already_running
+            && !is_vinegar_flatpak_running()
+            && config.mcp_command.is_none()
+        {
+            return Err(
+                "No running Roblox Studio detected. Open Roblox Studio first or click Launch."
+                    .to_string(),
+            );
+        }
+
+        // Prefer the running Studio process's actual X11 DISPLAY (e.g. :0, :1, :99)
+        // unless the caller explicitly passed a non-default display.
+        if config.display == DEFAULT_EMBED_DISPLAY {
+            if let Some(ref d) = detected_display {
+                config.display = d.clone();
+            }
+        }
+        let display = validate_x11_display(&config.display)?;
+        let home = std::env::var("HOME")
+            .map_err(|_| "HOME environment variable is not set".to_string())?;
+        let mcp_cmd = config.mcp_command.clone().unwrap_or_else(|| {
+            PathBuf::from(&home)
+                .join(".local/bin/roblox-studio-mcp")
+                .to_string_lossy()
+                .into_owned()
+        });
+
+        // Stop any prior managed x11grab pump & poller before re-attaching (preserve pre-existing external Xvfb/Studio).
+        manager.x11grab_stop.store(true, Ordering::SeqCst);
+        if let Some(mut prev) = manager.ffmpeg_child.take() {
+            let _ = prev.kill();
+            let _ = prev.wait();
+        }
+        manager.x11grab_stop = Arc::new(AtomicBool::new(false));
+        manager.state.ffmpeg_pid = None;
+        manager.state.x11grab_active = false;
+        manager.state.phase = "starting".to_string();
+        manager.state.last_error = None;
+        manager.state.place_file = config
+            .place_file
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned());
+        manager.state.display = Some(display.clone());
+
+        // 1. Attach to existing X11 display (probing its true resolution) or spawn Xvfb.
+        if x11_socket_exists(&display) {
+            if let Some([rw, rh]) = probe_x11_resolution(&display) {
+                config.width = rw;
+                config.height = rh;
+            }
+        } else if config.launch_studio_process && !already_running {
+            let screen_spec = format!("{}x{}x{}", config.width, config.height, config.depth);
+            let child = Command::new("Xvfb")
+                .args([&display, "-screen", "0", &screen_spec, "-ac"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("failed to spawn Xvfb {display}: {e}"))?;
+            manager.state.xvfb_pid = Some(child.id());
+            manager.xvfb_child = Some(child);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !x11_socket_exists(&display) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        } else if !already_running {
+            return Err(format!("No running Roblox Studio or X11 display {display} found; launch Studio first."));
+        }
+        manager.state.resolution = [config.width, config.height];
+
+        // 2. Spawn Vinegar on DISPLAY=<display> ONLY if requested and Studio is NOT already running (#118).
+        if config.launch_studio_process && !already_running && !is_vinegar_flatpak_running() {
+            let mut cmd = Command::new("flatpak");
+            cmd.arg("run");
+            if let Some(pf) = config.place_file.as_ref() {
+                if let Some(parent) = pf.parent() {
+                    cmd.arg(format!("--filesystem={}", parent.display()));
+                }
+                cmd.arg("--file-forwarding");
+                cmd.arg("org.vinegarhq.Vinegar");
+                cmd.arg("@@");
+                cmd.arg(pf);
+                cmd.arg("@@");
+            } else {
+                cmd.arg("org.vinegarhq.Vinegar");
+            }
+            cmd.env("DISPLAY", &display)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+                if let Some(uid) = current_unix_uid() {
+                    cmd.env("XDG_RUNTIME_DIR", format!("/run/user/{uid}"));
+                }
+            }
+            let child = cmd.spawn().map_err(|e| format!("failed to launch Flatpak Vinegar: {e}"))?;
+            manager.state.studio_pid = Some(child.id());
+            manager.studio_child = Some(child);
+        }
+
+        // 3. Start real-time 12 FPS x11grab MJPEG stream IMMEDIATELY (even while on Sign-In / QR screen!),
+        //    except when targeting the host Wayland desktop's XWayland display (e.g. `:0` under Wayland),
+        //    where x11grab captures an empty/root buffer and MCP `screen_capture` should drive `/stream.mjpg`.
+        if let Some(stream_hub) = hub {
+            if !is_wayland_desktop_display(&display)
+                && x11_socket_exists(&display)
+                && find_on_path("ffmpeg").is_some()
+            {
+                let _ = spawn_x11grab_pump(
+                    manager,
+                    stream_hub,
+                    &display,
+                    config.width,
+                    config.height,
+                );
+            }
+        }
+
+        // 4. Short probe for an already-signed-in Studio place; NEVER kill x11grab if awaiting sign-in!
+        if (already_running || is_vinegar_flatpak_running()) && Path::new(&mcp_cmd).is_file() {
+            if let Ok(mut client) = McpClient::spawn_with_timeout(&mcp_cmd, Duration::from_secs(3)) {
+                if client.has_live_studio() {
+                    manager.state.started_at_ms = Some(now_ms());
+                    manager.sync_from_client(&client, Some(mcp_cmd));
+                    return Ok(EmbedLaunchOutcome::Connected(manager.state(), Box::new(client)));
+                }
+            }
+        }
+
+        if !manager.state.x11grab_active && !already_running && !is_vinegar_flatpak_running() {
+            return Err(
+                "Could not start X11 viewport capture or detect a running Roblox Studio session."
+                    .to_string(),
+            );
+        }
+
+        manager.state.embedded = true;
+        manager.state.mcp_connected = false;
+        manager.state.phase = "awaiting_signin".to_string();
+        manager.state.started_at_ms = Some(now_ms());
+        manager.state.mcp_command = Some(mcp_cmd.clone());
+        manager.state.last_error = None;
+        Ok(EmbedLaunchOutcome::StreamingAwaitingAuth {
+            state: manager.state(),
+            mcp_cmd,
+        })
+    }
+
+    #[cfg(not(unix))]
+    {
+        manager.x11grab_stop.store(true, Ordering::SeqCst);
+        manager.x11grab_stop = Arc::new(AtomicBool::new(false));
+        #[cfg(windows)]
+        {
+            let running = detect_windows_studio_running();
+            if running {
+                // Studio is already running on Windows -> never spawn a duplicate (#118).
+                config.launch_studio_process = false;
+            } else if !config.launch_studio_process && config.mcp_command.is_none() {
+                return Err(
+                    "No running Roblox Studio detected on Windows. Open Roblox Studio first or click Launch."
+                        .to_string(),
+                );
+            }
+        }
+        let mcp_cmd_fallback = config
+            .mcp_command
+            .clone()
+            .or_else(detect_host_mcp_command)
+            .unwrap_or_default();
+        let (state, mut client) = launch_embedded_studio_with_hub(manager, config, hub)?;
+        if client.has_live_studio() {
+            Ok(EmbedLaunchOutcome::Connected(state, Box::new(client)))
+        } else {
+            let cmd = state.mcp_command.clone().unwrap_or(mcp_cmd_fallback);
+            manager.state.embedded = true;
+            manager.state.mcp_connected = false;
+            manager.state.phase = "awaiting_signin".to_string();
+            manager.state.studio_id = None;
+            manager.state.last_error = None;
+            Ok(EmbedLaunchOutcome::StreamingAwaitingAuth {
+                state: manager.state(),
+                mcp_cmd: cmd,
+            })
+        }
     }
 }
 
@@ -1317,6 +2081,21 @@ fn x11_socket_exists(display: &str) -> bool {
     } else {
         false
     }
+}
+
+/// Returns `true` when `display` is the desktop XWayland display under an active Wayland
+/// compositor (e.g. `WAYLAND_DISPLAY=wayland-1` + `DISPLAY=:0`), as opposed to an isolated
+/// headless `Xvfb` like `:99` where `ffmpeg x11grab` works cleanly.
+#[cfg(unix)]
+fn is_wayland_desktop_display(display: &str) -> bool {
+    let has_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty());
+    if !has_wayland {
+        return false;
+    }
+    let host_disp = std::env::var("DISPLAY")
+        .ok()
+        .and_then(|d| normalize_x11_display_env(&d));
+    host_disp.as_deref() == Some(display)
 }
 
 #[cfg(unix)]

@@ -194,7 +194,7 @@ install directory (fragile across updates and read-only in Flatpak), and `Editab
 runtime-only, ID-verified gated, and non-persistent in `.rbxlx`. Real Studio textures use uploaded
 `rbxassetid://` entries from `assets.lock.json`.
 
-## 8. Studio connection & auto-plugin helpers (#24, #29)
+## 8. Studio connection, live embedded auth & grabbing existing Studio (#24, #29, #35, #118)
 
 - Auto backend (`workspace_mode: "auto"`) only enters `studio_mcp` when `list_roblox_studios`
   returns at least one open Studio place (`studio_id`); otherwise it falls back cleanly to
@@ -204,6 +204,31 @@ runtime-only, ID-verified gated, and non-persistent in `.rbxlx`. Real Studio tex
   `auto_install_plugin` (boolean, default `true`, persisted in `studio_prefs.json`). On startup
   with Vinegar detected, OpenRO auto-installs `OpenRoCompanion.lua` into the verified `Plugins/`
   dir if not yet present (`OPENRO_NO_AUTO_PLUGIN=1` disables).
+- `GET /api/studio/embed/status` (passive, never launches Studio; cached 2s):
+  - Top-level detection & session fields:
+    - `studio_running`: `bool` (Linux `/proc` scan for `RobloxStudioBeta.exe`/Vinegar, Windows `tasklist`, macOS `pgrep`, or active embedded session)
+    - `studio_display`: `string | null` (actual X11 `DISPLAY` of running Studio on Linux, e.g. `":0"`, `":1"`, `":99"`; `null` on Windows/macOS)
+    - `already_logged_in`: `bool` (`true` when `running_studios` is non-empty or live MCP is connected)
+    - `running_studios`: `[{ studio_id, place_name, datamodel_type }]`
+    - `phase`: `"idle" | "starting" | "awaiting_signin" | "connected" | "stopped" | "error"`
+    - `state`: `"idle" | "launching" | "awaiting_signin" | "running" | "error"`
+    - `awaiting_signin`: `bool` (`phase == "awaiting_signin"`)
+    - `running`: `bool` (`true` while streaming in `"awaiting_signin"` or `"connected"`)
+    - `x11grab_active`: `bool`, `mcp_connected`: `bool`, `studio_id`: `string | null`
+    - `stream_url`: `"/api/studio/stream.mjpg"`, `frame_url`: `"/api/studio/frame"`, `has_live_frame`: `bool`, `frame_seq`: `u64`
+    - `detection`: `{ platform, studio_installed, studio_running, studio_display, already_logged_in, running_studios, xvfb_available, display_ready, studio_exe, mcp_command, guidance }`
+- `POST /api/studio/embed/attach` (loopback-only; body `{}` or `{ display?, mcp_command? }`):
+  - Grabs an **already-running** Roblox Studio without ever spawning a duplicate Studio process (`launch_studio_process = false`).
+  - On Linux, detects the running Studio's real X11 `DISPLAY` and resolution and immediately starts the 12 FPS `ffmpeg x11grab` MJPEG stream on `/api/studio/stream.mjpg`.
+  - If Studio is already signed in with an open place -> attaches live MCP immediately and returns `200 { ok: true, running: true, connected: true, awaiting_signin: false, phase: "connected", studio_connected: true, ... }`.
+  - If Studio is running at the Sign-In / QR screen (no `studio_id` yet) -> keeps the live viewport stream running, starts a background MCP auto-attacher (2s poll, `OPENRO_EMBED_POLL_MS` override), and returns `200 { ok: true, running: true, connected: false, awaiting_signin: true, phase: "awaiting_signin", x11grab_active, stream_url, message, status }`. As soon as the user finishes signing in / opens a place inside the embedded viewport, `GET /api/studio/embed/status` automatically promotes to `phase: "connected"`, `mcp_connected: true`, `already_logged_in: true`.
+  - Returns `502` if no running Studio (and no explicit `mcp_command`) is detected.
+- `POST /api/studio/embed/launch` (loopback-only; body `{ display?, width?, height?, place_file?, mcp_command?, launch_studio_process? }`):
+  - If Studio is already running, **auto-attaches** instead of launching a duplicate Studio process (same live-stream + auto-promote flow as `/attach`).
+  - Otherwise spawns Studio (on Linux: `Xvfb` + Flatpak Vinegar using saved login; on Windows: `RobloxStudioBeta.exe`) and starts streaming immediately (`phase: "awaiting_signin"` until signed in, then auto-promotes to `"connected"`).
+  - On non-X11 platforms (Windows, macOS, Wayland), once connected with `!x11grab_active`, pushes live MCP `screen_capture` frames into `/api/studio/stream.mjpg` whenever a browser tab is subscribed.
+- `POST /api/studio/input/mouse` & `POST /api/studio/input/keyboard` (loopback-only):
+  - While `x11grab_active && !mcp_connected` (`phase: "awaiting_signin"`), forwards clicks/moves/wheel and keystrokes/typed text directly to the embedded X11 display (`transport: "x11"`, `studio_mode: "awaiting_signin"`) so users can click Sign In / type credentials or scan QR inside OpenRO without leaving the app. Once MCP attaches, routes through official Studio MCP `user_mouse_input` / `user_keyboard_input`.
 - `POST /api/studio/launch-and-continue`: 1-click helper for UI actions needing live Studio;
   returns `{ ok, ready, studio_connected, already_connected? | attached_existing? }` or delegates
-  to Embedded Studio launch.
+  to Embedded Studio launch/attach.
