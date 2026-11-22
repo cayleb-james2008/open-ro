@@ -3656,31 +3656,18 @@ fn is_valid_project_slug(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// Resolve a project slug to its directory. Uses `projects.json` inside `data_dir` when present
-/// (openro-core's ProjectStore layout), `<data_dir>/projects/<id>`, or `projects/<id>` under cwd.
+/// Resolve a project slug to its directory via `ProjectStore` first, falling back to
+/// `<data_dir>/projects/<id>`, `OPENRO_PROJECT_ROOT`, or `projects/<id>` under cwd.
 fn resolve_project_dir(shared: &Shared, id: &str) -> Option<PathBuf> {
     if !is_valid_project_slug(id) {
         return None;
     }
-    if let Some(dir) = &shared.data_dir {
-        if let Ok(raw) = std::fs::read_to_string(dir.join("projects.json")) {
-            if let Ok(v) = serde_json::from_str::<Value>(&raw) {
-                for key in ["projects", "registered", "items"] {
-                    if let Some(arr) = v.get(key).and_then(Value::as_array) {
-                        for item in arr {
-                            if item.get("id").and_then(Value::as_str) == Some(id) {
-                                if let Some(p) = item.get("path").or_else(|| item.get("dir")).and_then(Value::as_str) {
-                                    let pb = PathBuf::from(p);
-                                    if pb.is_dir() {
-                                        return Some(pb);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    if let Some(found) = shared.projects.lock().unwrap().find(id) {
+        if found.dir.is_dir() {
+            return Some(found.dir);
         }
+    }
+    if let Some(dir) = &shared.data_dir {
         let in_data = dir.join("projects").join(id);
         if in_data.is_dir() {
             return Some(in_data);
@@ -3767,6 +3754,7 @@ fn try_route_opencloud_assets(
         data_dir,
         store,
         resolve: &resolver,
+        active_project: shared.active_project_dir(),
     };
     let Some(reply) = crate::opencloud::route(&ctx, &req.method, path, query, &body) else {
         return false;
@@ -5496,7 +5484,8 @@ fn handle_tools_blender_generate(stream: &mut TcpStream, shared: &Shared, req: &
     let project_root = body
         .get("project")
         .and_then(|v| v.as_str())
-        .and_then(|id| resolve_project_dir(shared, id));
+        .and_then(|id| resolve_project_dir(shared, id))
+        .or_else(|| shared.active_project_dir());
     let result = if body.get("parts").is_some() || body.get("script").is_some() {
         crate::mesh::generate_for_project(
             &shared.assets_root,
@@ -5540,7 +5529,8 @@ fn handle_tools_audio_generate(stream: &mut TcpStream, shared: &Shared, req: &Re
     let project_root = body
         .get("project")
         .and_then(|v| v.as_str())
-        .and_then(|id| resolve_project_dir(shared, id));
+        .and_then(|id| resolve_project_dir(shared, id))
+        .or_else(|| shared.active_project_dir());
     match crate::audio_synth::generate_audio_asset_for_project(
         &shared.assets_root,
         project_root.as_deref(),

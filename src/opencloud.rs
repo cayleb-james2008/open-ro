@@ -56,6 +56,7 @@ pub struct Ctx<'a> {
     pub data_dir: &'a Path,
     pub store: SecretStore,
     pub resolve: &'a dyn Fn(&str) -> Option<PathBuf>,
+    pub active_project: Option<PathBuf>,
 }
 
 pub enum Reply {
@@ -1441,6 +1442,9 @@ fn art_root(ctx: &Ctx, project: Option<&str>) -> R<PathBuf> {
     match project.filter(|p| !p.is_empty()) {
         Some(id) => (ctx.resolve)(id).ok_or(Oc { status: 404, msg: "Unknown project.".into() }),
         None => {
+            if let Some(active) = &ctx.active_project {
+                return Ok(active.clone());
+            }
             let p = ctx.data_dir.join("art");
             let _ = std::fs::create_dir_all(&p);
             Ok(p)
