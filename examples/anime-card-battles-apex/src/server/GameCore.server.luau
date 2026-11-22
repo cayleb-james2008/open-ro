@@ -197,46 +197,84 @@ local function updateOverheadCard(player: Player, profile)
         return
     end
     local rarityInfo = CardDatabase.RARITY_BY_ID[cardDef.rarity] or CardDatabase.RARITIES[1]
+    local elemColor = CardDatabase.ELEMENT_COLORS[cardDef.element] or rarityInfo.color
 
+    -- Living 3D Lead-Card Guardian Aura hovering behind the player's shoulder
     local model = Instance.new("Model")
-    model.Name = "EquippedShowcaseCard"
+    model.Name = "EquippedGuardianAura"
 
     local board = Instance.new("Part")
-    board.Name = "CardBoard"
-    board.Size = Vector3.new(2.2, 3.0, 0.22)
+    board.Name = "GuardianCard"
+    board.Size = Vector3.new(2.5, 3.4, 0.24)
     board.Anchored = false
     board.CanCollide = false
     board.Massless = true
     board.Material = Enum.Material.SmoothPlastic
     board.Color = rarityInfo.color
-    board.CFrame = head.CFrame * CFrame.new(2.2, 2.1, 0)
+    board.CFrame = head.CFrame * CFrame.new(2.7, 1.85, 2.1)
     board.Parent = model
 
-    local decal = Instance.new("Decal")
-    decal.Name = "ArtDecal"
-    decal.Face = Enum.NormalId.Front
-    decal.Texture = cardDef.portrait
-    decal.Parent = board
+    for _, face in ipairs({ Enum.NormalId.Front, Enum.NormalId.Back }) do
+        local decal = Instance.new("Decal")
+        decal.Name = "ArtDecal_" .. face.Name
+        decal.Face = face
+        decal.Texture = cardDef.portrait
+        decal.Parent = board
 
-    local sgui = Instance.new("SurfaceGui")
-    sgui.Name = "ArtSurfaceGui"
-    sgui.Face = Enum.NormalId.Front
-    local img = Instance.new("ImageLabel")
-    img.Size = UDim2.new(1, 0, 1, 0)
-    img.BackgroundTransparency = 1
-    img.Image = cardDef.portrait
-    img.ScaleType = Enum.ScaleType.Crop
-    img.Parent = sgui
-    sgui.Parent = board
+        local sgui = Instance.new("SurfaceGui")
+        sgui.Name = "ArtSurfaceGui_" .. face.Name
+        sgui.Face = face
+        local img = Instance.new("ImageLabel")
+        img.Size = UDim2.new(1, 0, 1, 0)
+        img.BackgroundTransparency = 1
+        img.Image = cardDef.portrait
+        img.ScaleType = Enum.ScaleType.Crop
+        img.Parent = sgui
+        sgui.Parent = board
+    end
 
     local hl = Instance.new("Highlight")
     hl.FillTransparency = 0.85
     hl.OutlineColor = rarityInfo.color
-    hl.OutlineTransparency = 0.1
+    hl.OutlineTransparency = 0.05
     hl.Parent = board
 
+    local glow = Instance.new("PointLight")
+    glow.Color = elemColor
+    glow.Brightness = 1.8
+    glow.Range = 14
+    glow.Parent = board
+
+    local auraParticles = Instance.new("ParticleEmitter")
+    auraParticles.Name = "GuardianSparks"
+    auraParticles.Color = ColorSequence.new(elemColor, rarityInfo.color)
+    auraParticles.Rate = 14
+    auraParticles.Speed = NumberRange.new(1.5, 3.5)
+    auraParticles.Lifetime = NumberRange.new(0.8, 1.5)
+    auraParticles.Size = NumberSequence.new(0.28)
+    auraParticles.Parent = board
+
+    -- Elemental orbiting aura frame welded cleanly to the floating card
+    local ringBar = Instance.new("Part")
+    ringBar.Name = "GuardianElementHalo"
+    ringBar.Size = Vector3.new(3.15, 0.24, 3.15)
+    ringBar.Anchored = false
+    ringBar.CanCollide = false
+    ringBar.Massless = true
+    ringBar.Material = Enum.Material.Neon
+    ringBar.Transparency = 0.28
+    ringBar.Color = elemColor
+    ringBar.CFrame = board.CFrame * CFrame.new(0, -1.9, 0)
+    ringBar.Parent = model
+
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = board
+    weld.Part1 = ringBar
+    weld.Parent = board
+
     local att0 = Instance.new("Attachment")
-    att0.Position = Vector3.new(2.2, 2.2, 0)
+    att0.Name = "GuardianTargetAnchor"
+    att0.Position = Vector3.new(2.7, 1.85, 2.1)
     att0.Parent = head
 
     local att1 = Instance.new("Attachment")
@@ -245,17 +283,18 @@ local function updateOverheadCard(player: Player, profile)
     local alignPos = Instance.new("AlignPosition")
     alignPos.Attachment0 = att1
     alignPos.Attachment1 = att0
-    alignPos.MaxForce = 10000
-    alignPos.Responsiveness = 18
+    alignPos.MaxForce = 12000
+    alignPos.Responsiveness = 16
     alignPos.Parent = board
 
     local alignOri = Instance.new("AlignOrientation")
     alignOri.Attachment0 = att1
     alignOri.Attachment1 = att0
-    alignOri.MaxTorque = 10000
-    alignOri.Responsiveness = 15
+    alignOri.MaxTorque = 12000
+    alignOri.Responsiveness = 14
     alignOri.Parent = board
 
+    model:SetAttribute("AnchorBaseY", 1.85)
     model.Parent = char
     overheadCards[player] = model
 end
@@ -1010,6 +1049,17 @@ local function wireWorldLandmarks()
                 local bob = math.sin(t * 2.0) * 0.45
                 haloOuter.CFrame = CFrame.new(baseOuter + Vector3.new(0, bob, 0)) * CFrame.Angles(0, t * 1.1, math.rad(15))
                 haloInner.CFrame = CFrame.new(baseInner + Vector3.new(0, -bob * 0.8, 0)) * CFrame.Angles(math.rad(12), -t * 1.6, 0)
+                for p, auraModel in pairs(overheadCards) do
+                    if p.Parent and auraModel and auraModel.Parent then
+                        local char = p.Character
+                        local head = char and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
+                        local targetAnchor = head and head:FindFirstChild("GuardianTargetAnchor")
+                        if targetAnchor and targetAnchor:IsA("Attachment") then
+                            targetAnchor.Position = Vector3.new(2.7, 1.85 + math.sin(t * 2.6) * 0.35, 2.1)
+                            targetAnchor.Orientation = Vector3.new(0, math.sin(t * 1.3) * 14, 0)
+                        end
+                    end
+                end
             end)
         end
     end

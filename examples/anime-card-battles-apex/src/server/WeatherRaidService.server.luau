@@ -34,6 +34,7 @@ end
 
 local activeWeatherVal = ensureValue("StringValue", "ActiveWeather", "Clear")
 local activeLuckVal = ensureValue("NumberValue", "ActiveWeatherLuck", 1.0)
+local isFusionWeatherVal = ensureValue("BoolValue", "IsFusionWeather", false)
 local weatherTimeLeftVal = ensureValue("IntValue", "WeatherTimeLeft", 90)
 local exclusiveCardVal = ensureValue("StringValue", "WeatherExclusiveCard", "")
 
@@ -115,11 +116,12 @@ local function applyWeather(idx: number)
     local preset = CardDatabase.WEATHERS[currentWeatherIdx]
     activeWeatherVal.Value = preset.id
     activeLuckVal.Value = preset.luckMult
+    isFusionWeatherVal.Value = (preset.fusion == true)
     exclusiveCardVal.Value = preset.exclusiveCard or ""
     weatherTimer = WEATHER_DURATION
     weatherTimeLeftVal.Value = weatherTimer
 
-    local info = TweenInfo.new(3.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+    local info = TweenInfo.new(3.0, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
     TweenService:Create(Lighting, info, {
         ClockTime = preset.clockTime,
         Brightness = preset.brightness,
@@ -128,12 +130,14 @@ local function applyWeather(idx: number)
     TweenService:Create(atmosphere, info, {
         Density = preset.density,
         Haze = preset.haze,
+        Color = preset.atmoColor or Color3.fromRGB(185, 230, 255),
+        Decay = preset.atmoDecay or Color3.fromRGB(125, 185, 245),
     }):Play()
     TweenService:Create(colorCorrection, info, {
         TintColor = preset.tint,
     }):Play()
 
-    if preset.id == "Rain" or preset.id == "Snow" or preset.id == "Sandstorm" or preset.id == "Starfall" then
+    if preset.id == "Rain" or preset.id == "Snow" or preset.id == "Sandstorm" or preset.id == "Starfall" or preset.fusion then
         skyEmitter.Enabled = true
         if preset.id == "Rain" then
             skyEmitter.Color = ColorSequence.new(Color3.fromRGB(120, 195, 255))
@@ -159,6 +163,7 @@ local function applyWeather(idx: number)
     weatherRaidEvent:FireAllClients("weather_changed", {
         id = preset.id,
         luckMult = preset.luckMult,
+        fusion = (preset.fusion == true),
         boostElement = preset.boostElement,
         exclusiveCard = preset.exclusiveCard,
         banner = preset.banner,
@@ -208,6 +213,8 @@ local function finishWorldRaid(defeated: boolean)
     })
 end
 
+local weatherCycleCounter = 0
+
 weatherShiftBindable.OnInvoke = function(_player, requestedId)
     local nextIdx = (currentWeatherIdx % #CardDatabase.WEATHERS) + 1
     if typeof(requestedId) == "string" then
@@ -216,6 +223,14 @@ weatherShiftBindable.OnInvoke = function(_player, requestedId)
                 nextIdx = i
                 break
             end
+        end
+    else
+        -- 35% chance on Weather Reroll to trigger a rare Fusion Weather Storm!
+        local roll = math.random()
+        if roll < 0.18 then
+            nextIdx = #CardDatabase.WEATHERS - 1 -- Crimson Eclipse (5.0x)
+        elseif roll < 0.35 then
+            nextIdx = #CardDatabase.WEATHERS     -- Celestial Tempest (4.5x)
         end
     end
     applyWeather(nextIdx)
@@ -255,6 +270,7 @@ weatherRaidEvent.OnServerEvent:Connect(function(player, action)
             weather = {
                 id = preset.id,
                 luckMult = preset.luckMult,
+                fusion = (preset.fusion == true),
                 boostElement = preset.boostElement,
                 exclusiveCard = preset.exclusiveCard,
                 banner = preset.banner,
@@ -286,7 +302,12 @@ task.spawn(function()
         task.wait(1)
         weatherTimer = weatherTimer - 1
         if weatherTimer <= 0 then
-            applyWeather(currentWeatherIdx + 1)
+            weatherCycleCounter = weatherCycleCounter + 1
+            if weatherCycleCounter % 4 == 0 then
+                applyWeather(if (weatherCycleCounter % 8 == 0) then #CardDatabase.WEATHERS else (#CardDatabase.WEATHERS - 1))
+            else
+                applyWeather(currentWeatherIdx + 1)
+            end
         else
             weatherTimeLeftVal.Value = weatherTimer
         end
