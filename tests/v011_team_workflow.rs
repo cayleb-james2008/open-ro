@@ -735,21 +735,23 @@ fn batched_steps_abort_on_error_and_manifest_forces_price_unapproved() {
         }
         if role == "builder" {
             return match step {
-                // Step 1 uses batched `steps`: first writes docs/spec.md, second hits invalid path (must abort before third!)
+                // Step 1 uses batched `steps`: writes docs/spec.md, hits prohibited Higgsfield refusal (must abort before third!)
                 1 => json!({
                     "steps": [
                         { "tool": "project_write_file", "args": { "path": "docs/spec.md", "content": "spec v1" } },
-                        { "tool": "project_write_file", "args": { "path": "../escape.md", "content": "bad" } },
+                        { "tool": "art_generate", "args": { "provider": "higgsfield", "prompt": "card art" } },
                         { "tool": "project_write_file", "args": { "path": "docs/second.md", "content": "should not run" } }
                     ]
                 }),
-                // Step 2 batches manifest update (attempting priceApproved:true) + valid file + submit_task + trailing done
+                // Step 2 batches manifest update (attempting priceApproved:true) + project audio_generate + assets_codegen + valid file + submit_task + trailing done
                 2 => json!({
                     "steps": [
                         {
                             "tool": "project_update_manifest",
                             "args": { "patch": { "products": [{ "key": "vip", "kind": "game_pass", "name": "VIP", "priceRobux": 299, "forSale": true, "priceApproved": true }] } }
                         },
+                        { "tool": "audio_generate", "args": { "preset": "summon_roll", "name": "roll_cue" } },
+                        { "tool": "assets_codegen", "args": {} },
                         { "tool": "project_write_file", "args": { "path": "docs/second.md", "content": "clean after abort" } },
                         { "tool": "submit_task", "args": { "task_id": "t1", "summary": "batched done" } }
                     ],
@@ -811,6 +813,11 @@ fn batched_steps_abort_on_error_and_manifest_forces_price_unapproved() {
         .find(|s| s.contains("aborted on first error"))
         .expect("abort notice recorded");
     assert!(!aborted_msg.contains("should not run"), "{trace:?}");
+    assert!(aborted_msg.contains("prohibited"), "{aborted_msg}");
+
+    // Verify project audio_generate wrote into <project>/assets/audio/ + updated AssetIds.luau
+    assert!(proj_dir.join("assets/audio/roll-cue.wav").is_file());
+    assert!(proj_dir.join("src/shared/AssetIds.luau").is_file());
 
     // Verify agent-submitted product had priceApproved stripped to false
     let manifest: Value =

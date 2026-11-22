@@ -2791,7 +2791,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
         _ => concat!(
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
-            "Use `project_files`, `project_read_file`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `luau_check`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `art_generate`, `blender_generate`, `audio_generate`.\n",
+            "Use `project_files`, `project_read_file`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `luau_check`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `assets_codegen`, `assets_upload`.\n",
             "When your task is ready for verification, call `submit_task` to hand it to `@verifier`."
         ),
     };
@@ -2919,9 +2919,16 @@ fn execute_agent_tool(
         "project_playtest" => {
             tool_project_playtest(shared, mgr, handle, agent_name, gen, args)
         }
-        "blender_generate" => tool_blender_generate(shared, handle, args),
+        "blender_generate" | "mesh_generate" => tool_blender_generate(shared, handle, args),
         "audio_generate" => tool_audio_generate(shared, handle, args),
-        "art_generate" => tool_art_generate(shared, handle, args),
+        "reference_search" => run_opencloud_route(shared, handle, "POST", "/api/art/references/search", args),
+        "reference_select" => run_opencloud_route(shared, handle, "POST", "/api/art/references/select", args),
+        "art_generate" => run_opencloud_route(shared, handle, "POST", "/api/art/generate", args),
+        "art_approve" => run_opencloud_route(shared, handle, "POST", "/api/art/approve", args),
+        "image_process" => run_opencloud_route(shared, handle, "POST", "/api/art/process", args),
+        "art_pack_card" => run_opencloud_route(shared, handle, "POST", "/api/art/pack-card", args),
+        "assets_codegen" => run_opencloud_route(shared, handle, "POST", "/api/projects/active/assets/codegen", args),
+        "assets_upload" => run_opencloud_route(shared, handle, "POST", "/api/projects/active/assets/upload", args),
         other => Err(format!("unknown Teamwork tool '{other}'")),
     }
 }
@@ -3962,8 +3969,9 @@ fn tool_blender_generate(
     handle: &Arc<RunHandle>,
     args: &Value,
 ) -> Result<Value, String> {
-    let _ = handle;
-    crate::library::generate_blender_mesh(&shared.assets_root, args, None)
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+    crate::mesh::generate_for_project(data_dir, Some(&project_dir), args, None)
 }
 
 fn tool_audio_generate(
@@ -3971,57 +3979,53 @@ fn tool_audio_generate(
     handle: &Arc<RunHandle>,
     args: &Value,
 ) -> Result<Value, String> {
-    let _ = handle;
-    crate::audio_synth::generate_audio_asset(&shared.assets_root, args)
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+    crate::audio_synth::generate_audio_asset_for_project(data_dir, Some(&project_dir), args)
 }
 
-fn tool_art_generate(
+fn run_opencloud_route(
     shared: &Arc<Shared>,
     handle: &Arc<RunHandle>,
+    method: &str,
+    path: &str,
     args: &Value,
 ) -> Result<Value, String> {
-    let _ = handle;
-    let cfg = shared.config.lock().unwrap().clone();
-    let mgr = crate::assets::AssetManager::open(&shared.assets_root);
-    let provider = args
-        .get("provider")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .or(cfg.image_provider)
-        .unwrap_or_else(|| {
-            if cfg.gemini_api_key.is_some() {
-                "gemini".to_string()
-            } else {
-                "openai".to_string()
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let mut body = args.clone();
+    if path == "/api/art/generate" && body.get("provider").is_none() {
+        if let Some(prov) = shared.config.lock().unwrap().image_provider.clone() {
+            if !prov.is_empty() {
+                body["provider"] = json!(prov);
             }
-        });
-    let api_key = if provider.eq_ignore_ascii_case("openai") {
-        cfg.openai_image_api_key.or(cfg.gemini_api_key)
-    } else {
-        cfg.gemini_api_key.or(cfg.openai_image_api_key)
+        }
+    }
+    let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+    let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+    let resolver = |_: &str| Some(project_dir.clone());
+    let ctx = crate::opencloud::Ctx {
+        data_dir,
+        store,
+        resolve: &resolver,
+        active_project: Some(project_dir.clone()),
     };
-    let req = crate::assets::GenerateImageRequest {
-        provider,
-        card_id: args.get("card_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        title: args.get("title").and_then(|v| v.as_str()).unwrap_or("Card Art").to_string(),
-        rarity: args.get("rarity").and_then(|v| v.as_str()).unwrap_or("Rare").to_string(),
-        element: args.get("element").and_then(|v| v.as_str()).unwrap_or("Flame").to_string(),
-        atk: args.get("atk").and_then(|v| v.as_i64()).unwrap_or(250),
-        hp: args.get("hp").and_then(|v| v.as_i64()).unwrap_or(1000),
-        speed: args.get("speed").and_then(|v| v.as_i64()).unwrap_or(85),
-        passive: args.get("passive").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        ultimate: args.get("ultimate").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        prompt: args
-            .get("prompt")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Anime card art")
-            .to_string(),
-        model: args.get("model").and_then(|v| v.as_str()).map(String::from),
-        api_key,
-        base_url: args.get("base_url").and_then(|v| v.as_str()).map(String::from),
-    };
-    let meta = mgr.generate_image(&req)?;
-    Ok(meta.to_json())
+    match crate::opencloud::route(&ctx, method, path, "", &body) {
+        Some(crate::opencloud::Reply::Json(code, val)) => {
+            if code < 400 && val.get("ok").and_then(|v| v.as_bool()) != Some(false) {
+                Ok(val)
+            } else {
+                Err(val
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .unwrap_or_else(|| format!("request failed with HTTP {code}: {val}")))
+            }
+        }
+        Some(crate::opencloud::Reply::Bytes(mime, bytes)) => {
+            Ok(json!({ "ok": true, "mime": mime, "bytes": bytes.len() }))
+        }
+        None => Err(format!("opencloud route not available: {path}")),
+    }
 }
 
 #[cfg(test)]
