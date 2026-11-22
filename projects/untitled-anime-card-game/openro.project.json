@@ -1,0 +1,12 @@
+{
+  "assets": {
+    "authorised": [],
+    "lockFile": "assets.lock.json"
+  },
+  "name": "Untitled Anime Card Game",
+  "placeId": null,
+  "products": [],
+  "rojoProject": "default.project.json",
+  "universeId": null,
+  "version": 1
+}
