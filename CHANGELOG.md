@@ -4,6 +4,23 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 0.9.0 - 2026-11-22
+
+- **Directly Embedded Roblox Studio + Live MJPEG Viewport + Interactive Input Pass-Through (`src/studio_embed.rs`, `src/studio_stream.rs`, `frontend/src/app/EmbeddedStudioPanel.tsx`):**
+  - Launch and embed Roblox Studio directly inside OpenRO's first-class **`Embedded Studio`** workspace tab (`GET /api/studio/embed/status`, `POST /api/studio/embed/launch`, `POST /api/studio/embed/stop`, strictly user-triggered on loopback — never auto-launched on boot or tests), supporting Linux `Xvfb :99` + Flatpak Vinegar and native Windows `RobloxStudioBeta.exe` / `StudioMCP.exe`.
+  - Added Condvar-backed live multipart MJPEG/MPNG streaming (`GET /api/studio/stream.mjpg` with `?once=1`/`?max_frames=N` and `X-Studio-Frame-Seq`) plus direct pointer and keyboard input forwarding (`POST /api/studio/input/mouse`, `POST /api/studio/input/keyboard`) into Studio.
+- **All 13 Official Roblox Studio MCP Tools (`src/mcp.rs`, `src/agent.rs`, `src/bin/mock_studio.rs`, `POST /api/studio/tools/:tool`):**
+  - Full live MCP and Local Place fallback support for all 13 official Studio tools (`list_roblox_studios`, `get_studio_state`, `search_game_tree`, `inspect_instance`, `script_read`, `script_grep`, `multi_edit`, `execute_luau`, `get_console_output`, `screen_capture`, `start_stop_play`, `user_mouse_input`, `user_keyboard_input`), exposed both to OpenRO's autonomous Agent loop and the interactive Studio Tools drawer.
+- **Built-In Developer Skill & Connection Library + Blender 5.2.2 LTS + Procedural `.wav` Synth (`src/library.rs`, `src/audio_synth.rs`, `frontend/src/app/ToolLibraryDialog.tsx`):**
+  - Ships with **4 pre-installed default packs** (`roblox-studio-core`, `blender-3d-pipeline`, `anime-fan-art-knowledge` with Visual Fidelity + Iconic Title-Epithet rules, and `roblox-market-taste`) plus **5 installable packs** (`9` total), persisted in `data_dir/library.json` (`0600`, masked secrets), with dynamic system-prompt injection into `Agent`.
+  - Added headless **Blender 5.2.2 LTS** procedural 3D `.obj`/`.mtl` + PNG preview generation (`POST /api/tools/blender/generate`, `GET /api/assets/meshes/:file`) and zero-dependency pure-Rust 44.1 kHz PCM16 `.wav` SFX synthesis (`POST /api/tools/audio/generate`, `GET /api/assets/audio/:file`).
+- **Live Roblox Market Taste & 8-Dimension Craft Dossier + Game Research (`src/market_taste.rs`, `GET /api/market-taste`, `POST /api/market-taste/{niche,refresh,research}`):**
+  - Built-in **Top-Trending Roblox Craft & Anti-Slop Quality Bar** across 8 profitable niches (`anime-rng-cards`, `viral-sim-tycoon`, `physics-crash-ragdoll`, `survival-expedition`, `horror-coop-mascot`, `tactical-arena-pvp`, `anime-action-rpg-td`, `social-rp-fashion`) with updating live Roblox Explore chart refresh (`apis.roblox.com/explore-api/v1/get-sorts`, strictly user-clicked), live Place/Universe URL research persisting `TASTE-DOSSIER.md`, and automatic injection of 8-dimension Craft Bar + Anti-Slop Guardrails + Automatic Twists into `src/agent.rs`.
+- **Rebuilt Sunlit Studio-Grade *Untitled Anime Card Game* (`examples/untitled-anime-card-game/`):**
+  - 215-Part sunlit floating archipelago hub (emerald grass terraces, marble plaza, turquoise koi moat, translucent crimson Japanese Torii Summon Shrine, Boss Raid Colosseum, Hall of Legends with 8 iconic anime title-epithet pedestals, 4 Blender 5.2.2 props, 5 PCM16 `.wav` SFX cues, 3,833+ lines of Luau), implementing all 3 Taste-Skill twists (**Chain Overdrive**, **Fusion Weather Storms**, and **Living 3D Lead-Card Guardian Aura**) and verified live inside headless Roblox Studio (`Xvfb :99` + Vinegar + `roblox-studio-mcp`, `0` Luau runtime errors).
+- **Cross-Platform Chromeless Desktop App Launcher (`src/desktop.rs`, `src/main.rs`):**
+  - Launches OpenRO in a dedicated chromeless desktop window (`chromium --app=` on Linux, `msedge.exe --app=` on Windows, `open` on macOS) with explicit `--no-open`, `--headless`, `--port`, `--version`, and `--help` CLI flags.
+
 ## 0.8.0 - 2026-11-22
 
 - **Co-Building 3D Studio IDE — Direct Part Authoring, Duplicate, Delete & Unified Undo/Redo (`src/place.rs`, `src/agent.rs`, `src/server.rs`, `StudioViewport3D.tsx`):**

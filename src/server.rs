@@ -4215,14 +4215,17 @@ fn handle_market_taste_research(stream: &mut TcpStream, shared: &Shared, req: &R
             // Also inject the synthesized reference game dossier into the Agent's system prompt
             // so the very next build inherits its craft bar & automatic twists.
             let mut dossier_block = String::new();
-            if let Some(md) = val.get("dossier_markdown").and_then(|v| v.as_str()) {
+            if let Some(md) = val
+                .get("markdown")
+                .or_else(|| val.get("dossier_markdown"))
+                .and_then(|v| v.as_str())
+            {
                 dossier_block = md.to_string();
-            } else if let Some(game) = val.get("game") {
-                let title = game.get("name").and_then(|v| v.as_str()).unwrap_or("Reference Game");
-                let niche = val.get("niche_id").and_then(|v| v.as_str()).unwrap_or("anime-rng-cards");
+            } else if let Some(title) = val.get("name").and_then(|v| v.as_str()) {
+                let niche = val.get("niche").and_then(|v| v.as_str()).unwrap_or("anime-rng-cards");
+                let craft = val.get("craft_bar").and_then(|v| v.as_str()).unwrap_or("");
                 dossier_block = format!(
-                    "## Recently Researched Roblox Reference Game: {title} (niche `{niche}`)\n\
-                     Match or exceed its visual craft, UX clarity, juice, and retention loops while applying the niche's automatic twists so the game feels similar in quality yet distinct."
+                    "## Researched Roblox Reference Game: {title} (niche `{niche}`)\nCraft Bar: {craft}"
                 );
             }
             if !dossier_block.is_empty() {

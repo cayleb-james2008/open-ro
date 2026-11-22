@@ -58,6 +58,54 @@ pub const NOTHING_TO_REVERT: &str = "nothing to revert";
 /// Returned by `redo_chat` when the chat has no undone change set waiting.
 pub const NOTHING_TO_REDO: &str = "nothing to redo";
 
+/// Distill a large skill/dossier prompt block down to its highest-signal lines
+/// (pack headers, active niche, Craft Bar, Anti-Slop Rules, and Automatic Twists)
+/// so local loopback models with smaller context windows never truncate the core
+/// JSON tool protocol.
+fn distill_prompt_for_local_model(raw: &str, max_chars: usize) -> String {
+    if raw.len() <= max_chars {
+        return raw.to_string();
+    }
+    let mut out = String::new();
+    for line in raw.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let high_signal = t.starts_with("##")
+            || t.starts_with("Active Market Niche:")
+            || t.starts_with("Top-Trending Craft Bar:")
+            || t.starts_with("Craft Bar:")
+            || t.starts_with("Visual Fidelity")
+            || t.starts_with("Title-Epithet")
+            || t.starts_with("8. ")
+            || t.starts_with("- **Twist")
+            || t.starts_with("- Anti-Slop")
+            || t.contains("roblox-market-taste")
+            || t.contains("Chain Overdrive")
+            || t.contains("Fusion Weather");
+        if !high_signal {
+            continue;
+        }
+        if out.len() + t.len() + 1 > max_chars {
+            break;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(t);
+    }
+    if out.is_empty() {
+        let mut end = max_chars.min(raw.len());
+        while end > 0 && !raw.is_char_boundary(end) {
+            end -= 1;
+        }
+        raw[..end].to_string()
+    } else {
+        out
+    }
+}
+
 /// Official Roblox Studio MCP tools exposed via `POST /api/studio/tools/:tool`
 /// and natively usable by the OpenRO agent when a live Studio MCP bridge is attached.
 pub const OFFICIAL_STUDIO_MCP_TOOLS: [&str; 13] = [
@@ -337,15 +385,32 @@ impl Agent {
     /// Full system prompt sent to the model: core OpenRO rules + installed Tool & Skill
     /// Library packs (including active Roblox Market Taste Craft Bar & Automatic Twists)
     /// + any recently researched Roblox reference game Taste Dossier.
+    ///
+    /// Local loopback gateways (e.g. Ollama 3B/7B models with default 4k context) receive
+    /// a distilled high-signal Craft Bar & Twists digest so the core JSON tool contract
+    /// is never truncated by a small context window; remote/frontier models receive the
+    /// complete unabridged dossier.
     pub fn effective_system_prompt(&self) -> String {
         let mut out = system_prompt();
+        let compact = self.model.is_loopback();
         if !self.library_prompt.trim().is_empty() {
             out.push_str("\n\n");
-            out.push_str(&self.library_prompt);
+            if compact {
+                out.push_str(&distill_prompt_for_local_model(&self.library_prompt, 1100));
+            } else {
+                out.push_str(&self.library_prompt);
+            }
         }
         if !self.market_dossier_prompt.trim().is_empty() {
             out.push_str("\n\n");
-            out.push_str(&self.market_dossier_prompt);
+            if compact {
+                out.push_str(&distill_prompt_for_local_model(&self.market_dossier_prompt, 450));
+            } else {
+                out.push_str(&self.market_dossier_prompt);
+            }
+        }
+        if !self.library_prompt.trim().is_empty() || !self.market_dossier_prompt.trim().is_empty() {
+            out.push_str("\n\nREMINDER: Reply with exactly ONE JSON object per turn, no prose outside the JSON.");
         }
         out
     }
