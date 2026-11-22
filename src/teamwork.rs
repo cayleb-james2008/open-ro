@@ -3199,7 +3199,7 @@ fn execute_agent_tool(
         "luau_check" => tool_luau_check(handle, args),
         "project_check" => tool_project_check(handle),
         "project_run_lune" => tool_project_run_lune(handle, agent_name, args),
-        "project_update_manifest" => tool_project_update_manifest(handle, args),
+        "project_update_manifest" => tool_project_update_manifest(handle, agent_name, args),
         "project_build" => tool_project_build(handle, args),
         "project_sync" => tool_project_sync(shared, mgr, handle, agent_name, gen, args),
         "project_playtest" => {
@@ -4093,11 +4093,29 @@ fn tool_project_edit_file(
         .get("path")
         .and_then(|v| v.as_str())
         .ok_or("project_edit_file requires args.path")?;
-    let edits = args
-        .get("edits")
-        .and_then(|v| v.as_array())
-        .filter(|a| !a.is_empty())
-        .ok_or("project_edit_file requires non-empty args.edits")?;
+    let edits: Vec<Value> = match args.get("edits").and_then(|v| v.as_array()) {
+        Some(arr) if !arr.is_empty() => arr.clone(),
+        Some(_) => return Err("project_edit_file requires non-empty args.edits".to_string()),
+        None => {
+            let old = args
+                .get("old")
+                .or_else(|| args.get("old_str"))
+                .or_else(|| args.get("old_string"));
+            let new = args
+                .get("new")
+                .or_else(|| args.get("new_str"))
+                .or_else(|| args.get("new_string"));
+            match (old, new) {
+                (Some(o), Some(n)) => vec![json!({ "old": o, "new": n })],
+                _ => {
+                    return Err(
+                        "project_edit_file requires non-empty args.edits (or old_string/new_string)"
+                            .to_string(),
+                    )
+                }
+            }
+        }
+    };
     let explicit_task = args.get("task_id").and_then(|v| v.as_str());
 
     let (project_dir, norm, task_id) = {
@@ -4115,12 +4133,14 @@ fn tool_project_edit_file(
         let old = e
             .get("old")
             .or_else(|| e.get("old_str"))
+            .or_else(|| e.get("old_string"))
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| format!("edit {}: old must be non-empty", i + 1))?;
         let new = e
             .get("new")
             .or_else(|| e.get("new_str"))
+            .or_else(|| e.get("new_string"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| format!("edit {}: new must be text", i + 1))?;
         match text.matches(old).count() {
@@ -4312,14 +4332,59 @@ fn tool_project_run_lune(
     Ok(res)
 }
 
-fn tool_project_update_manifest(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+fn normalize_manifest_patch_aliases(patch: &mut Value) {
+    let Some(obj) = patch.as_object_mut() else {
+        return;
+    };
+    obj.remove("task_id");
+    if let Some(arr) = obj.get_mut("products").and_then(|v| v.as_array_mut()) {
+        for item in arr.iter_mut() {
+            let Some(p) = item.as_object_mut() else {
+                continue;
+            };
+            let missing_key = p
+                .get("key")
+                .and_then(|k| k.as_str())
+                .is_none_or(|s| s.trim().is_empty());
+            if missing_key {
+                if let Some(id_val) = p.remove("id") {
+                    if let Some(id_str) = id_val.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                        p.insert("key".into(), json!(id_str));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn tool_project_update_manifest(
+    handle: &Arc<RunHandle>,
+    caller: &str,
+    args: &Value,
+) -> Result<Value, String> {
     let project_dir = handle.state.lock().unwrap().project_dir.clone();
     let current = projects::manifest(&project_dir)?;
-    let patch = args.get("patch").unwrap_or(args);
+    let mut patch = args.get("patch").unwrap_or(args).clone();
+    normalize_manifest_patch_aliases(&mut patch);
     // Agents can never self-approve product prices (`allow_price_approval = false`).
-    let merged = projects::merge_manifest_for_actor(&current, patch, false)?;
+    let merged = projects::merge_manifest_for_actor(&current, &patch, false)?;
     projects::write_manifest(&project_dir, &merged)?;
-    Ok(json!({ "ok": true, "manifest": merged }))
+
+    let explicit_task = args.get("task_id").and_then(|v| v.as_str());
+    let mut recorded_task_id: Option<String> = None;
+    {
+        let mut st = handle.state.lock().unwrap();
+        if let Ok(tid) = resolve_caller_task_id(&st, caller, explicit_task) {
+            let can_record = st
+                .task_index(&tid)
+                .is_some_and(|i| st.tasks[i].owner.eq_ignore_ascii_case(caller) && st.tasks[i].status.holds_claims());
+            if can_record {
+                record_task_file_mutation(&mut st, &tid, "openro.project.json");
+                recorded_task_id = Some(tid);
+            }
+        }
+    }
+    Ok(json!({ "ok": true, "manifest": merged, "task_id": recorded_task_id }))
 }
 
 fn tool_project_sync(
@@ -4667,5 +4732,21 @@ mod tests {
         let snapshot = msgs.clone();
         compact_agent_history(&mut msgs);
         assert_eq!(msgs, snapshot);
+    }
+
+    #[test]
+    fn manifest_patch_aliases_products_id_to_key() {
+        let mut patch = json!({
+            "task_id": "t4",
+            "products": [
+                { "id": "pass_vip", "kind": "game_pass", "name": "VIP", "priceRobux": 349 },
+                { "key": "prod_gems", "id": "ignored_id", "kind": "developer_product", "name": "Gems", "priceRobux": 99 }
+            ]
+        });
+        normalize_manifest_patch_aliases(&mut patch);
+        assert!(patch.get("task_id").is_none());
+        assert_eq!(patch["products"][0]["key"], "pass_vip");
+        assert!(patch["products"][0].get("id").is_none());
+        assert_eq!(patch["products"][1]["key"], "prod_gems");
     }
 }
