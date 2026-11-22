@@ -161,8 +161,10 @@ history (`messages`: `[{ role, content }]`). Supports `?since=<trace_seq>`.
    Acquiring the lease serializes concurrent callers across the entire sync/playtest operation.
 4. **Verifier gate**: Worker agents submit tasks (`awaiting_verification`); only a `verifier` agent
    can pass (`done`) or reject (`changes_requested`) a task via `verify_task`. For `game_code` tasks
-   (or tasks touching `.luau` / `src/`), `verify_task(passed=true)` requires a Playtest Runner pass
-   with `0` console errors recorded after the task's latest edit.
+   (or files under `src/` or `ui/`), `verify_task(passed=true)` requires a Playtest Runner pass
+   with `0` console errors recorded after the task's latest edit. For `tools/**/*.luau` tasks not
+   touching `src/` or `ui/`, `verify_task(passed=true)` requires a passing `project_run_lune` check
+   (`passed: true`) after the latest edit instead of Studio playtesting.
 5. **Auto-commit on task done**: When a task passes verification, OpenRO commits the task's changed
    files through the project git hook (`projects::git_commit`) with message:
    `openro(<role>): <task> [team <run> task <id>]`
