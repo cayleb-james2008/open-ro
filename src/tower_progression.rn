@@ -1,6 +1,6 @@
-// OpenRO game system: 50-Floor Endless Anime Tower, 5 World Portals & Tower Leaderboard.
+// OpenRO game system: Endless Anime Tower, 5 World Portals & Global OrderedDataStore Tower Leaderboard.
 // Parameters:
-// - max_floors (int): total tower floors (default 50)
+// - max_floors (int): baseline milestone ceiling (default 50, endless scaling beyond)
 // - world_count (int): number of themed world portals (default 5)
 // - base_reward (int): baseline floor clear currency reward
 // - store_name (string): OrderedDataStore name for global Tower Leaderboard
@@ -53,11 +53,11 @@ if not towerClearSignal then
 end
 
 local WORLDS = {
-    { name = "Ember Harbor", minFloor = 1, color = Color3.fromRGB(235, 92, 54) },
-    { name = "Thunder Spire", minFloor = 11, color = Color3.fromRGB(70, 170, 255) },
-    { name = "Eclipse Citadel", minFloor = 21, color = Color3.fromRGB(168, 85, 247) },
+    { name = "Ember Harbor",        minFloor = 1,  color = Color3.fromRGB(235, 92, 54) },
+    { name = "Thunder Spire",       minFloor = 11, color = Color3.fromRGB(70, 170, 255) },
+    { name = "Eclipse Citadel",     minFloor = 21, color = Color3.fromRGB(168, 85, 247) },
     { name = "Shadow Monarch Rift", minFloor = 31, color = Color3.fromRGB(99, 102, 241) },
-    { name = "Celestial Apex", minFloor = 41, color = Color3.fromRGB(245, 195, 66) },
+    { name = "Celestial Apex",      minFloor = 41, color = Color3.fromRGB(245, 195, 66) },
 }
 
 local worldsFolder = workspace:FindFirstChild("TowerWorlds")
@@ -74,7 +74,7 @@ for idx = 1, WORLD_COUNT do
         local pad = Instance.new("Part")
         pad.Name = gateName
         pad.Size = Vector3.new(8, 1, 8)
-        pad.Position = Vector3.new((idx - 3) * 16, 1, -48)
+        pad.Position = Vector3.new((idx - 3) * 14, 1.5, -52)
         pad.Anchored = true
         pad.CanCollide = true
         pad.Material = Enum.Material.Neon
@@ -83,10 +83,10 @@ for idx = 1, WORLD_COUNT do
         local billboard = Instance.new("BillboardGui")
         billboard.Size = UDim2.new(0, 220, 0, 52)
         billboard.StudsOffset = Vector3.new(0, 4.5, 0)
-        billboard.AlwaysOnTop = true
+        billboard.AlwaysOnTop = false
         local lbl = Instance.new("TextLabel")
         lbl.Size = UDim2.new(1, 0, 1, 0)
-        lbl.BackgroundTransparency = 0.25
+        lbl.BackgroundTransparency = 0.2
         lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
         lbl.TextScaled = true
         lbl.Text = "World " .. idx .. ": " .. world.name .. " (F" .. world.minFloor .. "+)"
@@ -149,7 +149,7 @@ towerClearSignal.Event:Connect(function(player, clearedFloor)
         return
     end
     local floorVal = ensureTowerStat(player)
-    local nextFloor = math.min(MAX_FLOORS, math.max(floorVal.Value, math.floor(clearedFloor) + 1))
+    local nextFloor = math.min(MAX_FLOORS * 4, math.max(floorVal.Value, math.floor(clearedFloor) + 1))
     floorVal.Value = nextFloor
     player:SetAttribute("TowerFloor", nextFloor)
     local milestone = (math.floor(clearedFloor) % 10 == 0)

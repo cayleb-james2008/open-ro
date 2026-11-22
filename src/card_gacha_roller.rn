@@ -1,10 +1,10 @@
-// OpenRO game system: Card Gacha Roller.
+// OpenRO game system: Card Gacha Roller (24-Card Catalog, 6 Packs, 6 Rarity Tiers, Pity, Upgrades, Auto-Delete).
 // Parameters:
 // - base_luck_pct (int): baseline luck percentage (100 = 1.0x)
-// - pity_threshold (int): rolls until guaranteed Mythic+ (2x for Celestial+)
+// - pity_threshold (int): rolls until guaranteed Mythic+ (2x for Secret+)
 // - fast_roll_ms (int): minimum cooldown between fast rolls in milliseconds
 // - enable_borders (bool): enable Normal/Shiny/Gold/Rainbow/Void border variants
-// Server-authoritative RemoteFunction + RemoteEvent honoring Weather & Potion luck multipliers.
+// Server-authoritative RemoteFunction + RemoteEvent honoring Weather, Pack, Upgrades & Potion multipliers.
 
 pub fn generate_card_gacha_roller(base_luck_pct, pity_threshold, fast_roll_ms, enable_borders) {
     let borders_lit = if enable_borders { "true" } else { "false" };
@@ -40,6 +40,14 @@ if not weatherLuckVal then
     weatherLuckVal.Parent = ReplicatedStorage
 end
 
+local activeWeatherVal = ReplicatedStorage:FindFirstChild("ActiveWeather")
+if not activeWeatherVal then
+    activeWeatherVal = Instance.new("StringValue")
+    activeWeatherVal.Name = "ActiveWeather"
+    activeWeatherVal.Value = "Clear"
+    activeWeatherVal.Parent = ReplicatedStorage
+end
+
 local cardGranted = ServerStorage:FindFirstChild("OpenROCardGranted")
 if not cardGranted then
     cardGranted = Instance.new("BindableEvent")
@@ -47,52 +55,72 @@ if not cardGranted then
     cardGranted.Parent = ServerStorage
 end
 
--- 7 rarity tiers (Common -> Secret) aligned with Apex Card roster
+-- 6 core rarity tiers (Common 1/2 -> Secret 1/50,000) + Celestial apex banner compatibility
 local RARITY_TIERS = {
-    { name = "Secret", weight = 1, denom = 8192 },
-    { name = "Celestial", weight = 4, denom = 2048 },
-    { name = "Mythic", weight = 16, denom = 512 },
-    { name = "Legendary", weight = 64, denom = 128 },
-    { name = "Epic", weight = 256, denom = 32 },
-    { name = "Rare", weight = 1024, denom = 8 },
-    { name = "Common", weight = 4096, denom = 2 },
+    { name = "Secret",    denom = 50000, xp = 1800, shards = 500 },
+    { name = "Celestial", denom = 8500,  xp = 900,  shards = 280 },
+    { name = "Mythic",    denom = 3500,  xp = 520,  shards = 160 },
+    { name = "Legendary", denom = 400,   xp = 180,  shards = 55 },
+    { name = "Epic",      denom = 60,    xp = 65,   shards = 18 },
+    { name = "Rare",      denom = 12,    xp = 24,   shards = 6 },
+    { name = "Common",    denom = 2,     xp = 10,   shards = 2 },
 }
 
 local BORDER_VARIANTS = {
-    { name = "Void", chance = 0.008, mult = 2.75 },
+    { name = "Void",    chance = 0.008, mult = 2.75 },
     { name = "Rainbow", chance = 0.025, mult = 2.0 },
-    { name = "Gold", chance = 0.075, mult = 1.5 },
-    { name = "Shiny", chance = 0.18, mult = 1.25 },
-    { name = "Normal", chance = 1.0, mult = 1.0 },
+    { name = "Gold",    chance = 0.075, mult = 1.5 },
+    { name = "Shiny",   chance = 0.18,  mult = 1.25 },
+    { name = "Normal",  chance = 1.0,   mult = 1.0 },
+}
+
+local PACKS = {
+    ["Starter"]           = { cost = 0,   luckBonus = 1.00 },
+    ["Shibuya Spirit"]    = { cost = 150, luckBonus = 1.15 },
+    ["Crimson Pirate"]    = { cost = 200, luckBonus = 1.25 },
+    ["Shadow Gate"]       = { cost = 300, luckBonus = 1.40 },
+    ["Celestial Alchemy"] = { cost = 450, luckBonus = 1.65 },
+    ["Eclipse Legends"]   = { cost = 750, luckBonus = 2.10 },
 }
 
 local CARD_POOL = {
     Secret = {
-        { id = "supernova-ascended-striker", title = "Supernova Ascended Striker", element = "Flame", atk = 680, hp = 2100, speed = 98 },
+        { id = "supernova-ascended-striker", title = "Supernova Ascended Striker", pack = "Eclipse Legends", element = "Solar", atk = 760, hp = 2350, speed = 99, skill = "Burn AoE" },
     },
     Celestial = {
-        { id = "infinity-void-sorcerer", title = "Infinity Void Sorcerer", element = "Void", atk = 540, hp = 1720, speed = 96 },
-        { id = "shadow-sovereign", title = "Shadow Sovereign", element = "Shadow", atk = 560, hp = 1650, speed = 94 },
+        { id = "celestial-star-oracle", title = "Celestial Star Oracle", pack = "Eclipse Legends", element = "Solar", atk = 570, hp = 1800, speed = 96, skill = "Time Stop", weatherLock = "Starfall" },
     },
     Mythic = {
-        { id = "crimson-sea-captain", title = "Crimson Sea Captain", element = "Flame", atk = 420, hp = 1480, speed = 88 },
-        { id = "nine-tail-ember-shinobi", title = "Nine-Tail Ember Shinobi", element = "Flame", atk = 440, hp = 1520, speed = 92 },
+        { id = "infinity-void-sorcerer", title = "Infinity Void Sorcerer", pack = "Shibuya Spirit", element = "Arcane", atk = 560, hp = 1780, speed = 96, skill = "Time Stop" },
+        { id = "shadow-sovereign", title = "Shadow Sovereign", pack = "Shadow Gate", element = "Shadow", atk = 585, hp = 1840, speed = 95, skill = "Lifesteal" },
+        { id = "crimson-sea-captain", title = "Crimson Sea Captain", pack = "Crimson Pirate", element = "Crimson", atk = 545, hp = 1720, speed = 92, skill = "Burn AoE" },
+        { id = "nine-tail-ember-shinobi", title = "Nine-Tail Ember Shinobi", pack = "Celestial Alchemy", element = "Solar", atk = 555, hp = 1760, speed = 94, skill = "Domain Buff" },
     },
     Legendary = {
-        { id = "thunder-flash-ronin", title = "Thunder Flash Ronin", element = "Storm", atk = 360, hp = 1150, speed = 100 },
+        { id = "thunder-flash-ronin", title = "Thunder Flash Ronin", pack = "Celestial Alchemy", element = "Storm", atk = 420, hp = 1240, speed = 100, skill = "Stun" },
+        { id = "blazing-tides-corsair", title = "Blazing Tides Corsair", pack = "Crimson Pirate", element = "Crimson", atk = 405, hp = 1360, speed = 89, skill = "Burn AoE", weatherLock = "Sandstorm" },
+        { id = "abyssal-dread-marshall", title = "Abyssal Dread Marshall", pack = "Shadow Gate", element = "Shadow", atk = 430, hp = 1420, speed = 91, skill = "Domain Buff" },
+        { id = "lunar-eclipse-duelist", title = "Lunar Eclipse Duelist", pack = "Eclipse Legends", element = "Storm", atk = 440, hp = 1320, speed = 97, skill = "Counter", weatherLock = "Eclipse 2x Luck" },
     },
     Epic = {
-        { id = "blood-moon-gravity-ronin", title = "Blood-Moon Gravity Ronin", element = "Void", atk = 295, hp = 1080, speed = 84 },
+        { id = "blood-moon-gravity-ronin", title = "Blood-Moon Gravity Ronin", pack = "Shadow Gate", element = "Shadow", atk = 330, hp = 1180, speed = 86, skill = "Guard Break", weatherLock = "Blood Moon" },
+        { id = "domain-curse-blade", title = "Domain Curse Blade", pack = "Shibuya Spirit", element = "Arcane", atk = 315, hp = 1140, speed = 88, skill = "Domain Buff" },
+        { id = "sage-transmuter", title = "Sage Transmuter", pack = "Celestial Alchemy", element = "Arcane", atk = 310, hp = 1160, speed = 83, skill = "Mirror Shield", weatherLock = "Snow" },
     },
     Rare = {
-        { id = "eclipse-arcane-alchemist", title = "Eclipse Arcane Alchemist", element = "Arcane", atk = 230, hp = 960, speed = 80 },
+        { id = "eclipse-arcane-alchemist", title = "Eclipse Arcane Alchemist", pack = "Starter", element = "Arcane", atk = 230, hp = 960, speed = 80, skill = "Mirror Shield" },
+        { id = "gale-kunoichi", title = "Gale Kunoichi", pack = "Starter", element = "Storm", atk = 245, hp = 880, speed = 90, skill = "Stun", weatherLock = "Rain" },
+        { id = "shikigami-summoner", title = "Shikigami Summoner", pack = "Shibuya Spirit", element = "Shadow", atk = 250, hp = 940, speed = 84, skill = "Lifesteal" },
+        { id = "iron-cutlass-firstmate", title = "Iron Cutlass Firstmate", pack = "Crimson Pirate", element = "Crimson", atk = 260, hp = 1020, speed = 82, skill = "Counter" },
+        { id = "umbral-dusk-stalker", title = "Umbral Dusk Stalker", pack = "Shadow Gate", element = "Shadow", atk = 255, hp = 920, speed = 87, skill = "Lifesteal" },
     },
     Common = {
-        { id = "ember-acolyte", title = "Ember Acolyte", element = "Flame", atk = 115, hp = 520, speed = 72 },
-        { id = "storm-scout", title = "Storm Scout", element = "Storm", atk = 120, hp = 490, speed = 78 },
-        { id = "void-initiate", title = "Void Initiate", element = "Void", atk = 110, hp = 540, speed = 70 },
-        { id = "shadow-blade", title = "Shadow Blade", element = "Shadow", atk = 125, hp = 470, speed = 76 },
-        { id = "arcane-scribe", title = "Arcane Scribe", element = "Arcane", atk = 105, hp = 560, speed = 68 },
+        { id = "ember-acolyte", title = "Ember Acolyte", pack = "Starter", element = "Crimson", atk = 115, hp = 520, speed = 72, skill = "Burn AoE" },
+        { id = "storm-scout", title = "Storm Scout", pack = "Starter", element = "Storm", atk = 125, hp = 490, speed = 82, skill = "Counter" },
+        { id = "void-initiate", title = "Void Initiate", pack = "Starter", element = "Shadow", atk = 120, hp = 510, speed = 75, skill = "Guard Break" },
+        { id = "arcane-scribe", title = "Arcane Scribe", pack = "Starter", element = "Arcane", atk = 108, hp = 560, speed = 70, skill = "Mirror Shield" },
+        { id = "cursed-fist-brawler", title = "Cursed Fist Brawler", pack = "Shibuya Spirit", element = "Shadow", atk = 135, hp = 540, speed = 76, skill = "Guard Break" },
+        { id = "harbor-deckhand", title = "Harbor Deckhand", pack = "Crimson Pirate", element = "Crimson", atk = 130, hp = 550, speed = 74, skill = "Burn AoE" },
     },
 }
 
@@ -105,6 +133,12 @@ local function getState(player)
         st = {
             rolls = 0,
             pity = 0,
+            level = 1,
+            xp = 0,
+            selectedPack = "Starter",
+            luckUpgrade = 0,
+            speedUpgrade = 0,
+            autoDelete = {},
             autoRoll = false,
             lastRollAt = 0,
         }
@@ -113,7 +147,7 @@ local function getState(player)
     return st
 end
 
-local function effectiveLuck(player)
+local function effectiveLuck(player, st)
     local potionLuck = player:GetAttribute("PotionLuckMult")
     if typeof(potionLuck) ~= "number" or potionLuck < 1 then
         potionLuck = 1
@@ -126,7 +160,9 @@ local function effectiveLuck(player)
     if weatherLuckVal and weatherLuckVal:IsA("NumberValue") and weatherLuckVal.Value > 0 then
         weatherMult = weatherLuckVal.Value
     end
-    return BASE_LUCK * potionLuck * weatherMult * (1 + rebirths * 0.35)
+    local upgMult = 1 + (st.luckUpgrade or 0) * 0.20
+    local lvlMult = 1 + math.max(0, (st.level or 1) - 1) * 0.05
+    return BASE_LUCK * potionLuck * weatherMult * upgMult * lvlMult * (1 + rebirths * 0.35)
 end
 
 local function rollBorder(luck)
@@ -146,7 +182,7 @@ end
 local function rollRarity(st, luck)
     if st.pity >= PITY_THRESHOLD * 2 then
         st.pity = 0
-        return "Celestial"
+        return "Secret"
     end
     if st.pity >= PITY_THRESHOLD then
         st.pity = 0
@@ -167,26 +203,76 @@ local function rollRarity(st, luck)
     return "Common"
 end
 
-local function performRoll(player, fastMode)
-    local st = getState(player)
-    local now = os.clock()
-    local speedMult = player:GetAttribute("PotionSpeedMult")
-    if typeof(speedMult) ~= "number" or speedMult < 1 then
-        speedMult = 1
+local function pickCard(pool, packName)
+    local activeWeather = if activeWeatherVal then activeWeatherVal.Value else "Clear"
+    local matching = {}
+    for _, c in ipairs(pool) do
+        local wOk = (c.weatherLock == nil) or (c.weatherLock == activeWeather)
+        if wOk and c.pack == packName then
+            table.insert(matching, c)
+        end
     end
-    local minDelay = (if fastMode then FAST_ROLL_SEC else FAST_ROLL_SEC * 1.6) / speedMult
+    if #matching > 0 then
+        return matching[rng:NextInteger(1, #matching)]
+    end
+    local unlocked = {}
+    for _, c in ipairs(pool) do
+        if c.weatherLock == nil or c.weatherLock == activeWeather then
+            table.insert(unlocked, c)
+        end
+    end
+    local source = if #unlocked > 0 then unlocked else pool
+    return source[rng:NextInteger(1, #source)]
+end
+
+local function performRoll(player, fastMode, packArg)
+    local st = getState(player)
+    if typeof(packArg) == "string" and PACKS[packArg] then
+        st.selectedPack = packArg
+    end
+    local pack = PACKS[st.selectedPack] or PACKS["Starter"]
+    local now = os.clock()
+    local potionSpd = player:GetAttribute("PotionSpeedMult")
+    if typeof(potionSpd) ~= "number" or potionSpd < 1 then
+        potionSpd = 1
+    end
+    local speedMult = potionSpd * (1 + (st.speedUpgrade or 0) * 0.12)
+    local minDelay = (if fastMode then FAST_ROLL_SEC else FAST_ROLL_SEC * 1.55) / speedMult
     if (now - st.lastRollAt) < minDelay then
         return { ok = false, reason = "cooldown" }
     end
+
+    local stats = player:FindFirstChild("leaderstats")
+    local coins = stats and stats:FindFirstChild("Coins")
+    if pack.cost > 0 and coins and coins:IsA("IntValue") then
+        if coins.Value < pack.cost then
+            return { ok = false, reason = "insufficient_coins", needed = pack.cost }
+        end
+        coins.Value = coins.Value - pack.cost
+    end
+
     st.lastRollAt = now
     st.rolls = st.rolls + 1
     st.pity = st.pity + 1
 
-    local luck = effectiveLuck(player)
+    local luck = effectiveLuck(player, st) * pack.luckBonus
     local rarity = rollRarity(st, luck)
     local pool = CARD_POOL[rarity] or CARD_POOL.Common
-    local picked = pool[rng:NextInteger(1, #pool)]
+    local picked = pickCard(pool, st.selectedPack)
     local borderName, borderMult = rollBorder(luck)
+
+    local xpGain = 15
+    for _, tier in ipairs(RARITY_TIERS) do
+        if tier.name == rarity then
+            xpGain = tier.xp
+            break
+        end
+    end
+    st.xp = st.xp + xpGain
+    while st.xp >= (80 + (st.level - 1) * 55) do
+        st.xp = st.xp - (80 + (st.level - 1) * 55)
+        st.level = st.level + 1
+    end
 
     local result = {
         ok = true,
@@ -194,6 +280,8 @@ local function performRoll(player, fastMode)
         title = picked.title,
         rarity = rarity,
         element = picked.element,
+        pack = picked.pack,
+        skill = picked.skill,
         border = borderName,
         border_mult = borderMult,
         atk = math.floor(picked.atk * borderMult),
@@ -202,38 +290,63 @@ local function performRoll(player, fastMode)
         pity = st.pity,
         pity_max = PITY_THRESHOLD,
         luck = luck,
+        level = st.level,
         total_rolls = st.rolls,
+        auto_deleted = (st.autoDelete[rarity] == true and borderName == "Normal"),
     }
 
     player:SetAttribute("TotalRolls", st.rolls)
     player:SetAttribute("PityCount", st.pity)
+    player:SetAttribute("RollLevel", st.level)
     cardGranted:Fire(player, result)
     rollEvent:FireClient(player, "rolled", result)
     return result
 end
 
-rollFunction.OnServerInvoke = function(player, action)
+rollFunction.OnServerInvoke = function(player, action, arg)
     if typeof(action) ~= "string" then
         return { ok = false, reason = "invalid_action" }
     end
+    local argStr = if typeof(arg) == "string" then arg else nil
+    local st = getState(player)
     if action == "roll" then
-        return performRoll(player, false)
+        return performRoll(player, false, argStr)
     elseif action == "fast_roll" then
-        return performRoll(player, true)
+        return performRoll(player, true, argStr)
     elseif action == "auto_toggle" then
-        local st = getState(player)
         st.autoRoll = not st.autoRoll
         player:SetAttribute("AutoRollEnabled", st.autoRoll)
         return { ok = true, auto_roll = st.autoRoll }
+    elseif action == "select_pack" and argStr and PACKS[argStr] then
+        st.selectedPack = argStr
+        return { ok = true, pack = argStr }
+    elseif action == "toggle_autodelete" and argStr then
+        if argStr == "Common" or argStr == "Rare" or argStr == "Epic" then
+            st.autoDelete[argStr] = not st.autoDelete[argStr]
+            return { ok = true, rarity = argStr, enabled = st.autoDelete[argStr] }
+        end
+    elseif action == "buy_upgrade" and argStr then
+        local stats = player:FindFirstChild("leaderstats")
+        local coins = stats and stats:FindFirstChild("Coins")
+        if argStr == "Luck" and coins and coins.Value >= 180 * (st.luckUpgrade + 1) then
+            coins.Value = coins.Value - 180 * (st.luckUpgrade + 1)
+            st.luckUpgrade = st.luckUpgrade + 1
+            return { ok = true, luckUpgrade = st.luckUpgrade }
+        elseif argStr == "Speed" and coins and coins.Value >= 200 * (st.speedUpgrade + 1) then
+            coins.Value = coins.Value - 200 * (st.speedUpgrade + 1)
+            st.speedUpgrade = st.speedUpgrade + 1
+            return { ok = true, speedUpgrade = st.speedUpgrade }
+        end
     elseif action == "status" then
-        local st = getState(player)
         return {
             ok = true,
             pity = st.pity,
             pity_max = PITY_THRESHOLD,
-            luck = effectiveLuck(player),
+            luck = effectiveLuck(player, st),
+            level = st.level,
             auto_roll = st.autoRoll,
             total_rolls = st.rolls,
+            selected_pack = st.selectedPack,
         }
     end
     return { ok = false, reason = "unknown_action" }
@@ -243,13 +356,14 @@ Players.PlayerAdded:Connect(function(player)
     local st = getState(player)
     player:SetAttribute("TotalRolls", st.rolls)
     player:SetAttribute("PityCount", st.pity)
+    player:SetAttribute("RollLevel", st.level)
     player:SetAttribute("AutoRollEnabled", false)
     task.spawn(function()
         while player.Parent do
             task.wait(math.max(0.25, FAST_ROLL_SEC))
             local cur = playerState[player]
             if cur and cur.autoRoll then
-                performRoll(player, true)
+                performRoll(player, true, cur.selectedPack)
             end
         end
     end)
