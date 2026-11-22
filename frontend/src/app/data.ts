@@ -5,7 +5,68 @@ export type PlaceInstance = { class_name?: string; properties?: Record<string, u
 export type Place = { scripts: Record<string, string>; instances: Record<string, PlaceInstance> };
 export type ChatList = { chats: Chat[]; active: string; can_undo: boolean; can_redo?: boolean };
 export type PartPreset = "block" | "sphere" | "cylinder" | "spawn" | "jump_pad" | "kill_brick" | "decal_board";
-export type WorkspaceMode = "studio_mcp" | "local_place" | "browser_place" | "disconnected";
+export type WorkspaceMode = "studio_mcp" | "plugin" | "local_place" | "browser_place" | "disconnected";
+
+export type ComposerMode = "agent" | "plan" | "ask";
+export type ReasoningLevel = "low" | "medium" | "high";
+
+export type DiffLineKind = "context" | "add" | "remove";
+
+export type DiffLine = {
+  kind: DiffLineKind;
+  text: string;
+  old_line?: number;
+  new_line?: number;
+};
+
+export type DiffHunk = {
+  old_start: number;
+  new_start: number;
+  lines: DiffLine[];
+};
+
+export type ScriptFileDiff = {
+  path: string;
+  status: "added" | "modified" | "removed";
+  additions: number;
+  deletions: number;
+  before_source: string;
+  after_source: string;
+  hunks: DiffHunk[];
+};
+
+export type ProposalDiagnostic = {
+  path: string;
+  line: number;
+  severity: "error" | "warning";
+  code: string;
+  message: string;
+};
+
+export type PendingProposal = {
+  id: string;
+  chat_id: string;
+  message: string;
+  summary: string;
+  mode?: ComposerMode;
+  file_diffs: ScriptFileDiff[];
+  diff?: PlaceDiff | null;
+  diagnostics: ProposalDiagnostic[];
+  status: "pending" | "applied" | "rejected";
+  created_at_ms: number;
+};
+
+export type StudioPluginStatus = {
+  connected: boolean;
+  studio_name: string | null;
+  place_name: string | null;
+  selection: string[];
+  last_heartbeat_ms: number | null;
+  install_path: string | null;
+  installed: boolean;
+  token_configured: boolean;
+  error?: string | null;
+};
 
 export type ProjectAssetRecord = {
   id: string;
@@ -489,6 +550,283 @@ export function isV090OrNewer(version: string | null | undefined): boolean {
   return maj > 0 || min >= 9;
 }
 
+export function isV0100OrNewer(version: string | null | undefined): boolean {
+  if (!version) return false;
+  const m = version.trim().replace(/^v/i, "").match(/^(\d+)\.(\d+)/);
+  if (!m) return false;
+  const maj = Number(m[1]);
+  const min = Number(m[2]);
+  return maj > 0 || min >= 10;
+}
+
+export function defaultPluginStatus(): StudioPluginStatus {
+  return {
+    connected: false,
+    studio_name: null,
+    place_name: null,
+    selection: [],
+    last_heartbeat_ms: null,
+    install_path: null,
+    installed: false,
+    token_configured: false,
+    error: null,
+  };
+}
+
+export function normalizePluginStatus(raw: unknown): StudioPluginStatus {
+  const fb = defaultPluginStatus();
+  if (!raw || typeof raw !== "object") return fb;
+  const o = raw as Record<string, unknown>;
+  return {
+    connected: o.connected === true,
+    studio_name: typeof o.studio_name === "string" && o.studio_name.trim() ? o.studio_name.trim() : null,
+    place_name: typeof o.place_name === "string" && o.place_name.trim() ? o.place_name.trim() : null,
+    selection: Array.isArray(o.selection)
+      ? o.selection.filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+      : [],
+    last_heartbeat_ms:
+      typeof o.last_heartbeat_ms === "number" && Number.isFinite(o.last_heartbeat_ms) ? o.last_heartbeat_ms : null,
+    install_path: typeof o.install_path === "string" && o.install_path.trim() ? o.install_path.trim() : null,
+    installed: o.installed === true,
+    token_configured: o.token_configured === true,
+    error: typeof o.error === "string" && o.error.trim() ? o.error.trim() : null,
+  };
+}
+
+function splitLines(src: string): string[] {
+  if (!src) return [];
+  const norm = src.replace(/\r\n/g, "\n");
+  const lines = norm.split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+export function buildUnifiedHunks(beforeSrc: string, afterSrc: string, contextLines = 3): {
+  hunks: DiffHunk[];
+  additions: number;
+  deletions: number;
+} {
+  const a = splitLines(beforeSrc);
+  const b = splitLines(afterSrc);
+  const m = a.length;
+  const n = b.length;
+
+  // Guard huge files cleanly while still returning an accurate single hunk.
+  const ops: DiffLine[] = [];
+  if (m * n > 250_000) {
+    let ai = 1;
+    let bi = 1;
+    for (const line of a) ops.push({ kind: "remove", text: line, old_line: ai++ });
+    for (const line of b) ops.push({ kind: "add", text: line, new_line: bi++ });
+  } else {
+    const dp: Uint32Array[] = Array.from({ length: m + 1 }, () => new Uint32Array(n + 1));
+    for (let i = m - 1; i >= 0; i--) {
+      for (let j = n - 1; j >= 0; j--) {
+        dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    let i = 0;
+    let j = 0;
+    while (i < m && j < n) {
+      if (a[i] === b[j]) {
+        ops.push({ kind: "context", text: a[i], old_line: i + 1, new_line: j + 1 });
+        i++;
+        j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+        ops.push({ kind: "remove", text: a[i], old_line: i + 1 });
+        i++;
+      } else {
+        ops.push({ kind: "add", text: b[j], new_line: j + 1 });
+        j++;
+      }
+    }
+    while (i < m) {
+      ops.push({ kind: "remove", text: a[i], old_line: i + 1 });
+      i++;
+    }
+    while (j < n) {
+      ops.push({ kind: "add", text: b[j], new_line: j + 1 });
+      j++;
+    }
+  }
+
+  let additions = 0;
+  let deletions = 0;
+  const changedIndices: number[] = [];
+  ops.forEach((op, idx) => {
+    if (op.kind === "add") {
+      additions++;
+      changedIndices.push(idx);
+    } else if (op.kind === "remove") {
+      deletions++;
+      changedIndices.push(idx);
+    }
+  });
+  if (changedIndices.length === 0) return { hunks: [], additions: 0, deletions: 0 };
+
+  const ranges: Array<[number, number]> = [];
+  for (const idx of changedIndices) {
+    const start = Math.max(0, idx - contextLines);
+    const end = Math.min(ops.length - 1, idx + contextLines);
+    const last = ranges[ranges.length - 1];
+    if (last && start <= last[1] + 1) {
+      last[1] = Math.max(last[1], end);
+    } else {
+      ranges.push([start, end]);
+    }
+  }
+
+  const hunks: DiffHunk[] = ranges.map(([s, e]) => {
+    const slice = ops.slice(s, e + 1);
+    const firstOld = slice.find((l) => typeof l.old_line === "number")?.old_line ?? 1;
+    const firstNew = slice.find((l) => typeof l.new_line === "number")?.new_line ?? 1;
+    return { old_start: firstOld, new_start: firstNew, lines: slice };
+  });
+
+  return { hunks, additions, deletions };
+}
+
+export function computeLocalScriptDiffs(before: Place | null, after: Place | null): ScriptFileDiff[] {
+  const bScripts = before?.scripts ?? {};
+  const aScripts = after?.scripts ?? {};
+  const allPaths = [...new Set([...Object.keys(bScripts), ...Object.keys(aScripts)])].sort();
+  const out: ScriptFileDiff[] = [];
+  for (const path of allPaths) {
+    const prev = bScripts[path];
+    const next = aScripts[path];
+    if (prev === next) continue;
+    const status: ScriptFileDiff["status"] =
+      prev === undefined ? "added" : next === undefined ? "removed" : "modified";
+    const before_source = prev ?? "";
+    const after_source = next ?? "";
+    const { hunks, additions, deletions } = buildUnifiedHunks(before_source, after_source);
+    out.push({ path, status, additions, deletions, before_source, after_source, hunks });
+  }
+  return out;
+}
+
+export function normalizeFileDiffs(raw: unknown): ScriptFileDiff[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ScriptFileDiff[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const path = typeof o.path === "string" ? o.path.trim() : "";
+    if (!path) continue;
+    const before_source = typeof o.before_source === "string" ? o.before_source : "";
+    const after_source = typeof o.after_source === "string" ? o.after_source : "";
+    const rawStatus = String(o.status || "").toLowerCase();
+    const status: ScriptFileDiff["status"] =
+      rawStatus === "added" || rawStatus === "removed" || rawStatus === "modified"
+        ? rawStatus
+        : !before_source
+          ? "added"
+          : !after_source
+            ? "removed"
+            : "modified";
+    const rawHunks = Array.isArray(o.hunks) ? o.hunks : [];
+    const hunks: DiffHunk[] = rawHunks
+      .filter((h): h is Record<string, unknown> => Boolean(h && typeof h === "object"))
+      .map((h) => {
+        const old_start = typeof h.old_start === "number" && Number.isFinite(h.old_start) ? h.old_start : 1;
+        const new_start = typeof h.new_start === "number" && Number.isFinite(h.new_start) ? h.new_start : 1;
+        const rawLines = Array.isArray(h.lines) ? h.lines : [];
+        let oldCursor = old_start;
+        let newCursor = new_start;
+        const lines: DiffLine[] = rawLines
+          .filter((l): l is Record<string, unknown> => Boolean(l && typeof l === "object"))
+          .map((l) => {
+            const k = String(l.kind || "context").toLowerCase();
+            const kind: DiffLineKind = k === "add" || k === "added" || k === "+" ? "add" : k === "remove" || k === "removed" || k === "-" ? "remove" : "context";
+            const text = typeof l.text === "string" ? l.text : "";
+            const old_line =
+              kind === "add"
+                ? undefined
+                : typeof l.old_line === "number"
+                  ? l.old_line
+                  : oldCursor++;
+            const new_line =
+              kind === "remove"
+                ? undefined
+                : typeof l.new_line === "number"
+                  ? l.new_line
+                  : newCursor++;
+            return { kind, text, old_line, new_line };
+          });
+        return { old_start, new_start, lines };
+      });
+    const computed = hunks.length === 0 && (before_source || after_source) ? buildUnifiedHunks(before_source, after_source) : null;
+    const additions =
+      typeof o.additions === "number" && Number.isFinite(o.additions)
+        ? o.additions
+        : computed?.additions ?? hunks.reduce((acc, h) => acc + h.lines.filter((l) => l.kind === "add").length, 0);
+    const deletions =
+      typeof o.deletions === "number" && Number.isFinite(o.deletions)
+        ? o.deletions
+        : computed?.deletions ?? hunks.reduce((acc, h) => acc + h.lines.filter((l) => l.kind === "remove").length, 0);
+    out.push({
+      path,
+      status,
+      additions,
+      deletions,
+      before_source,
+      after_source,
+      hunks: hunks.length > 0 ? hunks : computed?.hunks ?? [],
+    });
+  }
+  return out;
+}
+
+export function normalizeProposal(raw: unknown): PendingProposal | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const id = typeof o.id === "string" && o.id.trim() ? o.id.trim() : "";
+  if (!id) return null;
+  const rawStatus = String(o.status || "pending").toLowerCase();
+  const status: PendingProposal["status"] =
+    rawStatus === "applied" || rawStatus === "rejected" ? rawStatus : "pending";
+  const rawMode = String(o.mode || "plan").toLowerCase();
+  const mode: ComposerMode = rawMode === "agent" || rawMode === "ask" ? rawMode : "plan";
+  const rawDiag = Array.isArray(o.diagnostics)
+    ? o.diagnostics
+    : o.diagnostics && typeof o.diagnostics === "object" && Array.isArray((o.diagnostics as Record<string, unknown>).diagnostics)
+      ? ((o.diagnostics as Record<string, unknown>).diagnostics as unknown[])
+      : [];
+  const diagnostics: ProposalDiagnostic[] = rawDiag
+    .filter((d): d is Record<string, unknown> => Boolean(d && typeof d === "object" && typeof (d as Record<string, unknown>).message === "string"))
+    .map((d) => ({
+      path: typeof d.path === "string" ? d.path : "Script",
+      line: typeof d.line === "number" && Number.isFinite(d.line) ? d.line : 1,
+      severity: String(d.severity || "").toLowerCase() === "warning" ? "warning" : "error",
+      code: typeof d.code === "string" ? d.code : "LUAU_CHECK",
+      message: String(d.message),
+    }));
+  return {
+    id,
+    chat_id: typeof o.chat_id === "string" ? o.chat_id : "",
+    message: typeof o.message === "string" ? o.message : "",
+    summary: typeof o.summary === "string" ? o.summary : "Staged Studio change proposal",
+    mode,
+    file_diffs: normalizeFileDiffs(o.file_diffs),
+    diff: normalizePlaceDiff(o.diff),
+    diagnostics,
+    status,
+    created_at_ms: typeof o.created_at_ms === "number" && Number.isFinite(o.created_at_ms) ? o.created_at_ms : Date.now(),
+  };
+}
+
+export function normalizeProposalList(raw: unknown): PendingProposal[] {
+  const list = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).proposals)
+      ? ((raw as Record<string, unknown>).proposals as unknown[])
+      : [];
+  return list
+    .map(normalizeProposal)
+    .filter((p): p is PendingProposal => p !== null)
+    .sort((a, b) => b.created_at_ms - a.created_at_ms);
+}
+
 export type StudioPlayMode = "edit" | "play" | "server";
 
 export type StudioEmbedStatus = {
@@ -959,7 +1297,7 @@ export type StudioActionKind =
   | "imported"
   | "restored";
 
-export type StudioMode = "live_mcp" | "local_place" | "browser_place";
+export type StudioMode = "live_mcp" | "plugin_live" | "local_place" | "browser_place";
 
 export type StudioActionEvent = {
   seq: number;
@@ -1029,7 +1367,9 @@ export function normalizeStudioAction(raw: unknown): StudioActionEvent | null {
   const kind = STUDIO_KIND_MAP[kindKey] || STUDIO_KIND_MAP[kindKey.replace(/_/g, "")] || "part_created";
   const rawMode = String(o.studio_mode || "local_place");
   const studio_mode: StudioMode =
-    rawMode === "live_mcp" || rawMode === "local_place" || rawMode === "browser_place" ? rawMode : "local_place";
+    rawMode === "live_mcp" || rawMode === "plugin_live" || rawMode === "local_place" || rawMode === "browser_place"
+      ? rawMode
+      : "local_place";
   return {
     seq: typeof o.seq === "number" && Number.isFinite(o.seq) ? o.seq : Date.now(),
     ts_ms: typeof o.ts_ms === "number" && Number.isFinite(o.ts_ms) ? o.ts_ms : Date.now(),
@@ -1053,7 +1393,9 @@ export function normalizeStudioActionsResponse(raw: unknown): StudioActionsSnaps
   const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const rawMode = String(o.studio_mode || "local_place");
   const studio_mode: StudioMode =
-    rawMode === "live_mcp" || rawMode === "local_place" || rawMode === "browser_place" ? rawMode : "local_place";
+    rawMode === "live_mcp" || rawMode === "plugin_live" || rawMode === "local_place" || rawMode === "browser_place"
+      ? rawMode
+      : "local_place";
   const list = Array.isArray(o.actions) ? o.actions : [];
   const actions: StudioActionEvent[] = [];
   for (const item of list) {
@@ -1120,7 +1462,9 @@ export function subscribeStudioStream(opts: {
         const rawMode = typeof parsed.studio_mode === "string" ? parsed.studio_mode : undefined;
         opts.onStatus({
           studio_mode:
-            rawMode === "live_mcp" || rawMode === "local_place" || rawMode === "browser_place" ? rawMode : undefined,
+            rawMode === "live_mcp" || rawMode === "plugin_live" || rawMode === "local_place" || rawMode === "browser_place"
+              ? rawMode
+              : undefined,
           has_live_frame: typeof parsed.has_live_frame === "boolean" ? parsed.has_live_frame : undefined,
           frame_seq: typeof parsed.frame_seq === "number" ? parsed.frame_seq : undefined,
         });

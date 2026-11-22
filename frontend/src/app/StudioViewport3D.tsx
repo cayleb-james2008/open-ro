@@ -40,15 +40,9 @@ import type {
   PartPreset,
   Place,
   StudioActionEvent,
-  StudioEmbedStatus,
-  StudioKeyboardInputPayload,
   StudioMode,
-  StudioMouseInputPayload,
-  StudioToolName,
-  StudioToolResult,
   ProjectAssetRecord,
 } from "./data";
-import { EmbeddedStudioPanel } from "./EmbeddedStudioPanel";
 
 export type StudioTool = "select" | "move" | "scale" | "rotate";
 type ConsoleFilter = "all" | "parts" | "scripts" | "console";
@@ -103,8 +97,8 @@ type ProjectedPoly = {
   depth: number;
 };
 
-const CANVAS_W = 800;
-const CANVAS_H = 408;
+const CANVAS_W = 920;
+const CANVAS_H = 580;
 
 const DEFAULT_CAMERA: CameraState = {
   tx: 0,
@@ -373,18 +367,15 @@ function actionPrefix(kind: StudioActionEvent["kind"]): { tag: string; cls: stri
 }
 
 export function StudioViewport3D({
-  mode,
   place,
   theme,
   assets,
   selectedPath,
   studioMode,
   actions,
-  hasLiveFrame,
-  frameSeq,
   building,
   canRedo = false,
-  embedStatus,
+  hideConsole = false,
   onSelectPart,
   onSaveInstance,
   onCreatePart,
@@ -392,28 +383,16 @@ export function StudioViewport3D({
   onDeletePart,
   onTriggerRedo,
   onRunPlaytest,
-  onCaptureFrame,
-  onConnectMcp,
-  onDisconnectMcp,
-  onLaunchEmbed,
-  onStopEmbed,
-  onRefreshEmbedStatus,
-  onSendMouseInput,
-  onSendKeyboardInput,
-  onInvokeStudioTool,
 }: {
-  mode: "studio-3d" | "embedded-studio" | "studio-feed";
   place: Place;
   theme: "light" | "dark";
   assets: ProjectAssetRecord[];
   selectedPath?: string | null;
   studioMode: StudioMode;
   actions: StudioActionEvent[];
-  hasLiveFrame: boolean;
-  frameSeq: number;
   building?: boolean;
   canRedo?: boolean;
-  embedStatus: StudioEmbedStatus;
+  hideConsole?: boolean;
   onSelectPart?: (path: string) => void;
   onSaveInstance?: (payload: InstanceEditPayload) => Promise<void> | void;
   onCreatePart?: (preset: PartPreset) => Promise<void> | void;
@@ -421,15 +400,6 @@ export function StudioViewport3D({
   onDeletePart?: (path: string) => Promise<void> | void;
   onTriggerRedo?: () => Promise<void> | void;
   onRunPlaytest?: () => Promise<void> | void;
-  onCaptureFrame?: () => Promise<void> | void;
-  onConnectMcp?: (command?: string) => Promise<void> | void;
-  onDisconnectMcp?: () => Promise<void> | void;
-  onLaunchEmbed?: (command?: string) => Promise<void> | void;
-  onStopEmbed?: () => Promise<void> | void;
-  onRefreshEmbedStatus?: () => Promise<void> | void;
-  onSendMouseInput?: (payload: StudioMouseInputPayload) => Promise<void> | void;
-  onSendKeyboardInput?: (payload: StudioKeyboardInputPayload) => Promise<void> | void;
-  onInvokeStudioTool?: (tool: StudioToolName, args: Record<string, unknown>) => Promise<StudioToolResult>;
 }) {
   const reduce = useReducedMotion();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1361,9 +1331,8 @@ export function StudioViewport3D({
     }
   }, [building, replaying, reduce, selectedPart, selectedPath, theme, tool, visibleParts, imgTick]);
 
-  // 60fps animation loop (stops cleanly under prefers-reduced-motion or Studio Feed tab)
+  // 60fps animation loop (stops cleanly under prefers-reduced-motion)
   useEffect(() => {
-    if (mode !== "studio-3d") return;
     drawScene();
     if (reduce) return;
 
@@ -1462,7 +1431,7 @@ export function StudioViewport3D({
 
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [building, drawScene, mode, reduce, replaying]);
+  }, [building, drawScene, reduce, replaying]);
 
   // Persist a transform change cleanly via POST /api/place/instance
   const commitTransform = useCallback(
@@ -1766,12 +1735,14 @@ export function StudioViewport3D({
   const modeBadgeLabel =
     studioMode === "live_mcp"
       ? "Live Studio MCP"
-      : studioMode === "browser_place"
-        ? "Browser Studio 3D"
-        : "Local Studio 3D";
+      : studioMode === "plugin_live"
+        ? "Studio Plugin Live"
+        : studioMode === "browser_place"
+          ? "Browser Studio 3D"
+          : "Local Studio 3D";
 
   return (
-    <div data-studio-viewport-3d className="flex min-w-0 flex-col gap-2.5 overflow-hidden">
+    <div data-studio-viewport-3d className="flex h-full min-h-0 min-w-0 flex-col gap-2 overflow-hidden">
       {/* Studio Ribbon Toolbar */}
       <div className="flex flex-col gap-2 rounded-card border border-hairline bg-board/55 px-2.5 py-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1898,12 +1869,15 @@ export function StudioViewport3D({
             </Button>
             <Pill
               className={`px-2 py-0.5 font-mono text-xs ${
-                studioMode === "live_mcp"
+                studioMode === "live_mcp" || studioMode === "plugin_live"
                   ? "bg-pill-active-bg text-pill-active-fg"
                   : "bg-tag-sky-bg text-tag-sky-fg"
               }`}
             >
-              <PillIndicator variant={studioMode === "live_mcp" ? "success" : "info"} pulse={Boolean(building)} />
+              <PillIndicator
+                variant={studioMode === "live_mcp" || studioMode === "plugin_live" ? "success" : "info"}
+                pulse={Boolean(building)}
+              />
               {modeBadgeLabel}
             </Pill>
           </div>
@@ -1938,126 +1912,106 @@ export function StudioViewport3D({
         )}
       </div>
 
-      {/* Main Viewport Body: Studio 3D OR Studio Feed */}
-      {mode === "studio-3d" ? (
-        <div className="flex flex-col gap-2">
-          <div
-            tabIndex={0}
-            aria-label="Interactive 3D Roblox Studio Viewport — drag to orbit, Shift+drag to pan, wheel to zoom, click any 3D part to select"
-            onKeyDown={onCanvasKeyDown}
-            onKeyUp={(e) => keysRef.current.delete(e.key)}
-            onBlur={() => keysRef.current.clear()}
-            className="relative overflow-hidden rounded-sm border border-hairline outline-none"
-          >
-            <canvas
-              ref={canvasRef}
-              width={CANVAS_W}
-              height={CANVAS_H}
-              onPointerDown={onPointerDown}
-              onPointerMove={onPointerMove}
-              onPointerUp={onPointerUp}
-              onContextMenu={(e) => e.preventDefault()}
-              onWheel={onWheel}
-              className="block h-auto w-full touch-none cursor-grab active:cursor-grabbing"
-            />
-          </div>
-
-          {/* Camera & Precision Gizmo Bar */}
-          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-ink-2">
-            <div className="flex flex-wrap items-center gap-1">
-              <Button variant="outline" size="xs" onClick={() => setViewPreset("iso")} aria-label="Isometric camera view" className="bg-surface max-md:min-h-11 max-md:min-w-11">
-                Iso
-              </Button>
-              <Button variant="outline" size="xs" onClick={() => setViewPreset("top")} aria-label="Top camera view" className="bg-surface max-md:min-h-11 max-md:min-w-11">
-                Top
-              </Button>
-              <Button variant="outline" size="xs" onClick={() => setViewPreset("front")} aria-label="Front camera view" className="bg-surface max-md:min-h-11 max-md:min-w-11">
-                Front
-              </Button>
-              <Button variant="outline" size="icon-xs" onClick={() => zoomBy(0.84)} aria-label="Zoom in 3D camera" className="bg-surface max-md:size-11">
-                <ZoomIn className="size-3.5" strokeWidth={1.5} aria-hidden />
-              </Button>
-              <Button variant="outline" size="icon-xs" onClick={() => zoomBy(1.18)} aria-label="Zoom out 3D camera" className="bg-surface max-md:size-11">
-                <ZoomOut className="size-3.5" strokeWidth={1.5} aria-hidden />
-              </Button>
-              <Button
-                variant="outline"
-                size="xs"
-                onClick={() => (selectedPart ? focusOnCoords(selectedPart.pos, selectedPart.size) : resetCamera())}
-                aria-label="Focus selected part"
-                className="bg-surface max-md:min-h-11 max-md:min-w-11"
-              >
-                <Focus className="size-3.5" strokeWidth={1.5} aria-hidden />
-                Focus
-              </Button>
-              <Button variant="outline" size="xs" onClick={resetCamera} aria-label="Reset 3D camera" className="bg-surface max-md:min-h-11 max-md:min-w-11">
-                <RotateCcw className="size-3.5" strokeWidth={1.5} aria-hidden />
-                Reset Cam
-              </Button>
-            </div>
-
-            {selectedPart ? (
-              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
-                <span className="inline-flex min-w-0 max-w-[14rem] items-center gap-1 truncate font-mono text-xs text-ink">
-                  <Crosshair className="size-3 shrink-0 text-blue" strokeWidth={1.5} aria-hidden />
-                  <span className="truncate">{selectedPart.name}</span>
-                </span>
-                {tool === "rotate" ? (
-                  <>
-                    <Button variant="outline" size="xs" onClick={() => nudgeSelected("y", -1)} aria-label="Rotate part -15 degrees" className="bg-surface max-md:min-h-11 max-md:min-w-11">
-                      -15°
-                    </Button>
-                    <Button variant="outline" size="xs" onClick={() => nudgeSelected("y", 1)} aria-label="Rotate part +15 degrees" className="bg-surface max-md:min-h-11 max-md:min-w-11">
-                      +15°
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <Button variant="outline" size="xs" onClick={() => nudgeSelected("x", -2)} aria-label={`${tool === "scale" ? "Shrink" : "Move"} X minus 2`} className="bg-surface max-md:min-h-11 max-md:min-w-11">
-                      -X
-                    </Button>
-                    <Button variant="outline" size="xs" onClick={() => nudgeSelected("x", 2)} aria-label={`${tool === "scale" ? "Grow" : "Move"} X plus 2`} className="bg-surface max-md:min-h-11 max-md:min-w-11">
-                      +X
-                    </Button>
-                    <Button variant="outline" size="xs" onClick={() => nudgeSelected("y", 2)} aria-label={`${tool === "scale" ? "Grow" : "Move"} Y plus 2`} className="bg-surface max-md:min-h-11 max-md:min-w-11">
-                      +Y
-                    </Button>
-                    <Button variant="outline" size="xs" onClick={() => nudgeSelected("z", 2)} aria-label={`${tool === "scale" ? "Grow" : "Move"} Z plus 2`} className="bg-surface max-md:min-h-11 max-md:min-w-11">
-                      +Z
-                    </Button>
-                  </>
-                )}
-              </div>
-            ) : (
-              <span className="min-w-0 max-w-full truncate text-xs text-ink-2">
-                Drag to orbit · Shift+drag pan · Wheel zoom · Click any 3D part to edit
-              </span>
-            )}
-          </div>
+      {/* Main 3D Viewport Canvas */}
+      <div className="flex min-h-0 flex-1 flex-col gap-2">
+        <div
+          tabIndex={0}
+          aria-label="Interactive 3D Roblox Studio Viewport — drag to orbit, Shift+drag to pan, wheel to zoom, click any 3D part to select"
+          onKeyDown={onCanvasKeyDown}
+          onKeyUp={(e) => keysRef.current.delete(e.key)}
+          onBlur={() => keysRef.current.clear()}
+          className="relative flex min-h-[260px] flex-1 items-center justify-center overflow-hidden rounded-sm border border-hairline bg-board/60 outline-none"
+        >
+          <canvas
+            ref={canvasRef}
+            width={CANVAS_W}
+            height={CANVAS_H}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onContextMenu={(e) => e.preventDefault()}
+            onWheel={onWheel}
+            className="block h-full w-full touch-none cursor-grab active:cursor-grabbing"
+          />
         </div>
-      ) : (
-        <EmbeddedStudioPanel
-          place={place}
-          studioMode={studioMode}
-          actions={actions}
-          hasLiveFrame={hasLiveFrame}
-          frameSeq={frameSeq}
-          embedStatus={embedStatus}
-          onLaunchEmbed={onLaunchEmbed}
-          onStopEmbed={onStopEmbed}
-          onRefreshEmbedStatus={onRefreshEmbedStatus}
-          onCaptureFrame={onCaptureFrame}
-          onConnectMcp={onConnectMcp}
-          onDisconnectMcp={onDisconnectMcp}
-          onSendMouseInput={onSendMouseInput}
-          onSendKeyboardInput={onSendKeyboardInput}
-          onInvokeStudioTool={onInvokeStudioTool}
-          onSelectPart={onSelectPart}
-        />
-      )}
 
-      {/* Collapsible Docked Studio Output & Live Agent Action Console */}
-      <div className="rounded-card border border-hairline bg-board/40">
+        {/* Camera & Precision Gizmo Bar */}
+        <div className="flex flex-none flex-wrap items-center justify-between gap-2 text-xs text-ink-2">
+          <div className="flex flex-wrap items-center gap-1">
+            <Button variant="outline" size="xs" onClick={() => setViewPreset("iso")} aria-label="Isometric camera view" className="bg-surface max-md:min-h-11 max-md:min-w-11">
+              Iso
+            </Button>
+            <Button variant="outline" size="xs" onClick={() => setViewPreset("top")} aria-label="Top camera view" className="bg-surface max-md:min-h-11 max-md:min-w-11">
+              Top
+            </Button>
+            <Button variant="outline" size="xs" onClick={() => setViewPreset("front")} aria-label="Front camera view" className="bg-surface max-md:min-h-11 max-md:min-w-11">
+              Front
+            </Button>
+            <Button variant="outline" size="icon-xs" onClick={() => zoomBy(0.84)} aria-label="Zoom in 3D camera" className="bg-surface max-md:size-11">
+              <ZoomIn className="size-3.5" strokeWidth={1.5} aria-hidden />
+            </Button>
+            <Button variant="outline" size="icon-xs" onClick={() => zoomBy(1.18)} aria-label="Zoom out 3D camera" className="bg-surface max-md:size-11">
+              <ZoomOut className="size-3.5" strokeWidth={1.5} aria-hidden />
+            </Button>
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => (selectedPart ? focusOnCoords(selectedPart.pos, selectedPart.size) : resetCamera())}
+              aria-label="Focus selected part"
+              className="bg-surface max-md:min-h-11 max-md:min-w-11"
+            >
+              <Focus className="size-3.5" strokeWidth={1.5} aria-hidden />
+              Focus
+            </Button>
+            <Button variant="outline" size="xs" onClick={resetCamera} aria-label="Reset 3D camera" className="bg-surface max-md:min-h-11 max-md:min-w-11">
+              <RotateCcw className="size-3.5" strokeWidth={1.5} aria-hidden />
+              Reset Cam
+            </Button>
+          </div>
+
+          {selectedPart ? (
+            <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
+              <span className="inline-flex min-w-0 max-w-[14rem] items-center gap-1 truncate font-mono text-xs text-ink">
+                <Crosshair className="size-3 shrink-0 text-blue" strokeWidth={1.5} aria-hidden />
+                <span className="truncate">{selectedPart.name}</span>
+              </span>
+              {tool === "rotate" ? (
+                <>
+                  <Button variant="outline" size="xs" onClick={() => nudgeSelected("y", -1)} aria-label="Rotate part -15 degrees" className="bg-surface max-md:min-h-11 max-md:min-w-11">
+                    -15°
+                  </Button>
+                  <Button variant="outline" size="xs" onClick={() => nudgeSelected("y", 1)} aria-label="Rotate part +15 degrees" className="bg-surface max-md:min-h-11 max-md:min-w-11">
+                    +15°
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button variant="outline" size="xs" onClick={() => nudgeSelected("x", -2)} aria-label={`${tool === "scale" ? "Shrink" : "Move"} X minus 2`} className="bg-surface max-md:min-h-11 max-md:min-w-11">
+                    -X
+                  </Button>
+                  <Button variant="outline" size="xs" onClick={() => nudgeSelected("x", 2)} aria-label={`${tool === "scale" ? "Grow" : "Move"} X plus 2`} className="bg-surface max-md:min-h-11 max-md:min-w-11">
+                    +X
+                  </Button>
+                  <Button variant="outline" size="xs" onClick={() => nudgeSelected("y", 2)} aria-label={`${tool === "scale" ? "Grow" : "Move"} Y plus 2`} className="bg-surface max-md:min-h-11 max-md:min-w-11">
+                    +Y
+                  </Button>
+                  <Button variant="outline" size="xs" onClick={() => nudgeSelected("z", 2)} aria-label={`${tool === "scale" ? "Grow" : "Move"} Z plus 2`} className="bg-surface max-md:min-h-11 max-md:min-w-11">
+                    +Z
+                  </Button>
+                </>
+              )}
+            </div>
+          ) : (
+            <span className="min-w-0 max-w-full truncate text-xs text-ink-2">
+              Drag to orbit · Shift+drag pan · Wheel zoom · Click any 3D part to edit
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Collapsible Docked Studio Output & Live Agent Action Console (hidden when Bottom Drawer hosts it) */}
+      {!hideConsole && (
+        <div className="flex-none rounded-card border border-hairline bg-board/40">
         <Expandable
           expandDirection="vertical"
           expandBehavior="push"
@@ -2156,6 +2110,7 @@ export function StudioViewport3D({
           )}
         </Expandable>
       </div>
+      )}
     </div>
   );
 }

@@ -1,13 +1,14 @@
-// Real in-browser Roblox Studio IDE engine installer for OpenRO v0.9.0 standalone web builds.
+// Real in-browser Roblox Studio IDE engine installer for OpenRO v0.10.0 standalone web builds.
 // Features:
-//  - Embedded Studio Workbench & All-12 Official Studio MCP Tools running live against the in-browser Place DataModel
+//  - RoPilot-Grade 3-Pane Studio IDE (Agent | Plan | Ask, Reviewable Unified Diffs, @Context Chips, Companion Plugin)
+//  - Embedded Studio Workbench & 13 Official Studio MCP Tools running live against the in-browser Place DataModel
 //  - Co-Building 3D Roblox Studio IDE (+ Add Part, Duplicate, Delete, Undo/Redo, Live Luau Editor)
 //  - Genuine client-side Studio & Rojo Ship Pack (.zip) builder (GET /api/export/bundle)
 //  - Embedded Realtime 3D Roblox Studio Viewport & Live Agent Building Stream (/api/studio/stream)
-//  - All 28 parametric Roblox game-system Luau compilers (including 6 Card-Battler systems)
+//  - All 28 parametric Roblox game-system Luau compilers
 //  - Static Luau analyzer & cross-reference playtest prover (POST /api/studio/playtest)
-//  - Genuine bidirectional Roblox Studio XML (.rbxlx) BOTH Import AND Export (with Decal bindings)
-//  - IndexedDB versioned snapshots, Studio action ring buffer, custom uploaded Card Art assets, & workspace persistence
+//  - Genuine bidirectional Roblox Studio XML (.rbxlx) BOTH Import AND Export
+//  - IndexedDB versioned snapshots, staged proposals, Studio action ring buffer, & workspace persistence
 //  - Live EventSource('/api/build/stream') and EventSource('/api/studio/stream') SSE emitters
 //  - Optional BYOK OpenAI-compatible LLM & Gemini Nano Banana / OpenAI Image API (keys strictly in sessionStorage)
 //  - One-click Connect to Local openro-rs (http://127.0.0.1:8077)
@@ -18,7 +19,10 @@ import { BASELINE_MARKET_NICHES } from "../src/app/marketTaste";
 import {
   DEFAULT_LIBRARY_PACKS,
   STUDIO_TOOL_SPECS,
+  computeLocalScriptDiffs,
+  type ComposerMode,
   type LibraryPack,
+  type PendingProposal,
   type PlaceDiff,
   type PlaceSnapshot,
   type ProjectAssetRecord,
@@ -44,6 +48,10 @@ type ChangeEntry =
   | { kind: "instance"; path: string; prev: PlaceInstance | null; post: PlaceInstance | null };
 
 type StoredSnapshot = PlaceSnapshot & { place: PlaceState };
+type StoredProposal = PendingProposal & {
+  after_place: PlaceState;
+  skills_used: string[];
+};
 
 type ChatSession = {
   id: string;
@@ -54,6 +62,7 @@ type ChatSession = {
   undoStack: Array<{ changes: ChangeEntry[]; skills: string[] }>;
   redoStack: Array<{ changes: ChangeEntry[]; skills: string[] }>;
   snapshots: StoredSnapshot[];
+  proposals?: StoredProposal[];
   studioActions: StudioActionEvent[];
   playMode?: StudioPlayMode;
   consoleLogs?: string[];
@@ -787,13 +796,14 @@ export function installWebEngine() {
     }
     const chat = state.chats[state.active] || Object.values(state.chats)[0];
     if (!Array.isArray(chat.snapshots)) chat.snapshots = [];
+    if (!Array.isArray(chat.proposals)) chat.proposals = [];
     if (!Array.isArray(chat.studioActions)) chat.studioActions = [];
     if (!Array.isArray(chat.redoStack)) chat.redoStack = [];
     if (!Array.isArray(chat.consoleLogs)) chat.consoleLogs = [];
     if (!chat.playMode) chat.playMode = "edit";
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "0.9.0" });
+      return jsonResponse({ name: "openro-rs", version: "0.10.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -804,13 +814,16 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "0.9.0",
+        version: "0.10.0",
         sse_build_stream: true,
         studio_stream: true,
         assets_api: true,
         ide_api: true,
         embed_api: true,
         studio_embed: true,
+        ropilot_v0100: true,
+        proposals_api: true,
+        plugin_bridge: true,
         studio_mjpeg: false,
         embedded_running: false,
         studio_id: "browser-place",
@@ -818,6 +831,145 @@ export function installWebEngine() {
         skills_count: GAME_SYSTEMS.length,
         store_recovered: [],
       });
+    }
+    if (method === "GET" && u.pathname === "/api/studio/plugin/status") {
+      return jsonResponse({
+        ok: true,
+        connected: false,
+        studio_name: null,
+        place_name: null,
+        selection: [],
+        last_heartbeat_ms: null,
+        install_path: null,
+        installed: false,
+        token_configured: true,
+      });
+    }
+    if (method === "GET" && u.pathname === "/api/studio/plugin/download") {
+      const lua = [
+        "-- OpenRoCompanion.lua — OpenRO v0.10.0 Roblox Studio Companion Plugin",
+        "-- Save this file into your Roblox Studio Plugins folder and enable HttpService in Game Settings.",
+        'local HttpService = game:GetService("HttpService")',
+        'local Selection = game:GetService("Selection")',
+        'local ChangeHistoryService = game:GetService("ChangeHistoryService")',
+        'local BASE_URL = "http://127.0.0.1:8077"',
+        'local PLUGIN_TOKEN = "" -- Run OpenRO Desktop to auto-inject your local loopback token.',
+        'print("[OpenRO Companion] Loaded. Connect to OpenRO desktop at " .. BASE_URL)',
+        "",
+      ].join("\n");
+      return new Response(lua, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Content-Disposition": 'attachment; filename="OpenRoCompanion.lua"',
+        },
+      });
+    }
+    if (method === "POST" && u.pathname === "/api/studio/plugin/install") {
+      return jsonResponse({
+        ok: false,
+        error:
+          "Browser Studio cannot write to your local OS Roblox Plugins directory. Download OpenRoCompanion.lua or run OpenRO desktop for 1-click install.",
+      });
+    }
+    if (method === "GET" && u.pathname === "/api/proposals") {
+      return jsonResponse({
+        ok: true,
+        proposals: (chat.proposals || []).map(({ after_place: _ap, skills_used: _su, ...pub }) => pub),
+      });
+    }
+    const propApplyMatch = u.pathname.match(/^\/api\/proposals\/([^/]+)\/apply$/);
+    if (method === "POST" && propApplyMatch) {
+      const pid = decodeURIComponent(propApplyMatch[1]);
+      const found = (chat.proposals || []).find((p) => p.id === pid);
+      if (!found) return jsonResponse({ ok: false, error: "proposal not found" }, 404);
+      if (found.status !== "pending") {
+        return jsonResponse({ ok: false, error: `proposal already ${found.status}` }, 409);
+      }
+      const selectedList = Array.isArray(body.selected_paths)
+        ? body.selected_paths.filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+        : found.file_diffs.map((d) => d.path);
+      const selectedSet = new Set(selectedList);
+      const before = clonePlace(chat.place);
+      const changes: ChangeEntry[] = [];
+
+      // Merge newly added instances from staged proposal
+      for (const [instPath, instVal] of Object.entries(found.after_place.instances || {})) {
+        const prev = chat.place.instances[instPath] ? JSON.parse(JSON.stringify(chat.place.instances[instPath])) : null;
+        if (JSON.stringify(prev) !== JSON.stringify(instVal)) {
+          chat.place.instances[instPath] = JSON.parse(JSON.stringify(instVal)) as PlaceInstance;
+          changes.push({ kind: "instance", path: instPath, prev, post: JSON.parse(JSON.stringify(instVal)) as PlaceInstance });
+          recordStudioAction(state, chat, {
+            kind: prev ? "part_updated" : "part_created",
+            path: instPath,
+            class_name: instVal.class_name || "Part",
+            summary: `${prev ? "Updated" : "Created"} ${instPath} from proposal ${pid}`,
+          });
+        }
+      }
+
+      // Merge selected Luau script diffs
+      for (const fd of found.file_diffs) {
+        if (selectedSet.size > 0 && !selectedSet.has(fd.path)) continue;
+        const prev = chat.place.scripts[fd.path] ?? null;
+        if (fd.status === "removed") {
+          delete chat.place.scripts[fd.path];
+          changes.push({ kind: "script", path: fd.path, prev, post: null });
+        } else {
+          chat.place.scripts[fd.path] = fd.after_source;
+          changes.push({ kind: "script", path: fd.path, prev, post: fd.after_source });
+          recordStudioAction(state, chat, {
+            kind: "script_written",
+            path: fd.path,
+            class_name: fd.path.startsWith("StarterGui.") ? "LocalScript" : "Script",
+            summary: `Applied proposal diff to ${fd.path} (+${fd.additions}/-${fd.deletions})`,
+          });
+        }
+      }
+
+      if (changes.length > 0) {
+        chat.undoStack.push({ changes, skills: [...found.skills_used] });
+        chat.redoStack = [];
+        for (const sk of found.skills_used) {
+          if (!chat.builtSkills.includes(sk)) chat.builtSkills.push(sk);
+        }
+        recordSnapshot(chat, `Applied: ${found.message.slice(0, 28)}`, before);
+      }
+
+      found.status = "applied";
+      const verdict = validatePlace(chat.place);
+      const appliedFileDiffs = computeLocalScriptDiffs(before, chat.place);
+      const appliedDiff = computePlaceDiff(before, chat.place);
+      chat.lines.push(
+        `OpenRO: Applied proposal "${found.message.slice(0, 48)}" (${appliedFileDiffs.length} script(s), ${verdict.passed ? "0 Luau errors" : `${verdict.errors.length} Luau issue(s)`}).`,
+      );
+      recordStudioAction(state, chat, {
+        kind: verdict.passed ? "playtest_passed" : "playtest_failed",
+        path: "Workspace",
+        class_name: "Playtest",
+        summary: verdict.passed ? "Applied proposal — Playtest passed (0 errors)" : "Applied proposal — Playtest flagged issues",
+        console_line: verdict.console,
+      });
+      persist();
+      const { after_place: _ap, skills_used: _su, ...pub } = found;
+      return jsonResponse({
+        ok: true,
+        proposal: pub,
+        file_diffs: appliedFileDiffs,
+        diff: appliedDiff,
+        passed: verdict.passed,
+      });
+    }
+    const propRejectMatch = u.pathname.match(/^\/api\/proposals\/([^/]+)\/reject$/);
+    if (method === "POST" && propRejectMatch) {
+      const pid = decodeURIComponent(propRejectMatch[1]);
+      const found = (chat.proposals || []).find((p) => p.id === pid);
+      if (!found) return jsonResponse({ ok: false, error: "proposal not found" }, 404);
+      found.status = "rejected";
+      chat.lines.push(`OpenRO: Rejected staged proposal "${found.message.slice(0, 48)}" — Studio place unchanged.`);
+      persist();
+      const { after_place: _ap, skills_used: _su, ...pub } = found;
+      return jsonResponse({ ok: true, proposal: pub });
     }
     if (method === "GET" && u.pathname === "/api/studio/actions") {
       const sinceParam = Number(u.searchParams.get("since") || "0");
@@ -918,7 +1070,7 @@ export function installWebEngine() {
         height: 900,
         tools_available: STUDIO_TOOL_SPECS.map((s) => s.name),
         message:
-          "Live local Roblox Studio desktop embedding requires the OpenRO v0.9.0 desktop app (Linux or Windows). All 12 Studio tools run live against your in-browser Place DataModel.",
+          "Live local Roblox Studio desktop embedding requires the OpenRO v0.10.0 desktop app (Linux or Windows). All 13 Studio MCP tools run live against your in-browser Place DataModel.",
       });
     }
     if (method === "POST" && u.pathname === "/api/studio/embed/launch") {
@@ -928,7 +1080,7 @@ export function installWebEngine() {
           running: false,
           state: "unsupported",
           error:
-            "Launching local Roblox Studio inside an embedded viewport requires the OpenRO v0.9.0 desktop app (Linux Xvfb/Vinegar or Windows RobloxStudioBeta.exe). Use Studio 3D or the All-12 Studio Tools below right inside your browser.",
+            "Launching local Roblox Studio inside an embedded viewport requires the OpenRO v0.10.0 desktop app (Linux Xvfb/Vinegar or Windows RobloxStudioBeta.exe). Use Studio 3D or the 13 Studio MCP Tools drawer below right inside your browser.",
         },
         503,
       );
@@ -1430,7 +1582,7 @@ export function installWebEngine() {
     if (method === "GET" && u.pathname === "/api/update") {
       return jsonResponse({
         name: "openro-rs",
-        current: "0.9.0",
+        current: "0.10.0",
         mode: "off",
         available: false,
         can_apply: false,
@@ -2016,8 +2168,38 @@ export function installWebEngine() {
     if (method === "POST" && u.pathname === "/api/chat") {
       const msg = typeof body.message === "string" ? body.message.trim() : "";
       if (!msg) return jsonResponse({ ok: false, error: "empty message" }, 400);
+      const rawMode = typeof body.mode === "string" ? body.mode.trim().toLowerCase() : "agent";
+      const mode: ComposerMode = rawMode === "plan" || rawMode === "ask" ? rawMode : "agent";
+      const reviewDiffs = body.review_diffs === true || mode === "plan";
+      const ctxPaths = Array.isArray(body.context_paths)
+        ? body.context_paths.filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+        : [];
       if (chat.title === "New chat") chat.title = msg.slice(0, 48);
       chat.lines.push(`You: ${msg}`);
+
+      // Read-only Ask mode: inspect attached @context paths and current DataModel without mutating chat.place
+      if (mode === "ask") {
+        const scriptKeys = Object.keys(chat.place.scripts || {});
+        const instKeys = Object.keys(chat.place.instances || {});
+        const diags = analyzePlaceLuau(chat.place);
+        const errs = diags.filter((d) => d.severity === "error").length;
+        const focusBits = ctxPaths.map((p) => {
+          if (chat.place.scripts[p]) {
+            const linesCount = chat.place.scripts[p].split("\n").length;
+            return `${p} (${linesCount} lines Luau)`;
+          }
+          if (chat.place.instances[p]) {
+            return `${p} (${chat.place.instances[p].class_name || "Instance"})`;
+          }
+          return `${p} (not found in current place)`;
+        });
+        const reply = focusBits.length > 0
+          ? `Read-only Ask analysis for ${focusBits.join(", ")}: your place currently has ${instKeys.length} Workspace part(s) and ${scriptKeys.length} Luau script(s) with ${errs} static Luau error(s). No Studio instances or scripts were modified.`
+          : `Read-only Ask summary: your Studio place currently contains ${instKeys.length} Workspace part(s) and ${scriptKeys.length} Luau script(s) (${errs} static Luau error(s)). Switch to Plan or Agent mode when you want me to stage or apply changes.`;
+        chat.lines.push(`OpenRO: ${reply}`);
+        persist();
+        return jsonResponse({ ok: true, mode: "ask", reply, summary: reply, thread: [`OpenRO: ${reply}`] });
+      }
 
       let plan: { steps: PlanStep[]; skills: string[]; summary: string };
       if (state.webMode === "byok") {
@@ -2033,10 +2215,71 @@ export function installWebEngine() {
         plan = compilePromptToPlan(msg, chat.place);
       }
 
+      // Plan mode OR Review diffs toggle: stage changes against a cloned shadow place and return a PendingProposal
+      if (reviewDiffs) {
+        const beforePlace = clonePlace(chat.place);
+        const shadowPlace = clonePlace(chat.place);
+        const shadowChat: ChatSession = {
+          ...chat,
+          place: shadowPlace,
+          lines: [],
+          undoStack: [],
+          redoStack: [],
+          snapshots: [],
+          studioActions: [],
+        };
+        const shadowRes = executePlan(state, shadowChat, plan.steps, plan.skills, plan.summary, msg.slice(0, 36));
+        const fileDiffs = computeLocalScriptDiffs(beforePlace, shadowChat.place);
+        const placeDiff = computePlaceDiff(beforePlace, shadowChat.place);
+        const diags = analyzePlaceLuau(shadowChat.place);
+        const propId = `prop-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const stored: StoredProposal = {
+          id: propId,
+          chat_id: chat.id,
+          message: msg,
+          summary: plan.summary,
+          mode,
+          file_diffs: fileDiffs,
+          diff: placeDiff,
+          diagnostics: diags,
+          status: "pending",
+          created_at_ms: Date.now(),
+          after_place: clonePlace(shadowChat.place),
+          skills_used: [...plan.skills],
+        };
+        chat.proposals = [stored, ...(chat.proposals || [])].slice(0, 20);
+        const stagedLine = `OpenRO: Staged ${fileDiffs.length} script diff(s) and ${placeDiff.added.filter((x) => x.kind === "instance").length} part(s) for review. Inspect in Code & Diff and click Accept & Apply to commit to Studio.`;
+        chat.lines.push(stagedLine);
+        persist();
+        const { after_place: _ap, skills_used: _su, ...pubProposal } = stored;
+        return jsonResponse({
+          ok: shadowRes.ok,
+          mode,
+          summary: plan.summary,
+          proposal: pubProposal,
+          file_diffs: fileDiffs,
+          diff: placeDiff,
+          thread: [stagedLine],
+          transcript: [],
+        });
+      }
+
+      const beforePlace = clonePlace(chat.place);
       const res = executePlan(state, chat, plan.steps, plan.skills, plan.summary, msg.slice(0, 36));
+      const fileDiffs = computeLocalScriptDiffs(beforePlace, chat.place);
+      const placeDiff = computePlaceDiff(beforePlace, chat.place);
       persist();
       return jsonResponse(
-        { ok: res.ok, error: res.error, summary: plan.summary, thread: res.thread, transcript: [] },
+        {
+          ok: res.ok,
+          mode: "agent",
+          error: res.error,
+          summary: plan.summary,
+          file_diffs: fileDiffs,
+          diff: placeDiff,
+          thread: res.thread,
+          transcript: [],
+        },
         res.ok ? 200 : 502,
       );
     }

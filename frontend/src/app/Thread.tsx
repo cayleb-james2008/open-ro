@@ -5,6 +5,8 @@ import {
   Check,
   ChevronDown,
   FileCode,
+  FileDiff,
+  GitPullRequest,
   RefreshCw,
   Terminal,
   Trash2,
@@ -27,7 +29,9 @@ import {
   type BuildPhaseId,
   type BuildStreamPhase,
   type Idea,
+  type PendingProposal,
   type Row,
+  type ScriptFileDiff,
 } from "./data";
 import { BlueprintCard } from "./Blueprints";
 
@@ -188,7 +192,17 @@ export function AgentMessage({
   );
 }
 
-export function BuildTrace({ rows, working = false }: { rows: Row[]; working?: boolean }) {
+export function BuildTrace({
+  rows,
+  working = false,
+  fileDiffs = [],
+  onOpenScriptDiff,
+}: {
+  rows: Row[];
+  working?: boolean;
+  fileDiffs?: ScriptFileDiff[];
+  onOpenScriptDiff?: (path: string) => void;
+}) {
   const rawSteps = rows.filter((r): r is Extract<Row, { kind: "step" }> => r.kind === "step");
   const verdict = rows.find((r): r is Extract<Row, { kind: "verdict" }> => r.kind === "verdict");
   const consoleRows = rows.filter((r): r is Extract<Row, { kind: "console" }> => r.kind === "console");
@@ -198,6 +212,7 @@ export function BuildTrace({ rows, working = false }: { rows: Row[]; working?: b
   const applied = rawInfos.some((i) => i.changed);
   const doneStages = [generated || applied, applied, !!verdict].filter(Boolean).length;
   const consoleText = consoleRows.map((c) => c.text).join("\n");
+  const diffByPath = new Map(fileDiffs.map((d) => [d.path, d]));
 
   // Fold "Generated ... script" immediately followed by "Wrote ..." into a single clean Studio step row.
   const displaySteps: { raw: string; info: ReturnType<typeof stepInfo> }[] = [];
@@ -222,28 +237,28 @@ export function BuildTrace({ rows, working = false }: { rows: Row[]; working?: b
         working ? "border-blue ring-2 ring-blue/25" : "border-hairline"
       }`}
     >
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-hairline bg-board/60 px-4 py-3">
-        <div className="flex min-w-0 items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-hairline bg-board/60 px-3.5 py-2.5">
+        <div className="flex min-w-0 items-center gap-2.5">
           <ProgressCircle
             value={Math.round((doneStages / 3) * 100)}
-            radius={16}
+            radius={15}
             strokeWidth={3.5}
-            className="size-9 flex-none"
+            className="size-8 flex-none"
           >
             <span className="font-mono text-xs font-medium tabular-nums text-ink">{doneStages}/3</span>
           </ProgressCircle>
 
           <div className="min-w-0">
-            <div className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-ink-2">
+            <div className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-ink-2">
               <span className="font-mono font-medium tabular-nums text-ink">
                 <SlidingNumber value={changeCount} />
               </span>
-              {`${changeCount === 1 ? "change" : "changes"} made in Studio`}
+              {`${changeCount === 1 ? "change" : "changes"} in Studio`}
             </div>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1">
           <TraceStagePill label="Luau" done={generated} />
           <TraceStagePill label="Studio" done={applied} />
           <TraceStagePill label="Playtest" done={!!verdict} />
@@ -254,28 +269,47 @@ export function BuildTrace({ rows, working = false }: { rows: Row[]; working?: b
         <ol className="m-0 divide-y divide-hairline list-none p-0">
           {displaySteps.map(({ raw, info }, idx) => {
             const Icon = STEP_ICONS[info.icon];
+            const matchedDiff = info.target ? diffByPath.get(info.target) : undefined;
+            const isScriptStep = Boolean(info.target && (info.stamp === "saved" || matchedDiff));
             return (
-              <li key={idx} className="px-4 py-2">
+              <li key={idx} className="px-3.5 py-2">
                 <Expandable expandDirection="vertical" expandBehavior="push">
                   {({ isExpanded }) => (
                     <>
-                      <div className="flex items-start gap-3">
+                      <div className="flex items-start gap-2.5">
                         <span className="mt-0.5 grid size-6 flex-none place-items-center rounded-sm bg-board text-icon">
                           <Icon className="size-3.5" strokeWidth={1.5} aria-hidden />
                         </span>
                         <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                            <span className="text-sm font-medium text-ink [overflow-wrap:anywhere]">
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className="text-xs font-medium text-ink [overflow-wrap:anywhere]">
                               {info.label}
                             </span>
-                            {info.target && (
+                            {info.target && isScriptStep && onOpenScriptDiff ? (
+                              <Button
+                                variant="outline"
+                                size="xs"
+                                onClick={() => onOpenScriptDiff(info.target!)}
+                                aria-label={`Inspect ${info.target} in Code & Diff`}
+                                className="h-6 max-w-full gap-1 bg-board/60 px-1.5 font-mono text-xs text-ink hover:bg-board max-md:min-h-11"
+                              >
+                                <FileCode className="size-3 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
+                                <span className="truncate">{info.target.split(".").pop() || info.target}</span>
+                                {matchedDiff && (
+                                  <>
+                                    <span className="text-pill-active-fg">+{matchedDiff.additions}</span>
+                                    <span className="text-pill-pro-fg">-{matchedDiff.deletions}</span>
+                                  </>
+                                )}
+                              </Button>
+                            ) : info.target ? (
                               <code className="max-w-full rounded-sm bg-board px-1.5 py-0.5 font-mono text-xs text-ink-2 [overflow-wrap:anywhere]">
                                 {info.target}
                               </code>
-                            )}
+                            ) : null}
                           </div>
                         </div>
-                        <div className="flex flex-none items-center gap-1.5">
+                        <div className="flex flex-none items-center gap-1">
                           <span className="font-mono text-xs text-ink-2">{info.result}</span>
                           <ExpandableTrigger
                             aria-label={`${isExpanded ? "Hide" : "Show"} step output for ${info.label}`}
@@ -303,8 +337,171 @@ export function BuildTrace({ rows, working = false }: { rows: Row[]; working?: b
         </ol>
       )}
 
+      {fileDiffs.length > 0 && onOpenScriptDiff && (
+        <div className="flex flex-wrap items-center gap-1.5 border-t border-hairline bg-board/40 px-3.5 py-2">
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-ink-2">
+            <FileDiff className="size-3.5 text-icon" strokeWidth={1.5} aria-hidden />
+            Diffs:
+          </span>
+          {fileDiffs.slice(0, 6).map((fd) => (
+            <Button
+              key={fd.path}
+              variant="outline"
+              size="xs"
+              onClick={() => onOpenScriptDiff(fd.path)}
+              aria-label={`Open diff for ${fd.path}`}
+              className="gap-1 bg-surface font-mono text-xs max-md:min-h-11"
+            >
+              <span className="max-w-[10rem] truncate">{fd.path.split(".").pop() || fd.path}</span>
+              <span className="text-pill-active-fg">+{fd.additions}</span>
+              <span className="text-pill-pro-fg">-{fd.deletions}</span>
+            </Button>
+          ))}
+        </div>
+      )}
+
       {verdict && <VerdictBanner tone={verdict.tone} raw={verdict.raw} consoleText={consoleText} />}
     </section>
+  );
+}
+
+export function ProposalDiffCard({
+  proposal,
+  busy = false,
+  onInspect,
+  onApply,
+  onReject,
+}: {
+  proposal: PendingProposal;
+  busy?: boolean;
+  onInspect: (proposalId: string, scriptPath?: string) => void;
+  onApply: (proposalId: string) => void;
+  onReject: (proposalId: string) => void;
+}) {
+  const totalAdded = proposal.file_diffs.reduce((s, d) => s + d.additions, 0);
+  const totalRemoved = proposal.file_diffs.reduce((s, d) => s + d.deletions, 0);
+  const errCount = proposal.diagnostics.filter((d) => d.severity === "error").length;
+  const instancesAdded = proposal.diff?.added.filter((x) => x.kind === "instance").length ?? 0;
+  const isPending = proposal.status === "pending";
+
+  const statusTone =
+    proposal.status === "applied"
+      ? { label: "Applied", cls: "bg-pill-active-bg text-pill-active-fg" }
+      : proposal.status === "rejected"
+        ? { label: "Rejected", cls: "bg-pill-pro-bg text-pill-pro-fg" }
+        : { label: "Pending review", cls: "bg-pill-warn-bg text-pill-warn-fg" };
+
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={reveal}
+      data-proposal-card={proposal.id}
+      aria-label={`Proposed change set ${proposal.id}`}
+      className={`overflow-hidden rounded-card border bg-surface ${
+        isPending ? "border-blue/45 ring-1 ring-blue/20" : "border-hairline"
+      }`}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline bg-board/60 px-3.5 py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <GitPullRequest className="size-4 shrink-0 text-blue" strokeWidth={1.5} aria-hidden />
+          <span className="truncate text-xs font-medium text-ink">Proposed Studio Changes</span>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Pill className="bg-board px-1.5 py-0 font-mono text-xs capitalize text-ink-2">
+            {proposal.mode || "plan"}
+          </Pill>
+          <Pill className={`px-2 py-0 text-xs font-medium ${statusTone.cls}`}>{statusTone.label}</Pill>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2.5 p-3.5">
+        <p className="text-xs leading-relaxed text-ink [overflow-wrap:anywhere]">{proposal.summary}</p>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Pill className="bg-board px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2">
+            {proposal.file_diffs.length} {proposal.file_diffs.length === 1 ? "script" : "scripts"}
+          </Pill>
+          {instancesAdded > 0 && (
+            <Pill className="bg-tag-mint-bg px-2 py-0.5 font-mono text-xs tabular-nums text-tag-mint-fg">
+              +{instancesAdded} parts
+            </Pill>
+          )}
+          <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-active-fg">
+            +{totalAdded}
+          </Pill>
+          <Pill className="bg-pill-pro-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-pro-fg">
+            -{totalRemoved}
+          </Pill>
+          <Pill
+            className={`px-2 py-0.5 font-mono text-xs ${
+              errCount > 0 ? "bg-pill-pro-bg text-pill-pro-fg" : "bg-pill-active-bg text-pill-active-fg"
+            }`}
+          >
+            {errCount > 0 ? `${errCount} err` : "0 Luau err"}
+          </Pill>
+        </div>
+
+        {proposal.file_diffs.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {proposal.file_diffs.map((fd) => (
+              <Button
+                key={fd.path}
+                variant="outline"
+                size="xs"
+                onClick={() => onInspect(proposal.id, fd.path)}
+                aria-label={`Inspect diff for ${fd.path}`}
+                className="gap-1.5 bg-board/55 font-mono text-xs max-md:min-h-11"
+              >
+                <FileDiff className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
+                <span className="max-w-[11rem] truncate">{fd.path.split(".").pop() || fd.path}</span>
+                <span className="text-pill-active-fg">+{fd.additions}</span>
+                <span className="text-pill-pro-fg">-{fd.deletions}</span>
+              </Button>
+            ))}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-1.5 border-t border-hairline pt-2.5">
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => onInspect(proposal.id, proposal.file_diffs[0]?.path)}
+            aria-label={`Inspect diff for proposal ${proposal.id}`}
+            className="bg-surface max-md:min-h-11"
+          >
+            <FileDiff className="size-3.5" strokeWidth={1.5} aria-hidden />
+            Inspect Diff
+          </Button>
+          {isPending && (
+            <>
+              <Button
+                variant="default"
+                size="xs"
+                disabled={busy}
+                onClick={() => onApply(proposal.id)}
+                aria-label={`Accept and apply proposal ${proposal.id}`}
+                className="max-md:min-h-11"
+              >
+                <Check className="size-3.5" strokeWidth={2} aria-hidden />
+                Accept &amp; Apply
+              </Button>
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={busy}
+                onClick={() => onReject(proposal.id)}
+                aria-label={`Reject proposal ${proposal.id}`}
+                className="bg-surface text-pill-pro-fg max-md:min-h-11"
+              >
+                <X className="size-3.5" strokeWidth={1.5} aria-hidden />
+                Reject
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+    </motion.section>
   );
 }
 
@@ -410,7 +607,14 @@ export function ThreadFeed({
   freshFrom,
   lastTriedIdea,
   buildPhase,
+  latestFileDiffs = [],
+  proposals = [],
+  capturedFrameUrl,
   onBuild,
+  onOpenScriptDiff,
+  onInspectProposal,
+  onApplyProposal,
+  onRejectProposal,
 }: {
   lines: string[];
   notices: { text: string; bad?: boolean; user?: boolean }[];
@@ -423,20 +627,52 @@ export function ThreadFeed({
   freshFrom: number;
   lastTriedIdea: Idea | null;
   buildPhase?: BuildStreamPhase | null;
+  latestFileDiffs?: ScriptFileDiff[];
+  proposals?: PendingProposal[];
+  capturedFrameUrl?: string | null;
   onBuild: (idea: Idea) => void;
+  onOpenScriptDiff?: (path: string) => void;
+  onInspectProposal?: (proposalId: string, scriptPath?: string) => void;
+  onApplyProposal?: (proposalId: string) => void;
+  onRejectProposal?: (proposalId: string) => void;
 }) {
   // Find first user turn so pre-build pitch lines do not duplicate the starter workbench.
   const firstUserIdx = lines.findIndex((l) => l.startsWith("You: "));
   const activeLines = firstUserIdx >= 0 ? lines.slice(firstUserIdx) : [];
   const items = activeLines.map(classify);
 
+  // Count traces so we attach latestFileDiffs to the final build trace cleanly.
+  let totalTraces = 0;
+  let inTrace = false;
+  for (const it of items) {
+    if (it.kind === "step" || it.kind === "verdict" || it.kind === "console") {
+      if (!inTrace) {
+        totalTraces++;
+        inTrace = true;
+      }
+      if (it.kind === "verdict") inTrace = false;
+    } else {
+      inTrace = false;
+    }
+  }
+
   const out: React.ReactNode[] = [];
   let traceBuffer: Row[] = [];
+  let traceSeen = 0;
   let pitchedRun: { title: string; pitch: string }[] = [];
 
   const flushTrace = (key: string) => {
     if (!traceBuffer.length) return;
-    out.push(<BuildTrace key={key} rows={traceBuffer} />);
+    traceSeen++;
+    const isLatestTrace = traceSeen === totalTraces;
+    out.push(
+      <BuildTrace
+        key={key}
+        rows={traceBuffer}
+        fileDiffs={isLatestTrace ? latestFileDiffs : undefined}
+        onOpenScriptDiff={onOpenScriptDiff}
+      />,
+    );
     traceBuffer = [];
   };
 
@@ -445,7 +681,7 @@ export function ThreadFeed({
     const cards = pitchedRun;
     pitchedRun = [];
     out.push(
-      <div key={key} data-answers="1" className="grid grid-cols-1 items-stretch gap-3 lg:grid-cols-3">
+      <div key={key} data-answers="1" className="grid grid-cols-1 items-stretch gap-2.5">
         {cards.map((it, idx) => {
           const live = ideas.find((x) => x.title === it.title);
           const idea: Idea = live ?? { id: `pitched-${idx}`, title: it.title, pitch: it.pitch, skills: [] };
@@ -523,6 +759,41 @@ export function ThreadFeed({
     );
   });
 
+  // Render pending or recently resolved RoPilot proposals inline in the Copilot feed
+  if (proposals.length > 0 && onInspectProposal && onApplyProposal && onRejectProposal) {
+    for (const prop of proposals.slice(0, 4)) {
+      out.push(
+        <ProposalDiffCard
+          key={`prop-${prop.id}`}
+          proposal={prop}
+          busy={busy}
+          onInspect={onInspectProposal}
+          onApply={onApplyProposal}
+          onReject={onRejectProposal}
+        />,
+      );
+    }
+  }
+
+  if (capturedFrameUrl) {
+    out.push(
+      <figure
+        key="captured-frame"
+        className="overflow-hidden rounded-card border border-hairline bg-surface p-2"
+      >
+        <figcaption className="mb-1.5 flex items-center justify-between text-xs text-ink-2">
+          <span>Latest Roblox Studio capture</span>
+          <span className="font-mono text-xs text-ink-3">Live viewport</span>
+        </figcaption>
+        <img
+          src={capturedFrameUrl}
+          alt="Latest captured Roblox Studio viewport frame"
+          className="block max-h-36 w-full rounded-sm border border-hairline object-cover"
+        />
+      </figure>,
+    );
+  }
+
   if (pending?.message) {
     out.push(<UserPrompt key="pending-msg" text={pending.message} fresh />);
   }
@@ -536,11 +807,11 @@ export function ThreadFeed({
             ? `Building ${pending.build} in Roblox Studio and running playtest…`
             : pending.undo
               ? "Reverting the last Studio build…"
-              : "Generating Luau and applying changes in Roblox Studio…"
+              : "Generating Luau and preparing Studio changes…"
         }
       />,
     );
   }
 
-  return <div className="flex flex-col gap-4">{out}</div>;
+  return <div className="flex flex-col gap-3">{out}</div>;
 }
