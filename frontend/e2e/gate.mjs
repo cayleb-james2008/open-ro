@@ -351,7 +351,7 @@ await reset()
     const html = (await res.text()).replace('data-studio="true"', 'data-studio="false"').replace('data-can-build="true"', 'data-can-build="false"')
     r.fulfill({ response: res, body: html })
   })
-  await p.route('**/api/status', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ studio_connected: studioUp, model_configured: true, workspace_mode: studioUp ? 'studio_mcp' : 'disconnected', sse_build_stream: true, studio_stream: true, version: '0.7.0' }) }))
+  await p.route('**/api/status', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ studio_connected: studioUp, model_configured: true, workspace_mode: studioUp ? 'studio_mcp' : 'disconnected', sse_build_stream: true, studio_stream: true, ide_api: true, ide_v080: true, rojo_export: true, version: '0.8.0' }) }))
   await p.goto(BASE); await ready(p); await p.waitForTimeout(500)
 
   ok('offline Studio: Build in Studio disabled with plain reason', await p.getByRole('button', { name: 'Build Lava Obby in Studio' }).isDisabled() && (await p.locator('section[aria-labelledby=stage-title]').innerText()).includes('Roblox Studio MCP connected'))

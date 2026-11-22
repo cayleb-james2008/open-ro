@@ -285,7 +285,8 @@ export function App() {
   const notices: Notice[] = activeId ? slotRead<Notice[]>(noticeKey(activeId), []) : [];
   const busy = Object.keys(inflight).length > 0;
   const building = activeId ? inflight[activeId] : undefined;
-  const canBuild = studioOk && modelOk;
+  // Built-in Studio blueprints & 28 game systems run deterministically without a model call.
+  const canBuild = studioOk;
 
   const totalPieces =
     place && place !== "error"
@@ -1618,6 +1619,7 @@ export function App() {
         error?: string;
       }>("/api/studio/mcp/disconnect", {});
       if (res.ok) {
+        await refreshPlace();
         setWorkspaceMode(res.workspace_mode || "local_place");
         setStudioMode(res.studio_mode || "local_place");
         setHasLiveFrame(false);
@@ -2108,7 +2110,7 @@ export function App() {
                   <div className="sr-only" id="stage-title">
                     Studio build thread
                   </div>
-                  {(totalPieces > 0 || Boolean(building)) && (
+                  {(totalPieces > 0 || Boolean(building) || studioMode === "live_mcp" || hasLiveFrame) && (
                     <StagePreview
                       place={place && place !== "error" ? place : { scripts: {}, instances: {} }}
                       theme={theme}

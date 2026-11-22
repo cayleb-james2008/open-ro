@@ -150,11 +150,13 @@ function LuauCodeView({ source }: { source: string }) {
 function LuauScriptEditor({
   path,
   source,
+  placeInstances,
   onSaveScript,
   onRunPlaytest,
 }: {
   path: string;
   source: string;
+  placeInstances?: Record<string, PlaceInstance>;
   onSaveScript?: (path: string, source: string) => Promise<void> | void;
   onRunPlaytest?: () => Promise<void> | void;
 }) {
@@ -169,8 +171,8 @@ function LuauScriptEditor({
 
   const liveDiags = useMemo(() => {
     if (!editing) return [] as LuauDiagnostic[];
-    return analyzePlaceLuau({ scripts: { [path]: draft }, instances: {} });
-  }, [draft, editing, path]);
+    return analyzePlaceLuau({ scripts: { [path]: draft }, instances: placeInstances || {} });
+  }, [draft, editing, path, placeInstances]);
 
   const liveErrs = liveDiags.filter((d) => d.severity === "error").length;
   const liveWarns = liveDiags.filter((d) => d.severity === "warning").length;
@@ -913,6 +915,7 @@ export function PartsShelf({
               <ExplorerGroup
                 title="Luau Scripts"
                 entries={filteredScripts}
+                placeInstances={place && place !== "error" ? place.instances : undefined}
                 selectedPath={selectedPath}
                 onSelectPath={onSelectPath}
                 onSaveInstance={onSaveInstance}
@@ -987,6 +990,7 @@ export function PartsShelf({
 
 function ExplorerItemRow({
   entry,
+  placeInstances,
   isSelected,
   onSelect,
   onSaveInstance,
@@ -996,6 +1000,7 @@ function ExplorerItemRow({
   onRunPlaytest,
 }: {
   entry: ExplorerEntry;
+  placeInstances?: Record<string, PlaceInstance>;
   isSelected: boolean;
   onSelect?: () => void;
   onSaveInstance?: (payload: InstanceEditPayload) => Promise<void>;
@@ -1119,6 +1124,7 @@ function ExplorerItemRow({
                   <LuauScriptEditor
                     path={entry.path}
                     source={entry.source || `-- ${entry.path}`}
+                    placeInstances={placeInstances}
                     onSaveScript={onSaveScript}
                     onRunPlaytest={onRunPlaytest}
                   />
@@ -1147,6 +1153,7 @@ function ExplorerItemRow({
 function ExplorerGroup({
   title,
   entries,
+  placeInstances,
   selectedPath,
   onSelectPath,
   onSaveInstance,
@@ -1157,6 +1164,7 @@ function ExplorerGroup({
 }: {
   title: string;
   entries: ExplorerEntry[];
+  placeInstances?: Record<string, PlaceInstance>;
   selectedPath?: string | null;
   onSelectPath?: (path: string | null) => void;
   onSaveInstance?: (payload: InstanceEditPayload) => Promise<void>;
@@ -1182,6 +1190,7 @@ function ExplorerGroup({
           <ExplorerItemRow
             key={entry.path}
             entry={entry}
+            placeInstances={placeInstances}
             isSelected={selectedPath === entry.path}
             onSelect={() => onSelectPath?.(entry.path)}
             onSaveInstance={onSaveInstance}
