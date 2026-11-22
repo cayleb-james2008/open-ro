@@ -972,3 +972,47 @@ pub fn generate(
         "elapsed_ms": started.elapsed().as_millis() as u64,
     }))
 }
+
+/// Generate a Blender mesh via `generate(...)` and, when `project_root` is provided,
+/// also copy outputs into `<project_root>/assets/meshes/`, update its merged `manifest.json`,
+/// and regenerate `<project_root>/src/shared/AssetIds.luau` with stud bbox metadata.
+pub fn generate_for_project(
+    data_dir: &Path,
+    project_root: Option<&Path>,
+    req: &Value,
+    blender_override: Option<&str>,
+) -> Result<Value, String> {
+    let mut res = generate(data_dir, req, blender_override)?;
+    let Some(root) = project_root else {
+        return Ok(res);
+    };
+    let proj_meshes = root.join("assets").join("meshes");
+    std::fs::create_dir_all(&proj_meshes)
+        .map_err(|e| format!("create project meshes dir: {e}"))?;
+    let mut copied = Vec::new();
+    for key in ["obj_path", "texture_path", "glow_obj_path", "glow_texture_path", "manifest_path"] {
+        if let Some(src_str) = res.get(key).and_then(Value::as_str) {
+            let src = Path::new(src_str);
+            if let Some(fname) = src.file_name() {
+                if src.is_file() {
+                    let dst = proj_meshes.join(fname);
+                    std::fs::copy(src, &dst)
+                        .map_err(|e| format!("copy mesh asset to project: {e}"))?;
+                    copied.push(format!("assets/meshes/{}", fname.to_string_lossy()));
+                }
+            }
+        }
+    }
+    if let (Some(slug), Some(manifest)) = (res.get("name").and_then(Value::as_str), res.get("manifest")) {
+        let _ = merge_dir_manifest(&proj_meshes, slug, manifest);
+    }
+    let codegen = crate::opencloud::assets_codegen(root, &json!({})).ok();
+    if let Some(obj) = res.as_object_mut() {
+        obj.insert("project_files".into(), json!(copied));
+        obj.insert("project_manifest".into(), json!("assets/meshes/manifest.json"));
+        if let Some(cg) = codegen {
+            obj.insert("asset_ids_luau".into(), cg);
+        }
+    }
+    Ok(res)
+}

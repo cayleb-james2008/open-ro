@@ -5493,8 +5493,17 @@ fn handle_tools_blender_generate(stream: &mut TcpStream, shared: &Shared, req: &
         .get("binary_path")
         .and_then(|v| v.as_str())
         .map(String::from);
+    let project_root = body
+        .get("project")
+        .and_then(|v| v.as_str())
+        .and_then(|id| resolve_project_dir(shared, id));
     let result = if body.get("parts").is_some() || body.get("script").is_some() {
-        crate::mesh::generate(&shared.assets_root, &body, blender_override.as_deref())
+        crate::mesh::generate_for_project(
+            &shared.assets_root,
+            project_root.as_deref(),
+            &body,
+            blender_override.as_deref(),
+        )
     } else {
         crate::library::generate_blender_mesh(
             &shared.assets_root,

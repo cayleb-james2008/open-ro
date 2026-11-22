@@ -754,7 +754,7 @@ fn assets_upload(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
 
     let lock_file = lock_path(root, &manifest)?;
     let mut lock = read_lock(&lock_file);
-    let client = if dry_run { None } else if picked.is_empty() { None } else { Some(Client::new(ctx)?) };
+    let client = if dry_run || picked.is_empty() { None } else { Some(Client::new(ctx)?) };
     let mut lock_dirty = false;
     for (rel, abs, bytes) in picked {
         let Some(kind) = kind_for(&rel, &types) else {
@@ -930,7 +930,12 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
     let mut meshes: Vec<(String, [f64; 3], u64)> = Vec::new();
     if let Some(entries) = mesh_manifest.as_ref().and_then(|v| v.get("meshes").and_then(Value::as_object).or_else(|| v.as_object())) {
         for (k, v) in entries {
-            if let Some(arr) = v.get("bbox_studs").or_else(|| v.get("size_studs")).and_then(Value::as_array) {
+            if let Some(arr) = v
+                .get("size")
+                .or_else(|| v.get("bbox_studs"))
+                .or_else(|| v.get("size_studs"))
+                .and_then(Value::as_array)
+            {
                 if arr.len() >= 3 {
                     let sz = [
                         arr[0].as_f64().unwrap_or(4.0),

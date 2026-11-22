@@ -1134,7 +1134,7 @@ pub fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
                 break;
             }
             let seg_len = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
-            if matches!(marker, 0xC0 | 0xC1 | 0xC2) && i + 8 < bytes.len() {
+            if matches!(marker, 0xC0..=0xC2) && i + 8 < bytes.len() {
                 let h = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;
                 let w = u16::from_be_bytes([bytes[i + 7], bytes[i + 8]]) as u32;
                 return Some((w, h));
@@ -1227,7 +1227,9 @@ fn default_out_path(body: &Value) -> String {
     }
 }
 
-fn resolve_reference_images(root: &Path, body: &Value) -> ArtRes<Vec<(String, PathBuf, Vec<u8>, &'static str)>> {
+type ResolvedRefImage = (String, PathBuf, Vec<u8>, &'static str);
+
+fn resolve_reference_images(root: &Path, body: &Value) -> ArtRes<Vec<ResolvedRefImage>> {
     let mut raw_paths: Vec<String> = Vec::new();
     if let Some(arr) = body.get("reference_images").and_then(Value::as_array) {
         for v in arr {
@@ -1667,7 +1669,7 @@ fn art_generate_gemini(
     prompt: &str,
     out_rel: &str,
     out_abs: &Path,
-    refs: &[(String, PathBuf, Vec<u8>, &'static str)],
+    refs: &[ResolvedRefImage],
     body: &Value,
 ) -> ArtRes<Value> {
     let api_key = store
@@ -1865,7 +1867,7 @@ fn art_generate_openai(
     prompt: &str,
     out_rel: &str,
     out_abs: &Path,
-    refs: &[(String, PathBuf, Vec<u8>, &'static str)],
+    refs: &[ResolvedRefImage],
     body: &Value,
 ) -> ArtRes<Value> {
     let api_key = store
