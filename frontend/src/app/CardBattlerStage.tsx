@@ -74,6 +74,18 @@ type BattleState = {
   events: CombatEvent[];
 };
 
+const CARD_TRAITS = ["Golden", "Voidtouched", "Overcharged", "Swift", "Immortal"] as const;
+const SKILL_POPUPS = [
+  "Counter",
+  "Lifesteal",
+  "Mirror Shield",
+  "Burn AoE",
+  "Guard Break",
+  "Stun",
+  "Time Stop",
+  "Domain Buff",
+] as const;
+
 const PROMO_CODES: Record<string, { coins: number; potions: number; label: string }> = {
   REBIRTH: { coins: 600, potions: 2, label: "+600 Coins & 2 Luck Potions" },
   APEX2026: { coins: 1000, potions: 3, label: "+1,000 Coins & 3 Luck Potions" },
@@ -709,7 +721,12 @@ export function CardBattlerStage({
           <div className="flex flex-col justify-between gap-3 rounded-card border border-hairline bg-board/40 p-3.5">
             <div className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-sm font-medium text-ink">Apex Gacha Pedestal</span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-sm font-medium text-ink">Torii Summon Shrine</span>
+                  <Pill className="bg-tag-design-bg px-2 py-0.5 text-xs text-tag-design-fg">
+                    Trait: {CARD_TRAITS[(lastPulls.length + weatherIdx) % CARD_TRAITS.length]}
+                  </Pill>
+                </div>
                 <span className="text-xs text-ink-2">{weather.desc}</span>
               </div>
 
@@ -939,10 +956,20 @@ export function CardBattlerStage({
           </div>
 
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            {/* Player Squad Panel */}
+            {/* Player Squad Panel (4v4 Clash Formation with Nano Banana Portraits & Live Skill Popup) */}
             <div className="flex flex-col gap-2 rounded-card border border-hairline bg-surface p-3">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-medium text-ink">Your Squad ({deckEntries.length} cards)</span>
+              <div className="flex flex-wrap items-center justify-between gap-1.5 text-xs">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-medium text-ink">4v4 Clash Squad ({deckEntries.length}/4)</span>
+                  {battle.events[0] && (
+                    <Pill
+                      data-skill-popup
+                      className="bg-tag-design-bg px-1.5 py-0 font-mono text-xs text-tag-design-fg"
+                    >
+                      {SKILL_POPUPS[battle.turn % SKILL_POPUPS.length]}
+                    </Pill>
+                  )}
+                </div>
                 <span className="font-mono tabular-nums text-ink-2">
                   HP {battle.teamHp.toLocaleString()} / {battle.teamMaxHp.toLocaleString()}
                   {battle.teamShield > 0 ? ` (+${battle.teamShield.toLocaleString()} Shield)` : ""}

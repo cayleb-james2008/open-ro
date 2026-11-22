@@ -10,17 +10,14 @@ import {
 } from "react";
 import { useReducedMotion } from "motion/react";
 import {
-  Camera,
   ChevronDown,
   CopyPlus,
   Crosshair,
-  Eye,
   Focus,
   Maximize2,
   MousePointer2,
   Move,
   Play,
-  Plug,
   Plus,
   Radio,
   Redo2,
@@ -29,7 +26,6 @@ import {
   Square,
   Terminal,
   Trash2,
-  Unplug,
   Video,
   ZoomIn,
   ZoomOut,
@@ -37,7 +33,6 @@ import {
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Expandable, ExpandableContent, ExpandableTrigger } from "@/components/ui/expandable";
 import { Pill, PillIndicator } from "@/components/kibo-ui/pill";
 import type {
@@ -45,9 +40,15 @@ import type {
   PartPreset,
   Place,
   StudioActionEvent,
+  StudioEmbedStatus,
+  StudioKeyboardInputPayload,
   StudioMode,
+  StudioMouseInputPayload,
+  StudioToolName,
+  StudioToolResult,
 } from "./data";
 import type { CardAssetRecord } from "./cardCatalog";
+import { EmbeddedStudioPanel } from "./EmbeddedStudioPanel";
 
 export type StudioTool = "select" | "move" | "scale" | "rotate";
 type ConsoleFilter = "all" | "parts" | "scripts" | "console";
@@ -387,6 +388,7 @@ export function StudioViewport3D({
   frameSeq,
   building,
   canRedo = false,
+  embedStatus,
   onSelectPart,
   onSaveInstance,
   onCreatePart,
@@ -397,8 +399,14 @@ export function StudioViewport3D({
   onCaptureFrame,
   onConnectMcp,
   onDisconnectMcp,
+  onLaunchEmbed,
+  onStopEmbed,
+  onRefreshEmbedStatus,
+  onSendMouseInput,
+  onSendKeyboardInput,
+  onInvokeStudioTool,
 }: {
-  mode: "studio-3d" | "studio-feed";
+  mode: "studio-3d" | "embedded-studio" | "studio-feed";
   place: Place;
   theme: "light" | "dark";
   assets: CardAssetRecord[];
@@ -409,6 +417,7 @@ export function StudioViewport3D({
   frameSeq: number;
   building?: boolean;
   canRedo?: boolean;
+  embedStatus: StudioEmbedStatus;
   onSelectPart?: (path: string) => void;
   onSaveInstance?: (payload: InstanceEditPayload) => Promise<void> | void;
   onCreatePart?: (preset: PartPreset) => Promise<void> | void;
@@ -419,6 +428,12 @@ export function StudioViewport3D({
   onCaptureFrame?: () => Promise<void> | void;
   onConnectMcp?: (command?: string) => Promise<void> | void;
   onDisconnectMcp?: () => Promise<void> | void;
+  onLaunchEmbed?: (command?: string) => Promise<void> | void;
+  onStopEmbed?: () => Promise<void> | void;
+  onRefreshEmbedStatus?: () => Promise<void> | void;
+  onSendMouseInput?: (payload: StudioMouseInputPayload) => Promise<void> | void;
+  onSendKeyboardInput?: (payload: StudioKeyboardInputPayload) => Promise<void> | void;
+  onInvokeStudioTool?: (tool: StudioToolName, args: Record<string, unknown>) => Promise<StudioToolResult>;
 }) {
   const reduce = useReducedMotion();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -432,12 +447,8 @@ export function StudioViewport3D({
   const [replaying, setReplaying] = useState(false);
   const [replayIndex, setReplayIndex] = useState<number | null>(null);
   const [playtestBusy, setPlaytestBusy] = useState(false);
-  const [captureBusy, setCaptureBusy] = useState(false);
   const [addPartOpen, setAddPartOpen] = useState(false);
   const [partActionBusy, setPartActionBusy] = useState(false);
-  const [mcpCmdDraft, setMcpCmdDraft] = useState("");
-  const [mcpBusy, setMcpBusy] = useState(false);
-  const [feedError, setFeedError] = useState(false);
   const [localDraftEdit, setLocalDraftEdit] = useState<{ path: string; pos: Vec3; size: Vec3; rotY: number } | null>(null);
 
   const camRef = useRef<CameraState>({ ...DEFAULT_CAMERA });
@@ -564,11 +575,6 @@ export function StudioViewport3D({
       imgCacheRef.current.set(url, img);
     }
   }, [parts]);
-
-  // Reset feedError when a new frame arrives
-  useEffect(() => {
-    if (frameSeq > 0) setFeedError(false);
-  }, [frameSeq]);
 
   // Focus camera helper
   const focusOnCoords = useCallback(
@@ -1699,16 +1705,6 @@ export function StudioViewport3D({
     }
   };
 
-  const handleCaptureClick = async () => {
-    if (!onCaptureFrame || captureBusy) return;
-    setCaptureBusy(true);
-    try {
-      await onCaptureFrame();
-    } finally {
-      setCaptureBusy(false);
-    }
-  };
-
   const handleCreatePreset = async (preset: PartPreset) => {
     if (!onCreatePart || partActionBusy) return;
     setPartActionBusy(true);
@@ -1747,26 +1743,6 @@ export function StudioViewport3D({
       await onTriggerRedo();
     } finally {
       setPartActionBusy(false);
-    }
-  };
-
-  const handleMcpConnect = async () => {
-    if (!onConnectMcp || mcpBusy) return;
-    setMcpBusy(true);
-    try {
-      await onConnectMcp(mcpCmdDraft.trim() || undefined);
-    } finally {
-      setMcpBusy(false);
-    }
-  };
-
-  const handleMcpDisconnect = async () => {
-    if (!onDisconnectMcp || mcpBusy) return;
-    setMcpBusy(true);
-    try {
-      await onDisconnectMcp();
-    } finally {
-      setMcpBusy(false);
     }
   };
 
@@ -2064,114 +2040,24 @@ export function StudioViewport3D({
           </div>
         </div>
       ) : (
-        /* Live Roblox Studio MCP Frame Feed */
-        <div
-          data-studio-feed-panel
-          className="flex flex-col gap-3 rounded-card border border-hairline bg-board/40 p-3.5"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <Eye className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
-              <span className="text-sm font-medium text-ink">Live Roblox Studio MCP Feed</span>
-              <Pill className="bg-surface px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2">
-                {hasLiveFrame ? `Frame #${frameSeq}` : "No live frame yet"}
-              </Pill>
-            </div>
-            <Button
-              variant="outline"
-              size="xs"
-              disabled={captureBusy}
-              onClick={() => void handleCaptureClick()}
-              aria-label="Capture live Studio frame"
-              className="bg-surface max-md:min-h-11"
-            >
-              <Camera className="size-3.5" strokeWidth={1.5} aria-hidden />
-              <span>{captureBusy ? "Capturing…" : "Capture Frame"}</span>
-            </Button>
-          </div>
-
-          {hasLiveFrame && !feedError ? (
-            <div className="relative overflow-hidden rounded-sm border border-hairline bg-surface">
-              <img
-                src={`/api/studio/frame?seq=${frameSeq}`}
-                alt={`Live Roblox Studio viewport frame ${frameSeq}`}
-                onError={() => setFeedError(true)}
-                className="block max-h-[380px] w-full object-contain"
-              />
-              {actions.length > 0 && (
-                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hairline bg-board/80 px-3 py-1.5 text-xs">
-                  <span className="truncate font-mono text-ink">
-                    Latest agent action: {actions[actions.length - 1].summary}
-                  </span>
-                  <span className="font-mono tabular-nums text-ink-2">
-                    seq #{actions[actions.length - 1].seq}
-                  </span>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="flex flex-col gap-2.5 rounded-sm border border-hairline bg-surface p-4 text-sm text-ink-2">
-              <p className="font-medium text-ink">
-                {studioMode === "live_mcp"
-                  ? "Roblox Studio MCP is attached — click Capture Frame or run a build to stream live screenshots."
-                  : "Live Studio Feed requires a connected Roblox Studio MCP bridge."}
-              </p>
-              <p className="text-xs leading-relaxed text-ink-2">
-                {studioMode === "live_mcp"
-                  ? "Every MCP mutation automatically calls screen_capture and pushes fresh PNG frames over /api/studio/stream."
-                  : studioMode === "browser_place"
-                    ? "You are currently building in Browser Studio 3D (offline-first). Connect to a local openro-rs server in Settings to attach a live Roblox Studio MCP bridge."
-                    : "You are currently building in Local Studio 3D (zero-dependency real-time 3D viewport). Attach an already-running Roblox Studio MCP bridge below without restarting openro-rs (OpenRO never launches Roblox Studio automatically)."}
-              </p>
-            </div>
-          )}
-
-          {/* Live Studio MCP Bridge Connect / Disconnect Control */}
-          {(onConnectMcp || onDisconnectMcp) && (
-            <div
-              data-studio-mcp-controls
-              className="flex flex-col gap-2 rounded-sm border border-hairline bg-surface p-3 sm:flex-row sm:items-center"
-            >
-              <Input
-                value={mcpCmdDraft}
-                onChange={(e) => setMcpCmdDraft(e.target.value)}
-                aria-label="Studio MCP bridge command"
-                placeholder="MCP command (optional, e.g. ~/.local/bin/roblox-studio-mcp)"
-                disabled={mcpBusy || studioMode === "live_mcp"}
-                className="min-w-0 flex-1 font-mono text-xs max-md:min-h-11"
-              />
-              <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-                {studioMode === "live_mcp" && onDisconnectMcp ? (
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    disabled={mcpBusy}
-                    aria-label="Disconnect Studio MCP bridge"
-                    onClick={() => void handleMcpDisconnect()}
-                    className="bg-surface max-md:min-h-11"
-                  >
-                    <Unplug className="size-3.5" strokeWidth={1.5} aria-hidden />
-                    <span>{mcpBusy ? "Disconnecting…" : "Disconnect MCP"}</span>
-                  </Button>
-                ) : (
-                  onConnectMcp && (
-                    <Button
-                      variant="default"
-                      size="xs"
-                      disabled={mcpBusy}
-                      aria-label="Connect Studio MCP bridge"
-                      onClick={() => void handleMcpConnect()}
-                      className="max-md:min-h-11"
-                    >
-                      <Plug className="size-3.5" strokeWidth={1.5} aria-hidden />
-                      <span>{mcpBusy ? "Connecting…" : "Connect MCP"}</span>
-                    </Button>
-                  )
-                )}
-              </div>
-            </div>
-          )}
-        </div>
+        <EmbeddedStudioPanel
+          place={place}
+          studioMode={studioMode}
+          actions={actions}
+          hasLiveFrame={hasLiveFrame}
+          frameSeq={frameSeq}
+          embedStatus={embedStatus}
+          onLaunchEmbed={onLaunchEmbed}
+          onStopEmbed={onStopEmbed}
+          onRefreshEmbedStatus={onRefreshEmbedStatus}
+          onCaptureFrame={onCaptureFrame}
+          onConnectMcp={onConnectMcp}
+          onDisconnectMcp={onDisconnectMcp}
+          onSendMouseInput={onSendMouseInput}
+          onSendKeyboardInput={onSendKeyboardInput}
+          onInvokeStudioTool={onInvokeStudioTool}
+          onSelectPart={onSelectPart}
+        />
       )}
 
       {/* Collapsible Docked Studio Output & Live Agent Action Console */}
