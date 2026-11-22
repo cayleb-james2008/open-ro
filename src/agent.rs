@@ -1500,7 +1500,7 @@ impl Agent {
         // The place is back to an earlier state. With no set left it is
         // the game as it was before any build; otherwise its verdict is
         // not known, so it stays unproven (and the failed run is gone).
-        let remaining = self.changes_by_chat.get(chat_id).is_some();
+        let remaining = self.changes_by_chat.contains_key(chat_id);
         let kept = self.chat_skills(chat_id);
         let proof = self.proof_by_chat.entry(chat_id.to_string()).or_default();
         proof.unproven = remaining;
@@ -1654,7 +1654,7 @@ fn claims_building(summary: &str) -> bool {
     // and a U+2019 inside "wasn't" would otherwise split the token
     // and smuggle the claim past its own suppressor.
     let summary = summary.replace('\u{2019}', "'");
-    for sentence in summary.split(|c| matches!(c, '.' | '!' | '?' | '\n' | ';')) {
+    for sentence in summary.split(['.', '!', '?', '\n', ';']) {
         let tokens: Vec<String> = sentence
             .to_lowercase()
             .split(|c: char| !c.is_alphanumeric() && c != '\'')

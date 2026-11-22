@@ -1,103 +1,170 @@
-/* Hum for openro, on the shared Anthropic/owner palette (_fe/palette-claude.css). Every colour role below is a palette value
- * or a value derived from one (the derivation is noted in DESIGN.md "Colour scheme"). Names are the house role names, so the
- * copied library parts take the palette without edits. Fonts, radii, grain, rims, the torn edge and stamps are not colour and
- * stay as they were. Clay (--blue) marks only the keys, the current selection and the focus ring; state colours mark state only. */
+/* Layout concept: Game Builder Studio Workbench — Left Session Rail (256px) | Center Blueprint & Luau Build Trace Stage | Right Roblox DataModel Explorer Shelf (300px); calm nested Square UI hairline surfaces, light default + crisp dark mode, zero gradients/glows. */
 :root[data-theme="light"] {
   color-scheme: light;
   --canvas: #f5f4ee;
   --board: #eeede5;
   --surface: #fdfcfa;
-  --hairline: #e3e1d6;
-  /* Field edge: 3:1 or better against the surface (3.43:1). */
-  --input: #8a897f;
+  --hairline: #dfddd2;
+  --edge: #86847b;
+  --input: var(--edge);
   --track: #ebe9df;
   --raised: #fefefc;
   --ink: #141413;
   --ink-2: #4d4c47;
-  --ink-3: #66655e;
-  --icon: #7d7c75;
+  --ink-3: #64635c;
+  --icon: #75746d;
   --disabled: #b0aea5;
-  /* Clay: the one primary key, the selection tint, the focus ring (darker clay for the ring: 5.6:1 on surface). */
-  --blue: #d97757; --blue-fg: #141413; --blue-hover: #cc6a49; --blue-soft: #f6e3d9;
-  --ink-button: #141413; --ink-button-fg: #faf9f5;
-  /* Palette blue, sage and red: instrument, state and failure. */
-  --dot-green: #788c5d; --dot-blue: #6a9bcc; --dot-red: #c4483a; --dot-clay: #d97757; --dot-amber: #c99a3e; --dot-online: #788c5d; --unread: #c4483a;
-  --tag-plan-bg: oklch(94% .04 40); --tag-plan-fg: oklch(36% .10 40);
-  --tag-ops-bg: oklch(94% .04 250); --tag-ops-fg: oklch(36% .10 250);
-  --tag-design-bg: oklch(94% .04 10); --tag-design-fg: oklch(36% .10 10);
-  --tag-research-bg: oklch(94% .04 300); --tag-research-fg: oklch(36% .10 300);
-  --tag-mint-bg: oklch(94% .04 130); --tag-mint-fg: oklch(36% .10 130);
-  --tag-dev-bg: oklch(94% .04 85); --tag-dev-fg: oklch(36% .10 85);
-  --tag-neutral-bg: oklch(94% .015 90); --tag-neutral-fg: oklch(36% .03 90);
-  --tag-sky-bg: oklch(94% .04 250); --tag-sky-fg: oklch(36% .10 250);
-  --pill-active-bg: oklch(94% .04 130); --pill-active-fg: oklch(36% .10 130);
-  --pill-pro-bg: oklch(94% .04 25); --pill-pro-fg: #9a2f24;
-  --pill-warn-bg: oklch(94% .05 85); --pill-warn-fg: oklch(38% .10 85);
-  --pill-inactive-bg: #ebe9df; --pill-inactive-fg: #4d4c47;
-  --av-rose-bg: oklch(94% .04 10); --av-rose-fg: oklch(36% .10 10);
-  --av-violet-bg: oklch(94% .04 300); --av-violet-fg: oklch(36% .10 300);
-  --av-sky-bg: oklch(94% .04 250); --av-sky-fg: oklch(36% .10 250);
-  --av-grey-bg: oklch(94% .015 90); --av-grey-fg: oklch(36% .03 90);
-  --elev-shell: 0 40px 100px rgba(20, 20, 19, 0.10);
-  --elev-card: 0 1px 2px rgba(20, 20, 19, 0.05);
-  --elev-raised: 0 1px 2px rgba(20, 20, 19, 0.08);
-  --elev-lift: 0 10px 28px rgba(20, 20, 19, 0.12);
-  /* The key's lower edge: the darker clay token, 3px, flat (no blur, no gradient). */
-  --elev-primary: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 3px 0 #cc6a49;
-  --destructive-foreground: #9a2f24; --info-foreground: #3b6896; --success-foreground: #4f6038; --warning-foreground: #7a5a14;
-  --warn: #7a5a14; --warn-bg: #f7f0dc;
+  /* Accent: clay marks primary action, active glide selection, and focus ring; state colours mark state only. */
+  --blue: #d97757;
+  --blue-fg: #141413;
+  --blue-hover: #cc6a49;
+  --blue-soft: #f6e3d9;
+  --ring: #b85535;
+  --focus: #a9482a;
+  --ink-button: #141413;
+  --ink-button-fg: #faf9f5;
+  --dot-green: #5b7c3e;
+  --dot-blue: #4b7fb3;
+  --dot-red: #c4483a;
+  --dot-clay: #d97757;
+  --dot-amber: #c99a3e;
+  --dot-online: #5b7c3e;
+  --unread: #c4483a;
+  --tag-plan-bg: #ffe3d7;      --tag-plan-fg: #67260c;
+  --tag-ops-bg: #d8eeff;       --tag-ops-fg: #023f6f;
+  --tag-design-bg: #ffe1e5;    --tag-design-fg: #672131;
+  --tag-research-bg: #efe6ff;  --tag-research-fg: #462e69;
+  --tag-mint-bg: #e2f1d5;      --tag-mint-fg: #264200;
+  --tag-dev-bg: #f8eace;       --tag-dev-fg: #553700;
+  --tag-neutral-bg: #ebe9df;   --tag-neutral-fg: #3b3a35;
+  --tag-sky-bg: #d8eeff;       --tag-sky-fg: #023f6f;
+  --pill-active-bg: #e2f1d5;   --pill-active-fg: #264200;
+  --pill-pro-bg: #ffe2de;      --pill-pro-fg: #682321;
+  --pill-inactive-bg: #ebe9df; --pill-inactive-fg: #464540;
+  --pill-warn-bg: #f8eace;     --pill-warn-fg: #553700;
+  --av-rose-bg: #ffe1e5;       --av-rose-fg: #672131;
+  --av-violet-bg: #efe6ff;     --av-violet-fg: #462e69;
+  --av-sky-bg: #d8eeff;        --av-sky-fg: #023f6f;
+  --av-grey-bg: #ebe9df;       --av-grey-fg: #3b3a35;
+  /* Zero resting shadows; lift only on floating dialogs and popovers. */
+  --elev-shell: none;
+  --elev-card: none;
+  --elev-raised: none;
+  --elev-lift: 0 10px 24px rgba(20, 20, 19, 0.14);
+  --elev-primary: none;
+  --destructive-foreground: #8f291f;
+  --info-foreground: #023f6f;
+  --success-foreground: #264200;
+  --warning-foreground: #553700;
+  --warn: #553700;
+  --warn-bg: #f8eace;
 }
+
 :root[data-theme="dark"] {
   color-scheme: dark;
   --canvas: #141413;
-  --board: #1c1c1a;
-  --surface: #1f1e1c;
-  --hairline: #33322f;
-  /* Field edge: 3:1 or better against the surface (3.5:1). */
-  --input: #77766e;
-  --track: #262523;
-  --raised: #2a2926;
+  --board: #1b1b19;
+  --surface: #201f1d;
+  --hairline: #33322e;
+  --edge: #76756d;
+  --input: var(--edge);
+  --track: #282724;
+  --raised: #33322e;
   --ink: #faf9f5;
   --ink-2: #c8c7bd;
-  --ink-3: #9d9c92;
-  --icon: #8c8b82;
+  --ink-3: #9e9d93;
+  --icon: #929188;
   --disabled: #5b5a55;
-  --blue: #d97757; --blue-fg: #141413; --blue-hover: #cc6a49; --blue-soft: #3a2a22;
-  --ink-button: #faf9f5; --ink-button-fg: #141413;
-  --dot-green: #8fa86d; --dot-blue: #7fb0e0; --dot-red: #e0675a; --dot-clay: #d97757; --dot-amber: #d9a84a; --dot-online: #8fa86d; --unread: #e0675a;
-  --tag-plan-bg: oklch(28% .04 40); --tag-plan-fg: oklch(84% .10 40);
-  --tag-ops-bg: oklch(28% .04 250); --tag-ops-fg: oklch(84% .10 250);
-  --tag-design-bg: oklch(28% .04 10); --tag-design-fg: oklch(84% .10 10);
-  --tag-research-bg: oklch(28% .04 300); --tag-research-fg: oklch(84% .10 300);
-  --tag-mint-bg: oklch(28% .04 130); --tag-mint-fg: oklch(84% .10 130);
-  --tag-dev-bg: oklch(28% .04 85); --tag-dev-fg: oklch(84% .10 85);
-  --tag-neutral-bg: oklch(28% .01 90); --tag-neutral-fg: oklch(84% .02 90);
-  --tag-sky-bg: oklch(28% .04 250); --tag-sky-fg: oklch(84% .10 250);
-  --pill-active-bg: oklch(28% .04 130); --pill-active-fg: oklch(84% .10 130);
-  --pill-pro-bg: oklch(28% .05 25); --pill-pro-fg: #f0988e;
-  --pill-warn-bg: oklch(28% .05 85); --pill-warn-fg: oklch(86% .10 85);
-  --pill-inactive-bg: #262523; --pill-inactive-fg: #c8c7bd;
-  --av-rose-bg: oklch(28% .04 10); --av-rose-fg: oklch(84% .10 10);
-  --av-violet-bg: oklch(28% .04 300); --av-violet-fg: oklch(84% .10 300);
-  --av-sky-bg: oklch(28% .04 250); --av-sky-fg: oklch(84% .10 250);
-  --av-grey-bg: oklch(28% .01 90); --av-grey-fg: oklch(84% .02 90);
-  --elev-shell: 0 40px 100px rgba(10, 10, 9, 0.5);
-  --elev-card: 0 1px 2px rgba(10, 10, 9, 0.4);
-  --elev-raised: 0 1px 2px rgba(10, 10, 9, 0.5);
-  --elev-lift: 0 12px 28px rgba(10, 10, 9, 0.55);
-  --elev-primary: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 3px 0 #cc6a49;
-  --destructive-foreground: #f0988e; --info-foreground: #9cc3e8; --success-foreground: #a9c188; --warning-foreground: #e7c277;
-  --warn: #e7c277; --warn-bg: #2e2818;
+  --blue: #d97757;
+  --blue-fg: #141413;
+  --blue-hover: #e2886b;
+  --blue-soft: #3a2921;
+  --ring: #e2886b;
+  --focus: #e2886b;
+  --ink-button: #faf9f5;
+  --ink-button-fg: #141413;
+  --dot-green: #8fa86d;
+  --dot-blue: #7fb0e0;
+  --dot-red: #e0675a;
+  --dot-clay: #d97757;
+  --dot-amber: #d9a84a;
+  --dot-online: #8fa86d;
+  --unread: #e0675a;
+  --tag-plan-bg: #3e2015;      --tag-plan-fg: #ffb294;
+  --tag-ops-bg: #142a41;       --tag-ops-fg: #92d0ff;
+  --tag-design-bg: #3e1e23;    --tag-design-fg: #ffacba;
+  --tag-research-bg: #2d233e;  --tag-research-fg: #d5baff;
+  --tag-mint-bg: #212e12;      --tag-mint-fg: #b3d98c;
+  --tag-dev-bg: #342707;       --tag-dev-fg: #ebc573;
+  --tag-neutral-bg: #2b2a27;   --tag-neutral-fg: #dad9cf;
+  --tag-sky-bg: #142a41;       --tag-sky-fg: #92d0ff;
+  --pill-active-bg: #212e12;   --pill-active-fg: #b3d98c;
+  --pill-pro-bg: #3e1e1c;      --pill-pro-fg: #ffaea6;
+  --pill-inactive-bg: #2b2a27; --pill-inactive-fg: #dad9cf;
+  --pill-warn-bg: #342707;     --pill-warn-fg: #ebc573;
+  --av-rose-bg: #3e1e23;       --av-rose-fg: #ffacba;
+  --av-violet-bg: #2d233e;     --av-violet-fg: #d5baff;
+  --av-sky-bg: #142a41;        --av-sky-fg: #92d0ff;
+  --av-grey-bg: #2b2a27;       --av-grey-fg: #dad9cf;
+  --elev-shell: none;
+  --elev-card: none;
+  --elev-raised: none;
+  --elev-lift: 0 12px 28px rgba(0, 0, 0, 0.55);
+  --elev-primary: none;
+  --destructive-foreground: #ffaea6;
+  --info-foreground: #92d0ff;
+  --success-foreground: #b3d98c;
+  --warning-foreground: #ebc573;
+  --warn: #ebc573;
+  --warn-bg: #2e2614;
 }
+
 :root {
-  /* Hum: type voice, radii and the heading recipe (Hallmark theme values) */
-  --font-sans: "Chillax", ui-rounded, ui-sans-serif, sans-serif;
-  --font-heading: "Chillax", ui-rounded, ui-sans-serif, sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, monospace;
-  --radius-shell: 32px; --radius-panel: 24px; --radius-dialog: 24px; --radius-card: 20px;
-  --radius-segment: 14px; --radius-chip: 999px; --radius-menu: 20px; --radius: 14px;
-  --display-weight: 600; --tracking-display: -0.03em;
+  /* House fonts & nested Square UI radii (inner always smaller than outer; weights 400 and 500 only). */
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-heading: var(--font-sans);
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --radius-shell: 24px;
+  --radius-panel: 16px;
+  --radius-dialog: 16px;
+  --radius-card: 10px;
+  --radius-segment: 7px;
+  --radius-chip: 6px;
+  --radius-menu: 14px;
+  --radius: 9px;
+  --display-weight: 500;
+  --tracking-display: -0.02em;
+  /* Ultra-design motion tokens alongside house --dur-* tokens */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-soft: cubic-bezier(0.33, 1, 0.68, 1);
+  --t-press: 120ms;
+  --t-hover: 150ms;
+  --t-ui: 200ms;
 }
-h1, h2, h3, .font-heading { font-family: var(--font-heading); font-weight: var(--display-weight); letter-spacing: var(--tracking-display); }
-.num, .mono, [data-measured] { font-family: var(--font-mono); font-variant-numeric: tabular-nums ; }
-::selection { background: color-mix(in oklab, var(--blue) 28%, transparent); }
+
+h1, h2, h3, .font-heading {
+  font-family: var(--font-heading);
+  font-weight: var(--display-weight);
+  letter-spacing: var(--tracking-display);
+}
+.num, .mono, [data-measured] {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+::selection {
+  background: color-mix(in oklab, var(--blue) 26%, transparent);
+}
+
+@theme inline {
+  --color-edge: var(--edge);
+  --color-focus: var(--focus);
+  --color-white: var(--surface);
+  --color-black: var(--ink);
+  --shadow-xs: var(--elev-card);
+  --shadow-sm: var(--elev-card);
+  --shadow: var(--elev-raised);
+  --shadow-md: var(--elev-lift);
+  --shadow-lg: var(--elev-lift);
+  --shadow-xl: var(--elev-lift);
+}

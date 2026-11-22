@@ -1,6 +1,5 @@
-// fixture.mjs: build Open-Ro, run it on free ports with a fresh game, the mock Studio and a stub model, stop it.
-// Everything it writes (data, logs, pid files, shots) goes to frontend/e2e/.out.
-//   node e2e/fixture.mjs start   start on fresh data and print the URL      node e2e/fixture.mjs stop
+// fixture.mjs: build OpenRO, run it on ports 18070-18079 (or free fallback) with a fresh game,
+// mock Studio and stub model, and stop only the PIDs it started. Output goes to frontend/e2e/.out.
 import { chromium } from 'playwright-core'
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -12,9 +11,9 @@ import { fileURLToPath } from 'node:url'
 export const E2E = path.dirname(fileURLToPath(import.meta.url)), ROOT = path.resolve(E2E, '../..')
 export const OUT = path.join(E2E, '.out'), RUN = path.join(OUT, 'run')
 const STATE = path.join(RUN, 'ports.json'), FIX = path.join(E2E, 'fixtures')
-const BIN = path.join(process.env.CARGO_TARGET_DIR || path.join(ROOT, 'target'), 'debug/openro-rs')
-// Playwright comes from the frontend's own devDependencies; the browser is the installed Chrome for Testing build.
-export const CHROME = process.env.E2E_CHROME || path.join(os.homedir(), '.cache/ms-playwright/chromium-1234/chrome-linux64/chrome')
+const TARGET_DIR = process.env.CARGO_TARGET_DIR || path.join(ROOT, 'target')
+const BIN = path.join(TARGET_DIR, 'debug/openro-rs')
+export const CHROME = process.env.CHROME_PATH || process.env.E2E_CHROME || path.join(os.homedir(), '.cache/ms-playwright/chromium-1234/chrome-linux64/chrome')
 export const launch = (opts = {}) => chromium.launch({ headless: true, executablePath: CHROME, ...opts })
 
 let st = fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, 'utf8')) : null
@@ -29,22 +28,38 @@ export function report(name, checks) {
 }
 
 export function build() {
-  const run = (cmd, args, cwd) => execFileSync(cmd, args, { cwd, stdio: 'inherit' })
+  const cargoEnv = { ...process.env, PATH: `${os.homedir()}/.local/rust/bin:${os.homedir()}/.rust/bin:${process.env.PATH || ''}`, CARGO_TARGET_DIR: TARGET_DIR }
+  const run = (cmd, args, cwd) => execFileSync(cmd, args, { cwd, env: cargoEnv, stdio: 'inherit' })
   const link = path.join(ROOT, 'rune/node_modules')
   if (!fs.existsSync(link)) fs.symlinkSync('../frontend/node_modules', link)
+  run('node', ['scripts/role-coverage.mjs'], path.join(ROOT, 'frontend'))
+  run('node', ['scripts/motion-source.mjs'], path.join(ROOT, 'frontend'))
   run('npm', ['run', 'build'], path.join(ROOT, 'frontend'))
-  // the binary embeds assets/index.html with include_str: touch the sources so cargo rebuilds
+  // Single-binary Rust rule: touch server.rs (which calls include_str! on assets/index.html) before cargo build
   const now = new Date()
   for (const f of fs.readdirSync(path.join(ROOT, 'src'))) if (f.endsWith('.rs')) fs.utimesSync(path.join(ROOT, 'src', f), now, now)
-  run('cargo', ['build', '--offline', '--bins'], ROOT) // --bins: mock_studio stands in for Roblox Studio
+  run('cargo', ['build', '--offline', '--bins'], ROOT)
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 const listening = port => new Promise(res => { const s = net.connect(port, '127.0.0.1'); s.once('connect', () => { s.destroy(); res(true) }); s.once('error', () => res(false)) })
-const freePort = () => new Promise((res, rej) => { const s = net.createServer().once('error', rej).listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => res(port)) }) })
-async function pickPort(taken) { for (;;) { const p = await freePort(); if (p !== 9230 && !taken.includes(p)) return p } }
+const tryBind = port => new Promise(res => {
+  const s = net.createServer()
+  s.once('error', () => res(0))
+  s.listen(port, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)) })
+})
+async function pickPort(taken) {
+  const min = Number(process.env.E2E_PORT_MIN || 18070)
+  const max = Number(process.env.E2E_PORT_MAX || 18079)
+  for (let p = min; p <= max; p++) {
+    if (!taken.includes(p) && await tryBind(p)) return p
+  }
+  for (;;) {
+    const p = await tryBind(0)
+    if (p && p !== 9230 && !taken.includes(p)) return p
+  }
+}
 
-// Only ever signal a pid this fixture wrote, and only while its command line is still the one it started.
 function alive(name, mark) {
   const f = path.join(RUN, `${name}.pid`)
   if (!fs.existsSync(f)) return 0
@@ -77,8 +92,8 @@ export async function start({ fresh = false } = {}) {
   if (await listening(st.app)) throw new Error(`port ${st.app} is still held`)
   if (fresh || !fs.existsSync(path.join(RUN, 'data'))) {
     fs.rmSync(path.join(RUN, 'data'), { recursive: true, force: true })
-    fs.mkdirSync(path.join(RUN, 'data')) // a fresh game starts with no data at all
-    await kill('stub', RUN) // the stub walks its replies in order: a fresh run starts it again
+    fs.mkdirSync(path.join(RUN, 'data'))
+    await kill('stub', RUN)
   }
   for (const d of ['home', 'tmp']) fs.mkdirSync(path.join(RUN, d), { recursive: true })
   const env = { PATH: '/usr/bin:/bin', HOME: path.join(RUN, 'home'), TMPDIR: path.join(RUN, 'tmp'), TZ: 'UTC', LANG: 'C.UTF-8' }
@@ -87,12 +102,12 @@ export async function start({ fresh = false } = {}) {
     launchProc('stub', process.execPath, [path.join(FIX, 'stub-model.mjs'), String(st.stub), path.join(RUN, 'replies.json')], env)
     for (let i = 0; i < 30 && !await listening(st.stub); i++) await sleep(100)
   }
-  launchProc('app', BIN, [], { ...env, OPENRO_PORT: String(st.app), OPENRO_DATA_DIR: path.join(RUN, 'data'), OPENRO_MCP_COMMAND: path.join(path.dirname(BIN), 'mock_studio'), OPENRO_MODEL_BASE_URL: `http://127.0.0.1:${st.stub}`, OPENRO_MODEL_API_KEY: 'stub', OPENRO_GAME_NAME: 'Test Game', OPENRO_UPDATE_MODE: 'off' })
+  launchProc('app', BIN, [], { ...env, OPENRO_PORT: String(st.app), OPENRO_DATA_DIR: path.join(RUN, 'data'), OPENRO_MCP_COMMAND: path.join(path.dirname(BIN), 'mock_studio'), OPENRO_MODEL_BASE_URL: `http://127.0.0.1:${st.stub}`, OPENRO_MODEL_API_KEY: 'stub', OPENRO_GAME_NAME: 'Skyline Obby', OPENRO_UPDATE_MODE: 'off' })
   for (let i = 0; i < 50; i++) {
     if (await fetch(BASE + 'api/status').then(r => r.ok, () => false)) return BASE
     await sleep(300)
   }
-  throw new Error('Open-Ro did not come up:\n' + fs.readFileSync(path.join(RUN, 'app.log'), 'utf8').slice(-800))
+  throw new Error('OpenRO did not come up:\n' + fs.readFileSync(path.join(RUN, 'app.log'), 'utf8').slice(-800))
 }
 export const reset = () => start({ fresh: true })
 

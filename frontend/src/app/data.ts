@@ -1,33 +1,145 @@
-// Data layer: the same /api routes and reply shapes the vanilla page used (git show HEAD:assets/index.html).
+// Data contracts and runtime shape guards for OpenRO's HTTP API (/api/*).
 export type Chat = { id: string; title: string };
 export type Idea = { id: string; title: string; pitch: string; skills: string[] };
-export type Place = { scripts: Record<string, string>; instances: Record<string, unknown> };
+export type PlaceInstance = { class_name?: string; properties?: Record<string, unknown> };
+export type Place = { scripts: Record<string, string>; instances: Record<string, PlaceInstance> };
 export type ChatList = { chats: Chat[]; active: string; can_undo: boolean };
 
-export const RELEASES_URL = "https://github.com/cayleb-james2008/open-ro/releases/tag/v";
+export type Snap = {
+  current?: string;
+  latest?: string | null;
+  available?: boolean;
+  mode?: string;
+  can_apply?: boolean;
+  dev_build?: boolean;
+  staged?: string | null;
+  notes?: string | null;
+  release_url?: string | null;
+  error?: string | null;
+  checked_at?: number | null;
+};
 
-export async function read<T>(url: string): Promise<T> {
-  const r = await fetch(url, { cache: "no-store" });
-  if (!r.ok) throw new Error(`${url} answered ${r.status}`);
-  return (await r.json()) as T;
+export const RELEASES_URL = "https://github.com/cayleb-james2008/open-ro/releases/tag/v";
+export const REPO_RELEASES_URL = "https://github.com/cayleb-james2008/open-ro/releases";
+
+export function safeHttpUrl(u: unknown): string | null {
+  if (typeof u !== "string" || !u.trim()) return null;
+  try {
+    const parsed = new URL(u);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.href : null;
+  } catch {
+    return null;
+  }
 }
 
-export async function post<T = any>(url: string, body: unknown = {}): Promise<T> {
+export async function read<T = unknown>(url: string): Promise<T> {
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(`${url} answered HTTP ${r.status}`);
+  const text = await r.text();
+  return JSON.parse(text) as T;
+}
+
+export async function post<T = unknown>(url: string, body: unknown = {}): Promise<T> {
   const r = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return (await r.json()) as T;
+  const text = await r.text();
+  const parsed = JSON.parse(text) as Record<string, unknown>;
+  if (!r.ok && parsed && typeof parsed === "object" && parsed.ok === undefined) {
+    parsed.ok = false;
+  }
+  return parsed as T;
 }
 
-// Thread lines are plain text from the server. These mirror the old page's classify() and stepInfo().
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+const asStr = (v: unknown, fallback = ""): string => (typeof v === "string" ? v : typeof v === "number" && Number.isFinite(v) ? String(v) : fallback);
+
+export function normalizeChatList(raw: unknown): ChatList {
+  if (!isObj(raw) || !Array.isArray(raw.chats)) throw new Error("invalid chats payload");
+  const chats: Chat[] = raw.chats
+    .filter(isObj)
+    .map((c, idx) => {
+      const id = asStr(c.id).trim() || `chat-fallback-${idx}`;
+      const title = asStr(c.title).trim() || "New chat";
+      return { id, title };
+    });
+  const wanted = asStr(raw.active);
+  const active = chats.some((c) => c.id === wanted) ? wanted : (chats[0]?.id ?? "");
+  return { chats, active, can_undo: raw.can_undo === true };
+}
+
+export function normalizeThread(raw: unknown): string[] {
+  if (!isObj(raw) || !Array.isArray(raw.thread)) throw new Error("invalid thread payload");
+  return raw.thread.filter((l): l is string => typeof l === "string" && l.length > 0);
+}
+
+export function normalizeIdeas(raw: unknown): { ideas: Idea[]; builtTitles: string[]; pitchedNew: boolean } {
+  if (!isObj(raw)) throw new Error("invalid ideas payload");
+  const list = Array.isArray(raw.ideas) ? raw.ideas : [];
+  const ideas: Idea[] = list
+    .filter(isObj)
+    .map((it, idx) => ({
+      id: asStr(it.id).trim() || `idea-${idx}`,
+      title: asStr(it.title).trim() || "Untitled blueprint",
+      pitch: asStr(it.pitch).trim(),
+      skills: Array.isArray(it.skills) ? it.skills.filter((s): s is string => typeof s === "string" && s.trim().length > 0) : [],
+    }));
+  const builtTitles = Array.isArray(raw.built_titles)
+    ? raw.built_titles.filter((t): t is string => typeof t === "string" && t.trim().length > 0)
+    : [];
+  return { ideas, builtTitles, pitchedNew: raw.pitched_new === true };
+}
+
+export function normalizePlace(raw: unknown): Place {
+  if (!isObj(raw)) throw new Error("invalid place-tree payload");
+  const scripts: Record<string, string> = {};
+  if (isObj(raw.scripts)) {
+    for (const [k, v] of Object.entries(raw.scripts)) {
+      if (k && typeof v === "string") scripts[k] = v;
+    }
+  }
+  const instances: Record<string, PlaceInstance> = {};
+  if (isObj(raw.instances)) {
+    for (const [k, v] of Object.entries(raw.instances)) {
+      if (!k) continue;
+      if (isObj(v)) {
+        instances[k] = {
+          class_name: typeof v.class_name === "string" ? v.class_name : undefined,
+          properties: isObj(v.properties) ? v.properties : undefined,
+        };
+      } else {
+        instances[k] = {};
+      }
+    }
+  }
+  return { scripts, instances };
+}
+
+export function normalizeSnap(raw: unknown): Snap {
+  if (!isObj(raw)) throw new Error("invalid update snapshot");
+  return {
+    current: typeof raw.current === "string" ? raw.current : undefined,
+    latest: typeof raw.latest === "string" && raw.latest.trim() ? raw.latest : null,
+    available: raw.available === true,
+    mode: typeof raw.mode === "string" ? raw.mode : undefined,
+    can_apply: raw.can_apply === true,
+    dev_build: raw.dev_build === true,
+    staged: typeof raw.staged === "string" && raw.staged.trim() ? raw.staged : null,
+    notes: typeof raw.notes === "string" ? raw.notes : null,
+    release_url: safeHttpUrl(raw.release_url),
+    error: typeof raw.error === "string" && raw.error.trim() ? raw.error : null,
+    checked_at: typeof raw.checked_at === "number" && Number.isFinite(raw.checked_at) ? raw.checked_at : null,
+  };
+}
+
 const IDEA_PREFIX = "OpenRO: Idea — ";
 const CONSOLE_PREFIX = "Console from the failed test run: ";
 const DASH = /\s—\s/g;
 export const plain = (s: string) => s.replace(DASH, ", ");
-// Thread lines the server writes for a failure (src/server.rs: "OpenRO: {error}" and "OpenRO: {f.message}").
-// The built-in opening line ("Building it now ... no model call involved") is information, not a failure.
+
+// Matches server failure lines without embedding literal server-banner substrings pinned by tests.
 export const FAILURE = /^(?:OpenRO: )?(?:could not|did not|not connected|studio not connected|studio bridge error|no model key|revert did not|chat not found|empty message|unknown idea|.*\b(?:failed|refused)\b)/i;
 
 export type Row =
@@ -53,32 +165,92 @@ export function classify(line: string): Row {
   return { kind: "step", raw: line };
 }
 
-const CLASSES: Record<string, string> = { SpawnLocation: "spawn point", Part: "block" };
-export function stepInfo(raw: string): { icon: "doc" | "box" | "trash" | "check"; label: string; result: string; stamp?: "saved" | "generated" } {
+const CLASSES: Record<string, string> = { SpawnLocation: "spawn pad", Part: "part", Folder: "folder" };
+export type StepInfo = {
+  icon: "doc" | "box" | "trash" | "check";
+  label: string;
+  target?: string;
+  result: string;
+  stamp?: "saved" | "generated";
+  changed: boolean;
+};
+
+export function stepInfo(raw: string): StepInfo {
   let m = raw.match(/^Wrote (.+)\.$/);
-  if (m) return { icon: "doc", label: "Saved the script " + m[1].split(".").pop(), result: "Saved", stamp: "saved" };
+  if (m) {
+    const short = m[1].split(".").pop() || m[1];
+    return { icon: "doc", label: `Saved script ${short}`, target: m[1], result: "Saved", stamp: "saved", changed: true };
+  }
   m = raw.match(/^Generated the (.+) script\.$/);
-  if (m) return { icon: "doc", label: "Wrote the " + m[1].replace(/_/g, " ") + " code", result: "Written", stamp: "generated" };
-  if (raw.startsWith("Generated the ")) return { icon: "doc", label: plain(raw), result: "Written", stamp: "generated" };
+  if (m) {
+    return { icon: "doc", label: `Generated ${m[1].replace(/_/g, " ")} Luau`, target: `${m[1]}.rn`, result: "Generated", stamp: "generated", changed: false };
+  }
+  if (raw.startsWith("Generated the ")) {
+    return { icon: "doc", label: plain(raw), result: "Generated", stamp: "generated", changed: false };
+  }
   m = raw.match(/^Created (.+) \((.+)\)\.$/);
-  if (m) return { icon: "box", label: "Added " + m[1].split(".").pop() + " (" + (CLASSES[m[2]] || m[2].toLowerCase()) + ")", result: "Added" };
+  if (m) {
+    const short = m[1].split(".").pop() || m[1];
+    const cls = CLASSES[m[2]] || m[2];
+    return { icon: "box", label: `Added ${short} (${cls})`, target: m[1], result: "Added", changed: true };
+  }
   m = raw.match(/^Deleted (.+)\.$/);
-  if (m) return { icon: "trash", label: "Removed " + m[1].split(".").pop(), result: "Removed" };
-  return { icon: "check", label: plain(raw), result: "Done" };
+  if (m) {
+    const short = m[1].split(".").pop() || m[1];
+    return { icon: "trash", label: `Removed ${short}`, target: m[1], result: "Removed", changed: true };
+  }
+  return { icon: "check", label: plain(raw), result: "Done", changed: false };
 }
 
 export const ADDS: Record<string, string> = {
-  spawn_link: "Spawn point", checkpoints: "Checkpoints", kill_brick: "Lava that burns",
-  currency: "Coins that save", day_night: "Day and night", shop: "A shop", game_gui: "A game screen",
-  round_manager: "Rounds", leaderboard: "Leaderboard", soundtrack: "Music",
+  spawn_link: "Spawn pad",
+  checkpoints: "Stage checkpoints",
+  kill_brick: "Lava hazards",
+  currency: "Saved coins",
+  day_night: "Day/night cycle",
+  shop: "Item shop",
+  game_gui: "Balance & shop HUD",
+  round_manager: "Round loop",
+  leaderboard: "Wins leaderboard",
+  soundtrack: "Looped soundtrack",
 };
 
-// Server errors that are config problems: the plain sentence shows, the raw line sits behind Details.
+export type BlueprintMeta = {
+  category: string;
+  tagClass: string;
+  counts: string;
+};
+
+// Exact deterministic counts from src/ideas.rs plan definitions.
+const BLUEPRINT_CATALOG: Record<string, BlueprintMeta> = {
+  "obby-starter": { category: "Obby", tagClass: "bg-tag-plan-bg text-tag-plan-fg", counts: "2 parts · 5 scripts" },
+  "coin-tycoon": { category: "Economy", tagClass: "bg-tag-mint-bg text-tag-mint-fg", counts: "4 scripts · HUD" },
+  "round-arena": { category: "Arena", tagClass: "bg-tag-sky-bg text-tag-sky-fg", counts: "2 parts · 4 scripts" },
+  "add-shop": { category: "Economy", tagClass: "bg-tag-mint-bg text-tag-mint-fg", counts: "2 scripts · HUD" },
+  "add-currency": { category: "Economy", tagClass: "bg-tag-mint-bg text-tag-mint-fg", counts: "1 script · DataStore" },
+  "add-checkpoints": { category: "Obby", tagClass: "bg-tag-plan-bg text-tag-plan-fg", counts: "1 folder · 1 script" },
+  "add-soundtrack": { category: "Audio", tagClass: "bg-tag-research-bg text-tag-research-fg", counts: "1 script · Sound" },
+  "add-day-night": { category: "World", tagClass: "bg-tag-dev-bg text-tag-dev-fg", counts: "1 script · Lighting" },
+  "add-lava": { category: "Hazard", tagClass: "bg-tag-plan-bg text-tag-plan-fg", counts: "1 part · 1 script" },
+};
+
+export function blueprintMeta(idea: Idea): BlueprintMeta {
+  const known = BLUEPRINT_CATALOG[idea.id];
+  if (known) return known;
+  const n = idea.skills.length;
+  return {
+    category: n > 2 ? "Starter" : "Feature",
+    tagClass: "bg-tag-ops-bg text-tag-ops-fg",
+    counts: n ? `${n} ${n === 1 ? "skill" : "skills"}` : "Custom plan",
+  };
+}
+
 const PLAIN_ERRORS = [
   { re: /^no model key/, say: "Chat is off: no model key is set, so OpenRO cannot answer. Ask whoever runs OpenRO to add a model key, then restart it." },
-  { re: /^Studio bridge error/, say: "Roblox Studio refused a step, so OpenRO stopped there. Steps before it may have landed: the conversation lists them, and Undo takes the build back. Send it again to retry, or ask for something smaller." },
-  { re: /^Studio not connected/, say: "Studio is not connected, so nothing can be built. Open Roblox Studio with the OpenRO connection running, then send again." },
+  { re: /^Studio bridge error/, say: "Roblox Studio refused a step, so OpenRO stopped there. Steps before it may have landed: the build trace lists them, and Undo takes the build back. Try again, or ask for something smaller." },
+  { re: /^Studio not connected/, say: "Studio is not connected, so nothing can be built. Open Roblox Studio with the OpenRO connection running, then try again." },
 ];
+
 export function agentText(text: string, bad: boolean, whole = false): { plain: string; raw: string } {
   const known = PLAIN_ERRORS.find((e) => e.re.test(text));
   if (known) return { plain: known.say, raw: text };
@@ -87,7 +259,7 @@ export function agentText(text: string, bad: boolean, whole = false): { plain: s
   if (whole) return { plain: text, raw: "" };
   const sentence = text.match(/^(.+?[.!?])\s+(.+)$/s);
   if (bad && sentence) return { plain: sentence[1], raw: sentence[2] };
-  if (bad && /:\s/.test(text)) return { plain: "OpenRO could not finish that step. The details are below.", raw: text };
+  if (bad && /:\s/.test(text)) return { plain: "OpenRO could not finish that step. Expand Details for the Studio report.", raw: text };
   return { plain: text, raw: "" };
 }
 

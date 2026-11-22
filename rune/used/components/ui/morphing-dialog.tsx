@@ -88,13 +88,14 @@ export type MorphingDialogTriggerProps = {
   children: React.ReactNode;
   className?: string;
   style?: React.CSSProperties;
-  triggerRef?: React.RefObject<HTMLButtonElement>;
+  triggerRef?: React.RefObject<HTMLButtonElement | null>;
   /** Local edit: id of the text that describes the trigger (aria-describedby). */
   describedBy?: string;
-  /** Local edit: true while something else (a keyboard drag) owns Enter and Space. */
+  /** Local edit: true while disabled or while something else owns Enter and Space. */
   blocked?: boolean;
   /** Local edit: sets data-thing, so the island's search can open the sheet by clicking its trigger. */
   thing?: string;
+  "aria-label"?: string;
 };
 
 function MorphingDialogTrigger({
@@ -105,8 +106,9 @@ function MorphingDialogTrigger({
   describedBy,
   blocked,
   thing,
+  "aria-label": ariaLabel,
 }: MorphingDialogTriggerProps) {
-  const { setIsOpen, isOpen, uniqueId } = useMorphingDialog();
+  const { setIsOpen, isOpen, uniqueId, triggerRef: ctxTriggerRef } = useMorphingDialog();
 
   const handleClick = useCallback(() => {
     if (blocked) return;
@@ -126,12 +128,15 @@ function MorphingDialogTrigger({
 
   return (
     <motion.button
-      ref={triggerRef}
+      type='button'
+      ref={triggerRef ?? ctxTriggerRef}
+      disabled={blocked}
       layoutId={`dialog-${uniqueId}`}
-      className={cn('relative cursor-pointer', className)}
+      className={cn('relative cursor-pointer disabled:pointer-events-none disabled:cursor-default', className)}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
       style={style}
+      aria-label={ariaLabel}
       aria-haspopup='dialog'
       data-thing={thing}
       aria-describedby={describedBy}
@@ -191,22 +196,22 @@ function MorphingDialogContent({
   }, [setIsOpen, firstFocusableElement, lastFocusableElement]);
 
   useEffect(() => {
-    if (isOpen) {
-      document.body.classList.add('overflow-hidden');
-      const focusableElements = containerRef.current?.querySelectorAll(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    if (!isOpen) return;
+    document.body.classList.add('overflow-hidden');
+    const focusableElements = containerRef.current?.querySelectorAll(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    );
+    if (focusableElements && focusableElements.length > 0) {
+      setFirstFocusableElement(focusableElements[0] as HTMLElement);
+      setLastFocusableElement(
+        focusableElements[focusableElements.length - 1] as HTMLElement
       );
-      if (focusableElements && focusableElements.length > 0) {
-        setFirstFocusableElement(focusableElements[0] as HTMLElement);
-        setLastFocusableElement(
-          focusableElements[focusableElements.length - 1] as HTMLElement
-        );
-        (focusableElements[0] as HTMLElement).focus();
-      }
-    } else {
-      document.body.classList.remove('overflow-hidden');
-      triggerRef.current?.focus();
+      (focusableElements[0] as HTMLElement).focus();
     }
+    return () => {
+      document.body.classList.remove('overflow-hidden');
+      requestAnimationFrame(() => triggerRef.current?.focus());
+    };
   }, [isOpen, triggerRef]);
 
   useClickOutside(containerRef, () => {
@@ -254,7 +259,7 @@ function MorphingDialogContainer({ children }: MorphingDialogContainerProps) {
         <>
           <motion.div
             key={`backdrop-${uniqueId}`}
-            className='fixed inset-0 h-full w-full bg-ink/25 backdrop-blur-xs dark:bg-ink/40'
+            className='fixed inset-0 h-full w-full bg-ink/30 dark:bg-ink/50'
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}

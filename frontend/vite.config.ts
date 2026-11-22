@@ -1,5 +1,6 @@
-// House-frontend build for a Rune (Rust) app: React + Tailwind 4, the library parts live in ../rune/used,
-// and the result is ONE html file (js, css and fonts inline) at ../assets/index.html, which the Rust binary embeds.
+// House-frontend single-file build for OpenRO (Rust + Rune): React + Tailwind 4, library parts in ../rune/used,
+// outputting ONE self-contained HTML file (JS, CSS and Geist woff2 fonts inlined) at ../assets/index.html,
+// plus optional static fixture-demo output when DEMO_OUT is set.
 import fs from "node:fs";
 import path from "node:path";
 import { defineConfig, type Plugin } from "vite";
@@ -8,8 +9,8 @@ import tailwindcss from "@tailwindcss/vite";
 
 const root = import.meta.dirname;
 const used = path.resolve(root, "../rune/used");
+const STAMP = "/* Hallmark · app screen · genre modern-minimal · scope app · theme Studio Workbench (native light, dark second) · Geist + Geist Mono, nested hairline surfaces, no gradients */";
 
-// "@/x" is the app's own src/x first, then the copied library part rune/used/x.
 function runeUsed(): Plugin {
   const exts = ["", ".tsx", ".ts", ".css", "/index.tsx", "/index.ts"];
   return {
@@ -28,7 +29,6 @@ function runeUsed(): Plugin {
   };
 }
 
-// After the build: inline the script, the stylesheet and (through assetsInlineLimit) the fonts into one page.
 function singleFile(): Plugin {
   return {
     name: "single-file",
@@ -42,13 +42,9 @@ function singleFile(): Plugin {
       });
       html = html.replace(/<link[^>]*rel="stylesheet"[^>]*href="([^"]+)"[^>]*>/g, (_m, href) => {
         const css = fs.readFileSync(path.join(dist, href.replace(/^\.?\//, "")), "utf8");
-        return `<style>${css}</style>`;
+        return `<style>${STAMP}\n${css}</style>`;
       });
-      // Hallmark: the stamp is the first line of the page CSS (the lint reads that line); Tailwind's fixed #fff ring offset becomes the surface token.
-      html = html.replace(/<style>/, "<style>/* Hallmark · app screen · genre modern-minimal · scope app · theme Hum (native light, dark second) · critique: paper grain, card-stock rims, one torn edge, no gradients on the page */\n");
       html = html.replace(/--tw-ring-offset-color:\s*#fff\b/g, "--tw-ring-offset-color:var(--surface)");
-      // The bare `transition` utility comes only from motion prop names in source, never from an element of this page;
-      // Tailwind merges the core rule into the override, which would fade focus rings (Hallmark 15). Drop the rule.
       html = html.replace(/\.transition\{[^}]*\}/g, "");
       const out = path.resolve(root, "../assets/index.html");
       fs.writeFileSync(out, html);

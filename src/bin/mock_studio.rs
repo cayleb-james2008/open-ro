@@ -5,35 +5,37 @@
 //! Studio present.
 //!
 //! Deterministic playtest rules (documented fixture behaviour):
-//!   1. playtest FAILS with console error
-//!        `ServerScriptService.RoundManager:4: attempt to index nil with 'Start'`
-//!      if any written script contains `workspace.Round.` but no written
-//!      script creates it (no `Name = "Round"` anywhere).
-//!   2. playtest FAILS with console error
-//!        `Workspace.SpawnPad is not a valid member of Workspace "Workspace"`
-//!      if any written script references `workspace.SpawnPad` but no
-//!      instance exists at `Workspace.SpawnPad`.
-//!   3. playtest FAILS with console error
-//!        `Workspace.Checkpoints is not a valid member of Workspace "Workspace"`
-//!      if any written script references `workspace.Checkpoints` but no
-//!      script creates it (no `Name = "Checkpoints"` anywhere) and no
-//!      instance exists at `Workspace.Checkpoints`.
-//!   4. playtest FAILS with console error
-//!        `ServerScriptService.Currency: DataStore save failed: BindToClose was never bound`
-//!      if any written script calls `GetDataStore(` without binding a
-//!      shutdown save (`BindToClose` absent from that script).
-//!   5. playtest FAILS with console error
-//!        `StarterGui.GameGui: OpenROShopBuy RemoteEvent was never created in ReplicatedStorage`
-//!      if any written script waits on `WaitForChild("OpenROShopBuy")`
-//!      but no written script creates a RemoteEvent.
-//!   6. playtest FAILS with console error
-//!        `ServerScriptService.Shop: no leaderstats exists for the shop to charge`
-//!      if any written script creates a RemoteEvent (the shop) but no
-//!      written script CREATES leaderstats (`Name = "leaderstats"` —
-//!      a currency or leaderboard script; the shop itself only looks
-//!      the folder up) — a shop with nothing to charge is dead on
-//!      arrival.
-//!   Otherwise the playtest PASSES and `get_console` returns an OK line.
+//!
+//! 1. playtest FAILS with console error
+//!    `ServerScriptService.RoundManager:4: attempt to index nil with 'Start'`
+//!    if any written script contains `workspace.Round.` but no written
+//!    script creates it (no `Name = "Round"` anywhere).
+//! 2. playtest FAILS with console error
+//!    `Workspace.SpawnPad is not a valid member of Workspace "Workspace"`
+//!    if any written script references `workspace.SpawnPad` but no
+//!    instance exists at `Workspace.SpawnPad`.
+//! 3. playtest FAILS with console error
+//!    `Workspace.Checkpoints is not a valid member of Workspace "Workspace"`
+//!    if any written script references `workspace.Checkpoints` but no
+//!    script creates it (no `Name = "Checkpoints"` anywhere) and no
+//!    instance exists at `Workspace.Checkpoints`.
+//! 4. playtest FAILS with console error
+//!    `ServerScriptService.Currency: DataStore save failed: BindToClose was never bound`
+//!    if any written script calls `GetDataStore(` without binding a
+//!    shutdown save (`BindToClose` absent from that script).
+//! 5. playtest FAILS with console error
+//!    `StarterGui.GameGui: OpenROShopBuy RemoteEvent was never created in ReplicatedStorage`
+//!    if any written script waits on `WaitForChild("OpenROShopBuy")`
+//!    but no written script creates a RemoteEvent.
+//! 6. playtest FAILS with console error
+//!    `ServerScriptService.Shop: no leaderstats exists for the shop to charge`
+//!    if any written script creates a RemoteEvent (the shop) but no
+//!    written script CREATES leaderstats (`Name = "leaderstats"` —
+//!    a currency or leaderboard script; the shop itself only looks
+//!    the folder up) — a shop with nothing to charge is dead on
+//!    arrival.
+//!
+//! Otherwise the playtest PASSES and `get_console` returns an OK line.
 //!
 //! The place tree holds scripts AND instances:
 //! `{ "scripts": {path: source}, "instances": {path: {class_name, properties}} }`.
