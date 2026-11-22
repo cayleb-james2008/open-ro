@@ -8,7 +8,26 @@
 //! and fail closed when none is configured.
 
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::io::{BufRead, BufReader, Read};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+/// Base URL that selects the Antigravity CLI provider (`agy -p ...`) instead
+/// of an OpenAI-compatible HTTP endpoint.
+pub const AGY_BASE_URL: &str = "agy://antigravity";
+pub const AGY_DEFAULT_MODEL: &str = "gemini-4-hydrogen-high";
+const AGY_DEFAULT_BIN: &str =
+    "/home/cayleb/.local/share/mise/installs/antigravity-cli/latest/agy";
+/// Linux caps one argv string at 128 KiB; stay safely under it.
+const AGY_MAX_PROMPT_BYTES: usize = 110_000;
+/// agy must act as a pure text model: every tool class is denied, so a model
+/// that tries to write a file, run a command or open a URL is refused by agy
+/// itself, whatever the prompt says.
+const AGY_DENY_SETTINGS: &str = r#"{"permissions":{"deny":["write_file(*)","read_file(*)","command(*)","mcp(*)","read_url(*)","execute_url(*)","download_url(*)"]}}"#;
+const AGY_TEXT_ONLY: &str = "[Text-only mode]\nYou are the language model inside the OpenRO game builder. You have no tools: never read or write files, never run commands, never browse. The host application performs every action for you. Reply only with the plain text (or JSON) the instructions below ask for.\n\n";
 
 pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 pub const DEFAULT_MODEL_ID: &str = "deepseek-v4.1-flash";
@@ -93,6 +112,300 @@ pub fn probe_local_gateways() -> Vec<DetectedGateway> {
     found
 }
 
+pub fn is_agy_url(url: &str) -> bool {
+    url.trim().starts_with("agy://")
+}
+
+/// Path of the agy binary: `OPENRO_AGY_BIN`, the installed default, else `agy`
+/// on PATH.
+pub fn agy_bin() -> PathBuf {
+    if let Some(p) = std::env::var("OPENRO_AGY_BIN").ok().filter(|s| !s.trim().is_empty()) {
+        return PathBuf::from(p.trim());
+    }
+    let default = PathBuf::from(AGY_DEFAULT_BIN);
+    if default.exists() {
+        default
+    } else {
+        PathBuf::from("agy")
+    }
+}
+
+/// True when the agy binary can be started (cheap check, no model call).
+pub fn agy_available() -> bool {
+    let bin = agy_bin();
+    if bin.components().count() > 1 {
+        bin.exists()
+    } else {
+        std::env::var_os("PATH")
+            .map(|paths| std::env::split_paths(&paths).any(|d| d.join(&bin).exists()))
+            .unwrap_or(false)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgyModel {
+    pub id: String,
+    pub label: String,
+}
+
+/// Parse `agy models` output (`id<TAB>label` lines after a header line).
+pub fn parse_agy_models(text: &str) -> Vec<AgyModel> {
+    text.lines()
+        .filter_map(|l| {
+            let (id, label) = l.split_once('\t')?;
+            let id = id.trim();
+            if id.is_empty() || id.contains(' ') {
+                return None;
+            }
+            Some(AgyModel { id: id.to_string(), label: label.trim().to_string() })
+        })
+        .collect()
+}
+
+pub fn agy_models_fallback() -> Vec<AgyModel> {
+    fallback_agy_models()
+}
+
+fn fallback_agy_models() -> Vec<AgyModel> {
+    [
+        ("gemini-4-hydrogen-high", "Gemini 4 Hydrogen (High)"),
+        ("gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen (XHigh)"),
+        ("gemini-4-hydrogen-medium", "Gemini 4 Hydrogen (Medium)"),
+        ("gemini-4-hydrogen-low", "Gemini 4 Hydrogen (Low)"),
+    ]
+    .iter()
+    .map(|(i, l)| AgyModel { id: i.to_string(), label: l.to_string() })
+    .collect()
+}
+
+type ModelCache = Mutex<Option<(Instant, PathBuf, Vec<AgyModel>)>>;
+
+/// Models agy offers, cached for ten minutes. Falls back to the Hydrogen set
+/// when agy cannot list (offline, not logged in). `refresh` bypasses the cache.
+pub fn agy_models(refresh: bool) -> Vec<AgyModel> {
+    let cache = agy_cache();
+    let bin = agy_bin();
+    if !refresh {
+        if let Some((at, b, list)) = cache.lock().unwrap().as_ref() {
+            if b == &bin && at.elapsed() < Duration::from_secs(600) {
+                return list.clone();
+            }
+        }
+    }
+    let listed = run_agy_models(&bin);
+    let list = if listed.is_empty() { fallback_agy_models() } else { listed };
+    *cache.lock().unwrap() = Some((Instant::now(), bin, list.clone()));
+    list
+}
+
+/// Cached model list without ever running agy (None until a refresh happened).
+pub fn agy_models_cached() -> Option<Vec<AgyModel>> {
+    // Same cache as `agy_models`; a zero-cost peek for status snapshots.
+    agy_cache().lock().unwrap().as_ref().map(|(_, _, l)| l.clone())
+}
+
+fn agy_cache() -> &'static ModelCache {
+    static CACHE: OnceLock<ModelCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// Last agy failure (quota, sign-in, outage); cleared by the next good answer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgyIssue {
+    pub kind: &'static str,
+    pub message: String,
+    pub resets_in: Option<String>,
+    pub at_unix: u64,
+}
+
+fn agy_issue_slot() -> &'static Mutex<Option<AgyIssue>> {
+    static ISSUE: OnceLock<Mutex<Option<AgyIssue>>> = OnceLock::new();
+    ISSUE.get_or_init(|| Mutex::new(None))
+}
+
+pub fn agy_last_issue() -> Option<AgyIssue> {
+    agy_issue_slot().lock().unwrap().clone()
+}
+
+fn record_agy_issue(raw: &str, message: &str) {
+    let lower = raw.to_ascii_lowercase();
+    let kind = if lower.contains("quota") {
+        "quota"
+    } else if lower.contains("not signed in") || lower.contains("unauthenticated") || lower.contains("log in") {
+        "auth"
+    } else {
+        "error"
+    };
+    let resets_in = reset_phrase(raw).map(|r| r.trim_start_matches("resets in").trim().to_string());
+    let at_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    *agy_issue_slot().lock().unwrap() = Some(AgyIssue {
+        kind,
+        message: message.to_string(),
+        resets_in,
+        at_unix,
+    });
+}
+
+fn run_agy_models(bin: &PathBuf) -> Vec<AgyModel> {
+    let Ok(mut child) = Command::new(bin)
+        .arg("models")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    let mut out = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = out.read_to_string(&mut buf);
+        let _ = tx.send(buf);
+    });
+    match rx.recv_timeout(Duration::from_secs(20)) {
+        Ok(text) => {
+            let _ = child.wait();
+            parse_agy_models(&text)
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Vec::new()
+        }
+    }
+}
+
+/// Flatten an OpenAI-style conversation into one agy prompt.
+pub fn flatten_messages(messages: &[Value]) -> String {
+    let text_of = |m: &Value| match m.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Null) | None => String::new(),
+        Some(other) => other.to_string(),
+    };
+    let mut out = String::from(AGY_TEXT_ONLY);
+    for m in messages {
+        let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+        let content = text_of(m);
+        match role {
+            "system" | "developer" => out.push_str(&format!("[System Instructions]\n{content}\n\n")),
+            "user" => out.push_str(&format!("User: {content}\n\n")),
+            "assistant" => out.push_str(&format!("Assistant: {content}\n\n")),
+            other => out.push_str(&format!("{other}: {content}\n\n")),
+        }
+    }
+    out.push_str("Assistant:");
+    fit_prompt(out)
+}
+
+/// Keep the prompt under the argv limit by cutting the middle (the oldest
+/// turns), keeping the opening instructions and the latest turns.
+fn fit_prompt(prompt: String) -> String {
+    if prompt.len() <= AGY_MAX_PROMPT_BYTES {
+        return prompt;
+    }
+    let head_len = AGY_MAX_PROMPT_BYTES * 35 / 100;
+    let tail_len = AGY_MAX_PROMPT_BYTES - head_len - 200;
+    let mut h = head_len;
+    while !prompt.is_char_boundary(h) {
+        h -= 1;
+    }
+    let mut t = prompt.len() - tail_len;
+    while !prompt.is_char_boundary(t) {
+        t += 1;
+    }
+    format!(
+        "{}\n\n[... {} bytes of older conversation left out to fit ...]\n\n{}",
+        &prompt[..h],
+        t - h,
+        &prompt[t..]
+    )
+}
+
+/// Outcome of reading agy's `stream-json` output.
+#[derive(Debug, PartialEq)]
+pub enum AgyOutcome {
+    Text(String),
+    Error(String),
+}
+
+/// Turn agy `stream-json` lines into the answer text or a clear error.
+/// A `result` event with status ERROR (quota, auth, outage) is never an empty
+/// answer.
+pub fn parse_agy_stream(lines: &[String]) -> AgyOutcome {
+    let mut deltas = String::new();
+    let mut response: Option<String> = None;
+    let mut error: Option<String> = None;
+    for line in lines {
+        let Ok(evt) = serde_json::from_str::<Value>(line.trim()) else { continue };
+        match evt.get("event").and_then(|e| e.as_str()) {
+            Some("step_update") => {
+                if let Some(d) = evt.pointer("/step_update/text_delta").and_then(|d| d.as_str()) {
+                    deltas.push_str(d);
+                }
+            }
+            Some("result") => {
+                let r = &evt["result"];
+                let status = r.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                if let Some(e) = r.get("error").and_then(|e| e.as_str()).filter(|e| !e.trim().is_empty()) {
+                    error = Some(e.trim().to_string());
+                } else if status.eq_ignore_ascii_case("ERROR") {
+                    error = Some("the model returned no response".to_string());
+                }
+                if let Some(t) = r.get("response").and_then(|t| t.as_str()).filter(|t| !t.trim().is_empty()) {
+                    response = Some(t.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(e) = error {
+        if response.is_none() && deltas.trim().is_empty() {
+            let message = explain_agy_error(&e);
+            record_agy_issue(&e, &message);
+            return AgyOutcome::Error(message);
+        }
+    }
+    let text = response.unwrap_or(deltas);
+    if text.trim().is_empty() {
+        AgyOutcome::Error(
+            "The model sent back an empty answer, so nothing was built. Send it again. (Details: Antigravity returned no text)".to_string(),
+        )
+    } else {
+        AgyOutcome::Text(text)
+    }
+}
+
+/// `resets in 2h13m` out of "Individual quota reached ... resets in 2h13m."
+fn reset_phrase(raw: &str) -> Option<String> {
+    let i = raw.to_ascii_lowercase().find("resets in")?;
+    let rest = &raw[i..];
+    let end = rest.find(". ").unwrap_or(rest.len());
+    Some(rest[..end].trim().trim_end_matches('.').to_string())
+}
+
+fn explain_agy_error(raw: &str) -> String {
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("quota") {
+        // "Individual quota reached ... resets in 2h13m"
+        return match reset_phrase(raw) {
+            Some(r) => format!(
+                "The Gemini model is out of quota for now, so nothing was built. Its quota {r}. Wait until then, or pick another model in Settings. (Details: {raw})"
+            ),
+            None => format!(
+                "The Gemini model is out of quota for now, so nothing was built. Wait a while, or pick another model in Settings. (Details: {raw})"
+            ),
+        };
+    }
+    if lower.contains("unauthenticated") || lower.contains("not logged in") || lower.contains("log in") || lower.contains("sign in") {
+        return format!("Antigravity is not signed in, so nothing was built. Run `agy` once in a terminal and sign in. (Details: {raw})");
+    }
+    format!("The model did not answer, so nothing was built. Wait a minute and send it again. (Details: {raw})")
+}
+
 #[derive(Clone)]
 pub struct ModelClient {
     base_url: String,
@@ -100,6 +413,9 @@ pub struct ModelClient {
     api_key: Option<String>,
     session_id: String,
     agent: ureq::Agent,
+    agy_bin: Option<PathBuf>,
+    agy_dir: PathBuf,
+    agy_timeout: Duration,
 }
 
 impl ModelClient {
@@ -118,7 +434,51 @@ impl ModelClient {
             }),
             session_id,
             agent,
+            agy_bin: None,
+            agy_dir: default_agy_dir(),
+            agy_timeout: Duration::from_secs(
+                std::env::var("OPENRO_AGY_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|v| v.trim().parse().ok())
+                    .filter(|n: &u64| *n > 0)
+                    .unwrap_or(600),
+            ),
         }
+    }
+
+    /// The Antigravity CLI provider with the given model (default Hydrogen).
+    pub fn antigravity(model_id: Option<String>) -> Self {
+        ModelClient::new(
+            AGY_BASE_URL.to_string(),
+            model_id.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| AGY_DEFAULT_MODEL.to_string()),
+            None,
+        )
+    }
+
+    /// Use this agy binary instead of `OPENRO_AGY_BIN` / the default.
+    pub fn with_agy_bin(mut self, bin: PathBuf) -> Self {
+        self.agy_bin = Some(bin);
+        self
+    }
+
+    /// Empty working directory agy runs in.
+    pub fn with_agy_dir(mut self, dir: PathBuf) -> Self {
+        self.agy_dir = dir;
+        self
+    }
+
+    pub fn with_agy_timeout(mut self, t: Duration) -> Self {
+        self.agy_timeout = t;
+        self
+    }
+
+    pub fn is_antigravity(&self) -> bool {
+        is_agy_url(&self.base_url)
+    }
+
+    /// `"antigravity"` or `"openai"`.
+    pub fn provider(&self) -> &'static str {
+        if self.is_antigravity() { "antigravity" } else { "openai" }
     }
 
     /// Build from the environment (`OPENRO_MODEL_BASE_URL`, `OPENRO_MODEL_ID`,
@@ -140,7 +500,14 @@ impl ModelClient {
             .ok()
             .is_some_and(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"));
 
+        let no_agy = std::env::var("OPENRO_NO_AGY")
+            .ok()
+            .is_some_and(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"));
+
         if env_base.is_none() && env_key.is_none() && !no_auto {
+            if !no_agy && agy_available() {
+                return ModelClient::antigravity(env_model);
+            }
             if let Some(gw) = probe_local_gateways().into_iter().next() {
                 return ModelClient::new(gw.base_url, env_model.unwrap_or(gw.model_id), None);
             }
@@ -154,6 +521,9 @@ impl ModelClient {
     /// Loopback OpenAI-compatible endpoints work without an API key; remote
     /// endpoints require one.
     pub fn is_configured(&self) -> bool {
+        if self.is_antigravity() {
+            return self.agy_bin.as_ref().map(|b| b.exists()).unwrap_or_else(agy_available);
+        }
         self.api_key.is_some() || is_loopback_url(&self.base_url)
     }
 
@@ -170,7 +540,7 @@ impl ModelClient {
     }
 
     pub fn is_loopback(&self) -> bool {
-        is_loopback_url(&self.base_url)
+        self.is_antigravity() || is_loopback_url(&self.base_url)
     }
 
     pub fn api_key_masked(&self) -> Option<String> {
@@ -191,6 +561,9 @@ impl ModelClient {
 
     /// One chat completion. Returns the assistant message content.
     pub fn chat(&self, messages: &[Value]) -> Result<String, String> {
+        if self.is_antigravity() {
+            return self.chat_agy(messages);
+        }
         if !self.is_configured() {
             return Err(
                 "no model key configured: set OPENRO_MODEL_API_KEY to enable chat".to_string(),
@@ -222,6 +595,160 @@ impl ModelClient {
             .map(|s| s.to_string())
             .ok_or_else(|| "The model sent back an empty answer, so nothing was built. Send it again. (Details: no message content)".to_string())
     }
+}
+
+impl ModelClient {
+    /// One turn through `agy -p`: stdin ignored (agy hangs on an open stdin),
+    /// all tools denied, run in an empty sandbox directory, hard timeout.
+    fn chat_agy(&self, messages: &[Value]) -> Result<String, String> {
+        if !self.is_configured() {
+            return Err("Antigravity (agy) is not installed here, so nothing was built. Install it or pick another model in Settings.".to_string());
+        }
+        let bin = self.agy_bin.clone().unwrap_or_else(agy_bin);
+        let _ = std::fs::create_dir_all(&self.agy_dir);
+        let prompt = flatten_messages(messages);
+        let mut child = Command::new(&bin)
+            .arg("-p")
+            .arg(&prompt)
+            .arg("--model")
+            .arg(&self.model_id)
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--settings")
+            .arg(AGY_DENY_SETTINGS)
+            .current_dir(&self.agy_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Antigravity could not start, so nothing was built. (Details: {e})"))?;
+        let stdout = child.stdout.take().unwrap();
+        let mut stderr = child.stderr.take().unwrap();
+        let err_thread = std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = stderr.read_to_string(&mut s);
+            s
+        });
+        let (tx, rx) = mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let deadline = Instant::now() + self.agy_timeout;
+        let mut lines = Vec::new();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(l) => lines.push(l),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "The model took longer than {} seconds, so nothing was built. Send it again.",
+                        self.agy_timeout.as_secs()
+                    ));
+                }
+            }
+        }
+        let status = child.wait().ok();
+        let stderr_text = err_thread.join().unwrap_or_default();
+        match parse_agy_stream(&lines) {
+            AgyOutcome::Text(t) => {
+                *agy_issue_slot().lock().unwrap() = None;
+                Ok(t)
+            }
+            AgyOutcome::Error(e) => {
+                let tail: String = stderr_text.trim().chars().take(300).collect();
+                if lines.is_empty() && !tail.is_empty() {
+                    Err(format!("The model did not answer, so nothing was built. Send it again. (Details: agy exited {:?}: {tail})", status.and_then(|s| s.code())))
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+}
+
+/// Resolve the active `ModelClient` from env vars, saved `RuntimeConfig`,
+/// Antigravity CLI availability, and local gateway probing (in that order).
+/// Used both at server startup and by Teamwork workers so every agent honours
+/// the live Settings selection and `OPENRO_AGY_BIN`.
+pub fn model_from_config(
+    cfg: &crate::config::RuntimeConfig,
+    data_dir: Option<&std::path::Path>,
+) -> ModelClient {
+    let env_nonempty = |k: &str| {
+        std::env::var(k)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let env_flag = |k: &str| {
+        std::env::var(k)
+            .ok()
+            .is_some_and(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
+    };
+    let env_base = env_nonempty("OPENRO_MODEL_BASE_URL");
+    let env_model = env_nonempty("OPENRO_MODEL_ID");
+    let env_key = env_nonempty("OPENRO_MODEL_API_KEY");
+    let no_auto = env_flag("OPENRO_NO_AUTO_MODEL");
+    let no_agy = env_flag("OPENRO_NO_AGY");
+
+    let saved_is_agy = cfg.provider.as_deref() == Some("antigravity")
+        || cfg.base_url.as_deref().is_some_and(is_agy_url);
+    let saved_is_openai = cfg.provider.as_deref() == Some("openai");
+
+    let model = if env_base.is_some() || env_key.is_some() {
+        let base = env_base.unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+        let def_model = if is_agy_url(&base) { AGY_DEFAULT_MODEL } else { DEFAULT_MODEL_ID };
+        ModelClient::new(base, env_model.unwrap_or_else(|| def_model.to_string()), env_key)
+    } else if saved_is_agy {
+        ModelClient::antigravity(env_model.or_else(|| cfg.model_id.clone()))
+    } else if cfg.base_url.is_some() || cfg.api_key.is_some() {
+        ModelClient::new(
+            cfg.base_url.clone().unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
+            env_model
+                .or_else(|| cfg.model_id.clone())
+                .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
+            cfg.api_key.clone(),
+        )
+    } else if !saved_is_openai && !no_auto && !no_agy && agy_available() {
+        ModelClient::antigravity(env_model.or_else(|| cfg.model_id.clone()))
+    } else if !no_auto {
+        if let Some(gw) = probe_local_gateways().into_iter().next() {
+            ModelClient::new(gw.base_url, env_model.unwrap_or(gw.model_id), None)
+        } else {
+            ModelClient::new(
+                DEFAULT_BASE_URL.to_string(),
+                env_model.unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
+                None,
+            )
+        }
+    } else {
+        ModelClient::new(
+            DEFAULT_BASE_URL.to_string(),
+            env_model.unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
+            None,
+        )
+    };
+
+    match data_dir {
+        Some(dir) => model.with_agy_dir(dir.join("agy-sandbox")),
+        None => model,
+    }
+}
+
+fn default_agy_dir() -> PathBuf {
+    std::env::var("OPENRO_DATA_DIR")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("openro-data"))
+        .join("agy-sandbox")
 }
 
 fn session_nonce() -> u64 {
