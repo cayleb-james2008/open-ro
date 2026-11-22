@@ -1,8 +1,11 @@
 pub mod agent;
 pub mod art_knowledge;
 pub mod assets;
+pub mod audio_synth;
 pub mod config;
+pub mod desktop;
 pub mod ideas;
+pub mod library;
 pub mod luau_check;
 pub mod mcp;
 pub mod model;
@@ -12,5 +15,6 @@ pub mod server;
 pub mod skills;
 pub mod snapshots;
 pub mod sse;
+pub mod studio_embed;
 pub mod studio_stream;
 pub mod update;

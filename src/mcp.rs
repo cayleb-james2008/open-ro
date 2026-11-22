@@ -1,20 +1,155 @@
 //! Studio bridge: an MCP client speaking JSON-RPC 2.0 over stdio to a
 //! child process (a Roblox Studio MCP server). The child command comes
-//! from `OPENRO_MCP_COMMAND`, so a real Studio MCP server drops in
-//! unchanged. Performs the `initialize` handshake, then `tools/call`.
+//! from `OPENRO_MCP_COMMAND` or embedded Studio detection, so a real
+//! Roblox Studio MCP server drops in unchanged.
+//!
+//! Supports both newline-delimited JSON-RPC (NDJSON) and `Content-Length`
+//! framed MCP stdio streams, automatically tracks the connected `studio_id`
+//! and `datamodel_type` (`"Edit"` by default), and exposes all 12 official
+//! Roblox Studio MCP tools plus `list_roblox_studios`.
 
 use crate::assets::{decode_base64, detect_image_mime};
 use crate::studio_stream::StudioFrame;
-use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use serde_json::{json, Map, Value};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Official Roblox Studio MCP tools exposed by OpenRO v0.9.0.
+pub const OFFICIAL_STUDIO_TOOLS: &[&str] = &[
+    "list_roblox_studios",
+    "get_studio_state",
+    "search_game_tree",
+    "inspect_instance",
+    "script_read",
+    "script_grep",
+    "multi_edit",
+    "execute_luau",
+    "get_console_output",
+    "screen_capture",
+    "start_stop_play",
+    "user_mouse_input",
+    "user_keyboard_input",
+];
+
+/// Legacy / mock Studio bridge tools also supported transparently.
+pub const LEGACY_STUDIO_TOOLS: &[&str] = &[
+    "get_place_tree",
+    "write_script",
+    "delete_script",
+    "create_instance",
+    "delete_instance",
+    "playtest",
+    "get_console",
+];
+
+/// Returns `true` when `tool` is an allowlisted official or legacy Roblox Studio MCP tool.
+pub fn is_allowed_studio_tool(tool: &str) -> bool {
+    OFFICIAL_STUDIO_TOOLS.contains(&tool) || LEGACY_STUDIO_TOOLS.contains(&tool)
+}
+
+/// Structured catalog of all official Roblox Studio MCP tools for the UI drawer & agent prompt.
+pub fn official_studio_tool_catalog() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "list_roblox_studios",
+            "category": "session",
+            "description": "List running Roblox Studio instances and their studio_id handles",
+            "requires_studio_id": false,
+            "requires_datamodel_type": false
+        }),
+        json!({
+            "name": "get_studio_state",
+            "category": "session",
+            "description": "Read active Roblox Studio mode, available DataModels, and play state",
+            "requires_studio_id": true,
+            "requires_datamodel_type": false
+        }),
+        json!({
+            "name": "search_game_tree",
+            "category": "explorer",
+            "description": "Search Instances in Workspace, ServerScriptService, ReplicatedStorage, or StarterGui",
+            "requires_studio_id": true,
+            "requires_datamodel_type": true
+        }),
+        json!({
+            "name": "inspect_instance",
+            "category": "explorer",
+            "description": "Inspect detailed properties, attributes, and children of an Instance path",
+            "requires_studio_id": true,
+            "requires_datamodel_type": false
+        }),
+        json!({
+            "name": "script_read",
+            "category": "scripts",
+            "description": "Read a Luau Script, LocalScript, or ModuleScript by dot path and line range",
+            "requires_studio_id": true,
+            "requires_datamodel_type": false
+        }),
+        json!({
+            "name": "script_grep",
+            "category": "scripts",
+            "description": "Search across all Luau scripts in the open Roblox Studio place",
+            "requires_studio_id": true,
+            "requires_datamodel_type": false
+        }),
+        json!({
+            "name": "multi_edit",
+            "category": "scripts",
+            "description": "Create or apply targeted multi-hunk edits to a Luau script in Studio",
+            "requires_studio_id": true,
+            "requires_datamodel_type": true
+        }),
+        json!({
+            "name": "execute_luau",
+            "category": "execution",
+            "description": "Execute Luau code directly inside Roblox Studio's Edit, Client, or Server DataModel",
+            "requires_studio_id": true,
+            "requires_datamodel_type": true
+        }),
+        json!({
+            "name": "get_console_output",
+            "category": "diagnostics",
+            "description": "Fetch live Roblox Studio Output window console lines and playtest errors",
+            "requires_studio_id": true,
+            "requires_datamodel_type": false
+        }),
+        json!({
+            "name": "screen_capture",
+            "category": "viewport",
+            "description": "Capture the live Roblox Studio 3D viewport as a PNG frame",
+            "requires_studio_id": true,
+            "requires_datamodel_type": false
+        }),
+        json!({
+            "name": "start_stop_play",
+            "category": "playtest",
+            "description": "Start Play, Run Server, or Stop the live Roblox Studio playtest session",
+            "requires_studio_id": true,
+            "requires_datamodel_type": false
+        }),
+        json!({
+            "name": "user_mouse_input",
+            "category": "input",
+            "description": "Forward live pointer move, click, drag, and scroll actions into Studio",
+            "requires_studio_id": true,
+            "requires_datamodel_type": true
+        }),
+        json!({
+            "name": "user_keyboard_input",
+            "category": "input",
+            "description": "Forward live key press, hold, release, and text input into Studio",
+            "requires_studio_id": true,
+            "requires_datamodel_type": true
+        }),
+    ]
+}
+
 /// How long one bridge request may take before it is declared wedged.
-/// A silent bridge used to hang the agent forever (blocking read, no
-/// timeout anywhere); `OPENRO_BRIDGE_TIMEOUT_SECS` overrides for tests
-/// and slow real servers.
+/// `OPENRO_BRIDGE_TIMEOUT_SECS` overrides for tests and slow real servers.
 fn request_timeout() -> Duration {
     let secs = std::env::var("OPENRO_BRIDGE_TIMEOUT_SECS")
         .ok()
@@ -24,12 +159,39 @@ fn request_timeout() -> Duration {
     Duration::from_secs(secs)
 }
 
+/// Split a command string into `[program, args...]` preserving quoted paths
+/// (important on Windows when paths contain spaces like `Program Files`).
+pub fn split_command_line(command: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    for ch in command.chars() {
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if !cur.is_empty() {
+                    parts.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        parts.push(cur);
+    }
+    parts
+}
+
 pub struct McpClient {
     child: Child,
     stdin: BufWriter<ChildStdin>,
-    /// Lines from the bridge's stdout, delivered by a reader thread so
+    /// JSON payloads from the bridge's stdout, delivered by a reader thread so
     /// requests can time out instead of blocking forever.
     lines: Receiver<String>,
+    /// True once the server uses LSP/MCP `Content-Length` framing or when forced via env.
+    content_length_framing: Arc<AtomicBool>,
     timeout: Duration,
     next_id: i64,
     /// Tool names the server advertised via `tools/list` at connect.
@@ -38,24 +200,29 @@ pub struct McpClient {
     /// capabilities are then unknown, and the agent must not refuse an
     /// ask on a guess.
     tools_known: bool,
+    /// Active Roblox Studio instance handle discovered via `list_roblox_studios`.
+    studio_id: Option<String>,
+    /// Active Roblox DataModel target (`"Edit"` | `"Client"` | `"Server"`).
+    datamodel_type: String,
+    /// Monotonic counter used to construct `capture_id` for `screen_capture`.
+    capture_seq: u64,
 }
 
 impl McpClient {
-    /// Spawn the server command (whitespace-split: program + args) and run
-    /// the MCP initialize handshake.
+    /// Spawn the server command (supporting quoted paths) and run the MCP initialize handshake.
     pub fn spawn(command: &str) -> Result<McpClient, String> {
         Self::spawn_with_timeout(command, request_timeout())
     }
 
     /// Spawn with an explicit per-request timeout.
     pub fn spawn_with_timeout(command: &str, timeout: Duration) -> Result<McpClient, String> {
-        let mut parts = command.split_whitespace();
+        let parts = split_command_line(command);
         let program = parts
-            .next()
+            .first()
             .ok_or_else(|| "empty MCP command".to_string())?;
-        let args: Vec<&str> = parts.collect();
+        let args = &parts[1..];
         let mut child = Command::new(program)
-            .args(&args)
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -64,6 +231,13 @@ impl McpClient {
         let stdin = BufWriter::new(child.stdin.take().expect("stdin piped"));
         let stdout = child.stdout.take().expect("stdout piped");
         let (tx, rx) = channel::<String>();
+        let cl_flag = Arc::new(AtomicBool::new(
+            std::env::var("OPENRO_MCP_FRAMING")
+                .ok()
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case("content-length")),
+        ));
+        let cl_reader = Arc::clone(&cl_flag);
+
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             let mut line = String::new();
@@ -72,6 +246,49 @@ impl McpClient {
                 match reader.read_line(&mut line) {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        // Support both LSP/MCP `Content-Length: N\r\n\r\n{...}` and NDJSON lines.
+                        if let Some(rest) = strip_prefix_ascii_ci(trimmed, "content-length:") {
+                            if let Ok(mut content_len) = rest.trim().parse::<usize>() {
+                                cl_reader.store(true, Ordering::Relaxed);
+                                // Consume remaining header lines until blank separator line.
+                                loop {
+                                    line.clear();
+                                    match reader.read_line(&mut line) {
+                                        Ok(0) | Err(_) => return,
+                                        Ok(_) => {
+                                            let h = line.trim();
+                                            if h.is_empty() {
+                                                break;
+                                            }
+                                            if let Some(r2) =
+                                                strip_prefix_ascii_ci(h, "content-length:")
+                                            {
+                                                if let Ok(n) = r2.trim().parse::<usize>() {
+                                                    content_len = n;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if content_len == 0 || content_len > 32 * 1024 * 1024 {
+                                    continue;
+                                }
+                                let mut body = vec![0u8; content_len];
+                                if reader.read_exact(&mut body).is_err() {
+                                    break;
+                                }
+                                if let Ok(text) = String::from_utf8(body) {
+                                    if tx.send(text).is_err() {
+                                        break;
+                                    }
+                                }
+                                continue;
+                            }
+                        }
                         if tx.send(line.clone()).is_err() {
                             break;
                         }
@@ -79,17 +296,27 @@ impl McpClient {
                 }
             }
         });
+
         let mut client = McpClient {
             child,
             stdin,
             lines: rx,
+            content_length_framing: cl_flag,
             timeout,
             next_id: 1,
             tools: Vec::new(),
             tools_known: false,
+            studio_id: None,
+            datamodel_type: "Edit".to_string(),
+            capture_seq: 0,
         };
         client.initialize()?;
         client.discover_tools();
+        // Auto-discover `studio_id` ONLY when the server explicitly advertises `list_roblox_studios`
+        // so minimal/legacy fixtures that don't implement it receive zero unexpected calls.
+        if client.tools_known && client.tools.iter().any(|t| t == "list_roblox_studios") {
+            let _ = client.list_roblox_studios();
+        }
         Ok(client)
     }
 
@@ -112,6 +339,15 @@ impl McpClient {
         &self.tools
     }
 
+    /// Count of official 13 Roblox Studio MCP tools currently advertised by this connection.
+    pub fn official_tools_available(&self) -> Vec<String> {
+        OFFICIAL_STUDIO_TOOLS
+            .iter()
+            .filter(|name| self.tools.iter().any(|t| t == **name))
+            .map(|s| (*s).to_string())
+            .collect()
+    }
+
     /// Whether `name` is usable: advertised, or the server's list is
     /// unknown (then the call itself will tell us).
     pub fn has_tool(&self, name: &str) -> bool {
@@ -123,6 +359,38 @@ impl McpClient {
         self.tools_known
     }
 
+    /// Currently tracked Roblox Studio `studio_id` (if discovered or set).
+    pub fn studio_id(&self) -> Option<&str> {
+        self.studio_id.as_deref()
+    }
+
+    /// Override or clear the tracked Roblox Studio `studio_id`.
+    pub fn set_studio_id(&mut self, id: Option<String>) {
+        self.studio_id = id.and_then(|s| {
+            let t = s.trim().to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        });
+    }
+
+    /// Current Roblox DataModel target (`"Edit"`, `"Client"`, or `"Server"`).
+    pub fn datamodel_type(&self) -> &str {
+        &self.datamodel_type
+    }
+
+    /// Set the default Roblox DataModel target (`"Edit"`, `"Client"`, or `"Server"`).
+    pub fn set_datamodel_type(&mut self, dm: &str) {
+        let normalized = match dm.trim().to_ascii_lowercase().as_str() {
+            "client" => "Client",
+            "server" => "Server",
+            _ => "Edit",
+        };
+        self.datamodel_type = normalized.to_string();
+    }
+
     /// Spawn from `OPENRO_MCP_COMMAND`; `Ok(None)` when it is not set.
     pub fn from_env() -> Result<Option<McpClient>, String> {
         match std::env::var("OPENRO_MCP_COMMAND") {
@@ -132,34 +400,48 @@ impl McpClient {
     }
 
     /// Passively detect a running Vinegar Flatpak Roblox Studio instance with
-    /// `/home/<user>/.local/bin/roblox-studio-mcp` installed. NEVER launches
-    /// Vinegar or downloads anything.
+    /// `~/.local/bin/roblox-studio-mcp` installed. NEVER launches Vinegar or
+    /// downloads anything. Returns `None` on non-Unix platforms.
     pub fn detect_vinegar_studio_mcp() -> Option<String> {
-        let home = std::env::var("HOME").ok()?;
-        let candidate = std::path::PathBuf::from(home).join(".local/bin/roblox-studio-mcp");
-        if !candidate.is_file() {
-            return None;
+        #[cfg(unix)]
+        {
+            let home = std::env::var("HOME").ok()?;
+            let candidate = std::path::PathBuf::from(home).join(".local/bin/roblox-studio-mcp");
+            if !candidate.is_file() {
+                return None;
+            }
+            let ps = Command::new("flatpak")
+                .args(["ps", "--columns=instance,application"])
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .ok()?;
+            if !ps.status.success() {
+                return None;
+            }
+            let stdout = String::from_utf8_lossy(&ps.stdout);
+            let running = stdout.lines().any(|line| {
+                let mut parts = line.split_whitespace();
+                let _inst = parts.next();
+                parts.next() == Some("org.vinegarhq.Vinegar")
+            });
+            if running {
+                Some(candidate.to_string_lossy().into_owned())
+            } else {
+                None
+            }
         }
-        let ps = Command::new("flatpak")
-            .args(["ps", "--columns=instance,application"])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()?;
-        if !ps.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8_lossy(&ps.stdout);
-        let running = stdout.lines().any(|line| {
-            let mut parts = line.split_whitespace();
-            let _inst = parts.next();
-            parts.next() == Some("org.vinegarhq.Vinegar")
-        });
-        if running {
-            Some(candidate.to_string_lossy().into_owned())
-        } else {
+        #[cfg(not(unix))]
+        {
             None
         }
+    }
+
+    /// Cross-platform passive detection of a local Roblox Studio MCP command
+    /// (running Vinegar on Linux, or `%LOCALAPPDATA%\Roblox\Versions\version-*\StudioMCP.exe`
+    /// / `mcp.bat` on Windows). Never launches Studio or downloads anything.
+    pub fn detect_studio_mcp_command() -> Option<String> {
+        crate::studio_embed::detect_host_mcp_command()
     }
 
     fn initialize(&mut self) -> Result<(), String> {
@@ -168,7 +450,7 @@ impl McpClient {
             json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": { "name": "openro", "version": "0.1.0" }
+                "clientInfo": { "name": "openro", "version": env!("CARGO_PKG_VERSION") }
             }),
         )?;
         if result.get("serverInfo").is_none() {
@@ -179,13 +461,22 @@ impl McpClient {
     }
 
     fn send(&mut self, message: &Value) -> Result<(), String> {
-        let line = serde_json::to_string(message)
+        let payload = serde_json::to_string(message)
             .map_err(|e| format!("serialise JSON-RPC: {e}"))?;
-        self.stdin
-            .write_all(line.as_bytes())
-            .and_then(|_| self.stdin.write_all(b"\n"))
-            .and_then(|_| self.stdin.flush())
-            .map_err(|e| format!("write to Studio MCP server: {e}"))
+        if self.content_length_framing.load(Ordering::Relaxed) {
+            let header = format!("Content-Length: {}\r\n\r\n", payload.len());
+            self.stdin
+                .write_all(header.as_bytes())
+                .and_then(|_| self.stdin.write_all(payload.as_bytes()))
+                .and_then(|_| self.stdin.flush())
+                .map_err(|e| format!("write framed message to Studio MCP server: {e}"))
+        } else {
+            self.stdin
+                .write_all(payload.as_bytes())
+                .and_then(|_| self.stdin.write_all(b"\n"))
+                .and_then(|_| self.stdin.flush())
+                .map_err(|e| format!("write to Studio MCP server: {e}"))
+        }
     }
 
     fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
@@ -233,13 +524,54 @@ impl McpClient {
         }))
     }
 
+    /// Inject tracked `studio_id`, `datamodel_type`, and `capture_id` into official tool args
+    /// when not explicitly provided by the caller.
+    fn prepare_official_args(&mut self, tool: &str, arguments: Value) -> Value {
+        let mut obj = match arguments {
+            Value::Object(map) => map,
+            _ => Map::new(),
+        };
+
+        if tool != "list_roblox_studios" && !obj.contains_key("studio_id") {
+            if self.studio_id.is_none()
+                && self.tools_known
+                && self.tools.iter().any(|t| t == "list_roblox_studios")
+            {
+                let _ = self.list_roblox_studios();
+            }
+            if let Some(id) = self.studio_id.as_deref() {
+                obj.insert("studio_id".to_string(), json!(id));
+            }
+        }
+
+        let needs_datamodel = matches!(
+            tool,
+            "search_game_tree"
+                | "multi_edit"
+                | "execute_luau"
+                | "user_mouse_input"
+                | "user_keyboard_input"
+        );
+        if needs_datamodel && !obj.contains_key("datamodel_type") {
+            obj.insert("datamodel_type".to_string(), json!(self.datamodel_type));
+        }
+
+        if tool == "screen_capture" && !obj.contains_key("capture_id") {
+            self.capture_seq += 1;
+            obj.insert(
+                "capture_id".to_string(),
+                json!(format!("ScreenCapture_{}", self.capture_seq)),
+            );
+        }
+
+        Value::Object(obj)
+    }
+
     /// Call one MCP tool; returns the text of its first content block.
     ///
     /// A tool-level failure is an Err here, never a success string: the
     /// MCP `isError` flag is honoured, and so is an `{"error": ...}`
-    /// JSON payload (some bridges report failures that way). Before
-    /// this check existed, a bridge error was returned as Ok text and
-    /// the agent narrated work that never happened.
+    /// JSON payload (some bridges report failures that way).
     pub fn call_tool(&mut self, name: &str, arguments: Value) -> Result<String, String> {
         let result = self.request(
             "tools/call",
@@ -253,18 +585,10 @@ impl McpClient {
             return Err(format!("Studio bridge error in {name}: {text}"));
         }
         if let Ok(payload) = serde_json::from_str::<Value>(text) {
-            // An `error` key is a bridge error only when it carries an
-            // actual message: a string, or an object with one. A null
-            // error field next to a valid result is a healthy payload
-            // shape (several bridges emit it) and must not be refused.
             match payload.get("error") {
                 Some(Value::String(s)) if !s.is_empty() => {
                     return Err(format!("Studio bridge error in {name}: {s}"));
                 }
-                // An object counts ONLY when it carries a non-empty
-                // message — {"code": 0} beside a passing verdict is a
-                // healthy shape, and inventing a "tool error" message
-                // for it would fabricate a failure.
                 Some(Value::Object(o)) => {
                     if let Some(msg) = o
                         .get("message")
@@ -280,26 +604,267 @@ impl McpClient {
         Ok(text.to_string())
     }
 
-    /// The place tree as JSON: `{ "scripts": { "<path>": "<source>", ... } }`.
-    pub fn get_place_tree(&mut self) -> Result<Value, String> {
-        let text = self.call_tool("get_place_tree", json!({}))?;
-        serde_json::from_str(&text)
-            .map_err(|e| format!("get_place_tree returned non-JSON text: {e}"))
+    fn call_tool_json(&mut self, name: &str, arguments: Value) -> Result<Value, String> {
+        let prepared = self.prepare_official_args(name, arguments);
+        let text = self.call_tool(name, prepared)?;
+        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+            Ok(v)
+        } else {
+            Ok(json!({ "ok": true, "output": text }))
+        }
     }
 
-    /// Capture a live screenshot frame from the connected Roblox Studio MCP bridge
-    /// via the `screen_capture` tool. Safely decodes base64 PNG/JPEG/WebP from MCP
-    /// `image` content blocks or JSON/data-URL `text` blocks and validates real magic bytes.
+    /// Unified dispatcher for any of the 13 official (or legacy) Studio MCP tools.
+    /// Rejects unknown/unlisted tool names cleanly and auto-injects `studio_id` & `datamodel_type`.
+    pub fn call_official_tool(&mut self, name: &str, arguments: Value) -> Result<Value, String> {
+        let clean = name.trim();
+        if !is_allowed_studio_tool(clean) {
+            return Err(format!(
+                "unsupported Studio MCP tool '{clean}' (must be one of the official Roblox Studio tools)"
+            ));
+        }
+        match clean {
+            "list_roblox_studios" => self.list_roblox_studios(),
+            "get_studio_state" => self.get_studio_state(),
+            "screen_capture" => {
+                let cam = arguments.get("camera_position").and_then(parse_vec3_json);
+                let look = arguments.get("look_at_position").and_then(parse_vec3_json);
+                let frame = self.screen_capture_with_camera(cam, look)?;
+                Ok(json!({
+                    "ok": true,
+                    "frame": frame.meta_json(),
+                    "width": frame.width,
+                    "height": frame.height,
+                    "mime": frame.mime,
+                    "bytes": frame.bytes.len(),
+                }))
+            }
+            "start_stop_play" => {
+                let mode = if let Some(m) = arguments.get("mode").and_then(|v| v.as_str()) {
+                    m.to_string()
+                } else if let Some(is_start) = arguments.get("is_start").and_then(|v| v.as_bool()) {
+                    if is_start {
+                        "start_play".to_string()
+                    } else {
+                        "stop".to_string()
+                    }
+                } else {
+                    "start_play".to_string()
+                };
+                self.start_stop_play(&mode)
+            }
+            "get_console_output" => {
+                let lines = self.get_console_output()?;
+                Ok(json!({
+                    "ok": true,
+                    "lines": lines,
+                    "count": lines.len(),
+                }))
+            }
+            _ => self.call_tool_json(clean, arguments),
+        }
+    }
+
+    /// 1. `list_roblox_studios` — list active Roblox Studio instances and update tracked `studio_id`.
+    pub fn list_roblox_studios(&mut self) -> Result<Value, String> {
+        let val = self.call_tool_json("list_roblox_studios", json!({}))?;
+        if let Some(id) = extract_first_studio_id(&val) {
+            self.studio_id = Some(id);
+        }
+        Ok(val)
+    }
+
+    /// 2. `get_studio_state` — query Studio play mode and available DataModels.
+    pub fn get_studio_state(&mut self) -> Result<Value, String> {
+        let val = self.call_tool_json("get_studio_state", json!({}))?;
+        if let Some(dm) = val.get("active_datamodel").and_then(|v| v.as_str()) {
+            self.set_datamodel_type(dm);
+        }
+        Ok(val)
+    }
+
+    /// 3. `search_game_tree` — search the Studio DataModel hierarchy.
+    pub fn search_game_tree(
+        &mut self,
+        path: Option<&str>,
+        keywords: Option<&str>,
+        instance_type: Option<&str>,
+        max_depth: Option<u32>,
+        head_limit: Option<u32>,
+    ) -> Result<Value, String> {
+        let mut args = Map::new();
+        if let Some(p) = path.filter(|s| !s.trim().is_empty()) {
+            args.insert("path".to_string(), json!(p));
+        }
+        if let Some(kw) = keywords.filter(|s| !s.trim().is_empty()) {
+            args.insert("keywords".to_string(), json!(kw));
+        }
+        if let Some(it) = instance_type.filter(|s| !s.trim().is_empty()) {
+            args.insert("instance_type".to_string(), json!(it));
+        }
+        if let Some(md) = max_depth {
+            args.insert("max_depth".to_string(), json!(md));
+        }
+        if let Some(hl) = head_limit {
+            args.insert("head_limit".to_string(), json!(hl));
+        }
+        self.call_tool_json("search_game_tree", Value::Object(args))
+    }
+
+    /// 4. `inspect_instance` — inspect properties, attributes, and children of an Instance.
+    pub fn inspect_instance(&mut self, path: &str) -> Result<Value, String> {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("inspect_instance requires a non-empty instance path".to_string());
+        }
+        self.call_tool_json("inspect_instance", json!({ "path": trimmed }))
+    }
+
+    /// 5. `script_read` — read a Luau script by path and optional 1-indexed line range.
+    pub fn script_read(
+        &mut self,
+        target_file: &str,
+        start_line: Option<u32>,
+        end_line: Option<u32>,
+    ) -> Result<Value, String> {
+        let trimmed = target_file.trim();
+        if trimmed.is_empty() {
+            return Err("script_read requires a non-empty target_file path".to_string());
+        }
+        let mut args = Map::new();
+        args.insert("target_file".to_string(), json!(trimmed));
+        match (start_line, end_line) {
+            (Some(s), Some(e)) => {
+                args.insert("should_read_entire_file".to_string(), json!(false));
+                args.insert("start_line_one_indexed".to_string(), json!(s.max(1)));
+                args.insert("end_line_one_indexed_inclusive".to_string(), json!(e.max(s)));
+            }
+            _ => {
+                args.insert("should_read_entire_file".to_string(), json!(true));
+            }
+        }
+        self.call_tool_json("script_read", Value::Object(args))
+    }
+
+    /// 6. `script_grep` — search across all Luau scripts in the open place.
+    pub fn script_grep(&mut self, query: &str) -> Result<Value, String> {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return Err("script_grep requires a non-empty query".to_string());
+        }
+        self.call_tool_json("script_grep", json!({ "query": trimmed }))
+    }
+
+    /// 7. `multi_edit` — create or apply multi-hunk string edits to a Studio Luau script.
+    pub fn multi_edit(
+        &mut self,
+        file_path: &str,
+        edits: Vec<Value>,
+        class_name: Option<&str>,
+    ) -> Result<Value, String> {
+        let trimmed = file_path.trim();
+        if trimmed.is_empty() {
+            return Err("multi_edit requires a non-empty file_path".to_string());
+        }
+        if edits.is_empty() {
+            return Err("multi_edit requires at least one edit operation".to_string());
+        }
+        let mut args = Map::new();
+        args.insert("file_path".to_string(), json!(trimmed));
+        args.insert("edits".to_string(), Value::Array(edits));
+        if let Some(cls) = class_name.filter(|s| !s.trim().is_empty()) {
+            args.insert("className".to_string(), json!(cls));
+        }
+        self.call_tool_json("multi_edit", Value::Object(args))
+    }
+
+    /// 8. `execute_luau` — execute Luau code inside Roblox Studio's active DataModel.
+    pub fn execute_luau(&mut self, code: &str) -> Result<Value, String> {
+        if code.trim().is_empty() {
+            return Err("execute_luau requires non-empty Luau code".to_string());
+        }
+        self.call_tool_json("execute_luau", json!({ "code": code }))
+    }
+
+    /// Read structured Studio Output console lines via `get_console_output`
+    /// (falling back to `get_console` on bridges that only advertise the legacy tool).
+    pub fn get_console_output(&mut self) -> Result<Vec<String>, String> {
+        let tool = if self.has_tool("get_console_output") {
+            "get_console_output"
+        } else {
+            "get_console"
+        };
+        let args = if tool == "get_console_output" {
+            self.prepare_official_args("get_console_output", json!({}))
+        } else {
+            json!({})
+        };
+        let raw = match self.call_tool(tool, args) {
+            Ok(text) => text,
+            Err(_) if tool == "get_console_output" => self.call_tool("get_console", json!({}))?,
+            Err(e) => return Err(e),
+        };
+        if let Ok(val) = serde_json::from_str::<Value>(raw.trim()) {
+            if let Some(arr) = val.as_array() {
+                return Ok(arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .collect());
+            }
+            if let Some(arr) = val.get("lines").and_then(|v| v.as_array()) {
+                return Ok(arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .collect());
+            }
+            for key in ["output", "console", "text"] {
+                if let Some(s) = val.get(key).and_then(|v| v.as_str()) {
+                    return Ok(s
+                        .lines()
+                        .map(str::trim_end)
+                        .filter(|l| !l.is_empty())
+                        .map(ToString::to_string)
+                        .collect());
+                }
+            }
+        }
+        Ok(raw
+            .lines()
+            .map(str::trim_end)
+            .filter(|l| !l.is_empty())
+            .map(ToString::to_string)
+            .collect())
+    }
+
+    /// 10. `screen_capture` — capture a live screenshot frame from Roblox Studio.
     pub fn screen_capture(&mut self) -> Result<StudioFrame, String> {
+        self.screen_capture_with_camera(None, None)
+    }
+
+    /// Capture a live screenshot frame with optional Studio camera override coordinates.
+    pub fn screen_capture_with_camera(
+        &mut self,
+        camera_position: Option<[f64; 3]>,
+        look_at_position: Option<[f64; 3]>,
+    ) -> Result<StudioFrame, String> {
         if !self.has_tool("screen_capture") {
             return Err(
                 "Connected Studio MCP bridge does not advertise the 'screen_capture' tool"
                     .to_string(),
             );
         }
+        let mut args = Map::new();
+        if let Some(cam) = camera_position {
+            args.insert("camera_position".to_string(), json!(cam));
+        }
+        if let Some(look) = look_at_position {
+            args.insert("look_at_position".to_string(), json!(look));
+        }
+        let prepared = self.prepare_official_args("screen_capture", Value::Object(args));
+
         let result = self.request(
             "tools/call",
-            json!({ "name": "screen_capture", "arguments": {} }),
+            json!({ "name": "screen_capture", "arguments": prepared }),
         )?;
         if result.get("isError").and_then(|v| v.as_bool()) == Some(true) {
             let msg = result
@@ -398,52 +963,10 @@ impl McpClient {
         })
     }
 
-    /// Read structured Studio Output console lines via `get_console_output`
-    /// (falling back to `get_console` on bridges that only advertise the legacy tool).
-    pub fn get_console_output(&mut self) -> Result<Vec<String>, String> {
-        let tool = if self.has_tool("get_console_output") {
-            "get_console_output"
-        } else {
-            "get_console"
-        };
-        let raw = match self.call_tool(tool, json!({})) {
-            Ok(text) => text,
-            Err(_) if tool == "get_console_output" => self.call_tool("get_console", json!({}))?,
-            Err(e) => return Err(e),
-        };
-        if let Ok(val) = serde_json::from_str::<Value>(raw.trim()) {
-            if let Some(arr) = val.as_array() {
-                return Ok(arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(ToString::to_string))
-                    .collect());
-            }
-            if let Some(arr) = val.get("lines").and_then(|v| v.as_array()) {
-                return Ok(arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(ToString::to_string))
-                    .collect());
-            }
-            for key in ["output", "console", "text"] {
-                if let Some(s) = val.get(key).and_then(|v| v.as_str()) {
-                    return Ok(s
-                        .lines()
-                        .map(str::trim_end)
-                        .filter(|l| !l.is_empty())
-                        .map(ToString::to_string)
-                        .collect());
-                }
-            }
-        }
-        Ok(raw
-            .lines()
-            .map(str::trim_end)
-            .filter(|l| !l.is_empty())
-            .map(ToString::to_string)
-            .collect())
-    }
-
-    /// Control Roblox Studio playtest execution (`"start_play"`, `"run_server"`, or `"stop"`).
+    /// Control Roblox Studio playtest execution via `start_stop_play`
+    /// (`"start_play"`, `"run_server"`, or `"stop"`). Emits both `mode` and
+    /// official `is_start: bool` + `studio_id` so both real `StudioMCP.exe` and
+    /// local mock servers accept it seamlessly.
     pub fn start_stop_play(&mut self, mode: &str) -> Result<Value, String> {
         let normalized = match mode.trim().to_ascii_lowercase().as_str() {
             "start_play" | "play" | "start" => "start_play",
@@ -455,21 +978,38 @@ impl McpClient {
                 ));
             }
         };
+        let is_start = normalized != "stop";
         if self.has_tool("start_stop_play") {
-            let text = self.call_tool("start_stop_play", json!({ "mode": normalized }))?;
+            let prepared = self.prepare_official_args(
+                "start_stop_play",
+                json!({
+                    "mode": normalized,
+                    "is_start": is_start,
+                }),
+            );
+            let text = self.call_tool("start_stop_play", prepared)?;
+            self.datamodel_type = match normalized {
+                "start_play" => "Client".to_string(),
+                "run_server" => "Server".to_string(),
+                _ => "Edit".to_string(),
+            };
             if let Ok(v) = serde_json::from_str::<Value>(&text) {
                 return Ok(v);
             }
             return Ok(json!({
                 "ok": true,
                 "mode": normalized,
+                "is_start": is_start,
+                "playing": is_start,
                 "output": text,
             }));
         }
-        if normalized == "stop" {
+        if !is_start {
+            self.datamodel_type = "Edit".to_string();
             return Ok(json!({
                 "ok": true,
                 "mode": "stop",
+                "is_start": false,
                 "playing": false,
                 "status": "stopped",
             }));
@@ -481,13 +1021,79 @@ impl McpClient {
         Ok(json!({
             "ok": true,
             "mode": normalized,
+            "is_start": true,
             "output": text,
         }))
+    }
+
+    /// 12. `user_mouse_input` — forward ordered mouse actions into Studio.
+    pub fn user_mouse_input(&mut self, actions: Vec<Value>) -> Result<Value, String> {
+        if actions.is_empty() {
+            return Err("user_mouse_input requires at least one mouse action".to_string());
+        }
+        self.call_tool_json("user_mouse_input", json!({ "actions": actions }))
+    }
+
+    /// 13. `user_keyboard_input` — forward ordered keyboard actions into Studio.
+    pub fn user_keyboard_input(&mut self, actions: Vec<Value>) -> Result<Value, String> {
+        if actions.is_empty() {
+            return Err("user_keyboard_input requires at least one keyboard action".to_string());
+        }
+        self.call_tool_json("user_keyboard_input", json!({ "actions": actions }))
+    }
+
+    /// The place tree as JSON: `{ "scripts": { "<path>": "<source>", ... } }`.
+    pub fn get_place_tree(&mut self) -> Result<Value, String> {
+        let text = self.call_tool("get_place_tree", json!({}))?;
+        serde_json::from_str(&text)
+            .map_err(|e| format!("get_place_tree returned non-JSON text: {e}"))
     }
 
     pub fn is_alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
+}
+
+fn strip_prefix_ascii_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    if s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        Some(&s[prefix.len()..])
+    } else {
+        None
+    }
+}
+
+fn parse_vec3_json(v: &Value) -> Option<[f64; 3]> {
+    let arr = v.as_array()?;
+    if arr.len() >= 3 {
+        let x = arr[0].as_f64()?;
+        let y = arr[1].as_f64()?;
+        let z = arr[2].as_f64()?;
+        if x.is_finite() && y.is_finite() && z.is_finite() {
+            return Some([x, y, z]);
+        }
+    }
+    None
+}
+
+fn extract_first_studio_id(val: &Value) -> Option<String> {
+    if let Some(id) = val.get("studio_id").and_then(|v| v.as_str()) {
+        if !id.trim().is_empty() {
+            return Some(id.trim().to_string());
+        }
+    }
+    if let Some(arr) = val.get("studios").and_then(|v| v.as_array()).or_else(|| val.as_array()) {
+        for item in arr {
+            if let Some(s) = item.as_str().filter(|s| !s.trim().is_empty()) {
+                return Some(s.trim().to_string());
+            }
+            for key in ["studio_id", "id", "studioId"] {
+                if let Some(s) = item.get(key).and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
+                    return Some(s.trim().to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Extract `(width, height)` directly from PNG `IHDR` or JPEG `SOF0`/`SOF2` headers.
