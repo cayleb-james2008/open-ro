@@ -2822,19 +2822,24 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "You are the Teamwork coordinator.\n",
             "Split the goal into concrete non-overlapping tasks with `create_task` (specify owner, verifier, kind, and non-overlapping `files`).\n",
             "Call `finish_run` once all tasks are `done`.\n",
-            "Tools: create_task, board_post, board_read, project_files, project_read_file, finish_run."
+            "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, finish_run."
         ),
         "verifier" => concat!(
             "You are the Teamwork verifier.\n",
-            "Inspect submitted work (`project_read_file`, `luau_check`, `project_check`, `project_run_lune`, `project_build`).\n",
+            "Inspect submitted work (`project_read_file`, `project_grep`, `luau_check`, `project_check`, `project_run_lune`, `project_build`).\n",
             "For game_code tasks (or `src/` / `ui/` changes), you MUST run `project_playtest` with `{\"task_id\":\"<id>\"}` and confirm 0 console errors BEFORE calling `verify_task` with `passed: true`.\n",
             "For `tools/**/*.luau` tasks (not touching `src/` or `ui/`), run `project_run_lune` (confirm `passed: true`) instead of `project_playtest` BEFORE calling `verify_task(passed=true)`.\n",
             "If anything fails, call `verify_task` with `passed: false` and clear failure notes."
         ),
+        "researcher" => concat!(
+            "You are the Teamwork researcher/designer.\n",
+            "Use `research_roblox_game` (`target` = Roblox URL or place/universe ID -> saves dossier & thumbs in `refs/<universeId>/`), `web_search`, `web_fetch`, `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_update_manifest`.\n",
+            "Claim every file you write (`project_write_file` auto-claims onto your active task), then call `submit_task` to hand off to `@verifier`."
+        ),
         _ => concat!(
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
-            "Use `project_files`, `project_read_file`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `luau_check`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `assets_codegen`, `assets_upload`.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `luau_check`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `assets_codegen`, `assets_upload`.\n",
             "When your task is ready for verification, call `submit_task` to hand it to `@verifier`."
         ),
     };
@@ -2950,6 +2955,7 @@ fn execute_agent_tool(
         "project_list" => Ok(tool_project_list(shared)),
         "project_files" => tool_project_files(handle, args),
         "project_read_file" => tool_project_read_file(handle, args),
+        "project_grep" => tool_project_grep(handle, args),
         "project_write_file" => tool_project_write_file(handle, agent_name, args),
         "project_edit_file" => tool_project_edit_file(handle, agent_name, args),
         "project_delete_file" => tool_project_delete_file(handle, agent_name, args),
@@ -2962,6 +2968,9 @@ fn execute_agent_tool(
         "project_playtest" => {
             tool_project_playtest(shared, mgr, handle, agent_name, gen, args)
         }
+        "research_roblox_game" => tool_research_roblox_game(handle, args),
+        "web_fetch" => tool_web_fetch(args),
+        "web_search" => tool_web_search(args),
         "blender_generate" | "mesh_generate" => tool_blender_generate(shared, handle, args),
         "audio_generate" => tool_audio_generate(shared, handle, args),
         "reference_search" => run_opencloud_route(shared, handle, "POST", "/api/art/references/search", args),
@@ -3558,6 +3567,60 @@ fn tool_project_list(shared: &Shared) -> Value {
         "active": store.active,
         "projects": list.iter().map(projects::summary).collect::<Vec<_>>(),
     })
+}
+
+fn tool_project_grep(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .ok_or("project_grep requires args.query")?;
+    let dir = args.get("dir").and_then(|v| v.as_str()).unwrap_or("");
+    let max_matches = args
+        .get("max_matches")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(50) as usize;
+    crate::agent::project_grep_files(&project_dir, query, dir, max_matches)
+}
+
+fn tool_research_roblox_game(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let target = args
+        .get("target")
+        .or_else(|| args.get("url"))
+        .or_else(|| args.get("place_id"))
+        .or_else(|| args.get("universe_id"))
+        .and_then(|v| {
+            v.as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .or_else(|| v.as_u64().map(|n| n.to_string()))
+        })
+        .ok_or("research_roblox_game requires args.target (Roblox game URL, place ID, or universe ID)")?;
+    let niche = args.get("niche").and_then(|v| v.as_str());
+    crate::market_taste::research_roblox_game_to_project(&project_dir, &target, niche)
+}
+
+fn tool_web_fetch(args: &Value) -> Result<Value, String> {
+    let url = args
+        .get("url")
+        .and_then(|v| v.as_str())
+        .ok_or("web_fetch requires args.url")?;
+    let max_chars = args
+        .get("max_chars")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(12_000) as usize;
+    crate::market_taste::web_fetch(url, max_chars)
+}
+
+fn tool_web_search(args: &Value) -> Result<Value, String> {
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .ok_or("web_search requires args.query")?;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(6) as usize;
+    crate::market_taste::web_search(query, limit)
 }
 
 fn tool_project_files(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
