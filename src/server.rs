@@ -225,7 +225,8 @@ impl Shared {
             (vec![chat], active)
         });
         let ideas = load_ideas(&data_dir, &mut recovered);
-        let cfg = RuntimeConfig::load(&data_dir);
+        let mut cfg = RuntimeConfig::load(&data_dir);
+        migrate_config_secrets(&data_dir, &mut cfg);
         let mut snap_store = SnapshotStore::open(&data_dir);
         recovered.append(&mut snap_store.recovered);
         let mut proposal_store = ProposalStore::open(&data_dir);
@@ -1092,6 +1093,11 @@ fn handle(
         return Ok(());
     }
 
+    // Open Cloud, shared secrets, reference search, art generation & image processing routes.
+    if try_route_opencloud_assets(&mut stream, shared, &req, &path, query) {
+        return Ok(());
+    }
+
     match (req.method.as_str(), path.as_str()) {
         ("GET", "/api/art-knowledge") => {
             respond_json(&mut stream, "200 OK", &crate::art_knowledge::summary_json());
@@ -1266,6 +1272,9 @@ fn handle(
         }
         ("POST", "/api/market-taste/research") => {
             handle_market_taste_research(&mut stream, shared, &req);
+        }
+        ("GET", "/api/tools/blender/status") => {
+            handle_tools_blender_status(&mut stream);
         }
         ("POST", "/api/tools/blender/generate") => {
             handle_tools_blender_generate(&mut stream, shared, &req);
@@ -3275,14 +3284,30 @@ fn config_snapshot(shared: &Shared) -> Value {
     let agy_issue = crate::model::agy_last_issue().map(|i| {
         json!({ "kind": i.kind, "message": i.message, "resets_in": i.resets_in, "at": i.at_unix })
     });
-    let gemini_key = cfg
-        .gemini_api_key
-        .clone()
+    let store = shared
+        .data_dir
+        .as_deref()
+        .map(crate::secrets::SecretStore::for_data_dir);
+    let gemini_key = store
+        .as_ref()
+        .and_then(|s| s.get(crate::secrets::GEMINI_KEY))
+        .or_else(|| cfg.gemini_api_key.clone())
         .or_else(|| std::env::var("GEMINI_API_KEY").ok().filter(|s| !s.trim().is_empty()));
-    let openai_img_key = cfg
-        .openai_image_api_key
-        .clone()
+    let openai_img_key = store
+        .as_ref()
+        .and_then(|s| s.get(crate::secrets::OPENAI_IMAGE_KEY))
+        .or_else(|| cfg.openai_image_api_key.clone())
         .or_else(|| std::env::var("OPENAI_API_KEY").ok().filter(|s| !s.trim().is_empty()));
+    let opencloud_key = store
+        .as_ref()
+        .and_then(|s| s.get(crate::secrets::OPENCLOUD_KEY));
+    let opencloud_creator = store
+        .as_ref()
+        .map(crate::opencloud::creator_json)
+        .unwrap_or_else(|| json!({}));
+    let secrets_dir_shared = std::env::var("OPENRO_SECRETS_DIR")
+        .ok()
+        .is_some_and(|s| !s.trim().is_empty());
     json!({
         "ok": true,
         "base_url": base_url,
@@ -3305,11 +3330,15 @@ fn config_snapshot(shared: &Shared) -> Value {
         "auto_install_plugin": crate::studio_plugin::auto_install_pref(shared.data_dir.as_deref()),
         "rbxlx_path": rbxlx_path,
         "detected_gateways": gateways,
-        "image_provider": cfg.image_provider.unwrap_or_else(|| "auto".to_string()),
+        "image_provider": cfg.image_provider.unwrap_or_else(|| "chatgpt".to_string()),
         "has_gemini_api_key": gemini_key.is_some(),
-        "gemini_api_key_masked": gemini_key.as_deref().map(mask_secret),
+        "gemini_api_key_masked": gemini_key.as_deref().map(crate::secrets::mask),
         "has_openai_image_api_key": openai_img_key.is_some(),
-        "openai_image_api_key_masked": openai_img_key.as_deref().map(mask_secret),
+        "openai_image_api_key_masked": openai_img_key.as_deref().map(crate::secrets::mask),
+        "has_opencloud_key": opencloud_key.is_some(),
+        "opencloud_key_masked": opencloud_key.as_deref().map(crate::secrets::mask),
+        "opencloud_creator": opencloud_creator,
+        "secrets_dir_shared": secrets_dir_shared,
     })
 }
 
@@ -3430,16 +3459,28 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
         }
     }
 
+    let secret_store = shared
+        .data_dir
+        .as_deref()
+        .map(crate::secrets::SecretStore::for_data_dir);
     if body
         .get("clear_gemini_api_key")
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
     {
         cfg.gemini_api_key = None;
+        if let Some(s) = &secret_store {
+            s.clear(crate::secrets::GEMINI_KEY)?;
+        }
     } else if let Some(k) = body.get("gemini_api_key").and_then(|v| v.as_str()) {
         let t = k.trim();
         if !t.is_empty() {
-            cfg.gemini_api_key = Some(t.to_string());
+            if let Some(s) = &secret_store {
+                s.set(crate::secrets::GEMINI_KEY, t)?;
+                cfg.gemini_api_key = None;
+            } else {
+                cfg.gemini_api_key = Some(t.to_string());
+            }
         }
     }
     if body
@@ -3448,16 +3489,41 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
         .unwrap_or(false)
     {
         cfg.openai_image_api_key = None;
+        if let Some(s) = &secret_store {
+            s.clear(crate::secrets::OPENAI_IMAGE_KEY)?;
+        }
     } else if let Some(k) = body.get("openai_image_api_key").and_then(|v| v.as_str()) {
         let t = k.trim();
         if !t.is_empty() {
-            cfg.openai_image_api_key = Some(t.to_string());
+            if let Some(s) = &secret_store {
+                s.set(crate::secrets::OPENAI_IMAGE_KEY, t)?;
+                cfg.openai_image_api_key = None;
+            } else {
+                cfg.openai_image_api_key = Some(t.to_string());
+            }
+        }
+    }
+    if body
+        .get("clear_opencloud_api_key")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        if let Some(s) = &secret_store {
+            s.clear(crate::secrets::OPENCLOUD_KEY)?;
+        }
+    } else if let Some(k) = body.get("opencloud_api_key").and_then(|v| v.as_str()) {
+        let t = k.trim();
+        if !t.is_empty() {
+            let Some(s) = &secret_store else {
+                return Err("saving Open Cloud keys requires a persistent data directory".to_string());
+            };
+            s.set(crate::secrets::OPENCLOUD_KEY, t)?;
         }
     }
     if let Some(prov) = body.get("image_provider").and_then(|v| v.as_str()) {
         match prov {
-            "auto" | "gemini" | "openai" => cfg.image_provider = Some(prov.to_string()),
-            other => return Err(format!("invalid image_provider '{other}' (expected auto, gemini, or openai)")),
+            "chatgpt" | "auto" | "gemini" | "openai" => cfg.image_provider = Some(prov.to_string()),
+            other => return Err(format!("invalid image_provider '{other}' (expected chatgpt, auto, gemini, or openai)")),
         }
     }
 
@@ -3565,14 +3631,143 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
     Ok(config_snapshot(shared))
 }
 
-fn mask_secret(k: &str) -> String {
-    let n = k.chars().count();
-    if n <= 8 {
-        "••••••••".to_string()
-    } else {
-        let tail: String = k.chars().skip(n - 4).collect();
-        format!("••••{tail}")
+fn migrate_config_secrets(data_dir: &std::path::Path, cfg: &mut RuntimeConfig) {
+    let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+    let moved = store.migrate(&[
+        (crate::secrets::GEMINI_KEY, cfg.gemini_api_key.as_deref()),
+        (crate::secrets::OPENAI_IMAGE_KEY, cfg.openai_image_api_key.as_deref()),
+    ]);
+    if !moved.is_empty() {
+        if moved.iter().any(|k| k == crate::secrets::GEMINI_KEY) {
+            cfg.gemini_api_key = None;
+        }
+        if moved.iter().any(|k| k == crate::secrets::OPENAI_IMAGE_KEY) {
+            cfg.openai_image_api_key = None;
+        }
+        let _ = cfg.save(data_dir);
     }
+}
+
+fn is_valid_project_slug(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 96
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Resolve a project slug to its directory via `ProjectStore` first, falling back to
+/// `<data_dir>/projects/<id>`, `OPENRO_PROJECT_ROOT`, or `projects/<id>` under cwd.
+fn resolve_project_dir(shared: &Shared, id: &str) -> Option<PathBuf> {
+    if !is_valid_project_slug(id) {
+        return None;
+    }
+    if let Some(found) = shared.projects.lock().unwrap().find(id) {
+        if found.dir.is_dir() {
+            return Some(found.dir);
+        }
+    }
+    if let Some(dir) = &shared.data_dir {
+        let in_data = dir.join("projects").join(id);
+        if in_data.is_dir() {
+            return Some(in_data);
+        }
+    }
+    if let Ok(root) = std::env::var("OPENRO_PROJECT_ROOT") {
+        let pb = PathBuf::from(root.trim());
+        let child = pb.join(id);
+        if child.is_dir() {
+            return Some(child);
+        }
+        if pb.file_name().and_then(|n| n.to_str()) == Some(id) && pb.is_dir() {
+            return Some(pb);
+        }
+    }
+    let cwd_proj = PathBuf::from("projects").join(id);
+    if cwd_proj.is_dir() {
+        return Some(cwd_proj);
+    }
+    None
+}
+
+fn status_line_for_code(code: u16) -> &'static str {
+    match code {
+        200 => "200 OK",
+        201 => "201 Created",
+        400 => "400 Bad Request",
+        403 => "403 Forbidden",
+        404 => "404 Not Found",
+        405 => "405 Method Not Allowed",
+        409 => "409 Conflict",
+        423 => "423 Locked",
+        429 => "429 Too Many Requests",
+        502 => "502 Bad Gateway",
+        503 => "503 Service Unavailable",
+        504 => "504 Gateway Timeout",
+        _ => "500 Internal Server Error",
+    }
+}
+
+fn try_route_opencloud_assets(
+    stream: &mut TcpStream,
+    shared: &Shared,
+    req: &Request,
+    path: &str,
+    query: &str,
+) -> bool {
+    let is_candidate = path == "/api/opencloud"
+        || path.starts_with("/api/opencloud/")
+        || path == "/api/art"
+        || path.starts_with("/api/art/")
+        || path == "/api/tools/image/process"
+        || (path.starts_with("/api/projects/")
+            && (path.contains("/assets")
+                || path.ends_with("/publish")
+                || path.ends_with("/products")
+                || path.ends_with("/products/sync")
+                || path.ends_with("/universe")));
+    if !is_candidate {
+        return false;
+    }
+    let mut body: Value = if req.body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+                return true;
+            }
+        }
+    };
+    if path == "/api/art/generate" && body.get("provider").is_none() {
+        if let Some(prov) = shared.config.lock().unwrap().image_provider.clone() {
+            if !prov.is_empty() {
+                body["provider"] = json!(prov);
+            }
+        }
+    }
+    let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+    let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+    let resolver = |id: &str| resolve_project_dir(shared, id);
+    let ctx = crate::opencloud::Ctx {
+        data_dir,
+        store,
+        resolve: &resolver,
+        active_project: shared.active_project_dir(),
+    };
+    let Some(reply) = crate::opencloud::route(&ctx, &req.method, path, query, &body) else {
+        return false;
+    };
+    match reply {
+        crate::opencloud::Reply::Json(code, val) => {
+            respond_json(stream, status_line_for_code(code), &val);
+        }
+        crate::opencloud::Reply::Bytes(mime, bytes) => {
+            respond_bytes(stream, "200 OK", mime, "no-store", &bytes);
+        }
+    }
+    true
 }
 
 fn handle_studio_mcp_connect(stream: &mut TcpStream, shared: &Shared, req: &Request) {
@@ -5258,6 +5453,10 @@ fn handle_studio_plugin_result(stream: &mut TcpStream, shared: &Shared, req: &Re
     }
 }
 
+fn handle_tools_blender_status(stream: &mut TcpStream) {
+    respond_json(stream, "200 OK", &crate::mesh::blender_status(None));
+}
+
 fn handle_tools_blender_generate(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
         respond_json(
@@ -5282,11 +5481,26 @@ fn handle_tools_blender_generate(stream: &mut TcpStream, shared: &Shared, req: &
         .get("binary_path")
         .and_then(|v| v.as_str())
         .map(String::from);
-    match crate::library::generate_blender_mesh(
-        &shared.assets_root,
-        &body,
-        blender_override.as_deref(),
-    ) {
+    let project_root = body
+        .get("project")
+        .and_then(|v| v.as_str())
+        .and_then(|id| resolve_project_dir(shared, id))
+        .or_else(|| shared.active_project_dir());
+    let result = if body.get("parts").is_some() || body.get("script").is_some() {
+        crate::mesh::generate_for_project(
+            &shared.assets_root,
+            project_root.as_deref(),
+            &body,
+            blender_override.as_deref(),
+        )
+    } else {
+        crate::library::generate_blender_mesh(
+            &shared.assets_root,
+            &body,
+            blender_override.as_deref(),
+        )
+    };
+    match result {
         Ok(v) => respond_json(stream, "200 OK", &v),
         Err(e) => respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e })),
     }
@@ -5312,14 +5526,23 @@ fn handle_tools_audio_generate(stream: &mut TcpStream, shared: &Shared, req: &Re
             }
         }
     };
-    match crate::audio_synth::generate_audio_asset(&shared.assets_root, &body) {
+    let project_root = body
+        .get("project")
+        .and_then(|v| v.as_str())
+        .and_then(|id| resolve_project_dir(shared, id))
+        .or_else(|| shared.active_project_dir());
+    match crate::audio_synth::generate_audio_asset_for_project(
+        &shared.assets_root,
+        project_root.as_deref(),
+        &body,
+    ) {
         Ok(v) => respond_json(stream, "200 OK", &v),
         Err(e) => respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e })),
     }
 }
 
 fn handle_mesh_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &str) {
-    match crate::library::read_mesh_asset(&shared.assets_root, raw_file) {
+    match crate::mesh::read_mesh_asset(&shared.assets_root, raw_file) {
         Ok((bytes, mime)) => {
             respond_bytes(stream, "200 OK", mime, "public, max-age=3600", &bytes);
         }
@@ -5769,16 +5992,24 @@ fn handle_assets_generate(stream: &mut TcpStream, shared: &Shared, raw_body: &[u
         .unwrap_or_else(|| crate::art_knowledge::build_homage_prompt(&title, &element, &rarity, ""));
 
     let cfg = shared.config.lock().unwrap().clone();
+    let store = shared
+        .data_dir
+        .as_deref()
+        .map(crate::secrets::SecretStore::for_data_dir);
     let requested_provider = body
         .get("provider")
         .and_then(|v| v.as_str())
         .or(cfg.image_provider.as_deref())
         .unwrap_or("auto");
-    let gemini_key = cfg
-        .gemini_api_key
+    let gemini_key = store
+        .as_ref()
+        .and_then(|s| s.get(crate::secrets::GEMINI_KEY))
+        .or(cfg.gemini_api_key)
         .or_else(|| std::env::var("GEMINI_API_KEY").ok().filter(|s| !s.trim().is_empty()));
-    let openai_key = cfg
-        .openai_image_api_key
+    let openai_key = store
+        .as_ref()
+        .and_then(|s| s.get(crate::secrets::OPENAI_IMAGE_KEY))
+        .or(cfg.openai_image_api_key)
         .or_else(|| std::env::var("OPENAI_API_KEY").ok().filter(|s| !s.trim().is_empty()));
 
     let use_gemini = matches!(requested_provider, "gemini" | "nano-banana" | "auto") && gemini_key.is_some();
