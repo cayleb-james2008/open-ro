@@ -40,8 +40,8 @@ fn library_defaults_install_uninstall_configure_0600_and_test() {
     let initial = mgr.list_json();
     assert_eq!(initial["ok"], true);
     let packs = initial["packs"].as_array().expect("packs array");
-    assert_eq!(packs.len(), 9);
-    assert_eq!(initial["prompt_skills_count"], 4);
+    assert_eq!(packs.len(), 8);
+    assert_eq!(initial["prompt_skills_count"], 3);
 
     let default_ids: Vec<&str> = packs
         .iter()
@@ -53,7 +53,6 @@ fn library_defaults_install_uninstall_configure_0600_and_test() {
         vec![
             "roblox-studio-core",
             "blender-3d-pipeline",
-            "anime-fan-art-knowledge",
             "roblox-market-taste"
         ]
     );
@@ -73,15 +72,13 @@ fn library_defaults_install_uninstall_configure_0600_and_test() {
         ]
     );
 
-    // Zero user-facing "Rune" jargon and zero prohibited video models anywhere in library or prompts
+    // Zero user-facing "Rune" jargon and zero prohibited video models anywhere in library or prompts;
+    // default boot prompt is general-purpose Top-Trending (NOT locked to anime cards).
     let combined_initial = format!("{}\n{}", initial, mgr.active_skill_prompt());
     assert!(!combined_initial.contains("Rune"));
     assert!(!combined_initial.to_ascii_lowercase().contains("soul cinema"));
     assert!(!combined_initial.to_ascii_lowercase().contains("higgsfield"));
-    assert!(combined_initial.contains("Joyful Pirate"));
-    assert!(combined_initial.contains("Six-Eyes Sorcerer"));
-    assert!(combined_initial.contains("Shadow Monarch"));
-    assert!(combined_initial.contains("Golden Ascended Warrior"));
+    assert!(mgr.active_skill_prompt().contains("top-trending"));
     let art_summary = openro_rs::art_knowledge::summary_json();
     assert!(art_summary["visual_fidelity_rule"]
         .as_str()
@@ -118,6 +115,12 @@ fn library_defaults_install_uninstall_configure_0600_and_test() {
 
     mgr.install("image-gen-studio")
         .expect("install image-gen-studio");
+    // Installing image-gen-studio injects the Stylized Fan-Art & Title-Epithet Creative Knowledge Point
+    let with_img_prompt = mgr.active_skill_prompt();
+    assert!(with_img_prompt.contains("Joyful Pirate"));
+    assert!(with_img_prompt.contains("Six-Eyes Sorcerer"));
+    assert!(with_img_prompt.contains("Shadow Monarch"));
+    assert!(with_img_prompt.contains("Golden Ascended Warrior"));
 
     // Configure secret API key -> persisted 0600, masked in JSON, never echoed raw!
     let secret = "sk-openro-super-secret-987654321";
@@ -169,7 +172,6 @@ fn library_defaults_install_uninstall_configure_0600_and_test() {
     for id in [
         "roblox-studio-core",
         "blender-3d-pipeline",
-        "anime-fan-art-knowledge",
         "roblox-market-taste",
         "audio-sfx-gen",
         "video-gen-studio",
@@ -468,8 +470,10 @@ fn market_taste_live_explore_refresh_niche_classifier_cache_and_prompt() {
     let mut store = MarketTasteStore::open(&tmp);
     let baseline_snap = store.snapshot_json(None);
     assert_eq!(baseline_snap["source"], "baseline_nov_2026");
-    assert_eq!(baseline_snap["active_niche"], "anime-rng-cards");
-    assert_eq!(baseline_snap["niches"].as_array().unwrap().len(), 8);
+    assert_eq!(baseline_snap["active_niche"], "top-trending");
+    assert_eq!(baseline_snap["niches"].as_array().unwrap().len(), 9);
+    assert_eq!(baseline_snap["niches"][0]["id"], "top-trending");
+    assert_eq!(baseline_snap["niche"]["top_games"][0]["name"], "Steal An Egg");
 
     // Refresh against mock loopback Explore API
     let url = format!("http://{addr}/explore-api/v1/get-sorts?sessionId=test");

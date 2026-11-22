@@ -14,10 +14,14 @@
 
 use crate::desktop::current_platform;
 use crate::mcp::{official_studio_tool_catalog, McpClient, OFFICIAL_STUDIO_TOOLS};
-use crate::studio_stream::StudioFrame;
+use crate::studio_stream::{StudioFrame, StudioStreamHub};
 use serde_json::{json, Value};
+#[cfg(unix)]
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Default isolated X11 display used for embedded Studio on Linux.
@@ -26,8 +30,10 @@ pub const DEFAULT_EMBED_DISPLAY: &str = ":99";
 pub const DEFAULT_EMBED_WIDTH: u32 = 1440;
 pub const DEFAULT_EMBED_HEIGHT: u32 = 900;
 pub const DEFAULT_EMBED_DEPTH: u8 = 24;
-/// Default startup wait timeout when launching a real Studio host process.
-pub const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 20_000;
+/// Default startup wait timeout when launching a real Studio host process (60s for Wine/Vinegar init).
+pub const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 60_000;
+/// Maximum JPEG frame buffer cap for the x11grab MJPEG pipe parser (8 MiB).
+const MAX_MJPEG_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 /// User-supplied configuration for launching or attaching an embedded Roblox Studio session.
 #[derive(Clone, Debug)]
@@ -41,6 +47,8 @@ pub struct EmbedConfig {
     /// or `C:\...\StudioMCP.exe`). When set alongside `launch_studio_process: false`, attaches
     /// directly without launching Vinegar or `RobloxStudioBeta.exe`.
     pub mcp_command: Option<String>,
+    /// Optional `.rbxlx` / `.rbxl` place file to open directly in embedded Roblox Studio.
+    pub place_file: Option<PathBuf>,
     /// When `true` and no direct custom MCP bridge overrides it, spawn the host Studio runtime
     /// (`Xvfb` + Flatpak Vinegar on Linux; `RobloxStudioBeta.exe` on Windows).
     pub launch_studio_process: bool,
@@ -56,6 +64,7 @@ impl Default for EmbedConfig {
             height: DEFAULT_EMBED_HEIGHT,
             depth: DEFAULT_EMBED_DEPTH,
             mcp_command: None,
+            place_file: None,
             launch_studio_process: true,
             startup_timeout_ms: DEFAULT_STARTUP_TIMEOUT_MS,
         }
@@ -101,11 +110,30 @@ impl EmbedConfig {
                 }
             }
         }
+        if let Some(pf) = v
+            .get("place_file")
+            .or_else(|| v.get("rbxlx_path"))
+            .and_then(|x| x.as_str())
+        {
+            let trimmed = pf.trim();
+            if !trimmed.is_empty() {
+                if trimmed.contains('\0') || trimmed.contains('\n') || trimmed.contains('\r') {
+                    return Err("place_file must not contain control characters".to_string());
+                }
+                let p = PathBuf::from(trimmed);
+                if p.components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+                {
+                    return Err("place_file must not contain '..' traversal segments".to_string());
+                }
+                cfg.place_file = Some(p);
+            }
+        }
         if let Some(launch) = v.get("launch_studio_process").and_then(|x| x.as_bool()) {
             cfg.launch_studio_process = launch;
         }
         if let Some(ms) = v.get("startup_timeout_ms").and_then(|x| x.as_u64()) {
-            cfg.startup_timeout_ms = ms.clamp(500, 120_000);
+            cfg.startup_timeout_ms = ms.clamp(500, 180_000);
         }
         Ok(cfg)
     }
@@ -324,6 +352,9 @@ pub struct StudioEmbedState {
     pub playing: bool,
     pub xvfb_pid: Option<u32>,
     pub studio_pid: Option<u32>,
+    pub ffmpeg_pid: Option<u32>,
+    pub x11grab_active: bool,
+    pub place_file: Option<String>,
     pub mcp_command: Option<String>,
     pub detected_studio_exe: Option<String>,
     pub detected_mcp_exe: Option<String>,
@@ -353,6 +384,9 @@ impl StudioEmbedState {
             playing: false,
             xvfb_pid: None,
             studio_pid: None,
+            ffmpeg_pid: None,
+            x11grab_active: false,
+            place_file: None,
             mcp_command: None,
             detected_studio_exe: probe.studio_exe,
             detected_mcp_exe: probe.mcp_command,
@@ -378,6 +412,9 @@ impl StudioEmbedState {
             "playing": self.playing,
             "xvfb_pid": self.xvfb_pid,
             "studio_pid": self.studio_pid,
+            "ffmpeg_pid": self.ffmpeg_pid,
+            "x11grab_active": self.x11grab_active,
+            "place_file": self.place_file,
             "mcp_command": self.mcp_command,
             "detected_studio_exe": self.detected_studio_exe,
             "detected_mcp_exe": self.detected_mcp_exe,
@@ -393,11 +430,14 @@ impl StudioEmbedState {
     }
 }
 
-/// Owns any child processes (`Xvfb`, Vinegar / `RobloxStudioBeta.exe`) spawned by OpenRO
-/// for an embedded Studio session, guaranteeing explicit child-only cleanup on `stop` and `Drop`.
+/// Owns any child processes (`Xvfb`, Vinegar / `RobloxStudioBeta.exe`, `ffmpeg` x11grab pump)
+/// spawned by OpenRO for an embedded Studio session, guaranteeing explicit child-only cleanup
+/// on `stop` and `Drop`.
 pub struct StudioEmbedManager {
     xvfb_child: Option<Child>,
     studio_child: Option<Child>,
+    ffmpeg_child: Option<Child>,
+    x11grab_stop: Arc<AtomicBool>,
     state: StudioEmbedState,
 }
 
@@ -408,11 +448,13 @@ impl Default for StudioEmbedManager {
 }
 
 impl StudioEmbedManager {
-    /// Creates an idle manager. NEVER spawns Xvfb, Vinegar, or Roblox Studio automatically.
+    /// Creates an idle manager. NEVER spawns Xvfb, Vinegar, ffmpeg, or Roblox Studio automatically.
     pub fn new() -> Self {
         StudioEmbedManager {
             xvfb_child: None,
             studio_child: None,
+            ffmpeg_child: None,
+            x11grab_stop: Arc::new(AtomicBool::new(false)),
             state: StudioEmbedState::idle(),
         }
     }
@@ -438,7 +480,7 @@ impl StudioEmbedManager {
 
     pub fn mark_disconnected(&mut self) {
         self.state.mcp_connected = false;
-        if self.studio_child.is_none() && self.xvfb_child.is_none() {
+        if self.studio_child.is_none() && self.xvfb_child.is_none() && self.ffmpeg_child.is_none() {
             self.state.embedded = false;
             self.state.phase = "idle".to_string();
         }
@@ -460,6 +502,14 @@ impl StudioEmbedManager {
         launch_embedded_studio(self, config)
     }
 
+    pub fn launch_with_hub(
+        &mut self,
+        config: EmbedConfig,
+        hub: Option<Arc<StudioStreamHub>>,
+    ) -> Result<(StudioEmbedState, McpClient), String> {
+        launch_embedded_studio_with_hub(self, config, hub)
+    }
+
     pub fn stop(&mut self) -> StudioEmbedState {
         stop_embedded_studio(self)
     }
@@ -471,6 +521,153 @@ impl Drop for StudioEmbedManager {
     }
 }
 
+/// Extract all complete JPEG frames (`0xFF 0xD8` .. `0xFF 0xD9`) from a streaming byte buffer
+/// (such as `ffmpeg -f mpjpeg pipe:1`), preserving any partial trailing frame for the next read.
+pub fn extract_jpeg_frames(buf: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut frames = Vec::new();
+    let mut scan_pos = 0usize;
+
+    loop {
+        let Some(rel_soi) = buf[scan_pos..].windows(2).position(|w| w == [0xFF, 0xD8]) else {
+            // No SOI in remainder: discard prefix bytes, keeping a trailing 0xFF if split across chunks.
+            let keep_last = buf.last() == Some(&0xFF) && buf.len() > scan_pos;
+            let drain_to = if keep_last {
+                buf.len() - 1
+            } else {
+                buf.len()
+            };
+            if drain_to > 0 {
+                buf.drain(..drain_to);
+            }
+            return frames;
+        };
+        let soi = scan_pos + rel_soi;
+        let search_eoi_start = soi + 2;
+        let Some(rel_eoi) = buf
+            .get(search_eoi_start..)
+            .and_then(|tail| tail.windows(2).position(|w| w == [0xFF, 0xD9]))
+        else {
+            // Incomplete frame: discard leading garbage before SOI and enforce max frame cap.
+            if soi > 0 {
+                buf.drain(..soi);
+            }
+            if buf.len() > MAX_MJPEG_FRAME_BYTES {
+                buf.clear();
+            }
+            return frames;
+        };
+        let eoi_end = search_eoi_start + rel_eoi + 2;
+        frames.push(buf[soi..eoi_end].to_vec());
+        scan_pos = eoi_end;
+        if scan_pos >= buf.len() {
+            buf.clear();
+            return frames;
+        }
+    }
+}
+
+/// Spawn a real-time 12 FPS Linux X11 MJPEG stream pump (`ffmpeg -f x11grab ... -f mpjpeg pipe:1`)
+/// that parses `0xFFD8..0xFFD9` frames directly into `hub.push_frame(...)` -> `/api/studio/stream.mjpg`.
+///
+/// Child handle is stored in `manager.ffmpeg_child` and torn down cleanly in `stop_embedded_studio` / `Drop`.
+pub fn spawn_x11grab_pump(
+    manager: &mut StudioEmbedManager,
+    hub: Arc<StudioStreamHub>,
+    display: &str,
+    width: u32,
+    height: u32,
+) -> Result<u32, String> {
+    let valid_display = validate_x11_display(display)?;
+    let w = width.clamp(320, 3840);
+    let h = height.clamp(200, 2160);
+
+    // Stop any previous ffmpeg pump owned by this manager first.
+    manager.x11grab_stop.store(true, Ordering::SeqCst);
+    if let Some(mut prev) = manager.ffmpeg_child.take() {
+        let _ = prev.kill();
+        let _ = prev.wait();
+    }
+    manager.state.ffmpeg_pid = None;
+    manager.state.x11grab_active = false;
+
+    #[cfg(unix)]
+    {
+        let video_size = format!("{w}x{h}");
+        let mut child = Command::new("ffmpeg")
+            .args([
+                "-loglevel",
+                "error",
+                "-f",
+                "x11grab",
+                "-framerate",
+                "12",
+                "-video_size",
+                &video_size,
+                "-i",
+                &valid_display,
+                "-c:v",
+                "mjpeg",
+                "-q:v",
+                "6",
+                "-f",
+                "mpjpeg",
+                "pipe:1",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("failed to spawn ffmpeg x11grab on {valid_display}: {e}"))?;
+
+        let pid = child.id();
+        let Some(mut stdout) = child.stdout.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("ffmpeg x11grab stdout was not piped".to_string());
+        };
+
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        manager.x11grab_stop = Arc::clone(&stop_flag);
+        manager.ffmpeg_child = Some(child);
+        manager.state.ffmpeg_pid = Some(pid);
+        manager.state.x11grab_active = true;
+
+        std::thread::spawn(move || {
+            let mut read_buf = [0u8; 32 * 1024];
+            let mut acc: Vec<u8> = Vec::with_capacity(128 * 1024);
+            while !stop_flag.load(Ordering::Relaxed) {
+                match stdout.read(&mut read_buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        acc.extend_from_slice(&read_buf[..n]);
+                        for jpeg in extract_jpeg_frames(&mut acc) {
+                            let frame = StudioFrame {
+                                seq: 0,
+                                ts_ms: now_ms(),
+                                mime: "image/jpeg".to_string(),
+                                bytes: jpeg,
+                                width: w,
+                                height: h,
+                                source: "x11grab_mjpeg".to_string(),
+                            };
+                            hub.push_frame(frame);
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(pid)
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = (hub, valid_display, w, h);
+        Err("x11grab MJPEG pump is only supported on Linux/Unix (use MCP screen_capture on Windows)"
+            .to_string())
+    }
+}
+
 /// Explicitly launch (or attach to) an embedded Roblox Studio session and return the
 /// connected `McpClient` alongside updated `StudioEmbedState`.
 ///
@@ -479,15 +676,32 @@ pub fn launch_embedded_studio(
     manager: &mut StudioEmbedManager,
     config: EmbedConfig,
 ) -> Result<(StudioEmbedState, McpClient), String> {
+    launch_embedded_studio_with_hub(manager, config, None)
+}
+
+/// Same as `launch_embedded_studio`, plus automatically attaches the real-time 12 FPS Linux
+/// `x11grab` MJPEG pump directly into `hub` whenever real Linux Studio runs on `Xvfb`.
+pub fn launch_embedded_studio_with_hub(
+    manager: &mut StudioEmbedManager,
+    config: EmbedConfig,
+    hub: Option<Arc<StudioStreamHub>>,
+) -> Result<(StudioEmbedState, McpClient), String> {
     let display = validate_x11_display(&config.display)?;
     // Clean up any prior managed child processes before starting a fresh session.
-    if manager.studio_child.is_some() || manager.xvfb_child.is_some() {
+    if manager.studio_child.is_some()
+        || manager.xvfb_child.is_some()
+        || manager.ffmpeg_child.is_some()
+    {
         stop_embedded_studio(manager);
     }
 
     manager.state.phase = "starting".to_string();
     manager.state.last_error = None;
     manager.state.resolution = [config.width, config.height];
+    manager.state.place_file = config
+        .place_file
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned());
     manager.state.display = if cfg!(unix) {
         Some(display.clone())
     } else {
@@ -554,11 +768,14 @@ pub fn launch_embedded_studio(
             }
         }
 
-        // 2. Spawn Flatpak Vinegar on DISPLAY=<display> only if not already running.
+        // 2. Spawn Flatpak Vinegar on DISPLAY=<display> (opening optional .rbxlx place_file) if not already running.
         if config.launch_studio_process && !is_vinegar_flatpak_running() {
             let mut cmd = Command::new("flatpak");
-            cmd.args(["run", "org.vinegarhq.Vinegar"])
-                .env("DISPLAY", &display)
+            cmd.args(["run", "org.vinegarhq.Vinegar"]);
+            if let Some(pf) = config.place_file.as_ref() {
+                cmd.arg(pf);
+            }
+            cmd.env("DISPLAY", &display)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
@@ -582,7 +799,20 @@ pub fn launch_embedded_studio(
             }
         }
 
-        // 3. Poll until Vinegar Flatpak is visible and StudioMCP answers initialize.
+        // 3. Start real-time 12 FPS x11grab MJPEG frame pump into StudioStreamHub when hub is provided!
+        if let Some(stream_hub) = hub {
+            if x11_socket_exists(&display) && find_on_path("ffmpeg").is_some() {
+                let _ = spawn_x11grab_pump(
+                    manager,
+                    stream_hub,
+                    &display,
+                    config.width,
+                    config.height,
+                );
+            }
+        }
+
+        // 4. Poll until Vinegar Flatpak is visible and StudioMCP answers initialize.
         let deadline = Instant::now() + Duration::from_millis(config.startup_timeout_ms);
         let mut last_err = "timed out waiting for Roblox Studio MCP bridge".to_string();
         loop {
@@ -610,6 +840,7 @@ pub fn launch_embedded_studio(
 
     #[cfg(windows)]
     {
+        let _ = hub;
         let local_appdata = std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
             .ok_or_else(|| "LOCALAPPDATA environment variable is not set".to_string())?;
@@ -639,7 +870,11 @@ pub fn launch_embedded_studio(
 
         if config.launch_studio_process {
             if let Some(studio_exe) = paths.studio_exe.as_ref() {
-                match Command::new(studio_exe)
+                let mut cmd = Command::new(studio_exe);
+                if let Some(pf) = config.place_file.as_ref() {
+                    cmd.arg(pf);
+                }
+                match cmd
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -686,9 +921,15 @@ pub fn launch_embedded_studio(
     }
 }
 
-/// Stop ONLY child processes explicitly spawned by `manager` (`studio_child` & `xvfb_child`).
+/// Stop ONLY child processes explicitly spawned by `manager`
+/// (`ffmpeg_child`, `studio_child`, and `xvfb_child`).
 /// Never runs `pkill -f` and never terminates an external pre-existing display server.
 pub fn stop_embedded_studio(manager: &mut StudioEmbedManager) -> StudioEmbedState {
+    manager.x11grab_stop.store(true, Ordering::SeqCst);
+    if let Some(mut child) = manager.ffmpeg_child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     if let Some(mut child) = manager.studio_child.take() {
         let _ = child.kill();
         let _ = child.wait();
@@ -704,6 +945,8 @@ pub fn stop_embedded_studio(manager: &mut StudioEmbedManager) -> StudioEmbedStat
     manager.state.studio_id = None;
     manager.state.studio_pid = None;
     manager.state.xvfb_pid = None;
+    manager.state.ffmpeg_pid = None;
+    manager.state.x11grab_active = false;
     manager.state.tools.clear();
     manager.state.official_tools_count = 0;
     manager.state()
