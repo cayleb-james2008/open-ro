@@ -1,0 +1,106 @@
+{
+  "name": "roll_altar",
+  "units": "studs",
+  "up_axis": "Y",
+  "mesh": "roll_altar.obj",
+  "texture": "roll_altar.png",
+  "glow_mesh": "roll_altar_glow.obj",
+  "glow_texture": "roll_altar_glow.png",
+  "tris": 3408,
+  "solid_tris": 2112,
+  "glow_tris": 1296,
+  "size": [
+    4.771,
+    2.65,
+    4.771
+  ],
+  "bbox": {
+    "min": [
+      -2.386,
+      0.0,
+      -2.386
+    ],
+    "max": [
+      2.386,
+      2.65,
+      2.386
+    ]
+  },
+  "anchors": [
+    {
+      "name": "base",
+      "pos": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "center",
+      "pos": [
+        0.0,
+        1.95,
+        0.0
+      ]
+    },
+    {
+      "name": "top",
+      "pos": [
+        0.0,
+        3.15,
+        0.0
+      ]
+    },
+    {
+      "name": "base-centre",
+      "pos": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "top-centre",
+      "pos": [
+        0.0,
+        2.6503,
+        0.0
+      ]
+    },
+    {
+      "name": "centre",
+      "pos": [
+        0.0,
+        1.3251,
+        0.0
+      ]
+    }
+  ],
+  "texture_stats": {
+    "solid": {
+      "file": "roll_altar.png",
+      "size": 1024,
+      "mean": [
+        0.3907,
+        0.3807,
+        0.3612
+      ],
+      "std": 0.31738
+    },
+    "glow": {
+      "file": "roll_altar_glow.png",
+      "size": 512,
+      "mean": [
+        0.4684,
+        0.6454,
+        0.5994
+      ],
+      "std": 0.40598
+    }
+  },
+  "texture_size": 1024,
+  "previews": [
+    "roll_altar_preview_0.png",
+    "roll_altar_preview_1.png"
+  ]
+}
