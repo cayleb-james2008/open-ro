@@ -168,6 +168,28 @@ impl LocalPlace {
         serialize_rbxlx(&self.game_name, &self.tree_json())
     }
 
+    /// Replace this Place's contents directly from a normalized JSON tree
+    /// `{"instances": {...}, "scripts": {...}}` with a single atomic disk persist.
+    pub fn replace_tree(&mut self, tree: &Value) {
+        self.scripts.clear();
+        self.instances.clear();
+        if let Some(sc_map) = tree.get("scripts").and_then(|v| v.as_object()) {
+            for (k, v) in sc_map {
+                if let Some(src) = v.as_str() {
+                    self.scripts.insert(k.clone(), src.to_string());
+                }
+            }
+        }
+        if let Some(inst_map) = tree.get("instances").and_then(|v| v.as_object()) {
+            for (k, v) in inst_map {
+                if v.is_object() {
+                    self.instances.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        self.persist();
+    }
+
     /// Replace this Place's contents from an imported `.rbxlx` XML document and persist atomically.
     pub fn import_rbxlx_xml(&mut self, xml: &str) -> Result<ImportSummary, String> {
         let parsed = parse_rbxlx_xml(xml)?;

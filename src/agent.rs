@@ -534,11 +534,15 @@ impl Agent {
     }
 
     /// Replace the active Place tree with `target` (`{"instances": {...}, "scripts": {...}}`),
-    /// applying only the exact delta (deleting obsolete entries and writing new/modified ones)
+    /// using an O(N) atomic bulk replace for `LocalPlace` or exact delta calls for `Mcp`,
     /// and returning the computed `PlaceDiff`.
     pub fn apply_place_tree(&mut self, target: &Value) -> Result<PlaceDiff, String> {
         let before = self.place_tree()?;
         let diff = compute_diff(&before, target);
+        if let Some(PlaceBackend::Local(local)) = self.studio.as_mut() {
+            local.replace_tree(target);
+            return Ok(diff);
+        }
         let empty = serde_json::Map::new();
         let target_instances = target
             .get("instances")
@@ -1483,10 +1487,22 @@ impl Agent {
         transcript: &mut Vec<String>,
         thread: &mut Vec<String>,
     ) -> Result<PlaytestOutcome, String> {
+        let check_detail = match self.studio.as_ref() {
+            Some(PlaceBackend::Local(local)) => {
+                let rep = local.analyze();
+                format!(
+                    "Checked {} script(s): {} error(s), {} warning(s)",
+                    local.scripts().len(),
+                    rep.error_count(),
+                    rep.warning_count()
+                )
+            }
+            _ => "Checking Luau syntax, service references, and script wiring".to_string(),
+        };
         self.emit_event(
             "static_luau_check",
             "Static Luau Check",
-            "Checking Luau syntax, service references, and script wiring",
+            &check_detail,
             None,
             None,
             78,
