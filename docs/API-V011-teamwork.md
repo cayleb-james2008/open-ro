@@ -198,3 +198,18 @@ data: {"event_seq":6,"ts_ms":1700000010000,"run_id":"team-1","message":{"seq":5,
 ```
 
 Event types: `status` (initial snapshot), `board` (new board post), `task` (task status/claim/verify/commit update), `roster` (agent `working`/`waiting`/`stopped`/`killed` change), `trace` (new per-agent trace step), `quota` (quota backoff active/cleared), `run` (run status `running`/`completed`/`stopped`/`failed`).
+
+---
+
+## 4. Agent Step Loop & Tools
+
+Each Teamwork agent runs a pure-text JSON step loop on OpenRO's active model (`gemini-4-hydrogen-high` via `agy` or configured HTTP endpoint) inside an isolated `agy-sandbox` directory. One turn returns one of:
+
+- Single tool call: `{"tool": "<name>", "args": {...}}`
+- Batched tool calls (aborts on first error): `{"steps": [{"tool": "<name>", "args": {...}}, ...]}`
+- Park / finish wake turn: `{"done": true, "summary": "...", "post": "..."?}`
+
+Available tools:
+- Board & tasks: `board_read`, `board_post`, `create_task`, `claim_files`, `release_files`, `submit_task`, `verify_task`, `finish_run`
+- Project & verification: `project_list`, `project_files`, `project_read_file`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest` (enforces `priceApproved: false` for agents), `luau_check`, `project_check`, `project_run_lune`, `project_build`, `project_sync` (leased), `project_playtest` (leased)
+- Assets: `art_generate`, `blender_generate`, `audio_generate`

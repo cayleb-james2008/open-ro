@@ -674,3 +674,149 @@ fn human_post_stop_kill_restart_and_sse_stream() {
 
     shared.teamwork.shutdown();
 }
+
+#[test]
+fn batched_steps_abort_on_error_and_manifest_forces_price_unapproved() {
+    let dir = scratch_dir("steps-manifest");
+    let data_dir = dir.join("data");
+    let proj_dir = dir.join("proj");
+    std::fs::create_dir_all(proj_dir.join("src/server")).unwrap();
+    std::fs::write(
+        proj_dir.join("default.project.json"),
+        json!({
+            "name": "StepsTest",
+            "tree": {
+                "$className": "DataModel",
+                "ServerScriptService": { "$className": "ServerScriptService", "$path": "src/server" }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(&data_dir).unwrap();
+    write_projects_index(&data_dir, &proj_dir);
+
+    let per_role: Arc<Mutex<std::collections::HashMap<String, usize>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let pr = Arc::clone(&per_role);
+    let stub = start_dynamic_stub(move |body, _| {
+        let req: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        let msgs = req["messages"].as_array().unwrap();
+        let sys = msgs[0]["content"].as_str().unwrap_or("");
+        let role = if sys.contains("[Agent: coordinator]") {
+            "coordinator"
+        } else if sys.contains("[Agent: builder]") {
+            "builder"
+        } else {
+            "verifier"
+        };
+        let step = {
+            let mut m = pr.lock().unwrap();
+            let e = m.entry(role.to_string()).or_insert(0);
+            *e += 1;
+            *e
+        };
+        if role == "coordinator" {
+            return match step {
+                1 => json!({
+                    "tool": "create_task",
+                    "args": { "id": "t1", "owner": "builder", "title": "Write config & draft manifest", "kind": "docs", "files": ["docs/spec.md", "docs/second.md"] }
+                }),
+                2 => json!({ "done": true, "summary": "created t1" }),
+                _ => {
+                    let all_text = msgs.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
+                    if all_text.contains("Verified task t1") {
+                        json!({ "tool": "finish_run", "args": { "summary": "batched steps ok" } })
+                    } else {
+                        json!({ "done": true, "summary": "waiting" })
+                    }
+                }
+            };
+        }
+        if role == "builder" {
+            return match step {
+                // Step 1 uses batched `steps`: first writes docs/spec.md, second hits invalid path (must abort before third!)
+                1 => json!({
+                    "steps": [
+                        { "tool": "project_write_file", "args": { "path": "docs/spec.md", "content": "spec v1" } },
+                        { "tool": "project_write_file", "args": { "path": "../escape.md", "content": "bad" } },
+                        { "tool": "project_write_file", "args": { "path": "docs/second.md", "content": "should not run" } }
+                    ]
+                }),
+                // Step 2 batches manifest update (attempting priceApproved:true) + valid file + submit_task + trailing done
+                2 => json!({
+                    "steps": [
+                        {
+                            "tool": "project_update_manifest",
+                            "args": { "patch": { "products": [{ "key": "vip", "kind": "game_pass", "name": "VIP", "priceRobux": 299, "forSale": true, "priceApproved": true }] } }
+                        },
+                        { "tool": "project_write_file", "args": { "path": "docs/second.md", "content": "clean after abort" } },
+                        { "tool": "submit_task", "args": { "task_id": "t1", "summary": "batched done" } }
+                    ],
+                    "done": true,
+                    "summary": "submitted t1 via batch"
+                }),
+                _ => json!({ "done": true, "summary": "builder parked" }),
+            };
+        }
+        let all_text = msgs.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
+        if all_text.contains("Task t1 (")
+            && !msgs.iter().any(|m| m["role"] == "assistant" && m["content"].as_str().unwrap_or("").contains("\"t1\""))
+        {
+            return json!({ "tool": "verify_task", "args": { "task_id": "t1", "passed": true, "notes": "ok" } });
+        }
+        json!({ "done": true, "summary": "verified" })
+    });
+
+    let (port, shared) = boot_server(data_dir, None);
+    let (st, _) = http(
+        port,
+        "POST",
+        "/api/config",
+        Some(&json!({ "base_url": stub.base_url, "model_id": "stub-model" })),
+    );
+    assert_eq!(st, 200);
+
+    let (st, created) = http(
+        port,
+        "POST",
+        "/api/teamwork",
+        Some(&json!({ "goal": "Verify batched steps & manifest gate", "roles": ["builder", "verifier"], "max_concurrency": 2 })),
+    );
+    assert_eq!(st, 201, "{created}");
+    let run_id = created["run"]["id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut detail = Value::Null;
+    while Instant::now() < deadline {
+        let (_, d) = http(port, "GET", &format!("/api/teamwork/{run_id}"), None);
+        detail = d;
+        if detail["run"]["status"] == "completed" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    assert_eq!(detail["run"]["status"], "completed", "{detail}");
+    assert_eq!(std::fs::read_to_string(proj_dir.join("docs/spec.md")).unwrap(), "spec v1");
+    assert_eq!(std::fs::read_to_string(proj_dir.join("docs/second.md")).unwrap(), "clean after abort");
+
+    // Verify abort-on-error stopped step 3 of batch 1 before executing it
+    let (_, tr) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/builder/trace"), None);
+    let trace = tr["trace"].as_array().unwrap();
+    let aborted_msg = tr["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["content"].as_str())
+        .find(|s| s.contains("aborted on first error"))
+        .expect("abort notice recorded");
+    assert!(!aborted_msg.contains("should not run"), "{trace:?}");
+
+    // Verify agent-submitted product had priceApproved stripped to false
+    let manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(proj_dir.join("openro.project.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["products"][0]["priceApproved"], false, "{manifest}");
+
+    shared.teamwork.shutdown();
+}
