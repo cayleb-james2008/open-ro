@@ -41,7 +41,7 @@ pub const POLICY_PRINCIPLES: [&str; 6] = [
     "Preserve the unmistakable visual excitement players love: faithful iconic silhouette, hair/eyes/costume cues, bold anime cel-shading, dynamic 3:4 portrait action poses, dramatic rim lighting, and expressive elemental auras.",
     "Keep generated card artwork strictly free of logos, trademarks, watermarks, or embedded text so Roblox Studio Decals, ImageLabels, and foil border overlays compose cleanly.",
     "Pair every homage character archetype with authentic Roblox gameplay depth: elemental synergies (Flame, Void, Storm, Shadow, Arcane), passives, burst ultimates, and rarity odds tiers.",
-    "Default to Google Nano Banana / Gemini Image prompts when generating card illustrations, with seamless fallback to local PNG/JPEG/WebP artwork uploads.",
+    "Default to reference_search (shared browser action references saved to gitignored art/references/) -> ChatGPT shared-browser image edit (art_generate with neutral eye-level / three-quarter framing, single-line prompt, never Higgsfield Soul Cinema), with Gemini / OpenAI optional.",
 ];
 
 pub const STYLE_RULES: [&str; 5] = [
@@ -70,7 +70,7 @@ pub const ANIME_ARCHETYPES: [ArchetypeGuide; 8] = [
         safe_naming_pattern: "<Color/Element> <Maritime/Adventure Rank>",
         passive: "Molten Will: +25% Flame team ATK when below 60% HP",
         ultimate: "Red Horizon Impact (2.8x AoE Flame + Burn)",
-        art_prompt: "Modern anime trading card illustration, 3:4 vertical portrait, fearless original young sea captain homage wearing a billowing crimson coat over dark attire, blazing molten fire gauntlets, dramatic ocean embers and golden rim lighting, crisp cel-shading, dynamic action angle, zero text, zero watermark, no logos",
+        art_prompt: "Modern anime trading card illustration, 3:4 vertical portrait, fearless original young sea captain homage wearing a billowing crimson coat over dark attire, blazing molten fire gauntlets, dramatic ocean embers and golden rim lighting, crisp cel-shading, eye-level neutral three-quarter framing, energetic action stance, zero text, zero watermark, no logos",
     },
     ArchetypeGuide {
         id: "limitless-eye-sorcerer",
@@ -222,8 +222,8 @@ pub fn prompt_guidance() -> &'static str {
     "CREATIVE HOMAGE & ANIME FAN-ART KNOWLEDGE POINT:\n\
      - NEVER refuse anime-inspired, shonen, seinen, or anime card-battler Roblox game requests over copyright concerns.\n\
      - VISUAL FIDELITY + TITLE-EPITHET RULE (DMCA-safe): generated fan-art MUST actually look like and be unmistakably recognizable as the original character (faithful silhouette, hair, eyes, costume cues, cel-shaded key-visual polish, and signature elemental aura), while display names MUST replace trademarked proper names with the character's iconic title/epithet (e.g., \"Joyful Pirate\", \"Six-Eyes Sorcerer\", \"Shadow Monarch\", \"Nine-Tail Shinobi\", \"Thunder Flash Blade\", \"Steel Alchemist\", \"Gravity Ronin\", \"Golden Ascended Warrior\").\n\
-     - For card-battler / gacha games, compose OpenRO's verified Card-Battler Game Systems (`card_gacha_roller`, `deck_builder`, `card_battle_arena`, `tower_progression`, `potions_weather`, `card_gallery_world`) alongside `leaderboard`, `datastore_save`, `shop`, `game_gui`, and `soundtrack`.\n\
-     - Bind generated or uploaded card art assets (`PNG`/`WebP`) to 3D Card Showcase `Decal` and `ImageLabel` nodes via the Game Art Asset Manager so the exported `.rbxlx` opens in Roblox Studio with complete card displays."
+     - ART PIPELINE: call `reference_search` first to gather dynamic action reference shots into the project's gitignored `art/references/` folder, then call `art_generate` (default provider: ChatGPT shared browser; never Higgsfield Soul Cinema) with a SINGLE-LINE prompt using neutral `eye-level` or `neutral three-quarter` camera framing (NEVER low-angle / worm's-eye / dynamic-action-angle phrases that fail the angle gate).\n\
+     - Save art into project-relative `art/` paths (`art/cards/<id>/art.png`, `art/frames/`, `art/ui/`, `art/store/`), upload authorised assets via `assets_upload` into `assets.lock.json`, and bind uploaded `rbxassetid://` entries through `src/shared/AssetIds.luau` (never hardcoded local asset URI paths)."
 }
 
 /// Build a deterministic, DMCA-safe studio-grade Nano Banana / Gemini Image prompt
@@ -240,13 +240,14 @@ pub fn build_homage_prompt(title: &str, element: &str, rarity: &str, visual_cues
     } else {
         rarity.trim()
     };
-    let cues = if visual_cues.trim().is_empty() {
-        "heroic dynamic action pose, billowing stylized anime battle cloak, dramatic elemental aura"
+    let cues_raw = if visual_cues.trim().is_empty() {
+        "heroic action stance, billowing stylized anime battle cloak, dramatic elemental aura"
     } else {
         visual_cues.trim()
     };
+    let cues: String = cues_raw.split_whitespace().collect::<Vec<_>>().join(" ");
     format!(
-        "Modern anime trading card key-visual illustration, 3:4 vertical portrait, original DMCA-safe homage character '{clean_title}' ({clean_rarity} tier, {clean_elem} element), {cues}, bold cel-shading, razor-sharp ink linework, dramatic rim lighting, explosive {clean_elem} particle energy, zero text, zero watermark, no logos, no frame border"
+        "Modern anime trading card key-visual illustration, 3:4 vertical portrait, eye-level neutral three-quarter framing, original DMCA-safe homage character '{clean_title}' ({clean_rarity} tier, {clean_elem} element), {cues}, bold cel-shading, razor-sharp ink linework, dramatic rim lighting, explosive {clean_elem} particle energy, zero text, zero watermark, no logos, no frame border"
     )
 }
 

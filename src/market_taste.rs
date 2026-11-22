@@ -1754,67 +1754,67 @@ static NICHE_PROFILES: [NicheProfile; 8] = [
     NicheProfile {
         id: "anime-rng-cards",
         name: "Anime RNG & Card Battlers",
-        tagline: "Sunlit shrine roll spectacle, Fusion Weather rarity storms, and tactile 4v4 anime card battles.",
-        craft_bar: "Match top-trending anime card hit craft: vibrant sunlit stylized floating archipelago with crisp cerulean sky, bold painted character card portraits, layered non-overlapping HUDs, snappy TweenService card slams & hitstop, and unmistakable 3-second roll delight.",
+        tagline: "High-clarity anime gacha collection, progression depth, and responsive card battles.",
+        craft_bar: "Match top-charting anime RNG and card-game craft: cohesive stylized lighting and readable hub landmarks, recognizable epithet-named character art, non-overlapping responsive HUDs, snappy TweenService reveal & combat feedback, and server-authoritative odds and saves.",
         gameplay_loop: &[
-            "5-second Core Hook: Roll at the Torii Shrine -> animated card rarity reveal -> equip best 4 cards into active deck",
-            "Battle Progression: Challenge Story Worlds, Infinite Tower floors, and timed Raid Bosses using 4v4 elemental card clashes",
-            "Luck Escalation: Brew Luck/Speed Potions at the Alchemist Cauldron and ride 15-minute Weather & Fusion Storms for Mythic odds",
-            "Collection & Prestige: Complete the Card Index for permanent stat milestones and Ascend duplicate pulls into foil variants",
+            "Fast first-touch core loop: clear entry action within seconds -> unmistakable rarity reveal -> immediate equip/upgrade feedback",
+            "Multi-mode progression: pair core rolling/collection with meaningful combat, world progression, or challenge modes defined by the project GDD",
+            "Transparent luck and progression modifiers: display active multipliers, odds tables, and pity progress cleanly from server state",
+            "Long-term collection goals: index milestones, ascension/duplicate sinks, and rebirth or tier scaling tuned to the project economy",
         ],
         ui_ux_style: &[
-            "Bold gold/metallic beveled titles with clean dark-navy card frames and high-contrast rarity color borders (Common -> Mythic -> Celestial)",
-            "Non-overlapping HUD layering: cleanly hide/dim bottom action dock whenever the Summon Reveal or Deck Modal opens",
-            "Compact top weather/luck pill showing live multiplier countdown + visible pity progress bar right beside Roll",
-            "44px+ mobile-safe tap targets across Roll, Auto-Roll, Deck, Potions, and Battle buttons",
+            "Clean high-contrast rarity hierarchy using distinct colour, label, and shape/glyph (never colour alone)",
+            "Non-overlapping HUD layering: dim or hide navigation docks while reveal, modal, or confirmation overlays are open",
+            "Keep top-left Roblox menu bounds unobstructed and provide Settings-only Light/Dark theme and reduced-motion/flash toggles",
+            "44px+ mobile-safe tap targets with responsive UIScale/layout across phone, tablet, and desktop viewports",
         ],
         animations_and_juice: &[
-            "TweenService Quint/Back card flip reveal with anticipation shake, radial light rays, and rarity-scaled screen flash",
-            "4v4 Battle Card slam forward -> 60ms hitstop impact freeze -> floating crit damage popups + camera micro-shake",
-            "Chain Overdrive timing window with glowing slash cut-in banner and dual-card finisher burst",
-            "Subtle idle hover bob and elemental particle drift on equipped Hall of Legends pedestals & Lead-Card Guardian Aura",
+            "TweenService spring/easing curves for card reveals, button presses, and modal transitions (respecting Flash/Reduced-Motion Settings)",
+            "Crisp combat/action feedback: anticipation, impact hitstop, floating numbers, and subtle camera feedback within mobile budgets",
+            "Clear affordances for unaffordable actions: explain the exact missing requirement and route the player directly to earn it",
+            "Zero visual clutter: keep particle emitters and lighting budgets disciplined on mobile devices",
         ],
         model_and_world_3d_style: &[
-            "Vibrant sunlit anime floating archipelago (`ClockTime = 13.5`, crisp cerulean Sky + light Atmosphere) — NEVER dark obsidian neon-box slabs in daylight!",
-            "Lush stylized emerald grass terraces, warm sandstone/cream marble central plaza, bright turquoise koi moat, and sculpted cliff undersides",
-            "Real Blender-silhouetted crimson Torii Gate with translucent summon beam (`Transparency = 0.72`) so architecture shines cleanly",
-            "Reserve dark crimson/indigo sky strictly for active Blood Moon / Crimson Eclipse / Celestial Tempest weather storms",
+            "Cohesive stylized world architecture and lighting driven by the project's GDD and reference art — avoid empty dark slabs",
+            "Custom UV-unwrapped, AO-baked Blender meshes (<= 20,000 tris/mesh) wired through manifest stud dimensions and AssetIds",
+            "Respect PartType.Cylinder local-X orientation (rotate Z+90deg for upright pillars) and StreamingEnabled mobile budgets",
+            "Keep interactive hubs navigable with clear sightlines from spawn to core stations and landmarks",
         ],
         audio_cadence: &[
-            "Summon Roll: rising crystalline pentatonic bell chime (`summon_roll.wav`) building tension into card flip",
-            "SSR/Mythic Pull: triumphant brass chord fanfare (`mythic_fanfare.wav`) + shimmer tail audible across the shrine",
-            "Battle Impact: punchy sub-bass thump + metallic anime slash (`battle_crit.wav`) synced to hitstop frame",
-            "UI & Potions: crisp tactile `ui_click.wav` on deck clicks and bubbly ascending `potion_drink.wav` on cauldron brews",
+            "Distinct rarity-scaled reveal cues and clean UI click/confirm feedback authored into the project's assets/audio/ folder",
+            "Punchy, non-fatiguing combat and reward impacts with pooled Sound cleanup via Debris",
+            "Volume and mute toggles accessible in Settings without interrupting gameplay",
+            "Bind uploaded audio through AssetIds.luau using proper Content/url asset references",
         ],
         monetization_loops: &[
-            "Gacha Pity Guarantee + Craftable/Purchasable Luck & Speed Potions (stacking transparently with VIP)",
-            "Server-wide Weather / Fusion Storm Totem (social flex product boosting every player in the lobby)",
-            "VIP Pass (2x Roll Speed, Auto-Roll, +20% Base Luck, Extra Deck Slot)",
-            "Cosmetic Foil Card Borders, Hover Aura Trails & Dual-Card Finisher VFX Packs",
+            "Server-authoritative Game Passes and Developer Products aligned with an owner-approved price sheet (never auto-published unapproved)",
+            "Transparent odds tables and pity guarantees with fair free-to-play earn paths alongside convenience boosts",
+            "Social server-wide boosts or cosmetic flex unlocks that reward the whole lobby without hard paywalls",
+            "Clear confirmation dialogs and receipt idempotency (`ProcessReceipt` / `UserOwnsGamePassAsync` cached safely on server)",
         ],
         retention_hooks: &[
-            "Visible Pity Counter (guaranteed SSR at 25 rolls, Mythic at 100) + Daily Login Luck Streak",
-            "15-minute Global Weather Cycle + rare Fusion Storms multiplying rare pull rates",
-            "Collection Index with milestone stat bonuses & shiny/ascended card evolutions",
-            "4v4 Arena Battles + Weekly Infinite Tower Leaderboard with exclusive seasonal foil titles",
+            "Visible pity counters, daily login streaks, and clear 'Next Goal' strip guiding each session's immediate objective",
+            "Timed server events, rotating banners, and leaderboard ladders synced cleanly on the server",
+            "Collection index milestones and meaningful duplicate conversion so every roll advances the account",
+            "Reliable `pcall` + `UpdateAsync` + `BindToClose` DataStore persistence with schema versioning",
         ],
         anti_slop_guardrails: &[
-            "Never ship a dark/black baseplate slab or opaque neon cylinder covering a shrine: keep sunlit sky + translucent VFX",
-            "Never overlap bottom HUD buttons on top of card reveal modals",
-            "Keep RNG odds, pity counters, inventory, and potion timers 100% server-authoritative (zero client trust)",
-            "Give free players craftable luck potions so monetization accelerates joy rather than walling gameplay",
+            "Never inject generic placeholder mechanics that contradict the user's brief or project GDD",
+            "Never overlap HUD buttons over modals or Roblox's top-left CoreGui controls",
+            "Keep RNG odds, pity counters, inventory, currencies, and combat outcomes 100% server-authoritative",
+            "Verify every script with static Luau/Selene checks and live Playtest Runner with 0 console errors",
         ],
         automatic_twists: &[
-            "CHAIN OVERDRIVE Timing Burst: hit [SPACE] or tap the Overdrive flash during a 4v4 clash to trigger a +35% dual-card anime cut-in finisher",
-            "FUSION WEATHER STORMS: overlapping biomes trigger rare Crimson Eclipse (5x Luck) or Celestial Tempest (4.5x Luck) server sky shifts",
-            "Living 3D Lead-Card Guardian Aura: your highest-rarity equipped card floats as a glowing stylized holographic crest behind your character in the hub",
+            "Server-authoritative progression telemetry & transparent odds/pity UI so players always trust every roll",
+            "Mobile-first responsive layout verification + Settings-only Light/Dark and reduced-motion accessibility",
+            "End-to-end automated asset pipeline: manifest-driven 3D sizing, AssetIds.luau binding, and zero-error playtest checks",
         ],
         quality_boosts: &[
-            "Sunlit Floating Archipelago hub with emerald grass, warm marble plaza, koi moat, and translucent shrine light beams",
-            "Clean modal HUD occlusion: dim/hide bottom dock automatically during card reveals so art & stats own the frame",
-            "Instant 5-second first roll with pre-warmed SFX + Blender-modeled Torii Gate, Pedestals, and Alchemist Cauldron",
+            "Cohesive stylized hub landmarks with manifest-backed meshes and disciplined mobile emitter/light budgets",
+            "Clean modal HUD occlusion and clear 'Next Goal' guidance from the first 5 seconds",
+            "Complete server-authoritative DataStore persistence, RemoteEvent validation, and zero console error verification",
         ],
-        pitch_prompt: "Build Untitled Anime Card Game — a top-trending Anime RNG & Card Battler on a sunlit floating archipelago (emerald grass terraces, warm marble plaza, turquoise koi moat, translucent crimson Torii Roll Shrine): 7-weather + Fusion Weather Storms (Crimson Eclipse 5x / Celestial Tempest 4.5x), craftable Luck/Speed Potions, visible Mythic pity counter, 4v4 Card Clash with Chain Overdrive timing finisher, Living 3D Lead-Card Guardian Aura, server-authoritative DataStore saves, Blender 3D hero props, procedural .wav SFX, and painted Nano Banana card art.",
+        pitch_prompt: "Build an original Roblox Anime RNG & Card game tailored strictly to the user's brief and GDD: server-authoritative RNG/pity/economy/DataStore systems, responsive non-overlapping UI with Settings-only Light/Dark & flash toggles, custom UV-textured Blender meshes, synthesized project audio, reference-guided anime character art bound via AssetIds.luau, and verified Playtest Runner checks.",
     },
     NicheProfile {
         id: "viral-sim-tycoon",
@@ -2244,3 +2244,712 @@ static NICHE_PROFILES: [NicheProfile; 8] = [
         pitch_prompt: "Build a polished Social Fashion & Town Hub inspired by Dress To Impress and Brookhaven RP: a warm sunlit marble plaza and boutique studio connecting a spotlighted Runway Stage, 3-minute theme rounds with Duo Sync Runway twist and Surprise Mid-Round Accessory Drop, peer star voting podium with confetti, Interactive Photo-Booth lighting presets, rate-limited prop/vehicle spawner, and DataStore rank & wardrobe saves.",
     },
 ];
+
+// ============================================================================
+// Project-scoped Roblox research (real fetched facts + downloaded thumbnails)
+// and SSRF-safe read-only web_fetch / web_search helpers (Gap #17).
+// ============================================================================
+
+/// Fetch live Roblox metadata and download thumbnail PNGs into
+/// `<project_dir>/refs/<universe_id>/` with ONLY real fetched facts (no
+/// hardcoded game-design boilerplate and never touching `TASTE-DOSSIER.md`).
+pub fn research_roblox_game_to_project(
+    project_dir: &Path,
+    target: &str,
+    niche_hint: Option<&str>,
+) -> Result<Value, String> {
+    research_roblox_game_to_project_with_base(
+        project_dir,
+        target,
+        niche_hint,
+        None,
+        Duration::from_secs(12),
+    )
+}
+
+pub fn research_roblox_game_to_project_with_base(
+    project_dir: &Path,
+    target: &str,
+    niche_hint: Option<&str>,
+    api_base_override: Option<&str>,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let (raw_id, is_place_id) = parse_roblox_id_input(target)?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(timeout.min(Duration::from_secs(5)))
+        .timeout_read(timeout)
+        .timeout(timeout)
+        .build();
+
+    let (apis_base, games_base, thumbs_base) = match api_base_override {
+        Some(base) => {
+            let clean = base.trim_end_matches('/').to_string();
+            (clean.clone(), clean.clone(), clean)
+        }
+        None => (
+            "https://apis.roblox.com".to_string(),
+            "https://games.roblox.com".to_string(),
+            "https://thumbnails.roblox.com".to_string(),
+        ),
+    };
+
+    let universe_id: u64 = if is_place_id {
+        let url = format!("{apis_base}/universes/v1/places/{raw_id}/universe");
+        let resp = agent
+            .get(&url)
+            .set("Accept", "application/json")
+            .set("User-Agent", concat!("OpenRO/", env!("CARGO_PKG_VERSION")))
+            .call()
+            .map_err(|e| format!("Roblox place->universe lookup failed: {e}"))?;
+        let val: Value = resp
+            .into_json()
+            .map_err(|e| format!("parse universe lookup json: {e}"))?;
+        val.get("universeId")
+            .and_then(|v| v.as_u64())
+            .filter(|&u| u > 0)
+            .ok_or_else(|| format!("Place ID {raw_id} did not resolve to a valid Roblox Universe ID"))?
+    } else {
+        raw_id
+    };
+
+    let game_url = format!("{games_base}/v1/games?universeIds={universe_id}");
+    let game_val: Value = agent
+        .get(&game_url)
+        .set("Accept", "application/json")
+        .set("User-Agent", concat!("OpenRO/", env!("CARGO_PKG_VERSION")))
+        .call()
+        .map_err(|e| format!("Roblox games API failed for universe {universe_id}: {e}"))?
+        .into_json()
+        .map_err(|e| format!("parse Roblox games API json: {e}"))?;
+
+    let game_obj = game_val
+        .get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|arr| arr.first())
+        .ok_or_else(|| format!("Roblox returned no game data for universe {universe_id}"))?;
+
+    let name = game_obj
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown Roblox Game")
+        .trim()
+        .to_string();
+    let description = game_obj
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let root_place_id = game_obj
+        .get("rootPlaceId")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(if is_place_id { raw_id } else { 0 });
+    let playing = game_obj.get("playing").and_then(|v| v.as_u64()).unwrap_or(0);
+    let visits = game_obj.get("visits").and_then(|v| v.as_u64()).unwrap_or(0);
+    let favorited_count = game_obj
+        .get("favoritedCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let genre = game_obj
+        .get("genre_l1")
+        .or_else(|| game_obj.get("genre"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("All")
+        .trim()
+        .to_string();
+    let creator_name = game_obj
+        .pointer("/creator/name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Roblox Creator")
+        .to_string();
+
+    let (up_votes, down_votes) = {
+        let votes_url = format!("{games_base}/v1/games/votes?universeIds={universe_id}");
+        agent
+            .get(&votes_url)
+            .set("Accept", "application/json")
+            .set("User-Agent", concat!("OpenRO/", env!("CARGO_PKG_VERSION")))
+            .call()
+            .ok()
+            .and_then(|r| r.into_json::<Value>().ok())
+            .and_then(|v| v.get("data")?.as_array()?.first().cloned())
+            .map(|entry| {
+                (
+                    entry.get("upVotes").and_then(|v| v.as_u64()).unwrap_or(0),
+                    entry.get("downVotes").and_then(|v| v.as_u64()).unwrap_or(0),
+                )
+            })
+            .unwrap_or((0, 0))
+    };
+    let like_ratio_pct = compute_like_ratio(up_votes, down_votes);
+
+    let thumbnails: Vec<String> = {
+        let thumb_url = format!(
+            "{thumbs_base}/v1/games/multiget/thumbnails?universeIds={universe_id}&countPerUniverse=6&defaults=true&size=768x432&format=Png&isCircular=false"
+        );
+        agent
+            .get(&thumb_url)
+            .set("Accept", "application/json")
+            .set("User-Agent", concat!("OpenRO/", env!("CARGO_PKG_VERSION")))
+            .call()
+            .ok()
+            .and_then(|r| r.into_json::<Value>().ok())
+            .and_then(|v| {
+                v.get("data")?
+                    .as_array()?
+                    .first()?
+                    .get("thumbnails")?
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|t| t.get("imageUrl").and_then(|u| u.as_str()))
+                            .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+                            .map(ToString::to_string)
+                            .collect()
+                    })
+            })
+            .unwrap_or_default()
+    };
+
+    let niche_id = niche_hint
+        .and_then(|h| normalize_niche_id(h).ok())
+        .unwrap_or_else(|| classify_game_niche(&name, &genre));
+
+    let ref_dir = project_dir.join("refs").join(universe_id.to_string());
+    std::fs::create_dir_all(&ref_dir)
+        .map_err(|e| format!("create project refs dir: {e}"))?;
+
+    // Download thumbnails locally (SSRF-checked unless api_base_override is set for tests).
+    let allow_loopback = api_base_override.is_some();
+    let mut local_thumbs: Vec<String> = Vec::new();
+    for (idx, url) in thumbnails.iter().take(6).enumerate() {
+        if let Ok(bytes) = download_image_bytes(url, allow_loopback, timeout) {
+            let ext = detect_image_ext(&bytes);
+            if let Some(ext) = ext {
+                let rel = format!("refs/{universe_id}/thumb_{}.{ext}", idx + 1);
+                let out_path = project_dir.join(&rel);
+                if write_atomic(&out_path, &bytes).is_ok() {
+                    local_thumbs.push(rel);
+                }
+            }
+        }
+    }
+
+    let dossier_rel = format!("refs/{universe_id}/dossier.json");
+    let readme_rel = format!("refs/{universe_id}/README.md");
+
+    let mut md = String::new();
+    md.push_str(&format!("# Reference Game: {name}\n\n"));
+    md.push_str(&format!("- **Universe ID:** `{universe_id}`\n"));
+    md.push_str(&format!("- **Root Place ID:** `{root_place_id}`\n"));
+    md.push_str(&format!("- **Creator:** {creator_name}\n"));
+    md.push_str(&format!("- **Genre:** `{genre}` (classified niche: `{niche_id}`)\n"));
+    md.push_str(&format!(
+        "- **Live Metrics:** {} playing · {} visits · {} favorites · {:.1}% likes ({} up / {} down)\n\n",
+        format_ccu(playing),
+        format_ccu(visits),
+        format_ccu(favorited_count),
+        like_ratio_pct,
+        up_votes,
+        down_votes
+    ));
+    if !description.is_empty() {
+        md.push_str("## Official Description\n\n");
+        md.push_str(&description);
+        md.push_str("\n\n");
+    }
+    if !thumbnails.is_empty() {
+        md.push_str("## Thumbnails\n\n");
+        for (i, url) in thumbnails.iter().enumerate() {
+            let local = local_thumbs
+                .get(i)
+                .map(|p| format!(" -> `{p}`"))
+                .unwrap_or_default();
+            md.push_str(&format!("{}. {url}{local}\n", i + 1));
+        }
+        md.push('\n');
+    }
+
+    let payload = json!({
+        "ok": true,
+        "source": "live_roblox_game_api",
+        "researched_at_ms": now_ms(),
+        "universe_id": universe_id,
+        "root_place_id": root_place_id,
+        "name": name,
+        "creator": creator_name,
+        "description": description,
+        "playing": playing,
+        "visits": visits,
+        "favorited_count": favorited_count,
+        "up_votes": up_votes,
+        "down_votes": down_votes,
+        "like_ratio_pct": like_ratio_pct,
+        "genre": genre,
+        "niche": niche_id,
+        "thumbnails": thumbnails,
+        "local_thumbnails": local_thumbs,
+        "dossier_path": dossier_rel,
+        "markdown_path": readme_rel,
+    });
+
+    let json_text = serde_json::to_string_pretty(&payload)
+        .map_err(|e| format!("serialize project dossier: {e}"))?;
+    write_atomic(&project_dir.join(&dossier_rel), json_text.as_bytes())?;
+    write_atomic(&project_dir.join(&readme_rel), md.as_bytes())?;
+    Ok(payload)
+}
+
+fn detect_image_ext(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("jpg")
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
+fn is_forbidden_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_unspecified()
+                || (o[0] == 100 && (64..=127).contains(&o[1])) // CGNAT 100.64.0.0/10
+                || (o[0] == 0)
+        }
+        std::net::IpAddr::V6(v6) => {
+            let seg0 = v6.segments()[0];
+            v6.is_loopback()
+                || v6.is_multicast()
+                || v6.is_unspecified()
+                || (seg0 & 0xfe00) == 0xfc00 // ULA fc00::/7
+                || (seg0 & 0xffc0) == 0xfe80 // link-local fe80::/10
+                || v6.to_ipv4_mapped().is_some_and(|v4| is_forbidden_ip(std::net::IpAddr::V4(v4)))
+        }
+    }
+}
+
+/// Parse scheme, host, port, and path from an HTTP(S) URL without external crates.
+fn split_http_url(raw: &str) -> Result<(&str, &str, u16, &str), String> {
+    let trimmed = raw.trim();
+    let (scheme, rest, default_port) = if let Some(r) = trimmed.strip_prefix("https://") {
+        ("https", r, 443u16)
+    } else if let Some(r) = trimmed.strip_prefix("http://") {
+        ("http", r, 80u16)
+    } else {
+        return Err(format!("unsupported URL scheme in '{trimmed}' (only http/https allowed)"));
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => match rest.find('?') {
+            Some(i) => (&rest[..i], &rest[i..]),
+            None => (rest, "/"),
+        },
+    };
+    if authority.is_empty() {
+        return Err("URL has no host".to_string());
+    }
+    if authority.contains('@') {
+        return Err("URLs with embedded credentials are not allowed".to_string());
+    }
+    let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+        let end = bracketed.find(']').ok_or("malformed IPv6 host in URL")?;
+        let h = &bracketed[..end];
+        let after = &bracketed[end + 1..];
+        let p = if let Some(ps) = after.strip_prefix(':') {
+            ps.parse::<u16>().map_err(|_| "invalid port in URL")?
+        } else {
+            default_port
+        };
+        (h, p)
+    } else if let Some((h, ps)) = authority.rsplit_once(':') {
+        let p = ps.parse::<u16>().map_err(|_| "invalid port in URL")?;
+        (h, p)
+    } else {
+        (authority, default_port)
+    };
+    if host.is_empty() || host.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(format!("invalid host '{host}'"));
+    }
+    Ok((scheme, host, port, path))
+}
+
+fn resolve_redirect_url(current: &str, location: &str) -> Result<String, String> {
+    let loc = location.trim();
+    if loc.starts_with("https://") || loc.starts_with("http://") {
+        return Ok(loc.to_string());
+    }
+    let (scheme, host, port, cur_path) = split_http_url(current)?;
+    let default_port = if scheme == "https" { 443 } else { 80 };
+    let host_part = if host.contains(':') { format!("[{host}]") } else { host.to_string() };
+    let origin = if port == default_port {
+        format!("{scheme}://{host_part}")
+    } else {
+        format!("{scheme}://{host_part}:{port}")
+    };
+    if loc.starts_with("//") {
+        Ok(format!("{scheme}:{loc}"))
+    } else if loc.starts_with('/') {
+        Ok(format!("{origin}{loc}"))
+    } else {
+        let base_dir = cur_path
+            .rsplit_once('/')
+            .map(|(d, _)| format!("{d}/"))
+            .unwrap_or_else(|| "/".to_string());
+        Ok(format!("{origin}{base_dir}{loc}"))
+    }
+}
+
+/// Validate a URL for SSRF safety: scheme must be http/https, hostname cannot
+/// be a literal or DNS-resolved loopback/private/link-local IP unless
+/// `allow_loopback` is true (used strictly by unit tests).
+pub fn validate_public_url(raw_url: &str, allow_loopback: bool) -> Result<String, String> {
+    let trimmed = raw_url.trim();
+    let (_scheme, host, port, _path) = split_http_url(trimmed)?;
+    let host_lower = host.to_ascii_lowercase();
+    if !allow_loopback
+        && (host_lower == "localhost"
+            || host_lower.ends_with(".localhost")
+            || host_lower.ends_with(".local")
+            || host_lower.ends_with(".internal"))
+    {
+        return Err(format!("blocked private/loopback host '{host}'"));
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if !allow_loopback && is_forbidden_ip(ip) {
+            return Err(format!("blocked private/loopback IP '{ip}'"));
+        }
+        return Ok(trimmed.to_string());
+    }
+    use std::net::ToSocketAddrs;
+    let addrs: Vec<std::net::SocketAddr> = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("DNS resolution failed for '{host}': {e}"))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(format!("DNS returned no addresses for '{host}'"));
+    }
+    if !allow_loopback {
+        for addr in &addrs {
+            if is_forbidden_ip(addr.ip()) {
+                return Err(format!(
+                    "blocked private/loopback address '{}' resolved for '{host}'",
+                    addr.ip()
+                ));
+            }
+        }
+    }
+    Ok(trimmed.to_string())
+}
+
+fn fetch_bytes_checked(
+    raw_url: &str,
+    allow_loopback: bool,
+    max_bytes: usize,
+    timeout: Duration,
+) -> Result<(String, String, Vec<u8>), String> {
+    let agent = ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout_connect(timeout.min(Duration::from_secs(5)))
+        .timeout_read(timeout)
+        .timeout(timeout)
+        .build();
+
+    let mut current = validate_public_url(raw_url, allow_loopback)?;
+    for _ in 0..5 {
+        let resp = match agent
+            .get(&current)
+            .set("Accept", "text/html,application/json,text/plain,image/*;q=0.8,*/*;q=0.5")
+            .set("User-Agent", concat!("OpenRO/", env!("CARGO_PKG_VERSION")))
+            .call()
+        {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, r)) if (300..400).contains(&code) => {
+                let loc = r
+                    .header("Location")
+                    .ok_or_else(|| format!("redirect HTTP {code} missing Location header"))?;
+                let next = resolve_redirect_url(&current, loc)?;
+                current = validate_public_url(&next, allow_loopback)?;
+                continue;
+            }
+            Err(e) => return Err(format!("HTTP fetch failed for {current}: {e}")),
+        };
+        let status = resp.status();
+        if (300..400).contains(&status) {
+            let loc = resp
+                .header("Location")
+                .ok_or_else(|| format!("redirect HTTP {status} missing Location header"))?;
+            let next = resolve_redirect_url(&current, loc)?;
+            current = validate_public_url(&next, allow_loopback)?;
+            continue;
+        }
+        let content_type = resp
+            .header("Content-Type")
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        use std::io::Read;
+        let mut buf = Vec::new();
+        resp.into_reader()
+            .take((max_bytes as u64) + 1)
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("read response body: {e}"))?;
+        if buf.len() > max_bytes {
+            buf.truncate(max_bytes);
+        }
+        return Ok((current, content_type, buf));
+    }
+    Err("too many HTTP redirects".to_string())
+}
+
+fn percent_encode_query(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        } else if bytes[i] == b'+' {
+            out.push(b' ');
+            i += 1;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn download_image_bytes(
+    url: &str,
+    allow_loopback: bool,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let (_, _, bytes) = fetch_bytes_checked(url, allow_loopback, 5 * 1024 * 1024, timeout)?;
+    if bytes.is_empty() {
+        return Err("empty image".to_string());
+    }
+    Ok(bytes)
+}
+
+/// Strip HTML tags, scripts, styles, and collapse whitespace into clean text.
+pub fn html_to_plain_text(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let bytes = html.as_bytes();
+    let mut stripped = String::with_capacity(html.len().min(32_768));
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if lower[i..].starts_with("<script") {
+            if let Some(end) = lower[i..].find("</script>") {
+                i += end + "</script>".len();
+                stripped.push(' ');
+                continue;
+            }
+            break;
+        }
+        if lower[i..].starts_with("<style") {
+            if let Some(end) = lower[i..].find("</style>") {
+                i += end + "</style>".len();
+                stripped.push(' ');
+                continue;
+            }
+            break;
+        }
+        if bytes[i] == b'<' {
+            if let Some(close) = html[i..].find('>') {
+                let tag = &lower[i + 1..i + close];
+                if tag.starts_with("br")
+                    || tag.starts_with("p")
+                    || tag.starts_with("/p")
+                    || tag.starts_with("li")
+                    || tag.starts_with("/h")
+                    || tag.starts_with("div")
+                    || tag.starts_with("/div")
+                    || tag.starts_with("tr")
+                {
+                    stripped.push('\n');
+                } else {
+                    stripped.push(' ');
+                }
+                i += close + 1;
+                continue;
+            }
+        }
+        let ch = html[i..].chars().next().unwrap();
+        stripped.push(ch);
+        i += ch.len_utf8();
+    }
+    let decoded = stripped
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ");
+    let mut lines = Vec::new();
+    for line in decoded.lines() {
+        let collapsed: String = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !collapsed.is_empty() {
+            lines.push(collapsed);
+        }
+    }
+    lines.join("\n")
+}
+
+/// Safe read-only web fetch (SSRF-blocked, size-capped, timeout-bounded).
+pub fn web_fetch(raw_url: &str, max_chars: usize) -> Result<Value, String> {
+    web_fetch_with_options(raw_url, max_chars, false, Duration::from_secs(15))
+}
+
+pub fn web_fetch_with_options(
+    raw_url: &str,
+    max_chars: usize,
+    allow_loopback: bool,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let cap = max_chars.clamp(512, 24_000);
+    let (final_url, content_type, bytes) =
+        fetch_bytes_checked(raw_url, allow_loopback, 256 * 1024, timeout)?;
+    let raw_text = String::from_utf8_lossy(&bytes);
+    let text = if content_type.to_ascii_lowercase().contains("html") {
+        html_to_plain_text(&raw_text)
+    } else {
+        raw_text.to_string()
+    };
+    let truncated = text.chars().count() > cap;
+    let body: String = text.chars().take(cap).collect();
+    Ok(json!({
+        "ok": true,
+        "url": final_url,
+        "content_type": content_type,
+        "bytes": bytes.len(),
+        "truncated": truncated,
+        "text": body,
+    }))
+}
+
+/// Read-only web search via DuckDuckGo HTML endpoint (SSRF-safe, no API key).
+pub fn web_search(query: &str, limit: usize) -> Result<Value, String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Err("web_search requires a non-empty query".to_string());
+    }
+    let encoded = percent_encode_query(q);
+    let endpoint = format!("https://html.duckduckgo.com/html/?q={encoded}");
+    web_search_with_endpoint(q, &endpoint, limit, false, Duration::from_secs(15))
+}
+
+pub fn web_search_with_endpoint(
+    query: &str,
+    endpoint: &str,
+    limit: usize,
+    allow_loopback: bool,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let cap = limit.clamp(1, 12);
+    let (_, _, bytes) = fetch_bytes_checked(endpoint, allow_loopback, 256 * 1024, timeout)?;
+    let html = String::from_utf8_lossy(&bytes);
+    let results = parse_ddg_html_results(&html, cap);
+    Ok(json!({
+        "ok": true,
+        "query": query,
+        "count": results.len(),
+        "results": results,
+    }))
+}
+
+fn parse_ddg_html_results(html: &str, limit: usize) -> Vec<Value> {
+    let mut results = Vec::new();
+    let mut cursor = html;
+    while results.len() < limit {
+        let Some(pos) = cursor.find("class=\"result__a\"") else {
+            break;
+        };
+        let chunk = &cursor[pos..];
+        let href = extract_attr(chunk, "href=")
+            .map(|h| decode_ddg_redirect(&h))
+            .unwrap_or_default();
+        let title = chunk
+            .find('>')
+            .and_then(|s| {
+                let after = &chunk[s + 1..];
+                let e = after.find("</a>")?;
+                Some(html_to_plain_text(&after[..e]))
+            })
+            .unwrap_or_default();
+        let snippet = chunk
+            .find("result__snippet")
+            .and_then(|sp| {
+                let sub = &chunk[sp..];
+                let s = sub.find('>')?;
+                let after = &sub[s + 1..];
+                let e = after.find("</a").or_else(|| after.find("</div"))?;
+                Some(html_to_plain_text(&after[..e]))
+            })
+            .unwrap_or_default();
+        if !href.is_empty() && !title.is_empty() {
+            results.push(json!({
+                "title": title,
+                "url": href,
+                "snippet": snippet,
+            }));
+        }
+        cursor = &chunk["class=\"result__a\"".len()..];
+    }
+    results
+}
+
+fn extract_attr(s: &str, attr: &str) -> Option<String> {
+    let tag_end = s.find('>')?;
+    let tag = &s[..tag_end];
+    let i = tag.find(attr)?;
+    let rest = &tag[i + attr.len()..];
+    let quote = rest.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let after = &rest[1..];
+    let end = after.find(quote)?;
+    Some(after[..end].replace("&amp;", "&"))
+}
+
+fn decode_ddg_redirect(href: &str) -> String {
+    if let Some(pos) = href.find("uddg=") {
+        let raw = &href[pos + 5..];
+        let end = raw.find('&').unwrap_or(raw.len());
+        let u = percent_decode(&raw[..end]);
+        if !u.is_empty() {
+            return u;
+        }
+    }
+    if href.starts_with("//") {
+        format!("https:{href}")
+    } else {
+        href.to_string()
+    }
+}
