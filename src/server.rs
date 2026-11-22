@@ -76,6 +76,8 @@ pub struct Shared {
     /// Chats whose change-set stack is non-empty (Undo has something to do).
     /// The agent keeps this current, so polling never waits on a running ask.
     pub undoable: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Chats whose undone change-set stack is non-empty (Redo has something to do).
+    pub redoable: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// Persistent Model + Studio settings (`data_dir/config.json`).
     pub config: Mutex<RuntimeConfig>,
     /// Versioned place snapshots & build diffs (`data_dir/snapshots.json`).
@@ -102,11 +104,13 @@ impl Shared {
         let mut agent = agent;
         let updater = crate::update::Updater::from_env("OPENRO", "openro-rs", env!("CARGO_PKG_VERSION"), "cayleb-james2008/open-ro", true);
         let undoable = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let redoable = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let events = Arc::new(BuildEventHub::new());
         let initial_mode = agent.as_ref().map(|a| a.studio_mode_tag()).unwrap_or("local_place");
         let studio_stream = Arc::new(StudioStreamHub::new(initial_mode));
         if let Some(a) = agent.as_mut() {
             a.attach_undo_sink(Arc::clone(&undoable));
+            a.attach_redo_sink(Arc::clone(&redoable));
             a.attach_events(Arc::clone(&events));
             a.attach_studio_stream(Arc::clone(&studio_stream));
         }
@@ -123,6 +127,7 @@ impl Shared {
             store_recovered: Vec::new(),
             active_handlers: AtomicUsize::new(0),
             undoable,
+            redoable,
             updater,
             busy: AtomicUsize::new(0),
             config: Mutex::new(RuntimeConfig::default()),
@@ -141,11 +146,13 @@ impl Shared {
         let updater = crate::update::Updater::from_env("OPENRO", "openro-rs", env!("CARGO_PKG_VERSION"), "cayleb-james2008/open-ro", true);
         let mut agent = agent;
         let undoable = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let redoable = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let events = Arc::new(BuildEventHub::new());
         let initial_mode = agent.as_ref().map(|a| a.studio_mode_tag()).unwrap_or("local_place");
         let studio_stream = Arc::new(StudioStreamHub::new(initial_mode));
         if let Some(a) = agent.as_mut() {
             a.attach_undo_sink(Arc::clone(&undoable));
+            a.attach_redo_sink(Arc::clone(&redoable));
             a.attach_events(Arc::clone(&events));
             a.attach_studio_stream(Arc::clone(&studio_stream));
         }
@@ -172,6 +179,7 @@ impl Shared {
             store_recovered: recovered,
             active_handlers: AtomicUsize::new(0),
             undoable,
+            redoable,
             updater,
             busy: AtomicUsize::new(0),
             config: Mutex::new(cfg),
@@ -1099,6 +1107,24 @@ fn handle(
         ("POST", "/api/place/instance") => {
             handle_place_instance(&mut stream, shared, &req.body);
         }
+        ("POST", "/api/place/create") => {
+            handle_place_create(&mut stream, shared, &req.body);
+        }
+        ("POST", "/api/place/duplicate") => {
+            handle_place_duplicate(&mut stream, shared, &req.body);
+        }
+        ("POST", "/api/place/delete") => {
+            handle_place_delete(&mut stream, shared, &req.body);
+        }
+        ("POST", "/api/place/script") => {
+            handle_place_script(&mut stream, shared, &req.body);
+        }
+        ("POST", "/api/redo") => {
+            handle_redo(&mut stream, shared);
+        }
+        ("GET", "/api/export/bundle") => {
+            handle_export_bundle(&mut stream, shared);
+        }
         ("GET", "/api/skills") => {
             let catalog = crate::skills::catalog_json();
             let count = catalog.as_array().map(|a| a.len()).unwrap_or(0);
@@ -1251,6 +1277,9 @@ fn handle(
         }
         ("GET", "/api/status") => {
             let info = status_info(shared);
+            let active = shared.active_chat.lock().unwrap().clone();
+            let can_undo = shared.undoable.lock().unwrap().contains(&active);
+            let can_redo = shared.redoable.lock().unwrap().contains(&active);
             respond_json(
                 &mut stream,
                 "200 OK",
@@ -1266,6 +1295,11 @@ fn handle(
                     "sse_build_stream": true,
                     "assets_api": true,
                     "studio_stream": true,
+                    "ide_api": true,
+                    "ide_v080": true,
+                    "rojo_export": true,
+                    "can_undo": can_undo,
+                    "can_redo": can_redo,
                     "studio_mode": shared.studio_stream.studio_mode(),
                     "skills_count": crate::skills::registry().len(),
                     "store_recovered": shared.store_recovered,
@@ -1280,10 +1314,11 @@ fn handle(
             );
         }
         ("GET", "/api/chats") => {
-            // can_undo: the active chat has a change set Undo can take back.
+            // can_undo / can_redo: active chat's undo & redo stacks.
             let mut body = shared.chats_json();
             let active = shared.active_chat.lock().unwrap().clone();
             body["can_undo"] = json!(shared.undoable.lock().unwrap().contains(&active));
+            body["can_redo"] = json!(shared.redoable.lock().unwrap().contains(&active));
             respond_json(&mut stream, "200 OK", &body);
         }
         ("POST", "/api/chats") => {
@@ -1658,6 +1693,8 @@ fn handle(
                             &json!({
                                 "ok": true,
                                 "restored": restored,
+                                "can_undo": agent.can_undo_chat(&chat_id),
+                                "can_redo": agent.can_redo_chat(&chat_id),
                                 "snapshot_id": snapshot_id,
                                 "diff": diff_val,
                             }),
@@ -1962,6 +1999,9 @@ fn handle_place_instance(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8
             let after = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
             let diff = compute_diff(&before, &after);
             let chat_id = shared.active_chat.lock().unwrap().clone();
+            agent.record_direct_edit(&chat_id, &before, &after);
+            let can_undo = agent.can_undo_chat(&chat_id);
+            let can_redo = agent.can_redo_chat(&chat_id);
             let label = if delete {
                 format!("Deleted {path}")
             } else {
@@ -1991,6 +2031,8 @@ fn handle_place_instance(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8
                     "ok": true,
                     "path": path,
                     "instance": instance_info,
+                    "can_undo": can_undo,
+                    "can_redo": can_redo,
                     "snapshot_id": snap.id,
                     "diff": diff.to_json(),
                 }),
@@ -1999,6 +2041,505 @@ fn handle_place_instance(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8
         Err(e) => respond_json(
             stream,
             "400 Bad Request",
+            &json!({ "ok": false, "error": e }),
+        ),
+    }
+}
+
+fn parse_opt_vec3(val: Option<&Value>) -> Option<[f64; 3]> {
+    let arr = val?.as_array()?;
+    if arr.len() < 3 {
+        return None;
+    }
+    let x = arr[0].as_f64()?;
+    let y = arr[1].as_f64()?;
+    let z = arr[2].as_f64()?;
+    if x.is_finite() && y.is_finite() && z.is_finite() {
+        Some([x, y, z])
+    } else {
+        None
+    }
+}
+
+fn handle_place_create(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8]) {
+    let _busy = BusyGuard::new(&shared.busy);
+    let body: Value = match serde_json::from_slice(raw_body) {
+        Ok(v) => v,
+        Err(_) => {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "invalid JSON body" }),
+            );
+            return;
+        }
+    };
+    let preset = body
+        .get("preset")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("block");
+    let name = body
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let props = body.get("properties");
+    let position = parse_opt_vec3(body.get("position"))
+        .or_else(|| parse_opt_vec3(props.and_then(|p| p.get("Position"))));
+    let size = parse_opt_vec3(body.get("size"))
+        .or_else(|| parse_opt_vec3(props.and_then(|p| p.get("Size"))));
+    let color = body
+        .get("color")
+        .and_then(|v| v.as_str())
+        .or_else(|| props.and_then(|p| p.get("Color")).and_then(|v| v.as_str()));
+
+    let chat_id = shared.active_chat.lock().unwrap().clone();
+    let mut guard = shared.agent.lock().unwrap();
+    let Some(agent) = guard.as_mut() else {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({ "ok": false, "error": "Studio not connected" }),
+        );
+        return;
+    };
+    let before = agent
+        .place_tree()
+        .unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+    match agent.create_part_preset(&chat_id, preset, name, position, size, color) {
+        Ok(created) => {
+            let after = agent
+                .place_tree()
+                .unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+            let diff = compute_diff(&before, &after);
+            let can_undo = agent.can_undo_chat(&chat_id);
+            let can_redo = agent.can_redo_chat(&chat_id);
+            let label = format!("Added {} ({})", created.path, created.preset);
+            let snap = shared.snapshots.lock().unwrap().record(
+                label.clone(),
+                "edit",
+                Some(chat_id.clone()),
+                after,
+                Some(diff.clone()),
+            );
+            shared.events.publish(
+                "create",
+                chat_id,
+                "done",
+                label,
+                diff.summary(),
+                None,
+                Some(created.path.clone()),
+                100,
+            );
+            let mut out = created.to_json();
+            if let Some(obj) = out.as_object_mut() {
+                obj.insert("can_undo".to_string(), json!(can_undo));
+                obj.insert("can_redo".to_string(), json!(can_redo));
+                obj.insert("snapshot_id".to_string(), json!(snap.id));
+                obj.insert("diff".to_string(), diff.to_json());
+            }
+            respond_json(stream, "200 OK", &out);
+        }
+        Err(e) => respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": e }),
+        ),
+    }
+}
+
+fn handle_place_duplicate(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8]) {
+    let _busy = BusyGuard::new(&shared.busy);
+    let body: Value = match serde_json::from_slice(raw_body) {
+        Ok(v) => v,
+        Err(_) => {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "invalid JSON body" }),
+            );
+            return;
+        }
+    };
+    let Some(path) = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": "missing string 'path' to duplicate" }),
+        );
+        return;
+    };
+
+    let chat_id = shared.active_chat.lock().unwrap().clone();
+    let mut guard = shared.agent.lock().unwrap();
+    let Some(agent) = guard.as_mut() else {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({ "ok": false, "error": "Studio not connected" }),
+        );
+        return;
+    };
+    let before = agent
+        .place_tree()
+        .unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+    match agent.duplicate_instance(&chat_id, path) {
+        Ok(dup) => {
+            let after = agent
+                .place_tree()
+                .unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+            let diff = compute_diff(&before, &after);
+            let can_undo = agent.can_undo_chat(&chat_id);
+            let can_redo = agent.can_redo_chat(&chat_id);
+            let label = format!("Duplicated {} -> {}", dup.source_path, dup.new_path);
+            let snap = shared.snapshots.lock().unwrap().record(
+                label.clone(),
+                "edit",
+                Some(chat_id.clone()),
+                after,
+                Some(diff.clone()),
+            );
+            shared.events.publish(
+                "duplicate",
+                chat_id,
+                "done",
+                label,
+                diff.summary(),
+                None,
+                Some(dup.new_path.clone()),
+                100,
+            );
+            let mut out = dup.to_json();
+            if let Some(obj) = out.as_object_mut() {
+                obj.insert("can_undo".to_string(), json!(can_undo));
+                obj.insert("can_redo".to_string(), json!(can_redo));
+                obj.insert("snapshot_id".to_string(), json!(snap.id));
+                obj.insert("diff".to_string(), diff.to_json());
+            }
+            respond_json(stream, "200 OK", &out);
+        }
+        Err(e) => respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": e }),
+        ),
+    }
+}
+
+fn handle_place_delete(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8]) {
+    let _busy = BusyGuard::new(&shared.busy);
+    let body: Value = match serde_json::from_slice(raw_body) {
+        Ok(v) => v,
+        Err(_) => {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "invalid JSON body" }),
+            );
+            return;
+        }
+    };
+    let Some(path) = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": "missing string 'path' to delete" }),
+        );
+        return;
+    };
+
+    let chat_id = shared.active_chat.lock().unwrap().clone();
+    let mut guard = shared.agent.lock().unwrap();
+    let Some(agent) = guard.as_mut() else {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({ "ok": false, "error": "Studio not connected" }),
+        );
+        return;
+    };
+    let before = agent
+        .place_tree()
+        .unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+    match agent.delete_at_path(&chat_id, path) {
+        Ok(deleted) => {
+            let after = agent
+                .place_tree()
+                .unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+            let diff = compute_diff(&before, &after);
+            let can_undo = agent.can_undo_chat(&chat_id);
+            let can_redo = agent.can_redo_chat(&chat_id);
+            let label = format!("Deleted {}", deleted.path);
+            let snap = shared.snapshots.lock().unwrap().record(
+                label.clone(),
+                "edit",
+                Some(chat_id.clone()),
+                after,
+                Some(diff.clone()),
+            );
+            shared.events.publish(
+                "delete",
+                chat_id,
+                "done",
+                label,
+                diff.summary(),
+                None,
+                Some(deleted.path.clone()),
+                100,
+            );
+            let mut out = deleted.to_json();
+            if let Some(obj) = out.as_object_mut() {
+                obj.insert("can_undo".to_string(), json!(can_undo));
+                obj.insert("can_redo".to_string(), json!(can_redo));
+                obj.insert("snapshot_id".to_string(), json!(snap.id));
+                obj.insert("diff".to_string(), diff.to_json());
+            }
+            respond_json(stream, "200 OK", &out);
+        }
+        Err(e) => respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": e }),
+        ),
+    }
+}
+
+fn handle_place_script(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8]) {
+    let _busy = BusyGuard::new(&shared.busy);
+    let body: Value = match serde_json::from_slice(raw_body) {
+        Ok(v) => v,
+        Err(_) => {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "invalid JSON body" }),
+            );
+            return;
+        }
+    };
+    let Some(path) = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": "missing string 'path' (e.g. ServerScriptService.Leaderboard)" }),
+        );
+        return;
+    };
+    let Some(source) = body.get("source").and_then(|v| v.as_str()) else {
+        respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": "missing string 'source' for Luau script" }),
+        );
+        return;
+    };
+
+    let chat_id = shared.active_chat.lock().unwrap().clone();
+    let mut guard = shared.agent.lock().unwrap();
+    let Some(agent) = guard.as_mut() else {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({ "ok": false, "error": "Studio not connected" }),
+        );
+        return;
+    };
+    let before = agent
+        .place_tree()
+        .unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+    match agent.update_script_source(&chat_id, path, source) {
+        Ok(updated) => {
+            let after = agent
+                .place_tree()
+                .unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+            let diff = compute_diff(&before, &after);
+            let can_undo = agent.can_undo_chat(&chat_id);
+            let can_redo = agent.can_redo_chat(&chat_id);
+            let label = format!("Edited script {}", updated.path);
+            let snap = shared.snapshots.lock().unwrap().record(
+                label.clone(),
+                "edit",
+                Some(chat_id.clone()),
+                after,
+                Some(diff.clone()),
+            );
+            shared.events.publish(
+                "script_edit",
+                chat_id,
+                "done",
+                label,
+                diff.summary(),
+                None,
+                Some(updated.path.clone()),
+                100,
+            );
+            let place_json = updated.place_report.to_json();
+            let diags = place_json
+                .get("diagnostics")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            let mut out = updated.to_json();
+            if let Some(obj) = out.as_object_mut() {
+                obj.insert("errors".to_string(), json!(updated.place_report.error_count()));
+                obj.insert(
+                    "warnings".to_string(),
+                    json!(updated.place_report.warning_count()),
+                );
+                obj.insert("passed".to_string(), json!(updated.place_report.is_ok()));
+                obj.insert("diagnostics".to_string(), diags);
+                obj.insert("can_undo".to_string(), json!(can_undo));
+                obj.insert("can_redo".to_string(), json!(can_redo));
+                obj.insert("snapshot_id".to_string(), json!(snap.id));
+                obj.insert("diff".to_string(), diff.to_json());
+            }
+            respond_json(stream, "200 OK", &out);
+        }
+        Err(e) => respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": e }),
+        ),
+    }
+}
+
+fn handle_redo(stream: &mut TcpStream, shared: &Shared) {
+    let _busy = BusyGuard::new(&shared.busy);
+    let chat_id = shared.active_chat.lock().unwrap().clone();
+    let mut guard = shared.agent.lock().unwrap();
+    let Some(agent) = guard.as_mut() else {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({ "ok": false, "error": "Studio not connected" }),
+        );
+        return;
+    };
+    let before_tree = agent.place_tree().ok();
+    match agent.redo_chat(&chat_id) {
+        Ok((restored, skills)) => {
+            if !skills.is_empty() {
+                shared.note_built(&chat_id, &skills);
+            }
+            let can_undo = agent.can_undo_chat(&chat_id);
+            let can_redo = agent.can_redo_chat(&chat_id);
+            let mut snapshot_id = Value::Null;
+            let mut diff_val = Value::Null;
+            let mut instance_count = 0usize;
+            let mut script_count = 0usize;
+            if let Ok(after_tree) = agent.place_tree() {
+                instance_count = after_tree
+                    .get("instances")
+                    .and_then(|v| v.as_object())
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                script_count = after_tree
+                    .get("scripts")
+                    .and_then(|v| v.as_object())
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                let explicit = before_tree
+                    .as_ref()
+                    .map(|b| compute_diff(b, &after_tree));
+                let snap = shared.snapshots.lock().unwrap().record(
+                    format!("Redo ({} change(s))", restored.len()),
+                    "redo",
+                    Some(chat_id.clone()),
+                    after_tree,
+                    explicit,
+                );
+                snapshot_id = json!(snap.id);
+                diff_val = snap.diff.to_json();
+            }
+            let label = format!("{} change(s) re-applied", restored.len());
+            shared.events.publish(
+                "redo",
+                chat_id.clone(),
+                "restored",
+                "Redo complete",
+                label.clone(),
+                None,
+                None,
+                100,
+            );
+            shared.append_lines_to(
+                &chat_id,
+                &[format!("OpenRO: Redid the undone step: {label}.")],
+            );
+            respond_json(
+                stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "restored": restored,
+                    "label": label,
+                    "instance_count": instance_count,
+                    "script_count": script_count,
+                    "can_undo": can_undo,
+                    "can_redo": can_redo,
+                    "snapshot_id": snapshot_id,
+                    "diff": diff_val,
+                }),
+            );
+        }
+        Err(e) if e == crate::agent::NOTHING_TO_REDO => respond_json(
+            stream,
+            "200 OK",
+            &json!({
+                "ok": false,
+                "error": e,
+                "can_undo": agent.can_undo_chat(&chat_id),
+                "can_redo": false,
+            }),
+        ),
+        Err(e) => respond_json(
+            stream,
+            "502 Bad Gateway",
+            &json!({ "ok": false, "error": e }),
+        ),
+    }
+}
+
+fn handle_export_bundle(stream: &mut TcpStream, shared: &Shared) {
+    let stored_meta = all_stored_assets(shared);
+    let pack_assets = all_ship_pack_assets(shared);
+    let mut guard = shared.agent.lock().unwrap();
+    let Some(agent) = guard.as_mut() else {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({ "ok": false, "error": "Studio not connected" }),
+        );
+        return;
+    };
+    if !stored_meta.is_empty() {
+        agent.bind_assets(&stored_meta);
+    }
+    match agent.export_rojo_ship_pack(&shared.game_name, &pack_assets) {
+        Ok(bundle) => {
+            let fname = bundle.filename_slug();
+            respond_download_bytes(stream, "application/zip", &fname, &bundle.zip_bytes);
+        }
+        Err(e) => respond_json(
+            stream,
+            "502 Bad Gateway",
             &json!({ "ok": false, "error": e }),
         ),
     }
@@ -2456,6 +2997,7 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
                     agent.set_changes_file(dir.join("changes.json"));
                 }
                 agent.attach_undo_sink(Arc::clone(&shared.undoable));
+                agent.attach_redo_sink(Arc::clone(&shared.redoable));
                 agent.attach_events(Arc::clone(&shared.events));
                 agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
                 *guard = Some(agent);
@@ -2584,6 +3126,7 @@ fn handle_studio_mcp_connect(stream: &mut TcpStream, shared: &Shared, req: &Requ
                     agent.set_changes_file(dir.join("changes.json"));
                 }
                 agent.attach_undo_sink(Arc::clone(&shared.undoable));
+                agent.attach_redo_sink(Arc::clone(&shared.redoable));
                 agent.attach_events(Arc::clone(&shared.events));
                 agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
                 let captured = agent.capture_studio_frame().ok();
@@ -2672,6 +3215,34 @@ fn all_stored_assets(shared: &Shared) -> Vec<crate::assets::AssetMetadata> {
         crate::assets::AssetManager::open(dir).list()
     } else {
         shared.game_assets.lock().unwrap().mem_assets.clone()
+    }
+}
+
+fn all_ship_pack_assets(shared: &Shared) -> Vec<crate::rojo_export::ShipPackAsset> {
+    if let Some(dir) = &shared.data_dir {
+        let mgr = crate::assets::AssetManager::open(dir);
+        let mut out = Vec::new();
+        for meta in mgr.list() {
+            if let Ok((bytes, _)) = mgr.read_bytes(&meta.filename) {
+                out.push(crate::rojo_export::ShipPackAsset {
+                    metadata: meta,
+                    bytes,
+                });
+            }
+        }
+        out
+    } else {
+        let idx = shared.game_assets.lock().unwrap();
+        let mut out = Vec::new();
+        for meta in &idx.mem_assets {
+            if let Some(bytes) = idx.mem_blobs.get(&meta.filename) {
+                out.push(crate::rojo_export::ShipPackAsset {
+                    metadata: meta.clone(),
+                    bytes: bytes.clone(),
+                });
+            }
+        }
+        out
     }
 }
 
