@@ -67,6 +67,14 @@ export type ConfigSnap = {
   web_engine?: boolean;
   web_mode?: "browser" | "byok" | "local_server";
   local_server_url?: string;
+  image_provider?: "auto" | "gemini" | "openai";
+  image_model?: string;
+  has_gemini_api_key?: boolean;
+  gemini_api_key_masked?: string | null;
+  has_openai_image_api_key?: boolean;
+  openai_image_api_key_masked?: string | null;
+  has_gemini_key?: boolean;
+  gemini_key_masked?: string | null;
 };
 
 export type Snap = {
@@ -375,6 +383,12 @@ export const ADDS: Record<string, string> = {
   weather_cycle: "Weather cycle",
   tycoon_dropper: "Tycoon dropper",
   admin_spectate: "Spectate HUD",
+  card_gacha_roller: "Gacha roller",
+  deck_builder: "Deck & fusion",
+  card_battle_arena: "Tactical boss arena",
+  tower_progression: "50-floor tower",
+  potions_weather: "Weather & potions",
+  card_gallery_world: "3D card lobby",
 };
 
 export const BUILD_PHASES: Array<{ id: BuildPhaseId; label: string }> = [
@@ -399,6 +413,14 @@ export function isV050OrNewer(version: string): boolean {
   const maj = Number(m[1]);
   const min = Number(m[2]);
   return maj > 0 || min >= 5;
+}
+
+export function isV060OrNewer(version: string): boolean {
+  const m = version.trim().match(/^(\d+)\.(\d+)/);
+  if (!m) return false;
+  const maj = Number(m[1]);
+  const min = Number(m[2]);
+  return maj > 0 || min >= 6;
 }
 
 /**
@@ -482,6 +504,7 @@ export type BlueprintMeta = {
 
 // Exact deterministic counts from src/ideas.rs plan definitions.
 const BLUEPRINT_CATALOG: Record<string, BlueprintMeta> = {
+  "anime-card-battles-apex": { category: "Card Battler", tagClass: "bg-tag-design-bg text-tag-design-fg", counts: "6 systems · 8 cards" },
   "obby-starter": { category: "Obby", tagClass: "bg-tag-plan-bg text-tag-plan-fg", counts: "2 parts · 5 scripts" },
   "coin-tycoon": { category: "Economy", tagClass: "bg-tag-mint-bg text-tag-mint-fg", counts: "4 scripts · HUD" },
   "round-arena": { category: "Arena", tagClass: "bg-tag-sky-bg text-tag-sky-fg", counts: "2 parts · 4 scripts" },

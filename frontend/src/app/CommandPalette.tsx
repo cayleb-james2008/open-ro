@@ -6,9 +6,11 @@ import {
   FileCode,
   History,
   Layers,
+  Palette,
   Plus,
   Search,
   SlidersHorizontal,
+  Sparkles,
   Undo2,
   Upload,
   X,
@@ -50,6 +52,8 @@ export function CommandPalette({
   onImportRbxlxClick,
   onOpenSnapshots,
   onOpenSettings,
+  onOpenArtStudio,
+  onBuildApex,
   onTriggerUndo,
 }: {
   open: boolean;
@@ -65,6 +69,8 @@ export function CommandPalette({
   onImportRbxlxClick: () => void;
   onOpenSnapshots: () => void;
   onOpenSettings: () => void;
+  onOpenArtStudio: () => void;
+  onBuildApex: () => void;
   onTriggerUndo: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -89,6 +95,24 @@ export function CommandPalette({
 
     // 1. Workbench Actions
     out.push(
+      {
+        kind: "action",
+        id: "act-build-apex",
+        title: "Build Anime Card Battles: Rebirth — Apex Edition",
+        subtitle: "One-click 6-system Roblox card battler with gacha packs, deck fusion & 50-floor boss tower",
+        badge: "Flagship",
+        badgeCls: "bg-tag-plan-bg text-tag-plan-fg",
+        onRun: onBuildApex,
+      },
+      {
+        kind: "action",
+        id: "act-art-studio",
+        title: "Open Card Art & Asset Studio",
+        subtitle: "Browse Nano Banana card art, upload custom PNG/WebP artwork, or open the Anime Style Guide",
+        badge: "Art Studio",
+        badgeCls: "bg-tag-research-bg text-tag-research-fg",
+        onRun: onOpenArtStudio,
+      },
       {
         kind: "action",
         id: "act-new-chat",
@@ -177,7 +201,7 @@ export function CommandPalette({
       }
     }
 
-    // 3. All 22 Roblox Game Systems
+    // 3. All 28 Roblox Game Systems
     for (const sys of GAME_SYSTEMS) {
       out.push({
         kind: "system",
@@ -194,7 +218,7 @@ export function CommandPalette({
     const q = query.trim().toLowerCase();
     if (!q) return out;
     return out.filter((it) => `${it.title} ${it.subtitle} ${it.badge}`.toLowerCase().includes(q));
-  }, [canUndo, onExportRbxlx, onImportRbxlxClick, onNewChat, onOpenSettings, onOpenSnapshots, onTriggerUndo, place, query]);
+  }, [canUndo, onBuildApex, onExportRbxlx, onImportRbxlxClick, onNewChat, onOpenArtStudio, onOpenSettings, onOpenSnapshots, onTriggerUndo, place, query]);
 
   const visible = items.slice(0, 40);
   const clampedIdx = visible.length ? Math.min(activeIdx, visible.length - 1) : 0;
@@ -227,6 +251,8 @@ export function CommandPalette({
     if (item.kind === "part") return Box;
     if (item.kind === "script") return FileCode;
     if (item.kind === "system") return Layers;
+    if (item.id === "act-build-apex") return Sparkles;
+    if (item.id === "act-art-studio") return Palette;
     if (item.id === "act-export") return Download;
     if (item.id === "act-import") return Upload;
     if (item.id === "act-snapshots") return History;
@@ -247,7 +273,7 @@ export function CommandPalette({
                   Studio Command Palette
                 </MorphingDialogTitle>
                 <Pill className="bg-board px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2">
-                  22 systems
+                  28 systems
                 </Pill>
               </div>
               <MorphingDialogClose
@@ -258,7 +284,7 @@ export function CommandPalette({
               </MorphingDialogClose>
             </div>
             <MorphingDialogDescription className="sr-only">
-              Search 22 Roblox game systems, Explorer parts and scripts, and Studio workbench actions.
+              Search 28 Roblox game systems, Explorer parts and scripts, Card Art Studio, and Studio workbench actions.
             </MorphingDialogDescription>
 
             <div className="border-b border-hairline px-4 py-3">
@@ -275,8 +301,8 @@ export function CommandPalette({
                     setActiveIdx(0);
                   }}
                   onKeyDown={onInputKeyDown}
-                  aria-label="Search commands, parts, scripts, and 22 game systems"
-                  placeholder="Search 22 game systems, parts, scripts, or actions…"
+                  aria-label="Search commands, parts, scripts, and 28 game systems"
+                  placeholder="Search 28 game systems, card art, parts, scripts, or actions…"
                   className="[&_input]:max-md:!min-h-11 [&_input]:md:!h-9"
                 />
                 {query ? (
