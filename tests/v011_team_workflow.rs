@@ -1516,3 +1516,131 @@ fn manifest_update_aliases_written_files_autocommit_and_flat_edit_alias() {
 
     shared.teamwork.shutdown();
 }
+
+#[test]
+fn board_read_spin_breaker_auto_parks_and_prompts_include_signatures() {
+    let dir = scratch_dir("board-read-spin-breaker");
+    let data_dir = dir.join("data");
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::create_dir_all(&data_dir).unwrap();
+    write_projects_index(&data_dir, &proj);
+
+    let coord_sys: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let art_sys: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let cs = Arc::clone(&coord_sys);
+    let asys = Arc::clone(&art_sys);
+
+    let per_role: Arc<Mutex<std::collections::HashMap<String, usize>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let pr = Arc::clone(&per_role);
+
+    let stub = start_dynamic_stub(move |body, _| {
+        let req: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        let msgs = req["messages"].as_array().unwrap();
+        let sys = msgs[0]["content"].as_str().unwrap_or("");
+        let role = if sys.contains("[Agent: coordinator]") {
+            *cs.lock().unwrap() = sys.to_string();
+            "coordinator"
+        } else if sys.contains("[Agent: art]") {
+            *asys.lock().unwrap() = sys.to_string();
+            "art"
+        } else {
+            "verifier"
+        };
+        let step = {
+            let mut m = pr.lock().unwrap();
+            let e = m.entry(role.to_string()).or_insert(0);
+            *e += 1;
+            *e
+        };
+        if role == "coordinator" {
+            let all_text = msgs.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
+            if all_text.contains("Verified task t1") {
+                return json!({ "tool": "finish_run", "args": { "summary": "woke after auto-park and finished" } });
+            }
+            return match step {
+                1 => json!({
+                    "tool": "create_task",
+                    "args": { "id": "t1", "owner": "art", "title": "Draft asset doc", "kind": "docs", "files": ["docs/ART.md"] }
+                }),
+                // Step 2 tries to spin by polling board_read without done:true; spin-breaker must auto-park after 1 call!
+                _ => json!({ "tool": "board_read", "args": {} }),
+            };
+        }
+        if role == "art" {
+            // Brief pause so coordinator reliably hits Step 2 (board_read with unchanged head) before t1 completes.
+            std::thread::sleep(Duration::from_millis(80));
+            return json!({
+                "steps": [
+                    { "tool": "project_write_file", "args": { "path": "docs/ART.md", "content": "# Art\n" } },
+                    { "tool": "submit_task", "args": { "task_id": "t1", "summary": "art doc done" } }
+                ],
+                "done": true,
+                "summary": "submitted"
+            });
+        }
+        let last_user = msgs.iter().rev().find(|m| m["role"] == "user").and_then(|m| m["content"].as_str()).unwrap_or("");
+        if last_user.contains("- t1 [awaiting_verification]") {
+            json!({ "tool": "verify_task", "args": { "task_id": "t1", "passed": true, "notes": "ok" }, "done": true, "summary": "verified" })
+        } else {
+            json!({ "done": true, "summary": "waiting" })
+        }
+    });
+
+    let (port, shared) = boot_server(data_dir, None);
+    let (st, _) = http(
+        port,
+        "POST",
+        "/api/config",
+        Some(&json!({ "base_url": stub.base_url, "model_id": "stub-model" })),
+    );
+    assert_eq!(st, 200);
+
+    let (st, created) = http(
+        port,
+        "POST",
+        "/api/teamwork",
+        Some(&json!({ "goal": "Verify board_read spin-breaker and art tool signatures", "roles": ["art", "verifier"], "max_concurrency": 3 })),
+    );
+    assert_eq!(st, 201, "{created}");
+    let run_id = created["run"]["id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut detail = Value::Null;
+    while Instant::now() < deadline {
+        let (_, d) = http(port, "GET", &format!("/api/teamwork/{run_id}"), None);
+        detail = d;
+        if detail["run"]["status"] == "completed" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    assert_eq!(detail["run"]["status"], "completed", "{detail}");
+
+    // Verify spin-breaker fired exactly once on coordinator's board_read poll instead of spinning 24 turns
+    let (_, tr) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/coordinator/trace"), None);
+    let trace = tr["trace"].as_array().unwrap();
+    let board_reads = trace
+        .iter()
+        .filter(|e| e["kind"] == "tool_result" && e["data"]["tool"] == "board_read")
+        .count();
+    assert_eq!(board_reads, 1, "expected 1 auto-parked board_read, got {board_reads}: {trace:?}");
+    assert!(trace.iter().any(|e| e["kind"] == "auto_park"), "missing auto_park trace: {trace:?}");
+
+    // Verify #48 prompt additions
+    let coord_prompt = coord_sys.lock().unwrap();
+    assert!(coord_prompt.contains("NEVER poll board_read"), "{coord_prompt}");
+    let art_prompt = art_sys.lock().unwrap();
+    for needle in [
+        "reference_search: {\"character\":",
+        "art_generate: {\"prompt\":",
+        "image_process: {\"output\":",
+        "mesh_generate: {\"name\":",
+        "audio_generate: {\"name\":",
+    ] {
+        assert!(art_prompt.contains(needle), "missing {needle} in art prompt: {art_prompt}");
+    }
+
+    shared.teamwork.shutdown();
+}
