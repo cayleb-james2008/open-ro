@@ -21,7 +21,7 @@ import { Button } from "@/components/ui/button";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { Pill } from "@/components/kibo-ui/pill";
 import { Expandable, ExpandableContent, ExpandableTrigger } from "@/components/ui/expandable";
-import type { InstanceEditPayload, Place, StudioActionEvent, StudioMode } from "./data";
+import type { InstanceEditPayload, PartPreset, Place, StudioActionEvent, StudioMode } from "./data";
 import { CardBattlerStage } from "./CardBattlerStage";
 import { APEX_CARDS, type CardAssetRecord } from "./cardCatalog";
 import { StudioViewport3D } from "./StudioViewport3D";
@@ -393,9 +393,16 @@ export function StagePreview({
   hasLiveFrame = false,
   frameSeq = 0,
   building = false,
+  canRedo = false,
   onSaveInstance,
+  onCreatePart,
+  onDuplicatePart,
+  onDeletePart,
+  onTriggerRedo,
   onRunPlaytest,
   onCaptureFrame,
+  onConnectMcp,
+  onDisconnectMcp,
 }: {
   place: Place;
   theme: "light" | "dark";
@@ -408,9 +415,16 @@ export function StagePreview({
   hasLiveFrame?: boolean;
   frameSeq?: number;
   building?: boolean;
+  canRedo?: boolean;
   onSaveInstance?: (payload: InstanceEditPayload) => Promise<void> | void;
+  onCreatePart?: (preset: PartPreset) => Promise<void> | void;
+  onDuplicatePart?: (path: string) => Promise<void> | void;
+  onDeletePart?: (path: string) => Promise<void> | void;
+  onTriggerRedo?: () => Promise<void> | void;
   onRunPlaytest?: () => Promise<void> | void;
   onCaptureFrame?: () => Promise<void> | void;
+  onConnectMcp?: (command?: string) => Promise<void> | void;
+  onDisconnectMcp?: () => Promise<void> | void;
 }) {
   const reduce = useReducedMotion();
   const isCardWorld = useMemo(() => isCardBattlerPlace(place), [place]);
@@ -1182,10 +1196,17 @@ export function StagePreview({
                     hasLiveFrame={hasLiveFrame}
                     frameSeq={frameSeq}
                     building={building}
+                    canRedo={canRedo}
                     onSelectPart={onSelectPart}
                     onSaveInstance={onSaveInstance}
+                    onCreatePart={onCreatePart}
+                    onDuplicatePart={onDuplicatePart}
+                    onDeletePart={onDeletePart}
+                    onTriggerRedo={onTriggerRedo}
                     onRunPlaytest={onRunPlaytest}
                     onCaptureFrame={onCaptureFrame}
+                    onConnectMcp={onConnectMcp}
+                    onDisconnectMcp={onDisconnectMcp}
                   />
                 </div>
               ) : isCardWorld ? (

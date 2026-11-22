@@ -4,10 +4,12 @@ import {
   Command,
   Download,
   FileCode,
+  FolderArchive,
   History,
   Layers,
   Palette,
   Plus,
+  Redo2,
   Search,
   SlidersHorizontal,
   Sparkles,
@@ -45,10 +47,13 @@ export function CommandPalette({
   canBuild,
   busy,
   canUndo,
+  canRedo = false,
   onAddSystem,
   onSelectPath,
   onNewChat,
   onExportRbxlx,
+  onDownloadShipPack,
+  onAddBlockPart,
   onImportRbxlxClick,
   onOpenSnapshots,
   onOpenSettings,
@@ -56,6 +61,7 @@ export function CommandPalette({
   onBuildApex,
   onRunPlaytest,
   onTriggerUndo,
+  onTriggerRedo,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -63,10 +69,13 @@ export function CommandPalette({
   canBuild: boolean;
   busy: boolean;
   canUndo: boolean;
+  canRedo?: boolean;
   onAddSystem: (sys: GameSystemDef) => void;
   onSelectPath: (path: string) => void;
   onNewChat: () => void;
   onExportRbxlx: () => void;
+  onDownloadShipPack?: () => void;
+  onAddBlockPart?: () => void;
   onImportRbxlxClick: () => void;
   onOpenSnapshots: () => void;
   onOpenSettings: () => void;
@@ -74,6 +83,7 @@ export function CommandPalette({
   onBuildApex: () => void;
   onRunPlaytest?: () => void;
   onTriggerUndo: () => void;
+  onTriggerRedo?: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
@@ -163,6 +173,28 @@ export function CommandPalette({
         onRun: onRunPlaytest,
       });
     }
+    if (onAddBlockPart) {
+      out.push({
+        kind: "action",
+        id: "act-add-part",
+        title: "Add 3D Part (Block) into Workspace",
+        subtitle: "Insert a new Roblox Part directly into the 3D Studio Viewport & Explorer",
+        badge: "Studio 3D",
+        badgeCls: "bg-tag-mint-bg text-tag-mint-fg",
+        onRun: onAddBlockPart,
+      });
+    }
+    if (pieceCount > 0 && onDownloadShipPack) {
+      out.push({
+        kind: "action",
+        id: "act-ship-pack",
+        title: "Download Studio & Rojo Ship Pack (.zip)",
+        subtitle: "Bundle game.rbxlx, default.project.json, src/*.luau, card assets, audit report & checklist",
+        badge: "Rojo ZIP",
+        badgeCls: "bg-tag-ops-bg text-tag-ops-fg",
+        onRun: onDownloadShipPack,
+      });
+    }
     if (pieceCount > 0) {
       out.push({
         kind: "action",
@@ -183,6 +215,17 @@ export function CommandPalette({
         badge: "Action",
         badgeCls: "bg-pill-warn-bg text-pill-warn-fg",
         onRun: onTriggerUndo,
+      });
+    }
+    if (canRedo && onTriggerRedo) {
+      out.push({
+        kind: "action",
+        id: "act-redo",
+        title: "Redo last Studio action",
+        subtitle: "Re-apply the most recently undone Studio part or script change (Ctrl+Y)",
+        badge: "Action",
+        badgeCls: "bg-tag-sky-bg text-tag-sky-fg",
+        onRun: onTriggerRedo,
       });
     }
 
@@ -231,7 +274,7 @@ export function CommandPalette({
     const q = query.trim().toLowerCase();
     if (!q) return out;
     return out.filter((it) => `${it.title} ${it.subtitle} ${it.badge}`.toLowerCase().includes(q));
-  }, [canUndo, onBuildApex, onExportRbxlx, onImportRbxlxClick, onNewChat, onOpenArtStudio, onOpenSettings, onOpenSnapshots, onRunPlaytest, onTriggerUndo, place, query]);
+  }, [canRedo, canUndo, onAddBlockPart, onBuildApex, onDownloadShipPack, onExportRbxlx, onImportRbxlxClick, onNewChat, onOpenArtStudio, onOpenSettings, onOpenSnapshots, onRunPlaytest, onTriggerRedo, onTriggerUndo, place, query]);
 
   const visible = items.slice(0, 40);
   const clampedIdx = visible.length ? Math.min(activeIdx, visible.length - 1) : 0;
@@ -267,10 +310,12 @@ export function CommandPalette({
     if (item.id === "act-build-apex") return Sparkles;
     if (item.id === "act-art-studio") return Palette;
     if (item.id === "act-export") return Download;
+    if (item.id === "act-ship-pack") return FolderArchive;
     if (item.id === "act-import") return Upload;
     if (item.id === "act-snapshots") return History;
     if (item.id === "act-settings") return SlidersHorizontal;
     if (item.id === "act-undo") return Undo2;
+    if (item.id === "act-redo") return Redo2;
     return Plus;
   };
 
