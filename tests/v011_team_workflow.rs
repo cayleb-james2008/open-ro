@@ -827,3 +827,131 @@ fn batched_steps_abort_on_error_and_manifest_forces_price_unapproved() {
 
     shared.teamwork.shutdown();
 }
+
+#[test]
+fn lune_tool_task_bypasses_studio_playtest_and_verifies_via_run_lune() {
+    let dir = scratch_dir("lune-gate");
+    let data_dir = dir.join("data");
+    let proj_dir = dir.join("proj");
+    std::fs::create_dir_all(proj_dir.join("src/server")).unwrap();
+    std::fs::write(
+        proj_dir.join("default.project.json"),
+        json!({
+            "name": "LuneGateTest",
+            "tree": {
+                "$className": "DataModel",
+                "ServerScriptService": { "$className": "ServerScriptService", "$path": "src/server" }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(&data_dir).unwrap();
+    write_projects_index(&data_dir, &proj_dir);
+
+    let per_role: Arc<Mutex<std::collections::HashMap<String, usize>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let pr = Arc::clone(&per_role);
+    let stub = start_dynamic_stub(move |body, _| {
+        let req: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        let msgs = req["messages"].as_array().unwrap();
+        let sys = msgs[0]["content"].as_str().unwrap_or("");
+        let role = if sys.contains("[Agent: coordinator]") {
+            "coordinator"
+        } else if sys.contains("[Agent: builder]") {
+            "builder"
+        } else {
+            "verifier"
+        };
+        let step = {
+            let mut m = pr.lock().unwrap();
+            let e = m.entry(role.to_string()).or_insert(0);
+            *e += 1;
+            *e
+        };
+        if role == "coordinator" {
+            return match step {
+                1 => json!({
+                    "steps": [{
+                        "tool": "create_task",
+                        "args": { "id": "t1", "owner": "builder", "title": "Add headless econ sim", "files": ["tools/econ-sim/sim.luau"] }
+                    }],
+                    "done": true,
+                    "summary": "dispatched lune sim task"
+                }),
+                _ => {
+                    let all_text = msgs.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
+                    if all_text.contains("Verified task t1") {
+                        json!({ "tool": "finish_run", "args": { "summary": "lune gate verified" } })
+                    } else {
+                        json!({ "done": true, "summary": "waiting" })
+                    }
+                }
+            };
+        }
+        if role == "builder" {
+            return match step {
+                1 => json!({
+                    "steps": [
+                        { "tool": "project_write_file", "args": { "path": "tools/econ-sim/sim.luau", "content": "local total = 0\nfor i = 1, 3 do total += i end\nprint('sim ok', total)\n" } },
+                        { "tool": "submit_task", "args": { "task_id": "t1", "summary": "wrote sim.luau" } }
+                    ],
+                    "done": true,
+                    "summary": "submitted sim"
+                }),
+                _ => json!({ "done": true, "summary": "parked" }),
+            };
+        }
+        // Verifier tries verify_task BEFORE project_run_lune (must be refused), then runs project_run_lune, then passes!
+        match step {
+            1 => json!({ "tool": "verify_task", "args": { "task_id": "t1", "passed": true, "notes": "shortcut" } }),
+            2 => json!({ "tool": "project_run_lune", "args": { "script": "tools/econ-sim/sim.luau", "task_id": "t1" } }),
+            3 => json!({ "tool": "verify_task", "args": { "task_id": "t1", "passed": true, "notes": "lune sim ok" } }),
+            _ => json!({ "done": true, "summary": "verified lune task" }),
+        }
+    });
+
+    // Note: boot_server(data_dir, None) has LocalPlace only (NO Studio MCP) -> proves Studio playtest is not required!
+    let (port, shared) = boot_server(data_dir, None);
+    let (st, _) = http(
+        port,
+        "POST",
+        "/api/config",
+        Some(&json!({ "base_url": stub.base_url, "model_id": "stub-model" })),
+    );
+    assert_eq!(st, 200);
+
+    let (st, created) = http(
+        port,
+        "POST",
+        "/api/teamwork",
+        Some(&json!({ "goal": "Verify Lune tool task without Studio", "roles": ["builder", "verifier"], "max_concurrency": 2 })),
+    );
+    assert_eq!(st, 201, "{created}");
+    let run_id = created["run"]["id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut detail = Value::Null;
+    while Instant::now() < deadline {
+        let (_, d) = http(port, "GET", &format!("/api/teamwork/{run_id}"), None);
+        detail = d;
+        if detail["run"]["status"] == "completed" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    assert_eq!(detail["run"]["status"], "completed", "{detail}");
+    assert_ne!(detail["tasks"][0]["kind"], "game_code", "tools/*.luau must not infer game_code");
+    assert_eq!(detail["tasks"][0]["status"], "done");
+
+    let (_, tr) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/verifier/trace"), None);
+    let trace = tr["trace"].as_array().unwrap();
+    assert!(trace.iter().any(|e| {
+        e["kind"] == "tool_result"
+            && e["data"]["error"]
+                .as_str()
+                .is_some_and(|m| m.contains("requires a passing project_run_lune"))
+    }), "{trace:?}");
+
+    shared.teamwork.shutdown();
+}

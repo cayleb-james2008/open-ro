@@ -220,6 +220,31 @@ impl PlaytestCheckRecord {
 }
 
 #[derive(Clone, Debug)]
+pub struct LuneCheckRecord {
+    pub passed: bool,
+    pub script: String,
+    pub at_ms: u64,
+}
+
+impl LuneCheckRecord {
+    fn to_json(&self) -> Value {
+        json!({
+            "passed": self.passed,
+            "script": self.script,
+            "at_ms": self.at_ms,
+        })
+    }
+
+    fn from_json(v: &Value) -> Option<Self> {
+        Some(LuneCheckRecord {
+            passed: v.get("passed")?.as_bool()?,
+            script: v.get("script").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            at_ms: v.get("at_ms").and_then(|x| x.as_u64()).unwrap_or(0),
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Task {
     pub id: String,
     pub title: String,
@@ -234,6 +259,7 @@ pub struct Task {
     pub result_summary: Option<String>,
     pub verify_report: Option<VerifyReport>,
     pub last_playtest: Option<PlaytestCheckRecord>,
+    pub last_lune: Option<LuneCheckRecord>,
     pub commit_sha: Option<String>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
@@ -248,11 +274,19 @@ impl Task {
         self.claimed_files
             .iter()
             .chain(self.written_files.iter())
-            .any(|p| {
-                p.ends_with(".luau")
-                    || p.ends_with(".lua")
-                    || p.starts_with("src/")
-            })
+            .any(|p| p.starts_with("src/") || p.starts_with("ui/"))
+    }
+
+    pub fn is_lune_tool(&self) -> bool {
+        !self.is_game_code()
+            && self
+                .claimed_files
+                .iter()
+                .chain(self.written_files.iter())
+                .any(|p| {
+                    p.starts_with("tools/")
+                        && (p.ends_with(".luau") || p.ends_with(".lua"))
+                })
     }
 
     pub fn to_json(&self) -> Value {
@@ -283,6 +317,13 @@ impl Task {
                 self.last_playtest
                     .as_ref()
                     .map(PlaytestCheckRecord::to_json)
+                    .unwrap_or(Value::Null),
+            );
+            o.insert(
+                "last_lune".into(),
+                self.last_lune
+                    .as_ref()
+                    .map(LuneCheckRecord::to_json)
                     .unwrap_or(Value::Null),
             );
             o.insert("last_edit_ms".into(), json!(self.last_edit_ms));
@@ -323,6 +364,7 @@ impl Task {
             result_summary: v.get("result_summary").and_then(|x| x.as_str()).map(String::from),
             verify_report: v.get("verify_report").and_then(VerifyReport::from_json),
             last_playtest: v.get("last_playtest").and_then(PlaytestCheckRecord::from_json),
+            last_lune: v.get("last_lune").and_then(LuneCheckRecord::from_json),
             commit_sha: v.get("commit_sha").and_then(|x| x.as_str()).map(String::from),
             created_at_ms: v.get("created_at_ms").and_then(|x| x.as_u64()).unwrap_or(0),
             updated_at_ms: v.get("updated_at_ms").and_then(|x| x.as_u64()).unwrap_or(0),
@@ -2785,7 +2827,8 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
         "verifier" => concat!(
             "You are the Teamwork verifier.\n",
             "Inspect submitted work (`project_read_file`, `luau_check`, `project_check`, `project_run_lune`, `project_build`).\n",
-            "For game_code tasks (or any `.luau`/`src/` changes), you MUST run `project_playtest` with `{\"task_id\":\"<id>\"}` and confirm 0 console errors BEFORE calling `verify_task` with `passed: true`.\n",
+            "For game_code tasks (or `src/` / `ui/` changes), you MUST run `project_playtest` with `{\"task_id\":\"<id>\"}` and confirm 0 console errors BEFORE calling `verify_task` with `passed: true`.\n",
+            "For `tools/**/*.luau` tasks (not touching `src/` or `ui/`), run `project_run_lune` (confirm `passed: true`) instead of `project_playtest` BEFORE calling `verify_task(passed=true)`.\n",
             "If anything fails, call `verify_task` with `passed: false` and clear failure notes."
         ),
         _ => concat!(
@@ -2912,7 +2955,7 @@ fn execute_agent_tool(
         "project_delete_file" => tool_project_delete_file(handle, agent_name, args),
         "luau_check" => tool_luau_check(handle, args),
         "project_check" => tool_project_check(handle),
-        "project_run_lune" => tool_project_run_lune(handle, args),
+        "project_run_lune" => tool_project_run_lune(handle, agent_name, args),
         "project_update_manifest" => tool_project_update_manifest(handle, args),
         "project_build" => tool_project_build(handle, args),
         "project_sync" => tool_project_sync(shared, mgr, handle, agent_name, gen, args),
@@ -3014,8 +3057,17 @@ fn tool_create_task(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Resu
         .and_then(|v| v.as_str())
         .map(TaskKind::parse)
         .unwrap_or_else(|| {
-            if norm_files.iter().any(|p| p.ends_with(".luau") || p.starts_with("src/")) {
+            if norm_files.iter().any(|p| p.starts_with("src/") || p.starts_with("ui/")) {
                 TaskKind::GameCode
+            } else if norm_files
+                .iter()
+                .any(|p| p.starts_with("tools/") && (p.ends_with(".luau") || p.ends_with(".lua")))
+            {
+                TaskKind::Other
+            } else if !norm_files.is_empty()
+                && norm_files.iter().all(|p| p.starts_with("docs/") || p.ends_with(".md"))
+            {
+                TaskKind::Docs
             } else if owner == "art" {
                 TaskKind::Art
             } else if owner == "world" {
@@ -3023,7 +3075,7 @@ fn tool_create_task(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Resu
             } else if owner == "researcher" {
                 TaskKind::Research
             } else {
-                TaskKind::GameCode
+                TaskKind::Other
             }
         });
     let description = args
@@ -3047,6 +3099,7 @@ fn tool_create_task(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Resu
         result_summary: None,
         verify_report: None,
         last_playtest: None,
+        last_lune: None,
         commit_sha: None,
         created_at_ms: ts,
         updated_at_ms: ts,
@@ -3276,7 +3329,9 @@ fn tool_verify_task(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Resu
         }
 
         let is_code = st.tasks[t_idx].is_game_code();
+        let is_lune = st.tasks[t_idx].is_lune_tool();
         let last_pt = st.tasks[t_idx].last_playtest.clone();
+        let last_lune = st.tasks[t_idx].last_lune.clone();
         let last_edit = st.tasks[t_idx].last_edit_ms;
 
         if passed && is_code {
@@ -3295,6 +3350,26 @@ fn tool_verify_task(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Resu
                     return Err(format!(
                         "Verifier gate refused: last playtest did not pass with 0 console errors ({} error(s)). Fail the task with passed:false instead.",
                         pt.console_errors
+                    ));
+                }
+                _ => {}
+            }
+        } else if passed && is_lune {
+            match &last_lune {
+                None => {
+                    return Err(format!(
+                        "Verifier gate refused: Lune tool task '{task_id}' requires a passing project_run_lune run before passing. Run project_run_lune first."
+                    ));
+                }
+                Some(lr) if lr.at_ms < last_edit => {
+                    return Err(format!(
+                        "Verifier gate refused: Lune tool task '{task_id}' was edited after the last project_run_lune check. Run project_run_lune again."
+                    ));
+                }
+                Some(lr) if !lr.passed => {
+                    return Err(format!(
+                        "Verifier gate refused: last project_run_lune ({}) did not pass. Fail the task with passed:false instead.",
+                        lr.script
                     ));
                 }
                 _ => {}
@@ -3596,8 +3671,9 @@ fn record_task_file_mutation(st: &mut RunState, task_id: &str, norm_path: &str) 
         }
         st.tasks[t_idx].last_edit_ms = ts;
         st.tasks[t_idx].updated_at_ms = ts;
-        // Editing invalidates any prior playtest check.
+        // Editing invalidates any prior playtest or Lune check.
         st.tasks[t_idx].last_playtest = None;
+        st.tasks[t_idx].last_lune = None;
         st.save_tasks_file();
     }
 }
@@ -3803,7 +3879,11 @@ fn tool_project_check(handle: &Arc<RunHandle>) -> Result<Value, String> {
     projects::check_project(&project_dir)
 }
 
-fn tool_project_run_lune(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+fn tool_project_run_lune(
+    handle: &Arc<RunHandle>,
+    agent_name: &str,
+    args: &Value,
+) -> Result<Value, String> {
     let project_dir = handle.state.lock().unwrap().project_dir.clone();
     let script = args
         .get("script")
@@ -3816,7 +3896,53 @@ fn tool_project_run_lune(handle: &Arc<RunHandle>, args: &Value) -> Result<Value,
         .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
         .unwrap_or_default();
     let timeout = args.get("timeout_secs").and_then(|v| v.as_u64()).unwrap_or(30);
-    projects::run_lune(&project_dir, script, &run_args, timeout)
+    let res = projects::run_lune(&project_dir, script, &run_args, timeout)?;
+    let passed = res.get("passed").and_then(|v| v.as_bool()).unwrap_or(false);
+    let norm_script = res
+        .get("script")
+        .and_then(|v| v.as_str())
+        .unwrap_or(script)
+        .to_string();
+    let explicit_tid = args.get("task_id").and_then(|v| v.as_str()).map(String::from);
+    {
+        let mut st = handle.state.lock().unwrap();
+        let target_tid = explicit_tid
+            .or_else(|| {
+                st.tasks
+                    .iter()
+                    .find(|t| {
+                        t.status == TaskStatus::AwaitingVerification
+                            && t.verifier.eq_ignore_ascii_case(agent_name)
+                            && (t.claimed_files.iter().any(|f| f == &norm_script)
+                                || t.written_files.iter().any(|f| f == &norm_script))
+                    })
+                    .map(|t| t.id.clone())
+            })
+            .or_else(|| {
+                st.tasks
+                    .iter()
+                    .find(|t| {
+                        t.status == TaskStatus::AwaitingVerification
+                            && t.verifier.eq_ignore_ascii_case(agent_name)
+                    })
+                    .map(|t| t.id.clone())
+            })
+            .or_else(|| {
+                st.agent_index(agent_name)
+                    .and_then(|i| st.roster[i].current_task_id.clone())
+            });
+        if let Some(tid) = target_tid {
+            if let Some(t_idx) = st.task_index(&tid) {
+                st.tasks[t_idx].last_lune = Some(LuneCheckRecord {
+                    passed,
+                    script: norm_script,
+                    at_ms: now_ms(),
+                });
+                st.save_tasks_file();
+            }
+        }
+    }
+    Ok(res)
 }
 
 fn tool_project_update_manifest(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
@@ -4062,5 +4188,44 @@ mod tests {
         assert!(normalize_rel_path(&dir, ".git/config", false).is_err());
         assert!(normalize_rel_path(&dir, "build/out.rbxlx", true).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn game_code_and_lune_tool_classification() {
+        let mk = |kind: TaskKind, files: &[&str]| Task {
+            id: "t1".into(),
+            title: "x".into(),
+            description: "x".into(),
+            kind,
+            owner: "builder".into(),
+            verifier: "verifier".into(),
+            status: TaskStatus::AwaitingVerification,
+            claimed_files: files.iter().map(|s| (*s).to_string()).collect(),
+            written_files: Vec::new(),
+            depends_on: Vec::new(),
+            result_summary: None,
+            verify_report: None,
+            last_playtest: None,
+            last_lune: None,
+            commit_sha: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            last_edit_ms: 0,
+        };
+        let lune_only = mk(TaskKind::Other, &["tools/econ-sim/sim.luau"]);
+        assert!(!lune_only.is_game_code());
+        assert!(lune_only.is_lune_tool());
+
+        let ui_code = mk(TaskKind::Other, &["ui/Shop.luau"]);
+        assert!(ui_code.is_game_code());
+        assert!(!ui_code.is_lune_tool());
+
+        let src_code = mk(TaskKind::Docs, &["src/shared/Rates.luau"]);
+        assert!(src_code.is_game_code());
+        assert!(!src_code.is_lune_tool());
+
+        let mixed = mk(TaskKind::Other, &["tools/sim.luau", "src/server/Main.server.luau"]);
+        assert!(mixed.is_game_code());
+        assert!(!mixed.is_lune_tool());
     }
 }
