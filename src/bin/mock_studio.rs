@@ -60,6 +60,45 @@ struct MockState {
     camera_pan_z: f64,
     multi_edit_count: u64,
     luau_exec_count: u64,
+    // v0.11 structured DataModel mirror for chunked sync & playtest check simulation
+    v011_tree: BTreeMap<String, MockNode>,
+    v011_compare_order: Vec<String>,
+}
+
+#[derive(Clone)]
+struct MockNode {
+    class: String,
+    props: BTreeMap<String, Value>,
+    source: Option<String>,
+}
+
+fn default_v011_services() -> BTreeMap<String, MockNode> {
+    let mut m = BTreeMap::new();
+    for (p, cls) in [
+        ("ReplicatedStorage", "ReplicatedStorage"),
+        ("ServerScriptService", "ServerScriptService"),
+        ("ServerStorage", "ServerStorage"),
+        ("StarterGui", "StarterGui"),
+        ("StarterPlayer", "StarterPlayer"),
+        ("StarterPlayer/StarterPlayerScripts", "StarterPlayerScripts"),
+        ("StarterPlayer/StarterCharacterScripts", "StarterCharacterScripts"),
+        ("StarterPack", "StarterPack"),
+        ("ReplicatedFirst", "ReplicatedFirst"),
+        ("Lighting", "Lighting"),
+        ("SoundService", "SoundService"),
+        ("Teams", "Teams"),
+        ("Workspace", "Workspace"),
+    ] {
+        m.insert(
+            p.to_string(),
+            MockNode {
+                class: cls.to_string(),
+                props: BTreeMap::new(),
+                source: None,
+            },
+        );
+    }
+    m
 }
 
 impl MockState {
@@ -88,6 +127,8 @@ impl MockState {
             camera_pan_z: 0.0,
             multi_edit_count: 0,
             luau_exec_count: 0,
+            v011_tree: default_v011_services(),
+            v011_compare_order: Vec::new(),
         }
     }
 
@@ -739,6 +780,10 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
                 .unwrap_or("Edit");
             if code.trim().is_empty() {
                 return error_result("execute_luau requires non-empty code".to_string());
+            }
+            if let Some(reply) = handle_v011_luau(code, dm, state) {
+                state.luau_exec_count += 1;
+                return reply;
             }
             let mut outputs: Vec<String> = Vec::new();
             let mut created_instances: Vec<String> = Vec::new();
@@ -1629,4 +1674,271 @@ fn encode_base64(bytes: &[u8]) -> String {
         i += 3;
     }
     out
+}
+
+fn v011_hash31(s: &str) -> u64 {
+    let mut h: u64 = 0;
+    for b in s.as_bytes() {
+        h = (h * 31 + *b as u64) % 4_294_967_296;
+    }
+    h
+}
+
+fn parse_luau_payload(code: &str) -> Option<Value> {
+    let idx = code.find("local PAYLOAD = [")?;
+    let after = &code[idx + "local PAYLOAD = [".len()..];
+    let eq_count = after.bytes().take_while(|b| *b == b'=').count();
+    let open_rest = &after[eq_count..];
+    if !open_rest.starts_with('[') {
+        return None;
+    }
+    let body = &open_rest[1..];
+    let close = format!("]{}]", "=".repeat(eq_count));
+    let end = body.find(&close)?;
+    let raw = &body[..end];
+    let raw = raw.strip_prefix('\n').unwrap_or(raw);
+    serde_json::from_str(raw).ok()
+}
+
+fn truncate_100k(s: String) -> String {
+    if s.len() <= 100_000 {
+        s
+    } else {
+        s.chars().take(100_000).collect()
+    }
+}
+
+fn handle_v011_luau(code: &str, dm: &str, state: &mut MockState) -> Option<Value> {
+    let first = code.lines().next().unwrap_or("").trim();
+    if first == "-- openro:v011:sync_compare" {
+        let p = parse_luau_payload(code)?;
+        let mut out: Vec<Value> = Vec::new();
+        let mut extra: Vec<String> = Vec::new();
+        let mut ok_count = 0usize;
+        for it in p["items"].as_array().cloned().unwrap_or_default() {
+            let path = it["p"].as_str().unwrap_or("").to_string();
+            state.v011_compare_order.push(path.clone());
+            let cls = it["c"].as_str().unwrap_or("");
+            let is_svc = it.get("svc").is_some();
+            match state.v011_tree.get(&path) {
+                None => out.push(json!({ "p": path, "s": "missing" })),
+                Some(node) if !is_svc && node.class != cls => {
+                    out.push(json!({ "p": path, "s": "class", "a": node.class }));
+                }
+                Some(node) => {
+                    let mut bad: Vec<String> = Vec::new();
+                    if let Some(h) = it["h"].as_u64() {
+                        let want_len = it["n"].as_u64().unwrap_or(0) as usize;
+                        let src = node.source.as_deref().unwrap_or("");
+                        if src.len() != want_len || v011_hash31(src) != h {
+                            bad.push("Source".into());
+                        }
+                    }
+                    if let Some(pr) = it["pr"].as_object() {
+                        for (k, v) in pr {
+                            if node.props.get(k) != Some(v) {
+                                bad.push(k.clone());
+                            }
+                        }
+                    }
+                    if !bad.is_empty() {
+                        out.push(json!({ "p": path, "s": "props", "b": bad }));
+                    } else {
+                        ok_count += 1;
+                    }
+                    if let Some(known) = it["k"].as_array() {
+                        let names: Vec<&str> = known.iter().filter_map(|x| x.as_str()).collect();
+                        let prefix = format!("{path}/");
+                        for key in state.v011_tree.keys() {
+                            if let Some(rest) = key.strip_prefix(&prefix) {
+                                if !rest.contains('/') && !names.contains(&rest) && extra.len() < 200 {
+                                    extra.push(key.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let res = truncate_100k(format!(
+            "OPENRO_V011:{}",
+            json!({ "r": out, "x": extra, "ok": ok_count })
+        ));
+        return Some(text_result(
+            json!({ "ok": true, "datamodel_type": dm, "output": res }).to_string(),
+        ));
+    }
+
+    if first == "-- openro:v011:sync_apply" {
+        let p = parse_luau_payload(code)?;
+        let mut applied = 0usize;
+        let mut errors: Vec<Value> = Vec::new();
+        for op in p["ops"].as_array().cloned().unwrap_or_default() {
+            let kind = op["k"].as_str().unwrap_or("");
+            let path = op["p"].as_str().unwrap_or("").to_string();
+            let cls = op["c"].as_str().unwrap_or("Folder").to_string();
+            match kind {
+                "delete" => {
+                    let prefix = format!("{path}/");
+                    let remove_keys: Vec<String> = state
+                        .v011_tree
+                        .keys()
+                        .filter(|k| *k == &path || k.starts_with(&prefix))
+                        .cloned()
+                        .collect();
+                    for k in remove_keys {
+                        state.v011_tree.remove(&k);
+                        let dot = k.replace('/', ".");
+                        state.scripts.remove(&dot);
+                        state.instances.remove(&dot);
+                    }
+                    applied += 1;
+                }
+                "create" | "replace" => {
+                    let Some((parent, _)) = path.rsplit_once('/') else {
+                        errors.push(json!({ "p": path, "m": "cannot create a service" }));
+                        continue;
+                    };
+                    if !state.v011_tree.contains_key(parent) {
+                        errors.push(json!({ "p": path, "m": format!("parent is missing: {parent}") }));
+                        continue;
+                    }
+                    if kind == "replace" {
+                        let prefix = format!("{path}/");
+                        let remove_keys: Vec<String> = state
+                            .v011_tree
+                            .keys()
+                            .filter(|k| *k == &path || k.starts_with(&prefix))
+                            .cloned()
+                            .collect();
+                        for k in remove_keys {
+                            state.v011_tree.remove(&k);
+                            let dot = k.replace('/', ".");
+                            state.scripts.remove(&dot);
+                            state.instances.remove(&dot);
+                        }
+                    }
+                    let mut props = BTreeMap::new();
+                    if let Some(pr) = op["pr"].as_object() {
+                        for (k, v) in pr {
+                            props.insert(k.clone(), v.clone());
+                        }
+                    }
+                    let src = op["s"].as_str().map(String::from);
+                    let dot = path.replace('/', ".");
+                    if let Some(ref s) = src {
+                        state.scripts.insert(dot, s.clone());
+                    } else {
+                        state.instances.insert(
+                            dot,
+                            json!({ "class_name": cls, "properties": props }),
+                        );
+                    }
+                    state.v011_tree.insert(path, MockNode { class: cls, props, source: src });
+                    applied += 1;
+                }
+                _ => {
+                    let Some(node) = state.v011_tree.get_mut(&path) else {
+                        errors.push(json!({ "p": path, "m": "missing" }));
+                        continue;
+                    };
+                    if let Some(pr) = op["pr"].as_object() {
+                        for (k, v) in pr {
+                            node.props.insert(k.clone(), v.clone());
+                        }
+                    }
+                    if let Some(s) = op["s"].as_str() {
+                        if op["a"].as_bool() == Some(true) {
+                            let cur = node.source.get_or_insert_with(String::new);
+                            cur.push_str(s);
+                        } else {
+                            node.source = Some(s.to_string());
+                        }
+                        if let Some(ref full_src) = node.source {
+                            state.scripts.insert(path.replace('/', "."), full_src.clone());
+                        }
+                    }
+                    applied += 1;
+                }
+            }
+        }
+        let res = truncate_100k(format!(
+            "OPENRO_V011:{}",
+            json!({ "n": applied, "e": errors })
+        ));
+        return Some(text_result(
+            json!({ "ok": true, "datamodel_type": dm, "output": res }).to_string(),
+        ));
+    }
+
+    if first == "-- openro:v011:check" {
+        let start = code.find("--[[USER]]\n")? + "--[[USER]]\n".len();
+        let end = code[start..].find("\n--[[/USER]]")? + start;
+        let user = code[start..end].trim();
+
+        for line in user.lines() {
+            if let Some(msg) = extract_print_literal(line.trim()) {
+                state.log_line(msg);
+            }
+        }
+
+        // error("...") simulation
+        if let Some(rest) = user.strip_prefix("error(") {
+            if let Some(inner) = rest.strip_suffix(')') {
+                let msg = inner.trim().trim_matches('"').trim_matches('\'');
+                state.log_line(format!("Error: {msg}"));
+                let res = format!("OPENRO_V011:{}", json!({ "ok": false, "e": msg }));
+                return Some(text_result(
+                    json!({ "ok": true, "datamodel_type": dm, "output": res }).to_string(),
+                ));
+            }
+        }
+
+        // Last line `return <expr>` deterministic evaluator
+        let ret_line = user.lines().rev().find(|l| l.trim().starts_with("return ")).map(|l| l.trim());
+        let val: Value = match ret_line.and_then(|l| l.strip_prefix("return ")).map(str::trim) {
+            Some("__dm__") => json!(dm),
+            Some("__compare_order__") => json!(state.v011_compare_order),
+            Some(expr) if expr.starts_with("__exists__(") && expr.ends_with(')') => {
+                let p = expr["__exists__(".len()..expr.len() - 1].trim().trim_matches('"').trim_matches('\'');
+                json!(state.v011_tree.contains_key(p))
+            }
+            Some(expr) if expr.starts_with("__source_len__(") && expr.ends_with(')') => {
+                let p = expr["__source_len__(".len()..expr.len() - 1].trim().trim_matches('"').trim_matches('\'');
+                let len = state.v011_tree.get(p).and_then(|n| n.source.as_ref()).map(|s| s.len()).unwrap_or(0);
+                json!(len)
+            }
+            Some(expr) if expr.starts_with("__prop__(") && expr.ends_with(')') => {
+                let inner = &expr["__prop__(".len()..expr.len() - 1];
+                if let Some((p, k)) = inner.split_once(',') {
+                    let p = p.trim().trim_matches('"').trim_matches('\'');
+                    let k = k.trim().trim_matches('"').trim_matches('\'');
+                    state.v011_tree.get(p).and_then(|n| n.props.get(k)).cloned().unwrap_or(Value::Null)
+                } else {
+                    Value::Null
+                }
+            }
+            Some("true") => json!(true),
+            Some("false") => json!(false),
+            Some("nil") => Value::Null,
+            Some(expr) if expr.starts_with('"') && expr.ends_with('"') && expr.len() >= 2 => {
+                json!(&expr[1..expr.len() - 1])
+            }
+            Some(expr) if expr.parse::<f64>().is_ok() => {
+                if let Ok(i) = expr.parse::<i64>() {
+                    json!(i)
+                } else {
+                    json!(expr.parse::<f64>().unwrap_or(0.0))
+                }
+            }
+            _ => json!(true),
+        };
+        let encoded = json!({ "v": val }).to_string();
+        let res = format!("OPENRO_V011:{}", json!({ "ok": true, "j": encoded }));
+        return Some(text_result(
+            json!({ "ok": true, "datamodel_type": dm, "output": res }).to_string(),
+        ));
+    }
+
+    None
 }

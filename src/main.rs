@@ -48,28 +48,68 @@ fn main() {
             "openro-rs {} — Roblox Game Builder Studio Workbench\n\n\
              Usage: openro-rs [OPTIONS]\n\n\
              Options:\n  \
-             --port <PORT>     Listen port (default: $OPENRO_PORT or 8077)\n  \
-             --no-open         Start server without opening a desktop app window\n  \
-             --headless        Alias for --no-open (headless/CI mode)\n  \
-             -V, --version     Print version and exit\n  \
-             -h, --help        Print help and exit",
+             --port <PORT>         Listen port (default: $OPENRO_PORT or 8077)\n  \
+             --data-dir <PATH>     Data directory (default: $OPENRO_DATA_DIR or openro-data)\n  \
+             --no-open             Start server without opening a desktop app window\n  \
+             --headless            Alias for --no-open (headless/CI mode)\n  \
+             -V, --version         Print version and exit\n  \
+             -h, --help            Print help and exit",
             env!("CARGO_PKG_VERSION")
         );
         return;
     }
 
-    let cli_port: Option<u16> = cli_args
-        .windows(2)
-        .find(|w| w[0] == "--port")
-        .and_then(|w| w[1].parse().ok())
-        .or_else(|| {
-            cli_args
-                .iter()
-                .find_map(|a| a.strip_prefix("--port=").and_then(|v| v.parse().ok()))
-        });
+    let mut cli_port: Option<u16> = None;
+    let mut cli_data_dir: Option<std::path::PathBuf> = None;
+    let mut i = 1usize;
+    while i < cli_args.len() {
+        let arg = &cli_args[i];
+        if arg == "--no-open" || arg == "--headless" {
+            i += 1;
+        } else if arg == "--port" {
+            let Some(val) = cli_args.get(i + 1) else {
+                eprintln!("openro-rs: --port requires a port number");
+                std::process::exit(2);
+            };
+            match val.parse::<u16>() {
+                Ok(p) => cli_port = Some(p),
+                Err(_) => {
+                    eprintln!("openro-rs: invalid --port value '{val}'");
+                    std::process::exit(2);
+                }
+            }
+            i += 2;
+        } else if let Some(val) = arg.strip_prefix("--port=") {
+            match val.parse::<u16>() {
+                Ok(p) => cli_port = Some(p),
+                Err(_) => {
+                    eprintln!("openro-rs: invalid --port value '{val}'");
+                    std::process::exit(2);
+                }
+            }
+            i += 1;
+        } else if arg == "--data-dir" {
+            let Some(val) = cli_args.get(i + 1).filter(|v| !v.trim().is_empty()) else {
+                eprintln!("openro-rs: --data-dir requires a directory path");
+                std::process::exit(2);
+            };
+            cli_data_dir = Some(std::path::PathBuf::from(val));
+            i += 2;
+        } else if let Some(val) = arg.strip_prefix("--data-dir=") {
+            if val.trim().is_empty() {
+                eprintln!("openro-rs: --data-dir requires a directory path");
+                std::process::exit(2);
+            }
+            cli_data_dir = Some(std::path::PathBuf::from(val));
+            i += 1;
+        } else {
+            eprintln!("openro-rs: unknown option '{arg}' (run with --help for valid options)");
+            std::process::exit(2);
+        }
+    }
 
-    let data_dir = env_nonempty("OPENRO_DATA_DIR")
-        .map(std::path::PathBuf::from)
+    let data_dir = cli_data_dir
+        .or_else(|| env_nonempty("OPENRO_DATA_DIR").map(std::path::PathBuf::from))
         .unwrap_or_else(|| std::path::PathBuf::from("openro-data"));
     let _ = std::fs::create_dir_all(&data_dir);
     let saved_cfg = RuntimeConfig::load(&data_dir);
