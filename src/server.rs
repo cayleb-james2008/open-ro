@@ -1041,6 +1041,8 @@ fn handle(
                     "is_loopback_model": info.is_loopback_model,
                     "game_name": shared.game_name,
                     "version": env!("CARGO_PKG_VERSION"),
+                    "sse_build_stream": true,
+                    "skills_count": crate::skills::registry().len(),
                     "store_recovered": shared.store_recovered,
                 }),
             );

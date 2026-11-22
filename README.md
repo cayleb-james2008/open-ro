@@ -1,26 +1,27 @@
-# OpenRO (`v0.4.0` — Rust + Rune + Local Place Engine + House Frontend)
+# OpenRO (`v0.5.0` — Rust + 22 Rune Skills + Static Luau Prover + `.rbxlx` Import/Export + House Frontend)
 
 [![latest release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases)
 
-Describe a Roblox game in plain words or pick a Studio blueprint — OpenRO generates Luau from verified Rune skills, builds into a persistent local Roblox place (`game.rbxlx`) or live Roblox Studio over MCP, proves every build with a playtest before calling it done, exports genuine `.rbxlx` XML for Roblox Studio, and reverts the last build in one click.
+Describe a Roblox game in plain words, pick a Studio blueprint, browse 22 Roblox game systems, or import an existing `.rbxlx` place — OpenRO generates idiomatic Luau from verified Rune skills, statically proves syntax & Place cross-references, builds into a persistent local Roblox place (`game.rbxlx`) or live Roblox Studio over MCP, streams live build phases over SSE, tracks versioned snapshots with diffs, lets you playtest in a 60fps interactive stage, exports genuine `.rbxlx` XML for Roblox Studio, and reverts in one click.
 
 ## Architecture
 
-- **Single-binary Rust server (`openro-rs`):** Serves the embedded single-file React + Tailwind 4 **Game Builder Studio Workbench** (`assets/index.html`, with JS, CSS, and self-hosted `Geist` + `Geist Mono` `.woff2` fonts inlined via `include_str!`) over `std::net::TcpListener`, alongside the JSON/XML API.
-  - **Left Studio Session Rail (`256px` desktop, Vaul drawer `<768px`):** Game place header, live backend status pill (`Studio connected` / `Local Place ready` / `Studio not connected` + `Check again`), primary `New chat`, `/` search filter across game sessions, `AnimatedBackground` chat list, **Settings (`Model, Studio & Appearance`)** `MorphingDialog` (housing Light/Dark `SegmentedControl`, local gateway auto-detection, live Model & MCP config), and release version link.
-  - **Center Studio Stage, Playable Preview & Build Trace:** Equal-height **Game Blueprint Starter Cards** (`Lava Obby`, `Coin Tycoon`, `Round Arena`, plus follow-up feature blueprints) with category tags, deterministic part/script count chips, `"Adds to Studio"` capability pills, `"Already in your game"` tracking, and one-click builds; interactive HTML5 Canvas **Playable Stage Preview** synced to placed Workspace objects; active **Studio Build Trace** with Tremor `ProgressCircle`, inline `SlidingNumber` change counts, **Playtest Verdict** banner (`Passed` / `Failed` / `Not proven yet`) with expandable Luau console logs, and hairline Composer Dock (`Enter` / `Shift+Enter`, `Undo` `MorphingDialog` confirmation, and self-update strip).
-  - **Right "In Your Game" Studio Explorer Shelf (`300px` `>=1100px`, Vaul bottom drawer `<1100px`):** Familiar Roblox Studio DataModel hierarchy grouping `Workspace` parts and `ServerScriptService` / `StarterGui` / `StarterPlayer` Luau scripts with `SlidingNumber` totals, quick filter, full copyable Luau source code & Instance property viewers, pinned **Export .rbxlx** download button, and **Copy game summary**.
+- **Single-binary Rust server (`openro-rs`):** Serves the embedded single-file React + Tailwind 4 **Game Builder Studio Workbench** (`assets/index.html`, with JS, CSS, and self-hosted `Geist` + `Geist Mono` `.woff2` fonts inlined via `include_str!`) over `std::net::TcpListener`, alongside the JSON/XML/SSE API.
+  - **Left Studio Session Rail (`256px` desktop, Vaul drawer `<768px`):** Game place header, live backend status pill (`Studio connected` / `Local Place ready` / `Studio not connected` + `Check again`), primary `New chat`, `/` search filter across game sessions, `AnimatedBackground` chat list, `Cmd+K` Command Palette & `Snapshots` triggers, **Settings (`Model, Studio & Appearance`)** `MorphingDialog` (exclusively housing the Light/Dark `SegmentedControl`, local gateway auto-detection, live Model & MCP config), and release version link.
+  - **Center Studio Stage, 60fps Playable Sandbox, 22-System Library & Build Trace:** Equal-height **Game Blueprint Starter Cards** + searchable **22 Game Systems** library (`Movement`, `Economy`, `Combat`, `World`, `Persistence`, `UI`); **60fps Interactive Playable Stage Sandbox** (`WASD`/Arrows/Space, `Top-Down` & `Side-View` cameras, real collision triggers, click-any-part to select in Explorer); live SSE build progress stream (`Planning -> Compiling Rune -> Static Luau Check -> Playtest Proof`); active **Studio Build Trace** with Tremor `ProgressCircle`, inline `SlidingNumber` change counts, **Playtest Verdict** banner with expandable Luau console logs, and hairline Composer Dock (`Enter` / `Shift+Enter`, `Undo` `MorphingDialog` confirmation, and self-update strip).
+  - **Right "In Your Game" Studio Explorer Shelf (`300px` `>=1100px`, Vaul bottom drawer `<1100px`):** Familiar Roblox Studio DataModel hierarchy grouping `Workspace` parts and `ServerScriptService` / `StarterGui` / `StarterPlayer` Luau scripts with `SlidingNumber` totals, quick filter, syntax-highlighted Luau code viewer with line numbers, **Static Luau Audit** badges, inline `Position`/`Size`/`Color`/`Anchored` property editor, expandable **Latest Build Diff**, `.rbxlx` **Import** (button & drag-and-drop), pinned **Export .rbxlx**, and **Copy game summary**.
 - **Model route (`src/model.rs`):** OpenAI-compatible `POST {base}/chat/completions`. Loopback gateways (`127.0.0.1`, `localhost`, `[::1]`) work without an API key, and when `OPENRO_MODEL_BASE_URL` and `OPENRO_MODEL_API_KEY` are unset (and `OPENRO_NO_AUTO_MODEL` is not `1`), `openro-rs` auto-probes running local gateways (`127.0.0.1:11434/v1`, `8789/v1`, `8790/v1`). Remote endpoints still require an API key and fail closed when unconfigured. Settings persist live to `data_dir/config.json` (`0600`) via loopback-guarded `GET/POST /api/config`.
-- **Real Local Place Engine + Studio MCP auto-detect (`src/place.rs`, `src/mcp.rs`):** Connects to `OPENRO_MCP_COMMAND` when explicitly set or passively detects a running Vinegar Flatpak Roblox Studio instance with `~/.local/bin/roblox-studio-mcp` (never launching Vinegar unprompted). When Studio is not open, OpenRO runs on its built-in persistent Local Place Engine (`data_dir/place.json` + atomic `data_dir/game.rbxlx` `<roblox version="4">` XML) with real Luau lexer/syntax, service-root, and runtime-wiring playtest verification.
-- **Rune Luau skill engine:** Ten embedded Rune scripts (`src/*.rn`) generate all Luau: `round_manager`, `leaderboard`, `day_night`, `kill_brick`, `spawn_link`, `currency` (leaderstats + DataStore load/save + `BindToClose`), `shop` (server-validated RemoteEvent purchases), `game_gui` (balance HUD + shop button), `checkpoints` (stage pads + respawn), and `soundtrack`. Arbitrary raw Luau outside registered skills is refused, and skill arguments are strictly type-validated in Rust.
-- **Playtest gate, repair loop & checkpointed Undo:**
-  - Every ask records an identity-checked change set in `changes.json` so `POST /api/revert` (`Undo`) restores untouched scripts, instances, and `game.rbxlx` atomically.
+- **Real Local Place Engine, Static Luau Prover & Studio MCP auto-detect (`src/place.rs`, `src/luau_check.rs`, `src/mcp.rs`):** Connects to `OPENRO_MCP_COMMAND` when explicitly set or passively detects a running Vinegar Flatpak Roblox Studio instance with `~/.local/bin/roblox-studio-mcp` (never launching Vinegar unprompted). Otherwise runs on its built-in persistent Local Place Engine (`data_dir/place.json` + atomic `data_dir/game.rbxlx` `<roblox version="4">` XML with real `CoordinateFrame`/`Vector3`/`Color3uint8`/`Material`/`Transparency`/CDATA `ProtectedString`), bidirectional `.rbxlx` import/export, and full static Luau + cross-reference verification.
+- **22 Rune Luau game-system skills (`src/*.rn`, `src/skills.rs`):** Embedded Rune scripts generate all Luau: `round_manager`, `leaderboard`, `day_night`, `kill_brick`, `spawn_link`, `currency`, `shop`, `game_gui`, `checkpoints`, `soundtrack`, `jump_pad`, `moving_platform`, `datastore_save`, `npc_patrol`, `portal_teleporter`, `combat_sword`, `inventory_backpack`, `quest_tracker`, `vehicle_spawner`, `weather_cycle`, `tycoon_dropper`, and `admin_spectate`. Arbitrary raw Luau outside registered skills is refused, and skill arguments are strictly type-validated in Rust.
+- **Playtest gate, repair loop, versioned snapshots & checkpointed Undo:**
+  - Every ask records an identity-checked change set in `changes.json` (for one-click `Undo`) and a versioned snapshot with instance/script diff in `snapshots.json`.
   - `done` is refused until a playtest passes after the latest change (`proof.json` persists verdicts across restarts).
   - Failed playtests feed Studio console errors back into the model for up to 3 automatic repair attempts before reporting a plain failure.
 
 ## Persistence (`OPENRO_DATA_DIR`, default `openro-data`)
 
 - `place.json` & `game.rbxlx`: live local Roblox place tree and genuine Roblox Studio XML file.
+- `snapshots.json`: bounded versioned snapshot history with instance/script diffs for restore & `.rbxlx` export.
 - `config.json`: loopback-managed Model provider & Studio backend settings (`0600` on Unix).
 - `chats.json`: chat sessions, titles, thread lines, and active chat id.
 - `changes.json`: per-chat change-set stacks for `Undo`.
@@ -29,16 +30,28 @@ Describe a Roblox game in plain words or pick a Studio blueprint — OpenRO gene
 
 Corrupt state files are preserved aside as `<name>.json.bak` (`bak2`, ...) and surfaced in `GET /api/status` (`store_recovered`) and a dismissible UI banner.
 
-## HTTP API
+## HTTP & SSE API
 
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/` | Embedded single-file Studio Workbench UI |
-| `GET` | `/api/version` | `{ "name": "openro-rs", "version": "0.4.0" }` |
-| `GET` | `/api/status` | `studio_connected`, `model_configured`, `workspace_mode`, `model_id`, `game_name`, `version`, `store_recovered` |
+| `GET` | `/api/version` | `{ "name": "openro-rs", "version": "0.5.0" }` |
+| `GET` | `/api/status` | `studio_connected`, `model_configured`, `workspace_mode`, `model_id`, `sse_build_stream`, `skills_count`, `game_name`, `version`, `store_recovered` |
+| `GET` | `/api/build/stream` | Live Server-Sent Events (`text/event-stream`) build phase stream with `Last-Event-ID` replay & 15s keepalive |
+| `GET` | `/api/build/events` | JSON polling fallback for recent build events (`?since=<seq>`) |
+| `GET` | `/api/skills` | Catalog of all 22 registered Rune Roblox game-system skills |
+| `POST` | `/api/skills/build` | Compile, write, and playtest a registered Rune skill (`{"skill": "..."}`) |
+| `GET/POST` | `/api/luau/check` | Static Luau syntax, loop-yield, DataStore `pcall`, RemoteEvent & Place cross-reference prover |
+| `GET` | `/api/snapshots` | Versioned Place snapshots & latest instance/script build diff |
+| `POST` | `/api/snapshots` | Record a manual Place snapshot (`{"label": "..."}`) |
+| `POST` | `/api/snapshots/:id/restore` | Restore a historical snapshot into the active Place |
+| `GET` | `/api/snapshots/:id/rbxlx` | Export a historical snapshot as genuine `<roblox version="4">` `.rbxlx` XML |
+| `GET` | `/api/place/diff` | Latest build diff (`added`/`modified`/`removed` instances & scripts) |
+| `POST` | `/api/place/instance` | Create, edit properties on, or delete an Instance in the active Place |
+| `POST` | `/api/import/rbxlx` | Import a Roblox Studio `.rbxlx` XML file (JSON `{"xml"}` or raw `application/xml`, up to 16 MB) |
+| `GET` | `/api/export/rbxlx` | Downloads genuine Roblox Studio XML (`<roblox version="4">`) for the current place |
 | `GET` | `/api/config` | Loopback-only Model & Studio runtime config + detected local gateways |
 | `POST` | `/api/config` | Loopback-only live Model & Studio settings update (saved to `config.json`) |
-| `GET` | `/api/export/rbxlx` | Downloads genuine Roblox Studio XML (`<roblox version="4">`) for the current place |
 | `GET` | `/api/chats` | `chats`, `active`, and `can_undo` |
 | `POST` | `/api/chats` | Create and select a new chat (`201 Created`) |
 | `POST` | `/api/chats/select` | Switch active chat (`{"id": "..."}`) |
@@ -66,14 +79,14 @@ cargo build --bins
 # 3. Run locally (http://127.0.0.1:8077 — auto-probes local gateways & runs Local Place Engine out of the box)
 ./target/release/openro-rs
 
-# Optional: build the self-contained browser web app (Parametric Luau Compiler + Stage Preview + .rbxlx export)
+# Optional: build the self-contained browser web app (22 Luau Compilers + 60fps Stage + .rbxlx Import/Export)
 cd frontend && npm run build:web
 ```
 
 ## Verification
 
 ```sh
-# Rust unit + integration suite (21 unit + 92 integration = 113 tests)
+# Rust unit + integration + scale suite (131 tests)
 cargo test
 
 # Full Playwright UI & worst-case replay suite (1440px, 768px, 390px, 320px in Light & Dark)
