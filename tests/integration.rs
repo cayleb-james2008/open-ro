@@ -917,7 +917,7 @@ fn http_revert_with_nothing_waiting_is_honest() {
     assert_eq!(status, 200, "{body}");
     let v: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["ok"], false, "nothing-to-revert is not a success: {body}");
-    let (status, body) = http_request(port, "POST", "/api/revert", Some(""));
+    let (status, _body) = http_request(port, "POST", "/api/revert", Some(""));
     assert_eq!(status, 200);
     let (_, body) = http_request(port, "GET", "/api/thread", None);
     assert!(body.contains("Nothing to revert"), "thread states it plainly: {body}");

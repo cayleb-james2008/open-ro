@@ -1,251 +1,497 @@
 import { motion, useReducedMotion } from "motion/react";
+import {
+  AlertTriangle,
+  Box,
+  Check,
+  ChevronDown,
+  FileCode,
+  RefreshCw,
+  Terminal,
+  Trash2,
+  X,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import { Expandable, ExpandableContent, ExpandableTrigger } from "@/components/ui/expandable";
+import { SlidingNumber } from "@/components/ui/sliding-number";
+import { Pill, PillIndicator, PillStatus } from "@/components/kibo-ui/pill";
+import { ProgressCircle } from "@/components/ProgressCircle/ProgressCircle";
+import { layout, reveal } from "@/motion";
+import {
+  FAILURE,
+  agentText,
+  classify,
+  plain,
+  stepInfo,
+  type Idea,
+  type Row,
+} from "./data";
+import { BlueprintCard } from "./Blueprints";
 
-/** The live line while a build runs: a pear dot that pulses (it carries the running state; it stops when the work stops). */
-export function WorkingLine({ children }: { children: string }) {
+const STEP_ICONS = {
+  doc: FileCode,
+  box: Box,
+  trash: Trash2,
+  check: Check,
+} as const;
+
+export function WorkingBanner({ label }: { label: string }) {
   const reduce = useReducedMotion();
   return (
-    <p role="status" className="flex items-center gap-2 text-ui text-ink-2">
-      <motion.span aria-hidden className="size-2.5 flex-none rounded-full bg-dot-blue" animate={reduce ? undefined : { opacity: [0.35, 1, 0.35] }} transition={{ repeat: Infinity, duration: 1.4 }} />
-      {children}
-    </p>
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex items-center gap-3 rounded-card border border-hairline bg-surface px-4 py-3 text-sm text-ink"
+    >
+      <Spinner className="size-4 text-blue" />
+      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{label}</span>
+      <Pill className="bg-board text-xs text-ink-2">
+        <PillStatus className="border-transparent">
+          <PillIndicator variant="info" pulse={!reduce} />
+          <span>Running</span>
+        </PillStatus>
+      </Pill>
+    </div>
   );
 }
-import { Check, X, AlertTriangle, FileText, Box, Trash2, Sparkles, ChevronDown } from "lucide-react";
-import { Key } from "./Key";
-import { Expandable, ExpandableTrigger } from "@/components/ui/expandable";
-import { Pill } from "@/components/kibo-ui/pill";
-import { ProgressCircle } from "@/components/ProgressCircle/ProgressCircle";
-import { glide, layout, reveal, instant } from "@/motion";
-import { ADDS, agentText, classify, FAILURE, plain, stepInfo, type Idea, type Row } from "./data";
 
-const ICONS = { doc: FileText, box: Box, trash: Trash2, check: Check } as const;
-
-/** The ask, from the person: an ink card. */
-export function UserBubble({ text, fresh }: { text: string; fresh?: boolean }) {
+export function UserPrompt({ text, fresh }: { text: string; fresh?: boolean }) {
   return (
-    <motion.div initial={fresh ? { opacity: 0, y: 4 } : false} animate={{ opacity: 1, y: 0 }} transition={reveal} className="flex justify-end">
-      <p className="max-w-[min(84%,560px)] whitespace-pre-wrap break-words rounded-panel rounded-tr-sm bg-ink-button px-4 py-3 text-ui text-ink-button-fg">{text}</p>
+    <motion.div
+      initial={fresh ? { opacity: 0, y: 4 } : false}
+      animate={{ opacity: 1, y: 0 }}
+      transition={reveal}
+      className="flex justify-end"
+    >
+      <div className="max-w-[min(86%,580px)] rounded-panel rounded-tr-sm border border-hairline bg-ink-button px-4 py-2.5 text-sm leading-relaxed text-ink-button-fg whitespace-pre-wrap [overflow-wrap:anywhere]">
+        {text}
+      </div>
     </motion.div>
   );
 }
 
-/** OpenRO speaking: cream card with a sparkle. A failure gets the coral card; information stays cream. */
-export function AgentBubble({ text, bad, whole, fresh }: { text: string; bad?: boolean; whole?: boolean; fresh?: boolean }) {
+export function AgentMessage({
+  text,
+  bad,
+  whole,
+  fresh,
+  onRetry,
+  retryDisabled,
+}: {
+  text: string;
+  bad?: boolean;
+  whole?: boolean;
+  fresh?: boolean;
+  onRetry?: () => void;
+  retryDisabled?: boolean;
+}) {
   const { plain: say, raw } = agentText(text, !!bad, !!whole);
   return (
-    <motion.div initial={fresh ? { opacity: 0, y: 4 } : false} animate={{ opacity: 1, y: 0 }} transition={reveal} className="flex items-start gap-3">
-      <span className="grid size-8 flex-none place-items-center rounded-full bg-track text-ink" aria-hidden><Sparkles className="size-4" strokeWidth={1.5} /></span>
-      <div className={`card-stock min-w-0 p-4 text-ui ${bad ? "border-transparent bg-pill-pro-bg text-pill-pro-fg" : "text-ink"}`}>
-        <span className="break-words">{say}</span>
-        {raw && (
-          <Expandable expandDirection="vertical" expandBehavior="push">
-            {({ isExpanded }) => (
-              <div className="mt-2">
-                <ExpandableTrigger aria-expanded={isExpanded} aria-label={isExpanded ? "Hide details" : "Show details"} className="inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded-sm px-1 text-sm text-ink-2 outline-none hover:text-ink focus-visible:ring-2 focus-visible:ring-focus">Details</ExpandableTrigger>
-                {isExpanded && <pre className="whitespace-pre-wrap break-words font-mono text-sm text-ink-2">{raw}</pre>}
-              </div>
-            )}
-          </Expandable>
+    <motion.div
+      initial={fresh ? { opacity: 0, y: 4 } : false}
+      animate={{ opacity: 1, y: 0 }}
+      transition={reveal}
+      role={bad ? "alert" : undefined}
+      className={`flex flex-col gap-2 rounded-card border p-3.5 text-sm leading-relaxed ${
+        bad
+          ? "border-pill-pro-fg/35 bg-pill-pro-bg text-pill-pro-fg"
+          : "border-hairline bg-surface text-ink"
+      }`}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <p className="min-w-0 flex-1 [overflow-wrap:anywhere]">{say}</p>
+        {bad && onRetry && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={retryDisabled}
+            onClick={onRetry}
+            className="bg-surface text-ink max-md:min-h-11"
+          >
+            <RefreshCw className="size-3.5" strokeWidth={1.5} aria-hidden />
+            Try again
+          </Button>
         )}
       </div>
+
+      {raw && (
+        <Expandable expandDirection="vertical" expandBehavior="push">
+          {({ isExpanded }) => (
+            <div className="border-t border-hairline/70 pt-2">
+              <ExpandableTrigger
+                aria-label={isExpanded ? "Hide message details" : "Show message details"}
+                className="inline-flex min-h-11 items-center gap-1 rounded-sm px-2 text-xs font-medium text-ink-2 outline-none hover:bg-board hover:text-ink md:min-h-7"
+              >
+                <span>Details</span>
+                <ChevronDown
+                  className={`size-3.5 transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`}
+                  strokeWidth={1.5}
+                  aria-hidden
+                />
+              </ExpandableTrigger>
+              <ExpandableContent preset="fade">
+                <pre className="mt-1.5 whitespace-pre-wrap break-all rounded-sm bg-board p-2.5 font-mono text-xs text-ink-2">
+                  {raw}
+                </pre>
+              </ExpandableContent>
+            </div>
+          )}
+        </Expandable>
+      )}
     </motion.div>
   );
 }
 
-/** One idea, a big card-stock tile: title, a clamped pitch with More, visible chips, the key pinned to the bottom. */
-export function IdeaTile({ idea, canBuild, busy, building, unavailable, onBuild }: { idea: Idea; canBuild: boolean; busy: boolean; building: boolean; unavailable?: "built" | "offer"; onBuild: () => void }) {
-  const reduce = useReducedMotion();
-  const pitch = plain(idea.pitch);
-  return (
-    <motion.article
-      whileHover={reduce ? undefined : { y: -2 }}
-      whileTap={reduce ? undefined : { y: 1 }}
-      transition={reduce ? instant : glide}
-      className={`card-stock relative flex h-full min-w-0 flex-col gap-3 overflow-hidden p-5 ${building ? "ring-2 ring-blue" : ""}`}
-    >
-      <h3 className="font-heading text-title tracking-display text-ink">{idea.title}</h3>
-      <Expandable expandDirection="vertical" expandBehavior="push">
-        {({ isExpanded }) => (
-          <div className="flex flex-col items-start gap-1">
-            <p className={`text-ui text-ink-2 ${isExpanded ? "" : "line-clamp-4"}`}>{pitch}</p>
-            {pitch.length > 160 && (
-              <ExpandableTrigger aria-expanded={isExpanded} aria-label={`${isExpanded ? "Show less" : "Read more"} about ${idea.title}`} className="inline-flex min-h-11 cursor-pointer items-center gap-1 rounded-chip border border-hairline bg-surface px-3 text-sm font-medium text-ink outline-none hover:bg-raised focus-visible:ring-2 focus-visible:ring-focus">
-                {isExpanded ? "Show less" : "Read more"}<ChevronDown className={`size-4 transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`} strokeWidth={1.5} aria-hidden />
-              </ExpandableTrigger>
-            )}
-          </div>
-        )}
-      </Expandable>
-      {idea.skills.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <span className="text-sm text-ink-2">What it adds</span>
-          <ul className="flex flex-wrap gap-1.5">
-            {[...new Set(idea.skills.map((s) => ADDS[s] || s.replace(/_/g, " ")))].map((t) => (
-              <li key={t}><Pill className="bg-tag-sky-bg text-sm text-tag-sky-fg">{t}</Pill></li>
-            ))}
-          </ul>
-        </div>
-      )}
-      <div className="mt-auto flex flex-col gap-2 pt-1">
-        {unavailable ? (
-          <p className="text-sm text-ink-2">{unavailable === "built" ? "Already in your game. The next ideas above are the ones you can build." : "Already in your game, or not on offer now. The next ideas above are the ones you can build."}</p>
-        ) : (
-          <>
-            <Key disabled={!canBuild || busy} onClick={onBuild} aria-label={`Build ${idea.title}`} data-focus-key={`idea:${idea.title}`} className="w-full">Build this</Key>
-            {!canBuild && <p className="text-sm text-ink-2">Connect Studio to build this. The banner above says how.</p>}
-          </>
-        )}
-      </div>
-    </motion.article>
-  );
-}
-
-/** The build tray: stamps fill in as steps arrive; the verdict is the last stamp. */
-export function BuildTray({ rows, working = false }: { rows: Row[]; working?: boolean }) {
-  const steps = rows.filter((r): r is Extract<Row, { kind: "step" }> => r.kind === "step");
+export function BuildTrace({ rows, working = false }: { rows: Row[]; working?: boolean }) {
+  const rawSteps = rows.filter((r): r is Extract<Row, { kind: "step" }> => r.kind === "step");
   const verdict = rows.find((r): r is Extract<Row, { kind: "verdict" }> => r.kind === "verdict");
-  const consoleOut = rows.find((r): r is Extract<Row, { kind: "console" }> => r.kind === "console");
-  const infos = steps.map((s) => stepInfo(s.raw));
-  const saved = infos.some((i) => i.stamp === "saved");
-  const generated = infos.some((i) => i.stamp === "generated");
-  const done = [saved, generated, !!verdict].filter(Boolean).length;
+  const consoleRows = rows.filter((r): r is Extract<Row, { kind: "console" }> => r.kind === "console");
+  const rawInfos = rawSteps.map((s) => stepInfo(s.raw));
+  const changeCount = rawInfos.filter((i) => i.changed).length;
+  const generated = rawInfos.some((i) => i.stamp === "generated");
+  const applied = rawInfos.some((i) => i.changed);
+  const doneStages = [generated || applied, applied, !!verdict].filter(Boolean).length;
+  const consoleText = consoleRows.map((c) => c.text).join("\n");
+
+  // Fold "Generated ... script" immediately followed by "Wrote ..." into a single clean Studio step row.
+  const displaySteps: { raw: string; info: ReturnType<typeof stepInfo> }[] = [];
+  for (let i = 0; i < rawSteps.length; i++) {
+    const cur = rawInfos[i];
+    const next = rawInfos[i + 1];
+    if (cur.stamp === "generated" && next?.stamp === "saved") {
+      displaySteps.push({
+        raw: `${rawSteps[i].raw}\n${rawSteps[i + 1].raw}`,
+        info: { ...next, label: next.label.replace(/^Saved script /, "Generated & saved ") },
+      });
+      i++;
+    } else {
+      displaySteps.push({ raw: rawSteps[i].raw, info: cur });
+    }
+  }
+
   return (
-    <section aria-label="What OpenRO did" className={`card-stock overflow-hidden ${working ? "ring-2 ring-blue" : ""}`}>
-      <div className="flex flex-wrap items-center gap-3 border-b border-hairline p-4">
-        <ProgressCircle value={Math.round((done / 3) * 100)} radius={16} strokeWidth={4} className="size-10">
-          <span className="font-mono text-xs font-medium tabular-nums">{done}/3</span>
-        </ProgressCircle>
-        <div className="flex min-w-0 flex-1 flex-wrap gap-2">
-          <Stamp label="Saved script" done={saved} />
-          <Stamp label="Generated" done={generated} />
-          <Stamp label="Tested" done={!!verdict} />
-          {verdict && <VerdictStamp tone={verdict.tone} />}
+    <section
+      aria-label="Studio build trace"
+      className={`overflow-hidden rounded-card border bg-surface ${
+        working ? "border-blue ring-2 ring-blue/25" : "border-hairline"
+      }`}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-hairline bg-board/60 px-4 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <ProgressCircle
+            value={Math.round((doneStages / 3) * 100)}
+            radius={16}
+            strokeWidth={3.5}
+            className="size-9 flex-none"
+          >
+            <span className="font-mono text-xs font-medium tabular-nums text-ink">{doneStages}/3</span>
+          </ProgressCircle>
+
+          <div className="min-w-0">
+            <div className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-ink-2">
+              <span className="font-mono font-medium tabular-nums text-ink">
+                <SlidingNumber value={changeCount} />
+              </span>
+              {`${changeCount === 1 ? "change" : "changes"} made in Studio`}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          <TraceStagePill label="Luau" done={generated} />
+          <TraceStagePill label="Studio" done={applied} />
+          <TraceStagePill label="Playtest" done={!!verdict} />
         </div>
       </div>
-      {steps.length > 0 && (
-        <ol className="m-0 list-none p-0">
-          {steps.map((s, i) => {
-            const info = infos[i];
-            const Icon = ICONS[info.icon];
+
+      {displaySteps.length > 0 && (
+        <ol className="m-0 divide-y divide-hairline list-none p-0">
+          {displaySteps.map(({ raw, info }, idx) => {
+            const Icon = STEP_ICONS[info.icon];
             return (
-              <li key={i} className="grid grid-cols-[28px_minmax(0,1fr)_auto] items-start gap-3 border-t border-hairline px-4 py-3">
-                <span className="grid size-7 place-items-center rounded-sm bg-track text-icon"><Icon className="size-4" strokeWidth={1.5} aria-hidden /></span>
-                <div className="min-w-0">
-                  <div className="break-words text-ui text-ink">{info.label}</div>
-                  <details className="mt-1">
-                    <summary className="inline-flex min-h-11 cursor-pointer items-center text-sm text-ink-3 hover:text-ink">Details</summary>
-                    <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-sm text-ink-2">{s.raw}</pre>
-                  </details>
-                </div>
-                <span className="pt-1 text-sm text-ink-2">{info.result}</span>
+              <li key={idx} className="px-4 py-2">
+                <Expandable expandDirection="vertical" expandBehavior="push">
+                  {({ isExpanded }) => (
+                    <>
+                      <div className="flex items-start gap-3">
+                        <span className="mt-0.5 grid size-6 flex-none place-items-center rounded-sm bg-board text-icon">
+                          <Icon className="size-3.5" strokeWidth={1.5} aria-hidden />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                            <span className="text-sm font-medium text-ink [overflow-wrap:anywhere]">
+                              {info.label}
+                            </span>
+                            {info.target && (
+                              <code className="max-w-full rounded-sm bg-board px-1.5 py-0.5 font-mono text-xs text-ink-2 [overflow-wrap:anywhere]">
+                                {info.target}
+                              </code>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex flex-none items-center gap-1.5">
+                          <span className="font-mono text-xs text-ink-2">{info.result}</span>
+                          <ExpandableTrigger
+                            aria-label={`${isExpanded ? "Hide" : "Show"} step output for ${info.label}`}
+                            className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-sm px-1.5 text-xs text-ink-2 outline-none hover:bg-board hover:text-ink md:min-h-7 md:min-w-7"
+                          >
+                            <ChevronDown
+                              className={`size-3.5 transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`}
+                              strokeWidth={1.5}
+                              aria-hidden
+                            />
+                          </ExpandableTrigger>
+                        </div>
+                      </div>
+                      <ExpandableContent preset="fade">
+                        <pre className="mt-2 whitespace-pre-wrap break-all rounded-sm bg-board p-2.5 font-mono text-xs text-ink-2">
+                          {raw}
+                        </pre>
+                      </ExpandableContent>
+                    </>
+                  )}
+                </Expandable>
               </li>
             );
           })}
         </ol>
       )}
-      {verdict && <VerdictBand tone={verdict.tone} raw={verdict.raw} console={consoleOut?.text} />}
+
+      {verdict && <VerdictBanner tone={verdict.tone} raw={verdict.raw} consoleText={consoleText} />}
     </section>
   );
 }
 
-function Stamp({ label, done }: { label: string; done: boolean }) {
+function TraceStagePill({ label, done }: { label: string; done: boolean }) {
   return (
-    <motion.span layout transition={layout} className={`inline-flex h-8 items-center gap-1.5 rounded-chip px-3 text-sm font-medium ${done ? "bg-pill-active-bg text-pill-active-fg" : "bg-track text-ink-3"}`}>
-      {done && <Check className="size-3.5" strokeWidth={2} aria-hidden />}
+    <motion.span
+      layout
+      transition={layout}
+      className={`inline-flex h-6 items-center gap-1 rounded-chip px-2 text-xs font-medium ${
+        done ? "bg-pill-active-bg text-pill-active-fg" : "bg-track text-ink-3"
+      }`}
+    >
+      {done && <Check className="size-3" strokeWidth={2} aria-hidden />}
       {label}
     </motion.span>
   );
 }
 
-function VerdictStamp({ tone }: { tone: "ok" | "bad" | "warn" }) {
-  const m = {
-    ok: { label: "Passed", cls: "bg-pill-active-bg text-pill-active-fg", Icon: Check },
-    bad: { label: "Did not pass", cls: "bg-pill-pro-bg text-pill-pro-fg", Icon: X },
-    warn: { label: "Not proven yet", cls: "bg-pill-warn-bg text-pill-warn-fg", Icon: AlertTriangle },
+function VerdictBanner({
+  tone,
+  raw,
+  consoleText,
+}: {
+  tone: "ok" | "bad" | "warn";
+  raw: string;
+  consoleText?: string;
+}) {
+  const cfg = {
+    ok: {
+      badge: "Passed",
+      pillCls: "bg-pill-active-bg text-pill-active-fg",
+      bandCls: "bg-pill-active-bg/45",
+      Icon: Check,
+      summary: "The Studio playtest ran through with zero Luau errors.",
+    },
+    bad: {
+      badge: "Failed",
+      pillCls: "bg-pill-pro-bg text-pill-pro-fg",
+      bandCls: "bg-pill-pro-bg/55",
+      Icon: X,
+      summary: plain(raw),
+    },
+    warn: {
+      badge: "Not proven yet",
+      pillCls: "bg-pill-warn-bg text-pill-warn-fg",
+      bandCls: "bg-pill-warn-bg/55",
+      Icon: AlertTriangle,
+      summary: "The playtest output could not be verified, so this build counts as unproven.",
+    },
   }[tone];
-  return (
-    <motion.span layout transition={layout} initial={{ scale: 0.92 }} animate={{ scale: 1 }} className={`inline-flex h-8 items-center gap-1.5 rounded-chip px-3 text-sm font-medium ${m.cls}`}>
-      <m.Icon className="size-3.5" strokeWidth={2} aria-hidden />
-      {m.label}
-    </motion.span>
-  );
-}
 
-function VerdictBand({ tone, raw, console: out }: { tone: "ok" | "bad" | "warn"; raw: string; console?: string }) {
-  const copy = {
-    ok: ["Passed", "The test run played through with no errors."],
-    bad: ["Failed", "The test run found a problem. OpenRO is reading the error and repairing your game."],
-    warn: ["Not proven yet", "The test run result could not be read, so this build counts as unproven. OpenRO will test again."],
-  }[tone];
-  const cls = tone === "ok" ? "bg-pill-active-bg text-pill-active-fg" : tone === "bad" ? "bg-pill-pro-bg text-pill-pro-fg" : "bg-pill-warn-bg text-pill-warn-fg";
   return (
-    <div className={`border-t border-hairline p-4 ${cls}`}>
-      <strong className="block font-heading text-ui font-semibold">{copy[0]}</strong>
-      <p className="mt-1 text-ui text-ink">{copy[1]}</p>
-      <details className="mt-2">
-        <summary className="inline-flex min-h-11 cursor-pointer items-center text-sm text-ink-2 hover:text-ink">Details</summary>
-        <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-sm text-ink">{raw}{out ? "\nConsole output from the test run:\n" + out : ""}</pre>
-      </details>
+    <div className={`border-t border-hairline px-4 py-3 ${cfg.bandCls}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <Pill className={`px-2.5 py-0.5 text-xs font-medium ${cfg.pillCls}`}>
+            <cfg.Icon className="size-3.5" strokeWidth={2} aria-hidden />
+            <span>{cfg.badge}</span>
+          </Pill>
+          <span className="text-xs font-medium text-ink">Playtest verdict</span>
+        </div>
+      </div>
+
+      <p className="mt-1.5 text-sm text-ink [overflow-wrap:anywhere]">{cfg.summary}</p>
+
+      <Expandable expandDirection="vertical" expandBehavior="push">
+        {({ isExpanded }) => (
+          <div className="mt-2">
+            <ExpandableTrigger
+              aria-label={isExpanded ? "Hide Luau console log" : "Show Luau console log"}
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-sm px-2 text-xs font-medium text-ink-2 outline-none hover:bg-surface/70 hover:text-ink md:min-h-7"
+            >
+              <Terminal className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>Luau console log</span>
+              <ChevronDown
+                className={`size-3.5 transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`}
+                strokeWidth={1.5}
+                aria-hidden
+              />
+            </ExpandableTrigger>
+            <ExpandableContent preset="fade">
+              <pre className="mt-1.5 max-h-44 overflow-auto whitespace-pre-wrap break-all rounded-sm border border-hairline bg-surface p-2.5 font-mono text-xs text-ink">
+                {raw}
+                {consoleText ? `\n${consoleText}` : "\n[0 Luau runtime errors]"}
+              </pre>
+            </ExpandableContent>
+          </div>
+        )}
+      </Expandable>
     </div>
   );
 }
 
-/** The thread from the server's lines, in order: ask, agent, ideas, build trays. */
-export function ThreadBody({
-  lines, notices, pending, ideas, builtTitles, canBuild, busy, buildingIdea, freshFrom, onBuild,
+export function ThreadFeed({
+  lines,
+  notices,
+  pending,
+  ideas,
+  builtTitles,
+  canBuild,
+  busy,
+  buildingIdea,
+  freshFrom,
+  lastTriedIdea,
+  onBuild,
 }: {
   lines: string[];
   notices: { text: string; bad?: boolean; user?: boolean }[];
-  pending: { message?: string; build?: string } | undefined;
+  pending: { message?: string; build?: string; undo?: boolean } | undefined;
   ideas: Idea[];
   builtTitles: string[];
   canBuild: boolean;
   busy: boolean;
   buildingIdea: string | undefined;
   freshFrom: number;
+  lastTriedIdea: Idea | null;
   onBuild: (idea: Idea) => void;
 }) {
-  const items = lines.map(classify);
+  // Find first user turn so pre-build pitch lines do not duplicate the starter workbench.
+  const firstUserIdx = lines.findIndex((l) => l.startsWith("You: "));
+  const activeLines = firstUserIdx >= 0 ? lines.slice(firstUserIdx) : [];
+  const items = activeLines.map(classify);
+
   const out: React.ReactNode[] = [];
-  let tray: Row[] = [];
-  let ideaRun: React.ReactNode[] = [];
-  const flushTray = (key: string) => { if (tray.length) out.push(<BuildTray key={key} rows={tray} />); tray = []; };
-  const flushIdeas = (key: string) => {
-    if (!ideaRun.length) return;
-    out.push(<div key={key} className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] items-stretch gap-4">{ideaRun}</div>);
-    ideaRun = [];
+  let traceBuffer: Row[] = [];
+  let pitchedRun: { title: string; pitch: string }[] = [];
+
+  const flushTrace = (key: string) => {
+    if (!traceBuffer.length) return;
+    out.push(<BuildTrace key={key} rows={traceBuffer} />);
+    traceBuffer = [];
   };
-  items.forEach((it, i) => {
-    const fresh = i >= freshFrom;
+
+  const flushPitched = (key: string) => {
+    if (!pitchedRun.length) return;
+    const cards = pitchedRun;
+    pitchedRun = [];
+    out.push(
+      <div key={key} data-answers="1" className="grid grid-cols-1 items-stretch gap-3 lg:grid-cols-3">
+        {cards.map((it, idx) => {
+          const live = ideas.find((x) => x.title === it.title);
+          const idea: Idea = live ?? { id: `pitched-${idx}`, title: it.title, pitch: it.pitch, skills: [] };
+          const unavailable = live ? undefined : builtTitles.includes(it.title) ? "built" : "offer";
+          return (
+            <BlueprintCard
+              key={`${it.title}-${idx}`}
+              idea={idea}
+              canBuild={canBuild}
+              busy={busy}
+              building={buildingIdea === it.title}
+              unavailable={unavailable}
+              featured={idx === 0 && !unavailable}
+              onBuild={() => live && onBuild(live)}
+            />
+          );
+        })}
+      </div>,
+    );
+  };
+
+  items.forEach((it, idx) => {
+    const absIdx = (firstUserIdx >= 0 ? firstUserIdx : 0) + idx;
+    const fresh = absIdx >= freshFrom;
     if (it.kind === "step" || it.kind === "verdict" || it.kind === "console") {
-      flushIdeas("ideas-" + i);
-      tray.push(it);
-      if (it.kind === "verdict") flushTray("tray-" + i);
+      flushPitched(`pitched-${idx}`);
+      traceBuffer.push(it);
+      if (it.kind === "verdict") flushTrace(`trace-${idx}`);
       return;
     }
-    flushTray("tray-" + i);
+    flushTrace(`trace-${idx}`);
     if (it.kind === "idea") {
-      const rec = ideas.find((x) => x.title === it.title);
-      const idea: Idea = rec ?? { id: "", title: it.title, pitch: it.pitch, skills: [] };
-      ideaRun.push(
-        <IdeaTile key={"i" + i} idea={idea} canBuild={canBuild} busy={busy} building={buildingIdea === it.title} unavailable={rec ? undefined : builtTitles.includes(it.title) ? "built" : "offer"} onBuild={() => rec && onBuild(rec)} />,
-      );
+      pitchedRun.push({ title: it.title, pitch: it.pitch });
       return;
     }
-    flushIdeas("ideas-" + i);
-    if (it.kind === "user") out.push(<UserBubble key={i} text={it.text} fresh={fresh} />);
-    else if (it.kind === "agent") out.push(<AgentBubble key={i} text={it.text} bad={FAILURE.test(it.text)} fresh={fresh} />);
+    flushPitched(`pitched-${idx}`);
+    if (it.kind === "user") {
+      out.push(<UserPrompt key={`u-${idx}`} text={it.text} fresh={fresh} />);
+    } else if (it.kind === "agent") {
+      const isBad = FAILURE.test(it.text);
+      out.push(
+        <AgentMessage
+          key={`a-${idx}`}
+          text={it.text}
+          bad={isBad}
+          fresh={fresh}
+          onRetry={isBad && lastTriedIdea ? () => onBuild(lastTriedIdea) : undefined}
+          retryDisabled={!canBuild || busy}
+        />,
+      );
+    }
   });
-  flushTray("tray-end");
-  flushIdeas("ideas-end");
-  notices.forEach((n, i) =>
-    out.push(n.user ? <UserBubble key={"n" + i} text={n.text} fresh /> : <AgentBubble key={"n" + i} text={n.text} bad={n.bad} whole fresh />),
-  );
-  if (pending?.message) out.push(<UserBubble key="pending" text={pending.message} fresh />);
+
+  flushTrace("trace-end");
+  flushPitched("pitched-end");
+
+  // Filter out duplicate notice if the exact same failure line was already persisted in the server thread.
+  const tailAgentText = items.filter((r): r is Extract<Row, { kind: "agent" }> => r.kind === "agent").pop()?.text;
+  notices.forEach((n, i) => {
+    if (!n.user && tailAgentText && plain(n.text) === tailAgentText) return;
+    out.push(
+      n.user ? (
+        <UserPrompt key={`n-${i}`} text={n.text} fresh />
+      ) : (
+        <AgentMessage
+          key={`n-${i}`}
+          text={n.text}
+          bad={n.bad}
+          whole
+          fresh
+          onRetry={n.bad && lastTriedIdea ? () => onBuild(lastTriedIdea) : undefined}
+          retryDisabled={!canBuild || busy}
+        />
+      ),
+    );
+  });
+
+  if (pending?.message) {
+    out.push(<UserPrompt key="pending-msg" text={pending.message} fresh />);
+  }
   if (pending) {
     out.push(
-      <WorkingLine key="working">OpenRO is working on it. A build can take a minute or two.</WorkingLine>,
+      <WorkingBanner
+        key="working"
+        label={
+          pending.build
+            ? `Building ${pending.build} in Roblox Studio and running playtest…`
+            : pending.undo
+              ? "Reverting the last Studio build…"
+              : "Generating Luau and applying changes in Roblox Studio…"
+        }
+      />,
     );
   }
-  return <>{out}</>;
+
+  return <div className="flex flex-col gap-4">{out}</div>;
 }

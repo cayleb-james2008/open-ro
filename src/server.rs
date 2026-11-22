@@ -297,7 +297,7 @@ impl Shared {
 /// changes loaders: any malformed entry makes the whole file corrupt
 /// — backed up, never partially read (a half-remembered context
 /// would pitch games the place already has, or skip ones it needs).
-fn load_ideas(dir: &PathBuf, recovered: &mut Vec<String>) -> std::collections::HashMap<String, ChatIdeas> {
+fn load_ideas(dir: &std::path::Path, recovered: &mut Vec<String>) -> std::collections::HashMap<String, ChatIdeas> {
     let path = dir.join("ideas.json");
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
@@ -370,7 +370,7 @@ pub fn backup_corrupt(path: &std::path::Path) -> Option<std::path::PathBuf> {
     Some(candidate)
 }
 
-fn load_chats(dir: &PathBuf, recovered: &mut Vec<String>) -> Option<(Vec<Chat>, String)> {
+fn load_chats(dir: &std::path::Path, recovered: &mut Vec<String>) -> Option<(Vec<Chat>, String)> {
     let path = dir.join("chats.json");
     let text = std::fs::read_to_string(&path).ok()?;
     let parsed = serde_json::from_str::<Value>(&text);

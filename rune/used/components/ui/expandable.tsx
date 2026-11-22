@@ -475,7 +475,7 @@ const ExpandableTrigger = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
 >(({ children, className, ...props }, ref) => {
-  const { toggleExpand } = useExpandable()
+  const { isExpanded, toggleExpand } = useExpandable()
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" || e.key === " ") {
@@ -491,6 +491,7 @@ const ExpandableTrigger = React.forwardRef<
       onKeyDown={handleKeyDown}
       role="button"
       tabIndex={0}
+      aria-expanded={isExpanded}
       aria-label="Toggle expand"
       className={cn("cursor-pointer", className)}
       {...props}
