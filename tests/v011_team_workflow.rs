@@ -1355,3 +1355,164 @@ fn self_claim_routing_history_compaction_tools_kind_and_ergonomics() {
 
     shared.teamwork.shutdown();
 }
+
+#[test]
+fn manifest_update_aliases_written_files_autocommit_and_flat_edit_alias() {
+    let dir = scratch_dir("manifest-autocommit-aliases");
+    let data_dir = dir.join("data");
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(proj.join("docs")).unwrap();
+    std::fs::write(
+        proj.join("default.project.json"),
+        json!({
+            "name": "ManifestAliasTest",
+            "tree": { "$className": "DataModel" }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(proj.join(".gitignore"), ".openro/\nbuild/\n").unwrap();
+    std::fs::write(proj.join("openro.project.json"), "{}\n").unwrap();
+    std::fs::write(proj.join("docs/MONETIZATION.md"), "# Draft\nPRICE_PLACEHOLDER\n").unwrap();
+    for args in [
+        &["init"][..],
+        &["config", "user.name", "OpenRO Test"],
+        &["config", "user.email", "test@openro.local"],
+        &["add", "default.project.json", ".gitignore", "openro.project.json", "docs/MONETIZATION.md"],
+        &["commit", "-m", "init"],
+    ] {
+        let out = std::process::Command::new("git")
+            .current_dir(&proj)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    std::fs::create_dir_all(&data_dir).unwrap();
+    write_projects_index(&data_dir, &proj);
+
+    let per_role: Arc<Mutex<std::collections::HashMap<String, usize>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let pr = Arc::clone(&per_role);
+    let stub = start_dynamic_stub(move |body, _| {
+        let req: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        let msgs = req["messages"].as_array().unwrap();
+        let sys = msgs[0]["content"].as_str().unwrap_or("");
+        let role = if sys.contains("[Agent: coordinator]") {
+            "coordinator"
+        } else if sys.contains("[Agent: builder]") {
+            "builder"
+        } else {
+            "verifier"
+        };
+        let step = {
+            let mut m = pr.lock().unwrap();
+            let e = m.entry(role.to_string()).or_insert(0);
+            *e += 1;
+            *e
+        };
+        if role == "coordinator" {
+            return match step {
+                1 => json!({
+                    "tool": "create_task",
+                    "args": { "id": "t1", "owner": "builder", "title": "Update monetization & manifest", "kind": "docs", "files": ["docs/MONETIZATION.md"] },
+                    "done": true,
+                    "summary": "created t1"
+                }),
+                _ => {
+                    let all_text = msgs.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
+                    if all_text.contains("Verified task t1") {
+                        json!({ "tool": "finish_run", "args": { "summary": "manifest & edit committed" } })
+                    } else {
+                        json!({ "done": true, "summary": "waiting" })
+                    }
+                }
+            };
+        }
+        if role == "builder" {
+            return match step {
+                1 => json!({
+                    "steps": [
+                        {
+                            "tool": "project_edit_file",
+                            "args": { "path": "docs/MONETIZATION.md", "old_string": "PRICE_PLACEHOLDER", "new_string": "VIP: 349 R$" }
+                        },
+                        {
+                            "tool": "project_update_manifest",
+                            "args": {
+                                "products": [{ "id": "pass_vip", "kind": "game_pass", "name": "VIP", "priceRobux": 349, "priceApproved": true }]
+                            }
+                        },
+                        { "tool": "submit_task", "args": { "task_id": "t1", "summary": "updated doc & manifest" } }
+                    ],
+                    "done": true,
+                    "summary": "submitted t1"
+                }),
+                _ => json!({ "done": true, "summary": "parked" }),
+            };
+        }
+        let last_user = msgs.iter().rev().find(|m| m["role"] == "user").and_then(|m| m["content"].as_str()).unwrap_or("");
+        if last_user.contains("- t1 [awaiting_verification]") {
+            json!({ "tool": "verify_task", "args": { "task_id": "t1", "passed": true, "notes": "doc & manifest ok" }, "done": true, "summary": "verified" })
+        } else {
+            json!({ "done": true, "summary": "waiting" })
+        }
+    });
+
+    let (port, shared) = boot_server(data_dir, None);
+    let (st, _) = http(
+        port,
+        "POST",
+        "/api/config",
+        Some(&json!({ "base_url": stub.base_url, "model_id": "stub-model" })),
+    );
+    assert_eq!(st, 200);
+
+    let (st, created) = http(
+        port,
+        "POST",
+        "/api/teamwork",
+        Some(&json!({ "goal": "Verify #46 manifest auto-commit and aliases", "roles": ["builder", "verifier"], "max_concurrency": 2 })),
+    );
+    assert_eq!(st, 201, "{created}");
+    let run_id = created["run"]["id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut detail = Value::Null;
+    while Instant::now() < deadline {
+        let (_, d) = http(port, "GET", &format!("/api/teamwork/{run_id}"), None);
+        detail = d;
+        if detail["run"]["status"] == "completed" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    assert_eq!(detail["run"]["status"], "completed", "{detail}");
+    let written = detail["tasks"][0]["written_files"].as_array().unwrap();
+    assert!(written.iter().any(|f| f == "openro.project.json"), "{written:?}");
+
+    let manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(proj.join("openro.project.json")).unwrap()).unwrap();
+    assert_eq!(manifest["products"][0]["key"], "pass_vip");
+    assert_eq!(manifest["products"][0]["priceApproved"], false);
+    assert_eq!(std::fs::read_to_string(proj.join("docs/MONETIZATION.md")).unwrap(), "# Draft\nVIP: 349 R$\n");
+
+    // Auto-commit staged & committed openro.project.json with zero dirty files left over
+    let show = std::process::Command::new("git")
+        .current_dir(&proj)
+        .args(["show", "--name-only", "--format=", "HEAD"])
+        .output()
+        .unwrap();
+    let changed = String::from_utf8_lossy(&show.stdout);
+    assert!(changed.lines().any(|l| l.trim() == "openro.project.json"), "HEAD files: {changed}");
+    assert!(changed.lines().any(|l| l.trim() == "docs/MONETIZATION.md"), "HEAD files: {changed}");
+    let status = std::process::Command::new("git")
+        .current_dir(&proj)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&status.stdout).trim().is_empty(), "dirty git status: {}", String::from_utf8_lossy(&status.stdout));
+
+    shared.teamwork.shutdown();
+}
