@@ -59,6 +59,10 @@ export function CommandPalette({
   onOpenSettings,
   onOpenToolLibrary,
   onOpenEmbeddedStudio,
+  onOpenCodeDiff,
+  onOpenStudioPlugin,
+  onToggleBottomDrawer,
+  onOpenStarters,
   onRunPlaytest,
   onTriggerUndo,
   onTriggerRedo,
@@ -81,6 +85,10 @@ export function CommandPalette({
   onOpenSettings: () => void;
   onOpenToolLibrary?: () => void;
   onOpenEmbeddedStudio?: () => void;
+  onOpenCodeDiff?: () => void;
+  onOpenStudioPlugin?: () => void;
+  onToggleBottomDrawer?: () => void;
+  onOpenStarters?: () => void;
   onRunPlaytest?: () => void;
   onTriggerUndo: () => void;
   onTriggerRedo?: () => void;
@@ -170,11 +178,55 @@ export function CommandPalette({
       out.push({
         kind: "action",
         id: "act-embed-studio",
-        title: "Open Embedded Roblox Studio & All-12 MCP Tools",
-        subtitle: "Stream live MJPEG Roblox Studio viewport, pass mouse/keyboard input, Play/Server/Stop, and run all 12 MCP tools",
+        title: "Open Embedded Roblox Studio & 13 MCP Tools",
+        subtitle: "Stream live MJPEG Roblox Studio viewport, pass mouse/keyboard input, Play/Server/Stop, and run all 13 MCP tools",
         badge: "Embedded",
         badgeCls: "bg-tag-sky-bg text-tag-sky-fg",
         onRun: onOpenEmbeddedStudio,
+      });
+    }
+    if (onOpenCodeDiff) {
+      out.push({
+        kind: "action",
+        id: "act-code-diff",
+        title: "Open Code & Diff Workbench",
+        subtitle: "Inspect unified script diffs, toggle per-file apply checkboxes, and edit Luau scripts with live diagnostics",
+        badge: "Diff",
+        badgeCls: "bg-tag-research-bg text-tag-research-fg",
+        onRun: onOpenCodeDiff,
+      });
+    }
+    if (onOpenStudioPlugin) {
+      out.push({
+        kind: "action",
+        id: "act-studio-plugin",
+        title: "Roblox Studio Companion Plugin (OpenRoCompanion.lua)",
+        subtitle: "1-click install, download plugin, and sync live Roblox Studio DataModel & Selection",
+        badge: "Plugin",
+        badgeCls: "bg-tag-mint-bg text-tag-mint-fg",
+        onRun: onOpenStudioPlugin,
+      });
+    }
+    if (onOpenStarters) {
+      out.push({
+        kind: "action",
+        id: "act-starters",
+        title: "Open Starters & 28 Game Systems",
+        subtitle: "Browse ready-to-build Roblox blueprints and parametric Luau game systems",
+        badge: "Starters",
+        badgeCls: "bg-tag-ops-bg text-tag-ops-fg",
+        onRun: onOpenStarters,
+      });
+    }
+    if (onToggleBottomDrawer) {
+      out.push({
+        kind: "action",
+        id: "act-bottom-drawer",
+        title: "Toggle Bottom Studio Drawer (Output, Trace, 13 MCP Tools, Properties)",
+        subtitle: "Expand or collapse Output Console, Agent Trace, 13 Studio MCP Tools, and Properties inspector",
+        badge: "Drawer",
+        badgeCls: "bg-tag-neutral-bg text-tag-neutral-fg",
+        onRun: onToggleBottomDrawer,
       });
     }
     if (onAddBlockPart) {
