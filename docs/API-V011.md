@@ -133,76 +133,63 @@ console error gives `ok: true, passed: false`. Files go to
 | `GET /api/projects/{id}/playtests/{run}/report.html` | the HTML report (`text/html`) |
 | `GET /api/projects/{id}/playtests/{run}/shots/{file}` | PNG |
 
-## 4. Open Cloud
+## 4. Open Cloud, assets, publish, products, universe settings
 
-The key is typed only into Settings; it is stored `0600` in `<data_dir>/opencloud.json`, shown only
-as a mask (`••••abcd`), never returned, never logged, and scrubbed from any upstream error text.
-Base URL `https://apis.roblox.com` (tests override with `OPENRO_OPENCLOUD_BASE`).
+Owned by `@openro-assets`; see [API-V011-assets.md](API-V011-assets.md). Their routes sit under
+`/api/opencloud*` and `/api/projects/{id}/{assets,publish,products,universe}`; the project routes
+above deliberately do not match those paths, so the two tables never overlap.
 
-| Method + path | Body | Reply |
+## 5. Project files (the agent's tools)
+
+Read and write files inside a project folder, so OpenRO's agent (and the UI) never needs a path
+outside it. Same loopback and path rules as above. Hidden `.git/` and `.openro/` are blocked for
+both reads and writes; `build/`, `openro.project.json` (use `/manifest`) and `*.lock.json` are not
+writable here.
+
+| Method + path | Body / query | Reply |
 |---|---|---|
-| `GET /api/opencloud` | | `{ has_key, key_masked, creator: { userId?\|groupId? }, base: "https://apis.roblox.com", scopes_needed: [..] }` |
-| `POST /api/opencloud/key` | `{ api_key }` or `{ clear: true }` | same as `GET` |
-| `POST /api/opencloud/settings` | `{ creator: { userId } \| { groupId } }` | same as `GET` |
+| `GET /api/projects/{id}/files?dir=src` | `dir` project-relative, default root | `{ dir, entries: [{ path, type: "file"\|"dir", bytes }] }` |
+| `GET /api/projects/{id}/file?path=src/server/Main.server.luau` | | `{ path, content, bytes, sha256 }` (text up to 1 MB) |
+| `POST /api/projects/{id}/file` | `{ path, content, expect_sha256? }` | `{ path, created, bytes, sha256 }`; creates folders; `409` if `expect_sha256` no longer matches |
+| `POST /api/projects/{id}/file/edit` | `{ path, edits: [{ old, new }], expect_sha256? }` | each `old` must occur exactly once or nothing is written (`409`); `{ path, edits, bytes, sha256 }` |
+| `POST /api/projects/{id}/file/delete` | `{ path }` | `{ path, deleted: true }` |
+| `POST /api/projects/{id}/check` | `{}` | runs Luau static analyzer + `selene` + `stylua --check`; `{ passed, luau, selene, stylua }` |
+| `POST /api/projects/{id}/run-lune` | `{ script, args?: [...], timeout_secs?: 30 }` | timeout-bounded `lune run <script>`; `{ script, passed, exit_code, timed_out, duration_ms, stdout, stderr }` |
+| `GET /api/projects/{id}/preview?path=art/cards/a.png` | `path` project-relative image | raw `image/png\|jpeg\|webp\|gif` (up to 10 MB) for OpenRO UI preview |
 
-Needed key scopes: `asset:read asset:write` (uploads), `universe-places:write` (publish),
-`game-pass:write`, `developer-product:write` (+ their `:read`), `universe:write` (settings).
-Without a key every call below answers `503 { error: "Add your Open Cloud key in Settings first." }`.
+Manifest price-approval gate: `POST /api/projects/{id}/manifest` with `"actor": "agent"` (or Rust
+`projects::merge_manifest_for_actor(current, patch, false)`) forces `products[].priceApproved = false`
+on any new or price-changed product; only human UI calls (`actor` omitted) can approve prices.
 
-### Assets (`POST https://apis.roblox.com/assets/v1/assets`, then poll `operations/{id}`)
+Agent tool contract (names for `@openro-agent` to wire; each calls the route on the right):
+`project_list` (`GET /api/projects`), `project_files` (`GET .../files`), `project_read_file` (`GET .../file`),
+`project_write_file` (`POST .../file`), `project_edit_file` (`POST .../file/edit`),
+`project_delete_file` (`POST .../file/delete`), `project_update_manifest` (`POST .../manifest` with `"actor": "agent"`),
+`project_check` (`POST .../check`), `project_run_lune` (`POST .../run-lune`),
+`project_build` (`POST .../build`), `project_sync` (`POST .../sync`, run after edits),
+`project_playtest` (`POST .../playtest`, run after a sync; read `console.errors` and failed `checks` to repair).
+A step that changes files should end with check, sync, then playtest.
 
-| Method + path | Body | Reply |
+## 6. Project git (commit-per-task & revert-a-task)
+
+Local git operations strictly scoped to the project folder (never pushes, never touches files
+outside the project, skips `.git/`, `.openro/`, `build/`, `art/references/`, `refs/`, and refuses
+files over 5 MB).
+
+| Method + path | Body / query | Reply |
 |---|---|---|
-| `GET /api/projects/{id}/assets` | | `{ files: [{ path, kind, bytes, sha256, authorised, locked: { assetId, state, sha256 }\|null, stale }] }` |
-| `POST /api/projects/{id}/assets/authorise` | `{ paths: [..], revoke?: false }` | edits `assets.authorised` in the manifest; `{ authorised: [..] }` |
-| `POST /api/projects/{id}/assets/upload` | see below | `{ results: [..], summary }` |
-| `GET /api/projects/{id}/assets/lock` | | the `assets.lock.json` content |
+| `GET /api/projects/{id}/git/status` | | `{ is_git_repo, branch, head, dirty, changed: [{ status, path }] }` |
+| `GET /api/projects/{id}/git/log?limit=20` | `limit` 1..100 | `{ commits: [{ commit, short, at, message }] }` |
+| `POST /api/projects/{id}/git/commit` | `{ message, files?: [...] }` (`paths` alias accepted) | `{ committed: bool, commit: sha\|null, short?, message?, note? }` |
+| `POST /api/projects/{id}/git/revert` | `{ commit }` | `{ reverted: true, original, commit, short }`; `409` on conflict (aborted cleanly) |
 
-Upload selection (exactly the rule: authorised by default, everything only on an explicit flag):
+Rust hook for `@openro-team`: `projects::git_commit(dir: &Path, files: &[String], message: &str) -> Result<Option<String>, String>` and `projects::git_revert(dir: &Path, commit: &str) -> Result<String, String>`.
 
-* `{}` or `{ "authorised": true }`: the files matching `assets.authorised`. Empty set = nothing is
-  uploaded and `summary.note` says to authorise some.
-* `{ "paths": ["art/cards/a.png"] }`: those files only (explicit list).
-* `{ "everything": true }`: every uploadable file under the project (separate explicit flag; combining
-  it with `paths` is `400`).
-* `{ "dry_run": true }` with any of the above: lists what would upload and uploads nothing.
-* `{ "force": true }` re-uploads files whose sha256 already has an asset id.
+## 7. Dev content preview (decision)
 
-Result item: `{ path, state: "uploaded"|"reused"|"unchanged"|"skipped"|"failed", assetId, assetType, sha256, operation, error? }`.
-`kind` by extension: `png/jpg/jpeg/bmp/tga` -> `Image` (falls back to `Decal` once if Roblox rejects `Image`),
-`mp3/ogg/wav/flac` -> `Audio`, `fbx/gltf/glb/rbxm/rbxmx` -> `Model`, `mp4/mov` -> `Video`;
-a manifest `assets.types` glob (or per-request `types`) can force `Decal` or `Animation` (an Animation
-must be a Studio-exported `.rbxm`/`.rbxmx`). Files over 20 MB are `skipped`.
-`assets.lock.json`: `{ "version": 1, "assets": { "<relative path>": { "sha256", "assetId", "assetType", "state", "uploadedAt" } } }`
-(`state` comes from the operation's moderation result when Roblox returns one).
-`rbxassetid://<assetId>` is the usable id. Operation polling backs off 0.5 s -> 4 s, 120 s cap per file
-(`OPENRO_OPENCLOUD_POLL_MS` shortens it for tests).
-
-### Place publish
-
-`POST /api/projects/{id}/publish` `{ versionType?: "Published"|"Saved" (default "Saved"), build_id? }`
-Publishes the build's `.rbxlx` (the latest build, or `build_id`) via
-`POST /universes/v1/{universeId}/places/{placeId}/versions?versionType=`. Needs `universeId` and
-`placeId` in the manifest (`400` otherwise). Reply `{ versionNumber, versionType, build_id, bytes }`.
-`Published` is a live deploy: callers must be told to ask first. Files over 10 MB are refused with `400`.
-
-### Game passes and developer products
-
-| Method + path | Body | Reply |
-|---|---|---|
-| `GET /api/projects/{id}/products` | | `{ manifest: [..], remote: { developer_products: [..], game_passes: [..] } }` (remote needs a key) |
-| `POST /api/projects/{id}/products/sync` | `{ keys?: [..], dry_run?: false }` | `{ results: [{ key, kind, action: "created"\|"updated"\|"adopted"\|"unchanged", id, error? }] }`, ids written back to the manifest |
-
-Matching: a manifest product with an `id` is updated when name, description, price or sale flag
-differ from the remote copy; without an `id`, a remote product with the same name is adopted,
-otherwise a new one is created. Endpoints used: `developer-products/v2/universes/{u}/developer-products`
-and `game-passes/v1/universes/{u}/game-passes` (multipart `name, description, price, isForSale, imageFile`;
-list is paged by `nextPageToken`).
-
-### Universe settings
-
-`GET /api/projects/{id}/universe` returns the Open Cloud universe (`GET /cloud/v2/universes/{u}`).
-`POST /api/projects/{id}/universe` `{ settings: { displayName?, description?, visibility?, voiceChatEnabled?,
-desktopEnabled?, mobileEnabled?, tabletEnabled?, consoleEnabled?, vrEnabled? } }` patches those fields
-(`PATCH /cloud/v2/universes/{u}?updateMask=...`). Other keys are `400`. Not covered by Open Cloud at
-this writing (use the Creator Dashboard): game icon and thumbnails, monetisation policy, age questionnaire.
+Local project images are previewed in the OpenRO UI via `GET /api/projects/{id}/preview?path=...`.
+Studio-side local PNG preview before Open Cloud upload is intentionally omitted: Roblox Studio
+refuses arbitrary filesystem paths, `rbxasset://` requires writing inside Studio's version-hashed
+install directory (fragile across updates and read-only in Flatpak), and `EditableImage` is
+runtime-only, ID-verified gated, and non-persistent in `.rbxlx`. Real Studio textures use uploaded
+`rbxassetid://` entries from `assets.lock.json`.

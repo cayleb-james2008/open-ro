@@ -104,6 +104,8 @@ pub struct Shared {
     last_researched_dossier_prompt: Mutex<String>,
     /// Root directory for library/mesh/audio assets (equals `data_dir` or an ephemeral dir).
     pub assets_root: PathBuf,
+    /// Workspace project list (`data_dir/projects.json`).
+    pub projects: Mutex<crate::projects::ProjectStore>,
     /// Short-TTL cache for host Studio detection (`flatpak ps` / PATH scan) so
     /// concurrent `GET /api/studio/embed/status` polls never fork subprocess storms.
     cached_embed_detect: Mutex<Option<(std::time::Instant, crate::studio_embed::HostStudioDetection)>>,
@@ -183,6 +185,7 @@ impl Shared {
             market_taste: Mutex::new(market_taste),
             last_researched_dossier_prompt: Mutex::new(String::new()),
             assets_root,
+            projects: Mutex::new(crate::projects::ProjectStore::load(None)),
             cached_embed_detect: Mutex::new(None),
             cached_library_list: Mutex::new(None),
             proposals: Mutex::new(ProposalStore::in_memory()),
@@ -230,6 +233,7 @@ impl Shared {
         // Ensure persistent game-assets directory is initialized on startup.
         let _ = crate::assets::AssetManager::open(&data_dir);
         let assets_root = data_dir.clone();
+        let projects = Mutex::new(crate::projects::ProjectStore::load(Some(&data_dir)));
         Arc::new(Shared {
             agent: Mutex::new(agent),
             chats: Mutex::new(chats),
@@ -254,12 +258,19 @@ impl Shared {
             market_taste: Mutex::new(market_taste),
             last_researched_dossier_prompt: Mutex::new(String::new()),
             assets_root,
+            projects,
             cached_embed_detect: Mutex::new(None),
             cached_library_list: Mutex::new(None),
             proposals: Mutex::new(proposal_store),
             studio_plugin,
             bound_port: AtomicU16::new(4040),
         })
+    }
+
+    pub fn active_project_dir(&self) -> Option<PathBuf> {
+        let store = self.projects.lock().unwrap();
+        let active = store.active.as_deref()?;
+        store.find(active).map(|r| r.dir)
     }
 
     fn save(&self) {
@@ -1067,6 +1078,18 @@ fn handle(
             handle_studio_tool(&mut stream, shared, &req, tool_name);
             return Ok(());
         }
+    }
+
+    // v0.11 Projects, project files, git, one-way Studio sync, and Playtest Runner routes.
+    if let Some(reply) = crate::project_api::route(
+        shared,
+        &req.method,
+        &req.path,
+        &req.body,
+        host_allowed(&req.host, &[]),
+    ) {
+        respond_bytes(&mut stream, reply.status, reply.content_type, "no-store", &reply.body);
+        return Ok(());
     }
 
     match (req.method.as_str(), path.as_str()) {
