@@ -50,14 +50,17 @@ import {
   SEND_FAILED,
   isV050OrNewer,
   isV060OrNewer,
+  isV070OrNewer,
   normalizeChatList,
   normalizeIdeas,
   normalizePlace,
   normalizeSnapshots,
+  normalizeStudioActionsResponse,
   normalizeThread,
   post,
   read,
   subscribeBuildStream,
+  subscribeStudioStream,
   type BuildStreamPhase,
   type Chat,
   type ChatList,
@@ -66,6 +69,8 @@ import {
   type Place,
   type PlaceDiff,
   type PlaceSnapshot,
+  type StudioActionEvent,
+  type StudioMode,
   type WorkspaceMode,
 } from "./app/data";
 import { BlueprintWorkbench, FeaturedApexBanner } from "./app/Blueprints";
@@ -201,6 +206,17 @@ export function App() {
   const [version, setVersion] = useState("");
   const [v050Ready, setV050Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
   const [v060Ready, setV060Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
+  const [v070Ready, setV070Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
+  const [studioMode, setStudioMode] = useState<StudioMode>(() =>
+    (window as ShellWindow).__OPENRO_WEB_ENGINE__
+      ? "browser_place"
+      : shell.workspaceMode === "studio_mcp"
+        ? "live_mcp"
+        : "local_place",
+  );
+  const [studioActions, setStudioActions] = useState<StudioActionEvent[]>([]);
+  const [hasLiveFrame, setHasLiveFrame] = useState(false);
+  const [frameSeq, setFrameSeq] = useState(0);
   const [cardAssets, setCardAssets] = useState<CardAssetRecord[]>(APEX_CARDS);
   const [artKnowledge, setArtKnowledge] = useState<ArtKnowledgeGuide>(ART_KNOWLEDGE_FALLBACK);
   const [lastTriedIdea, setLastTriedIdea] = useState<Idea | null>(null);
@@ -417,6 +433,23 @@ export function App() {
     [v060Ready],
   );
 
+  const refreshStudioActions = useCallback(
+    async (forceServer = false) => {
+      if (!v070Ready && !forceServer) return;
+      try {
+        const raw = await read("/api/studio/actions");
+        const norm = normalizeStudioActionsResponse(raw);
+        setStudioMode(norm.studio_mode);
+        setHasLiveFrame(norm.has_live_frame);
+        setFrameSeq(norm.frame_seq);
+        setStudioActions(norm.actions.slice(-500));
+      } catch {
+        /* keep current stream buffer */
+      }
+    },
+    [v070Ready],
+  );
+
   const refreshAll = useCallback(async () => {
     const [, , nextPlace] = await Promise.all([refreshChats(), refreshThread(), refreshPlace()]);
     await refreshIdeas();
@@ -427,8 +460,23 @@ export function App() {
     if (v060Ready) {
       void refreshCardStudio(true);
     }
+    if (v070Ready) {
+      void refreshStudioActions(true);
+    }
     return nextPlace;
-  }, [refreshChats, refreshThread, refreshPlace, refreshIdeas, refreshSnapshots, refreshDiagnostics, refreshCardStudio, v050Ready, v060Ready]);
+  }, [
+    refreshChats,
+    refreshThread,
+    refreshPlace,
+    refreshIdeas,
+    refreshSnapshots,
+    refreshDiagnostics,
+    refreshCardStudio,
+    refreshStudioActions,
+    v050Ready,
+    v060Ready,
+    v070Ready,
+  ]);
 
   const pushLocalSnapshot = useCallback((label: string, snapPlace: Place | null, diff?: PlaceDiff | null) => {
     if (!snapPlace) return;
@@ -459,6 +507,10 @@ export function App() {
             setV060Ready(true);
             void refreshCardStudio(true);
           }
+          if (isV070OrNewer(v.version)) {
+            setV070Ready(true);
+            void refreshStudioActions(true);
+          }
         }
       })
       .catch(() => {});
@@ -469,6 +521,7 @@ export function App() {
       model_id?: unknown;
       version?: unknown;
       sse_build_stream?: unknown;
+      studio_stream?: unknown;
       assets_api?: unknown;
       skills_count?: unknown;
     }>("/api/status")
@@ -483,6 +536,13 @@ export function App() {
           s.workspace_mode === "disconnected"
         ) {
           setWorkspaceMode(s.workspace_mode);
+          setStudioMode(
+            s.workspace_mode === "studio_mcp"
+              ? "live_mcp"
+              : s.workspace_mode === "browser_place"
+                ? "browser_place"
+                : "local_place",
+          );
         }
         if (typeof s.model_id === "string" && s.model_id.trim()) {
           setActiveModelLabel(s.model_id.trim().split("/").pop() || s.model_id.trim());
@@ -498,9 +558,56 @@ export function App() {
           setV060Ready(true);
           void refreshCardStudio(true);
         }
+        if (s.studio_stream === true || (typeof s.version === "string" && isV070OrNewer(s.version))) {
+          setV070Ready(true);
+          void refreshStudioActions(true);
+        }
       })
       .catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Live Studio SSE stream (/api/studio/stream) for realtime 3D viewport updates & MCP frames
+  useEffect(() => {
+    if (!v070Ready) return;
+    let placeTimer: number | null = null;
+    const schedulePlaceSync = () => {
+      if (placeTimer !== null) return;
+      placeTimer = window.setTimeout(() => {
+        placeTimer = null;
+        void refreshPlace();
+      }, 160);
+    };
+    const unsub = subscribeStudioStream({
+      enabled: v070Ready,
+      onAction: (ev) => {
+        setStudioMode(ev.studio_mode);
+        setStudioActions((prev) => {
+          if (prev.some((x) => x.seq === ev.seq)) return prev;
+          return [...prev, ev].slice(-500);
+        });
+        if (
+          ["part_created", "part_updated", "script_written", "decal_bound", "reverted", "imported", "restored"].includes(
+            ev.kind,
+          )
+        ) {
+          schedulePlaceSync();
+        }
+      },
+      onFrame: (info) => {
+        setHasLiveFrame(true);
+        setFrameSeq(info.seq);
+      },
+      onStatus: (st) => {
+        if (st.studio_mode) setStudioMode(st.studio_mode);
+        if (typeof st.has_live_frame === "boolean") setHasLiveFrame(st.has_live_frame);
+        if (typeof st.frame_seq === "number") setFrameSeq(st.frame_seq);
+      },
+    });
+    return () => {
+      unsub();
+      if (placeTimer !== null) window.clearTimeout(placeTimer);
+    };
+  }, [refreshPlace, v070Ready]);
 
   const prevChatRef = useRef<string | null>(null);
   const prevLenRef = useRef(0);
@@ -1009,6 +1116,53 @@ export function App() {
     }
   };
 
+  const handleRunStudioPlaytest = async () => {
+    if (!v070Ready) {
+      toast.success("Static Luau check complete — upgrade server to v0.7.0 for live Studio playtest streaming.");
+      return;
+    }
+    try {
+      const res = await post<{ ok?: boolean; passed?: boolean; error?: string; console?: string }>(
+        "/api/studio/playtest",
+        {},
+      );
+      if (res.ok === false) {
+        toast.error(res.error || "Studio playtest failed.");
+      } else if (res.passed === false) {
+        toast.error("Playtest flagged issues — check Studio Output console.");
+      } else {
+        toast.success("Studio Playtest passed — 0 Luau errors");
+      }
+      await refreshStudioActions(true);
+      await refreshDiagnostics(true);
+    } catch {
+      toast.error("Could not reach /api/studio/playtest.");
+    }
+  };
+
+  const handleCaptureStudioFrame = async () => {
+    if (!v070Ready) {
+      toast.error("Live Studio Frame capture requires OpenRO v0.7.0 with Roblox Studio MCP attached.");
+      return;
+    }
+    try {
+      const res = await post<{ ok?: boolean; frame_seq?: number; error?: string }>(
+        "/api/studio/capture",
+        {},
+      );
+      if (res.ok === false) {
+        toast.error(res.error || "Live Studio MCP is not attached — switch to Studio 3D or connect Studio MCP.");
+        return;
+      }
+      setHasLiveFrame(true);
+      if (typeof res.frame_seq === "number") setFrameSeq(res.frame_seq);
+      else setFrameSeq((n) => n + 1);
+      toast.success("Captured fresh frame from Roblox Studio MCP");
+    } catch {
+      toast.error("Could not capture frame from Studio MCP.");
+    }
+  };
+
   const handleSelectPartFromStage = (path: string) => {
     setSelectedPath(path);
     if (narrow) {
@@ -1237,12 +1391,12 @@ export function App() {
 
         <div className="flex items-center justify-between gap-2 text-xs text-ink-2">
           <a
-            href={RELEASES_URL + (version || "0.6.0")}
+            href={RELEASES_URL + (version || "0.7.0")}
             target="_blank"
             rel="noreferrer"
             className="inline-flex min-h-11 items-center gap-1 rounded-sm px-1 font-mono text-xs text-ink-2 outline-none hover:text-ink hover:underline md:min-h-7"
           >
-            <span>OpenRO v{version || "0.6.0"}</span>
+            <span>OpenRO v{version || "0.7.0"}</span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
           <span className="truncate text-right text-xs text-ink-3">
@@ -1474,14 +1628,22 @@ export function App() {
                   <div className="sr-only" id="stage-title">
                     Studio build thread
                   </div>
-                  {place && place !== "error" && totalPieces > 0 && (
+                  {(totalPieces > 0 || Boolean(building)) && (
                     <StagePreview
-                      place={place}
+                      place={place && place !== "error" ? place : { scripts: {}, instances: {} }}
                       theme={theme}
                       selectedPath={selectedPath}
                       onSelectPart={handleSelectPartFromStage}
                       assets={cardAssets}
                       onOpenArtStudio={() => setArtStudioOpen(true)}
+                      studioMode={studioMode}
+                      studioActions={studioActions}
+                      hasLiveFrame={hasLiveFrame}
+                      frameSeq={frameSeq}
+                      building={Boolean(building)}
+                      onSaveInstance={handleSaveInstance}
+                      onRunPlaytest={handleRunStudioPlaytest}
+                      onCaptureFrame={handleCaptureStudioFrame}
                     />
                   )}
                   <ThreadFeed
@@ -1681,6 +1843,7 @@ export function App() {
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenArtStudio={() => setArtStudioOpen(true)}
           onBuildApex={() => void buildApexCardBattles()}
+          onRunPlaytest={() => void handleRunStudioPlaytest()}
           onTriggerUndo={() => void undoNow()}
         />
 

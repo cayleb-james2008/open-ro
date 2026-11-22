@@ -5,13 +5,14 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  Box,
   ChevronDown,
   Coins,
   Crosshair,
   Eye,
   Gamepad2,
   Layers,
-  Map as MapIcon,
+  Monitor,
   RotateCcw,
   ShoppingBag,
   Sparkles,
@@ -20,9 +21,12 @@ import { Button } from "@/components/ui/button";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { Pill } from "@/components/kibo-ui/pill";
 import { Expandable, ExpandableContent, ExpandableTrigger } from "@/components/ui/expandable";
-import type { Place } from "./data";
+import type { InstanceEditPayload, Place, StudioActionEvent, StudioMode } from "./data";
 import { CardBattlerStage } from "./CardBattlerStage";
 import { APEX_CARDS, type CardAssetRecord } from "./cardCatalog";
+import { StudioViewport3D } from "./StudioViewport3D";
+
+type ViewportTab = "studio-3d" | "studio-feed" | "playable";
 
 function isCardBattlerPlace(place: Place): boolean {
   const keys = [...Object.keys(place.scripts || {}), ...Object.keys(place.instances || {})].join(" ");
@@ -384,6 +388,14 @@ export function StagePreview({
   onSelectPart,
   assets,
   onOpenArtStudio,
+  studioMode = "local_place",
+  studioActions = [],
+  hasLiveFrame = false,
+  frameSeq = 0,
+  building = false,
+  onSaveInstance,
+  onRunPlaytest,
+  onCaptureFrame,
 }: {
   place: Place;
   theme: "light" | "dark";
@@ -391,10 +403,18 @@ export function StagePreview({
   onSelectPart?: (path: string) => void;
   assets?: CardAssetRecord[];
   onOpenArtStudio?: () => void;
+  studioMode?: StudioMode;
+  studioActions?: StudioActionEvent[];
+  hasLiveFrame?: boolean;
+  frameSeq?: number;
+  building?: boolean;
+  onSaveInstance?: (payload: InstanceEditPayload) => Promise<void> | void;
+  onRunPlaytest?: () => Promise<void> | void;
+  onCaptureFrame?: () => Promise<void> | void;
 }) {
   const reduce = useReducedMotion();
   const isCardWorld = useMemo(() => isCardBattlerPlace(place), [place]);
-  const [stageMode, setStageMode] = useState<"card-battler" | "lobby-map">("card-battler");
+  const [viewportTab, setViewportTab] = useState<ViewportTab>("studio-3d");
   const world = useMemo(() => parseWorld(place), [place]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hitboxesRef = useRef<RenderHitbox[]>([]);
@@ -925,11 +945,11 @@ export function StagePreview({
     hitboxesRef.current = hitboxes;
   }, [cameraMode, clockHour, selectedPath, theme, world]);
 
-  const showingCardBattler = isCardWorld && stageMode === "card-battler";
+  const showingPlayable2D = viewportTab === "playable" && !isCardWorld;
 
-  // 60fps requestAnimationFrame loop (respects prefers-reduced-motion; pauses cleanly when collapsed or in Card Battles mode)
+  // 60fps requestAnimationFrame loop (only runs when 2D Playable Obby/Platformer stage is visible)
   useEffect(() => {
-    if (showingCardBattler) return;
+    if (!showingPlayable2D) return;
     drawFrame();
     if (!stageOpen || reduce) return;
     let rafId = 0;
@@ -961,7 +981,7 @@ export function StagePreview({
 
     rafId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafId);
-  }, [drawFrame, reduce, showingCardBattler, stageOpen, stepPhysics, world, renderTick]);
+  }, [drawFrame, reduce, showingPlayable2D, stageOpen, stepPhysics, world, renderTick]);
 
   const nudge = (dx: number, dy: number, jump = false) => {
     stepPhysics(0.14, dx, dy, jump);
@@ -1019,28 +1039,40 @@ export function StagePreview({
           <>
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline bg-board/60 px-3.5 py-2.5">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <Gamepad2 className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
+                {viewportTab === "studio-3d" ? (
+                  <Box className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
+                ) : viewportTab === "studio-feed" ? (
+                  <Monitor className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
+                ) : (
+                  <Gamepad2 className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
+                )}
                 <span className="text-sm font-medium text-ink">
-                  {isCardWorld ? "Playable Card Battler Stage" : "Playable Stage"}
+                  {viewportTab === "studio-3d"
+                    ? "Roblox Studio 3D Viewport"
+                    : viewportTab === "studio-feed"
+                      ? "Live Studio Feed"
+                      : isCardWorld
+                        ? "Playable Card Battler Stage"
+                        : "Playable Stage"}
                 </span>
                 <Pill className="bg-tag-sky-bg px-2 py-0.5 text-xs text-tag-sky-fg">{world.themeLabel}</Pill>
-                {!showingCardBattler && world.hasCheckpoints > 0 && (
+                {showingPlayable2D && world.hasCheckpoints > 0 && (
                   <Pill className="bg-board px-2 py-0.5 font-mono text-xs tabular-nums text-ink">
                     Stage {stage}/{world.hasCheckpoints}
                   </Pill>
                 )}
-                {!showingCardBattler && (
+                {showingPlayable2D && (
                   <Pill className="bg-tag-dev-bg px-2 py-0.5 font-mono text-xs tabular-nums text-tag-dev-fg">
                     <Coins className="size-3" strokeWidth={1.5} aria-hidden />
                     {balance} {world.currencyName}
                   </Pill>
                 )}
-                {!showingCardBattler && respawns > 0 && (
+                {showingPlayable2D && respawns > 0 && (
                   <Pill className="bg-pill-pro-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-pro-fg">
                     {respawns} {respawns === 1 ? "hazard" : "hazards"}
                   </Pill>
                 )}
-                {!showingCardBattler && world.hasDayNight && (
+                {showingPlayable2D && world.hasDayNight && (
                   <span className="font-mono text-xs tabular-nums text-ink-2">
                     {String(Math.floor(clockHour)).padStart(2, "0")}:00
                   </span>
@@ -1048,30 +1080,37 @@ export function StagePreview({
               </div>
 
               <div className="flex flex-wrap items-center gap-1.5">
-                {isCardWorld && (
-                  <SegmentedControl aria-label="Card battler stage mode" size="sm">
-                    <SegmentedControlItem
-                      data-checked={stageMode === "card-battler" ? "" : undefined}
-                      aria-pressed={stageMode === "card-battler"}
-                      onClick={() => setStageMode("card-battler")}
-                      className="gap-1 max-md:!h-11 max-md:px-2.5"
-                    >
-                      <Sparkles className="size-3.5" strokeWidth={1.5} aria-hidden />
-                      Card Battles
-                    </SegmentedControlItem>
-                    <SegmentedControlItem
-                      data-checked={stageMode === "lobby-map" ? "" : undefined}
-                      aria-pressed={stageMode === "lobby-map"}
-                      onClick={() => setStageMode("lobby-map")}
-                      className="gap-1 max-md:!h-11 max-md:px-2.5"
-                    >
-                      <MapIcon className="size-3.5" strokeWidth={1.5} aria-hidden />
-                      3D Lobby Map
-                    </SegmentedControlItem>
-                  </SegmentedControl>
-                )}
+                <SegmentedControl aria-label="Studio viewport mode" size="sm">
+                  <SegmentedControlItem
+                    data-checked={viewportTab === "studio-3d" ? "" : undefined}
+                    aria-pressed={viewportTab === "studio-3d"}
+                    onClick={() => setViewportTab("studio-3d")}
+                    className="gap-1 max-md:!h-11 max-md:px-2.5"
+                  >
+                    <Box className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    Studio 3D
+                  </SegmentedControlItem>
+                  <SegmentedControlItem
+                    data-checked={viewportTab === "studio-feed" ? "" : undefined}
+                    aria-pressed={viewportTab === "studio-feed"}
+                    onClick={() => setViewportTab("studio-feed")}
+                    className="gap-1 max-md:!h-11 max-md:px-2.5"
+                  >
+                    <Monitor className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    Studio Feed
+                  </SegmentedControlItem>
+                  <SegmentedControlItem
+                    data-checked={viewportTab === "playable" ? "" : undefined}
+                    aria-pressed={viewportTab === "playable"}
+                    onClick={() => setViewportTab("playable")}
+                    className="gap-1 max-md:!h-11 max-md:px-2.5"
+                  >
+                    <Gamepad2 className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    Playable Stage
+                  </SegmentedControlItem>
+                </SegmentedControl>
 
-                {!showingCardBattler && (
+                {showingPlayable2D && (
                   <>
                     <SegmentedControl aria-label="Stage camera mode" size="sm">
                       <SegmentedControlItem
@@ -1130,7 +1169,26 @@ export function StagePreview({
             </div>
 
             <ExpandableContent preset="fade">
-              {showingCardBattler ? (
+              {viewportTab === "studio-3d" || viewportTab === "studio-feed" ? (
+                <div className="p-3">
+                  <StudioViewport3D
+                    mode={viewportTab}
+                    place={place}
+                    theme={theme}
+                    assets={assets && assets.length > 0 ? assets : APEX_CARDS}
+                    selectedPath={selectedPath}
+                    studioMode={studioMode}
+                    actions={studioActions}
+                    hasLiveFrame={hasLiveFrame}
+                    frameSeq={frameSeq}
+                    building={building}
+                    onSelectPart={onSelectPart}
+                    onSaveInstance={onSaveInstance}
+                    onRunPlaytest={onRunPlaytest}
+                    onCaptureFrame={onCaptureFrame}
+                  />
+                </div>
+              ) : isCardWorld ? (
                 <div className="p-3">
                   <CardBattlerStage
                     assets={assets && assets.length > 0 ? assets : APEX_CARDS}

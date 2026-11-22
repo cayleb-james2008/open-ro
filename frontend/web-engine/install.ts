@@ -1,16 +1,17 @@
-// Real in-browser Roblox Studio engine installer for OpenRO v0.6.0 standalone web builds.
+// Real in-browser Roblox Studio engine installer for OpenRO v0.7.0 standalone web builds.
 // Features:
+//  - Embedded Realtime 3D Roblox Studio Viewport & Live Agent Building Stream (/api/studio/stream)
 //  - All 28 parametric Roblox game-system Luau compilers (including 6 Card-Battler systems)
-//  - Static Luau analyzer & cross-reference playtest prover
+//  - Static Luau analyzer & cross-reference playtest prover (POST /api/studio/playtest)
 //  - Genuine bidirectional Roblox Studio XML (.rbxlx) BOTH Import AND Export (with Decal bindings)
-//  - IndexedDB versioned snapshots, custom uploaded Card Art assets, & workspace persistence
-//  - Live EventSource('/api/build/stream') SSE phase emitter
+//  - IndexedDB versioned snapshots, Studio action ring buffer, custom uploaded Card Art assets, & workspace persistence
+//  - Live EventSource('/api/build/stream') and EventSource('/api/studio/stream') SSE emitters
 //  - Optional BYOK OpenAI-compatible LLM & Gemini Nano Banana / OpenAI Image API (keys strictly in sessionStorage)
 //  - One-click Connect to Local openro-rs (http://127.0.0.1:8077)
 import { computePlaceDiff } from "../src/app/luauAudit";
 import { GAME_SYSTEMS } from "../src/app/systems";
 import type { CardAssetRecord } from "../src/app/cardCatalog";
-import type { PlaceDiff, PlaceSnapshot } from "../src/app/data";
+import type { PlaceDiff, PlaceSnapshot, StudioActionEvent, StudioActionKind } from "../src/app/data";
 import {
   STARTER_CATALOG,
   buildPlanForSkill,
@@ -38,11 +39,13 @@ type ChatSession = {
   place: PlaceState;
   undoStack: Array<{ changes: ChangeEntry[]; skills: string[] }>;
   snapshots: StoredSnapshot[];
+  studioActions: StudioActionEvent[];
 };
 
 type EngineState = {
   active: string;
   counter: number;
+  actionSeq: number;
   chats: Record<string, ChatSession>;
   webMode: "browser" | "byok" | "local_server";
   byokBaseUrl: string;
@@ -73,15 +76,27 @@ function writeSlotKey(slot: string, k: string) {
   }
 }
 
-// Lightweight EventSource subscriber registry for /api/build/stream
+// Lightweight EventSource subscriber registries for /api/build/stream and /api/studio/stream
 type PhaseListener = (payload: Record<string, unknown>) => void;
+type StudioListener = (eventName: string, payload: Record<string, unknown>) => void;
 const sseListeners = new Set<PhaseListener>();
+const studioListeners = new Set<StudioListener>();
 
 function emitSsePhase(phase: string, label: string, detail: string, progress: number) {
   const payload = { phase, label, detail, progress };
   for (const fn of sseListeners) {
     try {
       fn(payload);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function emitStudioEvent(eventName: string, payload: Record<string, unknown>) {
+  for (const fn of studioListeners) {
+    try {
+      fn(eventName, payload);
     } catch {
       /* ignore */
     }
@@ -100,6 +115,7 @@ function installSseShim() {
     onerror: ((this: EventSource, ev: Event) => unknown) | null = null;
     onopen: ((this: EventSource, ev: Event) => unknown) | null = null;
     private listener: PhaseListener | null = null;
+    private studioListener: StudioListener | null = null;
 
     constructor(url: string | URL, eventSourceInitDict?: EventSourceInit) {
       super();
@@ -109,6 +125,24 @@ function installSseShim() {
         u = new URL(raw, location.href);
       } catch {
         return new OrigEventSource(url, eventSourceInitDict) as unknown as OpenROWebEventSource;
+      }
+      if (u.pathname === "/api/studio/stream") {
+        this.url = u.href;
+        this.studioListener = (eventName, payload) => {
+          if (this.readyState === 2) return;
+          const ev = new MessageEvent(eventName, { data: JSON.stringify(payload) });
+          this.dispatchEvent(ev);
+        };
+        studioListeners.add(this.studioListener);
+        queueMicrotask(() => {
+          if (this.readyState === 2) return;
+          this.dispatchEvent(
+            new MessageEvent("status", {
+              data: JSON.stringify({ studio_mode: "browser_place", has_live_frame: false, frame_seq: 0 }),
+            }),
+          );
+        });
+        return;
       }
       if (u.pathname !== "/api/build/stream") {
         return new OrigEventSource(url, eventSourceInitDict) as unknown as OpenROWebEventSource;
@@ -128,6 +162,10 @@ function installSseShim() {
       if (this.listener) {
         sseListeners.delete(this.listener);
         this.listener = null;
+      }
+      if (this.studioListener) {
+        studioListeners.delete(this.studioListener);
+        this.studioListener = null;
       }
     }
   }
@@ -185,6 +223,7 @@ function defaultState(): EngineState {
   return {
     active: id,
     counter: 2,
+    actionSeq: 1,
     chats: {
       [id]: {
         id,
@@ -194,6 +233,7 @@ function defaultState(): EngineState {
         place: { scripts: {}, instances: {} },
         undoStack: [],
         snapshots: [],
+        studioActions: [],
       },
     },
     webMode: "browser",
@@ -205,6 +245,54 @@ function defaultState(): EngineState {
   };
 }
 
+function recordStudioAction(
+  state: EngineState,
+  chat: ChatSession,
+  input: {
+    kind: StudioActionKind;
+    path: string;
+    class_name: string;
+    summary: string;
+    position?: [number, number, number] | null;
+    size?: [number, number, number] | null;
+    color?: string | null;
+    code_snippet?: string | null;
+    console_line?: string | null;
+  },
+): StudioActionEvent {
+  if (!Array.isArray(chat.studioActions)) chat.studioActions = [];
+  const ev: StudioActionEvent = {
+    seq: state.actionSeq++,
+    ts_ms: Date.now(),
+    kind: input.kind,
+    studio_mode: "browser_place",
+    path: input.path,
+    class_name: input.class_name,
+    position: input.position ?? null,
+    size: input.size ?? null,
+    color: input.color ?? null,
+    summary: input.summary,
+    code_snippet: input.code_snippet ?? null,
+    console_line: input.console_line ?? null,
+    frame_seq: null,
+    instance_count: Object.keys(chat.place.instances).length,
+    script_count: Object.keys(chat.place.scripts).length,
+  };
+  chat.studioActions.push(ev);
+  if (chat.studioActions.length > 500) {
+    chat.studioActions = chat.studioActions.slice(-500);
+  }
+  emitStudioEvent("studio_action", ev as unknown as Record<string, unknown>);
+  return ev;
+}
+
+function propVec3(v: unknown): [number, number, number] | null {
+  if (Array.isArray(v) && v.length >= 3 && v.every((n) => typeof n === "number" && Number.isFinite(n))) {
+    return [v[0], v[1], v[2]];
+  }
+  return null;
+}
+
 function jsonResponse(obj: unknown, status = 200): Response {
   return new Response(JSON.stringify(obj), {
     status,
@@ -213,6 +301,7 @@ function jsonResponse(obj: unknown, status = 200): Response {
 }
 
 function executePlan(
+  state: EngineState,
   chat: ChatSession,
   steps: PlanStep[],
   skillsTag: string[],
@@ -257,6 +346,19 @@ function executePlan(
       const post: PlaceInstance = { class_name, properties: properties || {} };
       chat.place.instances[path] = post;
       recordInstance(path, prev, JSON.parse(JSON.stringify(post)));
+      const props = properties || {};
+      recordStudioAction(state, chat, {
+        kind: typeof props.DecalTexture === "string" ? "decal_bound" : "part_created",
+        path,
+        class_name,
+        position: propVec3(props.Position),
+        size: propVec3(props.Size),
+        color: typeof props.Color === "string" ? props.Color : null,
+        summary:
+          typeof props.CardTitle === "string"
+            ? `Bound 3D card art "${props.CardTitle}" on ${path}`
+            : `Created ${path} (${class_name})`,
+      });
       produced.push(`Created ${path} (${class_name}).`);
       continue;
     }
@@ -272,14 +374,34 @@ function executePlan(
       const prev = chat.place.scripts[path] ?? null;
       chat.place.scripts[path] = src;
       recordScript(path, prev, src);
+      recordStudioAction(state, chat, {
+        kind: "script_written",
+        path,
+        class_name: path.startsWith("StarterGui.") ? "LocalScript" : "Script",
+        summary: `Wrote ${path} (${src.split("\n").length} lines)`,
+        code_snippet: src.split("\n").slice(0, 3).join("\n"),
+      });
       produced.push(`Wrote ${path}.`);
       continue;
     }
     if (step.tool === "playtest") {
       emitSsePhase("checking", "Static Luau Check", "Auditing syntax, blocks, DataStore guards & cross-refs", 76);
+      recordStudioAction(state, chat, {
+        kind: "playtest_started",
+        path: "Workspace",
+        class_name: "Playtest",
+        summary: "Started Studio Playtest & static Luau audit",
+      });
       const verdict = validatePlace(chat.place);
       emitSsePhase("playtest", "Playtest Proof", verdict.passed ? "Playtest verified (0 errors)" : "Playtest failed", 96);
       lastConsole = verdict.console;
+      recordStudioAction(state, chat, {
+        kind: verdict.passed ? "playtest_passed" : "playtest_failed",
+        path: "Workspace",
+        class_name: "Playtest",
+        summary: verdict.passed ? "Playtest passed (0 errors)" : "Playtest failed",
+        console_line: verdict.console,
+      });
       if (verdict.passed) {
         playtestPassed = true;
         produced.push("Playtest passed.");
@@ -326,7 +448,7 @@ async function runByokLlm(
   if (key) headers.Authorization = `Bearer ${key}`;
   const skillNames = GAME_SYSTEMS.map((s) => s.id).join("|");
   const sysPrompt =
-    'You are OpenRO v0.6.0, a Roblox Studio game builder. Return ONLY a JSON object with {"steps": [...], "summary": "..."}. ' +
+    'You are OpenRO v0.7.0, a Roblox Studio game builder. Return ONLY a JSON object with {"steps": [...], "summary": "..."}. ' +
     'Each step is either {"tool":"create_instance","args":{"class_name":"Part|SpawnLocation","name":"...","parent":"Workspace","properties":{"Anchored":true}}} ' +
     `or {"skill":"${skillNames}","args":{...}} ` +
     'followed by {"tool":"write_script","args":{"path":"ServerScriptService.Name","skill":"..."}} and finish with {"tool":"playtest","args":{}}.';
@@ -390,10 +512,12 @@ export function installWebEngine() {
           if (saved && saved.chats && typeof saved.active === "string" && saved.chats[saved.active]) {
             for (const c of Object.values(saved.chats)) {
               if (!Array.isArray(c.snapshots)) c.snapshots = [];
+              if (!Array.isArray(c.studioActions)) c.studioActions = [];
             }
             state = {
               ...defaultState(),
               ...saved,
+              actionSeq: typeof saved.actionSeq === "number" && Number.isFinite(saved.actionSeq) ? saved.actionSeq : 1,
             };
           }
         })
@@ -441,9 +565,10 @@ export function installWebEngine() {
     }
     const chat = state.chats[state.active] || Object.values(state.chats)[0];
     if (!Array.isArray(chat.snapshots)) chat.snapshots = [];
+    if (!Array.isArray(chat.studioActions)) chat.studioActions = [];
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "0.6.0" });
+      return jsonResponse({ name: "openro-rs", version: "0.7.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -454,11 +579,74 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "0.6.0",
+        version: "0.7.0",
         sse_build_stream: true,
+        studio_stream: true,
         assets_api: true,
         skills_count: GAME_SYSTEMS.length,
         store_recovered: [],
+      });
+    }
+    if (method === "GET" && u.pathname === "/api/studio/actions") {
+      const sinceParam = Number(u.searchParams.get("since") || "0");
+      const filtered = Number.isFinite(sinceParam) && sinceParam > 0
+        ? chat.studioActions.filter((a) => a.seq > sinceParam)
+        : chat.studioActions;
+      return jsonResponse({
+        ok: true,
+        studio_mode: "browser_place",
+        has_live_frame: false,
+        frame_seq: 0,
+        actions: filtered,
+      });
+    }
+    if (method === "GET" && u.pathname === "/api/studio/frame") {
+      return jsonResponse(
+        {
+          ok: false,
+          error: "No live Roblox Studio MCP frame available in Browser Engine mode. Connect Local OpenRO with OPENRO_MCP_COMMAND to stream Studio screenshots.",
+        },
+        404,
+      );
+    }
+    if (method === "POST" && u.pathname === "/api/studio/capture") {
+      return jsonResponse(
+        {
+          ok: false,
+          error: "Live Studio screen_capture requires a connected Roblox Studio MCP bridge. Use Studio 3D or connect Local OpenRO in Settings.",
+        },
+        503,
+      );
+    }
+    if (method === "POST" && u.pathname === "/api/studio/playtest") {
+      recordStudioAction(state, chat, {
+        kind: "playtest_started",
+        path: "Workspace",
+        class_name: "Playtest",
+        summary: "Started Browser Studio 3D Playtest",
+      });
+      const verdict = validatePlace(chat.place);
+      recordStudioAction(state, chat, {
+        kind: "playtest_log",
+        path: "Workspace",
+        class_name: "Playtest",
+        summary: verdict.console,
+        console_line: verdict.console,
+      });
+      recordStudioAction(state, chat, {
+        kind: verdict.passed ? "playtest_passed" : "playtest_failed",
+        path: "Workspace",
+        class_name: "Playtest",
+        summary: verdict.passed ? "Studio Playtest passed (0 errors)" : `Studio Playtest failed (${verdict.errors.length} error(s))`,
+        console_line: verdict.console,
+      });
+      persist();
+      return jsonResponse({
+        ok: true,
+        passed: verdict.passed,
+        console: verdict.console,
+        errors: verdict.errors.length,
+        diagnostics: verdict.diagnostics,
       });
     }
     if (method === "GET" && u.pathname === "/api/art-knowledge") {
@@ -634,7 +822,7 @@ export function installWebEngine() {
     if (method === "GET" && u.pathname === "/api/update") {
       return jsonResponse({
         name: "openro-rs",
-        current: "0.6.0",
+        current: "0.7.0",
         mode: "off",
         available: false,
         can_apply: false,
@@ -744,6 +932,7 @@ export function installWebEngine() {
         place: { scripts: {}, instances: {} },
         undoStack: [],
         snapshots: [],
+        studioActions: [],
       };
       state.active = id;
       persist();
@@ -777,6 +966,15 @@ export function installWebEngine() {
       chat.place.instances[path] = next;
       chat.undoStack.push({ changes: [{ kind: "instance", path, prev, post: JSON.parse(JSON.stringify(next)) }], skills: [] });
       recordSnapshot(chat, `Edited ${path.split(".").pop() || path}`, before);
+      recordStudioAction(state, chat, {
+        kind: "part_updated",
+        path,
+        class_name: className,
+        position: propVec3(props.Position),
+        size: propVec3(props.Size),
+        color: typeof props.Color === "string" ? props.Color : null,
+        summary: `Updated ${path} transform & properties`,
+      });
       persist();
       return jsonResponse({ ok: true, path, instance: next });
     }
@@ -831,6 +1029,12 @@ export function installWebEngine() {
       chat.lines.push(
         `OpenRO: Imported ${filename} (${snap.parts_count} parts, ${snap.scripts_count} scripts). ${verdict.passed ? "Static Luau check passed with 0 errors." : `${verdict.errors.length} Luau issue(s) flagged in Explorer.`}`,
       );
+      recordStudioAction(state, chat, {
+        kind: "imported",
+        path: "Workspace",
+        class_name: "Place",
+        summary: `Imported ${filename} (${snap.parts_count} parts, ${snap.scripts_count} scripts)`,
+      });
       persist();
       return jsonResponse({
         ok: true,
@@ -872,6 +1076,12 @@ export function installWebEngine() {
       const before = clonePlace(chat.place);
       chat.place = clonePlace(found.place);
       recordSnapshot(chat, `Restored ${found.label}`, before);
+      recordStudioAction(state, chat, {
+        kind: "restored",
+        path: "Workspace",
+        class_name: "Snapshot",
+        summary: `Restored snapshot "${found.label}" (${found.parts_count} parts, ${found.scripts_count} scripts)`,
+      });
       chat.lines.push(`OpenRO: Restored snapshot "${found.label}" (${found.parts_count} parts, ${found.scripts_count} scripts).`);
       persist();
       return jsonResponse({ ok: true, restored: found.id });
@@ -910,7 +1120,7 @@ export function installWebEngine() {
       if (!plan) return jsonResponse({ ok: false, error: `unknown skill: ${skillParam}` }, 404);
       if (chat.title === "New chat") chat.title = plan.title;
       chat.lines.push(`You: Add ${plan.title} (${skillParam})`);
-      const res = executePlan(chat, plan.steps, plan.skills, plan.summary, plan.title);
+      const res = executePlan(state, chat, plan.steps, plan.skills, plan.summary, plan.title);
       persist();
       return jsonResponse({
         ok: res.ok,
@@ -927,7 +1137,7 @@ export function installWebEngine() {
         if (!plan) return jsonResponse({ ok: false, error: `unknown skill: ${skillParam}` }, 404);
         if (chat.title === "New chat") chat.title = plan.title;
         chat.lines.push(`You: Add ${plan.title} (${skillParam})`);
-        const res = executePlan(chat, plan.steps, plan.skills, plan.summary, plan.title);
+        const res = executePlan(state, chat, plan.steps, plan.skills, plan.summary, plan.title);
         persist();
         return jsonResponse({
           ok: res.ok,
@@ -941,6 +1151,7 @@ export function installWebEngine() {
       if (chat.title === "New chat") chat.title = idea.title;
       chat.lines.push(`You: Build this — ${idea.title}`);
       const res = executePlan(
+        state,
         chat,
         idea.plan,
         idea.skills,
@@ -981,7 +1192,7 @@ export function installWebEngine() {
         plan = compilePromptToPlan(msg, chat.place);
       }
 
-      const res = executePlan(chat, plan.steps, plan.skills, plan.summary, msg.slice(0, 36));
+      const res = executePlan(state, chat, plan.steps, plan.skills, plan.summary, msg.slice(0, 36));
       persist();
       return jsonResponse(
         { ok: res.ok, error: res.error, summary: plan.summary, thread: res.thread, transcript: [] },
@@ -1010,6 +1221,12 @@ export function installWebEngine() {
       const remainingSkills = new Set(chat.undoStack.flatMap((u) => u.skills));
       chat.builtSkills = chat.builtSkills.filter((sk) => remainingSkills.has(sk));
       recordSnapshot(chat, "Undo revert", before);
+      recordStudioAction(state, chat, {
+        kind: "reverted",
+        path: "Workspace",
+        class_name: "Place",
+        summary: `Reverted ${restored.length} Studio change(s)`,
+      });
       chat.lines.push(`OpenRO: Undid the last build: ${restored.length} change(s) put back.`);
       persist();
       return jsonResponse({ ok: true, restored });
