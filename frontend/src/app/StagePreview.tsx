@@ -1079,13 +1079,13 @@ export function StagePreview({
                 )}
               </div>
 
-              <div className="flex flex-wrap items-center gap-1.5">
-                <SegmentedControl aria-label="Studio viewport mode" size="sm">
+              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
+                <SegmentedControl aria-label="Studio viewport mode" size="sm" className="max-w-full flex-wrap">
                   <SegmentedControlItem
                     data-checked={viewportTab === "studio-3d" ? "" : undefined}
                     aria-pressed={viewportTab === "studio-3d"}
                     onClick={() => setViewportTab("studio-3d")}
-                    className="gap-1 max-md:!h-11 max-md:px-2.5"
+                    className="gap-1 max-md:!h-11 max-md:px-2"
                   >
                     <Box className="size-3.5" strokeWidth={1.5} aria-hidden />
                     Studio 3D
@@ -1094,7 +1094,7 @@ export function StagePreview({
                     data-checked={viewportTab === "studio-feed" ? "" : undefined}
                     aria-pressed={viewportTab === "studio-feed"}
                     onClick={() => setViewportTab("studio-feed")}
-                    className="gap-1 max-md:!h-11 max-md:px-2.5"
+                    className="gap-1 max-md:!h-11 max-md:px-2"
                   >
                     <Monitor className="size-3.5" strokeWidth={1.5} aria-hidden />
                     Studio Feed
@@ -1103,7 +1103,7 @@ export function StagePreview({
                     data-checked={viewportTab === "playable" ? "" : undefined}
                     aria-pressed={viewportTab === "playable"}
                     onClick={() => setViewportTab("playable")}
-                    className="gap-1 max-md:!h-11 max-md:px-2.5"
+                    className="gap-1 max-md:!h-11 max-md:px-2"
                   >
                     <Gamepad2 className="size-3.5" strokeWidth={1.5} aria-hidden />
                     Playable Stage

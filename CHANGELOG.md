@@ -4,6 +4,19 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 0.7.0 - 2026-11-22
+
+- **Embedded Realtime 3D Roblox Studio Viewport & Live Agent Build Viewer (`frontend/src/app/StudioViewport3D.tsx`, `StagePreview.tsx`):**
+  - Zero-dependency interactive HTML5 Canvas 3D perspective viewport featuring painter's algorithm depth sorting, directional face shading, Roblox Studio baseplate stud grid, interactive 3D Axis ViewCube (`X/Y/Z` + `Iso`/`Top`/`Front`), realistic 3D Parts (`Position`/`Size`/`Color`/`Transparency`/`Material`/`Rotation`), Neon rims, `SpawnLocation` decal, and perspective-mapped **Card Art Gallery Billboards**.
+  - Full interactive camera (`Orbit`, `Pan`, `Zoom`, `WASD`/`QE` fly, `Focus (F)`, `Reset Cam (R)`, **`Follow Agent` ON by default**), 3D click hit-testing selecting items in Studio Explorer, and interactive `Select` / `Move` / `Scale` / `Rotate` 3D gizmos persisting edits directly via `POST /api/place/instance`.
+  - Live **3D Agent Builder Drone + Laser Placement Beam + Part Pop-In Glow + Action Callout** animated in real time from `GET /api/studio/stream`, step-by-step **`Replay Build`**, **`Playtest`** trigger (`POST /api/studio/playtest`), collapsible **Studio Output & Live Agent Stream Console**, and `SegmentedControl` switching seamlessly between **`Studio 3D`**, **`Studio Feed`** (live Roblox Studio MCP PNG frames), and **`Playable Stage`** (playable Anime Card Battles or 60fps WASD Obby).
+- **Realtime Studio Action & Frame Stream Hub + Live MCP Capture (`src/studio_stream.rs`, `src/mcp.rs`, `src/agent.rs`, `src/server.rs`):**
+  - Added bounded 500-event `StudioStreamHub` with 32-client SSE fan-out (`GET /api/studio/stream`, `Last-Event-ID`/`?since` replay, 15s keepalive), `GET /api/studio/actions`, `GET /api/studio/frame` (`X-Frame-Seq`, `Cache-Control: no-store`, honest `404`), `POST /api/studio/capture` (live MCP `screen_capture()` PNG or honest `503` on Local Place Engine), and `POST /api/studio/playtest` (`start_stop_play` + `get_console_output` or Local Place playtest).
+  - Emits granular `StudioActionEvent` records (`part_created`, `part_updated`, `script_written`, `decal_bound`, `playtest_started`, `playtest_log`, `playtest_passed`, `playtest_failed`, `studio_frame`, `reverted`, `imported`, `restored`) and auto-captures live MCP PNG frames on build mutations.
+  - Upgraded `mock_studio` with a zero-dependency spec-compliant dynamic 3D isometric PNG `screen_capture`, `get_console_output`, and `start_stop_play` so end-to-end live MCP frame pipelines are mechanically verifiable without launching external binaries.
+- **Standalone Browser Web Parity (`frontend/web-engine/install.ts`):**
+  - Mirrored the embedded `Studio 3D` viewport, live action stream, IndexedDB action ring buffer, `Replay Build`, `Playtest`, and honest `Studio Feed` mode into the single-file browser bundle.
+
 ## 0.6.0 - 2026-11-22
 
 - **28 Verified Roblox Game Systems (+6 Anime Card-Battler Systems, `src/skills.rs`, `src/ideas.rs`):**
