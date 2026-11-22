@@ -4,45 +4,17 @@
 //! tree, so the real OpenRO MCP client can be exercised end to end with no
 //! Studio present.
 //!
-//! Deterministic playtest rules (documented fixture behaviour):
+//! Advertises and implements all 13 official Roblox Studio MCP tools:
+//! - `list_roblox_studios`, `get_studio_state`, `search_game_tree`, `inspect_instance`
+//! - `script_read`, `script_grep`, `multi_edit`, `execute_luau`
+//! - `get_console_output`, `screen_capture`, `start_stop_play`
+//! - `user_mouse_input`, `user_keyboard_input`
 //!
-//! 1. playtest FAILS with console error
-//!    `ServerScriptService.RoundManager:4: attempt to index nil with 'Start'`
-//!    if any written script contains `workspace.Round.` but no written
-//!    script creates it (no `Name = "Round"` anywhere).
-//! 2. playtest FAILS with console error
-//!    `Workspace.SpawnPad is not a valid member of Workspace "Workspace"`
-//!    if any written script references `workspace.SpawnPad` but no
-//!    instance exists at `Workspace.SpawnPad`.
-//! 3. playtest FAILS with console error
-//!    `Workspace.Checkpoints is not a valid member of Workspace "Workspace"`
-//!    if any written script references `workspace.Checkpoints` but no
-//!    script creates it (no `Name = "Checkpoints"` anywhere) and no
-//!    instance exists at `Workspace.Checkpoints`.
-//! 4. playtest FAILS with console error
-//!    `ServerScriptService.Currency: DataStore save failed: BindToClose was never bound`
-//!    if any written script calls `GetDataStore(` without binding a
-//!    shutdown save (`BindToClose` absent from that script).
-//! 5. playtest FAILS with console error
-//!    `StarterGui.GameGui: OpenROShopBuy RemoteEvent was never created in ReplicatedStorage`
-//!    if any written script waits on `WaitForChild("OpenROShopBuy")`
-//!    but no written script creates a RemoteEvent.
-//! 6. playtest FAILS with console error
-//!    `ServerScriptService.Shop: no leaderstats exists for the shop to charge`
-//!    if any written script creates a RemoteEvent (the shop) but no
-//!    written script CREATES leaderstats (`Name = "leaderstats"` —
-//!    a currency or leaderboard script; the shop itself only looks
-//!    the folder up) — a shop with nothing to charge is dead on
-//!    arrival.
+//! Plus all 7 legacy place-tree/playtest fixture tools for backwards compatibility.
 //!
-//! Also advertises live Studio viewer tools:
-//! - `screen_capture`: returns a genuine dynamically rendered `320x200` RGB PNG
-//!   depicting the placed Workspace parts, colors, script indicators, and play mode.
-//! - `get_console_output`: returns accumulated Studio Output console lines.
-//! - `start_stop_play`: starts (`start_play`/`run_server`) or stops (`stop`) play mode.
-//!
-//! The place tree holds scripts AND instances:
-//! `{ "scripts": {path: source}, "instances": {path: {class_name, properties}} }`.
+//! `screen_capture` renders a genuine dynamically updated `320x200` RGB PNG that
+//! visually reflects placed parts, camera orbit/zoom, live mouse cursor/selection,
+//! keyboard input indicators, `multi_edit` / `execute_luau` activity, and play mode.
 
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -59,6 +31,7 @@ const SHOP_FAIL_CONSOLE: &str = "StarterGui.GameGui: OpenROShopBuy RemoteEvent w
 const SHOP_NO_CURRENCY_CONSOLE: &str = "ServerScriptService.Shop: no leaderstats exists for the shop to charge — add a currency or leaderboard first";
 const OK_CONSOLE: &str = "Playtest OK: all scripts ran without errors";
 
+const STUDIO_ID: &str = "mock-studio-01";
 const FRAME_W: usize = 320;
 const FRAME_H: usize = 200;
 
@@ -68,7 +41,25 @@ struct MockState {
     console: String,
     console_lines: Vec<String>,
     playing: bool,
+    play_mode: String,
+    active_datamodel: String,
     frame_counter: u64,
+    // Interactive Studio viewport state driven by mouse/keyboard/edit/luau tools
+    cursor_x: f64,
+    cursor_y: f64,
+    mouse_down: bool,
+    mouse_clicks: u64,
+    selected_instance: Option<String>,
+    last_key: Option<String>,
+    typed_text: String,
+    key_events: u64,
+    camera_yaw: f64,
+    camera_pitch: f64,
+    camera_zoom: f64,
+    camera_pan_x: f64,
+    camera_pan_z: f64,
+    multi_edit_count: u64,
+    luau_exec_count: u64,
 }
 
 impl MockState {
@@ -79,7 +70,24 @@ impl MockState {
             console: OK_CONSOLE.to_string(),
             console_lines: vec!["[Studio] Connected to Mock Roblox Studio MCP bridge.".to_string()],
             playing: false,
+            play_mode: "edit".to_string(),
+            active_datamodel: "Edit".to_string(),
             frame_counter: 0,
+            cursor_x: (FRAME_W as f64) * 0.5,
+            cursor_y: (FRAME_H as f64) * 0.5,
+            mouse_down: false,
+            mouse_clicks: 0,
+            selected_instance: None,
+            last_key: None,
+            typed_text: String::new(),
+            key_events: 0,
+            camera_yaw: 0.0,
+            camera_pitch: 0.0,
+            camera_zoom: 1.0,
+            camera_pan_x: 0.0,
+            camera_pan_z: 0.0,
+            multi_edit_count: 0,
+            luau_exec_count: 0,
         }
     }
 
@@ -88,6 +96,18 @@ impl MockState {
             self.console_lines.remove(0);
         }
         self.console_lines.push(line.into());
+    }
+
+    fn datamodel_types(&self) -> Vec<&'static str> {
+        if self.playing {
+            if self.play_mode == "run_server" {
+                vec!["Edit", "Server"]
+            } else {
+                vec!["Edit", "Client", "Server"]
+            }
+        } else {
+            vec!["Edit"]
+        }
     }
 }
 
@@ -125,22 +145,45 @@ fn main() {
             "initialize" => json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "mock-studio", "version": "0.2.0" }
+                "serverInfo": { "name": "mock-studio", "version": "0.9.0" }
             }),
             "tools/list" => {
                 // MOCK_DROP=<tool> simulates a bridge that lacks a tool.
                 let drop = std::env::var("MOCK_DROP").unwrap_or_default();
                 let all = [
-                    ("get_place_tree", "List scripts and instances in the place"),
-                    ("write_script", "Create or overwrite a script"),
-                    ("delete_script", "Delete a script"),
+                    // Official 13 Roblox Studio MCP tools
                     (
-                        "create_instance",
-                        "Create an instance (class, name, parent, properties)",
+                        "list_roblox_studios",
+                        "List running Roblox Studio instances and their studio_id handles",
                     ),
-                    ("delete_instance", "Delete an instance"),
-                    ("playtest", "Run the place"),
-                    ("get_console", "Read the console output"),
+                    (
+                        "get_studio_state",
+                        "Get current Studio mode, available DataModels, and selection state",
+                    ),
+                    (
+                        "search_game_tree",
+                        "Search Instances in the Roblox DataModel by path, class, or keywords",
+                    ),
+                    (
+                        "inspect_instance",
+                        "Inspect properties, attributes, and children of an Instance path",
+                    ),
+                    (
+                        "script_read",
+                        "Read a Luau script by path and optional line range",
+                    ),
+                    (
+                        "script_grep",
+                        "Search text across all Luau scripts in the open place",
+                    ),
+                    (
+                        "multi_edit",
+                        "Create or apply multi-hunk string edits to a Luau script",
+                    ),
+                    (
+                        "execute_luau",
+                        "Execute Luau code inside Studio's Edit, Client, or Server DataModel",
+                    ),
                     (
                         "get_console_output",
                         "Read structured Studio Output console lines",
@@ -151,8 +194,27 @@ fn main() {
                     ),
                     (
                         "start_stop_play",
-                        "Start or stop Roblox Studio playtest mode (start_play|run_server|stop)",
+                        "Start or stop Roblox Studio playtest mode (start_play|run_server|stop / is_start)",
                     ),
+                    (
+                        "user_mouse_input",
+                        "Forward mouse move, click, drag, and scroll actions into Studio",
+                    ),
+                    (
+                        "user_keyboard_input",
+                        "Forward key press, hold, release, and text input into Studio",
+                    ),
+                    // Legacy place-tree & playtest fixture tools
+                    ("get_place_tree", "List scripts and instances in the place"),
+                    ("write_script", "Create or overwrite a script"),
+                    ("delete_script", "Delete a script"),
+                    (
+                        "create_instance",
+                        "Create an instance (class, name, parent, properties)",
+                    ),
+                    ("delete_instance", "Delete an instance"),
+                    ("playtest", "Run the place"),
+                    ("get_console", "Read the console output"),
                 ];
                 let tools: Vec<Value> = all
                     .iter()
@@ -200,9 +262,6 @@ fn text_result(text: String) -> Value {
     })
 }
 
-/// A tool failure, reported the way a real MCP server reports it:
-/// `isError: true`. (This fixture used to return errors as successful
-/// text with an "error" key — which taught the client to swallow them.)
 fn error_result(text: String) -> Value {
     json!({
         "content": [{ "type": "text", "text": text }],
@@ -212,6 +271,45 @@ fn error_result(text: String) -> Value {
 
 fn bad_path(path: &str) -> bool {
     path.is_empty() || path.split('.').any(|seg| seg.is_empty() || seg == "..")
+}
+
+fn normalize_game_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix("game.") {
+        rest.to_string()
+    } else if let Some(rest) = trimmed.strip_prefix("Game.") {
+        rest.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn script_class_for_path(path: &str) -> &'static str {
+    if path.starts_with("StarterGui.") || path.starts_with("StarterPlayer.") {
+        "LocalScript"
+    } else if path.starts_with("ReplicatedStorage.") {
+        "ModuleScript"
+    } else {
+        "Script"
+    }
+}
+
+fn class_matches_filter(class_name: &str, filter: &str) -> bool {
+    if class_name == filter {
+        return true;
+    }
+    match filter {
+        "Instance" => true,
+        "BasePart" => matches!(class_name, "Part" | "SpawnLocation" | "MeshPart" | "WedgePart"),
+        "BaseScript" | "LuaSourceContainer" => {
+            matches!(class_name, "Script" | "LocalScript" | "ModuleScript")
+        }
+        "GuiObject" | "GuiBase2d" => matches!(
+            class_name,
+            "ScreenGui" | "SurfaceGui" | "BillboardGui" | "Frame" | "ImageLabel" | "TextLabel" | "TextButton"
+        ),
+        _ => false,
+    }
 }
 
 fn evaluate_playtest(
@@ -270,14 +368,601 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
     {
         return error_result(format!("unknown tool {name}"));
     }
-    // MOCK_ERR_CONSOLE=1: only get_console / get_console_output fails (a console
-    // subsystem outage while playtests themselves still answer).
+    // MOCK_ERR_CONSOLE=1: only get_console / get_console_output fails.
     if matches!(name, "get_console" | "get_console_output")
         && std::env::var("MOCK_ERR_CONSOLE").is_ok()
     {
         return error_result("console subsystem exploded".to_string());
     }
+
     match name {
+        // -------------------------------------------------------------------
+        // Official 13 Roblox Studio MCP tools
+        // -------------------------------------------------------------------
+        "list_roblox_studios" => text_result(
+            json!({
+                "studios": [{
+                    "studio_id": STUDIO_ID,
+                    "place_name": "OpenRO Mock Place",
+                    "datamodel_types": state.datamodel_types(),
+                    "active_datamodel": state.active_datamodel,
+                    "playing": state.playing,
+                }],
+                "count": 1,
+            })
+            .to_string(),
+        ),
+        "get_studio_state" => text_result(
+            json!({
+                "studio_id": STUDIO_ID,
+                "playing": state.playing,
+                "mode": state.play_mode,
+                "datamodel_types": state.datamodel_types(),
+                "active_datamodel": state.active_datamodel,
+                "scripts_count": state.scripts.len(),
+                "instances_count": state.instances.len(),
+                "selected_instance": state.selected_instance,
+                "cursor": [state.cursor_x, state.cursor_y],
+                "last_key": state.last_key,
+                "typed_text": state.typed_text,
+                "camera": {
+                    "yaw": state.camera_yaw,
+                    "pitch": state.camera_pitch,
+                    "zoom": state.camera_zoom,
+                    "pan": [state.camera_pan_x, state.camera_pan_z],
+                },
+                "multi_edit_count": state.multi_edit_count,
+                "luau_exec_count": state.luau_exec_count,
+                "frame_counter": state.frame_counter,
+            })
+            .to_string(),
+        ),
+        "search_game_tree" => {
+            let dm = args
+                .get("datamodel_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Edit");
+            let path_filter = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(normalize_game_path)
+                .filter(|s| !s.is_empty());
+            let class_filter = args
+                .get("instance_type")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let keywords: Vec<String> = args
+                .get("keywords")
+                .and_then(|v| v.as_str())
+                .map(|raw| {
+                    raw.split([',', ' '])
+                        .map(|s| s.trim().to_ascii_lowercase())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let max_depth = args
+                .get("max_depth")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize);
+            let head_limit = args
+                .get("head_limit")
+                .and_then(|v| v.as_u64())
+                .map(|n| (n as usize).clamp(1, 500))
+                .unwrap_or(200);
+
+            let mut results: Vec<Value> = Vec::new();
+            let mut push_if_match = |path: &str, class_name: &str, kind: &str| {
+                if let Some(pf) = path_filter.as_deref() {
+                    let pl = path.to_ascii_lowercase();
+                    let pfl = pf.to_ascii_lowercase();
+                    if pl != pfl && !pl.starts_with(&format!("{pfl}.")) {
+                        return;
+                    }
+                }
+                let depth = path.split('.').count();
+                if let Some(md) = max_depth {
+                    if depth > md {
+                        return;
+                    }
+                }
+                if let Some(cf) = class_filter {
+                    if !class_matches_filter(class_name, cf) {
+                        return;
+                    }
+                }
+                let leaf = path.rsplit('.').next().unwrap_or(path);
+                if !keywords.is_empty() {
+                    let lower_leaf = leaf.to_ascii_lowercase();
+                    let lower_path = path.to_ascii_lowercase();
+                    if !keywords
+                        .iter()
+                        .any(|kw| lower_leaf.contains(kw) || lower_path.contains(kw))
+                    {
+                        return;
+                    }
+                }
+                results.push(json!({
+                    "path": path,
+                    "name": leaf,
+                    "class_name": class_name,
+                    "kind": kind,
+                    "depth": depth,
+                }));
+            };
+
+            for (p, rec) in &state.instances {
+                let cls = rec
+                    .get("class_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Part");
+                push_if_match(p, cls, "instance");
+            }
+            for p in state.scripts.keys() {
+                push_if_match(p, script_class_for_path(p), "script");
+            }
+
+            let total = results.len();
+            let truncated = total > head_limit;
+            results.truncate(head_limit);
+
+            text_result(
+                json!({
+                    "datamodel_type": dm,
+                    "count": results.len(),
+                    "total": total,
+                    "truncated": truncated,
+                    "results": results,
+                })
+                .to_string(),
+            )
+        }
+        "inspect_instance" => {
+            let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let target = normalize_game_path(raw_path);
+            if target.is_empty() {
+                return error_result("inspect_instance requires a non-empty path".to_string());
+            }
+            let target_lower = target.to_ascii_lowercase();
+
+            if let Some((path, rec)) = state
+                .instances
+                .iter()
+                .find(|(k, _)| k.to_ascii_lowercase() == target_lower)
+            {
+                let prefix = format!("{path}.");
+                let mut children: Vec<String> = state
+                    .instances
+                    .keys()
+                    .chain(state.scripts.keys())
+                    .filter(|k| k.starts_with(&prefix))
+                    .cloned()
+                    .collect();
+                children.sort();
+                let leaf = path.rsplit('.').next().unwrap_or(path);
+                return text_result(
+                    json!({
+                        "path": path,
+                        "name": leaf,
+                        "class_name": rec.get("class_name").and_then(|v| v.as_str()).unwrap_or("Part"),
+                        "properties": rec.get("properties").cloned().unwrap_or(json!({})),
+                        "attributes": {},
+                        "children": children,
+                    })
+                    .to_string(),
+                );
+            }
+            if let Some((path, src)) = state
+                .scripts
+                .iter()
+                .find(|(k, _)| k.to_ascii_lowercase() == target_lower)
+            {
+                let leaf = path.rsplit('.').next().unwrap_or(path);
+                return text_result(
+                    json!({
+                        "path": path,
+                        "name": leaf,
+                        "class_name": script_class_for_path(path),
+                        "properties": {
+                            "Disabled": false,
+                            "LineCount": src.lines().count(),
+                            "ByteLength": src.len(),
+                        },
+                        "attributes": {},
+                        "children": [],
+                    })
+                    .to_string(),
+                );
+            }
+            error_result(format!("no instance or script found at '{target}'"))
+        }
+        "script_read" => {
+            let raw_file = args
+                .get("target_file")
+                .or_else(|| args.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let target = normalize_game_path(raw_file);
+            let target_lower = target.to_ascii_lowercase();
+            let Some((path, source)) = state
+                .scripts
+                .iter()
+                .find(|(k, _)| k.to_ascii_lowercase() == target_lower)
+            else {
+                return error_result(format!("script not found: '{target}'"));
+            };
+
+            let all_lines: Vec<&str> = source.lines().collect();
+            let total_lines = all_lines.len();
+            let read_all = args
+                .get("should_read_entire_file")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let (start_1, end_1) = if read_all || total_lines == 0 {
+                (1usize, total_lines.max(1))
+            } else {
+                let s = args
+                    .get("start_line_one_indexed")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1)
+                    .max(1) as usize;
+                let e = args
+                    .get("end_line_one_indexed_inclusive")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(total_lines as u64)
+                    .max(s as u64) as usize;
+                (s.min(total_lines), e.min(total_lines))
+            };
+
+            let slice: Vec<String> = if total_lines == 0 {
+                Vec::new()
+            } else {
+                all_lines[start_1 - 1..end_1]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, line)| format!("{}: {line}", start_1 + i))
+                    .collect()
+            };
+            let content = if total_lines == 0 {
+                String::new()
+            } else {
+                all_lines[start_1 - 1..end_1].join("\n")
+            };
+
+            text_result(
+                json!({
+                    "path": path,
+                    "class_name": script_class_for_path(path),
+                    "total_lines": total_lines,
+                    "start_line": start_1,
+                    "end_line": end_1,
+                    "source": content,
+                    "numbered_lines": slice,
+                })
+                .to_string(),
+            )
+        }
+        "script_grep" => {
+            let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            if query.is_empty() {
+                return error_result("script_grep requires a non-empty query".to_string());
+            }
+            let q_lower = query.to_ascii_lowercase();
+            let mut matches = Vec::new();
+            for (path, source) in &state.scripts {
+                for (idx, line) in source.lines().enumerate() {
+                    if line.to_ascii_lowercase().contains(&q_lower) {
+                        matches.push(json!({
+                            "path": path,
+                            "line": idx + 1,
+                            "text": line,
+                        }));
+                    }
+                }
+            }
+            text_result(
+                json!({
+                    "query": query,
+                    "match_count": matches.len(),
+                    "matches": matches,
+                })
+                .to_string(),
+            )
+        }
+        "multi_edit" => {
+            let raw_path = args
+                .get("file_path")
+                .or_else(|| args.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let path = normalize_game_path(raw_path);
+            if bad_path(&path) {
+                return error_result(format!("invalid multi_edit file_path: '{raw_path}'"));
+            }
+            let Some(edits) = args.get("edits").and_then(|v| v.as_array()) else {
+                return error_result("multi_edit requires an 'edits' array".to_string());
+            };
+            if edits.is_empty() {
+                return error_result("multi_edit requires at least one edit".to_string());
+            }
+            let mut working = state.scripts.get(&path).cloned().unwrap_or_default();
+            for (idx, edit) in edits.iter().enumerate() {
+                let old_s = edit
+                    .get("old_string")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let new_s = edit
+                    .get("new_string")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let replace_all = edit
+                    .get("replace_all")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if old_s.is_empty() {
+                    working = new_s.to_string();
+                } else if !working.contains(old_s) {
+                    return error_result(format!(
+                        "multi_edit edit[{idx}] old_string not found in '{path}'"
+                    ));
+                } else if replace_all {
+                    working = working.replace(old_s, new_s);
+                } else {
+                    working = working.replacen(old_s, new_s, 1);
+                }
+            }
+            let lines = working.lines().count();
+            let bytes = working.len();
+            state.scripts.insert(path.clone(), working);
+            state.multi_edit_count += 1;
+            state.log_line(format!(
+                "[MultiEdit] Updated {path} ({} edit(s), {lines} lines)",
+                edits.len()
+            ));
+            text_result(
+                json!({
+                    "ok": true,
+                    "path": path,
+                    "edits_applied": edits.len(),
+                    "lines": lines,
+                    "bytes": bytes,
+                })
+                .to_string(),
+            )
+        }
+        "execute_luau" => {
+            let code = args.get("code").and_then(|v| v.as_str()).unwrap_or("");
+            let dm = args
+                .get("datamodel_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Edit");
+            if code.trim().is_empty() {
+                return error_result("execute_luau requires non-empty code".to_string());
+            }
+            let mut outputs: Vec<String> = Vec::new();
+            let mut created_instances: Vec<String> = Vec::new();
+
+            // Capture deterministic print("...") / print('...') calls into Studio Output
+            for line in code.lines() {
+                let t = line.trim();
+                if let Some(inner) = extract_print_literal(t) {
+                    outputs.push(inner.clone());
+                    state.log_line(format!("[Luau:{dm}] {inner}"));
+                }
+            }
+
+            // Deterministically apply simple `Instance.new("Part") ... .Name = "Foo"` statements
+            if let Some((cls, inst_name, pos, color)) = parse_simple_luau_instance(code) {
+                let parent = if cls == "RemoteEvent" || cls == "RemoteFunction" {
+                    "ReplicatedStorage"
+                } else {
+                    "Workspace"
+                };
+                let full_path = format!("{parent}.{inst_name}");
+                let mut props = serde_json::Map::new();
+                props.insert("Anchored".to_string(), json!(true));
+                props.insert("Position".to_string(), json!(pos));
+                props.insert("Size".to_string(), json!([6.0, 2.0, 6.0]));
+                if let Some(hex) = color {
+                    props.insert("Color".to_string(), json!(hex));
+                }
+                state.instances.insert(
+                    full_path.clone(),
+                    json!({ "class_name": cls, "properties": Value::Object(props) }),
+                );
+                created_instances.push(full_path.clone());
+                state.log_line(format!("[ExecuteLuau:{dm}] Created {cls} at {full_path}"));
+            } else {
+                state.log_line(format!(
+                    "[ExecuteLuau:{dm}] Executed {} bytes of Luau",
+                    code.len()
+                ));
+            }
+
+            state.luau_exec_count += 1;
+            text_result(
+                json!({
+                    "ok": true,
+                    "datamodel_type": dm,
+                    "executed_bytes": code.len(),
+                    "created_instances": created_instances,
+                    "output": outputs.join("\n"),
+                    "lines": outputs,
+                })
+                .to_string(),
+            )
+        }
+        "user_mouse_input" => {
+            let Some(actions) = args.get("actions").and_then(|v| v.as_array()) else {
+                return error_result("user_mouse_input requires an 'actions' array".to_string());
+            };
+            if actions.is_empty() {
+                return error_result("user_mouse_input actions must not be empty".to_string());
+            }
+            for act in actions {
+                let kind = act.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                let new_x = act
+                    .get("x")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| scale_to_viewport(v, FRAME_W));
+                let new_y = act
+                    .get("y")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| scale_to_viewport(v, FRAME_H));
+
+                match kind {
+                    "moveTo" => {
+                        if let (Some(nx), Some(ny)) = (new_x, new_y) {
+                            if state.mouse_down {
+                                let dx = nx - state.cursor_x;
+                                let dy = ny - state.cursor_y;
+                                state.camera_yaw = (state.camera_yaw + dx * 0.025)
+                                    .clamp(-std::f64::consts::PI, std::f64::consts::PI);
+                                state.camera_pitch =
+                                    (state.camera_pitch + dy * 0.015).clamp(-0.9, 0.9);
+                            }
+                            state.cursor_x = nx;
+                            state.cursor_y = ny;
+                        }
+                    }
+                    "mouseButtonDown" => {
+                        if let (Some(nx), Some(ny)) = (new_x, new_y) {
+                            state.cursor_x = nx;
+                            state.cursor_y = ny;
+                        }
+                        state.mouse_down = true;
+                    }
+                    "mouseButtonUp" => {
+                        if let (Some(nx), Some(ny)) = (new_x, new_y) {
+                            state.cursor_x = nx;
+                            state.cursor_y = ny;
+                        }
+                        state.mouse_down = false;
+                    }
+                    "mouseButtonClick" => {
+                        if let (Some(nx), Some(ny)) = (new_x, new_y) {
+                            state.cursor_x = nx;
+                            state.cursor_y = ny;
+                        }
+                        state.mouse_clicks += 1;
+                        if let Some(ip) = act.get("instance_path").and_then(|v| v.as_str()) {
+                            state.selected_instance = Some(normalize_game_path(ip));
+                        } else {
+                            state.selected_instance = pick_nearest_instance(state);
+                        }
+                    }
+                    "scrollUp" => {
+                        state.camera_zoom = (state.camera_zoom * 1.15).clamp(0.5, 2.2);
+                    }
+                    "scrollDown" => {
+                        state.camera_zoom = (state.camera_zoom / 1.15).clamp(0.5, 2.2);
+                    }
+                    "wait" => {}
+                    other => {
+                        return error_result(format!("unsupported mouse action '{other}'"));
+                    }
+                }
+            }
+            state.log_line(format!(
+                "[Input:Mouse] {} action(s) cursor=({:.0},{:.0}) yaw={:.2} zoom={:.2}",
+                actions.len(),
+                state.cursor_x,
+                state.cursor_y,
+                state.camera_yaw,
+                state.camera_zoom
+            ));
+            text_result(
+                json!({
+                    "ok": true,
+                    "applied": actions.len(),
+                    "cursor": [state.cursor_x, state.cursor_y],
+                    "mouse_clicks": state.mouse_clicks,
+                    "selected_instance": state.selected_instance,
+                    "camera": {
+                        "yaw": state.camera_yaw,
+                        "pitch": state.camera_pitch,
+                        "zoom": state.camera_zoom,
+                    },
+                })
+                .to_string(),
+            )
+        }
+        "user_keyboard_input" => {
+            let Some(actions) = args.get("actions").and_then(|v| v.as_array()) else {
+                return error_result("user_keyboard_input requires an 'actions' array".to_string());
+            };
+            if actions.is_empty() {
+                return error_result("user_keyboard_input actions must not be empty".to_string());
+            }
+            for act in actions {
+                let kind = act.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                match kind {
+                    "keyDown" | "keyPress" => {
+                        let key = act
+                            .get("key_code")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("None");
+                        state.last_key = Some(key.to_string());
+                        state.key_events += 1;
+                        match key {
+                            "W" | "Up" => state.camera_pan_z -= 4.0,
+                            "S" | "Down" => state.camera_pan_z += 4.0,
+                            "A" | "Left" => state.camera_pan_x -= 4.0,
+                            "D" | "Right" => state.camera_pan_x += 4.0,
+                            "F" => {
+                                state.camera_pan_x = 0.0;
+                                state.camera_pan_z = 0.0;
+                                state.camera_zoom = 1.15;
+                            }
+                            "Escape" => {
+                                state.selected_instance = None;
+                            }
+                            _ => {}
+                        }
+                    }
+                    "keyUp" => {
+                        if let Some(key) = act.get("key_code").and_then(|v| v.as_str()) {
+                            state.last_key = Some(key.to_string());
+                        }
+                    }
+                    "textInput" => {
+                        if let Some(txt) = act.get("text_inputs").and_then(|v| v.as_str()) {
+                            state.typed_text = txt.chars().take(64).collect();
+                            state.last_key = Some("TextInput".to_string());
+                            state.key_events += 1;
+                        }
+                    }
+                    "wait" => {}
+                    other => {
+                        return error_result(format!("unsupported keyboard action '{other}'"));
+                    }
+                }
+            }
+            state.log_line(format!(
+                "[Input:Keyboard] {} action(s) last_key={:?}",
+                actions.len(),
+                state.last_key
+            ));
+            text_result(
+                json!({
+                    "ok": true,
+                    "applied": actions.len(),
+                    "last_key": state.last_key,
+                    "typed_text": state.typed_text,
+                    "key_events": state.key_events,
+                    "camera": {
+                        "pan": [state.camera_pan_x, state.camera_pan_z],
+                        "zoom": state.camera_zoom,
+                    },
+                })
+                .to_string(),
+            )
+        }
+
+        // -------------------------------------------------------------------
+        // Legacy + Live Play/Console/Capture tools
+        // -------------------------------------------------------------------
         "get_place_tree" => text_result(
             json!({ "scripts": state.scripts, "instances": state.instances }).to_string(),
         ),
@@ -314,14 +999,9 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
             if bad_path(&path) {
                 return error_result(format!("invalid instance path: {path}"));
             }
-            // Strict, like a real place: creating over an existing
-            // instance is an error, not a silent overwrite.
             if state.instances.contains_key(&path) {
                 return error_result(format!("instance already exists at {path}"));
             }
-            // MOCK_INST_EXTRA=1: the bridge adds one of its own
-            // default properties to every instance record, as a real
-            // place tree does.
             let properties = if std::env::var("MOCK_INST_EXTRA").is_ok() {
                 let mut p = properties.as_object().cloned().unwrap_or_default();
                 p.insert("BridgeDefault".to_string(), json!(true));
@@ -341,6 +1021,9 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
             if state.instances.remove(path).is_none() {
                 return error_result(format!("no instance at {path}"));
             }
+            if state.selected_instance.as_deref() == Some(path) {
+                state.selected_instance = None;
+            }
             state.log_line(format!("[Studio] Deleted instance {path}"));
             text_result(json!({ "ok": true, "path": path }).to_string())
         }
@@ -348,8 +1031,6 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
             let (passed, msg) = evaluate_playtest(&state.scripts, &state.instances);
             state.console = msg.to_string();
             state.log_line(format!("[Playtest] {msg}"));
-            // MOCK_PLAYTEST_TEXT=1: verdict as loose plain text, the
-            // shape that used to fool the client's substring heuristic.
             if std::env::var("MOCK_PLAYTEST_TEXT").is_ok() {
                 return text_result(if passed {
                     "Playtest passed. 0 failures, 0 errors.".to_string()
@@ -357,17 +1038,12 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
                     format!("Playtest failed. {msg}")
                 });
             }
-            // MOCK_ERR_CODE_ONLY=1: a passing verdict carrying an
-            // error OBJECT with a code but no message — a healthy
-            // shape some bridges emit.
             if std::env::var("MOCK_ERR_CODE_ONLY").is_ok() {
                 return text_result(
                     json!({ "status": "passed", "console": msg, "error": { "code": 0 } })
                         .to_string(),
                 );
             }
-            // MOCK_NULL_ERROR=1: healthy payloads that also carry an
-            // "error": null field, as several real bridges emit.
             if std::env::var("MOCK_NULL_ERROR").is_ok() {
                 return text_result(
                     json!({ "status": if passed { "passed" } else { "failed" }, "console": msg, "error": null })
@@ -389,17 +1065,30 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
             .to_string(),
         ),
         "start_stop_play" => {
-            let mode = args
-                .get("mode")
-                .and_then(|v| v.as_str())
-                .unwrap_or("start_play");
-            match mode {
+            let resolved_mode = if let Some(m) = args.get("mode").and_then(|v| v.as_str()) {
+                m
+            } else if let Some(is_start) = args.get("is_start").and_then(|v| v.as_bool()) {
+                if is_start {
+                    "start_play"
+                } else {
+                    "stop"
+                }
+            } else {
+                "start_play"
+            };
+            match resolved_mode {
                 "start_play" | "run_server" => {
                     let (passed, msg) = evaluate_playtest(&state.scripts, &state.instances);
                     state.playing = true;
+                    state.play_mode = resolved_mode.to_string();
+                    state.active_datamodel = if resolved_mode == "run_server" {
+                        "Server".to_string()
+                    } else {
+                        "Client".to_string()
+                    };
                     state.console = msg.to_string();
                     state.log_line(format!(
-                        "[Studio Play] Started {mode} ({} script(s), {} instance(s))",
+                        "[Studio Play] Started {resolved_mode} ({} script(s), {} instance(s))",
                         state.scripts.len(),
                         state.instances.len()
                     ));
@@ -407,8 +1096,10 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
                     text_result(
                         json!({
                             "ok": true,
-                            "mode": mode,
+                            "mode": resolved_mode,
+                            "is_start": true,
                             "playing": true,
+                            "active_datamodel": state.active_datamodel,
                             "status": if passed { "passed" } else { "failed" },
                             "console": msg,
                             "lines": state.console_lines,
@@ -418,12 +1109,16 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
                 }
                 "stop" => {
                     state.playing = false;
+                    state.play_mode = "edit".to_string();
+                    state.active_datamodel = "Edit".to_string();
                     state.log_line("[Studio Play] Stopped playtest session.".to_string());
                     text_result(
                         json!({
                             "ok": true,
                             "mode": "stop",
+                            "is_start": false,
                             "playing": false,
+                            "active_datamodel": "Edit",
                             "status": "stopped",
                             "console": state.console,
                         })
@@ -434,13 +1129,17 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
             }
         }
         "screen_capture" => {
+            if let Some(cam) = args.get("camera_position").and_then(|v| v.as_array()) {
+                if cam.len() >= 3 {
+                    if let (Some(cx), Some(cz)) = (cam[0].as_f64(), cam[2].as_f64()) {
+                        state.camera_yaw =
+                            (cx / 40.0).clamp(-std::f64::consts::PI, std::f64::consts::PI);
+                        state.camera_pan_z = (cz / 4.0).clamp(-30.0, 30.0);
+                    }
+                }
+            }
             state.frame_counter += 1;
-            let png = render_studio_scene_png(
-                &state.scripts,
-                &state.instances,
-                state.playing,
-                state.frame_counter,
-            );
+            let png = render_studio_scene_png(state);
             let b64 = encode_base64(&png);
             let meta = json!({
                 "width": FRAME_W,
@@ -448,6 +1147,11 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
                 "instances": state.instances.len(),
                 "scripts": state.scripts.len(),
                 "playing": state.playing,
+                "selected_instance": state.selected_instance,
+                "cursor": [state.cursor_x, state.cursor_y],
+                "last_key": state.last_key,
+                "camera_yaw": state.camera_yaw,
+                "camera_zoom": state.camera_zoom,
                 "frame": state.frame_counter,
             })
             .to_string();
@@ -470,37 +1174,129 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
     }
 }
 
+fn scale_to_viewport(coord: f64, dim: usize) -> f64 {
+    if !coord.is_finite() {
+        return (dim as f64) * 0.5;
+    }
+    // Accept normalized [0..1] or full-resolution coordinates cleanly
+    let scaled = if (0.0..=1.0).contains(&coord) {
+        coord * (dim as f64)
+    } else if coord > dim as f64 {
+        (coord / 1440.0) * (dim as f64)
+    } else {
+        coord
+    };
+    scaled.clamp(0.0, (dim - 1) as f64)
+}
+
+fn extract_print_literal(trimmed: &str) -> Option<String> {
+    let rest = trimmed.strip_prefix("print(")?;
+    let inner = rest.strip_suffix(')')?.trim();
+    if (inner.starts_with('"') && inner.ends_with('"') && inner.len() >= 2)
+        || (inner.starts_with('\'') && inner.ends_with('\'') && inner.len() >= 2)
+    {
+        Some(inner[1..inner.len() - 1].to_string())
+    } else if !inner.is_empty() {
+        Some(inner.to_string())
+    } else {
+        None
+    }
+}
+
+fn parse_simple_luau_instance(code: &str) -> Option<(String, String, [f64; 3], Option<String>)> {
+    let marker = "Instance.new(\"";
+    let start = code.find(marker)? + marker.len();
+    let end = code[start..].find('"')? + start;
+    let cls = code[start..end].to_string();
+
+    let name_marker = ".Name = \"";
+    let name = if let Some(ns) = code.find(name_marker) {
+        let s = ns + name_marker.len();
+        code[s..]
+            .find('"')
+            .map(|e| code[s..s + e].to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| format!("Luau{cls}"))
+    } else {
+        format!("Luau{cls}")
+    };
+
+    let pos = [0.0, 4.0, 0.0];
+    let color = if code.contains("Bright red") || code.contains("255, 0, 0") {
+        Some("#EF4444".to_string())
+    } else if code.contains("Bright green") || code.contains("0, 255, 0") {
+        Some("#22C55E".to_string())
+    } else if code.contains("Cyan") || code.contains("0, 200, 255") {
+        Some("#06B6D4".to_string())
+    } else {
+        Some("#38BDF8".to_string())
+    };
+    Some((cls, name, pos, color))
+}
+
+fn pick_nearest_instance(state: &MockState) -> Option<String> {
+    let horizon = 74.0 + state.camera_pitch * 26.0;
+    let mut best: Option<(f64, String)> = None;
+    for (idx, (path, rec)) in state.instances.iter().enumerate() {
+        let props = rec.get("properties").unwrap_or(&Value::Null);
+        let pos = parse_vec3(props.get("Position")).unwrap_or([
+            ((idx as f64 % 5.0) - 2.0) * 14.0,
+            2.0,
+            (idx as f64 / 5.0).floor() * 14.0,
+        ]);
+        let (sx, sy) = project_part(pos, state, horizon);
+        let dx = sx - state.cursor_x;
+        let dy = sy - state.cursor_y;
+        let d2 = dx * dx + dy * dy;
+        if best.as_ref().is_none_or(|(bd, _)| d2 < *bd) {
+            best = Some((d2, path.clone()));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+fn project_part(pos: [f64; 3], state: &MockState, horizon: f64) -> (f64, f64) {
+    let px = pos[0] - state.camera_pan_x;
+    let pz = pos[2] - state.camera_pan_z;
+    let cos_y = state.camera_yaw.cos();
+    let sin_y = state.camera_yaw.sin();
+    let rx = px * cos_y - pz * sin_y;
+    let rz = px * sin_y + pz * cos_y;
+    let zoom = state.camera_zoom;
+    let sx = (FRAME_W as f64) * 0.5 + (rx - rz) * 2.1 * zoom;
+    let sy = horizon + 54.0 + (rx + rz) * 0.72 * zoom - pos[1] * 2.4 * zoom;
+    (sx, sy)
+}
+
 // ---------------------------------------------------------------------------
 // Dynamic 320x200 Roblox Studio Viewport PNG Renderer (zero dependencies)
 // ---------------------------------------------------------------------------
 
-fn render_studio_scene_png(
-    scripts: &BTreeMap<String, String>,
-    instances: &BTreeMap<String, Value>,
-    playing: bool,
-    frame_counter: u64,
-) -> Vec<u8> {
+fn render_studio_scene_png(state: &MockState) -> Vec<u8> {
     let mut rgb = vec![0u8; FRAME_W * FRAME_H * 3];
 
+    let horizon_f = (74.0 + state.camera_pitch * 26.0).clamp(42.0, 110.0);
+    let horizon = horizon_f as usize;
+
     // 1. Sky gradient + perspective baseplate floor + stud grid
-    let horizon = 74usize;
     for y in 0..FRAME_H {
         for x in 0..FRAME_W {
-            let color = if y < 6 && playing {
+            let color = if y < 6 && state.playing {
                 // Play-mode green indicator ribbon across top of Studio viewport
                 [46, 196, 118]
             } else if y < horizon {
-                let t = y as f32 / horizon as f32;
+                let t = y as f32 / horizon.max(1) as f32;
                 let r = (128.0 + 70.0 * t) as u8;
                 let g = (176.0 + 52.0 * t) as u8;
                 let b = (232.0 + 18.0 * t) as u8;
                 [r, g, b]
             } else {
-                // Studio Baseplate with perspective grid lines
                 let dy = (y - horizon) as f32 + 1.0;
-                let gx = ((x as f32 - (FRAME_W as f32 * 0.5)) / (dy * 0.14 + 6.0)).floor() as i32;
-                let gz = (dy / 14.0).floor() as i32;
-                let is_line = ((x as i32 + y as i32) % 16 == 0)
+                let yaw_shift = (state.camera_yaw * 18.0) as f32;
+                let gx = (((x as f32) + yaw_shift - (FRAME_W as f32 * 0.5)) / (dy * 0.14 + 6.0))
+                    .floor() as i32;
+                let gz = (dy / (14.0 * state.camera_zoom as f32).max(4.0)).floor() as i32;
+                let is_line = ((x as i32 + y as i32 + yaw_shift as i32) % 16 == 0)
                     || (y - horizon).is_multiple_of(14)
                     || ((gx + gz) % 2 == 0 && (y - horizon) % 7 == 0);
                 if is_line {
@@ -514,6 +1310,7 @@ fn render_studio_scene_png(
     }
 
     struct RenderPart {
+        path: String,
         depth: f64,
         pos: [f64; 3],
         size: [f64; 3],
@@ -522,7 +1319,7 @@ fn render_studio_scene_png(
 
     // 2. Project each Workspace Part/SpawnLocation as a shaded isometric 3D box
     let mut parts: Vec<RenderPart> = Vec::new();
-    for (idx, (path, rec)) in instances.iter().enumerate() {
+    for (idx, (path, rec)) in state.instances.iter().enumerate() {
         let class_name = rec
             .get("class_name")
             .and_then(|v| v.as_str())
@@ -538,45 +1335,98 @@ fn render_studio_scene_png(
         let color = parse_color_rgb(path, &class_name, props);
         let depth = pos[0] + pos[2] - pos[1] * 0.25;
         parts.push(RenderPart {
+            path: path.clone(),
             depth,
             pos,
             size,
             color,
         });
     }
-    // Painter's sort back-to-front
     parts.sort_by(|a, b| a.depth.partial_cmp(&b.depth).unwrap_or(std::cmp::Ordering::Equal));
 
     for part in parts {
-        let pos = part.pos;
-        let size = part.size;
-        let col = part.color;
-        let sx = (FRAME_W as f64 * 0.5 + (pos[0] - pos[2]) * 2.1) as i32;
-        let sy = (horizon as f64 + 54.0 + (pos[0] + pos[2]) * 0.72 - pos[1] * 2.4) as i32;
-        let w = (size[0].max(size[2]) * 2.6).clamp(12.0, 74.0) as i32;
-        let h = (size[1] * 3.2).clamp(8.0, 48.0) as i32;
-        let top_h = (w / 4).clamp(4, 16);
+        let (sx_f, sy_f) = project_part(part.pos, state, horizon_f);
+        let sx = sx_f as i32;
+        let sy = sy_f as i32;
+        let zoom = state.camera_zoom;
+        let w = (part.size[0].max(part.size[2]) * 2.6 * zoom).clamp(10.0, 96.0) as i32;
+        let h = (part.size[1] * 3.2 * zoom).clamp(8.0, 64.0) as i32;
+        let top_h = (w / 4).clamp(4, 18);
 
-        let top_col = shade(col, 1.18);
-        let side_col = shade(col, 0.78);
-        let border_col = shade(col, 0.45);
+        let top_col = shade(part.color, 1.18);
+        let side_col = shade(part.color, 0.78);
+        let selected = state.selected_instance.as_deref() == Some(part.path.as_str());
+        let border_col = if selected {
+            [250, 204, 21] // bright Studio selection gold highlight
+        } else {
+            shade(part.color, 0.45)
+        };
 
-        // Body
         fill_rect(&mut rgb, sx - w / 2, sy - h, w, h, side_col);
-        // Top highlight
         fill_rect(&mut rgb, sx - w / 2, sy - h - top_h, w, top_h, top_col);
-        // Crisp outline
         stroke_rect(&mut rgb, sx - w / 2, sy - h - top_h, w, h + top_h, border_col);
+        if selected {
+            stroke_rect(
+                &mut rgb,
+                sx - w / 2 - 2,
+                sy - h - top_h - 2,
+                w + 4,
+                h + top_h + 4,
+                [250, 204, 21],
+            );
+        }
     }
 
-    // 3. Top-left HUD strip encoding script count & capture sequence visibly
-    let script_bars = scripts.len().min(16);
-    fill_rect(&mut rgb, 8, 10, 8 + (script_bars as i32) * 8 + 14, 14, [24, 28, 38]);
-    for i in 0..script_bars {
-        fill_rect(&mut rgb, 12 + (i as i32) * 8, 13, 5, 8, [96, 165, 250]);
+    // 3. Top-left HUD strip encoding script count, multi_edit, and execute_luau activity
+    let script_bars = state.scripts.len().min(14);
+    let edit_pips = (state.multi_edit_count as usize).min(4);
+    let luau_pips = (state.luau_exec_count as usize).min(4);
+    let hud_w = 16 + (script_bars + edit_pips + luau_pips) as i32 * 8;
+    fill_rect(&mut rgb, 8, 10, hud_w.max(26), 14, [24, 28, 38]);
+    let mut hx = 12i32;
+    for _ in 0..script_bars {
+        fill_rect(&mut rgb, hx, 13, 5, 8, [96, 165, 250]); // blue = scripts
+        hx += 8;
     }
-    // Frame heartbeat dot (bottom-right)
-    let pulse = if frame_counter.is_multiple_of(2) {
+    for _ in 0..edit_pips {
+        fill_rect(&mut rgb, hx, 13, 5, 8, [251, 191, 36]); // amber = multi_edit
+        hx += 8;
+    }
+    for _ in 0..luau_pips {
+        fill_rect(&mut rgb, hx, 13, 5, 8, [34, 211, 238]); // cyan = execute_luau
+        hx += 8;
+    }
+
+    // 4. Top-right keyboard activity badge when user_keyboard_input has fired
+    if state.key_events > 0 {
+        let key_bars = (state.key_events as usize).min(8);
+        let kw = 10 + (key_bars as i32) * 6;
+        let kx = (FRAME_W as i32) - kw - 8;
+        fill_rect(&mut rgb, kx, 10, kw, 14, [30, 24, 48]);
+        for i in 0..key_bars {
+            fill_rect(&mut rgb, kx + 4 + (i as i32) * 6, 13, 4, 8, [192, 132, 252]);
+        }
+    }
+
+    // 5. Interactive cursor crosshair & click ripple ring when mouse has interacted
+    if state.mouse_clicks > 0 || state.mouse_down || state.camera_yaw.abs() > 0.001 {
+        let cx = state.cursor_x as i32;
+        let cy = state.cursor_y as i32;
+        let cross_col = if state.mouse_down {
+            [249, 115, 22] // orange drag
+        } else {
+            [56, 189, 248] // sky cyan pointer
+        };
+        fill_rect(&mut rgb, cx - 6, cy, 13, 1, cross_col);
+        fill_rect(&mut rgb, cx, cy - 6, 1, 13, cross_col);
+        if state.mouse_clicks > 0 {
+            let r = 6 + ((state.mouse_clicks % 3) as i32) * 3;
+            stroke_rect(&mut rgb, cx - r, cy - r, r * 2 + 1, r * 2 + 1, [250, 204, 21]);
+        }
+    }
+
+    // 6. Frame heartbeat dot (bottom-right)
+    let pulse = if state.frame_counter.is_multiple_of(2) {
         [74, 222, 128]
     } else {
         [56, 189, 248]
