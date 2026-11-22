@@ -137,9 +137,11 @@ if "-p" in args:
 state_dir = os.environ["FAKE_AGY_STATE"]
 os.makedirs(state_dir, exist_ok=True)
 
-# Record argv & cwd once for assertions
-with open(os.path.join(state_dir, "last_argv.json"), "w") as f:
+# Record argv & cwd atomically across concurrent fake-agy workers
+argv_tmp = os.path.join(state_dir, f"last_argv.{os.getpid()}.tmp")
+with open(argv_tmp, "w") as f:
     json.dump({"args": args, "cwd": os.getcwd()}, f)
+os.replace(argv_tmp, os.path.join(state_dir, "last_argv.json"))
 
 def emit_text(obj):
     txt = json.dumps(obj)
@@ -161,8 +163,10 @@ def count_file(name):
         with open(p) as f:
             c = int(f.read().strip() or "0")
     c += 1
-    with open(p, "w") as f:
+    tmp_p = f"{p}.{os.getpid()}.tmp"
+    with open(tmp_p, "w") as f:
         f.write(str(c))
+    os.replace(tmp_p, p)
     return c
 
 if "[Role: coordinator]" in prompt:
