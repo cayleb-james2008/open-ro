@@ -165,7 +165,7 @@ function parseWorld(place: Place): ParsedWorld {
 
   const isCardWorld = isCardBattlerPlace(place);
   const themeLabel = isCardWorld
-    ? "Anime Card Battles"
+    ? "Untitled Anime Card Game"
     : /\b(ice|frost)/i.test(leafNames)
       ? "Ice Parkour"
       : /\blava/i.test(leafNames)

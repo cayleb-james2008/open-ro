@@ -121,14 +121,14 @@ export function FeaturedApexBanner({
 
   return (
     <section
-      aria-label="Featured Apex Card Battler Blueprint"
+      aria-label="Featured Untitled Anime Card Game Blueprint"
       className="rounded-card border border-hairline bg-surface p-3"
     >
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
           <div className="flex flex-wrap items-center gap-2">
             <Badge className="border-transparent bg-tag-plan-bg px-2 py-0.5 text-xs font-medium text-tag-plan-fg">
-              Featured v0.6.0 Flagship
+              Featured v0.9.0 Flagship
             </Badge>
             <span className="rounded-chip bg-board px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2">
               6 systems · {assets.length || APEX_CARDS.length} anime cards
@@ -137,10 +137,10 @@ export function FeaturedApexBanner({
 
           <div className="min-w-0">
             <h3 className="text-ui font-medium text-ink">
-              Anime Card Battles: Rebirth — Apex Edition
+              Untitled Anime Card Game
             </h3>
             <p className="mt-0.5 text-sm leading-snug text-ink-2">
-              7-tier foil gacha with pity &amp; promo codes, weather &amp; luck potions, 4-card deck fusion &amp; rebirth, 50-floor boss tower, and a 3D card gallery lobby.
+              Sunlit floating archipelago with sculpted Torii Summon Shrine, Fusion Weather Storms, 4v4 Chain Overdrive clashes, Living Lead-Card Guardian Aura, and 50-floor boss tower.
             </p>
           </div>
 
@@ -148,7 +148,7 @@ export function FeaturedApexBanner({
             {built ? (
               <div className="inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-pill-active-bg px-3 py-1.5 text-xs font-medium text-pill-active-fg">
                 <Check className="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden />
-                <span>Anime Card Battles active in this place</span>
+                <span>Untitled Anime Card Game active in this place</span>
               </div>
             ) : (
               <Button
@@ -157,11 +157,11 @@ export function FeaturedApexBanner({
                 loading={building}
                 disabled={!canBuild || busy}
                 onClick={onBuildApex}
-                aria-label="Build Anime Card Battles: Apex in Studio"
+                aria-label="Build Untitled Anime Card Game in Studio"
                 className="max-md:min-h-11"
               >
                 <Sparkles className="size-4" strokeWidth={1.5} aria-hidden />
-                Build Anime Card Battles: Apex
+                Build Untitled Anime Card Game
               </Button>
             )}
             <Button

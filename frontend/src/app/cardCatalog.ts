@@ -1,6 +1,6 @@
-// Canonical card art catalog, Nano Banana WebP bundles, Anime Fan-Art & Creative Homage
-// Knowledge Point, Elemental Synergies, Foil Tiers, Weather profiles & Boss roster
-// for Anime Card Battles: Rebirth — Apex Edition (OpenRO v0.6.0).
+// Canonical card art catalog, Nano Banana WebP bundles, Anime Fan-Art Visual Fidelity &
+// Title-Epithet Knowledge Point, Elemental Synergies, Foil Tiers, Weather & Fusion Storms,
+// and Boss roster for Untitled Anime Card Game (OpenRO v0.9.0).
 import bloodMoonImg from "../assets/cards/blood-moon-gravity-ronin.webp";
 import crimsonSeaImg from "../assets/cards/crimson-sea-captain.webp";
 import eclipseArcaneImg from "../assets/cards/eclipse-arcane-alchemist.webp";
@@ -111,7 +111,7 @@ export const BUNDLED_ART_BY_ID: Record<string, string> = {
 export const APEX_CARDS: CardAssetRecord[] = [
   {
     card_id: "supernova-ascended-striker",
-    title: "Supernova Ascended Striker",
+    title: "Golden Ascended Warrior",
     rarity: "Secret",
     odds: "1 in 8,192",
     element: "Flame",
@@ -123,11 +123,11 @@ export const APEX_CARDS: CardAssetRecord[] = [
     file: "supernova-ascended-striker.webp",
     image_url: supernovaStrikerImg,
     source: "google-nano-banana",
-    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, cosmic martial artist ascending in golden supernova aura, spiky radiant hair, battle-torn gi, starlight sparks, crisp ink linework, zero text or watermarks.",
+    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, unmistakably recognizable golden-haired ascended martial warrior surging in supernova aura, battle-torn gi, starlight sparks, crisp ink linework, zero text or watermarks.",
   },
   {
     card_id: "shadow-sovereign",
-    title: "Shadow Sovereign",
+    title: "Shadow Monarch",
     rarity: "Celestial",
     odds: "1 in 2,048",
     element: "Shadow",
@@ -139,11 +139,11 @@ export const APEX_CARDS: CardAssetRecord[] = [
     file: "shadow-sovereign.webp",
     image_url: shadowSovereignImg,
     source: "google-nano-banana",
-    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, dark sovereign in obsidian cloak wielding twin glowing violet-blue spectral daggers, phantom armored knights rising behind in neon indigo mist, zero text.",
+    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, unmistakably recognizable obsidian-cloaked shadow monarch wielding twin glowing violet-blue daggers, phantom armored knights rising behind in neon indigo mist, zero text.",
   },
   {
     card_id: "infinity-void-sorcerer",
-    title: "Infinity Void Sorcerer",
+    title: "Six-Eyes Sorcerer",
     rarity: "Celestial",
     odds: "1 in 2,048",
     element: "Void",
@@ -155,11 +155,11 @@ export const APEX_CARDS: CardAssetRecord[] = [
     file: "infinity-void-sorcerer.webp",
     image_url: infinityVoidImg,
     source: "google-nano-banana",
-    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, silver-haired void sorcerer with glowing cyan eyes raising hand to conjure a collapsing crimson-and-indigo singularity sphere, dramatic anime key visual, zero text.",
+    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, unmistakably recognizable silver-haired six-eyes sorcerer with luminous cyan gaze conjuring a collapsing crimson-and-indigo singularity sphere, dramatic anime key visual, zero text.",
   },
   {
     card_id: "nine-tail-ember-shinobi",
-    title: "Nine-Tail Ember Shinobi",
+    title: "Nine-Tail Shinobi",
     rarity: "Mythic",
     odds: "1 in 512",
     element: "Flame",
@@ -171,11 +171,11 @@ export const APEX_CARDS: CardAssetRecord[] = [
     file: "nine-tail-ember-shinobi.webp",
     image_url: nineTailImg,
     source: "google-nano-banana",
-    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, orange-and-gold ember shinobi cloaked in translucent solar flame tails channeling a spinning wind-fire energy sphere, dynamic speedlines, zero text.",
+    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, unmistakably recognizable orange-and-gold nine-tail shinobi cloaked in translucent solar flame chakra channeling a spinning wind-fire sphere, dynamic speedlines, zero text.",
   },
   {
     card_id: "crimson-sea-captain",
-    title: "Crimson Sea Captain",
+    title: "Joyful Pirate",
     rarity: "Mythic",
     odds: "1 in 512",
     element: "Flame",
@@ -187,11 +187,11 @@ export const APEX_CARDS: CardAssetRecord[] = [
     file: "crimson-sea-captain.webp",
     image_url: crimsonSeaImg,
     source: "google-nano-banana",
-    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, fearless red-coated sea captain leaping over crashing ocean waves with blazing ember gauntlets and billowing crimson cape, vibrant shonen shading, zero text.",
+    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, unmistakably recognizable fearless red-coated joyful pirate captain leaping over crashing ocean waves with blazing ember fists and billowing crimson cape, vibrant shonen shading, zero text.",
   },
   {
     card_id: "thunder-flash-ronin",
-    title: "Thunder Flash Ronin",
+    title: "Thunder Flash Blade",
     rarity: "Legendary",
     odds: "1 in 128",
     element: "Storm",
@@ -203,11 +203,11 @@ export const APEX_CARDS: CardAssetRecord[] = [
     file: "thunder-flash-ronin.webp",
     image_url: thunderFlashImg,
     source: "google-nano-banana",
-    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, yellow-haori lightning swordsman mid-iaido slash surrounded by crackling golden thunder arcs and storm clouds, sharp high-contrast anime key art, zero text.",
+    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, unmistakably recognizable yellow-haori lightning swordsman mid-iaido slash surrounded by crackling golden thunder arcs and storm clouds, sharp high-contrast anime key art, zero text.",
   },
   {
     card_id: "blood-moon-gravity-ronin",
-    title: "Blood-Moon Gravity Ronin",
+    title: "Gravity Ronin",
     rarity: "Epic",
     odds: "1 in 32",
     element: "Void",
@@ -219,11 +219,11 @@ export const APEX_CARDS: CardAssetRecord[] = [
     file: "blood-moon-gravity-ronin.webp",
     image_url: bloodMoonImg,
     source: "google-nano-banana",
-    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, scarred gravity ronin in midnight cloak beneath a huge crimson moon pulling floating basalt boulders into orbit with a gleaming katana, zero text.",
+    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, unmistakably recognizable scarred gravity ronin in midnight cloak beneath a crimson moon pulling floating basalt boulders into orbit with a gleaming katana, zero text.",
   },
   {
     card_id: "eclipse-arcane-alchemist",
-    title: "Eclipse Arcane Alchemist",
+    title: "Steel Alchemist",
     rarity: "Rare",
     odds: "1 in 8",
     element: "Arcane",
@@ -235,7 +235,7 @@ export const APEX_CARDS: CardAssetRecord[] = [
     file: "eclipse-arcane-alchemist.webp",
     image_url: eclipseArcaneImg,
     source: "google-nano-banana",
-    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, crimson-cloak alchemist clapping hands over a glowing turquoise transmutation circle with crystalline shields erupting around, crisp ink contours, zero text.",
+    prompt: "Cel-shaded anime trading card portrait, 3:4 vertical, unmistakably recognizable crimson-coat steel alchemist clapping hands over a glowing turquoise transmutation circle with crystalline shields erupting around, crisp ink contours, zero text.",
   },
 ];
 
@@ -313,6 +313,24 @@ export const WEATHER_PROFILES: WeatherProfile[] = [
     desc: "4.0x Secret Luck · +30% All Burst",
     badgeCls: "bg-tag-design-bg text-tag-design-fg",
   },
+  {
+    id: "celestial_tempest",
+    name: "Celestial Tempest",
+    luckMult: 4.5,
+    boostedElement: "Storm",
+    elementBonusPct: 34,
+    desc: "Fusion Storm · 4.5x Luck · +34% Storm Crit",
+    badgeCls: "bg-tag-sky-bg text-tag-sky-fg",
+  },
+  {
+    id: "crimson_eclipse",
+    name: "Crimson Eclipse",
+    luckMult: 5.0,
+    boostedElement: "Void",
+    elementBonusPct: 40,
+    desc: "Fusion Storm · 5.0x Luck · +40% All DMG",
+    badgeCls: "bg-ink-button text-ink-button-fg",
+  },
 ];
 
 export type TowerBossDef = {
@@ -339,53 +357,71 @@ export const TOWER_BOSSES: TowerBossDef[] = [
 ];
 
 export const ART_KNOWLEDGE_FALLBACK: ArtKnowledgeGuide = {
-  title: "Anime Fan-Art & Creative Homage Knowledge Point",
+  title: "Anime Fan-Art Visual Fidelity & Title-Epithet Knowledge Point",
   summary:
-    "OpenRO actively builds anime-inspired Roblox experiences by translating beloved shonen and fantasy archetypes into original, DMCA-safe homage characters, distinct skill kits, and custom cel-shaded card art.",
+    "OpenRO builds iconic anime-inspired Roblox games where generated fan-art MUST look unmistakably recognizable as the original character, while every in-game display name uses the character's iconic title/epithet instead of trademarked proper names.",
   policy_note:
-    "Never refuse an anime-inspired game request out of knee-jerk copyright caution. Preserve the high-energy silhouette, color language, elemental aura, and dramatic framing players love while authoring original character titles, unique move names, and studio-clean artwork ready to ship on Roblox.",
+    "Visual Fidelity + Title-Epithet Rule: Keep the exact unmistakable silhouette, hair, outfit cues, elemental aura, and heroic expression fans recognize instantly, while replacing trademarked proper names with iconic title epithets (Joyful Pirate, Six-Eyes Sorcerer, Shadow Monarch, Nine-Tail Shinobi, Thunder Flash Blade, Steel Alchemist, Gravity Ronin, Golden Ascended Warrior) and keeping artwork watermark-free and text-free.",
   style_pillars: [
-    "3:4 vertical trading-card framing with bold cel-shaded ink contours and high-contrast rim light.",
-    "Distinct elemental aura palettes: Flame (molten gold/crimson), Void (indigo/magenta), Storm (electric amber/cyan), Shadow (violet/obsidian), Arcane (emerald/turquoise).",
-    "Original DMCA-safe homage titles and ultimate move names — zero trademarked logos, watermarks, or baked-in text so Roblox ImageLabels & Decals stay crisp.",
+    "Unmistakable Visual Fidelity: generated card art must clearly look like the iconic anime character silhouette, costume, and aura fans expect.",
+    "Title-Epithet Display Naming: always replace trademarked proper names with iconic titles (e.g. Joyful Pirate, Six-Eyes Sorcerer, Shadow Monarch, Nine-Tail Shinobi, Thunder Flash Blade, Steel Alchemist, Gravity Ronin, Golden Ascended Warrior).",
+    "3:4 vertical trading-card framing with bold cel-shaded ink contours, dramatic rim light, and zero baked-in text or watermarks so Roblox ImageLabels & Decals stay razor-sharp.",
     "Clean separation of artwork assets (`data_dir/game-assets/`) and `.rbxlx` `Decal`/`ImageLabel` bindings via `asset-manifest.json`.",
   ],
   archetypes: [
     {
-      id: "shadow-monarch-homage",
-      archetype: "Shadow Necromancer Monarch",
-      homage_title: "Shadow Sovereign",
-      element: "Shadow",
-      rarity: "Celestial",
-      visual_cues: "Obsidian coat, twin violet-cyan spectral blades, rising phantom knights",
-      prompt_template: "Cel-shaded anime trading card portrait, 3:4 vertical, dark sovereign in obsidian cloak wielding twin glowing violet spectral daggers with shadow knights emerging behind, zero text.",
+      id: "joyful-pirate-epithet",
+      archetype: "Straw-Hat Pirate Captain",
+      homage_title: "Joyful Pirate",
+      element: "Flame",
+      rarity: "Mythic",
+      visual_cues: "Crimson coat, straw hat silhouette, blazing ember fists over ocean spray",
+      prompt_template: "Cel-shaded anime trading card portrait, 3:4 vertical, unmistakably recognizable red-coated joyful pirate captain leaping over crashing ocean waves with blazing ember fists and billowing crimson cape, zero text.",
     },
     {
-      id: "limitless-sorcerer-homage",
-      archetype: "Spatial Infinity Sorcerer",
-      homage_title: "Infinity Void Sorcerer",
+      id: "six-eyes-sorcerer-epithet",
+      archetype: "Limitless Spatial Sorcerer",
+      homage_title: "Six-Eyes Sorcerer",
       element: "Void",
       rarity: "Celestial",
-      visual_cues: "Silver hair, luminous cyan gaze, collapsing violet-red void sphere",
-      prompt_template: "Cel-shaded anime trading card portrait, 3:4 vertical, silver-haired sorcerer channeling a glowing crimson-and-violet singularity orb between outstretched fingers, crisp ink lines, zero text.",
+      visual_cues: "Spiky silver hair, luminous cyan six-eyes gaze, collapsing violet-crimson singularity orb",
+      prompt_template: "Cel-shaded anime trading card portrait, 3:4 vertical, unmistakably recognizable silver-haired six-eyes sorcerer channeling a glowing crimson-and-violet singularity orb between outstretched fingers, crisp ink lines, zero text.",
     },
     {
-      id: "thunder-iaido-homage",
+      id: "shadow-monarch-epithet",
+      archetype: "Shadow Necromancer Sovereign",
+      homage_title: "Shadow Monarch",
+      element: "Shadow",
+      rarity: "Celestial",
+      visual_cues: "Obsidian coat, twin violet-cyan spectral daggers, rising phantom shadow knights",
+      prompt_template: "Cel-shaded anime trading card portrait, 3:4 vertical, unmistakably recognizable obsidian-cloaked shadow monarch wielding twin glowing violet spectral daggers with shadow knights emerging behind, zero text.",
+    },
+    {
+      id: "nine-tail-shinobi-epithet",
+      archetype: "Nine-Tail Chakra Ninja",
+      homage_title: "Nine-Tail Shinobi",
+      element: "Flame",
+      rarity: "Mythic",
+      visual_cues: "Golden-orange chakra cloak, translucent flame tails, spinning spiral sphere",
+      prompt_template: "Cel-shaded anime trading card portrait, 3:4 vertical, unmistakably recognizable orange-and-gold nine-tail shinobi cloaked in glowing flame chakra channeling a spinning energy sphere, zero text.",
+    },
+    {
+      id: "thunder-flash-blade-epithet",
       archetype: "Lightning Iaido Swordsman",
-      homage_title: "Thunder Flash Ronin",
+      homage_title: "Thunder Flash Blade",
       element: "Storm",
       rarity: "Legendary",
-      visual_cues: "Amber-gold haori, mid-flash katana draw, jagged golden lightning arcs",
-      prompt_template: "Cel-shaded anime trading card portrait, 3:4 vertical, swordsman in golden-amber patterned haori unleashing a blinding thunderclap katana dash through storm sparks, zero text.",
+      visual_cues: "Amber-gold haori, mid-flash katana draw, crackling golden lightning arcs",
+      prompt_template: "Cel-shaded anime trading card portrait, 3:4 vertical, unmistakably recognizable swordsman in golden-amber patterned haori unleashing a blinding thunderclap katana dash through storm sparks, zero text.",
     },
     {
-      id: "ascended-martial-homage",
-      archetype: "Ascended Starlight Martial Artist",
-      homage_title: "Supernova Ascended Striker",
+      id: "golden-ascended-warrior-epithet",
+      archetype: "Ascended Golden Martial Artist",
+      homage_title: "Golden Ascended Warrior",
       element: "Flame",
       rarity: "Secret",
-      visual_cues: "Radiant supernova aura, spiky golden crest, cosmic energy surge",
-      prompt_template: "Cel-shaded anime trading card portrait, 3:4 vertical, ascended cosmic martial artist bursting with golden-white supernova lightning and starlight energy waves, dynamic camera angle, zero text.",
+      visual_cues: "Radiant golden supernova aura, spiky golden crest, battle-torn gi",
+      prompt_template: "Cel-shaded anime trading card portrait, 3:4 vertical, unmistakably recognizable golden ascended martial warrior bursting with golden-white supernova lightning and starlight energy waves, dynamic camera angle, zero text.",
     },
   ],
 };
@@ -447,9 +483,22 @@ export function normalizeAssetList(raw: unknown): CardAssetRecord[] {
             ? "openai-api"
             : "upload";
 
+      const isBundledDefault =
+        Boolean(base) && (source === "google-nano-banana" || source === "nano-banana");
+      const rawTitle =
+        typeof r.epithet_title === "string" && r.epithet_title.trim()
+          ? r.epithet_title.trim()
+          : typeof r.title_epithet === "string" && r.title_epithet.trim()
+            ? r.title_epithet.trim()
+            : isBundledDefault && base
+              ? base.title
+              : typeof r.title === "string" && r.title.trim()
+                ? r.title.trim()
+                : base?.title || cardId;
+
       byId.set(cardId, {
         card_id: cardId,
-        title: typeof r.title === "string" && r.title.trim() ? r.title.trim() : base?.title || cardId,
+        title: rawTitle,
         rarity,
         odds: typeof r.odds === "string" && r.odds.trim() ? r.odds.trim() : base?.odds || "1 in 64",
         element,
@@ -498,7 +547,7 @@ export function normalizeArtKnowledge(raw: unknown): ArtKnowledgeGuide {
       const rarity = (RARITY_ORDER.includes(String(a.rarity) as CardRarity)
         ? String(a.rarity)
         : "Mythic") as CardRarity;
-      const homageTitle = String(a.homage_title || a.title || "Original Homage");
+      const homageTitle = String(a.epithet_title || a.title_epithet || a.homage_title || a.title || "Iconic Title");
       const rawPrompt = String(a.prompt_template || a.prompt || "").trim();
       const promptTpl =
         rawPrompt ||
@@ -518,10 +567,20 @@ export function normalizeArtKnowledge(raw: unknown): ArtKnowledgeGuide {
     })
     .filter((a) => a.prompt_template.length > 0);
 
+  const extraRules = [o.visual_fidelity_rule, o.title_epithet_rule].filter(
+    (x): x is string => typeof x === "string" && x.trim().length > 0,
+  );
+  const combinedPolicy =
+    extraRules.length > 0
+      ? extraRules.join(" ")
+      : typeof o.policy_note === "string" && o.policy_note.trim()
+        ? o.policy_note.trim()
+        : ART_KNOWLEDGE_FALLBACK.policy_note;
+
   return {
     title: typeof o.title === "string" && o.title.trim() ? o.title.trim() : ART_KNOWLEDGE_FALLBACK.title,
     summary: typeof o.summary === "string" && o.summary.trim() ? o.summary.trim() : ART_KNOWLEDGE_FALLBACK.summary,
-    policy_note: typeof o.policy_note === "string" && o.policy_note.trim() ? o.policy_note.trim() : ART_KNOWLEDGE_FALLBACK.policy_note,
+    policy_note: combinedPolicy,
     style_pillars: pillars.length ? pillars : ART_KNOWLEDGE_FALLBACK.style_pillars,
     archetypes: archetypes.length ? archetypes : ART_KNOWLEDGE_FALLBACK.archetypes,
   };

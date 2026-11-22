@@ -639,7 +639,7 @@ export function CardBattlerStage({
 
       {/* Mode Switcher */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <SegmentedControl aria-label="Anime Card Battles modes" size="sm">
+        <SegmentedControl aria-label="Untitled Anime Card Game modes" size="sm">
           <SegmentedControlItem
             data-checked={tab === "roll" ? "" : undefined}
             aria-pressed={tab === "roll"}
@@ -1079,7 +1079,7 @@ export function CardBattlerStage({
                 className="max-md:min-h-11"
               >
                 <Zap className="size-3.5" strokeWidth={1.5} aria-hidden />
-                Ultimate Burst
+                Chain Overdrive (+35%)
               </Button>
             </div>
 
