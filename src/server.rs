@@ -4849,7 +4849,7 @@ fn cached_embed_detection(shared: &Shared) -> crate::studio_embed::HostStudioDet
     fresh
 }
 
-fn invalidate_embed_detect_cache(shared: &Shared) {
+pub(crate) fn invalidate_embed_detect_cache(shared: &Shared) {
     *shared.cached_embed_detect.lock().unwrap() = None;
 }
 
@@ -4889,6 +4889,8 @@ fn build_embed_status_payload(shared: &Shared) -> Value {
             "studio_running": detect.studio_running,
             "studio_display": detect.studio_display,
             "already_logged_in": detect.already_logged_in,
+            "place_open": detect.place_open,
+            "guidance": detect.guidance,
             "running_studios": detect.running_studios,
             "vinegar_installed": detect.studio_installed,
             "xvfb_installed": detect.xvfb_available,
@@ -4900,8 +4902,10 @@ fn build_embed_status_payload(shared: &Shared) -> Value {
             "available_tools": crate::agent::OFFICIAL_STUDIO_MCP_TOOLS,
         });
     };
-    let detect = if state.phase == "connected" || state.phase == "awaiting_signin" {
-        // Active session or background auto-attacher already tracks MCP state;
+    let detect = if (state.phase == "connected" && state.place_open)
+        || state.phase == "awaiting_signin"
+    {
+        // Active open-place session or background auto-attacher already tracks MCP state;
         // avoid spawning redundant passive MCP probes on every UI status poll.
         crate::studio_embed::detect_studio_environment_fast()
     } else {
@@ -4926,18 +4930,30 @@ fn build_embed_status_payload(shared: &Shared) -> Value {
         "idle"
     };
     let mut running_studios = detect.running_studios.clone();
+    let place_open = if state.mcp_connected {
+        state.place_open || detect.place_open
+    } else {
+        detect.place_open
+    };
     if state.mcp_connected && running_studios.is_empty() {
         if let Some(ref sid) = state.studio_id {
             running_studios.push(json!({
                 "studio_id": sid,
                 "place_name": Value::Null,
-                "datamodel_type": state.datamodel_type,
+                "datamodel_type": if place_open { state.datamodel_type.as_str() } else { "Unavailable" },
+                "place_open": place_open,
+                "studio_state": if place_open { Value::Null } else { json!("Place is not open") },
             }));
         }
     }
     let already_logged_in = detect.already_logged_in || (state.mcp_connected && state.studio_id.is_some());
     let studio_running = detect.studio_running || state.embedded;
     let studio_display = detect.studio_display.clone().or_else(|| state.display.clone());
+    let guidance = if already_logged_in && !place_open {
+        "Studio is on the Start Page — open a blank Baseplate to sync/playtest.".to_string()
+    } else {
+        detect.guidance.clone()
+    };
 
     let mut obj = state.to_json_with_detection(&detect);
     if let Some(map) = obj.as_object_mut() {
@@ -4950,6 +4966,8 @@ fn build_embed_status_payload(shared: &Shared) -> Value {
         map.insert("studio_running".to_string(), json!(studio_running));
         map.insert("studio_display".to_string(), json!(studio_display));
         map.insert("already_logged_in".to_string(), json!(already_logged_in));
+        map.insert("place_open".to_string(), json!(place_open));
+        map.insert("guidance".to_string(), json!(guidance));
         map.insert("running_studios".to_string(), json!(running_studios));
         map.insert("vinegar_installed".to_string(), json!(detect.studio_installed));
         map.insert("xvfb_installed".to_string(), json!(detect.xvfb_available));
@@ -5099,8 +5117,13 @@ fn spawn_embed_mcp_auto_attacher(
             if stop_flag.load(Ordering::Relaxed) {
                 return;
             }
+            let place_open = crate::studio_embed::probe_client_place_open(&mut client);
             let studio_id = client.studio_id().map(ToString::to_string);
-            let datamodel_type = client.datamodel_type().to_string();
+            let datamodel_type = if place_open {
+                client.datamodel_type().to_string()
+            } else {
+                "Unavailable".to_string()
+            };
             let tools = client.tools().to_vec();
             let official_count = client.official_tools_available().len();
             // Attach PlaceBackend::Mcp + capture initial live frame BEFORE exposing
@@ -5118,6 +5141,7 @@ fn spawn_embed_mcp_auto_attacher(
                     official_count,
                     Some(mcp_cmd.clone()),
                 );
+                mgr.set_place_open(place_open);
                 mgr.state().x11grab_active
             };
             invalidate_embed_detect_cache(&shared);
@@ -5207,6 +5231,7 @@ fn handle_studio_embed_launch(
                     "running": true,
                     "connected": true,
                     "awaiting_signin": false,
+                    "place_open": embed_state.place_open,
                     "phase": "connected",
                     "studio_connected": true,
                     "workspace_mode": "studio_mcp",

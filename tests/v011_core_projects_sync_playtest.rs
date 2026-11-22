@@ -1394,3 +1394,244 @@ fn embed_live_auth_streams_awaiting_signin_and_auto_promotes_on_login() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn start_page_detection_reports_place_open_false_and_hints_sync() {
+    use openro_rs::studio_embed::infer_place_open_from_state;
+
+    // 1. Unit checks across all real/wrapped Start Page vs open-place responses (#47)
+    assert!(!infer_place_open_from_state(Ok(&json!({
+        "mode": "Unavailable",
+        "state": "Place is not open"
+    })))
+    .0);
+    assert!(!infer_place_open_from_state(Ok(&json!({
+        "ok": true,
+        "output": "Place is not open"
+    })))
+    .0);
+    assert!(!infer_place_open_from_state(Err("Studio bridge error: Place is not open")).0);
+    assert!(!infer_place_open_from_state(Ok(&json!({
+        "datamodel_types": []
+    })))
+    .0);
+    assert!(infer_place_open_from_state(Ok(&json!({
+        "mode": "edit",
+        "active_datamodel": "Edit",
+        "datamodel_types": ["Edit"]
+    })))
+    .0);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir("start-page-detect");
+        let data = root.join("data");
+        let ws = root.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+
+        let mock_bin = env!("CARGO_BIN_EXE_mock_studio");
+        let wrapper = root.join("start_page_mock.sh");
+        let script = format!("#!/bin/sh\nexport MOCK_START_PAGE=1\nexec '{mock_bin}'\n");
+        std::fs::write(&wrapper, script).unwrap();
+        let mut perms = std::fs::metadata(&wrapper).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&wrapper, perms).unwrap();
+
+        // 2. Passive probe_running_studios flags place_open: false on Start Page
+        let probed = openro_rs::studio_embed::probe_running_studios(&wrapper.to_string_lossy());
+        assert_eq!(probed.len(), 1, "expected 1 running studio: {probed:?}");
+        assert_eq!(probed[0]["place_open"], json!(false));
+        assert_eq!(probed[0]["datamodel_type"], json!("Unavailable"));
+        assert_eq!(probed[0]["studio_state"], json!("Place is not open"));
+
+        // 3. Attach via HTTP -> status reports already_logged_in: true, place_open: false, Start Page guidance
+        let port = start_server(None, data);
+        let (code, _) = api_json(port, "POST", "/api/projects/workspace", Some(json!({ "path": ws })));
+        assert_eq!(code, 200);
+        let (code, created) = api_json(
+            port,
+            "POST",
+            "/api/projects/create",
+            Some(json!({ "name": "StartPageTest", "parent": ws })),
+        );
+        assert_eq!(code, 201);
+        let pid = created["project"]["id"].as_str().unwrap().to_string();
+
+        let (code, att) = api_json(
+            port,
+            "POST",
+            "/api/studio/embed/attach",
+            Some(json!({ "mcp_command": wrapper.to_string_lossy() })),
+        );
+        assert_eq!(code, 200, "attach failed: {att}");
+        assert_eq!(att["place_open"], json!(false));
+        assert_eq!(att["status"]["already_logged_in"], json!(true));
+        assert_eq!(att["status"]["place_open"], json!(false));
+        assert!(
+            att["status"]["guidance"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Studio is on the Start Page"),
+            "missing Start Page guidance: {att}"
+        );
+
+        // 4. sync/diff surfaces clear Start Page hint pointing to open-in-studio
+        let (code, diff_err) = api_json(
+            port,
+            "POST",
+            &format!("/api/projects/{pid}/sync/diff"),
+            Some(json!({})),
+        );
+        assert_eq!(code, 502);
+        let err_msg = diff_err["error"].as_str().unwrap_or("");
+        assert!(err_msg.contains("Place is not open"), "{err_msg}");
+        assert!(err_msg.contains("open-in-studio"), "{err_msg}");
+
+        let _ = api_json(port, "POST", "/api/studio/embed/stop", Some(json!({})));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[test]
+fn project_open_in_studio_builds_and_opens_rbxlx_with_dry_run_and_reuse() {
+    let root = temp_dir("open-in-studio");
+    let data = root.join("data");
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let port = start_server(None, data);
+    let (code, _) = api_json(port, "POST", "/api/projects/workspace", Some(json!({ "path": ws })));
+    assert_eq!(code, 200);
+    let (code, created) = api_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(json!({ "name": "OpenStudioGame", "parent": ws })),
+    );
+    assert_eq!(code, 201);
+    let pid = created["project"]["id"].as_str().unwrap().to_string();
+
+    // 1. Non-loopback refused 403
+    let (evil_code, _, _) = http_req(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/open-in-studio"),
+        "evil.example:8077",
+        Some("{}"),
+    );
+    assert_eq!(evil_code, 403);
+
+    // 2. dry_run builds fresh .rbxlx without spawning Studio
+    let (code, dry1) = api_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/open-in-studio"),
+        Some(json!({ "dry_run": true, "engine": "builtin" })),
+    );
+    assert_eq!(code, 200, "open-in-studio dry_run failed: {dry1}");
+    assert_eq!(dry1["ok"], json!(true));
+    assert_eq!(dry1["rebuilt"], json!(true));
+    assert_eq!(dry1["launched"], json!(false));
+    assert_eq!(dry1["dry_run"], json!(true));
+    let build_id = dry1["build_id"].as_str().unwrap().to_string();
+    let rbxlx_path = dry1["rbxlx_path"].as_str().unwrap().to_string();
+    assert!(std::path::Path::new(&rbxlx_path).is_file(), "missing built rbxlx: {rbxlx_path}");
+    assert!(!dry1["command"].as_array().unwrap().is_empty());
+
+    // 3. rebuild: false reuses existing built .rbxlx
+    let (code, dry2) = api_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/open-in-studio"),
+        Some(json!({ "rebuild": false, "dry_run": true })),
+    );
+    assert_eq!(code, 200, "open-in-studio reuse failed: {dry2}");
+    assert_eq!(dry2["rebuilt"], json!(false));
+    assert_eq!(dry2["build_id"], json!(build_id));
+    assert_eq!(dry2["rbxlx_path"], json!(rbxlx_path));
+
+    // 4. End-to-end launch via OPENRO_OPEN_STUDIO_CMD against isolated openro-rs child binary
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let launched_log = root.join("launched_rbxlx.txt");
+        let launcher = root.join("fake_studio_open.sh");
+        std::fs::write(
+            &launcher,
+            format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", launched_log.display()),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&launcher).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&launcher, perms).unwrap();
+
+        let probe_sock = TcpListener::bind(("127.0.0.1", 0)).expect("ephemeral port");
+        let child_port = probe_sock.local_addr().unwrap().port();
+        drop(probe_sock);
+
+        let child_data = root.join("child-data");
+        std::fs::create_dir_all(&child_data).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_openro-rs"))
+            .args([
+                "--no-open",
+                "--port",
+                &child_port.to_string(),
+                "--data-dir",
+                &child_data.to_string_lossy(),
+            ])
+            .env("OPENRO_NO_OPEN", "1")
+            .env("OPENRO_NO_AUTO_PLUGIN", "1")
+            .env("OPENRO_NO_STATUS_MCP_PROBE", "1")
+            .env("OPENRO_OPEN_STUDIO_CMD", &launcher)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn openro-rs");
+
+        // Wait for child server ready
+        let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < ready_deadline {
+            if std::net::TcpStream::connect(("127.0.0.1", child_port)).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        let (code, _) = api_json(
+            child_port,
+            "POST",
+            "/api/projects/workspace",
+            Some(json!({ "path": ws })),
+        );
+        assert_eq!(code, 200);
+        let (code, res) = api_json(
+            child_port,
+            "POST",
+            &format!("/api/projects/{pid}/open-in-studio"),
+            Some(json!({ "rebuild": false })),
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+
+        assert_eq!(code, 200, "child open-in-studio failed: {res}");
+        assert_eq!(res["launched"], json!(true));
+        assert!(res["pid"].as_u64().unwrap_or(0) > 0);
+
+        // Wait briefly for tiny shell script to finish writing launched_rbxlx.txt
+        let write_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !launched_log.exists() && std::time::Instant::now() < write_deadline {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let recorded = std::fs::read_to_string(&launched_log).unwrap_or_default();
+        assert!(
+            recorded.ends_with(".rbxlx"),
+            "launcher did not receive built .rbxlx path: '{recorded}'"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&root);
+}
