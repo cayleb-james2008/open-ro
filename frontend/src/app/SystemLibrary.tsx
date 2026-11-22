@@ -52,7 +52,7 @@ export function SystemLibrary({
 
   return (
     <section
-      aria-label="22 Game Systems Library"
+      aria-label="28 Game Systems Library"
       className="rounded-card border border-hairline bg-surface"
     >
       <Expandable
@@ -63,12 +63,12 @@ export function SystemLibrary({
       >
         {({ isExpanded }) => (
           <>
-            <div className="flex flex-wrap items-center justify-between gap-2 bg-board/55 px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 bg-board/55 px-3.5 py-2.5">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <Layers className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
                 <h3 className="text-ui font-medium text-ink">Game Systems Library</h3>
                 <Pill className="bg-tag-sky-bg px-2 py-0.5 font-mono text-xs tabular-nums text-tag-sky-fg">
-                  22 Game Systems
+                  28 Game Systems
                 </Pill>
                 {installedCount > 0 && (
                   <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-active-fg">
@@ -78,10 +78,10 @@ export function SystemLibrary({
               </div>
 
               <ExpandableTrigger
-                aria-label={isExpanded ? "Hide 22 Game Systems Library" : "Browse all 22 Game Systems"}
+                aria-label={isExpanded ? "Hide 28 Game Systems Library" : "Browse all 28 Game Systems"}
                 className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-hairline bg-surface px-3 text-xs font-medium text-ink outline-none transition-[color,background-color,border-color] duration-(--dur-press) ease-(--ease-house) hover:bg-board md:min-h-8"
               >
-                <span>{isExpanded ? "Hide library" : "Browse 22 systems"}</span>
+                <span>{isExpanded ? "Hide library" : "Browse 28 systems"}</span>
                 <ChevronDown
                   className={`size-3.5 transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`}
                   strokeWidth={1.5}
@@ -126,7 +126,7 @@ export function SystemLibrary({
                       type="search"
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
-                      aria-label="Search 22 game systems"
+                      aria-label="Search 28 game systems"
                       placeholder="Search systems…"
                       className="[&_input]:max-md:!min-h-11 [&_input]:md:!h-8"
                     />
