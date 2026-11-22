@@ -55,6 +55,162 @@ fn playtest() -> Value {
     json!({ "tool": "playtest", "args": {} })
 }
 
+fn part_at(
+    name: &str,
+    parent: &str,
+    pos: [f64; 3],
+    size: [f64; 3],
+    color: &str,
+    material: &str,
+) -> Value {
+    instance(
+        "Part",
+        name,
+        parent,
+        json!({
+            "Anchored": true,
+            "CanCollide": true,
+            "Position": pos,
+            "Size": size,
+            "Color": color,
+            "Material": material,
+        }),
+    )
+}
+
+fn apex_hub_world_instances() -> Vec<Value> {
+    let mut out = vec![
+        instance(
+            "SpawnLocation",
+            "SpawnPad",
+            "Workspace",
+            json!({
+                "Anchored": true,
+                "CanCollide": true,
+                "Position": [0.0, 2.2, 0.0],
+                "Size": [12.0, 1.0, 12.0],
+                "Color": "#4F7CF0",
+                "Material": "SmoothPlastic",
+            }),
+        ),
+        part_at("RollPedestal", "Workspace", [0.0, 3.8, -61.0], [12.0, 1.0, 12.0], "#4F7CF0", "Neon"),
+        part_at("TowerPortal", "Workspace", [-80.0, 21.0, -18.0], [7.5, 38.0, 7.5], "#38BDF8", "Neon"),
+        part_at("BossRaidShrine", "Workspace", [80.0, 7.5, -36.0], [18.0, 10.0, 6.0], "#E0532A", "Slate"),
+        part_at("PotionStand", "Workspace", [-74.0, 1.4, 30.0], [34.0, 2.0, 34.0], "#21332E", "WoodPlanks"),
+        instance("Folder", "ApexLobby", "Workspace", json!({})),
+        instance("Sky", "ApexSky", "Lighting", json!({ "StarCount": 3500 })),
+        instance("Atmosphere", "ApexAtmosphere", "Lighting", json!({ "Density": 0.28, "Haze": 1.2 })),
+        instance("BloomEffect", "ApexBloom", "Lighting", json!({ "Enabled": true, "Intensity": 0.85, "Size": 24 })),
+        instance("SunRaysEffect", "ApexSunRays", "Lighting", json!({ "Enabled": true, "Intensity": 0.14 })),
+        instance("ColorCorrectionEffect", "ApexColorCorrection", "Lighting", json!({ "Enabled": true, "Contrast": 0.12, "Saturation": 0.18 })),
+        // Celestial Arena Island Courtyard, Koi Moat & Stone Bridges
+        part_at("IslandBaseTier1", "Workspace.ApexLobby", [0.0, -2.0, 0.0], [168.0, 4.0, 168.0], "#181E30", "Slate"),
+        part_at("CourtyardMain", "Workspace.ApexLobby", [0.0, 0.8, 0.0], [96.0, 1.6, 96.0], "#232B42", "Marble"),
+        part_at("CenterEmblemFloor", "Workspace.ApexLobby", [0.0, 1.8, 0.0], [34.0, 0.4, 34.0], "#1A2136", "SmoothPlastic"),
+        part_at("EmblemTrimN", "Workspace.ApexLobby", [0.0, 2.02, -17.0], [35.0, 0.2, 0.9], "#38BDF8", "Neon"),
+        part_at("EmblemTrimS", "Workspace.ApexLobby", [0.0, 2.02, 17.0], [35.0, 0.2, 0.9], "#38BDF8", "Neon"),
+        part_at("EmblemTrimE", "Workspace.ApexLobby", [17.0, 2.02, 0.0], [0.9, 0.2, 35.0], "#38BDF8", "Neon"),
+        part_at("EmblemTrimW", "Workspace.ApexLobby", [-17.0, 2.02, 0.0], [0.9, 0.2, 35.0], "#38BDF8", "Neon"),
+        part_at("KoiMoatNorth", "Workspace.ApexLobby", [0.0, 0.4, -55.0], [124.0, 0.6, 14.0], "#0EA5E9", "Glass"),
+        part_at("KoiMoatSouth", "Workspace.ApexLobby", [0.0, 0.4, 52.0], [124.0, 0.6, 10.0], "#0EA5E9", "Glass"),
+        part_at("KoiMoatEast", "Workspace.ApexLobby", [55.0, 0.4, 0.0], [14.0, 0.6, 124.0], "#0EA5E9", "Glass"),
+        part_at("KoiMoatWest", "Workspace.ApexLobby", [-55.0, 0.4, 0.0], [14.0, 0.6, 124.0], "#0EA5E9", "Glass"),
+        part_at("NorthBridgeDeck", "Workspace.ApexLobby", [0.0, 2.0, -44.0], [12.0, 1.0, 36.0], "#2B3450", "Marble"),
+        part_at("NorthBridgeRailL", "Workspace.ApexLobby", [-6.2, 2.9, -44.0], [0.8, 1.2, 36.0], "#38BDF8", "Neon"),
+        part_at("NorthBridgeRailR", "Workspace.ApexLobby", [6.2, 2.9, -44.0], [0.8, 1.2, 36.0], "#38BDF8", "Neon"),
+        part_at("SouthBridgeDeck", "Workspace.ApexLobby", [0.0, 2.0, 44.0], [16.0, 1.0, 30.0], "#2B3450", "Marble"),
+        part_at("EastBridgeDeck", "Workspace.ApexLobby", [44.0, 2.0, -14.0], [36.0, 1.0, 12.0], "#2B3450", "Marble"),
+        part_at("WestBridgeDeck", "Workspace.ApexLobby", [-44.0, 2.0, -14.0], [36.0, 1.0, 12.0], "#2B3450", "Marble"),
+        part_at("PathSEBridge", "Workspace.ApexLobby", [44.0, 2.0, 28.0], [36.0, 1.0, 10.0], "#2B3450", "Marble"),
+        part_at("PathSWBridge", "Workspace.ApexLobby", [-44.0, 2.0, 28.0], [36.0, 1.0, 10.0], "#2B3450", "Marble"),
+        // Japanese Torii Summon Shrine
+        part_at("ShrineDais1", "Workspace.ApexLobby", [0.0, 1.6, -70.0], [40.0, 1.8, 28.0], "#1E2538", "Slate"),
+        part_at("ShrineDais2", "Workspace.ApexLobby", [0.0, 2.8, -70.0], [30.0, 1.2, 20.0], "#29324B", "Marble"),
+        part_at("ToriiBaseL", "Workspace.ApexLobby", [-9.5, 4.4, -71.0], [3.4, 2.2, 3.4], "#111520", "Marble"),
+        part_at("ToriiBaseR", "Workspace.ApexLobby", [9.5, 4.4, -71.0], [3.4, 2.2, 3.4], "#111520", "Marble"),
+        part_at("ToriiPillarL", "Workspace.ApexLobby", [-9.5, 13.5, -71.0], [2.4, 16.5, 2.4], "#C82820", "SmoothPlastic"),
+        part_at("ToriiPillarR", "Workspace.ApexLobby", [9.5, 13.5, -71.0], [2.4, 16.5, 2.4], "#C82820", "SmoothPlastic"),
+        part_at("ToriiNukiBeam", "Workspace.ApexLobby", [0.0, 17.5, -71.0], [25.0, 1.4, 1.4], "#C82820", "SmoothPlastic"),
+        part_at("ToriiShimakiBeam", "Workspace.ApexLobby", [0.0, 21.4, -71.0], [27.5, 1.4, 2.0], "#C82820", "SmoothPlastic"),
+        part_at("ToriiKasagiCenter", "Workspace.ApexLobby", [0.0, 22.9, -71.0], [20.0, 1.5, 2.8], "#151924", "Slate"),
+        part_at("ToriiPlaque", "Workspace.ApexLobby", [0.0, 19.5, -71.0], [3.4, 3.4, 1.8], "#FACC15", "Metal"),
+        part_at("SummonLightBeam", "Workspace.ApexLobby", [0.0, 18.0, -71.0], [4.5, 30.0, 4.5], "#38BDF8", "Neon"),
+        part_at("ToriiHaloOuter", "Workspace.ApexLobby", [0.0, 12.5, -71.0], [10.5, 0.7, 10.5], "#38BDF8", "Neon"),
+        part_at("ToriiHaloInner", "Workspace.ApexLobby", [0.0, 12.5, -71.0], [7.2, 0.6, 7.2], "#FACC15", "Neon"),
+        // Boss Raid Colosseum + Champion Statue + Damage Pillar
+        part_at("ColosseumFloor", "Workspace.ApexLobby", [80.0, 1.4, -18.0], [46.0, 2.0, 46.0], "#272030", "Slate"),
+        part_at("ColosseumInnerRing", "Workspace.ApexLobby", [80.0, 2.6, -18.0], [28.0, 0.6, 28.0], "#3D1E26", "Marble"),
+        part_at("StatuePlinth", "Workspace.ApexLobby", [80.0, 4.2, -24.0], [8.0, 3.2, 8.0], "#1C1926", "Granite"),
+        part_at("StatueTorso", "Workspace.ApexLobby", [80.0, 11.4, -24.0], [4.8, 4.4, 2.8], "#B91C1C", "Metal"),
+        part_at("StatueHelm", "Workspace.ApexLobby", [80.0, 15.2, -24.0], [2.8, 2.8, 2.8], "#FACC15", "Metal"),
+        part_at("StatueSwordL", "Workspace.ApexLobby", [75.2, 11.0, -22.5], [0.7, 9.0, 1.0], "#EF4444", "Neon"),
+        part_at("StatueSwordR", "Workspace.ApexLobby", [84.8, 11.0, -22.5], [0.7, 9.0, 1.0], "#EF4444", "Neon"),
+        part_at("DamagePillar", "Workspace.ApexLobby", [66.0, 7.5, -18.0], [5.5, 10.5, 2.2], "#1F1624", "SmoothPlastic"),
+        // Infinite Tower Plinth + Alchemist Cauldron Pavilion + PvP Duel Arena + Hall Promenade
+        part_at("TowerPlinth", "Workspace.ApexLobby", [-80.0, 1.4, -18.0], [44.0, 2.0, 44.0], "#181C2E", "Slate"),
+        part_at("CauldronBase", "Workspace.ApexLobby", [-78.0, 3.0, 30.0], [8.0, 1.2, 8.0], "#1E293B", "Metal"),
+        part_at("CauldronBody", "Workspace.ApexLobby", [-78.0, 5.4, 30.0], [6.5, 4.2, 6.5], "#0F172A", "Metal"),
+        part_at("CauldronBrew", "Workspace.ApexLobby", [-78.0, 7.6, 30.0], [5.2, 0.5, 5.2], "#34D399", "Neon"),
+        part_at("TraitAnvilBase", "Workspace.ApexLobby", [-67.0, 3.5, 30.0], [5.5, 2.2, 4.2], "#312E81", "Metal"),
+        part_at("TraitForgeCrystal", "Workspace.ApexLobby", [-67.0, 6.0, 30.0], [2.4, 3.2, 2.4], "#A855F7", "Neon"),
+        part_at("DuelArenaStage", "Workspace.ApexLobby", [76.0, 1.4, 30.0], [46.0, 2.0, 36.0], "#1E263D", "Marble"),
+        part_at("ClashCenterPlatform", "Workspace.ApexLobby", [76.0, 2.7, 30.0], [12.0, 0.8, 12.0], "#FACC15", "Neon"),
+        part_at("HallPromenade", "Workspace.ApexLobby", [0.0, 1.4, 65.0], [96.0, 2.0, 28.0], "#22293F", "Granite"),
+        part_at("LeaderboardWall", "Workspace.ApexLobby", [0.0, 9.0, 77.0], [30.0, 12.5, 2.2], "#141A29", "SmoothPlastic"),
+    ];
+
+    for (idx, (cx, cz)) in [(-40.0, -40.0), (40.0, -40.0), (-40.0, 40.0), (40.0, 40.0)]
+        .into_iter()
+        .enumerate()
+    {
+        let n = idx + 1;
+        out.push(part_at(&format!("PlazaPillarBase{n}"), "Workspace.ApexLobby", [cx, 2.6, cz], [6.0, 2.0, 6.0], "#1E293B", "Marble"));
+        out.push(part_at(&format!("PlazaPillarShaft{n}"), "Workspace.ApexLobby", [cx, 8.6, cz], [3.5, 10.0, 3.5], "#334155", "Marble"));
+        out.push(part_at(&format!("PlazaPillarOrb{n}"), "Workspace.ApexLobby", [cx, 15.0, cz], [3.2, 3.2, 3.2], "#A855F7", "Neon"));
+    }
+
+    for (idx, (bx, bz)) in [(66.0, -30.0), (94.0, -30.0), (66.0, -6.0), (94.0, -6.0)]
+        .into_iter()
+        .enumerate()
+    {
+        let n = idx + 1;
+        out.push(part_at(&format!("BrazierStand{n}"), "Workspace.ApexLobby", [bx, 4.5, bz], [2.6, 4.2, 2.6], "#1E1B29", "Metal"));
+        out.push(part_at(&format!("BrazierFlame{n}"), "Workspace.ApexLobby", [bx, 7.4, bz], [2.2, 2.2, 2.2], "#F97316", "Neon"));
+    }
+
+    for s in 0..12 {
+        let ang = (s as f64) * std::f64::consts::PI / 6.0;
+        let sx = -80.0 + ang.cos() * 9.0;
+        let sz = -18.0 + ang.sin() * 9.0;
+        let sy = 3.2 + (s as f64) * 2.4;
+        let col = if s % 2 == 0 { "#6366F1" } else { "#38BDF8" };
+        out.push(part_at(&format!("SpiralStep{:02}", s + 1), "Workspace.ApexLobby", [sx, sy, sz], [5.0, 0.9, 3.2], col, "Neon"));
+    }
+
+    for slot in 1..=4 {
+        let z_off = 19.5 + ((slot - 1) as f64) * 7.0;
+        out.push(part_at(&format!("LeftStagePad{slot}"), "Workspace.ApexLobby", [60.0, 2.7, z_off], [5.0, 0.7, 5.0], "#38BDF8", "Neon"));
+        out.push(part_at(&format!("RightStagePad{slot}"), "Workspace.ApexLobby", [92.0, 2.7, z_off], [5.0, 0.7, 5.0], "#EF4444", "Neon"));
+    }
+
+    for (tidx, (tx, tz)) in [
+        (-31.0, -31.0), (31.0, -31.0), (-31.0, 31.0), (31.0, 31.0),
+        (-44.0, 6.0), (44.0, 6.0), (-22.0, -46.0), (22.0, -46.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let n = tidx + 1;
+        out.push(part_at(&format!("SakuraTrunk{n}"), "Workspace.ApexLobby", [tx, 6.2, tz], [2.2, 9.2, 2.2], "#5C3A21", "Wood"));
+        out.push(part_at(&format!("SakuraCanopyMain{n}"), "Workspace.ApexLobby", [tx, 11.8, tz], [9.0, 6.0, 9.0], "#F472B6", "SmoothPlastic"));
+        out.push(part_at(&format!("SakuraCanopyL{n}"), "Workspace.ApexLobby", [tx - 2.6, 10.6, tz + 1.4], [5.8, 4.5, 5.8], "#F9A8D4", "SmoothPlastic"));
+        out.push(part_at(&format!("SakuraCanopyR{n}"), "Workspace.ApexLobby", [tx + 2.5, 10.9, tz - 1.5], [6.0, 4.5, 6.0], "#EC4899", "SmoothPlastic"));
+        out.push(part_at(&format!("SakuraLantern{n}"), "Workspace.ApexLobby", [tx, 8.2, tz - 2.5], [1.4, 1.8, 1.4], "#FBBF24", "Neon"));
+    }
+
+    out
+}
+
 fn spawn_pad() -> Value {
     instance(
         "SpawnLocation",
@@ -191,122 +347,73 @@ pub fn opening_ideas() -> Vec<Idea> {
         Idea {
             id: "anime-card-battles-apex",
             title: "Anime Card Battles: Rebirth — Apex Edition",
-            pitch: "A complete anime card-battler Roblox experience: 7-tier foil gacha \
-                    rolling with pity & weather luck, 6-slot Star Fusion & Rebirth decks, \
-                    tactical 5-element turn-based combat with Ultimate Bursts & Active \
-                    Counters, a 50-floor Endless Tower with 5 World Portals, dynamic \
-                    Potions/Weather/Codes, and a 3D Card Gallery Studio Lobby.",
-            plan: vec![
-                spawn_pad(),
-                instance(
-                    "Part",
-                    "RollPedestal",
-                    "Workspace",
-                    json!({
-                        "Anchored": true,
-                        "CanCollide": true,
-                        "Position": [0, 1.5, -14],
-                        "Size": [10, 2, 10],
-                        "Color": "#4F7CF0",
-                        "Material": "Neon"
-                    }),
-                ),
-                instance(
-                    "Part",
-                    "TowerPortal",
-                    "Workspace",
-                    json!({
-                        "Anchored": true,
-                        "CanCollide": true,
-                        "Position": [-28, 7.5, -24],
-                        "Size": [12, 14, 2],
-                        "Color": "#38BDF8",
-                        "Material": "Neon"
-                    }),
-                ),
-                instance(
-                    "Part",
-                    "BossRaidShrine",
-                    "Workspace",
-                    json!({
-                        "Anchored": true,
-                        "CanCollide": true,
-                        "Position": [28, 5.5, -24],
-                        "Size": [12, 10, 8],
-                        "Color": "#E0532A",
-                        "Material": "Slate"
-                    }),
-                ),
-                instance(
-                    "Part",
-                    "PotionStand",
-                    "Workspace",
-                    json!({
-                        "Anchored": true,
-                        "CanCollide": true,
-                        "Position": [-28, 3, 12],
-                        "Size": [10, 5, 6],
-                        "Color": "#3CB371",
-                        "Material": "WoodPlanks"
-                    }),
-                ),
-                skill(
-                    "leaderboard",
-                    json!({ "currency": "Coins", "start_amount": 250 }),
-                ),
-                write("ServerScriptService.Leaderboard", "leaderboard"),
-                skill(
-                    "datastore_save",
-                    json!({ "store_name": "OpenROApexEconomy_v1", "stat_name": "Coins", "default_value": 250, "autosave_seconds": 60, "bind_close": true }),
-                ),
-                write("ServerScriptService.DataStoreSave", "datastore_save"),
-                skill(
-                    "shop",
-                    json!({ "item_name": "Lucky Charm", "price": 250, "currency": "Coins" }),
-                ),
-                write("ServerScriptService.Shop", "shop"),
-                skill(
-                    "game_gui",
-                    json!({ "title": "Anime Card Battles: Apex", "button_label": "Buy Lucky Charm (250)", "currency": "Coins" }),
-                ),
-                write("StarterGui.GameGui", "game_gui"),
-                skill(
-                    "soundtrack",
-                    json!({ "sound_id": 0, "volume": 6, "looped": true }),
-                ),
-                write("ServerScriptService.Soundtrack", "soundtrack"),
-                skill(
-                    "card_gacha_roller",
-                    json!({ "base_luck_pct": 100, "pity_threshold": 50, "fast_roll_ms": 350, "enable_borders": true }),
-                ),
-                write("ServerScriptService.CardGachaRoller", "card_gacha_roller"),
-                skill(
-                    "deck_builder",
-                    json!({ "deck_slots": 6, "fusion_cost": 3, "rebirth_floor": 10, "store_name": "OpenROApexDecks_v1", "bind_close": true }),
-                ),
-                write("ServerScriptService.DeckBuilder", "deck_builder"),
-                skill(
-                    "card_battle_arena",
-                    json!({ "team_size": 4, "ultimate_charge_max": 100, "counter_window_ms": 800, "boss_hp_scale": 4 }),
-                ),
-                write("ServerScriptService.CardBattleArena", "card_battle_arena"),
-                skill(
-                    "tower_progression",
-                    json!({ "max_floors": 50, "world_count": 5, "base_reward": 120, "store_name": "OpenROTowerBoard_v1", "bind_close": true }),
-                ),
-                write("ServerScriptService.TowerProgression", "tower_progression"),
-                skill(
-                    "potions_weather",
-                    json!({ "weather_cycle_seconds": 90, "luck_potion_cost": 150, "speed_potion_cost": 120, "enable_codes": true }),
-                ),
-                write("ServerScriptService.PotionsWeather", "potions_weather"),
-                skill(
-                    "card_gallery_world",
-                    json!({ "lobby_name": "ApexLobby", "showcase_count": 8, "enable_holograms": true, "create_structures": true }),
-                ),
-                write("ServerScriptService.CardGalleryWorld", "card_gallery_world"),
-                playtest(),
-            ],
+            pitch: "A complete anime card-battler Roblox experience: 24 anime-homage cards \
+                    across 6 packs & 6 rarity tiers (Common 1/2 to Secret 1/50,000), pity & \
+                    7-biome weather luck, Traits & Craftable Charms, tactical 4v4 turn-based \
+                    combat with 5 Story Bosses, Infinite Tower & World Raid Boss, and a 120+ \
+                    part Celestial Arena Island hub with Japanese Torii Summon Shrine.",
+            plan: {
+                let mut steps = apex_hub_world_instances();
+                steps.extend(vec![
+                    skill(
+                        "leaderboard",
+                        json!({ "currency": "Coins", "start_amount": 250 }),
+                    ),
+                    write("ServerScriptService.Leaderboard", "leaderboard"),
+                    skill(
+                        "datastore_save",
+                        json!({ "store_name": "OpenROApexEconomy_v1", "stat_name": "Coins", "default_value": 250, "autosave_seconds": 60, "bind_close": true }),
+                    ),
+                    write("ServerScriptService.DataStoreSave", "datastore_save"),
+                    skill(
+                        "shop",
+                        json!({ "item_name": "Lucky Charm", "price": 250, "currency": "Coins" }),
+                    ),
+                    write("ServerScriptService.Shop", "shop"),
+                    skill(
+                        "game_gui",
+                        json!({ "title": "Anime Card Battles: Apex", "button_label": "Buy Lucky Charm (250)", "currency": "Coins" }),
+                    ),
+                    write("StarterGui.GameGui", "game_gui"),
+                    skill(
+                        "soundtrack",
+                        json!({ "sound_id": 0, "volume": 6, "looped": true }),
+                    ),
+                    write("ServerScriptService.Soundtrack", "soundtrack"),
+                    skill(
+                        "card_gacha_roller",
+                        json!({ "base_luck_pct": 100, "pity_threshold": 50, "fast_roll_ms": 350, "enable_borders": true }),
+                    ),
+                    write("ServerScriptService.CardGachaRoller", "card_gacha_roller"),
+                    skill(
+                        "deck_builder",
+                        json!({ "deck_slots": 6, "fusion_cost": 3, "rebirth_floor": 10, "store_name": "OpenROApexDecks_v1", "bind_close": true }),
+                    ),
+                    write("ServerScriptService.DeckBuilder", "deck_builder"),
+                    skill(
+                        "card_battle_arena",
+                        json!({ "team_size": 4, "ultimate_charge_max": 100, "counter_window_ms": 800, "boss_hp_scale": 4 }),
+                    ),
+                    write("ServerScriptService.CardBattleArena", "card_battle_arena"),
+                    skill(
+                        "tower_progression",
+                        json!({ "max_floors": 50, "world_count": 5, "base_reward": 120, "store_name": "OpenROTowerBoard_v1", "bind_close": true }),
+                    ),
+                    write("ServerScriptService.TowerProgression", "tower_progression"),
+                    skill(
+                        "potions_weather",
+                        json!({ "weather_cycle_seconds": 90, "luck_potion_cost": 150, "speed_potion_cost": 120, "enable_codes": true }),
+                    ),
+                    write("ServerScriptService.PotionsWeather", "potions_weather"),
+                    skill(
+                        "card_gallery_world",
+                        json!({ "lobby_name": "ApexLobby", "showcase_count": 8, "enable_holograms": true, "create_structures": true }),
+                    ),
+                    write("ServerScriptService.CardGalleryWorld", "card_gallery_world"),
+                    playtest(),
+                ]);
+                steps
+            },
             skills: vec![
                 "leaderboard",
                 "datastore_save",

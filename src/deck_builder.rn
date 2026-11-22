@@ -1,4 +1,4 @@
-// OpenRO game system: Deck Builder, Collection Index, Star Fusion & Rebirth Ascension.
+// OpenRO game system: Deck Builder, Collection Index, Star Fusion, Traits, Charms & Rebirth.
 // Parameters:
 // - deck_slots (int): active deck capacity (3..=6)
 // - fusion_cost (int): duplicate copies consumed per Star Fusion rank-up
@@ -59,8 +59,25 @@ if not deckQuery then
     deckQuery.Parent = ServerStorage
 end
 
+local TRAITS = {
+    { id = "Golden",      atkMult = 1.22, hpMult = 1.05, spdBonus = 0 },
+    { id = "Voidtouched", atkMult = 1.18, hpMult = 1.08, spdBonus = 4 },
+    { id = "Overcharged", atkMult = 1.20, hpMult = 1.00, spdBonus = 6 },
+    { id = "Swift",       atkMult = 1.10, hpMult = 1.00, spdBonus = 22 },
+    { id = "Immortal",    atkMult = 1.08, hpMult = 1.38, spdBonus = 0 },
+}
+
+local CHARMS = {
+    ["Samehada"]      = { cost = 40,  atkFlat = 95,  hpFlat = 180 },
+    ["Spirit Arrow"]  = { cost = 75,  atkFlat = 140, hpFlat = 120 },
+    ["Gravity Core"]  = { cost = 120, atkFlat = 110, hpFlat = 420 },
+    ["Eclipse Crown"] = { cost = 220, atkFlat = 220, hpFlat = 550 },
+}
+
+local rng = Random.new()
 local profiles = {}
 local lastAction = {}
+local overheadBoards = {}
 
 local function withRetry(fn, attempts)
     local maxTries = attempts or 3
@@ -79,7 +96,66 @@ end
 local function cardPower(card)
     local starMult = 1 + ((card.stars or 1) - 1) * 0.25
     local borderMult = card.border_mult or 1.0
-    return math.floor(((card.atk or 100) * 1.4 + (card.hp or 500) * 0.35) * starMult * borderMult)
+    local tMult = 1.0
+    if card.trait then
+        for _, tr in ipairs(TRAITS) do
+            if tr.id == card.trait then
+                tMult = tr.atkMult
+                break
+            end
+        end
+    end
+    local cBonus = 0
+    if card.charm and CHARMS[card.charm] then
+        cBonus = CHARMS[card.charm].atkFlat
+    end
+    return math.floor((((card.atk or 100) * tMult + cBonus) * 1.4 + (card.hp or 500) * 0.35) * starMult * borderMult)
+end
+
+local function updateOverheadCard(player, profile)
+    local char = player.Character
+    if not char then
+        return
+    end
+    local head = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+    if not head then
+        return
+    end
+    if overheadBoards[player] then
+        overheadBoards[player]:Destroy()
+        overheadBoards[player] = nil
+    end
+    local leadId = profile.deck[1]
+    if not leadId then
+        return
+    end
+    local card = nil
+    for _, c in ipairs(profile.owned) do
+        if c.card_id == leadId then
+            card = c
+            break
+        end
+    end
+    if not card then
+        return
+    end
+    local part = Instance.new("Part")
+    part.Name = "EquippedShowcaseCard"
+    part.Size = Vector3.new(2.0, 2.8, 0.2)
+    part.Anchored = false
+    part.CanCollide = false
+    part.Massless = true
+    part.CFrame = head.CFrame * CFrame.new(2.1, 2.0, 0)
+    local decal = Instance.new("Decal")
+    decal.Face = Enum.NormalId.Front
+    decal.Texture = "rbxasset://openro-assets/" .. leadId .. ".png"
+    decal.Parent = part
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = head
+    weld.Part1 = part
+    weld.Parent = part
+    part.Parent = char
+    overheadBoards[player] = part
 end
 
 local function recomputeBonuses(player, profile)
@@ -94,6 +170,7 @@ local function recomputeBonuses(player, profile)
     player:SetAttribute("Rebirths", profile.rebirths)
     player:SetAttribute("RebirthPowerPct", rebirthBonusPct)
     player:SetAttribute("EquippedDeckSize", #profile.deck)
+    player:SetAttribute("Shards", profile.shards or 0)
 end
 
 local function syncClient(player)
@@ -105,6 +182,8 @@ local function syncClient(player)
     deckEvent:FireClient(player, "sync", {
         deck = profile.deck,
         owned = profile.owned,
+        shards = profile.shards or 0,
+        charms_owned = profile.charms_owned or {},
         rebirths = profile.rebirths,
         max_slots = DECK_SLOTS,
         fusion_cost = FUSION_COST,
@@ -112,7 +191,7 @@ local function syncClient(player)
     })
 end
 
-local function autoEquipBest(profile)
+local function autoEquipBest(player, profile)
     local sorted = {}
     for _, card in ipairs(profile.owned) do
         table.insert(sorted, card)
@@ -131,6 +210,7 @@ local function autoEquipBest(profile)
             table.insert(profile.deck, card.card_id)
         end
     end
+    updateOverheadCard(player, profile)
 end
 
 local function grantCard(player, cardData)
@@ -139,6 +219,11 @@ local function grantCard(player, cardData)
         return
     end
     profile.index[cardData.card_id] = true
+    if cardData.auto_deleted then
+        profile.shards = (profile.shards or 0) + 6
+        syncClient(player)
+        return
+    end
     local existing = nil
     for _, entry in ipairs(profile.owned) do
         if entry.card_id == cardData.card_id then
@@ -159,17 +244,22 @@ local function grantCard(player, cardData)
             card_id = cardData.card_id,
             title = cardData.title or cardData.card_id,
             rarity = cardData.rarity or "Common",
-            element = cardData.element or "Flame",
+            element = cardData.element or "Solar",
             border = cardData.border or "Normal",
             border_mult = cardData.border_mult or 1.0,
             atk = cardData.atk or 120,
             hp = cardData.hp or 500,
             speed = cardData.speed or 75,
+            skill = cardData.skill or "Burn AoE",
             stars = 1,
             copies = 1,
+            locked = false,
+            trait = nil,
+            charm = nil,
         })
         if #profile.deck < DECK_SLOTS then
             table.insert(profile.deck, cardData.card_id)
+            updateOverheadCard(player, profile)
         end
     end
     syncClient(player)
@@ -180,7 +270,7 @@ cardGranted.Event:Connect(grantCard)
 deckQuery.OnInvoke = function(player)
     local profile = profiles[player]
     if not profile then
-        return { deck = {}, owned = {}, rebirths = 0 }
+        return { deck = {}, owned = {}, rebirths = 0, shards = 0 }
     end
     return profile
 end
@@ -198,6 +288,8 @@ local function saveProfile(player)
         deck = profile.deck,
         owned = profile.owned,
         index = profile.index,
+        shards = profile.shards or 0,
+        charms_owned = profile.charms_owned or {},
         rebirths = profile.rebirths,
     }
     local ok, err = withRetry(function()
@@ -224,11 +316,17 @@ local function defaultProfile()
                 atk = 230,
                 hp = 960,
                 speed = 80,
+                skill = "Mirror Shield",
                 stars = 1,
                 copies = 1,
+                locked = true,
+                trait = nil,
+                charm = nil,
             },
         },
         index = { ["eclipse-arcane-alchemist"] = true },
+        shards = 35,
+        charms_owned = {},
         rebirths = 0,
     }
 end
@@ -251,15 +349,23 @@ local function onPlayerAdded(player)
             deck = typeof(saved.deck) == "table" and saved.deck or {},
             owned = saved.owned,
             index = typeof(saved.index) == "table" and saved.index or {},
+            shards = typeof(saved.shards) == "number" and saved.shards or 35,
+            charms_owned = typeof(saved.charms_owned) == "table" and saved.charms_owned or {},
             rebirths = typeof(saved.rebirths) == "number" and math.max(0, math.floor(saved.rebirths)) or 0,
         }
     else
         profiles[player] = defaultProfile()
     end
+    player.CharacterAdded:Connect(function()
+        task.wait(0.2)
+        if profiles[player] then
+            updateOverheadCard(player, profiles[player])
+        end
+    end)
     syncClient(player)
 end
 
-deckEvent.OnServerEvent:Connect(function(player, action, cardId)
+deckEvent.OnServerEvent:Connect(function(player, action, cardId, extraArg)
     local now = os.clock()
     if lastAction[player] and (now - lastAction[player]) < 0.25 then
         return
@@ -276,7 +382,7 @@ deckEvent.OnServerEvent:Connect(function(player, action, cardId)
         syncClient(player)
         return
     elseif action == "auto_equip" then
-        autoEquipBest(profile)
+        autoEquipBest(player, profile)
         syncClient(player)
         return
     elseif action == "rebirth" then
@@ -284,6 +390,14 @@ deckEvent.OnServerEvent:Connect(function(player, action, cardId)
         if typeof(floor) == "number" and floor >= REBIRTH_FLOOR then
             profile.rebirths = profile.rebirths + 1
             player:SetAttribute("TowerFloor", 1)
+            syncClient(player)
+        end
+        return
+    elseif action == "craft_charm" and typeof(cardId) == "string" then
+        local ch = CHARMS[cardId]
+        if ch and not profile.charms_owned[cardId] and (profile.shards or 0) >= ch.cost then
+            profile.shards = profile.shards - ch.cost
+            profile.charms_owned[cardId] = true
             syncClient(player)
         end
         return
@@ -309,15 +423,31 @@ deckEvent.OnServerEvent:Connect(function(player, action, cardId)
         end
         if #profile.deck < DECK_SLOTS then
             table.insert(profile.deck, cardId)
+            updateOverheadCard(player, profile)
             syncClient(player)
         end
     elseif action == "unequip" then
         for idx, id in ipairs(profile.deck) do
             if id == cardId then
                 table.remove(profile.deck, idx)
+                updateOverheadCard(player, profile)
                 syncClient(player)
                 return
             end
+        end
+    elseif action == "toggle_lock" then
+        target.locked = not target.locked
+        syncClient(player)
+    elseif action == "reroll_trait" then
+        if (profile.shards or 0) >= 15 then
+            profile.shards = profile.shards - 15
+            target.trait = TRAITS[rng:NextInteger(1, #TRAITS)].id
+            syncClient(player)
+        end
+    elseif action == "equip_charm" and typeof(extraArg) == "string" then
+        if profile.charms_owned[extraArg] then
+            target.charm = extraArg
+            syncClient(player)
         end
     elseif action == "fuse" then
         if (target.stars or 1) < 5 and (target.copies or 1) >= (FUSION_COST + 1) then
@@ -333,6 +463,10 @@ end)
 Players.PlayerAdded:Connect(onPlayerAdded)
 Players.PlayerRemoving:Connect(function(player)
     saveProfile(player)
+    if overheadBoards[player] then
+        overheadBoards[player]:Destroy()
+        overheadBoards[player] = nil
+    end
     profiles[player] = nil
     lastAction[player] = nil
 end)
