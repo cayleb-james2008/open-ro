@@ -547,6 +547,39 @@ fn token_to_material(tok: u32) -> Option<&'static str> {
         .map(|(name, _)| *name)
 }
 
+fn face_to_token(val: Option<&Value>) -> u32 {
+    if let Some(v) = val {
+        if let Some(n) = v.as_u64() {
+            return n as u32;
+        }
+        if let Some(s) = v.as_str() {
+            let clean = s.trim().strip_prefix("Enum.NormalId.").unwrap_or(s.trim());
+            return match clean.to_ascii_lowercase().as_str() {
+                "right" => 0,
+                "top" => 1,
+                "back" => 2,
+                "left" => 3,
+                "bottom" => 4,
+                "front" => 5,
+                _ => 5,
+            };
+        }
+    }
+    5 // Front
+}
+
+fn token_to_face(tok: u32) -> Option<&'static str> {
+    match tok {
+        0 => Some("Right"),
+        1 => Some("Top"),
+        2 => Some("Back"),
+        3 => Some("Left"),
+        4 => Some("Bottom"),
+        5 => Some("Front"),
+        _ => None,
+    }
+}
+
 fn is_base_part_class(class_name: &str) -> bool {
     matches!(
         class_name,
@@ -961,6 +994,56 @@ impl XmlGen {
                     "Neutral",
                 ],
             );
+        } else if matches!(node.class_name.as_str(), "Decal" | "Texture") {
+            let props = &node.properties;
+            let tex = props
+                .get("Texture")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let face_tok = face_to_token(props.get("Face"));
+            self.write_indent(depth + 2);
+            let _ = writeln!(
+                self.out,
+                "<Content name=\"Texture\"><url>{}</url></Content>",
+                xml_escape(tex)
+            );
+            self.write_indent(depth + 2);
+            let _ = writeln!(self.out, "<token name=\"Face\">{face_tok}</token>");
+            self.write_extra_properties(depth + 2, props, &["Name", "Texture", "Face"]);
+        } else if matches!(node.class_name.as_str(), "ImageLabel" | "ImageButton") {
+            let props = &node.properties;
+            let img = props
+                .get("Image")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let bg_trans = props
+                .get("BackgroundTransparency")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0);
+            self.write_indent(depth + 2);
+            let _ = writeln!(
+                self.out,
+                "<Content name=\"Image\"><url>{}</url></Content>",
+                xml_escape(img)
+            );
+            self.write_indent(depth + 2);
+            let _ = writeln!(
+                self.out,
+                "<float name=\"BackgroundTransparency\">{}</float>",
+                fmt_num(bg_trans)
+            );
+            self.write_extra_properties(
+                depth + 2,
+                props,
+                &["Name", "Image", "BackgroundTransparency"],
+            );
+        } else if node.class_name == "SurfaceGui" {
+            let props = &node.properties;
+            let face_tok = face_to_token(props.get("Face"));
+            self.write_indent(depth + 2);
+            let _ = writeln!(self.out, "<token name=\"Face\">{face_tok}</token>");
+            self.write_extra_properties(depth + 2, props, &["Name", "Face"]);
         } else {
             self.write_extra_properties(depth + 2, &node.properties, &["Name"]);
         }
@@ -1444,6 +1527,41 @@ impl<'a> XmlParser<'a> {
         }
     }
 
+    /// Read `<Content name="..."><url>...</url></Content>` or `<Content><null></null></Content>`.
+    fn read_content_url(&mut self, depth: usize) -> Result<String, String> {
+        if depth > MAX_XML_DEPTH {
+            return Err(format!("XML nesting exceeds maximum depth {MAX_XML_DEPTH}"));
+        }
+        let mut url = String::new();
+        loop {
+            self.skip_misc()?;
+            if self.is_eof() {
+                return Err("unclosed <Content>".to_string());
+            }
+            if self.starts_with("</") {
+                self.read_close_tag("Content")?;
+                return Ok(url);
+            }
+            if self.starts_with("<") {
+                let (tag, _, self_closing) = self.read_open_tag()?;
+                if !self_closing {
+                    if tag == "url" || tag == "uri" {
+                        url = self.read_text_element_body(&tag)?;
+                    } else {
+                        self.skip_element_body(&tag, depth + 1)?;
+                    }
+                }
+                continue;
+            }
+            let next_lt = self.remaining().find('<').unwrap_or(self.remaining().len());
+            let txt = xml_unescape(self.remaining()[..next_lt].trim());
+            if !txt.is_empty() && url.is_empty() {
+                url = txt;
+            }
+            self.pos += next_lt;
+        }
+    }
+
     fn parse_properties(&mut self, depth: usize) -> Result<ParsedProperties, String> {
         if depth > MAX_XML_DEPTH {
             return Err(format!("XML nesting exceeds maximum depth {MAX_XML_DEPTH}"));
@@ -1541,8 +1659,20 @@ impl<'a> XmlParser<'a> {
                         } else {
                             props.insert("Material".to_string(), json!(tok));
                         }
+                    } else if prop_name == "Face" {
+                        if let Some(face_name) = token_to_face(tok) {
+                            props.insert("Face".to_string(), Value::String(face_name.to_string()));
+                        } else {
+                            props.insert("Face".to_string(), json!(tok));
+                        }
                     } else if !prop_name.is_empty() {
                         props.insert(prop_name, json!(tok));
+                    }
+                }
+                "Content" => {
+                    let url_val = self.read_content_url(depth + 1)?;
+                    if !prop_name.is_empty() {
+                        props.insert(prop_name, Value::String(url_val));
                     }
                 }
                 "Color3uint8" => {

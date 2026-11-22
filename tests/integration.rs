@@ -1593,7 +1593,7 @@ fn claim_flag_curly_apostrophes_and_semicolons() {
 #[test]
 fn new_skills_generate_parameterised_luau() {
     let registry = openro_rs::skills::registry();
-    assert_eq!(registry.len(), 22, "twenty-two skills registered: {:?}", registry.iter().map(|s| s.name).collect::<Vec<_>>());
+    assert_eq!(registry.len(), 28, "twenty-eight game systems registered: {:?}", registry.iter().map(|s| s.name).collect::<Vec<_>>());
     let prompt = openro_rs::agent::system_prompt();
     for def in &registry {
         assert!(prompt.contains(def.name), "system prompt lists skill {}", def.name);
@@ -1790,8 +1790,9 @@ fn builtin_plan_builds_a_complete_game() {
 fn ideas_engine_pitches_by_context() {
     // An empty game gets the complete-game pitches.
     let opening = openro_rs::ideas::ideas_for(&[]);
-    assert_eq!(opening.len(), 3, "three opening games pitched");
+    assert_eq!(opening.len(), 4, "four opening games pitched");
     assert!(opening.iter().any(|i| i.id == "obby-starter"));
+    assert!(opening.iter().any(|i| i.id == "anime-card-battles-apex"));
     // With money built, the shop follow-up unlocks; built skills are
     // never re-pitched.
     let built = vec!["currency".to_string()];
