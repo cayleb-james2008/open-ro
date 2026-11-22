@@ -424,6 +424,18 @@ const PREVIEW_CAP: usize = 10 * 1024 * 1024;
 fn file_path(dir: &Path, rel: &str, writing: bool) -> Result<std::path::PathBuf, Reply> {
     let full = projects::safe_join(dir, rel).map_err(Reply::bad)?;
     let shown = projects::rel_display(dir, &full);
+    if shown.is_empty() || shown == "." {
+        return Err(Reply::bad(if writing {
+            "cannot modify or delete the project root folder"
+        } else {
+            "path refers to the project root folder; list it with /files"
+        }));
+    }
+    if let (Ok(canon_dir), Ok(canon_full)) = (dir.canonicalize(), full.canonicalize()) {
+        if canon_full == canon_dir {
+            return Err(Reply::bad("cannot modify or delete the project root folder"));
+        }
+    }
     let top = shown.split('/').next().unwrap_or("");
     if top == ".git" || shown.split('/').any(|s| s == ".git") {
         return Err(Reply::bad("the .git folder is off limits"));
@@ -565,13 +577,28 @@ fn edit_file(dir: &Path, body: &Value) -> Result<Reply, Reply> {
 
 fn delete_file(dir: &Path, body: &Value) -> Result<Reply, Reply> {
     let full = file_path(dir, body["path"].as_str().unwrap_or(""), true)?;
+    let shown = projects::rel_display(dir, &full);
+    if shown.is_empty() || shown == "." {
+        return Err(Reply::bad("cannot delete the project root folder"));
+    }
+    if let (Ok(canon_dir), Ok(canon_full)) = (dir.canonicalize(), full.canonicalize()) {
+        if canon_full == canon_dir || !canon_full.starts_with(&canon_dir) {
+            return Err(Reply::bad("cannot delete the project root folder"));
+        }
+    }
     if !full.exists() {
         return Err(Reply::err("404 Not Found", "that file does not exist"));
     }
     if full.is_dir() {
+        if full.join(".git").exists()
+            || full.join(".openro").exists()
+            || full.join(projects::MANIFEST_FILE).exists()
+        {
+            return Err(Reply::bad("cannot delete a folder containing protected project metadata"));
+        }
         std::fs::remove_dir_all(&full).map_err(|e| Reply::bad(e.to_string()))?;
     } else {
         std::fs::remove_file(&full).map_err(|e| Reply::bad(e.to_string()))?;
     }
-    Ok(Reply::ok(json!({ "path": projects::rel_display(dir, &full), "deleted": true })))
+    Ok(Reply::ok(json!({ "path": shown, "deleted": true })))
 }

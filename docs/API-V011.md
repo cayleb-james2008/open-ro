@@ -193,3 +193,17 @@ refuses arbitrary filesystem paths, `rbxasset://` requires writing inside Studio
 install directory (fragile across updates and read-only in Flatpak), and `EditableImage` is
 runtime-only, ID-verified gated, and non-persistent in `.rbxlx`. Real Studio textures use uploaded
 `rbxassetid://` entries from `assets.lock.json`.
+
+## 8. Studio connection & auto-plugin helpers (#24, #29)
+
+- Auto backend (`workspace_mode: "auto"`) only enters `studio_mcp` when `list_roblox_studios`
+  returns at least one open Studio place (`studio_id`); otherwise it falls back cleanly to
+  `local_place`. Explicit `POST /api/studio/mcp/connect` returns `502` with plain words when no
+  Studio place is open.
+- `GET /api/config`, `POST /api/config`, and `GET /api/studio/plugin/status` expose
+  `auto_install_plugin` (boolean, default `true`, persisted in `studio_prefs.json`). On startup
+  with Vinegar detected, OpenRO auto-installs `OpenRoCompanion.lua` into the verified `Plugins/`
+  dir if not yet present (`OPENRO_NO_AUTO_PLUGIN=1` disables).
+- `POST /api/studio/launch-and-continue`: 1-click helper for UI actions needing live Studio;
+  returns `{ ok, ready, studio_connected, already_connected? | attached_existing? }` or delegates
+  to Embedded Studio launch.

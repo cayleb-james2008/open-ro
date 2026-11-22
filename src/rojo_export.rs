@@ -423,6 +423,17 @@ pub fn build_rojo_ship_pack(
     place: &LocalPlace,
     assets: &[ShipPackAsset],
 ) -> Result<ShipPackBundle, String> {
+    build_rojo_ship_pack_with_extras(place, assets, &[], &[])
+}
+
+/// Build the Studio & Rojo Ship Pack `.zip` archive including generated meshes/audio files
+/// (`extra_files`: `(zip_path, bytes)`) and their manifest rows.
+pub fn build_rojo_ship_pack_with_extras(
+    place: &LocalPlace,
+    assets: &[ShipPackAsset],
+    extra_files: &[(String, Vec<u8>)],
+    extra_manifest_entries: &[Value],
+) -> Result<ShipPackBundle, String> {
     let game_name = place.game_name().to_string();
     let audit = place.analyze();
     let rbxlx_xml = place.to_rbxlx_xml();
@@ -430,7 +441,16 @@ pub fn build_rojo_ship_pack(
     let mapped_scripts = map_scripts_for_rojo(place.scripts());
 
     let meta_list: Vec<AssetMetadata> = assets.iter().map(|a| a.metadata.clone()).collect();
-    let asset_manifest = build_asset_manifest_json(&game_name, &meta_list);
+    let mut asset_manifest = build_asset_manifest_json(&game_name, &meta_list);
+    if !extra_manifest_entries.is_empty() {
+        if let Some(arr) = asset_manifest.get_mut("assets").and_then(|v| v.as_array_mut()) {
+            arr.extend(extra_manifest_entries.iter().cloned());
+            let total = arr.len();
+            if let Some(obj) = asset_manifest.as_object_mut() {
+                obj.insert("asset_count".to_string(), json!(total));
+            }
+        }
+    }
     let checklist = build_upload_checklist(&game_name, place, assets, &audit);
 
     let mut zip = ZipWriter::new();
@@ -455,7 +475,7 @@ pub fn build_rojo_ship_pack(
          }}\n",
         place.scripts().len(),
         place.instances().len(),
-        assets.len()
+        assets.len() + extra_files.len()
     );
     zip.add_file("src/shared/PlaceMeta.luau", place_meta_luau.as_bytes())?;
 
@@ -464,7 +484,7 @@ pub fn build_rojo_ship_pack(
         zip.add_file(&item.zip_path, item.source.as_bytes())?;
     }
 
-    // 5. Asset manifest + all uploaded artwork files
+    // 5. Asset manifest + all uploaded artwork files + generated meshes/audio
     let manifest_text = serde_json::to_string_pretty(&asset_manifest)
         .map_err(|e| format!("serialize asset-manifest.json: {e}"))?;
     zip.add_file("asset-manifest.json", manifest_text.as_bytes())?;
@@ -473,6 +493,10 @@ pub fn build_rojo_ship_pack(
     for asset in assets {
         let safe_name = sanitize_filename(&asset.metadata.filename)?;
         zip.add_file(&format!("assets/{safe_name}"), &asset.bytes)?;
+        included_assets += 1;
+    }
+    for (zip_path, bytes) in extra_files {
+        zip.add_file(zip_path, bytes)?;
         included_assets += 1;
     }
 

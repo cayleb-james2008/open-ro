@@ -76,12 +76,15 @@ pub fn safe_join(root: &Path, rel: &str) -> Result<PathBuf, String> {
     Ok(joined)
 }
 
-/// Project-relative display path with `/` separators.
+/// Project-relative display path with `/` separators (normalizes away `.` segments).
 pub fn rel_display(root: &Path, p: &Path) -> String {
     p.strip_prefix(root)
         .unwrap_or(p)
         .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .filter_map(|c| match c {
+            Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+            _ => None,
+        })
         .collect::<Vec<_>>()
         .join("/")
 }

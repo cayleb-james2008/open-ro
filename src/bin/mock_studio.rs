@@ -420,19 +420,25 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
         // -------------------------------------------------------------------
         // Official 13 Roblox Studio MCP tools
         // -------------------------------------------------------------------
-        "list_roblox_studios" => text_result(
-            json!({
-                "studios": [{
-                    "studio_id": STUDIO_ID,
-                    "place_name": "OpenRO Mock Place",
-                    "datamodel_types": state.datamodel_types(),
-                    "active_datamodel": state.active_datamodel,
-                    "playing": state.playing,
-                }],
-                "count": 1,
-            })
-            .to_string(),
-        ),
+        "list_roblox_studios" => {
+            if std::env::var("MOCK_NO_STUDIOS").is_ok() {
+                text_result(json!({ "studios": [], "count": 0 }).to_string())
+            } else {
+                text_result(
+                    json!({
+                        "studios": [{
+                            "studio_id": STUDIO_ID,
+                            "place_name": "OpenRO Mock Place",
+                            "datamodel_types": state.datamodel_types(),
+                            "active_datamodel": state.active_datamodel,
+                            "playing": state.playing,
+                        }],
+                        "count": 1,
+                    })
+                    .to_string(),
+                )
+            }
+        }
         "get_studio_state" => text_result(
             json!({
                 "studio_id": STUDIO_ID,
