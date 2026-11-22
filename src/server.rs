@@ -10,7 +10,7 @@
 use crate::agent::{Agent, AskMode, AskOptions};
 use crate::config::RuntimeConfig;
 use crate::mcp::McpClient;
-use crate::model::{probe_local_gateways, ModelClient, DEFAULT_BASE_URL, DEFAULT_MODEL_ID};
+use crate::model::{probe_local_gateways, ModelClient, AGY_BASE_URL, AGY_DEFAULT_MODEL, DEFAULT_BASE_URL, DEFAULT_MODEL_ID};
 use crate::place::{LocalPlace, PlaceBackend};
 use crate::snapshots::{
     compute_diff, compute_file_diffs, merge_selected_tree, parse_rbxlx_xml, ProposalStore,
@@ -1405,6 +1405,31 @@ fn handle(
                 ),
             }
         }
+        ("GET", "/api/models") => {
+            if !host_allowed(&req.host, &[]) {
+                respond_json(
+                    &mut stream,
+                    "403 Forbidden",
+                    &json!({ "ok": false, "error": "settings are only accessible from this machine (loopback)" }),
+                );
+                return Ok(());
+            }
+            crate::model::agy_models(query_param(query, "refresh").is_some_and(|v| v == "1"));
+            let snap = config_snapshot(shared);
+            respond_json(
+                &mut stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "provider": snap["provider"],
+                    "model_id": snap["model_id"],
+                    "default": AGY_DEFAULT_MODEL,
+                    "available": snap["antigravity_available"],
+                    "models": snap["antigravity_models"],
+                    "issue": snap["antigravity_issue"],
+                }),
+            );
+        }
         ("GET", "/api/config") => {
             if !host_allowed(&req.host, &[]) {
                 respond_json(
@@ -1513,6 +1538,10 @@ fn handle(
                     "workspace_mode": info.workspace_mode,
                     "model_id": info.model_id,
                     "model_base_url": info.model_base_url,
+                    "model_provider": if crate::model::is_agy_url(&info.model_base_url) { "antigravity" } else { "openai" },
+                    "antigravity_issue": crate::model::agy_last_issue().map(|i| {
+                        json!({ "kind": i.kind, "message": i.message, "resets_in": i.resets_in, "at": i.at_unix })
+                    }),
                     "is_loopback_model": info.is_loopback_model,
                     "game_name": shared.game_name,
                     "version": env!("CARGO_PKG_VERSION"),
@@ -3187,6 +3216,11 @@ fn config_snapshot(shared: &Shared) -> Value {
             })
         })
         .collect();
+    let agy_active = crate::model::is_agy_url(&base_url);
+    let agy_models: Vec<Value> = agy_models_json();
+    let agy_issue = crate::model::agy_last_issue().map(|i| {
+        json!({ "kind": i.kind, "message": i.message, "resets_in": i.resets_in, "at": i.at_unix })
+    });
     let gemini_key = cfg
         .gemini_api_key
         .clone()
@@ -3199,6 +3233,11 @@ fn config_snapshot(shared: &Shared) -> Value {
         "ok": true,
         "base_url": base_url,
         "model_id": model_id,
+        "provider": if agy_active { "antigravity" } else { "openai" },
+        "antigravity_available": crate::model::agy_available(),
+        "antigravity_default_model": AGY_DEFAULT_MODEL,
+        "antigravity_models": agy_models,
+        "antigravity_issue": agy_issue,
         "has_api_key": has_key,
         "api_key_masked": masked,
         "model_configured": configured,
@@ -3219,23 +3258,75 @@ fn config_snapshot(shared: &Shared) -> Value {
     })
 }
 
+/// Model list for the picker: the cached `agy models` result, else the
+/// Hydrogen set. Never runs agy (that is `GET /api/models`).
+fn agy_models_json() -> Vec<Value> {
+    let list = crate::model::agy_models_cached().unwrap_or_else(crate::model::agy_models_fallback);
+    list.into_iter()
+        .map(|m| {
+            let (family, effort) = match m.label.split_once(" (") {
+                Some((f, e)) => (f.to_string(), e.trim_end_matches(')').to_string()),
+                None => (m.label.clone(), String::new()),
+            };
+            json!({ "id": m.id, "label": m.label, "family": family, "effort": effort })
+        })
+        .collect()
+}
+
 fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
     let mut cfg = shared.config.lock().unwrap().clone();
+    let (active_base, active_model) = {
+        let guard = shared.agent.lock().unwrap();
+        match guard.as_ref() {
+            Some(a) => (Some(a.model.base_url().to_string()), Some(a.model.model_id().to_string())),
+            None => (None, None),
+        }
+    };
 
+    // `provider: "antigravity"` selects the Antigravity CLI (Gemini models);
+    // `provider: "openai"` goes back to an OpenAI-compatible endpoint.
+    let current_base = cfg.base_url.as_deref().or(active_base.as_deref()).unwrap_or("");
+    let was_agy = cfg.provider.as_deref() == Some("antigravity") || crate::model::is_agy_url(current_base);
+    let mut explicit_openai = false;
+    match body.get("provider").and_then(|v| v.as_str()) {
+        Some("antigravity") => {
+            cfg.provider = Some("antigravity".to_string());
+            cfg.base_url = Some(AGY_BASE_URL.to_string());
+            if !was_agy && body.get("model_id").and_then(|v| v.as_str()).is_none_or(|m| m.trim().is_empty()) {
+                cfg.model_id = Some(AGY_DEFAULT_MODEL.to_string());
+            }
+        }
+        Some("openai") => {
+            explicit_openai = true;
+            cfg.provider = Some("openai".to_string());
+            if was_agy {
+                cfg.base_url = None;
+                cfg.model_id = None;
+            }
+        }
+        Some(other) => return Err(format!("invalid provider '{other}' (expected antigravity or openai)")),
+        None => {}
+    }
     let base_url = match body.get("base_url").and_then(|v| v.as_str()) {
         Some(s) if !s.trim().is_empty() => {
             let trimmed = s.trim();
-            if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
-                return Err("base_url must start with http:// or https://".to_string());
+            if !(trimmed.starts_with("http://") || trimmed.starts_with("https://") || crate::model::is_agy_url(trimmed)) {
+                return Err("base_url must start with http://, https:// or agy://".to_string());
             }
             cfg.base_url = Some(trimmed.to_string());
+            cfg.provider = Some(if crate::model::is_agy_url(trimmed) { "antigravity" } else { "openai" }.to_string());
             trimmed.to_string()
         }
         _ => cfg
             .base_url
             .clone()
+            .or_else(|| if explicit_openai { None } else { active_base.clone() })
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
     };
+    if crate::model::is_agy_url(&base_url) {
+        cfg.provider = Some("antigravity".to_string());
+        cfg.base_url = Some(base_url.clone());
+    }
 
     let model_id = match body.get("model_id").and_then(|v| v.as_str()) {
         Some(s) if !s.trim().is_empty() => {
@@ -3245,7 +3336,14 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
         _ => cfg
             .model_id
             .clone()
-            .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
+            .or(if explicit_openai { None } else { active_model })
+            .unwrap_or_else(|| {
+                if crate::model::is_agy_url(&base_url) {
+                    AGY_DEFAULT_MODEL.to_string()
+                } else {
+                    DEFAULT_MODEL_ID.to_string()
+                }
+            }),
     };
 
     let clear_key = body
@@ -3354,7 +3452,10 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
         }
     };
 
-    let new_model = ModelClient::new(base_url, model_id, cfg.api_key.clone());
+    let mut new_model = ModelClient::new(base_url, model_id, cfg.api_key.clone());
+    if let Some(dir) = &shared.data_dir {
+        new_model = new_model.with_agy_dir(dir.join("agy-sandbox"));
+    }
 
     if let Some(dir) = &shared.data_dir {
         cfg.save(dir)?;
