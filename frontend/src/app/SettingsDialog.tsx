@@ -60,9 +60,10 @@ export function SettingsDialog({
   const [clearKey, setClearKey] = useState(false);
   const [mcpCommand, setMcpCommand] = useState("");
   const [wsMode, setWsMode] = useState("auto");
+  const [autoInstallPlugin, setAutoInstallPlugin] = useState(true);
   const [webMode, setWebMode] = useState<"browser" | "byok" | "local_server">("browser");
   const [localServerUrl, setLocalServerUrl] = useState("http://127.0.0.1:8077");
-  const [imageProvider, setImageProvider] = useState<"auto" | "gemini" | "openai">("auto");
+  const [imageProvider, setImageProvider] = useState<"chatgpt" | "auto" | "gemini" | "openai">("chatgpt");
   const [geminiApiKey, setGeminiApiKey] = useState("");
   const [clearGeminiKey, setClearGeminiKey] = useState(false);
   const [openaiImageKey, setOpenaiImageKey] = useState("");
@@ -87,10 +88,18 @@ export function SettingsDialog({
       setClearKey(false);
       setMcpCommand(data.mcp_command || "");
       setWsMode(data.workspace_mode || "auto");
+      setAutoInstallPlugin(data.auto_install_plugin !== false);
       if (data.web_mode) setWebMode(data.web_mode);
       if (data.local_server_url) setLocalServerUrl(data.local_server_url);
-      if (data.image_provider === "gemini" || data.image_provider === "openai" || data.image_provider === "auto") {
+      if (
+        data.image_provider === "chatgpt" ||
+        data.image_provider === "gemini" ||
+        data.image_provider === "openai" ||
+        data.image_provider === "auto"
+      ) {
         setImageProvider(data.image_provider);
+      } else {
+        setImageProvider("chatgpt");
       }
       setGeminiApiKey("");
       setClearGeminiKey(false);
@@ -150,6 +159,7 @@ export function SettingsDialog({
             clear_api_key: provider === "antigravity" ? false : clearKey,
             mcp_command: mcpCommand.trim(),
             workspace_mode: wsMode,
+            auto_install_plugin: autoInstallPlugin,
             ...imagePayload,
           };
       const res = await post<ConfigSnap & { ok?: boolean; error?: string }>("/api/config", payload);
@@ -373,7 +383,7 @@ export function SettingsDialog({
                         onClick={() => void (provider === "antigravity" ? refreshAgyModels() : loadConfig())}
                         className="text-ink-2 hover:text-ink max-md:min-h-11"
                       >
-                        <RefreshCw className={`size-3 ${refreshingModels ? "animate-spin" : ""}`} strokeWidth={1.5} aria-hidden />
+                        <RefreshCw className={`size-3 ${refreshingModels ? "motion-safe:animate-spin" : ""}`} strokeWidth={1.5} aria-hidden />
                         {provider === "antigravity" ? "Refresh models" : "Probe gateways"}
                       </Button>
                     </div>
@@ -413,11 +423,11 @@ export function SettingsDialog({
                       <div
                         role="alert"
                         data-agy-issue
-                        className={`flex flex-wrap items-center justify-between gap-2 rounded-card px-3 py-2 text-sm ${agyIssue.kind === "quota" ? "bg-pill-warn-bg text-pill-warn-fg" : "bg-pill-pro-bg text-pill-pro-fg"}`}
+                        className={`flex flex-wrap items-center justify-between gap-2 rounded-sm px-3 py-2 text-sm ${agyIssue.kind === "quota" ? "bg-pill-warn-bg text-pill-warn-fg" : "bg-pill-pro-bg text-pill-pro-fg"}`}
                       >
                         <span>{agyIssue.message}</span>
                         {agyIssue.resets_in && (
-                          <span className="font-mono text-xs font-medium">resets in {agyIssue.resets_in}</span>
+                          <span className="text-xs font-medium">resets in <span className="font-mono">{agyIssue.resets_in}</span></span>
                         )}
                       </div>
                     )}
@@ -604,6 +614,19 @@ export function SettingsDialog({
                         <code className="max-w-full truncate font-mono text-xs text-ink-3">{cfg.rbxlx_path}</code>
                       )}
                     </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hairline pt-2.5">
+                      <span className="text-xs text-ink-2">Auto-install Studio companion plugin on Vinegar launch</span>
+                      <Button
+                        variant={autoInstallPlugin ? "default" : "outline"}
+                        size="sm"
+                        aria-pressed={autoInstallPlugin}
+                        onClick={() => setAutoInstallPlugin((v) => !v)}
+                        className="max-md:min-h-11"
+                      >
+                        {autoInstallPlugin ? "Enabled" : "Off"}
+                      </Button>
+                    </div>
                   </section>
                 </>
               )}
@@ -619,21 +642,29 @@ export function SettingsDialog({
                       <ImageIcon className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
                       <h3 className="text-sm font-medium text-ink">Game Asset &amp; Texture Generation</h3>
                     </div>
-                    <Pill className="bg-tag-research-bg px-2 py-0.5 font-mono text-xs text-tag-research-fg">
-                      {cfg.has_gemini_api_key || cfg.has_gemini_key || cfg.has_openai_image_api_key
-                        ? "Key configured"
-                        : "Optional BYOK"}
-                    </Pill>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {cfg.secrets_dir_shared && (
+                        <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg">Shared secrets</Pill>
+                      )}
+                      <Pill className="bg-tag-research-bg px-2 py-0.5 text-xs text-tag-research-fg">
+                        {cfg.has_gemini_api_key || cfg.has_gemini_key || cfg.has_openai_image_api_key
+                          ? "API key saved"
+                          : imageProvider === "chatgpt"
+                            ? "Shared browser"
+                            : "Optional key"}
+                      </Pill>
+                    </div>
                   </div>
 
                   <p className="text-xs leading-relaxed text-ink-2">
-                    Optional Google Gemini (Nano Banana) or OpenAI Image API key for generating custom decals, icons, badges, and stylized character textures for any Roblox game (install the Image Generation Studio pack in Tool Library to unlock).
+                    Default uses ChatGPT in the shared browser with reference images. Optional Google Gemini or OpenAI Image API keys are stored write-only.
                   </p>
 
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     {(
                       [
-                        { id: "auto", label: "Auto", sub: "Gemini -> OpenAI" },
+                        { id: "chatgpt", label: "ChatGPT (shared browser)", sub: "Default reference-image flow" },
+                        { id: "auto", label: "Auto API", sub: "Gemini -> OpenAI" },
                         { id: "gemini", label: "Gemini Nano Banana", sub: "gemini-2.5-flash-image" },
                         { id: "openai", label: "OpenAI Images", sub: "gpt-image-1" },
                       ] as const

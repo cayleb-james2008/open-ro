@@ -1,16 +1,18 @@
 import { useState } from "react";
-import { FolderOpen, FlaskConical, Images, Rocket } from "lucide-react";
+import { FolderOpen, FlaskConical, Images, Palette, Rocket } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { PublishPanel } from "./PublishPanel";
 import { AssetsPanel } from "./AssetsPanel";
+import { ArtStudioPanel } from "./ArtStudioPanel";
 import { PlaytestPanel } from "./PlaytestPanel";
 import type { Ship } from "./useShip";
 
-type Section = "publish" | "assets" | "playtests";
+type Section = "publish" | "assets" | "art" | "playtests";
 const SECTIONS: { id: Section; label: string; Icon: typeof Rocket }[] = [
   { id: "publish", label: "Publish & Monetize", Icon: Rocket },
   { id: "assets", label: "Assets", Icon: Images },
+  { id: "art", label: "Art & Refs", Icon: Palette },
   { id: "playtests", label: "Playtests", Icon: FlaskConical },
 ];
 
@@ -44,6 +46,7 @@ export function ShipPanel({ ship, studioOk, onOpenProjects, onOpenSettings }: { 
       <div className="min-h-0 flex-1 overflow-y-auto pb-4">
         {section === "publish" && <PublishPanel ship={ship} onOpenSettings={onOpenSettings} />}
         {section === "assets" && <AssetsPanel ship={ship} onOpenSettings={onOpenSettings} />}
+        {section === "art" && <ArtStudioPanel ship={ship} />}
         {section === "playtests" && <PlaytestPanel ship={ship} studioOk={studioOk} />}
       </div>
     </div>

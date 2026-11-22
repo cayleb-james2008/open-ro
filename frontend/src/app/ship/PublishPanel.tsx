@@ -84,7 +84,7 @@ function UniverseForm({ id }: { id: string }) {
   };
   return (
     <div className="mt-3 flex flex-col gap-3">
-      {msg && <p role="alert" className="rounded-card bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{msg}</p>}
+      {msg && <p role="alert" className="rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{msg}</p>}
       {state === "loading" ? <p className="text-sm text-ink-2">Reading the game page…</p> : (
         <>
           <Field label="Game name"><Input value={name} onChange={(e) => setName(e.target.value)} /></Field>
@@ -180,7 +180,7 @@ export function PublishPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSetti
 
   const publish = async () => {
     setPublishing(true); setError("");
-    const r = await call<{ versionNumber: number; versionType: string; bytes: number }>(projUrl(active.id, "/publish"), { versionType: live ? "Published" : "Saved" });
+    const r = await call<{ versionNumber: number; versionType: string; bytes: number }>(projUrl(active.id, "/publish"), { versionType: live ? "Published" : "Saved", confirm: live });
     setPublishing(false); setDialogOpen(false);
     if (!r.ok) { setError(r.error || "Roblox did not take the place."); return; }
     setPublished({ versionNumber: r.versionNumber, versionType: r.versionType, bytes: r.bytes });
