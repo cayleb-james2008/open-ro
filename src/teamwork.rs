@@ -2713,9 +2713,12 @@ fn run_agent_wake_cycle(
 
         let mut batch_ran = false;
         let mut batch_aborted = false;
+        let mut spin_park_head: Option<u64> = None;
         if !batch.is_empty() {
             batch_ran = true;
             let batched = step.get("steps").is_some();
+            let only_board_read = batch.iter().all(|(t, _)| t == "board_read");
+            let mut last_board_read_head: Option<u64> = None;
             let mut results_lines = Vec::with_capacity(batch.len());
             for (step_idx, (tool, args)) in batch.into_iter().enumerate() {
                 if is_cancelled(handle, agent_name, gen) {
@@ -2734,6 +2737,13 @@ fn run_agent_wake_cycle(
                 let tool_out =
                     execute_agent_tool(shared, mgr, handle, agent_name, gen, &tool, &args);
                 let ok = tool_out.is_ok();
+                if ok && tool == "board_read" {
+                    last_board_read_head = tool_out
+                        .as_ref()
+                        .ok()
+                        .and_then(|v| v.get("head"))
+                        .and_then(|h| h.as_u64());
+                }
                 results_lines.push(match &tool_out {
                     Ok(v) => format!("tool_result ({tool}): {v}"),
                     Err(e) => format!("tool_result ({tool}) error: {e}"),
@@ -2751,6 +2761,9 @@ fn run_agent_wake_cycle(
                     break;
                 }
             }
+            if only_board_read && !batch_aborted && last_board_read_head == Some(pending_cursor) {
+                spin_park_head = last_board_read_head;
+            }
             let combined = if batch_aborted && batched {
                 format!(
                     "{}\n(batched steps aborted on first error)",
@@ -2759,15 +2772,40 @@ fn run_agent_wake_cycle(
             } else {
                 results_lines.join("\n")
             };
-            let mut st = handle.state.lock().unwrap();
-            if let Some(idx) = st.agent_index(agent_name) {
-                st.roster[idx]
-                    .messages
-                    .push(json!({ "role": "user", "content": combined }));
-                compact_agent_history(&mut st.roster[idx].messages);
-                st.save_agent_file(agent_name);
+            let mut parked_spin = false;
+            {
+                let mut st = handle.state.lock().unwrap();
+                if let Some(idx) = st.agent_index(agent_name) {
+                    st.roster[idx]
+                        .messages
+                        .push(json!({ "role": "user", "content": combined }));
+                    compact_agent_history(&mut st.roster[idx].messages);
+                    if let Some(head) = spin_park_head {
+                        let all_done = st.roster[idx].role == "coordinator"
+                            && !st.tasks.is_empty()
+                            && st
+                                .tasks
+                                .iter()
+                                .all(|t| matches!(t.status, TaskStatus::Done | TaskStatus::Cancelled));
+                        if !all_done && st.board.latest_seq() == head {
+                            st.roster[idx].parked_at_seq = Some(head);
+                            st.append_trace(
+                                agent_name,
+                                turn_num,
+                                "auto_park",
+                                &format!("Auto-parked after board_read poll with unchanged head {head}"),
+                                json!({ "head": head }),
+                            );
+                            parked_spin = true;
+                        }
+                    }
+                    st.save_agent_file(agent_name);
+                }
             }
             handle.notify_all();
+            if parked_spin {
+                return Ok(());
+            }
             if batch_aborted || step.get("done").and_then(|v| v.as_bool()) != Some(true) {
                 continue;
             }
@@ -2853,6 +2891,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
         "coordinator" => concat!(
             "You are the Teamwork coordinator.\n",
             "Split the goal into concrete non-overlapping tasks with `create_task` (specify owner, verifier, kind, and non-overlapping `files`); spread tasks across all available workers in parallel instead of stacking everything onto one worker.\n",
+            "To wait for workers, return {\"done\":true,\"summary\":\"waiting\"} — NEVER poll board_read.\n",
             "Call `finish_run` once all tasks are `done`.\n",
             "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, finish_run."
         ),
@@ -2873,6 +2912,12 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
             "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `luau_check`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `assets_codegen`, `assets_upload`.\n",
+            "Asset arg signatures:\n",
+            "- reference_search: {\"character\":\"...\",\"show\":\"...\",\"card_id\":\"...\"}\n",
+            "- art_generate: {\"prompt\":\"single-line eye-level three-quarter prompt\",\"out_path\":\"art/cards/x/art.png\",\"references\":[\"art/references/...\"]}\n",
+            "- image_process: {\"output\":\"art/ui/x.png\",\"input\":\"...?\",\"ops\":[{\"op\":\"draw\",\"width\":256,\"height\":256,\"shapes\":[...]}]} (or \"script\")\n",
+            "- mesh_generate: {\"name\":\"PropName\",\"parts\":[{\"shape\":\"box|cylinder|sphere|cone|torus|wedge\",\"size\":[w,d,h],\"pos\":[x,y,z],\"color\":\"#hex\"}],\"script\":\"...?\"}\n",
+            "- audio_generate: {\"name\":\"sfx_name\",\"preset\":\"summon_roll|mythic_fanfare|battle_crit|potion_drink|ui_click|level_up\",\"duration_ms\":1200,\"out_path\":\"assets/audio/sfx.wav\"}\n",
             "When your task is ready for verification, call `submit_task` to hand it to `@verifier`."
         ),
     };
