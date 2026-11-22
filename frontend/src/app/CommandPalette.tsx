@@ -7,6 +7,8 @@ import {
   FolderArchive,
   History,
   Layers,
+  Monitor,
+  Package,
   Palette,
   Plus,
   Redo2,
@@ -58,6 +60,8 @@ export function CommandPalette({
   onOpenSnapshots,
   onOpenSettings,
   onOpenArtStudio,
+  onOpenToolLibrary,
+  onOpenEmbeddedStudio,
   onBuildApex,
   onRunPlaytest,
   onTriggerUndo,
@@ -80,6 +84,8 @@ export function CommandPalette({
   onOpenSnapshots: () => void;
   onOpenSettings: () => void;
   onOpenArtStudio: () => void;
+  onOpenToolLibrary?: () => void;
+  onOpenEmbeddedStudio?: () => void;
   onBuildApex: () => void;
   onRunPlaytest?: () => void;
   onTriggerUndo: () => void;
@@ -171,6 +177,28 @@ export function CommandPalette({
         badge: "Studio 3D",
         badgeCls: "bg-tag-sky-bg text-tag-sky-fg",
         onRun: onRunPlaytest,
+      });
+    }
+    if (onOpenToolLibrary) {
+      out.push({
+        kind: "action",
+        id: "act-tool-library",
+        title: "Open Tool & Skill Library (Blender 3D, Audio SFX, Media Packs)",
+        subtitle: "Install/configure agent packs, generate Blender .obj meshes, and synthesize .wav SFX",
+        badge: "Library",
+        badgeCls: "bg-tag-mint-bg text-tag-mint-fg",
+        onRun: onOpenToolLibrary,
+      });
+    }
+    if (onOpenEmbeddedStudio) {
+      out.push({
+        kind: "action",
+        id: "act-embed-studio",
+        title: "Open Embedded Roblox Studio & All-12 MCP Tools",
+        subtitle: "Stream live MJPEG Roblox Studio viewport, pass mouse/keyboard input, Play/Server/Stop, and run all 12 MCP tools",
+        badge: "Embedded",
+        badgeCls: "bg-tag-sky-bg text-tag-sky-fg",
+        onRun: onOpenEmbeddedStudio,
       });
     }
     if (onAddBlockPart) {
@@ -274,7 +302,7 @@ export function CommandPalette({
     const q = query.trim().toLowerCase();
     if (!q) return out;
     return out.filter((it) => `${it.title} ${it.subtitle} ${it.badge}`.toLowerCase().includes(q));
-  }, [canRedo, canUndo, onAddBlockPart, onBuildApex, onDownloadShipPack, onExportRbxlx, onImportRbxlxClick, onNewChat, onOpenArtStudio, onOpenSettings, onOpenSnapshots, onRunPlaytest, onTriggerRedo, onTriggerUndo, place, query]);
+  }, [canRedo, canUndo, onAddBlockPart, onBuildApex, onDownloadShipPack, onExportRbxlx, onImportRbxlxClick, onNewChat, onOpenArtStudio, onOpenEmbeddedStudio, onOpenSettings, onOpenSnapshots, onOpenToolLibrary, onRunPlaytest, onTriggerRedo, onTriggerUndo, place, query]);
 
   const visible = items.slice(0, 40);
   const clampedIdx = visible.length ? Math.min(activeIdx, visible.length - 1) : 0;
@@ -309,6 +337,8 @@ export function CommandPalette({
     if (item.kind === "system") return Layers;
     if (item.id === "act-build-apex") return Sparkles;
     if (item.id === "act-art-studio") return Palette;
+    if (item.id === "act-tool-library") return Package;
+    if (item.id === "act-embed-studio") return Monitor;
     if (item.id === "act-export") return Download;
     if (item.id === "act-ship-pack") return FolderArchive;
     if (item.id === "act-import") return Upload;

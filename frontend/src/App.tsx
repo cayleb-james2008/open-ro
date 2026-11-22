@@ -19,6 +19,7 @@ import {
   ExternalLink,
   FolderTree,
   Menu,
+  Package,
   Palette,
   Plus,
   RefreshCw,
@@ -52,8 +53,11 @@ import {
   isV060OrNewer,
   isV070OrNewer,
   isV080OrNewer,
+  isV090OrNewer,
   normalizeChatList,
+  normalizeEmbedStatus,
   normalizeIdeas,
+  normalizeLibrarySnapshot,
   normalizePlace,
   normalizeSnapshots,
   normalizeStudioActionsResponse,
@@ -67,12 +71,18 @@ import {
   type ChatList,
   type Idea,
   type InstanceEditPayload,
+  type LibrarySnapshot,
   type PartPreset,
   type Place,
   type PlaceDiff,
   type PlaceSnapshot,
   type StudioActionEvent,
+  type StudioEmbedStatus,
+  type StudioKeyboardInputPayload,
   type StudioMode,
+  type StudioMouseInputPayload,
+  type StudioToolName,
+  type StudioToolResult,
   type WorkspaceMode,
 } from "./app/data";
 import { BlueprintWorkbench, FeaturedApexBanner } from "./app/Blueprints";
@@ -92,10 +102,11 @@ import { buildRojoShipPackZip } from "./app/zipBuilder";
 import { SettingsDialog } from "./app/SettingsDialog";
 import { PartsShelf, StudioChip } from "./app/Shelf";
 import { SnapshotsDialog } from "./app/SnapshotsDialog";
-import { StagePreview } from "./app/StagePreview";
+import { StagePreview, type ViewportTab } from "./app/StagePreview";
 import { SystemLibrary } from "./app/SystemLibrary";
 import type { GameSystemDef } from "./app/systems";
 import { ThreadFeed } from "./app/Thread";
+import { ToolLibraryDialog } from "./app/ToolLibraryDialog";
 import { UpdateStrip, useUpdate } from "./app/Update";
 
 type Pending = { message?: string; build?: string; undo?: boolean };
@@ -195,6 +206,8 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
   const [artStudioOpen, setArtStudioOpen] = useState(false);
+  const [toolLibraryOpen, setToolLibraryOpen] = useState(false);
+  const [librarySnap, setLibrarySnap] = useState<LibrarySnapshot>(() => normalizeLibrarySnapshot({}));
   const [settingsOpen, setSettingsOpen] = useState(() => {
     try {
       return new URLSearchParams(window.location.search).get("settings") === "1";
@@ -211,6 +224,16 @@ export function App() {
   const [v060Ready, setV060Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
   const [v070Ready, setV070Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
   const [v080Ready, setV080Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
+  const [v090Ready, setV090Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
+  const [embedStatus, setEmbedStatus] = useState<StudioEmbedStatus>(() =>
+    normalizeEmbedStatus({
+      running: false,
+      state: (window as ShellWindow).__OPENRO_WEB_ENGINE__ ? "unsupported" : "idle",
+      play_mode: "edit",
+    }),
+  );
+  const [embedRevealed, setEmbedRevealed] = useState(false);
+  const [requestedViewportTab, setRequestedViewportTab] = useState<ViewportTab | null>(null);
   const [studioMode, setStudioMode] = useState<StudioMode>(() =>
     (window as ShellWindow).__OPENRO_WEB_ENGINE__
       ? "browser_place"
@@ -439,6 +462,41 @@ export function App() {
     [v060Ready],
   );
 
+  const refreshEmbedStatus = useCallback(
+    async (forceServer = false) => {
+      if (!v090Ready && !forceServer) return;
+      try {
+        const raw = await read("/api/studio/embed/status");
+        const norm = normalizeEmbedStatus(raw);
+        setEmbedStatus(norm);
+        if (norm.running && norm.mcp_connected) {
+          setStudioMode("live_mcp");
+          setWorkspaceMode("studio_mcp");
+        }
+        if (norm.has_live_frame && typeof norm.frame_seq === "number" && norm.frame_seq > 0) {
+          setHasLiveFrame(true);
+          setFrameSeq(norm.frame_seq);
+        }
+      } catch {
+        /* keep current embed status */
+      }
+    },
+    [v090Ready],
+  );
+
+  const refreshLibrary = useCallback(
+    async (forceServer = false) => {
+      if (!v090Ready && !forceServer) return;
+      try {
+        const raw = await read("/api/library");
+        setLibrarySnap(normalizeLibrarySnapshot(raw));
+      } catch {
+        /* keep bundled fallback pack list */
+      }
+    },
+    [v090Ready],
+  );
+
   const refreshStudioActions = useCallback(
     async (forceServer = false) => {
       if (!v070Ready && !forceServer) return;
@@ -520,6 +578,11 @@ export function App() {
           if (isV080OrNewer(v.version)) {
             setV080Ready(true);
           }
+          if (isV090OrNewer(v.version)) {
+            setV090Ready(true);
+            void refreshEmbedStatus(true);
+            void refreshLibrary(true);
+          }
         }
       })
       .catch(() => {});
@@ -533,6 +596,8 @@ export function App() {
       studio_stream?: unknown;
       assets_api?: unknown;
       ide_api?: unknown;
+      embed_api?: unknown;
+      studio_embed?: unknown;
       skills_count?: unknown;
     }>("/api/status")
       .then((s) => {
@@ -574,6 +639,11 @@ export function App() {
         }
         if (s.ide_api === true || (typeof s.version === "string" && isV080OrNewer(s.version))) {
           setV080Ready(true);
+        }
+        if (s.studio_embed === true || s.embed_api === true || (typeof s.version === "string" && isV090OrNewer(s.version))) {
+          setV090Ready(true);
+          void refreshEmbedStatus(true);
+          void refreshLibrary(true);
         }
       })
       .catch(() => {});
@@ -1633,6 +1703,156 @@ export function App() {
     }
   };
 
+  const handleLaunchEmbed = async (command?: string) => {
+    if (!v090Ready) {
+      toast.error("Embedded Roblox Studio requires OpenRO v0.9.0 desktop server.");
+      return;
+    }
+    setEmbedStatus((prev) => ({ ...prev, state: "launching", error: null }));
+    try {
+      const res = await post<Record<string, unknown>>("/api/studio/embed/launch", command ? { command } : {});
+      if (res.ok === true) {
+        const norm = normalizeEmbedStatus(res.status ?? res);
+        setEmbedStatus({ ...norm, running: true });
+        if (norm.mcp_connected || res.studio_mode === "live_mcp") {
+          setStudioOk(true);
+          setStudioMode("live_mcp");
+          setWorkspaceMode("studio_mcp");
+        }
+        if (typeof res.frame_seq === "number" && res.frame_seq > 0) {
+          setHasLiveFrame(true);
+          setFrameSeq(res.frame_seq);
+        }
+        setEmbedRevealed(true);
+        setRequestedViewportTab("embedded-studio");
+        toast.success("Launched & embedded Roblox Studio");
+        void refreshStudioActions(true);
+        void refreshPlace();
+      } else {
+        const errText =
+          typeof res.error === "string" && res.error
+            ? res.error
+            : "Could not launch Embedded Roblox Studio on this host.";
+        setEmbedStatus((prev) => ({
+          ...prev,
+          running: false,
+          state: studioMode === "browser_place" ? "unsupported" : "error",
+          error: errText,
+        }));
+        toast.error(errText);
+      }
+    } catch {
+      const errText = "Could not reach /api/studio/embed/launch.";
+      setEmbedStatus((prev) => ({ ...prev, running: false, state: "error", error: errText }));
+      toast.error(errText);
+    }
+  };
+
+  const handleStopEmbed = async () => {
+    if (!v090Ready) return;
+    try {
+      const res = await post<Record<string, unknown>>("/api/studio/embed/stop", {});
+      if (res.ok === true) {
+        setEmbedStatus(normalizeEmbedStatus({ ...(res.status && typeof res.status === "object" ? (res.status as Record<string, unknown>) : res), running: false, state: "stopped", play_mode: "edit" }));
+        setWorkspaceMode("local_place");
+        setStudioMode("local_place");
+        setHasLiveFrame(false);
+        await refreshPlace();
+        void refreshStudioActions(true);
+        toast.success("Stopped Embedded Roblox Studio — returned to Local Studio 3D");
+      } else {
+        toast.error(typeof res.error === "string" ? res.error : "Could not stop Embedded Roblox Studio.");
+      }
+    } catch {
+      toast.error("Could not reach /api/studio/embed/stop.");
+    }
+  };
+
+  const handleSendMouseInput = async (payload: StudioMouseInputPayload) => {
+    if (!v090Ready) return;
+    try {
+      const res = await post<{ ok?: boolean; frame_seq?: number }>("/api/studio/input/mouse", payload);
+      if (res.ok && typeof res.frame_seq === "number" && res.frame_seq > 0) {
+        setHasLiveFrame(true);
+        setFrameSeq(res.frame_seq);
+      }
+    } catch {
+      /* non-fatal input drop */
+    }
+  };
+
+  const handleSendKeyboardInput = async (payload: StudioKeyboardInputPayload) => {
+    if (!v090Ready) return;
+    try {
+      const res = await post<{ ok?: boolean; frame_seq?: number }>("/api/studio/input/keyboard", payload);
+      if (res.ok && typeof res.frame_seq === "number" && res.frame_seq > 0) {
+        setHasLiveFrame(true);
+        setFrameSeq(res.frame_seq);
+      }
+    } catch {
+      /* non-fatal input drop */
+    }
+  };
+
+  const handleInvokeStudioTool = async (
+    tool: StudioToolName,
+    args: Record<string, unknown>,
+  ): Promise<StudioToolResult> => {
+    const started = performance.now();
+    if (!v090Ready) {
+      return {
+        ok: false,
+        tool,
+        error: "All-12 Studio MCP Tools require OpenRO v0.9.0.",
+        duration_ms: 0,
+      };
+    }
+    try {
+      const res = await post<Record<string, unknown>>(`/api/studio/tools/${encodeURIComponent(tool)}`, args);
+      const duration_ms = Math.max(1, Math.round(performance.now() - started));
+      const ok = res.ok !== false;
+      const playModeRaw = typeof res.play_mode === "string" ? res.play_mode : undefined;
+      if (playModeRaw === "edit" || playModeRaw === "play" || playModeRaw === "server") {
+        setEmbedStatus((prev) => ({ ...prev, play_mode: playModeRaw }));
+      } else if (tool === "start_stop_play" && ok) {
+        const reqMode = String(args.mode || "stop");
+        const nextPm = reqMode === "start_play" ? "play" : reqMode === "run_server" ? "server" : "edit";
+        setEmbedStatus((prev) => ({ ...prev, play_mode: nextPm }));
+      }
+      if (typeof res.frame_seq === "number" && res.frame_seq > 0) {
+        setHasLiveFrame(true);
+        setFrameSeq(res.frame_seq);
+      }
+      if (ok && (tool === "multi_edit" || tool === "execute_luau")) {
+        void refreshPlace();
+        void refreshDiagnostics(true);
+      }
+      if (ok) void refreshStudioActions(true);
+      return {
+        ok,
+        tool,
+        result: res.result !== undefined ? res.result : ok ? res : undefined,
+        text: typeof res.text === "string" ? res.text : undefined,
+        error: !ok && typeof res.error === "string" ? res.error : undefined,
+        frame_seq: typeof res.frame_seq === "number" ? res.frame_seq : undefined,
+        duration_ms,
+      };
+    } catch {
+      return {
+        ok: false,
+        tool,
+        error: `Could not reach /api/studio/tools/${tool}.`,
+        duration_ms: Math.max(1, Math.round(performance.now() - started)),
+      };
+    }
+  };
+
+  const handleOpenEmbeddedStudio = () => {
+    setEmbedRevealed(true);
+    setRequestedViewportTab("embedded-studio");
+    if (threadRef.current) threadRef.current.scrollTop = 0;
+  };
+
   ideShortcutRef.current = {
     selectedPath,
     canRedo,
@@ -1759,6 +1979,25 @@ export function App() {
             {cardAssets.length}
           </span>
         </Button>
+
+        <Button
+          variant="outline"
+          onClick={() => {
+            setMenuOpen(false);
+            setToolLibraryOpen(true);
+            void refreshLibrary();
+          }}
+          aria-label="Open Tool and Skill Library"
+          className="w-full justify-between bg-board/50 font-normal text-ink-2 hover:bg-board hover:text-ink max-md:min-h-11"
+        >
+          <span className="inline-flex min-w-0 items-center gap-2">
+            <Package className="size-3.5 flex-none text-icon" strokeWidth={1.5} aria-hidden />
+            <span className="truncate text-sm">Tool Library</span>
+          </span>
+          <span className="rounded-chip bg-surface px-1.5 py-0.5 font-mono text-xs tabular-nums text-ink-2">
+            {librarySnap.packs.filter((p) => p.installed).length}/{librarySnap.packs.length}
+          </span>
+        </Button>
       </div>
 
       <InputGroup className="bg-board/45">
@@ -1868,12 +2107,12 @@ export function App() {
 
         <div className="flex items-center justify-between gap-2 text-xs text-ink-2">
           <a
-            href={RELEASES_URL + (version || "0.8.0")}
+            href={RELEASES_URL + (version || "0.9.0")}
             target="_blank"
             rel="noreferrer"
             className="inline-flex min-h-11 items-center gap-1 rounded-sm px-1 font-mono text-xs text-ink-2 outline-none hover:text-ink hover:underline md:min-h-7"
           >
-            <span>OpenRO v{version || "0.8.0"}</span>
+            <span>OpenRO v{version || "0.9.0"}</span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
           <span className="truncate text-right text-xs text-ink-3">
@@ -1949,7 +2188,7 @@ export function App() {
                       <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/30" />
                       <Drawer.Content
                         onEscapeKeyDown={(e) => {
-                          if (settingsOpen || paletteOpen || snapshotsOpen || artStudioOpen) {
+                          if (settingsOpen || paletteOpen || snapshotsOpen || artStudioOpen || toolLibraryOpen) {
                             e.preventDefault();
                             return;
                           }
@@ -2079,6 +2318,39 @@ export function App() {
                 </div>
               ) : !hasConversation ? (
                 <>
+                  {(embedRevealed || embedStatus.running) && (
+                    <StagePreview
+                      place={place && place !== "error" ? place : { scripts: {}, instances: {} }}
+                      theme={theme}
+                      selectedPath={selectedPath}
+                      onSelectPart={handleSelectPartFromStage}
+                      assets={cardAssets}
+                      onOpenArtStudio={() => setArtStudioOpen(true)}
+                      studioMode={studioMode}
+                      studioActions={studioActions}
+                      hasLiveFrame={hasLiveFrame}
+                      frameSeq={frameSeq}
+                      building={Boolean(building)}
+                      canRedo={canRedo}
+                      embedStatus={embedStatus}
+                      requestedTab={requestedViewportTab}
+                      onSaveInstance={handleSaveInstance}
+                      onCreatePart={handleCreatePart}
+                      onDuplicatePart={handleDuplicatePart}
+                      onDeletePart={handleDeletePart}
+                      onTriggerRedo={handleRedo}
+                      onRunPlaytest={handleRunStudioPlaytest}
+                      onCaptureFrame={handleCaptureStudioFrame}
+                      onConnectMcp={handleConnectMcp}
+                      onDisconnectMcp={handleDisconnectMcp}
+                      onLaunchEmbed={handleLaunchEmbed}
+                      onStopEmbed={handleStopEmbed}
+                      onRefreshEmbedStatus={() => void refreshEmbedStatus(true)}
+                      onSendMouseInput={handleSendMouseInput}
+                      onSendKeyboardInput={handleSendKeyboardInput}
+                      onInvokeStudioTool={handleInvokeStudioTool}
+                    />
+                  )}
                   <BlueprintWorkbench
                     ideas={workbenchIdeas}
                     builtTitles={builtTitles}
@@ -2110,7 +2382,7 @@ export function App() {
                   <div className="sr-only" id="stage-title">
                     Studio build thread
                   </div>
-                  {(totalPieces > 0 || Boolean(building) || studioMode === "live_mcp" || hasLiveFrame) && (
+                  {(totalPieces > 0 || Boolean(building) || studioMode === "live_mcp" || hasLiveFrame || embedStatus.running || embedRevealed) && (
                     <StagePreview
                       place={place && place !== "error" ? place : { scripts: {}, instances: {} }}
                       theme={theme}
@@ -2124,6 +2396,8 @@ export function App() {
                       frameSeq={frameSeq}
                       building={Boolean(building)}
                       canRedo={canRedo}
+                      embedStatus={embedStatus}
+                      requestedTab={requestedViewportTab}
                       onSaveInstance={handleSaveInstance}
                       onCreatePart={handleCreatePart}
                       onDuplicatePart={handleDuplicatePart}
@@ -2133,6 +2407,12 @@ export function App() {
                       onCaptureFrame={handleCaptureStudioFrame}
                       onConnectMcp={handleConnectMcp}
                       onDisconnectMcp={handleDisconnectMcp}
+                      onLaunchEmbed={handleLaunchEmbed}
+                      onStopEmbed={handleStopEmbed}
+                      onRefreshEmbedStatus={() => void refreshEmbedStatus(true)}
+                      onSendMouseInput={handleSendMouseInput}
+                      onSendKeyboardInput={handleSendKeyboardInput}
+                      onInvokeStudioTool={handleInvokeStudioTool}
                     />
                   )}
                   <ThreadFeed
@@ -2339,10 +2619,23 @@ export function App() {
           onOpenSnapshots={() => setSnapshotsOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenArtStudio={() => setArtStudioOpen(true)}
+          onOpenToolLibrary={() => {
+            setToolLibraryOpen(true);
+            void refreshLibrary();
+          }}
+          onOpenEmbeddedStudio={handleOpenEmbeddedStudio}
           onBuildApex={() => void buildApexCardBattles()}
           onRunPlaytest={() => void handleRunStudioPlaytest()}
           onTriggerUndo={() => void undoNow()}
           onTriggerRedo={() => void handleRedo()}
+        />
+
+        <ToolLibraryDialog
+          open={toolLibraryOpen}
+          onOpenChange={setToolLibraryOpen}
+          snapshot={librarySnap}
+          v090Ready={v090Ready}
+          onRefresh={() => refreshLibrary(true)}
         />
 
         <CardArtStudio

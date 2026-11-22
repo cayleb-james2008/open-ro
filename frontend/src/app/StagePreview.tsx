@@ -21,12 +21,23 @@ import { Button } from "@/components/ui/button";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { Pill } from "@/components/kibo-ui/pill";
 import { Expandable, ExpandableContent, ExpandableTrigger } from "@/components/ui/expandable";
-import type { InstanceEditPayload, PartPreset, Place, StudioActionEvent, StudioMode } from "./data";
+import type {
+  InstanceEditPayload,
+  PartPreset,
+  Place,
+  StudioActionEvent,
+  StudioEmbedStatus,
+  StudioKeyboardInputPayload,
+  StudioMode,
+  StudioMouseInputPayload,
+  StudioToolName,
+  StudioToolResult,
+} from "./data";
 import { CardBattlerStage } from "./CardBattlerStage";
 import { APEX_CARDS, type CardAssetRecord } from "./cardCatalog";
 import { StudioViewport3D } from "./StudioViewport3D";
 
-type ViewportTab = "studio-3d" | "studio-feed" | "playable";
+export type ViewportTab = "studio-3d" | "embedded-studio" | "playable";
 
 function isCardBattlerPlace(place: Place): boolean {
   const keys = [...Object.keys(place.scripts || {}), ...Object.keys(place.instances || {})].join(" ");
@@ -394,6 +405,8 @@ export function StagePreview({
   frameSeq = 0,
   building = false,
   canRedo = false,
+  embedStatus,
+  requestedTab,
   onSaveInstance,
   onCreatePart,
   onDuplicatePart,
@@ -403,6 +416,12 @@ export function StagePreview({
   onCaptureFrame,
   onConnectMcp,
   onDisconnectMcp,
+  onLaunchEmbed,
+  onStopEmbed,
+  onRefreshEmbedStatus,
+  onSendMouseInput,
+  onSendKeyboardInput,
+  onInvokeStudioTool,
 }: {
   place: Place;
   theme: "light" | "dark";
@@ -416,6 +435,8 @@ export function StagePreview({
   frameSeq?: number;
   building?: boolean;
   canRedo?: boolean;
+  embedStatus: StudioEmbedStatus;
+  requestedTab?: ViewportTab | null;
   onSaveInstance?: (payload: InstanceEditPayload) => Promise<void> | void;
   onCreatePart?: (preset: PartPreset) => Promise<void> | void;
   onDuplicatePart?: (path: string) => Promise<void> | void;
@@ -425,10 +446,19 @@ export function StagePreview({
   onCaptureFrame?: () => Promise<void> | void;
   onConnectMcp?: (command?: string) => Promise<void> | void;
   onDisconnectMcp?: () => Promise<void> | void;
+  onLaunchEmbed?: (command?: string) => Promise<void> | void;
+  onStopEmbed?: () => Promise<void> | void;
+  onRefreshEmbedStatus?: () => Promise<void> | void;
+  onSendMouseInput?: (payload: StudioMouseInputPayload) => Promise<void> | void;
+  onSendKeyboardInput?: (payload: StudioKeyboardInputPayload) => Promise<void> | void;
+  onInvokeStudioTool?: (tool: StudioToolName, args: Record<string, unknown>) => Promise<StudioToolResult>;
 }) {
   const reduce = useReducedMotion();
   const isCardWorld = useMemo(() => isCardBattlerPlace(place), [place]);
-  const [viewportTab, setViewportTab] = useState<ViewportTab>("studio-3d");
+  const [viewportTab, setViewportTab] = useState<ViewportTab>(() => requestedTab || "studio-3d");
+  useEffect(() => {
+    if (requestedTab) setViewportTab(requestedTab);
+  }, [requestedTab]);
   const world = useMemo(() => parseWorld(place), [place]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hitboxesRef = useRef<RenderHitbox[]>([]);
@@ -1055,7 +1085,7 @@ export function StagePreview({
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 {viewportTab === "studio-3d" ? (
                   <Box className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
-                ) : viewportTab === "studio-feed" ? (
+                ) : viewportTab === "embedded-studio" ? (
                   <Monitor className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
                 ) : (
                   <Gamepad2 className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
@@ -1063,8 +1093,8 @@ export function StagePreview({
                 <span className="text-sm font-medium text-ink">
                   {viewportTab === "studio-3d"
                     ? "Roblox Studio 3D Viewport"
-                    : viewportTab === "studio-feed"
-                      ? "Live Studio Feed"
+                    : viewportTab === "embedded-studio"
+                      ? "Embedded Roblox Studio"
                       : isCardWorld
                         ? "Playable Card Battler Stage"
                         : "Playable Stage"}
@@ -1105,13 +1135,13 @@ export function StagePreview({
                     Studio 3D
                   </SegmentedControlItem>
                   <SegmentedControlItem
-                    data-checked={viewportTab === "studio-feed" ? "" : undefined}
-                    aria-pressed={viewportTab === "studio-feed"}
-                    onClick={() => setViewportTab("studio-feed")}
+                    data-checked={viewportTab === "embedded-studio" ? "" : undefined}
+                    aria-pressed={viewportTab === "embedded-studio"}
+                    onClick={() => setViewportTab("embedded-studio")}
                     className="gap-1 max-md:!h-11 max-md:px-2"
                   >
                     <Monitor className="size-3.5" strokeWidth={1.5} aria-hidden />
-                    Studio Feed
+                    Embedded Studio
                   </SegmentedControlItem>
                   <SegmentedControlItem
                     data-checked={viewportTab === "playable" ? "" : undefined}
@@ -1183,7 +1213,7 @@ export function StagePreview({
             </div>
 
             <ExpandableContent preset="fade">
-              {viewportTab === "studio-3d" || viewportTab === "studio-feed" ? (
+              {viewportTab === "studio-3d" || viewportTab === "embedded-studio" ? (
                 <div className="p-3">
                   <StudioViewport3D
                     mode={viewportTab}
@@ -1197,6 +1227,7 @@ export function StagePreview({
                     frameSeq={frameSeq}
                     building={building}
                     canRedo={canRedo}
+                    embedStatus={embedStatus}
                     onSelectPart={onSelectPart}
                     onSaveInstance={onSaveInstance}
                     onCreatePart={onCreatePart}
@@ -1207,6 +1238,12 @@ export function StagePreview({
                     onCaptureFrame={onCaptureFrame}
                     onConnectMcp={onConnectMcp}
                     onDisconnectMcp={onDisconnectMcp}
+                    onLaunchEmbed={onLaunchEmbed}
+                    onStopEmbed={onStopEmbed}
+                    onRefreshEmbedStatus={onRefreshEmbedStatus}
+                    onSendMouseInput={onSendMouseInput}
+                    onSendKeyboardInput={onSendKeyboardInput}
+                    onInvokeStudioTool={onInvokeStudioTool}
                   />
                 </div>
               ) : isCardWorld ? (
