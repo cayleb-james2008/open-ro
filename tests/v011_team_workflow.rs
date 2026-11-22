@@ -1107,3 +1107,251 @@ fn research_and_grep_tools_enforce_ssrf_and_execute_cleanly() {
 
     shared.teamwork.shutdown();
 }
+
+#[test]
+fn self_claim_routing_history_compaction_tools_kind_and_ergonomics() {
+    let dir = scratch_dir("self-claim-history-compact");
+    let data_dir = dir.join("data");
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(proj.join("src/server")).unwrap();
+    std::fs::create_dir_all(proj.join("docs")).unwrap();
+    std::fs::create_dir_all(proj.join("tools/econ-sim")).unwrap();
+    std::fs::write(
+        proj.join("default.project.json"),
+        json!({
+            "name": "SelfClaimCompactTest",
+            "tree": {
+                "$className": "DataModel",
+                "ServerScriptService": { "$className": "ServerScriptService", "$path": "src/server" }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(proj.join("docs/SEED.md"), "# Seed\n").unwrap();
+    std::fs::create_dir_all(&data_dir).unwrap();
+    write_projects_index(&data_dir, &proj);
+
+    let big_body_1 = format!("# Research\n{}\n", "A".repeat(1_800));
+    let big_body_2 = format!("# GDD\n{}\n", "B".repeat(1_800));
+    let prompt_checks: Arc<Mutex<Vec<(String, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+    let prompt_checks_srv = prompt_checks.clone();
+    let per_role: Arc<Mutex<std::collections::HashMap<String, usize>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let pr = Arc::clone(&per_role);
+
+    let stub = start_dynamic_stub(move |body, _| {
+        let req: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        let msgs = req["messages"].as_array().cloned().unwrap_or_default();
+        let sys = msgs[0]["content"].as_str().unwrap_or("");
+        let role = if sys.contains("[Agent: coordinator]") {
+            "coordinator"
+        } else if sys.contains("[Agent: researcher]") {
+            "researcher"
+        } else if sys.contains("[Agent: builder]") {
+            "builder"
+        } else {
+            "verifier"
+        };
+        let last_user = msgs
+            .iter()
+            .rev()
+            .find(|m| m["role"] == "user")
+            .and_then(|m| m["content"].as_str())
+            .unwrap_or("");
+        prompt_checks_srv
+            .lock()
+            .unwrap()
+            .push((role.to_string(), last_user.contains("Tasks:\n")));
+
+        let step = {
+            let mut m = pr.lock().unwrap();
+            let e = m.entry(role.to_string()).or_insert(0);
+            *e += 1;
+            *e
+        };
+        if role == "coordinator" {
+            return match step {
+                1 => json!({
+                    "steps": [
+                        { "tool": "create_task", "args": { "id": "t1", "owner": "researcher", "title": "Write research", "files": ["docs/RESEARCH.md"] } },
+                        { "tool": "create_task", "args": { "id": "t2", "owner": "researcher", "title": "Write GDD", "files": ["docs/GDD.md"] } },
+                        { "tool": "create_task", "args": { "id": "t3", "owner": "builder", "title": "Economy sim", "kind": "game_code", "files": ["docs/ECONOMY.md", "tools/econ-sim/sim.luau", "openro.project.json"] } }
+                    ],
+                    "done": true,
+                    "summary": "dispatched"
+                }),
+                _ => {
+                    let all_text = msgs.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
+                    if all_text.contains("Verified task t1")
+                        && all_text.contains("Verified task t2")
+                        && all_text.contains("Verified task t3")
+                    {
+                        json!({ "tool": "finish_run", "args": { "summary": "all verified" } })
+                    } else {
+                        json!({ "done": true, "summary": "waiting" })
+                    }
+                }
+            };
+        }
+        if role == "researcher" {
+            return match step {
+                // Step 1: project_files using `path` alias (#45a)
+                1 => json!({ "tool": "project_files", "args": { "path": "docs" } }),
+                // Step 2: write t2's claimed file while current_task_id == t1 (#41 self-claim routing)
+                2 => json!({
+                    "tool": "project_write_file",
+                    "args": { "path": "docs/GDD.md", "content": big_body_2.clone() }
+                }),
+                // Step 3: write t1's file
+                3 => json!({
+                    "tool": "project_write_file",
+                    "args": { "path": "docs/RESEARCH.md", "content": big_body_1.clone() }
+                }),
+                // Step 4: submit both tasks
+                4 => json!({
+                    "steps": [
+                        { "tool": "submit_task", "args": { "task_id": "t1", "summary": "research ready" } },
+                        { "tool": "submit_task", "args": { "task_id": "t2", "summary": "gdd ready" } }
+                    ],
+                    "done": true,
+                    "summary": "researcher finished"
+                }),
+                _ => json!({ "done": true, "summary": "parked" }),
+            };
+        }
+        if role == "builder" {
+            return match step {
+                // Step 1: cross-agent write to researcher's docs/GDD.md MUST STILL FAIL
+                1 => json!({
+                    "tool": "project_write_file",
+                    "args": { "path": "docs/GDD.md", "content": "hijack\n" }
+                }),
+                // Step 2: write t3's econ doc + Lune tool & submit
+                2 => json!({
+                    "steps": [
+                        { "tool": "project_write_file", "args": { "path": "docs/ECONOMY.md", "content": "# Economy\n" } },
+                        { "tool": "project_write_file", "args": { "path": "tools/econ-sim/sim.luau", "content": "print('sim ok')\n" } },
+                        { "tool": "submit_task", "args": { "task_id": "t3", "summary": "econ sim ready" } }
+                    ],
+                    "done": true,
+                    "summary": "builder finished"
+                }),
+                _ => json!({ "done": true, "summary": "parked" }),
+            };
+        }
+        // Verifier: wait until t1, t2, and t3 are all awaiting verification so builder's
+        // cross-agent claim test on t2/docs/GDD.md always runs while t2 holds its claim.
+        if last_user.contains("- t1 [awaiting_verification]")
+            && last_user.contains("- t2 [awaiting_verification]")
+            && last_user.contains("- t3 [awaiting_verification]")
+        {
+            return json!({
+                "steps": [
+                    { "tool": "project_run_lune", "args": { "script": "tools/econ-sim/sim.luau", "task_id": "t3" } },
+                    { "tool": "verify_task", "args": { "task_id": "t1", "passed": true, "notes": "t1 ok" } },
+                    { "tool": "verify_task", "args": { "task_id": "t2", "passed": true, "notes": "t2 ok" } },
+                    { "tool": "verify_task", "args": { "task_id": "t3", "passed": true, "notes": "t3 verified via lune despite game_code kind" } }
+                ],
+                "done": true,
+                "summary": "all tasks verified"
+            });
+        }
+        json!({ "done": true, "summary": "waiting for all 3 submissions" })
+    });
+
+    let (port, shared) = boot_server(data_dir, None);
+    let (st, _) = http(
+        port,
+        "POST",
+        "/api/config",
+        Some(&json!({ "base_url": stub.base_url, "model_id": "stub-model" })),
+    );
+    assert_eq!(st, 200);
+
+    let (st, created) = http(
+        port,
+        "POST",
+        "/api/teamwork",
+        Some(&json!({ "goal": "Verify #41, #43, #44, #45", "roles": ["researcher", "builder", "verifier"], "max_concurrency": 3 })),
+    );
+    assert_eq!(st, 201, "{created}");
+    let run_id = created["run"]["id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut detail = Value::Null;
+    while Instant::now() < deadline {
+        let (_, d) = http(port, "GET", &format!("/api/teamwork/{run_id}"), None);
+        detail = d;
+        if detail["run"]["status"] == "completed" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    assert_eq!(detail["run"]["status"], "completed", "{detail}");
+
+    // #45b: create_task stripped openro.project.json instead of failing, and returned a note
+    let (_, coord_trace) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/coordinator/trace"), None);
+    let t3_res = coord_trace["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["kind"] == "tool_result" && e["data"]["tool"] == "create_task" && e["data"]["result"]["id"] == "t3")
+        .expect("t3 create_task result");
+    assert!(t3_res["data"]["result"]["note"].as_str().unwrap_or("").contains("project_update_manifest"));
+    assert!(!t3_res["data"]["result"]["claimed_files"].as_array().unwrap().iter().any(|f| f == "openro.project.json"));
+
+    // #45a & #41: researcher project_files(path="docs") listed SEED.md and wrote t2's docs/GDD.md while on t1
+    let (_, res_trace) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/researcher/trace"), None);
+    let res_events = res_trace["trace"].as_array().unwrap();
+    assert!(res_events.iter().any(|e| {
+        e["kind"] == "tool_result"
+            && e["data"]["tool"] == "project_files"
+            && e["data"]["ok"] == true
+            && e["data"]["result"]["entries"]
+                .as_array()
+                .is_some_and(|arr| arr.iter().any(|it| it["path"] == "docs/SEED.md"))
+    }), "{res_events:?}");
+    assert!(res_events.iter().any(|e| {
+        e["kind"] == "tool_result"
+            && e["data"]["tool"] == "project_write_file"
+            && e["data"]["ok"] == true
+            && e["data"]["result"]["path"] == "docs/GDD.md"
+            && e["data"]["result"]["task_id"] == "t2"
+    }), "{res_events:?}");
+
+    // Cross-agent write conflict on docs/GDD.md still rejected for builder
+    let (_, bld_trace) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/builder/trace"), None);
+    assert!(bld_trace["trace"].as_array().unwrap().iter().any(|e| {
+        e["kind"] == "tool_result"
+            && e["data"]["tool"] == "project_write_file"
+            && e["data"]["ok"] == false
+            && e["data"]["error"].as_str().unwrap_or("").contains("file claim conflict")
+    }));
+
+    // #43: model saw live "Tasks:" transiently, while agents/researcher.json persisted ZERO "Tasks:" and compacted >2-turn-old entries
+    let checks = prompt_checks.lock().unwrap();
+    assert!(checks.iter().filter(|(r, _)| r == "researcher").all(|(_, has_tasks)| *has_tasks), "researcher prompts missing transient Tasks: {checks:?}");
+
+    let agent_file = proj.join(".openro/teamwork").join(&run_id).join("agents/researcher.json");
+    let raw_agent = std::fs::read_to_string(&agent_file).unwrap();
+    let agent_json: Value = serde_json::from_str(&raw_agent).unwrap();
+    let persisted_msgs = agent_json["messages"].as_array().unwrap();
+    assert!(persisted_msgs.iter().all(|m| !m["content"].as_str().unwrap_or("").contains("Tasks:\n")), "{persisted_msgs:?}");
+    assert!(persisted_msgs.iter().any(|m| {
+        let c = m["content"].as_str().unwrap_or("");
+        c.starts_with("[compacted tool_result") && !c.contains('\n')
+    }), "{persisted_msgs:?}");
+    assert!(persisted_msgs.iter().any(|m| {
+        let c = m["content"].as_str().unwrap_or("");
+        m["role"] == "assistant" && c.contains("[compacted project_write_file content") && !c.contains(&"B".repeat(500))
+    }), "{persisted_msgs:?}");
+
+    // #44: t3 passed via Lune without needing Studio playtest
+    let tasks = detail["tasks"].as_array().unwrap();
+    let t3 = tasks.iter().find(|t| t["id"] == "t3").unwrap();
+    assert_eq!(t3["status"], "done");
+    assert_eq!(t3["verify_report"]["playtest_passed"], Value::Null);
+
+    shared.teamwork.shutdown();
+}
