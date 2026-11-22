@@ -4,6 +4,11 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## Unreleased (0.11.0)
+
+- **Antigravity CLI Model Provider — Gemini 4 Hydrogen Default (`src/model.rs`, `src/config.rs`, `src/server.rs`, `tests/v011_agent_agy.rs`):**
+  - Added pure-text Antigravity CLI (`agy -p ... --output-format stream-json`) model provider defaulting to `gemini-4-hydrogen-high`, with cached `agy models` discovery (`GET /api/models`), persisted provider/model selection (`GET`/`POST /api/config`), strict deny-all tool sandbox (`DATA_DIR/agy-sandbox`), and clear quota/reset-time error surfacing in `/api/status` and `/api/chat`.
+
 ## 0.10.0 - 2026-11-22
 
 - **RoPilot 3-Pane Studio IDE Layout (`frontend/src/App.tsx`, `CodeDiffWorkbench.tsx`, `CopilotComposer.tsx`, `StudioBottomDrawer.tsx`, `Shelf.tsx`):**
