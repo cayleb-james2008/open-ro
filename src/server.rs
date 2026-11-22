@@ -868,6 +868,29 @@ fn handle(
         return Ok(());
     }
 
+    // Live Embedded Roblox Studio multipart MJPEG/MPNG viewport stream (`GET /api/studio/stream.mjpg`):
+    // drops HandlerSlot first so active <img> streams never starve concurrent HTTP requests.
+    if req.method == "GET" && path == "/api/studio/stream.mjpg" {
+        drop(slot);
+        if shared.studio_stream.active_subscribers() >= crate::studio_stream::MAX_STUDIO_SSE_CLIENTS {
+            respond_json(
+                &mut stream,
+                "503 Service Unavailable",
+                &json!({ "ok": false, "error": "Too many live Studio viewport streams are open right now. Close an extra tab and retry." }),
+            );
+            return Ok(());
+        }
+        let max_frames = if query_param(query, "once").is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true")) {
+            Some(1)
+        } else {
+            query_param(query, "max_frames").and_then(|s| s.parse::<usize>().ok()).filter(|&n| n > 0)
+        };
+        if let Err(msg) = shared.studio_stream.serve_mjpeg(stream, max_frames) {
+            eprintln!("openro: Studio MJPEG stream refused: {msg}");
+        }
+        return Ok(());
+    }
+
     let _slot = slot;
 
     // Parameterized snapshot routes: POST /api/snapshots/:id/restore & GET /api/snapshots/:id/rbxlx
