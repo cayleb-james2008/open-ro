@@ -1,0 +1,1106 @@
+//! Cross-platform Embedded Roblox Studio host manager for OpenRO v0.9.0.
+//!
+//! Manages an embedded Roblox Studio session strictly on explicit user action
+//! (NEVER auto-launched on server boot or during automated tests):
+//! - **Linux:** attaches to an existing display or spawns an isolated
+//!   `Xvfb :99 -screen 0 1440x900x24 -ac`, launches Flatpak
+//!   `org.vinegarhq.Vinegar` with `DISPLAY=:99`, and attaches `~/.local/bin/roblox-studio-mcp`.
+//! - **Windows:** passively locates `%LOCALAPPDATA%\Roblox\Versions\version-*\RobloxStudioBeta.exe`
+//!   plus `StudioMCP.exe` / `mcp.bat` without any Unix-only APIs, launches Studio when requested,
+//!   and attaches `McpClient`.
+//! - **Explicit child teardown:** `stop_embedded_studio` and `Drop` terminate ONLY the child
+//!   process handles spawned by this manager (`child.kill()` + `child.wait()`) — never `pkill -f`,
+//!   and never touching a pre-existing host `Xvfb`.
+
+use crate::desktop::current_platform;
+use crate::mcp::{official_studio_tool_catalog, McpClient, OFFICIAL_STUDIO_TOOLS};
+use crate::studio_stream::StudioFrame;
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// Default isolated X11 display used for embedded Studio on Linux.
+pub const DEFAULT_EMBED_DISPLAY: &str = ":99";
+/// Default embedded Studio viewport resolution.
+pub const DEFAULT_EMBED_WIDTH: u32 = 1440;
+pub const DEFAULT_EMBED_HEIGHT: u32 = 900;
+pub const DEFAULT_EMBED_DEPTH: u8 = 24;
+/// Default startup wait timeout when launching a real Studio host process.
+pub const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 20_000;
+
+/// User-supplied configuration for launching or attaching an embedded Roblox Studio session.
+#[derive(Clone, Debug)]
+pub struct EmbedConfig {
+    /// Isolated Linux X11 display (e.g. `":99"`). Ignored on Windows/macOS.
+    pub display: String,
+    pub width: u32,
+    pub height: u32,
+    pub depth: u8,
+    /// Optional explicit MCP bridge command (e.g. `mock_studio`, `~/.local/bin/roblox-studio-mcp`,
+    /// or `C:\...\StudioMCP.exe`). When set alongside `launch_studio_process: false`, attaches
+    /// directly without launching Vinegar or `RobloxStudioBeta.exe`.
+    pub mcp_command: Option<String>,
+    /// When `true` and no direct custom MCP bridge overrides it, spawn the host Studio runtime
+    /// (`Xvfb` + Flatpak Vinegar on Linux; `RobloxStudioBeta.exe` on Windows).
+    pub launch_studio_process: bool,
+    /// Maximum time to wait for Studio + MCP readiness in milliseconds.
+    pub startup_timeout_ms: u64,
+}
+
+impl Default for EmbedConfig {
+    fn default() -> Self {
+        EmbedConfig {
+            display: DEFAULT_EMBED_DISPLAY.to_string(),
+            width: DEFAULT_EMBED_WIDTH,
+            height: DEFAULT_EMBED_HEIGHT,
+            depth: DEFAULT_EMBED_DEPTH,
+            mcp_command: None,
+            launch_studio_process: true,
+            startup_timeout_ms: DEFAULT_STARTUP_TIMEOUT_MS,
+        }
+    }
+}
+
+impl EmbedConfig {
+    pub fn from_json(v: &Value) -> Result<Self, String> {
+        let mut cfg = Self::default();
+        if let Some(d) = v.get("display").and_then(|x| x.as_str()) {
+            let trimmed = d.trim();
+            if !trimmed.is_empty() {
+                cfg.display = validate_x11_display(trimmed)?;
+            }
+        }
+        if let Some(w) = v.get("width").and_then(|x| x.as_u64()) {
+            cfg.width = (w as u32).clamp(320, 3840);
+        }
+        if let Some(h) = v.get("height").and_then(|x| x.as_u64()) {
+            cfg.height = (h as u32).clamp(200, 2160);
+        }
+        if let Some(depth) = v.get("depth").and_then(|x| x.as_u64()) {
+            cfg.depth = match depth {
+                16 => 16,
+                32 => 32,
+                _ => 24,
+            };
+        }
+        if let Some(cmd) = v
+            .get("mcp_command")
+            .or_else(|| v.get("command"))
+            .and_then(|x| x.as_str())
+        {
+            let trimmed = cmd.trim();
+            if !trimmed.is_empty() {
+                if trimmed.contains('\0') || trimmed.contains('\n') || trimmed.contains('\r') {
+                    return Err("mcp_command must not contain control characters".to_string());
+                }
+                cfg.mcp_command = Some(trimmed.to_string());
+                // Explicit custom MCP command defaults to direct attach unless caller forces launch.
+                if v.get("launch_studio_process").is_none() {
+                    cfg.launch_studio_process = false;
+                }
+            }
+        }
+        if let Some(launch) = v.get("launch_studio_process").and_then(|x| x.as_bool()) {
+            cfg.launch_studio_process = launch;
+        }
+        if let Some(ms) = v.get("startup_timeout_ms").and_then(|x| x.as_u64()) {
+            cfg.startup_timeout_ms = ms.clamp(500, 120_000);
+        }
+        Ok(cfg)
+    }
+}
+
+/// Discovered Windows Roblox Studio binaries under `%LOCALAPPDATA%\Roblox`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowsRobloxPaths {
+    pub version_dir: Option<PathBuf>,
+    pub studio_exe: Option<PathBuf>,
+    pub studio_mcp_exe: Option<PathBuf>,
+    pub mcp_bat: Option<PathBuf>,
+}
+
+/// Pure filesystem scanner for `%LOCALAPPDATA%\Roblox\Versions\version-*\RobloxStudioBeta.exe`,
+/// `StudioMCP.exe`, and `%LOCALAPPDATA%\Roblox\mcp.bat`. Unit-testable on Linux and Windows.
+pub fn find_windows_roblox_paths(local_appdata: &Path) -> WindowsRobloxPaths {
+    let roblox_root = local_appdata.join("Roblox");
+    let mcp_bat_candidate = roblox_root.join("mcp.bat");
+    let mcp_bat = if mcp_bat_candidate.is_file() {
+        Some(mcp_bat_candidate)
+    } else {
+        None
+    };
+
+    let versions_dir = roblox_root.join("Versions");
+    let mut candidates: Vec<(SystemTime, String, PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&versions_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.to_ascii_lowercase().starts_with("version-") {
+                continue;
+            }
+            let has_studio = path.join("RobloxStudioBeta.exe").is_file();
+            let has_mcp = path.join("StudioMCP.exe").is_file();
+            if has_studio || has_mcp {
+                let modified = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(UNIX_EPOCH);
+                candidates.push((modified, name, path));
+            }
+        }
+    }
+    // Prefer newest version directory (tie-break deterministically by directory name).
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+
+    if let Some((_, _, best_dir)) = candidates.into_iter().next() {
+        let studio = best_dir.join("RobloxStudioBeta.exe");
+        let mcp = best_dir.join("StudioMCP.exe");
+        WindowsRobloxPaths {
+            studio_exe: if studio.is_file() { Some(studio) } else { None },
+            studio_mcp_exe: if mcp.is_file() { Some(mcp) } else { None },
+            version_dir: Some(best_dir),
+            mcp_bat,
+        }
+    } else {
+        WindowsRobloxPaths {
+            version_dir: None,
+            studio_exe: None,
+            studio_mcp_exe: None,
+            mcp_bat,
+        }
+    }
+}
+
+/// Passive host-environment probe (NEVER spawns Vinegar or Roblox Studio).
+#[derive(Clone, Debug)]
+pub struct HostStudioDetection {
+    pub platform: &'static str,
+    pub studio_installed: bool,
+    pub studio_running: bool,
+    pub xvfb_available: bool,
+    pub display_ready: bool,
+    pub studio_exe: Option<String>,
+    pub mcp_command: Option<String>,
+    pub guidance: String,
+}
+
+impl HostStudioDetection {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "platform": self.platform,
+            "studio_installed": self.studio_installed,
+            "studio_running": self.studio_running,
+            "xvfb_available": self.xvfb_available,
+            "display_ready": self.display_ready,
+            "studio_exe": self.studio_exe,
+            "mcp_command": self.mcp_command,
+            "guidance": self.guidance,
+        })
+    }
+}
+
+/// Passively detect Roblox Studio & MCP availability on Linux or Windows without launching anything.
+pub fn detect_studio_environment() -> HostStudioDetection {
+    #[cfg(unix)]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let mcp_wrapper = PathBuf::from(&home).join(".local/bin/roblox-studio-mcp");
+        let vinegar_prefix = PathBuf::from(&home).join(".var/app/org.vinegarhq.Vinegar");
+        let mcp_present = mcp_wrapper.is_file();
+        let xvfb_available = find_on_path("Xvfb").is_some();
+        let display_ready = x11_socket_exists(DEFAULT_EMBED_DISPLAY);
+        let studio_running = is_vinegar_flatpak_running();
+        let flatpak_installed = find_on_path("flatpak").is_some() && vinegar_prefix.exists();
+
+        let guidance = if studio_running && mcp_present {
+            "Roblox Studio (Vinegar) is running and ready to attach via roblox-studio-mcp."
+                .to_string()
+        } else if flatpak_installed && mcp_present {
+            "Click 'Launch & Embed Studio' to start Roblox Studio inside isolated Xvfb :99 and attach live MCP."
+                .to_string()
+        } else {
+            "Install Flatpak org.vinegarhq.Vinegar + ~/.local/bin/roblox-studio-mcp, or connect a custom Studio MCP command."
+                .to_string()
+        };
+
+        HostStudioDetection {
+            platform: current_platform(),
+            studio_installed: flatpak_installed || studio_running,
+            studio_running,
+            xvfb_available,
+            display_ready,
+            studio_exe: if flatpak_installed {
+                Some("flatpak:org.vinegarhq.Vinegar".to_string())
+            } else {
+                None
+            },
+            mcp_command: if mcp_present {
+                Some(mcp_wrapper.to_string_lossy().into_owned())
+            } else {
+                None
+            },
+            guidance,
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let local_appdata = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        let paths = local_appdata
+            .as_deref()
+            .map(find_windows_roblox_paths)
+            .unwrap_or_default();
+        let studio_installed = paths.studio_exe.is_some();
+        let mcp_command = paths
+            .studio_mcp_exe
+            .as_ref()
+            .map(|p| format!("\"{}\"", p.display()))
+            .or_else(|| {
+                paths
+                    .mcp_bat
+                    .as_ref()
+                    .map(|p| format!("cmd /C \"{}\"", p.display()))
+            });
+        let guidance = if studio_installed && mcp_command.is_some() {
+            "Native Windows Roblox Studio & StudioMCP.exe detected — click 'Launch & Embed Studio' to connect."
+                .to_string()
+        } else if studio_installed {
+            "Roblox Studio detected in %LOCALAPPDATA%\\Roblox\\Versions; enable Studio MCP in Beta Features."
+                .to_string()
+        } else {
+            "Install Roblox Studio from create.roblox.com to enable live embedded Studio sync."
+                .to_string()
+        };
+
+        HostStudioDetection {
+            platform: current_platform(),
+            studio_installed,
+            studio_running: false,
+            xvfb_available: false,
+            display_ready: true,
+            studio_exe: paths.studio_exe.map(|p| p.to_string_lossy().into_owned()),
+            mcp_command,
+            guidance,
+        }
+    }
+}
+
+/// Cross-platform passive MCP command discovery (never spawns Studio).
+pub fn detect_host_mcp_command() -> Option<String> {
+    #[cfg(unix)]
+    {
+        McpClient::detect_vinegar_studio_mcp()
+    }
+    #[cfg(windows)]
+    {
+        let local_appdata = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
+        let paths = find_windows_roblox_paths(&local_appdata);
+        if let Some(mcp) = paths.studio_mcp_exe {
+            return Some(format!("\"{}\"", mcp.display()));
+        }
+        if let Some(bat) = paths.mcp_bat {
+            return Some(format!("cmd /C \"{}\"", bat.display()));
+        }
+        None
+    }
+}
+
+/// Snapshot of the embedded Roblox Studio runtime state returned by status/launch/stop endpoints.
+#[derive(Clone, Debug)]
+pub struct StudioEmbedState {
+    pub phase: String,
+    pub platform: &'static str,
+    pub embedded: bool,
+    pub mcp_connected: bool,
+    pub display: Option<String>,
+    pub resolution: [u32; 2],
+    pub studio_id: Option<String>,
+    pub datamodel_type: String,
+    pub playing: bool,
+    pub xvfb_pid: Option<u32>,
+    pub studio_pid: Option<u32>,
+    pub mcp_command: Option<String>,
+    pub detected_studio_exe: Option<String>,
+    pub detected_mcp_exe: Option<String>,
+    pub tools: Vec<String>,
+    pub official_tools_count: usize,
+    pub last_error: Option<String>,
+    pub last_input: Option<String>,
+    pub started_at_ms: Option<u64>,
+}
+
+impl StudioEmbedState {
+    pub fn idle() -> Self {
+        let probe = detect_studio_environment();
+        StudioEmbedState {
+            phase: "idle".to_string(),
+            platform: probe.platform,
+            embedded: false,
+            mcp_connected: false,
+            display: if cfg!(unix) {
+                Some(DEFAULT_EMBED_DISPLAY.to_string())
+            } else {
+                None
+            },
+            resolution: [DEFAULT_EMBED_WIDTH, DEFAULT_EMBED_HEIGHT],
+            studio_id: None,
+            datamodel_type: "Edit".to_string(),
+            playing: false,
+            xvfb_pid: None,
+            studio_pid: None,
+            mcp_command: None,
+            detected_studio_exe: probe.studio_exe,
+            detected_mcp_exe: probe.mcp_command,
+            tools: Vec::new(),
+            official_tools_count: 0,
+            last_error: None,
+            last_input: None,
+            started_at_ms: None,
+        }
+    }
+
+    pub fn to_json(&self) -> Value {
+        let detection = detect_studio_environment();
+        json!({
+            "phase": self.phase,
+            "platform": self.platform,
+            "embedded": self.embedded,
+            "mcp_connected": self.mcp_connected,
+            "display": self.display,
+            "resolution": self.resolution,
+            "studio_id": self.studio_id,
+            "datamodel_type": self.datamodel_type,
+            "playing": self.playing,
+            "xvfb_pid": self.xvfb_pid,
+            "studio_pid": self.studio_pid,
+            "mcp_command": self.mcp_command,
+            "detected_studio_exe": self.detected_studio_exe,
+            "detected_mcp_exe": self.detected_mcp_exe,
+            "tools": self.tools,
+            "official_tools_count": self.official_tools_count,
+            "official_tools_total": OFFICIAL_STUDIO_TOOLS.len(),
+            "tool_catalog": official_studio_tool_catalog(),
+            "detection": detection.to_json(),
+            "last_error": self.last_error,
+            "last_input": self.last_input,
+            "started_at_ms": self.started_at_ms,
+        })
+    }
+}
+
+/// Owns any child processes (`Xvfb`, Vinegar / `RobloxStudioBeta.exe`) spawned by OpenRO
+/// for an embedded Studio session, guaranteeing explicit child-only cleanup on `stop` and `Drop`.
+pub struct StudioEmbedManager {
+    xvfb_child: Option<Child>,
+    studio_child: Option<Child>,
+    state: StudioEmbedState,
+}
+
+impl Default for StudioEmbedManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StudioEmbedManager {
+    /// Creates an idle manager. NEVER spawns Xvfb, Vinegar, or Roblox Studio automatically.
+    pub fn new() -> Self {
+        StudioEmbedManager {
+            xvfb_child: None,
+            studio_child: None,
+            state: StudioEmbedState::idle(),
+        }
+    }
+
+    pub fn state(&self) -> StudioEmbedState {
+        self.state.clone()
+    }
+
+    /// Synchronize live metadata from an active `McpClient` (e.g. after connect/tool call).
+    pub fn sync_from_client(&mut self, client: &McpClient, mcp_command: Option<String>) {
+        self.state.mcp_connected = true;
+        self.state.embedded = true;
+        self.state.phase = "connected".to_string();
+        self.state.studio_id = client.studio_id().map(ToString::to_string);
+        self.state.datamodel_type = client.datamodel_type().to_string();
+        self.state.tools = client.tools().to_vec();
+        self.state.official_tools_count = client.official_tools_available().len();
+        if let Some(cmd) = mcp_command {
+            self.state.mcp_command = Some(cmd);
+        }
+        self.state.last_error = None;
+    }
+
+    pub fn mark_disconnected(&mut self) {
+        self.state.mcp_connected = false;
+        if self.studio_child.is_none() && self.xvfb_child.is_none() {
+            self.state.embedded = false;
+            self.state.phase = "idle".to_string();
+        }
+        self.state.studio_id = None;
+        self.state.tools.clear();
+        self.state.official_tools_count = 0;
+        self.state.playing = false;
+    }
+
+    pub fn set_playing(&mut self, playing: bool) {
+        self.state.playing = playing;
+    }
+
+    pub fn record_input(&mut self, summary: impl Into<String>) {
+        self.state.last_input = Some(summary.into());
+    }
+
+    pub fn launch(&mut self, config: EmbedConfig) -> Result<(StudioEmbedState, McpClient), String> {
+        launch_embedded_studio(self, config)
+    }
+
+    pub fn stop(&mut self) -> StudioEmbedState {
+        stop_embedded_studio(self)
+    }
+}
+
+impl Drop for StudioEmbedManager {
+    fn drop(&mut self) {
+        let _ = stop_embedded_studio(self);
+    }
+}
+
+/// Explicitly launch (or attach to) an embedded Roblox Studio session and return the
+/// connected `McpClient` alongside updated `StudioEmbedState`.
+///
+/// Strictly user-triggered — NEVER call from startup or tests unless explicitly requested.
+pub fn launch_embedded_studio(
+    manager: &mut StudioEmbedManager,
+    config: EmbedConfig,
+) -> Result<(StudioEmbedState, McpClient), String> {
+    let display = validate_x11_display(&config.display)?;
+    // Clean up any prior managed child processes before starting a fresh session.
+    if manager.studio_child.is_some() || manager.xvfb_child.is_some() {
+        stop_embedded_studio(manager);
+    }
+
+    manager.state.phase = "starting".to_string();
+    manager.state.last_error = None;
+    manager.state.resolution = [config.width, config.height];
+    manager.state.display = if cfg!(unix) {
+        Some(display.clone())
+    } else {
+        None
+    };
+
+    // Direct MCP command mode (e.g. mock_studio in E2E/CI or custom external MCP bridge)
+    if let Some(explicit_cmd) = config.mcp_command.clone() {
+        if !config.launch_studio_process {
+            let client = match McpClient::spawn(&explicit_cmd) {
+                Ok(c) => c,
+                Err(e) => {
+                    manager.state.phase = "error".to_string();
+                    manager.state.last_error = Some(e.clone());
+                    return Err(e);
+                }
+            };
+            manager.state.started_at_ms = Some(now_ms());
+            manager.sync_from_client(&client, Some(explicit_cmd));
+            return Ok((manager.state(), client));
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        let home = std::env::var("HOME")
+            .map_err(|_| "HOME environment variable is not set".to_string())?;
+        let mcp_cmd = config.mcp_command.clone().unwrap_or_else(|| {
+            PathBuf::from(&home)
+                .join(".local/bin/roblox-studio-mcp")
+                .to_string_lossy()
+                .into_owned()
+        });
+        if !Path::new(&mcp_cmd).is_file() {
+            let msg = format!(
+                "Roblox Studio MCP wrapper not found at '{mcp_cmd}'. Install ~/.local/bin/roblox-studio-mcp or pass an explicit mcp_command."
+            );
+            manager.state.phase = "error".to_string();
+            manager.state.last_error = Some(msg.clone());
+            return Err(msg);
+        }
+
+        // 1. Attach to existing Xvfb display or spawn an isolated Xvfb owned by this manager.
+        if !x11_socket_exists(&display) {
+            let screen_spec = format!("{}x{}x{}", config.width, config.height, config.depth);
+            let child = Command::new("Xvfb")
+                .args([&display, "-screen", "0", &screen_spec, "-ac"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| {
+                    let msg = format!("failed to spawn Xvfb {display}: {e}");
+                    manager.state.phase = "error".to_string();
+                    manager.state.last_error = Some(msg.clone());
+                    msg
+                })?;
+            manager.state.xvfb_pid = Some(child.id());
+            manager.xvfb_child = Some(child);
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !x11_socket_exists(&display) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+
+        // 2. Spawn Flatpak Vinegar on DISPLAY=<display> only if not already running.
+        if config.launch_studio_process && !is_vinegar_flatpak_running() {
+            let mut cmd = Command::new("flatpak");
+            cmd.args(["run", "org.vinegarhq.Vinegar"])
+                .env("DISPLAY", &display)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+                if let Some(uid) = current_unix_uid() {
+                    cmd.env("XDG_RUNTIME_DIR", format!("/run/user/{uid}"));
+                }
+            }
+            match cmd.spawn() {
+                Ok(child) => {
+                    manager.state.studio_pid = Some(child.id());
+                    manager.studio_child = Some(child);
+                }
+                Err(e) => {
+                    let msg = format!("failed to launch Flatpak org.vinegarhq.Vinegar: {e}");
+                    stop_embedded_studio(manager);
+                    manager.state.phase = "error".to_string();
+                    manager.state.last_error = Some(msg.clone());
+                    return Err(msg);
+                }
+            }
+        }
+
+        // 3. Poll until Vinegar Flatpak is visible and StudioMCP answers initialize.
+        let deadline = Instant::now() + Duration::from_millis(config.startup_timeout_ms);
+        let mut last_err = "timed out waiting for Roblox Studio MCP bridge".to_string();
+        loop {
+            if is_vinegar_flatpak_running() {
+                match McpClient::spawn(&mcp_cmd) {
+                    Ok(client) => {
+                        manager.state.started_at_ms = Some(now_ms());
+                        manager.sync_from_client(&client, Some(mcp_cmd));
+                        return Ok((manager.state(), client));
+                    }
+                    Err(e) => last_err = e,
+                }
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+
+        stop_embedded_studio(manager);
+        manager.state.phase = "error".to_string();
+        manager.state.last_error = Some(last_err.clone());
+        Err(last_err)
+    }
+
+    #[cfg(windows)]
+    {
+        let local_appdata = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .ok_or_else(|| "LOCALAPPDATA environment variable is not set".to_string())?;
+        let paths = find_windows_roblox_paths(&local_appdata);
+        let mcp_cmd = config
+            .mcp_command
+            .clone()
+            .or_else(|| {
+                paths
+                    .studio_mcp_exe
+                    .as_ref()
+                    .map(|p| format!("\"{}\"", p.display()))
+            })
+            .or_else(|| {
+                paths
+                    .mcp_bat
+                    .as_ref()
+                    .map(|p| format!("cmd /C \"{}\"", p.display()))
+            })
+            .ok_or_else(|| {
+                let msg = "StudioMCP.exe / mcp.bat not found under %LOCALAPPDATA%\\Roblox\\Versions."
+                    .to_string();
+                manager.state.phase = "error".to_string();
+                manager.state.last_error = Some(msg.clone());
+                msg
+            })?;
+
+        if config.launch_studio_process {
+            if let Some(studio_exe) = paths.studio_exe.as_ref() {
+                match Command::new(studio_exe)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                {
+                    Ok(child) => {
+                        manager.state.studio_pid = Some(child.id());
+                        manager.studio_child = Some(child);
+                    }
+                    Err(e) => {
+                        let msg = format!(
+                            "failed to launch RobloxStudioBeta.exe ({}): {e}",
+                            studio_exe.display()
+                        );
+                        manager.state.phase = "error".to_string();
+                        manager.state.last_error = Some(msg.clone());
+                        return Err(msg);
+                    }
+                }
+            }
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(config.startup_timeout_ms);
+        let last_err = loop {
+            match McpClient::spawn(&mcp_cmd) {
+                Ok(client) => {
+                    manager.state.started_at_ms = Some(now_ms());
+                    manager.sync_from_client(&client, Some(mcp_cmd));
+                    return Ok((manager.state(), client));
+                }
+                Err(e) => {
+                    if Instant::now() >= deadline {
+                        break e;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        };
+
+        stop_embedded_studio(manager);
+        manager.state.phase = "error".to_string();
+        manager.state.last_error = Some(last_err.clone());
+        Err(last_err)
+    }
+}
+
+/// Stop ONLY child processes explicitly spawned by `manager` (`studio_child` & `xvfb_child`).
+/// Never runs `pkill -f` and never terminates an external pre-existing display server.
+pub fn stop_embedded_studio(manager: &mut StudioEmbedManager) -> StudioEmbedState {
+    if let Some(mut child) = manager.studio_child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    if let Some(mut child) = manager.xvfb_child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    manager.state.phase = "stopped".to_string();
+    manager.state.embedded = false;
+    manager.state.mcp_connected = false;
+    manager.state.playing = false;
+    manager.state.studio_id = None;
+    manager.state.studio_pid = None;
+    manager.state.xvfb_pid = None;
+    manager.state.tools.clear();
+    manager.state.official_tools_count = 0;
+    manager.state()
+}
+
+/// Translate browser mouse JSON or raw official MCP `actions` into validated
+/// Roblox Studio `user_mouse_input` action records.
+pub fn translate_mouse_payload(payload: &Value) -> Result<Vec<Value>, String> {
+    if let Some(arr) = payload.get("actions").and_then(|v| v.as_array()) {
+        if arr.is_empty() {
+            return Err("mouse input actions array must not be empty".to_string());
+        }
+        return Ok(arr.clone());
+    }
+
+    let event = payload
+        .get("event")
+        .or_else(|| payload.get("type"))
+        .or_else(|| payload.get("action"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("click")
+        .trim()
+        .to_ascii_lowercase();
+
+    let button = match payload
+        .get("button")
+        .or_else(|| payload.get("mouse_button"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("left")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "right" | "2" => "right",
+        _ => "left",
+    };
+
+    let x = payload.get("x").and_then(|v| v.as_f64());
+    let y = payload.get("y").and_then(|v| v.as_f64());
+    let instance_path = payload
+        .get("instance_path")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let pos_fields = |act: &mut serde_json::Map<String, Value>, px: Option<f64>, py: Option<f64>| {
+        if let Some(ip) = instance_path {
+            act.insert("instance_path".to_string(), json!(ip));
+        } else if let (Some(xv), Some(yv)) = (px, py) {
+            if xv.is_finite() && yv.is_finite() {
+                act.insert("x".to_string(), json!(xv.clamp(0.0, 4096.0)));
+                act.insert("y".to_string(), json!(yv.clamp(0.0, 4096.0)));
+            }
+        }
+    };
+
+    let mut actions = Vec::new();
+    match event.as_str() {
+        "move" | "mousemove" | "moveto" => {
+            let mut m = serde_json::Map::new();
+            m.insert("action".to_string(), json!("moveTo"));
+            pos_fields(&mut m, x, y);
+            actions.push(Value::Object(m));
+        }
+        "down" | "mousedown" | "mousebuttondown" => {
+            let mut m = serde_json::Map::new();
+            m.insert("action".to_string(), json!("mouseButtonDown"));
+            m.insert("mouse_button".to_string(), json!(button));
+            pos_fields(&mut m, x, y);
+            actions.push(Value::Object(m));
+        }
+        "up" | "mouseup" | "mousebuttonup" => {
+            let mut m = serde_json::Map::new();
+            m.insert("action".to_string(), json!("mouseButtonUp"));
+            m.insert("mouse_button".to_string(), json!(button));
+            pos_fields(&mut m, x, y);
+            actions.push(Value::Object(m));
+        }
+        "click" | "mousebuttonclick" => {
+            let mut m = serde_json::Map::new();
+            m.insert("action".to_string(), json!("mouseButtonClick"));
+            m.insert("mouse_button".to_string(), json!(button));
+            pos_fields(&mut m, x, y);
+            actions.push(Value::Object(m));
+        }
+        "right_click" | "rightclick" => {
+            let mut m = serde_json::Map::new();
+            m.insert("action".to_string(), json!("mouseButtonClick"));
+            m.insert("mouse_button".to_string(), json!("right"));
+            pos_fields(&mut m, x, y);
+            actions.push(Value::Object(m));
+        }
+        "double_click" | "doubleclick" => {
+            let mut m1 = serde_json::Map::new();
+            m1.insert("action".to_string(), json!("mouseButtonClick"));
+            m1.insert("mouse_button".to_string(), json!(button));
+            pos_fields(&mut m1, x, y);
+            let mut m2 = serde_json::Map::new();
+            m2.insert("action".to_string(), json!("mouseButtonClick"));
+            m2.insert("mouse_button".to_string(), json!(button));
+            pos_fields(&mut m2, x, y);
+            actions.push(Value::Object(m1));
+            actions.push(Value::Object(m2));
+        }
+        "drag" => {
+            let end_x = payload
+                .get("end_x")
+                .or_else(|| payload.get("x2"))
+                .and_then(|v| v.as_f64())
+                .or(x);
+            let end_y = payload
+                .get("end_y")
+                .or_else(|| payload.get("y2"))
+                .and_then(|v| v.as_f64())
+                .or(y);
+            let mut down = serde_json::Map::new();
+            down.insert("action".to_string(), json!("mouseButtonDown"));
+            down.insert("mouse_button".to_string(), json!(button));
+            pos_fields(&mut down, x, y);
+            let mut mv = serde_json::Map::new();
+            mv.insert("action".to_string(), json!("moveTo"));
+            pos_fields(&mut mv, end_x, end_y);
+            let mut up = serde_json::Map::new();
+            up.insert("action".to_string(), json!("mouseButtonUp"));
+            up.insert("mouse_button".to_string(), json!(button));
+            pos_fields(&mut up, end_x, end_y);
+            actions.push(Value::Object(down));
+            actions.push(Value::Object(mv));
+            actions.push(Value::Object(up));
+        }
+        "wheel" | "scroll" | "scrollup" | "scrolldown" => {
+            let delta = payload
+                .get("delta_y")
+                .or_else(|| payload.get("deltaY"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(if event == "scrollup" { -120.0 } else { 120.0 });
+            let act_name = if event == "scrollup" || delta < 0.0 {
+                "scrollUp"
+            } else {
+                "scrollDown"
+            };
+            let mut m = serde_json::Map::new();
+            m.insert("action".to_string(), json!(act_name));
+            pos_fields(&mut m, x, y);
+            actions.push(Value::Object(m));
+        }
+        other => {
+            return Err(format!(
+                "unsupported mouse event '{other}' (expected click, double_click, right_click, down, up, move, drag, or wheel)"
+            ));
+        }
+    }
+
+    Ok(actions)
+}
+
+/// Forward a mouse click, drag, move, or wheel event to Roblox Studio via `user_mouse_input`.
+pub fn forward_mouse(client: &mut McpClient, payload: &Value) -> Result<Value, String> {
+    let actions = translate_mouse_payload(payload)?;
+    client.user_mouse_input(actions)
+}
+
+/// Map a browser DOM `KeyboardEvent.key` or `code` to a Roblox `Enum.KeyCode` string.
+pub fn normalize_roblox_keycode(raw: &str) -> String {
+    if raw == " " {
+        return "Space".to_string();
+    }
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "None".to_string();
+    }
+    if trimmed.len() == 1 {
+        let ch = trimmed.chars().next().unwrap();
+        if ch.is_ascii_alphabetic() {
+            return ch.to_ascii_uppercase().to_string();
+        }
+        return match ch {
+            '0' => "Zero",
+            '1' => "One",
+            '2' => "Two",
+            '3' => "Three",
+            '4' => "Four",
+            '5' => "Five",
+            '6' => "Six",
+            '7' => "Seven",
+            '8' => "Eight",
+            '9' => "Nine",
+            '-' => "Minus",
+            '=' => "Equals",
+            '/' => "Slash",
+            '.' => "Period",
+            ',' => "Comma",
+            _ => trimmed,
+        }
+        .to_string();
+    }
+    if let Some(rest) = trimmed.strip_prefix("Key") {
+        if rest.len() == 1 {
+            return rest.to_ascii_uppercase();
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix("Digit") {
+        if rest.len() == 1 {
+            return normalize_roblox_keycode(rest);
+        }
+    }
+    match trimmed {
+        "Enter" => "Return".to_string(),
+        "Esc" | "Escape" => "Escape".to_string(),
+        "ArrowUp" => "Up".to_string(),
+        "ArrowDown" => "Down".to_string(),
+        "ArrowLeft" => "Left".to_string(),
+        "ArrowRight" => "Right".to_string(),
+        "Shift" | "ShiftLeft" => "LeftShift".to_string(),
+        "ShiftRight" => "RightShift".to_string(),
+        "Control" | "ControlLeft" => "LeftControl".to_string(),
+        "ControlRight" => "RightControl".to_string(),
+        "Alt" | "AltLeft" => "LeftAlt".to_string(),
+        "AltRight" => "RightAlt".to_string(),
+        "Spacebar" | "Space" => "Space".to_string(),
+        "Delete" => "Delete".to_string(),
+        "Backspace" => "Backspace".to_string(),
+        "Tab" => "Tab".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Translate browser keyboard JSON or raw official MCP `actions` into validated
+/// Roblox Studio `user_keyboard_input` action records.
+pub fn translate_keyboard_payload(payload: &Value) -> Result<Vec<Value>, String> {
+    if let Some(arr) = payload.get("actions").and_then(|v| v.as_array()) {
+        if arr.is_empty() {
+            return Err("keyboard input actions array must not be empty".to_string());
+        }
+        return Ok(arr.clone());
+    }
+
+    let event = payload
+        .get("event")
+        .or_else(|| payload.get("type"))
+        .or_else(|| payload.get("action"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("press")
+        .trim()
+        .to_ascii_lowercase();
+
+    let instance_path = payload
+        .get("instance_path")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    if matches!(event.as_str(), "text" | "textinput" | "type") {
+        let text = payload
+            .get("text")
+            .or_else(|| payload.get("text_inputs"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "keyboard textInput requires a 'text' string".to_string())?;
+        if text.is_empty() || text.len() > 2048 || text.contains('\0') {
+            return Err("keyboard text must be 1..=2048 bytes without NUL".to_string());
+        }
+        let mut m = serde_json::Map::new();
+        m.insert("action".to_string(), json!("textInput"));
+        m.insert("text_inputs".to_string(), json!(text));
+        if let Some(ip) = instance_path {
+            m.insert("instance_path".to_string(), json!(ip));
+        }
+        return Ok(vec![Value::Object(m)]);
+    }
+
+    let raw_key = payload
+        .get("key_code")
+        .or_else(|| payload.get("key"))
+        .or_else(|| payload.get("code"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "keyboard input requires 'key' or 'key_code'".to_string())?;
+    let key_code = normalize_roblox_keycode(raw_key);
+
+    let act = match event.as_str() {
+        "down" | "keydown" => "keyDown",
+        "up" | "keyup" => "keyUp",
+        "press" | "keypress" => "keyPress",
+        other => {
+            return Err(format!(
+                "unsupported keyboard event '{other}' (expected keydown, keyup, press, or text)"
+            ));
+        }
+    };
+
+    let mut m = serde_json::Map::new();
+    m.insert("action".to_string(), json!(act));
+    m.insert("key_code".to_string(), json!(key_code));
+    if let Some(ip) = instance_path {
+        m.insert("instance_path".to_string(), json!(ip));
+    }
+    Ok(vec![Value::Object(m)])
+}
+
+/// Forward a keyboard press, hold, release, or text input event to Roblox Studio
+/// via `user_keyboard_input`.
+pub fn forward_keyboard(client: &mut McpClient, payload: &Value) -> Result<Value, String> {
+    let actions = translate_keyboard_payload(payload)?;
+    client.user_keyboard_input(actions)
+}
+
+/// Format a single `multipart/x-mixed-replace` HTTP stream chunk for `/api/studio/stream.mjpg`.
+pub fn format_mjpeg_part(frame: &StudioFrame, boundary: &str) -> Vec<u8> {
+    let header = format!(
+        "--{boundary}\r\nContent-Type: {}\r\nContent-Length: {}\r\nX-Studio-Frame-Seq: {}\r\n\r\n",
+        frame.mime,
+        frame.bytes.len(),
+        frame.seq
+    );
+    let mut out = Vec::with_capacity(header.len() + frame.bytes.len() + 2);
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(&frame.bytes);
+    out.extend_from_slice(b"\r\n");
+    out
+}
+
+/// Validate Linux X11 display strings (`:0` .. `:999`).
+pub fn validate_x11_display(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    let Some(num) = trimmed.strip_prefix(':') else {
+        return Err(format!(
+            "invalid X11 display '{trimmed}' (expected ':99' format)"
+        ));
+    };
+    if num.is_empty() || num.len() > 3 || !num.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!(
+            "invalid X11 display '{trimmed}' (expected ':0' through ':999')"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(unix)]
+fn x11_socket_exists(display: &str) -> bool {
+    if let Some(num) = display.strip_prefix(':') {
+        Path::new(&format!("/tmp/.X11-unix/X{num}")).exists()
+    } else {
+        false
+    }
+}
+
+#[cfg(unix)]
+fn is_vinegar_flatpak_running() -> bool {
+    let Ok(ps) = Command::new("flatpak")
+        .args(["ps", "--columns=instance,application"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    if !ps.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&ps.stdout).lines().any(|line| {
+        let mut parts = line.split_whitespace();
+        let _inst = parts.next();
+        parts.next() == Some("org.vinegarhq.Vinegar")
+    })
+}
+
+#[cfg(unix)]
+fn find_on_path(bin: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(bin);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+fn current_unix_uid() -> Option<String> {
+    let out = Command::new("id")
+        .arg("-u")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if out.status.success() {
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
+            return Some(s);
+        }
+    }
+    None
+}
