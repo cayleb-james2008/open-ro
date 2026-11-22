@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/morphing-dialog";
 import { open as dialogSpring } from "@/motion";
 import { post, read, type ConfigSnap, type WorkspaceMode } from "./data";
+import { OpenCloudSettings } from "./ship/OpenCloudSettings";
 
 export function SettingsDialog({
   theme,
@@ -26,6 +27,7 @@ export function SettingsDialog({
   compactLabel,
   workspaceMode,
   showTrigger = true,
+  onOpenCloudChanged,
 }: {
   theme: "light" | "dark";
   onThemeChange: (t: "light" | "dark") => void;
@@ -35,6 +37,7 @@ export function SettingsDialog({
   compactLabel?: string;
   workspaceMode: WorkspaceMode;
   showTrigger?: boolean;
+  onOpenCloudChanged?: () => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -472,6 +475,9 @@ export function SettingsDialog({
                   </section>
                 </>
               )}
+
+              {/* Roblox Open Cloud: write-only key, always masked */}
+              {!cfg?.web_engine && <OpenCloudSettings onChanged={onOpenCloudChanged} />}
 
               {/* Game Asset & Texture Image Generation (Gemini Nano Banana / OpenAI Images) */}
               {cfg && (

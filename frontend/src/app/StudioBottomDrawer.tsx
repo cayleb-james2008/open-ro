@@ -422,7 +422,7 @@ export function StudioBottomDrawer({
             <div data-properties-panel className="flex flex-col gap-2.5">
               {!selectedPath || !selectedInstance ? (
                 <p className="rounded-sm border border-hairline bg-board/35 p-3 text-xs text-ink-2">
-                  Select a Workspace part in the Left Explorer or click any part in Studio 3D / Playable Stage to edit Position, Size, Color, Material, and Anchored state.
+                  Select a Workspace part in the Left Explorer or click any part in Studio 3D to edit Position, Size, Color, Material, and Anchored state.
                 </p>
               ) : (
                 <>
