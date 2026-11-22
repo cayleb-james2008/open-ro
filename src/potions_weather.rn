@@ -1,8 +1,8 @@
-// OpenRO game system: Dynamic Server Weather, Craftable Luck/Speed Potions & Redeemable Codes.
+// OpenRO game system: 7-Biome Server Weather Events, Potions (Luck I/II/III, Speed I/II, Star, Weather Reroll), Codes & World Raid Countdown.
 // Parameters:
 // - weather_cycle_seconds (int): duration of each server weather event
-// - luck_potion_cost (int): coin cost to brew a 2.0x Luck Potion
-// - speed_potion_cost (int): coin cost to brew a 1.75x Fast-Roll Speed Potion
+// - luck_potion_cost (int): coin cost to brew a Luck Potion
+// - speed_potion_cost (int): coin cost to brew a Speed Potion
 // - enable_codes (bool): allow players to redeem REBIRTH / APEX2026 / LUCKBOOST
 
 pub fn generate_potions_weather(weather_cycle_seconds, luck_potion_cost, speed_potion_cost, enable_codes) {
@@ -29,7 +29,7 @@ local weatherNameVal = ReplicatedStorage:FindFirstChild("ActiveWeather")
 if not weatherNameVal then
     weatherNameVal = Instance.new("StringValue")
     weatherNameVal.Name = "ActiveWeather"
-    weatherNameVal.Value = "Solar Flare"
+    weatherNameVal.Value = "Clear"
     weatherNameVal.Parent = ReplicatedStorage
 end
 
@@ -37,8 +37,16 @@ local weatherLuckVal = ReplicatedStorage:FindFirstChild("ActiveWeatherLuck")
 if not weatherLuckVal then
     weatherLuckVal = Instance.new("NumberValue")
     weatherLuckVal.Name = "ActiveWeatherLuck"
-    weatherLuckVal.Value = 1.5
+    weatherLuckVal.Value = 1.0
     weatherLuckVal.Parent = ReplicatedStorage
+end
+
+local raidCountdownVal = ReplicatedStorage:FindFirstChild("WorldRaidCountdown")
+if not raidCountdownVal then
+    raidCountdownVal = Instance.new("IntValue")
+    raidCountdownVal.Name = "WorldRaidCountdown"
+    raidCountdownVal.Value = 60
+    raidCountdownVal.Parent = ReplicatedStorage
 end
 
 local atmosphere = Lighting:FindFirstChildOfClass("Atmosphere")
@@ -48,21 +56,26 @@ if not atmosphere then
     atmosphere.Parent = Lighting
 end
 
+-- 7 Weather Biomes (with Solar Flare, Void Eclipse, Thunderstorm atmospheric presets)
 local WEATHERS = {
-    { name = "Solar Flare", luck = 1.5, clock = 14.5, brightness = 2.6, density = 0.24, haze = 0.9, element = "Flame" },
-    { name = "Void Eclipse", luck = 2.0, clock = 20.5, brightness = 1.1, density = 0.44, haze = 2.1, element = "Void" },
-    { name = "Thunderstorm", luck = 1.6, clock = 16.0, brightness = 1.2, density = 0.50, haze = 2.5, element = "Storm" },
-    { name = "Blood Moon", luck = 2.25, clock = 22.0, brightness = 1.0, density = 0.48, haze = 2.8, element = "Shadow" },
+    { name = "Clear",           alias = "Solar Flare",  luck = 1.00, clock = 14.2, brightness = 2.4, density = 0.22, haze = 0.9, element = "Solar",   exclusive = "" },
+    { name = "Rain",            alias = "Thunderstorm", luck = 1.25, clock = 16.2, brightness = 1.5, density = 0.42, haze = 2.2, element = "Storm",   exclusive = "gale-kunoichi" },
+    { name = "Snow",            alias = "Frost Veil",   luck = 1.35, clock = 11.4, brightness = 2.1, density = 0.44, haze = 2.4, element = "Arcane",  exclusive = "sage-transmuter" },
+    { name = "Sandstorm",       alias = "Solar Flare",  luck = 1.50, clock = 17.8, brightness = 1.9, density = 0.52, haze = 3.0, element = "Crimson", exclusive = "blazing-tides-corsair" },
+    { name = "Blood Moon",      alias = "Blood Moon",   luck = 1.85, clock = 22.0, brightness = 1.1, density = 0.46, haze = 2.6, element = "Shadow",  exclusive = "blood-moon-gravity-ronin" },
+    { name = "Eclipse 2x Luck", alias = "Void Eclipse", luck = 2.00, clock = 20.5, brightness = 1.0, density = 0.48, haze = 2.8, element = "Shadow",  exclusive = "lunar-eclipse-duelist" },
+    { name = "Starfall",        alias = "Starfall",     luck = 2.50, clock = 23.2, brightness = 1.4, density = 0.30, haze = 1.4, element = "Solar",   exclusive = "celestial-star-oracle" },
 }
 
 local CODES = {
-    REBIRTH = { coins = 500, luckSec = 180, speedSec = 0 },
-    APEX2026 = { coins = 1000, luckSec = 240, speedSec = 180 },
-    LUCKBOOST = { coins = 250, luckSec = 300, speedSec = 0 },
+    REBIRTH   = { coins = 500,  luckSec = 180, speedSec = 0 },
+    APEX2026  = { coins = 1000, luckSec = 240, speedSec = 180 },
+    LUCKBOOST = { coins = 250,  luckSec = 300, speedSec = 0 },
 }
 
 local redeemedCodes = {}
 local lastRequest = {}
+local currentIdx = 1
 
 local function grantCurrency(player, amount)
     local stats = player:FindFirstChild("leaderstats")
@@ -81,6 +94,23 @@ local function activateBuff(player, attrName, mult, durationSec)
     end)
 end
 
+local function applyWeatherPreset(idx)
+    currentIdx = ((idx - 1) % #WEATHERS) + 1
+    local preset = WEATHERS[currentIdx]
+    weatherNameVal.Value = preset.name
+    weatherLuckVal.Value = preset.luck
+    local info = TweenInfo.new(4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+    TweenService:Create(Lighting, info, { ClockTime = preset.clock, Brightness = preset.brightness }):Play()
+    TweenService:Create(atmosphere, info, { Density = preset.density, Haze = preset.haze }):Play()
+    potionEvent:FireAllClients("weather_changed", {
+        name = preset.name,
+        alias = preset.alias,
+        luck = preset.luck,
+        element = preset.element,
+        exclusive = preset.exclusive,
+    })
+end
+
 potionEvent.OnServerEvent:Connect(function(player, action, payload)
     local now = os.clock()
     if lastRequest[player] and (now - lastRequest[player]) < 0.35 then
@@ -90,26 +120,54 @@ potionEvent.OnServerEvent:Connect(function(player, action, payload)
     if typeof(action) ~= "string" then
         return
     end
-    if action == "craft_luck" then
-        local stats = player:FindFirstChild("leaderstats")
-        local coins = stats and stats:FindFirstChild("Coins")
+    local stats = player:FindFirstChild("leaderstats")
+    local coins = stats and stats:FindFirstChild("Coins")
+    if action == "craft_luck" or action == "craft_luck_1" then
         if not coins or coins.Value < LUCK_POTION_COST then
             potionEvent:FireClient(player, "insufficient_coins", { needed = LUCK_POTION_COST })
             return
         end
         coins.Value = coins.Value - LUCK_POTION_COST
+        activateBuff(player, "PotionLuckMult", 1.5, 150)
+        potionEvent:FireClient(player, "potion_active", { kind = "Luck I", mult = 1.5, seconds = 150 })
+    elseif action == "craft_luck_2" then
+        local cost = LUCK_POTION_COST * 2
+        if not coins or coins.Value < cost then return end
+        coins.Value = coins.Value - cost
         activateBuff(player, "PotionLuckMult", 2.0, 180)
-        potionEvent:FireClient(player, "potion_active", { kind = "Luck", mult = 2.0, seconds = 180 })
-    elseif action == "craft_speed" then
-        local stats = player:FindFirstChild("leaderstats")
-        local coins = stats and stats:FindFirstChild("Coins")
+        potionEvent:FireClient(player, "potion_active", { kind = "Luck II", mult = 2.0, seconds = 180 })
+    elseif action == "craft_luck_3" then
+        local cost = LUCK_POTION_COST * 4
+        if not coins or coins.Value < cost then return end
+        coins.Value = coins.Value - cost
+        activateBuff(player, "PotionLuckMult", 3.0, 210)
+        potionEvent:FireClient(player, "potion_active", { kind = "Luck III", mult = 3.0, seconds = 210 })
+    elseif action == "craft_speed" or action == "craft_speed_1" then
         if not coins or coins.Value < SPEED_POTION_COST then
             potionEvent:FireClient(player, "insufficient_coins", { needed = SPEED_POTION_COST })
             return
         end
         coins.Value = coins.Value - SPEED_POTION_COST
-        activateBuff(player, "PotionSpeedMult", 1.75, 180)
-        potionEvent:FireClient(player, "potion_active", { kind = "Speed", mult = 1.75, seconds = 180 })
+        activateBuff(player, "PotionSpeedMult", 1.5, 150)
+        potionEvent:FireClient(player, "potion_active", { kind = "Speed I", mult = 1.5, seconds = 150 })
+    elseif action == "craft_speed_2" then
+        local cost = SPEED_POTION_COST * 2
+        if not coins or coins.Value < cost then return end
+        coins.Value = coins.Value - cost
+        activateBuff(player, "PotionSpeedMult", 1.9, 180)
+        potionEvent:FireClient(player, "potion_active", { kind = "Speed II", mult = 1.9, seconds = 180 })
+    elseif action == "craft_star" then
+        local cost = LUCK_POTION_COST * 5
+        if not coins or coins.Value < cost then return end
+        coins.Value = coins.Value - cost
+        activateBuff(player, "PotionLuckMult", 2.5, 240)
+        activateBuff(player, "PotionSpeedMult", 1.6, 240)
+        potionEvent:FireClient(player, "potion_active", { kind = "Star Potion", mult = 2.5, seconds = 240 })
+    elseif action == "weather_reroll" then
+        local cost = LUCK_POTION_COST * 2
+        if not coins or coins.Value < cost then return end
+        coins.Value = coins.Value - cost
+        applyWeatherPreset(currentIdx + 1)
     elseif action == "redeem_code" and ENABLE_CODES then
         if typeof(payload) ~= "string" or #payload == 0 or #payload > 32 then
             return
@@ -154,21 +212,20 @@ Players.PlayerRemoving:Connect(function(player)
 end)
 
 task.spawn(function()
-    local idx = 1
+    local elapsed = 0
+    applyWeatherPreset(1)
     while true do
-        local preset = WEATHERS[idx]
-        weatherNameVal.Value = preset.name
-        weatherLuckVal.Value = preset.luck
-        local info = TweenInfo.new(5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
-        TweenService:Create(Lighting, info, { ClockTime = preset.clock, Brightness = preset.brightness }):Play()
-        TweenService:Create(atmosphere, info, { Density = preset.density, Haze = preset.haze }):Play()
-        potionEvent:FireAllClients("weather_changed", {
-            name = preset.name,
-            luck = preset.luck,
-            element = preset.element,
-        })
-        task.wait(CYCLE_SECONDS)
-        idx = (idx % #WEATHERS) + 1
+        task.wait(1)
+        elapsed = elapsed + 1
+        if elapsed >= CYCLE_SECONDS then
+            elapsed = 0
+            applyWeatherPreset(currentIdx + 1)
+        end
+        if raidCountdownVal.Value > 1 then
+            raidCountdownVal.Value = raidCountdownVal.Value - 1
+        else
+            raidCountdownVal.Value = 90
+        end
     end
 end)
 `;
