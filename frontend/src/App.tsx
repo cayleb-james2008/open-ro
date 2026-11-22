@@ -21,7 +21,8 @@ import {
   FileDiff,
   FolderArchive,
   FolderTree,
-  Gamepad2,
+  FolderKanban,
+  Ship as ShipIcon,
   History,
   Menu,
   MessageSquare,
@@ -119,10 +120,14 @@ import { analyzePlaceLuau, computePlaceDiff, type LuauDiagnostic } from "./app/l
 import { parseRbxlxXml, serializeRbxlx } from "./app/rbxlxCodec";
 import { buildRojoShipPackZip } from "./app/zipBuilder";
 import { SettingsDialog } from "./app/SettingsDialog";
+import { useShip } from "./app/ship/useShip";
+import { ProjectsRail } from "./app/ship/ProjectsRail";
+import { ShipPanel } from "./app/ship/ShipPanel";
 import { LeftExplorerTree, StudioChip } from "./app/Shelf";
 import { SnapshotsDialog } from "./app/SnapshotsDialog";
-import { StagePreview, type ViewportTab } from "./app/StagePreview";
 import { StudioBottomDrawer, type BottomDrawerTab } from "./app/StudioBottomDrawer";
+
+type ViewportTab = "embedded-studio" | "studio-3d" | "code-diff" | "ship";
 import { StudioPluginDialog } from "./app/StudioPluginDialog";
 import { StudioViewport3D } from "./app/StudioViewport3D";
 import { SystemLibrary } from "./app/SystemLibrary";
@@ -233,7 +238,7 @@ export function App() {
   const [chatQuery, setChatQuery] = useState("");
 
   // RoPilot 3-Pane IDE Layout State
-  const [leftDockTab, setLeftDockTab] = useState<"explorer" | "chats">("explorer");
+  const [leftDockTab, setLeftDockTab] = useState<"explorer" | "chats" | "projects">("explorer");
   const [leftDockCollapsed, setLeftDockCollapsed] = useState(false);
   const [rightDockCollapsed, setRightDockCollapsed] = useState(false);
   const [centerTab, setCenterTab] = useState<ViewportTab>(() =>
@@ -321,6 +326,7 @@ export function App() {
   placeRef.current = place;
 
   const update = useUpdate(showUpdateRef);
+  const ship = useShip(!isBrowserEngine);
 
   useEffect(() => {
     if (wasMenuOpenRef.current && !menuOpen) {
@@ -2222,15 +2228,15 @@ export function App() {
         </div>
       </div>
 
-      {/* Explorer | Chats Segmented Toggle */}
+      {/* Explorer | Chats | Projects Segmented Toggle */}
       <SegmentedControl aria-label="Left dock section" size="sm" className="w-full flex-none">
         <SegmentedControlItem
           data-checked={leftDockTab === "explorer" ? "" : undefined}
           aria-pressed={leftDockTab === "explorer"}
           onClick={() => setLeftDockTab("explorer")}
-          className="flex-1 justify-center gap-1 max-md:!h-11"
+          className="flex-1 justify-center gap-1 !px-1.5 sm:text-xs max-md:!h-11"
         >
-          <FolderTree className="size-3.5" strokeWidth={1.5} aria-hidden />
+          <FolderTree className="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden />
           <span>Explorer</span>
           <span className="font-mono text-xs tabular-nums text-ink-2">{totalPieces}</span>
         </SegmentedControlItem>
@@ -2238,15 +2244,28 @@ export function App() {
           data-checked={leftDockTab === "chats" ? "" : undefined}
           aria-pressed={leftDockTab === "chats"}
           onClick={() => setLeftDockTab("chats")}
-          className="flex-1 justify-center gap-1 max-md:!h-11"
+          className="flex-1 justify-center gap-1 !px-1.5 sm:text-xs max-md:!h-11"
         >
-          <MessageSquare className="size-3.5" strokeWidth={1.5} aria-hidden />
+          <MessageSquare className="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden />
           <span>Chats</span>
         </SegmentedControlItem>
+        {!isBrowserEngine && (
+          <SegmentedControlItem
+            data-checked={leftDockTab === "projects" ? "" : undefined}
+            aria-pressed={leftDockTab === "projects"}
+            onClick={() => setLeftDockTab("projects")}
+            className="flex-1 justify-center gap-1 !px-1.5 sm:text-xs max-md:!h-11"
+          >
+            <FolderKanban className="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden />
+            <span>Projects</span>
+          </SegmentedControlItem>
+        )}
       </SegmentedControl>
 
       {/* Main Dock Scroll Region */}
-      {leftDockTab === "explorer" ? (
+      {leftDockTab === "projects" ? (
+        <ProjectsRail ship={ship} studioOk={studioOk} />
+      ) : leftDockTab === "explorer" ? (
         <LeftExplorerTree
           gameName={shell.gameName}
           builtTitles={builtTitles}
@@ -2551,15 +2570,17 @@ export function App() {
                 </span>
               )}
             </SegmentedControlItem>
-            <SegmentedControlItem
-              data-checked={centerTab === "playable" ? "" : undefined}
-              aria-pressed={centerTab === "playable"}
-              onClick={() => setCenterTab("playable")}
-              className="gap-1 max-md:!h-11 max-md:px-2"
-            >
-              <Gamepad2 className="size-3.5" strokeWidth={1.5} aria-hidden />
-              <span>Playable Stage</span>
-            </SegmentedControlItem>
+            {!isBrowserEngine && (
+              <SegmentedControlItem
+                data-checked={centerTab === "ship" ? "" : undefined}
+                aria-pressed={centerTab === "ship"}
+                onClick={() => setCenterTab("ship")}
+                className="gap-1 max-md:!h-11 max-md:px-2"
+              >
+                <ShipIcon className="size-3.5" strokeWidth={1.5} aria-hidden />
+                <span>Ship</span>
+              </SegmentedControlItem>
+            )}
           </SegmentedControl>
         </div>
 
@@ -2671,7 +2692,18 @@ export function App() {
             onTriggerRedo={handleRedo}
             onRunPlaytest={handleRunStudioPlaytest}
           />
-        ) : centerTab === "code-diff" ? (
+        ) : centerTab === "ship" ? (
+          <ShipPanel
+            ship={ship}
+            studioOk={studioOk}
+            onOpenProjects={() => {
+              setLeftDockCollapsed(false);
+              setLeftDockTab("projects");
+              if (narrow) setMenuOpen(true);
+            }}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+        ) : (
           <CodeDiffWorkbench
             place={safePlace}
             selectedScriptPath={selectedScriptPath}
@@ -2687,13 +2719,6 @@ export function App() {
             onApplyProposal={handleApplyProposal}
             onRejectProposal={handleRejectProposal}
             onAttachContext={handleAddContextPath}
-          />
-        ) : (
-          <StagePreview
-            place={safePlace}
-            theme={theme}
-            selectedPath={selectedPath}
-            onSelectPart={handleSelectPartAndInspect}
           />
         )}
       </div>
@@ -3009,9 +3034,9 @@ export function App() {
 
         {/* Main 3-Pane IDE Shell */}
         <div className="flex min-h-0 flex-1 overflow-hidden">
-          {/* Pane 1: Desktop Left Dock (248px collapsible) */}
+          {/* Pane 1: Desktop Left Dock (264px collapsible) */}
           {!narrow && !leftDockCollapsed && (
-            <div className="w-[248px] flex-none border-r border-hairline">{leftDockBody}</div>
+            <div className="w-[264px] flex-none border-r border-hairline">{leftDockBody}</div>
           )}
 
           {/* Pane 2: Center Studio Workspace */}
@@ -3154,6 +3179,7 @@ export function App() {
           workspaceMode={workspaceMode}
           compactLabel={activeModelLabel}
           showTrigger={false}
+          onOpenCloudChanged={() => void ship.refreshCloud()}
           onApplied={({ studioConnected, modelConfigured, workspaceMode: nextMode }) => {
             setStudioOk(studioConnected);
             setModelOk(modelConfigured);
