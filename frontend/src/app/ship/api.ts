@@ -38,7 +38,7 @@ export type PlaytestReport = {
   screenshots?: { name: string; file: string; bytes?: number; width?: number; height?: number }[];
 };
 
-export type Res<T> = { ok: boolean; status: number; error?: string } & Partial<T>;
+export type Res<T> = { ok: boolean; httpStatus: number; error?: string } & Partial<T>;
 
 /** GET when `body` is undefined, else POST JSON. A network or parse failure comes back as ok:false with plain words. */
 export async function call<T = Record<string, unknown>>(url: string, body?: unknown): Promise<Res<T>> {
@@ -48,9 +48,9 @@ export async function call<T = Record<string, unknown>>(url: string, body?: unkn
     let data: Record<string, unknown> = {};
     try { data = JSON.parse(text) as Record<string, unknown>; } catch { /* not JSON */ }
     const error = typeof data.error === "string" ? data.error : r.ok ? undefined : r.status === 404 ? "This OpenRO build does not have that feature yet." : `The server answered ${r.status}.`;
-    return { ...(data as Partial<T>), ok: r.ok && data.ok !== false, status: r.status, error };
+    return { ...(data as Partial<T>), ok: r.ok && data.ok !== false, httpStatus: r.status, error };
   } catch {
-    return { ok: false, status: 0, error: "Could not reach the OpenRO server." } as Res<T>;
+    return { ok: false, httpStatus: 0, error: "Could not reach the OpenRO server." } as Res<T>;
   }
 }
 

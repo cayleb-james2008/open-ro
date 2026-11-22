@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { toast } from "sonner";
 import { FolderOpen, FolderPlus, Hammer, RefreshCw, ScanSearch, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,7 +8,7 @@ import { SlidingNumber } from "@/components/ui/sliding-number";
 import { Expandable, ExpandableTrigger } from "@/components/ui/expandable";
 import { MorphingDialog, MorphingDialogClose, MorphingDialogContainer, MorphingDialogContent, MorphingDialogDescription, MorphingDialogTitle, MorphingDialogTrigger } from "@/components/ui/morphing-dialog";
 import { open as dialogSpring } from "@/motion";
-import { prettyBytes, stamp } from "./api";
+import { call, prettyBytes, stamp } from "./api";
 import type { Ship } from "./useShip";
 
 export const triggerCls = "inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-lg border border-hairline bg-surface px-3 text-sm font-medium text-ink outline-none transition-[color,background-color] duration-(--dur-press) ease-(--ease-house) hover:bg-board focus-visible:ring-2 focus-visible:ring-focus";
@@ -160,7 +161,23 @@ export function ProjectsRail({ ship, studioOk }: { ship: Ship; studioOk: boolean
                 <Button variant="outline" size="lg" disabled={!!busy || syncBlocked} onClick={() => void ship.checkChanges()} className="max-md:min-h-11"><ScanSearch className="size-4" strokeWidth={1.5} aria-hidden />{busy === "diff" ? "Comparing…" : "Compare"}</Button>
               </div>
               <Button variant="outline" size="lg" disabled={!!busy || syncBlocked} onClick={() => void ship.syncNow(false)} className="w-full max-md:min-h-11"><UploadCloud className="size-4" strokeWidth={1.5} aria-hidden />{busy === "sync" ? "Sending to Studio…" : "Send to Studio"}</Button>
-              {!studioOk && <p className="text-sm text-ink-2">Connect Roblox Studio to compare or send.</p>}
+              {!studioOk && (
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm text-ink-2">Studio is not connected.</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      const r = await call<{ studio_connected?: boolean; error?: string }>("/api/studio/launch-and-continue", {});
+                      if (r.ok && r.studio_connected) { toast.success("Studio connected"); await ship.refresh(); }
+                      else toast.error(r.error || "Could not launch Studio.");
+                    }}
+                    className="max-md:min-h-11"
+                  >
+                    Launch Studio &amp; continue
+                  </Button>
+                </div>
+              )}
 
               {lastBuild && (
                 <div className="flex flex-col gap-1 border-t border-hairline pt-2.5 text-sm" data-build-result>

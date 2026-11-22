@@ -1,16 +1,13 @@
 import { useMemo, useState } from "react";
-import { toast } from "sonner";
 import {
   Archive,
   AtSign,
   Box,
   Check,
   ChevronDown,
-  Copy,
   FileCode,
   FileDiff,
   FolderTree,
-  History,
   Layers,
   Monitor,
   RefreshCw,
@@ -85,8 +82,6 @@ export function buildGameSummary(gameName: string, builtTitles: string[], place:
 }
 
 export function LeftExplorerTree({
-  gameName,
-  builtTitles,
   place,
   error,
   selectedPath,
@@ -95,16 +90,12 @@ export function LeftExplorerTree({
   studioSelection = [],
   buildDiff,
   serverDiagnostics,
-  snapshotCount = 0,
   syncing = false,
   onSelectPart,
   onOpenScript,
   onAttachContext,
   onRefreshPlace,
-  onOpenSnapshots,
 }: {
-  gameName: string;
-  builtTitles: string[];
   place: Place | null | "error";
   error: boolean;
   selectedPath?: string | null;
@@ -113,13 +104,11 @@ export function LeftExplorerTree({
   studioSelection?: string[];
   buildDiff?: PlaceDiff | null;
   serverDiagnostics?: LuauDiagnostic[];
-  snapshotCount?: number;
   syncing?: boolean;
   onSelectPart: (path: string) => void;
   onOpenScript: (path: string) => void;
   onAttachContext: (path: string) => void;
   onRefreshPlace?: () => void;
-  onOpenSnapshots?: () => void;
 }) {
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
@@ -220,19 +209,10 @@ export function LeftExplorerTree({
   }, [diagByPath, diagnostics, place, q]);
 
   const diffTotal = buildDiff ? buildDiff.added.length + buildDiff.modified.length + buildDiff.removed.length : 0;
-  const summary = useMemo(() => buildGameSummary(gameName, builtTitles, place), [gameName, builtTitles, place]);
-
-  const copySummary = () => {
-    if (!summary) return;
-    navigator.clipboard.writeText(summary).then(
-      () => toast.success("Copied game summary"),
-      () => toast.error("Could not copy automatically."),
-    );
-  };
 
   return (
     <section
-      aria-label="Roblox DataModel Explorer"
+      aria-label="Project Explorer"
       data-explorer-tree
       className="flex min-h-0 flex-1 flex-col gap-2"
     >
@@ -249,7 +229,7 @@ export function LeftExplorerTree({
         <div className="flex shrink-0 items-center gap-1">
           {scriptCount > 0 && (
             <Pill
-              className={`px-1.5 py-0 font-mono text-xs ${
+              className={`px-1.5 py-0 text-xs ${
                 errCount > 0
                   ? "bg-pill-pro-bg text-pill-pro-fg"
                   : warnCount > 0
@@ -294,7 +274,7 @@ export function LeftExplorerTree({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           aria-label="Filter Explorer"
-          placeholder="Filter DataModel…"
+          placeholder="Filter files…"
           className="[&_input]:max-md:!min-h-11 [&_input]:md:!h-8 [&_input]:text-xs"
         />
         {query && (
@@ -315,8 +295,8 @@ export function LeftExplorerTree({
       {/* Studio Live Selection Quick Attach Strip */}
       {studioSelection.length > 0 && (
         <div className="flex items-center justify-between gap-1.5 rounded-card border border-blue/35 bg-blue-soft/45 px-2 py-1.5 text-xs">
-          <span className="min-w-0 truncate font-mono text-xs text-ink">
-            Studio sel: {studioSelection[0].split(".").pop()}
+          <span className="min-w-0 truncate text-xs text-ink">
+            Studio sel: <span className="font-mono">{studioSelection[0].split(".").pop()}</span>
             {studioSelection.length > 1 ? ` +${studioSelection.length - 1}` : ""}
           </span>
           <Button
@@ -324,7 +304,7 @@ export function LeftExplorerTree({
             size="xs"
             onClick={() => onAttachContext(studioSelection[0])}
             aria-label={`Attach live Studio selection ${studioSelection[0]} to Copilot`}
-            className="h-6 shrink-0 px-1.5 font-mono text-xs max-md:min-h-11"
+            className="h-6 shrink-0 px-1.5 font-mono text-xs max-md:min-h-11 max-md:min-w-11"
           >
             +@
           </Button>
@@ -414,7 +394,7 @@ export function LeftExplorerTree({
         ) : total === 0 ? (
           <div className="flex flex-col gap-2 rounded-card border border-hairline bg-board/60 p-3 text-xs leading-relaxed text-ink-2">
             <span>No parts or scripts in this place yet.</span>
-            <span>Use Starters, drop a .rbxlx file, or prompt the Copilot on the right.</span>
+            <span>Drop a .rbxlx file or prompt the agent.</span>
           </div>
         ) : groups.length === 0 ? (
           <p className="rounded-card border border-hairline bg-board/60 p-2.5 text-xs text-ink-2">
@@ -487,33 +467,6 @@ export function LeftExplorerTree({
             </div>
           ))
         )}
-      </div>
-
-      {/* Compact Explorer Utilities */}
-      <div className="flex flex-none items-center gap-1.5 border-t border-hairline pt-2">
-        {onOpenSnapshots && (
-          <Button
-            variant="outline"
-            size="xs"
-            onClick={onOpenSnapshots}
-            aria-label="Open version snapshots"
-            className="flex-1 justify-center bg-board/50 max-md:min-h-11"
-          >
-            <History className="size-3.5" strokeWidth={1.5} aria-hidden />
-            <span>Snapshots{snapshotCount > 0 ? ` (${snapshotCount})` : ""}</span>
-          </Button>
-        )}
-        <Button
-          variant="outline"
-          size="xs"
-          disabled={!summary}
-          onClick={copySummary}
-          aria-label="Copy game summary"
-          className="justify-center bg-board/50 max-md:min-h-11"
-        >
-          <Copy className="size-3.5" strokeWidth={1.5} aria-hidden />
-          <span>Copy</span>
-        </Button>
       </div>
     </section>
   );

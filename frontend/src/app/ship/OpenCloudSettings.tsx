@@ -27,7 +27,7 @@ export function OpenCloudSettings({ onChanged }: { onChanged?: () => void }) {
     let live = true;
     void call<OpenCloud>("/api/opencloud").then((r) => {
       if (!live) return;
-      if (r.status === 404) setOff(true); else if (r.ok) apply(r as OpenCloud); else setErr(r.error || "Could not read the Open Cloud state.");
+      if (r.httpStatus === 404) setOff(true); else if (r.ok) apply(r as OpenCloud); else setErr(r.error || "Could not read the Open Cloud state.");
     });
     return () => { live = false; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
