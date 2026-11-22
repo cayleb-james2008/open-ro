@@ -3,11 +3,13 @@
 //! from `OPENRO_MCP_COMMAND`, so a real Studio MCP server drops in
 //! unchanged. Performs the `initialize` handshake, then `tools/call`.
 
+use crate::assets::{decode_base64, detect_image_mime};
+use crate::studio_stream::StudioFrame;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How long one bridge request may take before it is declared wedged.
 /// A silent bridge used to hang the agent forever (blocking read, no
@@ -285,9 +287,246 @@ impl McpClient {
             .map_err(|e| format!("get_place_tree returned non-JSON text: {e}"))
     }
 
+    /// Capture a live screenshot frame from the connected Roblox Studio MCP bridge
+    /// via the `screen_capture` tool. Safely decodes base64 PNG/JPEG/WebP from MCP
+    /// `image` content blocks or JSON/data-URL `text` blocks and validates real magic bytes.
+    pub fn screen_capture(&mut self) -> Result<StudioFrame, String> {
+        if !self.has_tool("screen_capture") {
+            return Err(
+                "Connected Studio MCP bridge does not advertise the 'screen_capture' tool"
+                    .to_string(),
+            );
+        }
+        let result = self.request(
+            "tools/call",
+            json!({ "name": "screen_capture", "arguments": {} }),
+        )?;
+        if result.get("isError").and_then(|v| v.as_bool()) == Some(true) {
+            let msg = result
+                .pointer("/content/0/text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown screen_capture error");
+            return Err(format!("Studio bridge error in screen_capture: {msg}"));
+        }
+
+        let content = result
+            .get("content")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| format!("screen_capture returned no content array: {result}"))?;
+
+        let mut b64_data: Option<String> = None;
+        let mut hinted_w: Option<u32> = None;
+        let mut hinted_h: Option<u32> = None;
+
+        for block in content {
+            let kind = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if kind == "image" {
+                if let Some(data) = block.get("data").and_then(|v| v.as_str()) {
+                    b64_data = Some(data.to_string());
+                }
+            } else if kind == "text" {
+                if let Some(txt) = block.get("text").and_then(|v| v.as_str()) {
+                    let trimmed = txt.trim();
+                    if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+                        if let Some(err_s) = parsed
+                            .get("error")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                        {
+                            return Err(format!("Studio bridge error in screen_capture: {err_s}"));
+                        }
+                        if hinted_w.is_none() {
+                            hinted_w = parsed
+                                .get("width")
+                                .and_then(|v| v.as_u64())
+                                .map(|n| n as u32);
+                        }
+                        if hinted_h.is_none() {
+                            hinted_h = parsed
+                                .get("height")
+                                .and_then(|v| v.as_u64())
+                                .map(|n| n as u32);
+                        }
+                        if b64_data.is_none() {
+                            for key in ["data", "image", "image_base64", "png_base64", "data_url"] {
+                                if let Some(s) = parsed.get(key).and_then(|v| v.as_str()) {
+                                    if !s.trim().is_empty() {
+                                        b64_data = Some(s.to_string());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    } else if b64_data.is_none() && trimmed.starts_with("data:image/") {
+                        b64_data = Some(trimmed.to_string());
+                    }
+                }
+            }
+        }
+
+        let raw_b64 = b64_data.ok_or_else(|| {
+            "screen_capture returned no image base64 payload in MCP content blocks".to_string()
+        })?;
+        let bytes = decode_base64(&raw_b64)
+            .map_err(|e| format!("screen_capture base64 decode failed: {e}"))?;
+        let (mime, _) = detect_image_mime(&bytes)
+            .map_err(|e| format!("screen_capture returned invalid image data: {e}"))?;
+        let (parsed_w, parsed_h) = parse_image_dimensions(&bytes).unwrap_or((0, 0));
+        let width = if parsed_w > 0 {
+            parsed_w
+        } else {
+            hinted_w.unwrap_or(0)
+        };
+        let height = if parsed_h > 0 {
+            parsed_h
+        } else {
+            hinted_h.unwrap_or(0)
+        };
+        let ts_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        Ok(StudioFrame {
+            seq: 0,
+            ts_ms,
+            mime: mime.to_string(),
+            bytes,
+            width,
+            height,
+            source: "studio_mcp".to_string(),
+        })
+    }
+
+    /// Read structured Studio Output console lines via `get_console_output`
+    /// (falling back to `get_console` on bridges that only advertise the legacy tool).
+    pub fn get_console_output(&mut self) -> Result<Vec<String>, String> {
+        let tool = if self.has_tool("get_console_output") {
+            "get_console_output"
+        } else {
+            "get_console"
+        };
+        let raw = match self.call_tool(tool, json!({})) {
+            Ok(text) => text,
+            Err(_) if tool == "get_console_output" => self.call_tool("get_console", json!({}))?,
+            Err(e) => return Err(e),
+        };
+        if let Ok(val) = serde_json::from_str::<Value>(raw.trim()) {
+            if let Some(arr) = val.as_array() {
+                return Ok(arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .collect());
+            }
+            if let Some(arr) = val.get("lines").and_then(|v| v.as_array()) {
+                return Ok(arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(ToString::to_string))
+                    .collect());
+            }
+            for key in ["output", "console", "text"] {
+                if let Some(s) = val.get(key).and_then(|v| v.as_str()) {
+                    return Ok(s
+                        .lines()
+                        .map(str::trim_end)
+                        .filter(|l| !l.is_empty())
+                        .map(ToString::to_string)
+                        .collect());
+                }
+            }
+        }
+        Ok(raw
+            .lines()
+            .map(str::trim_end)
+            .filter(|l| !l.is_empty())
+            .map(ToString::to_string)
+            .collect())
+    }
+
+    /// Control Roblox Studio playtest execution (`"start_play"`, `"run_server"`, or `"stop"`).
+    pub fn start_stop_play(&mut self, mode: &str) -> Result<Value, String> {
+        let normalized = match mode.trim().to_ascii_lowercase().as_str() {
+            "start_play" | "play" | "start" => "start_play",
+            "run_server" | "server" | "run" => "run_server",
+            "stop" | "stop_play" => "stop",
+            other => {
+                return Err(format!(
+                    "unsupported start_stop_play mode '{other}' (expected start_play, run_server, or stop)"
+                ));
+            }
+        };
+        if self.has_tool("start_stop_play") {
+            let text = self.call_tool("start_stop_play", json!({ "mode": normalized }))?;
+            if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                return Ok(v);
+            }
+            return Ok(json!({
+                "ok": true,
+                "mode": normalized,
+                "output": text,
+            }));
+        }
+        if normalized == "stop" {
+            return Ok(json!({
+                "ok": true,
+                "mode": "stop",
+                "playing": false,
+                "status": "stopped",
+            }));
+        }
+        let text = self.call_tool("playtest", json!({}))?;
+        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+            return Ok(v);
+        }
+        Ok(json!({
+            "ok": true,
+            "mode": normalized,
+            "output": text,
+        }))
+    }
+
     pub fn is_alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
+}
+
+/// Extract `(width, height)` directly from PNG `IHDR` or JPEG `SOF0`/`SOF2` headers.
+fn parse_image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    // PNG IHDR
+    if bytes.len() >= 24 && &bytes[..8] == b"\x89PNG\r\n\x1a\n" && &bytes[12..16] == b"IHDR" {
+        let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+        return Some((w, h));
+    }
+    // JPEG SOF0 / SOF1 / SOF2
+    if bytes.len() >= 4 && bytes[0] == 0xFF && bytes[1] == 0xD8 {
+        let mut i = 2usize;
+        while i + 9 < bytes.len() {
+            if bytes[i] != 0xFF {
+                i += 1;
+                continue;
+            }
+            let marker = bytes[i + 1];
+            if marker == 0xD9 || marker == 0xDA {
+                break;
+            }
+            if matches!(marker, 0xC0..=0xC2) {
+                let h = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;
+                let w = u16::from_be_bytes([bytes[i + 7], bytes[i + 8]]) as u32;
+                return Some((w, h));
+            }
+            if i + 3 < bytes.len() {
+                let seg_len = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
+                if seg_len < 2 {
+                    break;
+                }
+                i += 2 + seg_len;
+            } else {
+                break;
+            }
+        }
+    }
+    None
 }
 
 impl Drop for McpClient {
