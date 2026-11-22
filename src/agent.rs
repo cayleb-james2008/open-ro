@@ -286,6 +286,8 @@ pub struct Agent {
     active_build_chat: String,
     /// Dynamic skill prompt block injected from installed Tool & Skill Library packs.
     library_prompt: String,
+    /// Optional 8-dimension Taste Dossier prompt block from the most recently researched Roblox game.
+    market_dossier_prompt: String,
 }
 
 impl Agent {
@@ -320,11 +322,32 @@ impl Agent {
             active_build_id: String::new(),
             active_build_chat: String::new(),
             library_prompt: String::new(),
+            market_dossier_prompt: String::new(),
         }
     }
 
     pub fn set_library_prompt(&mut self, prompt: String) {
         self.library_prompt = prompt;
+    }
+
+    pub fn set_market_dossier_prompt(&mut self, prompt: String) {
+        self.market_dossier_prompt = prompt;
+    }
+
+    /// Full system prompt sent to the model: core OpenRO rules + installed Tool & Skill
+    /// Library packs (including active Roblox Market Taste Craft Bar & Automatic Twists)
+    /// + any recently researched Roblox reference game Taste Dossier.
+    pub fn effective_system_prompt(&self) -> String {
+        let mut out = system_prompt();
+        if !self.library_prompt.trim().is_empty() {
+            out.push_str("\n\n");
+            out.push_str(&self.library_prompt);
+        }
+        if !self.market_dossier_prompt.trim().is_empty() {
+            out.push_str("\n\n");
+            out.push_str(&self.market_dossier_prompt);
+        }
+        out
     }
 
     pub fn studio_id(&self) -> Option<String> {
@@ -2086,11 +2109,7 @@ impl Agent {
         }
         self.generated.clear();
         self.last_skill = None;
-        let full_system = if self.library_prompt.trim().is_empty() {
-            system_prompt()
-        } else {
-            format!("{}\n\n{}", system_prompt(), self.library_prompt)
-        };
+        let full_system = self.effective_system_prompt();
         let mut messages = vec![
             json!({ "role": "system", "content": full_system }),
             json!({ "role": "user", "content": ask }),

@@ -94,6 +94,10 @@ pub struct Shared {
     pub studio_embed: Mutex<crate::studio_embed::StudioEmbedManager>,
     /// Built-in Developer Skill & Connection Library manager (`data_dir/library.json`).
     pub library: Mutex<crate::library::LibraryManager>,
+    /// Live Roblox Market Taste & 8-Dimension Craft Dossier store (`data_dir/market_taste_cache.json`).
+    pub market_taste: Mutex<crate::market_taste::MarketTasteStore>,
+    /// Optional 8-dimension Taste Dossier markdown from the latest `/api/market-taste/research` run.
+    last_researched_dossier_prompt: Mutex<String>,
     /// Root directory for library/mesh/audio assets (equals `data_dir` or an ephemeral dir).
     pub assets_root: PathBuf,
     /// Short-TTL cache for host Studio detection (`flatpak ps` / PATH scan) so
@@ -131,6 +135,7 @@ impl Shared {
         let studio_stream = Arc::new(StudioStreamHub::new(initial_mode));
         let assets_root = make_ephemeral_assets_root();
         let library = crate::library::LibraryManager::open(&assets_root);
+        let market_taste = crate::market_taste::MarketTasteStore::open(&assets_root);
         let lib_prompt = library.active_skill_prompt();
         if let Some(a) = agent.as_mut() {
             a.attach_undo_sink(Arc::clone(&undoable));
@@ -163,6 +168,8 @@ impl Shared {
             game_assets: Mutex::new(GameAssetsIndex::default()),
             studio_embed: Mutex::new(crate::studio_embed::StudioEmbedManager::new()),
             library: Mutex::new(library),
+            market_taste: Mutex::new(market_taste),
+            last_researched_dossier_prompt: Mutex::new(String::new()),
             assets_root,
             cached_embed_detect: Mutex::new(None),
             cached_library_list: Mutex::new(None),
@@ -181,6 +188,7 @@ impl Shared {
         let initial_mode = agent.as_ref().map(|a| a.studio_mode_tag()).unwrap_or("local_place");
         let studio_stream = Arc::new(StudioStreamHub::new(initial_mode));
         let library = crate::library::LibraryManager::open(&data_dir);
+        let market_taste = crate::market_taste::MarketTasteStore::open(&data_dir);
         let lib_prompt = library.active_skill_prompt();
         if let Some(a) = agent.as_mut() {
             a.attach_undo_sink(Arc::clone(&undoable));
@@ -224,6 +232,8 @@ impl Shared {
             game_assets: Mutex::new(GameAssetsIndex::default()),
             studio_embed: Mutex::new(crate::studio_embed::StudioEmbedManager::new()),
             library: Mutex::new(library),
+            market_taste: Mutex::new(market_taste),
+            last_researched_dossier_prompt: Mutex::new(String::new()),
             assets_root,
             cached_embed_detect: Mutex::new(None),
             cached_library_list: Mutex::new(None),
@@ -1148,6 +1158,18 @@ fn handle(
         ("POST", "/api/library/test") => {
             handle_library_test(&mut stream, shared, &req);
         }
+        ("GET", "/api/market-taste") => {
+            handle_market_taste_get(&mut stream, shared, query);
+        }
+        ("POST", "/api/market-taste/niche") => {
+            handle_market_taste_niche(&mut stream, shared, &req);
+        }
+        ("POST", "/api/market-taste/refresh") => {
+            handle_market_taste_refresh(&mut stream, shared, &req);
+        }
+        ("POST", "/api/market-taste/research") => {
+            handle_market_taste_research(&mut stream, shared, &req);
+        }
         ("POST", "/api/tools/blender/generate") => {
             handle_tools_blender_generate(&mut stream, shared, &req);
         }
@@ -1402,6 +1424,7 @@ fn handle(
             let can_redo = shared.redoable.lock().unwrap().contains(&active);
             let embed_state = shared.studio_embed.lock().unwrap().state();
             let active_lib_tools = shared.library.lock().unwrap().active_tools();
+            let active_niche = shared.market_taste.lock().unwrap().active_niche().to_string();
             respond_json(
                 &mut stream,
                 "200 OK",
@@ -1420,7 +1443,9 @@ fn handle(
                     "studio_embed": true,
                     "studio_mjpeg": true,
                     "library_api": true,
-                    "embedded_running": embed_state.embedded || embed_state.mcp_connected,
+                    "market_taste_api": true,
+                    "active_niche": active_niche,
+                    "embedded_running": embed_state.embedded,
                     "studio_id": embed_state.studio_id,
                     "studio_tools": crate::agent::OFFICIAL_STUDIO_MCP_TOOLS,
                     "active_library_tools": active_lib_tools,
@@ -3927,9 +3952,11 @@ fn respond_library_error(stream: &mut TcpStream, err: crate::library::LibraryErr
 fn sync_agent_library_prompt(shared: &Shared) {
     invalidate_library_cache(shared);
     let prompt = shared.library.lock().unwrap().active_skill_prompt();
+    let dossier_prompt = shared.last_researched_dossier_prompt.lock().unwrap().clone();
     if let Ok(mut guard) = shared.agent.lock() {
         if let Some(agent) = guard.as_mut() {
             agent.set_library_prompt(prompt);
+            agent.set_market_dossier_prompt(dossier_prompt);
         }
     }
 }
@@ -4037,6 +4064,187 @@ fn handle_library_test(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     match res {
         Ok(v) => respond_json(stream, "200 OK", &v),
         Err(e) => respond_library_error(stream, e),
+    }
+}
+
+fn handle_market_taste_get(stream: &mut TcpStream, shared: &Shared, query: &str) {
+    let niche_param = query_param(query, "niche");
+    let canonical_niche = match niche_param.as_deref() {
+        Some(raw) if !raw.trim().is_empty() => match crate::market_taste::normalize_niche_id(raw) {
+            Ok(id) => Some(id),
+            Err(msg) => {
+                respond_json(
+                    stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": msg }),
+                );
+                return;
+            }
+        },
+        _ => None,
+    };
+    let snap = shared.market_taste.lock().unwrap().snapshot_json(canonical_niche);
+    respond_json(stream, "200 OK", &snap);
+}
+
+fn handle_market_taste_niche(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "changing active market niche is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    let body: Value = match serde_json::from_slice::<Value>(&req.body) {
+        Ok(v) if v.is_object() => v,
+        _ => {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "invalid JSON body; expected {\"niche\": \"...\"}" }),
+            );
+            return;
+        }
+    };
+    let niche = body
+        .get("niche")
+        .or_else(|| body.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let res = shared.market_taste.lock().unwrap().set_active_niche(niche);
+    match res {
+        Ok(snap) => {
+            sync_agent_library_prompt(shared);
+            respond_json(stream, "200 OK", &snap);
+        }
+        Err(msg) => respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": msg }),
+        ),
+    }
+}
+
+fn handle_market_taste_refresh(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "refreshing live Roblox charts is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    let res = shared
+        .market_taste
+        .lock()
+        .unwrap()
+        .refresh_live(std::time::Duration::from_secs(12));
+    match res {
+        Ok(snap) => {
+            sync_agent_library_prompt(shared);
+            respond_json(stream, "200 OK", &snap);
+        }
+        Err(msg) => {
+            let fallback = shared.market_taste.lock().unwrap().snapshot_json(None);
+            respond_json(
+                stream,
+                "502 Bad Gateway",
+                &json!({
+                    "ok": false,
+                    "error": msg,
+                    "snapshot": fallback,
+                }),
+            );
+        }
+    }
+}
+
+fn handle_market_taste_research(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "researching Roblox games is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    let body: Value = match serde_json::from_slice::<Value>(&req.body) {
+        Ok(v) if v.is_object() => v,
+        _ => {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "invalid JSON body; expected {\"target\": \"<Roblox URL or Place/Universe ID>\"}" }),
+            );
+            return;
+        }
+    };
+    let target = body
+        .get("target")
+        .or_else(|| body.get("url"))
+        .or_else(|| body.get("place_or_universe_id"))
+        .or_else(|| body.get("input"))
+        .or_else(|| body.get("place_id"))
+        .or_else(|| body.get("universe_id"))
+        .and_then(|v| {
+            v.as_str()
+                .map(|s| s.to_string())
+                .or_else(|| v.as_u64().map(|n| n.to_string()))
+        })
+        .unwrap_or_default();
+    if target.trim().is_empty() {
+        respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": "missing Roblox game URL, Place ID, or Universe ID" }),
+        );
+        return;
+    }
+    let niche_hint = body
+        .get("niche_hint")
+        .or_else(|| body.get("niche"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    // Run network research without holding `shared.market_taste` lock.
+    let res = crate::market_taste::research_roblox_game(&shared.assets_root, &target, niche_hint);
+    match res {
+        Ok(val) => {
+            // Also inject the synthesized reference game dossier into the Agent's system prompt
+            // so the very next build inherits its craft bar & automatic twists.
+            let mut dossier_block = String::new();
+            if let Some(md) = val.get("dossier_markdown").and_then(|v| v.as_str()) {
+                dossier_block = md.to_string();
+            } else if let Some(game) = val.get("game") {
+                let title = game.get("name").and_then(|v| v.as_str()).unwrap_or("Reference Game");
+                let niche = val.get("niche_id").and_then(|v| v.as_str()).unwrap_or("anime-rng-cards");
+                dossier_block = format!(
+                    "## Recently Researched Roblox Reference Game: {title} (niche `{niche}`)\n\
+                     Match or exceed its visual craft, UX clarity, juice, and retention loops while applying the niche's automatic twists so the game feels similar in quality yet distinct."
+                );
+            }
+            if !dossier_block.is_empty() {
+                *shared.last_researched_dossier_prompt.lock().unwrap() = dossier_block;
+                sync_agent_library_prompt(shared);
+            }
+            respond_json(stream, "200 OK", &val);
+        }
+        Err(msg) => {
+            let low = msg.to_ascii_lowercase();
+            let status = if low.contains("invalid")
+                || low.contains("empty")
+                || low.contains("expected")
+                || low.contains("parse")
+                || low.contains("provide a roblox")
+            {
+                "400 Bad Request"
+            } else {
+                "502 Bad Gateway"
+            };
+            respond_json(stream, status, &json!({ "ok": false, "error": msg }));
+        }
     }
 }
 

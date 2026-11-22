@@ -263,17 +263,21 @@ fn v090_embedded_studio_mjpeg_input_passthrough_and_all_13_mcp_tools() {
 fn v090_library_packs_blender_mesh_and_wav_audio_api() {
     let port = start_local_server("Library & Media Tools v0.9.0");
 
-    // 1. GET /api/library returns 3 pre-installed defaults + 5 installable packs (8 total)
+    // 1. GET /api/library returns 4 pre-installed defaults + 5 installable packs (9 total)
     let (st, lib) = http_json(port, "GET", "/api/library", "");
     assert_eq!(st, 200, "GET /api/library failed: {lib}");
     assert_eq!(lib["ok"], json!(true));
     let packs = lib["packs"].as_array().unwrap();
-    assert_eq!(packs.len(), 8, "expected 8 library packs: {lib}");
+    assert_eq!(packs.len(), 9, "expected 9 library packs: {lib}");
     let defaults = packs
         .iter()
         .filter(|p| p["default_installed"] == json!(true))
         .count();
-    assert_eq!(defaults, 3);
+    assert_eq!(defaults, 4);
+    assert!(
+        packs.iter().any(|p| p["id"] == json!("roblox-market-taste") && p["default_installed"] == json!(true)),
+        "roblox-market-taste must be pre-installed as the 4th default pack: {lib}"
+    );
 
     // 2. Non-loopback refused 403 on library install & media tools
     let (st_evil, _, _) = http_req_host(
@@ -388,4 +392,93 @@ fn v090_library_packs_blender_mesh_and_wav_audio_api() {
     assert!(head_w.to_ascii_lowercase().contains("content-type: audio/wav"));
     assert!(wav_bytes.starts_with(b"RIFF"));
     assert_eq!(&wav_bytes[8..12], b"WAVE");
+}
+
+#[test]
+fn v090_market_taste_api_niche_guards_and_prompt_injection() {
+    let model = ModelClient::new(
+        "http://127.0.0.1:11434/v1".to_string(),
+        "qwen2.5:3b".to_string(),
+        None,
+    );
+    let place = LocalPlace::in_memory("Market Taste API v0.9.0".to_string());
+    let agent = Agent::with_local_place(model, place);
+    let shared = Shared::new(Some(agent), "Market Taste API v0.9.0".to_string());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let srv_shared = std::sync::Arc::clone(&shared);
+    std::thread::spawn(move || {
+        let _ = serve(listener, srv_shared);
+    });
+
+    // 1. GET /api/status exposes market_taste_api & active_niche
+    let (st, status) = http_json(port, "GET", "/api/status", "");
+    assert_eq!(st, 200);
+    assert_eq!(status["market_taste_api"], json!(true));
+    assert_eq!(status["active_niche"], json!("anime-rng-cards"));
+
+    // 2. GET /api/market-taste returns all 8 niches + full 8-dimension Taste Dossier + automatic twists
+    let (st, mt) = http_json(port, "GET", "/api/market-taste", "");
+    assert_eq!(st, 200, "GET /api/market-taste failed: {mt}");
+    assert_eq!(mt["ok"], json!(true));
+    assert_eq!(mt["active_niche"], json!("anime-rng-cards"));
+    assert_eq!(mt["niches"].as_array().unwrap().len(), 8);
+    assert!(mt["niche"]["taste_dossier"].is_object());
+    assert!(mt["niche"]["automatic_twists"].as_array().unwrap().len() >= 3);
+    assert!(mt["niche"]["anti_slop_rules"].as_array().unwrap().len() >= 3);
+
+    // 3. Query param ?niche= switches preview without mutating active niche; bad niche -> 400
+    let (st, mt_q) = http_json(port, "GET", "/api/market-taste?niche=viral-sim-tycoon", "");
+    assert_eq!(st, 200);
+    assert_eq!(mt_q["selected_niche"], json!("viral-sim-tycoon"));
+    assert_eq!(mt_q["active_niche"], json!("anime-rng-cards"));
+
+    let (st_bad, _) = http_json(port, "GET", "/api/market-taste?niche=not-a-niche", "");
+    assert_eq!(st_bad, 400);
+
+    // 4. Non-loopback refused 403 on all Market Taste POST endpoints
+    for ep in [
+        "/api/market-taste/niche",
+        "/api/market-taste/refresh",
+        "/api/market-taste/research",
+    ] {
+        let (st_evil, _, _) = http_req_host(
+            port,
+            "evil.example:8077",
+            "POST",
+            ep,
+            b"{\"niche\":\"viral-sim-tycoon\",\"target\":\"10092619788\"}",
+        );
+        assert_eq!(st_evil, 403, "expected 403 on non-loopback {ep}");
+    }
+
+    // 5. POST /api/market-taste/niche switches active niche & updates Agent's injected system prompt
+    let (st, sw) = http_json(
+        port,
+        "POST",
+        "/api/market-taste/niche",
+        &json!({ "niche": "tactical-arena-pvp" }).to_string(),
+    );
+    assert_eq!(st, 200, "switch niche failed: {sw}");
+    assert_eq!(sw["active_niche"], json!("tactical-arena-pvp"));
+
+    let (st, status2) = http_json(port, "GET", "/api/status", "");
+    assert_eq!(st, 200);
+    assert_eq!(status2["active_niche"], json!("tactical-arena-pvp"));
+
+    let sys_prompt = shared
+        .agent
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .effective_system_prompt();
+    assert!(
+        sys_prompt.contains("roblox-market-taste") && sys_prompt.contains("tactical-arena-pvp"),
+        "Agent effective_system_prompt must include updated active niche Craft Bar"
+    );
+
+    // 6. Malformed / empty research input returns 400 (never 500)
+    let (st_r400, _) = http_json(port, "POST", "/api/market-taste/research", "{}");
+    assert_eq!(st_r400, 400);
 }
