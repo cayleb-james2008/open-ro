@@ -1593,7 +1593,7 @@ fn claim_flag_curly_apostrophes_and_semicolons() {
 #[test]
 fn new_skills_generate_parameterised_luau() {
     let registry = openro_rs::skills::registry();
-    assert_eq!(registry.len(), 10, "ten skills registered: {:?}", registry.iter().map(|s| s.name).collect::<Vec<_>>());
+    assert_eq!(registry.len(), 22, "twenty-two skills registered: {:?}", registry.iter().map(|s| s.name).collect::<Vec<_>>());
     let prompt = openro_rs::agent::system_prompt();
     for def in &registry {
         assert!(prompt.contains(def.name), "system prompt lists skill {}", def.name);
@@ -1805,9 +1805,9 @@ fn ideas_engine_pitches_by_context() {
     let follow_half = openro_rs::ideas::ideas_for(&half);
     assert!(follow_half.iter().any(|i| i.id == "add-shop"), "a shop without its GUI still pitches the shop idea: {:?}", follow_half.iter().map(|i| i.id).collect::<Vec<_>>());
     // Everything built → nothing left to pitch (no empty promises).
-    let all: Vec<String> = ["currency", "shop", "game_gui", "checkpoints", "soundtrack", "day_night", "kill_brick"]
+    let all: Vec<String> = openro_rs::skills::registry()
         .iter()
-        .map(|s| s.to_string())
+        .map(|s| s.name.to_string())
         .collect();
     assert!(openro_rs::ideas::ideas_for(&all).is_empty(), "a complete game gets no stale pitches");
     // Every pitched plan only uses steps the loop understands, and
