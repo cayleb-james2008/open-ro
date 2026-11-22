@@ -4,6 +4,18 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 0.8.0 - 2026-11-22
+
+- **Co-Building 3D Studio IDE — Direct Part Authoring, Duplicate, Delete & Unified Undo/Redo (`src/place.rs`, `src/agent.rs`, `src/server.rs`, `StudioViewport3D.tsx`):**
+  - Added typed 3D part preset creation (`POST /api/place/create` supporting `block`, `sphere`, `cylinder`, `spawn`, `jump_pad`, `kill_brick`, and `card_billboard` with automatic companion Luau controllers for `jump_pad` and `kill_brick` and `.rbxlx` `<token name="shape">` round-trip), instance cloning with `+[4, 0, 4]` offset (`POST /api/place/duplicate`, `Ctrl+D`), instance/script deletion (`POST /api/place/delete`), and unified per-chat Undo/Redo (`POST /api/revert` + `POST /api/redo`, `Ctrl+Y` / `Cmd+Shift+Z`, `can_undo`/`can_redo` in `GET /api/chats` & `GET /api/status`) across AI builds, blueprints, 3D edits, and live Luau edits.
+  - Upgraded `StudioViewport3D.tsx` with a Studio Ribbon **`+ Add Part`** preset picker, **`Duplicate`**, **`Delete`**, **`Redo`** actions, and radial-shaded 3D **Sphere (`Ball`)** & 10-segment **Cylinder** geometry rendering.
+- **In-Explorer Live Luau Script Editor (`POST /api/place/script`, `frontend/src/app/Shelf.tsx`):**
+  - Added an inline **Live Luau Script Editor** inside the Studio Explorer using COSS `Textarea` with a 1:1 pixel-aligned line-number gutter, real-time Static Luau Prover diagnostics (`Clean` / `N err` / `N warn`), one-click **`Save & Check`**, and instant **`Playtest`**.
+- **One-Click Roblox Studio & Rojo 7 Ship Pack `.zip` Exporter (`src/rojo_export.rs`, `GET /api/export/bundle`, `frontend/src/app/zipBuilder.ts`):**
+  - Zero-dependency pure-Rust PKWARE ZIP 2.0 archive writer (IEEE CRC-32, UTF-8 names, ZIP-slip hardened) bundling `game.rbxlx`, `default.project.json`, `src/{server,client,shared}/*.luau`, `asset-manifest.json`, uploaded `assets/*` artwork, `luau-audit-report.json`, and `STUDIO-UPLOAD-CHECKLIST.md` — mirrored 1-to-1 by a zero-dep client-side PKZIP writer in the standalone browser web bundle.
+- **Dynamic Live Studio MCP Bridge Connect & Disconnect (`POST /api/studio/mcp/connect`, `POST /api/studio/mcp/disconnect`):**
+  - Added loopback-guarded (`403` non-loopback, `409` while busy) live MCP bridge connect/disconnect directly inside `Studio Feed` so creators can hot-attach a running Roblox Studio MCP session (streaming real PNG viewport frames via `/api/studio/frame`) and detach back to the persistent Local Place Engine without restarting `openro-rs` or ever launching Vinegar/Wine automatically.
+
 ## 0.7.0 - 2026-11-22
 
 - **Embedded Realtime 3D Roblox Studio Viewport & Live Agent Build Viewer (`frontend/src/app/StudioViewport3D.tsx`, `StagePreview.tsx`):**
