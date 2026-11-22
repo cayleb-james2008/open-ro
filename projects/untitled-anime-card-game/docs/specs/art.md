@@ -21,7 +21,7 @@ Rarities, roster and card names come from `docs/GDD.md` / `docs/ROSTER.md` (desi
 - Uploads go through OpenRO's asset pipeline only, and only after the owner has entered the Open Cloud
   key in Settings. Upload the authorised set (`art/cards/**`, `art/frames/r*/*.png`, `art/ui/*.png`,
   `art/worlds/**`, `art/store/*.png`). Record ids in `assets.lock.json`, then regenerate `src/shared/AssetIds.luau`
-  from it (a table `AssetIds["art/ui/icon_coins.png"] = "rbxassetid://123"`; never hand-edit it).
+  from it (a table `AssetIds["art/ui/coins.png"] = "rbxassetid://123"`; never hand-edit it).
 
 ## 1. Card art
 
@@ -78,7 +78,7 @@ Also `art/frames/preview/r<N>.png`: flattened preview over a placeholder for rev
 
 `docs/specs/game-ui.md` section 6 is the authoritative list of names and sizes (panels, buttons, pill,
 ribbon, close button, gloss, rarity frames and glows, icons, reveal rays, card back, banner plate). Build
-exactly that list, one PNG per name in `art/ui/`, RGBA, deliver at 2x its stated minimum size when it is
+exactly that list, one PNG per name in `art/ui/` (the `ui_*`, `frame_r*`, `glow_r*` names stay as listed), RGBA, deliver at 2x its stated minimum size when it is
 not a 9-slice. If the list changes, game-ui's file wins; if a name is added later by game-ui, add it.
 
 Style: glossy, chunky, outlined, dark-violet panels with bright accent buttons, readable at phone size.
@@ -88,27 +88,32 @@ images (`ui_button_face`, `ui_button_lip`) so the game can press the face down o
 Write `art/ui/slices.json`: `{"<name>": {"slice": [left, top, right, bottom], "size": [w, h]}}` for
 every 9-slice image so game-ui sets `SliceCenter` from it.
 
-Icons: 128x128 (deliver 256), centred, about 8 px margin; names `icon_<name>` for gems, coins,
-roll_ticket, luck, potion, pass, star, lock, crown, sword, deck, cards, world, tower, raid, ranked,
-rebirth, skills, quests, shop, codes, settings. Also `icon_hp`, `icon_speed`, `icon_key`, `icon_shard`
-if game-ui adds them. Never rename an existing file.
+Icons: file name = the exact name in game-ui section 6, no prefix (`art/ui/coins.png`, not
+`icon_coins.png`); the lock key is `art/ui/<name>.png`. 128x128 (deliver 256), centred, about 8 px
+margin. Never rename an existing file.
 
-### 3b. Extra icons and card pieces (from GDD sections 4 and 6; names from the designer's economy list win)
+- Currency/item icons: `coins`, `gems`, `roll_ticket`, `trait_reroll`, `world_token`, `charm_dust`,
+  `spire_token`, `raid_token`, `ranked_medal`, `pass_xp`, `luck`, `star`, `lock`, `crown`, plus
+  `raid_ticket` and per-world `world_token_w1` .. `world_token_w5` (world emblem colour and motif, no
+  show logos; `world_token` is the neutral one).
+- Potions (`potion_*`; one bottle each, different liquid colour and glyph): `potion_luck`,
+  `potion_luck_greater`, `potion_luck_super`, `potion_luck_ultra`, `potion_mutation`, `potion_speed`,
+  `potion_extra_roll`, `potion_coin`.
+- Nav icons: `cards`, `deck`, `worlds`, `spire`, `raid`, `ranked`, `shop`, `skills`, `quests`, `pass`,
+  `codes`, `settings`, `leaderboard`, `daily`, `potion`, `profile`.
+- Charms by type: `charm_attack`, `charm_guard`, `charm_speed`, `charm_fortune`, `charm_fury`.
+- Rarity glyphs `glyph_r1..glyph_r8`, 64x64 (deliver 128): a distinct SHAPE per rarity so rarity never
+  relies on colour alone. Drawing brief: circle, rounded square, diamond, hexagon, star, flame, crown,
+  prismatic star. They are images, not font glyphs.
+- Also `reveal_rays` (512x512), `banner_plate` (512x128), `card_back` (256x356 min, deliver 512x712),
+  `card_back_season1`.
 
-- Currency and item icons, 128x128 (deliver 256), `icon_<id>`: coins, gems, roll_ticket, trait_reroll,
-  charm_dust, spire_token, raid_token, raid_ticket, ranked_medal, pass_xp, plus one `icon_token_w1` ..
-  `icon_token_w5` per world (use the world's emblem colour and motif, no show logos).
-- Potion icons (one bottle each, different liquid colour and glyph): `icon_potion_luck`,
-  `icon_potion_luck_greater`, `icon_potion_luck_super`, `icon_potion_luck_ultra`, `icon_potion_mutation`,
-  `icon_potion_speed`, `icon_potion_extra_roll`, `icon_potion_coin`.
-- Charm icons by type (Attack, Guard, Speed, Fortune, Fury): `icon_charm_attack` .. `icon_charm_fury`.
-- Rarity chip glyphs, 64x64, `rarity_r1..r8`: a distinct SHAPE per rarity (circle, rounded square,
-  diamond, hexagon, star, flame, crown, prismatic star) so rarity never relies on colour alone.
+### 3b. Card pieces
+
 - Mutation overlays, 512x712 transparent, drawn over the card art: `art/cards/mutation_shiny.png`,
   `mutation_golden.png`, `mutation_rainbow.png`, `mutation_void.png`, `mutation_celestial.png`
   (Shiny = sparkle flecks, Golden = gold sheen, Rainbow = prismatic wash, Void = dark swirl with violet
   edge, Celestial = star field and soft halo). Must not hide the face (keep the centre third light).
-- Card back: `art/ui/card_back.png`, 256x356 minimum (deliver 512x712), plus `card_back_season1.png`.
 
 ## 3c. Per-world art kit (5 worlds: w1 Hidden Leaf, w2 Saiyan Skies, w3 sea / pirate, w4 curse city, w5 Soul Society)
 
@@ -121,7 +126,7 @@ banner portals:
 | `act_1.png` .. `act_6.png` | 512x288 | Act thumbnails; act 6 shows the boss silhouette. |
 | `boss_banner.png` | 1024x256 | Boss portrait banner, the boss-exclusive card character in a menacing pose (generated from its reference like any card). |
 | `banner_pack.png` | 512x768 | Standard World Pack banner art. |
-| `token.png` | 256x256 | World token icon (same as `icon_token_w<N>` in art/ui; one source, copy not duplicate in the lock). |
+| `token.png` | 256x256 | World token icon (same picture as `art/ui/world_token_w<N>.png`; world director may use either). |
 
 World themes come from ROSTER.md (arena names). Backdrops must not copy a single frame of the show; they
 are original scenes in the same mood.
