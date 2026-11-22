@@ -6,4 +6,6 @@ pub mod model;
 pub mod place;
 pub mod server;
 pub mod skills;
+pub mod snapshots;
+pub mod sse;
 pub mod update;

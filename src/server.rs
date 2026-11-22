@@ -12,6 +12,8 @@ use crate::config::RuntimeConfig;
 use crate::mcp::McpClient;
 use crate::model::{probe_local_gateways, ModelClient, DEFAULT_BASE_URL, DEFAULT_MODEL_ID};
 use crate::place::{LocalPlace, PlaceBackend};
+use crate::snapshots::{compute_diff, parse_rbxlx_xml, SnapshotStore};
+use crate::sse::BuildEventHub;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -75,6 +77,12 @@ pub struct Shared {
     pub undoable: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// Persistent Model + Studio settings (`data_dir/config.json`).
     pub config: Mutex<RuntimeConfig>,
+    /// Versioned place snapshots & build diffs (`data_dir/snapshots.json`).
+    pub snapshots: Mutex<SnapshotStore>,
+    /// Live SSE build-progress event hub (`/api/build/stream`).
+    pub events: Arc<BuildEventHub>,
+    /// Cached lightweight status so concurrent polling never stalls behind an active build.
+    status_cache: Mutex<StatusInfo>,
 }
 
 impl Shared {
@@ -83,9 +91,12 @@ impl Shared {
         let mut agent = agent;
         let updater = crate::update::Updater::from_env("OPENRO", "openro-rs", env!("CARGO_PKG_VERSION"), "cayleb-james2008/open-ro", true);
         let undoable = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let events = Arc::new(BuildEventHub::new());
         if let Some(a) = agent.as_mut() {
             a.attach_undo_sink(Arc::clone(&undoable));
+            a.attach_events(Arc::clone(&events));
         }
+        let initial_status = extract_status_from_agent(agent.as_mut());
         let chat = default_chat();
         let active = chat.id.clone();
         Arc::new(Shared {
@@ -101,6 +112,9 @@ impl Shared {
             updater,
             busy: AtomicUsize::new(0),
             config: Mutex::new(RuntimeConfig::default()),
+            snapshots: Mutex::new(SnapshotStore::in_memory()),
+            events,
+            status_cache: Mutex::new(initial_status),
         })
     }
 
@@ -111,9 +125,12 @@ impl Shared {
         let updater = crate::update::Updater::from_env("OPENRO", "openro-rs", env!("CARGO_PKG_VERSION"), "cayleb-james2008/open-ro", true);
         let mut agent = agent;
         let undoable = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let events = Arc::new(BuildEventHub::new());
         if let Some(a) = agent.as_mut() {
             a.attach_undo_sink(Arc::clone(&undoable));
+            a.attach_events(Arc::clone(&events));
         }
+        let initial_status = extract_status_from_agent(agent.as_mut());
         let mut recovered = agent.as_ref().map(|a| a.recovered.clone()).unwrap_or_default();
         let (chats, active) = load_chats(&data_dir, &mut recovered).unwrap_or_else(|| {
             let chat = default_chat();
@@ -122,6 +139,8 @@ impl Shared {
         });
         let ideas = load_ideas(&data_dir, &mut recovered);
         let cfg = RuntimeConfig::load(&data_dir);
+        let mut snap_store = SnapshotStore::open(&data_dir);
+        recovered.append(&mut snap_store.recovered);
         Arc::new(Shared {
             agent: Mutex::new(agent),
             chats: Mutex::new(chats),
@@ -135,6 +154,9 @@ impl Shared {
             updater,
             busy: AtomicUsize::new(0),
             config: Mutex::new(cfg),
+            snapshots: Mutex::new(snap_store),
+            events,
+            status_cache: Mutex::new(initial_status),
         })
     }
 
@@ -441,6 +463,17 @@ const MAX_HANDLERS: usize = 64;
 const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Largest request body the API accepts (chat asks are small JSON).
 const MAX_BODY_BYTES: usize = 1_048_576;
+/// Generous cap specifically for `.rbxlx` place imports (500+ instances & 50+ scripts).
+const MAX_IMPORT_BYTES: usize = 16 * 1024 * 1024;
+
+fn max_body_for_path(path: &str) -> usize {
+    let clean = path.split('?').next().unwrap_or(path);
+    if clean == "/api/import/rbxlx" {
+        MAX_IMPORT_BYTES
+    } else {
+        MAX_BODY_BYTES
+    }
+}
 
 /// Counts one ask, idea build or revert in flight for as long as it lives.
 struct BusyGuard<'a>(&'a AtomicUsize);
@@ -499,8 +532,7 @@ pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> 
         let shared = Arc::clone(&shared);
         let allowed = Arc::clone(&allowed);
         std::thread::spawn(move || {
-            let _slot = slot;
-            let _ = handle(stream, &shared, &allowed);
+            let _ = handle(stream, &shared, &allowed, slot);
         });
     }
     Ok(())
@@ -515,6 +547,7 @@ struct Request {
     sec_fetch_site: String,
     content_type: String,
     content_length: usize,
+    last_event_id: u64,
 }
 
 fn read_request(stream: &mut TcpStream) -> Option<Request> {
@@ -548,6 +581,7 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
         sec_fetch_site: String::new(),
         content_type: String::new(),
         content_length: 0,
+        last_event_id: 0,
     };
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
@@ -558,12 +592,14 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
                 "origin" => req.origin = v.to_string(),
                 "sec-fetch-site" => req.sec_fetch_site = v.to_ascii_lowercase(),
                 "content-type" => req.content_type = v.to_ascii_lowercase(),
+                "last-event-id" => req.last_event_id = v.parse().unwrap_or(0),
                 _ => {}
             }
         }
     }
+    let body_cap = max_body_for_path(&req.path);
     // An oversized body is not read at all: handle answers 413.
-    if req.content_length > MAX_BODY_BYTES {
+    if req.content_length > body_cap {
         return Some(req);
     }
     let mut body = buf[header_end..].to_vec();
@@ -604,14 +640,19 @@ fn refusal(req: &Request, allowed: &[String]) -> Option<(&'static str, &'static 
     if !host_allowed(&req.host, allowed) {
         return Some(("403 Forbidden", "This OpenRO server only answers requests addressed to this machine. Open it at http://127.0.0.1 instead."));
     }
-    if req.content_length > MAX_BODY_BYTES {
+    let clean_path = req.path.split('?').next().unwrap_or(&req.path);
+    let body_cap = max_body_for_path(clean_path);
+    if req.content_length > body_cap {
         return Some(("413 Payload Too Large", "That message is too large (over 1 MB). Send a shorter one."));
     }
     let changes_state = matches!(req.method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
     if !changes_state {
         return None;
     }
-    if req.content_length > 0 && !req.content_type.starts_with("application/json") {
+    let xml_import_ok = clean_path == "/api/import/rbxlx"
+        && (req.content_type.starts_with("application/xml")
+            || req.content_type.starts_with("text/xml"));
+    if req.content_length > 0 && !req.content_type.starts_with("application/json") && !xml_import_ok {
         return Some(("415 Unsupported Media Type", "OpenRO takes JSON requests only. The page sends them; a plain form post is refused."));
     }
     let origin_authority = req
@@ -680,23 +721,194 @@ fn respond_json(stream: &mut TcpStream, status: &str, value: &Value) {
     respond(stream, status, "application/json", &value.to_string());
 }
 
-fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io::Result<()> {
+fn handle(
+    mut stream: TcpStream,
+    shared: &Shared,
+    allowed: &[String],
+    slot: HandlerSlot,
+) -> std::io::Result<()> {
     let req = match read_request(&mut stream) {
         Some(r) => r,
         None => return Ok(()),
     };
     if let Some((status, message)) = refusal(&req, allowed) {
         respond_json(&mut stream, status, &json!({ "ok": false, "error": message }));
-        if req.content_length > MAX_BODY_BYTES {
+        let body_cap = max_body_for_path(&req.path);
+        if req.content_length > body_cap {
             // The body was never read: take it (bounded by its declared
             // length) so closing does not reset the 413 before it arrives.
-            drain_unread(&mut stream, req.content_length.min(4 * MAX_BODY_BYTES));
+            drain_unread(&mut stream, req.content_length.min(4 * body_cap));
         }
         return Ok(());
     }
-    let path = req.path.split('?').next().unwrap_or("/").to_string();
+    let (path_raw, query) = req.path.split_once('?').unwrap_or((req.path.as_str(), ""));
+    let path = path_raw.to_string();
+
+    // True SSE stream: drop the short-lived HandlerSlot so long-lived SSE
+    // subscribers never starve normal concurrent HTTP traffic (SSE tracks
+    // its own MAX_SSE_CLIENTS cap inside BuildEventHub).
+    if req.method == "GET" && path == "/api/build/stream" {
+        drop(slot);
+        if shared.events.active_subscribers() >= crate::sse::MAX_SSE_CLIENTS {
+            respond_json(
+                &mut stream,
+                "503 Service Unavailable",
+                &json!({ "ok": false, "error": "Too many live build streams are open right now. Close an extra tab and retry." }),
+            );
+            return Ok(());
+        }
+        let active_chat = shared.active_chat.lock().unwrap().clone();
+        let busy = shared.busy.load(Ordering::SeqCst) > 0;
+        let last_id = if req.last_event_id > 0 {
+            req.last_event_id
+        } else {
+            query_param(query, "since")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        if let Err(msg) = shared.events.serve_stream(stream, &active_chat, busy, last_id) {
+            eprintln!("openro: SSE stream refused: {msg}");
+        }
+        return Ok(());
+    }
+
+    let _slot = slot;
+
+    // Parameterized snapshot routes: POST /api/snapshots/:id/restore & GET /api/snapshots/:id/rbxlx
+    if let Some(rest) = path.strip_prefix("/api/snapshots/") {
+        if let Some(snap_id) = rest.strip_suffix("/restore") {
+            if req.method == "POST" {
+                handle_snapshot_restore(&mut stream, shared, snap_id);
+                return Ok(());
+            }
+        }
+        if let Some(snap_id) = rest.strip_suffix("/rbxlx") {
+            if req.method == "GET" {
+                let xml = shared
+                    .snapshots
+                    .lock()
+                    .unwrap()
+                    .export_rbxlx(snap_id, &shared.game_name);
+                match xml {
+                    Some(body) => {
+                        let fname = format!(
+                            "{}-{}.rbxlx",
+                            slugify_filename(&shared.game_name),
+                            slugify_filename(snap_id)
+                        );
+                        respond_download(&mut stream, "application/xml; charset=utf-8", &fname, &body);
+                    }
+                    None => respond_json(
+                        &mut stream,
+                        "404 Not Found",
+                        &json!({ "ok": false, "error": format!("snapshot not found: {snap_id}") }),
+                    ),
+                }
+                return Ok(());
+            }
+        }
+    }
 
     match (req.method.as_str(), path.as_str()) {
+        ("GET", "/api/build/events") => {
+            let since = query_param(query, "since")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            let mut body = shared.events.recent_json(since);
+            body["ok"] = json!(true);
+            body["busy"] = json!(shared.busy.load(Ordering::SeqCst) > 0);
+            respond_json(&mut stream, "200 OK", &body);
+        }
+        ("GET", "/api/snapshots") => {
+            let include_tree = query_param(query, "include_tree")
+                .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+            let store = shared.snapshots.lock().unwrap();
+            respond_json(
+                &mut stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "snapshots": store.list(include_tree),
+                    "latest_diff": store.latest_diff(),
+                }),
+            );
+        }
+        ("POST", "/api/snapshots") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let label = body
+                .get("label")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("Manual snapshot")
+                .to_string();
+            let tree = {
+                let mut guard = shared.agent.lock().unwrap();
+                match guard.as_mut() {
+                    Some(agent) => agent.place_tree(),
+                    None => Err("Studio not connected".to_string()),
+                }
+            };
+            match tree {
+                Ok(t) => {
+                    let chat_id = shared.active_chat.lock().unwrap().clone();
+                    let snap = shared.snapshots.lock().unwrap().record(
+                        label,
+                        "manual",
+                        Some(chat_id),
+                        t,
+                        None,
+                    );
+                    respond_json(
+                        &mut stream,
+                        "201 Created",
+                        &json!({ "ok": true, "snapshot": snap.summary_json() }),
+                    );
+                }
+                Err(e) => respond_json(
+                    &mut stream,
+                    "503 Service Unavailable",
+                    &json!({ "ok": false, "error": e }),
+                ),
+            }
+        }
+        ("GET", "/api/place/diff") => {
+            let mut latest = shared.snapshots.lock().unwrap().latest_diff();
+            latest["ok"] = json!(true);
+            respond_json(&mut stream, "200 OK", &latest);
+        }
+        ("POST", "/api/import/rbxlx") => {
+            handle_import_rbxlx(&mut stream, shared, &req);
+        }
+        ("POST", "/api/place/instance") => {
+            handle_place_instance(&mut stream, shared, &req.body);
+        }
+        ("GET", "/api/skills") => {
+            let skills_list: Vec<Value> = crate::skills::registry()
+                .into_iter()
+                .map(|def| {
+                    json!({
+                        "name": def.name,
+                        "title": title_for_skill(def.name),
+                        "category": category_for_skill(def.name),
+                        "description": def.description,
+                        "params": def.params,
+                    })
+                })
+                .collect();
+            respond_json(
+                &mut stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "count": skills_list.len(),
+                    "skills": skills_list,
+                }),
+            );
+        }
+        ("GET", "/api/luau/check") | ("POST", "/api/luau/check") => {
+            handle_luau_check(&mut stream, shared, req.method == "POST", &req.body);
+        }
         ("GET", "/") => {
             let info = status_info(shared);
             let html = render_page_full(
@@ -931,7 +1143,9 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
                         &json!({ "ok": false, "error": error }),
                     );
                 }
-                Some(agent) => match agent.run_ask(&chat_id, &message) {
+                Some(agent) => {
+                    let before_tree = agent.place_tree().ok();
+                    match agent.run_ask(&chat_id, &message) {
                     Ok(outcome) if outcome.refused => {
                         // Refused, not built: the plain reason is the
                         // answer, the model's success claim is not shown,
@@ -945,11 +1159,31 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
                     }
                     Ok(outcome) => {
                         shared.append_lines_to(&chat_id, &outcome.thread);
+                        let mut snapshot_id = Value::Null;
+                        let mut diff_val = Value::Null;
                         // Only an ask that really changed the game records
                         // what it built and pitches the follow-up set (once
                         // per context). A zero-change ask gets no pitch.
                         if outcome.changed {
                             shared.note_built(&chat_id, &outcome.skills_used);
+                            if let Ok(after_tree) = agent.place_tree() {
+                                let explicit = before_tree
+                                    .as_ref()
+                                    .map(|b| compute_diff(b, &after_tree));
+                                let label: String = format!(
+                                    "Built: {}",
+                                    message.chars().take(48).collect::<String>()
+                                );
+                                let snap = shared.snapshots.lock().unwrap().record(
+                                    label,
+                                    "build",
+                                    Some(chat_id.clone()),
+                                    after_tree,
+                                    explicit,
+                                );
+                                snapshot_id = json!(snap.id);
+                                diff_val = snap.diff.to_json();
+                            }
                             let (_, pitch) = shared.pitch_for(
                                 &chat_id,
                                 "OpenRO: That landed. Next, I could add:",
@@ -966,6 +1200,8 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
                                 "summary": outcome.summary,
                                 "thread": outcome.thread,
                                 "transcript": outcome.transcript,
+                                "snapshot_id": snapshot_id,
+                                "diff": diff_val,
                             }),
                         );
                     }
@@ -994,7 +1230,8 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
                             &json!({ "ok": false, "error": f.message }),
                         );
                     }
-                },
+                }
+                }
             }
         }
         ("POST", "/api/ideas") => {
@@ -1086,10 +1323,28 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
                         &json!({ "ok": false, "error": error }),
                     );
                 }
-                Some(agent) => match agent.build_idea(&chat_id, &id) {
+                Some(agent) => {
+                    let before_tree = agent.place_tree().ok();
+                    match agent.build_idea(&chat_id, &id) {
                     Ok(outcome) => {
                         shared.append_lines_to(&chat_id, &outcome.thread);
                         shared.note_built(&chat_id, &outcome.skills_used);
+                        let mut snapshot_id = Value::Null;
+                        let mut diff_val = Value::Null;
+                        if let Ok(after_tree) = agent.place_tree() {
+                            let explicit = before_tree
+                                .as_ref()
+                                .map(|b| compute_diff(b, &after_tree));
+                            let snap = shared.snapshots.lock().unwrap().record(
+                                format!("Blueprint: {}", idea.title),
+                                "idea",
+                                Some(chat_id.clone()),
+                                after_tree,
+                                explicit,
+                            );
+                            snapshot_id = json!(snap.id);
+                            diff_val = snap.diff.to_json();
+                        }
                         let (next, pitch) = shared.pitch_for(
                             &chat_id,
                             "OpenRO: That landed. Next, I could add:",
@@ -1106,6 +1361,8 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
                                 "thread": outcome.thread,
                                 "transcript": outcome.transcript,
                                 "ideas": ideas_json(&next),
+                                "snapshot_id": snapshot_id,
+                                "diff": diff_val,
                             }),
                         );
                     }
@@ -1126,7 +1383,8 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
                             &json!({ "ok": false, "error": f.message }),
                         );
                     }
-                },
+                }
+                }
             }
         }
         ("POST", "/api/revert") => {
@@ -1135,9 +1393,37 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
             let mut guard = shared.agent.lock().unwrap();
             let reverted = guard.as_ref().map(|a| a.top_skills(&chat_id)).unwrap_or_default();
             match guard.as_mut() {
-                Some(agent) => match agent.revert_chat(&chat_id) {
+                Some(agent) => {
+                    let before_tree = agent.place_tree().ok();
+                    match agent.revert_chat(&chat_id) {
                     Ok(restored) => {
                         shared.forget_built(&chat_id, &reverted, &agent.chat_skills(&chat_id));
+                        let mut snapshot_id = Value::Null;
+                        let mut diff_val = Value::Null;
+                        if let Ok(after_tree) = agent.place_tree() {
+                            let explicit = before_tree
+                                .as_ref()
+                                .map(|b| compute_diff(b, &after_tree));
+                            let snap = shared.snapshots.lock().unwrap().record(
+                                format!("Undo ({} change(s))", restored.len()),
+                                "revert",
+                                Some(chat_id.clone()),
+                                after_tree,
+                                explicit,
+                            );
+                            snapshot_id = json!(snap.id);
+                            diff_val = snap.diff.to_json();
+                        }
+                        shared.events.publish(
+                            "revert",
+                            chat_id.clone(),
+                            "reverted",
+                            "Undo complete",
+                            format!("Reverted {} change(s)", restored.len()),
+                            None,
+                            None,
+                            100,
+                        );
                         shared.append_lines_to(&chat_id, &[format!(
                             "OpenRO: Undid the last build: {} change(s) put back.",
                             restored.len()
@@ -1145,7 +1431,12 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
                         respond_json(
                             &mut stream,
                             "200 OK",
-                            &json!({ "ok": true, "restored": restored }),
+                            &json!({
+                                "ok": true,
+                                "restored": restored,
+                                "snapshot_id": snapshot_id,
+                                "diff": diff_val,
+                            }),
                         );
                     }
                     Err(e) if e == crate::agent::NOTHING_TO_REVERT => {
@@ -1174,7 +1465,8 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
                             &json!({ "ok": false, "error": e }),
                         );
                     }
-                },
+                }
+                }
                 None => respond_json(
                     &mut stream,
                     "503 Service Unavailable",
@@ -1191,6 +1483,400 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
     Ok(())
 }
 
+fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == key {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+fn handle_snapshot_restore(stream: &mut TcpStream, shared: &Shared, snap_id: &str) {
+    let _busy = BusyGuard::new(&shared.busy);
+    let snap = {
+        let store = shared.snapshots.lock().unwrap();
+        store.get(snap_id).cloned()
+    };
+    let Some(target) = snap else {
+        respond_json(
+            stream,
+            "404 Not Found",
+            &json!({ "ok": false, "error": format!("snapshot not found: {snap_id}") }),
+        );
+        return;
+    };
+    let mut guard = shared.agent.lock().unwrap();
+    let Some(agent) = guard.as_mut() else {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({ "ok": false, "error": "Studio not connected" }),
+        );
+        return;
+    };
+    match agent.apply_place_tree(&target.tree) {
+        Ok(diff) => {
+            let chat_id = shared.active_chat.lock().unwrap().clone();
+            let restored_tree = agent.place_tree().unwrap_or_else(|_| target.tree.clone());
+            let new_snap = shared.snapshots.lock().unwrap().record(
+                format!("Restored: {}", target.label),
+                "restore",
+                Some(chat_id.clone()),
+                restored_tree,
+                Some(diff.clone()),
+            );
+            shared.events.publish(
+                "restore",
+                chat_id,
+                "restored",
+                "Snapshot restored",
+                format!("Restored '{}' ({})", target.label, diff.summary()),
+                None,
+                None,
+                100,
+            );
+            respond_json(
+                stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "restored_from": target.id,
+                    "snapshot_id": new_snap.id,
+                    "instance_count": new_snap.instance_count,
+                    "script_count": new_snap.script_count,
+                    "diff": diff.to_json(),
+                }),
+            );
+        }
+        Err(e) => respond_json(
+            stream,
+            "502 Bad Gateway",
+            &json!({ "ok": false, "error": e }),
+        ),
+    }
+}
+
+fn handle_import_rbxlx(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    let _busy = BusyGuard::new(&shared.busy);
+    let (xml_str, label) = if req.content_type.starts_with("application/xml")
+        || req.content_type.starts_with("text/xml")
+    {
+        match std::str::from_utf8(&req.body) {
+            Ok(s) => (s.to_string(), "Imported .rbxlx".to_string()),
+            Err(_) => {
+                respond_json(
+                    stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": "invalid UTF-8 in .rbxlx XML payload" }),
+                );
+                return;
+            }
+        }
+    } else {
+        let body: Value = match serde_json::from_slice(&req.body) {
+            Ok(v) => v,
+            Err(_) => {
+                respond_json(
+                    stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": "invalid JSON body; expected {\"xml\": \"<roblox ...>\"}" }),
+                );
+                return;
+            }
+        };
+        let Some(xml) = body.get("xml").and_then(|v| v.as_str()) else {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "missing string field 'xml' in import payload" }),
+            );
+            return;
+        };
+        let lbl = body
+            .get("label")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Imported .rbxlx")
+            .to_string();
+        (xml.to_string(), lbl)
+    };
+
+    let parsed_tree = match parse_rbxlx_xml(&xml_str) {
+        Ok(t) => t,
+        Err(e) => {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": e }),
+            );
+            return;
+        }
+    };
+
+    let mut guard = shared.agent.lock().unwrap();
+    let Some(agent) = guard.as_mut() else {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({ "ok": false, "error": "Studio not connected" }),
+        );
+        return;
+    };
+    match agent.apply_place_tree(&parsed_tree) {
+        Ok(diff) => {
+            let chat_id = shared.active_chat.lock().unwrap().clone();
+            let final_tree = agent.place_tree().unwrap_or(parsed_tree);
+            let snap = shared.snapshots.lock().unwrap().record(
+                label.clone(),
+                "import",
+                Some(chat_id.clone()),
+                final_tree.clone(),
+                Some(diff.clone()),
+            );
+            shared.events.publish(
+                "import",
+                chat_id,
+                "imported",
+                "Imported .rbxlx",
+                format!(
+                    "Imported {} instance(s) and {} script(s)",
+                    snap.instance_count, snap.script_count
+                ),
+                None,
+                None,
+                100,
+            );
+            respond_json(
+                stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "snapshot_id": snap.id,
+                    "instance_count": snap.instance_count,
+                    "script_count": snap.script_count,
+                    "diff": diff.to_json(),
+                    "tree": final_tree,
+                }),
+            );
+        }
+        Err(e) => respond_json(
+            stream,
+            "502 Bad Gateway",
+            &json!({ "ok": false, "error": e }),
+        ),
+    }
+}
+
+fn handle_place_instance(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8]) {
+    let _busy = BusyGuard::new(&shared.busy);
+    let body: Value = match serde_json::from_slice(raw_body) {
+        Ok(v) => v,
+        Err(_) => {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "invalid JSON body" }),
+            );
+            return;
+        }
+    };
+    let Some(path) = body.get("path").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) else {
+        respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": "missing string 'path' (e.g. Workspace.JumpPad)" }),
+        );
+        return;
+    };
+    let delete = body.get("delete").and_then(|v| v.as_bool()).unwrap_or(false);
+    let class_name = body.get("class_name").and_then(|v| v.as_str());
+    let properties = body.get("properties").cloned().unwrap_or_else(|| json!({}));
+
+    let mut guard = shared.agent.lock().unwrap();
+    let Some(agent) = guard.as_mut() else {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({ "ok": false, "error": "Studio not connected" }),
+        );
+        return;
+    };
+    let before = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+
+    let op_res = if delete {
+        agent.delete_instance_at(path).map(|()| json!({ "deleted": true, "path": path }))
+    } else {
+        agent.set_instance_properties(path, class_name, &properties)
+    };
+    match op_res {
+        Ok(instance_info) => {
+            let after = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+            let diff = compute_diff(&before, &after);
+            let chat_id = shared.active_chat.lock().unwrap().clone();
+            let label = if delete {
+                format!("Deleted {path}")
+            } else {
+                format!("Edited {path}")
+            };
+            let snap = shared.snapshots.lock().unwrap().record(
+                label.clone(),
+                "edit",
+                Some(chat_id.clone()),
+                after,
+                Some(diff.clone()),
+            );
+            shared.events.publish(
+                "edit",
+                chat_id,
+                "done",
+                label,
+                diff.summary(),
+                None,
+                Some(path.to_string()),
+                100,
+            );
+            respond_json(
+                stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "path": path,
+                    "instance": instance_info,
+                    "snapshot_id": snap.id,
+                    "diff": diff.to_json(),
+                }),
+            );
+        }
+        Err(e) => respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": e }),
+        ),
+    }
+}
+
+fn handle_luau_check(stream: &mut TcpStream, shared: &Shared, is_post: bool, raw_body: &[u8]) {
+    let tree = if is_post && !raw_body.is_empty() {
+        let body: Value = match serde_json::from_slice(raw_body) {
+            Ok(v) => v,
+            Err(_) => {
+                respond_json(
+                    stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": "invalid JSON body" }),
+                );
+                return;
+            }
+        };
+        if let Some(src) = body.get("source").and_then(|v| v.as_str()) {
+            let path = body
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("ServerScriptService.Check");
+            json!({ "instances": {}, "scripts": { path: src } })
+        } else {
+            body
+        }
+    } else {
+        let mut guard = shared.agent.lock().unwrap();
+        match guard.as_mut() {
+            Some(agent) => match agent.place_tree() {
+                Ok(t) => t,
+                Err(e) => {
+                    respond_json(
+                        stream,
+                        "502 Bad Gateway",
+                        &json!({ "ok": false, "error": e }),
+                    );
+                    return;
+                }
+            },
+            None => json!({ "instances": {}, "scripts": {} }),
+        }
+    };
+
+    let scripts = tree
+        .get("scripts")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let mut diagnostics = Vec::new();
+    let mut error_count = 0usize;
+    let mut warning_count = 0usize;
+    for (path, val) in &scripts {
+        let src = val.as_str().unwrap_or("");
+        if let Err(err) = crate::place::check_luau_syntax(src) {
+            error_count += 1;
+            diagnostics.push(json!({
+                "path": path,
+                "severity": "error",
+                "code": "LUAU_SYNTAX",
+                "message": err,
+            }));
+        }
+        if src.contains("while true do") && !src.contains("wait(") {
+            warning_count += 1;
+            diagnostics.push(json!({
+                "path": path,
+                "severity": "warning",
+                "code": "UNYIELDED_LOOP",
+                "message": "while true do loop appears to be missing task.wait()",
+            }));
+        }
+        if src.contains("DataStoreService") && !src.contains("pcall") {
+            warning_count += 1;
+            diagnostics.push(json!({
+                "path": path,
+                "severity": "warning",
+                "code": "UNGUARDED_DATASTORE",
+                "message": "DataStoreService access should be wrapped in pcall()",
+            }));
+        }
+    }
+    respond_json(
+        stream,
+        "200 OK",
+        &json!({
+            "ok": true,
+            "passed": error_count == 0,
+            "scripts_checked": scripts.len(),
+            "error_count": error_count,
+            "warning_count": warning_count,
+            "diagnostics": diagnostics,
+        }),
+    );
+}
+
+fn title_for_skill(name: &str) -> String {
+    name.split('_')
+        .filter(|s| !s.is_empty())
+        .map(|w| {
+            let mut ch = w.chars();
+            match ch.next() {
+                Some(first) => format!("{}{}", first.to_uppercase(), ch.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn category_for_skill(name: &str) -> &'static str {
+    match name {
+        "checkpoints" | "jump_pad" | "moving_platform" | "portal_teleporter" | "vehicle_spawner" | "spawn_link" => "Movement",
+        "currency" | "leaderboard" | "shop" | "tycoon_dropper" => "Economy",
+        "kill_brick" | "combat_sword" | "npc_patrol" | "round_manager" => "Combat",
+        "day_night" | "weather_cycle" | "soundtrack" => "World",
+        "datastore_save" | "inventory_backpack" | "quest_tracker" => "Persistence",
+        "game_gui" | "admin_spectate" => "UI",
+        _ => "Core",
+    }
+}
+
 /// Read and discard up to `budget` bytes the client is still sending.
 fn drain_unread(stream: &mut TcpStream, mut budget: usize) {
     let mut chunk = [0u8; 8192];
@@ -1202,6 +1888,7 @@ fn drain_unread(stream: &mut TcpStream, mut budget: usize) {
     }
 }
 
+#[derive(Clone)]
 struct StatusInfo {
     studio_connected: bool,
     model_configured: bool,
@@ -1211,9 +1898,8 @@ struct StatusInfo {
     is_loopback_model: bool,
 }
 
-fn status_info(shared: &Shared) -> StatusInfo {
-    let mut guard = shared.agent.lock().unwrap();
-    match guard.as_mut() {
+fn extract_status_from_agent(agent: Option<&mut Agent>) -> StatusInfo {
+    match agent {
         Some(agent) => StatusInfo {
             studio_connected: agent.studio_connected(),
             model_configured: agent.model.is_configured(),
@@ -1230,6 +1916,17 @@ fn status_info(shared: &Shared) -> StatusInfo {
             model_base_url: DEFAULT_BASE_URL.to_string(),
             is_loopback_model: false,
         },
+    }
+}
+
+fn status_info(shared: &Shared) -> StatusInfo {
+    match shared.agent.try_lock() {
+        Ok(mut guard) => {
+            let info = extract_status_from_agent(guard.as_mut());
+            *shared.status_cache.lock().unwrap() = info.clone();
+            info
+        }
+        Err(_) => shared.status_cache.lock().unwrap().clone(),
     }
 }
 
@@ -1409,6 +2106,7 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
             Some(agent) => {
                 agent.model = new_model;
                 agent.studio = new_backend;
+                agent.attach_events(Arc::clone(&shared.events));
             }
             None => {
                 let mut agent = Agent::with_backend(new_model, new_backend);
@@ -1416,9 +2114,11 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
                     agent.set_changes_file(dir.join("changes.json"));
                 }
                 agent.attach_undo_sink(Arc::clone(&shared.undoable));
+                agent.attach_events(Arc::clone(&shared.events));
                 *guard = Some(agent);
             }
         }
+        *shared.status_cache.lock().unwrap() = extract_status_from_agent(guard.as_mut());
     }
 
     Ok(config_snapshot(shared))
