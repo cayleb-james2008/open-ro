@@ -7,6 +7,7 @@ pub mod desktop;
 pub mod ideas;
 pub mod library;
 pub mod luau_check;
+pub mod market_taste;
 pub mod mcp;
 pub mod model;
 pub mod place;

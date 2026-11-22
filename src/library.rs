@@ -10,6 +10,7 @@
 //! - `roblox-studio-core`
 //! - `blender-3d-pipeline` (auto-detects Blender 5.x on Linux/Windows + headless `.obj` generation)
 //! - `anime-fan-art-knowledge`
+//! - `roblox-market-taste` (live Roblox Explore charts, 8 profitable niches, monetization & retention)
 //!
 //! One-click installable packs:
 //! - `image-gen-studio` (Gemini Nano Banana / OpenAI Image)
@@ -20,6 +21,7 @@
 
 use crate::art_knowledge;
 use crate::audio_synth;
+use crate::market_taste::{self, MarketTasteStore};
 use crate::studio_embed::detect_studio_environment;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -107,7 +109,7 @@ pub struct BlenderDetection {
     pub version: Option<String>,
 }
 
-/// Complete catalog of all 8 OpenRO Library packs (3 pre-installed defaults + 5 installable).
+/// Complete catalog of all 9 OpenRO Library packs (4 pre-installed defaults + 5 installable).
 pub fn all_pack_specs() -> &'static [PackSpec] {
     &PACK_SPECS
 }
@@ -216,6 +218,7 @@ pub fn detect_blender(override_path: Option<&str>) -> BlenderDetection {
 /// Manages installed packs, `0600` provider configs, unlocked agent tools, and active `SKILL.md` prompts.
 #[derive(Clone, Debug)]
 pub struct LibraryManager {
+    data_dir: PathBuf,
     config_path: PathBuf,
     installed_extra: BTreeSet<String>,
     configs: BTreeMap<String, PackUserConfig>,
@@ -226,12 +229,18 @@ impl LibraryManager {
     pub fn open(data_dir: &Path) -> Self {
         let config_path = data_dir.join("library.json");
         let mut mgr = LibraryManager {
+            data_dir: data_dir.to_path_buf(),
             config_path,
             installed_extra: BTreeSet::new(),
             configs: BTreeMap::new(),
         };
         mgr.load();
         mgr
+    }
+
+    /// Open the persistent `MarketTasteStore` sharing this `LibraryManager`'s `data_dir`.
+    pub fn market_taste(&self) -> MarketTasteStore {
+        MarketTasteStore::open(&self.data_dir)
     }
 
     fn load(&mut self) {
@@ -336,10 +345,12 @@ impl LibraryManager {
         set.into_iter().collect()
     }
 
-    /// Compose the live developer skill system prompt from all currently installed packs.
+    /// Compose the live developer skill system prompt from all currently installed packs,
+    /// including the active Roblox Market Taste niche benchmarks & profitability rules.
     pub fn active_skill_prompt(&self) -> String {
         let mut out = String::new();
         out.push_str("## Active OpenRO Developer Skills & Tool Packs\n");
+        let market_store = self.market_taste();
         for spec in PACK_SPECS.iter() {
             if !self.is_installed(spec.id) {
                 continue;
@@ -352,6 +363,10 @@ impl LibraryManager {
             ));
             out.push_str(spec.skill_markdown);
             out.push('\n');
+            if spec.id == "roblox-market-taste" {
+                out.push_str(&market_store.prompt_section_for(None));
+                out.push('\n');
+            }
         }
         out
     }
@@ -386,6 +401,7 @@ impl LibraryManager {
         let detected_binary: Option<String> = match spec.id {
             "blender-3d-pipeline" | "model-3d-gen" => blender.path.clone(),
             "roblox-studio-core" => detect_studio_environment().mcp_command,
+            "roblox-market-taste" => Some("built-in:roblox-explore-api".to_string()),
             "audio-sfx-gen" => Some("built-in:openro-audio-synth".to_string()),
             "rojo-open-cloud" => find_on_path("rojo")
                 .map(|p| p.to_string_lossy().into_owned())
@@ -394,7 +410,10 @@ impl LibraryManager {
         };
 
         let configured = match spec.id {
-            "roblox-studio-core" | "anime-fan-art-knowledge" | "audio-sfx-gen" => true,
+            "roblox-studio-core"
+            | "anime-fan-art-knowledge"
+            | "roblox-market-taste"
+            | "audio-sfx-gen" => true,
             "blender-3d-pipeline" | "model-3d-gen" => {
                 blender.detected || saved_key.is_some() || env_key_present
             }
@@ -621,15 +640,46 @@ impl LibraryManager {
                     )
                 }
             }
-            "anime-fan-art-knowledge" => {
-                (
-                    true,
-                    format!(
-                        "Fan-Art & Creative Homage Knowledge Point loaded ({} policy principles, {} anime archetype guides).",
-                        art_knowledge::policy_principles().len(),
-                        art_knowledge::anime_archetypes().len()
-                    ),
-                )
+            "anime-fan-art-knowledge" => (
+                true,
+                format!(
+                    "Fan-Art & Creative Homage Knowledge Point loaded ({} policy principles, {} anime archetype guides).",
+                    art_knowledge::policy_principles().len(),
+                    art_knowledge::anime_archetypes().len()
+                ),
+            ),
+            "roblox-market-taste" => {
+                let mut store = self.market_taste();
+                if std::env::var("OPENRO_MARKET_API_URL")
+                    .ok()
+                    .is_some_and(|v| !v.trim().is_empty())
+                {
+                    match store.refresh_live(std::time::Duration::from_secs(5)) {
+                        Ok(snap) => (
+                            true,
+                            format!(
+                                "Live Roblox Explore charts refreshed ({} live games across {} niches; active niche '{}').",
+                                snap["live_games_count"].as_u64().unwrap_or(0),
+                                market_taste::MARKET_NICHE_IDS.len(),
+                                store.active_niche()
+                            ),
+                        ),
+                        Err(e) => (
+                            false,
+                            format!("Live Roblox Explore refresh failed ({e}); embedded baseline remains active."),
+                        ),
+                    }
+                } else {
+                    (
+                        true,
+                        format!(
+                            "Market Taste engine ready ({} niches, active '{}', {} cached live games, Nov 2026 baseline loaded). Click 'Refresh Live Roblox Charts' to sync live Explore charts.",
+                            market_taste::MARKET_NICHE_IDS.len(),
+                            store.active_niche(),
+                            store.live_games_count()
+                        ),
+                    )
+                }
             }
             "audio-sfx-gen" => match audio_synth::synthesize_wav("ui_click", Some(60)) {
                 Ok(w) => (
@@ -1371,10 +1421,10 @@ fn find_on_path(bin: &str) -> Option<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// Static Pack Catalog (3 Pre-Installed Defaults + 5 One-Click Installable)
+// Static Pack Catalog (4 Pre-Installed Defaults + 5 One-Click Installable)
 // ---------------------------------------------------------------------------
 
-static PACK_SPECS: [PackSpec; 8] = [
+static PACK_SPECS: [PackSpec; 9] = [
     // --- 3 Pre-Installed Default Packs ---
     PackSpec {
         id: "roblox-studio-core",
@@ -1441,7 +1491,7 @@ static PACK_SPECS: [PackSpec; 8] = [
         id: "anime-fan-art-knowledge",
         name: "Fan-Art & Creative Homage Knowledge Point",
         category: "Art Direction",
-        description: "Pre-installed anime character card craft pillars, transformation checklist, rarity VFX specs, and Nano Banana prompt architecture.",
+        description: "Pre-installed anime fan-art visual fidelity + title-epithet naming guide, rarity VFX specs, and Nano Banana character portrait prompt architecture.",
         default_installed: true,
         version: "0.9.0",
         default_provider: "built-in-knowledge",
@@ -1452,13 +1502,42 @@ static PACK_SPECS: [PackSpec; 8] = [
         ],
         capabilities: &[
             "anime-homage-direction",
+            "visual-fidelity-fan-art",
+            "title-epithet-naming",
             "card-rarity-tiers",
             "decal-surfacegui-binding",
         ],
         env_vars: &[],
-        skill_summary: "Original anime homage craft pillars, archetype silhouettes, elemental VFX layering, and Roblox Decal/SurfaceGui card art binding.",
-        skill_markdown: "- Design bold original anime-inspired silhouettes, distinct elemental color keys, and readable card stats (`ATK`, `HP`, `SPD`, passive + ultimate).\n\
+        skill_summary: "Unmistakable fan-art visual fidelity paired with iconic title/epithet display names (Joyful Pirate, Six-Eyes Sorcerer, Shadow Monarch, Nine-Tail Shinobi, Thunder Flash Blade, Steel Alchemist, Gravity Ronin, Golden Ascended Warrior).",
+        skill_markdown: "- **Visual Fidelity Rule:** Generated fan-art MUST actually look like and be unmistakably recognizable as the original character (faithful hair, eyes, expression, outfit silhouette, weapon/stance, and signature elemental aura).\n\
+- **Title-Epithet Naming Rule:** Display names MUST replace trademarked proper names with the character's iconic title/epithet (e.g., `Joyful Pirate`, `Six-Eyes Sorcerer`, `Shadow Monarch`, `Nine-Tail Shinobi`, `Thunder Flash Blade`, `Steel Alchemist`, `Gravity Ronin`, `Golden Ascended Warrior`).\n\
 - Pair every generated portrait with both a Workspace `Decal` and `SurfaceGui > ImageLabel` frame so cards read clearly in 3D and UI.",
+    },
+    PackSpec {
+        id: "roblox-market-taste",
+        name: "Roblox Market Taste & Profitability",
+        category: "Market Intelligence",
+        description: "Pre-installed live Roblox Explore chart analyzer across 8 profitable niches with proven monetization loops, D1/D7 retention hooks, and anti-slop guardrails.",
+        default_installed: true,
+        version: "0.9.0",
+        default_provider: "roblox-explore-api",
+        tools: &[
+            "market_taste_snapshot",
+            "market_taste_refresh",
+            "market_taste_set_niche",
+            "pitch_profitable_game",
+        ],
+        capabilities: &[
+            "live-roblox-charts",
+            "8-niche-classifier",
+            "monetization-loops",
+            "d1-d7-retention-hooks",
+            "anti-slop-guardrails",
+        ],
+        env_vars: &["OPENRO_MARKET_API_URL"],
+        skill_summary: "Live Roblox Explore chart benchmarks across 8 high-retention niches, server-authoritative monetization loops, D1/D7 retention rituals, and anti-slop taste rules.",
+        skill_markdown: "- Ground every game pitch and build in live-charting player demand for the active niche below.\n\
+- Include a fast 5-to-10-second first-touch joy hook, clean server-authoritative monetization hooks, and a concrete D1/D7 return ritual.",
     },
     // --- 5 One-Click Installable Library Packs ---
     PackSpec {
