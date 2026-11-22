@@ -1273,6 +1273,9 @@ fn handle(
         ("POST", "/api/market-taste/research") => {
             handle_market_taste_research(&mut stream, shared, &req);
         }
+        ("GET", "/api/tools/blender/status") => {
+            handle_tools_blender_status(&mut stream);
+        }
         ("POST", "/api/tools/blender/generate") => {
             handle_tools_blender_generate(&mut stream, shared, &req);
         }
@@ -5462,6 +5465,10 @@ fn handle_studio_plugin_result(stream: &mut TcpStream, shared: &Shared, req: &Re
     }
 }
 
+fn handle_tools_blender_status(stream: &mut TcpStream) {
+    respond_json(stream, "200 OK", &crate::mesh::blender_status(None));
+}
+
 fn handle_tools_blender_generate(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
         respond_json(
@@ -5486,11 +5493,16 @@ fn handle_tools_blender_generate(stream: &mut TcpStream, shared: &Shared, req: &
         .get("binary_path")
         .and_then(|v| v.as_str())
         .map(String::from);
-    match crate::library::generate_blender_mesh(
-        &shared.assets_root,
-        &body,
-        blender_override.as_deref(),
-    ) {
+    let result = if body.get("parts").is_some() || body.get("script").is_some() {
+        crate::mesh::generate(&shared.assets_root, &body, blender_override.as_deref())
+    } else {
+        crate::library::generate_blender_mesh(
+            &shared.assets_root,
+            &body,
+            blender_override.as_deref(),
+        )
+    };
+    match result {
         Ok(v) => respond_json(stream, "200 OK", &v),
         Err(e) => respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e })),
     }
@@ -5531,7 +5543,7 @@ fn handle_tools_audio_generate(stream: &mut TcpStream, shared: &Shared, req: &Re
 }
 
 fn handle_mesh_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &str) {
-    match crate::library::read_mesh_asset(&shared.assets_root, raw_file) {
+    match crate::mesh::read_mesh_asset(&shared.assets_root, raw_file) {
         Ok((bytes, mime)) => {
             respond_bytes(stream, "200 OK", mime, "public, max-age=3600", &bytes);
         }
