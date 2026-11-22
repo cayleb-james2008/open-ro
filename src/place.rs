@@ -11,10 +11,15 @@
 
 use crate::luau_check::{self, AnalysisReport, Diagnostic, VALID_SERVICES};
 use crate::mcp::McpClient;
+use crate::skills;
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+
+/// Maximum depth of the bounded in-memory Undo / Redo history stacks.
+pub const MAX_HISTORY_DEPTH: usize = 64;
+const MAX_SCRIPT_BYTES: usize = 512 * 1024;
 
 /// Canonical Place DataModel alias (`Place::from_rbxlx_xml(&str) -> Result<Place, String>`).
 pub type Place = LocalPlace;
@@ -118,6 +123,141 @@ impl PlaceDiff {
     }
 }
 
+/// Result of creating a 3D Part preset via `LocalPlace::create_part_preset`.
+#[derive(Clone, Debug)]
+pub struct CreatedPreset {
+    pub path: String,
+    pub class_name: String,
+    pub preset: String,
+    pub instance: Value,
+    pub companion_script: Option<String>,
+    pub created_paths: Vec<String>,
+}
+
+impl CreatedPreset {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "ok": true,
+            "path": self.path,
+            "class_name": self.class_name,
+            "preset": self.preset,
+            "instance": self.instance,
+            "companion_script": self.companion_script,
+            "created_paths": self.created_paths,
+        })
+    }
+}
+
+/// Result of duplicating an instance (and any child instances/scripts) via `LocalPlace::duplicate_instance`.
+#[derive(Clone, Debug)]
+pub struct DuplicateResult {
+    pub source_path: String,
+    pub new_path: String,
+    pub class_name: String,
+    pub instance: Value,
+    pub duplicated_instances: Vec<String>,
+    pub duplicated_scripts: Vec<String>,
+}
+
+impl DuplicateResult {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "ok": true,
+            "source_path": self.source_path,
+            "new_path": self.new_path,
+            "path": self.new_path,
+            "class_name": self.class_name,
+            "instance": self.instance,
+            "duplicated_instances": self.duplicated_instances,
+            "duplicated_scripts": self.duplicated_scripts,
+        })
+    }
+}
+
+/// Result of deleting an instance (and any child instances/scripts) via `LocalPlace::delete_instance`.
+#[derive(Clone, Debug)]
+pub struct DeleteResult {
+    pub path: String,
+    pub removed_instances: Vec<String>,
+    pub removed_scripts: Vec<String>,
+}
+
+impl DeleteResult {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "ok": true,
+            "path": self.path,
+            "removed_instances": self.removed_instances,
+            "removed_scripts": self.removed_scripts,
+        })
+    }
+}
+
+/// Result of live-editing a Luau script via `LocalPlace::update_script_source`.
+#[derive(Clone, Debug)]
+pub struct ScriptUpdateResult {
+    pub path: String,
+    pub created: bool,
+    pub bytes: usize,
+    pub lines: usize,
+    pub script_report: AnalysisReport,
+    pub place_report: AnalysisReport,
+}
+
+impl ScriptUpdateResult {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "ok": true,
+            "path": self.path,
+            "created": self.created,
+            "bytes": self.bytes,
+            "lines": self.lines,
+            "analysis": self.script_report.to_json(),
+            "place_analysis": self.place_report.to_json(),
+            "error_count": self.place_report.error_count(),
+            "warning_count": self.place_report.warning_count(),
+        })
+    }
+}
+
+/// Result of an Undo or Redo operation on `LocalPlace`.
+#[derive(Clone, Debug)]
+pub struct UndoRedoResult {
+    pub action: &'static str,
+    pub label: String,
+    pub diff: PlaceDiff,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    pub undo_depth: usize,
+    pub redo_depth: usize,
+    pub instance_count: usize,
+    pub script_count: usize,
+}
+
+impl UndoRedoResult {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "ok": true,
+            "action": self.action,
+            "label": self.label,
+            "diff": self.diff.to_json(),
+            "can_undo": self.can_undo,
+            "can_redo": self.can_redo,
+            "undo_depth": self.undo_depth,
+            "redo_depth": self.redo_depth,
+            "instance_count": self.instance_count,
+            "script_count": self.script_count,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PlaceStateSnapshot {
+    scripts: BTreeMap<String, String>,
+    instances: BTreeMap<String, Value>,
+    label: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct LocalPlace {
     scripts: BTreeMap<String, String>,
@@ -126,6 +266,8 @@ pub struct LocalPlace {
     data_dir: Option<PathBuf>,
     game_name: String,
     pub recovered: Vec<String>,
+    undo_stack: VecDeque<PlaceStateSnapshot>,
+    redo_stack: VecDeque<PlaceStateSnapshot>,
 }
 
 impl LocalPlace {
@@ -138,6 +280,8 @@ impl LocalPlace {
             data_dir: None,
             game_name,
             recovered: Vec::new(),
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
         }
     }
 
@@ -153,6 +297,8 @@ impl LocalPlace {
             data_dir: Some(data_dir),
             game_name,
             recovered,
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
         };
         place.persist();
         place
@@ -168,9 +314,530 @@ impl LocalPlace {
         serialize_rbxlx(&self.game_name, &self.tree_json())
     }
 
+    /// Record the current Place state onto the bounded Undo stack and clear Redo.
+    fn push_undo_snapshot(&mut self, label: impl Into<String>) {
+        if self.undo_stack.len() >= MAX_HISTORY_DEPTH {
+            self.undo_stack.pop_front();
+        }
+        self.undo_stack.push_back(PlaceStateSnapshot {
+            scripts: self.scripts.clone(),
+            instances: self.instances.clone(),
+            label: label.into(),
+        });
+        self.redo_stack.clear();
+    }
+
+    /// Explicitly record a Redo entry (useful when an external server-level revert
+    /// restores an earlier tree and wants `POST /api/redo` to step forward again).
+    pub fn push_redo_state(
+        &mut self,
+        scripts: BTreeMap<String, String>,
+        instances: BTreeMap<String, Value>,
+        label: impl Into<String>,
+    ) {
+        if self.redo_stack.len() >= MAX_HISTORY_DEPTH {
+            self.redo_stack.pop_front();
+        }
+        self.redo_stack.push_back(PlaceStateSnapshot {
+            scripts,
+            instances,
+            label: label.into(),
+        });
+    }
+
+    pub fn undo_depth(&self) -> usize {
+        self.undo_stack.len()
+    }
+
+    pub fn redo_depth(&self) -> usize {
+        self.redo_stack.len()
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    /// Step backward to the previous state, pushing the current state onto the bounded Redo stack.
+    pub fn undo(&mut self) -> Result<UndoRedoResult, String> {
+        let prev = self
+            .undo_stack
+            .pop_back()
+            .ok_or_else(|| "nothing to undo".to_string())?;
+        let before = self.clone_state_only();
+        if self.redo_stack.len() >= MAX_HISTORY_DEPTH {
+            self.redo_stack.pop_front();
+        }
+        self.redo_stack.push_back(PlaceStateSnapshot {
+            scripts: self.scripts.clone(),
+            instances: self.instances.clone(),
+            label: prev.label.clone(),
+        });
+        self.scripts = prev.scripts;
+        self.instances = prev.instances;
+        self.persist();
+        let diff = self.diff_from(&before);
+        Ok(UndoRedoResult {
+            action: "undo",
+            label: prev.label,
+            diff,
+            can_undo: self.can_undo(),
+            can_redo: self.can_redo(),
+            undo_depth: self.undo_depth(),
+            redo_depth: self.redo_depth(),
+            instance_count: self.instances.len(),
+            script_count: self.scripts.len(),
+        })
+    }
+
+    /// Step forward to the most recently undone state, pushing the current state back onto Undo.
+    pub fn redo(&mut self) -> Result<UndoRedoResult, String> {
+        let next = self
+            .redo_stack
+            .pop_back()
+            .ok_or_else(|| "nothing to redo".to_string())?;
+        let before = self.clone_state_only();
+        if self.undo_stack.len() >= MAX_HISTORY_DEPTH {
+            self.undo_stack.pop_front();
+        }
+        self.undo_stack.push_back(PlaceStateSnapshot {
+            scripts: self.scripts.clone(),
+            instances: self.instances.clone(),
+            label: next.label.clone(),
+        });
+        self.scripts = next.scripts;
+        self.instances = next.instances;
+        self.persist();
+        let diff = self.diff_from(&before);
+        Ok(UndoRedoResult {
+            action: "redo",
+            label: next.label,
+            diff,
+            can_undo: self.can_undo(),
+            can_redo: self.can_redo(),
+            undo_depth: self.undo_depth(),
+            redo_depth: self.redo_depth(),
+            instance_count: self.instances.len(),
+            script_count: self.scripts.len(),
+        })
+    }
+
+    fn clone_state_only(&self) -> LocalPlace {
+        LocalPlace {
+            scripts: self.scripts.clone(),
+            instances: self.instances.clone(),
+            last_console: String::new(),
+            data_dir: None,
+            game_name: self.game_name.clone(),
+            recovered: Vec::new(),
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
+        }
+    }
+
+    /// Create a ready-to-use 3D Part preset (`block`, `sphere`, `cylinder`, `spawn`,
+    /// `jump_pad`, `kill_brick`, `card_billboard`) in `Workspace`, attaching companion
+    /// Luau scripts or Decal/ImageLabel children automatically for interactive presets.
+    pub fn create_part_preset(
+        &mut self,
+        preset: &str,
+        name: Option<&str>,
+        position: Option<[f64; 3]>,
+        size: Option<[f64; 3]>,
+        color: Option<&str>,
+    ) -> Result<CreatedPreset, String> {
+        let norm_preset = match preset.trim().to_ascii_lowercase().as_str() {
+            "block" | "part" => "block",
+            "sphere" | "ball" => "sphere",
+            "cylinder" => "cylinder",
+            "spawn" | "spawnlocation" | "spawn_pad" => "spawn",
+            "jump_pad" | "jumppad" => "jump_pad",
+            "kill_brick" | "killbrick" | "lava" => "kill_brick",
+            "card_billboard" | "cardbillboard" | "billboard" => "card_billboard",
+            other => {
+                return Err(format!(
+                    "unknown part preset '{other}' (expected block, sphere, cylinder, spawn, jump_pad, kill_brick, or card_billboard)"
+                ));
+            }
+        };
+
+        let (class_name, default_name, default_pos, default_size, default_color, material, shape) =
+            match norm_preset {
+                "block" => (
+                    "Part",
+                    "Block",
+                    [0.0, 2.0, 0.0],
+                    [8.0, 2.0, 8.0],
+                    "#64748B",
+                    "SmoothPlastic",
+                    Some("Block"),
+                ),
+                "sphere" => (
+                    "Part",
+                    "Sphere",
+                    [0.0, 4.0, 0.0],
+                    [6.0, 6.0, 6.0],
+                    "#38BDF8",
+                    "SmoothPlastic",
+                    Some("Ball"),
+                ),
+                "cylinder" => (
+                    "Part",
+                    "Cylinder",
+                    [0.0, 4.0, 0.0],
+                    [6.0, 6.0, 6.0],
+                    "#F59E0B",
+                    "Metal",
+                    Some("Cylinder"),
+                ),
+                "spawn" => (
+                    "SpawnLocation",
+                    "SpawnPad",
+                    [0.0, 1.0, 0.0],
+                    [10.0, 1.0, 10.0],
+                    "#4F7CF0",
+                    "SmoothPlastic",
+                    None,
+                ),
+                "jump_pad" => (
+                    "Part",
+                    "JumpPad",
+                    [0.0, 1.0, 16.0],
+                    [8.0, 1.0, 8.0],
+                    "#3CB371",
+                    "Neon",
+                    Some("Block"),
+                ),
+                "kill_brick" => (
+                    "Part",
+                    "LavaBrick",
+                    [0.0, 1.0, 24.0],
+                    [10.0, 1.0, 10.0],
+                    "#E0532A",
+                    "Neon",
+                    Some("Block"),
+                ),
+                "card_billboard" => (
+                    "Part",
+                    "CardBillboard",
+                    [0.0, 5.0, 24.0],
+                    [6.0, 8.5, 0.8],
+                    "#A855F7",
+                    "SmoothPlastic",
+                    Some("Block"),
+                ),
+                _ => unreachable!(),
+            };
+
+        let requested_base = match name.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(n) => {
+                if !valid_part_identifier(n) {
+                    return Err(format!(
+                        "part name '{n}' must start with a letter/underscore and contain only letters, digits, or underscores"
+                    ));
+                }
+                n
+            }
+            None => default_name,
+        };
+
+        let pos = position.unwrap_or(default_pos);
+        let sz = size.unwrap_or(default_size);
+        if !pos.iter().all(|v| v.is_finite()) {
+            return Err("position coordinates must be finite numbers".to_string());
+        }
+        if !sz.iter().all(|v| v.is_finite() && *v > 0.0) {
+            return Err("size dimensions must be finite positive numbers".to_string());
+        }
+        let resolved_color = match color.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(hex) => normalize_hex_color(hex)?,
+            None => default_color.to_string(),
+        };
+
+        // Pick a collision-free name under Workspace
+        let mut resolved_name = requested_base.to_string();
+        let mut suffix = 2usize;
+        while self
+            .instances
+            .contains_key(&format!("Workspace.{resolved_name}"))
+        {
+            resolved_name = format!("{requested_base}_{suffix}");
+            suffix += 1;
+        }
+        let path = format!("Workspace.{resolved_name}");
+
+        let mut props = Map::new();
+        props.insert("Anchored".to_string(), json!(true));
+        props.insert("CanCollide".to_string(), json!(true));
+        props.insert("Position".to_string(), json!([pos[0], pos[1], pos[2]]));
+        props.insert("Size".to_string(), json!([sz[0], sz[1], sz[2]]));
+        props.insert("Color".to_string(), json!(resolved_color));
+        props.insert("Material".to_string(), json!(material));
+        props.insert("Transparency".to_string(), json!(0.0));
+        if let Some(sh) = shape {
+            props.insert("Shape".to_string(), json!(sh));
+        }
+        if class_name == "SpawnLocation" {
+            props.insert("Neutral".to_string(), json!(true));
+        }
+
+        // Pre-compile any companion script before mutating state so errors leave place untouched
+        let companion: Option<(String, String)> = match norm_preset {
+            "jump_pad" => {
+                let src = skills::generate(
+                    "jump_pad",
+                    &json!({
+                        "boost_power": 125,
+                        "cooldown_ms": 600,
+                        "pad_name": resolved_name,
+                        "create_pad": false
+                    }),
+                )?;
+                Some((format!("ServerScriptService.{resolved_name}Controller"), src))
+            }
+            "kill_brick" => {
+                let src = skills::generate("kill_brick", &json!({ "damage": 100 }))?;
+                Some((format!("{path}.KillBrick"), src))
+            }
+            _ => None,
+        };
+
+        self.push_undo_snapshot(format!("Create {norm_preset} {path}"));
+
+        let record = json!({
+            "class_name": class_name,
+            "properties": Value::Object(props),
+        });
+        self.instances.insert(path.clone(), record.clone());
+        let mut created_paths = vec![path.clone()];
+
+        if norm_preset == "card_billboard" {
+            let decal_path = format!("{path}.CardArtDecal");
+            let gui_path = format!("{path}.CardDisplayGui");
+            let img_path = format!("{gui_path}.CardArtImage");
+            self.instances.insert(
+                decal_path.clone(),
+                json!({
+                    "class_name": "Decal",
+                    "properties": {
+                        "Texture": "rbxasset://openro-assets/supernova-ascended-striker.png",
+                        "Face": "Front"
+                    }
+                }),
+            );
+            self.instances.insert(
+                gui_path.clone(),
+                json!({
+                    "class_name": "SurfaceGui",
+                    "properties": { "Face": "Front" }
+                }),
+            );
+            self.instances.insert(
+                img_path.clone(),
+                json!({
+                    "class_name": "ImageLabel",
+                    "properties": {
+                        "Image": "rbxasset://openro-assets/supernova-ascended-striker.png",
+                        "BackgroundTransparency": 1.0
+                    }
+                }),
+            );
+            created_paths.push(decal_path);
+            created_paths.push(gui_path);
+            created_paths.push(img_path);
+        }
+
+        let companion_script = if let Some((sc_path, sc_src)) = companion {
+            self.scripts.insert(sc_path.clone(), sc_src);
+            created_paths.push(sc_path.clone());
+            Some(sc_path)
+        } else {
+            None
+        };
+
+        self.persist();
+        Ok(CreatedPreset {
+            path,
+            class_name: class_name.to_string(),
+            preset: norm_preset.to_string(),
+            instance: record,
+            companion_script,
+            created_paths,
+        })
+    }
+
+    /// Duplicate an existing instance (along with all descendant child instances and
+    /// child scripts), offsetting the duplicated root part's Position by `[4, 0, 4]`.
+    pub fn duplicate_instance(&mut self, path: &str) -> Result<DuplicateResult, String> {
+        let orig = self
+            .instances
+            .get(path)
+            .cloned()
+            .ok_or_else(|| format!("no instance at {path}"))?;
+        let (parent, leaf) = path
+            .rsplit_once('.')
+            .ok_or_else(|| format!("invalid instance path '{path}'"))?;
+
+        let mut new_leaf = format!("{leaf}_Copy");
+        let mut suffix = 2usize;
+        while self
+            .instances
+            .contains_key(&format!("{parent}.{new_leaf}"))
+        {
+            new_leaf = format!("{leaf}_Copy{suffix}");
+            suffix += 1;
+        }
+        let new_path = format!("{parent}.{new_leaf}");
+
+        let mut cloned_root = orig;
+        if let Some(props) = cloned_root
+            .get_mut("properties")
+            .and_then(|v| v.as_object_mut())
+        {
+            if let Some((x, y, z)) = parse_vec3(props.get("Position")) {
+                props.insert("Position".to_string(), json!([x + 4.0, y, z + 4.0]));
+            }
+            if let Some(arr) = props.get_mut("CFrame").and_then(|v| v.as_array_mut()) {
+                if arr.len() == 12 {
+                    if let (Some(x), Some(z)) = (arr[0].as_f64(), arr[2].as_f64()) {
+                        arr[0] = json!(x + 4.0);
+                        arr[2] = json!(z + 4.0);
+                    }
+                }
+            }
+        }
+
+        let child_prefix = format!("{path}.");
+        let child_instances: Vec<(String, Value)> = self
+            .instances
+            .iter()
+            .filter(|(k, _)| k.starts_with(&child_prefix))
+            .map(|(k, v)| (format!("{new_path}.{}", &k[child_prefix.len()..]), v.clone()))
+            .collect();
+        let child_scripts: Vec<(String, String)> = self
+            .scripts
+            .iter()
+            .filter(|(k, _)| k.starts_with(&child_prefix))
+            .map(|(k, v)| (format!("{new_path}.{}", &k[child_prefix.len()..]), v.clone()))
+            .collect();
+
+        self.push_undo_snapshot(format!("Duplicate {path} -> {new_path}"));
+
+        let class_name = cloned_root
+            .get("class_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Part")
+            .to_string();
+        self.instances.insert(new_path.clone(), cloned_root.clone());
+
+        let mut duplicated_instances = vec![new_path.clone()];
+        for (ck, cv) in child_instances {
+            self.instances.insert(ck.clone(), cv);
+            duplicated_instances.push(ck);
+        }
+        let mut duplicated_scripts = Vec::new();
+        for (sk, sv) in child_scripts {
+            self.scripts.insert(sk.clone(), sv);
+            duplicated_scripts.push(sk);
+        }
+
+        self.persist();
+        Ok(DuplicateResult {
+            source_path: path.to_string(),
+            new_path,
+            class_name,
+            instance: cloned_root,
+            duplicated_instances,
+            duplicated_scripts,
+        })
+    }
+
+    /// Delete an instance and all of its descendant child instances and child scripts.
+    pub fn delete_instance(&mut self, path: &str) -> Result<DeleteResult, String> {
+        if !self.instances.contains_key(path) {
+            return Err(format!("no instance at {path}"));
+        }
+        let child_prefix = format!("{path}.");
+        let inst_keys: Vec<String> = self
+            .instances
+            .keys()
+            .filter(|k| k.as_str() == path || k.starts_with(&child_prefix))
+            .cloned()
+            .collect();
+        let script_keys: Vec<String> = self
+            .scripts
+            .keys()
+            .filter(|k| k.starts_with(&child_prefix))
+            .cloned()
+            .collect();
+
+        self.push_undo_snapshot(format!("Delete {path}"));
+
+        for k in &inst_keys {
+            self.instances.remove(k);
+        }
+        for k in &script_keys {
+            self.scripts.remove(k);
+        }
+
+        self.persist();
+        Ok(DeleteResult {
+            path: path.to_string(),
+            removed_instances: inst_keys,
+            removed_scripts: script_keys,
+        })
+    }
+
+    /// Save live-edited Luau source for a script and return immediate Static Luau Prover
+    /// diagnostics (`script_report` + full cross-referenced `place_report`).
+    pub fn update_script_source(
+        &mut self,
+        path: &str,
+        source: &str,
+    ) -> Result<ScriptUpdateResult, String> {
+        validate_script_path(path)?;
+        if source.len() > MAX_SCRIPT_BYTES {
+            return Err(format!(
+                "script source exceeds maximum allowed size ({MAX_SCRIPT_BYTES} bytes)"
+            ));
+        }
+        if source.contains('\0') {
+            return Err("script source must not contain NUL bytes".to_string());
+        }
+
+        let created = !self.scripts.contains_key(path);
+        self.push_undo_snapshot(format!(
+            "{} {path}",
+            if created { "Create script" } else { "Edit script" }
+        ));
+        self.scripts.insert(path.to_string(), source.to_string());
+        self.persist();
+
+        let script_report = luau_check::analyze_script(path, source);
+        let place_report = self.analyze();
+        let lines = if source.is_empty() {
+            0
+        } else {
+            source.lines().count()
+        };
+
+        Ok(ScriptUpdateResult {
+            path: path.to_string(),
+            created,
+            bytes: source.len(),
+            lines,
+            script_report,
+            place_report,
+        })
+    }
+
     /// Replace this Place's contents directly from a normalized JSON tree
     /// `{"instances": {...}, "scripts": {...}}` with a single atomic disk persist.
     pub fn replace_tree(&mut self, tree: &Value) {
+        self.push_undo_snapshot("Replace place tree");
         self.scripts.clear();
         self.instances.clear();
         if let Some(sc_map) = tree.get("scripts").and_then(|v| v.as_object()) {
@@ -193,6 +860,7 @@ impl LocalPlace {
     /// Replace this Place's contents from an imported `.rbxlx` XML document and persist atomically.
     pub fn import_rbxlx_xml(&mut self, xml: &str) -> Result<ImportSummary, String> {
         let parsed = parse_rbxlx_xml(xml)?;
+        self.push_undo_snapshot(format!("Import {}", parsed.game_name));
         self.scripts = parsed.scripts;
         self.instances = parsed.instances;
         if !parsed.game_name.is_empty() && parsed.game_name != "Imported Place" {
@@ -216,6 +884,10 @@ impl LocalPlace {
         let patch_obj = patch
             .as_object()
             .ok_or_else(|| "instance property patch must be a JSON object".to_string())?;
+        if !self.instances.contains_key(path) {
+            return Err(format!("no instance at {path}"));
+        }
+        self.push_undo_snapshot(format!("Update {path}"));
         let rec = self
             .instances
             .get_mut(path)
@@ -332,6 +1004,7 @@ impl LocalPlace {
                     .get("source")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "write_script requires string source".to_string())?;
+                self.push_undo_snapshot(format!("Write script {path}"));
                 self.scripts.insert(path.to_string(), source.to_string());
                 self.persist();
                 Ok(json!({ "ok": true, "path": path }).to_string())
@@ -341,6 +1014,7 @@ impl LocalPlace {
                     .get("path")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "delete_script requires string path".to_string())?;
+                self.push_undo_snapshot(format!("Delete script {path}"));
                 self.scripts.remove(path);
                 self.persist();
                 Ok(json!({ "ok": true, "path": path }).to_string())
@@ -360,6 +1034,7 @@ impl LocalPlace {
                     .ok_or_else(|| "create_instance requires string parent".to_string())?;
                 let path = format!("{parent}.{inst_name}");
                 let properties = args.get("properties").cloned().unwrap_or_else(|| json!({}));
+                self.push_undo_snapshot(format!("Create {class_name} {path}"));
                 self.instances.insert(
                     path.clone(),
                     json!({ "class_name": class_name, "properties": properties }),
@@ -372,6 +1047,7 @@ impl LocalPlace {
                     .get("path")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| "delete_instance requires string path".to_string())?;
+                self.push_undo_snapshot(format!("Delete instance {path}"));
                 self.instances.remove(path);
                 self.persist();
                 Ok(json!({ "ok": true, "path": path }).to_string())
@@ -398,6 +1074,74 @@ impl LocalPlace {
             "get_console" => Ok(self.last_console.clone()),
             other => Err(format!("unknown local place tool: {other}")),
         }
+    }
+}
+
+fn valid_part_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    s.len() <= 64 && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn validate_script_path(path: &str) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("script path must not be empty".to_string());
+    }
+    if path.chars().any(|c| c.is_control()) {
+        return Err("script path must not contain control characters".to_string());
+    }
+    let segs: Vec<&str> = path.split('.').collect();
+    if segs.len() < 2 || segs.iter().any(|s| s.is_empty() || *s == "..") {
+        return Err(format!(
+            "invalid script path '{path}' (expected <Service>.<Name>)"
+        ));
+    }
+    if !VALID_SERVICES.contains(&segs[0]) {
+        return Err(format!(
+            "invalid Roblox service root '{}' (expected one of {})",
+            segs[0],
+            VALID_SERVICES.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_hex_color(hex: &str) -> Result<String, String> {
+    let clean = hex.trim().trim_start_matches('#');
+    if clean.len() != 6 || !clean.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("color '{hex}' must be a 6-digit hex color like #4F7CF0"));
+    }
+    Ok(format!("#{}", clean.to_ascii_uppercase()))
+}
+
+fn shape_to_token(val: Option<&Value>) -> Option<u32> {
+    let v = val?;
+    if let Some(n) = v.as_u64() {
+        return Some(n as u32);
+    }
+    let s = v.as_str()?;
+    let clean = s.trim().strip_prefix("Enum.PartType.").unwrap_or(s.trim());
+    match clean.to_ascii_lowercase().as_str() {
+        "ball" | "sphere" => Some(0),
+        "block" => Some(1),
+        "cylinder" => Some(2),
+        "wedge" => Some(3),
+        "cornerwedge" => Some(4),
+        _ => None,
+    }
+}
+
+fn token_to_shape(tok: u32) -> Option<&'static str> {
+    match tok {
+        0 => Some("Ball"),
+        1 => Some("Block"),
+        2 => Some("Cylinder"),
+        3 => Some("Wedge"),
+        4 => Some("CornerWedge"),
+        _ => None,
     }
 }
 
@@ -967,6 +1711,12 @@ impl XmlGen {
                 "<float name=\"Transparency\">{}</float>",
                 fmt_num(transparency)
             );
+            if node.class_name == "Part" {
+                if let Some(shape_tok) = shape_to_token(props.get("Shape").or_else(|| props.get("shape"))) {
+                    self.write_indent(depth + 2);
+                    let _ = writeln!(self.out, "<token name=\"shape\">{shape_tok}</token>");
+                }
+            }
             if node.class_name == "SpawnLocation" {
                 let neutral = props
                     .get("Neutral")
@@ -992,6 +1742,8 @@ impl XmlGen {
                     "Material",
                     "Transparency",
                     "Neutral",
+                    "Shape",
+                    "shape",
                 ],
             );
         } else if matches!(node.class_name.as_str(), "Decal" | "Texture") {
@@ -1665,6 +2417,12 @@ impl<'a> XmlParser<'a> {
                         } else {
                             props.insert("Face".to_string(), json!(tok));
                         }
+                    } else if prop_name == "shape" || prop_name == "Shape" {
+                        if let Some(shape_name) = token_to_shape(tok) {
+                            props.insert("Shape".to_string(), Value::String(shape_name.to_string()));
+                        } else {
+                            props.insert("Shape".to_string(), json!(tok));
+                        }
                     } else if !prop_name.is_empty() {
                         props.insert(prop_name, json!(tok));
                     }
@@ -2046,6 +2804,8 @@ pub fn parse_rbxlx_xml(xml: &str) -> Result<Place, String> {
         data_dir: None,
         game_name,
         recovered: Vec::new(),
+        undo_stack: VecDeque::new(),
+        redo_stack: VecDeque::new(),
     })
 }
 

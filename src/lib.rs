@@ -7,6 +7,7 @@ pub mod luau_check;
 pub mod mcp;
 pub mod model;
 pub mod place;
+pub mod rojo_export;
 pub mod server;
 pub mod skills;
 pub mod snapshots;
