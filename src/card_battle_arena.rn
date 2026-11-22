@@ -1,4 +1,4 @@
-// OpenRO game system: Tactical + Auto Card Battle Arena & Multi-Phase Boss Raid.
+// OpenRO game system: 4v4 Auto-Battle Clash Arena, 5 Story Bosses, Infinite Tower, World Raid Boss & PvP Duel.
 // Parameters:
 // - team_size (int): active battle cards per side (3..=6)
 // - ultimate_charge_max (int): burst gauge threshold for Ultimate skills
@@ -37,27 +37,39 @@ if not deckSnapshot then
     deckSnapshot.Parent = ServerStorage
 end
 
--- Elemental Synergy & Advantage Wheel: Flame > Shadow > Storm > Arcane > Void > Flame
+-- Elemental Advantage Wheel: Solar > Shadow > Storm > Arcane > Crimson > Solar
 local ELEMENT_ADVANTAGE = {
-    Flame = "Shadow",
-    Shadow = "Storm",
-    Storm = "Arcane",
-    Arcane = "Void",
-    Void = "Flame",
+    Solar   = "Shadow",
+    Shadow  = "Storm",
+    Storm   = "Arcane",
+    Arcane  = "Crimson",
+    Crimson = "Solar",
+    Flame   = "Shadow",
+    Void    = "Flame",
 }
 
 local SYNERGY_BONUSES = {
-    Flame = { atkMult = 1.20, critBonus = 0.05, shieldPct = 0.0, lifesteal = 0.0 },
-    Void = { atkMult = 1.15, critBonus = 0.08, shieldPct = 0.05, lifesteal = 0.0 },
-    Storm = { atkMult = 1.10, critBonus = 0.22, shieldPct = 0.0, lifesteal = 0.0 },
-    Shadow = { atkMult = 1.15, critBonus = 0.10, shieldPct = 0.0, lifesteal = 0.18 },
-    Arcane = { atkMult = 1.08, critBonus = 0.05, shieldPct = 0.22, lifesteal = 0.0 },
+    Solar   = { atkMult = 1.22, critBonus = 0.08, shieldPct = 0.00, lifesteal = 0.00 },
+    Crimson = { atkMult = 1.20, critBonus = 0.05, shieldPct = 0.00, lifesteal = 0.00 },
+    Flame   = { atkMult = 1.20, critBonus = 0.05, shieldPct = 0.00, lifesteal = 0.00 },
+    Void    = { atkMult = 1.15, critBonus = 0.08, shieldPct = 0.05, lifesteal = 0.00 },
+    Storm   = { atkMult = 1.12, critBonus = 0.22, shieldPct = 0.00, lifesteal = 0.00 },
+    Shadow  = { atkMult = 1.15, critBonus = 0.10, shieldPct = 0.00, lifesteal = 0.20 },
+    Arcane  = { atkMult = 1.10, critBonus = 0.05, shieldPct = 0.22, lifesteal = 0.00 },
+}
+
+local STORY_BOSSES = {
+    { id = 1, name = "Ember Dock Tyrant",           element = "Crimson", hp = 1200, atk = 140, reward = 220 },
+    { id = 2, name = "Shibuya Curse Weaver",        element = "Shadow",  hp = 2200, atk = 210, reward = 420 },
+    { id = 3, name = "Thunder Spire Shogun",        element = "Storm",   hp = 3600, atk = 290, reward = 680 },
+    { id = 4, name = "Arcane Citadel Grandmaster",  element = "Arcane",  hp = 5400, atk = 380, reward = 1050 },
+    { id = 5, name = "Impossible Overlord",         element = "Solar",   hp = 8200, atk = 490, reward = 1800 },
 }
 
 local BOSS_PHASES = {
-    { threshold = 1.0, title = "Phase 1: Awakening", atkMult = 1.0 },
-    { threshold = 0.55, title = "Phase 2: Enraged Domain", atkMult = 1.35 },
-    { threshold = 0.25, title = "Phase 3: Apex Singularity", atkMult = 1.75 },
+    { threshold = 1.00, title = "Phase 1: Awakening",         atkMult = 1.00 },
+    { threshold = 0.55, title = "Phase 2: Enraged Domain",    atkMult = 1.35 },
+    { threshold = 0.25, title = "Phase 3: Apex Singularity",  atkMult = 1.75 },
 }
 
 local rng = Random.new()
@@ -97,11 +109,13 @@ local function buildPlayerTeam(player)
                 table.insert(team, {
                     card_id = c.card_id,
                     title = c.title or c.card_id,
-                    element = c.element or "Flame",
+                    element = c.element or "Solar",
+                    skill = c.skill or "Burn AoE",
                     atk = c.atk or 220,
                     hp = c.hp or 950,
                     max_hp = c.hp or 950,
                     speed = c.speed or 82,
+                    cd = 1,
                     shield = 0,
                     stunned = false,
                 })
@@ -112,11 +126,13 @@ local function buildPlayerTeam(player)
         table.insert(team, {
             card_id = "crimson-sea-captain",
             title = "Crimson Sea Captain",
-            element = "Flame",
+            element = "Crimson",
+            skill = "Burn AoE",
             atk = 420,
             hp = 1480,
             max_hp = 1480,
             speed = 88,
+            cd = 1,
             shield = 0,
             stunned = false,
         })
@@ -131,7 +147,7 @@ local function computeSynergies(team)
     end
     local active = {}
     local atkMult = 1.0
-    local critBonus = 0.10
+    local critBonus = 0.12
     local shieldPct = 0.0
     local lifesteal = 0.0
     for elem, count in pairs(counts) do
@@ -166,29 +182,44 @@ local function bossPhaseFor(boss)
     return chosen
 end
 
-local function startBattle(player, floorNum)
+local function startBattle(player, floorNum, modeArg)
+    local modeName = if typeof(modeArg) == "string" then modeArg else "tower"
     local floor = math.clamp(math.floor(floorNum), 1, 200)
     local team = buildPlayerTeam(player)
     local syn = computeSynergies(team)
     for _, unit in ipairs(team) do
         unit.shield = math.floor(unit.max_hp * syn.shieldPct)
     end
-    local elements = { "Flame", "Void", "Storm", "Shadow", "Arcane" }
+    local elements = { "Solar", "Shadow", "Storm", "Arcane", "Crimson" }
     local bossElement = elements[((floor - 1) % #elements) + 1]
-    local isRaidBoss = (floor % 5 == 0)
+    local isRaidBoss = (modeName == "raid" or floor % 5 == 0)
+    local bossTitle = if isRaidBoss then ("Impossible Overlord F" .. floor) else ("Tower Guardian F" .. floor)
     local bossHp = math.floor((900 + floor * 260) * (if isRaidBoss then BOSS_HP_SCALE else 1))
     local bossAtk = math.floor(140 + floor * 28)
 
+    if modeName == "story" then
+        local sb = STORY_BOSSES[math.clamp(floor, 1, #STORY_BOSSES)]
+        bossTitle = sb.name
+        bossElement = sb.element
+        bossHp = sb.hp * math.max(1, math.floor(BOSS_HP_SCALE / 2))
+        bossAtk = sb.atk
+    elseif modeName == "pvp" then
+        bossTitle = "PvP Duel Challenger"
+        bossHp = math.floor(1600 + floor * 220)
+        bossAtk = 260
+    end
+
     local state = {
+        mode = modeName,
         floor = floor,
         turn = 1,
-        auto = false,
+        auto = (modeName ~= "tower"),
         ultGauge = 35,
         counterUntil = 0,
         synergy = syn,
         team = team,
         boss = {
-            title = if isRaidBoss then ("Impossible Overlord F" .. floor) else ("Tower Guardian F" .. floor),
+            title = bossTitle,
             element = bossElement,
             hp = bossHp,
             max_hp = bossHp,
@@ -215,7 +246,6 @@ local function stepTurn(player, mode)
     local phase = bossPhaseFor(boss)
     boss.phase = phase.title
 
-    -- Sort living player units by Speed initiative
     local order = {}
     for _, unit in ipairs(state.team) do
         if unit.hp > 0 then
@@ -236,27 +266,35 @@ local function stepTurn(player, mode)
         if boss.hp <= 0 then
             break
         end
-        local elemMult = if ELEMENT_ADVANTAGE[unit.element] == boss.element then 1.25 else 1.0
+        unit.cd = unit.cd - 1
+        local skillFire = (unit.cd <= 0)
+        if skillFire then
+            unit.cd = 3
+        end
+        local elemMult = if ELEMENT_ADVANTAGE[unit.element] == boss.element then 1.30 else 1.0
         local isCrit = rng:NextNumber() <= syn.critBonus
         local critMult = if isCrit then 1.65 else 1.0
-        local ultMult = if useUltimate then 2.8 else 1.0
+        local ultMult = if useUltimate then 2.8 else (if skillFire then 1.55 else 1.0)
         local dmg = math.max(1, math.floor(unit.atk * syn.atkMult * elemMult * critMult * ultMult))
         boss.hp = math.max(0, boss.hp - dmg)
         state.ultGauge = math.min(ULTIMATE_MAX, state.ultGauge + 18)
 
-        if syn.lifesteal > 0 then
-            local heal = math.floor(dmg * syn.lifesteal)
+        if syn.lifesteal > 0 or (skillFire and unit.skill == "Lifesteal") then
+            local heal = math.floor(dmg * math.max(0.25, syn.lifesteal))
             unit.hp = math.min(unit.max_hp, unit.hp + heal)
         end
-        if useUltimate and unit.element == "Void" then
+        if (useUltimate or skillFire) and (unit.skill == "Stun" or unit.skill == "Time Stop" or unit.element == "Void") then
             boss.stunned = true
-        elseif useUltimate and unit.element == "Flame" then
+        elseif (useUltimate or skillFire) and (unit.skill == "Burn AoE" or unit.element == "Crimson" or unit.element == "Solar") then
             boss.burnTurns = 2
+        elseif skillFire and unit.skill == "Mirror Shield" then
+            unit.shield = unit.shield + math.floor(unit.max_hp * 0.18)
+        elseif skillFire and unit.skill == "Counter" then
+            state.counterUntil = os.clock() + COUNTER_WINDOW_SEC
         end
-        table.insert(log, unit.title .. " dealt " .. dmg .. (if isCrit then " CRIT" else "") .. " (" .. unit.element .. ")")
+        table.insert(log, unit.title .. " [" .. (if skillFire then unit.skill else "Strike") .. "] dealt " .. dmg .. (if isCrit then " CRIT" else ""))
     end
 
-    -- Apply Burn DoT
     if boss.hp > 0 and boss.burnTurns > 0 then
         local burnDmg = math.max(25, math.floor(boss.max_hp * 0.04))
         boss.hp = math.max(0, boss.hp - burnDmg)
@@ -264,7 +302,6 @@ local function stepTurn(player, mode)
         table.insert(log, "Burn seared boss for " .. burnDmg)
     end
 
-    -- Boss counter-attack if alive
     if boss.hp > 0 then
         if boss.stunned then
             boss.stunned = false
@@ -310,7 +347,9 @@ local function stepTurn(player, mode)
         state.finished = true
         local reward = 100 + state.floor * 35
         awardCoins(player, reward)
-        towerClearSignal:Fire(player, state.floor)
+        if state.mode == "tower" then
+            towerClearSignal:Fire(player, state.floor)
+        end
         battleEvent:FireClient(player, "victory", { state = state, reward = reward, log = log })
     elseif not anyAlive then
         state.finished = true
@@ -320,7 +359,7 @@ local function stepTurn(player, mode)
     end
 end
 
-battleEvent.OnServerEvent:Connect(function(player, action, floorArg)
+battleEvent.OnServerEvent:Connect(function(player, action, floorArg, modeArg)
     local now = os.clock()
     if lastAction[player] and (now - lastAction[player]) < 0.2 then
         return
@@ -329,12 +368,13 @@ battleEvent.OnServerEvent:Connect(function(player, action, floorArg)
     if typeof(action) ~= "string" then
         return
     end
+    local safeMode = if typeof(modeArg) == "string" then modeArg else "tower"
     if action == "start_raid" then
         local floorNum = 1
         if typeof(floorArg) == "number" and floorArg == floorArg then
             floorNum = floorArg
         end
-        startBattle(player, floorNum)
+        startBattle(player, floorNum, safeMode)
     elseif action == "attack" or action == "ultimate" then
         stepTurn(player, action)
     elseif action == "counter" then
