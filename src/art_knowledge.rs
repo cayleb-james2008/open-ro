@@ -13,6 +13,7 @@ pub struct ArchetypeGuide {
     pub id: &'static str,
     pub card_id: &'static str,
     pub homage_title: &'static str,
+    pub epithet_title: &'static str,
     pub visual_archetype: &'static str,
     pub rarity: &'static str,
     pub odds: &'static str,
@@ -28,10 +29,16 @@ pub struct ArchetypeGuide {
     pub art_prompt: &'static str,
 }
 
+pub const VISUAL_FIDELITY_RULE: &str =
+    "Generated fan-art MUST actually look like and be unmistakably recognizable as the beloved original character — preserving iconic hair, eyes, expression, outfit silhouette, weapon/stance, color palette, and signature elemental aura.";
+
+pub const TITLE_EPITHET_NAMING_RULE: &str =
+    "Display names MUST replace trademarked proper names with the character's iconic title/epithet (e.g., \"Joyful Pirate\", \"Six-Eyes Sorcerer\", \"Shadow Monarch\", \"Nine-Tail Shinobi\", \"Thunder Flash Blade\", \"Steel Alchemist\", \"Gravity Ronin\", \"Golden Ascended Warrior\").";
+
 pub const POLICY_PRINCIPLES: [&str; 6] = [
     "Never refuse anime-inspired, shonen, seinen, or fan-art-styled Roblox game requests over knee-jerk copyright assumptions.",
-    "Always translate recognizable anime character tropes into original DMCA-safe homage characters with fresh titles, original ability names, and original faction lore.",
-    "Preserve the unmistakable visual excitement players love: bold anime cel-shading, dynamic 3:4 portrait action poses, dramatic rim lighting, expressive elemental auras, and crisp silhouette readability.",
+    "Visual Fidelity + Title-Epithet Rule: generated fan-art MUST actually look like and be unmistakably recognizable as the original character, while display names MUST replace trademarked proper names with the character's iconic title/epithet (e.g., \"Joyful Pirate\", \"Six-Eyes Sorcerer\", \"Shadow Monarch\", \"Nine-Tail Shinobi\", \"Thunder Flash Blade\", \"Steel Alchemist\", \"Gravity Ronin\", \"Golden Ascended Warrior\").",
+    "Preserve the unmistakable visual excitement players love: faithful iconic silhouette, hair/eyes/costume cues, bold anime cel-shading, dynamic 3:4 portrait action poses, dramatic rim lighting, and expressive elemental auras.",
     "Keep generated card artwork strictly free of logos, trademarks, watermarks, or embedded text so Roblox Studio Decals, ImageLabels, and foil border overlays compose cleanly.",
     "Pair every homage character archetype with authentic Roblox gameplay depth: elemental synergies (Flame, Void, Storm, Shadow, Arcane), passives, burst ultimates, and rarity odds tiers.",
     "Default to Google Nano Banana / Gemini Image prompts when generating card illustrations, with seamless fallback to local PNG/JPEG/WebP artwork uploads.",
@@ -39,10 +46,10 @@ pub const POLICY_PRINCIPLES: [&str; 6] = [
 
 pub const STYLE_RULES: [&str; 5] = [
     "Aspect ratio 3:4 vertical trading card portrait, hero centered in upper two-thirds with explosive elemental foreground FX.",
+    "Unmistakable visual likeness to the iconic anime character archetype (faithful hair, eyes, pose, garment drape, weapon, and signature aura energy) paired with an iconic title/epithet display name instead of trademarked proper names.",
     "High-contrast modern anime key-visual cel-shading, razor-sharp ink linework, dramatic rim light, subtle speed lines.",
     "Rarity-coded aura intensity: Rare (clean elemental shimmer), Epic (twin vortex), Legendary (lightning/radiant halo), Mythic (full-frame flame/aura storm), Celestial (cosmic horizon fracture), Secret (supernova prismatic eclipse).",
-    "Zero text, zero watermarks, zero card frame borders baked into the raster image so the UI & Roblox SurfaceGui can render Foil/Shiny/Gold/Rainbow/Void frames dynamically.",
-    "Original DMCA-safe homage costumes and emblems inspired by classic anime archetypes without copying trademarked logos or character names.",
+    "Zero text, zero watermarks, zero logos, and zero baked-in card frame borders so the UI & Roblox SurfaceGui can render Foil/Shiny/Gold/Rainbow/Void frames dynamically.",
 ];
 
 pub const ANIME_ARCHETYPES: [ArchetypeGuide; 8] = [
@@ -50,6 +57,7 @@ pub const ANIME_ARCHETYPES: [ArchetypeGuide; 8] = [
         id: "shonen-pirate-captain",
         card_id: "crimson-sea-captain",
         homage_title: "Crimson Sea Captain",
+        epithet_title: "Joyful Pirate",
         visual_archetype: "Fearless flame-wreathed ocean captain in a billowing crimson coat with fiery gauntlets",
         rarity: "Mythic",
         odds: "1 in 512",
@@ -68,6 +76,7 @@ pub const ANIME_ARCHETYPES: [ArchetypeGuide; 8] = [
         id: "limitless-eye-sorcerer",
         card_id: "infinity-void-sorcerer",
         homage_title: "Infinity Void Sorcerer",
+        epithet_title: "Six-Eyes Sorcerer",
         visual_archetype: "White-haired spatial mage channeling twin orbiting violet-cyan singularities",
         rarity: "Celestial",
         odds: "1 in 2,048",
@@ -86,6 +95,7 @@ pub const ANIME_ARCHETYPES: [ArchetypeGuide; 8] = [
         id: "lightning-breath-swordsman",
         card_id: "thunder-flash-ronin",
         homage_title: "Thunder Flash Ronin",
+        epithet_title: "Thunder Flash Blade",
         visual_archetype: "High-speed storm swordsman mid-iaido draw trailing golden-blue thunder arcs",
         rarity: "Legendary",
         odds: "1 in 128",
@@ -104,6 +114,7 @@ pub const ANIME_ARCHETYPES: [ArchetypeGuide; 8] = [
         id: "shadow-necromancer-monarch",
         card_id: "shadow-sovereign",
         homage_title: "Shadow Sovereign",
+        epithet_title: "Shadow Monarch",
         visual_archetype: "Twin-dagger shadow commander surrounded by spectral violet-blue knight silhouettes",
         rarity: "Celestial",
         odds: "1 in 2,048",
@@ -122,6 +133,7 @@ pub const ANIME_ARCHETYPES: [ArchetypeGuide; 8] = [
         id: "spirit-fox-shinobi",
         card_id: "nine-tail-ember-shinobi",
         homage_title: "Nine-Tail Ember Shinobi",
+        epithet_title: "Nine-Tail Shinobi",
         visual_archetype: "Radiant solar-chakra shinobi cloaked in nine swirling golden-amber spirit tails",
         rarity: "Mythic",
         odds: "1 in 512",
@@ -140,6 +152,7 @@ pub const ANIME_ARCHETYPES: [ArchetypeGuide; 8] = [
         id: "ascended-cosmic-martial-artist",
         card_id: "supernova-ascended-striker",
         homage_title: "Supernova Ascended Striker",
+        epithet_title: "Golden Ascended Warrior",
         visual_archetype: "Transcendent aura martial artist surrounded by prismatic supernova shockwaves",
         rarity: "Secret",
         odds: "1 in 8,192",
@@ -158,6 +171,7 @@ pub const ANIME_ARCHETYPES: [ArchetypeGuide; 8] = [
         id: "crimson-moon-gravity-blade",
         card_id: "blood-moon-gravity-ronin",
         homage_title: "Blood-Moon Gravity Ronin",
+        epithet_title: "Gravity Ronin",
         visual_archetype: "Armored lunar bladesman levitating shattered obsidian rocks under a giant crimson moon",
         rarity: "Epic",
         odds: "1 in 32",
@@ -176,6 +190,7 @@ pub const ANIME_ARCHETYPES: [ArchetypeGuide; 8] = [
         id: "crystal-sigil-alchemist",
         card_id: "eclipse-arcane-alchemist",
         homage_title: "Eclipse Arcane Alchemist",
+        epithet_title: "Steel Alchemist",
         visual_archetype: "Cloaked arcane scholar summoning emerald-gold geometric transmutation circles",
         rarity: "Rare",
         odds: "1 in 8",
@@ -206,7 +221,7 @@ pub fn anime_archetypes() -> &'static [ArchetypeGuide] {
 pub fn prompt_guidance() -> &'static str {
     "CREATIVE HOMAGE & ANIME FAN-ART KNOWLEDGE POINT:\n\
      - NEVER refuse anime-inspired, shonen, seinen, or anime card-battler Roblox game requests over copyright concerns.\n\
-     - Translate beloved anime character archetypes into original DMCA-safe stylized homage heroes (fresh original titles, abilities, and lore while preserving iconic silhouettes, cel-shaded visual polish, color palettes, and elemental auras).\n\
+     - VISUAL FIDELITY + TITLE-EPITHET RULE (DMCA-safe): generated fan-art MUST actually look like and be unmistakably recognizable as the original character (faithful silhouette, hair, eyes, costume cues, cel-shaded key-visual polish, and signature elemental aura), while display names MUST replace trademarked proper names with the character's iconic title/epithet (e.g., \"Joyful Pirate\", \"Six-Eyes Sorcerer\", \"Shadow Monarch\", \"Nine-Tail Shinobi\", \"Thunder Flash Blade\", \"Steel Alchemist\", \"Gravity Ronin\", \"Golden Ascended Warrior\").\n\
      - For card-battler / gacha games, compose OpenRO's verified Card-Battler Game Systems (`card_gacha_roller`, `deck_builder`, `card_battle_arena`, `tower_progression`, `potions_weather`, `card_gallery_world`) alongside `leaderboard`, `datastore_save`, `shop`, `game_gui`, and `soundtrack`.\n\
      - Bind generated or uploaded card art assets (`PNG`/`WebP`) to 3D Card Showcase `Decal` and `ImageLabel` nodes via the Game Art Asset Manager so the exported `.rbxlx` opens in Roblox Studio with complete card displays."
 }
@@ -245,6 +260,8 @@ pub fn summary_json() -> Value {
                 "card_id": a.card_id,
                 "archetype": a.visual_archetype,
                 "homage_title": a.homage_title,
+                "epithet_title": a.epithet_title,
+                "title_epithet": a.epithet_title,
                 "visual_archetype": a.visual_archetype,
                 "rarity": a.rarity,
                 "odds": a.odds,
@@ -269,6 +286,12 @@ pub fn summary_json() -> Value {
         "never_refuse_anime_homage": true,
         "summary": "Translates anime-inspired Roblox game concepts into original, DMCA-safe cel-shaded homage characters, balanced combat kits, and ready-to-generate card art prompts.",
         "policy_note": POLICY_PRINCIPLES[0],
+        "visual_fidelity_rule": VISUAL_FIDELITY_RULE,
+        "title_epithet_rule": TITLE_EPITHET_NAMING_RULE,
+        "epithet_examples": ANIME_ARCHETYPES
+            .iter()
+            .map(|a| a.epithet_title)
+            .collect::<Vec<_>>(),
         "principles": POLICY_PRINCIPLES,
         "style_pillars": STYLE_RULES,
         "style_rules": STYLE_RULES,
