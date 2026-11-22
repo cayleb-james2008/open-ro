@@ -5,14 +5,11 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
-  Box,
-  ChevronDown,
   Coins,
   Crosshair,
   Eye,
   Gamepad2,
   Layers,
-  Monitor,
   RotateCcw,
   ShoppingBag,
   Sparkles,
@@ -20,23 +17,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { Pill } from "@/components/kibo-ui/pill";
-import { Expandable, ExpandableContent, ExpandableTrigger } from "@/components/ui/expandable";
-import type {
-  InstanceEditPayload,
-  PartPreset,
-  Place,
-  ProjectAssetRecord,
-  StudioActionEvent,
-  StudioEmbedStatus,
-  StudioKeyboardInputPayload,
-  StudioMode,
-  StudioMouseInputPayload,
-  StudioToolName,
-  StudioToolResult,
-} from "./data";
-import { StudioViewport3D } from "./StudioViewport3D";
+import type { Place } from "./data";
 
-export type ViewportTab = "studio-3d" | "embedded-studio" | "playable";
+export type ViewportTab = "embedded-studio" | "studio-3d" | "code-diff" | "playable";
 
 type CameraMode = "top-down" | "side-view";
 
@@ -386,65 +369,13 @@ export function StagePreview({
   theme,
   selectedPath,
   onSelectPart,
-  assets,
-  studioMode = "local_place",
-  studioActions = [],
-  hasLiveFrame = false,
-  frameSeq = 0,
-  building = false,
-  canRedo = false,
-  embedStatus,
-  requestedTab,
-  onSaveInstance,
-  onCreatePart,
-  onDuplicatePart,
-  onDeletePart,
-  onTriggerRedo,
-  onRunPlaytest,
-  onCaptureFrame,
-  onConnectMcp,
-  onDisconnectMcp,
-  onLaunchEmbed,
-  onStopEmbed,
-  onRefreshEmbedStatus,
-  onSendMouseInput,
-  onSendKeyboardInput,
-  onInvokeStudioTool,
 }: {
   place: Place;
   theme: "light" | "dark";
   selectedPath?: string | null;
   onSelectPart?: (path: string) => void;
-  assets?: ProjectAssetRecord[];
-  studioMode?: StudioMode;
-  studioActions?: StudioActionEvent[];
-  hasLiveFrame?: boolean;
-  frameSeq?: number;
-  building?: boolean;
-  canRedo?: boolean;
-  embedStatus: StudioEmbedStatus;
-  requestedTab?: ViewportTab | null;
-  onSaveInstance?: (payload: InstanceEditPayload) => Promise<void> | void;
-  onCreatePart?: (preset: PartPreset) => Promise<void> | void;
-  onDuplicatePart?: (path: string) => Promise<void> | void;
-  onDeletePart?: (path: string) => Promise<void> | void;
-  onTriggerRedo?: () => Promise<void> | void;
-  onRunPlaytest?: () => Promise<void> | void;
-  onCaptureFrame?: () => Promise<void> | void;
-  onConnectMcp?: (command?: string) => Promise<void> | void;
-  onDisconnectMcp?: () => Promise<void> | void;
-  onLaunchEmbed?: (command?: string) => Promise<void> | void;
-  onStopEmbed?: () => Promise<void> | void;
-  onRefreshEmbedStatus?: () => Promise<void> | void;
-  onSendMouseInput?: (payload: StudioMouseInputPayload) => Promise<void> | void;
-  onSendKeyboardInput?: (payload: StudioKeyboardInputPayload) => Promise<void> | void;
-  onInvokeStudioTool?: (tool: StudioToolName, args: Record<string, unknown>) => Promise<StudioToolResult>;
 }) {
   const reduce = useReducedMotion();
-  const [viewportTab, setViewportTab] = useState<ViewportTab>(() => requestedTab || "studio-3d");
-  useEffect(() => {
-    if (requestedTab) setViewportTab(requestedTab);
-  }, [requestedTab]);
   const world = useMemo(() => parseWorld(place), [place]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hitboxesRef = useRef<RenderHitbox[]>([]);
@@ -458,7 +389,6 @@ export function StagePreview({
   const [ownedItem, setOwnedItem] = useState<string | null>(null);
   const [statusLine, setStatusLine] = useState("Click canvas + use WASD/Arrows & Space to playtest, or click any part to inspect it.");
   const [clockHour, setClockHour] = useState(11);
-  const [stageOpen, setStageOpen] = useState(true);
   const [renderTick, setRenderTick] = useState(0);
 
   const stageRef = useRef(stage);
@@ -975,13 +905,10 @@ export function StagePreview({
     hitboxesRef.current = hitboxes;
   }, [cameraMode, clockHour, selectedPath, theme, world]);
 
-  const showingPlayable2D = viewportTab === "playable";
-
-  // 60fps requestAnimationFrame loop (only runs when 2D Playable Obby/Platformer stage is visible)
+  // 60fps requestAnimationFrame loop
   useEffect(() => {
-    if (!showingPlayable2D) return;
     drawFrame();
-    if (!stageOpen || reduce) return;
+    if (reduce) return;
     let rafId = 0;
     let lastTs = performance.now();
 
@@ -1011,7 +938,7 @@ export function StagePreview({
 
     rafId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafId);
-  }, [drawFrame, reduce, showingPlayable2D, stageOpen, stepPhysics, world, renderTick]);
+  }, [drawFrame, reduce, stepPhysics, world, renderTick]);
 
   const nudge = (dx: number, dy: number, jump = false) => {
     stepPhysics(0.14, dx, dy, jump);
@@ -1057,241 +984,136 @@ export function StagePreview({
   return (
     <section
       aria-label="Playable Roblox Stage Preview"
-      className="rounded-card border border-hairline bg-surface"
+      data-playable-stage
+      className="flex h-full min-h-0 flex-col overflow-hidden rounded-card border border-hairline bg-surface"
     >
-      <Expandable
-        expandDirection="vertical"
-        expandBehavior="push"
-        expanded={stageOpen}
-        onToggle={() => setStageOpen((v) => !v)}
-      >
-        {({ isExpanded }) => (
-          <>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline bg-board/60 px-3.5 py-2.5">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                {viewportTab === "studio-3d" ? (
-                  <Box className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
-                ) : viewportTab === "embedded-studio" ? (
-                  <Monitor className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
-                ) : (
-                  <Gamepad2 className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
-                )}
-                <span className="text-sm font-medium text-ink">
-                  {viewportTab === "studio-3d"
-                    ? "Roblox Studio 3D Viewport"
-                    : viewportTab === "embedded-studio"
-                      ? "Embedded Roblox Studio"
-                      : "Playable Stage"}
-                </span>
-                <Pill className="bg-tag-sky-bg px-2 py-0.5 text-xs text-tag-sky-fg">{world.themeLabel}</Pill>
-                {showingPlayable2D && world.hasCheckpoints > 0 && (
-                  <Pill className="bg-board px-2 py-0.5 font-mono text-xs tabular-nums text-ink">
-                    Stage {stage}/{world.hasCheckpoints}
-                  </Pill>
-                )}
-                {showingPlayable2D && (
-                  <Pill className="bg-tag-dev-bg px-2 py-0.5 font-mono text-xs tabular-nums text-tag-dev-fg">
-                    <Coins className="size-3" strokeWidth={1.5} aria-hidden />
-                    {balance} {world.currencyName}
-                  </Pill>
-                )}
-                {showingPlayable2D && respawns > 0 && (
-                  <Pill className="bg-pill-pro-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-pro-fg">
-                    {respawns} {respawns === 1 ? "hazard" : "hazards"}
-                  </Pill>
-                )}
-                {showingPlayable2D && world.hasDayNight && (
-                  <span className="font-mono text-xs tabular-nums text-ink-2">
-                    {String(Math.floor(clockHour)).padStart(2, "0")}:00
-                  </span>
-                )}
-              </div>
+      <div className="flex flex-none flex-wrap items-center justify-between gap-2 border-b border-hairline bg-board/60 px-3 py-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <Gamepad2 className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
+          <span className="text-xs font-medium text-ink">Playable 2D Sandbox</span>
+          <Pill className="bg-tag-sky-bg px-2 py-0.5 text-xs text-tag-sky-fg">{world.themeLabel}</Pill>
+          {world.hasCheckpoints > 0 && (
+            <Pill className="bg-board px-2 py-0.5 font-mono text-xs tabular-nums text-ink">
+              Stage {stage}/{world.hasCheckpoints}
+            </Pill>
+          )}
+          <Pill className="bg-tag-dev-bg px-2 py-0.5 font-mono text-xs tabular-nums text-tag-dev-fg">
+            <Coins className="size-3" strokeWidth={1.5} aria-hidden />
+            {balance} {world.currencyName}
+          </Pill>
+          {respawns > 0 && (
+            <Pill className="bg-pill-pro-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-pro-fg">
+              {respawns} {respawns === 1 ? "hazard" : "hazards"}
+            </Pill>
+          )}
+          {world.hasDayNight && (
+            <span className="font-mono text-xs tabular-nums text-ink-2">
+              {String(Math.floor(clockHour)).padStart(2, "0")}:00
+            </span>
+          )}
+        </div>
 
-              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
-                <SegmentedControl aria-label="Studio viewport mode" size="sm" className="max-w-full flex-wrap">
-                  <SegmentedControlItem
-                    data-checked={viewportTab === "studio-3d" ? "" : undefined}
-                    aria-pressed={viewportTab === "studio-3d"}
-                    onClick={() => setViewportTab("studio-3d")}
-                    className="gap-1 max-md:!h-11 max-md:px-2"
-                  >
-                    <Box className="size-3.5" strokeWidth={1.5} aria-hidden />
-                    Studio 3D
-                  </SegmentedControlItem>
-                  <SegmentedControlItem
-                    data-checked={viewportTab === "embedded-studio" ? "" : undefined}
-                    aria-pressed={viewportTab === "embedded-studio"}
-                    onClick={() => setViewportTab("embedded-studio")}
-                    className="gap-1 max-md:!h-11 max-md:px-2"
-                  >
-                    <Monitor className="size-3.5" strokeWidth={1.5} aria-hidden />
-                    Embedded Studio
-                  </SegmentedControlItem>
-                  <SegmentedControlItem
-                    data-checked={viewportTab === "playable" ? "" : undefined}
-                    aria-pressed={viewportTab === "playable"}
-                    onClick={() => setViewportTab("playable")}
-                    className="gap-1 max-md:!h-11 max-md:px-2"
-                  >
-                    <Gamepad2 className="size-3.5" strokeWidth={1.5} aria-hidden />
-                    Playable Stage
-                  </SegmentedControlItem>
-                </SegmentedControl>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <SegmentedControl aria-label="Stage camera mode" size="sm">
+            <SegmentedControlItem
+              data-checked={cameraMode === "top-down" ? "" : undefined}
+              aria-pressed={cameraMode === "top-down"}
+              onClick={() => setCameraMode("top-down")}
+              className="gap-1 max-md:!h-11 max-md:px-2.5"
+            >
+              <Layers className="size-3.5" strokeWidth={1.5} aria-hidden />
+              Top-Down
+            </SegmentedControlItem>
+            <SegmentedControlItem
+              data-checked={cameraMode === "side-view" ? "" : undefined}
+              aria-pressed={cameraMode === "side-view"}
+              onClick={() => setCameraMode("side-view")}
+              className="gap-1 max-md:!h-11 max-md:px-2.5"
+            >
+              <Eye className="size-3.5" strokeWidth={1.5} aria-hidden />
+              Side-View
+            </SegmentedControlItem>
+          </SegmentedControl>
 
-                {showingPlayable2D && (
-                  <>
-                    <SegmentedControl aria-label="Stage camera mode" size="sm">
-                      <SegmentedControlItem
-                        data-checked={cameraMode === "top-down" ? "" : undefined}
-                        aria-pressed={cameraMode === "top-down"}
-                        onClick={() => setCameraMode("top-down")}
-                        className="gap-1 max-md:!h-11 max-md:px-2.5"
-                      >
-                        <Layers className="size-3.5" strokeWidth={1.5} aria-hidden />
-                        Top-Down
-                      </SegmentedControlItem>
-                      <SegmentedControlItem
-                        data-checked={cameraMode === "side-view" ? "" : undefined}
-                        aria-pressed={cameraMode === "side-view"}
-                        onClick={() => setCameraMode("side-view")}
-                        className="gap-1 max-md:!h-11 max-md:px-2.5"
-                      >
-                        <Eye className="size-3.5" strokeWidth={1.5} aria-hidden />
-                        Side-View
-                      </SegmentedControlItem>
-                    </SegmentedControl>
-
-                    {world.shopItem && (
-                      <Button variant="outline" size="xs" onClick={buyShopItem} className="max-md:min-h-11">
-                        {ownedItem ? (
-                          <Sparkles className="size-3 text-blue" strokeWidth={1.5} aria-hidden />
-                        ) : (
-                          <ShoppingBag className="size-3" strokeWidth={1.5} aria-hidden />
-                        )}
-                        {ownedItem ? `${ownedItem} equipped` : `Buy ${world.shopItem} (${world.shopPrice})`}
-                      </Button>
-                    )}
-                    <Button
-                      variant="outline"
-                      size="xs"
-                      onClick={resetPlay}
-                      aria-label="Reset playtest"
-                      className="max-md:min-h-11"
-                    >
-                      <RotateCcw className="size-3.5" strokeWidth={1.5} aria-hidden />
-                      Reset Playtest
-                    </Button>
-                  </>
-                )}
-                <ExpandableTrigger
-                  aria-label="Toggle playable stage preview"
-                  className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-sm text-ink-2 outline-none hover:bg-surface hover:text-ink md:min-h-7 md:min-w-7"
-                >
-                  <ChevronDown
-                    className={`size-3.5 transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`}
-                    strokeWidth={1.5}
-                    aria-hidden
-                  />
-                </ExpandableTrigger>
-              </div>
-            </div>
-
-            <ExpandableContent preset="fade">
-              {viewportTab === "studio-3d" || viewportTab === "embedded-studio" ? (
-                <div className="p-3">
-                  <StudioViewport3D
-                    mode={viewportTab}
-                    place={place}
-                    theme={theme}
-                    assets={assets ?? []}
-                    selectedPath={selectedPath}
-                    studioMode={studioMode}
-                    actions={studioActions}
-                    hasLiveFrame={hasLiveFrame}
-                    frameSeq={frameSeq}
-                    building={building}
-                    canRedo={canRedo}
-                    embedStatus={embedStatus}
-                    onSelectPart={onSelectPart}
-                    onSaveInstance={onSaveInstance}
-                    onCreatePart={onCreatePart}
-                    onDuplicatePart={onDuplicatePart}
-                    onDeletePart={onDeletePart}
-                    onTriggerRedo={onTriggerRedo}
-                    onRunPlaytest={onRunPlaytest}
-                    onCaptureFrame={onCaptureFrame}
-                    onConnectMcp={onConnectMcp}
-                    onDisconnectMcp={onDisconnectMcp}
-                    onLaunchEmbed={onLaunchEmbed}
-                    onStopEmbed={onStopEmbed}
-                    onRefreshEmbedStatus={onRefreshEmbedStatus}
-                    onSendMouseInput={onSendMouseInput}
-                    onSendKeyboardInput={onSendKeyboardInput}
-                    onInvokeStudioTool={onInvokeStudioTool}
-                  />
-                </div>
+          {world.shopItem && (
+            <Button variant="outline" size="xs" onClick={buyShopItem} className="bg-surface max-md:min-h-11">
+              {ownedItem ? (
+                <Sparkles className="size-3 text-blue" strokeWidth={1.5} aria-hidden />
               ) : (
-                <div className="flex flex-col gap-2.5 p-3">
-                  <div
-                    tabIndex={0}
-                    aria-label="Interactive Roblox stage canvas (use WASD or Arrow keys and Space, or click any part to select)"
-                    onKeyDown={(e) => {
-                      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", " ", "a", "A", "d", "D", "w", "W", "s", "S"].includes(e.key)) {
-                        e.preventDefault();
-                        keysRef.current.add(e.key);
-                        if (reduce) {
-                          const dx = e.key === "ArrowLeft" || e.key === "a" || e.key === "A" ? -1 : e.key === "ArrowRight" || e.key === "d" || e.key === "D" ? 1 : 0;
-                          const dy = e.key === "ArrowUp" || e.key === "w" || e.key === "W" ? -1 : e.key === "ArrowDown" || e.key === "s" || e.key === "S" ? 1 : 0;
-                          nudge(dx, dy, e.key === " ");
-                        }
-                      }
-                    }}
-                    onKeyUp={(e) => {
-                      keysRef.current.delete(e.key);
-                    }}
-                    onBlur={() => {
-                      keysRef.current.clear();
-                    }}
-                    className="overflow-hidden rounded-sm border border-hairline outline-none"
-                  >
-                    <canvas
-                      ref={canvasRef}
-                      width={CANVAS_W}
-                      height={CANVAS_H}
-                      onClick={handleCanvasClick}
-                      className="block h-auto w-full cursor-crosshair"
-                    />
-                  </div>
-
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="inline-flex min-w-0 flex-1 items-center gap-1.5 text-xs text-ink-2">
-                      <Crosshair className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
-                      <span className="truncate">{statusLine}</span>
-                    </p>
-                    <div className="flex shrink-0 items-center gap-1">
-                      <Button variant="outline" size="icon-xs" aria-label="Move avatar left" onClick={() => nudge(-1.4, 0)} className="max-md:size-11">
-                        <ArrowLeft className="size-3.5" strokeWidth={1.5} aria-hidden />
-                      </Button>
-                      <Button variant="outline" size="icon-xs" aria-label="Move avatar up" onClick={() => nudge(0, -1.4)} className="max-md:size-11">
-                        <ArrowUp className="size-3.5" strokeWidth={1.5} aria-hidden />
-                      </Button>
-                      <Button variant="outline" size="icon-xs" aria-label="Move avatar down" onClick={() => nudge(0, 1.4)} className="max-md:size-11">
-                        <ArrowDown className="size-3.5" strokeWidth={1.5} aria-hidden />
-                      </Button>
-                      <Button variant="outline" size="icon-xs" aria-label="Move avatar right" onClick={() => nudge(1.4, 0)} className="max-md:size-11">
-                        <ArrowRight className="size-3.5" strokeWidth={1.5} aria-hidden />
-                      </Button>
-                      <Button variant="outline" size="xs" onClick={() => nudge(0.6, 0, true)} className="max-md:min-h-11">
-                        Jump
-                      </Button>
-                    </div>
-                  </div>
-                </div>
+                <ShoppingBag className="size-3" strokeWidth={1.5} aria-hidden />
               )}
-            </ExpandableContent>
-          </>
-        )}
-      </Expandable>
+              {ownedItem ? `${ownedItem} equipped` : `Buy ${world.shopItem} (${world.shopPrice})`}
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={resetPlay}
+            aria-label="Reset playtest"
+            className="bg-surface max-md:min-h-11"
+          >
+            <RotateCcw className="size-3.5" strokeWidth={1.5} aria-hidden />
+            Reset Playtest
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-2.5 p-3">
+        <div
+          tabIndex={0}
+          aria-label="Interactive Roblox stage canvas (use WASD or Arrow keys and Space, or click any part to select)"
+          onKeyDown={(e) => {
+            if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", " ", "a", "A", "d", "D", "w", "W", "s", "S"].includes(e.key)) {
+              e.preventDefault();
+              keysRef.current.add(e.key);
+              if (reduce) {
+                const dx = e.key === "ArrowLeft" || e.key === "a" || e.key === "A" ? -1 : e.key === "ArrowRight" || e.key === "d" || e.key === "D" ? 1 : 0;
+                const dy = e.key === "ArrowUp" || e.key === "w" || e.key === "W" ? -1 : e.key === "ArrowDown" || e.key === "s" || e.key === "S" ? 1 : 0;
+                nudge(dx, dy, e.key === " ");
+              }
+            }
+          }}
+          onKeyUp={(e) => {
+            keysRef.current.delete(e.key);
+          }}
+          onBlur={() => {
+            keysRef.current.clear();
+          }}
+          className="flex min-h-[240px] flex-1 items-center justify-center overflow-hidden rounded-sm border border-hairline bg-board/50 outline-none"
+        >
+          <canvas
+            ref={canvasRef}
+            width={CANVAS_W}
+            height={CANVAS_H}
+            onClick={handleCanvasClick}
+            className="block max-h-full w-full cursor-crosshair object-contain"
+          />
+        </div>
+
+        <div className="flex flex-none flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <p className="inline-flex min-w-0 flex-1 items-center gap-1.5 text-xs text-ink-2">
+            <Crosshair className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
+            <span className="truncate">{statusLine}</span>
+          </p>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button variant="outline" size="icon-xs" aria-label="Move avatar left" onClick={() => nudge(-1.4, 0)} className="max-md:size-11">
+              <ArrowLeft className="size-3.5" strokeWidth={1.5} aria-hidden />
+            </Button>
+            <Button variant="outline" size="icon-xs" aria-label="Move avatar up" onClick={() => nudge(0, -1.4)} className="max-md:size-11">
+              <ArrowUp className="size-3.5" strokeWidth={1.5} aria-hidden />
+            </Button>
+            <Button variant="outline" size="icon-xs" aria-label="Move avatar down" onClick={() => nudge(0, 1.4)} className="max-md:size-11">
+              <ArrowDown className="size-3.5" strokeWidth={1.5} aria-hidden />
+            </Button>
+            <Button variant="outline" size="icon-xs" aria-label="Move avatar right" onClick={() => nudge(1.4, 0)} className="max-md:size-11">
+              <ArrowRight className="size-3.5" strokeWidth={1.5} aria-hidden />
+            </Button>
+            <Button variant="outline" size="xs" onClick={() => nudge(0.6, 0, true)} className="max-md:min-h-11">
+              Jump
+            </Button>
+          </div>
+        </div>
+      </div>
     </section>
   );
 }

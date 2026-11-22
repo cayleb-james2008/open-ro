@@ -7,7 +7,6 @@ import {
   type ChangeEvent,
   type DragEvent,
   type FormEvent,
-  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
 } from "react";
 import { MotionConfig } from "motion/react";
@@ -15,24 +14,37 @@ import { Toaster, toast } from "sonner";
 import { Drawer } from "vaul";
 import {
   Blocks,
+  Box,
   Command,
+  Download,
   ExternalLink,
+  FileDiff,
+  FolderArchive,
   FolderTree,
+  Gamepad2,
+  History,
   Menu,
+  MessageSquare,
   Monitor,
   Package,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Play,
+  Plug,
   Plus,
   RefreshCw,
   Search,
-  Send,
   SlidersHorizontal,
-  Undo2,
+  Sparkles,
   Upload,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupTextarea } from "@/components/ui/input-group";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Kbd } from "@/components/ui/kbd";
+import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { AnimatedBackground } from "@/components/ui/animated-background";
 import { SlidingNumber } from "@/components/ui/sliding-number";
 import {
@@ -42,13 +54,15 @@ import {
   MorphingDialogContent,
   MorphingDialogDescription,
   MorphingDialogTitle,
-  MorphingDialogTrigger,
 } from "@/components/ui/morphing-dialog";
 import { Pill } from "@/components/kibo-ui/pill";
-import { glide, open } from "@/motion";
+import { glide, open as dialogSpring } from "@/motion";
 import {
   RELEASES_URL,
   SEND_FAILED,
+  computeLocalScriptDiffs,
+  defaultPluginStatus,
+  isV0100OrNewer,
   isV050OrNewer,
   isV060OrNewer,
   isV070OrNewer,
@@ -57,9 +71,13 @@ import {
   normalizeAssetList,
   normalizeChatList,
   normalizeEmbedStatus,
+  normalizeFileDiffs,
   normalizeIdeas,
   normalizeLibrarySnapshot,
   normalizePlace,
+  normalizePluginStatus,
+  normalizeProposal,
+  normalizeProposalList,
   normalizeSnapshots,
   normalizeStudioActionsResponse,
   normalizeThread,
@@ -70,32 +88,43 @@ import {
   type BuildStreamPhase,
   type Chat,
   type ChatList,
+  type ComposerMode,
   type Idea,
   type InstanceEditPayload,
   type LibrarySnapshot,
   type PartPreset,
+  type PendingProposal,
   type Place,
   type PlaceDiff,
   type PlaceSnapshot,
   type ProjectAssetRecord,
+  type ReasoningLevel,
+  type ScriptFileDiff,
   type StudioActionEvent,
   type StudioEmbedStatus,
   type StudioKeyboardInputPayload,
   type StudioMode,
   type StudioMouseInputPayload,
+  type StudioPluginStatus,
   type StudioToolName,
   type StudioToolResult,
   type WorkspaceMode,
 } from "./app/data";
 import { BlueprintWorkbench } from "./app/Blueprints";
+import { CodeDiffWorkbench } from "./app/CodeDiffWorkbench";
 import { CommandPalette } from "./app/CommandPalette";
+import { CopilotComposer } from "./app/CopilotComposer";
+import { EmbeddedStudioPanel } from "./app/EmbeddedStudioPanel";
 import { analyzePlaceLuau, computePlaceDiff, type LuauDiagnostic } from "./app/luauAudit";
 import { parseRbxlxXml, serializeRbxlx } from "./app/rbxlxCodec";
 import { buildRojoShipPackZip } from "./app/zipBuilder";
 import { SettingsDialog } from "./app/SettingsDialog";
-import { PartsShelf, StudioChip } from "./app/Shelf";
+import { LeftExplorerTree, StudioChip } from "./app/Shelf";
 import { SnapshotsDialog } from "./app/SnapshotsDialog";
 import { StagePreview, type ViewportTab } from "./app/StagePreview";
+import { StudioBottomDrawer, type BottomDrawerTab } from "./app/StudioBottomDrawer";
+import { StudioPluginDialog } from "./app/StudioPluginDialog";
+import { StudioViewport3D } from "./app/StudioViewport3D";
 import { SystemLibrary } from "./app/SystemLibrary";
 import type { GameSystemDef } from "./app/systems";
 import { ThreadFeed } from "./app/Thread";
@@ -147,7 +176,11 @@ function readShell() {
   const s = document.getElementById("server-state");
   const rawMode = s?.dataset.workspaceMode;
   const workspaceMode: WorkspaceMode =
-    rawMode === "studio_mcp" || rawMode === "local_place" || rawMode === "browser_place" || rawMode === "disconnected"
+    rawMode === "studio_mcp" ||
+    rawMode === "plugin" ||
+    rawMode === "local_place" ||
+    rawMode === "browser_place" ||
+    rawMode === "disconnected"
       ? rawMode
       : s?.dataset.studio === "true"
         ? "studio_mcp"
@@ -172,6 +205,8 @@ function clonePlace(p: Place | null | "error"): Place | null {
 
 export function App() {
   const shell = useMemo(readShell, []);
+  const isBrowserEngine = Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__);
+
   const [theme, setThemeState] = useState<"light" | "dark">(() =>
     document.documentElement.dataset.theme === "dark" ? "dark" : "light",
   );
@@ -181,10 +216,7 @@ export function App() {
     (window as ShellWindow).openroSetTheme?.(t);
   };
 
-  // <768px collapses Left Rail to Vaul drawer.
-  const phone = useMedia("(max-width: 767px)");
-  const compactInput = useMedia("(max-width: 960px)");
-  // <1100px collapses Right Explorer Shelf to Vaul bottom drawer.
+  // < 1100px uses compact Vaul drawer + Studio | Copilot tab switcher so 390x844 has 0px overflow.
   const narrow = useMedia("(max-width: 1099px)");
 
   const [chats, setChats] = useState<ChatList | null>(null);
@@ -194,19 +226,30 @@ export function App() {
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [builtTitles, setBuiltTitles] = useState<string[]>([]);
   const [place, setPlace] = useState<Place | null | "error">(null);
+  const [syncingPlace, setSyncingPlace] = useState(false);
   const [inflight, setInflight] = useState<Record<string, Pending>>({});
   const [, bump] = useState(0);
   const [text, setText] = useState("");
   const [chatQuery, setChatQuery] = useState("");
+
+  // RoPilot 3-Pane IDE Layout State
+  const [leftDockTab, setLeftDockTab] = useState<"explorer" | "chats">("explorer");
+  const [leftDockCollapsed, setLeftDockCollapsed] = useState(false);
+  const [rightDockCollapsed, setRightDockCollapsed] = useState(false);
+  const [centerTab, setCenterTab] = useState<ViewportTab>(() =>
+    isBrowserEngine ? "studio-3d" : "embedded-studio",
+  );
+  const [bottomDrawerOpen, setBottomDrawerOpen] = useState(false);
+  const [bottomDrawerTab, setBottomDrawerTab] = useState<BottomDrawerTab>("console");
+  const [mobilePane, setMobilePane] = useState<"studio" | "copilot">("studio");
   const [menuOpen, setMenuOpen] = useState(false);
-  const [shelfOpen, setShelfOpen] = useState(false);
-  const [shelfCollapsed, setShelfCollapsed] = useState(false);
+
+  // Dialogs
+  const [startersOpen, setStartersOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
   const [toolLibraryOpen, setToolLibraryOpen] = useState(false);
-  const [librarySnap, setLibrarySnap] = useState<LibrarySnapshot>(() => normalizeLibrarySnapshot({}));
-  const [marketTaste, setMarketTaste] = useState<MarketTasteSnapshot>(() => defaultMarketTasteSnapshot());
-  const [marketBusy, setMarketBusy] = useState(false);
+  const [pluginDialogOpen, setPluginDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(() => {
     try {
       return new URLSearchParams(window.location.search).get("settings") === "1";
@@ -214,27 +257,42 @@ export function App() {
       return false;
     }
   });
+
+  // RoPilot Copilot Modes, Proposals & Diffs
+  const [composerMode, setComposerMode] = useState<ComposerMode>("agent");
+  const [reviewDiffs, setReviewDiffs] = useState(false);
+  const [reasoning, setReasoning] = useState<ReasoningLevel>("medium");
+  const [contextPaths, setContextPaths] = useState<string[]>([]);
+  const [proposals, setProposals] = useState<PendingProposal[]>([]);
+  const [activeProposalId, setActiveProposalId] = useState<string | null>(null);
+  const [latestFileDiffs, setLatestFileDiffs] = useState<ScriptFileDiff[]>([]);
+  const [selectedScriptPath, setSelectedScriptPath] = useState<string | null>(null);
+  const [pluginStatus, setPluginStatus] = useState<StudioPluginStatus>(() => defaultPluginStatus());
+
+  // Library, Market Taste, Studio & Feature Flags
+  const [librarySnap, setLibrarySnap] = useState<LibrarySnapshot>(() => normalizeLibrarySnapshot({}));
+  const [marketTaste, setMarketTaste] = useState<MarketTasteSnapshot>(() => defaultMarketTasteSnapshot());
+  const [marketBusy, setMarketBusy] = useState(false);
   const [studioOk, setStudioOk] = useState(shell.studio);
   const [modelOk, setModelOk] = useState(shell.canBuild || !shell.studio);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(shell.workspaceMode);
   const [activeModelLabel, setActiveModelLabel] = useState("");
   const [version, setVersion] = useState("");
-  const [v050Ready, setV050Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
-  const [v060Ready, setV060Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
-  const [v070Ready, setV070Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
-  const [v080Ready, setV080Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
-  const [v090Ready, setV090Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
+  const [v050Ready, setV050Ready] = useState(() => isBrowserEngine);
+  const [v060Ready, setV060Ready] = useState(() => isBrowserEngine);
+  const [v070Ready, setV070Ready] = useState(() => isBrowserEngine);
+  const [v080Ready, setV080Ready] = useState(() => isBrowserEngine);
+  const [v090Ready, setV090Ready] = useState(() => isBrowserEngine);
+  const [v0100Ready, setV0100Ready] = useState(() => isBrowserEngine);
   const [embedStatus, setEmbedStatus] = useState<StudioEmbedStatus>(() =>
     normalizeEmbedStatus({
       running: false,
-      state: (window as ShellWindow).__OPENRO_WEB_ENGINE__ ? "unsupported" : "idle",
+      state: isBrowserEngine ? "unsupported" : "idle",
       play_mode: "edit",
     }),
   );
-  const [embedRevealed, setEmbedRevealed] = useState(false);
-  const [requestedViewportTab, setRequestedViewportTab] = useState<ViewportTab | null>(null);
   const [studioMode, setStudioMode] = useState<StudioMode>(() =>
-    (window as ShellWindow).__OPENRO_WEB_ENGINE__
+    isBrowserEngine
       ? "browser_place"
       : shell.workspaceMode === "studio_mcp"
         ? "live_mcp"
@@ -256,9 +314,7 @@ export function App() {
   const chatSearchRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const menuKeyRef = useRef<HTMLButtonElement>(null);
-  const shelfKeyRef = useRef<HTMLButtonElement>(null);
   const wasMenuOpenRef = useRef(false);
-  const wasShelfOpenRef = useRef(false);
   const showUpdateRef = useRef<HTMLButtonElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const placeRef = useRef<Place | null | "error">(place);
@@ -284,36 +340,21 @@ export function App() {
     wasMenuOpenRef.current = menuOpen;
   }, [menuOpen]);
 
-  useEffect(() => {
-    if (wasShelfOpenRef.current && !shelfOpen) {
-      const focusTrigger = () => {
-        if (document.activeElement === inputRef.current) return;
-        (shelfKeyRef.current ?? document.querySelector<HTMLElement>('[aria-label="In your game"]'))?.focus();
-      };
-      requestAnimationFrame(focusTrigger);
-      const t1 = window.setTimeout(focusTrigger, 120);
-      const t2 = window.setTimeout(focusTrigger, 420);
-      wasShelfOpenRef.current = false;
-      return () => {
-        window.clearTimeout(t1);
-        window.clearTimeout(t2);
-      };
-    }
-    wasShelfOpenRef.current = shelfOpen;
-  }, [shelfOpen]);
-
   const activeId = chats?.active ?? "";
   const notices: Notice[] = activeId ? slotRead<Notice[]>(noticeKey(activeId), []) : [];
   const busy = Object.keys(inflight).length > 0;
   const building = activeId ? inflight[activeId] : undefined;
-  // Built-in Studio blueprints & 28 game systems run deterministically without a model call.
   const canBuild = studioOk;
 
-  const totalPieces =
-    place && place !== "error"
-      ? Object.keys(place.scripts || {}).length + Object.keys(place.instances || {}).length
-      : 0;
-  const builtCount = place && place !== "error" ? totalPieces : null;
+  const safePlace: Place = useMemo(
+    () => (place && place !== "error" ? place : { scripts: {}, instances: {} }),
+    [place],
+  );
+  const totalPieces = Object.keys(safePlace.scripts || {}).length + Object.keys(safePlace.instances || {}).length;
+  const pendingProposalCount = useMemo(
+    () => proposals.filter((p) => p.status === "pending").length,
+    [proposals],
+  );
 
   const undoState = !chats
     ? "loading"
@@ -329,7 +370,7 @@ export function App() {
   const undoReason =
     undoState === "nostudio"
       ? "Connect Studio to inspect or undo builds"
-      : undoState === "nothing" || (builtCount === 0 && undoState !== "ok")
+      : undoState === "nothing" || (totalPieces === 0 && undoState !== "ok")
         ? "Nothing to undo yet"
         : "";
   const canUndo = undoState === "ok";
@@ -390,6 +431,7 @@ export function App() {
   }, [refreshThread]);
 
   const refreshPlace = useCallback(async (): Promise<Place | null> => {
+    setSyncingPlace(true);
     try {
       const raw = await read("/api/place-tree");
       const norm = normalizePlace(raw);
@@ -398,6 +440,8 @@ export function App() {
     } catch {
       setPlace("error");
       return null;
+    } finally {
+      setSyncingPlace(false);
     }
   }, []);
 
@@ -426,7 +470,9 @@ export function App() {
         if (raw && Array.isArray(raw.diagnostics)) {
           setServerDiagnostics(
             raw.diagnostics
-              .filter((d): d is Partial<LuauDiagnostic> & { path: string; message: string } => Boolean(d && typeof d.path === "string" && typeof d.message === "string"))
+              .filter((d): d is Partial<LuauDiagnostic> & { path: string; message: string } =>
+                Boolean(d && typeof d.path === "string" && typeof d.message === "string"),
+              )
               .map((d) => ({
                 path: d.path,
                 line: typeof d.line === "number" && Number.isFinite(d.line) ? d.line : 1,
@@ -478,6 +524,37 @@ export function App() {
     [v090Ready],
   );
 
+  const refreshPluginStatus = useCallback(
+    async (forceServer = false) => {
+      if (!v0100Ready && !forceServer) return;
+      try {
+        const raw = await read("/api/studio/plugin/status");
+        const norm = normalizePluginStatus(raw);
+        setPluginStatus(norm);
+        if (norm.connected) {
+          setStudioOk(true);
+          setWorkspaceMode((prev) => (prev === "studio_mcp" ? prev : "plugin"));
+        }
+      } catch {
+        /* keep current plugin status */
+      }
+    },
+    [v0100Ready],
+  );
+
+  const refreshProposals = useCallback(
+    async (forceServer = false) => {
+      if (!v0100Ready && !forceServer) return;
+      try {
+        const raw = await read("/api/proposals");
+        setProposals(normalizeProposalList(raw));
+      } catch {
+        /* keep current proposal list */
+      }
+    },
+    [v0100Ready],
+  );
+
   const refreshLibrary = useCallback(
     async (forceServer = false) => {
       if (!v090Ready && !forceServer) return;
@@ -498,70 +575,10 @@ export function App() {
         const raw = await read("/api/market-taste");
         setMarketTaste(normalizeMarketTasteSnapshot(raw));
       } catch {
-        /* keep bundled Nov 2026 Roblox baseline */
+        /* keep bundled baseline */
       }
     },
     [v090Ready],
-  );
-
-  const handleSelectMarketNiche = useCallback(
-    async (nicheId: string) => {
-      setMarketTaste((prev) => ({ ...prev, active_niche: nicheId }));
-      if (!v090Ready) return;
-      setMarketBusy(true);
-      try {
-        const raw = await post<Record<string, unknown>>("/api/market-taste/niche", { niche: nicheId });
-        if (raw && raw.ok !== false) {
-          setMarketTaste(normalizeMarketTasteSnapshot(raw));
-        }
-      } catch {
-        /* keep optimistic local selection */
-      } finally {
-        setMarketBusy(false);
-      }
-    },
-    [v090Ready],
-  );
-
-  const handleRefreshMarketTaste = useCallback(async () => {
-    if (!v090Ready) {
-      toast.info("Live Roblox chart refresh requires OpenRO v0.9.0.");
-      return;
-    }
-    setMarketBusy(true);
-    try {
-      const raw = await post<Record<string, unknown>>("/api/market-taste/refresh", {});
-      const norm = normalizeMarketTasteSnapshot(raw);
-      setMarketTaste(norm);
-      if (raw?.offline_fallback === true) {
-        toast.info("Browser Studio uses the Nov 2026 Roblox Explore baseline offline.");
-      } else if (raw?.ok === false) {
-        toast.error(typeof raw.error === "string" ? raw.error : "Could not refresh Roblox Explore charts.");
-      } else {
-        toast.success(`Refreshed Roblox Explore charts (${norm.niches.length} niches)`);
-      }
-    } catch {
-      toast.error("Could not reach /api/market-taste/refresh.");
-    } finally {
-      setMarketBusy(false);
-    }
-  }, [v090Ready]);
-
-  const handlePitchMarketPrompt = useCallback(
-    (prompt: string, nicheName: string) => {
-      const clean = prompt.trim();
-      if (!clean) return;
-      setText(clean);
-      if (activeId) slotWrite(draftKey(activeId), clean);
-      setToolLibraryOpen(false);
-      setMenuOpen(false);
-      requestAnimationFrame(() => {
-        inputRef.current?.focus();
-        inputRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      });
-      toast.success(`Loaded ${nicheName} pitch into chat composer`);
-    },
-    [activeId],
   );
 
   const refreshStudioActions = useCallback(
@@ -588,12 +605,9 @@ export function App() {
       void refreshSnapshots(true);
       if (nextPlace) void refreshDiagnostics(true);
     }
-    if (v060Ready) {
-      void refreshProjectAssets(true);
-    }
-    if (v070Ready) {
-      void refreshStudioActions(true);
-    }
+    if (v060Ready) void refreshProjectAssets(true);
+    if (v070Ready) void refreshStudioActions(true);
+    if (v0100Ready) void refreshProposals(true);
     return nextPlace;
   }, [
     refreshChats,
@@ -604,9 +618,11 @@ export function App() {
     refreshDiagnostics,
     refreshProjectAssets,
     refreshStudioActions,
+    refreshProposals,
     v050Ready,
     v060Ready,
     v070Ready,
+    v0100Ready,
   ]);
 
   const pushLocalSnapshot = useCallback((label: string, snapPlace: Place | null, diff?: PlaceDiff | null) => {
@@ -623,6 +639,7 @@ export function App() {
     setSnapshots((prev) => [entry, ...prev].slice(0, 30));
   }, []);
 
+  // Initial boot discovery
   useEffect(() => {
     void refreshAll();
     read<{ version?: unknown }>("/api/version")
@@ -642,18 +659,22 @@ export function App() {
             setV070Ready(true);
             void refreshStudioActions(true);
           }
-          if (isV080OrNewer(v.version)) {
-            setV080Ready(true);
-          }
+          if (isV080OrNewer(v.version)) setV080Ready(true);
           if (isV090OrNewer(v.version)) {
             setV090Ready(true);
             void refreshEmbedStatus(true);
             void refreshLibrary(true);
             void refreshMarketTaste(true);
           }
+          if (isV0100OrNewer(v.version)) {
+            setV0100Ready(true);
+            void refreshProposals(true);
+            void refreshPluginStatus(true);
+          }
         }
       })
       .catch(() => {});
+
     read<{
       studio_connected?: unknown;
       model_configured?: unknown;
@@ -666,6 +687,9 @@ export function App() {
       ide_api?: unknown;
       embed_api?: unknown;
       studio_embed?: unknown;
+      ropilot_v0100?: unknown;
+      proposals_api?: unknown;
+      plugin_bridge?: unknown;
       skills_count?: unknown;
     }>("/api/status")
       .then((s) => {
@@ -674,6 +698,7 @@ export function App() {
         if (typeof s.model_configured === "boolean") setModelOk(s.model_configured);
         if (
           s.workspace_mode === "studio_mcp" ||
+          s.workspace_mode === "plugin" ||
           s.workspace_mode === "local_place" ||
           s.workspace_mode === "browser_place" ||
           s.workspace_mode === "disconnected"
@@ -682,9 +707,11 @@ export function App() {
           setStudioMode(
             s.workspace_mode === "studio_mcp"
               ? "live_mcp"
-              : s.workspace_mode === "browser_place"
-                ? "browser_place"
-                : "local_place",
+              : s.workspace_mode === "plugin"
+                ? "plugin_live"
+                : s.workspace_mode === "browser_place"
+                  ? "browser_place"
+                  : "local_place",
           );
         }
         if (typeof s.model_id === "string" && s.model_id.trim()) {
@@ -714,11 +741,63 @@ export function App() {
           void refreshLibrary(true);
           void refreshMarketTaste(true);
         }
+        if (
+          s.ropilot_v0100 === true ||
+          s.proposals_api === true ||
+          s.plugin_bridge === true ||
+          (typeof s.version === "string" && isV0100OrNewer(s.version))
+        ) {
+          setV0100Ready(true);
+          void refreshProposals(true);
+          void refreshPluginStatus(true);
+        }
       })
       .catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Live Studio SSE stream (/api/studio/stream) for realtime 3D viewport updates & MCP frames
+  // Explorer Auto-Sync Fix (#397): whenever live MCP, embedded Studio, or companion plugin turns active,
+  // automatically trigger debounced refreshPlace() + one +1.5s retry so Explorer never stays stuck at "0 instances".
+  // Keep callbacks in a ref so unrelated version-flag updates never cancel pending sync timers.
+  const syncFuncsRef = useRef({ refreshPlace, refreshDiagnostics });
+  syncFuncsRef.current = { refreshPlace, refreshDiagnostics };
+  const liveSyncKey = [
+    studioMode === "live_mcp" ? "mcp" : studioMode === "plugin_live" ? "plugmode" : "",
+    embedStatus.mcp_connected ? "emcp" : "",
+    embedStatus.running ? "erun" : "",
+    pluginStatus.connected ? "plug" : "",
+  ]
+    .filter(Boolean)
+    .join("|");
+  const prevLiveSyncKeyRef = useRef("");
+
+  useEffect(() => {
+    const prev = prevLiveSyncKeyRef.current;
+    prevLiveSyncKeyRef.current = liveSyncKey;
+    if (!liveSyncKey || liveSyncKey === prev) return;
+    const t1 = window.setTimeout(() => {
+      void syncFuncsRef.current.refreshPlace();
+      void syncFuncsRef.current.refreshDiagnostics(true);
+    }, 150);
+    const t2 = window.setTimeout(() => {
+      void syncFuncsRef.current.refreshPlace();
+    }, 1500);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, [liveSyncKey]);
+
+  // Gentle plugin status polling ONLY while plugin dialog is open or plugin mode is active
+  useEffect(() => {
+    if (!v0100Ready) return;
+    if (!pluginDialogOpen && workspaceMode !== "plugin") return;
+    const iv = window.setInterval(() => {
+      void refreshPluginStatus(true);
+    }, 5000);
+    return () => window.clearInterval(iv);
+  }, [pluginDialogOpen, refreshPluginStatus, v0100Ready, workspaceMode]);
+
+  // Live Studio SSE stream (/api/studio/stream) for realtime viewport updates & MCP frames
   useEffect(() => {
     if (!v070Ready) return;
     let placeTimer: number | null = null;
@@ -761,20 +840,20 @@ export function App() {
     };
   }, [refreshPlace, v070Ready]);
 
+  // Auto-scroll right Copilot thread on new messages
   const prevChatRef = useRef<string | null>(null);
   const prevLenRef = useRef(0);
-
   useEffect(() => {
     const el = threadRef.current;
     if (!el) return;
     if (!hasConversation || prevChatRef.current !== activeId) {
       el.scrollTop = 0;
-    } else if (lines.length > prevLenRef.current || Boolean(building)) {
+    } else if (lines.length > prevLenRef.current || Boolean(building) || proposals.length > 0) {
       el.scrollTop = el.scrollHeight;
     }
     prevChatRef.current = activeId;
     prevLenRef.current = lines.length;
-  }, [activeId, lines.length, notices.length, Boolean(building), hasConversation]);
+  }, [activeId, lines.length, notices.length, Boolean(building), hasConversation, proposals.length]);
 
   const ideShortcutRef = useRef<{
     selectedPath: string | null;
@@ -783,7 +862,7 @@ export function App() {
     redo: () => Promise<void>;
   } | null>(null);
 
-  // Global keyboard shortcuts: Cmd+K opens Command Palette; Ctrl+D duplicates selected part; Ctrl+Y / Cmd+Shift+Z redoes; `/` jumps to chat search
+  // Global keyboard shortcuts: Cmd+K opens Command Palette; Ctrl+D duplicates; Ctrl+Y redoes; `/` focuses search
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -815,18 +894,54 @@ export function App() {
       }
       if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey || inEditable) return;
       e.preventDefault();
-      if (!phone && chatSearchRef.current) chatSearchRef.current.focus();
+      if (!narrow && leftDockTab === "chats" && chatSearchRef.current) chatSearchRef.current.focus();
       else inputRef.current?.focus();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [phone]);
+  }, [leftDockTab, narrow]);
 
   const cantBuildWhy = !studioOk
-    ? "Building needs the Local Place Engine or Roblox Studio MCP connected. Open Settings or use Check again."
+    ? "Building needs the Local Place Engine, Studio Plugin, or Roblox Studio MCP connected."
     : !modelOk
-      ? "Chat prompts need a local gateway or API key configured in Settings. Built-in Studio blueprints still run right away."
+      ? "Chat prompts need a local gateway or API key configured in Settings. Built-in Studio starters still run right away."
       : "";
+
+  const handleToggleContextPath = useCallback((path: string) => {
+    setContextPaths((prev) =>
+      prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path].slice(-8),
+    );
+  }, []);
+
+  const handleAddContextPath = useCallback((path: string) => {
+    setContextPaths((prev) => (prev.includes(path) ? prev : [...prev, path].slice(-8)));
+  }, []);
+
+  const handleRemoveContextPath = useCallback((path: string) => {
+    setContextPaths((prev) => prev.filter((p) => p !== path));
+  }, []);
+
+  const handleOpenScriptInCodeDiff = useCallback((path: string, proposalId?: string) => {
+    setSelectedScriptPath(path);
+    setSelectedPath(path);
+    if (proposalId) setActiveProposalId(proposalId);
+    setCenterTab("code-diff");
+    setMobilePane("studio");
+    setMenuOpen(false);
+  }, []);
+
+  const handleSelectPartAndInspect = useCallback((path: string) => {
+    setSelectedPath(path);
+    if (placeRef.current && placeRef.current !== "error" && path in (placeRef.current.scripts || {})) {
+      setSelectedScriptPath(path);
+      setCenterTab("code-diff");
+    } else {
+      setBottomDrawerTab("properties");
+      setBottomDrawerOpen(true);
+    }
+    setMobilePane("studio");
+    setMenuOpen(false);
+  }, []);
 
   const checkStudio = async () => {
     try {
@@ -844,6 +959,7 @@ export function App() {
       setModelOk(nextModel);
       if (
         s?.workspace_mode === "studio_mcp" ||
+        s?.workspace_mode === "plugin" ||
         s?.workspace_mode === "local_place" ||
         s?.workspace_mode === "browser_place" ||
         s?.workspace_mode === "disconnected"
@@ -876,7 +992,10 @@ export function App() {
     setText(slotRead<string>(draftKey(id), ""));
     slotWrite(draftKey(id), "");
     setSelectedPath(null);
+    setSelectedScriptPath(null);
     setBuildDiff(null);
+    setLatestFileDiffs([]);
+    setActiveProposalId(null);
     setMenuOpen(false);
     await refreshAll();
   };
@@ -895,7 +1014,11 @@ export function App() {
     }
     setChatQuery("");
     setSelectedPath(null);
+    setSelectedScriptPath(null);
     setBuildDiff(null);
+    setLatestFileDiffs([]);
+    setActiveProposalId(null);
+    setContextPaths([]);
     setMenuOpen(false);
     await refreshAll();
     inputRef.current?.focus();
@@ -905,6 +1028,7 @@ export function App() {
     const chatId = activeId || "default";
     const beforePlace = clonePlace(placeRef.current);
     setLastTriedIdea(idea);
+    setStartersOpen(false);
     begin(chatId, { build: idea.title });
     const stopStream = subscribeBuildStream(setBuildPhase, v050Ready);
     let failure: string | null = null;
@@ -923,14 +1047,12 @@ export function App() {
     if (!failure && afterPlace) {
       const diff = computePlaceDiff(beforePlace, afterPlace);
       setBuildDiff(diff);
+      const scriptDiffs = computeLocalScriptDiffs(beforePlace, afterPlace);
+      if (scriptDiffs.length > 0) setLatestFileDiffs(scriptDiffs);
       if (!v050Ready) pushLocalSnapshot(idea.title, afterPlace, diff);
-    }
-    await new Promise((r) => setTimeout(r, 60));
-    const active = document.activeElement;
-    if (!active || active === document.body) {
-      const key = document.querySelector<HTMLButtonElement>(`[data-focus-key="idea:${CSS.escape(idea.title)}"]`);
-      if (key && !key.disabled) key.focus();
-      else inputRef.current?.focus();
+      if (centerTab === "embedded-studio" && !embedStatus.running) {
+        setCenterTab("studio-3d");
+      }
     }
   };
 
@@ -939,20 +1061,36 @@ export function App() {
     if (!message || busy) return;
     const chatId = activeId || "default";
     const beforePlace = clonePlace(placeRef.current);
+    const effectiveReview = composerMode === "plan" || reviewDiffs;
     if (restoreOnFail) setText("");
     begin(chatId, { message });
     const stopStream = subscribeBuildStream(setBuildPhase, v050Ready);
     let failure: string | null = null;
+    let returnedProposal: PendingProposal | null = null;
+    let returnedFileDiffs: ScriptFileDiff[] = [];
+
     try {
+      const bodyPayload: Record<string, unknown> = { message };
+      if (v0100Ready) {
+        bodyPayload.mode = composerMode;
+        bodyPayload.reasoning = reasoning;
+        bodyPayload.review_diffs = effectiveReview;
+        if (contextPaths.length > 0) bodyPayload.context_paths = contextPaths;
+      }
       const r = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify(bodyPayload),
       });
       const raw = await r.text();
-      let data: { ok?: boolean; error?: string } = {};
+      let data: {
+        ok?: boolean;
+        error?: string;
+        proposal?: unknown;
+        file_diffs?: unknown;
+      } = {};
       try {
-        data = JSON.parse(raw) as { ok?: boolean; error?: string };
+        data = JSON.parse(raw) as typeof data;
       } catch {
         /* non-JSON proxy or crash reply */
       }
@@ -960,31 +1098,109 @@ export function App() {
         failure = data.error || "OpenRO did not accept that message.";
       } else if (!r.ok && !((r.status === 502 || r.status === 503) && data.ok === false)) {
         failure = SEND_FAILED;
+      } else {
+        if (data.proposal) {
+          returnedProposal = normalizeProposal(data.proposal);
+        }
+        if (data.file_diffs) {
+          returnedFileDiffs = normalizeFileDiffs(data.file_diffs);
+        }
       }
     } catch {
       failure = SEND_FAILED;
     }
+
     stopStream();
     setBuildPhase(null);
     end(chatId);
+
     if (failure) {
       addNotice(chatId, { text: message, user: true });
       addNotice(chatId, { text: failure, bad: true });
       if (restoreOnFail) setText(message);
     }
+
     const afterPlace = await refreshAll();
-    if (!failure && afterPlace) {
-      const diff = computePlaceDiff(beforePlace, afterPlace);
-      setBuildDiff(diff);
-      if (!v050Ready) pushLocalSnapshot(message.slice(0, 36), afterPlace, diff);
+
+    if (!failure) {
+      if (returnedProposal) {
+        setProposals((prev) => [returnedProposal!, ...prev.filter((p) => p.id !== returnedProposal!.id)]);
+        setActiveProposalId(returnedProposal.id);
+        if (returnedProposal.file_diffs[0]?.path) {
+          setSelectedScriptPath(returnedProposal.file_diffs[0].path);
+        }
+        setCenterTab("code-diff");
+        toast.success(`Staged proposal ready (${returnedProposal.file_diffs.length} script diffs)`);
+      } else if (afterPlace) {
+        const diff = computePlaceDiff(beforePlace, afterPlace);
+        if (diff.added.length + diff.modified.length + diff.removed.length > 0) {
+          setBuildDiff(diff);
+        }
+        const scriptDiffs =
+          returnedFileDiffs.length > 0 ? returnedFileDiffs : computeLocalScriptDiffs(beforePlace, afterPlace);
+        if (scriptDiffs.length > 0) {
+          setLatestFileDiffs(scriptDiffs);
+        }
+        if (!v050Ready) pushLocalSnapshot(message.slice(0, 36), afterPlace, diff);
+      }
     }
     inputRef.current?.focus();
   };
 
-  const submitMessage = () => submitPromptText(text, true);
+  const handleApplyProposal = async (proposalId: string, selectedPaths?: string[]) => {
+    const target = proposals.find((p) => p.id === proposalId);
+    const paths = selectedPaths ?? target?.file_diffs.map((d) => d.path) ?? [];
+    const beforePlace = clonePlace(placeRef.current);
+    try {
+      const res = await post<{ ok?: boolean; error?: string; file_diffs?: unknown }>(
+        `/api/proposals/${encodeURIComponent(proposalId)}/apply`,
+        { selected_paths: paths },
+      );
+      if (res.ok) {
+        toast.success(`Applied proposal (${paths.length || "all"} files) to Studio`);
+        setProposals((prev) =>
+          prev.map((p) => (p.id === proposalId ? { ...p, status: "applied" } : p)),
+        );
+        const afterPlace = await refreshAll();
+        if (afterPlace) {
+          setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+          const diffs = res.file_diffs
+            ? normalizeFileDiffs(res.file_diffs)
+            : computeLocalScriptDiffs(beforePlace, afterPlace);
+          if (diffs.length > 0) setLatestFileDiffs(diffs);
+        }
+      } else {
+        toast.error(res.error || "Could not apply proposal.");
+      }
+    } catch {
+      toast.error("Could not reach /api/proposals/:id/apply.");
+    }
+  };
+
+  const handleRejectProposal = async (proposalId: string) => {
+    try {
+      const res = await post<{ ok?: boolean; error?: string }>(
+        `/api/proposals/${encodeURIComponent(proposalId)}/reject`,
+        {},
+      );
+      if (res.ok) {
+        toast.info("Proposal rejected — Studio place untouched");
+        setProposals((prev) =>
+          prev.map((p) => (p.id === proposalId ? { ...p, status: "rejected" } : p)),
+        );
+        if (activeProposalId === proposalId) setActiveProposalId(null);
+        void refreshProposals(true);
+      } else {
+        toast.error(res.error || "Could not reject proposal.");
+      }
+    } catch {
+      toast.error("Could not reach /api/proposals/:id/reject.");
+    }
+  };
 
   const addSystem = async (sys: GameSystemDef) => {
     if (!canBuild || busy) return;
+    setStartersOpen(false);
     const matchedIdea = ideas.find((i) => i.id === sys.defaultIdeaId || (i.skills.length === 1 && i.skills[0] === sys.id));
     if (matchedIdea) {
       await buildIdea(matchedIdea);
@@ -1006,7 +1222,10 @@ export function App() {
         if (res.ok) {
           toast.success(`Added ${sys.title} (${sys.id}) to Studio`);
           const afterPlace = await refreshAll();
-          if (afterPlace) setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+          if (afterPlace) {
+            setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+            setLatestFileDiffs(computeLocalScriptDiffs(beforePlace, afterPlace));
+          }
           return;
         }
       } catch {
@@ -1031,14 +1250,7 @@ export function App() {
 
   const send = (e: FormEvent) => {
     e.preventDefault();
-    void submitMessage();
-  };
-
-  const onComposerKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      void submitMessage();
-    }
+    void submitPromptText(text, true);
   };
 
   const undoNow = async () => {
@@ -1066,6 +1278,7 @@ export function App() {
     const afterPlace = await refreshAll();
     if (!bad && afterPlace) {
       setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+      setLatestFileDiffs(computeLocalScriptDiffs(beforePlace, afterPlace));
     }
     if (msg) {
       addNotice(chatId, { text: msg, bad });
@@ -1138,7 +1351,7 @@ export function App() {
         toast.error(res.error || "Server rejected .rbxlx import.");
         return;
       } catch {
-        /* fall back to local parsed place */
+        /* fallback */
       }
     }
 
@@ -1236,9 +1449,7 @@ export function App() {
         const r = await fetch(`/api/snapshots/${encodeURIComponent(snap.id)}/rbxlx`, { cache: "no-store" });
         if (r.ok) xml = await r.text();
       }
-      if (!xml && snap.place) {
-        xml = serializeRbxlx(snap.label, snap.place);
-      }
+      if (!xml && snap.place) xml = serializeRbxlx(snap.label, snap.place);
       if (!xml.includes("<roblox")) throw new Error("no xml");
       const slug = snap.label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "snapshot";
       const blob = new Blob([xml], { type: "application/xml;charset=utf-8" });
@@ -1258,18 +1469,17 @@ export function App() {
 
   const handleRunStudioPlaytest = async () => {
     if (!v070Ready) {
-      toast.success("Static Luau check complete — upgrade server to v0.7.0 for live Studio playtest streaming.");
+      toast.success("Static Luau check complete.");
       return;
     }
     try {
-      const res = await post<{ ok?: boolean; passed?: boolean; error?: string; console?: string }>(
-        "/api/studio/playtest",
-        {},
-      );
+      const res = await post<{ ok?: boolean; passed?: boolean; error?: string }>("/api/studio/playtest", {});
       if (res.ok === false) {
         toast.error(res.error || "Studio playtest failed.");
       } else if (res.passed === false) {
-        toast.error("Playtest flagged issues — check Studio Output console.");
+        toast.error("Playtest flagged issues — inspect Output Console.");
+        setBottomDrawerTab("console");
+        setBottomDrawerOpen(true);
       } else {
         toast.success("Studio Playtest passed — 0 Luau errors");
       }
@@ -1282,14 +1492,11 @@ export function App() {
 
   const handleCaptureStudioFrame = async () => {
     if (!v070Ready) {
-      toast.error("Live Studio Frame capture requires OpenRO v0.7.0 with Roblox Studio MCP attached.");
+      toast.error("Live Studio Frame capture requires Roblox Studio attached.");
       return;
     }
     try {
-      const res = await post<{ ok?: boolean; frame_seq?: number; error?: string }>(
-        "/api/studio/capture",
-        {},
-      );
+      const res = await post<{ ok?: boolean; frame_seq?: number; error?: string }>("/api/studio/capture", {});
       if (res.ok === false) {
         toast.error(res.error || "Live Studio MCP is not attached — switch to Studio 3D or connect Studio MCP.");
         return;
@@ -1297,9 +1504,9 @@ export function App() {
       setHasLiveFrame(true);
       if (typeof res.frame_seq === "number") setFrameSeq(res.frame_seq);
       else setFrameSeq((n) => n + 1);
-      toast.success("Captured fresh frame from Roblox Studio MCP");
+      toast.success("Captured fresh frame from Roblox Studio");
     } catch {
-      toast.error("Could not capture frame from Studio MCP.");
+      toast.error("Could not capture frame from Studio.");
     }
   };
 
@@ -1311,7 +1518,7 @@ export function App() {
       }
       return `${base}${Date.now() % 1000}`;
     };
-    const offsetX = (Object.keys(existing).length % 5 - 2) * 8;
+    const offsetX = ((Object.keys(existing).length % 5) - 2) * 8;
     const offsetZ = 10 + Math.floor(Object.keys(existing).length / 5) * 6;
     switch (preset) {
       case "sphere":
@@ -1394,7 +1601,6 @@ export function App() {
     const beforePlace = clonePlace(placeRef.current) || { scripts: {}, instances: {} };
     const spec = buildPartPresetSpec(preset, beforePlace.instances || {});
     const fallbackPath = `Workspace.${spec.name}`;
-
     const applyLocal = () => {
       const updated: Place = {
         scripts: { ...beforePlace.scripts },
@@ -1451,13 +1657,12 @@ export function App() {
       const src = beforePlace.instances[path];
       const base = path.replace(/^Workspace\./, "");
       let dupName = `${base}Copy`;
-      for (let i = 2; i < 500 && `Workspace.${dupName}` in beforePlace.instances; i++) {
-        dupName = `${base}Copy${i}`;
-      }
+      for (let i = 2; i < 500 && `Workspace.${dupName}` in beforePlace.instances; i++) dupName = `${base}Copy${i}`;
       const dupPath = `Workspace.${dupName}`;
-      const pos = Array.isArray(src.properties?.Position) && src.properties.Position.length >= 3
-        ? [Number(src.properties.Position[0]) + 4, Number(src.properties.Position[1]), Number(src.properties.Position[2]) + 4]
-        : [4, 2, 4];
+      const pos =
+        Array.isArray(src.properties?.Position) && src.properties.Position.length >= 3
+          ? [Number(src.properties.Position[0]) + 4, Number(src.properties.Position[1]), Number(src.properties.Position[2]) + 4]
+          : [4, 2, 4];
       const updated: Place = {
         scripts: { ...beforePlace.scripts },
         instances: {
@@ -1542,19 +1747,20 @@ export function App() {
     const beforePlace = clonePlace(placeRef.current);
     const localDiags = analyzePlaceLuau({ scripts: { [path]: source }, instances: beforePlace?.instances || {} });
     const applyLocal = () => {
-      if (!beforePlace) return;
+      const base = beforePlace || { scripts: {}, instances: {} };
       const updated: Place = {
-        instances: { ...beforePlace.instances },
-        scripts: { ...beforePlace.scripts, [path]: source },
+        instances: { ...base.instances },
+        scripts: { ...base.scripts, [path]: source },
       };
       setPlace(updated);
       setBuildDiff(computePlaceDiff(beforePlace, updated));
+      setLatestFileDiffs(computeLocalScriptDiffs(beforePlace, updated));
     };
 
     if (!v080Ready) {
       applyLocal();
       const errs = localDiags.filter((d) => d.severity === "error").length;
-      if (errs > 0) toast.error(`Saved ${path} (${errs} Luau error${errs === 1 ? "" : "s"} flagged)`);
+      if (errs > 0) toast.error(`Saved ${path} (${errs} Luau error${errs === 1 ? "" : "s"})`);
       else toast.success(`Saved & checked ${path} (0 errors)`);
       return;
     }
@@ -1566,7 +1772,6 @@ export function App() {
         error_count?: number;
         warnings?: number;
         warning_count?: number;
-        diagnostics?: LuauDiagnostic[];
         error?: string;
       }>("/api/place/script", { path, source });
       if (res.ok) {
@@ -1582,19 +1787,19 @@ export function App() {
             : typeof res.warnings === "number"
               ? res.warnings
               : localDiags.filter((d) => d.severity === "warning").length;
-        if (errs > 0) {
-          toast.error(`Saved ${path.split(".").pop() || path} — ${errs} Luau error${errs === 1 ? "" : "s"} detected`);
-        } else if (warns > 0) {
-          toast.success(`Saved ${path.split(".").pop() || path} — 0 errors, ${warns} warning${warns === 1 ? "" : "s"}`);
-        } else {
-          toast.success(`Saved & checked ${path.split(".").pop() || path} — 0 Luau errors`);
-        }
+        if (errs > 0) toast.error(`Saved ${path.split(".").pop() || path} — ${errs} Luau error${errs === 1 ? "" : "s"}`);
+        else if (warns > 0) toast.success(`Saved ${path.split(".").pop() || path} — 0 errors, ${warns} warning${warns === 1 ? "" : "s"}`);
+        else toast.success(`Saved & checked ${path.split(".").pop() || path} — 0 Luau errors`);
         const afterPlace = await refreshPlace();
         void refreshChats();
         void refreshDiagnostics(true);
         void refreshStudioActions(true);
         void refreshSnapshots(true);
-        if (afterPlace) setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+        if (afterPlace) {
+          setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+          const diffs = computeLocalScriptDiffs(beforePlace, afterPlace);
+          if (diffs.length > 0) setLatestFileDiffs(diffs);
+        }
       } else {
         toast.error(res.error || "Could not save Luau script.");
       }
@@ -1608,7 +1813,7 @@ export function App() {
     const chatId = activeId || "default";
     const beforePlace = clonePlace(placeRef.current);
     if (!v080Ready) {
-      toast.error("Redo requires OpenRO v0.8.0.");
+      toast.error("Redo requires OpenRO v0.8.0 or newer.");
       return;
     }
     try {
@@ -1633,6 +1838,29 @@ export function App() {
     }
   };
 
+  const handleExportRbxlx = async () => {
+    try {
+      const r = await fetch("/api/export/rbxlx", { cache: "no-store" });
+      if (!r.ok) throw new Error("export failed");
+      const xml = await r.text();
+      if (!xml.includes("<roblox")) throw new Error("unexpected xml");
+      const label = activeTitle && activeTitle !== "New chat" ? activeTitle : shell.gameName;
+      const slug = (label || "openro-place").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "openro-place";
+      const blob = new Blob([xml], { type: "application/xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${slug}.rbxlx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast.success(`Exported ${slug}.rbxlx`);
+    } catch {
+      toast.error("Could not export .rbxlx right now.");
+    }
+  };
+
   const handleDownloadShipPack = async () => {
     const cur = placeRef.current && placeRef.current !== "error" ? placeRef.current : null;
     if (!cur || (Object.keys(cur.instances || {}).length === 0 && Object.keys(cur.scripts || {}).length === 0)) {
@@ -1641,7 +1869,6 @@ export function App() {
     }
     const label = activeTitle && activeTitle !== "New chat" ? activeTitle : shell.gameName;
     const slug = (label || "openro-ship-pack").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "openro-ship-pack";
-    const isBrowserEngine = Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__);
 
     try {
       let zipBytes: Uint8Array | null = null;
@@ -1649,9 +1876,7 @@ export function App() {
         const r = await fetch("/api/export/bundle", { cache: "no-store" });
         if (r.ok) {
           const buf = new Uint8Array(await r.arrayBuffer());
-          if (buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b) {
-            zipBytes = buf;
-          }
+          if (buf.length >= 4 && buf[0] === 0x50 && buf[1] === 0x4b) zipBytes = buf;
         }
       }
       if (!zipBytes) {
@@ -1679,7 +1904,7 @@ export function App() {
 
   const handleConnectMcp = async (command?: string) => {
     if (!v080Ready) {
-      toast.error("Live Studio MCP Connect requires OpenRO v0.8.0.");
+      toast.error("Live Studio MCP Connect requires OpenRO v0.8.0+.");
       return;
     }
     try {
@@ -1712,18 +1937,16 @@ export function App() {
   const handleDisconnectMcp = async () => {
     if (!v080Ready) return;
     try {
-      const res = await post<{
-        ok?: boolean;
-        workspace_mode?: WorkspaceMode;
-        studio_mode?: StudioMode;
-        error?: string;
-      }>("/api/studio/mcp/disconnect", {});
+      const res = await post<{ ok?: boolean; workspace_mode?: WorkspaceMode; studio_mode?: StudioMode; error?: string }>(
+        "/api/studio/mcp/disconnect",
+        {},
+      );
       if (res.ok) {
         await refreshPlace();
         setWorkspaceMode(res.workspace_mode || "local_place");
         setStudioMode(res.studio_mode || "local_place");
         setHasLiveFrame(false);
-        toast.success("Disconnected Studio MCP bridge — returned to Local Studio 3D");
+        toast.success("Disconnected Studio MCP bridge");
         void refreshStudioActions(true);
       } else {
         toast.error(res.error || "Could not disconnect Studio MCP bridge.");
@@ -1735,7 +1958,7 @@ export function App() {
 
   const handleLaunchEmbed = async (command?: string) => {
     if (!v090Ready) {
-      toast.error("Embedded Roblox Studio requires OpenRO v0.9.0 desktop server.");
+      toast.error("Embedded Roblox Studio requires OpenRO desktop server.");
       return;
     }
     setEmbedStatus((prev) => ({ ...prev, state: "launching", error: null }));
@@ -1753,8 +1976,7 @@ export function App() {
           setHasLiveFrame(true);
           setFrameSeq(res.frame_seq);
         }
-        setEmbedRevealed(true);
-        setRequestedViewportTab("embedded-studio");
+        setCenterTab("embedded-studio");
         toast.success("Launched & embedded Roblox Studio");
         void refreshStudioActions(true);
         void refreshPlace();
@@ -1783,13 +2005,20 @@ export function App() {
     try {
       const res = await post<Record<string, unknown>>("/api/studio/embed/stop", {});
       if (res.ok === true) {
-        setEmbedStatus(normalizeEmbedStatus({ ...(res.status && typeof res.status === "object" ? (res.status as Record<string, unknown>) : res), running: false, state: "stopped", play_mode: "edit" }));
+        setEmbedStatus(
+          normalizeEmbedStatus({
+            ...(res.status && typeof res.status === "object" ? (res.status as Record<string, unknown>) : res),
+            running: false,
+            state: "stopped",
+            play_mode: "edit",
+          }),
+        );
         setWorkspaceMode("local_place");
         setStudioMode("local_place");
         setHasLiveFrame(false);
         await refreshPlace();
         void refreshStudioActions(true);
-        toast.success("Stopped Embedded Roblox Studio — returned to Local Studio 3D");
+        toast.success("Stopped Embedded Roblox Studio");
       } else {
         toast.error(typeof res.error === "string" ? res.error : "Could not stop Embedded Roblox Studio.");
       }
@@ -1807,7 +2036,7 @@ export function App() {
         setFrameSeq(res.frame_seq);
       }
     } catch {
-      /* non-fatal input drop */
+      /* non-fatal */
     }
   };
 
@@ -1820,7 +2049,7 @@ export function App() {
         setFrameSeq(res.frame_seq);
       }
     } catch {
-      /* non-fatal input drop */
+      /* non-fatal */
     }
   };
 
@@ -1830,12 +2059,7 @@ export function App() {
   ): Promise<StudioToolResult> => {
     const started = performance.now();
     if (!v090Ready) {
-      return {
-        ok: false,
-        tool,
-        error: "All-12 Studio MCP Tools require OpenRO v0.9.0.",
-        duration_ms: 0,
-      };
+      return { ok: false, tool, error: "13 Studio MCP Tools require OpenRO v0.9.0+.", duration_ms: 0 };
     }
     try {
       const res = await post<Record<string, unknown>>(`/api/studio/tools/${encodeURIComponent(tool)}`, args);
@@ -1877,50 +2101,68 @@ export function App() {
     }
   };
 
-  const handleOpenEmbeddedStudio = () => {
-    setEmbedRevealed(true);
-    setRequestedViewportTab("embedded-studio");
-    if (threadRef.current) threadRef.current.scrollTop = 0;
-  };
+  const handleSelectMarketNiche = useCallback(
+    async (nicheId: string) => {
+      setMarketTaste((prev) => ({ ...prev, active_niche: nicheId }));
+      if (!v090Ready) return;
+      setMarketBusy(true);
+      try {
+        const raw = await post<Record<string, unknown>>("/api/market-taste/niche", { niche: nicheId });
+        if (raw && raw.ok !== false) setMarketTaste(normalizeMarketTasteSnapshot(raw));
+      } catch {
+        /* keep optimistic local selection */
+      } finally {
+        setMarketBusy(false);
+      }
+    },
+    [v090Ready],
+  );
+
+  const handleRefreshMarketTaste = useCallback(async () => {
+    if (!v090Ready) {
+      toast.info("Live Roblox chart refresh requires OpenRO v0.9.0+.");
+      return;
+    }
+    setMarketBusy(true);
+    try {
+      const raw = await post<Record<string, unknown>>("/api/market-taste/refresh", {});
+      const norm = normalizeMarketTasteSnapshot(raw);
+      setMarketTaste(norm);
+      if (raw?.offline_fallback === true) {
+        toast.info("Browser Studio uses the Nov 2026 Roblox Explore baseline offline.");
+      } else if (raw?.ok === false) {
+        toast.error(typeof raw.error === "string" ? raw.error : "Could not refresh Roblox Explore charts.");
+      } else {
+        toast.success(`Refreshed Roblox Explore charts (${norm.niches.length} niches)`);
+      }
+    } catch {
+      toast.error("Could not reach /api/market-taste/refresh.");
+    } finally {
+      setMarketBusy(false);
+    }
+  }, [v090Ready]);
+
+  const handlePitchMarketPrompt = useCallback(
+    (prompt: string, nicheName: string) => {
+      const clean = prompt.trim();
+      if (!clean) return;
+      setText(clean);
+      if (activeId) slotWrite(draftKey(activeId), clean);
+      setToolLibraryOpen(false);
+      setMenuOpen(false);
+      setRightDockCollapsed(false);
+      setMobilePane("copilot");
+      requestAnimationFrame(() => inputRef.current?.focus());
+      toast.success(`Loaded ${nicheName} pitch into Copilot composer`);
+    },
+    [activeId],
+  );
 
   ideShortcutRef.current = {
     selectedPath,
     canRedo,
     duplicate: handleDuplicatePart,
     redo: handleRedo,
-  };
-
-  const handleSelectPartFromStage = (path: string) => {
-    setSelectedPath(path);
-    if (narrow) {
-      setShelfOpen(true);
-    } else if (shelfCollapsed) {
-      setShelfCollapsed(false);
-    }
-  };
-
-  const triggerExportFromPalette = async () => {
-    try {
-      const r = await fetch("/api/export/rbxlx", { cache: "no-store" });
-      if (!r.ok) throw new Error("export failed");
-      const xml = await r.text();
-      const blob = new Blob([xml], { type: "application/xml;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "openro-place.rbxlx";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      toast.success("Exported openro-place.rbxlx");
-    } catch {
-      toast.error("Could not export .rbxlx right now.");
-    }
-  };
-
-  const onUndoClick = (e: MouseEvent<HTMLDivElement>) => {
-    if ((e.target as HTMLElement).closest("[data-undo-yes]")) void undoNow();
   };
 
   const onBannerClick = (e: MouseEvent<HTMLDivElement>) => {
@@ -1934,239 +2176,737 @@ export function App() {
     return q ? all.filter((c) => (c.title || "New chat").toLowerCase().includes(q)) : all;
   }, [chats, chatQuery]);
 
-  const rail = (
-    <nav aria-label="Chats and Studio controls" className="flex h-full min-h-0 flex-col gap-3 bg-surface p-3.5 text-ink">
-      <div className="flex min-w-0 items-center gap-2.5 px-0.5 pt-0.5">
-        <span className="grid size-9 flex-none place-items-center rounded-card border border-hairline bg-board text-ink">
-          <Blocks className="size-4.5" strokeWidth={1.5} aria-hidden />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <h1 className="text-base font-medium leading-tight text-ink">OpenRO</h1>
-          </div>
-          <div className="truncate text-xs text-ink-2" title={shell.gameName}>
-            {shell.gameName}
+  // Left Dock Contents (reused inside Desktop 248px Left Dock and Mobile Vaul Left Drawer)
+  const leftDockBody = (
+    <nav
+      aria-label="Explorer, Chats, and Studio controls"
+      className="flex h-full min-h-0 flex-col gap-2.5 bg-surface p-2.5 text-ink"
+    >
+      {/* Brand + Collapse + Palette */}
+      <div className="flex min-w-0 flex-none items-center justify-between gap-1.5 px-0.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="grid size-8 flex-none place-items-center rounded-card border border-hairline bg-board text-ink">
+            <Blocks className="size-4" strokeWidth={1.5} aria-hidden />
+          </span>
+          <div className="min-w-0">
+            <h1 className="truncate text-sm font-medium leading-tight text-ink">OpenRO</h1>
+            <div className="truncate text-xs text-ink-2" title={shell.gameName}>
+              {shell.gameName}
+            </div>
           </div>
         </div>
-      </div>
-
-      {/* Live Studio / Local Place connection block inside Left Rail on desktop */}
-      {!phone && (
-        <div
-          data-answers="2"
-          className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-hairline bg-board/60 px-2.5 py-2"
-        >
-          <StudioChip connected={studioOk} workspaceMode={workspaceMode} />
-          {!studioOk && (
-            <Button variant="outline" size="xs" onClick={() => void checkStudio()} className="bg-surface">
-              <RefreshCw className="size-3" strokeWidth={1.5} aria-hidden />
-              Check again
-            </Button>
-          )}
-        </div>
-      )}
-
-      <div className="flex flex-col gap-1.5">
-        <Button
-          variant="secondary"
-          onClick={() => void newChat()}
-          className="w-full justify-start border-ink-button bg-ink-button text-ink-button-fg hover:bg-ink-button/90 max-md:min-h-11"
-        >
-          <Plus className="size-4" strokeWidth={1.5} aria-hidden />
-          New chat
-        </Button>
-
-        <Button
-          variant="outline"
-          onClick={() => {
-            setMenuOpen(false);
-            setPaletteOpen(true);
-          }}
-          aria-label="Open command palette"
-          className="w-full justify-between bg-board/50 font-normal text-ink-2 hover:bg-board hover:text-ink max-md:min-h-11"
-        >
-          <span className="inline-flex min-w-0 items-center gap-2">
-            <Command className="size-3.5 flex-none text-icon" strokeWidth={1.5} aria-hidden />
-            <span className="truncate text-sm">Command palette</span>
-          </span>
-          <Kbd className="px-1.5 font-mono">⌘K</Kbd>
-        </Button>
-
-        <Button
-          variant="outline"
-          onClick={() => {
-            setMenuOpen(false);
-            handleOpenEmbeddedStudio();
-          }}
-          aria-label="Open Embedded Roblox Studio"
-          className="w-full justify-between bg-board/50 font-normal text-ink-2 hover:bg-board hover:text-ink max-md:min-h-11"
-        >
-          <span className="inline-flex min-w-0 items-center gap-2">
-            <Monitor className="size-3.5 flex-none text-icon" strokeWidth={1.5} aria-hidden />
-            <span className="truncate text-sm">Embedded Studio</span>
-          </span>
-          <span className="rounded-chip bg-surface px-1.5 py-0.5 font-mono text-xs tabular-nums text-ink-2">
-            {embedStatus.running ? "Live" : "IDE"}
-          </span>
-        </Button>
-
-        <Button
-          variant="outline"
-          onClick={() => {
-            setMenuOpen(false);
-            setToolLibraryOpen(true);
-            void refreshLibrary();
-            void refreshMarketTaste();
-          }}
-          aria-label="Open Tool and Skill Library"
-          className="w-full justify-between bg-board/50 font-normal text-ink-2 hover:bg-board hover:text-ink max-md:min-h-11"
-        >
-          <span className="inline-flex min-w-0 items-center gap-2">
-            <Package className="size-3.5 flex-none text-icon" strokeWidth={1.5} aria-hidden />
-            <span className="truncate text-sm">Tool Library</span>
-          </span>
-          <span className="rounded-chip bg-surface px-1.5 py-0.5 font-mono text-xs tabular-nums text-ink-2">
-            {librarySnap.packs.filter((p) => p.installed).length}/{librarySnap.packs.length}
-          </span>
-        </Button>
-      </div>
-
-      <InputGroup className="bg-board/45">
-        <InputGroupAddon align="inline-start" className="ps-2.5">
-          <Search className="size-3.5 text-icon" strokeWidth={1.5} aria-hidden />
-        </InputGroupAddon>
-        <InputGroupInput
-          ref={chatSearchRef}
-          type="search"
-          value={chatQuery}
-          onChange={(e) => setChatQuery(e.target.value)}
-          aria-label="Search chats"
-          placeholder="Search chats"
-          className="[&_input]:max-md:!min-h-11 [&_input]:md:!h-8"
-        />
-        {chatQuery ? (
-          <InputGroupAddon align="inline-end" className="has-[>button]:me-0 pe-1">
+        <div className="flex shrink-0 items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => {
+              setMenuOpen(false);
+              setPaletteOpen(true);
+            }}
+            aria-label="Open command palette"
+            className="size-7 text-ink-2 hover:text-ink max-md:size-11"
+          >
+            <Command className="size-3.5" strokeWidth={1.5} aria-hidden />
+          </Button>
+          {!narrow && (
             <Button
               variant="ghost"
               size="icon-xs"
-              onClick={() => setChatQuery("")}
-              aria-label="Clear chat search"
-              className="max-md:size-11"
+              onClick={() => setLeftDockCollapsed(true)}
+              aria-label="Collapse left dock"
+              className="size-7 text-ink-2 hover:text-ink"
             >
-              <X className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <PanelLeftClose className="size-3.5" strokeWidth={1.5} aria-hidden />
             </Button>
-          </InputGroupAddon>
-        ) : (
-          <InputGroupAddon align="inline-end" className="has-[>kbd:last-child]:me-0 pe-2">
-            <Kbd className="px-1.5 font-mono">/</Kbd>
-          </InputGroupAddon>
-        )}
-      </InputGroup>
-
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-        {chatsError && !chats ? (
-          <div className="flex flex-col items-start gap-2 rounded-card border border-hairline bg-board p-3 text-xs text-ink-2">
-            <span>Could not load chats from server.</span>
-            <Button variant="outline" size="xs" onClick={() => void refreshAll()} className="max-md:min-h-11">
-              Retry chats
-            </Button>
-          </div>
-        ) : filteredChats.length === 0 ? (
-          <div className="flex flex-col items-start gap-2 rounded-card border border-hairline bg-board/50 p-3 text-xs text-ink-2">
-            <span>No chats match &ldquo;{chatQuery}&rdquo;.</span>
-            {chatQuery && (
-              <Button variant="outline" size="xs" onClick={() => setChatQuery("")} className="max-md:min-h-11">
-                Show all chats
-              </Button>
-            )}
-          </div>
-        ) : (
-          <AnimatedBackground
-            defaultValue={activeId}
-            onValueChange={(id) => id && id !== activeId && void switchChat(id)}
-            className="rounded-card bg-blue-soft"
-            transition={glide}
-            enableHover={false}
-          >
-            <ul id="chat-list" className="flex flex-col gap-0.5" aria-label="Your chats">
-              {filteredChats.map((c: Chat) => (
-                <li key={c.id} className="relative">
-                  <Button
-                    variant="ghost"
-                    data-id={c.id}
-                    aria-current={c.id === activeId ? "true" : undefined}
-                    onClick={() => void switchChat(c.id)}
-                    className="chat-btn h-auto min-h-9 w-full justify-between rounded-card border-transparent px-2.5 py-1.5 text-left font-normal text-ink-2 hover:bg-board/70 hover:text-ink data-[checked=true]:font-medium data-[checked=true]:text-ink max-md:min-h-11"
-                  >
-                    <span className="min-w-0 flex-1 truncate text-sm">{c.title || "New chat"}</span>
-                    {inflight[c.id] && (
-                      <Pill className="bg-surface px-1.5 py-0 font-mono text-xs text-ink">working</Pill>
-                    )}
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          </AnimatedBackground>
-        )}
+          )}
+        </div>
       </div>
 
-      <div className="flex flex-col gap-2.5 border-t border-hairline pt-3">
+      {/* Explorer | Chats Segmented Toggle */}
+      <SegmentedControl aria-label="Left dock section" size="sm" className="w-full flex-none">
+        <SegmentedControlItem
+          data-checked={leftDockTab === "explorer" ? "" : undefined}
+          aria-pressed={leftDockTab === "explorer"}
+          onClick={() => setLeftDockTab("explorer")}
+          className="flex-1 justify-center gap-1 max-md:!h-11"
+        >
+          <FolderTree className="size-3.5" strokeWidth={1.5} aria-hidden />
+          <span>Explorer</span>
+          <span className="font-mono text-xs tabular-nums text-ink-2">{totalPieces}</span>
+        </SegmentedControlItem>
+        <SegmentedControlItem
+          data-checked={leftDockTab === "chats" ? "" : undefined}
+          aria-pressed={leftDockTab === "chats"}
+          onClick={() => setLeftDockTab("chats")}
+          className="flex-1 justify-center gap-1 max-md:!h-11"
+        >
+          <MessageSquare className="size-3.5" strokeWidth={1.5} aria-hidden />
+          <span>Chats</span>
+        </SegmentedControlItem>
+      </SegmentedControl>
+
+      {/* Main Dock Scroll Region */}
+      {leftDockTab === "explorer" ? (
+        <LeftExplorerTree
+          gameName={shell.gameName}
+          builtTitles={builtTitles}
+          place={place}
+          error={place === "error"}
+          selectedPath={selectedPath}
+          selectedScriptPath={selectedScriptPath}
+          contextPaths={contextPaths}
+          studioSelection={pluginStatus.selection}
+          buildDiff={buildDiff}
+          serverDiagnostics={serverDiagnostics}
+          snapshotCount={snapshots.length}
+          syncing={syncingPlace}
+          onSelectPart={handleSelectPartAndInspect}
+          onOpenScript={(p) => handleOpenScriptInCodeDiff(p)}
+          onAttachContext={handleToggleContextPath}
+          onRefreshPlace={() => void refreshPlace()}
+          onOpenSnapshots={() => {
+            setMenuOpen(false);
+            setSnapshotsOpen(true);
+          }}
+        />
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void newChat()}
+            className="w-full justify-start border-ink-button bg-ink-button text-ink-button-fg hover:bg-ink-button/90 max-md:min-h-11"
+          >
+            <Plus className="size-3.5" strokeWidth={1.5} aria-hidden />
+            New chat
+          </Button>
+
+          <InputGroup className="bg-board/45">
+            <InputGroupAddon align="inline-start" className="ps-2">
+              <Search className="size-3.5 text-icon" strokeWidth={1.5} aria-hidden />
+            </InputGroupAddon>
+            <InputGroupInput
+              ref={chatSearchRef}
+              type="search"
+              value={chatQuery}
+              onChange={(e) => setChatQuery(e.target.value)}
+              aria-label="Search chats"
+              placeholder="Search chats…"
+              className="[&_input]:max-md:!min-h-11 [&_input]:md:!h-8 [&_input]:text-xs"
+            />
+            {chatQuery ? (
+              <InputGroupAddon align="inline-end" className="has-[>button]:me-0 pe-1">
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={() => setChatQuery("")}
+                  aria-label="Clear chat search"
+                  className="size-6 max-md:size-11"
+                >
+                  <X className="size-3.5" strokeWidth={1.5} aria-hidden />
+                </Button>
+              </InputGroupAddon>
+            ) : (
+              <InputGroupAddon align="inline-end" className="has-[>kbd:last-child]:me-0 pe-1.5">
+                <Kbd className="px-1 font-mono text-xs">/</Kbd>
+              </InputGroupAddon>
+            )}
+          </InputGroup>
+
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+            {chatsError && !chats ? (
+              <div className="flex flex-col items-start gap-2 rounded-card border border-hairline bg-board p-2.5 text-xs text-ink-2">
+                <span>Could not load chats from server.</span>
+                <Button variant="outline" size="xs" onClick={() => void refreshAll()} className="max-md:min-h-11">
+                  Retry chats
+                </Button>
+              </div>
+            ) : filteredChats.length === 0 ? (
+              <div className="flex flex-col items-start gap-2 rounded-card border border-hairline bg-board/50 p-2.5 text-xs text-ink-2">
+                <span>No chats match &ldquo;{chatQuery}&rdquo;.</span>
+                {chatQuery && (
+                  <Button variant="outline" size="xs" onClick={() => setChatQuery("")} className="max-md:min-h-11">
+                    Show all chats
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <AnimatedBackground
+                defaultValue={activeId}
+                onValueChange={(id) => id && id !== activeId && void switchChat(id)}
+                className="rounded-card bg-blue-soft"
+                transition={glide}
+                enableHover={false}
+              >
+                <ul id="chat-list" className="flex flex-col gap-0.5" aria-label="Your chats">
+                  {filteredChats.map((c: Chat) => (
+                    <li key={c.id} className="relative">
+                      <Button
+                        variant="ghost"
+                        data-id={c.id}
+                        aria-current={c.id === activeId ? "true" : undefined}
+                        onClick={() => void switchChat(c.id)}
+                        className="chat-btn h-auto min-h-8 w-full justify-between rounded-card border-transparent px-2 py-1 text-left font-normal text-ink-2 hover:bg-board/70 hover:text-ink data-[checked=true]:font-medium data-[checked=true]:text-ink max-md:min-h-11"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-xs">{c.title || "New chat"}</span>
+                        {inflight[c.id] && (
+                          <Pill className="bg-surface px-1.5 py-0 font-mono text-xs text-ink">working</Pill>
+                        )}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </AnimatedBackground>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1.5 border-t border-hairline pt-2">
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => {
+                setMenuOpen(false);
+                setSnapshotsOpen(true);
+              }}
+              className="flex-1 justify-center bg-board/50 max-md:min-h-11"
+            >
+              <History className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>Snapshots</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => {
+                setMenuOpen(false);
+                setPaletteOpen(true);
+              }}
+              className="justify-center bg-board/50 max-md:min-h-11"
+            >
+              <Kbd className="px-1 font-mono text-xs">⌘K</Kbd>
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Compact Left Dock Bottom Footer: Connection, Tool Library, Studio Plugin, Settings */}
+      <div className="flex flex-none flex-col gap-1.5 border-t border-hairline pt-2">
+        <div
+          data-answers="2"
+          className="flex items-center justify-between gap-1.5 rounded-card border border-hairline bg-board/55 px-2 py-1.5"
+        >
+          <StudioChip connected={studioOk} workspaceMode={workspaceMode} />
+          {!studioOk && (
+            <Button variant="outline" size="xs" onClick={() => void checkStudio()} className="bg-surface max-md:min-h-11">
+              <RefreshCw className="size-3" strokeWidth={1.5} aria-hidden />
+              Check
+            </Button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-1.5">
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => {
+              setMenuOpen(false);
+              setToolLibraryOpen(true);
+              void refreshLibrary();
+              void refreshMarketTaste();
+            }}
+            aria-label="Open Tool and Skill Library"
+            className="justify-between bg-board/50 px-2 font-normal text-ink hover:bg-board max-md:min-h-11"
+          >
+            <span className="inline-flex min-w-0 items-center gap-1">
+              <Package className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
+              <span className="truncate">Tools</span>
+            </span>
+            <span className="font-mono text-xs tabular-nums text-ink-3">
+              {librarySnap.packs.filter((p) => p.installed).length}/{librarySnap.packs.length}
+            </span>
+          </Button>
+
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => {
+              setMenuOpen(false);
+              setPluginDialogOpen(true);
+              void refreshPluginStatus(true);
+            }}
+            aria-label="Open Roblox Studio Companion Plugin"
+            className="justify-between bg-board/50 px-2 font-normal text-ink hover:bg-board max-md:min-h-11"
+          >
+            <span className="inline-flex min-w-0 items-center gap-1">
+              <Plug className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
+              <span className="truncate">Plugin</span>
+            </span>
+            <span
+              className={`font-mono text-xs ${
+                pluginStatus.connected ? "text-pill-active-fg" : "text-ink-3"
+              }`}
+            >
+              {pluginStatus.connected ? "Live" : "Setup"}
+            </span>
+          </Button>
+        </div>
+
         <Button
           variant="outline"
+          size="xs"
           aria-label="Settings"
           onClick={() => {
             setMenuOpen(false);
             setSettingsOpen(true);
           }}
-          className="w-full justify-between bg-board/60 font-medium text-ink hover:bg-board max-md:min-h-11"
+          className="w-full justify-between bg-board/60 px-2 font-medium text-ink hover:bg-board max-md:min-h-11"
         >
-          <span className="inline-flex min-w-0 items-center gap-2">
-            <SlidersHorizontal className="size-4 flex-none text-icon" strokeWidth={1.5} aria-hidden />
+          <span className="inline-flex min-w-0 items-center gap-1.5">
+            <SlidersHorizontal className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
             <span className="truncate">Settings</span>
           </span>
           <span className="truncate font-mono text-xs text-ink-3">
             {activeModelLabel ||
               (workspaceMode === "studio_mcp"
                 ? "Studio MCP"
-                : workspaceMode === "local_place"
-                  ? "Local Place"
-                  : workspaceMode === "browser_place"
-                    ? "Browser"
-                    : "Offline")}
+                : workspaceMode === "plugin"
+                  ? "Plugin"
+                  : workspaceMode === "local_place"
+                    ? "Local"
+                    : workspaceMode === "browser_place"
+                      ? "Browser"
+                      : "Offline")}
           </span>
         </Button>
 
-        <div className="flex items-center justify-between gap-2 text-xs text-ink-2">
+        <div className="flex items-center justify-between gap-2 px-0.5 text-xs text-ink-3">
           <a
-            href={RELEASES_URL + (version || "0.9.0")}
+            href={RELEASES_URL + (version || "0.10.0")}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex min-h-11 items-center gap-1 rounded-sm px-1 font-mono text-xs text-ink-2 outline-none hover:text-ink hover:underline md:min-h-7"
+            className="inline-flex min-h-7 items-center gap-1 rounded-sm font-mono text-xs text-ink-2 outline-none hover:text-ink hover:underline max-md:min-h-11"
           >
-            <span>OpenRO v{version || "0.9.0"}</span>
+            <span>OpenRO v{version || "0.10.0"}</span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
-          <span className="truncate text-right text-xs text-ink-3">
-            {update.busy === "check"
-              ? "Checking…"
-              : update.snap?.staged
-                ? `${update.snap.staged} staged`
-                : update.snap?.available
-                  ? `${update.snap.latest} available`
-                  : update.snap?.checked_at
-                    ? "Up to date"
-                    : "Studio Workbench"}
+          <span className="truncate text-right text-xs">
+            {update.snap?.available ? `${update.snap.latest} avail` : "Studio IDE"}
           </span>
         </div>
       </div>
     </nav>
   );
 
+  // Center Studio Workspace (Top Tab Bar + Full-Height Active Surface + Collapsible Bottom Drawer)
+  const centerWorkspace = (
+    <main
+      aria-label="Studio Workspace"
+      data-studio-workspace
+      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-canvas"
+    >
+      {/* Top Studio Tab Bar + Compact Ship Actions */}
+      <header className="flex min-h-11 flex-none flex-wrap items-center justify-between gap-2 border-b border-hairline bg-surface px-2.5 py-1.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          {!narrow && leftDockCollapsed && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => setLeftDockCollapsed(false)}
+              aria-label="Expand left dock"
+              className="size-7 text-ink-2 hover:text-ink"
+            >
+              <PanelLeftOpen className="size-4" strokeWidth={1.5} aria-hidden />
+            </Button>
+          )}
+
+          <SegmentedControl aria-label="Center Studio workspace tab" size="sm" className="max-w-full flex-wrap">
+            <SegmentedControlItem
+              data-checked={centerTab === "embedded-studio" ? "" : undefined}
+              aria-pressed={centerTab === "embedded-studio"}
+              onClick={() => setCenterTab("embedded-studio")}
+              className="gap-1 max-md:!h-11 max-md:px-2"
+            >
+              <Monitor className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>Embedded Studio</span>
+            </SegmentedControlItem>
+            <SegmentedControlItem
+              data-checked={centerTab === "studio-3d" ? "" : undefined}
+              aria-pressed={centerTab === "studio-3d"}
+              onClick={() => setCenterTab("studio-3d")}
+              className="gap-1 max-md:!h-11 max-md:px-2"
+            >
+              <Box className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>Studio 3D</span>
+            </SegmentedControlItem>
+            <SegmentedControlItem
+              data-checked={centerTab === "code-diff" ? "" : undefined}
+              aria-pressed={centerTab === "code-diff"}
+              onClick={() => setCenterTab("code-diff")}
+              className="gap-1 max-md:!h-11 max-md:px-2"
+            >
+              <FileDiff className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>Code &amp; Diff</span>
+              {pendingProposalCount > 0 && (
+                <span className="rounded-chip bg-blue px-1.5 py-0 font-mono text-xs tabular-nums text-blue-fg">
+                  {pendingProposalCount}
+                </span>
+              )}
+            </SegmentedControlItem>
+            <SegmentedControlItem
+              data-checked={centerTab === "playable" ? "" : undefined}
+              aria-pressed={centerTab === "playable"}
+              onClick={() => setCenterTab("playable")}
+              className="gap-1 max-md:!h-11 max-md:px-2"
+            >
+              <Gamepad2 className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>Playable Stage</span>
+            </SegmentedControlItem>
+          </SegmentedControl>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1">
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={totalPieces === 0}
+            onClick={() => void handleRunStudioPlaytest()}
+            aria-label="Run Studio playtest"
+            title="Run Studio Playtest"
+            className="bg-surface max-md:min-h-11"
+          >
+            <Play className="size-3.5" strokeWidth={1.5} aria-hidden />
+            <span className="hidden 2xl:inline">Playtest</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={totalPieces === 0}
+            onClick={() => void handleExportRbxlx()}
+            aria-label="Export .rbxlx"
+            title="Export game.rbxlx"
+            className="bg-surface max-md:min-h-11"
+          >
+            <Download className="size-3.5" strokeWidth={1.5} aria-hidden />
+            <span className="hidden sm:inline">.rbxlx</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={totalPieces === 0}
+            onClick={() => void handleDownloadShipPack()}
+            aria-label="Download Studio and Rojo Ship Pack (.zip)"
+            title="Download Rojo Ship Pack (.zip)"
+            className="bg-surface max-md:min-h-11"
+          >
+            <FolderArchive className="size-3.5" strokeWidth={1.5} aria-hidden />
+            <span className="hidden 2xl:inline">Rojo .zip</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => fileInputRef.current?.click()}
+            aria-label="Import .rbxlx"
+            title="Import .rbxlx XML"
+            className="bg-surface max-md:min-h-11"
+          >
+            <Upload className="size-3.5" strokeWidth={1.5} aria-hidden />
+            <span className="hidden 2xl:inline">Import</span>
+          </Button>
+          {!narrow && rightDockCollapsed && (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => setRightDockCollapsed(false)}
+              aria-label="Expand Copilot panel"
+              className="bg-surface"
+            >
+              <PanelRightOpen className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>Copilot</span>
+            </Button>
+          )}
+        </div>
+      </header>
+
+      <div
+        className="server-banners"
+        onClick={onBannerClick}
+        dangerouslySetInnerHTML={{ __html: shell.bannerHtml }}
+      />
+      {update.show && <UpdateStrip u={update} />}
+
+      {/* Full-Height Active Center Surface */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-2.5">
+        {centerTab === "embedded-studio" ? (
+          <EmbeddedStudioPanel
+            studioMode={studioMode}
+            embedStatus={embedStatus}
+            hasLiveFrame={hasLiveFrame}
+            frameSeq={frameSeq}
+            actions={studioActions}
+            onLaunchEmbed={handleLaunchEmbed}
+            onStopEmbed={handleStopEmbed}
+            onRefreshEmbedStatus={() => void refreshEmbedStatus(true)}
+            onCaptureFrame={handleCaptureStudioFrame}
+            onConnectMcp={handleConnectMcp}
+            onDisconnectMcp={handleDisconnectMcp}
+            onSendMouseInput={handleSendMouseInput}
+            onSendKeyboardInput={handleSendKeyboardInput}
+            onInvokeStudioTool={handleInvokeStudioTool}
+          />
+        ) : centerTab === "studio-3d" ? (
+          <StudioViewport3D
+            place={safePlace}
+            theme={theme}
+            assets={projectAssets}
+            selectedPath={selectedPath}
+            studioMode={studioMode}
+            actions={studioActions}
+            building={Boolean(building)}
+            canRedo={canRedo}
+            hideConsole
+            onSelectPart={handleSelectPartAndInspect}
+            onSaveInstance={handleSaveInstance}
+            onCreatePart={handleCreatePart}
+            onDuplicatePart={handleDuplicatePart}
+            onDeletePart={handleDeletePart}
+            onTriggerRedo={handleRedo}
+            onRunPlaytest={handleRunStudioPlaytest}
+          />
+        ) : centerTab === "code-diff" ? (
+          <CodeDiffWorkbench
+            place={safePlace}
+            selectedScriptPath={selectedScriptPath}
+            onSelectScriptPath={setSelectedScriptPath}
+            proposals={proposals}
+            activeProposalId={activeProposalId}
+            onSelectProposalId={setActiveProposalId}
+            latestFileDiffs={latestFileDiffs}
+            serverDiagnostics={serverDiagnostics}
+            busy={busy}
+            onSaveScript={handleSaveScript}
+            onRunPlaytest={handleRunStudioPlaytest}
+            onApplyProposal={handleApplyProposal}
+            onRejectProposal={handleRejectProposal}
+            onAttachContext={handleAddContextPath}
+          />
+        ) : (
+          <StagePreview
+            place={safePlace}
+            theme={theme}
+            selectedPath={selectedPath}
+            onSelectPart={handleSelectPartAndInspect}
+          />
+        )}
+      </div>
+
+      {/* Collapsible Bottom Studio Drawer (Output Console, Agent Trace, 13 MCP Tools, Properties) */}
+      <StudioBottomDrawer
+        open={bottomDrawerOpen}
+        onToggle={() => setBottomDrawerOpen((v) => !v)}
+        activeTab={bottomDrawerTab}
+        onTabChange={setBottomDrawerTab}
+        place={safePlace}
+        selectedPath={selectedPath}
+        studioActions={studioActions}
+        onSelectPath={(p) => {
+          setSelectedPath(p);
+          setCenterTab("studio-3d");
+        }}
+        onOpenScript={(p) => handleOpenScriptInCodeDiff(p)}
+        onAttachContext={handleAddContextPath}
+        onSaveInstance={handleSaveInstance}
+        onDuplicatePart={handleDuplicatePart}
+        onDeletePart={handleDeletePart}
+        onInvokeStudioTool={handleInvokeStudioTool}
+      />
+    </main>
+  );
+
+  // Right Docked RoPilot Copilot Panel
+  const rightCopilot = (
+    <aside
+      aria-label="RoPilot Copilot"
+      data-ropilot-copilot
+      className="flex h-full min-h-0 flex-col bg-surface text-ink"
+    >
+      {/* Copilot Header */}
+      <div className="flex min-h-11 flex-none items-center justify-between gap-2 border-b border-hairline px-3 py-1.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <Sparkles className="size-4 shrink-0 text-blue" strokeWidth={1.5} aria-hidden />
+          <h2 className="truncate text-sm font-medium text-ink" title={activeTitle}>
+            {activeTitle}
+          </h2>
+          {pendingProposalCount > 0 && (
+            <Pill className="bg-pill-warn-bg px-1.5 py-0 font-mono text-xs tabular-nums text-pill-warn-fg">
+              {pendingProposalCount} diff
+            </Pill>
+          )}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => setStartersOpen(true)}
+            aria-label="Open Starters and 28 Game Systems"
+            className="bg-board/55 max-md:min-h-11"
+          >
+            <Sparkles className="size-3.5 text-blue" strokeWidth={1.5} aria-hidden />
+            <span>Starters</span>
+          </Button>
+          {!narrow && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => setRightDockCollapsed(true)}
+              aria-label="Collapse Copilot panel"
+              className="size-7 text-ink-2 hover:text-ink"
+            >
+              <PanelRightClose className="size-3.5" strokeWidth={1.5} aria-hidden />
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Scrollable Copilot Feed */}
+      <div
+        id="thread"
+        ref={threadRef}
+        aria-live="polite"
+        aria-busy={!chats && !chatsError}
+        className="min-h-0 flex-1 overflow-y-auto p-3"
+      >
+        {threadError ? (
+          <div role="alert" className="flex flex-col items-start gap-2.5 rounded-card border border-hairline bg-board p-3.5">
+            <strong className="text-sm font-medium text-pill-pro-fg">Could not load conversation.</strong>
+            <p className="text-xs text-ink-2">The OpenRO server did not answer. Try again or reload.</p>
+            <Button variant="default" size="sm" onClick={() => void refreshAll()} className="max-md:min-h-11">
+              Try again
+            </Button>
+          </div>
+        ) : !hasConversation && proposals.length === 0 ? (
+          <div className="flex flex-col gap-3">
+            <section
+              aria-label="RoPilot Studio Copilot welcome"
+              className="flex flex-col gap-2.5 rounded-card border border-hairline bg-board/50 p-3.5"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium text-ink">Studio Copilot ready</span>
+                <Pill className="bg-surface px-2 py-0 font-mono text-xs text-ink-2">
+                  <SlidingNumber value={totalPieces} /> pieces
+                </Pill>
+              </div>
+              <p className="text-xs leading-relaxed text-ink-2">
+                Describe any Roblox system, mechanic, or UI change below. Attach scripts with <code className="font-mono text-ink">@</code> from Explorer, switch to <strong className="font-medium text-ink">Plan</strong> or toggle <strong className="font-medium text-ink">Review diffs</strong> to inspect unified hunks before applying to Studio, or use <strong className="font-medium text-ink">Ask</strong> for read-only explanations.
+              </p>
+
+              <div className="flex flex-col gap-1.5 pt-1">
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => setStartersOpen(true)}
+                  className="w-full justify-between bg-surface text-left max-md:min-h-11"
+                >
+                  <span className="inline-flex items-center gap-1.5 font-medium text-ink">
+                    <Sparkles className="size-3.5 text-blue" strokeWidth={1.5} aria-hidden />
+                    Browse Starters &amp; 28 Game Systems
+                  </span>
+                  <span className="font-mono text-xs text-ink-3">Open</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => {
+                    setText("Build a lava obby with 4 checkpoints, jump pads, and coin leaderstats");
+                    inputRef.current?.focus();
+                  }}
+                  className="w-full justify-start bg-surface text-left font-normal text-ink-2 hover:text-ink max-md:min-h-11"
+                >
+                  <span className="truncate">&ldquo;Build a lava obby with 4 checkpoints &amp; coins&rdquo;</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => {
+                    setComposerMode("plan");
+                    setText("Add a server-authoritative coin shop with a speed coil upgrade");
+                    inputRef.current?.focus();
+                  }}
+                  className="w-full justify-start bg-surface text-left font-normal text-ink-2 hover:text-ink max-md:min-h-11"
+                >
+                  <span className="truncate">&ldquo;Plan a coin shop with reviewable script diffs&rdquo;</span>
+                </Button>
+              </div>
+            </section>
+          </div>
+        ) : (
+          <ThreadFeed
+            lines={lines}
+            notices={notices}
+            pending={building}
+            ideas={ideas}
+            builtTitles={builtTitles}
+            canBuild={canBuild}
+            busy={busy}
+            buildingIdea={building?.build}
+            freshFrom={lines.length}
+            lastTriedIdea={lastTriedIdea}
+            buildPhase={buildPhase}
+            latestFileDiffs={latestFileDiffs}
+            proposals={proposals}
+            capturedFrameUrl={hasLiveFrame && frameSeq > 0 ? `/api/studio/frame?seq=${frameSeq}` : null}
+            onBuild={(idea) => void buildIdea(idea)}
+            onOpenScriptDiff={(p) => handleOpenScriptInCodeDiff(p)}
+            onInspectProposal={(pid, scriptPath) => {
+              setActiveProposalId(pid);
+              if (scriptPath) setSelectedScriptPath(scriptPath);
+              setCenterTab("code-diff");
+              setMobilePane("studio");
+            }}
+            onApplyProposal={(pid) => void handleApplyProposal(pid)}
+            onRejectProposal={(pid) => void handleRejectProposal(pid)}
+          />
+        )}
+      </div>
+
+      {/* Docked RoPilot Composer */}
+      <CopilotComposer
+        text={text}
+        onTextChange={setText}
+        inputRef={inputRef}
+        busy={busy}
+        canUndo={canUndo}
+        undoReason={undoReason}
+        place={place}
+        contextPaths={contextPaths}
+        pluginSelection={pluginStatus.selection}
+        onAddContextPath={handleAddContextPath}
+        onRemoveContextPath={handleRemoveContextPath}
+        mode={composerMode}
+        onModeChange={setComposerMode}
+        reviewDiffs={reviewDiffs}
+        onReviewDiffsChange={setReviewDiffs}
+        reasoning={reasoning}
+        onReasoningChange={setReasoning}
+        modelLabel={activeModelLabel}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onSubmit={send}
+        onConfirmUndo={() => void undoNow()}
+        showUpdateAvailable={update.isDismissedAvailable}
+        showUpdateRef={showUpdateRef}
+        onShowUpdateAgain={() => update.showAgain()}
+        canCheckUpdate={update.canCheck}
+        checkingUpdate={update.busy !== ""}
+        onCheckUpdate={() => void update.check()}
+      />
+    </aside>
+  );
+
   return (
     <MotionConfig reducedMotion="user">
       <div
-        className="relative flex h-dvh min-h-0 w-full overflow-hidden bg-canvas text-ink"
+        className="relative flex h-dvh min-h-0 w-full flex-col overflow-hidden bg-canvas text-ink"
         data-app="openro"
+        data-ide-layout="ropilot-3pane"
         onDragOver={onAppDragOver}
         onDragLeave={onAppDragLeave}
         onDrop={onAppDrop}
@@ -2193,433 +2933,141 @@ export function App() {
         )}
 
         <a className="skip" href="#composer-input">
-          Skip to message box
+          Skip to Copilot composer
         </a>
 
-        {!phone && <div className="w-[256px] flex-none border-r border-hairline">{rail}</div>}
-
-        <main className="flex min-w-0 flex-1 flex-col">
-          <header className="flex min-h-14 flex-none flex-col justify-center gap-2 border-b border-hairline bg-surface px-3 py-2 md:flex-row md:items-center md:justify-between md:px-6">
-            <div className="flex min-w-0 flex-1 items-center justify-between gap-2">
-              <div className="flex min-w-0 flex-1 items-center gap-2">
-                {phone && (
-                  <Drawer.Root open={menuOpen} onOpenChange={setMenuOpen} direction="left" autoFocus>
-                    <Drawer.Trigger asChild>
-                      <Button
-                        ref={menuKeyRef}
-                        variant="ghost"
-                        size="icon"
-                        aria-label="Open the menu"
-                        className="size-11"
-                      >
-                        <Menu className="size-5" strokeWidth={1.5} aria-hidden />
-                      </Button>
-                    </Drawer.Trigger>
-                    <Drawer.Portal>
-                      <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/30" />
-                      <Drawer.Content
-                        onEscapeKeyDown={(e) => {
-                          if (settingsOpen || paletteOpen || snapshotsOpen || toolLibraryOpen) {
-                            e.preventDefault();
-                            return;
-                          }
-                          setMenuOpen(false);
-                        }}
-                        onCloseAutoFocus={(e) => {
-                          e.preventDefault();
-                          (menuKeyRef.current ?? document.querySelector<HTMLElement>('[aria-label="Open the menu"]'))?.focus();
-                        }}
-                        className="fixed inset-y-0 left-0 z-50 w-[min(86vw,288px)] border-r border-hairline bg-surface outline-none"
-                      >
-                        <Drawer.Title className="sr-only">Chats and Studio controls</Drawer.Title>
-                        <Drawer.Description className="sr-only">
-                          Switch Studio chats, start a new chat, search commands, and open Settings.
-                        </Drawer.Description>
-                        {rail}
-                      </Drawer.Content>
-                    </Drawer.Portal>
-                  </Drawer.Root>
-                )}
-                <h2 className="min-w-0 flex-1 truncate text-base font-medium text-ink md:text-title">
-                  {activeTitle}
-                </h2>
-              </div>
-
-              {narrow && (
-                <Drawer.Root open={shelfOpen} onOpenChange={setShelfOpen} autoFocus>
-                  <Drawer.Trigger asChild>
-                    <Button
-                      ref={shelfKeyRef}
-                      variant="outline"
-                      size="sm"
-                      aria-label="In your game"
-                      data-answers-via="3"
-                      className="shrink-0 gap-1.5 max-md:min-h-11 max-md:px-3"
-                    >
-                      <FolderTree className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
-                      <span className="hidden sm:inline">In your game</span>
-                      <span className="rounded-chip bg-board px-1.5 py-0.5 font-mono text-xs tabular-nums text-ink">
-                        <SlidingNumber value={totalPieces} />
-                      </span>
-                    </Button>
-                  </Drawer.Trigger>
-                  <Drawer.Portal>
-                    <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/30" />
-                    <Drawer.Content
-                      onEscapeKeyDown={() => setShelfOpen(false)}
-                      onCloseAutoFocus={(e) => {
-                        e.preventDefault();
-                        (shelfKeyRef.current ?? document.querySelector<HTMLElement>('[aria-label="In your game"]'))?.focus();
-                      }}
-                      className="fixed inset-x-0 bottom-0 z-50 flex max-h-[82dvh] flex-col rounded-t-panel border-t border-hairline bg-surface outline-none"
-                    >
-                      <Drawer.Handle className="mx-auto mt-2.5 mb-1 h-1.5 w-10 rounded-full bg-track" />
-                      <Drawer.Title className="sr-only">In your game</Drawer.Title>
-                      <Drawer.Description className="sr-only">
-                        Roblox Studio DataModel Explorer listing Workspace parts and Luau scripts in your place.
-                      </Drawer.Description>
-                      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                        <PartsShelf
-                          gameName={shell.gameName}
-                          builtTitles={builtTitles}
-                          place={place}
-                          error={place === "error"}
-                          selectedPath={selectedPath}
-                          onSelectPath={setSelectedPath}
-                          onSaveInstance={handleSaveInstance}
-                          onSaveScript={handleSaveScript}
-                          onDuplicatePart={handleDuplicatePart}
-                          onDeletePart={handleDeletePart}
-                          onRunPlaytest={handleRunStudioPlaytest}
-                          onDownloadShipPack={handleDownloadShipPack}
-                          onImportClick={() => fileInputRef.current?.click()}
-                          onOpenSnapshots={() => {
-                            setShelfOpen(false);
-                            setSnapshotsOpen(true);
-                          }}
-                          snapshotCount={snapshots.length}
-                          buildDiff={buildDiff}
-                          serverDiagnostics={serverDiagnostics}
-                        />
-                      </div>
-                    </Drawer.Content>
-                  </Drawer.Portal>
-                </Drawer.Root>
-              )}
-            </div>
-
-            {/* Mobile Studio / Local Place status + Check again in first fold */}
-            {phone && (
-              <div className="flex w-full flex-wrap items-center justify-between gap-2 border-t border-hairline pt-2">
-                <div data-answers="2" className="flex items-center gap-1.5">
-                  <StudioChip connected={studioOk} workspaceMode={workspaceMode} />
-                  {!studioOk && (
-                    <Button variant="outline" size="sm" onClick={() => void checkStudio()} className="min-h-11">
-                      <RefreshCw className="size-3.5" strokeWidth={1.5} aria-hidden />
-                      Check again
-                    </Button>
-                  )}
-                </div>
-              </div>
-            )}
-          </header>
-
-          <div
-            className="server-banners"
-            onClick={onBannerClick}
-            dangerouslySetInnerHTML={{ __html: shell.bannerHtml }}
-          />
-          {update.show && <UpdateStrip u={update} />}
-
-          <div
-            id="thread"
-            ref={threadRef}
-            aria-live="polite"
-            aria-busy={!chats && !chatsError}
-            className="min-h-0 flex-1 overflow-y-auto"
-          >
-            <div className="mx-auto flex w-full max-w-[840px] flex-col gap-3.5 p-3.5 md:px-6 md:py-4">
-              {threadError ? (
-                <div role="alert" className="flex flex-col items-start gap-3 rounded-card border border-hairline bg-surface p-4">
-                  <strong className="text-ui font-medium text-pill-pro-fg">Could not load the conversation.</strong>
-                  <p className="text-sm text-ink-2">The OpenRO server did not answer. Try again, or reload the page.</p>
-                  <Button variant="default" onClick={() => void refreshAll()} className="max-md:min-h-11">
-                    Try again
+        {/* Responsive Compact Mobile/Tablet Header (< 1100px) */}
+        {narrow && (
+          <div className="flex min-h-12 flex-none items-center justify-between gap-2 border-b border-hairline bg-surface px-2.5 py-1.5">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <Drawer.Root open={menuOpen} onOpenChange={setMenuOpen} direction="left" autoFocus>
+                <Drawer.Trigger asChild>
+                  <Button
+                    ref={menuKeyRef}
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Open the menu"
+                    className="size-11 shrink-0"
+                  >
+                    <Menu className="size-5" strokeWidth={1.5} aria-hidden />
                   </Button>
-                </div>
-              ) : !hasConversation ? (
-                <>
-                  {(embedRevealed || embedStatus.running) && (
-                    <StagePreview
-                      place={place && place !== "error" ? place : { scripts: {}, instances: {} }}
-                      theme={theme}
-                      selectedPath={selectedPath}
-                      onSelectPart={handleSelectPartFromStage}
-                      assets={projectAssets}
-                      studioMode={studioMode}
-                      studioActions={studioActions}
-                      hasLiveFrame={hasLiveFrame}
-                      frameSeq={frameSeq}
-                      building={Boolean(building)}
-                      canRedo={canRedo}
-                      embedStatus={embedStatus}
-                      requestedTab={requestedViewportTab}
-                      onSaveInstance={handleSaveInstance}
-                      onCreatePart={handleCreatePart}
-                      onDuplicatePart={handleDuplicatePart}
-                      onDeletePart={handleDeletePart}
-                      onTriggerRedo={handleRedo}
-                      onRunPlaytest={handleRunStudioPlaytest}
-                      onCaptureFrame={handleCaptureStudioFrame}
-                      onConnectMcp={handleConnectMcp}
-                      onDisconnectMcp={handleDisconnectMcp}
-                      onLaunchEmbed={handleLaunchEmbed}
-                      onStopEmbed={handleStopEmbed}
-                      onRefreshEmbedStatus={() => void refreshEmbedStatus(true)}
-                      onSendMouseInput={handleSendMouseInput}
-                      onSendKeyboardInput={handleSendKeyboardInput}
-                      onInvokeStudioTool={handleInvokeStudioTool}
-                    />
-                  )}
-                  <BlueprintWorkbench
-                    ideas={workbenchIdeas}
-                    builtTitles={builtTitles}
-                    canBuild={canBuild}
-                    cantBuildWhy={cantBuildWhy}
-                    busy={busy}
-                    buildingTitle={building?.build}
-                    onBuild={(idea) => void buildIdea(idea)}
-                  />
-                  <SystemLibrary
-                    place={place}
-                    canBuild={canBuild}
-                    busy={busy}
-                    buildingTitle={building?.build}
-                    onAddSystem={(sys) => void addSystem(sys)}
-                  />
-                </>
-              ) : (
-                <>
-                  <div className="sr-only" id="stage-title">
-                    Studio build thread
-                  </div>
-                  {(totalPieces > 0 || Boolean(building) || studioMode === "live_mcp" || hasLiveFrame || embedStatus.running || embedRevealed) && (
-                    <StagePreview
-                      place={place && place !== "error" ? place : { scripts: {}, instances: {} }}
-                      theme={theme}
-                      selectedPath={selectedPath}
-                      onSelectPart={handleSelectPartFromStage}
-                      assets={projectAssets}
-                      studioMode={studioMode}
-                      studioActions={studioActions}
-                      hasLiveFrame={hasLiveFrame}
-                      frameSeq={frameSeq}
-                      building={Boolean(building)}
-                      canRedo={canRedo}
-                      embedStatus={embedStatus}
-                      requestedTab={requestedViewportTab}
-                      onSaveInstance={handleSaveInstance}
-                      onCreatePart={handleCreatePart}
-                      onDuplicatePart={handleDuplicatePart}
-                      onDeletePart={handleDeletePart}
-                      onTriggerRedo={handleRedo}
-                      onRunPlaytest={handleRunStudioPlaytest}
-                      onCaptureFrame={handleCaptureStudioFrame}
-                      onConnectMcp={handleConnectMcp}
-                      onDisconnectMcp={handleDisconnectMcp}
-                      onLaunchEmbed={handleLaunchEmbed}
-                      onStopEmbed={handleStopEmbed}
-                      onRefreshEmbedStatus={() => void refreshEmbedStatus(true)}
-                      onSendMouseInput={handleSendMouseInput}
-                      onSendKeyboardInput={handleSendKeyboardInput}
-                      onInvokeStudioTool={handleInvokeStudioTool}
-                    />
-                  )}
-                  <ThreadFeed
-                    lines={lines}
-                    notices={notices}
-                    pending={building}
-                    ideas={ideas}
-                    builtTitles={builtTitles}
-                    canBuild={canBuild}
-                    busy={busy}
-                    buildingIdea={building?.build}
-                    freshFrom={lines.length}
-                    lastTriedIdea={lastTriedIdea}
-                    buildPhase={buildPhase}
-                    onBuild={(idea) => void buildIdea(idea)}
-                  />
-                  {!building && workbenchIdeas.some((i) => !builtTitles.includes(i.title)) && !lines.some((l) => l.startsWith("OpenRO: That landed.")) && (
-                    <BlueprintWorkbench
-                      ideas={workbenchIdeas}
-                      builtTitles={builtTitles}
-                      canBuild={canBuild}
-                      cantBuildWhy={cantBuildWhy}
-                      busy={busy}
-                      onBuild={(idea) => void buildIdea(idea)}
-                    />
-                  )}
-                  <SystemLibrary
-                    place={place}
-                    canBuild={canBuild}
-                    busy={busy}
-                    buildingTitle={building?.build}
-                    onAddSystem={(sys) => void addSystem(sys)}
-                  />
-                </>
-              )}
+                </Drawer.Trigger>
+                <Drawer.Portal>
+                  <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/30" />
+                  <Drawer.Content
+                    onEscapeKeyDown={(e) => {
+                      if (settingsOpen || paletteOpen || snapshotsOpen || toolLibraryOpen || pluginDialogOpen || startersOpen) {
+                        e.preventDefault();
+                        return;
+                      }
+                      setMenuOpen(false);
+                    }}
+                    onCloseAutoFocus={(e) => {
+                      e.preventDefault();
+                      (menuKeyRef.current ?? document.querySelector<HTMLElement>('[aria-label="Open the menu"]'))?.focus();
+                    }}
+                    className="fixed inset-y-0 left-0 z-50 w-[min(86vw,288px)] border-r border-hairline bg-surface outline-none"
+                  >
+                    <Drawer.Title className="sr-only">Explorer, Chats, and Studio controls</Drawer.Title>
+                    <Drawer.Description className="sr-only">
+                      Browse Studio Explorer, switch chats, open Tool Library, Studio Plugin, or Settings.
+                    </Drawer.Description>
+                    {leftDockBody}
+                  </Drawer.Content>
+                </Drawer.Portal>
+              </Drawer.Root>
+              <span className="truncate text-sm font-medium text-ink">OpenRO</span>
             </div>
-          </div>
 
-          {/* Hairline Bottom Composer Dock */}
-          <div data-answers="4" className="flex-none border-t border-hairline bg-surface">
-            <div className="mx-auto flex w-full max-w-[840px] flex-col gap-2 px-3 py-2.5 md:px-6 md:py-3.5">
-              <form id="composer" onSubmit={send} className="grid gap-2 sm:flex sm:items-end">
-                <InputGroup className="min-w-0 bg-canvas/55 sm:flex-1">
-                  <InputGroupTextarea
-                    ref={inputRef}
-                    id="composer-input"
-                    rows={1}
-                    aria-label="Describe your game"
-                    placeholder={
-                      compactInput
-                        ? "Describe your game…"
-                        : "Describe a game or change, e.g. lava obby with coins…"
-                    }
-                    value={text}
-                    onChange={(e) => setText(e.target.value)}
-                    onKeyDown={onComposerKeyDown}
-                    className="[&_textarea]:!min-h-11 [&_textarea]:max-h-28 [&_textarea]:!py-2.5 [&_textarea]:leading-5"
-                  />
-                  <InputGroupAddon align="inline-end" className="has-[>button]:me-0 self-center pe-1.5">
-                    <MorphingDialog transition={open}>
-                      <MorphingDialogTrigger
-                        thing="undo"
-                        blocked={!canUndo}
-                        describedBy={undoReason ? "undo-reason" : undefined}
-                        aria-label="Undo"
-                        className="inline-flex min-h-11 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-ink-2 outline-none transition-[color,background-color,border-color] duration-(--dur-press) ease-(--ease-house) hover:bg-track hover:text-ink disabled:text-ink-3 md:min-h-8"
-                      >
-                        <Undo2 className="size-3.5" strokeWidth={1.5} aria-hidden />
-                        <span>Undo</span>
-                      </MorphingDialogTrigger>
-                      <MorphingDialogContainer>
-                        <MorphingDialogContent className="relative mx-4 w-full max-w-[420px] rounded-dialog border border-hairline bg-surface p-5 text-ink shadow-lift">
-                          <div onClick={onUndoClick} data-undo-dialog className="flex flex-col gap-4">
-                            <div>
-                              <MorphingDialogTitle className="text-title font-medium text-ink">
-                                Undo the last build?
-                              </MorphingDialogTitle>
-                              <MorphingDialogDescription className="mt-1 text-sm text-ink-2">
-                                OpenRO restores the scripts and Workspace instances modified by the most recent build in this chat.
-                              </MorphingDialogDescription>
-                            </div>
-                            <div className="flex flex-wrap justify-end gap-2">
-                              <MorphingDialogClose
-                                aria-label="Keep it"
-                                className="static inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-hairline bg-surface px-4 text-sm font-medium text-ink outline-none transition-[color,background-color,border-color] duration-(--dur-press) ease-(--ease-house) hover:bg-board md:min-h-9"
-                              >
-                                Keep it
-                              </MorphingDialogClose>
-                              <MorphingDialogClose
-                                data-undo-yes
-                                aria-label="Yes, undo it"
-                                className="static inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-blue bg-blue px-4 text-sm font-medium text-blue-fg outline-none transition-[color,background-color,border-color] duration-(--dur-press) ease-(--ease-house) hover:bg-blue-hover md:min-h-9"
-                              >
-                                Yes, undo it
-                              </MorphingDialogClose>
-                            </div>
-                          </div>
-                        </MorphingDialogContent>
-                      </MorphingDialogContainer>
-                    </MorphingDialog>
-                  </InputGroupAddon>
-                </InputGroup>
-
-                <Button
-                  type="submit"
-                  variant="default"
-                  disabled={busy || !text.trim()}
-                  className="h-11 w-full px-4 sm:w-auto"
-                >
-                  <Send className="size-4" strokeWidth={1.5} aria-hidden />
-                  Send
-                </Button>
-              </form>
-
-              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-ink-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="hidden items-center gap-1 sm:inline-flex">
-                    <Kbd className="px-1.5 font-mono">Enter</Kbd>
-                    <span>send</span>
-                    <span aria-hidden>·</span>
-                    <Kbd className="px-1.5 font-mono">Shift+Enter</Kbd>
-                    <span>new line</span>
-                    <span aria-hidden>·</span>
-                    <Kbd className="px-1.5 font-mono">⌘K</Kbd>
-                    <span>commands</span>
+            <SegmentedControl aria-label="Switch Studio or Copilot view" size="sm">
+              <SegmentedControlItem
+                data-checked={mobilePane === "studio" ? "" : undefined}
+                aria-pressed={mobilePane === "studio"}
+                onClick={() => setMobilePane("studio")}
+                className="gap-1 max-md:!h-11 max-md:px-2.5"
+              >
+                <Monitor className="size-3.5" strokeWidth={1.5} aria-hidden />
+                <span>Studio</span>
+              </SegmentedControlItem>
+              <SegmentedControlItem
+                data-checked={mobilePane === "copilot" ? "" : undefined}
+                aria-pressed={mobilePane === "copilot"}
+                onClick={() => setMobilePane("copilot")}
+                className="gap-1 max-md:!h-11 max-md:px-2.5"
+              >
+                <Sparkles className="size-3.5" strokeWidth={1.5} aria-hidden />
+                <span>Copilot</span>
+                {pendingProposalCount > 0 && (
+                  <span className="rounded-chip bg-blue px-1 font-mono text-xs text-blue-fg">
+                    {pendingProposalCount}
                   </span>
-                  {undoReason && <span id="undo-reason">{undoReason}</span>}
-                </div>
-
-                {/* Always-reachable update controls at every viewport width */}
-                <div className="flex items-center gap-1.5">
-                  {update.isDismissedAvailable && (
-                    <Button
-                      ref={showUpdateRef}
-                      variant="ghost"
-                      size="xs"
-                      onClick={() => update.showAgain()}
-                      className="text-ink underline-offset-2 hover:underline max-md:min-h-11 max-md:px-2.5"
-                    >
-                      Show update
-                    </Button>
-                  )}
-                  {update.canCheck && (
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      aria-label="Check for updates"
-                      disabled={update.busy !== ""}
-                      onClick={() => void update.check()}
-                      className="text-ink-2 hover:text-ink max-md:min-h-11 max-md:px-2.5"
-                    >
-                      <RefreshCw className="size-3" strokeWidth={1.5} aria-hidden />
-                      <span>Check updates</span>
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        </main>
-
-        {!narrow && (
-          <div className="flex-none border-l border-hairline" style={{ width: shelfCollapsed ? "auto" : 316 }}>
-            <PartsShelf
-              gameName={shell.gameName}
-              builtTitles={builtTitles}
-              place={place}
-              error={place === "error"}
-              collapsed={shelfCollapsed}
-              onToggle={() => setShelfCollapsed((c) => !c)}
-              answerAttr
-              selectedPath={selectedPath}
-              onSelectPath={setSelectedPath}
-              onSaveInstance={handleSaveInstance}
-              onSaveScript={handleSaveScript}
-              onDuplicatePart={handleDuplicatePart}
-              onDeletePart={handleDeletePart}
-              onRunPlaytest={handleRunStudioPlaytest}
-              onDownloadShipPack={handleDownloadShipPack}
-              onImportClick={() => fileInputRef.current?.click()}
-              onOpenSnapshots={() => setSnapshotsOpen(true)}
-              snapshotCount={snapshots.length}
-              buildDiff={buildDiff}
-              serverDiagnostics={serverDiagnostics}
-            />
+                )}
+              </SegmentedControlItem>
+            </SegmentedControl>
           </div>
         )}
+
+        {/* Main 3-Pane IDE Shell */}
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          {/* Pane 1: Desktop Left Dock (248px collapsible) */}
+          {!narrow && !leftDockCollapsed && (
+            <div className="w-[248px] flex-none border-r border-hairline">{leftDockBody}</div>
+          )}
+
+          {/* Pane 2: Center Studio Workspace */}
+          {(!narrow || mobilePane === "studio") && centerWorkspace}
+
+          {/* Pane 3: Right Docked RoPilot Copilot (380px collapsible on desktop, full width on mobile Copilot tab) */}
+          {!narrow ? (
+            !rightDockCollapsed && (
+              <div className="w-[380px] flex-none border-l border-hairline">{rightCopilot}</div>
+            )
+          ) : (
+            mobilePane === "copilot" && <div className="flex min-h-0 min-w-0 flex-1 flex-col">{rightCopilot}</div>
+          )}
+        </div>
+
+        {/* Starters & 28 Game Systems Dialog (on demand from Copilot Header / Welcome / Palette) */}
+        <MorphingDialog open={startersOpen} onOpenChange={setStartersOpen} transition={dialogSpring}>
+          <MorphingDialogContainer>
+            <MorphingDialogContent className="relative mx-4 flex max-h-[86dvh] w-full max-w-[920px] flex-col overflow-hidden rounded-dialog border border-hairline bg-surface text-ink shadow-lift">
+              <div className="flex flex-none items-center justify-between gap-2 border-b border-hairline bg-board/60 px-5 py-3.5">
+                <div className="min-w-0">
+                  <MorphingDialogTitle className="text-base font-medium text-ink">
+                    Starters &amp; 28 Roblox Game Systems
+                  </MorphingDialogTitle>
+                  <MorphingDialogDescription className="text-xs text-ink-2">
+                    Launch a full playable starter place or compose individual Luau systems directly into Studio.
+                  </MorphingDialogDescription>
+                </div>
+                <MorphingDialogClose
+                  aria-label="Close Starters dialog"
+                  className="static inline-flex size-8 items-center justify-center rounded-md text-ink-2 outline-none hover:bg-board hover:text-ink max-md:size-11"
+                >
+                  <X className="size-4" strokeWidth={1.5} aria-hidden />
+                </MorphingDialogClose>
+              </div>
+              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-5">
+                <BlueprintWorkbench
+                  ideas={workbenchIdeas}
+                  builtTitles={builtTitles}
+                  canBuild={canBuild}
+                  cantBuildWhy={cantBuildWhy}
+                  busy={busy}
+                  buildingTitle={building?.build}
+                  onBuild={(idea) => void buildIdea(idea)}
+                />
+                <SystemLibrary
+                  place={place}
+                  canBuild={canBuild}
+                  busy={busy}
+                  buildingTitle={building?.build}
+                  onAddSystem={(sys) => void addSystem(sys)}
+                />
+              </div>
+            </MorphingDialogContent>
+          </MorphingDialogContainer>
+        </MorphingDialog>
 
         <CommandPalette
           open={paletteOpen}
@@ -2630,9 +3078,9 @@ export function App() {
           canUndo={canUndo}
           canRedo={canRedo}
           onAddSystem={(sys) => void addSystem(sys)}
-          onSelectPath={handleSelectPartFromStage}
+          onSelectPath={handleSelectPartAndInspect}
           onNewChat={() => void newChat()}
-          onExportRbxlx={() => void triggerExportFromPalette()}
+          onExportRbxlx={() => void handleExportRbxlx()}
           onDownloadShipPack={() => void handleDownloadShipPack()}
           onAddBlockPart={() => void handleCreatePart("block")}
           onImportRbxlxClick={() => fileInputRef.current?.click()}
@@ -2643,10 +3091,36 @@ export function App() {
             void refreshLibrary();
             void refreshMarketTaste();
           }}
-          onOpenEmbeddedStudio={handleOpenEmbeddedStudio}
+          onOpenEmbeddedStudio={() => {
+            setCenterTab("embedded-studio");
+            setMobilePane("studio");
+          }}
+          onOpenCodeDiff={() => {
+            setCenterTab("code-diff");
+            setMobilePane("studio");
+          }}
+          onOpenStudioPlugin={() => {
+            setPluginDialogOpen(true);
+            void refreshPluginStatus(true);
+          }}
+          onToggleBottomDrawer={() => setBottomDrawerOpen((v) => !v)}
+          onOpenStarters={() => setStartersOpen(true)}
           onRunPlaytest={() => void handleRunStudioPlaytest()}
           onTriggerUndo={() => void undoNow()}
           onTriggerRedo={() => void handleRedo()}
+        />
+
+        <StudioPluginDialog
+          open={pluginDialogOpen}
+          onOpenChange={setPluginDialogOpen}
+          status={pluginStatus}
+          v0100Ready={v0100Ready}
+          onRefreshStatus={() => refreshPluginStatus(true)}
+          onAttachSelection={(paths) => {
+            for (const p of paths) handleAddContextPath(p);
+            toast.success(`Attached ${paths.length} selected Studio item(s) to Copilot`);
+            setPluginDialogOpen(false);
+          }}
         />
 
         <ToolLibraryDialog
@@ -2695,7 +3169,7 @@ export function App() {
             }
           }}
         />
-        <Toaster position="bottom-right" theme={theme} />
+        <Toaster position="top-center" theme={theme} />
       </div>
     </MotionConfig>
   );
