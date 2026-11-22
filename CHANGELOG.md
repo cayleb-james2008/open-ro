@@ -6,6 +6,10 @@ itself from the newest release (see README, "Versions and updates").
 
 ## Unreleased (0.11.0)
 
+- **Rojo Projects API, Chunked Studio Sync, Playtest Runner & Project Git Hooks (`src/projects.rs`, `src/project_api.rs`, `src/studio_sync.rs`, `src/playtest.rs`, `docs/API-V011.md`):**
+  - Added full Rojo project management (`/api/projects*`, manifest with server-enforced human `priceApproved` gate, path-safe file read/write/edit/delete, `.rbxlx` builds via `rojo` or built-in writer, `/check` for `selene`/`stylua`/Luau, `/run-lune` runner, and scoped `/git/{status,log,commit,revert}`).
+  - Added chunked one-way Studio push-sync (`/sync/diff`, `/sync` with structural services before `Workspace`, >30k script splitting, post-apply verification) and automated Playtest Runner (`/playtest`, `/playtests`, JSON/HTML reports, PNG screenshot gallery, stale console-error diffing).
+  - Fixed Auto-mode Studio detection (`McpClient::has_live_studio` falls back to `local_place` when no Studio place is open), upright `PartType.Cylinder` orientation & `<Content><url>` XML export, mesh/audio bundle inclusion, `luau_check` cylinder/VFX warnings, `--data-dir` CLI flag, Vinegar first-launch plugin auto-install, and `/api/studio/launch-and-continue`.
 - **Projects, Ship & Teamwork Studio IDE UI + Playable Stage Removal (`frontend/src/app/ship/`, `frontend/src/app/teamwork/`, `frontend/src/App.tsx`, `SettingsDialog.tsx`):**
   - Removed `Playable Stage` (`StagePreview.tsx`) completely across UI and docs.
   - Added Left-dock **Projects** rail (create/open/build/diff/sync), **Ship** workspace (`Publish & Monetize` with human price-approval gate & inline Universe/Place ID dialog, `Assets` queue/lock/moderation, `Playtests` report & screenshot viewer), **Teamwork** multi-agent board pane (live SSE feed, roster states, tasks & file claims, traces, human post box, quota banner), **Antigravity** model picker with quota/reset display, and write-only masked **Roblox Open Cloud** Settings.
