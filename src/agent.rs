@@ -58,6 +58,28 @@ pub const NOTHING_TO_REVERT: &str = "nothing to revert";
 /// Returned by `redo_chat` when the chat has no undone change set waiting.
 pub const NOTHING_TO_REDO: &str = "nothing to redo";
 
+/// Official Roblox Studio MCP tools exposed via `POST /api/studio/tools/:tool`
+/// and natively usable by the OpenRO agent when a live Studio MCP bridge is attached.
+pub const OFFICIAL_STUDIO_MCP_TOOLS: [&str; 13] = [
+    "list_roblox_studios",
+    "get_studio_state",
+    "search_game_tree",
+    "inspect_instance",
+    "script_read",
+    "script_grep",
+    "multi_edit",
+    "execute_luau",
+    "get_console_output",
+    "screen_capture",
+    "start_stop_play",
+    "user_mouse_input",
+    "user_keyboard_input",
+];
+
+pub fn is_official_studio_tool(name: &str) -> bool {
+    OFFICIAL_STUDIO_MCP_TOOLS.contains(&name)
+}
+
 /// The system prompt, generated from the skill registry so the model is
 /// told exactly the skills that exist, with their real parameters.
 pub fn system_prompt() -> String {
@@ -959,6 +981,491 @@ impl Agent {
         self.emit_studio_action(ev);
         let _ = self.auto_capture_mcp_frame();
         Ok(res)
+    }
+
+    /// List the official Roblox Studio MCP tools currently usable on the active backend.
+    pub fn available_studio_tools(&self) -> Vec<String> {
+        match &self.studio {
+            Some(PlaceBackend::Mcp(mcp)) => {
+                if mcp.tools_known() {
+                    OFFICIAL_STUDIO_MCP_TOOLS
+                        .iter()
+                        .filter(|t| mcp.has_tool(t))
+                        .map(|t| (*t).to_string())
+                        .collect()
+                } else {
+                    OFFICIAL_STUDIO_MCP_TOOLS
+                        .iter()
+                        .map(|t| (*t).to_string())
+                        .collect()
+                }
+            }
+            Some(PlaceBackend::Local(_)) => [
+                "list_roblox_studios",
+                "get_studio_state",
+                "search_game_tree",
+                "inspect_instance",
+                "script_read",
+                "script_grep",
+                "multi_edit",
+                "get_console_output",
+                "start_stop_play",
+            ]
+            .iter()
+            .map(|t| (*t).to_string())
+            .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Invoke one of the 13 official Roblox Studio MCP tools (`POST /api/studio/tools/:tool`
+    /// or `POST /api/studio/input/{mouse,keyboard}`), streaming matching `StudioActionEvent`
+    /// records and auto-capturing a fresh PNG frame on interactive/mutating tools.
+    pub fn invoke_studio_tool(
+        &mut self,
+        chat_id: &str,
+        tool: &str,
+        args: Value,
+    ) -> Result<(Value, Option<u64>), String> {
+        if !is_official_studio_tool(tool) {
+            return Err(format!("unknown or unsupported Studio tool: {tool}"));
+        }
+        let args_obj = if args.is_object() { args } else { json!({}) };
+        match self.studio.as_mut() {
+            Some(PlaceBackend::Mcp(_)) => {
+                if tool == "screen_capture" {
+                    let frame = self.capture_studio_frame()?;
+                    return Ok((frame.meta_json(), Some(frame.seq)));
+                }
+                if tool == "get_console_output" {
+                    let lines = match self.studio.as_mut() {
+                        Some(PlaceBackend::Mcp(mcp)) => mcp.get_console_output()?,
+                        _ => Vec::new(),
+                    };
+                    return Ok((
+                        json!({
+                            "ok": true,
+                            "lines": lines,
+                            "console": lines.join("\n"),
+                        }),
+                        None,
+                    ));
+                }
+                if tool == "start_stop_play" {
+                    let mode = args_obj
+                        .get("mode")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("start_play")
+                        .to_string();
+                    let val = match self.studio.as_mut() {
+                        Some(PlaceBackend::Mcp(mcp)) => mcp.start_stop_play(&mode)?,
+                        _ => return Err("Studio not connected".to_string()),
+                    };
+                    let fseq = self.auto_capture_mcp_frame();
+                    let mut ev = StudioActionInput::new(
+                        if mode == "stop" {
+                            StudioActionKind::PlaytestPassed
+                        } else {
+                            StudioActionKind::PlaytestStarted
+                        },
+                        format!("Studio start_stop_play({mode})"),
+                    );
+                    ev.path = "Workspace".to_string();
+                    ev.class_name = "RunService".to_string();
+                    ev.frame_seq = fseq;
+                    self.emit_studio_action(ev);
+                    return Ok((val, fseq));
+                }
+
+                let raw_text = match self.studio.as_mut() {
+                    Some(PlaceBackend::Mcp(mcp)) => mcp.call_tool(tool, args_obj.clone())?,
+                    _ => return Err("Studio not connected".to_string()),
+                };
+                let parsed = serde_json::from_str::<Value>(&raw_text)
+                    .unwrap_or_else(|_| json!({ "text": raw_text }));
+
+                let captures_frame = matches!(
+                    tool,
+                    "multi_edit" | "execute_luau" | "user_mouse_input" | "user_keyboard_input"
+                );
+                let fseq = if captures_frame {
+                    self.auto_capture_mcp_frame()
+                } else {
+                    None
+                };
+
+                let (kind, path, class_name, summary) = match tool {
+                    "execute_luau" => (
+                        StudioActionKind::LuauExecuted,
+                        "ServerScriptService".to_string(),
+                        "Script".to_string(),
+                        "Executed Luau inside live Roblox Studio".to_string(),
+                    ),
+                    "multi_edit" => (
+                        StudioActionKind::ScriptWritten,
+                        args_obj
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("ServerScriptService")
+                            .to_string(),
+                        "Script".to_string(),
+                        "Applied multi_edit to Studio script".to_string(),
+                    ),
+                    "user_mouse_input" => (
+                        StudioActionKind::CameraFocus,
+                        "Workspace.CurrentCamera".to_string(),
+                        "Camera".to_string(),
+                        format!(
+                            "Mouse {} ({}, {}) in Embedded Studio",
+                            args_obj
+                                .get("action")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("click"),
+                            args_obj.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                            args_obj.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        ),
+                    ),
+                    "user_keyboard_input" => (
+                        StudioActionKind::CameraFocus,
+                        "Workspace.CurrentCamera".to_string(),
+                        "UserInputService".to_string(),
+                        format!(
+                            "Keyboard {} in Embedded Studio",
+                            args_obj
+                                .get("key")
+                                .or_else(|| args_obj.get("text"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("input")
+                        ),
+                    ),
+                    _ => (
+                        StudioActionKind::CameraFocus,
+                        "Workspace".to_string(),
+                        "StudioService".to_string(),
+                        format!("Called Roblox Studio tool {tool}"),
+                    ),
+                };
+                if captures_frame {
+                    let mut ev = StudioActionInput::new(kind, summary);
+                    ev.path = path;
+                    ev.class_name = class_name;
+                    ev.frame_seq = fseq;
+                    if tool == "execute_luau" {
+                        if let Some(code) = args_obj
+                            .get("code")
+                            .or_else(|| args_obj.get("source"))
+                            .and_then(|v| v.as_str())
+                        {
+                            ev.code_snippet = Some(snippet_from_source(code));
+                        }
+                    }
+                    self.emit_studio_action(ev);
+                }
+                Ok((parsed, fseq))
+            }
+            Some(PlaceBackend::Local(_)) => self.invoke_local_studio_tool(chat_id, tool, &args_obj),
+            None => Err("Studio not connected".to_string()),
+        }
+    }
+
+    fn invoke_local_studio_tool(
+        &mut self,
+        chat_id: &str,
+        tool: &str,
+        args: &Value,
+    ) -> Result<(Value, Option<u64>), String> {
+        match tool {
+            "screen_capture" | "user_mouse_input" | "user_keyboard_input" | "execute_luau" => Err(
+                format!(
+                    "Tool '{tool}' requires a connected live Roblox Studio MCP session (currently running Local Place Engine). Click Launch & Embed Studio or Connect MCP."
+                ),
+            ),
+            "list_roblox_studios" => Ok((
+                json!({
+                    "studios": [],
+                    "studio_mode": "local_place",
+                    "note": "Running Local Place Engine; launch or connect Roblox Studio MCP to attach live instances."
+                }),
+                None,
+            )),
+            "get_studio_state" => {
+                let Some(PlaceBackend::Local(local)) = self.studio.as_ref() else {
+                    return Err("Studio not connected".to_string());
+                };
+                Ok((
+                    json!({
+                        "studio_mode": "local_place",
+                        "datamodel_type": "Edit",
+                        "is_playing": false,
+                        "game_name": local.game_name(),
+                        "instance_count": local.instances().len(),
+                        "script_count": local.scripts().len(),
+                    }),
+                    None,
+                ))
+            }
+            "search_game_tree" => {
+                let Some(PlaceBackend::Local(local)) = self.studio.as_ref() else {
+                    return Err("Studio not connected".to_string());
+                };
+                let q = args
+                    .get("query")
+                    .or_else(|| args.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase();
+                let class_filter = args
+                    .get("class_name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_ascii_lowercase())
+                    .filter(|s| !s.is_empty());
+                let mut matches = Vec::new();
+                for (path, rec) in local.instances() {
+                    let cls = rec
+                        .get("class_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Instance");
+                    if !q.is_empty() && !path.to_ascii_lowercase().contains(&q) {
+                        continue;
+                    }
+                    if let Some(cf) = &class_filter {
+                        if cls.to_ascii_lowercase() != *cf {
+                            continue;
+                        }
+                    }
+                    matches.push(json!({
+                        "path": path,
+                        "name": path.rsplit('.').next().unwrap_or(path),
+                        "class_name": cls,
+                        "kind": "instance",
+                    }));
+                }
+                for (path, src) in local.scripts() {
+                    let cls = if path.starts_with("StarterGui.") || path.starts_with("StarterPlayer.")
+                    {
+                        "LocalScript"
+                    } else if path.starts_with("ReplicatedStorage.") {
+                        "ModuleScript"
+                    } else {
+                        "Script"
+                    };
+                    if !q.is_empty() && !path.to_ascii_lowercase().contains(&q) {
+                        continue;
+                    }
+                    if let Some(cf) = &class_filter {
+                        if cls.to_ascii_lowercase() != *cf {
+                            continue;
+                        }
+                    }
+                    matches.push(json!({
+                        "path": path,
+                        "name": path.rsplit('.').next().unwrap_or(path),
+                        "class_name": cls,
+                        "kind": "script",
+                        "lines": src.lines().count(),
+                    }));
+                }
+                Ok((json!({ "count": matches.len(), "matches": matches }), None))
+            }
+            "inspect_instance" => {
+                let Some(PlaceBackend::Local(local)) = self.studio.as_ref() else {
+                    return Err("Studio not connected".to_string());
+                };
+                let path = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| "inspect_instance requires string 'path'".to_string())?;
+                if let Some(rec) = local.instances().get(path) {
+                    let prefix = format!("{path}.");
+                    let children: Vec<String> = local
+                        .instances()
+                        .keys()
+                        .chain(local.scripts().keys())
+                        .filter(|k| k.starts_with(&prefix))
+                        .cloned()
+                        .collect();
+                    return Ok((
+                        json!({
+                            "path": path,
+                            "kind": "instance",
+                            "class_name": rec.get("class_name").and_then(|v| v.as_str()).unwrap_or("Instance"),
+                            "properties": rec.get("properties").cloned().unwrap_or_else(|| json!({})),
+                            "children": children,
+                        }),
+                        None,
+                    ));
+                }
+                if let Some(src) = local.scripts().get(path) {
+                    return Ok((
+                        json!({
+                            "path": path,
+                            "kind": "script",
+                            "class_name": if path.starts_with("StarterGui.") || path.starts_with("StarterPlayer.") { "LocalScript" } else { "Script" },
+                            "lines": src.lines().count(),
+                            "bytes": src.len(),
+                            "source": src,
+                        }),
+                        None,
+                    ));
+                }
+                Err(format!("no instance or script at {path}"))
+            }
+            "script_read" => {
+                let Some(PlaceBackend::Local(local)) = self.studio.as_ref() else {
+                    return Err("Studio not connected".to_string());
+                };
+                let path = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| "script_read requires string 'path'".to_string())?;
+                let src = local
+                    .scripts()
+                    .get(path)
+                    .ok_or_else(|| format!("no script at {path}"))?;
+                let all_lines: Vec<&str> = src.lines().collect();
+                let start = args
+                    .get("start_line")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1)
+                    .max(1) as usize;
+                let end = args
+                    .get("end_line")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize)
+                    .unwrap_or(all_lines.len())
+                    .min(all_lines.len());
+                let slice = if start <= end && start >= 1 {
+                    all_lines[start - 1..end].join("\n")
+                } else {
+                    String::new()
+                };
+                Ok((
+                    json!({
+                        "path": path,
+                        "total_lines": all_lines.len(),
+                        "start_line": start,
+                        "end_line": end,
+                        "source": slice,
+                    }),
+                    None,
+                ))
+            }
+            "script_grep" => {
+                let Some(PlaceBackend::Local(local)) = self.studio.as_ref() else {
+                    return Err("Studio not connected".to_string());
+                };
+                let needle = args
+                    .get("query")
+                    .or_else(|| args.get("pattern"))
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| "script_grep requires string 'query' or 'pattern'".to_string())?;
+                let low = needle.to_ascii_lowercase();
+                let mut hits = Vec::new();
+                for (path, src) in local.scripts() {
+                    for (idx, line) in src.lines().enumerate() {
+                        if line.to_ascii_lowercase().contains(&low) {
+                            hits.push(json!({
+                                "path": path,
+                                "line": idx + 1,
+                                "text": line,
+                            }));
+                            if hits.len() >= 200 {
+                                break;
+                            }
+                        }
+                    }
+                    if hits.len() >= 200 {
+                        break;
+                    }
+                }
+                Ok((
+                    json!({
+                        "query": needle,
+                        "count": hits.len(),
+                        "matches": hits,
+                    }),
+                    None,
+                ))
+            }
+            "multi_edit" => {
+                let path = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| "multi_edit requires string 'path'".to_string())?;
+                let edits = args
+                    .get("edits")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| "multi_edit requires array 'edits'".to_string())?;
+                let mut src = match self.studio.as_ref() {
+                    Some(PlaceBackend::Local(local)) => local
+                        .scripts()
+                        .get(path)
+                        .cloned()
+                        .ok_or_else(|| format!("no script at {path}"))?,
+                    _ => return Err("Studio not connected".to_string()),
+                };
+                let mut applied = 0usize;
+                for ed in edits {
+                    let old_s = ed
+                        .get("old_str")
+                        .or_else(|| ed.get("old_text"))
+                        .or_else(|| ed.get("find"))
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| "each edit requires 'old_str'".to_string())?;
+                    let new_s = ed
+                        .get("new_str")
+                        .or_else(|| ed.get("new_text"))
+                        .or_else(|| ed.get("replace"))
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| "each edit requires 'new_str'".to_string())?;
+                    if !src.contains(old_s) {
+                        return Err(format!("multi_edit target not found in {path}"));
+                    }
+                    src = src.replacen(old_s, new_s, 1);
+                    applied += 1;
+                }
+                let updated = self.update_script_source(chat_id, path, &src)?;
+                let mut out = updated.to_json();
+                if let Some(obj) = out.as_object_mut() {
+                    obj.insert("edits_applied".to_string(), json!(applied));
+                }
+                Ok((out, None))
+            }
+            "get_console_output" => {
+                let console = self
+                    .studio_mut()?
+                    .call_tool("get_console", json!({}))
+                    .unwrap_or_default();
+                let lines: Vec<String> = console
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(String::from)
+                    .collect();
+                Ok((json!({ "lines": lines, "console": lines.join("\n") }), None))
+            }
+            "start_stop_play" => {
+                let mode = args
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("start_play");
+                if mode == "stop" {
+                    return Ok((json!({ "ok": true, "mode": "stop", "status": "stopped" }), None));
+                }
+                let res = self.run_studio_playtest()?;
+                Ok((res, None))
+            }
+            other => Err(format!("unsupported Studio tool: {other}")),
+        }
     }
 
     /// Bind uploaded/generated game card art assets into the active LocalPlace's
@@ -2294,6 +2801,13 @@ impl Agent {
                 let text = self.studio_mut()?.call_tool(tool, json!({}))?;
                 transcript.push(format!("tool {tool} -> {text}"));
                 Ok(format!("tool_result: {tool}: {text}"))
+            }
+            t if is_official_studio_tool(t) => {
+                let chat_id = self.active_build_chat.clone();
+                let (val, _) = self.invoke_studio_tool(&chat_id, t, args.clone())?;
+                let text = val.to_string();
+                transcript.push(format!("tool {t} -> {text}"));
+                Ok(format!("tool_result: {t}: {text}"))
             }
             other => Err(format!("unknown tool: {other}")),
         }
