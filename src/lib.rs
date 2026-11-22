@@ -1,4 +1,6 @@
 pub mod agent;
+pub mod art_knowledge;
+pub mod assets;
 pub mod config;
 pub mod ideas;
 pub mod luau_check;

@@ -40,10 +40,10 @@ const ALL_22_SKILLS: [&str; 22] = [
 #[test]
 fn all_22_rune_skills_compile_parameterize_escape_and_pass_static_analysis() {
     let reg = skills::registry();
-    assert_eq!(reg.len(), 22, "exact count of 22 Rune skills");
+    assert_eq!(reg.len(), 28, "exact count of 28 game systems");
 
     let names: HashSet<&str> = reg.iter().map(|s| s.name).collect();
-    assert_eq!(names.len(), 22, "all 22 skill names are unique");
+    assert_eq!(names.len(), 28, "all 28 system names are unique");
     for expected in ALL_22_SKILLS {
         assert!(names.contains(expected), "missing skill '{expected}'");
     }
@@ -51,7 +51,7 @@ fn all_22_rune_skills_compile_parameterize_escape_and_pass_static_analysis() {
     // Verify catalog_json covers all 6 UI Blueprint Library categories
     let catalog = skills::catalog_json();
     let arr = catalog.as_array().expect("catalog is JSON array");
-    assert_eq!(arr.len(), 22);
+    assert_eq!(arr.len(), 28);
     let valid_cats: HashSet<&str> = [
         "Movement",
         "Economy",
@@ -79,8 +79,9 @@ fn all_22_rune_skills_compile_parameterize_escape_and_pass_static_analysis() {
         let luau = skills::generate(name, &entry["default_args"])
             .unwrap_or_else(|e| panic!("skill '{name}' failed Rune execution: {e}"));
         assert!(
-            luau.contains(&format!("Rune skill: {name}")),
-            "skill '{name}' header tags itself"
+            luau.contains(&format!("Rune skill: {name}"))
+                || luau.contains(&format!("system: {name}")),
+            "system '{name}' header tags itself"
         );
         let report = analyze_script(entry["default_path"].as_str().unwrap(), &luau);
         assert!(
@@ -964,23 +965,23 @@ fn scale_benchmark_500_plus_instances_and_50_plus_scripts() {
             )
             .unwrap();
     }
-    assert_eq!(place.scripts().len(), 54);
+    assert_eq!(place.scripts().len(), 60);
 
     // 3. Measure XML export
     let t_export = Instant::now();
     let xml = place.to_rbxlx_xml();
     let export_ms = t_export.elapsed().as_millis();
-    assert!(xml.len() > 200_000, "rich 521-instance/54-script XML ({} bytes)", xml.len());
+    assert!(xml.len() > 200_000, "rich 521-instance/60-script XML ({} bytes)", xml.len());
     if let Ok(dump_path) = std::env::var("OPENRO_DUMP_RBXLX_PATH") {
         std::fs::write(&dump_path, &xml).expect("write dump rbxlx");
     }
 
     // 4. Measure XML import round-trip
     let t_import = Instant::now();
-    let imported = Place::from_rbxlx_xml(&xml).expect("521-instance / 54-script XML parses cleanly");
+    let imported = Place::from_rbxlx_xml(&xml).expect("521-instance / 60-script XML parses cleanly");
     let import_ms = t_import.elapsed().as_millis();
     assert_eq!(imported.instances().len(), 522); // +1 auto-created Workspace.LavaBrick container for Workspace.LavaBrick.KillBrick
-    assert_eq!(imported.scripts().len(), 54);
+    assert_eq!(imported.scripts().len(), 60);
     assert_eq!(
         imported.scripts().get("ServerScriptService.MegaJumpPad31"),
         place.scripts().get("ServerScriptService.MegaJumpPad31")

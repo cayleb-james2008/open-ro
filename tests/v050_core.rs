@@ -292,11 +292,11 @@ print("imported ok")]]></ProtectedString>
         assert_eq!(st, 400, "bad XML must return 400 for {bad:?}, got {st}: {err_body}");
     }
 
-    // 6. Verify GET /api/skills (all 22 Rune skills), POST /api/skills/build, and GET/POST /api/luau/check.
+    // 6. Verify GET /api/skills (all 28 Game Systems), POST /api/skills/build, and GET/POST /api/luau/check.
     let (st, _, skills_body) = http_req(port, "GET", "/api/skills", "application/json", None);
     assert_eq!(st, 200);
     let skills_v: Value = serde_json::from_str(&skills_body).unwrap();
-    assert_eq!(skills_v["count"], json!(22));
+    assert_eq!(skills_v["count"], json!(28));
 
     let skill_build = json!({ "skill": "jump_pad" }).to_string();
     let (st, _, sb_body) = http_req(
