@@ -7,19 +7,23 @@
 //! are saved to `chats.json` there on every change and reloaded at
 //! start, so a restart loses nothing.
 
-use crate::agent::Agent;
+use crate::agent::{Agent, AskMode, AskOptions};
 use crate::config::RuntimeConfig;
 use crate::mcp::McpClient;
 use crate::model::{probe_local_gateways, ModelClient, DEFAULT_BASE_URL, DEFAULT_MODEL_ID};
 use crate::place::{LocalPlace, PlaceBackend};
-use crate::snapshots::{compute_diff, parse_rbxlx_xml, SnapshotStore};
+use crate::snapshots::{
+    compute_diff, compute_file_diffs, merge_selected_tree, parse_rbxlx_xml, ProposalStore,
+    ScriptFileDiff, SnapshotStore,
+};
 use crate::sse::BuildEventHub;
+use crate::studio_plugin::StudioPluginBridge;
 use crate::studio_stream::{StudioActionInput, StudioActionKind, StudioStreamHub};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -106,6 +110,12 @@ pub struct Shared {
     /// Short-TTL cache for `GET /api/library` (`blender --version` / host detection)
     /// invalidated immediately on any pack mutation.
     cached_library_list: Mutex<Option<(std::time::Instant, Value)>>,
+    /// Staged RoPilot diff proposals (`data_dir/proposals.json`).
+    pub proposals: Mutex<ProposalStore>,
+    /// Lightweight Companion Roblox Studio Plugin long-poll bridge (`OpenRoCompanion.lua`).
+    pub studio_plugin: Arc<StudioPluginBridge>,
+    /// Active loopback listen port recorded when `serve()` binds.
+    pub bound_port: AtomicU16,
 }
 
 #[derive(Clone, Default)]
@@ -136,6 +146,7 @@ impl Shared {
         let assets_root = make_ephemeral_assets_root();
         let library = crate::library::LibraryManager::open(&assets_root);
         let market_taste = crate::market_taste::MarketTasteStore::open(&assets_root);
+        let studio_plugin = StudioPluginBridge::open(None);
         let lib_prompt = library.active_skill_prompt();
         if let Some(a) = agent.as_mut() {
             a.attach_undo_sink(Arc::clone(&undoable));
@@ -143,6 +154,7 @@ impl Shared {
             a.attach_events(Arc::clone(&events));
             a.attach_studio_stream(Arc::clone(&studio_stream));
             a.set_library_prompt(lib_prompt);
+            a.set_assets_root(assets_root.clone());
         }
         let initial_status = extract_status_from_agent(agent.as_mut());
         let chat = default_chat();
@@ -173,6 +185,9 @@ impl Shared {
             assets_root,
             cached_embed_detect: Mutex::new(None),
             cached_library_list: Mutex::new(None),
+            proposals: Mutex::new(ProposalStore::in_memory()),
+            studio_plugin,
+            bound_port: AtomicU16::new(4040),
         })
     }
 
@@ -189,6 +204,7 @@ impl Shared {
         let studio_stream = Arc::new(StudioStreamHub::new(initial_mode));
         let library = crate::library::LibraryManager::open(&data_dir);
         let market_taste = crate::market_taste::MarketTasteStore::open(&data_dir);
+        let studio_plugin = StudioPluginBridge::open(Some(&data_dir));
         let lib_prompt = library.active_skill_prompt();
         if let Some(a) = agent.as_mut() {
             a.attach_undo_sink(Arc::clone(&undoable));
@@ -196,6 +212,7 @@ impl Shared {
             a.attach_events(Arc::clone(&events));
             a.attach_studio_stream(Arc::clone(&studio_stream));
             a.set_library_prompt(lib_prompt);
+            a.set_assets_root(data_dir.clone());
         }
         let initial_status = extract_status_from_agent(agent.as_mut());
         let mut recovered = agent.as_ref().map(|a| a.recovered.clone()).unwrap_or_default();
@@ -208,6 +225,8 @@ impl Shared {
         let cfg = RuntimeConfig::load(&data_dir);
         let mut snap_store = SnapshotStore::open(&data_dir);
         recovered.append(&mut snap_store.recovered);
+        let mut proposal_store = ProposalStore::open(&data_dir);
+        recovered.append(&mut proposal_store.recovered);
         // Ensure persistent game-assets directory is initialized on startup.
         let _ = crate::assets::AssetManager::open(&data_dir);
         let assets_root = data_dir.clone();
@@ -237,6 +256,9 @@ impl Shared {
             assets_root,
             cached_embed_detect: Mutex::new(None),
             cached_library_list: Mutex::new(None),
+            proposals: Mutex::new(proposal_store),
+            studio_plugin,
+            bound_port: AtomicU16::new(4040),
         })
     }
 
@@ -581,6 +603,9 @@ impl Drop for HandlerSlot {
 }
 
 pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> {
+    if let Ok(addr) = listener.local_addr() {
+        shared.bound_port.store(addr.port(), Ordering::Relaxed);
+    }
     // Extra host names this server answers to, beyond this machine's own.
     let allowed: Arc<Vec<String>> = Arc::new(
         std::env::var("OPENRO_ALLOWED_HOSTS")
@@ -628,6 +653,7 @@ struct Request {
     content_type: String,
     content_length: usize,
     last_event_id: u64,
+    plugin_token: String,
 }
 
 fn read_request(stream: &mut TcpStream) -> Option<Request> {
@@ -662,6 +688,7 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
         content_type: String::new(),
         content_length: 0,
         last_event_id: 0,
+        plugin_token: String::new(),
     };
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
@@ -673,6 +700,7 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
                 "sec-fetch-site" => req.sec_fetch_site = v.to_ascii_lowercase(),
                 "content-type" => req.content_type = v.to_ascii_lowercase(),
                 "last-event-id" => req.last_event_id = v.parse().unwrap_or(0),
+                "x-openro-plugin-token" => req.plugin_token = v.to_string(),
                 _ => {}
             }
         }
@@ -940,7 +968,32 @@ fn handle(
         return Ok(());
     }
 
+    // Long-poll Companion Studio Plugin endpoint: drop short-lived HandlerSlot so
+    // an idle Studio plugin poll never consumes normal HTTP concurrency slots.
+    if req.method == "GET" && path == "/api/studio/plugin/poll" {
+        drop(slot);
+        handle_studio_plugin_poll(&mut stream, shared, &req, query);
+        return Ok(());
+    }
+
     let _slot = slot;
+
+    // Parameterized staged diff proposal routes:
+    // POST /api/proposals/:id/apply & POST /api/proposals/:id/reject
+    if let Some(rest) = path.strip_prefix("/api/proposals/") {
+        if let Some(prop_id) = rest.strip_suffix("/apply") {
+            if req.method == "POST" && !prop_id.is_empty() {
+                handle_proposal_apply(&mut stream, shared, &req, prop_id);
+                return Ok(());
+            }
+        }
+        if let Some(prop_id) = rest.strip_suffix("/reject") {
+            if req.method == "POST" && !prop_id.is_empty() {
+                handle_proposal_reject(&mut stream, shared, prop_id);
+                return Ok(());
+            }
+        }
+    }
 
     // Parameterized snapshot routes: POST /api/snapshots/:id/restore & GET /api/snapshots/:id/rbxlx
     if let Some(rest) = path.strip_prefix("/api/snapshots/") {
@@ -1141,6 +1194,24 @@ fn handle(
         }
         ("POST", "/api/studio/input/keyboard") => {
             handle_studio_input_keyboard(&mut stream, shared, &req);
+        }
+        ("GET", "/api/proposals") => {
+            handle_proposals_list(&mut stream, shared, query);
+        }
+        ("GET", "/api/studio/plugin/status") => {
+            handle_studio_plugin_status(&mut stream, shared, &req);
+        }
+        ("GET", "/api/studio/plugin/download") => {
+            handle_studio_plugin_download(&mut stream, shared, &req);
+        }
+        ("POST", "/api/studio/plugin/install") => {
+            handle_studio_plugin_install(&mut stream, shared, &req);
+        }
+        ("POST", "/api/studio/plugin/handshake") => {
+            handle_studio_plugin_handshake(&mut stream, shared, &req);
+        }
+        ("POST", "/api/studio/plugin/result") => {
+            handle_studio_plugin_result(&mut stream, shared, &req);
         }
         ("GET", "/api/library") => {
             let body = cached_library_list_json(shared);
@@ -1431,6 +1502,8 @@ fn handle(
             };
             let active_lib_tools = shared.library.lock().unwrap().active_tools();
             let active_niche = shared.market_taste.lock().unwrap().active_niche().to_string();
+            let plugin_connected = shared.studio_plugin.is_connected();
+            let pending_proposals = shared.proposals.lock().unwrap().pending_count();
             respond_json(
                 &mut stream,
                 "200 OK",
@@ -1443,6 +1516,11 @@ fn handle(
                     "is_loopback_model": info.is_loopback_model,
                     "game_name": shared.game_name,
                     "version": env!("CARGO_PKG_VERSION"),
+                    "ropilot_v0100": true,
+                    "proposals_api": true,
+                    "plugin_bridge": true,
+                    "plugin_connected": plugin_connected,
+                    "pending_proposals": pending_proposals,
                     "sse_build_stream": true,
                     "assets_api": true,
                     "studio_stream": true,
@@ -1537,6 +1615,39 @@ fn handle(
                 );
                 return Ok(());
             }
+            let mode = body
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .map(AskMode::parse)
+                .unwrap_or(AskMode::Agent);
+            let reasoning = body
+                .get("reasoning")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let context_paths: Vec<String> = body
+                .get("context_paths")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
+                        .filter(|s| !s.is_empty())
+                        .take(32)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let review_diffs = body
+                .get("review_diffs")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let opts = AskOptions {
+                mode,
+                reasoning,
+                context_paths,
+                review_diffs,
+            };
+
             // The chat this ask belongs to is fixed NOW, before the
             // ask runs: every line it produces — the user's words,
             // the narration, the failure — is filed into THIS chat,
@@ -1558,94 +1669,202 @@ fn handle(
                         &json!({ "ok": false, "error": error }),
                     );
                 }
-                Some(agent) => {
-                    let before_tree = agent.place_tree().ok();
-                    match agent.run_ask(&chat_id, &message) {
-                    Ok(outcome) if outcome.refused => {
-                        // Refused, not built: the plain reason is the
-                        // answer, the model's success claim is not shown,
-                        // and no pitch follows.
-                        shared.append_lines_to(&chat_id, &outcome.thread);
-                        respond_json(
-                            &mut stream,
-                            "502 Bad Gateway",
-                            &json!({ "ok": false, "error": outcome.summary }),
-                        );
-                    }
-                    Ok(outcome) => {
-                        shared.append_lines_to(&chat_id, &outcome.thread);
-                        let mut snapshot_id = Value::Null;
-                        let mut diff_val = Value::Null;
-                        // Only an ask that really changed the game records
-                        // what it built and pitches the follow-up set (once
-                        // per context). A zero-change ask gets no pitch.
-                        if outcome.changed {
-                            shared.note_built(&chat_id, &outcome.skills_used);
-                            if let Ok(after_tree) = agent.place_tree() {
-                                let explicit = before_tree
-                                    .as_ref()
-                                    .map(|b| compute_diff(b, &after_tree));
-                                let label: String = format!(
-                                    "Built: {}",
-                                    message.chars().take(48).collect::<String>()
-                                );
-                                let snap = shared.snapshots.lock().unwrap().record(
-                                    label,
-                                    "build",
-                                    Some(chat_id.clone()),
-                                    after_tree,
-                                    explicit,
-                                );
-                                snapshot_id = json!(snap.id);
-                                diff_val = snap.diff.to_json();
-                            }
-                            let (_, pitch) = shared.pitch_for(
-                                &chat_id,
-                                "OpenRO: That landed. Next, I could add:",
+                Some(agent) if mode == AskMode::Ask => {
+                    match agent.run_ask_with_options(&chat_id, &message, opts) {
+                        Ok(outcome) => {
+                            shared.append_lines_to(&chat_id, &outcome.thread);
+                            respond_json(
+                                &mut stream,
+                                "200 OK",
+                                &json!({
+                                    "ok": true,
+                                    "mode": "ask",
+                                    "summary": outcome.summary,
+                                    "thread": outcome.thread,
+                                    "transcript": outcome.transcript,
+                                    "file_diffs": [],
+                                }),
                             );
-                            if !pitch.is_empty() {
-                                shared.append_lines_to(&chat_id, &pitch);
-                            }
                         }
-                        respond_json(
-                            &mut stream,
-                            "200 OK",
-                            &json!({
-                                "ok": true,
-                                "summary": outcome.summary,
-                                "thread": outcome.thread,
-                                "transcript": outcome.transcript,
-                                "snapshot_id": snapshot_id,
-                                "diff": diff_val,
-                            }),
-                        );
-                    }
-                    Err(f) => {
-                        // The ask's own lines and its failure both join
-                        // the persisted thread — the chat tells the
-                        // truth about what happened, and the change set
-                        // stays revertable in this chat. Skills it did
-                        // land still count as built for the pitch
-                        // engine: the scripts are in the place even
-                        // though the ask failed.
-                        shared.append_lines_to(&chat_id, &f.thread);
-                        shared.append_lines_to(&chat_id, &[format!("OpenRO: {}", f.message)]);
-                        shared.note_built(&chat_id, &f.skills_used);
-                        let status = if f.message.contains("no model key configured")
-                            || f.message.contains("Studio not connected")
-                            || f.message.contains("does not offer")
-                        {
-                            "503 Service Unavailable"
-                        } else {
-                            "502 Bad Gateway"
-                        };
-                        respond_json(
-                            &mut stream,
-                            status,
-                            &json!({ "ok": false, "error": f.message }),
-                        );
+                        Err(f) => {
+                            shared.append_lines_to(&chat_id, &f.thread);
+                            shared.append_lines_to(&chat_id, &[format!("OpenRO: {}", f.message)]);
+                            let status = if f.message.contains("no model key configured")
+                                || f.message.contains("Studio not connected")
+                                || f.message.contains("does not offer")
+                            {
+                                "503 Service Unavailable"
+                            } else {
+                                "502 Bad Gateway"
+                            };
+                            respond_json(
+                                &mut stream,
+                                status,
+                                &json!({ "ok": false, "mode": "ask", "error": f.message }),
+                            );
+                        }
                     }
                 }
+                Some(agent) if mode == AskMode::Plan || review_diffs => {
+                    match agent.run_ask_staged(&chat_id, &message, opts) {
+                        Ok(staged) if staged.outcome.refused => {
+                            shared.append_lines_to(&chat_id, &staged.outcome.thread);
+                            respond_json(
+                                &mut stream,
+                                "502 Bad Gateway",
+                                &json!({ "ok": false, "mode": mode.as_str(), "error": staged.outcome.summary }),
+                            );
+                        }
+                        Ok(staged) => {
+                            shared.append_lines_to(&chat_id, &staged.outcome.thread);
+                            let proposal = shared.proposals.lock().unwrap().create(
+                                chat_id.clone(),
+                                message.clone(),
+                                staged.outcome.summary.clone(),
+                                mode.as_str().to_string(),
+                                staged.before_tree,
+                                staged.after_tree,
+                                staged.diagnostics,
+                                staged.outcome.skills_used.clone(),
+                            );
+                            let file_diffs_json: Vec<Value> = proposal
+                                .file_diffs
+                                .iter()
+                                .map(ScriptFileDiff::to_json)
+                                .collect();
+                            respond_json(
+                                &mut stream,
+                                "200 OK",
+                                &json!({
+                                    "ok": true,
+                                    "mode": mode.as_str(),
+                                    "staged": true,
+                                    "proposal": proposal.to_json(),
+                                    "file_diffs": file_diffs_json,
+                                    "diff": proposal.diff.to_json(),
+                                    "diagnostics": proposal.diagnostics,
+                                    "summary": staged.outcome.summary,
+                                    "thread": staged.outcome.thread,
+                                    "transcript": staged.outcome.transcript,
+                                }),
+                            );
+                        }
+                        Err(f) => {
+                            shared.append_lines_to(&chat_id, &f.thread);
+                            shared.append_lines_to(&chat_id, &[format!("OpenRO: {}", f.message)]);
+                            let status = if f.message.contains("no model key configured")
+                                || f.message.contains("Studio not connected")
+                                || f.message.contains("does not offer")
+                            {
+                                "503 Service Unavailable"
+                            } else {
+                                "502 Bad Gateway"
+                            };
+                            respond_json(
+                                &mut stream,
+                                status,
+                                &json!({ "ok": false, "mode": mode.as_str(), "error": f.message }),
+                            );
+                        }
+                    }
+                }
+                Some(agent) => {
+                    let before_tree = agent.place_tree().ok();
+                    match agent.run_ask_with_options(&chat_id, &message, opts) {
+                        Ok(outcome) if outcome.refused => {
+                            // Refused, not built: the plain reason is the
+                            // answer, the model's success claim is not shown,
+                            // and no pitch follows.
+                            shared.append_lines_to(&chat_id, &outcome.thread);
+                            respond_json(
+                                &mut stream,
+                                "502 Bad Gateway",
+                                &json!({ "ok": false, "error": outcome.summary }),
+                            );
+                        }
+                        Ok(outcome) => {
+                            shared.append_lines_to(&chat_id, &outcome.thread);
+                            let mut snapshot_id = Value::Null;
+                            let mut diff_val = Value::Null;
+                            let mut file_diffs_json: Vec<Value> = Vec::new();
+                            // Only an ask that really changed the game records
+                            // what it built and pitches the follow-up set (once
+                            // per context). A zero-change ask gets no pitch.
+                            if outcome.changed {
+                                shared.note_built(&chat_id, &outcome.skills_used);
+                                if let Ok(after_tree) = agent.place_tree() {
+                                    let explicit = before_tree
+                                        .as_ref()
+                                        .map(|b| compute_diff(b, &after_tree));
+                                    if let Some(b) = before_tree.as_ref() {
+                                        file_diffs_json = compute_file_diffs(b, &after_tree)
+                                            .iter()
+                                            .map(ScriptFileDiff::to_json)
+                                            .collect();
+                                    }
+                                    let label: String = format!(
+                                        "Built: {}",
+                                        message.chars().take(48).collect::<String>()
+                                    );
+                                    let snap = shared.snapshots.lock().unwrap().record(
+                                        label,
+                                        "build",
+                                        Some(chat_id.clone()),
+                                        after_tree,
+                                        explicit,
+                                    );
+                                    snapshot_id = json!(snap.id);
+                                    diff_val = snap.diff.to_json();
+                                }
+                                let (_, pitch) = shared.pitch_for(
+                                    &chat_id,
+                                    "OpenRO: That landed. Next, I could add:",
+                                );
+                                if !pitch.is_empty() {
+                                    shared.append_lines_to(&chat_id, &pitch);
+                                }
+                            }
+                            respond_json(
+                                &mut stream,
+                                "200 OK",
+                                &json!({
+                                    "ok": true,
+                                    "mode": "agent",
+                                    "summary": outcome.summary,
+                                    "thread": outcome.thread,
+                                    "transcript": outcome.transcript,
+                                    "snapshot_id": snapshot_id,
+                                    "diff": diff_val,
+                                    "file_diffs": file_diffs_json,
+                                }),
+                            );
+                        }
+                        Err(f) => {
+                            // The ask's own lines and its failure both join
+                            // the persisted thread — the chat tells the
+                            // truth about what happened, and the change set
+                            // stays revertable in this chat. Skills it did
+                            // land still count as built for the pitch
+                            // engine: the scripts are in the place even
+                            // though the ask failed.
+                            shared.append_lines_to(&chat_id, &f.thread);
+                            shared.append_lines_to(&chat_id, &[format!("OpenRO: {}", f.message)]);
+                            shared.note_built(&chat_id, &f.skills_used);
+                            let status = if f.message.contains("no model key configured")
+                                || f.message.contains("Studio not connected")
+                                || f.message.contains("does not offer")
+                            {
+                                "503 Service Unavailable"
+                            } else {
+                                "502 Bad Gateway"
+                            };
+                            respond_json(
+                                &mut stream,
+                                status,
+                                &json!({ "ok": false, "error": f.message }),
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -4276,6 +4495,500 @@ fn handle_market_taste_research(stream: &mut TcpStream, shared: &Shared, req: &R
             };
             respond_json(stream, status, &json!({ "ok": false, "error": msg }));
         }
+    }
+}
+
+fn handle_proposals_list(stream: &mut TcpStream, shared: &Shared, query: &str) {
+    let status_filter = query_param(query, "status").filter(|s| !s.is_empty());
+    let chat_filter = query_param(query, "chat_id").filter(|s| !s.is_empty());
+    let store = shared.proposals.lock().unwrap();
+    let proposals = store.list(status_filter, chat_filter);
+    let pending_count = store.pending_count();
+    respond_json(
+        stream,
+        "200 OK",
+        &json!({
+            "ok": true,
+            "proposals": proposals,
+            "pending_count": pending_count,
+        }),
+    );
+}
+
+fn handle_proposal_apply(stream: &mut TcpStream, shared: &Shared, req: &Request, prop_id: &str) {
+    let _busy = BusyGuard::new(&shared.busy);
+    let body: Value = if req.body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_json(
+                    stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": "invalid JSON body" }),
+                );
+                return;
+            }
+        }
+    };
+
+    let selected_paths: Option<Vec<String>> = match body.get("selected_paths") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(arr)) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for item in arr {
+                let Some(s) = item.as_str().map(str::trim) else {
+                    respond_json(
+                        stream,
+                        "400 Bad Request",
+                        &json!({ "ok": false, "error": "selected_paths entries must be strings" }),
+                    );
+                    return;
+                };
+                if let Err(e) = crate::agent::check_path(s) {
+                    respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
+                    return;
+                }
+                out.push(s.to_string());
+            }
+            if out.is_empty() {
+                respond_json(
+                    stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": "selected_paths must contain at least one path" }),
+                );
+                return;
+            }
+            Some(out)
+        }
+        Some(_) => {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "selected_paths must be an array of paths" }),
+            );
+            return;
+        }
+    };
+
+    let prop = {
+        let store = shared.proposals.lock().unwrap();
+        match store.get(prop_id) {
+            Some(p) => p.clone(),
+            None => {
+                respond_json(
+                    stream,
+                    "404 Not Found",
+                    &json!({ "ok": false, "error": format!("proposal not found: {prop_id}") }),
+                );
+                return;
+            }
+        }
+    };
+    if prop.status != "pending" {
+        respond_json(
+            stream,
+            "409 Conflict",
+            &json!({ "ok": false, "error": format!("proposal {prop_id} is already {}", prop.status) }),
+        );
+        return;
+    }
+
+    let (applied_paths, applied_diff, applied_file_diffs, snapshot_id, playtest) = {
+        let mut guard = shared.agent.lock().unwrap();
+        let Some(agent) = guard.as_mut() else {
+            respond_json(
+                stream,
+                "503 Service Unavailable",
+                &json!({ "ok": false, "error": "Studio not connected" }),
+            );
+            return;
+        };
+        let live_before = match agent.place_tree() {
+            Ok(t) => t,
+            Err(e) => {
+                respond_json(
+                    stream,
+                    "502 Bad Gateway",
+                    &json!({ "ok": false, "error": format!("failed to read active place tree: {e}") }),
+                );
+                return;
+            }
+        };
+        let (merged_tree, applied_paths) = merge_selected_tree(
+            &live_before,
+            &prop.before_tree,
+            &prop.after_tree,
+            selected_paths.as_deref(),
+        );
+        if let Err(e) = agent.apply_place_tree(&merged_tree) {
+            respond_json(
+                stream,
+                "502 Bad Gateway",
+                &json!({ "ok": false, "error": format!("failed to apply proposal to Studio: {e}") }),
+            );
+            return;
+        }
+        let live_after = agent.place_tree().unwrap_or(merged_tree);
+        let applied_diff = compute_diff(&live_before, &live_after);
+        let applied_file_diffs: Vec<Value> = compute_file_diffs(&live_before, &live_after)
+            .iter()
+            .map(ScriptFileDiff::to_json)
+            .collect();
+        agent.record_direct_edit(&prop.chat_id, &live_before, &live_after);
+        if !prop.skills_used.is_empty() {
+            shared.note_built(&prop.chat_id, &prop.skills_used);
+        }
+        let label = format!(
+            "Applied: {}",
+            prop.message.chars().take(48).collect::<String>()
+        );
+        let snap = shared.snapshots.lock().unwrap().record(
+            label,
+            "proposal_apply",
+            Some(prop.chat_id.clone()),
+            live_after,
+            Some(applied_diff.clone()),
+        );
+        let playtest = agent.run_studio_playtest().unwrap_or_else(|e| {
+            json!({
+                "ok": false,
+                "passed": false,
+                "status": "failed",
+                "console": e,
+                "console_lines": [e],
+            })
+        });
+        *shared.status_cache.lock().unwrap() = extract_status_from_agent(Some(agent));
+        (
+            applied_paths,
+            applied_diff,
+            applied_file_diffs,
+            snap.id,
+            playtest,
+        )
+    };
+
+    let updated = shared
+        .proposals
+        .lock()
+        .unwrap()
+        .mark_status(prop_id, "applied")
+        .unwrap_or(prop);
+    let passed = playtest
+        .get("passed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    shared.append_lines_to(
+        &updated.chat_id,
+        &[format!(
+            "OpenRO: Applied {} change(s) from proposal {} (playtest {}).",
+            applied_paths.len(),
+            updated.id,
+            if passed { "passed" } else { "reported errors" }
+        )],
+    );
+    respond_json(
+        stream,
+        "200 OK",
+        &json!({
+            "ok": true,
+            "proposal": updated.to_json(),
+            "applied_paths": applied_paths,
+            "playtest": playtest,
+            "snapshot_id": snapshot_id,
+            "diff": applied_diff.to_json(),
+            "file_diffs": applied_file_diffs,
+        }),
+    );
+}
+
+fn handle_proposal_reject(stream: &mut TcpStream, shared: &Shared, prop_id: &str) {
+    let mut store = shared.proposals.lock().unwrap();
+    let Some(existing) = store.get(prop_id) else {
+        respond_json(
+            stream,
+            "404 Not Found",
+            &json!({ "ok": false, "error": format!("proposal not found: {prop_id}") }),
+        );
+        return;
+    };
+    if existing.status != "pending" {
+        respond_json(
+            stream,
+            "409 Conflict",
+            &json!({ "ok": false, "error": format!("proposal {prop_id} is already {}", existing.status) }),
+        );
+        return;
+    }
+    let updated = store.mark_status(prop_id, "rejected").unwrap();
+    drop(store);
+    respond_json(
+        stream,
+        "200 OK",
+        &json!({
+            "ok": true,
+            "proposal": updated.to_json(),
+        }),
+    );
+}
+
+fn request_port(req: &Request, shared: &Shared) -> u16 {
+    let host = req.host.trim();
+    if let Some(after_bracket) = host.strip_prefix('[') {
+        if let Some((_, rest)) = after_bracket.split_once("]:") {
+            if let Ok(p) = rest.parse::<u16>() {
+                if p > 0 {
+                    return p;
+                }
+            }
+        }
+    } else if let Some((_, port_str)) = host.rsplit_once(':') {
+        if let Ok(p) = port_str.parse::<u16>() {
+            if p > 0 {
+                return p;
+            }
+        }
+    }
+    shared.bound_port.load(Ordering::Relaxed)
+}
+
+fn handle_studio_plugin_status(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "Companion Studio Plugin status is loopback-only" }),
+        );
+        return;
+    }
+    respond_json(stream, "200 OK", &shared.studio_plugin.status_json());
+}
+
+fn handle_studio_plugin_download(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "downloading OpenRoCompanion.lua is loopback-only" }),
+        );
+        return;
+    }
+    let port = request_port(req, shared);
+    let token = shared.studio_plugin.token_for_local_template();
+    let lua = crate::studio_plugin::render_companion_lua(port, &token);
+    respond_download(
+        stream,
+        "text/plain; charset=utf-8",
+        crate::studio_plugin::COMPANION_PLUGIN_FILENAME,
+        &lua,
+    );
+}
+
+fn handle_studio_plugin_install(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "installing OpenRoCompanion.lua is loopback-only" }),
+        );
+        return;
+    }
+    let body: Value = if req.body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_json(
+                    stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": "invalid JSON body" }),
+                );
+                return;
+            }
+        }
+    };
+    let requested_dir = body
+        .get("target_dir")
+        .or_else(|| body.get("path"))
+        .and_then(|v| v.as_str());
+    let port = request_port(req, shared);
+    let token = shared.studio_plugin.token_for_local_template();
+    match crate::studio_plugin::install_companion_plugin(port, &token, requested_dir) {
+        Ok(installed_path) => respond_json(
+            stream,
+            "200 OK",
+            &json!({
+                "ok": true,
+                "install_path": installed_path.to_string_lossy(),
+                "installed": true,
+                "port": port,
+            }),
+        ),
+        Err(msg) => {
+            let low = msg.to_ascii_lowercase();
+            let status = if low.contains("was not found") || low.contains("does not exist") {
+                "404 Not Found"
+            } else if low.contains("traversal") || low.contains("refusing") || low.contains("symlink") {
+                "403 Forbidden"
+            } else {
+                "400 Bad Request"
+            };
+            respond_json(stream, status, &json!({ "ok": false, "error": msg }));
+        }
+    }
+}
+
+fn require_plugin_auth(stream: &mut TcpStream, shared: &Shared, req: &Request) -> bool {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "Companion Studio Plugin endpoints are loopback-only" }),
+        );
+        return false;
+    }
+    if !shared.studio_plugin.verify_token(&req.plugin_token) {
+        respond_json(
+            stream,
+            "401 Unauthorized",
+            &json!({ "ok": false, "error": "missing or invalid X-OpenRo-Plugin-Token" }),
+        );
+        return false;
+    }
+    true
+}
+
+fn handle_studio_plugin_handshake(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !require_plugin_auth(stream, shared, req) {
+        return;
+    }
+    let body: Value = if req.body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_json(
+                    stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": "invalid JSON body" }),
+                );
+                return;
+            }
+        }
+    };
+    let studio_name = body
+        .get("studio_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Roblox Studio");
+    let place_name = body
+        .get("place_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let selection: Vec<String> = body
+        .get("selection")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let payload = shared
+        .studio_plugin
+        .record_handshake(studio_name, place_name, selection);
+
+    // Automatically attach PlaceBackend::Plugin when running on LocalPlace (never interrupts active MCP).
+    if let Ok(mut guard) = shared.agent.try_lock() {
+        if let Some(agent) = guard.as_mut() {
+            let can_attach = matches!(agent.studio, None | Some(PlaceBackend::Local(_)));
+            if can_attach {
+                agent.studio = Some(PlaceBackend::Plugin(Arc::clone(&shared.studio_plugin)));
+                agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
+                *shared.status_cache.lock().unwrap() = extract_status_from_agent(Some(agent));
+            }
+        }
+    }
+
+    respond_json(stream, "200 OK", &payload);
+}
+
+fn handle_studio_plugin_poll(stream: &mut TcpStream, shared: &Shared, req: &Request, query: &str) {
+    if !require_plugin_auth(stream, shared, req) {
+        return;
+    }
+    let timeout_ms = query_param(query, "timeout_ms")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(10_000)
+        .min(crate::studio_plugin::MAX_POLL_TIMEOUT_MS);
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(timeout_ms + 5_000)));
+    let cmd = shared
+        .studio_plugin
+        .poll_next_command(std::time::Duration::from_millis(timeout_ms));
+    respond_json(
+        stream,
+        "200 OK",
+        &json!({
+            "ok": true,
+            "command": cmd.map(|c| c.to_json()),
+        }),
+    );
+}
+
+fn handle_studio_plugin_result(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !require_plugin_auth(stream, shared, req) {
+        return;
+    }
+    let body: Value = match serde_json::from_slice::<Value>(&req.body) {
+        Ok(v) if v.is_object() => v,
+        _ => {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "invalid JSON body" }),
+            );
+            return;
+        }
+    };
+    let Some(id) = body
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": "missing command id" }),
+        );
+        return;
+    };
+    let ok = body.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
+    let result = body.get("result").cloned().unwrap_or_else(|| json!({ "ok": true }));
+    let error = body
+        .get("error")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let selection = body.get("selection").and_then(|v| v.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect()
+    });
+    if shared
+        .studio_plugin
+        .submit_result(id, ok, result, error, selection)
+    {
+        respond_json(stream, "200 OK", &json!({ "ok": true, "id": id }));
+    } else {
+        respond_json(
+            stream,
+            "404 Not Found",
+            &json!({ "ok": false, "error": format!("unknown or expired command id: {id}") }),
+        );
     }
 }
 

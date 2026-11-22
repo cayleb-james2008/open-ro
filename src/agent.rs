@@ -52,6 +52,54 @@ use std::sync::Arc;
 /// playtest, repairs) legitimately needs more than a one-script ask.
 const MAX_STEPS: usize = 40;
 const MAX_REPAIRS: usize = 3;
+/// Cap custom Luau writes (`write_luau` / `multi_edit`) cleanly at 512 KiB.
+const MAX_LUAU_BYTES: usize = 512 * 1024;
+
+/// Composer execution mode for `POST /api/chat` (`Agent | Plan | Ask`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AskMode {
+    #[default]
+    Agent,
+    Plan,
+    Ask,
+}
+
+impl AskMode {
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "plan" => AskMode::Plan,
+            "ask" => AskMode::Ask,
+            _ => AskMode::Agent,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AskMode::Agent => "agent",
+            AskMode::Plan => "plan",
+            AskMode::Ask => "ask",
+        }
+    }
+}
+
+/// Optional per-request RoPilot execution options for `POST /api/chat`.
+#[derive(Clone, Debug, Default)]
+pub struct AskOptions {
+    pub mode: AskMode,
+    pub reasoning: String,
+    pub context_paths: Vec<String>,
+    pub review_diffs: bool,
+}
+
+/// Outcome of a staged proposal run (`mode == "plan"` or `review_diffs == true`) executed
+/// on an isolated shadow `LocalPlace` with zero live Studio mutations.
+#[derive(Debug)]
+pub struct StagedAskOutcome {
+    pub outcome: RunOutcome,
+    pub before_tree: Value,
+    pub after_tree: Value,
+    pub diagnostics: Value,
+}
 
 /// Returned by `revert_chat` when the chat has no change set waiting.
 pub const NOTHING_TO_REVERT: &str = "nothing to revert";
@@ -129,7 +177,7 @@ pub fn is_official_studio_tool(name: &str) -> bool {
 }
 
 /// The system prompt, generated from the skill registry so the model is
-/// told exactly the skills that exist, with their real parameters.
+/// told exactly the game systems and RoPilot Studio tools that exist.
 pub fn system_prompt() -> String {
     let mut skill_lines = String::new();
     for def in skills::registry() {
@@ -139,24 +187,35 @@ pub fn system_prompt() -> String {
         ));
     }
     format!(
-        "You are OpenRO, a proactive creative agent that builds Roblox games. \
-The user describes a game change in plain English and you build it. \
+        "You are OpenRO, a RoPilot-grade Roblox Studio Copilot agent that builds and edits complete Roblox games. \
+The user describes a game change in plain English and you inspect, author, and verify it. \
 Reply with exactly ONE JSON object per turn, no prose outside the JSON.\n\n\
-SKILLS — each call generates Luau by running a Rune skill; Luau comes only from skills, never written by hand:\n{skill_lines}\n\
-TOOLS (the Studio bridge):\n\
-- {{\"tool\": \"write_script\", \"args\": {{\"path\": \"ServerScriptService.Name\", \"skill\": \"<skill name>\"}}}} writes a skill's generated script (\"use_generated\": true writes the most recent skill result)\n\
-- {{\"tool\": \"create_instance\", \"args\": {{\"class_name\": \"SpawnLocation\", \"name\": \"SpawnPad\", \"parent\": \"Workspace\", \"properties\": {{...}}}}}} creates a place instance\n\
+VERIFIED GAME-SYSTEM SKILLS (instant battle-tested Roblox systems):\n{skill_lines}\n\
+STUDIO & WHOLE-GAME TOOLS:\n\
+- {{\"tool\": \"write_script\", \"args\": {{\"path\": \"ServerScriptService.Name\", \"skill\": \"<skill name>\"}}}} writes a generated skill script (\"use_generated\": true writes the most recent skill result)\n\
+- {{\"tool\": \"write_luau\", \"args\": {{\"path\": \"ServerScriptService.CustomSystem\", \"source\": \"-- custom Luau...\"}}}} writes custom server-authoritative Luau checked by the Static Luau Prover before saving\n\
+- {{\"tool\": \"multi_edit\", \"args\": {{\"path\": \"ServerScriptService.Name\", \"edits\": [{{\"old_str\": \"...\", \"new_str\": \"...\"}}]}}}} applies targeted multi-hunk edits to an existing Luau script (Static Luau Prover gated)\n\
+- {{\"tool\": \"create_instance\", \"args\": {{\"class_name\": \"SpawnLocation\", \"name\": \"SpawnPad\", \"parent\": \"Workspace\", \"properties\": {{...}}}}}} creates or updates a place instance\n\
 - {{\"tool\": \"delete_instance\", \"args\": {{\"path\": \"Workspace.SpawnPad\"}}}} deletes an instance\n\
 - {{\"tool\": \"delete_script\", \"args\": {{\"path\": \"ServerScriptService.Name\"}}}} deletes a script\n\
-- {{\"tool\": \"playtest\", \"args\": {{}}}} runs the game\n\
-- {{\"tool\": \"get_console\", \"args\": {{}}}} reads the console\n\
 - {{\"tool\": \"get_place_tree\", \"args\": {{}}}} lists the place's scripts and instances\n\
+- {{\"tool\": \"search_game_tree\", \"args\": {{\"query\": \"...\"}}}} searches instances and scripts across the place\n\
+- {{\"tool\": \"inspect_instance\", \"args\": {{\"path\": \"Workspace.SpawnPad\"}}}} inspects properties, children, or script source\n\
+- {{\"tool\": \"script_read\", \"args\": {{\"path\": \"ServerScriptService.Name\", \"start_line\": 1, \"end_line\": 120}}}} reads a Luau script\n\
+- {{\"tool\": \"script_grep\", \"args\": {{\"query\": \"RemoteEvent\"}}}} searches across all Luau scripts\n\
+- {{\"tool\": \"execute_luau\", \"args\": {{\"code\": \"...\"}}}} executes Luau inside live Roblox Studio\n\
+- {{\"tool\": \"get_console_output\", \"args\": {{}}}} / {{\"tool\": \"get_console\", \"args\": {{}}}} reads Studio Output console lines\n\
+- {{\"tool\": \"screen_capture\", \"args\": {{}}}} captures the live Studio 3D viewport\n\
+- {{\"tool\": \"start_stop_play\", \"args\": {{\"mode\": \"start_play|run_server|stop\"}}}} controls live Studio play mode\n\
+- {{\"tool\": \"user_mouse_input\", \"args\": {{\"action\": \"click\", \"x\": 0.5, \"y\": 0.5}}}} and {{\"tool\": \"user_keyboard_input\", \"args\": {{\"key\": \"W\"}}}} send live input to Studio\n\
+- {{\"tool\": \"blender_generate\", \"args\": {{\"preset\": \"torii_gate|card_pedestal|colosseum_arch|cauldron|crystal_obelisk\", \"name\": \"ShrineGate\"}}}} generates a 3D .obj mesh + preview\n\
+- {{\"tool\": \"audio_generate\", \"args\": {{\"preset\": \"summon_roll|mythic_fanfare|battle_crit|potion_drink|ui_click|level_up\", \"name\": \"CritSfx\"}}}} synthesizes a 44.1kHz WAV SFX\n\
+- {{\"tool\": \"playtest\", \"args\": {{}}}} runs static + live playtest verification\n\
 - {{\"done\": true, \"summary\": \"...\"}} finishes.\n\n\
-Exact order (ONE JSON object per turn): 1) call {{\"skill\": \"<name>\", \"args\": {{...}}}} FIRST to generate Luau, \
-2) call {{\"tool\": \"write_script\", \"args\": {{\"path\": \"ServerScriptService.Name\", \"skill\": \"<name>\"}}}} to save it, \
-3) call {{\"tool\": \"playtest\", \"args\": {{}}}} to verify, 4) call {{\"done\": true, \"summary\": \"...\"}}.\n\
-Always playtest after writing, and repair from the console output until the playtest passes. \
-Look at the place tree before changing things you did not create.\n\n{}",
+Workflow (ONE JSON object per turn): For standard systems, call {{\"skill\": \"<name>\", \"args\": {{...}}}} then write_script; \
+for custom mechanics or modifications, inspect with script_read/search_game_tree and edit with write_luau or multi_edit; \
+then ALWAYS call {{\"tool\": \"playtest\", \"args\": {{}}}} to verify before {{\"done\": true, \"summary\": \"...\"}}.\n\
+Repair from console or Static Luau Prover diagnostics until the playtest passes.\n\n{}",
         crate::art_knowledge::prompt_guidance()
     )
 }
@@ -336,6 +395,8 @@ pub struct Agent {
     library_prompt: String,
     /// Optional 8-dimension Taste Dossier prompt block from the most recently researched Roblox game.
     market_dossier_prompt: String,
+    /// Root directory for generated 3D meshes (`blender_generate`) and `.wav` SFX (`audio_generate`).
+    assets_root: Option<std::path::PathBuf>,
 }
 
 impl Agent {
@@ -371,7 +432,20 @@ impl Agent {
             active_build_chat: String::new(),
             library_prompt: String::new(),
             market_dossier_prompt: String::new(),
+            assets_root: None,
         }
+    }
+
+    pub fn set_assets_root(&mut self, root: std::path::PathBuf) {
+        self.assets_root = Some(root);
+    }
+
+    fn effective_assets_root(&self) -> std::path::PathBuf {
+        self.assets_root.clone().unwrap_or_else(|| {
+            let dir = std::env::temp_dir().join(format!("openro-agent-assets-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&dir);
+            dir
+        })
     }
 
     pub fn set_library_prompt(&mut self, prompt: String) {
@@ -437,6 +511,7 @@ impl Agent {
     pub fn studio_mode_tag(&self) -> &'static str {
         match &self.studio {
             Some(PlaceBackend::Mcp(_)) => "live_mcp",
+            Some(PlaceBackend::Plugin(_)) => "plugin_live",
             _ => "local_place",
         }
     }
@@ -453,7 +528,7 @@ impl Agent {
                     (ic, sc)
                 })
                 .unwrap_or((0, 0)),
-            None => (0, 0),
+            Some(PlaceBackend::Plugin(_)) | None => (0, 0),
         }
     }
 
@@ -490,10 +565,25 @@ impl Agent {
         }
     }
 
+    fn take_playtest_frame_seq(&mut self) -> Option<u64> {
+        let hub = self.studio_stream.as_ref().map(Arc::clone)?;
+        let Some(PlaceBackend::Mcp(mcp)) = self.studio.as_mut() else {
+            return None;
+        };
+        mcp.take_last_playtest_frame()
+            .map(|frame| hub.store_frame(frame).seq)
+    }
+
     /// Explicitly capture one live Roblox Studio MCP frame (`POST /api/studio/capture`).
     pub fn capture_studio_frame(&mut self) -> Result<StudioFrame, String> {
         let frame = match self.studio.as_mut() {
             Some(PlaceBackend::Mcp(mcp)) => mcp.screen_capture()?,
+            Some(PlaceBackend::Plugin(_)) => {
+                return Err(
+                    "Live Studio Frame capture requires Embedded Studio / MCP (Companion Plugin uses Studio's native viewport)."
+                        .to_string(),
+                );
+            }
             Some(PlaceBackend::Local(_)) => {
                 return Err(
                     "Live Studio Frame capture requires a connected Roblox Studio MCP session (currently running Local Place Engine). Switch to Studio 3D or attach Roblox Studio MCP."
@@ -550,6 +640,39 @@ impl Agent {
                     out_lines.push(format!("playtest error: {e}"));
                 }
                 (start_ok && !has_err, out_lines, fseq)
+            }
+            Some(PlaceBackend::Plugin(_)) => {
+                let text = self.studio_mut()?.call_tool("playtest", json!({}))?;
+                let verdict = playtest_verdict(&text);
+                let mut out_lines: Vec<String> = serde_json::from_str::<Value>(&text)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("lines")
+                            .and_then(|a| a.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|x| x.as_str().map(String::from))
+                                    .collect::<Vec<_>>()
+                            })
+                            .or_else(|| {
+                                v.get("console").and_then(|c| c.as_str()).map(|s| {
+                                    s.lines()
+                                        .map(str::trim)
+                                        .filter(|l| !l.is_empty())
+                                        .map(String::from)
+                                        .collect::<Vec<_>>()
+                                })
+                            })
+                    })
+                    .unwrap_or_default();
+                if out_lines.is_empty() {
+                    out_lines.push(if matches!(verdict, Verdict::Passed) {
+                        "Companion Studio Plugin playtest passed.".to_string()
+                    } else {
+                        text.clone()
+                    });
+                }
+                (matches!(verdict, Verdict::Passed), out_lines, None)
             }
             Some(PlaceBackend::Local(_)) => {
                 let text = self.studio_mut()?.call_tool("playtest", json!({}))?;
@@ -847,7 +970,7 @@ impl Agent {
                 }
                 build_rojo_ship_pack(local, assets)
             }
-            Some(PlaceBackend::Mcp(_)) => {
+            Some(PlaceBackend::Mcp(_)) | Some(PlaceBackend::Plugin(_)) => {
                 let tree = self.place_tree()?;
                 let mut tmp = LocalPlace::in_memory(game_name.to_string());
                 tmp.replace_tree(&tree);
@@ -896,7 +1019,7 @@ impl Agent {
             Some(PlaceBackend::Local(local)) => {
                 local.create_part_preset(preset, name, position, size, color)?
             }
-            Some(PlaceBackend::Mcp(_)) => {
+            Some(PlaceBackend::Mcp(_)) | Some(PlaceBackend::Plugin(_)) => {
                 let mut tmp = LocalPlace::in_memory("OpenRO".to_string());
                 tmp.replace_tree(&before);
                 let c = tmp.create_part_preset(preset, name, position, size, color)?;
@@ -950,7 +1073,7 @@ impl Agent {
         let before = self.place_tree()?;
         let dup = match self.studio.as_mut() {
             Some(PlaceBackend::Local(local)) => local.duplicate_instance(path)?,
-            Some(PlaceBackend::Mcp(_)) => {
+            Some(PlaceBackend::Mcp(_)) | Some(PlaceBackend::Plugin(_)) => {
                 let mut tmp = LocalPlace::in_memory("OpenRO".to_string());
                 tmp.replace_tree(&before);
                 let d = tmp.duplicate_instance(path)?;
@@ -998,7 +1121,7 @@ impl Agent {
         let deleted = if is_instance {
             match self.studio.as_mut() {
                 Some(PlaceBackend::Local(local)) => local.delete_instance(path)?,
-                Some(PlaceBackend::Mcp(_)) => {
+                Some(PlaceBackend::Mcp(_)) | Some(PlaceBackend::Plugin(_)) => {
                     let mut tmp = LocalPlace::in_memory("OpenRO".to_string());
                     tmp.replace_tree(&before);
                     let d = tmp.delete_instance(path)?;
@@ -1052,7 +1175,7 @@ impl Agent {
         let before = self.place_tree()?;
         let res = match self.studio.as_mut() {
             Some(PlaceBackend::Local(local)) => local.update_script_source(path, source)?,
-            Some(PlaceBackend::Mcp(_)) => {
+            Some(PlaceBackend::Mcp(_)) | Some(PlaceBackend::Plugin(_)) => {
                 let mut tmp = LocalPlace::in_memory("OpenRO".to_string());
                 tmp.replace_tree(&before);
                 let checked = tmp.update_script_source(path, source)?;
@@ -1102,6 +1225,21 @@ impl Agent {
                         .collect()
                 }
             }
+            Some(PlaceBackend::Plugin(_)) => [
+                "list_roblox_studios",
+                "get_studio_state",
+                "search_game_tree",
+                "inspect_instance",
+                "script_read",
+                "script_grep",
+                "multi_edit",
+                "execute_luau",
+                "get_console_output",
+                "start_stop_play",
+            ]
+            .iter()
+            .map(|t| (*t).to_string())
+            .collect(),
             Some(PlaceBackend::Local(_)) => [
                 "list_roblox_studios",
                 "get_studio_state",
@@ -1269,8 +1407,97 @@ impl Agent {
                 }
                 Ok((parsed, fseq))
             }
+            Some(PlaceBackend::Plugin(_)) => self.invoke_plugin_studio_tool(chat_id, tool, &args_obj),
             Some(PlaceBackend::Local(_)) => self.invoke_local_studio_tool(chat_id, tool, &args_obj),
             None => Err("Studio not connected".to_string()),
+        }
+    }
+
+    fn invoke_plugin_studio_tool(
+        &mut self,
+        chat_id: &str,
+        tool: &str,
+        args: &Value,
+    ) -> Result<(Value, Option<u64>), String> {
+        match tool {
+            "screen_capture" | "user_mouse_input" | "user_keyboard_input" => Err(format!(
+                "Tool '{tool}' requires Embedded Studio / MCP (Companion Plugin uses Studio's native viewport)."
+            )),
+            "execute_luau" | "get_console_output" | "start_stop_play" => {
+                let text = self.studio_mut()?.call_tool(tool, args.clone())?;
+                let parsed = serde_json::from_str::<Value>(&text)
+                    .unwrap_or_else(|_| json!({ "ok": true, "output": text }));
+                Ok((parsed, None))
+            }
+            "list_roblox_studios" => Ok((
+                json!({ "studios": ["companion_plugin"], "studio_mode": "plugin_live" }),
+                None,
+            )),
+            "get_studio_state" => {
+                let tree = self.place_tree()?;
+                let ic = tree.get("instances").and_then(|v| v.as_object()).map(|m| m.len()).unwrap_or(0);
+                let sc = tree.get("scripts").and_then(|v| v.as_object()).map(|m| m.len()).unwrap_or(0);
+                Ok((
+                    json!({
+                        "studio_mode": "plugin_live",
+                        "datamodel_type": "Edit",
+                        "is_playing": false,
+                        "instance_count": ic,
+                        "script_count": sc,
+                    }),
+                    None,
+                ))
+            }
+            "search_game_tree" | "inspect_instance" | "script_read" | "script_grep" => {
+                let tree = self.place_tree()?;
+                let mut tmp = LocalPlace::in_memory("OpenRO".to_string());
+                tmp.replace_tree(&tree);
+                let mut helper = Agent::with_local_place(self.model.clone(), tmp);
+                helper.invoke_local_studio_tool(chat_id, tool, args)
+            }
+            "multi_edit" => {
+                let path = args
+                    .get("path")
+                    .or_else(|| args.get("file_path"))
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| "multi_edit requires string 'path'".to_string())?;
+                let edits = args
+                    .get("edits")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| "multi_edit requires array 'edits'".to_string())?;
+                let mut src = self
+                    .prev_script_current(path)?
+                    .ok_or_else(|| format!("no script at {path}"))?;
+                let mut applied = 0usize;
+                for ed in edits {
+                    let old_s = ed
+                        .get("old_str")
+                        .or_else(|| ed.get("old_text"))
+                        .or_else(|| ed.get("find"))
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| "each edit requires 'old_str'".to_string())?;
+                    let new_s = ed
+                        .get("new_str")
+                        .or_else(|| ed.get("new_text"))
+                        .or_else(|| ed.get("replace"))
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| "each edit requires 'new_str'".to_string())?;
+                    if !src.contains(old_s) {
+                        return Err(format!("multi_edit target not found in {path}"));
+                    }
+                    src = src.replacen(old_s, new_s, 1);
+                    applied += 1;
+                }
+                let updated = self.update_script_source(chat_id, path, &src)?;
+                let mut out = updated.to_json();
+                if let Some(obj) = out.as_object_mut() {
+                    obj.insert("edits_applied".to_string(), json!(applied));
+                }
+                Ok((out, None))
+            }
+            other => Err(format!("unsupported Studio tool: {other}")),
         }
     }
 
@@ -1759,14 +1986,17 @@ impl Agent {
     }
 
     /// Refuse honestly when the connected bridge is known to lack a
-    /// tool the agent cannot build without. The required set is every
-    /// tool the loop can call — checking only some of them once let a
-    /// bridge pass that could not create instances, and the loop then
-    /// fabricated the results mid-ask.
+    /// tool the agent cannot build without. Accepts:
+    /// - Persistent `LocalPlace` or connected Companion Studio `Plugin`,
+    /// - Official Roblox Studio MCP (`execute_luau` + `start_stop_play` + `get_console_output`), or
+    /// - Legacy 7-tool Studio MCP bridges.
     fn check_bridge_capabilities(&self) -> Result<(), String> {
         let Some(studio) = &self.studio else {
             return Ok(());
         };
+        if matches!(studio, PlaceBackend::Local(_) | PlaceBackend::Plugin(_)) {
+            return Ok(());
+        }
         if !studio.tools_known() {
             return Ok(());
         }
@@ -1779,6 +2009,12 @@ impl Agent {
             "get_console",
             "get_place_tree",
         ];
+        if let PlaceBackend::Mcp(mcp) = studio {
+            let advertises_any_legacy = REQUIRED.iter().any(|t| mcp.has_exact_tool(t));
+            if mcp.has_official_bridge() && !advertises_any_legacy {
+                return Ok(());
+            }
+        }
         let missing: Vec<&str> = REQUIRED
             .iter()
             .filter(|t| !studio.has_tool(t))
@@ -1787,7 +2023,7 @@ impl Agent {
         if !missing.is_empty() {
             return Err(format!(
                 "Studio bridge does not offer these tools: {} — this bridge cannot build. \
-                 Connect a Studio MCP server that offers {}.",
+                 Connect a Studio MCP server that offers {} (or official execute_luau + start_stop_play + get_console_output).",
                 missing.join(", "),
                 REQUIRED.join(", ")
             ));
@@ -1795,24 +2031,102 @@ impl Agent {
         Ok(())
     }
 
-    /// Run one ask in one chat. Whatever happens — success, honest
-    /// failure, mid-ask error — the changes this ask checkpointed are
-    /// harvested into that chat's revertable change set.
+    /// Run one ask in one chat (default `Agent` mode). Whatever happens —
+    /// success, honest failure, mid-ask error — the changes this ask checkpointed
+    /// are harvested into that chat's revertable change set.
     pub fn run_ask(&mut self, chat_id: &str, ask: &str) -> Result<RunOutcome, AskFailure> {
+        self.run_ask_with_options(chat_id, ask, AskOptions::default())
+    }
+
+    /// Run one ask with explicit RoPilot composer options (`mode`, `reasoning`, `context_paths`).
+    pub fn run_ask_with_options(
+        &mut self,
+        chat_id: &str,
+        ask: &str,
+        opts: AskOptions,
+    ) -> Result<RunOutcome, AskFailure> {
         self.current_changes.clear();
         self.begin_build_trace(chat_id, ask);
-        let result = self.run_ask_inner(chat_id, ask);
+        let result = self.run_ask_inner(chat_id, ask, &opts, false);
         match &result {
             Ok(o) if o.refused => self.emit_event("failed", "Build refused", &o.summary, None, None, 100),
             Ok(o) => self.emit_event("done", "Build verified", &o.summary, None, None, 100),
             Err(f) => self.emit_event("failed", "Build failed", &f.message, None, None, 100),
         }
-        let skills = match &result {
-            Ok(o) => o.skills_used.clone(),
-            Err(f) => f.skills_used.clone(),
-        };
-        self.harvest(chat_id, skills);
+        if opts.mode != AskMode::Ask {
+            let skills = match &result {
+                Ok(o) => o.skills_used.clone(),
+                Err(f) => f.skills_used.clone(),
+            };
+            self.harvest(chat_id, skills);
+        } else {
+            self.current_changes.clear();
+        }
         result
+    }
+
+    /// Run an ask in isolated staged/proposal mode (`mode == "plan"` or `review_diffs == true`):
+    /// clones the active place tree into a shadow `LocalPlace`, runs all agent steps against the
+    /// shadow copy (ZERO live Studio mutation!), computes Static Luau Prover diagnostics on the
+    /// staged tree, and returns before/after trees for unified diff review & selective apply.
+    pub fn run_ask_staged(
+        &mut self,
+        chat_id: &str,
+        ask: &str,
+        opts: AskOptions,
+    ) -> Result<StagedAskOutcome, AskFailure> {
+        let fail = |message: String| AskFailure {
+            message,
+            thread: Vec::new(),
+            transcript: Vec::new(),
+            skills_used: Vec::new(),
+        };
+        if !self.model.is_configured() {
+            return Err(fail(
+                "no model key configured: set OPENRO_MODEL_API_KEY to enable chat".to_string(),
+            ));
+        }
+        if self.studio.is_none() {
+            return Err(fail(
+                "Studio not connected: set OPENRO_MCP_COMMAND to a Studio MCP server".to_string(),
+            ));
+        }
+        if let Err(e) = self.check_bridge_capabilities() {
+            return Err(fail(e));
+        }
+        let before_tree = self.place_tree().map_err(fail)?;
+        let game_name = match &self.studio {
+            Some(PlaceBackend::Local(l)) => l.game_name().to_string(),
+            _ => "OpenRO".to_string(),
+        };
+        let mut shadow = LocalPlace::in_memory(game_name);
+        shadow.replace_tree(&before_tree);
+
+        let mut shadow_agent = Agent::with_local_place(self.model.clone(), shadow);
+        shadow_agent.set_library_prompt(self.library_prompt.clone());
+        shadow_agent.set_market_dossier_prompt(self.market_dossier_prompt.clone());
+        if let Some(root) = &self.assets_root {
+            shadow_agent.set_assets_root(root.clone());
+        }
+        if let Some(ev) = &self.events {
+            shadow_agent.attach_events(Arc::clone(ev));
+        }
+        shadow_agent.begin_build_trace(chat_id, ask);
+        let outcome = shadow_agent.run_ask_inner(chat_id, ask, &opts, true)?;
+        let (after_tree, diagnostics) = match shadow_agent.studio.as_ref() {
+            Some(PlaceBackend::Local(local)) => (local.tree_json(), local.analyze().to_json()),
+            _ => (
+                before_tree.clone(),
+                json!({ "ok": true, "error_count": 0, "warning_count": 0, "diagnostics": [] }),
+            ),
+        };
+        shadow_agent.emit_event("done", "Proposal ready", &outcome.summary, None, None, 100);
+        Ok(StagedAskOutcome {
+            outcome,
+            before_tree,
+            after_tree,
+            diagnostics,
+        })
     }
 
     /// Push this ask's checkpoints (if it changed anything) onto the
@@ -2146,7 +2460,14 @@ impl Agent {
         })
     }
 
-    fn run_ask_inner(&mut self, chat_id: &str, ask: &str) -> Result<RunOutcome, AskFailure> {
+    fn run_ask_inner(
+        &mut self,
+        chat_id: &str,
+        ask: &str,
+        opts: &AskOptions,
+        staged: bool,
+    ) -> Result<RunOutcome, AskFailure> {
+        let read_only = opts.mode == AskMode::Ask;
         let mut thread: Vec<String> = Vec::new();
         let mut transcript: Vec<String> = Vec::new();
         let mut skills_used: Vec<String> = Vec::new();
@@ -2174,10 +2495,44 @@ impl Agent {
         }
         self.generated.clear();
         self.last_skill = None;
-        let full_system = self.effective_system_prompt();
+        let mut full_system = self.effective_system_prompt();
+        if read_only {
+            full_system.push_str(
+                "\n\nACTIVE MODE: ASK (READ-ONLY). You may inspect the game with get_place_tree, \
+                 search_game_tree, inspect_instance, script_read, script_grep, or get_console_output. \
+                 Do NOT call mutating tools (write_luau, write_script, multi_edit, create_instance, \
+                 delete_instance, delete_script, execute_luau, playtest). Reply with {\"done\": true, \"summary\": \"...\"}.",
+            );
+        } else if staged {
+            full_system.push_str(
+                "\n\nACTIVE MODE: PLAN / STAGED DIFF REVIEW. Your edits run in an isolated preview so \
+                 the user can review exact unified diffs before applying them to Roblox Studio.",
+            );
+        }
+        let reasoning_norm = opts.reasoning.trim().to_ascii_lowercase();
+        if matches!(reasoning_norm.as_str(), "low" | "medium" | "high") {
+            full_system.push_str(&format!(
+                "\nREASONING DEPTH: {reasoning_norm}."
+            ));
+        }
+
+        // Inject compact Whole-Game Context Summary + requested context_paths on turn 1.
+        let compact = self.model.is_loopback();
+        let turn1_user = match self.place_tree().ok() {
+            Some(tree) => {
+                let ctx = build_whole_game_context(&tree, &opts.context_paths, compact);
+                if ctx.is_empty() {
+                    ask.to_string()
+                } else {
+                    format!("{ask}\n\n{ctx}")
+                }
+            }
+            None => ask.to_string(),
+        };
+
         let mut messages = vec![
             json!({ "role": "system", "content": full_system }),
-            json!({ "role": "user", "content": ask }),
+            json!({ "role": "user", "content": turn1_user }),
         ];
         let mut summary: Option<String> = None;
         let mut failed_playtests = 0usize;
@@ -2215,7 +2570,7 @@ impl Agent {
             };
 
             if step.get("done").and_then(|d| d.as_bool()) == Some(true) {
-                if unproven_changes {
+                if unproven_changes && !staged && !read_only {
                     transcript.push("done refused: changes are unproven by a playtest".to_string());
                     messages.push(json!({
                         "role": "user",
@@ -2231,7 +2586,7 @@ impl Agent {
                 // An ask that changed nothing because a step failed is
                 // refused in plain words: its own summary is not the
                 // result, and no pitch follows it.
-                if changes_made == 0 && !problems.is_empty() {
+                if !read_only && changes_made == 0 && !problems.is_empty() {
                     let message = match &gate_sentence {
                         Some(sentence) => sentence.clone(),
                         None => format!(
@@ -2254,7 +2609,7 @@ impl Agent {
                 // that no passing playtest has covered (or the app's
                 // last playtest failed): a success summary would be false.
                 let proof = self.proof_by_chat.get(chat_id).cloned().unwrap_or_default();
-                if proof.unproven {
+                if !read_only && !staged && proof.unproven {
                     let why = match &proof.failed_console {
                         Some(console) => format!(
                             "the last test run of your game failed. Console output: {console}"
@@ -2275,7 +2630,7 @@ impl Agent {
                 // break) does NOT excuse a build claim: when the
                 // summary claims building work but the ask changed
                 // nothing, the ledger line comes FIRST, then the claim.
-                if changes_made == 0 && claims_building(&s) {
+                if !read_only && changes_made == 0 && claims_building(&s) {
                     thread.push(
                         "OpenRO: Note — this ask made no changes to the game.".to_string(),
                     );
@@ -2287,6 +2642,14 @@ impl Agent {
             }
 
             if let Some(skill) = step.get("skill").and_then(|v| v.as_str()) {
+                if read_only {
+                    let msg = format!(
+                        "Ask mode is read-only: skill '{skill}' is disabled. Use read-only inspection tools and reply with {{\"done\": true, \"summary\": \"...\"}}."
+                    );
+                    transcript.push(format!("skill {skill} refused (ask mode): {msg}"));
+                    messages.push(json!({ "role": "user", "content": format!("skill_result: error: {msg}") }));
+                    continue;
+                }
                 let args = step.get("args").cloned().unwrap_or(json!({}));
                 // A skill whose prerequisite was undone in this chat and
                 // not rebuilt since is refused, not generated.
@@ -2320,6 +2683,81 @@ impl Agent {
 
             if let Some(tool) = step.get("tool").and_then(|v| v.as_str()) {
                 let args = step.get("args").cloned().unwrap_or(json!({}));
+                if read_only && !is_read_only_tool(tool) {
+                    let msg = format!(
+                        "Ask mode is read-only: tool '{tool}' cannot mutate the place. \
+                         Use read-only tools (get_place_tree, search_game_tree, inspect_instance, \
+                         script_read, script_grep, get_console_output) and reply with {{\"done\": true, \"summary\": \"...\"}}."
+                    );
+                    transcript.push(format!("tool {tool} refused (ask mode): {msg}"));
+                    messages.push(json!({
+                        "role": "user",
+                        "content": format!("tool_result: error: {msg}")
+                    }));
+                    continue;
+                }
+                if tool == "write_luau" {
+                    match self.run_write_luau(
+                        &args,
+                        &mut transcript,
+                        &mut thread,
+                        &mut writes,
+                        last_failed_console.as_deref(),
+                    ) {
+                        Ok(note) => {
+                            changes_made += 1;
+                            unproven_changes = true;
+                            self.note_change(chat_id);
+                            last_written = args.get("path").and_then(|v| v.as_str()).map(|p| p.to_string());
+                            messages.push(json!({ "role": "user", "content": note }));
+                        }
+                        Err(e) => {
+                            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("the script");
+                            problems.push(format!("saving {path} failed: {e}"));
+                            transcript.push(format!("tool write_luau error: {e}"));
+                            messages.push(json!({
+                                "role": "user",
+                                "content": format!("tool_result: error: {e}. Fix the error and try again.")
+                            }));
+                        }
+                    }
+                    continue;
+                }
+                if tool == "multi_edit" {
+                    match self.run_multi_edit(
+                        &args,
+                        &mut transcript,
+                        &mut thread,
+                        &mut writes,
+                        last_failed_console.as_deref(),
+                    ) {
+                        Ok(note) => {
+                            changes_made += 1;
+                            unproven_changes = true;
+                            self.note_change(chat_id);
+                            last_written = args
+                                .get("path")
+                                .or_else(|| args.get("file_path"))
+                                .and_then(|v| v.as_str())
+                                .map(|p| p.to_string());
+                            messages.push(json!({ "role": "user", "content": note }));
+                        }
+                        Err(e) => {
+                            let path = args
+                                .get("path")
+                                .or_else(|| args.get("file_path"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("the script");
+                            problems.push(format!("editing {path} failed: {e}"));
+                            transcript.push(format!("tool multi_edit error: {e}"));
+                            messages.push(json!({
+                                "role": "user",
+                                "content": format!("tool_result: error: {e}. Fix the error and try again.")
+                            }));
+                        }
+                    }
+                    continue;
+                }
                 if tool == "playtest" {
                     // Nothing changed in this ask: there is nothing to
                     // test, and a run now would be a vacuous pass.
@@ -2613,6 +3051,248 @@ impl Agent {
         Ok(note)
     }
 
+    /// RoPilot custom Luau writer (`write_luau`): validates `path`, caps size at `512 KiB`,
+    /// runs `luau_check::analyze_source` (rejecting with exact line-numbered errors before
+    /// writing if any `Severity::Error` is present), checkpoints previous state onto the
+    /// per-chat Undo stack, writes to the active backend, emits `ScriptWritten` + auto-capture.
+    fn run_write_luau(
+        &mut self,
+        args: &Value,
+        transcript: &mut Vec<String>,
+        thread: &mut Vec<String>,
+        writes: &mut HashMap<String, String>,
+        last_failed_console: Option<&str>,
+    ) -> Result<String, String> {
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or("write_luau needs args.path")?
+            .to_string();
+        let source = args
+            .get("source")
+            .and_then(|v| v.as_str())
+            .ok_or("write_luau needs args.source")?
+            .to_string();
+        check_path(&path)?;
+        if source.len() > MAX_LUAU_BYTES {
+            return Err(format!(
+                "write_luau source exceeds maximum allowed size ({MAX_LUAU_BYTES} bytes)"
+            ));
+        }
+        if source.contains('\0') {
+            return Err("write_luau source must not contain NUL bytes".to_string());
+        }
+        let report = crate::luau_check::analyze_source(&path, &source);
+        if report.error_count() > 0 {
+            let formatted = format_luau_errors(&report);
+            return Err(format!(
+                "Static Luau Prover rejected {path} ({} error(s)):\n{formatted}",
+                report.error_count()
+            ));
+        }
+        let prev = self.prev_script(&path)?;
+        self.studio_mut()?
+            .call_tool("write_script", json!({ "path": path, "source": source.clone() }))?;
+        self.record_script(&path, prev, Some(source.clone()));
+        self.emit_event(
+            "writing",
+            "Writing Custom Luau",
+            &format!("Saved {path} ({} bytes)", source.len()),
+            None,
+            Some(&path),
+            60,
+        );
+        let mut st_ev = StudioActionInput::new(
+            StudioActionKind::ScriptWritten,
+            format!("Wrote custom Luau {path} ({} bytes)", source.len()),
+        );
+        st_ev.path = path.clone();
+        st_ev.class_name = if path.starts_with("StarterGui.") || path.starts_with("StarterPlayer.") {
+            "LocalScript".to_string()
+        } else if path.starts_with("ReplicatedStorage.") {
+            "ModuleScript".to_string()
+        } else {
+            "Script".to_string()
+        };
+        st_ev.code_snippet = Some(snippet_from_source(&source));
+        self.emit_studio_action(st_ev);
+        let _ = self.auto_capture_mcp_frame();
+        transcript.push(format!("tool write_luau {path} ({} bytes)", source.len()));
+        thread.push(format!("Wrote {path}."));
+        let warn_suffix = if report.warning_count() > 0 {
+            format!(
+                " ({} static warning(s): {})",
+                report.warning_count(),
+                report.warnings().join("; ")
+            )
+        } else {
+            String::new()
+        };
+        let mut note = format!(
+            "tool_result: write_luau {path} succeeded{warn_suffix}. Write any remaining scripts/instances, or call {{\"tool\":\"playtest\",\"args\":{{}}}} when ready."
+        );
+        if let (Some(prev_written), Some(console)) = (writes.get(&path), last_failed_console) {
+            if *prev_written == source {
+                transcript.push(format!(
+                    "note: write_luau {path} was byte-identical to the failing version"
+                ));
+                note = format!(
+                    "tool_result: write_luau {path} succeeded — but this source is byte-identical \
+                     to the version that just failed the playtest with: {console}\n\
+                     Change something material before playtesting again."
+                );
+            }
+        }
+        writes.insert(path, source);
+        Ok(note)
+    }
+
+    /// RoPilot targeted multi-hunk Luau editor (`multi_edit`): validates `path`, applies
+    /// ordered `old_str -> new_str` replacements, caps size at `512 KiB`, runs
+    /// `luau_check::analyze_source` (rejecting on any `Severity::Error` before writing),
+    /// checkpoints previous state onto per-chat Undo, writes & emits `ScriptWritten`.
+    fn run_multi_edit(
+        &mut self,
+        args: &Value,
+        transcript: &mut Vec<String>,
+        thread: &mut Vec<String>,
+        writes: &mut HashMap<String, String>,
+        last_failed_console: Option<&str>,
+    ) -> Result<String, String> {
+        let path = args
+            .get("path")
+            .or_else(|| args.get("file_path"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or("multi_edit needs args.path")?
+            .to_string();
+        let edits = args
+            .get("edits")
+            .and_then(|v| v.as_array())
+            .filter(|a| !a.is_empty())
+            .ok_or("multi_edit needs non-empty args.edits array")?;
+        check_path(&path)?;
+
+        let current_opt = self.prev_script_current(&path)?;
+        let mut updated = match current_opt {
+            Some(s) => s,
+            None => {
+                let first_empty = edits
+                    .first()
+                    .and_then(|e| {
+                        e.get("old_str")
+                            .or_else(|| e.get("old_text"))
+                            .or_else(|| e.get("find"))
+                            .and_then(|v| v.as_str())
+                    })
+                    .is_some_and(|s| s.is_empty());
+                if first_empty {
+                    String::new()
+                } else {
+                    return Err(format!(
+                        "no script at {path} — use write_luau to create it first"
+                    ));
+                }
+            }
+        };
+
+        let mut applied = 0usize;
+        for (idx, ed) in edits.iter().enumerate() {
+            let old_s = ed
+                .get("old_str")
+                .or_else(|| ed.get("old_text"))
+                .or_else(|| ed.get("find"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| format!("multi_edit edit #{} needs string 'old_str'", idx + 1))?;
+            let new_s = ed
+                .get("new_str")
+                .or_else(|| ed.get("new_text"))
+                .or_else(|| ed.get("replace"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| format!("multi_edit edit #{} needs string 'new_str'", idx + 1))?;
+            if old_s.is_empty() {
+                if !updated.is_empty() && !updated.ends_with('\n') {
+                    updated.push('\n');
+                }
+                updated.push_str(new_s);
+            } else {
+                if !updated.contains(old_s) {
+                    return Err(format!(
+                        "multi_edit edit #{} target not found in {path} (read the script with script_read first)",
+                        idx + 1
+                    ));
+                }
+                updated = updated.replacen(old_s, new_s, 1);
+            }
+            applied += 1;
+        }
+
+        if updated.len() > MAX_LUAU_BYTES {
+            return Err(format!(
+                "multi_edit result exceeds maximum allowed size ({MAX_LUAU_BYTES} bytes)"
+            ));
+        }
+        if updated.contains('\0') {
+            return Err("multi_edit result must not contain NUL bytes".to_string());
+        }
+        let report = crate::luau_check::analyze_source(&path, &updated);
+        if report.error_count() > 0 {
+            let formatted = format_luau_errors(&report);
+            return Err(format!(
+                "Static Luau Prover rejected multi_edit on {path} ({} error(s)):\n{formatted}",
+                report.error_count()
+            ));
+        }
+
+        let prev = self.prev_script(&path)?;
+        self.studio_mut()?
+            .call_tool("write_script", json!({ "path": path, "source": updated.clone() }))?;
+        self.record_script(&path, prev, Some(updated.clone()));
+        self.emit_event(
+            "writing",
+            "Editing Luau",
+            &format!("Applied {applied} edit(s) to {path} ({} bytes)", updated.len()),
+            None,
+            Some(&path),
+            62,
+        );
+        let mut st_ev = StudioActionInput::new(
+            StudioActionKind::ScriptWritten,
+            format!("Edited {path} ({applied} hunk(s), {} bytes)", updated.len()),
+        );
+        st_ev.path = path.clone();
+        st_ev.class_name = if path.starts_with("StarterGui.") || path.starts_with("StarterPlayer.") {
+            "LocalScript".to_string()
+        } else if path.starts_with("ReplicatedStorage.") {
+            "ModuleScript".to_string()
+        } else {
+            "Script".to_string()
+        };
+        st_ev.code_snippet = Some(snippet_from_source(&updated));
+        self.emit_studio_action(st_ev);
+        let _ = self.auto_capture_mcp_frame();
+        transcript.push(format!(
+            "tool multi_edit {path} ({applied} edit(s), {} bytes)",
+            updated.len()
+        ));
+        thread.push(format!("Edited {path} ({applied} change(s))."));
+        let mut note = format!(
+            "tool_result: multi_edit {path} applied {applied} edit(s). Call {{\"tool\":\"playtest\",\"args\":{{}}}} when ready."
+        );
+        if let (Some(prev_written), Some(console)) = (writes.get(&path), last_failed_console) {
+            if *prev_written == updated {
+                note = format!(
+                    "tool_result: multi_edit {path} resulted in byte-identical source to the failing version ({console}). Make a material fix before playtesting again."
+                );
+            }
+        }
+        writes.insert(path, updated);
+        Ok(note)
+    }
+
     /// Resolve the source for a write_script step: a named skill's
     /// generated source, or the most recent generation. There is no
     /// hand-written-source path — Luau comes only from Rune skills.
@@ -2724,7 +3404,9 @@ impl Agent {
                         })
                         .unwrap_or_else(|| format!("(could not read the console: {e})")),
                 };
-                let fseq = self.auto_capture_mcp_frame();
+                let fseq = self
+                    .take_playtest_frame_seq()
+                    .or_else(|| self.auto_capture_mcp_frame());
                 let mut pt_fail = StudioActionInput::new(
                     StudioActionKind::PlaytestFailed,
                     "Playtest failed — reading console output",
@@ -2755,7 +3437,9 @@ impl Agent {
                     None,
                     95,
                 );
-                let fseq = self.auto_capture_mcp_frame();
+                let fseq = self
+                    .take_playtest_frame_seq()
+                    .or_else(|| self.auto_capture_mcp_frame());
                 let mut pt_pass = StudioActionInput::new(
                     StudioActionKind::PlaytestPassed,
                     "Playtest passed with 0 Luau errors",
@@ -2908,6 +3592,30 @@ impl Agent {
                 let text = self.studio_mut()?.call_tool(tool, json!({}))?;
                 transcript.push(format!("tool {tool} -> {text}"));
                 Ok(format!("tool_result: {tool}: {text}"))
+            }
+            "blender_generate" => {
+                let root = self.effective_assets_root();
+                let res = crate::library::generate_blender_mesh(&root, args, None)?;
+                let text = res.to_string();
+                let name = res
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("3D mesh");
+                transcript.push(format!("tool blender_generate -> {text}"));
+                thread.push(format!("Generated 3D mesh {name}."));
+                Ok(format!("tool_result: blender_generate: {text}"))
+            }
+            "audio_generate" => {
+                let root = self.effective_assets_root();
+                let res = crate::audio_synth::generate_audio_asset(&root, args)?;
+                let text = res.to_string();
+                let name = res
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("SFX audio");
+                transcript.push(format!("tool audio_generate -> {text}"));
+                thread.push(format!("Synthesized WAV audio {name}."));
+                Ok(format!("tool_result: audio_generate: {text}"))
             }
             t if is_official_studio_tool(t) => {
                 let chat_id = self.active_build_chat.clone();
@@ -3629,7 +4337,7 @@ fn extract_inline_skill_args(write_args: &Value) -> Option<Value> {
 /// segments, no `.`/`..` segments, no separators or control characters.
 /// The agent validates before forwarding — model output is not passed
 /// to the bridge unchecked.
-fn check_path(path: &str) -> Result<(), String> {
+pub fn check_path(path: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err("path must not be empty".to_string());
     }
@@ -3673,4 +4381,134 @@ fn playtest_verdict(result_text: &str) -> Verdict {
         "failed" | "playtest failed" => Verdict::Failed,
         _ => Verdict::Unreadable,
     }
+}
+
+fn is_read_only_tool(tool: &str) -> bool {
+    matches!(
+        tool,
+        "get_place_tree"
+            | "search_game_tree"
+            | "inspect_instance"
+            | "script_read"
+            | "script_grep"
+            | "get_console_output"
+            | "get_console"
+            | "list_roblox_studios"
+            | "get_studio_state"
+    )
+}
+
+fn format_luau_errors(report: &crate::luau_check::AnalysisReport) -> String {
+    report
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == crate::luau_check::Severity::Error)
+        .map(|d| format!("Line {} [{}]: {}", d.line, d.code, d.message))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Build a compact Whole-Game Context Summary injected into turn 1 so the model sees
+/// the open Roblox place immediately (service counts, instance/script paths, and full
+/// contents of caller-selected `context_paths` capped sensibly).
+fn build_whole_game_context(tree: &Value, context_paths: &[String], compact: bool) -> String {
+    let empty = serde_json::Map::new();
+    let instances = tree
+        .get("instances")
+        .and_then(|v| v.as_object())
+        .unwrap_or(&empty);
+    let scripts = tree
+        .get("scripts")
+        .and_then(|v| v.as_object())
+        .unwrap_or(&empty);
+    if instances.is_empty() && scripts.is_empty() && context_paths.is_empty() {
+        return String::new();
+    }
+
+    let mut svc_counts: std::collections::BTreeMap<&str, (usize, usize)> =
+        std::collections::BTreeMap::new();
+    for k in instances.keys() {
+        let root = k.split('.').next().unwrap_or("Other");
+        svc_counts.entry(root).or_default().0 += 1;
+    }
+    for k in scripts.keys() {
+        let root = k.split('.').next().unwrap_or("Other");
+        svc_counts.entry(root).or_default().1 += 1;
+    }
+
+    let mut out = String::from("[OPENRO WHOLE-GAME CONTEXT]\n");
+    let svc_summary: Vec<String> = svc_counts
+        .iter()
+        .map(|(svc, (ic, sc))| format!("{svc}: {ic} instance(s), {sc} script(s)"))
+        .collect();
+    if !svc_summary.is_empty() {
+        out.push_str("Services: ");
+        out.push_str(&svc_summary.join(" | "));
+        out.push('\n');
+    }
+
+    let path_cap = if compact { 16 } else { 40 };
+    if !scripts.is_empty() {
+        let mut s_paths: Vec<&str> = scripts.keys().map(String::as_str).collect();
+        s_paths.sort();
+        let shown: Vec<&str> = s_paths.iter().take(path_cap).copied().collect();
+        out.push_str(&format!(
+            "Scripts ({}): {}{}\n",
+            s_paths.len(),
+            shown.join(", "),
+            if s_paths.len() > path_cap { ", ..." } else { "" }
+        ));
+    }
+    if !instances.is_empty() {
+        let mut i_paths: Vec<&str> = instances.keys().map(String::as_str).collect();
+        i_paths.sort();
+        let shown: Vec<&str> = i_paths.iter().take(path_cap).copied().collect();
+        out.push_str(&format!(
+            "Instances ({}): {}{}\n",
+            i_paths.len(),
+            shown.join(", "),
+            if i_paths.len() > path_cap { ", ..." } else { "" }
+        ));
+    }
+
+    if !context_paths.is_empty() {
+        let max_per_file = if compact { 2048 } else { 8192 };
+        let max_total = if compact { 4096 } else { 24576 };
+        let mut used = 0usize;
+        let mut seen = BTreeSet::new();
+        for raw in context_paths {
+            let p = raw.trim();
+            if p.is_empty() || !seen.insert(p.to_string()) || check_path(p).is_err() {
+                continue;
+            }
+            if used >= max_total {
+                break;
+            }
+            if let Some(src) = scripts.get(p).and_then(|v| v.as_str()) {
+                let budget = (max_total - used).min(max_per_file);
+                let mut end = budget.min(src.len());
+                while end > 0 && !src.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let slice = &src[..end];
+                out.push_str(&format!(
+                    "\n--- Attached Script: {p} ---\n{slice}{}\n",
+                    if end < src.len() { "\n-- [truncated]" } else { "" }
+                ));
+                used += slice.len();
+            } else if let Some(inst) = instances.get(p) {
+                let text = inst.to_string();
+                let budget = (max_total - used).min(max_per_file);
+                let mut end = budget.min(text.len());
+                while end > 0 && !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let slice = &text[..end];
+                out.push_str(&format!("\n--- Attached Instance: {p} ---\n{slice}\n"));
+                used += slice.len();
+            }
+        }
+    }
+
+    out
 }
