@@ -330,6 +330,35 @@ fn handle_mock_conn(mut stream: TcpStream, state: &Mutex<MockState>, png: &[u8])
         }
     } else if method == "POST" && (path.ends_with("/images/edits") || path.ends_with("/images/generations")) {
         ("200 OK", json!({ "data": [{ "b64_json": encode_base64(png) }] }))
+    } else if method == "GET" && path.starts_with("/images/search") {
+        let html = if path.contains("CAPTCHA_TEST") {
+            "<html><body>Please verify you are human</body></html>".to_string()
+        } else {
+            let img_url = format!("http://127.0.0.1:{}/mock-img/goku-action.png", stream.local_addr().unwrap().port());
+            let sheet_url = format!("http://127.0.0.1:{}/mock-img/goku-sheet.png", stream.local_addr().unwrap().port());
+            format!(
+                r#"<html><body>
+                <a class="iusc" m="{{&quot;murl&quot;:&quot;{sheet_url}&quot;,&quot;purl&quot;:&quot;https://wiki.example/goku&quot;,&quot;t&quot;:&quot;Goku official character sheet standing pose&quot;,&quot;w&quot;:600,&quot;h&quot;:1200}}"></a>
+                <a class="iusc" m="{{&quot;murl&quot;:&quot;{img_url}&quot;,&quot;purl&quot;:&quot;https://anime.example/ep130&quot;,&quot;t&quot;:&quot;Goku dynamic battle action scene sakuga&quot;,&quot;w&quot;:1280,&quot;h&quot;:720}}"></a>
+                </body></html>"#
+            )
+        };
+        drop(st);
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html}",
+            html.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        return;
+    } else if method == "GET" && path.starts_with("/mock-img/") {
+        drop(st);
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            png.len()
+        );
+        let _ = stream.write_all(header.as_bytes());
+        let _ = stream.write_all(png);
+        return;
     } else {
         ("404 Not Found", json!({ "message": format!("unmocked {method} {path}") }))
     };
@@ -842,6 +871,95 @@ sys.exit(0)
         &json!({ "project": "demo-uacg", "script": "import subprocess\nsubprocess.run(['id'])" }),
     );
     assert_eq!(st_deny, 400);
+
+    // #37 regression: size:[w,h] alias + flat single-shape draw works, and 0-shape draw / missing canvas size / unknown op -> 400
+    let (st_alias, alias_res) = http_json(
+        port,
+        "POST",
+        "/api/art/process",
+        &json!({
+            "project": "demo-uacg",
+            "output": "art/ui/card_bg_alias.png",
+            "ops": [
+                { "op": "canvas", "size": [256, 356], "color": "#00000000" },
+                { "op": "draw", "shape": "rounded_rect", "box": [8, 8, 248, 348], "radius": 18, "fill": "#1B2440FF" }
+            ]
+        }),
+    );
+    assert_eq!(st_alias, 200, "size + flat draw alias failed: {alias_res}");
+    assert_eq!(alias_res["width"], 256);
+    assert_eq!(alias_res["height"], 356);
+    assert!(alias_res["opaque_ratio"].as_f64().unwrap() > 0.7, "flat draw must not produce blank image: {alias_res}");
+
+    let (st_empty_draw, empty_draw) = http_json(
+        port,
+        "POST",
+        "/api/art/process",
+        &json!({
+            "project": "demo-uacg",
+            "output": "art/ui/should_fail.png",
+            "ops": [
+                { "op": "canvas", "size": [128, 128] },
+                { "op": "draw", "shapes": [] }
+            ]
+        }),
+    );
+    assert_eq!(st_empty_draw, 400, "empty draw must 400: {empty_draw}");
+
+    let (st_bad_canvas, _) = http_json(
+        port,
+        "POST",
+        "/api/art/process",
+        &json!({
+            "project": "demo-uacg",
+            "output": "art/ui/should_fail2.png",
+            "ops": [{ "op": "canvas" }]
+        }),
+    );
+    assert_eq!(st_bad_canvas, 400);
+
+    let (st_bad_shape, _) = http_json(
+        port,
+        "POST",
+        "/api/art/process",
+        &json!({
+            "project": "demo-uacg",
+            "output": "art/ui/should_fail3.png",
+            "ops": [
+                { "op": "canvas", "width": 64, "height": 64 },
+                { "op": "draw", "shape": "bogus_hex", "fill": "#FFFFFFFF" }
+            ]
+        }),
+    );
+    assert_eq!(st_bad_shape, 400);
+
+    // #38 regression: reference_search falls back cleanly to direct HTTP search when shared browser is absent,
+    // and stops cleanly (502) if the HTTP search page shows a CAPTCHA challenge!
+    {
+        let _fb_env = EnvGuard::set(&[
+            ("OPENRO_REFERENCE_SEARCH_BIN", ""),
+            ("OPENRO_SHARED_BROWSER_PY", "/nonexistent/openro-test-no-shared-browser"),
+            ("OPENRO_REFERENCE_SEARCH_HTTP_BASE", &mock_base),
+        ]);
+        let (st_fb, fb) = http_json(
+            port,
+            "POST",
+            "/api/art/references/search",
+            &json!({ "project": "demo-uacg", "character": "Son Goku", "show": "Dragon Ball Super", "card_id": "goku_ui" }),
+        );
+        assert_eq!(st_fb, 200, "http fallback search failed: {fb}");
+        assert_eq!(fb["search_backend"], "http_fallback");
+        assert!(fb["candidates"][0]["image_url"].as_str().unwrap().contains("goku-action"));
+        assert!(project_dir.join(fb["reference_path"].as_str().unwrap()).is_file());
+
+        let (st_cap, cap) = http_json(
+            port,
+            "POST",
+            "/api/art/references/search",
+            &json!({ "project": "demo-uacg", "character": "CAPTCHA_TEST", "show": "Anime" }),
+        );
+        assert_eq!(st_cap, 502, "CAPTCHA page must fail 502 without bypassing: {cap}");
+    }
 
     // One-shot pack-card (art.png 512x712 + icon.png 256x256 + full.png + contact sheet)
     let (st_pack, pack) = http_json(
