@@ -96,6 +96,12 @@ pub struct Shared {
     pub library: Mutex<crate::library::LibraryManager>,
     /// Root directory for library/mesh/audio assets (equals `data_dir` or an ephemeral dir).
     pub assets_root: PathBuf,
+    /// Short-TTL cache for host Studio detection (`flatpak ps` / PATH scan) so
+    /// concurrent `GET /api/studio/embed/status` polls never fork subprocess storms.
+    cached_embed_detect: Mutex<Option<(std::time::Instant, crate::studio_embed::HostStudioDetection)>>,
+    /// Short-TTL cache for `GET /api/library` (`blender --version` / host detection)
+    /// invalidated immediately on any pack mutation.
+    cached_library_list: Mutex<Option<(std::time::Instant, Value)>>,
 }
 
 #[derive(Clone, Default)]
@@ -158,6 +164,8 @@ impl Shared {
             studio_embed: Mutex::new(crate::studio_embed::StudioEmbedManager::new()),
             library: Mutex::new(library),
             assets_root,
+            cached_embed_detect: Mutex::new(None),
+            cached_library_list: Mutex::new(None),
         })
     }
 
@@ -217,6 +225,8 @@ impl Shared {
             studio_embed: Mutex::new(crate::studio_embed::StudioEmbedManager::new()),
             library: Mutex::new(library),
             assets_root,
+            cached_embed_detect: Mutex::new(None),
+            cached_library_list: Mutex::new(None),
         })
     }
 
@@ -1123,7 +1133,7 @@ fn handle(
             handle_studio_input_keyboard(&mut stream, shared, &req);
         }
         ("GET", "/api/library") => {
-            let body = shared.library.lock().unwrap().list_json();
+            let body = cached_library_list_json(shared);
             respond_json(&mut stream, "200 OK", &body);
         }
         ("POST", "/api/library/install") => {
@@ -3303,6 +3313,7 @@ fn handle_studio_mcp_disconnect(stream: &mut TcpStream, shared: &Shared, req: &R
         let mut mgr = shared.studio_embed.lock().unwrap();
         let _ = crate::studio_embed::stop_embedded_studio(&mut mgr);
     }
+    invalidate_embed_detect_cache(shared);
 
     let local_place = match &shared.data_dir {
         Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
@@ -3620,10 +3631,48 @@ fn handle_studio_tool(stream: &mut TcpStream, shared: &Shared, req: &Request, to
     }
 }
 
+const HOST_DETECT_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn cached_embed_detection(shared: &Shared) -> crate::studio_embed::HostStudioDetection {
+    {
+        let cache = shared.cached_embed_detect.lock().unwrap();
+        if let Some((at, ref det)) = *cache {
+            if at.elapsed() < HOST_DETECT_CACHE_TTL {
+                return det.clone();
+            }
+        }
+    }
+    let fresh = crate::studio_embed::detect_studio_environment();
+    *shared.cached_embed_detect.lock().unwrap() = Some((std::time::Instant::now(), fresh.clone()));
+    fresh
+}
+
+fn invalidate_embed_detect_cache(shared: &Shared) {
+    *shared.cached_embed_detect.lock().unwrap() = None;
+}
+
+fn cached_library_list_json(shared: &Shared) -> Value {
+    {
+        let cache = shared.cached_library_list.lock().unwrap();
+        if let Some((at, ref val)) = *cache {
+            if at.elapsed() < HOST_DETECT_CACHE_TTL {
+                return val.clone();
+            }
+        }
+    }
+    let fresh = shared.library.lock().unwrap().list_json();
+    *shared.cached_library_list.lock().unwrap() = Some((std::time::Instant::now(), fresh.clone()));
+    fresh
+}
+
+fn invalidate_library_cache(shared: &Shared) {
+    *shared.cached_library_list.lock().unwrap() = None;
+}
+
 fn build_embed_status_payload(shared: &Shared) -> Value {
     let state = shared.studio_embed.lock().unwrap().state();
     let info = status_info(shared);
-    let detect = crate::studio_embed::detect_studio_environment();
+    let detect = cached_embed_detection(shared);
     let frame_seq = shared.studio_stream.latest_frame_seq();
     let studio_mode = shared.studio_stream.studio_mode();
     let available_tools = match shared.agent.try_lock() {
@@ -3712,6 +3761,7 @@ fn handle_studio_embed_launch(stream: &mut TcpStream, shared: &Shared, req: &Req
         let mut mgr = shared.studio_embed.lock().unwrap();
         crate::studio_embed::launch_embedded_studio(&mut mgr, cfg)
     };
+    invalidate_embed_detect_cache(shared);
 
     match launch_res {
         Ok((_embed_state, mcp)) => {
@@ -3826,6 +3876,7 @@ fn handle_studio_embed_stop(stream: &mut TcpStream, shared: &Shared, req: &Reque
         let mut mgr = shared.studio_embed.lock().unwrap();
         let _ = crate::studio_embed::stop_embedded_studio(&mut mgr);
     }
+    invalidate_embed_detect_cache(shared);
 
     let local_place = match &shared.data_dir {
         Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
@@ -3874,6 +3925,7 @@ fn respond_library_error(stream: &mut TcpStream, err: crate::library::LibraryErr
 }
 
 fn sync_agent_library_prompt(shared: &Shared) {
+    invalidate_library_cache(shared);
     let prompt = shared.library.lock().unwrap().active_skill_prompt();
     if let Ok(mut guard) = shared.agent.lock() {
         if let Some(agent) = guard.as_mut() {
@@ -3981,6 +4033,7 @@ fn handle_library_test(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     };
     let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("");
     let res = shared.library.lock().unwrap().test_pack(id);
+    invalidate_library_cache(shared);
     match res {
         Ok(v) => respond_json(stream, "200 OK", &v),
         Err(e) => respond_library_error(stream, e),
