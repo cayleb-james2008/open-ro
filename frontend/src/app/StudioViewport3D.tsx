@@ -12,6 +12,7 @@ import { useReducedMotion } from "motion/react";
 import {
   Camera,
   ChevronDown,
+  CopyPlus,
   Crosshair,
   Eye,
   Focus,
@@ -19,11 +20,16 @@ import {
   MousePointer2,
   Move,
   Play,
+  Plug,
+  Plus,
   Radio,
+  Redo2,
   RotateCcw,
   RotateCw,
   Square,
   Terminal,
+  Trash2,
+  Unplug,
   Video,
   ZoomIn,
   ZoomOut,
@@ -31,10 +37,12 @@ import {
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Expandable, ExpandableContent, ExpandableTrigger } from "@/components/ui/expandable";
 import { Pill, PillIndicator } from "@/components/kibo-ui/pill";
 import type {
   InstanceEditPayload,
+  PartPreset,
   Place,
   StudioActionEvent,
   StudioMode,
@@ -46,10 +54,21 @@ type ConsoleFilter = "all" | "parts" | "scripts" | "console";
 type Vec3 = [number, number, number];
 type Vec2 = [number, number];
 
+const PART_PRESETS: Array<{ id: PartPreset; label: string; swatch: string }> = [
+  { id: "block", label: "Block", swatch: "#8B939E" },
+  { id: "sphere", label: "Sphere", swatch: "#3B82F6" },
+  { id: "cylinder", label: "Cylinder", swatch: "#D49B26" },
+  { id: "spawn", label: "SpawnLocation", swatch: "#2D68DF" },
+  { id: "jump_pad", label: "JumpPad", swatch: "#24946E" },
+  { id: "kill_brick", label: "KillBrick", swatch: "#DF522D" },
+  { id: "card_billboard", label: "CardBillboard", swatch: "#7B4ED4" },
+];
+
 type Part3D = {
   path: string;
   name: string;
   className: string;
+  shape: "Block" | "Ball" | "Cylinder";
   pos: Vec3;
   size: Vec3;
   rotYDeg: number;
@@ -188,10 +207,19 @@ function extractParts(place: Place, assets: CardAssetRecord[]): Part3D[] {
       }
     }
 
+    const rawShape = typeof props.Shape === "string" ? props.Shape : typeof props.shape === "string" ? props.shape : "";
+    const shape: Part3D["shape"] =
+      /ball|sphere/i.test(rawShape) || /sphere|ball/i.test(name)
+        ? "Ball"
+        : /cylinder/i.test(rawShape) || /cylinder|pillar/i.test(name)
+          ? "Cylinder"
+          : "Block";
+
     out.push({
       path,
       name,
       className: cls,
+      shape,
       pos,
       size,
       rotYDeg,
@@ -358,10 +386,17 @@ export function StudioViewport3D({
   hasLiveFrame,
   frameSeq,
   building,
+  canRedo = false,
   onSelectPart,
   onSaveInstance,
+  onCreatePart,
+  onDuplicatePart,
+  onDeletePart,
+  onTriggerRedo,
   onRunPlaytest,
   onCaptureFrame,
+  onConnectMcp,
+  onDisconnectMcp,
 }: {
   mode: "studio-3d" | "studio-feed";
   place: Place;
@@ -373,10 +408,17 @@ export function StudioViewport3D({
   hasLiveFrame: boolean;
   frameSeq: number;
   building?: boolean;
+  canRedo?: boolean;
   onSelectPart?: (path: string) => void;
   onSaveInstance?: (payload: InstanceEditPayload) => Promise<void> | void;
+  onCreatePart?: (preset: PartPreset) => Promise<void> | void;
+  onDuplicatePart?: (path: string) => Promise<void> | void;
+  onDeletePart?: (path: string) => Promise<void> | void;
+  onTriggerRedo?: () => Promise<void> | void;
   onRunPlaytest?: () => Promise<void> | void;
   onCaptureFrame?: () => Promise<void> | void;
+  onConnectMcp?: (command?: string) => Promise<void> | void;
+  onDisconnectMcp?: () => Promise<void> | void;
 }) {
   const reduce = useReducedMotion();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -391,6 +433,10 @@ export function StudioViewport3D({
   const [replayIndex, setReplayIndex] = useState<number | null>(null);
   const [playtestBusy, setPlaytestBusy] = useState(false);
   const [captureBusy, setCaptureBusy] = useState(false);
+  const [addPartOpen, setAddPartOpen] = useState(false);
+  const [partActionBusy, setPartActionBusy] = useState(false);
+  const [mcpCmdDraft, setMcpCmdDraft] = useState("");
+  const [mcpBusy, setMcpBusy] = useState(false);
   const [feedError, setFeedError] = useState(false);
   const [localDraftEdit, setLocalDraftEdit] = useState<{ path: string; pos: Vec3; size: Vec3; rotY: number } | null>(null);
 
@@ -801,8 +847,7 @@ export function StudioViewport3D({
       spawnCorners?: Vec2[];
       decalImg?: HTMLImageElement;
       decalCorners?: Vec2[];
-      partCenter?: Vec2;
-      label?: string;
+      sphere?: { cx: number; cy: number; r: number; baseHex: string; alpha: number };
     };
 
     const anim = agentAnimRef.current;
@@ -882,6 +927,86 @@ export function StudioViewport3D({
       const decalImg = part.decalUrl ? imgCacheRef.current.get(part.decalUrl) : undefined;
       const decalReady = Boolean(decalImg && decalImg.complete && decalImg.naturalWidth > 0);
 
+      // Sphere ("Ball") 3D shading + octagonal hit polygon
+      if (part.shape === "Ball") {
+        const ctr = project(px, py, pz);
+        const edge = project(px + right[0] * Math.max(hx, hy, hz), py + right[1] * Math.max(hx, hy, hz), pz + right[2] * Math.max(hx, hy, hz));
+        if (ctr.visible && edge.visible) {
+          const sr = Math.max(6, Math.hypot(edge.sx - ctr.sx, edge.sy - ctr.sy));
+          const ring: Vec2[] = [];
+          for (let k = 0; k < 10; k++) {
+            const ang = (k / 10) * Math.PI * 2;
+            ring.push([ctr.sx + Math.cos(ang) * sr, ctr.sy + Math.sin(ang) * sr]);
+          }
+          faces.push({
+            path: part.path,
+            pts: ring,
+            depth: ctr.depth,
+            fill: shadeHex(part.color, 1, alpha),
+            stroke: isSelected ? "#2F80FF" : isDark ? "rgba(255,255,255,0.22)" : "rgba(20,24,32,0.22)",
+            lineWidth: isSelected ? 2 : 1,
+            isNeon,
+            sphere: { cx: ctr.sx, cy: ctr.sy, r: sr, baseHex: part.color, alpha },
+          });
+          hitPolys.push({ path: part.path, points: ring, depth: ctr.depth });
+        }
+        continue;
+      }
+
+      // Cylinder 10-sided 3D prism
+      if (part.shape === "Cylinder") {
+        const segs = 10;
+        const bot: Array<ReturnType<typeof project>> = [];
+        const top: Array<ReturnType<typeof project>> = [];
+        for (let k = 0; k < segs; k++) {
+          const a = (k / segs) * Math.PI * 2 + radY;
+          const ox = Math.cos(a) * hx;
+          const oz = Math.sin(a) * hz;
+          bot.push(project(px + ox, py - hy, pz + oz));
+          top.push(project(px + ox, py + hy, pz + oz));
+        }
+        if (bot.every((c) => c.visible) && top.every((c) => c.visible)) {
+          const topPts: Vec2[] = top.map((c) => [c.sx, c.sy]);
+          const topDepth = top.reduce((acc, c) => acc + c.depth, 0) / segs;
+          faces.push({
+            path: part.path,
+            pts: topPts,
+            depth: topDepth,
+            fill: shadeHex(part.color, isNeon ? 1.15 : 0.98, alpha),
+            stroke: isSelected ? "#2F80FF" : isDark ? "rgba(255,255,255,0.18)" : "rgba(20,24,32,0.20)",
+            lineWidth: isSelected ? 1.8 : 0.85,
+            isNeon,
+          });
+          hitPolys.push({ path: part.path, points: topPts, depth: topDepth });
+          for (let k = 0; k < segs; k++) {
+            const nk = (k + 1) % segs;
+            const midA = ((k + 0.5) / segs) * Math.PI * 2 + radY;
+            const nx = Math.cos(midA);
+            const nz = Math.sin(midA);
+            const ndotl = Math.max(0, nx * sunDir[0] + nz * sunDir[2]);
+            const shade = isNeon ? 0.94 + ndotl * 0.22 : 0.55 + ndotl * 0.45;
+            const pts: Vec2[] = [
+              [bot[k].sx, bot[k].sy],
+              [bot[nk].sx, bot[nk].sy],
+              [top[nk].sx, top[nk].sy],
+              [top[k].sx, top[k].sy],
+            ];
+            const dAvg = (bot[k].depth + bot[nk].depth + top[nk].depth + top[k].depth) / 4;
+            faces.push({
+              path: part.path,
+              pts,
+              depth: dAvg,
+              fill: shadeHex(part.color, shade, alpha),
+              stroke: isSelected ? "#2F80FF" : isDark ? "rgba(255,255,255,0.12)" : "rgba(20,24,32,0.14)",
+              lineWidth: isSelected ? 1.4 : 0.7,
+              isNeon,
+            });
+            hitPolys.push({ path: part.path, points: pts, depth: dAvg });
+          }
+          continue;
+        }
+      }
+
       for (const fd of FACE_DEFS) {
         const [i0, i1, i2, i3] = fd.idx;
         const p0 = projCorners[i0];
@@ -957,6 +1082,24 @@ export function StudioViewport3D({
     hitPolysRef.current = hitPolys;
 
     for (const f of faces) {
+      if (f.sphere) {
+        const { cx, cy, r, baseHex, alpha } = f.sphere;
+        const grad = ctx.createRadialGradient(cx - r * 0.32, cy - r * 0.34, Math.max(1, r * 0.12), cx, cy, r);
+        grad.addColorStop(0, shadeHex(baseHex, 1.38, alpha));
+        grad.addColorStop(0.55, shadeHex(baseHex, 0.96, alpha));
+        grad.addColorStop(1, shadeHex(baseHex, 0.52, alpha));
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+        if (f.stroke !== "transparent") {
+          ctx.strokeStyle = f.stroke;
+          ctx.lineWidth = f.lineWidth;
+          ctx.stroke();
+        }
+        continue;
+      }
+
       ctx.beginPath();
       ctx.moveTo(f.pts[0][0], f.pts[0][1]);
       for (let i = 1; i < f.pts.length; i++) ctx.lineTo(f.pts[i][0], f.pts[i][1]);
@@ -1447,6 +1590,7 @@ export function StudioViewport3D({
         path: d.origPart.path,
         name: d.origPart.path.split(".").pop() || d.origPart.path,
         className: d.origPart.className,
+        shape: "Block",
         pos: d.origPart.pos,
         size: d.origPart.size,
         rotYDeg: d.origPart.rotY,
@@ -1565,6 +1709,67 @@ export function StudioViewport3D({
     }
   };
 
+  const handleCreatePreset = async (preset: PartPreset) => {
+    if (!onCreatePart || partActionBusy) return;
+    setPartActionBusy(true);
+    try {
+      await onCreatePart(preset);
+      setAddPartOpen(false);
+    } finally {
+      setPartActionBusy(false);
+    }
+  };
+
+  const handleDuplicateSelected = async () => {
+    if (!onDuplicatePart || !selectedPart || partActionBusy) return;
+    setPartActionBusy(true);
+    try {
+      await onDuplicatePart(selectedPart.path);
+    } finally {
+      setPartActionBusy(false);
+    }
+  };
+
+  const handleDeleteSelected = async () => {
+    if (!onDeletePart || !selectedPart || partActionBusy) return;
+    setPartActionBusy(true);
+    try {
+      await onDeletePart(selectedPart.path);
+    } finally {
+      setPartActionBusy(false);
+    }
+  };
+
+  const handleRedoClick = async () => {
+    if (!onTriggerRedo || !canRedo || partActionBusy) return;
+    setPartActionBusy(true);
+    try {
+      await onTriggerRedo();
+    } finally {
+      setPartActionBusy(false);
+    }
+  };
+
+  const handleMcpConnect = async () => {
+    if (!onConnectMcp || mcpBusy) return;
+    setMcpBusy(true);
+    try {
+      await onConnectMcp(mcpCmdDraft.trim() || undefined);
+    } finally {
+      setMcpBusy(false);
+    }
+  };
+
+  const handleMcpDisconnect = async () => {
+    if (!onDisconnectMcp || mcpBusy) return;
+    setMcpBusy(true);
+    try {
+      await onDisconnectMcp();
+    } finally {
+      setMcpBusy(false);
+    }
+  };
+
   const filteredActions = useMemo(() => {
     const list = actions.length > 0 ? actions : replaySteps;
     if (consoleFilter === "all") return [...list].reverse().slice(0, 60);
@@ -1596,85 +1801,169 @@ export function StudioViewport3D({
   return (
     <div data-studio-viewport-3d className="flex min-w-0 flex-col gap-2.5 overflow-hidden">
       {/* Studio Ribbon Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-hairline bg-board/55 px-2.5 py-2">
-        <div className="flex flex-wrap items-center gap-1">
-          {(
-            [
-              { id: "select", label: "Select", Icon: MousePointer2 },
-              { id: "move", label: "Move", Icon: Move },
-              { id: "scale", label: "Scale", Icon: Maximize2 },
-              { id: "rotate", label: "Rotate", Icon: RotateCw },
-            ] as const
-          ).map(({ id, label, Icon }) => (
+      <div className="flex flex-col gap-2 rounded-card border border-hairline bg-board/55 px-2.5 py-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-1">
+            {(
+              [
+                { id: "select", label: "Select", Icon: MousePointer2 },
+                { id: "move", label: "Move", Icon: Move },
+                { id: "scale", label: "Scale", Icon: Maximize2 },
+                { id: "rotate", label: "Rotate", Icon: RotateCw },
+              ] as const
+            ).map(({ id, label, Icon }) => (
+              <Button
+                key={id}
+                variant={tool === id ? "default" : "outline"}
+                size="xs"
+                aria-pressed={tool === id}
+                aria-label={`${label} tool`}
+                onClick={() => setTool(id)}
+                className={tool === id ? "max-md:min-h-11 max-md:min-w-11" : "bg-surface max-md:min-h-11 max-md:min-w-11"}
+              >
+                <Icon className="size-3.5" strokeWidth={1.5} aria-hidden />
+                <span>{label}</span>
+              </Button>
+            ))}
+
+            {onCreatePart && (
+              <Button
+                variant={addPartOpen ? "default" : "outline"}
+                size="xs"
+                aria-pressed={addPartOpen}
+                aria-label="Add 3D part"
+                disabled={partActionBusy}
+                onClick={() => setAddPartOpen((v) => !v)}
+                className={addPartOpen ? "max-md:min-h-11 max-md:min-w-11" : "bg-surface max-md:min-h-11 max-md:min-w-11"}
+              >
+                <Plus className="size-3.5" strokeWidth={1.5} aria-hidden />
+                <span>Add Part</span>
+              </Button>
+            )}
+            {onDuplicatePart && (
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={!selectedPart || partActionBusy}
+                aria-label="Duplicate selected part"
+                onClick={() => void handleDuplicateSelected()}
+                className="bg-surface max-md:min-h-11 max-md:min-w-11"
+              >
+                <CopyPlus className="size-3.5" strokeWidth={1.5} aria-hidden />
+                <span>Duplicate</span>
+              </Button>
+            )}
+            {onDeletePart && (
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={!selectedPart || partActionBusy}
+                aria-label="Delete selected part"
+                onClick={() => void handleDeleteSelected()}
+                className="bg-surface max-md:min-h-11 max-md:min-w-11"
+              >
+                <Trash2 className="size-3.5" strokeWidth={1.5} aria-hidden />
+                <span>Delete</span>
+              </Button>
+            )}
+            {onTriggerRedo && (
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={!canRedo || partActionBusy}
+                aria-label="Redo last Studio action"
+                onClick={() => void handleRedoClick()}
+                className="bg-surface max-md:min-h-11 max-md:min-w-11"
+              >
+                <Redo2 className="size-3.5" strokeWidth={1.5} aria-hidden />
+                <span>Redo</span>
+              </Button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
             <Button
-              key={id}
-              variant={tool === id ? "default" : "outline"}
+              variant="outline"
               size="xs"
-              aria-pressed={tool === id}
-              aria-label={`${label} tool`}
-              onClick={() => setTool(id)}
-              className={tool === id ? "max-md:min-h-11" : "bg-surface max-md:min-h-11"}
+              disabled={playtestBusy}
+              onClick={() => void handlePlaytestClick()}
+              aria-label="Run Studio playtest"
+              className="bg-surface max-md:min-h-11"
             >
-              <Icon className="size-3.5" strokeWidth={1.5} aria-hidden />
-              <span>{label}</span>
+              <Play className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>{playtestBusy ? "Testing…" : "Playtest"}</span>
             </Button>
-          ))}
+            <Button
+              variant={replaying ? "secondary" : "outline"}
+              size="xs"
+              disabled={replaySteps.length === 0}
+              aria-pressed={replaying}
+              onClick={() => setReplaying((v) => !v)}
+              aria-label="Replay agent build in 3D"
+              className={replaying ? "max-md:min-h-11" : "bg-surface max-md:min-h-11"}
+            >
+              {replaying ? (
+                <Square className="size-3.5" strokeWidth={1.5} aria-hidden />
+              ) : (
+                <Video className="size-3.5" strokeWidth={1.5} aria-hidden />
+              )}
+              <span>
+                {replaying && replayIndex !== null
+                  ? `Stop (${replayIndex + 1}/${replaySteps.length})`
+                  : "Replay Build"}
+              </span>
+            </Button>
+            <Button
+              variant={followAgent ? "default" : "outline"}
+              size="xs"
+              aria-pressed={followAgent}
+              onClick={() => setFollowAgent((v) => !v)}
+              aria-label="Follow agent camera"
+              className={followAgent ? "max-md:min-h-11" : "bg-surface max-md:min-h-11"}
+            >
+              <Radio className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>Follow Agent</span>
+            </Button>
+            <Pill
+              className={`px-2 py-0.5 font-mono text-xs ${
+                studioMode === "live_mcp"
+                  ? "bg-pill-active-bg text-pill-active-fg"
+                  : "bg-tag-sky-bg text-tag-sky-fg"
+              }`}
+            >
+              <PillIndicator variant={studioMode === "live_mcp" ? "success" : "info"} pulse={Boolean(building)} />
+              {modeBadgeLabel}
+            </Pill>
+          </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
-          <Button
-            variant="outline"
-            size="xs"
-            disabled={playtestBusy}
-            onClick={() => void handlePlaytestClick()}
-            aria-label="Run Studio playtest"
-            className="bg-surface max-md:min-h-11"
+        {/* Inline + Add Part Preset Picker Strip */}
+        {addPartOpen && onCreatePart && (
+          <div
+            data-add-part-picker
+            className="flex flex-wrap items-center gap-1.5 border-t border-hairline pt-2"
           >
-            <Play className="size-3.5" strokeWidth={1.5} aria-hidden />
-            <span>{playtestBusy ? "Testing…" : "Playtest"}</span>
-          </Button>
-          <Button
-            variant={replaying ? "secondary" : "outline"}
-            size="xs"
-            disabled={replaySteps.length === 0}
-            aria-pressed={replaying}
-            onClick={() => setReplaying((v) => !v)}
-            aria-label="Replay agent build in 3D"
-            className={replaying ? "max-md:min-h-11" : "bg-surface max-md:min-h-11"}
-          >
-            {replaying ? (
-              <Square className="size-3.5" strokeWidth={1.5} aria-hidden />
-            ) : (
-              <Video className="size-3.5" strokeWidth={1.5} aria-hidden />
-            )}
-            <span>
-              {replaying && replayIndex !== null
-                ? `Stop (${replayIndex + 1}/${replaySteps.length})`
-                : "Replay Build"}
-            </span>
-          </Button>
-          <Button
-            variant={followAgent ? "default" : "outline"}
-            size="xs"
-            aria-pressed={followAgent}
-            onClick={() => setFollowAgent((v) => !v)}
-            aria-label="Follow agent camera"
-            className={followAgent ? "max-md:min-h-11" : "bg-surface max-md:min-h-11"}
-          >
-            <Radio className="size-3.5" strokeWidth={1.5} aria-hidden />
-            <span>Follow Agent</span>
-          </Button>
-          <Pill
-            className={`px-2 py-0.5 font-mono text-xs ${
-              studioMode === "live_mcp"
-                ? "bg-pill-active-bg text-pill-active-fg"
-                : "bg-tag-sky-bg text-tag-sky-fg"
-            }`}
-          >
-            <PillIndicator variant={studioMode === "live_mcp" ? "success" : "info"} pulse={Boolean(building)} />
-            {modeBadgeLabel}
-          </Pill>
-        </div>
+            <span className="text-xs font-medium text-ink-2">Insert into Workspace:</span>
+            {PART_PRESETS.map((p) => (
+              <Button
+                key={p.id}
+                variant="outline"
+                size="xs"
+                disabled={partActionBusy}
+                aria-label={`Insert ${p.label}`}
+                onClick={() => void handleCreatePreset(p.id)}
+                className="gap-1.5 bg-surface max-md:min-h-11 max-md:min-w-11"
+              >
+                <span
+                  className="size-2.5 flex-none rounded-full border border-hairline"
+                  style={{ backgroundColor: p.swatch }}
+                  aria-hidden
+                />
+                <span>{p.label}</span>
+              </Button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Main Viewport Body: Studio 3D OR Studio Feed */}
@@ -1821,7 +2110,7 @@ export function StudioViewport3D({
               )}
             </div>
           ) : (
-            <div className="flex flex-col gap-2 rounded-sm border border-hairline bg-surface p-4 text-sm text-ink-2">
+            <div className="flex flex-col gap-2.5 rounded-sm border border-hairline bg-surface p-4 text-sm text-ink-2">
               <p className="font-medium text-ink">
                 {studioMode === "live_mcp"
                   ? "Roblox Studio MCP is attached — click Capture Frame or run a build to stream live screenshots."
@@ -1830,8 +2119,56 @@ export function StudioViewport3D({
               <p className="text-xs leading-relaxed text-ink-2">
                 {studioMode === "live_mcp"
                   ? "Every MCP mutation automatically calls screen_capture and pushes fresh PNG frames over /api/studio/stream."
-                  : "You are currently building in Local Studio 3D (zero-dependency real-time 3D viewport). To stream live frames directly from Roblox Studio, start openro-rs with OPENRO_MCP_COMMAND pointing to your Studio MCP bridge and select Studio MCP in Settings."}
+                  : studioMode === "browser_place"
+                    ? "You are currently building in Browser Studio 3D (offline-first). Connect to a local openro-rs server in Settings to attach a live Roblox Studio MCP bridge."
+                    : "You are currently building in Local Studio 3D (zero-dependency real-time 3D viewport). Attach an already-running Roblox Studio MCP bridge below without restarting openro-rs (OpenRO never launches Roblox Studio automatically)."}
               </p>
+            </div>
+          )}
+
+          {/* Live Studio MCP Bridge Connect / Disconnect Control */}
+          {(onConnectMcp || onDisconnectMcp) && (
+            <div
+              data-studio-mcp-controls
+              className="flex flex-col gap-2 rounded-sm border border-hairline bg-surface p-3 sm:flex-row sm:items-center"
+            >
+              <Input
+                value={mcpCmdDraft}
+                onChange={(e) => setMcpCmdDraft(e.target.value)}
+                aria-label="Studio MCP bridge command"
+                placeholder="MCP command (optional, e.g. ~/.local/bin/roblox-studio-mcp)"
+                disabled={mcpBusy || studioMode === "live_mcp"}
+                className="min-w-0 flex-1 font-mono text-xs max-md:min-h-11"
+              />
+              <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                {studioMode === "live_mcp" && onDisconnectMcp ? (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    disabled={mcpBusy}
+                    aria-label="Disconnect Studio MCP bridge"
+                    onClick={() => void handleMcpDisconnect()}
+                    className="bg-surface max-md:min-h-11"
+                  >
+                    <Unplug className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    <span>{mcpBusy ? "Disconnecting…" : "Disconnect MCP"}</span>
+                  </Button>
+                ) : (
+                  onConnectMcp && (
+                    <Button
+                      variant="default"
+                      size="xs"
+                      disabled={mcpBusy}
+                      aria-label="Connect Studio MCP bridge"
+                      onClick={() => void handleMcpConnect()}
+                      className="max-md:min-h-11"
+                    >
+                      <Plug className="size-3.5" strokeWidth={1.5} aria-hidden />
+                      <span>{mcpBusy ? "Connecting…" : "Connect MCP"}</span>
+                    </Button>
+                  )
+                )}
+              </div>
             </div>
           )}
         </div>

@@ -7,24 +7,30 @@ import {
   Check,
   ChevronDown,
   Copy,
+  CopyPlus,
   Download,
   FileCode,
   FileDiff,
+  FolderArchive,
   FolderTree,
   History,
   Layers,
   Monitor,
   PanelRightClose,
   PanelRightOpen,
+  Pencil,
+  Play,
   Save,
   Search,
   ShieldCheck,
+  Trash2,
   Upload,
   User,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Expandable, ExpandableContent, ExpandableTrigger } from "@/components/ui/expandable";
 import { SlidingNumber } from "@/components/ui/sliding-number";
@@ -141,14 +147,193 @@ function LuauCodeView({ source }: { source: string }) {
   );
 }
 
+function LuauScriptEditor({
+  path,
+  source,
+  onSaveScript,
+  onRunPlaytest,
+}: {
+  path: string;
+  source: string;
+  onSaveScript?: (path: string, source: string) => Promise<void> | void;
+  onRunPlaytest?: () => Promise<void> | void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(source);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  useEffect(() => {
+    if (!editing) setDraft(source);
+  }, [source, editing]);
+
+  const liveDiags = useMemo(() => {
+    if (!editing) return [] as LuauDiagnostic[];
+    return analyzePlaceLuau({ scripts: { [path]: draft }, instances: {} });
+  }, [draft, editing, path]);
+
+  const liveErrs = liveDiags.filter((d) => d.severity === "error").length;
+  const liveWarns = liveDiags.filter((d) => d.severity === "warning").length;
+  const lineCount = Math.max(1, draft.replace(/\r\n/g, "\n").split("\n").length);
+  const dirty = draft !== source;
+
+  const handleSave = async () => {
+    if (!onSaveScript || saving) return;
+    setSaving(true);
+    try {
+      await onSaveScript(path, draft);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handlePlaytest = async () => {
+    if (!onRunPlaytest || testing) return;
+    setTesting(true);
+    try {
+      if (dirty && onSaveScript) {
+        await onSaveScript(path, draft);
+      }
+      await onRunPlaytest();
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  if (!editing) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        {onSaveScript && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-mono text-xs text-ink-3">{lineCount} lines</span>
+            <Button
+              variant="outline"
+              size="xs"
+              aria-label={`Edit script ${path}`}
+              onClick={() => {
+                setDraft(source);
+                setEditing(true);
+              }}
+              className="bg-surface max-md:min-h-11"
+            >
+              <Pencil className="size-3" strokeWidth={1.5} aria-hidden />
+              Edit script
+            </Button>
+          </div>
+        )}
+        <LuauCodeView source={source || `-- ${path}`} />
+      </div>
+    );
+  }
+
+  return (
+    <div data-luau-editor={path} className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-1.5">
+        <Pill
+          data-luau-live-badge
+          className={`px-2 py-0.5 font-mono text-xs ${
+            liveErrs > 0
+              ? "bg-pill-pro-bg text-pill-pro-fg"
+              : liveWarns > 0
+                ? "bg-pill-warn-bg text-pill-warn-fg"
+                : "bg-pill-active-bg text-pill-active-fg"
+          }`}
+        >
+          {liveErrs > 0 ? `${liveErrs} err` : liveWarns > 0 ? `${liveWarns} warn` : "Clean"}
+        </Pill>
+        <div className="flex flex-wrap items-center gap-1">
+          <Button
+            variant="default"
+            size="xs"
+            disabled={saving || !onSaveScript}
+            aria-label={`Save and check ${path}`}
+            onClick={() => void handleSave()}
+            className="max-md:min-h-11"
+          >
+            <Save className="size-3" strokeWidth={1.5} aria-hidden />
+            {saving ? "Saving…" : "Save & Check"}
+          </Button>
+          {onRunPlaytest && (
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={testing}
+              aria-label={`Playtest ${path}`}
+              onClick={() => void handlePlaytest()}
+              className="bg-surface max-md:min-h-11"
+            >
+              <Play className="size-3" strokeWidth={1.5} aria-hidden />
+              {testing ? "Testing…" : "Playtest"}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="xs"
+            aria-label={`Close script editor for ${path}`}
+            onClick={() => setEditing(false)}
+            className="max-md:min-h-11"
+          >
+            Done
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex max-h-64 items-start overflow-y-auto rounded-sm border border-hairline bg-surface">
+        <div
+          aria-hidden
+          className="shrink-0 select-none border-r border-hairline bg-board/50 px-2 py-2 text-right font-mono text-xs leading-5 tabular-nums text-ink-3"
+        >
+          {Array.from({ length: lineCount }, (_, idx) => (
+            <div key={idx} className="h-5 leading-5">
+              {idx + 1}
+            </div>
+          ))}
+        </div>
+        <Textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          aria-label={`Edit Luau source for ${path}`}
+          spellCheck={false}
+          wrap="off"
+          rows={Math.max(6, lineCount)}
+          style={{ height: `${Math.max(6, lineCount) * 20 + 16}px` }}
+          className="min-w-0 flex-1 rounded-none border-0 bg-transparent shadow-none before:hidden [&_textarea]:!field-sizing-fixed [&_textarea]:!min-h-0 [&_textarea]:resize-none [&_textarea]:overflow-x-auto [&_textarea]:overflow-y-hidden [&_textarea]:whitespace-pre [&_textarea]:!p-2 [&_textarea]:font-mono [&_textarea]:text-xs [&_textarea]:leading-5"
+        />
+      </div>
+
+      {liveDiags.length > 0 && (
+        <ul data-luau-live-diags className="flex flex-col gap-1 rounded-sm border border-hairline bg-surface p-2 text-xs">
+          {liveDiags.map((d, idx) => (
+            <li
+              key={idx}
+              className={`flex items-start gap-1.5 ${
+                d.severity === "error" ? "text-pill-pro-fg" : "text-pill-warn-fg"
+              }`}
+            >
+              <AlertTriangle className="mt-0.5 size-3 flex-none" strokeWidth={1.5} aria-hidden />
+              <span className="min-w-0 [overflow-wrap:anywhere]">
+                <strong className="font-mono font-medium">L{d.line} [{d.code}]</strong> {d.message}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function InstancePropertyEditor({
   path,
   instance,
   onSave,
+  onDuplicate,
+  onDelete,
 }: {
   path: string;
   instance: PlaceInstance;
   onSave?: (payload: InstanceEditPayload) => Promise<void>;
+  onDuplicate?: (path: string) => Promise<void> | void;
+  onDelete?: (path: string) => Promise<void> | void;
 }) {
   const props = instance.properties || {};
   const initPos = readVec3(props.Position, [0, 1, 0]);
@@ -277,6 +462,37 @@ function InstancePropertyEditor({
           {saving ? "Saving…" : "Save properties"}
         </Button>
       )}
+
+      {(onDuplicate || onDelete) && (
+        <div className="grid grid-cols-2 gap-1.5">
+          {onDuplicate && (
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={saving}
+              onClick={() => void onDuplicate(path)}
+              aria-label={`Duplicate ${path}`}
+              className="w-full justify-center bg-surface max-md:min-h-11"
+            >
+              <CopyPlus className="size-3" strokeWidth={1.5} aria-hidden />
+              Duplicate
+            </Button>
+          )}
+          {onDelete && (
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={saving}
+              onClick={() => void onDelete(path)}
+              aria-label={`Delete ${path}`}
+              className="w-full justify-center bg-surface max-md:min-h-11"
+            >
+              <Trash2 className="size-3" strokeWidth={1.5} aria-hidden />
+              Delete
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -292,6 +508,11 @@ export function PartsShelf({
   selectedPath,
   onSelectPath,
   onSaveInstance,
+  onSaveScript,
+  onDuplicatePart,
+  onDeletePart,
+  onRunPlaytest,
+  onDownloadShipPack,
   onImportClick,
   onOpenSnapshots,
   snapshotCount = 0,
@@ -308,6 +529,11 @@ export function PartsShelf({
   selectedPath?: string | null;
   onSelectPath?: (path: string | null) => void;
   onSaveInstance?: (payload: InstanceEditPayload) => Promise<void>;
+  onSaveScript?: (path: string, source: string) => Promise<void> | void;
+  onDuplicatePart?: (path: string) => Promise<void> | void;
+  onDeletePart?: (path: string) => Promise<void> | void;
+  onRunPlaytest?: () => Promise<void> | void;
+  onDownloadShipPack?: () => Promise<void> | void;
   onImportClick?: () => void;
   onOpenSnapshots?: () => void;
   snapshotCount?: number;
@@ -316,6 +542,7 @@ export function PartsShelf({
 }) {
   const [query, setQuery] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [exportingZip, setExportingZip] = useState(false);
   const q = query.trim().toLowerCase();
 
   const diagnostics = useMemo(() => {
@@ -438,6 +665,16 @@ export function PartsShelf({
       toast.error("Could not export .rbxlx right now.");
     } finally {
       setExporting(false);
+    }
+  };
+
+  const handleShipPackClick = async () => {
+    if (!onDownloadShipPack || exportingZip) return;
+    setExportingZip(true);
+    try {
+      await onDownloadShipPack();
+    } finally {
+      setExportingZip(false);
     }
   };
 
@@ -666,6 +903,10 @@ export function PartsShelf({
                 selectedPath={selectedPath}
                 onSelectPath={onSelectPath}
                 onSaveInstance={onSaveInstance}
+                onSaveScript={onSaveScript}
+                onDuplicatePart={onDuplicatePart}
+                onDeletePart={onDeletePart}
+                onRunPlaytest={onRunPlaytest}
               />
             )}
             {filteredScripts.length > 0 && (
@@ -675,13 +916,17 @@ export function PartsShelf({
                 selectedPath={selectedPath}
                 onSelectPath={onSelectPath}
                 onSaveInstance={onSaveInstance}
+                onSaveScript={onSaveScript}
+                onDuplicatePart={onDuplicatePart}
+                onDeletePart={onDeletePart}
+                onRunPlaytest={onRunPlaytest}
               />
             )}
           </>
         )}
       </div>
 
-      <div className="flex flex-none flex-col gap-2 border-t border-hairline bg-surface p-3">
+      <div className="flex flex-none flex-col gap-1.5 border-t border-hairline bg-surface p-3">
         <div className="grid grid-cols-2 gap-1.5">
           <Button
             variant="default"
@@ -714,6 +959,18 @@ export function PartsShelf({
             </Button>
           )}
         </div>
+        {onDownloadShipPack && (
+          <Button
+            variant="outline"
+            disabled={total === 0 || error || exportingZip}
+            onClick={() => void handleShipPackClick()}
+            aria-label="Download Studio and Rojo Ship Pack (.zip)"
+            className="w-full justify-center bg-board/60 font-medium text-ink hover:bg-board max-md:min-h-11"
+          >
+            <FolderArchive className="size-3.5 text-icon" strokeWidth={1.5} aria-hidden />
+            {exportingZip ? "Packing .zip…" : "Rojo Ship Pack (.zip)"}
+          </Button>
+        )}
         <Button
           variant="outline"
           disabled={!summary}
@@ -733,11 +990,19 @@ function ExplorerItemRow({
   isSelected,
   onSelect,
   onSaveInstance,
+  onSaveScript,
+  onDuplicatePart,
+  onDeletePart,
+  onRunPlaytest,
 }: {
   entry: ExplorerEntry;
   isSelected: boolean;
   onSelect?: () => void;
   onSaveInstance?: (payload: InstanceEditPayload) => Promise<void>;
+  onSaveScript?: (path: string, source: string) => Promise<void> | void;
+  onDuplicatePart?: (path: string) => Promise<void> | void;
+  onDeletePart?: (path: string) => Promise<void> | void;
+  onRunPlaytest?: () => Promise<void> | void;
 }) {
   const [expanded, setExpanded] = useState(isSelected);
   const itemRef = useRef<HTMLLIElement>(null);
@@ -851,9 +1116,20 @@ function ExplorerItemRow({
                 )}
 
                 {entry.isScript ? (
-                  <LuauCodeView source={entry.source || `-- ${entry.path}`} />
+                  <LuauScriptEditor
+                    path={entry.path}
+                    source={entry.source || `-- ${entry.path}`}
+                    onSaveScript={onSaveScript}
+                    onRunPlaytest={onRunPlaytest}
+                  />
                 ) : entry.instance ? (
-                  <InstancePropertyEditor path={entry.path} instance={entry.instance} onSave={onSaveInstance} />
+                  <InstancePropertyEditor
+                    path={entry.path}
+                    instance={entry.instance}
+                    onSave={onSaveInstance}
+                    onDuplicate={onDuplicatePart}
+                    onDelete={onDeletePart}
+                  />
                 ) : (
                   <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-sm border border-hairline bg-surface p-2 font-mono text-xs text-ink">
                     {entry.rawCopy}
@@ -874,12 +1150,20 @@ function ExplorerGroup({
   selectedPath,
   onSelectPath,
   onSaveInstance,
+  onSaveScript,
+  onDuplicatePart,
+  onDeletePart,
+  onRunPlaytest,
 }: {
   title: string;
   entries: ExplorerEntry[];
   selectedPath?: string | null;
   onSelectPath?: (path: string | null) => void;
   onSaveInstance?: (payload: InstanceEditPayload) => Promise<void>;
+  onSaveScript?: (path: string, source: string) => Promise<void> | void;
+  onDuplicatePart?: (path: string) => Promise<void> | void;
+  onDeletePart?: (path: string) => Promise<void> | void;
+  onRunPlaytest?: () => Promise<void> | void;
 }) {
   const visible = entries.slice(0, 60);
   const hiddenCount = entries.length - visible.length;
@@ -901,6 +1185,10 @@ function ExplorerGroup({
             isSelected={selectedPath === entry.path}
             onSelect={() => onSelectPath?.(entry.path)}
             onSaveInstance={onSaveInstance}
+            onSaveScript={onSaveScript}
+            onDuplicatePart={onDuplicatePart}
+            onDeletePart={onDeletePart}
+            onRunPlaytest={onRunPlaytest}
           />
         ))}
       </ul>
