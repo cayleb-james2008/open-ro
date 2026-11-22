@@ -5,7 +5,206 @@
   },
   "name": "Untitled Anime Card Game",
   "placeId": null,
-  "products": [],
+  "products": [
+    {
+      "description": "Expands card inventory cap by +150 slots.",
+      "key": "pass_extra_storage",
+      "kind": "game_pass",
+      "name": "Extra Card Storage (+150)",
+      "priceApproved": false,
+      "priceRobux": 49,
+      "robloxId": null
+    },
+    {
+      "description": "Unlocks 2 extra saved Active/Defense deck presets.",
+      "key": "pass_extra_deck_slots",
+      "kind": "game_pass",
+      "name": "+Deck Slots (+2)",
+      "priceApproved": false,
+      "priceRobux": 79,
+      "robloxId": null
+    },
+    {
+      "description": "Permanent 1.5x multiplicative Luck on all World Banners.",
+      "key": "pass_lucky",
+      "kind": "game_pass",
+      "name": "Lucky (1.5x)",
+      "priceApproved": false,
+      "priceRobux": 99,
+      "robloxId": null
+    },
+    {
+      "description": "Cuts roll cooldown from 1.60s to 0.60s.",
+      "key": "pass_fast_roll",
+      "kind": "game_pass",
+      "name": "Fast Roll",
+      "priceApproved": false,
+      "priceRobux": 129,
+      "robloxId": null
+    },
+    {
+      "description": "Permanent 2.0x multiplicative Luck on all World Banners.",
+      "key": "pass_2x_luck",
+      "kind": "game_pass",
+      "name": "2x Luck",
+      "priceApproved": false,
+      "priceRobux": 149,
+      "robloxId": null
+    },
+    {
+      "description": "Continuous rolling with custom Rarity and Mutation auto-sell filters.",
+      "key": "pass_auto_roll",
+      "kind": "game_pass",
+      "name": "Auto Roll",
+      "priceApproved": false,
+      "priceRobux": 149,
+      "robloxId": null
+    },
+    {
+      "description": "Permanent 3.0x multiplicative Luck on all World Banners.",
+      "key": "pass_mega_lucky",
+      "kind": "game_pass",
+      "name": "Mega Lucky (3x)",
+      "priceApproved": false,
+      "priceRobux": 199,
+      "robloxId": null
+    },
+    {
+      "description": "Roll 5 cards per pull cycle on Yen banners.",
+      "key": "pass_multi_roll",
+      "kind": "game_pass",
+      "name": "Multi-Roll (5x)",
+      "priceApproved": false,
+      "priceRobux": 299,
+      "robloxId": null
+    },
+    {
+      "description": "1.20x Luck, +15% Potion duration, +25% Yen & Gem battle drops, daily bonus.",
+      "key": "pass_vip",
+      "kind": "game_pass",
+      "name": "VIP",
+      "priceApproved": false,
+      "priceRobux": 349,
+      "robloxId": null
+    },
+    {
+      "description": "Doubles roll weight for Shiny, Golden, Rainbow, and Void mutations.",
+      "key": "pass_mutation_hunter",
+      "kind": "game_pass",
+      "name": "Mutation & Shiny Hunter",
+      "priceApproved": false,
+      "priceRobux": 449,
+      "robloxId": null
+    },
+    {
+      "description": "One-time offer: 2,500 Gems, 25 Roll Tickets, 2x Major Luck Potions, 10,000 Yen, Guaranteed Epic+ Card.",
+      "key": "prod_starter_bundle",
+      "kind": "developer_product",
+      "name": "Shinobi Starter Bundle",
+      "priceApproved": false,
+      "priceRobux": 149,
+      "robloxId": null
+    },
+    {
+      "description": "1,200 Gems.",
+      "key": "prod_gems_pouch",
+      "kind": "developer_product",
+      "name": "Pouch of Gems (1,200)",
+      "priceApproved": false,
+      "priceRobux": 99,
+      "robloxId": null
+    },
+    {
+      "description": "3,500 Gems.",
+      "key": "prod_gems_chest",
+      "kind": "developer_product",
+      "name": "Chest of Gems (3,500)",
+      "priceApproved": false,
+      "priceRobux": 249,
+      "robloxId": null
+    },
+    {
+      "description": "8,000 Gems.",
+      "key": "prod_gems_vault",
+      "kind": "developer_product",
+      "name": "Vault of Gems (8,000)",
+      "priceApproved": false,
+      "priceRobux": 499,
+      "robloxId": null
+    },
+    {
+      "description": "20,000 Gems.",
+      "key": "prod_gems_treasury",
+      "kind": "developer_product",
+      "name": "Treasury of Gems (20,000)",
+      "priceApproved": false,
+      "priceRobux": 999,
+      "robloxId": null
+    },
+    {
+      "description": "15 Roll Tickets with 2.0x Ticket Luck.",
+      "key": "prod_tickets_15",
+      "kind": "developer_product",
+      "name": "15 Roll Tickets",
+      "priceApproved": false,
+      "priceRobux": 79,
+      "robloxId": null
+    },
+    {
+      "description": "50 Roll Tickets with 2.0x Ticket Luck.",
+      "key": "prod_tickets_50",
+      "kind": "developer_product",
+      "name": "50 Roll Tickets",
+      "priceApproved": false,
+      "priceRobux": 229,
+      "robloxId": null
+    },
+    {
+      "description": "150 Roll Tickets with 2.0x Ticket Luck.",
+      "key": "prod_tickets_150",
+      "kind": "developer_product",
+      "name": "150 Roll Tickets",
+      "priceApproved": false,
+      "priceRobux": 599,
+      "robloxId": null
+    },
+    {
+      "description": "3x Major Luck Potion and 1x Super Luck Potion.",
+      "key": "prod_potions_alchemist",
+      "kind": "developer_product",
+      "name": "Alchemist Luck Pack",
+      "priceApproved": false,
+      "priceRobux": 99,
+      "robloxId": null
+    },
+    {
+      "description": "3x Super Luck Potion and 2x Boss Luck Potion.",
+      "key": "prod_potions_boss",
+      "kind": "developer_product",
+      "name": "Boss Hunter Potion Pack",
+      "priceApproved": false,
+      "priceRobux": 249,
+      "robloxId": null
+    },
+    {
+      "description": "25 Trait Crystals.",
+      "key": "prod_trait_crystals_25",
+      "kind": "developer_product",
+      "name": "25 Trait Crystals",
+      "priceApproved": false,
+      "priceRobux": 149,
+      "robloxId": null
+    },
+    {
+      "description": "Unlocks Season 1 Premium Battle Pass track.",
+      "key": "prod_season_pass_s1",
+      "kind": "developer_product",
+      "name": "Season 1 Pass: Dawn of Legends",
+      "priceApproved": false,
+      "priceRobux": 399,
+      "robloxId": null
+    }
+  ],
   "rojoProject": "default.project.json",
   "universeId": null,
   "version": 1
