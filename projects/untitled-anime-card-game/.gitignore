@@ -1,0 +1,6 @@
+art/references/
+build/
+refs/
+*.rbxl
+*.rbxlx.lock
+.DS_Store
