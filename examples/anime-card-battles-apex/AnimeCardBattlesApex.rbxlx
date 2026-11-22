@@ -1,0 +1,2322 @@
+<?xml version="1.0" encoding="utf-8"?>
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+  <Meta name="ExplicitAutoJoints">true</Meta>
+  <Meta name="OpenROGameName">Anime Card Battles: Rebirth — Apex Edition</Meta>
+  <External>null</External>
+  <External>nil</External>
+  <Item class="Workspace" referent="RBX00000001">
+    <Properties>
+      <string name="Name">Workspace</string>
+      <float name="Gravity">196.2</float>
+    </Properties>
+    <Item class="Part" referent="RBX00000002">
+      <Properties>
+        <string name="Name">BossRaidShrine</string>
+        <bool name="Anchored">true</bool>
+        <bool name="CanCollide">true</bool>
+        <CoordinateFrame name="CFrame">
+          <X>28</X><Y>5.5</Y><Z>-24</Z>
+          <R00>1</R00><R01>0</R01><R02>0</R02>
+          <R10>0</R10><R11>1</R11><R12>0</R12>
+          <R20>0</R20><R21>0</R21><R22>1</R22>
+        </CoordinateFrame>
+        <Vector3 name="size"><X>12</X><Y>10</Y><Z>8</Z></Vector3>
+        <Color3uint8 name="Color3uint8">4292891434</Color3uint8>
+        <token name="Material">800</token>
+        <float name="Transparency">0</float>
+      </Properties>
+    </Item>
+    <Item class="Folder" referent="RBX00000003">
+      <Properties>
+        <string name="Name">CardGallery</string>
+      </Properties>
+      <Item class="Part" referent="RBX00000004">
+        <Properties>
+          <string name="Name">Showcase_blood_moon_gravity_ronin</string>
+          <bool name="Anchored">true</bool>
+          <bool name="CanCollide">true</bool>
+          <CoordinateFrame name="CFrame">
+            <X>-31.5</X><Y>5</Y><Z>28</Z>
+            <R00>1</R00><R01>0</R01><R02>0</R02>
+            <R10>0</R10><R11>1</R11><R12>0</R12>
+            <R20>0</R20><R21>0</R21><R22>1</R22>
+          </CoordinateFrame>
+          <Vector3 name="size"><X>6</X><Y>8.5</Y><Z>0.8</Z></Vector3>
+          <Color3uint8 name="Color3uint8">4290782931</Color3uint8>
+          <token name="Material">272</token>
+          <float name="Transparency">0</float>
+          <string name="CardElement">Void</string>
+          <string name="CardId">blood-moon-gravity-ronin</string>
+          <string name="CardRarity">Epic</string>
+          <string name="CardTitle">Blood-Moon Gravity Ronin</string>
+          <string name="OpenROAssetFile">blood-moon-gravity-ronin.png</string>
+        </Properties>
+        <Item class="Decal" referent="RBX00000005">
+          <Properties>
+            <string name="Name">CardArtDecal</string>
+            <Content name="Texture"><url>rbxasset://openro-assets/blood-moon-gravity-ronin.png</url></Content>
+            <token name="Face">5</token>
+            <string name="CardId">blood-moon-gravity-ronin</string>
+            <string name="OpenROAssetFile">blood-moon-gravity-ronin.png</string>
+          </Properties>
+        </Item>
+        <Item class="SurfaceGui" referent="RBX00000006">
+          <Properties>
+            <string name="Name">CardDisplayGui</string>
+            <token name="Face">5</token>
+          </Properties>
+          <Item class="ImageLabel" referent="RBX00000007">
+            <Properties>
+              <string name="Name">CardArtImage</string>
+              <Content name="Image"><url>rbxasset://openro-assets/blood-moon-gravity-ronin.png</url></Content>
+              <float name="BackgroundTransparency">1</float>
+              <string name="CardId">blood-moon-gravity-ronin</string>
+              <string name="OpenROAssetFile">blood-moon-gravity-ronin.png</string>
+            </Properties>
+          </Item>
+        </Item>
+      </Item>
+      <Item class="Part" referent="RBX00000008">
+        <Properties>
+          <string name="Name">Showcase_crimson_sea_captain</string>
+          <bool name="Anchored">true</bool>
+          <bool name="CanCollide">true</bool>
+          <CoordinateFrame name="CFrame">
+            <X>-22.5</X><Y>5</Y><Z>28</Z>
+            <R00>1</R00><R01>0</R01><R02>0</R02>
+            <R10>0</R10><R11>1</R11><R12>0</R12>
+            <R20>0</R20><R21>0</R21><R22>1</R22>
+          </CoordinateFrame>
+          <Vector3 name="size"><X>6</X><Y>8.5</Y><Z>0.8</Z></Vector3>
+          <Color3uint8 name="Color3uint8">4293612330</Color3uint8>
+          <token name="Material">272</token>
+          <float name="Transparency">0</float>
+          <string name="CardElement">Flame</string>
+          <string name="CardId">crimson-sea-captain</string>
+          <string name="CardRarity">Mythic</string>
+          <string name="CardTitle">Crimson Sea Captain</string>
+          <string name="OpenROAssetFile">crimson-sea-captain.png</string>
+        </Properties>
+        <Item class="Decal" referent="RBX00000009">
+          <Properties>
+            <string name="Name">CardArtDecal</string>
+            <Content name="Texture"><url>rbxasset://openro-assets/crimson-sea-captain.png</url></Content>
+            <token name="Face">5</token>
+            <string name="CardId">crimson-sea-captain</string>
+            <string name="OpenROAssetFile">crimson-sea-captain.png</string>
+          </Properties>
+        </Item>
+        <Item class="SurfaceGui" referent="RBX0000000A">
+          <Properties>
+            <string name="Name">CardDisplayGui</string>
+            <token name="Face">5</token>
+          </Properties>
+          <Item class="ImageLabel" referent="RBX0000000B">
+            <Properties>
+              <string name="Name">CardArtImage</string>
+              <Content name="Image"><url>rbxasset://openro-assets/crimson-sea-captain.png</url></Content>
+              <float name="BackgroundTransparency">1</float>
+              <string name="CardId">crimson-sea-captain</string>
+              <string name="OpenROAssetFile">crimson-sea-captain.png</string>
+            </Properties>
+          </Item>
+        </Item>
+      </Item>
+      <Item class="Part" referent="RBX0000000C">
+        <Properties>
+          <string name="Name">Showcase_eclipse_arcane_alchemist</string>
+          <bool name="Anchored">true</bool>
+          <bool name="CanCollide">true</bool>
+          <CoordinateFrame name="CFrame">
+            <X>-13.5</X><Y>5</Y><Z>28</Z>
+            <R00>1</R00><R01>0</R01><R02>0</R02>
+            <R10>0</R10><R11>1</R11><R12>0</R12>
+            <R20>0</R20><R21>0</R21><R22>1</R22>
+          </CoordinateFrame>
+          <Vector3 name="size"><X>6</X><Y>8.5</Y><Z>0.8</Z></Vector3>
+          <Color3uint8 name="Color3uint8">4281652121</Color3uint8>
+          <token name="Material">272</token>
+          <float name="Transparency">0</float>
+          <string name="CardElement">Arcane</string>
+          <string name="CardId">eclipse-arcane-alchemist</string>
+          <string name="CardRarity">Rare</string>
+          <string name="CardTitle">Eclipse Arcane Alchemist</string>
+          <string name="OpenROAssetFile">eclipse-arcane-alchemist.png</string>
+        </Properties>
+        <Item class="Decal" referent="RBX0000000D">
+          <Properties>
+            <string name="Name">CardArtDecal</string>
+            <Content name="Texture"><url>rbxasset://openro-assets/eclipse-arcane-alchemist.png</url></Content>
+            <token name="Face">5</token>
+            <string name="CardId">eclipse-arcane-alchemist</string>
+            <string name="OpenROAssetFile">eclipse-arcane-alchemist.png</string>
+          </Properties>
+        </Item>
+        <Item class="SurfaceGui" referent="RBX0000000E">
+          <Properties>
+            <string name="Name">CardDisplayGui</string>
+            <token name="Face">5</token>
+          </Properties>
+          <Item class="ImageLabel" referent="RBX0000000F">
+            <Properties>
+              <string name="Name">CardArtImage</string>
+              <Content name="Image"><url>rbxasset://openro-assets/eclipse-arcane-alchemist.png</url></Content>
+              <float name="BackgroundTransparency">1</float>
+              <string name="CardId">eclipse-arcane-alchemist</string>
+              <string name="OpenROAssetFile">eclipse-arcane-alchemist.png</string>
+            </Properties>
+          </Item>
+        </Item>
+      </Item>
+      <Item class="Part" referent="RBX00000010">
+        <Properties>
+          <string name="Name">Showcase_infinity_void_sorcerer</string>
+          <bool name="Anchored">true</bool>
+          <bool name="CanCollide">true</bool>
+          <CoordinateFrame name="CFrame">
+            <X>-4.5</X><Y>5</Y><Z>28</Z>
+            <R00>1</R00><R01>0</R01><R02>0</R02>
+            <R10>0</R10><R11>1</R11><R12>0</R12>
+            <R20>0</R20><R21>0</R21><R22>1</R22>
+          </CoordinateFrame>
+          <Vector3 name="size"><X>6</X><Y>8.5</Y><Z>0.8</Z></Vector3>
+          <Color3uint8 name="Color3uint8">4289222135</Color3uint8>
+          <token name="Material">272</token>
+          <float name="Transparency">0</float>
+          <string name="CardElement">Void</string>
+          <string name="CardId">infinity-void-sorcerer</string>
+          <string name="CardRarity">Celestial</string>
+          <string name="CardTitle">Infinity Void Sorcerer</string>
+          <string name="OpenROAssetFile">infinity-void-sorcerer.png</string>
+        </Properties>
+        <Item class="Decal" referent="RBX00000011">
+          <Properties>
+            <string name="Name">CardArtDecal</string>
+            <Content name="Texture"><url>rbxasset://openro-assets/infinity-void-sorcerer.png</url></Content>
+            <token name="Face">5</token>
+            <string name="CardId">infinity-void-sorcerer</string>
+            <string name="OpenROAssetFile">infinity-void-sorcerer.png</string>
+          </Properties>
+        </Item>
+        <Item class="SurfaceGui" referent="RBX00000012">
+          <Properties>
+            <string name="Name">CardDisplayGui</string>
+            <token name="Face">5</token>
+          </Properties>
+          <Item class="ImageLabel" referent="RBX00000013">
+            <Properties>
+              <string name="Name">CardArtImage</string>
+              <Content name="Image"><url>rbxasset://openro-assets/infinity-void-sorcerer.png</url></Content>
+              <float name="BackgroundTransparency">1</float>
+              <string name="CardId">infinity-void-sorcerer</string>
+              <string name="OpenROAssetFile">infinity-void-sorcerer.png</string>
+            </Properties>
+          </Item>
+        </Item>
+      </Item>
+      <Item class="Part" referent="RBX00000014">
+        <Properties>
+          <string name="Name">Showcase_nine_tail_ember_shinobi</string>
+          <bool name="Anchored">true</bool>
+          <bool name="CanCollide">true</bool>
+          <CoordinateFrame name="CFrame">
+            <X>4.5</X><Y>5</Y><Z>28</Z>
+            <R00>1</R00><R01>0</R01><R02>0</R02>
+            <R10>0</R10><R11>1</R11><R12>0</R12>
+            <R20>0</R20><R21>0</R21><R22>1</R22>
+          </CoordinateFrame>
+          <Vector3 name="size"><X>6</X><Y>8.5</Y><Z>0.8</Z></Vector3>
+          <Color3uint8 name="Color3uint8">4293612330</Color3uint8>
+          <token name="Material">272</token>
+          <float name="Transparency">0</float>
+          <string name="CardElement">Flame</string>
+          <string name="CardId">nine-tail-ember-shinobi</string>
+          <string name="CardRarity">Mythic</string>
+          <string name="CardTitle">Nine-Tail Ember Shinobi</string>
+          <string name="OpenROAssetFile">nine-tail-ember-shinobi.png</string>
+        </Properties>
+        <Item class="Decal" referent="RBX00000015">
+          <Properties>
+            <string name="Name">CardArtDecal</string>
+            <Content name="Texture"><url>rbxasset://openro-assets/nine-tail-ember-shinobi.png</url></Content>
+            <token name="Face">5</token>
+            <string name="CardId">nine-tail-ember-shinobi</string>
+            <string name="OpenROAssetFile">nine-tail-ember-shinobi.png</string>
+          </Properties>
+        </Item>
+        <Item class="SurfaceGui" referent="RBX00000016">
+          <Properties>
+            <string name="Name">CardDisplayGui</string>
+            <token name="Face">5</token>
+          </Properties>
+          <Item class="ImageLabel" referent="RBX00000017">
+            <Properties>
+              <string name="Name">CardArtImage</string>
+              <Content name="Image"><url>rbxasset://openro-assets/nine-tail-ember-shinobi.png</url></Content>
+              <float name="BackgroundTransparency">1</float>
+              <string name="CardId">nine-tail-ember-shinobi</string>
+              <string name="OpenROAssetFile">nine-tail-ember-shinobi.png</string>
+            </Properties>
+          </Item>
+        </Item>
+      </Item>
+      <Item class="Part" referent="RBX00000018">
+        <Properties>
+          <string name="Name">Showcase_shadow_sovereign</string>
+          <bool name="Anchored">true</bool>
+          <bool name="CanCollide">true</bool>
+          <CoordinateFrame name="CFrame">
+            <X>13.5</X><Y>5</Y><Z>28</Z>
+            <R00>1</R00><R01>0</R01><R02>0</R02>
+            <R10>0</R10><R11>1</R11><R12>0</R12>
+            <R20>0</R20><R21>0</R21><R22>1</R22>
+          </CoordinateFrame>
+          <Vector3 name="size"><X>6</X><Y>8.5</Y><Z>0.8</Z></Vector3>
+          <Color3uint8 name="Color3uint8">4289222135</Color3uint8>
+          <token name="Material">272</token>
+          <float name="Transparency">0</float>
+          <string name="CardElement">Shadow</string>
+          <string name="CardId">shadow-sovereign</string>
+          <string name="CardRarity">Celestial</string>
+          <string name="CardTitle">Shadow Sovereign</string>
+          <string name="OpenROAssetFile">shadow-sovereign.png</string>
+        </Properties>
+        <Item class="Decal" referent="RBX00000019">
+          <Properties>
+            <string name="Name">CardArtDecal</string>
+            <Content name="Texture"><url>rbxasset://openro-assets/shadow-sovereign.png</url></Content>
+            <token name="Face">5</token>
+            <string name="CardId">shadow-sovereign</string>
+            <string name="OpenROAssetFile">shadow-sovereign.png</string>
+          </Properties>
+        </Item>
+        <Item class="SurfaceGui" referent="RBX0000001A">
+          <Properties>
+            <string name="Name">CardDisplayGui</string>
+            <token name="Face">5</token>
+          </Properties>
+          <Item class="ImageLabel" referent="RBX0000001B">
+            <Properties>
+              <string name="Name">CardArtImage</string>
+              <Content name="Image"><url>rbxasset://openro-assets/shadow-sovereign.png</url></Content>
+              <float name="BackgroundTransparency">1</float>
+              <string name="CardId">shadow-sovereign</string>
+              <string name="OpenROAssetFile">shadow-sovereign.png</string>
+            </Properties>
+          </Item>
+        </Item>
+      </Item>
+      <Item class="Part" referent="RBX0000001C">
+        <Properties>
+          <string name="Name">Showcase_supernova_ascended_striker</string>
+          <bool name="Anchored">true</bool>
+          <bool name="CanCollide">true</bool>
+          <CoordinateFrame name="CFrame">
+            <X>22.5</X><Y>5</Y><Z>28</Z>
+            <R00>1</R00><R01>0</R01><R02>0</R02>
+            <R10>0</R10><R11>1</R11><R12>0</R12>
+            <R20>0</R20><R21>0</R21><R22>1</R22>
+          </CoordinateFrame>
+          <Vector3 name="size"><X>6</X><Y>8.5</Y><Z>0.8</Z></Vector3>
+          <Color3uint8 name="Color3uint8">4294951996</Color3uint8>
+          <token name="Material">272</token>
+          <float name="Transparency">0</float>
+          <string name="CardElement">Flame</string>
+          <string name="CardId">supernova-ascended-striker</string>
+          <string name="CardRarity">Secret</string>
+          <string name="CardTitle">Supernova Ascended Striker</string>
+          <string name="OpenROAssetFile">supernova-ascended-striker.png</string>
+        </Properties>
+        <Item class="Decal" referent="RBX0000001D">
+          <Properties>
+            <string name="Name">CardArtDecal</string>
+            <Content name="Texture"><url>rbxasset://openro-assets/supernova-ascended-striker.png</url></Content>
+            <token name="Face">5</token>
+            <string name="CardId">supernova-ascended-striker</string>
+            <string name="OpenROAssetFile">supernova-ascended-striker.png</string>
+          </Properties>
+        </Item>
+        <Item class="SurfaceGui" referent="RBX0000001E">
+          <Properties>
+            <string name="Name">CardDisplayGui</string>
+            <token name="Face">5</token>
+          </Properties>
+          <Item class="ImageLabel" referent="RBX0000001F">
+            <Properties>
+              <string name="Name">CardArtImage</string>
+              <Content name="Image"><url>rbxasset://openro-assets/supernova-ascended-striker.png</url></Content>
+              <float name="BackgroundTransparency">1</float>
+              <string name="CardId">supernova-ascended-striker</string>
+              <string name="OpenROAssetFile">supernova-ascended-striker.png</string>
+            </Properties>
+          </Item>
+        </Item>
+      </Item>
+      <Item class="Part" referent="RBX00000020">
+        <Properties>
+          <string name="Name">Showcase_thunder_flash_ronin</string>
+          <bool name="Anchored">true</bool>
+          <bool name="CanCollide">true</bool>
+          <CoordinateFrame name="CFrame">
+            <X>31.5</X><Y>5</Y><Z>28</Z>
+            <R00>1</R00><R01>0</R01><R02>0</R02>
+            <R10>0</R10><R11>1</R11><R12>0</R12>
+            <R20>0</R20><R21>0</R21><R22>1</R22>
+          </CoordinateFrame>
+          <Vector3 name="size"><X>6</X><Y>8.5</Y><Z>0.8</Z></Vector3>
+          <Color3uint8 name="Color3uint8">4281908728</Color3uint8>
+          <token name="Material">272</token>
+          <float name="Transparency">0</float>
+          <string name="CardElement">Storm</string>
+          <string name="CardId">thunder-flash-ronin</string>
+          <string name="CardRarity">Legendary</string>
+          <string name="CardTitle">Thunder Flash Ronin</string>
+          <string name="OpenROAssetFile">thunder-flash-ronin.png</string>
+        </Properties>
+        <Item class="Decal" referent="RBX00000021">
+          <Properties>
+            <string name="Name">CardArtDecal</string>
+            <Content name="Texture"><url>rbxasset://openro-assets/thunder-flash-ronin.png</url></Content>
+            <token name="Face">5</token>
+            <string name="CardId">thunder-flash-ronin</string>
+            <string name="OpenROAssetFile">thunder-flash-ronin.png</string>
+          </Properties>
+        </Item>
+        <Item class="SurfaceGui" referent="RBX00000022">
+          <Properties>
+            <string name="Name">CardDisplayGui</string>
+            <token name="Face">5</token>
+          </Properties>
+          <Item class="ImageLabel" referent="RBX00000023">
+            <Properties>
+              <string name="Name">CardArtImage</string>
+              <Content name="Image"><url>rbxasset://openro-assets/thunder-flash-ronin.png</url></Content>
+              <float name="BackgroundTransparency">1</float>
+              <string name="CardId">thunder-flash-ronin</string>
+              <string name="OpenROAssetFile">thunder-flash-ronin.png</string>
+            </Properties>
+          </Item>
+        </Item>
+      </Item>
+    </Item>
+    <Item class="Part" referent="RBX00000024">
+      <Properties>
+        <string name="Name">PotionStand</string>
+        <bool name="Anchored">true</bool>
+        <bool name="CanCollide">true</bool>
+        <CoordinateFrame name="CFrame">
+          <X>-28</X><Y>3</Y><Z>12</Z>
+          <R00>1</R00><R01>0</R01><R02>0</R02>
+          <R10>0</R10><R11>1</R11><R12>0</R12>
+          <R20>0</R20><R21>0</R21><R22>1</R22>
+        </CoordinateFrame>
+        <Vector3 name="size"><X>10</X><Y>5</Y><Z>6</Z></Vector3>
+        <Color3uint8 name="Color3uint8">4282168177</Color3uint8>
+        <token name="Material">528</token>
+        <float name="Transparency">0</float>
+      </Properties>
+    </Item>
+    <Item class="Part" referent="RBX00000025">
+      <Properties>
+        <string name="Name">RollPedestal</string>
+        <bool name="Anchored">true</bool>
+        <bool name="CanCollide">true</bool>
+        <CoordinateFrame name="CFrame">
+          <X>0</X><Y>1.5</Y><Z>-14</Z>
+          <R00>1</R00><R01>0</R01><R02>0</R02>
+          <R10>0</R10><R11>1</R11><R12>0</R12>
+          <R20>0</R20><R21>0</R21><R22>1</R22>
+        </CoordinateFrame>
+        <Vector3 name="size"><X>10</X><Y>2</Y><Z>10</Z></Vector3>
+        <Color3uint8 name="Color3uint8">4283399408</Color3uint8>
+        <token name="Material">288</token>
+        <float name="Transparency">0</float>
+      </Properties>
+    </Item>
+    <Item class="SpawnLocation" referent="RBX00000026">
+      <Properties>
+        <string name="Name">SpawnPad</string>
+        <bool name="Anchored">true</bool>
+        <bool name="CanCollide">true</bool>
+        <CoordinateFrame name="CFrame">
+          <X>0</X><Y>1</Y><Z>176</Z>
+          <R00>1</R00><R01>0</R01><R02>0</R02>
+          <R10>0</R10><R11>1</R11><R12>0</R12>
+          <R20>0</R20><R21>0</R21><R22>1</R22>
+        </CoordinateFrame>
+        <Vector3 name="size"><X>8</X><Y>1</Y><Z>8</Z></Vector3>
+        <Color3uint8 name="Color3uint8">4283399408</Color3uint8>
+        <token name="Material">272</token>
+        <float name="Transparency">0</float>
+        <bool name="Neutral">true</bool>
+      </Properties>
+    </Item>
+    <Item class="Part" referent="RBX00000027">
+      <Properties>
+        <string name="Name">TowerPortal</string>
+        <bool name="Anchored">true</bool>
+        <bool name="CanCollide">true</bool>
+        <CoordinateFrame name="CFrame">
+          <X>-28</X><Y>7.5</Y><Z>-24</Z>
+          <R00>1</R00><R01>0</R01><R02>0</R02>
+          <R10>0</R10><R11>1</R11><R12>0</R12>
+          <R20>0</R20><R21>0</R21><R22>1</R22>
+        </CoordinateFrame>
+        <Vector3 name="size"><X>12</X><Y>14</Y><Z>2</Z></Vector3>
+        <Color3uint8 name="Color3uint8">4281908728</Color3uint8>
+        <token name="Material">288</token>
+        <float name="Transparency">0</float>
+      </Properties>
+    </Item>
+  </Item>
+  <Item class="ServerScriptService" referent="RBX00000028">
+    <Properties>
+      <string name="Name">ServerScriptService</string>
+    </Properties>
+    <Item class="Script" referent="RBX00000029">
+      <Properties>
+        <string name="Name">CardBattleArena</string>
+        <bool name="Disabled">false</bool>
+        <ProtectedString name="Source"><![CDATA[-- CardBattleArena -- generated by OpenRO (system: card_battle_arena)
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+local TEAM_SIZE = 4
+local ULTIMATE_MAX = 100
+local COUNTER_WINDOW_SEC = 800 / 1000
+local BOSS_HP_SCALE = 4
+
+local battleEvent = ReplicatedStorage:FindFirstChild("OpenROBattleEvent")
+if not battleEvent then
+    battleEvent = Instance.new("RemoteEvent")
+    battleEvent.Name = "OpenROBattleEvent"
+    battleEvent.Parent = ReplicatedStorage
+end
+
+local towerClearSignal = ServerStorage:FindFirstChild("OpenROTowerClear")
+if not towerClearSignal then
+    towerClearSignal = Instance.new("BindableEvent")
+    towerClearSignal.Name = "OpenROTowerClear"
+    towerClearSignal.Parent = ServerStorage
+end
+
+local deckSnapshot = ServerStorage:FindFirstChild("OpenRODeckSnapshot")
+if not deckSnapshot then
+    deckSnapshot = Instance.new("BindableFunction")
+    deckSnapshot.Name = "OpenRODeckSnapshot"
+    deckSnapshot.Parent = ServerStorage
+end
+
+-- Elemental Synergy & Advantage Wheel: Flame > Shadow > Storm > Arcane > Void > Flame
+local ELEMENT_ADVANTAGE = {
+    Flame = "Shadow",
+    Shadow = "Storm",
+    Storm = "Arcane",
+    Arcane = "Void",
+    Void = "Flame",
+}
+
+local SYNERGY_BONUSES = {
+    Flame = { atkMult = 1.20, critBonus = 0.05, shieldPct = 0.0, lifesteal = 0.0 },
+    Void = { atkMult = 1.15, critBonus = 0.08, shieldPct = 0.05, lifesteal = 0.0 },
+    Storm = { atkMult = 1.10, critBonus = 0.22, shieldPct = 0.0, lifesteal = 0.0 },
+    Shadow = { atkMult = 1.15, critBonus = 0.10, shieldPct = 0.0, lifesteal = 0.18 },
+    Arcane = { atkMult = 1.08, critBonus = 0.05, shieldPct = 0.22, lifesteal = 0.0 },
+}
+
+local BOSS_PHASES = {
+    { threshold = 1.0, title = "Phase 1: Awakening", atkMult = 1.0 },
+    { threshold = 0.55, title = "Phase 2: Enraged Domain", atkMult = 1.35 },
+    { threshold = 0.25, title = "Phase 3: Apex Singularity", atkMult = 1.75 },
+}
+
+local rng = Random.new()
+local battles = {}
+local lastAction = {}
+
+local function awardCoins(player, amount)
+    local stats = player:FindFirstChild("leaderstats")
+    if not stats then
+        return
+    end
+    local coins = stats:FindFirstChild("Coins") or stats:FindFirstChild("Gems")
+    if coins and coins:IsA("IntValue") then
+        coins.Value = coins.Value + amount
+    end
+end
+
+local function buildPlayerTeam(player)
+    local team = {}
+    local profile = nil
+    if deckSnapshot and deckSnapshot:IsA("BindableFunction") then
+        local ok, res = pcall(function()
+            return deckSnapshot:Invoke(player)
+        end)
+        if ok and typeof(res) == "table" then
+            profile = res
+        end
+    end
+    if profile and typeof(profile.owned) == "table" then
+        local byId = {}
+        for _, card in ipairs(profile.owned) do
+            byId[card.card_id] = card
+        end
+        for _, id in ipairs(profile.deck or {}) do
+            local c = byId[id]
+            if c and #team < TEAM_SIZE then
+                table.insert(team, {
+                    card_id = c.card_id,
+                    title = c.title or c.card_id,
+                    element = c.element or "Flame",
+                    atk = c.atk or 220,
+                    hp = c.hp or 950,
+                    max_hp = c.hp or 950,
+                    speed = c.speed or 82,
+                    shield = 0,
+                    stunned = false,
+                })
+            end
+        end
+    end
+    if #team == 0 then
+        table.insert(team, {
+            card_id = "crimson-sea-captain",
+            title = "Crimson Sea Captain",
+            element = "Flame",
+            atk = 420,
+            hp = 1480,
+            max_hp = 1480,
+            speed = 88,
+            shield = 0,
+            stunned = false,
+        })
+    end
+    return team
+end
+
+local function computeSynergies(team)
+    local counts = {}
+    for _, unit in ipairs(team) do
+        counts[unit.element] = (counts[unit.element] or 0) + 1
+    end
+    local active = {}
+    local atkMult = 1.0
+    local critBonus = 0.10
+    local shieldPct = 0.0
+    local lifesteal = 0.0
+    for elem, count in pairs(counts) do
+        if count >= 2 then
+            local bonus = SYNERGY_BONUSES[elem]
+            if bonus then
+                table.insert(active, elem .. " x" .. count)
+                atkMult = atkMult * bonus.atkMult
+                critBonus = critBonus + bonus.critBonus
+                shieldPct = shieldPct + bonus.shieldPct
+                lifesteal = lifesteal + bonus.lifesteal
+            end
+        end
+    end
+    return {
+        labels = active,
+        atkMult = atkMult,
+        critBonus = math.min(0.65, critBonus),
+        shieldPct = shieldPct,
+        lifesteal = lifesteal,
+    }
+end
+
+local function bossPhaseFor(boss)
+    local ratio = boss.hp / math.max(1, boss.max_hp)
+    local chosen = BOSS_PHASES[1]
+    for _, phase in ipairs(BOSS_PHASES) do
+        if ratio <= phase.threshold then
+            chosen = phase
+        end
+    end
+    return chosen
+end
+
+local function startBattle(player, floorNum)
+    local floor = math.clamp(math.floor(floorNum), 1, 200)
+    local team = buildPlayerTeam(player)
+    local syn = computeSynergies(team)
+    for _, unit in ipairs(team) do
+        unit.shield = math.floor(unit.max_hp * syn.shieldPct)
+    end
+    local elements = { "Flame", "Void", "Storm", "Shadow", "Arcane" }
+    local bossElement = elements[((floor - 1) % #elements) + 1]
+    local isRaidBoss = (floor % 5 == 0)
+    local bossHp = math.floor((900 + floor * 260) * (if isRaidBoss then BOSS_HP_SCALE else 1))
+    local bossAtk = math.floor(140 + floor * 28)
+
+    local state = {
+        floor = floor,
+        turn = 1,
+        auto = false,
+        ultGauge = 35,
+        counterUntil = 0,
+        synergy = syn,
+        team = team,
+        boss = {
+            title = if isRaidBoss then ("Impossible Overlord F" .. floor) else ("Tower Guardian F" .. floor),
+            element = bossElement,
+            hp = bossHp,
+            max_hp = bossHp,
+            atk = bossAtk,
+            speed = 86 + (floor % 15),
+            burnTurns = 0,
+            stunned = false,
+            phase = BOSS_PHASES[1].title,
+        },
+        finished = false,
+    }
+    battles[player] = state
+    battleEvent:FireClient(player, "started", state)
+end
+
+local function stepTurn(player, mode)
+    local state = battles[player]
+    if not state or state.finished then
+        return
+    end
+    local log = {}
+    local syn = state.synergy
+    local boss = state.boss
+    local phase = bossPhaseFor(boss)
+    boss.phase = phase.title
+
+    -- Sort living player units by Speed initiative
+    local order = {}
+    for _, unit in ipairs(state.team) do
+        if unit.hp > 0 then
+            table.insert(order, unit)
+        end
+    end
+    table.sort(order, function(a, b)
+        return a.speed > b.speed
+    end)
+
+    local useUltimate = (mode == "ultimate" and state.ultGauge >= ULTIMATE_MAX)
+    if useUltimate then
+        state.ultGauge = 0
+        table.insert(log, "ULTIMATE BURST unleashed!")
+    end
+
+    for _, unit in ipairs(order) do
+        if boss.hp <= 0 then
+            break
+        end
+        local elemMult = if ELEMENT_ADVANTAGE[unit.element] == boss.element then 1.25 else 1.0
+        local isCrit = rng:NextNumber() <= syn.critBonus
+        local critMult = if isCrit then 1.65 else 1.0
+        local ultMult = if useUltimate then 2.8 else 1.0
+        local dmg = math.max(1, math.floor(unit.atk * syn.atkMult * elemMult * critMult * ultMult))
+        boss.hp = math.max(0, boss.hp - dmg)
+        state.ultGauge = math.min(ULTIMATE_MAX, state.ultGauge + 18)
+
+        if syn.lifesteal > 0 then
+            local heal = math.floor(dmg * syn.lifesteal)
+            unit.hp = math.min(unit.max_hp, unit.hp + heal)
+        end
+        if useUltimate and unit.element == "Void" then
+            boss.stunned = true
+        elseif useUltimate and unit.element == "Flame" then
+            boss.burnTurns = 2
+        end
+        table.insert(log, unit.title .. " dealt " .. dmg .. (if isCrit then " CRIT" else "") .. " (" .. unit.element .. ")")
+    end
+
+    -- Apply Burn DoT
+    if boss.hp > 0 and boss.burnTurns > 0 then
+        local burnDmg = math.max(25, math.floor(boss.max_hp * 0.04))
+        boss.hp = math.max(0, boss.hp - burnDmg)
+        boss.burnTurns = boss.burnTurns - 1
+        table.insert(log, "Burn seared boss for " .. burnDmg)
+    end
+
+    -- Boss counter-attack if alive
+    if boss.hp > 0 then
+        if boss.stunned then
+            boss.stunned = false
+            table.insert(log, boss.title .. " was STUNNED and skipped turn!")
+        else
+            local living = {}
+            for _, unit in ipairs(state.team) do
+                if unit.hp > 0 then
+                    table.insert(living, unit)
+                end
+            end
+            if #living > 0 then
+                local target = living[rng:NextInteger(1, #living)]
+                local rawDmg = math.floor(boss.atk * phase.atkMult)
+                local counterActive = os.clock() <= state.counterUntil
+                if counterActive then
+                    rawDmg = math.floor(rawDmg * 0.35)
+                    local reflect = math.floor(boss.atk * 0.8)
+                    boss.hp = math.max(0, boss.hp - reflect)
+                    target.shield = target.shield + math.floor(target.max_hp * 0.12)
+                    table.insert(log, "ACTIVE COUNTER deflected strike & reflected " .. reflect .. " DMG!")
+                end
+                local absorbed = math.min(target.shield, rawDmg)
+                target.shield = target.shield - absorbed
+                local rem = rawDmg - absorbed
+                target.hp = math.max(0, target.hp - rem)
+                state.ultGauge = math.min(ULTIMATE_MAX, state.ultGauge + 12)
+                table.insert(log, boss.title .. " hit " .. target.title .. " for " .. rem .. " (" .. phase.title .. ")")
+            end
+        end
+    end
+
+    state.turn = state.turn + 1
+    local anyAlive = false
+    for _, unit in ipairs(state.team) do
+        if unit.hp > 0 then
+            anyAlive = true
+            break
+        end
+    end
+
+    if boss.hp <= 0 then
+        state.finished = true
+        local reward = 100 + state.floor * 35
+        awardCoins(player, reward)
+        towerClearSignal:Fire(player, state.floor)
+        battleEvent:FireClient(player, "victory", { state = state, reward = reward, log = log })
+    elseif not anyAlive then
+        state.finished = true
+        battleEvent:FireClient(player, "defeat", { state = state, log = log })
+    else
+        battleEvent:FireClient(player, "turn", { state = state, log = log })
+    end
+end
+
+battleEvent.OnServerEvent:Connect(function(player, action, floorArg)
+    local now = os.clock()
+    if lastAction[player] and (now - lastAction[player]) < 0.2 then
+        return
+    end
+    lastAction[player] = now
+    if typeof(action) ~= "string" then
+        return
+    end
+    if action == "start_raid" then
+        local floorNum = 1
+        if typeof(floorArg) == "number" and floorArg == floorArg then
+            floorNum = floorArg
+        end
+        startBattle(player, floorNum)
+    elseif action == "attack" or action == "ultimate" then
+        stepTurn(player, action)
+    elseif action == "counter" then
+        local state = battles[player]
+        if state and not state.finished then
+            state.counterUntil = os.clock() + COUNTER_WINDOW_SEC
+            battleEvent:FireClient(player, "counter_ready", { window_sec = COUNTER_WINDOW_SEC })
+        end
+    elseif action == "toggle_auto" then
+        local state = battles[player]
+        if state and not state.finished then
+            state.auto = not state.auto
+            battleEvent:FireClient(player, "auto_state", { auto = state.auto })
+        end
+    elseif action == "retreat" then
+        battles[player] = nil
+        battleEvent:FireClient(player, "retreated", {})
+    end
+end)
+
+Players.PlayerAdded:Connect(function(player)
+    task.spawn(function()
+        while player.Parent do
+            task.wait(0.85)
+            local st = battles[player]
+            if st and st.auto and not st.finished then
+                local mode = if st.ultGauge >= ULTIMATE_MAX then "ultimate" else "attack"
+                stepTurn(player, mode)
+            end
+        end
+    end)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    battles[player] = nil
+    lastAction[player] = nil
+end)
+]]></ProtectedString>
+      </Properties>
+    </Item>
+    <Item class="Script" referent="RBX0000002A">
+      <Properties>
+        <string name="Name">CardGachaRoller</string>
+        <bool name="Disabled">false</bool>
+        <ProtectedString name="Source"><![CDATA[-- CardGachaRoller -- generated by OpenRO (system: card_gacha_roller)
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+local BASE_LUCK = 100 / 100
+local PITY_THRESHOLD = 50
+local FAST_ROLL_SEC = 350 / 1000
+local ENABLE_BORDERS = true
+
+local rollFunction = ReplicatedStorage:FindFirstChild("OpenROCardRoll")
+if not rollFunction then
+    rollFunction = Instance.new("RemoteFunction")
+    rollFunction.Name = "OpenROCardRoll"
+    rollFunction.Parent = ReplicatedStorage
+end
+
+local rollEvent = ReplicatedStorage:FindFirstChild("OpenROCardRollEvent")
+if not rollEvent then
+    rollEvent = Instance.new("RemoteEvent")
+    rollEvent.Name = "OpenROCardRollEvent"
+    rollEvent.Parent = ReplicatedStorage
+end
+
+local weatherLuckVal = ReplicatedStorage:FindFirstChild("ActiveWeatherLuck")
+if not weatherLuckVal then
+    weatherLuckVal = Instance.new("NumberValue")
+    weatherLuckVal.Name = "ActiveWeatherLuck"
+    weatherLuckVal.Value = 1.0
+    weatherLuckVal.Parent = ReplicatedStorage
+end
+
+local cardGranted = ServerStorage:FindFirstChild("OpenROCardGranted")
+if not cardGranted then
+    cardGranted = Instance.new("BindableEvent")
+    cardGranted.Name = "OpenROCardGranted"
+    cardGranted.Parent = ServerStorage
+end
+
+-- 7 rarity tiers (Common -> Secret) aligned with Apex Card roster
+local RARITY_TIERS = {
+    { name = "Secret", weight = 1, denom = 8192 },
+    { name = "Celestial", weight = 4, denom = 2048 },
+    { name = "Mythic", weight = 16, denom = 512 },
+    { name = "Legendary", weight = 64, denom = 128 },
+    { name = "Epic", weight = 256, denom = 32 },
+    { name = "Rare", weight = 1024, denom = 8 },
+    { name = "Common", weight = 4096, denom = 2 },
+}
+
+local BORDER_VARIANTS = {
+    { name = "Void", chance = 0.008, mult = 2.75 },
+    { name = "Rainbow", chance = 0.025, mult = 2.0 },
+    { name = "Gold", chance = 0.075, mult = 1.5 },
+    { name = "Shiny", chance = 0.18, mult = 1.25 },
+    { name = "Normal", chance = 1.0, mult = 1.0 },
+}
+
+local CARD_POOL = {
+    Secret = {
+        { id = "supernova-ascended-striker", title = "Supernova Ascended Striker", element = "Flame", atk = 680, hp = 2100, speed = 98 },
+    },
+    Celestial = {
+        { id = "infinity-void-sorcerer", title = "Infinity Void Sorcerer", element = "Void", atk = 540, hp = 1720, speed = 96 },
+        { id = "shadow-sovereign", title = "Shadow Sovereign", element = "Shadow", atk = 560, hp = 1650, speed = 94 },
+    },
+    Mythic = {
+        { id = "crimson-sea-captain", title = "Crimson Sea Captain", element = "Flame", atk = 420, hp = 1480, speed = 88 },
+        { id = "nine-tail-ember-shinobi", title = "Nine-Tail Ember Shinobi", element = "Flame", atk = 440, hp = 1520, speed = 92 },
+    },
+    Legendary = {
+        { id = "thunder-flash-ronin", title = "Thunder Flash Ronin", element = "Storm", atk = 360, hp = 1150, speed = 100 },
+    },
+    Epic = {
+        { id = "blood-moon-gravity-ronin", title = "Blood-Moon Gravity Ronin", element = "Void", atk = 295, hp = 1080, speed = 84 },
+    },
+    Rare = {
+        { id = "eclipse-arcane-alchemist", title = "Eclipse Arcane Alchemist", element = "Arcane", atk = 230, hp = 960, speed = 80 },
+    },
+    Common = {
+        { id = "ember-acolyte", title = "Ember Acolyte", element = "Flame", atk = 115, hp = 520, speed = 72 },
+        { id = "storm-scout", title = "Storm Scout", element = "Storm", atk = 120, hp = 490, speed = 78 },
+        { id = "void-initiate", title = "Void Initiate", element = "Void", atk = 110, hp = 540, speed = 70 },
+        { id = "shadow-blade", title = "Shadow Blade", element = "Shadow", atk = 125, hp = 470, speed = 76 },
+        { id = "arcane-scribe", title = "Arcane Scribe", element = "Arcane", atk = 105, hp = 560, speed = 68 },
+    },
+}
+
+local rng = Random.new()
+local playerState = {}
+
+local function getState(player)
+    local st = playerState[player]
+    if not st then
+        st = {
+            rolls = 0,
+            pity = 0,
+            autoRoll = false,
+            lastRollAt = 0,
+        }
+        playerState[player] = st
+    end
+    return st
+end
+
+local function effectiveLuck(player)
+    local potionLuck = player:GetAttribute("PotionLuckMult")
+    if typeof(potionLuck) ~= "number" or potionLuck < 1 then
+        potionLuck = 1
+    end
+    local rebirths = player:GetAttribute("Rebirths")
+    if typeof(rebirths) ~= "number" or rebirths < 0 then
+        rebirths = 0
+    end
+    local weatherMult = 1
+    if weatherLuckVal and weatherLuckVal:IsA("NumberValue") and weatherLuckVal.Value > 0 then
+        weatherMult = weatherLuckVal.Value
+    end
+    return BASE_LUCK * potionLuck * weatherMult * (1 + rebirths * 0.35)
+end
+
+local function rollBorder(luck)
+    if not ENABLE_BORDERS then
+        return "Normal", 1.0
+    end
+    local draw = rng:NextNumber()
+    for _, variant in ipairs(BORDER_VARIANTS) do
+        local threshold = math.min(0.95, variant.chance * math.sqrt(luck))
+        if variant.name == "Normal" or draw <= threshold then
+            return variant.name, variant.mult
+        end
+    end
+    return "Normal", 1.0
+end
+
+local function rollRarity(st, luck)
+    if st.pity >= PITY_THRESHOLD * 2 then
+        st.pity = 0
+        return "Celestial"
+    end
+    if st.pity >= PITY_THRESHOLD then
+        st.pity = 0
+        return "Mythic"
+    end
+    for _, tier in ipairs(RARITY_TIERS) do
+        if tier.name == "Common" then
+            return "Common"
+        end
+        local odds = math.min(0.65, luck / tier.denom)
+        if rng:NextNumber() <= odds then
+            if tier.name == "Mythic" or tier.name == "Celestial" or tier.name == "Secret" then
+                st.pity = 0
+            end
+            return tier.name
+        end
+    end
+    return "Common"
+end
+
+local function performRoll(player, fastMode)
+    local st = getState(player)
+    local now = os.clock()
+    local speedMult = player:GetAttribute("PotionSpeedMult")
+    if typeof(speedMult) ~= "number" or speedMult < 1 then
+        speedMult = 1
+    end
+    local minDelay = (if fastMode then FAST_ROLL_SEC else FAST_ROLL_SEC * 1.6) / speedMult
+    if (now - st.lastRollAt) < minDelay then
+        return { ok = false, reason = "cooldown" }
+    end
+    st.lastRollAt = now
+    st.rolls = st.rolls + 1
+    st.pity = st.pity + 1
+
+    local luck = effectiveLuck(player)
+    local rarity = rollRarity(st, luck)
+    local pool = CARD_POOL[rarity] or CARD_POOL.Common
+    local picked = pool[rng:NextInteger(1, #pool)]
+    local borderName, borderMult = rollBorder(luck)
+
+    local result = {
+        ok = true,
+        card_id = picked.id,
+        title = picked.title,
+        rarity = rarity,
+        element = picked.element,
+        border = borderName,
+        border_mult = borderMult,
+        atk = math.floor(picked.atk * borderMult),
+        hp = math.floor(picked.hp * borderMult),
+        speed = picked.speed,
+        pity = st.pity,
+        pity_max = PITY_THRESHOLD,
+        luck = luck,
+        total_rolls = st.rolls,
+    }
+
+    player:SetAttribute("TotalRolls", st.rolls)
+    player:SetAttribute("PityCount", st.pity)
+    cardGranted:Fire(player, result)
+    rollEvent:FireClient(player, "rolled", result)
+    return result
+end
+
+rollFunction.OnServerInvoke = function(player, action)
+    if typeof(action) ~= "string" then
+        return { ok = false, reason = "invalid_action" }
+    end
+    if action == "roll" then
+        return performRoll(player, false)
+    elseif action == "fast_roll" then
+        return performRoll(player, true)
+    elseif action == "auto_toggle" then
+        local st = getState(player)
+        st.autoRoll = not st.autoRoll
+        player:SetAttribute("AutoRollEnabled", st.autoRoll)
+        return { ok = true, auto_roll = st.autoRoll }
+    elseif action == "status" then
+        local st = getState(player)
+        return {
+            ok = true,
+            pity = st.pity,
+            pity_max = PITY_THRESHOLD,
+            luck = effectiveLuck(player),
+            auto_roll = st.autoRoll,
+            total_rolls = st.rolls,
+        }
+    end
+    return { ok = false, reason = "unknown_action" }
+end
+
+Players.PlayerAdded:Connect(function(player)
+    local st = getState(player)
+    player:SetAttribute("TotalRolls", st.rolls)
+    player:SetAttribute("PityCount", st.pity)
+    player:SetAttribute("AutoRollEnabled", false)
+    task.spawn(function()
+        while player.Parent do
+            task.wait(math.max(0.25, FAST_ROLL_SEC))
+            local cur = playerState[player]
+            if cur and cur.autoRoll then
+                performRoll(player, true)
+            end
+        end
+    end)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    playerState[player] = nil
+end)
+]]></ProtectedString>
+      </Properties>
+    </Item>
+    <Item class="Script" referent="RBX0000002B">
+      <Properties>
+        <string name="Name">CardGalleryWorld</string>
+        <bool name="Disabled">false</bool>
+        <ProtectedString name="Source"><![CDATA[-- CardGalleryWorld -- generated by OpenRO (system: card_gallery_world)
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local LOBBY_NAME = "ApexLobby"
+local SHOWCASE_COUNT = 8
+local ENABLE_HOLOGRAMS = true
+
+local SHOWCASE_CARDS = {
+    { id = "supernova-ascended-striker", title = "Supernova Ascended Striker", rarity = "Secret", odds = "1/8,192", color = Color3.fromRGB(255, 196, 60) },
+    { id = "infinity-void-sorcerer", title = "Infinity Void Sorcerer", rarity = "Celestial", odds = "1/2,048", color = Color3.fromRGB(168, 85, 247) },
+    { id = "shadow-sovereign", title = "Shadow Sovereign", rarity = "Celestial", odds = "1/2,048", color = Color3.fromRGB(99, 102, 241) },
+    { id = "crimson-sea-captain", title = "Crimson Sea Captain", rarity = "Mythic", odds = "1/512", color = Color3.fromRGB(235, 83, 42) },
+    { id = "nine-tail-ember-shinobi", title = "Nine-Tail Ember Shinobi", rarity = "Mythic", odds = "1/512", color = Color3.fromRGB(249, 115, 22) },
+    { id = "thunder-flash-ronin", title = "Thunder Flash Ronin", rarity = "Legendary", odds = "1/128", color = Color3.fromRGB(56, 189, 248) },
+    { id = "blood-moon-gravity-ronin", title = "Blood-Moon Gravity Ronin", rarity = "Epic", odds = "1/32", color = Color3.fromRGB(192, 38, 211) },
+    { id = "eclipse-arcane-alchemist", title = "Eclipse Arcane Alchemist", rarity = "Rare", odds = "1/8", color = Color3.fromRGB(52, 211, 153) },
+}
+
+local lobby = workspace:FindFirstChild("ApexLobby")
+if not lobby then
+    lobby = Instance.new("Folder")
+    lobby.Name = "ApexLobby"
+    lobby.Parent = workspace
+end
+
+local function makeLandmark(name, size, pos, color, material)
+    local existing = lobby:FindFirstChild(name)
+    if existing then
+        return existing
+    end
+    local part = Instance.new("Part")
+    part.Name = name
+    part.Size = size
+    part.Position = pos
+    part.Anchored = true
+    part.CanCollide = true
+    part.Color = color
+    part.Material = material
+    part.Parent = lobby
+    return part
+end
+
+-- Spawn Courtyard
+makeLandmark("SpawnCourtyard", Vector3.new(96, 1, 96), Vector3.new(0, 0, 0), Color3.fromRGB(38, 42, 54), Enum.Material.Marble)
+
+-- Holographic Roll Pedestal
+local rollPedestal = makeLandmark("RollPedestal", Vector3.new(10, 2, 10), Vector3.new(0, 1.5, -14), Color3.fromRGB(79, 124, 240), Enum.Material.Neon)
+local holoRing = makeLandmark("HoloRing", Vector3.new(6, 0.6, 6), Vector3.new(0, 6, -14), Color3.fromRGB(168, 85, 247), Enum.Material.Neon)
+holoRing.CanCollide = false
+
+-- Tower Portal Gate, Boss Raid Shrine, Potion Alchemist Stand, Leaderboard Wall
+makeLandmark("TowerPortalGate", Vector3.new(12, 14, 2), Vector3.new(-28, 7.5, -24), Color3.fromRGB(56, 189, 248), Enum.Material.Neon)
+makeLandmark("BossRaidShrine", Vector3.new(12, 10, 8), Vector3.new(28, 5.5, -24), Color3.fromRGB(224, 83, 42), Enum.Material.Slate)
+makeLandmark("PotionAlchemistStand", Vector3.new(10, 5, 6), Vector3.new(-28, 3, 12), Color3.fromRGB(60, 179, 113), Enum.Material.WoodPlanks)
+local boardWall = makeLandmark("LeaderboardWall", Vector3.new(18, 10, 1.5), Vector3.new(28, 5.5, 12), Color3.fromRGB(30, 34, 46), Enum.Material.SmoothPlastic)
+
+-- 3D Card Showcase Billboards bound to Decal & ImageLabel artwork slots
+local galleryFolder = lobby:FindFirstChild("CardShowcases")
+if not galleryFolder then
+    galleryFolder = Instance.new("Folder")
+    galleryFolder.Name = "CardShowcases"
+    galleryFolder.Parent = lobby
+end
+
+for i = 1, SHOWCASE_COUNT do
+    local card = SHOWCASE_CARDS[((i - 1) % #SHOWCASE_CARDS) + 1]
+    local standName = "Showcase_" .. card.id
+    if not galleryFolder:FindFirstChild(standName) then
+        local stand = Instance.new("Part")
+        stand.Name = standName
+        stand.Size = Vector3.new(6, 8.5, 0.8)
+        stand.Position = Vector3.new((i - (SHOWCASE_COUNT + 1) / 2) * 8.5, 5, 28)
+        stand.Anchored = true
+        stand.Material = Enum.Material.SmoothPlastic
+        stand.Color = card.color
+        stand:SetAttribute("CardId", card.id)
+
+        local decal = Instance.new("Decal")
+        decal.Name = "CardArtDecal"
+        decal.Face = Enum.NormalId.Front
+        decal.Texture = "rbxasset://openro-assets/" .. card.id .. ".png"
+        decal.Parent = stand
+
+        local gui = Instance.new("SurfaceGui")
+        gui.Name = "CardInfoGui"
+        gui.Face = Enum.NormalId.Front
+        local img = Instance.new("ImageLabel")
+        img.Name = "CardArtImage"
+        img.Size = UDim2.new(1, 0, 0.78, 0)
+        img.BackgroundTransparency = 1
+        img.Image = "rbxasset://openro-assets/" .. card.id .. ".png"
+        img.Parent = gui
+
+        local title = Instance.new("TextLabel")
+        title.Name = "CardCaption"
+        title.Size = UDim2.new(1, 0, 0.22, 0)
+        title.Position = UDim2.new(0, 0, 0.78, 0)
+        title.BackgroundTransparency = 0.2
+        title.TextColor3 = Color3.fromRGB(255, 255, 255)
+        title.TextScaled = true
+        title.Text = card.title .. " [" .. card.rarity .. " " .. card.odds .. "]"
+        title.Parent = gui
+        gui.Parent = stand
+
+        local glow = Instance.new("PointLight")
+        glow.Color = card.color
+        glow.Range = 14
+        glow.Brightness = 1.4
+        glow.Parent = stand
+        stand.Parent = galleryFolder
+    end
+end
+
+-- Live Leaderboard SurfaceGui on LeaderboardWall
+if not boardWall:FindFirstChild("TowerLeaderboardGui") then
+    local lbGui = Instance.new("SurfaceGui")
+    lbGui.Name = "TowerLeaderboardGui"
+    local lbText = Instance.new("TextLabel")
+    lbText.Name = "Rankings"
+    lbText.Size = UDim2.new(1, 0, 1, 0)
+    lbText.BackgroundTransparency = 0.15
+    lbText.TextColor3 = Color3.fromRGB(255, 255, 255)
+    lbText.TextScaled = true
+    lbText.Text = "APEX TOWER LEADERBOARD"
+    lbText.Parent = lbGui
+    lbGui.Parent = boardWall
+
+    task.spawn(function()
+        while boardWall.Parent do
+            local lines = { "APEX TOWER LEADERBOARD" }
+            for _, p in ipairs(Players:GetPlayers()) do
+                local floor = p:GetAttribute("TowerFloor") or 1
+                table.insert(lines, p.Name .. " - Floor " .. tostring(floor))
+            end
+            lbText.Text = table.concat(lines, "\n")
+            task.wait(5)
+        end
+    end)
+end
+
+if ENABLE_HOLOGRAMS and rollPedestal and holoRing then
+    local t = 0
+    local basePos = holoRing.Position
+    RunService.Heartbeat:Connect(function(dt)
+        if not holoRing.Parent then
+            return
+        end
+        t = t + dt
+        local bob = math.sin(t * 2.2) * 0.75
+        holoRing.CFrame = CFrame.new(basePos + Vector3.new(0, bob, 0)) * CFrame.Angles(0, t * 1.4, 0)
+    end)
+end
+]]></ProtectedString>
+      </Properties>
+    </Item>
+    <Item class="Script" referent="RBX0000002C">
+      <Properties>
+        <string name="Name">DataStoreSave</string>
+        <bool name="Disabled">false</bool>
+        <ProtectedString name="Source"><![CDATA[-- DataStoreSave -- generated by OpenRO (Rune skill: datastore_save)
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+
+local STORE_NAME = "OpenROApexEconomy_v1"
+local STAT_NAME = "Coins"
+local DEFAULT_VALUE = 250
+local AUTOSAVE_SECONDS = 60
+local store = DataStoreService:GetDataStore(STORE_NAME)
+
+local function withRetry(fn, attempts)
+    local maxTries = attempts or 3
+    for attempt = 1, maxTries do
+        local ok, result = pcall(fn)
+        if ok then
+            return true, result
+        end
+        if attempt < maxTries then
+            task.wait(2 ^ attempt)
+        end
+    end
+    return false, nil
+end
+
+local function savePlayer(player)
+    if player:GetAttribute("DataLoaded") ~= true then
+        return
+    end
+    local stats = player:FindFirstChild("leaderstats")
+    local stat = stats and stats:FindFirstChild(STAT_NAME)
+    if not stat then
+        return
+    end
+    local key = "Player_" .. player.UserId
+    local payload = { value = stat.Value, updatedAt = os.time() }
+    local ok, err = withRetry(function()
+        return store:UpdateAsync(key, function(_old)
+            return payload
+        end)
+    end, 3)
+    if not ok then
+        warn("DataStore save failed for " .. player.Name .. ": " .. tostring(err))
+    end
+end
+
+local function onPlayerAdded(player)
+    local stats = player:FindFirstChild("leaderstats")
+    if not stats then
+        stats = Instance.new("Folder")
+        stats.Name = "leaderstats"
+        stats.Parent = player
+    end
+    local stat = stats:FindFirstChild(STAT_NAME)
+    if not stat then
+        stat = Instance.new("IntValue")
+        stat.Name = STAT_NAME
+        stat.Value = DEFAULT_VALUE
+        stat.Parent = stats
+    end
+    local key = "Player_" .. player.UserId
+    local ok, data = withRetry(function()
+        return store:GetAsync(key)
+    end, 3)
+    if not ok then
+        warn("DataStore load failed for " .. player.Name)
+        player:SetAttribute("DataLoaded", false)
+        return
+    end
+    player:SetAttribute("DataLoaded", true)
+    if typeof(data) == "table" and typeof(data.value) == "number" then
+        stat.Value = math.floor(data.value)
+    elseif typeof(data) == "number" then
+        stat.Value = math.floor(data)
+    else
+        stat.Value = DEFAULT_VALUE
+    end
+    task.spawn(function()
+        while player.Parent do
+            task.wait(AUTOSAVE_SECONDS)
+            if player.Parent then
+                savePlayer(player)
+            end
+        end
+    end)
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+Players.PlayerRemoving:Connect(savePlayer)
+for _, existing in ipairs(Players:GetPlayers()) do
+    task.spawn(onPlayerAdded, existing)
+end
+
+game:BindToClose(function()
+    local active = Players:GetPlayers()
+    local remaining = #active
+    if remaining == 0 then
+        return
+    end
+    for _, player in ipairs(active) do
+        task.spawn(function()
+            savePlayer(player)
+            remaining = remaining - 1
+        end)
+    end
+    local deadline = os.clock() + 25
+    while remaining > 0 and os.clock() < deadline do
+        task.wait(0.1)
+    end
+end)
+]]></ProtectedString>
+      </Properties>
+    </Item>
+    <Item class="Script" referent="RBX0000002D">
+      <Properties>
+        <string name="Name">DeckBuilder</string>
+        <bool name="Disabled">false</bool>
+        <ProtectedString name="Source"><![CDATA[-- DeckBuilder -- generated by OpenRO (system: deck_builder)
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local DataStoreService = game:GetService("DataStoreService")
+
+local DECK_SLOTS = 6
+local FUSION_COST = 3
+local REBIRTH_FLOOR = 10
+local STORE_NAME = "OpenROApexDecks_v1"
+local store = DataStoreService:GetDataStore(STORE_NAME)
+
+local deckEvent = ReplicatedStorage:FindFirstChild("OpenRODeckAction")
+if not deckEvent then
+    deckEvent = Instance.new("RemoteEvent")
+    deckEvent.Name = "OpenRODeckAction"
+    deckEvent.Parent = ReplicatedStorage
+end
+
+local cardGranted = ServerStorage:FindFirstChild("OpenROCardGranted")
+if not cardGranted then
+    cardGranted = Instance.new("BindableEvent")
+    cardGranted.Name = "OpenROCardGranted"
+    cardGranted.Parent = ServerStorage
+end
+
+local deckQuery = ServerStorage:FindFirstChild("OpenRODeckSnapshot")
+if not deckQuery then
+    deckQuery = Instance.new("BindableFunction")
+    deckQuery.Name = "OpenRODeckSnapshot"
+    deckQuery.Parent = ServerStorage
+end
+
+local profiles = {}
+local lastAction = {}
+
+local function withRetry(fn, attempts)
+    local maxTries = attempts or 3
+    for attempt = 1, maxTries do
+        local ok, result = pcall(fn)
+        if ok then
+            return true, result
+        end
+        if attempt < maxTries then
+            task.wait(2 ^ attempt)
+        end
+    end
+    return false, nil
+end
+
+local function cardPower(card)
+    local starMult = 1 + ((card.stars or 1) - 1) * 0.25
+    local borderMult = card.border_mult or 1.0
+    return math.floor(((card.atk or 100) * 1.4 + (card.hp or 500) * 0.35) * starMult * borderMult)
+end
+
+local function recomputeBonuses(player, profile)
+    local uniqueCount = 0
+    for _ in pairs(profile.index) do
+        uniqueCount = uniqueCount + 1
+    end
+    local indexBonusPct = uniqueCount * 3
+    local rebirthBonusPct = profile.rebirths * 20
+    player:SetAttribute("CollectionUniqueCount", uniqueCount)
+    player:SetAttribute("CollectionBonusPct", indexBonusPct)
+    player:SetAttribute("Rebirths", profile.rebirths)
+    player:SetAttribute("RebirthPowerPct", rebirthBonusPct)
+    player:SetAttribute("EquippedDeckSize", #profile.deck)
+end
+
+local function syncClient(player)
+    local profile = profiles[player]
+    if not profile then
+        return
+    end
+    recomputeBonuses(player, profile)
+    deckEvent:FireClient(player, "sync", {
+        deck = profile.deck,
+        owned = profile.owned,
+        rebirths = profile.rebirths,
+        max_slots = DECK_SLOTS,
+        fusion_cost = FUSION_COST,
+        rebirth_floor = REBIRTH_FLOOR,
+    })
+end
+
+local function autoEquipBest(profile)
+    local sorted = {}
+    for _, card in ipairs(profile.owned) do
+        table.insert(sorted, card)
+    end
+    table.sort(sorted, function(a, b)
+        return cardPower(a) > cardPower(b)
+    end)
+    profile.deck = {}
+    local seen = {}
+    for _, card in ipairs(sorted) do
+        if #profile.deck >= DECK_SLOTS then
+            break
+        end
+        if not seen[card.card_id] then
+            seen[card.card_id] = true
+            table.insert(profile.deck, card.card_id)
+        end
+    end
+end
+
+local function grantCard(player, cardData)
+    local profile = profiles[player]
+    if not profile or typeof(cardData) ~= "table" or typeof(cardData.card_id) ~= "string" then
+        return
+    end
+    profile.index[cardData.card_id] = true
+    local existing = nil
+    for _, entry in ipairs(profile.owned) do
+        if entry.card_id == cardData.card_id then
+            existing = entry
+            break
+        end
+    end
+    if existing then
+        existing.copies = (existing.copies or 1) + 1
+        if (cardData.border_mult or 1.0) > (existing.border_mult or 1.0) then
+            existing.border = cardData.border or existing.border
+            existing.border_mult = cardData.border_mult
+            existing.atk = cardData.atk or existing.atk
+            existing.hp = cardData.hp or existing.hp
+        end
+    else
+        table.insert(profile.owned, {
+            card_id = cardData.card_id,
+            title = cardData.title or cardData.card_id,
+            rarity = cardData.rarity or "Common",
+            element = cardData.element or "Flame",
+            border = cardData.border or "Normal",
+            border_mult = cardData.border_mult or 1.0,
+            atk = cardData.atk or 120,
+            hp = cardData.hp or 500,
+            speed = cardData.speed or 75,
+            stars = 1,
+            copies = 1,
+        })
+        if #profile.deck < DECK_SLOTS then
+            table.insert(profile.deck, cardData.card_id)
+        end
+    end
+    syncClient(player)
+end
+
+cardGranted.Event:Connect(grantCard)
+
+deckQuery.OnInvoke = function(player)
+    local profile = profiles[player]
+    if not profile then
+        return { deck = {}, owned = {}, rebirths = 0 }
+    end
+    return profile
+end
+
+local function saveProfile(player)
+    if player:GetAttribute("DeckDataLoaded") ~= true then
+        return
+    end
+    local profile = profiles[player]
+    if not profile then
+        return
+    end
+    local key = "Deck_" .. player.UserId
+    local snapshot = {
+        deck = profile.deck,
+        owned = profile.owned,
+        index = profile.index,
+        rebirths = profile.rebirths,
+    }
+    local ok, err = withRetry(function()
+        return store:UpdateAsync(key, function(_old)
+            return snapshot
+        end)
+    end, 3)
+    if not ok then
+        warn("DeckBuilder save failed for " .. player.Name .. ": " .. tostring(err))
+    end
+end
+
+local function defaultProfile()
+    return {
+        deck = { "eclipse-arcane-alchemist" },
+        owned = {
+            {
+                card_id = "eclipse-arcane-alchemist",
+                title = "Eclipse Arcane Alchemist",
+                rarity = "Rare",
+                element = "Arcane",
+                border = "Normal",
+                border_mult = 1.0,
+                atk = 230,
+                hp = 960,
+                speed = 80,
+                stars = 1,
+                copies = 1,
+            },
+        },
+        index = { ["eclipse-arcane-alchemist"] = true },
+        rebirths = 0,
+    }
+end
+
+local function onPlayerAdded(player)
+    local key = "Deck_" .. player.UserId
+    local ok, saved = withRetry(function()
+        return store:GetAsync(key)
+    end, 3)
+    if not ok then
+        warn("DeckBuilder load failed for " .. player.Name)
+        player:SetAttribute("DeckDataLoaded", false)
+        profiles[player] = defaultProfile()
+        syncClient(player)
+        return
+    end
+    player:SetAttribute("DeckDataLoaded", true)
+    if typeof(saved) == "table" and typeof(saved.owned) == "table" then
+        profiles[player] = {
+            deck = typeof(saved.deck) == "table" and saved.deck or {},
+            owned = saved.owned,
+            index = typeof(saved.index) == "table" and saved.index or {},
+            rebirths = typeof(saved.rebirths) == "number" and math.max(0, math.floor(saved.rebirths)) or 0,
+        }
+    else
+        profiles[player] = defaultProfile()
+    end
+    syncClient(player)
+end
+
+deckEvent.OnServerEvent:Connect(function(player, action, cardId)
+    local now = os.clock()
+    if lastAction[player] and (now - lastAction[player]) < 0.25 then
+        return
+    end
+    lastAction[player] = now
+    if typeof(action) ~= "string" then
+        return
+    end
+    local profile = profiles[player]
+    if not profile then
+        return
+    end
+    if action == "sync" then
+        syncClient(player)
+        return
+    elseif action == "auto_equip" then
+        autoEquipBest(profile)
+        syncClient(player)
+        return
+    elseif action == "rebirth" then
+        local floor = player:GetAttribute("TowerFloor") or 1
+        if typeof(floor) == "number" and floor >= REBIRTH_FLOOR then
+            profile.rebirths = profile.rebirths + 1
+            player:SetAttribute("TowerFloor", 1)
+            syncClient(player)
+        end
+        return
+    end
+    if typeof(cardId) ~= "string" or #cardId == 0 or #cardId > 64 then
+        return
+    end
+    local target = nil
+    for _, entry in ipairs(profile.owned) do
+        if entry.card_id == cardId then
+            target = entry
+            break
+        end
+    end
+    if not target then
+        return
+    end
+    if action == "equip" then
+        for _, id in ipairs(profile.deck) do
+            if id == cardId then
+                return
+            end
+        end
+        if #profile.deck < DECK_SLOTS then
+            table.insert(profile.deck, cardId)
+            syncClient(player)
+        end
+    elseif action == "unequip" then
+        for idx, id in ipairs(profile.deck) do
+            if id == cardId then
+                table.remove(profile.deck, idx)
+                syncClient(player)
+                return
+            end
+        end
+    elseif action == "fuse" then
+        if (target.stars or 1) < 5 and (target.copies or 1) >= (FUSION_COST + 1) then
+            target.copies = target.copies - FUSION_COST
+            target.stars = (target.stars or 1) + 1
+            target.atk = math.floor(target.atk * 1.25)
+            target.hp = math.floor(target.hp * 1.25)
+            syncClient(player)
+        end
+    end
+end)
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+Players.PlayerRemoving:Connect(function(player)
+    saveProfile(player)
+    profiles[player] = nil
+    lastAction[player] = nil
+end)
+for _, existing in ipairs(Players:GetPlayers()) do
+    task.spawn(onPlayerAdded, existing)
+end
+
+game:BindToClose(function()
+    local active = Players:GetPlayers()
+    local remaining = #active
+    if remaining == 0 then
+        return
+    end
+    for _, player in ipairs(active) do
+        task.spawn(function()
+            saveProfile(player)
+            remaining = remaining - 1
+        end)
+    end
+    local deadline = os.clock() + 25
+    while remaining > 0 and os.clock() < deadline do
+        task.wait(0.1)
+    end
+end)
+]]></ProtectedString>
+      </Properties>
+    </Item>
+    <Item class="Script" referent="RBX0000002E">
+      <Properties>
+        <string name="Name">JumpPadInCardLobby</string>
+        <bool name="Disabled">false</bool>
+        <ProtectedString name="Source"><![CDATA[-- JumpPad -- generated by OpenRO (Rune skill: jump_pad)
+local Players = game:GetService("Players")
+
+local BOOST_POWER = 120
+local COOLDOWN_SEC = 600 / 1000
+
+local pad = workspace:FindFirstChild("JumpPad")
+if not pad then
+    pad = Instance.new("Part")
+    pad.Name = "JumpPad"
+    pad.Size = Vector3.new(8, 1, 8)
+    pad.Position = Vector3.new(0, 1, 16)
+    pad.Anchored = true
+    pad.CanCollide = true
+    pad.Material = Enum.Material.Neon
+    pad.Color = Color3.fromRGB(60, 179, 113)
+    pad.Parent = workspace
+end
+
+local emitter = pad:FindFirstChildOfClass("ParticleEmitter")
+if not emitter then
+    emitter = Instance.new("ParticleEmitter")
+    emitter.Name = "BounceFX"
+    emitter.Enabled = false
+    emitter.Speed = NumberRange.new(12, 24)
+    emitter.Lifetime = NumberRange.new(0.3, 0.6)
+    emitter.Color = ColorSequence.new(Color3.fromRGB(110, 255, 170))
+    emitter.Parent = pad
+end
+
+local bounceSound = pad:FindFirstChildOfClass("Sound")
+if not bounceSound then
+    bounceSound = Instance.new("Sound")
+    bounceSound.Name = "BounceSound"
+    bounceSound.SoundId = "rbxassetid://12222200"
+    bounceSound.Volume = 0.5
+    bounceSound.Parent = pad
+end
+
+local lastBounce = {}
+
+pad.Touched:Connect(function(hit)
+    local character = hit.Parent
+    local player = character and Players:GetPlayerFromCharacter(character)
+    if not player then
+        return
+    end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not root or humanoid.Health <= 0 then
+        return
+    end
+    local now = os.clock()
+    if lastBounce[player] and (now - lastBounce[player]) < COOLDOWN_SEC then
+        return
+    end
+    lastBounce[player] = now
+    local currentVel = root.AssemblyLinearVelocity
+    root.AssemblyLinearVelocity = Vector3.new(currentVel.X, BOOST_POWER, currentVel.Z)
+    humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+    emitter:Emit(16)
+    bounceSound:Play()
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    lastBounce[player] = nil
+end)
+]]></ProtectedString>
+      </Properties>
+    </Item>
+    <Item class="Script" referent="RBX0000002F">
+      <Properties>
+        <string name="Name">Leaderboard</string>
+        <bool name="Disabled">false</bool>
+        <ProtectedString name="Source"><![CDATA[-- Leaderboard -- generated by OpenRO (Rune skill: leaderboard)
+local Players = game:GetService("Players")
+
+local function onPlayerAdded(player)
+    local stats = Instance.new("Folder")
+    stats.Name = "leaderstats"
+    local stat = Instance.new("IntValue")
+    stat.Name = "Coins"
+    stat.Value = 250
+    stat.Parent = stats
+    stats.Parent = player
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+]]></ProtectedString>
+      </Properties>
+    </Item>
+    <Item class="Script" referent="RBX00000030">
+      <Properties>
+        <string name="Name">PotionsWeather</string>
+        <bool name="Disabled">false</bool>
+        <ProtectedString name="Source"><![CDATA[-- PotionsWeather -- generated by OpenRO (system: potions_weather)
+local Players = game:GetService("Players")
+local Lighting = game:GetService("Lighting")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local CYCLE_SECONDS = 90
+local LUCK_POTION_COST = 150
+local SPEED_POTION_COST = 120
+local ENABLE_CODES = true
+
+local potionEvent = ReplicatedStorage:FindFirstChild("OpenROPotionEvent")
+if not potionEvent then
+    potionEvent = Instance.new("RemoteEvent")
+    potionEvent.Name = "OpenROPotionEvent"
+    potionEvent.Parent = ReplicatedStorage
+end
+
+local weatherNameVal = ReplicatedStorage:FindFirstChild("ActiveWeather")
+if not weatherNameVal then
+    weatherNameVal = Instance.new("StringValue")
+    weatherNameVal.Name = "ActiveWeather"
+    weatherNameVal.Value = "Solar Flare"
+    weatherNameVal.Parent = ReplicatedStorage
+end
+
+local weatherLuckVal = ReplicatedStorage:FindFirstChild("ActiveWeatherLuck")
+if not weatherLuckVal then
+    weatherLuckVal = Instance.new("NumberValue")
+    weatherLuckVal.Name = "ActiveWeatherLuck"
+    weatherLuckVal.Value = 1.5
+    weatherLuckVal.Parent = ReplicatedStorage
+end
+
+local atmosphere = Lighting:FindFirstChildOfClass("Atmosphere")
+if not atmosphere then
+    atmosphere = Instance.new("Atmosphere")
+    atmosphere.Name = "ApexWeatherAtmosphere"
+    atmosphere.Parent = Lighting
+end
+
+local WEATHERS = {
+    { name = "Solar Flare", luck = 1.5, clock = 14.5, brightness = 2.6, density = 0.24, haze = 0.9, element = "Flame" },
+    { name = "Void Eclipse", luck = 2.0, clock = 20.5, brightness = 1.1, density = 0.44, haze = 2.1, element = "Void" },
+    { name = "Thunderstorm", luck = 1.6, clock = 16.0, brightness = 1.2, density = 0.50, haze = 2.5, element = "Storm" },
+    { name = "Blood Moon", luck = 2.25, clock = 22.0, brightness = 1.0, density = 0.48, haze = 2.8, element = "Shadow" },
+}
+
+local CODES = {
+    REBIRTH = { coins = 500, luckSec = 180, speedSec = 0 },
+    APEX2026 = { coins = 1000, luckSec = 240, speedSec = 180 },
+    LUCKBOOST = { coins = 250, luckSec = 300, speedSec = 0 },
+}
+
+local redeemedCodes = {}
+local lastRequest = {}
+
+local function grantCurrency(player, amount)
+    local stats = player:FindFirstChild("leaderstats")
+    local coins = stats and stats:FindFirstChild("Coins")
+    if coins and coins:IsA("IntValue") then
+        coins.Value = coins.Value + amount
+    end
+end
+
+local function activateBuff(player, attrName, mult, durationSec)
+    player:SetAttribute(attrName, mult)
+    task.delay(durationSec, function()
+        if player.Parent then
+            player:SetAttribute(attrName, 1.0)
+        end
+    end)
+end
+
+potionEvent.OnServerEvent:Connect(function(player, action, payload)
+    local now = os.clock()
+    if lastRequest[player] and (now - lastRequest[player]) < 0.35 then
+        return
+    end
+    lastRequest[player] = now
+    if typeof(action) ~= "string" then
+        return
+    end
+    if action == "craft_luck" then
+        local stats = player:FindFirstChild("leaderstats")
+        local coins = stats and stats:FindFirstChild("Coins")
+        if not coins or coins.Value < LUCK_POTION_COST then
+            potionEvent:FireClient(player, "insufficient_coins", { needed = LUCK_POTION_COST })
+            return
+        end
+        coins.Value = coins.Value - LUCK_POTION_COST
+        activateBuff(player, "PotionLuckMult", 2.0, 180)
+        potionEvent:FireClient(player, "potion_active", { kind = "Luck", mult = 2.0, seconds = 180 })
+    elseif action == "craft_speed" then
+        local stats = player:FindFirstChild("leaderstats")
+        local coins = stats and stats:FindFirstChild("Coins")
+        if not coins or coins.Value < SPEED_POTION_COST then
+            potionEvent:FireClient(player, "insufficient_coins", { needed = SPEED_POTION_COST })
+            return
+        end
+        coins.Value = coins.Value - SPEED_POTION_COST
+        activateBuff(player, "PotionSpeedMult", 1.75, 180)
+        potionEvent:FireClient(player, "potion_active", { kind = "Speed", mult = 1.75, seconds = 180 })
+    elseif action == "redeem_code" and ENABLE_CODES then
+        if typeof(payload) ~= "string" or #payload == 0 or #payload > 32 then
+            return
+        end
+        local key = string.upper(payload)
+        local reward = CODES[key]
+        if not reward then
+            potionEvent:FireClient(player, "code_invalid", { code = key })
+            return
+        end
+        local seen = redeemedCodes[player]
+        if not seen then
+            seen = {}
+            redeemedCodes[player] = seen
+        end
+        if seen[key] then
+            potionEvent:FireClient(player, "code_used", { code = key })
+            return
+        end
+        seen[key] = true
+        if reward.coins > 0 then
+            grantCurrency(player, reward.coins)
+        end
+        if reward.luckSec > 0 then
+            activateBuff(player, "PotionLuckMult", 2.0, reward.luckSec)
+        end
+        if reward.speedSec > 0 then
+            activateBuff(player, "PotionSpeedMult", 1.75, reward.speedSec)
+        end
+        potionEvent:FireClient(player, "code_redeemed", { code = key, coins = reward.coins })
+    end
+end)
+
+Players.PlayerAdded:Connect(function(player)
+    player:SetAttribute("PotionLuckMult", 1.0)
+    player:SetAttribute("PotionSpeedMult", 1.0)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    redeemedCodes[player] = nil
+    lastRequest[player] = nil
+end)
+
+task.spawn(function()
+    local idx = 1
+    while true do
+        local preset = WEATHERS[idx]
+        weatherNameVal.Value = preset.name
+        weatherLuckVal.Value = preset.luck
+        local info = TweenInfo.new(5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+        TweenService:Create(Lighting, info, { ClockTime = preset.clock, Brightness = preset.brightness }):Play()
+        TweenService:Create(atmosphere, info, { Density = preset.density, Haze = preset.haze }):Play()
+        potionEvent:FireAllClients("weather_changed", {
+            name = preset.name,
+            luck = preset.luck,
+            element = preset.element,
+        })
+        task.wait(CYCLE_SECONDS)
+        idx = (idx % #WEATHERS) + 1
+    end
+end)
+]]></ProtectedString>
+      </Properties>
+    </Item>
+    <Item class="Script" referent="RBX00000031">
+      <Properties>
+        <string name="Name">Shop</string>
+        <bool name="Disabled">false</bool>
+        <ProtectedString name="Source"><![CDATA[-- Shop -- generated by OpenRO (Rune skill: shop)
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local ITEM_NAME = "Lucky Charm"
+local PRICE = 250
+local CURRENCY = "Coins"
+
+local event = Instance.new("RemoteEvent")
+event.Name = "OpenROShopBuy"
+event.Parent = ReplicatedStorage
+
+event.OnServerEvent:Connect(function(player)
+    local stats = player:FindFirstChild("leaderstats")
+    local stat = stats and stats:FindFirstChild(CURRENCY)
+    if not stat then
+        return
+    end
+    if stat.Value < PRICE then
+        print(player.Name .. " cannot afford " .. ITEM_NAME)
+        return
+    end
+    stat.Value = stat.Value - PRICE
+    local owned = Instance.new("BoolValue")
+    owned.Name = ITEM_NAME .. "Owned"
+    owned.Value = true
+    owned.Parent = player
+    print(player.Name .. " bought " .. ITEM_NAME .. " for " .. PRICE .. " " .. CURRENCY)
+end)
+
+print("Shop open: " .. ITEM_NAME .. " costs " .. PRICE .. " " .. CURRENCY)
+]]></ProtectedString>
+      </Properties>
+    </Item>
+    <Item class="Script" referent="RBX00000032">
+      <Properties>
+        <string name="Name">Soundtrack</string>
+        <bool name="Disabled">false</bool>
+        <ProtectedString name="Source"><![CDATA[-- Soundtrack -- generated by OpenRO (Rune skill: soundtrack)
+local SoundService = game:GetService("SoundService")
+
+local sound = Instance.new("Sound")
+sound.Name = "Soundtrack"
+sound.SoundId = "rbxassetid://0"
+sound.Volume = 6 / 10
+sound.Looped = true
+sound.Parent = SoundService
+sound:Play()
+]]></ProtectedString>
+      </Properties>
+    </Item>
+    <Item class="Script" referent="RBX00000033">
+      <Properties>
+        <string name="Name">TowerProgression</string>
+        <bool name="Disabled">false</bool>
+        <ProtectedString name="Source"><![CDATA[-- TowerProgression -- generated by OpenRO (system: tower_progression)
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local DataStoreService = game:GetService("DataStoreService")
+
+local MAX_FLOORS = 50
+local WORLD_COUNT = 5
+local BASE_REWARD = 120
+local STORE_NAME = "OpenROTowerBoard_v1"
+local towerBoard = DataStoreService:GetOrderedDataStore(STORE_NAME)
+
+local towerEvent = ReplicatedStorage:FindFirstChild("OpenROTowerEvent")
+if not towerEvent then
+    towerEvent = Instance.new("RemoteEvent")
+    towerEvent.Name = "OpenROTowerEvent"
+    towerEvent.Parent = ReplicatedStorage
+end
+
+local towerClearSignal = ServerStorage:FindFirstChild("OpenROTowerClear")
+if not towerClearSignal then
+    towerClearSignal = Instance.new("BindableEvent")
+    towerClearSignal.Name = "OpenROTowerClear"
+    towerClearSignal.Parent = ServerStorage
+end
+
+local WORLDS = {
+    { name = "Ember Harbor", minFloor = 1, color = Color3.fromRGB(235, 92, 54) },
+    { name = "Thunder Spire", minFloor = 11, color = Color3.fromRGB(70, 170, 255) },
+    { name = "Eclipse Citadel", minFloor = 21, color = Color3.fromRGB(168, 85, 247) },
+    { name = "Shadow Monarch Rift", minFloor = 31, color = Color3.fromRGB(99, 102, 241) },
+    { name = "Celestial Apex", minFloor = 41, color = Color3.fromRGB(245, 195, 66) },
+}
+
+local worldsFolder = workspace:FindFirstChild("TowerWorlds")
+if not worldsFolder then
+    worldsFolder = Instance.new("Folder")
+    worldsFolder.Name = "TowerWorlds"
+    worldsFolder.Parent = workspace
+end
+
+for idx = 1, WORLD_COUNT do
+    local world = WORLDS[((idx - 1) % #WORLDS) + 1]
+    local gateName = "WorldPortal" .. idx
+    if not worldsFolder:FindFirstChild(gateName) then
+        local pad = Instance.new("Part")
+        pad.Name = gateName
+        pad.Size = Vector3.new(8, 1, 8)
+        pad.Position = Vector3.new((idx - 3) * 16, 1, -48)
+        pad.Anchored = true
+        pad.CanCollide = true
+        pad.Material = Enum.Material.Neon
+        pad.Color = world.color
+
+        local billboard = Instance.new("BillboardGui")
+        billboard.Size = UDim2.new(0, 220, 0, 52)
+        billboard.StudsOffset = Vector3.new(0, 4.5, 0)
+        billboard.AlwaysOnTop = true
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1, 0, 1, 0)
+        lbl.BackgroundTransparency = 0.25
+        lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+        lbl.TextScaled = true
+        lbl.Text = "World " .. idx .. ": " .. world.name .. " (F" .. world.minFloor .. "+)"
+        lbl.Parent = billboard
+        billboard.Parent = pad
+        pad.Parent = worldsFolder
+    end
+end
+
+local lastRequest = {}
+
+local function ensureTowerStat(player)
+    local stats = player:FindFirstChild("leaderstats")
+    if not stats then
+        stats = Instance.new("Folder")
+        stats.Name = "leaderstats"
+        stats.Parent = player
+    end
+    local floorVal = stats:FindFirstChild("TowerFloor")
+    if not floorVal then
+        floorVal = Instance.new("IntValue")
+        floorVal.Name = "TowerFloor"
+        floorVal.Value = 1
+        floorVal.Parent = stats
+    end
+    return floorVal
+end
+
+local function saveFloor(player)
+    local stats = player:FindFirstChild("leaderstats")
+    local floorVal = stats and stats:FindFirstChild("TowerFloor")
+    if not floorVal then
+        return
+    end
+    local key = "Player_" .. player.UserId
+    local best = math.max(1, floorVal.Value)
+    pcall(function()
+        towerBoard:SetAsync(key, best)
+    end)
+end
+
+local function fetchTopLeaderboard()
+    local top = {}
+    local ok, pages = pcall(function()
+        return towerBoard:GetSortedAsync(false, 10)
+    end)
+    if ok and pages then
+        for rank, entry in ipairs(pages:GetCurrentPage()) do
+            table.insert(top, { rank = rank, key = entry.key, floor = entry.value })
+        end
+    end
+    return top
+end
+
+towerClearSignal.Event:Connect(function(player, clearedFloor)
+    if typeof(player) ~= "Instance" or not player:IsA("Player") then
+        return
+    end
+    if typeof(clearedFloor) ~= "number" or clearedFloor < 1 then
+        return
+    end
+    local floorVal = ensureTowerStat(player)
+    local nextFloor = math.min(MAX_FLOORS, math.max(floorVal.Value, math.floor(clearedFloor) + 1))
+    floorVal.Value = nextFloor
+    player:SetAttribute("TowerFloor", nextFloor)
+    local milestone = (math.floor(clearedFloor) % 10 == 0)
+    local bonus = if milestone then BASE_REWARD * 5 else BASE_REWARD
+    local stats = player:FindFirstChild("leaderstats")
+    local coins = stats and stats:FindFirstChild("Coins")
+    if coins and coins:IsA("IntValue") then
+        coins.Value = coins.Value + bonus
+    end
+    towerEvent:FireClient(player, "floor_cleared", {
+        cleared = math.floor(clearedFloor),
+        next_floor = nextFloor,
+        max_floors = MAX_FLOORS,
+        milestone_boss = milestone,
+        bonus = bonus,
+    })
+end)
+
+towerEvent.OnServerEvent:Connect(function(player, action, worldIdx)
+    local now = os.clock()
+    if lastRequest[player] and (now - lastRequest[player]) < 0.35 then
+        return
+    end
+    lastRequest[player] = now
+    if typeof(action) ~= "string" then
+        return
+    end
+    local floorVal = ensureTowerStat(player)
+    if action == "leaderboard" then
+        towerEvent:FireClient(player, "leaderboard", fetchTopLeaderboard())
+    elseif action == "warp_world" then
+        if typeof(worldIdx) ~= "number" or worldIdx ~= worldIdx then
+            return
+        end
+        local idx = math.clamp(math.floor(worldIdx), 1, WORLD_COUNT)
+        local world = WORLDS[((idx - 1) % #WORLDS) + 1]
+        if floorVal.Value < world.minFloor then
+            towerEvent:FireClient(player, "locked", { required_floor = world.minFloor, world = world.name })
+            return
+        end
+        local pad = worldsFolder:FindFirstChild("WorldPortal" .. idx)
+        local char = player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if pad and root then
+            root.CFrame = pad.CFrame + Vector3.new(0, 4, 0)
+        end
+        towerEvent:FireClient(player, "warped", { world_index = idx, world_name = world.name })
+    elseif action == "status" then
+        towerEvent:FireClient(player, "status", {
+            current_floor = floorVal.Value,
+            max_floors = MAX_FLOORS,
+            worlds = WORLD_COUNT,
+        })
+    end
+end)
+
+Players.PlayerAdded:Connect(function(player)
+    local floorVal = ensureTowerStat(player)
+    player:SetAttribute("TowerFloor", floorVal.Value)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    saveFloor(player)
+    lastRequest[player] = nil
+end)
+
+game:BindToClose(function()
+    for _, player in ipairs(Players:GetPlayers()) do
+        saveFloor(player)
+    end
+end)
+]]></ProtectedString>
+      </Properties>
+    </Item>
+  </Item>
+  <Item class="StarterGui" referent="RBX00000034">
+    <Properties>
+      <string name="Name">StarterGui</string>
+    </Properties>
+    <Item class="LocalScript" referent="RBX00000035">
+      <Properties>
+        <string name="Name">GameGui</string>
+        <bool name="Disabled">false</bool>
+        <ProtectedString name="Source"><![CDATA[-- GameGui -- generated by OpenRO (Rune skill: game_gui)
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local player = Players.LocalPlayer
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "GameGui"
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local title = Instance.new("TextLabel")
+title.Name = "Title"
+title.Text = "Anime Card Battles: Apex"
+title.Size = UDim2.new(0, 320, 0, 48)
+title.Position = UDim2.new(0.5, -160, 0, 16)
+title.BackgroundTransparency = 0.3
+title.Parent = gui
+
+local balance = Instance.new("TextLabel")
+balance.Name = "Balance"
+balance.Size = UDim2.new(0, 200, 0, 36)
+balance.Position = UDim2.new(0, 16, 0, 16)
+balance.BackgroundTransparency = 0.3
+balance.Parent = gui
+
+local stats = player:WaitForChild("leaderstats")
+local stat = stats:WaitForChild("Coins")
+local function refresh()
+    balance.Text = "Coins: " .. stat.Value
+end
+stat.Changed:Connect(refresh)
+refresh()
+
+local button = Instance.new("TextButton")
+button.Name = "ShopButton"
+button.Text = "Buy Lucky Charm (250)"
+button.Size = UDim2.new(0, 160, 0, 44)
+button.Position = UDim2.new(1, -176, 0, 16)
+button.Parent = gui
+button.MouseButton1Click:Connect(function()
+    ReplicatedStorage:WaitForChild("OpenROShopBuy"):FireServer()
+end)
+]]></ProtectedString>
+      </Properties>
+    </Item>
+  </Item>
+  <Item class="StarterPlayer" referent="RBX00000036">
+    <Properties>
+      <string name="Name">StarterPlayer</string>
+    </Properties>
+    <Item class="StarterPlayerScripts" referent="RBX00000037">
+      <Properties>
+        <string name="Name">StarterPlayerScripts</string>
+      </Properties>
+    </Item>
+  </Item>
+  <Item class="ReplicatedStorage" referent="RBX00000038">
+    <Properties>
+      <string name="Name">ReplicatedStorage</string>
+    </Properties>
+  </Item>
+  <Item class="Lighting" referent="RBX00000039">
+    <Properties>
+      <string name="Name">Lighting</string>
+    </Properties>
+  </Item>
+  <Item class="SoundService" referent="RBX0000003A">
+    <Properties>
+      <string name="Name">SoundService</string>
+    </Properties>
+  </Item>
+</roblox>

@@ -1,0 +1,192 @@
+{
+  "asset_count": 8,
+  "assets": [
+    {
+      "atk": 295,
+      "bytes": 1225992,
+      "card_id": "blood-moon-gravity-ronin",
+      "element": "Void",
+      "filename": "blood-moon-gravity-ronin.png",
+      "hp": 1080,
+      "mime_type": "image/png",
+      "odds": "1 in 32",
+      "passive": "Monolith Pull: reduces enemy Speed by 20%",
+      "place_bindings": {
+        "decal": "Workspace.CardGallery.Showcase_blood_moon_gravity_ronin.CardArtDecal",
+        "image_label": "Workspace.CardGallery.Showcase_blood_moon_gravity_ronin.CardDisplayGui.CardArtImage",
+        "stand": "Workspace.CardGallery.Showcase_blood_moon_gravity_ronin"
+      },
+      "rarity": "Epic",
+      "roblox_content_uri": "rbxasset://openro-assets/blood-moon-gravity-ronin.png",
+      "sha256": "1c45afeaee3d6195787d32b098301480f2ae4dd218c282a75f73502fb97eaaa5",
+      "source": "nano-banana",
+      "speed": 84,
+      "title": "Blood-Moon Gravity Ronin",
+      "ultimate": "Crimson Orbit Crush (2.3x Void + Armor Break)"
+    },
+    {
+      "atk": 420,
+      "bytes": 1410372,
+      "card_id": "crimson-sea-captain",
+      "element": "Flame",
+      "filename": "crimson-sea-captain.png",
+      "hp": 1480,
+      "mime_type": "image/png",
+      "odds": "1 in 512",
+      "passive": "Molten Will: +25% Flame team ATK when below 60% HP",
+      "place_bindings": {
+        "decal": "Workspace.CardGallery.Showcase_crimson_sea_captain.CardArtDecal",
+        "image_label": "Workspace.CardGallery.Showcase_crimson_sea_captain.CardDisplayGui.CardArtImage",
+        "stand": "Workspace.CardGallery.Showcase_crimson_sea_captain"
+      },
+      "rarity": "Mythic",
+      "roblox_content_uri": "rbxasset://openro-assets/crimson-sea-captain.png",
+      "sha256": "72e385bddb6aa4c6e3c4b0693e30546d7d12bb4094f5b77bc989aeac50285798",
+      "source": "nano-banana",
+      "speed": 88,
+      "title": "Crimson Sea Captain",
+      "ultimate": "Red Horizon Impact (2.8x AoE Flame + Burn)"
+    },
+    {
+      "atk": 230,
+      "bytes": 1594376,
+      "card_id": "eclipse-arcane-alchemist",
+      "element": "Arcane",
+      "filename": "eclipse-arcane-alchemist.png",
+      "hp": 960,
+      "mime_type": "image/png",
+      "odds": "1 in 8",
+      "passive": "Equivalent Exchange: converts 15% DMG into Team Shield",
+      "place_bindings": {
+        "decal": "Workspace.CardGallery.Showcase_eclipse_arcane_alchemist.CardArtDecal",
+        "image_label": "Workspace.CardGallery.Showcase_eclipse_arcane_alchemist.CardDisplayGui.CardArtImage",
+        "stand": "Workspace.CardGallery.Showcase_eclipse_arcane_alchemist"
+      },
+      "rarity": "Rare",
+      "roblox_content_uri": "rbxasset://openro-assets/eclipse-arcane-alchemist.png",
+      "sha256": "e7c6321a29082ef65480b8ba130576444631639de84a5353e6bb28a5e55d6e2a",
+      "source": "nano-banana",
+      "speed": 80,
+      "title": "Eclipse Arcane Alchemist",
+      "ultimate": "Crystal Transmutation (2.0x Arcane + Party Shield)"
+    },
+    {
+      "atk": 540,
+      "bytes": 1355139,
+      "card_id": "infinity-void-sorcerer",
+      "element": "Void",
+      "filename": "infinity-void-sorcerer.png",
+      "hp": 1720,
+      "mime_type": "image/png",
+      "odds": "1 in 2,048",
+      "passive": "Limitless Barrier: blocks 35% of incoming first-strike damage",
+      "place_bindings": {
+        "decal": "Workspace.CardGallery.Showcase_infinity_void_sorcerer.CardArtDecal",
+        "image_label": "Workspace.CardGallery.Showcase_infinity_void_sorcerer.CardDisplayGui.CardArtImage",
+        "stand": "Workspace.CardGallery.Showcase_infinity_void_sorcerer"
+      },
+      "rarity": "Celestial",
+      "roblox_content_uri": "rbxasset://openro-assets/infinity-void-sorcerer.png",
+      "sha256": "e445fbbe81a88d4108c45c0a519bcbc8de0e075802cff9bc9b20abeff5479610",
+      "source": "nano-banana",
+      "speed": 96,
+      "title": "Infinity Void Sorcerer",
+      "ultimate": "Hollow Singularity (3.4x True Void DMG + 1-turn Stun)"
+    },
+    {
+      "atk": 440,
+      "bytes": 1308151,
+      "card_id": "nine-tail-ember-shinobi",
+      "element": "Flame",
+      "filename": "nine-tail-ember-shinobi.png",
+      "hp": 1520,
+      "mime_type": "image/png",
+      "odds": "1 in 512",
+      "passive": "Solar Cloak: restores 8% team HP every turn",
+      "place_bindings": {
+        "decal": "Workspace.CardGallery.Showcase_nine_tail_ember_shinobi.CardArtDecal",
+        "image_label": "Workspace.CardGallery.Showcase_nine_tail_ember_shinobi.CardDisplayGui.CardArtImage",
+        "stand": "Workspace.CardGallery.Showcase_nine_tail_ember_shinobi"
+      },
+      "rarity": "Mythic",
+      "roblox_content_uri": "rbxasset://openro-assets/nine-tail-ember-shinobi.png",
+      "sha256": "df1a37982361639190aea2b48c4f557be5c3723d67a3c8e40d4c879f3ed19337",
+      "source": "nano-banana",
+      "speed": 92,
+      "title": "Nine-Tail Ember Shinobi",
+      "ultimate": "Spiral Sun Barrage (2.9x Flame + Team Speed Boost)"
+    },
+    {
+      "atk": 560,
+      "bytes": 1376214,
+      "card_id": "shadow-sovereign",
+      "element": "Shadow",
+      "filename": "shadow-sovereign.png",
+      "hp": 1650,
+      "mime_type": "image/png",
+      "odds": "1 in 2,048",
+      "passive": "Arise Legion: defeated foes grant +15% ATK stack to team",
+      "place_bindings": {
+        "decal": "Workspace.CardGallery.Showcase_shadow_sovereign.CardArtDecal",
+        "image_label": "Workspace.CardGallery.Showcase_shadow_sovereign.CardDisplayGui.CardArtImage",
+        "stand": "Workspace.CardGallery.Showcase_shadow_sovereign"
+      },
+      "rarity": "Celestial",
+      "roblox_content_uri": "rbxasset://openro-assets/shadow-sovereign.png",
+      "sha256": "81a2383a2ac6d08aa7e009259d5deeeafd5e708454a345aa7bb1039f35326808",
+      "source": "nano-banana",
+      "speed": 94,
+      "title": "Shadow Sovereign",
+      "ultimate": "Monarch Domain (3.2x Shadow Barrage + Lifesteal)"
+    },
+    {
+      "atk": 680,
+      "bytes": 1299872,
+      "card_id": "supernova-ascended-striker",
+      "element": "Flame",
+      "filename": "supernova-ascended-striker.png",
+      "hp": 2100,
+      "mime_type": "image/png",
+      "odds": "1 in 8,192",
+      "passive": "Ascended Limit: gains +20% ATK & +10% Crit every round",
+      "place_bindings": {
+        "decal": "Workspace.CardGallery.Showcase_supernova_ascended_striker.CardArtDecal",
+        "image_label": "Workspace.CardGallery.Showcase_supernova_ascended_striker.CardDisplayGui.CardArtImage",
+        "stand": "Workspace.CardGallery.Showcase_supernova_ascended_striker"
+      },
+      "rarity": "Secret",
+      "roblox_content_uri": "rbxasset://openro-assets/supernova-ascended-striker.png",
+      "sha256": "a5ad5ee033ec6ccd06b083c52b9cdc3547d9c87155f160ad7fa2c3bd5ee7c6de",
+      "source": "nano-banana",
+      "speed": 98,
+      "title": "Supernova Ascended Striker",
+      "ultimate": "Galactic Star Beam (4.0x Cosmic DMG, ignores Shields)"
+    },
+    {
+      "atk": 360,
+      "bytes": 1468804,
+      "card_id": "thunder-flash-ronin",
+      "element": "Storm",
+      "filename": "thunder-flash-ronin.png",
+      "hp": 1150,
+      "mime_type": "image/png",
+      "odds": "1 in 128",
+      "passive": "First Clap: always strikes first with +30% Crit chance",
+      "place_bindings": {
+        "decal": "Workspace.CardGallery.Showcase_thunder_flash_ronin.CardArtDecal",
+        "image_label": "Workspace.CardGallery.Showcase_thunder_flash_ronin.CardDisplayGui.CardArtImage",
+        "stand": "Workspace.CardGallery.Showcase_thunder_flash_ronin"
+      },
+      "rarity": "Legendary",
+      "roblox_content_uri": "rbxasset://openro-assets/thunder-flash-ronin.png",
+      "sha256": "562a77b8a6238fa16762b66b2742f77016dd4d6ef84f33bdfa33dcfe5a0aee51",
+      "source": "nano-banana",
+      "speed": 100,
+      "title": "Thunder Flash Ronin",
+      "ultimate": "Sevenfold Lightning Flash (2.6x Crit Storm Strike)"
+    }
+  ],
+  "game": "Anime Card Battles: Rebirth — Apex Edition",
+  "ok": true,
+  "schema": "openro-asset-manifest-v1"
+}

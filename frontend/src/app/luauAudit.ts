@@ -44,12 +44,17 @@ export function checkLuauSyntaxDetailed(source: string): { line: number; code: s
   let i = 0;
   const delims: Array<[string, number]> = [];
   const blocks: Array<[string, number]> = [];
-  const tokens: Array<[string, number, boolean]> = [];
+  type LexTok = { kind: "ident" | "punct" | "str"; value: string; line: number; isMember: boolean };
+  const tokens: LexTok[] = [];
 
   while (i < source.length) {
     const c = source[i];
     if (c === "\n") {
       line++;
+      i++;
+      continue;
+    }
+    if (/\s/.test(c)) {
       i++;
       continue;
     }
@@ -73,7 +78,7 @@ export function checkLuauSyntaxDetailed(source: string): { line: number; code: s
       }
       continue;
     }
-    if (c === '"' || c === "'") {
+    if (c === '"' || c === "'" || c === "`") {
       const startLine = line;
       const q = c;
       i++;
@@ -84,7 +89,8 @@ export function checkLuauSyntaxDetailed(source: string): { line: number; code: s
           i += 2;
           continue;
         }
-        if (source[i] === "\n") return { line: startLine, code: "LUAU_STRING", message: "Unclosed string literal" };
+        if (source[i] === "\n" && q !== "`") return { line: startLine, code: "LUAU_STRING", message: "Unclosed string literal" };
+        if (source[i] === "\n") line++;
         if (source[i] === q) {
           i++;
           closed = true;
@@ -93,6 +99,7 @@ export function checkLuauSyntaxDetailed(source: string): { line: number; code: s
         i++;
       }
       if (!closed) return { line: startLine, code: "LUAU_STRING", message: "Unclosed string literal" };
+      tokens.push({ kind: "str", value: "", line: startLine, isMember: false });
       continue;
     }
     if (c === "[" && source[i + 1] === "[") {
@@ -109,10 +116,12 @@ export function checkLuauSyntaxDetailed(source: string): { line: number; code: s
         i++;
       }
       if (!closed) return { line: startLine, code: "LUAU_LONG_STR", message: "Unclosed long string [[" };
+      tokens.push({ kind: "str", value: "", line: startLine, isMember: false });
       continue;
     }
     if (c === "(" || c === "[" || c === "{") {
       delims.push([c, line]);
+      tokens.push({ kind: "punct", value: c, line, isMember: false });
       i++;
       continue;
     }
@@ -127,6 +136,7 @@ export function checkLuauSyntaxDetailed(source: string): { line: number; code: s
           message: `Mismatched delimiter '${c}' (opened '${top[0]}' on line ${top[1]})`,
         };
       }
+      tokens.push({ kind: "punct", value: c, line, isMember: false });
       i++;
       continue;
     }
@@ -134,9 +144,16 @@ export function checkLuauSyntaxDetailed(source: string): { line: number; code: s
       const start = i;
       const prevMember = start > 0 && (source[start - 1] === "." || source[start - 1] === ":");
       while (i < source.length && /[A-Za-z0-9_]/.test(source[i])) i++;
-      tokens.push([source.slice(start, i), line, prevMember]);
+      tokens.push({ kind: "ident", value: source.slice(start, i), line, isMember: prevMember });
       continue;
     }
+    const two = source.slice(i, i + 2);
+    if (["..", "==", "~=", "<=", ">=", "+=", "-=", "*=", "/=", "%=", "^="].includes(two)) {
+      tokens.push({ kind: "punct", value: two, line, isMember: false });
+      i += 2;
+      continue;
+    }
+    tokens.push({ kind: "punct", value: c, line, isMember: false });
     i++;
   }
 
@@ -145,12 +162,30 @@ export function checkLuauSyntaxDetailed(source: string): { line: number; code: s
     return { line: l, code: "LUAU_DELIM", message: `Unclosed delimiter '${ch}'` };
   }
 
+  const IF_EXPR_PREV_PUNCT = new Set([
+    "=", "(", ",", "{", "+", "-", "*", "/", "%", "^", "..",
+    "==", "~=", "<", "<=", ">", ">=", "+=", "-=", "*=", "/=",
+  ]);
+  const IF_EXPR_PREV_IDENT = new Set(["return", "and", "or", "not"]);
+  const isIfExpressionContext = (prev: LexTok | undefined): boolean => {
+    if (!prev) return false;
+    if (prev.kind === "punct") return IF_EXPR_PREV_PUNCT.has(prev.value);
+    if (prev.kind === "ident" && !prev.isMember) return IF_EXPR_PREV_IDENT.has(prev.value);
+    return false;
+  };
+
   let expectLoopDo = false;
-  for (const [word, tokLine, isMember] of tokens) {
-    if (isMember) continue;
+  for (let idx = 0; idx < tokens.length; idx++) {
+    const tok = tokens[idx];
+    if (tok.kind !== "ident" || tok.isMember) continue;
+    const word = tok.value;
+    const tokLine = tok.line;
     if (word === "function") blocks.push(["function", tokLine]);
-    else if (word === "if") blocks.push(["if", tokLine]);
-    else if (word === "for" || word === "while") {
+    else if (word === "if") {
+      if (!isIfExpressionContext(tokens[idx - 1])) {
+        blocks.push(["if", tokLine]);
+      }
+    } else if (word === "for" || word === "while") {
       blocks.push([word, tokLine]);
       expectLoopDo = true;
     } else if (word === "do") {
