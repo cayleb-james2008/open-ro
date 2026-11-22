@@ -90,11 +90,11 @@ function RunDetail({ id, run }: { id: string; run: PlaytestRun }) {
             <section aria-label="Screenshots" className="flex flex-col gap-2">
               <h4 className="text-sm font-medium text-ink-2">Screenshots <span className="font-mono">{shots.length}</span></h4>
               <ul className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-2" data-gallery>
-                {shots.map((s) => (
+                {shots.map((s, i) => (
                   <li key={s.file}>
                     <MorphingDialog transition={dialogSpring}>
                       <MorphingDialogTrigger className="block w-full overflow-hidden rounded-card border border-hairline bg-board text-left outline-none focus-visible:ring-2 focus-visible:ring-focus" aria-label={`Open screenshot ${s.name}`}>
-                        <img src={shotUrl(id, run.run_id, s.file)} alt={s.name} loading="lazy" className="aspect-video w-full object-cover" />
+                        <img src={shotUrl(id, run.run_id, s.file)} alt={s.name} loading={i === 0 ? "eager" : "lazy"} fetchPriority={i === 0 ? "high" : undefined} className="aspect-video w-full object-cover" />
                         <span className="block truncate px-2 py-1.5 text-sm text-ink-2">{s.name}</span>
                       </MorphingDialogTrigger>
                       <MorphingDialogContainer>
@@ -156,7 +156,7 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
         </div>
         <Button variant={syncFirst ? "secondary" : "outline"} size="lg" aria-pressed={syncFirst} onClick={() => setSyncFirst((v) => !v)} className="max-md:min-h-11">Send to Studio first</Button>
         <Button variant="default" size="lg" disabled={!studioOk || running} onClick={() => void run()} data-run-playtest className="max-md:min-h-11"><Play className="size-4" strokeWidth={1.5} aria-hidden />{running ? "Playing…" : "Run playtest"}</Button>
-        {error && <p role="alert" className="w-full rounded-card bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
+        {error && <p role="alert" className="w-full rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
       </section>
       {runs === null ? (
         <div className="grid gap-2" aria-hidden><span className="h-14 rounded-card bg-track" /><span className="h-14 rounded-card bg-track" /></div>
@@ -168,8 +168,8 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
             {runs.map((r) => (
               <li key={r.run_id}>
                 <Button variant="ghost" onClick={() => setSelected(r.run_id)} aria-current={r.run_id === selected ? "true" : undefined} className={`h-auto min-h-14 w-full flex-col items-start gap-1 whitespace-normal rounded-card border px-3 py-2 text-left sm:h-auto ${r.run_id === selected ? "border-hairline bg-blue-soft" : "border-transparent hover:bg-track"}`}>
-                  <span className="flex w-full items-center justify-between gap-2"><Verdict passed={r.passed} /><span className="font-mono text-sm tabular-nums text-ink-2">{r.checks} checks</span></span>
-                  <span className="text-sm text-ink-2">{stamp(r.at)}{r.errors ? ` · ${r.errors} console error${r.errors === 1 ? "" : "s"}` : ""}</span>
+                  <span className="flex w-full items-center justify-between gap-2"><Verdict passed={r.passed} /><span className="text-sm text-ink-2"><span className="font-mono tabular-nums">{r.checks}</span> checks</span></span>
+                  <span className="flex flex-wrap gap-x-2 text-sm text-ink-2"><span>{stamp(r.at)}</span>{r.errors ? <span><span className="font-mono tabular-nums">{r.errors}</span> console error{r.errors === 1 ? "" : "s"}</span> : null}</span>
                 </Button>
               </li>
             ))}

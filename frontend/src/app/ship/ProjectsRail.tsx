@@ -163,12 +163,17 @@ export function ProjectsRail({ ship, studioOk }: { ship: Ship; studioOk: boolean
               {!studioOk && <p className="text-sm text-ink-2">Connect Roblox Studio to compare or send.</p>}
 
               {lastBuild && (
-                <div className="flex flex-col gap-1 rounded-card bg-board p-2.5 text-sm" data-build-result>
+                <div className="flex flex-col gap-1 border-t border-hairline pt-2.5 text-sm" data-build-result>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="font-medium text-ink">Last build</span>
                     <Pill className="bg-tag-sky-bg px-2 py-0.5 font-mono text-sm text-tag-sky-fg">{lastBuild.engine}</Pill>
                   </div>
-                  <span className="text-ink-2">{lastBuild.instances} parts · {lastBuild.scripts} scripts · {prettyBytes(lastBuild.bytes)} · {stamp(lastBuild.at)}</span>
+                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-ink-2">
+                    <span><span className="font-mono tabular-nums">{lastBuild.instances}</span> parts</span>
+                    <span><span className="font-mono tabular-nums">{lastBuild.scripts}</span> scripts</span>
+                    <span className="font-mono tabular-nums">{prettyBytes(lastBuild.bytes)}</span>
+                    <span>{stamp(lastBuild.at)}</span>
+                  </div>
                   <code className="truncate font-mono text-sm text-ink-2">{lastBuild.path}</code>
                   {lastBuild.warnings?.length > 0 && (
                     <Expandable expandDirection="vertical" expandBehavior="push">
@@ -208,9 +213,13 @@ export function ProjectsRail({ ship, studioOk }: { ship: Ship; studioOk: boolean
               )}
 
               {sync && (
-                <div className="flex flex-col gap-1 rounded-card bg-board p-2.5 text-sm" data-sync-result>
+                <div className="flex flex-col gap-1 border-t border-hairline pt-2.5 text-sm" data-sync-result>
                   <span className="font-medium text-ink">Sent to Studio</span>
-                  <span className="text-ink-2">{sync.applied?.created ?? 0} added · {sync.applied?.updated ?? 0} updated · {sync.applied?.deleted ?? 0} removed</span>
+                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-ink-2">
+                    <span><span className="font-mono tabular-nums">{sync.applied?.created ?? 0}</span> added</span>
+                    <span><span className="font-mono tabular-nums">{sync.applied?.updated ?? 0}</span> updated</span>
+                    <span><span className="font-mono tabular-nums">{sync.applied?.deleted ?? 0}</span> removed</span>
+                  </div>
                   <span className={sync.verify && sync.verify.remaining > 0 ? "text-pill-warn-fg" : "text-ink-2"}>{sync.verify ? (sync.verify.remaining === 0 ? "Checked after sending: nothing left to send." : `${sync.verify.remaining} still differ in Studio.`) : ""}</span>
                   {sync.errors?.map((e, i) => <span key={i} className="text-pill-pro-fg">{e}</span>)}
                 </div>

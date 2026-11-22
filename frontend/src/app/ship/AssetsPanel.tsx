@@ -106,8 +106,8 @@ export function AssetsPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSettin
           </MorphingDialog>
         </div>
         {!hasKey && <p className="text-sm text-ink-2">Uploads need an Open Cloud key. <Button variant="link" size="sm" onClick={onOpenSettings} className="inline h-auto p-0 underline max-md:min-h-11">Add it in Settings</Button></p>}
-        {error && <p role="alert" className="rounded-card bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
-        {note && <p className="rounded-card bg-board px-3 py-2 text-sm text-ink-2">{note}</p>}
+        {error && <p role="alert" className="rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
+        {note && <p className="rounded-sm bg-board px-3 py-2 text-sm text-ink-2">{note}</p>}
         {results && (
           <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto text-sm" aria-label="Upload results" data-upload-results>
             {results.map((x) => (

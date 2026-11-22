@@ -51,7 +51,7 @@ export function OpenCloudSettings({ onChanged }: { onChanged?: () => void }) {
         <Pill className={`px-2 py-0.5 text-sm ${cloud?.has_key ? "bg-pill-active-bg text-pill-active-fg" : "bg-pill-inactive-bg text-pill-inactive-fg"}`} data-key-state>{cloud?.has_key ? `Saved ${cloud.key_masked ?? ""}` : "No key yet"}</Pill>
       </div>
       <p className="text-sm text-ink-2">Lets OpenRO upload files, publish and set up game passes for your project. The key is stored on this computer, is never shown again after you save it, and is only used by OpenRO.</p>
-      {err && <p role="alert" className="rounded-card bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{err}</p>}
+      {err && <p role="alert" className="rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{err}</p>}
       <label className="flex flex-col gap-1 text-sm font-medium text-ink-2">
         <span className="inline-flex items-center gap-1"><KeyRound className="size-3.5 text-icon" strokeWidth={1.5} aria-hidden />{cloud?.has_key ? "Replace the key" : "Open Cloud API key"}</span>
         <Input type="password" name="openro-opencloud-key" autoComplete="new-password" spellCheck={false} value={key} onChange={(e) => setKey(e.target.value)} placeholder={cloud?.has_key ? "Type a new key to replace it" : "Paste your key"} className="font-mono" aria-describedby="opencloud-scopes" />

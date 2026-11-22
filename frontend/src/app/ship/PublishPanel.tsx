@@ -48,7 +48,7 @@ function ProductRow({ p, canApprove, onApprove }: { p: Product; canApprove: bool
         ) : (
           <span className="flex flex-col items-end gap-0.5" data-price="pending">
             <Pill className="bg-pill-warn-bg px-2.5 py-0.5 text-sm text-pill-warn-fg">pending approval</Pill>
-            <span className="font-mono text-sm tabular-nums text-ink-2">proposed {p.priceRobux}</span>
+            <span className="text-sm text-ink-2">proposed <span className="font-mono tabular-nums">{p.priceRobux}</span></span>
           </span>
         )}
         {!approved && canApprove && <Button variant="outline" size="sm" onClick={onApprove} className="max-md:min-h-11">Approve price</Button>}
@@ -121,6 +121,43 @@ function UniverseSettings({ id }: { id: string }) {
   );
 }
 
+function SetProjectIdsDialog({ active, ship }: { active: { universeId?: number | null; placeId?: number | null }; ship: Ship }) {
+  const [open, setOpen] = useState(false);
+  const [uni, setUni] = useState(active.universeId ? String(active.universeId) : "");
+  const [place, setPlace] = useState(active.placeId ? String(active.placeId) : "");
+  const [saving, setSaving] = useState(false);
+  const submit = async () => {
+    setSaving(true);
+    const ok = await ship.saveManifest({
+      universeId: /^\d+$/.test(uni.trim()) ? Number(uni.trim()) : null,
+      placeId: /^\d+$/.test(place.trim()) ? Number(place.trim()) : null,
+    });
+    setSaving(false);
+    if (ok) { toast.success("Project IDs saved"); setOpen(false); }
+  };
+  return (
+    <MorphingDialog transition={dialogSpring} open={open} onOpenChange={setOpen}>
+      <MorphingDialogTrigger thing="set-project-ids" className="inline-flex min-h-11 cursor-pointer items-center rounded-lg px-2 text-sm font-medium text-ink outline-none hover:bg-track focus-visible:ring-2 focus-visible:ring-focus md:min-h-8">
+        Set IDs
+      </MorphingDialogTrigger>
+      <MorphingDialogContainer>
+        <MorphingDialogContent className="relative mx-3 flex w-full max-w-[420px] flex-col gap-4 rounded-dialog border border-hairline bg-surface p-5 text-ink shadow-lift">
+          <div>
+            <MorphingDialogTitle className="font-heading text-title font-semibold">Roblox game and place numbers</MorphingDialogTitle>
+            <MorphingDialogDescription className="mt-1 text-sm text-ink-2">Saved to openro.project.json for publishing and passes.</MorphingDialogDescription>
+          </div>
+          <Field label="Game number (Universe ID)"><Input inputMode="numeric" value={uni} onChange={(e) => setUni(e.target.value)} className="font-mono" placeholder="123456789" /></Field>
+          <Field label="Place number (Place ID)"><Input inputMode="numeric" value={place} onChange={(e) => setPlace(e.target.value)} className="font-mono" placeholder="987654321" /></Field>
+          <div className="flex flex-wrap justify-end gap-2">
+            <MorphingDialogClose aria-label="Cancel" className="static inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-hairline bg-surface px-4 text-sm font-medium text-ink outline-none hover:bg-board focus-visible:ring-2 focus-visible:ring-focus">Cancel</MorphingDialogClose>
+            <Button variant="default" size="lg" disabled={saving || !/^\d+$/.test(uni.trim()) || !/^\d+$/.test(place.trim())} onClick={() => void submit()} className="max-md:min-h-11">{saving ? "Saving…" : "Save IDs"}</Button>
+          </div>
+        </MorphingDialogContent>
+      </MorphingDialogContainer>
+    </MorphingDialog>
+  );
+}
+
 export function PublishPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSettings: () => void }) {
   const { active, detail, cloud, build } = ship;
   const [live, setLive] = useState(false);
@@ -176,7 +213,13 @@ export function PublishPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSetti
         </div>
         <ul className="mt-1 flex flex-col">
           <Check1 ok={hasKey} label="Open Cloud key saved" fix="Add it in Settings" onFix={onOpenSettings} />
-          <Check1 ok={hasIds} label="Game number and place number set" fix="Add in the project file" onFix={onOpenSettings} />
+          <li className="flex min-h-11 items-center gap-2 text-sm">
+            <span className={`grid size-6 flex-none place-items-center rounded-full ${hasIds ? "bg-pill-active-bg text-pill-active-fg" : "bg-pill-warn-bg text-pill-warn-fg"}`}>
+              {hasIds ? <Check className="size-3.5" strokeWidth={2} aria-hidden /> : <CircleAlert className="size-3.5" strokeWidth={2} aria-hidden />}
+            </span>
+            <span className="min-w-0 flex-1 text-ink">Game number and place number set</span>
+            {!hasIds && <SetProjectIdsDialog active={active} ship={ship} />}
+          </li>
           <Check1 ok={hasBuild} label="A build exists" />
         </ul>
         <div className="mt-2 flex flex-wrap items-center gap-3">
@@ -207,8 +250,8 @@ export function PublishPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSetti
           )}
         </div>
         {!hasKey && <p className="mt-1 inline-flex items-center gap-1.5 text-sm text-ink-2"><KeyRound className="size-3.5" strokeWidth={1.5} aria-hidden />The button turns on once the key is saved.</p>}
-        {error && <p role="alert" className="mt-2 rounded-card bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
-        {published && <p className="mt-2 rounded-card bg-pill-active-bg px-3 py-2 text-sm text-pill-active-fg" data-published>Version <span className="font-mono">{published.versionNumber}</span> is on Roblox ({published.versionType === "Published" ? "live" : "saved, not live"}){published.bytes ? ` · ${prettyBytes(published.bytes)}` : ""}.</p>}
+        {error && <p role="alert" className="mt-2 rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
+        {published && <p className="mt-2 rounded-sm bg-pill-active-bg px-3 py-2 text-sm text-pill-active-fg" data-published>Version <span className="font-mono">{published.versionNumber}</span> is on Roblox ({published.versionType === "Published" ? "live" : "saved, not live"}){published.bytes ? ` · ${prettyBytes(published.bytes)}` : ""}.</p>}
       </section>
 
       <section aria-label="Game passes and products" className="flex flex-col gap-2">

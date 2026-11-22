@@ -406,7 +406,7 @@ export function StudioBottomDrawer({
                       </Pill>
                     )}
                   </div>
-                  <pre className="h-24 overflow-auto rounded-sm border border-hairline bg-board/35 p-2 font-mono text-xs text-ink">
+                  <pre className="h-24 overflow-auto whitespace-pre-wrap break-words rounded-sm border border-hairline bg-board/35 p-2 font-mono text-xs text-ink">
                     {toolResult
                       ? toolResult.error
                         ? toolResult.error
@@ -495,8 +495,27 @@ export function StudioBottomDrawer({
                     <div className="flex flex-col gap-1">
                       <span className="text-xs text-ink-2">Color · Material · Anchored</span>
                       <div className="flex items-center gap-1.5">
+                        <input
+                          type="color"
+                          aria-label="Color picker"
+                          value={/^#[0-9a-f]{6}$/i.test(color.trim()) ? color.trim() : "#9aa0a6"}
+                          onChange={(e) => setColor(e.target.value)}
+                          className="h-8 w-9 shrink-0 cursor-pointer rounded-sm border border-hairline bg-surface p-0.5 max-md:min-h-11"
+                        />
                         <Input value={color} onChange={(e) => setColor(e.target.value)} aria-label="Color hex" className="h-8 w-24 font-mono text-xs max-md:min-h-11" />
-                        <Input value={material} onChange={(e) => setMaterial(e.target.value)} aria-label="Material" className="h-8 min-w-0 flex-1 font-mono text-xs max-md:min-h-11" />
+                        <select
+                          value={material}
+                          onChange={(e) => setMaterial(e.target.value)}
+                          aria-label="Material"
+                          className="h-8 min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 font-mono text-xs text-ink outline-none focus-visible:ring-2 focus-visible:ring-focus max-md:min-h-11"
+                        >
+                          {["SmoothPlastic", "Plastic", "Neon", "Metal", "Wood", "WoodPlanks", "Slate", "Concrete", "Glass", "ForceField", "Granite", "Marble", "Ice", "Fabric", "Foil"].map((m) => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                          {material && !["SmoothPlastic", "Plastic", "Neon", "Metal", "Wood", "WoodPlanks", "Slate", "Concrete", "Glass", "ForceField", "Granite", "Marble", "Ice", "Fabric", "Foil"].includes(material) && (
+                            <option value={material}>{material}</option>
+                          )}
+                        </select>
                         <Button
                           variant={anchored ? "default" : "outline"}
                           size="xs"
