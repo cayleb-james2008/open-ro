@@ -217,4 +217,4 @@ Available tools:
 - Research & web: `research_roblox_game`, `web_search`, `web_fetch` (SSRF-blocked, `max_chars` default `6000` / max `10000`)
 - Assets & media: `reference_search`, `reference_select`, `art_generate` (ChatGPT default, Higgsfield refused), `art_approve`, `image_process`, `art_pack_card`, `mesh_generate` / `blender_generate` (project-local + `manifest.json` + `AssetIds.luau`), `audio_generate` (project-local + `AssetIds.luau`), `assets_codegen`, `assets_upload`
 
-Context & history hygiene: live `Tasks:` status is injected transiently per model turn (never accumulated in persisted `agents/<name>.json`), and `tool_result` entries plus large `project_write_file` / step payloads older than 2 turns are compacted to 1-line summaries.
+Context & history hygiene: live `Tasks:` status is injected transiently per model turn (never accumulated in persisted `agents/<name>.json`), and `tool_result` entries plus large `project_write_file` / step payloads older than 2 turns are compacted to 1-line summaries. Polling `board_read` when the board `head` has not changed auto-parks the agent `waiting` until a new message arrives.
