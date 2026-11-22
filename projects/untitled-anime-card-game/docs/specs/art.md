@@ -20,7 +20,7 @@ Rarities, roster and card names come from `docs/GDD.md` / `docs/ROSTER.md` (desi
 - Plain wording in anything players see. No internal jargon.
 - Uploads go through OpenRO's asset pipeline only, and only after the owner has entered the Open Cloud
   key in Settings. Upload the authorised set (`art/cards/**`, `art/frames/r*/*.png`, `art/ui/*.png`,
-  `art/store/*.png`). Record ids in `assets.lock.json`, then regenerate `src/shared/AssetIds.luau`
+  `art/worlds/**`, `art/store/*.png`). Record ids in `assets.lock.json`, then regenerate `src/shared/AssetIds.luau`
   from it (a table `AssetIds["art/ui/icon_coins.png"] = "rbxassetid://123"`; never hand-edit it).
 
 ## 1. Card art
@@ -93,6 +93,39 @@ roll_ticket, luck, potion, pass, star, lock, crown, sword, deck, cards, world, t
 rebirth, skills, quests, shop, codes, settings. Also `icon_hp`, `icon_speed`, `icon_key`, `icon_shard`
 if game-ui adds them. Never rename an existing file.
 
+### 3b. Extra icons and card pieces (from GDD sections 4 and 6; names from the designer's economy list win)
+
+- Currency and item icons, 128x128 (deliver 256), `icon_<id>`: coins, gems, roll_ticket, trait_reroll,
+  charm_dust, spire_token, raid_token, raid_ticket, ranked_medal, pass_xp, plus one `icon_token_w1` ..
+  `icon_token_w5` per world (use the world's emblem colour and motif, no show logos).
+- Potion icons (one bottle each, different liquid colour and glyph): `icon_potion_luck`,
+  `icon_potion_luck_greater`, `icon_potion_luck_super`, `icon_potion_luck_ultra`, `icon_potion_mutation`,
+  `icon_potion_speed`, `icon_potion_extra_roll`, `icon_potion_coin`.
+- Charm icons by type (Attack, Guard, Speed, Fortune, Fury): `icon_charm_attack` .. `icon_charm_fury`.
+- Rarity chip glyphs, 64x64, `rarity_r1..r8`: a distinct SHAPE per rarity (circle, rounded square,
+  diamond, hexagon, star, flame, crown, prismatic star) so rarity never relies on colour alone.
+- Mutation overlays, 512x712 transparent, drawn over the card art: `art/cards/mutation_shiny.png`,
+  `mutation_golden.png`, `mutation_rainbow.png`, `mutation_void.png`, `mutation_celestial.png`
+  (Shiny = sparkle flecks, Golden = gold sheen, Rainbow = prismatic wash, Void = dark swirl with violet
+  edge, Celestial = star field and soft halo). Must not hide the face (keep the centre third light).
+- Card back: `art/ui/card_back.png`, 256x356 minimum (deliver 512x712), plus `card_back_season1.png`.
+
+## 3c. Per-world art kit (5 worlds: w1 Hidden Leaf, w2 Saiyan Skies, w3 sea / pirate, w4 curse city, w5 Soul Society)
+
+In `art/worlds/w<N>/`; used by the world's battle stage (world director), the game-ui world map and the
+banner portals:
+
+| File | Size | Content |
+|---|---|---|
+| `backdrop.png` | 1920x1080 | Key backdrop, no characters, calm centre, horizon in the upper third. |
+| `act_1.png` .. `act_6.png` | 512x288 | Act thumbnails; act 6 shows the boss silhouette. |
+| `boss_banner.png` | 1024x256 | Boss portrait banner, the boss-exclusive card character in a menacing pose (generated from its reference like any card). |
+| `banner_pack.png` | 512x768 | Standard World Pack banner art. |
+| `token.png` | 256x256 | World token icon (same as `icon_token_w<N>` in art/ui; one source, copy not duplicate in the lock). |
+
+World themes come from ROSTER.md (arena names). Backdrops must not copy a single frame of the show; they
+are original scenes in the same mood.
+
 ## 4. Game icon, thumbnails and store imagery
 
 Folder `art/store/`:
@@ -107,11 +140,27 @@ Folder `art/store/`:
 - Open Cloud has no endpoint for the game icon and thumbnails. They are an owner step in the Creator
   Dashboard; leave the finished files in `art/store/` and list them in `docs/BUILD-LOG.md`.
 
-## 5. Done means
+## 5. Verification (what the playtester can measure)
+
+- Each frame: opaque-pixel coverage of `base.png` + `ornament.png` strictly increases from r1 to r8; ring
+  width is 12 px at r1 and 24 px at r8 (linear steps are fine). The builder writes these numbers in
+  `art/ART-LOG.md` per rarity.
+- Every PNG decodes, has the exact size in this spec, and is under 5 MB (the builder writes the check
+  result in ART-LOG.md).
+- For each batch of cards the builder writes one contact sheet per batch `art/previews/batch_<n>.png`
+  with columns reference | art | icon | full, rows = cards. Previews are never uploaded and never
+  committed (the whole `art/previews/` folder stays out of git). The owner's references stay on disk in
+  `art/references/` only.
+- Roblox moderation may reject recognisable characters. A rejected upload: ART-LOG row with
+  `state: rejected`, the card is re-drawn (different pose, less literal likeness, same character
+  identity), re-uploaded, and `assets.lock.json` never holds an id for the rejected file. The UI falls
+  back to the placeholder or a gradient when a card's art id is missing, so builds never wait on uploads.
+
+## 6. Done means
 
 - Every file above exists at the exact size, is under 5 MB, and loads (decode check).
-- Each rarity at 120 px wide reads as a clear step up from the one before it.
-- Every roster card has art, icon and flattened full image (placeholder or real) and a frame layer set.
+- The frame measurements in section 5 hold, and each rarity at 120 px wide is a clear step up.
+- Every roster card (72) has art, icon and flattened full image (placeholder or real) and a frame layer set.
 - `art/ART-LOG.md` has a row per file; `assets.lock.json` and `src/shared/AssetIds.luau` agree
   (every uploaded path has an id).
 - Screenshots of the finished card, frame and UI sheets are saved for review.
