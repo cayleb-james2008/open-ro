@@ -34,7 +34,7 @@ export function useShip(enabled: boolean) {
 
   const refresh = useCallback(async () => {
     const r = await call<{ roots: string[]; active: string | null; projects: Summary[] }>("/api/projects");
-    if (r.status === 404) { setAvailable(false); setLoaded(true); return; }
+    if (r.httpStatus === 404) { setAvailable(false); setLoaded(true); return; }
     if (!r.ok) { setError(r.error || "Could not read your projects."); setLoaded(true); return; }
     setError("");
     setProjects(r.projects || []);

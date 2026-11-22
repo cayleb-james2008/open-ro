@@ -7,7 +7,7 @@ export type ChatList = { chats: Chat[]; active: string; can_undo: boolean; can_r
 export type PartPreset = "block" | "sphere" | "cylinder" | "spawn" | "jump_pad" | "kill_brick" | "decal_board";
 export type WorkspaceMode = "studio_mcp" | "plugin" | "local_place" | "browser_place" | "disconnected";
 
-export type ComposerMode = "agent" | "plan" | "ask";
+export type ComposerMode = "swarm" | "agent" | "plan" | "ask";
 export type ReasoningLevel = "low" | "medium" | "high";
 
 export type DiffLineKind = "context" | "add" | "remove";
@@ -188,8 +188,13 @@ export type ConfigSnap = {
   web_engine?: boolean;
   web_mode?: "browser" | "byok" | "local_server";
   local_server_url?: string;
-  image_provider?: "auto" | "gemini" | "openai";
+  image_provider?: "chatgpt" | "auto" | "gemini" | "openai";
   image_model?: string;
+  secrets_dir_shared?: boolean;
+  auto_install_plugin?: boolean;
+  has_opencloud_key?: boolean;
+  opencloud_key_masked?: string | null;
+  opencloud_creator?: { userId?: string | number; groupId?: string | number };
   has_gemini_api_key?: boolean;
   gemini_api_key_masked?: string | null;
   has_openai_image_api_key?: boolean;
@@ -848,9 +853,20 @@ export function normalizeProposalList(raw: unknown): PendingProposal[] {
 
 export type StudioPlayMode = "edit" | "play" | "server";
 
+export type RunningStudioInfo = {
+  studio_id: string;
+  place_name?: string;
+  datamodel_type?: string;
+};
+
 export type StudioEmbedStatus = {
   running: boolean;
   state: "idle" | "launching" | "running" | "connected" | "stopped" | "error" | "unsupported";
+  phase?: "idle" | "launching" | "awaiting_signin" | "connected" | "error";
+  studio_running?: boolean;
+  studio_display?: string | null;
+  already_logged_in?: boolean;
+  running_studios?: RunningStudioInfo[];
   platform?: string;
   display?: string | null;
   studio_id?: string | null;
@@ -1061,9 +1077,33 @@ export function normalizeEmbedStatus(raw: unknown): StudioEmbedStatus {
       : typeof o.error === "string" && o.error
         ? o.error
         : null;
+  const rawPhase = typeof o.phase === "string" ? o.phase.toLowerCase() : "";
+  const phase: StudioEmbedStatus["phase"] =
+    rawPhase === "launching" ||
+    rawPhase === "awaiting_signin" ||
+    rawPhase === "connected" ||
+    rawPhase === "error" ||
+    rawPhase === "idle"
+      ? rawPhase
+      : undefined;
+  const runningStudios: RunningStudioInfo[] = Array.isArray(o.running_studios)
+    ? o.running_studios
+        .filter((r): r is Record<string, unknown> => Boolean(r && typeof r === "object"))
+        .map((r) => ({
+          studio_id: typeof r.studio_id === "string" ? r.studio_id : "",
+          place_name: typeof r.place_name === "string" ? r.place_name : undefined,
+          datamodel_type: typeof r.datamodel_type === "string" ? r.datamodel_type : undefined,
+        }))
+        .filter((r) => r.studio_id.length > 0)
+    : [];
   return {
-    running: o.running === true || state === "running" || state === "connected",
+    running: o.running === true || state === "running" || state === "connected" || phase === "awaiting_signin",
     state,
+    phase,
+    studio_running: o.studio_running === true,
+    studio_display: typeof o.studio_display === "string" ? o.studio_display : null,
+    already_logged_in: o.already_logged_in === true,
+    running_studios: runningStudios,
     platform: typeof o.platform === "string" ? o.platform : undefined,
     display: typeof o.display === "string" ? o.display : null,
     studio_id: typeof o.studio_id === "string" ? o.studio_id : null,

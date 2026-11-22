@@ -7,15 +7,17 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
+import * as Popover from "@radix-ui/react-popover";
 import {
+  Box,
   Camera,
   Keyboard,
   Monitor,
+  MoreHorizontal,
   Play,
   Plug,
   RefreshCw,
   Rocket,
-  Server,
   Square,
   Unplug,
 } from "lucide-react";
@@ -41,6 +43,7 @@ export function EmbeddedStudioPanel({
   frameSeq,
   actions,
   onLaunchEmbed,
+  onAttachEmbed,
   onStopEmbed,
   onRefreshEmbedStatus,
   onCaptureFrame,
@@ -49,6 +52,7 @@ export function EmbeddedStudioPanel({
   onSendMouseInput,
   onSendKeyboardInput,
   onInvokeStudioTool,
+  onOpen3DPreview,
 }: {
   studioMode: StudioMode;
   embedStatus: StudioEmbedStatus;
@@ -56,6 +60,7 @@ export function EmbeddedStudioPanel({
   frameSeq: number;
   actions: StudioActionEvent[];
   onLaunchEmbed?: (command?: string) => Promise<void> | void;
+  onAttachEmbed?: () => Promise<void> | void;
   onStopEmbed?: () => Promise<void> | void;
   onRefreshEmbedStatus?: () => Promise<void> | void;
   onCaptureFrame?: () => Promise<void> | void;
@@ -64,6 +69,7 @@ export function EmbeddedStudioPanel({
   onSendMouseInput?: (payload: StudioMouseInputPayload) => Promise<void> | void;
   onSendKeyboardInput?: (payload: StudioKeyboardInputPayload) => Promise<void> | void;
   onInvokeStudioTool?: (tool: StudioToolName, args: Record<string, unknown>) => Promise<StudioToolResult>;
+  onOpen3DPreview?: () => void;
 }) {
   const viewportBoxRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
@@ -180,10 +186,14 @@ export function EmbeddedStudioPanel({
   };
 
   const handleLaunch = async () => {
-    if (!onLaunchEmbed || embedBusy) return;
+    if (embedBusy) return;
     setEmbedBusy(true);
     try {
-      await onLaunchEmbed(mcpCmdDraft.trim() || undefined);
+      if ((embedStatus.already_logged_in || embedStatus.studio_running) && onAttachEmbed) {
+        await onAttachEmbed();
+      } else if (onLaunchEmbed) {
+        await onLaunchEmbed(mcpCmdDraft.trim() || undefined);
+      }
     } finally {
       setEmbedBusy(false);
     }
@@ -245,10 +255,11 @@ export function EmbeddedStudioPanel({
   const showMjpeg = embedStatus.running && streamKind === "mjpeg" && !mjpegFailed;
   const showSnapshot = !showMjpeg && (hasLiveFrame || embedStatus.running) && !frameFailed;
   const playLabel: Record<StudioPlayMode, string> = { edit: "Edit", play: "Playing", server: "Server" };
+  const awaitingSignIn = embedStatus.phase === "awaiting_signin";
 
   return (
     <div data-embedded-studio-panel className="flex h-full min-h-0 flex-col bg-surface">
-      {/* Compact Single-Row Studio Transport Bar */}
+      {/* Slim Studio Bar */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline bg-board/55 px-3 py-1.5">
         <div className="flex flex-wrap items-center gap-1.5">
           <Pill
@@ -262,13 +273,15 @@ export function EmbeddedStudioPanel({
           >
             <PillIndicator variant={embedStatus.running || studioMode === "live_mcp" ? "success" : "info"} pulse={embedStatus.running} />
             <span>
-              {embedStatus.running
-                ? `Embedded Live${embedStatus.display ? ` (${embedStatus.display})` : ""}`
-                : studioMode === "live_mcp"
-                  ? "Studio MCP Connected"
-                  : studioMode === "browser_place"
-                    ? "Browser Studio"
-                    : "Studio Standby"}
+              {awaitingSignIn
+                ? "Sign in"
+                : embedStatus.running
+                  ? "Live"
+                  : studioMode === "live_mcp"
+                    ? "Connected"
+                    : studioMode === "browser_place"
+                      ? "Browser"
+                      : "Standby"}
             </span>
           </Pill>
 
@@ -281,116 +294,137 @@ export function EmbeddedStudioPanel({
               {lastPointer.action} ({lastPointer.x},{lastPointer.y})
             </span>
           )}
-          {lastKey && <span className="hidden font-mono text-xs text-ink-3 xl:inline">Key {lastKey}</span>}
+          {lastKey && (
+            <span className="hidden text-xs text-ink-3 xl:inline">
+              Key <span className="font-mono">{lastKey}</span>
+            </span>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
-          {studioMode !== "browser_place" && embedStatus.running && (
-              <Button
-                variant="outline"
-                size="xs"
-                disabled={embedBusy}
-                aria-label="Stop embedded Roblox Studio"
-                onClick={() => void handleStop()}
-                className="bg-surface max-md:min-h-11"
-              >
-                <Square className="size-3.5" strokeWidth={1.5} aria-hidden />
-                <span>{embedBusy ? "Stopping…" : "Stop"}</span>
-              </Button>
-          )}
-
           {onInvokeStudioTool && (
-            <>
+            embedStatus.play_mode === "play" || embedStatus.play_mode === "server" ? (
               <Button
-                variant={embedStatus.play_mode === "play" ? "default" : "outline"}
+                variant="default"
                 size="xs"
                 disabled={playBusy}
-                aria-label="Start Solo Play in Studio"
-                onClick={() => void handlePlayMode("start_play")}
-                className={embedStatus.play_mode === "play" ? "max-md:min-h-11" : "bg-surface max-md:min-h-11"}
-              >
-                <Play className="size-3" strokeWidth={1.5} aria-hidden />
-                <span>Solo Play</span>
-              </Button>
-              <Button
-                variant={embedStatus.play_mode === "server" ? "default" : "outline"}
-                size="xs"
-                disabled={playBusy}
-                aria-label="Run Server in Studio"
-                onClick={() => void handlePlayMode("run_server")}
-                className={embedStatus.play_mode === "server" ? "max-md:min-h-11" : "bg-surface max-md:min-h-11"}
-              >
-                <Server className="size-3" strokeWidth={1.5} aria-hidden />
-                <span>Server</span>
-              </Button>
-              <Button
-                variant="outline"
-                size="xs"
-                disabled={playBusy}
-                aria-label="Stop Studio simulation"
+                aria-label="Stop playtest"
                 onClick={() => void handlePlayMode("stop")}
-                className="bg-surface max-md:min-h-11 max-md:min-w-11"
+                className="max-md:min-h-11"
               >
                 <Square className="size-3" strokeWidth={1.5} aria-hidden />
                 <span>Stop</span>
               </Button>
-            </>
+            ) : (
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={playBusy}
+                aria-label="Play in Studio"
+                onClick={() => void handlePlayMode("start_play")}
+                className="bg-surface max-md:min-h-11"
+              >
+                <Play className="size-3" strokeWidth={1.5} aria-hidden />
+                <span>Play</span>
+              </Button>
+            )
           )}
 
-          <Button
-            variant="outline"
-            size="xs"
-            disabled={captureBusy}
-            onClick={() => void handleCapture()}
-            aria-label="Capture live Studio frame"
-            className="bg-surface max-md:min-h-11"
-          >
-            <Camera className="size-3" strokeWidth={1.5} aria-hidden />
-            <span>{captureBusy ? "Capturing…" : "Capture"}</span>
-          </Button>
-
-          {liveStreamReady && (
+          {studioMode !== "browser_place" && embedStatus.running && (
             <Button
-              variant={keyboardCapture ? "default" : "outline"}
+              variant="outline"
               size="xs"
-              aria-pressed={keyboardCapture}
-              aria-label="Toggle keyboard capture for Embedded Studio"
-              onClick={() => {
-                setKeyboardCapture((v) => !v);
-                viewportBoxRef.current?.focus();
-              }}
-              className={keyboardCapture ? "max-md:min-h-11" : "bg-surface max-md:min-h-11"}
-            >
-              <Keyboard className="size-3" strokeWidth={1.5} aria-hidden />
-              <span>{keyboardCapture ? "Keys On (Esc)" : "Keyboard Focus"}</span>
-            </Button>
-          )}
-
-          {(onConnectMcp || onDisconnectMcp) && (
-            <Button
-              variant={mcpOpen || studioMode === "live_mcp" ? "secondary" : "outline"}
-              size="xs"
-              aria-pressed={mcpOpen}
-              aria-label="Toggle Studio MCP bridge settings"
-              onClick={() => setMcpOpen((v) => !v)}
+              disabled={embedBusy}
+              aria-label="Detach Studio"
+              onClick={() => void handleStop()}
               className="bg-surface max-md:min-h-11"
             >
-              <Plug className="size-3" strokeWidth={1.5} aria-hidden />
-              <span>MCP Bridge</span>
+              <Square className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>{embedBusy ? "Stopping…" : "Stop"}</span>
             </Button>
           )}
 
-          {onRefreshEmbedStatus && (
+          {onOpen3DPreview && (
             <Button
               variant="ghost"
-              size="icon-xs"
-              aria-label="Refresh embedded Studio status"
-              onClick={() => void onRefreshEmbedStatus()}
-              className="text-ink-2 hover:text-ink max-md:size-11 max-md:min-w-11 max-md:shrink-0"
+              size="xs"
+              onClick={onOpen3DPreview}
+              aria-label="Open 3D Preview"
+              className="text-ink-2 hover:text-ink max-md:min-h-11"
             >
-              <RefreshCw className="size-3" strokeWidth={1.5} aria-hidden />
+              <Box className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>3D Preview</span>
             </Button>
           )}
+
+          <Popover.Root>
+            <Popover.Trigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Studio controls"
+                className="shrink-0 text-ink-2 hover:text-ink max-md:size-11"
+              >
+                <MoreHorizontal className="size-4" strokeWidth={1.5} aria-hidden />
+              </Button>
+            </Popover.Trigger>
+            <Popover.Portal>
+              <Popover.Content
+                align="end"
+                sideOffset={6}
+                className="z-50 flex w-48 flex-col gap-1 rounded-card border border-hairline bg-surface p-1.5 shadow-lift"
+              >
+                {onCaptureFrame && (
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    disabled={captureBusy}
+                    onClick={() => void handleCapture()}
+                    className="w-full justify-start gap-2"
+                  >
+                    <Camera className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    <span>{captureBusy ? "Capturing…" : "Capture frame"}</span>
+                  </Button>
+                )}
+                {liveStreamReady && (
+                  <Button
+                    variant={keyboardCapture ? "secondary" : "ghost"}
+                    size="xs"
+                    onClick={() => {
+                      setKeyboardCapture((v) => !v);
+                      viewportBoxRef.current?.focus();
+                    }}
+                    className="w-full justify-start gap-2"
+                  >
+                    <Keyboard className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    <span>{keyboardCapture ? "Keys On (Esc)" : "Keyboard Focus"}</span>
+                  </Button>
+                )}
+                {(onConnectMcp || onDisconnectMcp) && (
+                  <Button
+                    variant={mcpOpen ? "secondary" : "ghost"}
+                    size="xs"
+                    onClick={() => setMcpOpen((v) => !v)}
+                    className="w-full justify-start gap-2"
+                  >
+                    <Plug className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    <span>Studio Bridge</span>
+                  </Button>
+                )}
+                {onRefreshEmbedStatus && (
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => void onRefreshEmbedStatus()}
+                    className="w-full justify-start gap-2"
+                  >
+                    <RefreshCw className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    <span>Refresh status</span>
+                  </Button>
+                )}
+              </Popover.Content>
+            </Popover.Portal>
+          </Popover.Root>
         </div>
       </div>
 
@@ -455,15 +489,20 @@ export function EmbeddedStudioPanel({
             onContextMenu={(e) => e.preventDefault()}
             onWheel={handleViewportWheel}
             onKeyDown={handleViewportKeyDown}
-            className={`relative flex h-full w-full min-h-[240px] flex-col overflow-hidden rounded-card border bg-surface outline-none transition-[border-color] duration-(--dur-press) ease-(--ease-house) ${
+            className={`relative flex h-full w-full min-h-[240px] flex-col overflow-hidden rounded-card border bg-surface outline-none motion-safe:transition-[border-color] duration-(--dur-press) ease-(--ease-house) ${
               keyboardCapture ? "border-blue ring-2 ring-blue/30" : "border-hairline"
             }`}
           >
+            {awaitingSignIn && (
+              <div className="flex items-center justify-center border-b border-hairline bg-pill-warn-bg px-3 py-1.5 text-xs font-medium text-pill-warn-fg">
+                Sign in above: OpenRO connects automatically
+              </div>
+            )}
             <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-board/50">
               {showMjpeg ? (
                 <img
                   src={embedStatus.stream_url || "/api/studio/stream.mjpg"}
-                  alt="Live embedded Roblox Studio MJPEG viewport"
+                  alt="Live Roblox Studio viewport"
                   draggable={false}
                   onLoad={() => setMjpegLoaded(true)}
                   onError={() => setMjpegFailed(true)}
@@ -479,10 +518,7 @@ export function EmbeddedStudioPanel({
                 />
               ) : (
                 <div className="flex flex-col items-center justify-center gap-2 px-6 py-12 text-center text-sm text-ink-2">
-                  <p className="font-medium text-ink">Waiting for first live frame from Roblox Studio…</p>
-                  <p className="max-w-md text-xs text-ink-2">
-                    Click Capture above or run any Studio action to stream live frames directly inside OpenRO.
-                  </p>
+                  <p className="font-medium text-ink">Waiting for Studio frame…</p>
                 </div>
               )}
             </div>
@@ -492,36 +528,52 @@ export function EmbeddedStudioPanel({
                 <span className="truncate font-mono text-ink">
                   {actions[actions.length - 1].summary}
                 </span>
-                <span className="font-mono tabular-nums text-ink-2">seq #{actions[actions.length - 1].seq}</span>
+                <span className="font-mono tabular-nums text-ink-2">#{actions[actions.length - 1].seq}</span>
               </div>
             )}
           </div>
         ) : (
           <div
             data-embedded-studio-notice
-            className="flex max-w-lg flex-col items-center gap-3 rounded-card border border-hairline bg-surface p-6 text-center"
+            className="flex max-w-md flex-col items-center gap-3 rounded-card border border-hairline bg-surface p-6 text-center"
           >
-            <span className="grid size-11 place-items-center rounded-card border border-hairline bg-board text-icon">
+            <span className="grid size-11 place-items-center rounded-sm border border-hairline bg-board text-icon">
               <Monitor className="size-5" strokeWidth={1.5} aria-hidden />
             </span>
             <div className="flex flex-col gap-1">
               <h3 className="text-sm font-medium text-ink">
                 {studioMode === "browser_place"
-                  ? "Live desktop Roblox Studio embedding runs in OpenRO Desktop"
-                  : "Embedded Roblox Studio is ready on demand"}
+                  ? "Browser mode"
+                  : embedStatus.already_logged_in
+                    ? "Found your logged-in Roblox Studio"
+                    : "Connect Roblox Studio"}
               </h3>
               <p className="text-xs leading-relaxed text-ink-2">
                 {studioMode === "browser_place"
-                  ? "In this browser build, use Studio 3D, Code & Diff (with reviewable unified diffs), Market Taste, and all 13 Studio Tools in the bottom drawer live against your in-browser Place. Download OpenRO v0.10.0 desktop to embed live Roblox Studio directly."
-                  : "Click Launch Studio above to start an isolated Roblox Studio viewport with 12 FPS live streaming and mouse/keyboard pass-through, or connect an open Roblox Studio window via the Companion Plugin or MCP Bridge."}
+                  ? "Use 3D Preview, Code, or Ship in browser mode."
+                  : embedStatus.already_logged_in
+                    ? `${embedStatus.running_studios?.[0]?.place_name || "Your open Studio session"} is ready.`
+                    : "Already have Studio open? OpenRO grabs it automatically."}
               </p>
             </div>
-            {studioMode !== "browser_place" && onLaunchEmbed && (
-              <Button variant="default" size="sm" disabled={embedBusy} onClick={() => void handleLaunch()} className="max-md:min-h-11">
-                <Rocket className="size-3.5" strokeWidth={1.5} aria-hidden />
-                {embedBusy ? "Launching Studio…" : "Launch & Embed Studio"}
-              </Button>
-            )}
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              {studioMode !== "browser_place" && (onAttachEmbed || onLaunchEmbed) && (
+                <Button variant="default" size="sm" disabled={embedBusy} onClick={() => void handleLaunch()} className="max-md:min-h-11">
+                  <Rocket className="size-3.5" strokeWidth={1.5} aria-hidden />
+                  {embedBusy
+                    ? "Connecting…"
+                    : embedStatus.already_logged_in || embedStatus.studio_running
+                      ? "Grab & Connect"
+                      : "Open My Roblox Studio"}
+                </Button>
+              )}
+              {onOpen3DPreview && (
+                <Button variant="outline" size="sm" onClick={onOpen3DPreview} className="max-md:min-h-11">
+                  <Box className="size-3.5" strokeWidth={1.5} aria-hidden />
+                  3D Preview
+                </Button>
+              )}
+            </div>
             {embedStatus.error && (
               <p className="w-full rounded-sm border border-hairline bg-board px-2.5 py-1.5 font-mono text-xs text-pill-pro-fg">
                 {embedStatus.error}
