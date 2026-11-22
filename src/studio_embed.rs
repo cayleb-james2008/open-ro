@@ -771,9 +771,18 @@ pub fn launch_embedded_studio_with_hub(
         // 2. Spawn Flatpak Vinegar on DISPLAY=<display> (opening optional .rbxlx place_file) if not already running.
         if config.launch_studio_process && !is_vinegar_flatpak_running() {
             let mut cmd = Command::new("flatpak");
-            cmd.args(["run", "org.vinegarhq.Vinegar"]);
+            cmd.arg("run");
             if let Some(pf) = config.place_file.as_ref() {
+                if let Some(parent) = pf.parent() {
+                    cmd.arg(format!("--filesystem={}", parent.display()));
+                }
+                cmd.arg("--file-forwarding");
+                cmd.arg("org.vinegarhq.Vinegar");
+                cmd.arg("@@");
                 cmd.arg(pf);
+                cmd.arg("@@");
+            } else {
+                cmd.arg("org.vinegarhq.Vinegar");
             }
             cmd.env("DISPLAY", &display)
                 .stdin(Stdio::null())
@@ -933,6 +942,17 @@ pub fn stop_embedded_studio(manager: &mut StudioEmbedManager) -> StudioEmbedStat
     if let Some(mut child) = manager.studio_child.take() {
         let _ = child.kill();
         let _ = child.wait();
+        #[cfg(unix)]
+        if find_on_path("flatpak").is_some() {
+            // `flatpak run` spawns a bubblewrap sandbox that can outlive the wrapper PID;
+            // only kill the Vinegar sandbox we launched (never touching Sober or host apps).
+            let _ = Command::new("flatpak")
+                .args(["kill", "org.vinegarhq.Vinegar"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
     }
     if let Some(mut child) = manager.xvfb_child.take() {
         let _ = child.kill();
