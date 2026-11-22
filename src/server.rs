@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -92,6 +92,8 @@ pub struct Shared {
     pub studio_stream: Arc<StudioStreamHub>,
     /// Cached lightweight status so concurrent polling never stalls behind an active build.
     status_cache: Mutex<StatusInfo>,
+    /// Cached latest place tree so `GET /api/place-tree` never blocks during long `/api/chat` runs (#31).
+    cached_place_tree: Mutex<Option<Value>>,
     /// Game art assets metadata & in-memory blob fallback (`data_dir/game-assets/`).
     pub game_assets: Mutex<GameAssetsIndex>,
     /// Directly embedded Roblox Studio host lifecycle manager (`src/studio_embed.rs`).
@@ -181,6 +183,7 @@ impl Shared {
             events,
             studio_stream,
             status_cache: Mutex::new(initial_status),
+            cached_place_tree: Mutex::new(None),
             game_assets: Mutex::new(GameAssetsIndex::default()),
             studio_embed: Mutex::new(crate::studio_embed::StudioEmbedManager::new()),
             library: Mutex::new(library),
@@ -257,6 +260,7 @@ impl Shared {
             events,
             studio_stream,
             status_cache: Mutex::new(initial_status),
+            cached_place_tree: Mutex::new(None),
             game_assets: Mutex::new(GameAssetsIndex::default()),
             studio_embed: Mutex::new(crate::studio_embed::StudioEmbedManager::new()),
             library: Mutex::new(library),
@@ -1244,7 +1248,10 @@ fn handle(
             handle_studio_embed_status(&mut stream, shared);
         }
         ("POST", "/api/studio/embed/launch") => {
-            handle_studio_embed_launch(&mut stream, shared, &req);
+            handle_studio_embed_launch(&mut stream, shared, &req, false);
+        }
+        ("POST", "/api/studio/embed/attach") => {
+            handle_studio_embed_launch(&mut stream, shared, &req, true);
         }
         ("POST", "/api/studio/launch-and-continue") => {
             handle_studio_launch_and_continue(&mut stream, shared, &req);
@@ -1676,21 +1683,47 @@ fn handle(
             }
         }
         ("GET", "/api/place-tree") => {
-            let mut guard = shared.agent.lock().unwrap();
-            match guard.as_mut() {
-                Some(agent) => match agent.place_tree() {
-                    Ok(tree) => respond_json(&mut stream, "200 OK", &tree),
-                    Err(e) => respond_json(
+            match shared.agent.try_lock() {
+                Ok(mut guard) => match guard.as_mut() {
+                    Some(agent) => match agent.place_tree() {
+                        Ok(tree) => {
+                            *shared.cached_place_tree.lock().unwrap() = Some(tree.clone());
+                            respond_json(&mut stream, "200 OK", &tree);
+                        }
+                        Err(e) => respond_json(
+                            &mut stream,
+                            "502 Bad Gateway",
+                            &json!({ "ok": false, "error": e }),
+                        ),
+                    },
+                    None => respond_json(
                         &mut stream,
-                        "502 Bad Gateway",
-                        &json!({ "ok": false, "error": e }),
+                        "503 Service Unavailable",
+                        &json!({ "ok": false, "error": "Studio not connected" }),
                     ),
                 },
-                None => respond_json(
-                    &mut stream,
-                    "503 Service Unavailable",
-                    &json!({ "ok": false, "error": "Studio not connected" }),
-                ),
+                Err(_) => {
+                    // Agent mutex is held by an active build/chat turn (#31): return cached
+                    // or on-disk LocalPlace tree immediately instead of blocking/timing out.
+                    let mut tree = shared
+                        .cached_place_tree
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .or_else(|| {
+                            shared.data_dir.as_ref().and_then(|dir| {
+                                dir.join("place.json")
+                                    .is_file()
+                                    .then(|| LocalPlace::open(dir.clone(), shared.game_name.clone()).tree_json())
+                            })
+                        })
+                        .unwrap_or_else(|| json!({ "scripts": {}, "instances": {} }));
+                    if let Some(o) = tree.as_object_mut() {
+                        o.insert("cached".to_string(), json!(true));
+                        o.insert("busy".to_string(), json!(true));
+                    }
+                    respond_json(&mut stream, "200 OK", &tree);
+                }
             }
         }
         ("POST", "/api/chat") => {
@@ -3272,33 +3305,49 @@ fn status_info(shared: &Shared) -> StatusInfo {
 
 fn config_snapshot(shared: &Shared) -> Value {
     let cfg = shared.config.lock().unwrap().clone();
-    let mut guard = shared.agent.lock().unwrap();
     let (base_url, model_id, has_key, masked, configured, is_loopback, studio_connected, active_backend, rbxlx_path) =
-        match guard.as_mut() {
-            Some(agent) => (
-                agent.model.base_url().to_string(),
-                agent.model.model_id().to_string(),
-                agent.model.has_api_key(),
-                agent.model.api_key_masked(),
-                agent.model.is_configured(),
-                agent.model.is_loopback(),
-                agent.studio_connected(),
-                agent.backend_mode(),
-                agent.rbxlx_path().map(|p| p.display().to_string()),
-            ),
-            None => (
-                cfg.base_url.clone().unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
-                cfg.model_id.clone().unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
-                cfg.api_key.as_ref().is_some_and(|k| !k.trim().is_empty()),
-                None,
-                false,
-                false,
-                false,
-                "disconnected",
-                None,
-            ),
+        match shared.agent.try_lock() {
+            Ok(mut guard) => match guard.as_mut() {
+                Some(agent) => (
+                    agent.model.base_url().to_string(),
+                    agent.model.model_id().to_string(),
+                    agent.model.has_api_key(),
+                    agent.model.api_key_masked(),
+                    agent.model.is_configured(),
+                    agent.model.is_loopback(),
+                    agent.studio_connected(),
+                    agent.backend_mode(),
+                    agent.rbxlx_path().map(|p| p.display().to_string()),
+                ),
+                None => (
+                    cfg.base_url.clone().unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
+                    cfg.model_id.clone().unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
+                    cfg.api_key.as_ref().is_some_and(|k| !k.trim().is_empty()),
+                    None,
+                    false,
+                    false,
+                    false,
+                    "disconnected",
+                    None,
+                ),
+            },
+            Err(_) => {
+                // Agent busy (#31): return cached status + persisted config immediately.
+                let st = shared.status_cache.lock().unwrap().clone();
+                let has = cfg.api_key.as_ref().is_some_and(|k| !k.trim().is_empty());
+                (
+                    st.model_base_url,
+                    st.model_id,
+                    has,
+                    cfg.api_key.as_deref().map(crate::secrets::mask),
+                    st.model_configured,
+                    st.is_loopback_model,
+                    st.studio_connected,
+                    st.workspace_mode,
+                    shared.data_dir.as_ref().map(|d| d.join("game.rbxlx").display().to_string()),
+                )
+            }
         };
-    drop(guard);
     let vinegar = McpClient::detect_vinegar_studio_mcp();
     let gateways: Vec<Value> = probe_local_gateways()
         .into_iter()
@@ -3388,7 +3437,38 @@ fn agy_models_json() -> Vec<Value> {
         .collect()
 }
 
+const VALID_CONFIG_KEYS: &[&str] = &[
+    "provider",
+    "base_url",
+    "model_id",
+    "api_key",
+    "clear_api_key",
+    "mcp_command",
+    "workspace_mode",
+    "active_backend",
+    "gemini_api_key",
+    "clear_gemini_api_key",
+    "openai_image_api_key",
+    "clear_openai_image_api_key",
+    "image_provider",
+    "auto_install_plugin",
+    "opencloud_api_key",
+    "clear_opencloud_api_key",
+    "opencloud_creator",
+    "opencloud_user_id",
+    "opencloud_group_id",
+];
+
 fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
+    if let Some(obj) = body.as_object() {
+        for k in obj.keys() {
+            if !VALID_CONFIG_KEYS.contains(&k.as_str()) {
+                return Err(format!(
+                    "unknown setting key '{k}' (use workspace_mode, provider, model_id, base_url, mcp_command, image_provider, or auto_install_plugin)"
+                ));
+            }
+        }
+    }
     let mut cfg = shared.config.lock().unwrap().clone();
     let (active_base, active_model) = {
         let guard = shared.agent.lock().unwrap();
@@ -3483,9 +3563,14 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
         };
     }
 
-    if let Some(mode) = body.get("workspace_mode").and_then(|v| v.as_str()) {
+    if let Some(mode) = body
+        .get("workspace_mode")
+        .or_else(|| body.get("active_backend"))
+        .and_then(|v| v.as_str())
+    {
         match mode {
             "auto" | "local_place" | "studio_mcp" => cfg.workspace_mode = Some(mode.to_string()),
+            "live_mcp" => cfg.workspace_mode = Some("studio_mcp".to_string()),
             other => return Err(format!("invalid workspace_mode '{other}' (expected auto, local_place, or studio_mcp)")),
         }
     }
@@ -4072,6 +4157,58 @@ fn handle_studio_input_mouse(stream: &mut TcpStream, shared: &Shared, req: &Requ
         return;
     }
 
+    // While Embedded Studio is streaming X11 on the Sign-In / QR screen (before MCP attaches),
+    // forward clicks/moves directly to the X11 display so users can sign in inside OpenRO (#35).
+    let x11_target = shared.studio_embed.try_lock().ok().and_then(|g| {
+        let st = g.state();
+        if st.x11grab_active && !st.mcp_connected {
+            st.display.map(|d| (d, st.resolution))
+        } else {
+            None
+        }
+    });
+    if let Some((disp, res)) = x11_target {
+        let button = body
+            .get("button")
+            .or_else(|| body.get("mouse_button"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("left");
+        let delta_y = body
+            .get("delta_y")
+            .or_else(|| body.get("deltaY"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        match crate::studio_embed::send_x11_mouse(&disp, res, &action, x, y, button, delta_y) {
+            Ok(result) => {
+                if let Ok(mut mgr) = shared.studio_embed.try_lock() {
+                    mgr.record_input(format!("x11 mouse {action} ({x:.2}, {y:.2})"));
+                }
+                let fseq = shared.studio_stream.latest_frame_seq();
+                respond_json(
+                    stream,
+                    "200 OK",
+                    &json!({
+                        "ok": true,
+                        "action": action,
+                        "transport": "x11",
+                        "studio_mode": "awaiting_signin",
+                        "frame_seq": fseq,
+                        "has_live_frame": fseq > 0,
+                        "result": result,
+                    }),
+                );
+            }
+            Err(e) => {
+                respond_json(
+                    stream,
+                    "502 Bad Gateway",
+                    &json!({ "ok": false, "transport": "x11", "error": e }),
+                );
+            }
+        }
+        return;
+    }
+
     let chat_id = shared.active_chat.lock().unwrap().clone();
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
@@ -4162,6 +4299,57 @@ fn handle_studio_input_keyboard(stream: &mut TcpStream, shared: &Shared, req: &R
         .filter(|s| !s.is_empty())
         .unwrap_or(if has_text { "type" } else { "press" })
         .to_string();
+
+    // While Embedded Studio is streaming X11 on the Sign-In / QR screen (before MCP attaches),
+    // forward keystrokes/text directly into the X11 display so users can sign in inside OpenRO (#35).
+    let x11_target = shared.studio_embed.try_lock().ok().and_then(|g| {
+        let st = g.state();
+        if st.x11grab_active && !st.mcp_connected {
+            st.display
+        } else {
+            None
+        }
+    });
+    if let Some(disp) = x11_target {
+        let key = body
+            .get("key")
+            .or_else(|| body.get("key_code"))
+            .or_else(|| body.get("code"))
+            .and_then(|v| v.as_str());
+        let text = body
+            .get("text")
+            .or_else(|| body.get("text_inputs"))
+            .and_then(|v| v.as_str());
+        match crate::studio_embed::send_x11_keyboard(&disp, &action, key, text) {
+            Ok(result) => {
+                if let Ok(mut mgr) = shared.studio_embed.try_lock() {
+                    mgr.record_input(format!("x11 keyboard {action}"));
+                }
+                let fseq = shared.studio_stream.latest_frame_seq();
+                respond_json(
+                    stream,
+                    "200 OK",
+                    &json!({
+                        "ok": true,
+                        "action": action,
+                        "transport": "x11",
+                        "studio_mode": "awaiting_signin",
+                        "frame_seq": fseq,
+                        "has_live_frame": fseq > 0,
+                        "result": result,
+                    }),
+                );
+            }
+            Err(e) => {
+                respond_json(
+                    stream,
+                    "502 Bad Gateway",
+                    &json!({ "ok": false, "transport": "x11", "error": e }),
+                );
+            }
+        }
+        return;
+    }
 
     let chat_id = shared.active_chat.lock().unwrap().clone();
     let mut guard = shared.agent.lock().unwrap();
@@ -4337,18 +4525,23 @@ fn invalidate_library_cache(shared: &Shared) {
 
 fn build_embed_status_payload(shared: &Shared) -> Value {
     let info = status_info(shared);
-    let detect = cached_embed_detection(shared);
     let frame_seq = shared.studio_stream.latest_frame_seq();
     let studio_mode = shared.studio_stream.studio_mode();
     let Some(state) = shared.studio_embed.try_lock().ok().map(|g| g.state()) else {
+        let detect = crate::studio_embed::detect_studio_environment_fast();
         return json!({
             "ok": true,
             "running": false,
             "embedded": false,
             "state": "launching",
             "phase": "starting",
+            "awaiting_signin": false,
             "studio_mode": studio_mode,
             "studio_connected": info.studio_connected,
+            "studio_running": detect.studio_running,
+            "studio_display": detect.studio_display,
+            "already_logged_in": detect.already_logged_in,
+            "running_studios": detect.running_studios,
             "vinegar_installed": detect.studio_installed,
             "xvfb_installed": detect.xvfb_available,
             "windows_studio_path": detect.studio_exe,
@@ -4359,6 +4552,13 @@ fn build_embed_status_payload(shared: &Shared) -> Value {
             "available_tools": crate::agent::OFFICIAL_STUDIO_MCP_TOOLS,
         });
     };
+    let detect = if state.phase == "connected" || state.phase == "awaiting_signin" {
+        // Active session or background auto-attacher already tracks MCP state;
+        // avoid spawning redundant passive MCP probes on every UI status poll.
+        crate::studio_embed::detect_studio_environment_fast()
+    } else {
+        cached_embed_detection(shared)
+    };
     let available_tools = match shared.agent.try_lock() {
         Ok(guard) => guard
             .as_ref()
@@ -4366,25 +4566,43 @@ fn build_embed_status_payload(shared: &Shared) -> Value {
             .unwrap_or_default(),
         Err(_) => state.tools.clone(),
     };
-    // `running` reflects an actively launched Embedded Roblox Studio session
-    // managed by `studio_embed`, NOT merely an external MCP bridge attached at boot.
-    // That keeps the fresh landing screen focused on Blueprints until the user
-    // launches Embedded Studio or builds a game.
     let running = state.embedded;
-    let simple_state = if running {
+    let awaiting_signin = state.phase == "awaiting_signin";
+    let simple_state = if awaiting_signin {
+        "awaiting_signin"
+    } else if running {
         "running"
     } else if state.last_error.is_some() {
         "error"
     } else {
         "idle"
     };
-    let mut obj = state.to_json();
+    let mut running_studios = detect.running_studios.clone();
+    if state.mcp_connected && running_studios.is_empty() {
+        if let Some(ref sid) = state.studio_id {
+            running_studios.push(json!({
+                "studio_id": sid,
+                "place_name": Value::Null,
+                "datamodel_type": state.datamodel_type,
+            }));
+        }
+    }
+    let already_logged_in = detect.already_logged_in || (state.mcp_connected && state.studio_id.is_some());
+    let studio_running = detect.studio_running || state.embedded;
+    let studio_display = detect.studio_display.clone().or_else(|| state.display.clone());
+
+    let mut obj = state.to_json_with_detection(&detect);
     if let Some(map) = obj.as_object_mut() {
         map.insert("ok".to_string(), json!(true));
         map.insert("running".to_string(), json!(running));
         map.insert("state".to_string(), json!(simple_state));
+        map.insert("awaiting_signin".to_string(), json!(awaiting_signin));
         map.insert("studio_mode".to_string(), json!(studio_mode));
         map.insert("studio_connected".to_string(), json!(info.studio_connected));
+        map.insert("studio_running".to_string(), json!(studio_running));
+        map.insert("studio_display".to_string(), json!(studio_display));
+        map.insert("already_logged_in".to_string(), json!(already_logged_in));
+        map.insert("running_studios".to_string(), json!(running_studios));
         map.insert("vinegar_installed".to_string(), json!(detect.studio_installed));
         map.insert("xvfb_installed".to_string(), json!(detect.xvfb_available));
         map.insert("windows_studio_path".to_string(), json!(detect.studio_exe));
@@ -4401,7 +4619,174 @@ fn handle_studio_embed_status(stream: &mut TcpStream, shared: &Shared) {
     respond_json(stream, "200 OK", &build_embed_status_payload(shared));
 }
 
-fn handle_studio_embed_launch(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+fn attach_embed_mcp_client(shared: &Shared, mcp: McpClient) -> (u64, Option<Value>, Vec<String>) {
+    let mut guard = shared.agent.lock().unwrap();
+    match guard.as_mut() {
+        Some(agent) => {
+            agent.studio = Some(PlaceBackend::Mcp(mcp));
+            agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
+            let mut ev = StudioActionInput::new(
+                StudioActionKind::CameraFocus,
+                "Embedded Roblox Studio live session attached",
+            );
+            ev.path = "Workspace.CurrentCamera".to_string();
+            ev.class_name = "Camera".to_string();
+            shared.studio_stream.record_action(ev);
+            let captured = agent.capture_studio_frame().ok();
+            let tools = agent.available_studio_tools();
+            *shared.status_cache.lock().unwrap() = extract_status_from_agent(Some(agent));
+            (
+                captured.as_ref().map(|f| f.seq).unwrap_or(0),
+                captured.as_ref().map(|f| f.meta_json()),
+                tools,
+            )
+        }
+        None => {
+            let model = ModelClient::new(
+                DEFAULT_BASE_URL.to_string(),
+                DEFAULT_MODEL_ID.to_string(),
+                None,
+            );
+            let mut agent = Agent::with_backend(model, Some(PlaceBackend::Mcp(mcp)));
+            if let Some(dir) = &shared.data_dir {
+                agent.set_changes_file(dir.join("changes.json"));
+            }
+            agent.attach_undo_sink(Arc::clone(&shared.undoable));
+            agent.attach_redo_sink(Arc::clone(&shared.redoable));
+            agent.attach_events(Arc::clone(&shared.events));
+            agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
+            let lib_prompt = shared.library.lock().unwrap().active_skill_prompt();
+            agent.set_library_prompt(lib_prompt);
+            let captured = agent.capture_studio_frame().ok();
+            let tools = agent.available_studio_tools();
+            *shared.status_cache.lock().unwrap() = extract_status_from_agent(Some(&mut agent));
+            *guard = Some(agent);
+            (
+                captured.as_ref().map(|f| f.seq).unwrap_or(0),
+                captured.as_ref().map(|f| f.meta_json()),
+                tools,
+            )
+        }
+    }
+}
+
+/// On non-X11 platforms (Windows, macOS, Wayland) where `ffmpeg x11grab` is not active,
+/// capture live MCP `screen_capture` frames into `StudioStreamHub` whenever a browser
+/// client is subscribed to `/api/studio/stream.mjpg` (#35). Uses `try_lock()` so it
+/// never blocks builds or playtests.
+fn spawn_mcp_screen_capture_pump(shared: Arc<Shared>, stop_flag: Arc<AtomicBool>) {
+    if std::env::var("OPENRO_DISABLE_MCP_FRAME_PUMP")
+        .ok()
+        .is_some_and(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
+    {
+        return;
+    }
+    std::thread::spawn(move || {
+        while !stop_flag.load(Ordering::Relaxed) {
+            for _ in 0..7 {
+                if stop_flag.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            if shared.studio_stream.active_subscribers() == 0
+                || shared.busy.load(Ordering::SeqCst) > 0
+            {
+                continue;
+            }
+            let Ok(mut guard) = shared.agent.try_lock() else {
+                continue;
+            };
+            let Some(agent) = guard.as_mut() else {
+                break;
+            };
+            if !matches!(agent.studio, Some(PlaceBackend::Mcp(_))) {
+                break;
+            }
+            let _ = agent.capture_studio_frame();
+        }
+    });
+}
+
+/// Background poller while Embedded Studio is in `phase: "awaiting_signin"` (#35, #118):
+/// automatically promotes the session to `phase: "connected"` and attaches `McpClient`
+/// as soon as the user finishes signing in / opens a place inside the live viewport.
+fn spawn_embed_mcp_auto_attacher(
+    shared: Arc<Shared>,
+    mcp_cmd: String,
+    stop_flag: Arc<AtomicBool>,
+) {
+    let poll_ms: u64 = std::env::var("OPENRO_EMBED_POLL_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|ms| ms.clamp(50, 10_000))
+        .unwrap_or(2_000);
+
+    std::thread::spawn(move || {
+        let step_ms = 50u64;
+        while !stop_flag.load(Ordering::Relaxed) {
+            let mut waited = 0u64;
+            while waited < poll_ms {
+                if stop_flag.load(Ordering::Relaxed) {
+                    return;
+                }
+                let slice = step_ms.min(poll_ms - waited);
+                std::thread::sleep(std::time::Duration::from_millis(slice));
+                waited += slice;
+            }
+            if stop_flag.load(Ordering::Relaxed) {
+                return;
+            }
+            if shared.busy.load(Ordering::SeqCst) > 0 {
+                continue;
+            }
+            let Ok(mut client) =
+                McpClient::spawn_with_timeout(&mcp_cmd, std::time::Duration::from_secs(3))
+            else {
+                continue;
+            };
+            if !client.has_live_studio() {
+                continue;
+            }
+            if stop_flag.load(Ordering::Relaxed) {
+                return;
+            }
+            let studio_id = client.studio_id().map(ToString::to_string);
+            let datamodel_type = client.datamodel_type().to_string();
+            let tools = client.tools().to_vec();
+            let official_count = client.official_tools_available().len();
+            // Attach PlaceBackend::Mcp + capture initial live frame BEFORE exposing
+            // phase="connected" so status readers never observe connected before MCP/frame are live.
+            let _ = attach_embed_mcp_client(&shared, client);
+            let x11grab_active = {
+                let mut mgr = shared.studio_embed.lock().unwrap();
+                if stop_flag.load(Ordering::Relaxed) {
+                    return;
+                }
+                mgr.sync_connected_meta(
+                    studio_id,
+                    datamodel_type,
+                    tools,
+                    official_count,
+                    Some(mcp_cmd.clone()),
+                );
+                mgr.state().x11grab_active
+            };
+            invalidate_embed_detect_cache(&shared);
+            if !x11grab_active {
+                spawn_mcp_screen_capture_pump(Arc::clone(&shared), Arc::clone(&stop_flag));
+            }
+            return;
+        }
+    });
+}
+
+fn handle_studio_embed_launch(
+    stream: &mut TcpStream,
+    shared: &Arc<Shared>,
+    req: &Request,
+    attach_only: bool,
+) {
     if !host_allowed(&req.host, &[]) {
         respond_json(
             stream,
@@ -4433,76 +4818,38 @@ fn handle_studio_embed_launch(stream: &mut TcpStream, shared: &Shared, req: &Req
             }
         }
     };
-    let cfg = match crate::studio_embed::EmbedConfig::from_json(&body) {
+    let mut cfg = match crate::studio_embed::EmbedConfig::from_json(&body) {
         Ok(c) => c,
         Err(e) => {
             respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
             return;
         }
     };
+    if attach_only {
+        cfg.launch_studio_process = false;
+        if cfg.mcp_command.is_none() {
+            cfg.mcp_command = shared.config.lock().unwrap().mcp_command.clone();
+        }
+    }
 
-    let launch_res = {
+    let (launch_res, stop_flag) = {
         let mut mgr = shared.studio_embed.lock().unwrap();
-        crate::studio_embed::launch_embedded_studio_with_hub(
+        let res = crate::studio_embed::launch_or_attach_live(
             &mut mgr,
             cfg,
             Some(Arc::clone(&shared.studio_stream)),
-        )
+        );
+        let flag = mgr.stop_flag();
+        (res, flag)
     };
     invalidate_embed_detect_cache(shared);
 
     match launch_res {
-        Ok((_embed_state, mcp)) => {
-            let (frame_seq, frame_meta, available_tools) = {
-                let mut guard = shared.agent.lock().unwrap();
-                match guard.as_mut() {
-                    Some(agent) => {
-                        agent.studio = Some(PlaceBackend::Mcp(mcp));
-                        agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
-                        let mut ev = StudioActionInput::new(
-                            StudioActionKind::CameraFocus,
-                            "Embedded Roblox Studio live session attached",
-                        );
-                        ev.path = "Workspace.CurrentCamera".to_string();
-                        ev.class_name = "Camera".to_string();
-                        shared.studio_stream.record_action(ev);
-                        let captured = agent.capture_studio_frame().ok();
-                        let tools = agent.available_studio_tools();
-                        *shared.status_cache.lock().unwrap() = extract_status_from_agent(Some(agent));
-                        (
-                            captured.as_ref().map(|f| f.seq).unwrap_or(0),
-                            captured.as_ref().map(|f| f.meta_json()),
-                            tools,
-                        )
-                    }
-                    None => {
-                        let model = ModelClient::new(
-                            DEFAULT_BASE_URL.to_string(),
-                            DEFAULT_MODEL_ID.to_string(),
-                            None,
-                        );
-                        let mut agent = Agent::with_backend(model, Some(PlaceBackend::Mcp(mcp)));
-                        if let Some(dir) = &shared.data_dir {
-                            agent.set_changes_file(dir.join("changes.json"));
-                        }
-                        agent.attach_undo_sink(Arc::clone(&shared.undoable));
-                        agent.attach_redo_sink(Arc::clone(&shared.redoable));
-                        agent.attach_events(Arc::clone(&shared.events));
-                        agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
-                        let lib_prompt = shared.library.lock().unwrap().active_skill_prompt();
-                        agent.set_library_prompt(lib_prompt);
-                        let captured = agent.capture_studio_frame().ok();
-                        let tools = agent.available_studio_tools();
-                        *shared.status_cache.lock().unwrap() = extract_status_from_agent(Some(&mut agent));
-                        *guard = Some(agent);
-                        (
-                            captured.as_ref().map(|f| f.seq).unwrap_or(0),
-                            captured.as_ref().map(|f| f.meta_json()),
-                            tools,
-                        )
-                    }
-                }
-            };
+        Ok(crate::studio_embed::EmbedLaunchOutcome::Connected(embed_state, mcp)) => {
+            let (frame_seq, frame_meta, available_tools) = attach_embed_mcp_client(shared, *mcp);
+            if !embed_state.x11grab_active {
+                spawn_mcp_screen_capture_pump(Arc::clone(shared), stop_flag);
+            }
             let status_obj = build_embed_status_payload(shared);
             respond_json(
                 stream,
@@ -4511,15 +4858,51 @@ fn handle_studio_embed_launch(stream: &mut TcpStream, shared: &Shared, req: &Req
                     "ok": true,
                     "running": true,
                     "connected": true,
+                    "awaiting_signin": false,
+                    "phase": "connected",
                     "studio_connected": true,
                     "workspace_mode": "studio_mcp",
                     "studio_mode": "live_mcp",
+                    "x11grab_active": embed_state.x11grab_active,
                     "has_live_frame": frame_seq > 0,
                     "frame_seq": frame_seq,
                     "frame": frame_meta,
                     "stream_url": "/api/studio/stream.mjpg",
                     "frame_url": "/api/studio/frame",
                     "available_tools": available_tools,
+                    "status": status_obj,
+                }),
+            );
+        }
+        Ok(crate::studio_embed::EmbedLaunchOutcome::StreamingAwaitingAuth { state, mcp_cmd }) => {
+            spawn_embed_mcp_auto_attacher(Arc::clone(shared), mcp_cmd, stop_flag);
+            if state.x11grab_active && shared.studio_stream.latest_frame_seq() == 0 {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+                while shared.studio_stream.latest_frame_seq() == 0
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+            }
+            let frame_seq = shared.studio_stream.latest_frame_seq();
+            let status_obj = build_embed_status_payload(shared);
+            respond_json(
+                stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "running": true,
+                    "connected": false,
+                    "awaiting_signin": true,
+                    "phase": "awaiting_signin",
+                    "studio_connected": false,
+                    "studio_mode": "awaiting_signin",
+                    "x11grab_active": state.x11grab_active,
+                    "has_live_frame": frame_seq > 0,
+                    "frame_seq": frame_seq,
+                    "stream_url": "/api/studio/stream.mjpg",
+                    "frame_url": "/api/studio/frame",
+                    "message": "Studio viewport is streaming live — sign in or open a place to attach MCP automatically.",
                     "status": status_obj,
                 }),
             );
@@ -4533,6 +4916,7 @@ fn handle_studio_embed_launch(stream: &mut TcpStream, shared: &Shared, req: &Req
                     "ok": false,
                     "running": false,
                     "connected": false,
+                    "awaiting_signin": false,
                     "studio_mode": shared.studio_stream.studio_mode(),
                     "error": e,
                     "status": status_obj,
@@ -5192,7 +5576,7 @@ fn handle_studio_plugin_status(stream: &mut TcpStream, shared: &Shared, req: &Re
 /// 1-click "Launch Studio & continue" endpoint (#29):
 /// If live Studio MCP is already connected, returns `ready: true`. Otherwise tries to
 /// attach an existing running Studio MCP session, or delegates to `handle_studio_embed_launch`.
-fn handle_studio_launch_and_continue(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+fn handle_studio_launch_and_continue(stream: &mut TcpStream, shared: &Arc<Shared>, req: &Request) {
     if !host_allowed(&req.host, &[]) {
         respond_json(
             stream,
@@ -5255,7 +5639,7 @@ fn handle_studio_launch_and_continue(stream: &mut TcpStream, shared: &Shared, re
             }
         }
     }
-    handle_studio_embed_launch(stream, shared, req);
+    handle_studio_embed_launch(stream, shared, req, false);
 }
 
 fn handle_studio_plugin_download(stream: &mut TcpStream, shared: &Shared, req: &Request) {
