@@ -870,22 +870,28 @@ impl McpClient {
     }
 
     /// Read structured Studio Output console lines via `get_console_output`
-    /// (falling back to `get_console` on bridges that only advertise the legacy tool).
+    /// (falling back to `get_console` ONLY when the bridge explicitly advertises `get_console`,
+    /// using `call_tool_raw` so legacy translation in `call_tool` can never recurse).
     pub fn get_console_output(&mut self) -> Result<Vec<String>, String> {
-        let tool = if self.has_tool("get_console_output") {
-            "get_console_output"
+        let use_official = self.has_exact_tool("get_console_output")
+            || (!self.tools_known && self.has_tool("get_console_output"));
+        let raw = if use_official {
+            let args = self.prepare_official_args("get_console_output", json!({}));
+            match self.call_tool_raw("get_console_output", args) {
+                Ok(text) => text,
+                Err(_) if self.has_exact_tool("get_console") => {
+                    self.call_tool_raw("get_console", json!({}))?
+                }
+                Err(e) => {
+                    let low = e.to_ascii_lowercase();
+                    if low.contains("no console") || low.contains("empty") {
+                        return Ok(Vec::new());
+                    }
+                    return Err(e);
+                }
+            }
         } else {
-            "get_console"
-        };
-        let args = if tool == "get_console_output" {
-            self.prepare_official_args("get_console_output", json!({}))
-        } else {
-            json!({})
-        };
-        let raw = match self.call_tool(tool, args) {
-            Ok(text) => text,
-            Err(_) if tool == "get_console_output" => self.call_tool("get_console", json!({}))?,
-            Err(e) => return Err(e),
+            self.call_tool_raw("get_console", json!({}))?
         };
         if let Ok(val) = serde_json::from_str::<Value>(raw.trim()) {
             if let Some(arr) = val.as_array() {
@@ -1127,9 +1133,11 @@ impl McpClient {
 
     /// The place tree as JSON: `{ "scripts": { "<path>": "<source>", ... }, "instances": { ... } }`.
     /// Uses `get_place_tree` when advertised (e.g. `mock_studio`), and translates cleanly
-    /// to a bounded read-only `execute_luau` DataModel walk across 7 Roblox services
+    /// to budget-safe chunked read-only `execute_luau` DataModel walks across 7 Roblox services
     /// (`Workspace`, `ServerScriptService`, `ReplicatedStorage`, `StarterGui`, `StarterPlayer`,
-    /// `Lighting`, `SoundService`) when attached to official Roblox Studio MCP.
+    /// `Lighting`, `SoundService`) when attached to official Roblox `StudioMCP.exe` — staying
+    /// strictly beneath StudioMCP's 100,000-character return truncation limit so large places
+    /// sync cleanly into Explorer with zero JSON truncation.
     pub fn get_place_tree(&mut self) -> Result<Value, String> {
         if self.has_tool("get_place_tree") {
             let text = self.call_tool_raw("get_place_tree", json!({}))?;
@@ -1139,12 +1147,15 @@ impl McpClient {
         if !self.has_tool("execute_luau") {
             return Ok(json!({ "scripts": {}, "instances": {} }));
         }
-        let luau = r#"
+
+        // Phase 1: Walk instances (budget-capped under 68 KiB JSON so StudioMCP's 100k char
+        // return limit never truncates the response) + collect ordered script paths.
+        let walk_luau = r#"
 local HttpService = game:GetService("HttpService")
-local scripts = {}
 local instances = {}
+local scriptPaths = {}
 local icount = 0
-local scount = 0
+local budget = 0
 local function fullPath(inst)
     local parts = {}
     local cur = inst
@@ -1158,49 +1169,56 @@ for _, svcName in ipairs({"Workspace", "ServerScriptService", "ReplicatedStorage
     local okSvc, svc = pcall(function() return game:GetService(svcName) end)
     if okSvc and svc then
         for _, d in ipairs(svc:GetDescendants()) do
-            if d:IsA("LuaSourceContainer") and scount < 160 then
-                local okSrc, src = pcall(function() return d.Source end)
-                if okSrc and type(src) == "string" then
-                    scripts[fullPath(d)] = src
-                    scount += 1
+            if d:IsA("LuaSourceContainer") and #scriptPaths < 160 then
+                table.insert(scriptPaths, fullPath(d))
+            elseif icount < 260 and budget < 68000 then
+                if d:IsA("BasePart") then
+                    local c = d.Color
+                    local p = fullPath(d)
+                    instances[p] = {
+                        class_name = d.ClassName,
+                        properties = {
+                            Position = {math.round(d.Position.X * 100) / 100, math.round(d.Position.Y * 100) / 100, math.round(d.Position.Z * 100) / 100},
+                            Size = {math.round(d.Size.X * 100) / 100, math.round(d.Size.Y * 100) / 100, math.round(d.Size.Z * 100) / 100},
+                            Color = {math.round(c.R * 255), math.round(c.G * 255), math.round(c.B * 255)},
+                            Anchored = d.Anchored,
+                            Material = d.Material.Name,
+                            Transparency = math.round(d.Transparency * 100) / 100,
+                            CanCollide = d.CanCollide,
+                        },
+                    }
+                    icount += 1
+                    budget += #p + 210
+                elseif d:IsA("Model") or d:IsA("Folder") or d:IsA("RemoteEvent") or d:IsA("RemoteFunction") or d:IsA("Tool") or d:IsA("Atmosphere") or d:IsA("Sky") or d:IsA("Sound") or d:IsA("ScreenGui") or d:IsA("Decal") or d:IsA("SurfaceGui") or d:IsA("ImageLabel") or d:IsA("PointLight") then
+                    local p = fullPath(d)
+                    local props = {}
+                    if d:IsA("Sound") then
+                        props.SoundId = d.SoundId
+                        props.Volume = d.Volume
+                    elseif d:IsA("Decal") then
+                        props.Texture = d.Texture
+                    elseif d:IsA("ImageLabel") then
+                        props.Image = d.Image
+                    end
+                    instances[p] = {
+                        class_name = d.ClassName,
+                        properties = props,
+                    }
+                    icount += 1
+                    budget += #p + 96
                 end
-            elseif d:IsA("BasePart") and icount < 350 then
-                local c = d.Color
-                instances[fullPath(d)] = {
-                    class_name = d.ClassName,
-                    properties = {
-                        Position = {math.round(d.Position.X * 100) / 100, math.round(d.Position.Y * 100) / 100, math.round(d.Position.Z * 100) / 100},
-                        Size = {math.round(d.Size.X * 100) / 100, math.round(d.Size.Y * 100) / 100, math.round(d.Size.Z * 100) / 100},
-                        Color = {math.round(c.R * 255), math.round(c.G * 255), math.round(c.B * 255)},
-                        Anchored = d.Anchored,
-                        Material = d.Material.Name,
-                        Transparency = math.round(d.Transparency * 100) / 100,
-                        CanCollide = d.CanCollide,
-                    },
-                }
-                icount += 1
-            elseif (d:IsA("Model") or d:IsA("Folder") or d:IsA("RemoteEvent") or d:IsA("RemoteFunction") or d:IsA("Tool") or d:IsA("Atmosphere") or d:IsA("Sky") or d:IsA("Sound") or d:IsA("ScreenGui") or d:IsA("Decal") or d:IsA("SurfaceGui") or d:IsA("ImageLabel") or d:IsA("PointLight")) and icount < 350 then
-                local props = {}
-                if d:IsA("Sound") then
-                    props.SoundId = d.SoundId
-                    props.Volume = d.Volume
-                elseif d:IsA("Decal") then
-                    props.Texture = d.Texture
-                elseif d:IsA("ImageLabel") then
-                    props.Image = d.Image
-                end
-                instances[fullPath(d)] = {
-                    class_name = d.ClassName,
-                    properties = props,
-                }
-                icount += 1
             end
         end
     end
 end
-return "OPENRO_TREE:" .. HttpService:JSONEncode({ scripts = scripts, instances = instances })
+return "OPENRO_TREE:" .. HttpService:JSONEncode({ instances = instances, script_paths = scriptPaths })
 "#;
-        match self.execute_luau(luau) {
+
+        let mut instances_map = Map::new();
+        let mut scripts_map = Map::new();
+        let mut script_paths: Vec<String> = Vec::new();
+
+        match self.execute_luau(walk_luau) {
             Ok(val) => {
                 if val.get("scripts").is_some() && val.get("instances").is_some() {
                     return Ok(val);
@@ -1211,19 +1229,116 @@ return "OPENRO_TREE:" .. HttpService:JSONEncode({ scripts = scripts, instances =
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if let Some(parsed) = parse_openro_tree_payload(raw) {
-                    return Ok(parsed);
+                    if let Some(insts) = parsed.get("instances").and_then(|v| v.as_object()) {
+                        instances_map = insts.clone();
+                    }
+                    if let Some(scrs) = parsed.get("scripts").and_then(|v| v.as_object()) {
+                        scripts_map = scrs.clone();
+                    }
+                    if let Some(paths) = parsed.get("script_paths").and_then(|v| v.as_array()) {
+                        for p in paths {
+                            if let Some(s) = p.as_str() {
+                                script_paths.push(s.to_string());
+                            }
+                        }
+                    }
                 }
-                Ok(json!({ "scripts": {}, "instances": {} }))
             }
             Err(e) => {
                 let low = e.to_ascii_lowercase();
                 if low.contains("place is not open") || low.contains("no roblox studio") {
-                    Ok(json!({ "scripts": {}, "instances": {} }))
-                } else {
-                    Err(e)
+                    return Ok(json!({ "scripts": {}, "instances": {} }));
                 }
+                return Err(e);
             }
         }
+
+        // Phase 2: Batch-fetch full Luau script sources in <= 54 KiB chunks so even
+        // multi-thousand-line games sync every script intact beneath StudioMCP's 100k cap.
+        let mut cursor = 0usize;
+        let max_batches = 24usize;
+        let mut batches = 0usize;
+        while cursor < script_paths.len() && batches < max_batches {
+            batches += 1;
+            let start_idx = cursor + 1;
+            let batch_luau = format!(
+                r#"
+local HttpService = game:GetService("HttpService")
+local targetPaths = {{}}
+local function fullPath(inst)
+    local parts = {{}}
+    local cur = inst
+    while cur and cur ~= game do
+        table.insert(parts, 1, cur.Name)
+        cur = cur.Parent
+    end
+    return table.concat(parts, ".")
+end
+for _, svcName in ipairs({{"Workspace", "ServerScriptService", "ReplicatedStorage", "StarterGui", "StarterPlayer", "Lighting", "SoundService"}}) do
+    local okSvc, svc = pcall(function() return game:GetService(svcName) end)
+    if okSvc and svc then
+        for _, d in ipairs(svc:GetDescendants()) do
+            if d:IsA("LuaSourceContainer") and #targetPaths < 160 then
+                table.insert(targetPaths, {{ fullPath(d), d }})
+            end
+        end
+    end
+end
+local out = {{}}
+local used = 0
+local nextIdx = #targetPaths + 1
+for i = {start_idx}, #targetPaths do
+    local entry = targetPaths[i]
+    local okSrc, src = pcall(function() return entry[2].Source end)
+    local body = (okSrc and type(src) == "string") and src or ""
+    if #body > 48000 then
+        body = string.sub(body, 1, 48000) .. "\n-- [openro: truncated at 48 KiB preview]"
+    end
+    if used > 0 and used + #body + #entry[1] + 32 > 54000 then
+        nextIdx = i
+        break
+    end
+    out[entry[1]] = body
+    used += #body + #entry[1] + 32
+end
+return "OPENRO_TREE:" .. HttpService:JSONEncode({{ scripts = out, next_idx = nextIdx }})
+"#
+            );
+            match self.execute_luau(&batch_luau) {
+                Ok(val) => {
+                    let raw = val
+                        .get("output")
+                        .or_else(|| val.get("result"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if let Some(parsed) = parse_openro_tree_payload(raw) {
+                        if let Some(scrs) = parsed.get("scripts").and_then(|v| v.as_object()) {
+                            for (k, v) in scrs {
+                                scripts_map.insert(k.clone(), v.clone());
+                            }
+                        }
+                        let next_1based = parsed
+                            .get("next_idx")
+                            .and_then(|v| v.as_u64())
+                            .map(|n| n as usize)
+                            .unwrap_or(script_paths.len() + 1);
+                        let next_0based = next_1based.saturating_sub(1);
+                        if next_0based <= cursor {
+                            break;
+                        }
+                        cursor = next_0based;
+                    } else {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        Ok(json!({
+            "scripts": Value::Object(scripts_map),
+            "instances": Value::Object(instances_map),
+        }))
     }
 
     /// Write a script via official `execute_luau` using collision-proof Luau long-bracket
