@@ -293,6 +293,224 @@ fn feature_ideas() -> Vec<Idea> {
             skills: vec!["kill_brick"],
             needs: vec![],
         },
+        Idea {
+            id: "add-jump-pad",
+            title: "Velocity jump pads",
+            pitch: "Drop in glowing neon bounce pads that launch players sky-high \
+                    with per-player cooldowns, burst particles, and bounce SFX.",
+            plan: vec![
+                instance(
+                    "Part",
+                    "JumpPad",
+                    "Workspace",
+                    json!({
+                        "Anchored": true,
+                        "CanCollide": true,
+                        "Material": "Neon",
+                        "Color": "#3CB371",
+                        "Size": [8, 1, 8],
+                        "Position": [0, 1, 16]
+                    }),
+                ),
+                skill(
+                    "jump_pad",
+                    json!({ "boost_power": 125, "cooldown_ms": 600, "pad_name": "JumpPad", "create_pad": false }),
+                ),
+                write("ServerScriptService.JumpPad", "jump_pad"),
+                playtest(),
+            ],
+            skills: vec!["jump_pad"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-moving-platform",
+            title: "Moving platforms",
+            pitch: "Add a smooth Heartbeat-driven moving platform that carries \
+                    standing players cleanly across gaps without slipping off.",
+            plan: vec![
+                instance(
+                    "Part",
+                    "MovingPlatform",
+                    "Workspace",
+                    json!({
+                        "Anchored": true,
+                        "CanCollide": true,
+                        "Material": "SmoothPlastic",
+                        "Color": "#4F7CF0",
+                        "Size": [10, 1, 10],
+                        "Position": [0, 6, 32]
+                    }),
+                ),
+                skill(
+                    "moving_platform",
+                    json!({ "platform_name": "MovingPlatform", "travel_distance": 24, "travel_seconds": 4, "axis": "X", "create_platform": false }),
+                ),
+                write("ServerScriptService.MovingPlatform", "moving_platform"),
+                playtest(),
+            ],
+            skills: vec!["moving_platform"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-datastore-save",
+            title: "Resilient DataStore save",
+            pitch: "Harden progress persistence with retry-backed UpdateAsync saves, \
+                    bad-load protection, periodic autosave, and parallel BindToClose shutdown saves.",
+            plan: vec![
+                skill(
+                    "datastore_save",
+                    json!({ "store_name": "OpenROPlayerData", "stat_name": "Coins", "default_value": 0, "autosave_seconds": 60, "bind_close": true }),
+                ),
+                write("ServerScriptService.DataStoreSave", "datastore_save"),
+                playtest(),
+            ],
+            skills: vec!["datastore_save"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-npc-patrol",
+            title: "Patrolling NPC guard",
+            pitch: "Spawn a PathfindingService guard NPC that walks a perimeter route, \
+                    speaks overhead callouts, and deals debounced melee damage.",
+            plan: vec![
+                skill(
+                    "npc_patrol",
+                    json!({ "npc_name": "GuardNPC", "waypoint_count": 4, "walk_speed": 12, "damage": 15, "dialogue": "Halt! Restricted zone." }),
+                ),
+                write("ServerScriptService.NpcPatrol", "npc_patrol"),
+                playtest(),
+            ],
+            skills: vec!["npc_patrol"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-portal-teleporter",
+            title: "Paired warp portals",
+            pitch: "Link two glowing CFrame warp pads (PortalA <-> PortalB) with \
+                    per-player debounce cooldowns and particle warp bursts.",
+            plan: vec![
+                skill(
+                    "portal_teleporter",
+                    json!({ "pair_name": "WarpPortal", "cooldown_seconds": 3, "offset_distance": 60, "create_portals": true }),
+                ),
+                write("ServerScriptService.PortalTeleporter", "portal_teleporter"),
+                playtest(),
+            ],
+            skills: vec!["portal_teleporter"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-combat-sword",
+            title: "Server-validated sword combat",
+            pitch: "Give players a ClassicSword tool with server-verified range, \
+                    equipped checks, swing cooldowns, and a live KOs leaderboard hook.",
+            plan: vec![
+                skill(
+                    "combat_sword",
+                    json!({ "sword_name": "ClassicSword", "damage": 25, "cooldown_ms": 450, "range_studs": 10 }),
+                ),
+                write("ServerScriptService.CombatSword", "combat_sword"),
+                playtest(),
+            ],
+            skills: vec!["combat_sword"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-inventory-backpack",
+            title: "Authoritative inventory backpack",
+            pitch: "Add a server-owned item inventory with slot caps, replicated \
+                    Inventory folder, and rate-limited equip/unequip RemoteEvent.",
+            plan: vec![
+                skill(
+                    "inventory_backpack",
+                    json!({ "starter_item": "Torch", "max_slots": 12, "remote_name": "OpenROInventoryEquip" }),
+                ),
+                write("ServerScriptService.InventoryBackpack", "inventory_backpack"),
+                playtest(),
+            ],
+            skills: vec!["inventory_backpack"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-quest-tracker",
+            title: "Milestone quest tracker",
+            pitch: "Track player objective milestones server-side with progress sync \
+                    events and automatic currency rewards upon completion.",
+            plan: vec![
+                skill(
+                    "quest_tracker",
+                    json!({ "quest_name": "Crystal Hunt", "target_count": 5, "reward_amount": 150, "currency": "Coins" }),
+                ),
+                write("ServerScriptService.QuestTracker", "quest_tracker"),
+                playtest(),
+            ],
+            skills: vec!["quest_tracker"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-vehicle-spawner",
+            title: "Vehicle spawner bay",
+            pitch: "Place a ProximityPrompt vehicle bay that spawns a welded VehicleSeat \
+                    rover with a strict 1-vehicle-per-player cap and leave cleanup.",
+            plan: vec![
+                skill(
+                    "vehicle_spawner",
+                    json!({ "vehicle_name": "Rover", "max_speed": 65, "cooldown_seconds": 5, "create_pad": true }),
+                ),
+                write("ServerScriptService.VehicleSpawner", "vehicle_spawner"),
+                playtest(),
+            ],
+            skills: vec!["vehicle_spawner"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-weather-cycle",
+            title: "Dynamic weather cycle",
+            pitch: "Transition smoothly across Clear, Dusk, Fog, and Rain using \
+                    Lighting & Atmosphere tweens plus overhead rain particles.",
+            plan: vec![
+                skill(
+                    "weather_cycle",
+                    json!({ "cycle_seconds": 45, "start_weather": "Clear", "enable_particles": true }),
+                ),
+                write("ServerScriptService.WeatherCycle", "weather_cycle"),
+                playtest(),
+            ],
+            skills: vec!["weather_cycle"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-tycoon-dropper",
+            title: "Tycoon dropper & upgrader",
+            pitch: "Drop in a full dropper -> conveyor -> collector -> x2 purchase \
+                    button loop that pays directly into leaderstats currency.",
+            plan: vec![
+                skill(
+                    "tycoon_dropper",
+                    json!({ "tycoon_name": "FactoryTycoon", "drop_value": 10, "drop_interval": 2, "upgrade_cost": 100, "currency": "Coins" }),
+                ),
+                write("ServerScriptService.TycoonDropper", "tycoon_dropper"),
+                playtest(),
+            ],
+            skills: vec!["tycoon_dropper"],
+            needs: vec![],
+        },
+        Idea {
+            id: "add-admin-spectate",
+            title: "Spectator cycle & status feed",
+            pitch: "Wire up a server-validated spectator target switcher with \
+                    authorization checks and a live Alive/Total round status feed.",
+            plan: vec![
+                skill(
+                    "admin_spectate",
+                    json!({ "remote_name": "OpenROSpectate", "cycle_interval": 5, "allow_all_players": true }),
+                ),
+                write("ServerScriptService.AdminSpectate", "admin_spectate"),
+                playtest(),
+            ],
+            skills: vec!["admin_spectate"],
+            needs: vec![],
+        },
     ]
 }
 

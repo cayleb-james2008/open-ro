@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod config;
 pub mod ideas;
+pub mod luau_check;
 pub mod mcp;
 pub mod model;
 pub mod place;
