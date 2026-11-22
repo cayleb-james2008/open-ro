@@ -627,7 +627,14 @@ impl LocalPlace {
         props.insert("Anchored".to_string(), json!(true));
         props.insert("CanCollide".to_string(), json!(true));
         props.insert("Position".to_string(), json!([pos[0], pos[1], pos[2]]));
-        props.insert("Size".to_string(), json!([sz[0], sz[1], sz[2]]));
+        if norm_preset == "cylinder" {
+            // Roblox PartType.Cylinder runs along local X; upright orientation maps
+            // requested (diameter_x, height_y, diameter_z) -> Size=(height_y, diameter_x, diameter_z) + Z+90 deg.
+            props.insert("Size".to_string(), json!([sz[1], sz[0], sz[2]]));
+            props.insert("Rotation".to_string(), json!([0.0, 0.0, 90.0]));
+        } else {
+            props.insert("Size".to_string(), json!([sz[0], sz[1], sz[2]]));
+        }
         props.insert("Color".to_string(), json!(resolved_color));
         props.insert("Material".to_string(), json!(material));
         props.insert("Transparency".to_string(), json!(0.0));
@@ -1378,6 +1385,35 @@ fn token_to_face(tok: u32) -> Option<&'static str> {
     }
 }
 
+fn is_content_property(key: &str) -> bool {
+    matches!(
+        key,
+        "MeshId"
+            | "TextureID"
+            | "TextureId"
+            | "SoundId"
+            | "Texture"
+            | "ColorMap"
+            | "MetalnessMap"
+            | "NormalMap"
+            | "RoughnessMap"
+            | "Image"
+            | "AnimationId"
+            | "SkyboxBk"
+            | "SkyboxDn"
+            | "SkyboxFt"
+            | "SkyboxLf"
+            | "SkyboxRt"
+            | "SkyboxUp"
+            | "MoonTextureId"
+            | "SunTextureId"
+            | "ShirtTemplate"
+            | "PantsTemplate"
+            | "Graphic"
+            | "OverlayTextureId"
+    )
+}
+
 fn is_base_part_class(class_name: &str) -> bool {
     matches!(
         class_name,
@@ -1621,11 +1657,23 @@ impl XmlGen {
                 }
                 Value::String(s) => {
                     self.write_indent(depth);
-                    let _ = writeln!(
-                        self.out,
-                        "<string name=\"{ek}\">{}</string>",
-                        xml_escape(s)
-                    );
+                    if is_content_property(k) {
+                        if s.is_empty() {
+                            let _ = writeln!(self.out, "<Content name=\"{ek}\"><null></null></Content>");
+                        } else {
+                            let _ = writeln!(
+                                self.out,
+                                "<Content name=\"{ek}\"><url>{}</url></Content>",
+                                xml_escape(s)
+                            );
+                        }
+                    } else {
+                        let _ = writeln!(
+                            self.out,
+                            "<string name=\"{ek}\">{}</string>",
+                            xml_escape(s)
+                        );
+                    }
                 }
                 Value::Array(arr) if arr.len() == 3 => {
                     if let (Some(x), Some(y), Some(z)) =

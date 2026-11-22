@@ -636,6 +636,61 @@ pub fn install_companion_plugin(
     write_plugin_file_to_verified_dir(&verified, port, token)
 }
 
+/// Read the Settings preference for auto-installing `OpenRoCompanion.lua` when
+/// Vinegar/Studio is detected (`data_dir/studio_prefs.json`, default `true`) (#29).
+pub fn auto_install_pref(data_dir: Option<&Path>) -> bool {
+    let Some(dir) = data_dir else { return true };
+    let Ok(text) = std::fs::read_to_string(dir.join("studio_prefs.json")) else {
+        return true;
+    };
+    serde_json::from_str::<Value>(&text)
+        .ok()
+        .and_then(|v| v.get("auto_install_plugin").and_then(|b| b.as_bool()))
+        .unwrap_or(true)
+}
+
+/// Persist the `auto_install_plugin` Settings toggle (`data_dir/studio_prefs.json`) (#29).
+pub fn set_auto_install_pref(data_dir: Option<&Path>, enabled: bool) -> Result<(), String> {
+    let Some(dir) = data_dir else { return Ok(()) };
+    std::fs::create_dir_all(dir).map_err(|e| format!("create prefs dir: {e}"))?;
+    let path = dir.join("studio_prefs.json");
+    let tmp = dir.join("studio_prefs.json.tmp");
+    let body = serde_json::to_string_pretty(&json!({ "auto_install_plugin": enabled }))
+        .map_err(|e| format!("serialize studio prefs: {e}"))?;
+    std::fs::write(&tmp, body).map_err(|e| format!("write studio prefs: {e}"))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("commit studio prefs: {e}"))?;
+    Ok(())
+}
+
+/// Best-effort first-launch install of `OpenRoCompanion.lua` into the verified
+/// Vinegar `Roblox/Plugins/` directory when `auto_install_plugin` is enabled (#29).
+/// Never touches any path outside the verified OS `Roblox/Plugins` directory and
+/// is a no-op if the plugin file already exists or `OPENRO_NO_AUTO_PLUGIN=1`.
+pub fn maybe_auto_install_vinegar_plugin(
+    bridge: &StudioPluginBridge,
+    data_dir: &Path,
+    port: u16,
+) -> Option<PathBuf> {
+    if std::env::var("OPENRO_NO_AUTO_PLUGIN")
+        .ok()
+        .is_some_and(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
+    {
+        return None;
+    }
+    if !auto_install_pref(Some(data_dir)) {
+        return None;
+    }
+    let detected = detect_roblox_plugins_dir()?;
+    if !detected.to_string_lossy().contains("Vinegar") {
+        return None;
+    }
+    if detected.join(COMPANION_PLUGIN_FILENAME).is_file() {
+        return None;
+    }
+    let token = bridge.token_for_local_template();
+    write_plugin_file_to_verified_dir(&detected, port, &token).ok()
+}
+
 /// Direct helper for writing `OpenRoCompanion.lua` into a canonicalized verified `Roblox/Plugins` directory.
 pub fn write_plugin_file_to_verified_dir(
     plugins_dir: &Path,
