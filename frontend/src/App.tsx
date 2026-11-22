@@ -125,6 +125,7 @@ import { useShip } from "./app/ship/useShip";
 import { ProjectsRail } from "./app/ship/ProjectsRail";
 import { ShipPanel } from "./app/ship/ShipPanel";
 import { TeamworkPanel } from "./app/teamwork/TeamworkPanel";
+import { AgentRunsPanel } from "./app/AgentRunsPanel";
 import { LeftExplorerTree, StudioChip } from "./app/Shelf";
 import { SnapshotsDialog } from "./app/SnapshotsDialog";
 import { StudioBottomDrawer, type BottomDrawerTab } from "./app/StudioBottomDrawer";
@@ -2931,7 +2932,18 @@ export function App() {
         )}
       </div>
 
-      {/* Docked RoPilot Composer */}
+      {/* Background Plan-Execute Run Queue & Checkpoints */}
+      {!isBrowserEngine && (
+        <AgentRunsPanel
+          chatId={activeId}
+          projectId={ship.activeId}
+          composerText={text}
+          onClearComposer={() => setText("")}
+          onRunFinished={() => void refreshAll()}
+        />
+      )}
+
+      {/* Docked OpenRO Composer */}
       <CopilotComposer
         text={text}
         onTextChange={setText}
