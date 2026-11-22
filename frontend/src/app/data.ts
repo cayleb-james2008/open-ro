@@ -151,9 +151,28 @@ export type GatewayInfo = {
   label: string;
 };
 
+export type AntigravityModel = {
+  id: string;
+  label?: string;
+  family?: string;
+  effort?: string;
+};
+
+export type AntigravityIssue = {
+  kind: "quota" | "auth" | "error";
+  message: string;
+  resets_in?: string | null;
+  at?: number;
+};
+
 export type ConfigSnap = {
   base_url: string;
   model_id: string;
+  provider?: "antigravity" | "openai";
+  antigravity_available?: boolean;
+  antigravity_default_model?: string;
+  antigravity_models?: AntigravityModel[];
+  antigravity_issue?: AntigravityIssue | null;
   has_api_key: boolean;
   api_key_masked: string | null;
   model_configured: boolean;

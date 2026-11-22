@@ -1,7 +1,7 @@
 import { useMemo, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { AtSign, Brain, FileDiff, Plus, Send, SlidersHorizontal, Undo2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { InputGroup, InputGroupAddon, InputGroupTextarea } from "@/components/ui/input-group";
+import { InputGroup, InputGroupTextarea } from "@/components/ui/input-group";
 import { Kbd } from "@/components/ui/kbd";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { Pill } from "@/components/kibo-ui/pill";
@@ -216,7 +216,7 @@ export function CopilotComposer({
           {mode !== "ask" && (
             <Button
               variant={reviewDiffs || mode === "plan" ? "secondary" : "outline"}
-              size="xs"
+              size="default"
               aria-label="Toggle review diffs before applying"
               aria-pressed={reviewDiffs || mode === "plan"}
               disabled={mode === "plan"}
@@ -227,9 +227,10 @@ export function CopilotComposer({
               Review diffs
             </Button>
           )}
+          <span className="text-xs text-ink-2">Effort</span>
           <Button
             variant="outline"
-            size="xs"
+            size="default"
             aria-label={`Reasoning effort ${REASONING_LABEL[reasoning]}`}
             onClick={() => onReasoningChange(REASONING_NEXT[reasoning])}
             className="gap-1 bg-board/40 font-mono text-xs text-ink-2 max-md:min-h-11"
@@ -237,6 +238,48 @@ export function CopilotComposer({
             <Brain className="size-3" strokeWidth={1.5} aria-hidden />
             {REASONING_LABEL[reasoning]}
           </Button>
+          <MorphingDialog transition={dialogSpring}>
+            <MorphingDialogTrigger
+              thing="undo"
+              blocked={!canUndo}
+              describedBy={undoReason ? "undo-reason" : undefined}
+              aria-label="Undo"
+              className="inline-flex min-h-11 cursor-pointer items-center gap-1 rounded-lg border border-hairline bg-surface px-2.5 text-xs font-medium text-ink-2 outline-none transition-[color,background-color] duration-(--dur-press) ease-(--ease-house) hover:bg-track hover:text-ink disabled:cursor-not-allowed disabled:bg-board disabled:text-ink-3 md:min-h-8"
+            >
+              <Undo2 className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>Undo</span>
+            </MorphingDialogTrigger>
+            <MorphingDialogContainer>
+              <MorphingDialogContent className="relative mx-3 w-full max-w-[420px] rounded-dialog border border-hairline bg-surface p-5 text-ink shadow-lift">
+                <div data-undo-dialog className="flex flex-col gap-4">
+                  <div className="flex flex-col gap-1.5">
+                    <MorphingDialogTitle className="text-ui font-medium text-ink">
+                      Undo the last Studio build?
+                    </MorphingDialogTitle>
+                    <MorphingDialogDescription className="text-sm leading-relaxed text-ink-2">
+                      This reverts the scripts and Workspace instances modified by the most recent build in this chat.
+                    </MorphingDialogDescription>
+                  </div>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <MorphingDialogClose
+                      aria-label="Keep it"
+                      className="static inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-hairline bg-surface px-4 text-sm font-medium text-ink outline-none transition-[color,background-color,border-color] duration-(--dur-press) ease-(--ease-house) hover:bg-board md:min-h-9"
+                    >
+                      Keep it
+                    </MorphingDialogClose>
+                    <MorphingDialogClose
+                      data-undo-yes
+                      aria-label="Yes, undo it"
+                      onClick={onConfirmUndo}
+                      className="static inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-blue bg-blue px-4 text-sm font-medium text-blue-fg outline-none transition-[color,background-color,border-color] duration-(--dur-press) ease-(--ease-house) hover:bg-blue-hover md:min-h-9"
+                    >
+                      Yes, undo it
+                    </MorphingDialogClose>
+                  </div>
+                </div>
+              </MorphingDialogContent>
+            </MorphingDialogContainer>
+          </MorphingDialog>
           <Button
             variant="ghost"
             size="xs"
@@ -266,50 +309,6 @@ export function CopilotComposer({
               aria-label="Describe a game or change"
               className="min-h-11 resize-none text-sm"
             />
-            <InputGroupAddon align="inline-end" className="self-end pb-1.5 pe-1.5">
-              <MorphingDialog transition={dialogSpring}>
-                <MorphingDialogTrigger
-                  thing="undo"
-                  blocked={!canUndo}
-                  describedBy={undoReason ? "undo-reason" : undefined}
-                  aria-label="Undo"
-                  className="inline-flex min-h-11 cursor-pointer items-center gap-1 rounded-md px-2 text-xs font-medium text-ink-2 outline-none transition-[color,background-color] duration-(--dur-press) ease-(--ease-house) hover:bg-track hover:text-ink disabled:cursor-not-allowed disabled:bg-board disabled:text-ink-3 md:min-h-7"
-                >
-                  <Undo2 className="size-3.5" strokeWidth={1.5} aria-hidden />
-                  <span>Undo</span>
-                </MorphingDialogTrigger>
-                <MorphingDialogContainer>
-                  <MorphingDialogContent className="relative mx-3 w-full max-w-[420px] rounded-dialog border border-hairline bg-surface p-5 text-ink shadow-lift">
-                    <div data-undo-dialog className="flex flex-col gap-4">
-                      <div className="flex flex-col gap-1.5">
-                        <MorphingDialogTitle className="text-ui font-medium text-ink">
-                          Undo the last Studio build?
-                        </MorphingDialogTitle>
-                        <MorphingDialogDescription className="text-sm leading-relaxed text-ink-2">
-                          This reverts the scripts and Workspace instances modified by the most recent build in this chat.
-                        </MorphingDialogDescription>
-                      </div>
-                      <div className="flex flex-wrap justify-end gap-2">
-                        <MorphingDialogClose
-                          aria-label="Keep it"
-                          className="static inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-hairline bg-surface px-4 text-sm font-medium text-ink outline-none transition-[color,background-color,border-color] duration-(--dur-press) ease-(--ease-house) hover:bg-board md:min-h-9"
-                        >
-                          Keep it
-                        </MorphingDialogClose>
-                        <MorphingDialogClose
-                          data-undo-yes
-                          aria-label="Yes, undo it"
-                          onClick={onConfirmUndo}
-                          className="static inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-blue bg-blue px-4 text-sm font-medium text-blue-fg outline-none transition-[color,background-color,border-color] duration-(--dur-press) ease-(--ease-house) hover:bg-blue-hover md:min-h-9"
-                        >
-                          Yes, undo it
-                        </MorphingDialogClose>
-                      </div>
-                    </div>
-                  </MorphingDialogContent>
-                </MorphingDialogContainer>
-              </MorphingDialog>
-            </InputGroupAddon>
           </InputGroup>
 
           <Button

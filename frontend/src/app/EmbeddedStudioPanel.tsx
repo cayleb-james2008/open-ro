@@ -285,20 +285,7 @@ export function EmbeddedStudioPanel({
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
-          {studioMode !== "browser_place" && (
-            !embedStatus.running ? (
-              <Button
-                variant="default"
-                size="xs"
-                disabled={embedBusy}
-                aria-label="Launch and embed Roblox Studio"
-                onClick={() => void handleLaunch()}
-                className="max-md:min-h-11"
-              >
-                <Rocket className="size-3.5" strokeWidth={1.5} aria-hidden />
-                <span>{embedBusy ? "Launching…" : "Launch Studio"}</span>
-              </Button>
-            ) : (
+          {studioMode !== "browser_place" && embedStatus.running && (
               <Button
                 variant="outline"
                 size="xs"
@@ -310,7 +297,6 @@ export function EmbeddedStudioPanel({
                 <Square className="size-3.5" strokeWidth={1.5} aria-hidden />
                 <span>{embedBusy ? "Stopping…" : "Stop"}</span>
               </Button>
-            )
           )}
 
           {onInvokeStudioTool && (

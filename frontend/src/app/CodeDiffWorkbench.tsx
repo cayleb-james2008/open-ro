@@ -490,7 +490,7 @@ export function CodeDiffWorkbench({
             <FileCode className="size-7 text-icon" strokeWidth={1.5} aria-hidden />
             <h3 className="text-sm font-medium text-ink">No Luau scripts open yet</h3>
             <p className="max-w-md text-xs leading-relaxed text-ink-2">
-              Select a script in the Left Explorer, click New Script above, or ask the RoPilot Copilot on the right to generate or refactor Luau with reviewable unified diffs.
+              Select a script in the Left Explorer, click New Script above, or ask the OpenRO Copilot on the right to generate or refactor Luau with reviewable unified diffs.
             </p>
             <Button variant="outline" size="sm" onClick={() => setNewScriptOpen(true)} className="mt-1 max-md:min-h-11">
               <Plus className="size-3.5" strokeWidth={1.5} aria-hidden />
@@ -541,50 +541,15 @@ export function CodeDiffWorkbench({
             )}
           </div>
         ) : (
-          <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
-            {/* Editable Luau Textarea */}
-            <div className="flex min-h-[240px] flex-col border-b border-hairline p-2.5 lg:border-b-0 lg:border-r">
-              <span className="mb-1.5 text-xs font-medium text-ink-2">Luau Source Editor</span>
-              <Textarea
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                aria-label={`Edit Luau source for ${currentPath}`}
-                spellCheck={false}
-                className="min-h-[240px] flex-1 resize-none bg-board/35 font-mono text-xs leading-relaxed"
-              />
-            </div>
-
-            {/* Syntax-Highlighted Line-Numbered Readout */}
-            <div className="flex min-h-[240px] flex-col overflow-auto bg-board/25 p-2.5">
-              <span className="mb-1.5 text-xs font-medium text-ink-2">Syntax Preview &amp; Static Check</span>
-              <div className="overflow-x-auto rounded-sm border border-hairline bg-surface p-2 font-mono text-xs leading-5">
-                {previewLines.map((line, i) => {
-                  const lineNo = i + 1;
-                  const diag = fileDiagnostics.find((d) => d.line === lineNo);
-                  return (
-                    <div
-                      key={lineNo}
-                      className={`flex items-start gap-2 rounded-xs px-1 ${
-                        diag?.severity === "error"
-                          ? "bg-pill-pro-bg/35"
-                          : diag?.severity === "warning"
-                            ? "bg-pill-warn-bg/35"
-                            : ""
-                      }`}
-                    >
-                      <span className="w-8 shrink-0 select-none text-right tabular-nums text-ink-3">{lineNo}</span>
-                      <span className="min-w-0 flex-1 whitespace-pre">
-                        {tokenizeLuauLine(line).map((tok, ti) => (
-                          <span key={ti} className={TOKEN_CLS[tok.kind]}>
-                            {tok.text}
-                          </span>
-                        ))}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+          <div className="flex min-h-0 flex-1 flex-col p-2.5">
+            <span className="mb-1.5 text-xs font-medium text-ink-2">Luau Source Editor</span>
+            <Textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              aria-label={`Edit Luau source for ${currentPath}`}
+              spellCheck={false}
+              className="min-h-[280px] flex-1 resize-none bg-board/35 font-mono text-xs leading-relaxed"
+            />
           </div>
         )}
 

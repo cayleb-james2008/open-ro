@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Check, Cpu, Globe, Image as ImageIcon, KeyRound, Laptop, Moon, RefreshCw, Server, SlidersHorizontal, Sun, X } from "lucide-react";
+import { Check, Cpu, Globe, Image as ImageIcon, KeyRound, Laptop, Moon, RefreshCw, Server, SlidersHorizontal, Sparkles, Sun, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
@@ -15,7 +15,7 @@ import {
   MorphingDialogTrigger,
 } from "@/components/ui/morphing-dialog";
 import { open as dialogSpring } from "@/motion";
-import { post, read, type ConfigSnap, type WorkspaceMode } from "./data";
+import { post, read, type AntigravityIssue, type AntigravityModel, type ConfigSnap, type WorkspaceMode } from "./data";
 import { OpenCloudSettings } from "./ship/OpenCloudSettings";
 
 export function SettingsDialog({
@@ -33,7 +33,13 @@ export function SettingsDialog({
   onThemeChange: (t: "light" | "dark") => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onApplied: (next: { studioConnected: boolean; modelConfigured: boolean; workspaceMode: WorkspaceMode }) => void;
+  onApplied: (next: {
+    studioConnected: boolean;
+    modelConfigured: boolean;
+    workspaceMode: WorkspaceMode;
+    modelId?: string;
+    antigravityIssue?: AntigravityIssue | null;
+  }) => void;
   compactLabel?: string;
   workspaceMode: WorkspaceMode;
   showTrigger?: boolean;
@@ -41,9 +47,13 @@ export function SettingsDialog({
 }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [refreshingModels, setRefreshingModels] = useState(false);
   const [loadErr, setLoadErr] = useState("");
   const [cfg, setCfg] = useState<ConfigSnap | null>(null);
 
+  const [provider, setProvider] = useState<"antigravity" | "openai">("openai");
+  const [agyModels, setAgyModels] = useState<AntigravityModel[]>([]);
+  const [agyIssue, setAgyIssue] = useState<AntigravityIssue | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
   const [modelId, setModelId] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -64,8 +74,15 @@ export function SettingsDialog({
     try {
       const data = await read<ConfigSnap>("/api/config");
       setCfg(data);
+      const nextProv: "antigravity" | "openai" =
+        data.provider === "antigravity" || (data.provider !== "openai" && data.antigravity_available)
+          ? "antigravity"
+          : "openai";
+      setProvider(nextProv);
+      setAgyModels(data.antigravity_models ?? []);
+      setAgyIssue(data.antigravity_issue ?? null);
       setBaseUrl(data.base_url || "");
-      setModelId(data.model_id || "");
+      setModelId(data.model_id || (nextProv === "antigravity" ? data.antigravity_default_model || "gemini-4-hydrogen-high" : ""));
       setApiKey("");
       setClearKey(false);
       setMcpCommand(data.mcp_command || "");
@@ -90,6 +107,19 @@ export function SettingsDialog({
     if (open) void loadConfig();
   }, [open, loadConfig]);
 
+  const refreshAgyModels = async () => {
+    setRefreshingModels(true);
+    try {
+      const m = await read<{ models?: AntigravityModel[]; issue?: AntigravityIssue | null }>("/api/models?refresh=1");
+      if (Array.isArray(m.models)) setAgyModels(m.models);
+      if (m.issue !== undefined) setAgyIssue(m.issue);
+    } catch {
+      toast.error("Could not refresh Antigravity models.");
+    } finally {
+      setRefreshingModels(false);
+    }
+  };
+
   const saveConfig = async () => {
     setSaving(true);
     setLoadErr("");
@@ -101,6 +131,7 @@ export function SettingsDialog({
         openai_image_api_key: openaiImageKey.trim() || undefined,
         clear_openai_image_api_key: clearOpenaiImageKey,
       };
+      const defaultAgy = cfg?.antigravity_default_model || "gemini-4-hydrogen-high";
       const payload: Record<string, unknown> = cfg?.web_engine
         ? {
             web_mode: webMode,
@@ -112,10 +143,11 @@ export function SettingsDialog({
             ...imagePayload,
           }
         : {
-            base_url: baseUrl.trim(),
-            model_id: modelId.trim(),
-            api_key: apiKey.trim() || undefined,
-            clear_api_key: clearKey,
+            provider,
+            base_url: provider === "antigravity" ? "agy://antigravity" : baseUrl.trim(),
+            model_id: modelId.trim() || (provider === "antigravity" ? defaultAgy : ""),
+            api_key: provider === "antigravity" ? undefined : apiKey.trim() || undefined,
+            clear_api_key: provider === "antigravity" ? false : clearKey,
             mcp_command: mcpCommand.trim(),
             workspace_mode: wsMode,
             ...imagePayload,
@@ -126,6 +158,8 @@ export function SettingsDialog({
         return;
       }
       setCfg(res);
+      if (res.antigravity_models) setAgyModels(res.antigravity_models);
+      setAgyIssue(res.antigravity_issue ?? null);
       setApiKey("");
       setClearKey(false);
       setGeminiApiKey("");
@@ -136,8 +170,11 @@ export function SettingsDialog({
         studioConnected: res.studio_connected,
         modelConfigured: res.model_configured,
         workspaceMode: res.active_backend,
+        modelId: res.model_id,
+        antigravityIssue: res.antigravity_issue ?? null,
       });
       toast.success(cfg?.web_engine ? "Workspace engine updated" : "Model & Studio settings applied");
+      onOpenChange(false);
     } catch {
       setLoadErr("Could not reach the settings endpoint.");
     } finally {
@@ -146,6 +183,7 @@ export function SettingsDialog({
   };
 
   const pickGateway = (gBase: string, gModel: string) => {
+    setProvider("openai");
     setBaseUrl(gBase);
     setModelId(gModel);
     setApiKey("");
@@ -258,7 +296,7 @@ export function SettingsDialog({
                         variant={webMode === opt.id ? "default" : "outline"}
                         size="sm"
                         onClick={() => setWebMode(opt.id)}
-                        className="h-auto flex-col items-start gap-0.5 py-2 text-left max-md:min-h-11"
+                        className="h-auto flex-col items-start gap-0.5 whitespace-normal py-2 text-left sm:h-auto max-md:min-h-11"
                       >
                         <span className="text-xs font-medium">{opt.label}</span>
                         <span className={`text-xs ${webMode === opt.id ? "text-blue-fg" : "text-ink-2"}`}>{opt.sub}</span>
@@ -331,91 +369,179 @@ export function SettingsDialog({
                       <Button
                         variant="ghost"
                         size="xs"
-                        onClick={() => void loadConfig()}
+                        disabled={refreshingModels}
+                        onClick={() => void (provider === "antigravity" ? refreshAgyModels() : loadConfig())}
                         className="text-ink-2 hover:text-ink max-md:min-h-11"
                       >
-                        <RefreshCw className="size-3" strokeWidth={1.5} aria-hidden />
-                        Probe gateways
+                        <RefreshCw className={`size-3 ${refreshingModels ? "animate-spin" : ""}`} strokeWidth={1.5} aria-hidden />
+                        {provider === "antigravity" ? "Refresh models" : "Probe gateways"}
                       </Button>
                     </div>
 
-                    {cfg && cfg.detected_gateways.length > 0 && (
-                      <div className="flex flex-col gap-1.5">
-                        <span className="text-xs text-ink-2">Running local gateways (no API key needed)</span>
-                        <div className="flex flex-wrap gap-1.5">
-                          {cfg.detected_gateways.map((gw) => {
-                            const active = baseUrl.trim() === gw.base_url && modelId.trim() === gw.model_id;
-                            return (
-                              <Button
-                                key={`${gw.base_url}-${gw.model_id}`}
-                                variant={active ? "default" : "outline"}
-                                size="xs"
-                                onClick={() => pickGateway(gw.base_url, gw.model_id)}
-                                className="max-md:min-h-11"
-                              >
-                                {active && <Check className="size-3" strokeWidth={2} aria-hidden />}
-                                <span className="font-mono text-xs">{gw.model_id}</span>
-                              </Button>
-                            );
-                          })}
-                        </div>
+                    {(cfg?.antigravity_available || provider === "antigravity") && (
+                      <SegmentedControl aria-label="Model provider" size="sm" className="w-full">
+                        <SegmentedControlItem
+                          data-checked={provider === "antigravity" ? "" : undefined}
+                          aria-pressed={provider === "antigravity"}
+                          onClick={() => {
+                            setProvider("antigravity");
+                            if (!modelId.trim() || baseUrl.startsWith("http")) {
+                              setModelId(cfg?.antigravity_default_model || "gemini-4-hydrogen-high");
+                            }
+                          }}
+                          className="flex-1 justify-center gap-1.5 max-md:!h-11"
+                        >
+                          <Sparkles className="size-3.5" strokeWidth={1.5} aria-hidden />
+                          Antigravity
+                        </SegmentedControlItem>
+                        <SegmentedControlItem
+                          data-checked={provider === "openai" ? "" : undefined}
+                          aria-pressed={provider === "openai"}
+                          onClick={() => {
+                            setProvider("openai");
+                            if (baseUrl === "agy://antigravity") setBaseUrl("");
+                          }}
+                          className="flex-1 justify-center gap-1.5 max-md:!h-11"
+                        >
+                          <Globe className="size-3.5" strokeWidth={1.5} aria-hidden />
+                          OpenAI-compatible
+                        </SegmentedControlItem>
+                      </SegmentedControl>
+                    )}
+
+                    {agyIssue && (
+                      <div
+                        role="alert"
+                        data-agy-issue
+                        className={`flex flex-wrap items-center justify-between gap-2 rounded-card px-3 py-2 text-sm ${agyIssue.kind === "quota" ? "bg-pill-warn-bg text-pill-warn-fg" : "bg-pill-pro-bg text-pill-pro-fg"}`}
+                      >
+                        <span>{agyIssue.message}</span>
+                        {agyIssue.resets_in && (
+                          <span className="font-mono text-xs font-medium">resets in {agyIssue.resets_in}</span>
+                        )}
                       </div>
                     )}
 
-                    <label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-                      <span>OpenAI-compatible Base URL</span>
-                      <Input
-                        value={baseUrl}
-                        onChange={(e) => setBaseUrl(e.target.value)}
-                        placeholder="http://127.0.0.1:11434/v1"
-                        className="font-mono text-xs"
-                      />
-                    </label>
-
-                    <label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-                      <span>Model ID</span>
-                      <Input
-                        value={modelId}
-                        onChange={(e) => setModelId(e.target.value)}
-                        placeholder="qwen2.5:3b"
-                        className="font-mono text-xs"
-                      />
-                    </label>
-
-                    <div className="flex flex-col gap-1.5">
-                      <label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-                        <span className="inline-flex items-center gap-1">
-                          <KeyRound className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
-                          API Key (optional on 127.0.0.1 / localhost; required for remote hosts)
-                        </span>
-                        <Input
-                          type="password"
-                          value={apiKey}
-                          onChange={(e) => {
-                            setApiKey(e.target.value);
-                            setClearKey(false);
-                          }}
-                          placeholder={
-                            cfg?.has_api_key && !clearKey
-                              ? `Saved (${cfg.api_key_masked || "configured"}) — leave blank to keep`
-                              : "Leave blank for loopback local gateways"
-                          }
-                          className="font-mono text-xs"
-                        />
-                      </label>
-                      {cfg?.has_api_key && !clearKey && (
-                        <div>
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            onClick={() => setClearKey(true)}
-                            className="text-ink-2 hover:text-ink max-md:min-h-11"
-                          >
-                            Clear saved API key
-                          </Button>
+                    {provider === "antigravity" ? (
+                      <div className="flex flex-col gap-2" data-agy-picker>
+                        <div className="flex items-center justify-between gap-2 text-xs text-ink-2">
+                          <span>Select an Antigravity model (Hydrogen default)</span>
+                          <span className="font-mono text-ink">{modelId || cfg?.antigravity_default_model || "gemini-4-hydrogen-high"}</span>
                         </div>
-                      )}
-                    </div>
+                        {agyModels.length > 0 ? (
+                          <div className="grid max-h-44 grid-cols-1 gap-1.5 overflow-y-auto sm:grid-cols-2">
+                            {agyModels.map((m) => {
+                              const active = (modelId.trim() || cfg?.antigravity_default_model || "gemini-4-hydrogen-high") === m.id;
+                              return (
+                                <Button
+                                  key={m.id}
+                                  variant={active ? "default" : "outline"}
+                                  size="sm"
+                                  onClick={() => setModelId(m.id)}
+                                  className="h-auto min-h-11 flex-col items-start gap-0.5 py-2 text-left sm:h-auto"
+                                >
+                                  <span className="flex w-full items-center justify-between gap-1 text-xs font-medium">
+                                    <span className="truncate">{m.label || m.id}</span>
+                                    {active && <Check className="size-3 flex-none" strokeWidth={2} aria-hidden />}
+                                  </span>
+                                  <span className={`truncate font-mono text-xs ${active ? "text-blue-fg" : "text-ink-2"}`}>{m.id}</span>
+                                </Button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+                            <span>Antigravity Model ID</span>
+                            <Input
+                              value={modelId}
+                              onChange={(e) => setModelId(e.target.value)}
+                              placeholder={cfg?.antigravity_default_model || "gemini-4-hydrogen-high"}
+                              className="font-mono text-xs"
+                            />
+                          </label>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        {cfg && cfg.detected_gateways.length > 0 && (
+                          <div className="flex flex-col gap-1.5">
+                            <span className="text-xs text-ink-2">Running local gateways (no API key needed)</span>
+                            <div className="flex flex-wrap gap-1.5">
+                              {cfg.detected_gateways.map((gw) => {
+                                const active = baseUrl.trim() === gw.base_url && modelId.trim() === gw.model_id;
+                                return (
+                                  <Button
+                                    key={`${gw.base_url}-${gw.model_id}`}
+                                    variant={active ? "default" : "outline"}
+                                    size="xs"
+                                    onClick={() => pickGateway(gw.base_url, gw.model_id)}
+                                    className="max-md:min-h-11"
+                                  >
+                                    {active && <Check className="size-3" strokeWidth={2} aria-hidden />}
+                                    <span className="font-mono text-xs">{gw.model_id}</span>
+                                  </Button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        <label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+                          <span>OpenAI-compatible Base URL</span>
+                          <Input
+                            value={baseUrl}
+                            onChange={(e) => setBaseUrl(e.target.value)}
+                            placeholder="http://127.0.0.1:11434/v1"
+                            className="font-mono text-xs"
+                          />
+                        </label>
+
+                        <label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+                          <span>Model ID</span>
+                          <Input
+                            value={modelId}
+                            onChange={(e) => setModelId(e.target.value)}
+                            placeholder="qwen2.5:3b"
+                            className="font-mono text-xs"
+                          />
+                        </label>
+
+                        <div className="flex flex-col gap-1.5">
+                          <label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+                            <span className="inline-flex items-center gap-1">
+                              <KeyRound className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
+                              API Key (optional on 127.0.0.1 / localhost; required for remote hosts)
+                            </span>
+                            <Input
+                              type="password"
+                              value={apiKey}
+                              onChange={(e) => {
+                                setApiKey(e.target.value);
+                                setClearKey(false);
+                              }}
+                              placeholder={
+                                cfg?.has_api_key && !clearKey
+                                  ? `Saved (${cfg.api_key_masked || "configured"}) — leave blank to keep`
+                                  : "Leave blank for loopback local gateways"
+                              }
+                              className="font-mono text-xs"
+                            />
+                          </label>
+                          {cfg?.has_api_key && !clearKey && (
+                            <div>
+                              <Button
+                                variant="ghost"
+                                size="xs"
+                                onClick={() => setClearKey(true)}
+                                className="text-ink-2 hover:text-ink max-md:min-h-11"
+                              >
+                                Clear saved API key
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </section>
 
                   {/* 3. Studio & Local Place Backend */}
@@ -425,8 +551,14 @@ export function SettingsDialog({
                         <Server className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
                         <h3 className="text-sm font-medium text-ink">Roblox Studio &amp; Place Backend</h3>
                       </div>
-                      <Pill className="bg-tag-sky-bg px-2 py-0.5 font-mono text-xs text-tag-sky-fg">
-                        {cfg?.active_backend || workspaceMode}
+                      <Pill className="bg-tag-sky-bg px-2 py-0.5 text-xs text-tag-sky-fg">
+                        {cfg?.active_backend === "studio_mcp"
+                          ? "Studio MCP"
+                          : cfg?.active_backend === "local_place"
+                            ? "Local Place"
+                            : cfg?.active_backend === "browser_place"
+                              ? "Browser Engine"
+                              : backendLabel}
                       </Pill>
                     </div>
 
@@ -443,7 +575,7 @@ export function SettingsDialog({
                           variant={wsMode === opt.id ? "default" : "outline"}
                           size="sm"
                           onClick={() => setWsMode(opt.id)}
-                          className="h-auto flex-col items-start gap-0.5 py-2 text-left max-md:min-h-11"
+                          className="h-auto flex-col items-start gap-0.5 whitespace-normal py-2 text-left sm:h-auto max-md:min-h-11"
                         >
                           <span className="text-xs font-medium">{opt.label}</span>
                           <span className={`text-xs ${wsMode === opt.id ? "text-blue-fg" : "text-ink-2"}`}>{opt.sub}</span>
@@ -511,7 +643,7 @@ export function SettingsDialog({
                         variant={imageProvider === opt.id ? "default" : "outline"}
                         size="sm"
                         onClick={() => setImageProvider(opt.id)}
-                        className="h-auto flex-col items-start gap-0.5 py-2 text-left max-md:min-h-11"
+                        className="h-auto flex-col items-start gap-0.5 whitespace-normal py-2 text-left sm:h-auto max-md:min-h-11"
                       >
                         <span className="text-xs font-medium">{opt.label}</span>
                         <span className={`text-xs ${imageProvider === opt.id ? "text-blue-fg" : "text-ink-2"}`}>{opt.sub}</span>
