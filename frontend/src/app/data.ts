@@ -423,6 +423,208 @@ export function isV060OrNewer(version: string): boolean {
   return maj > 0 || min >= 6;
 }
 
+export function isV070OrNewer(version: string): boolean {
+  const m = version.trim().match(/^(\d+)\.(\d+)/);
+  if (!m) return false;
+  const maj = Number(m[1]);
+  const min = Number(m[2]);
+  return maj > 0 || min >= 7;
+}
+
+export type StudioActionKind =
+  | "part_created"
+  | "part_updated"
+  | "script_written"
+  | "decal_bound"
+  | "luau_executed"
+  | "playtest_started"
+  | "playtest_log"
+  | "playtest_passed"
+  | "playtest_failed"
+  | "studio_frame"
+  | "camera_focus"
+  | "reverted"
+  | "imported"
+  | "restored";
+
+export type StudioMode = "live_mcp" | "local_place" | "browser_place";
+
+export type StudioActionEvent = {
+  seq: number;
+  ts_ms: number;
+  kind: StudioActionKind;
+  studio_mode: StudioMode;
+  path: string;
+  class_name: string;
+  position?: [number, number, number] | null;
+  size?: [number, number, number] | null;
+  color?: string | null;
+  summary: string;
+  code_snippet?: string | null;
+  console_line?: string | null;
+  frame_seq?: number | null;
+  instance_count?: number;
+  script_count?: number;
+};
+
+export type StudioActionsSnapshot = {
+  studio_mode: StudioMode;
+  has_live_frame: boolean;
+  frame_seq: number;
+  actions: StudioActionEvent[];
+};
+
+const STUDIO_KIND_MAP: Record<string, StudioActionKind> = {
+  part_created: "part_created",
+  partcreated: "part_created",
+  part_updated: "part_updated",
+  partupdated: "part_updated",
+  script_written: "script_written",
+  scriptwritten: "script_written",
+  decal_bound: "decal_bound",
+  decalbound: "decal_bound",
+  luau_executed: "luau_executed",
+  luauexecuted: "luau_executed",
+  playtest_started: "playtest_started",
+  playteststarted: "playtest_started",
+  playtest_log: "playtest_log",
+  playtestlog: "playtest_log",
+  playtest_passed: "playtest_passed",
+  playtestpassed: "playtest_passed",
+  playtest_failed: "playtest_failed",
+  playtestfailed: "playtest_failed",
+  studio_frame: "studio_frame",
+  studioframe: "studio_frame",
+  camera_focus: "camera_focus",
+  camerafocus: "camera_focus",
+  reverted: "reverted",
+  imported: "imported",
+  restored: "restored",
+};
+
+function normalizeVec3(v: unknown): [number, number, number] | null {
+  if (Array.isArray(v) && v.length >= 3 && v.every((n) => typeof n === "number" && Number.isFinite(n))) {
+    return [v[0], v[1], v[2]];
+  }
+  return null;
+}
+
+export function normalizeStudioAction(raw: unknown): StudioActionEvent | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const rawKind = String(o.kind || "part_created").trim();
+  const kindKey = rawKind.toLowerCase().replace(/[^a-z0-9_]/g, "");
+  const kind = STUDIO_KIND_MAP[kindKey] || STUDIO_KIND_MAP[kindKey.replace(/_/g, "")] || "part_created";
+  const rawMode = String(o.studio_mode || "local_place");
+  const studio_mode: StudioMode =
+    rawMode === "live_mcp" || rawMode === "local_place" || rawMode === "browser_place" ? rawMode : "local_place";
+  return {
+    seq: typeof o.seq === "number" && Number.isFinite(o.seq) ? o.seq : Date.now(),
+    ts_ms: typeof o.ts_ms === "number" && Number.isFinite(o.ts_ms) ? o.ts_ms : Date.now(),
+    kind,
+    studio_mode,
+    path: typeof o.path === "string" ? o.path : "",
+    class_name: typeof o.class_name === "string" ? o.class_name : "Instance",
+    position: normalizeVec3(o.position),
+    size: normalizeVec3(o.size),
+    color: typeof o.color === "string" && o.color.trim() ? o.color.trim() : null,
+    summary: typeof o.summary === "string" && o.summary.trim() ? o.summary.trim() : `${kind} ${typeof o.path === "string" ? o.path : ""}`.trim(),
+    code_snippet: typeof o.code_snippet === "string" ? o.code_snippet : null,
+    console_line: typeof o.console_line === "string" ? o.console_line : null,
+    frame_seq: typeof o.frame_seq === "number" && Number.isFinite(o.frame_seq) ? o.frame_seq : null,
+    instance_count: typeof o.instance_count === "number" && Number.isFinite(o.instance_count) ? o.instance_count : undefined,
+    script_count: typeof o.script_count === "number" && Number.isFinite(o.script_count) ? o.script_count : undefined,
+  };
+}
+
+export function normalizeStudioActionsResponse(raw: unknown): StudioActionsSnapshot {
+  const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const rawMode = String(o.studio_mode || "local_place");
+  const studio_mode: StudioMode =
+    rawMode === "live_mcp" || rawMode === "local_place" || rawMode === "browser_place" ? rawMode : "local_place";
+  const list = Array.isArray(o.actions) ? o.actions : [];
+  const actions: StudioActionEvent[] = [];
+  for (const item of list) {
+    const norm = normalizeStudioAction(item);
+    if (norm) actions.push(norm);
+  }
+  return {
+    studio_mode,
+    has_live_frame: o.has_live_frame === true,
+    frame_seq: typeof o.frame_seq === "number" && Number.isFinite(o.frame_seq) ? o.frame_seq : 0,
+    actions,
+  };
+}
+
+/**
+ * Subscribe to GET /api/studio/stream (SSE) for real-time agent Studio mutations & MCP frames.
+ * Only opens EventSource when enabled (v0.7.0+ or standalone web engine) to keep zero 404 errors on older builds.
+ */
+export function subscribeStudioStream(opts: {
+  enabled: boolean;
+  since?: number;
+  onAction: (ev: StudioActionEvent) => void;
+  onFrame: (info: { seq: number; mime?: string; width?: number; height?: number; source?: string }) => void;
+  onStatus?: (info: { studio_mode?: StudioMode; has_live_frame?: boolean; frame_seq?: number }) => void;
+}): () => void {
+  if (!opts.enabled || typeof EventSource === "undefined") {
+    return () => {};
+  }
+  let closed = false;
+  let es: EventSource | null = null;
+  try {
+    const url = opts.since && opts.since > 0 ? `/api/studio/stream?since=${opts.since}` : "/api/studio/stream";
+    es = new EventSource(url);
+    es.addEventListener("studio_action", (e) => {
+      if (closed) return;
+      try {
+        const parsed = JSON.parse((e as MessageEvent).data);
+        const norm = normalizeStudioAction(parsed);
+        if (norm) opts.onAction(norm);
+      } catch {
+        /* ignore malformed event */
+      }
+    });
+    es.addEventListener("studio_frame", (e) => {
+      if (closed) return;
+      try {
+        const parsed = JSON.parse((e as MessageEvent).data) as Record<string, unknown>;
+        const seq = typeof parsed.seq === "number" ? parsed.seq : typeof parsed.frame_seq === "number" ? parsed.frame_seq : Date.now();
+        opts.onFrame({
+          seq,
+          mime: typeof parsed.mime === "string" ? parsed.mime : undefined,
+          width: typeof parsed.width === "number" ? parsed.width : undefined,
+          height: typeof parsed.height === "number" ? parsed.height : undefined,
+          source: typeof parsed.source === "string" ? parsed.source : undefined,
+        });
+      } catch {
+        /* ignore */
+      }
+    });
+    es.addEventListener("status", (e) => {
+      if (closed || !opts.onStatus) return;
+      try {
+        const parsed = JSON.parse((e as MessageEvent).data) as Record<string, unknown>;
+        const rawMode = typeof parsed.studio_mode === "string" ? parsed.studio_mode : undefined;
+        opts.onStatus({
+          studio_mode:
+            rawMode === "live_mcp" || rawMode === "local_place" || rawMode === "browser_place" ? rawMode : undefined,
+          has_live_frame: typeof parsed.has_live_frame === "boolean" ? parsed.has_live_frame : undefined,
+          frame_seq: typeof parsed.frame_seq === "number" ? parsed.frame_seq : undefined,
+        });
+      } catch {
+        /* ignore */
+      }
+    });
+  } catch {
+    es = null;
+  }
+  return () => {
+    closed = true;
+    es?.close();
+  };
+}
+
 /**
  * Subscribe to GET /api/build/stream (SSE) during an active build when supported.
  * Gracefully falls back to timed phase progression when SSE isn't active yet
