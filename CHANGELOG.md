@@ -6,6 +6,10 @@ itself from the newest release (see README, "Versions and updates").
 
 ## Unreleased (0.11.0)
 
+- **Projects, Ship & Teamwork Studio IDE UI + Playable Stage Removal (`frontend/src/app/ship/`, `frontend/src/app/teamwork/`, `frontend/src/App.tsx`, `SettingsDialog.tsx`):**
+  - Removed `Playable Stage` (`StagePreview.tsx`) completely across UI and docs.
+  - Added Left-dock **Projects** rail (create/open/build/diff/sync), **Ship** workspace (`Publish & Monetize` with human price-approval gate & inline Universe/Place ID dialog, `Assets` queue/lock/moderation, `Playtests` report & screenshot viewer), **Teamwork** multi-agent board pane (live SSE feed, roster states, tasks & file claims, traces, human post box, quota banner), **Antigravity** model picker with quota/reset display, and write-only masked **Roblox Open Cloud** Settings.
+  - Fixed live UX audit items (#25–#28): unclipped Settings buttons & close on Save, `bottom-right` toasts, wrapped drawer output, `OpenRO` naming, full-width Luau editor, auto-attached selection context chips, Color swatch + `Enum.Material` picker, and relocated Undo beside `Effort`.
 - **Antigravity CLI Model Provider — Gemini 4 Hydrogen Default (`src/model.rs`, `src/config.rs`, `src/server.rs`, `tests/v011_agent_agy.rs`):**
   - Added pure-text Antigravity CLI (`agy -p ... --output-format stream-json`) model provider defaulting to `gemini-4-hydrogen-high`, with cached `agy models` discovery (`GET /api/models`), persisted provider/model selection (`GET`/`POST /api/config`), strict deny-all tool sandbox (`DATA_DIR/agy-sandbox`), and clear quota/reset-time error surfacing in `/api/status` and `/api/chat`.
 
