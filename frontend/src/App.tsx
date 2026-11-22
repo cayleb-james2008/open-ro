@@ -19,6 +19,7 @@ import {
   ExternalLink,
   FolderTree,
   Menu,
+  Palette,
   Plus,
   RefreshCw,
   Search,
@@ -48,6 +49,7 @@ import {
   RELEASES_URL,
   SEND_FAILED,
   isV050OrNewer,
+  isV060OrNewer,
   normalizeChatList,
   normalizeIdeas,
   normalizePlace,
@@ -66,7 +68,16 @@ import {
   type PlaceSnapshot,
   type WorkspaceMode,
 } from "./app/data";
-import { BlueprintWorkbench } from "./app/Blueprints";
+import { BlueprintWorkbench, FeaturedApexBanner } from "./app/Blueprints";
+import { CardArtStudio } from "./app/CardArtStudio";
+import {
+  APEX_CARDS,
+  ART_KNOWLEDGE_FALLBACK,
+  normalizeArtKnowledge,
+  normalizeAssetList,
+  type ArtKnowledgeGuide,
+  type CardAssetRecord,
+} from "./app/cardCatalog";
 import { CommandPalette } from "./app/CommandPalette";
 import { computePlaceDiff, type LuauDiagnostic } from "./app/luauAudit";
 import { parseRbxlxXml, serializeRbxlx } from "./app/rbxlxCodec";
@@ -175,6 +186,7 @@ export function App() {
   const [shelfCollapsed, setShelfCollapsed] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
+  const [artStudioOpen, setArtStudioOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(() => {
     try {
       return new URLSearchParams(window.location.search).get("settings") === "1";
@@ -188,6 +200,9 @@ export function App() {
   const [activeModelLabel, setActiveModelLabel] = useState("");
   const [version, setVersion] = useState("");
   const [v050Ready, setV050Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
+  const [v060Ready, setV060Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
+  const [cardAssets, setCardAssets] = useState<CardAssetRecord[]>(APEX_CARDS);
+  const [artKnowledge, setArtKnowledge] = useState<ArtKnowledgeGuide>(ART_KNOWLEDGE_FALLBACK);
   const [lastTriedIdea, setLastTriedIdea] = useState<Idea | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [buildPhase, setBuildPhase] = useState<BuildStreamPhase | null>(null);
@@ -385,6 +400,23 @@ export function App() {
     [v050Ready],
   );
 
+  const refreshCardStudio = useCallback(
+    async (forceServer = false) => {
+      if (!v060Ready && !forceServer) return;
+      try {
+        const [rawAssets, rawKnowledge] = await Promise.all([
+          read("/api/assets").catch(() => null),
+          read("/api/art-knowledge").catch(() => null),
+        ]);
+        if (rawAssets) setCardAssets(normalizeAssetList(rawAssets));
+        if (rawKnowledge) setArtKnowledge(normalizeArtKnowledge(rawKnowledge));
+      } catch {
+        /* keep bundled Nano Banana manifest & fallback style guide */
+      }
+    },
+    [v060Ready],
+  );
+
   const refreshAll = useCallback(async () => {
     const [, , nextPlace] = await Promise.all([refreshChats(), refreshThread(), refreshPlace()]);
     await refreshIdeas();
@@ -392,8 +424,11 @@ export function App() {
       void refreshSnapshots(true);
       if (nextPlace) void refreshDiagnostics(true);
     }
+    if (v060Ready) {
+      void refreshCardStudio(true);
+    }
     return nextPlace;
-  }, [refreshChats, refreshThread, refreshPlace, refreshIdeas, refreshSnapshots, refreshDiagnostics, v050Ready]);
+  }, [refreshChats, refreshThread, refreshPlace, refreshIdeas, refreshSnapshots, refreshDiagnostics, refreshCardStudio, v050Ready, v060Ready]);
 
   const pushLocalSnapshot = useCallback((label: string, snapPlace: Place | null, diff?: PlaceDiff | null) => {
     if (!snapPlace) return;
@@ -420,6 +455,10 @@ export function App() {
             void refreshSnapshots(true);
             void refreshDiagnostics(true);
           }
+          if (isV060OrNewer(v.version)) {
+            setV060Ready(true);
+            void refreshCardStudio(true);
+          }
         }
       })
       .catch(() => {});
@@ -430,6 +469,8 @@ export function App() {
       model_id?: unknown;
       version?: unknown;
       sse_build_stream?: unknown;
+      assets_api?: unknown;
+      skills_count?: unknown;
     }>("/api/status")
       .then((s) => {
         if (!s || typeof s !== "object") return;
@@ -448,6 +489,14 @@ export function App() {
         }
         if (s.sse_build_stream === true || (typeof s.version === "string" && isV050OrNewer(s.version))) {
           setV050Ready(true);
+        }
+        if (
+          s.assets_api === true ||
+          (typeof s.skills_count === "number" && s.skills_count >= 28) ||
+          (typeof s.version === "string" && isV060OrNewer(s.version))
+        ) {
+          setV060Ready(true);
+          void refreshCardStudio(true);
         }
       })
       .catch(() => {});
@@ -682,6 +731,56 @@ export function App() {
     }
     await submitPromptText(sys.prompt, false);
   };
+
+  const serverApexIdea = useMemo(
+    () => ideas.find((i) => i.id === "anime-card-battles-apex" || /anime card battles/i.test(i.title)) || null,
+    [ideas],
+  );
+  const workbenchIdeas = useMemo(
+    () => ideas.filter((i) => i.id !== "anime-card-battles-apex" && !/anime card battles/i.test(i.title)),
+    [ideas],
+  );
+
+  const buildApexCardBattles = async () => {
+    if (!canBuild || busy) return;
+    const apexIdea: Idea = serverApexIdea || {
+      id: "anime-card-battles-apex",
+      title: "Anime Card Battles: Apex",
+      pitch:
+        "Complete Roblox anime card battler: weighted 7-tier gacha packs with pity, foils & promo codes, 4-card deck synergies & star fusion, tactical boss arena, 50-floor tower & rebirth, live server weather & luck potions, and a 3D card gallery lobby.",
+      skills: [
+        "card_gacha_roller",
+        "deck_builder",
+        "card_battle_arena",
+        "tower_progression",
+        "potions_weather",
+        "card_gallery_world",
+      ],
+    };
+    if (v060Ready || serverApexIdea) {
+      await buildIdea(apexIdea);
+      return;
+    }
+    await submitPromptText(
+      "Build Anime Card Battles: Rebirth — Apex Edition with weighted 7-tier gacha pack roller, 4-card deck with star fusion and rebirth, tactical boss battle arena, 50-floor tower progression, server weather and luck potions, and a 3D card gallery lobby.",
+      false,
+    );
+  };
+
+  const handleCardAssetAdded = (asset: CardAssetRecord) => {
+    setCardAssets((prev) => {
+      const rest = prev.filter((a) => a.card_id !== asset.card_id);
+      return [asset, ...rest];
+    });
+  };
+
+  const apexBuilt =
+    builtTitles.some((t) => /anime card battles/i.test(t)) ||
+    Boolean(
+      place &&
+        place !== "error" &&
+        Object.keys(place.scripts || {}).some((k) => /CardGacha|CardBattle|TowerProgression/i.test(k)),
+    );
 
   const send = (e: FormEvent) => {
     e.preventDefault();
@@ -1011,6 +1110,24 @@ export function App() {
           </span>
           <Kbd className="px-1.5 font-mono">⌘K</Kbd>
         </Button>
+
+        <Button
+          variant="outline"
+          onClick={() => {
+            setMenuOpen(false);
+            setArtStudioOpen(true);
+          }}
+          aria-label="Open Card Art Studio"
+          className="w-full justify-between bg-board/50 font-normal text-ink-2 hover:bg-board hover:text-ink max-md:min-h-11"
+        >
+          <span className="inline-flex min-w-0 items-center gap-2">
+            <Palette className="size-3.5 flex-none text-icon" strokeWidth={1.5} aria-hidden />
+            <span className="truncate text-sm">Card Art Studio</span>
+          </span>
+          <span className="rounded-chip bg-surface px-1.5 py-0.5 font-mono text-xs tabular-nums text-ink-2">
+            {cardAssets.length}
+          </span>
+        </Button>
       </div>
 
       <InputGroup className="bg-board/45">
@@ -1120,12 +1237,12 @@ export function App() {
 
         <div className="flex items-center justify-between gap-2 text-xs text-ink-2">
           <a
-            href={RELEASES_URL + (version || "0.5.0")}
+            href={RELEASES_URL + (version || "0.6.0")}
             target="_blank"
             rel="noreferrer"
             className="inline-flex min-h-11 items-center gap-1 rounded-sm px-1 font-mono text-xs text-ink-2 outline-none hover:text-ink hover:underline md:min-h-7"
           >
-            <span>OpenRO v{version || "0.5.1"}</span>
+            <span>OpenRO v{version || "0.6.0"}</span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
           <span className="truncate text-right text-xs text-ink-3">
@@ -1201,7 +1318,7 @@ export function App() {
                       <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/30" />
                       <Drawer.Content
                         onEscapeKeyDown={(e) => {
-                          if (settingsOpen || paletteOpen || snapshotsOpen) {
+                          if (settingsOpen || paletteOpen || snapshotsOpen || artStudioOpen) {
                             e.preventDefault();
                             return;
                           }
@@ -1315,7 +1432,7 @@ export function App() {
             aria-busy={!chats && !chatsError}
             className="min-h-0 flex-1 overflow-y-auto"
           >
-            <div className="mx-auto flex w-full max-w-[840px] flex-col gap-5 p-3.5 md:p-6">
+            <div className="mx-auto flex w-full max-w-[840px] flex-col gap-3.5 p-3.5 md:px-6 md:py-4">
               {threadError ? (
                 <div role="alert" className="flex flex-col items-start gap-3 rounded-card border border-hairline bg-surface p-4">
                   <strong className="text-ui font-medium text-pill-pro-fg">Could not load the conversation.</strong>
@@ -1327,13 +1444,22 @@ export function App() {
               ) : !hasConversation ? (
                 <>
                   <BlueprintWorkbench
-                    ideas={ideas}
+                    ideas={workbenchIdeas}
                     builtTitles={builtTitles}
                     canBuild={canBuild}
                     cantBuildWhy={cantBuildWhy}
                     busy={busy}
                     buildingTitle={building?.build}
                     onBuild={(idea) => void buildIdea(idea)}
+                  />
+                  <FeaturedApexBanner
+                    assets={cardAssets}
+                    built={apexBuilt}
+                    canBuild={canBuild}
+                    busy={busy}
+                    building={Boolean(building?.build && /anime card battles/i.test(building.build))}
+                    onBuildApex={() => void buildApexCardBattles()}
+                    onOpenArtStudio={() => setArtStudioOpen(true)}
                   />
                   <SystemLibrary
                     place={place}
@@ -1354,6 +1480,8 @@ export function App() {
                       theme={theme}
                       selectedPath={selectedPath}
                       onSelectPart={handleSelectPartFromStage}
+                      assets={cardAssets}
+                      onOpenArtStudio={() => setArtStudioOpen(true)}
                     />
                   )}
                   <ThreadFeed
@@ -1370,9 +1498,9 @@ export function App() {
                     buildPhase={buildPhase}
                     onBuild={(idea) => void buildIdea(idea)}
                   />
-                  {!building && ideas.some((i) => !builtTitles.includes(i.title)) && !lines.some((l) => l.startsWith("OpenRO: That landed.")) && (
+                  {!building && workbenchIdeas.some((i) => !builtTitles.includes(i.title)) && !lines.some((l) => l.startsWith("OpenRO: That landed.")) && (
                     <BlueprintWorkbench
-                      ideas={ideas}
+                      ideas={workbenchIdeas}
                       builtTitles={builtTitles}
                       canBuild={canBuild}
                       cantBuildWhy={cantBuildWhy}
@@ -1551,7 +1679,19 @@ export function App() {
           onImportRbxlxClick={() => fileInputRef.current?.click()}
           onOpenSnapshots={() => setSnapshotsOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
+          onOpenArtStudio={() => setArtStudioOpen(true)}
+          onBuildApex={() => void buildApexCardBattles()}
           onTriggerUndo={() => void undoNow()}
+        />
+
+        <CardArtStudio
+          open={artStudioOpen}
+          onOpenChange={setArtStudioOpen}
+          assets={cardAssets}
+          knowledge={artKnowledge}
+          v060Ready={v060Ready}
+          onAssetAdded={handleCardAssetAdded}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
 
         <SnapshotsDialog

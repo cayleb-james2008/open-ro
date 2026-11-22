@@ -1,14 +1,15 @@
-// Real in-browser Roblox Studio engine installer for OpenRO v0.5.0 standalone web builds.
+// Real in-browser Roblox Studio engine installer for OpenRO v0.6.0 standalone web builds.
 // Features:
-//  - All 22 parametric Roblox game-system Luau compilers (zero canned responses)
+//  - All 28 parametric Roblox game-system Luau compilers (including 6 Card-Battler systems)
 //  - Static Luau analyzer & cross-reference playtest prover
-//  - Genuine bidirectional Roblox Studio XML (.rbxlx) BOTH Import AND Export
-//  - IndexedDB versioned snapshots, instance property editing, & workspace persistence
+//  - Genuine bidirectional Roblox Studio XML (.rbxlx) BOTH Import AND Export (with Decal bindings)
+//  - IndexedDB versioned snapshots, custom uploaded Card Art assets, & workspace persistence
 //  - Live EventSource('/api/build/stream') SSE phase emitter
-//  - Optional BYOK OpenAI-compatible LLM (key stored strictly in sessionStorage)
+//  - Optional BYOK OpenAI-compatible LLM & Gemini Nano Banana / OpenAI Image API (keys strictly in sessionStorage)
 //  - One-click Connect to Local openro-rs (http://127.0.0.1:8077)
 import { computePlaceDiff } from "../src/app/luauAudit";
 import { GAME_SYSTEMS } from "../src/app/systems";
+import type { CardAssetRecord } from "../src/app/cardCatalog";
 import type { PlaceDiff, PlaceSnapshot } from "../src/app/data";
 import {
   STARTER_CATALOG,
@@ -47,9 +48,30 @@ type EngineState = {
   byokBaseUrl: string;
   byokModelId: string;
   localServerUrl: string;
+  imageProvider: "auto" | "gemini" | "openai";
+  customAssets: CardAssetRecord[];
 };
 
 const BYOK_KEY_SLOT = "openro-byok-key";
+const GEMINI_KEY_SLOT = "openro-gemini-key";
+const OPENAI_IMG_KEY_SLOT = "openro-openai-image-key";
+
+function readSlotKey(slot: string): string {
+  try {
+    return sessionStorage.getItem(slot) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeSlotKey(slot: string, k: string) {
+  try {
+    if (!k.trim()) sessionStorage.removeItem(slot);
+    else sessionStorage.setItem(slot, k.trim());
+  } catch {
+    /* ignore */
+  }
+}
 
 // Lightweight EventSource subscriber registry for /api/build/stream
 type PhaseListener = (payload: Record<string, unknown>) => void;
@@ -178,6 +200,8 @@ function defaultState(): EngineState {
     byokBaseUrl: "https://api.openai.com/v1",
     byokModelId: "gpt-4o-mini",
     localServerUrl: "http://127.0.0.1:8077",
+    imageProvider: "auto",
+    customAssets: [],
   };
 }
 
@@ -302,7 +326,7 @@ async function runByokLlm(
   if (key) headers.Authorization = `Bearer ${key}`;
   const skillNames = GAME_SYSTEMS.map((s) => s.id).join("|");
   const sysPrompt =
-    'You are OpenRO v0.5.0, a Roblox Studio game builder. Return ONLY a JSON object with {"steps": [...], "summary": "..."}. ' +
+    'You are OpenRO v0.6.0, a Roblox Studio game builder. Return ONLY a JSON object with {"steps": [...], "summary": "..."}. ' +
     'Each step is either {"tool":"create_instance","args":{"class_name":"Part|SpawnLocation","name":"...","parent":"Workspace","properties":{"Anchored":true}}} ' +
     `or {"skill":"${skillNames}","args":{...}} ` +
     'followed by {"tool":"write_script","args":{"path":"ServerScriptService.Name","skill":"..."}} and finish with {"tool":"playtest","args":{}}.';
@@ -419,7 +443,7 @@ export function installWebEngine() {
     if (!Array.isArray(chat.snapshots)) chat.snapshots = [];
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "0.5.1" });
+      return jsonResponse({ name: "openro-rs", version: "0.6.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -430,10 +454,166 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "0.5.1",
+        version: "0.6.0",
         sse_build_stream: true,
+        assets_api: true,
+        skills_count: GAME_SYSTEMS.length,
         store_recovered: [],
       });
+    }
+    if (method === "GET" && u.pathname === "/api/art-knowledge") {
+      return jsonResponse({
+        ok: true,
+        title: "Anime Homage & Fan-Art Styling Knowledge Point",
+        summary:
+          "How OpenRO builds iconic Roblox Anime Card Battlers that feel alive with classic shonen energy while shipping original cel-shaded silhouettes, titles, abilities, and studio-ready textures.",
+        policy_note:
+          "Never knee-jerk refuse anime card battler requests: transform iconic archetypes into original homage heroes with bespoke titles, elemental palettes, and clean 3:4 cel-shaded portraits ready for Roblox Decals and SurfaceGuis.",
+        principles: [
+          "Translate iconic anime archetypes into original titles, passives, and ultimates rather than refusing creative requests.",
+          "Preserve high-impact visual readability: crisp cel-shaded line art, bold 3:4 trading-card framing, elemental particle auras, and high-contrast palettes.",
+          "Keep card art watermark-free and text-free so Roblox SurfaceGui/ImageLabel overlays render rarity frames, stats, and foil effects crisply.",
+          "Bind each generated asset through manifest records and Roblox Studio Decal/ImageLabel properties for instant Studio import.",
+        ],
+        archetype_translations: [
+          { archetype: "Straw-Hat Pirate Brawler", homage_title: "Crimson Sea Captain", element: "Flame", rarity: "Mythic", palette: "Crimson, obsidian, sunlit gold" },
+          { archetype: "Limitless Void Mentor", homage_title: "Infinity Void Sorcerer", element: "Void", rarity: "Celestial", palette: "Electric violet, silver-white, abyssal indigo" },
+          { archetype: "Lightning Iaido Swordsman", homage_title: "Thunder Flash Ronin", element: "Storm", rarity: "Legendary", palette: "Storm gold, deep navy, arc cyan" },
+          { archetype: "Shadow Monarch Necromancer", homage_title: "Shadow Sovereign", element: "Shadow", rarity: "Celestial", palette: "Obsidian black, neon cobalt, phantom violet" },
+          { archetype: "Fox-Flame Ninja", homage_title: "Nine-Tail Ember Shinobi", element: "Flame", rarity: "Mythic", palette: "Solar orange, crimson embers, warm gold" },
+          { archetype: "Ascended Golden Martial Artist", homage_title: "Supernova Ascended Striker", element: "Flame", rarity: "Secret", palette: "Blazing gold, plasma cyan, starlight white" },
+          { archetype: "Gravity-Blade Ronin", homage_title: "Blood-Moon Gravity Ronin", element: "Void", rarity: "Epic", palette: "Blood crimson, dark slate, lunar silver" },
+          { archetype: "Transmutation Alchemist", homage_title: "Eclipse Arcane Alchemist", element: "Arcane", rarity: "Rare", palette: "Alchemical gold, crimson coat, arcane teal" },
+        ],
+        prompt_template:
+          "High-craft modern anime cel-shaded trading card illustration (3:4 portrait), dynamic heroic pose, bold inked contours, glowing {element} elemental aura, dramatic rim lighting, original stylized homage character '{title}' ({rarity} tier), no text, no watermark, no borders.",
+      });
+    }
+    if (method === "GET" && u.pathname === "/api/assets") {
+      const custom = state.customAssets || [];
+      return jsonResponse({ ok: true, count: custom.length, assets: custom });
+    }
+    if (method === "POST" && u.pathname === "/api/assets/upload") {
+      const filename = typeof body.filename === "string" && body.filename.trim() ? body.filename.trim() : "custom-card.png";
+      const dataUrl =
+        typeof body.data_url === "string" && body.data_url.startsWith("data:image/")
+          ? body.data_url
+          : typeof body.data_base64 === "string" && body.data_base64.trim()
+            ? `data:image/png;base64,${body.data_base64.trim()}`
+            : "";
+      if (!dataUrl) {
+        return jsonResponse({ ok: false, error: "Expected PNG, JPEG, or WebP image bytes." }, 400);
+      }
+      const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : filename.replace(/\.[^.]+$/, "");
+      const cardId =
+        typeof body.card_id === "string" && body.card_id.trim()
+          ? body.card_id.trim()
+          : title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `card-${Date.now()}`;
+      const record: CardAssetRecord = {
+        card_id: cardId,
+        title,
+        rarity: (typeof body.rarity === "string" ? body.rarity : "Mythic") as CardAssetRecord["rarity"],
+        odds: typeof body.odds === "string" ? body.odds : "Custom Upload",
+        element: (typeof body.element === "string" ? body.element : "Flame") as CardAssetRecord["element"],
+        atk: typeof body.atk === "number" ? body.atk : 430,
+        hp: typeof body.hp === "number" ? body.hp : 1460,
+        speed: typeof body.speed === "number" ? body.speed : 92,
+        passive: typeof body.passive === "string" ? body.passive : "Custom Card Resonance: +18% ATK",
+        ultimate: typeof body.ultimate === "string" ? body.ultimate : `${title} Burst`,
+        prompt: typeof body.prompt === "string" ? body.prompt : undefined,
+        file: filename,
+        image_url: dataUrl,
+        source: "upload",
+      };
+      state.customAssets = [record, ...(state.customAssets || []).filter((a) => a.card_id !== cardId)].slice(0, 24);
+      persist();
+      return jsonResponse({ ok: true, asset: record, file: filename, url: dataUrl }, 201);
+    }
+    if (method === "POST" && u.pathname === "/api/assets/generate") {
+      const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : "Apex Vanguard";
+      const element = typeof body.element === "string" ? body.element : "Flame";
+      const rarity = typeof body.rarity === "string" ? body.rarity : "Mythic";
+      const promptText =
+        typeof body.prompt === "string" && body.prompt.trim()
+          ? body.prompt.trim()
+          : `High-craft modern anime cel-shaded trading card illustration (3:4 portrait), glowing ${element} aura, original stylized homage character '${title}' (${rarity} tier), no text, no watermark.`;
+      const reqProvider = typeof body.provider === "string" ? body.provider : state.imageProvider || "auto";
+      const gemKey = readSlotKey(GEMINI_KEY_SLOT);
+      const oaiKey = readSlotKey(OPENAI_IMG_KEY_SLOT);
+      const useGem = (reqProvider === "gemini" || reqProvider === "auto") && Boolean(gemKey);
+      const useOai = !useGem && (reqProvider === "openai" || reqProvider === "auto") && Boolean(oaiKey);
+      if (!useGem && !useOai) {
+        return jsonResponse(
+          {
+            ok: false,
+            error:
+              "No image generation API key configured in this browser session. Add a Google Gemini API key (Nano Banana) or OpenAI Image key in Settings, or upload PNG/JPG/WebP artwork directly.",
+            homage_prompt: promptText,
+          },
+          503,
+        );
+      }
+      try {
+        let dataUrl = "";
+        let srcTag: CardAssetRecord["source"] = "gemini-api";
+        if (useGem) {
+          const resp = await origFetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${encodeURIComponent(gemKey)}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: promptText }] }],
+                generationConfig: { responseModalities: ["IMAGE"] },
+              }),
+            },
+          );
+          if (!resp.ok) throw new Error(`Gemini Image API returned HTTP ${resp.status}`);
+          const val = (await resp.json()) as {
+            candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string; mimeType?: string } }> } }>;
+          };
+          const part = val.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
+          if (!part?.inlineData?.data) throw new Error("Gemini Image API returned no inline image bytes.");
+          dataUrl = `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`;
+        } else {
+          srcTag = "openai-api";
+          const resp = await origFetch("https://api.openai.com/v1/images/generations", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${oaiKey}` },
+            body: JSON.stringify({ model: "gpt-image-1", prompt: promptText, size: "1024x1536", response_format: "b64_json" }),
+          });
+          if (!resp.ok) throw new Error(`OpenAI Image API returned HTTP ${resp.status}`);
+          const val = (await resp.json()) as { data?: Array<{ b64_json?: string }> };
+          const b64 = val.data?.[0]?.b64_json;
+          if (!b64) throw new Error("OpenAI Image API returned no b64_json image bytes.");
+          dataUrl = `data:image/png;base64,${b64}`;
+        }
+        const cardId = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `gen-${Date.now()}`;
+        const record: CardAssetRecord = {
+          card_id: cardId,
+          title,
+          rarity: rarity as CardAssetRecord["rarity"],
+          odds: "Generated",
+          element: element as CardAssetRecord["element"],
+          atk: 450,
+          hp: 1520,
+          speed: 94,
+          passive: `${element} Surge: +20% squad ${element} ATK`,
+          ultimate: `${title} Overdrive`,
+          prompt: promptText,
+          file: `${cardId}.png`,
+          image_url: dataUrl,
+          source: srcTag,
+        };
+        state.customAssets = [record, ...(state.customAssets || []).filter((a) => a.card_id !== cardId)].slice(0, 24);
+        persist();
+        return jsonResponse({ ok: true, asset: record }, 201);
+      } catch (err) {
+        return jsonResponse(
+          { ok: false, error: err instanceof Error ? err.message : "Image generation request failed." },
+          502,
+        );
+      }
     }
     if (method === "GET" && (u.pathname === "/api/systems" || u.pathname === "/api/skills")) {
       return jsonResponse({ ok: true, count: GAME_SYSTEMS.length, systems: GAME_SYSTEMS, skills: GAME_SYSTEMS });
@@ -454,7 +634,7 @@ export function installWebEngine() {
     if (method === "GET" && u.pathname === "/api/update") {
       return jsonResponse({
         name: "openro-rs",
-        current: "0.5.0",
+        current: "0.6.0",
         mode: "off",
         available: false,
         can_apply: false,
@@ -467,6 +647,8 @@ export function installWebEngine() {
     }
     if (method === "GET" && u.pathname === "/api/config") {
       const k = readSessionKey();
+      const gk = readSlotKey(GEMINI_KEY_SLOT);
+      const ok = readSlotKey(OPENAI_IMG_KEY_SLOT);
       return jsonResponse({
         ok: true,
         web_engine: true,
@@ -476,6 +658,11 @@ export function installWebEngine() {
         model_id: state.byokModelId,
         has_api_key: Boolean(k),
         api_key_masked: maskKey(k),
+        image_provider: state.imageProvider || "auto",
+        has_gemini_api_key: Boolean(gk),
+        gemini_api_key_masked: maskKey(gk),
+        has_openai_image_api_key: Boolean(ok),
+        openai_image_api_key_masked: maskKey(ok),
         model_configured: true,
         is_loopback_model: true,
         studio_connected: true,
@@ -499,8 +686,21 @@ export function installWebEngine() {
       }
       if (body.clear_api_key === true) writeSessionKey("");
       else if (typeof body.api_key === "string" && body.api_key.trim()) writeSessionKey(body.api_key.trim());
+      if (body.image_provider === "auto" || body.image_provider === "gemini" || body.image_provider === "openai") {
+        state.imageProvider = body.image_provider;
+      }
+      if (body.clear_gemini_api_key === true) writeSlotKey(GEMINI_KEY_SLOT, "");
+      else if (typeof body.gemini_api_key === "string" && body.gemini_api_key.trim()) {
+        writeSlotKey(GEMINI_KEY_SLOT, body.gemini_api_key.trim());
+      }
+      if (body.clear_openai_image_api_key === true) writeSlotKey(OPENAI_IMG_KEY_SLOT, "");
+      else if (typeof body.openai_image_api_key === "string" && body.openai_image_api_key.trim()) {
+        writeSlotKey(OPENAI_IMG_KEY_SLOT, body.openai_image_api_key.trim());
+      }
       persist();
       const k = readSessionKey();
+      const gk = readSlotKey(GEMINI_KEY_SLOT);
+      const ok = readSlotKey(OPENAI_IMG_KEY_SLOT);
       return jsonResponse({
         ok: true,
         web_engine: true,
@@ -510,6 +710,11 @@ export function installWebEngine() {
         model_id: state.byokModelId,
         has_api_key: Boolean(k),
         api_key_masked: maskKey(k),
+        image_provider: state.imageProvider || "auto",
+        has_gemini_api_key: Boolean(gk),
+        gemini_api_key_masked: maskKey(gk),
+        has_openai_image_api_key: Boolean(ok),
+        openai_image_api_key_masked: maskKey(ok),
         model_configured: true,
         is_loopback_model: true,
         studio_connected: true,

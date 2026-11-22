@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Check, Cpu, Globe, KeyRound, Laptop, Moon, RefreshCw, Server, SlidersHorizontal, Sun, X } from "lucide-react";
+import { Check, Cpu, Globe, Image as ImageIcon, KeyRound, Laptop, Moon, RefreshCw, Server, SlidersHorizontal, Sun, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
@@ -49,6 +49,11 @@ export function SettingsDialog({
   const [wsMode, setWsMode] = useState("auto");
   const [webMode, setWebMode] = useState<"browser" | "byok" | "local_server">("browser");
   const [localServerUrl, setLocalServerUrl] = useState("http://127.0.0.1:8077");
+  const [imageProvider, setImageProvider] = useState<"auto" | "gemini" | "openai">("auto");
+  const [geminiApiKey, setGeminiApiKey] = useState("");
+  const [clearGeminiKey, setClearGeminiKey] = useState(false);
+  const [openaiImageKey, setOpenaiImageKey] = useState("");
+  const [clearOpenaiImageKey, setClearOpenaiImageKey] = useState(false);
 
   const loadConfig = useCallback(async () => {
     setLoading(true);
@@ -64,6 +69,13 @@ export function SettingsDialog({
       setWsMode(data.workspace_mode || "auto");
       if (data.web_mode) setWebMode(data.web_mode);
       if (data.local_server_url) setLocalServerUrl(data.local_server_url);
+      if (data.image_provider === "gemini" || data.image_provider === "openai" || data.image_provider === "auto") {
+        setImageProvider(data.image_provider);
+      }
+      setGeminiApiKey("");
+      setClearGeminiKey(false);
+      setOpenaiImageKey("");
+      setClearOpenaiImageKey(false);
     } catch (e) {
       setLoadErr(e instanceof Error ? e.message : "Could not load runtime settings.");
     } finally {
@@ -79,6 +91,13 @@ export function SettingsDialog({
     setSaving(true);
     setLoadErr("");
     try {
+      const imagePayload = {
+        image_provider: imageProvider,
+        gemini_api_key: geminiApiKey.trim() || undefined,
+        clear_gemini_api_key: clearGeminiKey,
+        openai_image_api_key: openaiImageKey.trim() || undefined,
+        clear_openai_image_api_key: clearOpenaiImageKey,
+      };
       const payload: Record<string, unknown> = cfg?.web_engine
         ? {
             web_mode: webMode,
@@ -87,6 +106,7 @@ export function SettingsDialog({
             api_key: apiKey.trim() || undefined,
             clear_api_key: clearKey,
             local_server_url: localServerUrl.trim() || "http://127.0.0.1:8077",
+            ...imagePayload,
           }
         : {
             base_url: baseUrl.trim(),
@@ -95,6 +115,7 @@ export function SettingsDialog({
             clear_api_key: clearKey,
             mcp_command: mcpCommand.trim(),
             workspace_mode: wsMode,
+            ...imagePayload,
           };
       const res = await post<ConfigSnap & { ok?: boolean; error?: string }>("/api/config", payload);
       if (res.ok === false) {
@@ -104,6 +125,10 @@ export function SettingsDialog({
       setCfg(res);
       setApiKey("");
       setClearKey(false);
+      setGeminiApiKey("");
+      setClearGeminiKey(false);
+      setOpenaiImageKey("");
+      setClearOpenaiImageKey(false);
       onApplied({
         studioConnected: res.studio_connected,
         modelConfigured: res.model_configured,
@@ -446,6 +471,110 @@ export function SettingsDialog({
                     </div>
                   </section>
                 </>
+              )}
+
+              {/* Card Art Image Generation (Gemini Nano Banana / OpenAI Images) */}
+              {cfg && (
+                <section aria-label="Card art image generation" className="flex flex-col gap-3 rounded-card border border-hairline bg-board/50 p-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <ImageIcon className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
+                      <h3 className="text-sm font-medium text-ink">Card Art Image Generation</h3>
+                    </div>
+                    <Pill className="bg-tag-research-bg px-2 py-0.5 font-mono text-xs text-tag-research-fg">
+                      {cfg.has_gemini_api_key || cfg.has_gemini_key || cfg.has_openai_image_api_key
+                        ? "Key configured"
+                        : "Optional BYOK"}
+                    </Pill>
+                  </div>
+
+                  <p className="text-xs leading-relaxed text-ink-2">
+                    8 Nano Banana anime card portraits are already bundled. Add a Google Gemini (Nano Banana) or OpenAI Image key here to generate additional custom cards on demand.
+                  </p>
+
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    {(
+                      [
+                        { id: "auto", label: "Auto", sub: "Gemini -> OpenAI" },
+                        { id: "gemini", label: "Gemini Nano Banana", sub: "gemini-2.5-flash-image" },
+                        { id: "openai", label: "OpenAI Images", sub: "gpt-image-1" },
+                      ] as const
+                    ).map((opt) => (
+                      <Button
+                        key={opt.id}
+                        variant={imageProvider === opt.id ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setImageProvider(opt.id)}
+                        className="h-auto flex-col items-start gap-0.5 py-2 text-left max-md:min-h-11"
+                      >
+                        <span className="text-xs font-medium">{opt.label}</span>
+                        <span className={`text-xs ${imageProvider === opt.id ? "text-blue-fg" : "text-ink-2"}`}>{opt.sub}</span>
+                      </Button>
+                    ))}
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+                      <span>Google Gemini API Key (Nano Banana){cfg.web_engine ? " — sessionStorage only" : ""}</span>
+                      <Input
+                        type="password"
+                        value={geminiApiKey}
+                        onChange={(e) => {
+                          setGeminiApiKey(e.target.value);
+                          setClearGeminiKey(false);
+                        }}
+                        placeholder={
+                          (cfg.has_gemini_api_key || cfg.has_gemini_key) && !clearGeminiKey
+                            ? `Saved (${cfg.gemini_api_key_masked || cfg.gemini_key_masked || "configured"}) — leave blank to keep`
+                            : "AIza… (or set GEMINI_API_KEY)"
+                        }
+                        className="font-mono text-xs"
+                      />
+                    </label>
+                    {(cfg.has_gemini_api_key || cfg.has_gemini_key) && !clearGeminiKey && (
+                      <div>
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          onClick={() => setClearGeminiKey(true)}
+                          className="text-ink-2 hover:text-ink max-md:min-h-11"
+                        >
+                          Clear saved Gemini key
+                        </Button>
+                      </div>
+                    )}
+
+                    <label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
+                      <span>OpenAI Image API Key (optional){cfg.web_engine ? " — sessionStorage only" : ""}</span>
+                      <Input
+                        type="password"
+                        value={openaiImageKey}
+                        onChange={(e) => {
+                          setOpenaiImageKey(e.target.value);
+                          setClearOpenaiImageKey(false);
+                        }}
+                        placeholder={
+                          cfg.has_openai_image_api_key && !clearOpenaiImageKey
+                            ? `Saved (${cfg.openai_image_api_key_masked || "configured"}) — leave blank to keep`
+                            : "sk-… (or set OPENAI_API_KEY)"
+                        }
+                        className="font-mono text-xs"
+                      />
+                    </label>
+                    {cfg.has_openai_image_api_key && !clearOpenaiImageKey && (
+                      <div>
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          onClick={() => setClearOpenaiImageKey(true)}
+                          className="text-ink-2 hover:text-ink max-md:min-h-11"
+                        >
+                          Clear saved OpenAI Image key
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </section>
               )}
             </div>
 

@@ -156,6 +156,21 @@ export function serializeRbxlx(gameName: string, place: Place): string {
       if (cls === "SpawnLocation") lines.push(`${indent}    <bool name="Neutral">true</bool>`);
     }
     lines.push(`${indent}  </Properties>`);
+    if (typeof props.DecalTexture === "string" && props.DecalTexture.trim()) {
+      const decalName =
+        typeof props.CardTitle === "string" && props.CardTitle.trim()
+          ? `${props.CardTitle.trim()}Art`
+          : `${name}Decal`;
+      lines.push(
+        `${indent}  <Item class="Decal" referent="${nextRef()}">`,
+        `${indent}    <Properties>`,
+        `${indent}      <string name="Name">${xmlEsc(decalName)}</string>`,
+        `${indent}      <Content name="Texture"><url>${xmlEsc(props.DecalTexture.trim())}</url></Content>`,
+        `${indent}      <token name="Face">5</token>`,
+        `${indent}    </Properties>`,
+        `${indent}  </Item>`,
+      );
+    }
     for (const [scName, scSrc] of childScripts) {
       writeScript(`${indent}  `, "Script", scName, scSrc);
     }
@@ -350,6 +365,10 @@ export function parseRbxlxXml(xml: string): { ok: true; gameName: string; place:
           props.Size = [readNum(p, "X", 4), readNum(p, "Y", 1), readNum(p, "Z", 4)];
         } else if (tag === "Vector3" && pName === "Position") {
           props.Position = [readNum(p, "X"), readNum(p, "Y"), readNum(p, "Z")];
+        } else if (tag === "Content" && (pName === "Texture" || pName === "Image")) {
+          const urlChild = childByTag(p, "url");
+          const rawUrl = (urlChild?.textContent ?? p.textContent ?? "").trim();
+          if (rawUrl) props[pName] = rawUrl;
         }
       }
     }
