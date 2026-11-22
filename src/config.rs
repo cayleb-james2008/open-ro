@@ -12,6 +12,12 @@ pub struct RuntimeConfig {
     pub mcp_command: Option<String>,
     /// `"auto"` | `"local_place"` | `"studio_mcp"`
     pub workspace_mode: Option<String>,
+    /// Optional Google Gemini / Nano Banana image generation key.
+    pub gemini_api_key: Option<String>,
+    /// Optional OpenAI image generation key.
+    pub openai_image_api_key: Option<String>,
+    /// `"auto"` | `"gemini"` | `"openai"`
+    pub image_provider: Option<String>,
 }
 
 impl RuntimeConfig {
@@ -35,6 +41,9 @@ impl RuntimeConfig {
             api_key: str_opt("api_key"),
             mcp_command: str_opt("mcp_command"),
             workspace_mode: str_opt("workspace_mode"),
+            gemini_api_key: str_opt("gemini_api_key"),
+            openai_image_api_key: str_opt("openai_image_api_key"),
+            image_provider: str_opt("image_provider"),
         }
     }
 
@@ -48,6 +57,9 @@ impl RuntimeConfig {
             "api_key": self.api_key,
             "mcp_command": self.mcp_command,
             "workspace_mode": self.workspace_mode,
+            "gemini_api_key": self.gemini_api_key,
+            "openai_image_api_key": self.openai_image_api_key,
+            "image_provider": self.image_provider,
         });
         let body = serde_json::to_string_pretty(&val)
             .map_err(|e| format!("serialize config: {e}"))?;
