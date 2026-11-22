@@ -4,6 +4,18 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 0.10.0 - 2026-11-22
+
+- **RoPilot 3-Pane Studio IDE Layout (`frontend/src/App.tsx`, `CodeDiffWorkbench.tsx`, `CopilotComposer.tsx`, `StudioBottomDrawer.tsx`, `Shelf.tsx`):**
+  - Re-architected OpenRO into a full-bleed **3-Pane Studio IDE**: Left **Game Explorer & Chats** rail (`252px`, auto-syncing live Studio instances and scripts automatically on attach/launch), Center **Full-Bleed Studio Stage** (`Embedded Studio | Studio 3D | Code & Diff | Playable Stage`) with a collapsible bottom Studio Drawer (`Output Console`, `Agent Trace`, **`Studio MCP Tools (13)`**, `Properties`), and Right **Docked RoPilot Copilot** (`380px`, collapsible) with on-demand `Starters` blueprints and clean `390×844` mobile tab bar.
+- **Custom Freeform Luau Generation, Whole-Game Context & Transparent Official Studio MCP Translation (`src/agent.rs`, `src/mcp.rs`, `src/luau_check.rs`):**
+  - Added freeform `write_luau` and `multi_edit` agent tools (preserving `write_script` skill-only safety) gated by pre-write Static Luau Prover verification (`512 KiB` cap, line-numbered diagnostics, per-chat Undo checkpointing), turn-1 Whole-Game Context Summary + `@Context` paths + reasoning depth (`Low | Med | High`), and whole-game/asset tools (`search_game_tree`, `inspect_instance`, `script_read`, `script_grep`, `execute_luau`, `get_console_output`, `screen_capture`, `start_stop_play`, `user_mouse_input`, `user_keyboard_input`, `blender_generate`, `audio_generate`).
+  - Upgraded `McpClient` and `check_bridge_capabilities()` to translate high-level reads/writes/playtests transparently onto official Roblox Studio MCP (`execute_luau`, `start_stop_play`, `get_console_output`, `screen_capture`) with collision-proof dynamic long-bracket escaping and `ChangeHistoryService:SetWaypoint`.
+- **Composer Modes (`Agent | Plan | Ask`) + Unified Diff Proposal Workbench (`src/snapshots.rs`, `src/server.rs`, `CodeDiffWorkbench.tsx`):**
+  - Extended `POST /api/chat` backward-compatibly with `mode` (`agent | plan | ask`), `reasoning`, `context_paths`, and `review_diffs`: `Ask` enforces strict read-only tools (`0` mutations), `Plan` and `Review diffs` execute on an isolated shadow `LocalPlace` generating reviewable unified green `+` / red `-` hunks, and `GET /api/proposals` + `POST /api/proposals/:id/{apply,reject}` apply selected files atomically with Undo checkpoint, Snapshot, and Playtest proof.
+- **Live Roblox Studio Companion Plugin Bridge (`src/studio_plugin.rs`, `StudioPluginDialog.tsx`):**
+  - Embedded `OpenRoCompanion.lua` (`HttpService`, `ChangeHistoryService`, `Selection`, `LogService`) with 256-bit OS CSPRNG `X-OpenRo-Plugin-Token` (`0600` in `data_dir/plugin_token`, constant-time verification), canonical OS `Roblox/Plugins` 1-click installer, live selection attachment, and long-poll endpoints (`/api/studio/plugin/{status,download,install,handshake,poll,result}`).
+
 ## 0.9.0 - 2026-11-22
 
 - **Directly Embedded Roblox Studio + Real-Time 12 FPS X11/MCP MJPEG Viewport + Input Pass-Through (`src/studio_embed.rs`, `src/studio_stream.rs`, `frontend/src/app/EmbeddedStudioPanel.tsx`):**

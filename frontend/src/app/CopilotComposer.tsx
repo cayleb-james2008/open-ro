@@ -121,7 +121,7 @@ export function CopilotComposer({
   };
 
   return (
-    <div data-copilot-composer className="flex flex-none flex-col gap-2 border-t border-hairline bg-surface px-3 py-2.5">
+    <div id="composer" data-copilot-composer className="flex flex-none flex-col gap-2 border-t border-hairline bg-surface px-3 py-2.5">
       {/* Context Chips + Picker */}
       <div className="flex flex-wrap items-center gap-1">
         <Button
