@@ -1,4 +1,4 @@
-# Aliveness Inventory — OpenRO v0.3.0
+# Aliveness Inventory — OpenRO v0.4.0
 
 Every movement in OpenRO has a direct operational cause and reads its timing from `rune/used/motion.ts` or the `--dur-*` / `--ease-house` tokens in `frontend/src/tokens.css`. Under `prefers-reduced-motion: reduce`, all travel and springs collapse to instant state changes.
 
@@ -7,7 +7,8 @@ Every movement in OpenRO has a direct operational cause and reads its timing fro
 | New chat primary button | Fill step (`hover:bg-primary/90`) | Inset press (`--dur-press`) | 2px `--focus` ring | Creates chat & focuses composer | - (above fold on load) | - | COSS `Button` | `--dur-press` |
 | Chat search & Explorer filter inputs | Border/surface tint | - (text field) | 2px `--focus` outline on group | Filters list instantly (frequency rule) | - (above fold) | - | COSS `InputGroup` + `Kbd` | `instant` |
 | Chat session rows (`#chat-list`) | Tint (`hover:bg-board/70`, instant scan) | Active tint | 2px `--focus` ring | Active pill glides to selected chat | - (above fold) | `working` Pill while ask runs | Motion Primitives `AnimatedBackground` + COSS `Button` | `glide` |
-| Light / Dark Appearance switch | Text contrast lift | Segment press | 2px `--focus` outline | Raised pill slides between Light and Dark; `<html data-theme>` updates | - (above fold) | - | COSS `SegmentedControl` | `--dur-swap` |
+| Settings (`Model, Studio & Appearance`) dialog & Light/Dark switch | Button hover tint | Segment/button press | 2px `--focus` outline; trapped `Tab` cycle; `Escape` returns focus to `Settings` | Dialog grows from rail footer (`open`); Appearance pill slides (`--dur-swap`); live config updates backend without restart | Backdrop fades | `Applying…` while saving `/api/config` | Motion Primitives `MorphingDialog` + COSS `SegmentedControl` + `Input` | `open`, `--dur-swap` |
+| Playable Stage Preview (`StagePreview.tsx`) | Control tint | D-pad / Jump / Buy press | Keyboard focusable canvas (`WASD`/Arrows/`Space`) | Canvas redraws strictly on input or place change (zero idle animation loop) | Smooth expand/collapse | Live Stage/Currency/Shop HUD | Cult UI `Expandable` + COSS `Button` + Kibo `Pill` | `--dur-swap` |
 | Studio status Pill + `Check again` | `Check again` tint (`hover:bg-accent/50`) | Button press | 2px `--focus` ring | Flips between `Studio not connected` and `Studio connected` + fires toast | - (above fold) | - | Kibo `Pill` + COSS `Button` | `--dur-press` |
 | Game Blueprint Starter Cards | Hairline sharpens (`hover:border-edge/70`, `--dur-press`) | Tactile seat (`scale: 0.985`, `press`) | 2px `--focus` ring on Build button | Transitions to `Building in Studio` spinner, then `Already in your game` badge | - (first-fold hero, instant on load) | Button `Spinner` + `ring-blue/30` while building | `motion.article` + COSS `Button` + Kibo `Pill` | `press` |
 | User prompt & OpenRO reply cards | - (static message) | - (static message) | - (non-interactive prose) | - | Fresh turns fade/rise 4px (`reveal`); persisted history renders instantly | `WorkingBanner` while ask runs | `motion.div` | `reveal` |

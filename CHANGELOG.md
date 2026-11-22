@@ -4,6 +4,19 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 0.4.0 - 2026-11-21
+
+- **Real Local Place Engine + `.rbxlx` Export + Studio MCP Auto-Detect:**
+  - Added a persistent Local Roblox Place Engine (`src/place.rs`) backed by `data_dir/place.json` and mirrored atomically to genuine Roblox Studio XML (`data_dir/game.rbxlx`, `<roblox version="4">`) on every build and Undo, with a real Luau lexer/syntax/service-root/runtime-wiring playtest verifier so OpenRO builds, playtests, reverts, and exports real Roblox places even when Roblox Studio is not currently open.
+  - Added passive Vinegar Flatpak Roblox Studio auto-detection (`$HOME/.local/bin/roblox-studio-mcp` when `org.vinegarhq.Vinegar` is actively running; never launches Vinegar or downloads anything).
+  - Added `GET /api/export/rbxlx` and a pinned **Export .rbxlx** button in the `"In Your Game"` Studio Explorer, plus full real Luau source code display and one-click `Copy Luau` inside each expanded Explorer script.
+  - Added an interactive HTML5 Canvas **Playable Stage Preview** (`StagePreview.tsx`) synced live to Workspace parts, checkpoints, hazards, currency pickups, shop items, and Day/Night lighting.
+- **Live Keyless Local Model Connectivity & Settings (`Model, Studio & Appearance`):**
+  - Loopback OpenAI-compatible gateways (`127.0.0.1`, `localhost`, `[::1]`) now run without requiring an API key; when `OPENRO_MODEL_BASE_URL` and `OPENRO_MODEL_API_KEY` are unset (and `OPENRO_NO_AUTO_MODEL` is not `1`), `openro-rs` auto-probes running local gateways (`11434`, `8789`, `8790`) while preserving strict fail-closed no-key refusal for remote hosts.
+  - Added loopback-guarded `GET/POST /api/config` (`data_dir/config.json`, `0600` permissions) and a **Model, Studio & Appearance** `MorphingDialog` in the Left Rail footer housing the Light/Dark `SegmentedControl` (moved off the main rail), live gateway switcher, custom URL/model/key fields, and Studio/Local Place mode switching without restarting.
+- **Real Functional Standalone Web Engine (`npm run build:web`):**
+  - Replaced legacy fixture-demo scaffolding with a real in-browser Roblox Studio engine (`frontend/web-engine/`) featuring a parametric Luau compiler, Luau syntax & wiring playtest validator, interactive Stage Preview, genuine `.rbxlx` XML download, IndexedDB persistence, optional BYOK LLM (`sessionStorage` only), and one-click Connect to Local `openro-rs` (`127.0.0.1:8077`).
+
 ## 0.3.0 - 2026-11-21
 
 - **Game Builder Studio Workbench (House Frontend):** Replaced the legacy chat/quest layout with a three-region Studio Workbench built on the House Frontend component stack (Motion Primitives, COSS UI, Cult UI, Kibo UI, Tremor, Vaul, Sonner, Motion) with self-hosted Geist and Geist Mono `.woff2` fonts in Light (default) and Dark themes, embedded into the single `openro-rs` binary.

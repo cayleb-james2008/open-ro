@@ -1272,7 +1272,6 @@ fn change_sets_survive_a_restart() {
     assert_eq!(restored.len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 // ---------------------------------------------------------------------------
 // Regression tests from thermonuclear review ROUND 3.
 // ---------------------------------------------------------------------------
@@ -1396,7 +1395,6 @@ fn corrupt_changes_file_is_backed_up_never_coerced() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 /// F7: class_name is validated like name.
 #[test]
 fn create_instance_rejects_bad_class_names() {
@@ -1515,7 +1513,6 @@ fn outcome_lines_follow_the_ask_not_the_active_chat() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 // ---------------------------------------------------------------------------
 // Regression tests from thermonuclear review ROUND 4.
 // ---------------------------------------------------------------------------
@@ -1565,7 +1562,6 @@ fn malformed_chats_file_is_backed_up_at_startup() {
     assert_eq!(std::fs::read_to_string(&bak).unwrap(), bad);
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 /// Round-4 (B) edges: curly apostrophes are normalised before the
 /// suppressor check; semicolons end sentences; spawned/fixed count.
 #[test]
@@ -1902,7 +1898,6 @@ fn ideas_state_survives_a_restart() {
     assert_eq!(thread_after, thread_before, "no duplicate pitch lines across the restart");
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 // ---------------------------------------------------------------------------
 // Thermonuclear dispositions (18 Nov 2026): composition honesty —
 // prerequisites enforced at build time, the shop's playtest gate, a
@@ -2321,7 +2316,6 @@ fn failed_playtest_verdict_survives_a_restart() {
     assert!(agent3.recovered.contains(&"proof.json.bak".to_string()), "recorded: {:?}", agent3.recovered);
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 /// RB3(a): an idea step that creates an instance already in the place with
 /// the same class is skipped, not a bridge failure.
 #[test]
@@ -2381,7 +2375,6 @@ fn ask_path_refuses_a_shop_whose_currency_was_undone() {
     assert!(!outcome.thread.join("\n").contains("Shop added."), "no success claim over the refusal");
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 // ---------------------------------------------------------------------------
 // Round 3 maker fixes (RR1-RR3).
 // ---------------------------------------------------------------------------
@@ -2410,7 +2403,6 @@ fn refused_try_with_no_landed_change_does_not_point_at_undo() {
     assert!(err.message.contains("Nothing from this try was added to your game"), "{}", err.message);
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 /// RR1 (plan): a rebuild whose changes cancel out says nothing landed.
 #[test]
 fn plan_that_changed_nothing_says_nothing_from_this_try_landed() {
@@ -2455,7 +2447,6 @@ fn refused_shop_user_message_is_plain() {
     assert!(outcome.transcript.join("\n").contains("skill shop refused"), "the internal text is in the transcript");
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 /// RR3: a corrupt proof file with a chat that has change sets treats the
 /// chat as unproven; a chat without changes stays clean.
 #[test]
@@ -2484,7 +2475,6 @@ fn corrupt_proof_file_makes_a_changed_chat_unproven() {
     assert!(!clean.refused);
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 // ---------------------------------------------------------------------------
 // Round 4 maker fixes (RR4, RR5).
 // ---------------------------------------------------------------------------
@@ -2666,4 +2656,134 @@ fn built_titles_lists_only_fully_built_ideas() {
         "a fully built idea is listed by its title"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+#[test]
+fn http_local_place_builds_exports_rbxlx_and_reverts() {
+    let dir = std::env::temp_dir().join(format!("openro-local-place-http-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let model = ModelClient::new(
+        "http://127.0.0.1:1/v1".to_string(),
+        "local-model".to_string(),
+        None,
+    );
+    let place = openro_rs::place::LocalPlace::open(dir.clone(), "Skyline Obby".to_string());
+    let mut agent = Agent::with_local_place(model, place);
+    agent.set_changes_file(dir.join("changes.json"));
+    let port = start_server_with_data(Some(agent), dir.clone());
+
+    let (status, body) = http_request(port, "GET", "/api/status", None);
+    assert_eq!(status, 200, "{body}");
+    let st: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(st["studio_connected"], json!(true));
+    assert_eq!(st["workspace_mode"], json!("local_place"));
+    assert_eq!(st["model_configured"], json!(true));
+    assert_eq!(st["is_loopback_model"], json!(true));
+
+    let (status, body) = http_request(
+        port,
+        "POST",
+        "/api/ideas/build",
+        Some(&json!({ "id": "obby-starter" }).to_string()),
+    );
+    assert_eq!(status, 200, "{body}");
+
+    let (status, xml) = http_request(port, "GET", "/api/export/rbxlx", None);
+    assert_eq!(status, 200, "{xml}");
+    assert!(xml.contains("<roblox ") && xml.contains("version=\"4\""), "valid roblox root");
+    assert!(xml.contains("<Item class=\"SpawnLocation\""), "spawn pad serialized");
+    assert!(xml.contains("<Item class=\"Script\""), "Luau script serialized");
+    assert!(xml.contains("Checkpoints"), "checkpoints script present");
+    assert!(xml.contains("KillBrick"), "kill brick child script present");
+    assert!(dir.join("game.rbxlx").is_file(), "game.rbxlx persisted on disk");
+    assert!(dir.join("place.json").is_file(), "place.json persisted on disk");
+
+    // Undo reverts both place tree and exported .rbxlx
+    let (status, body) = http_request(port, "POST", "/api/revert", Some("{}"));
+    assert_eq!(status, 200, "{body}");
+    let (status, xml_after) = http_request(port, "GET", "/api/export/rbxlx", None);
+    assert_eq!(status, 200);
+    assert!(!xml_after.contains("<string name=\"Name\">SpawnPad</string>"), "reverted SpawnPad");
+    let disk_xml = std::fs::read_to_string(dir.join("game.rbxlx")).unwrap();
+    assert!(!disk_xml.contains("<string name=\"Name\">SpawnPad</string>"), "disk game.rbxlx reverted");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+#[test]
+fn http_config_is_loopback_guarded_and_switches_live_without_key() {
+    let dir = std::env::temp_dir().join(format!("openro-config-http-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let stub = start_stub_model(vec![
+        json!({ "skill": "day_night", "args": { "cycle_minutes": 6 } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.DayNight", "skill": "day_night" } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Added a 6-minute day/night cycle." }).to_string(),
+    ]);
+    let port = start_server_with_data(None, dir.clone());
+
+    // Non-loopback host is refused on /api/config even when allowed hosts might admit it
+    let (status, body) = http_raw(
+        port,
+        "GET /api/config HTTP/1.1\r\nHost: openro.lan:8077\r\nConnection: close\r\n\r\n",
+        b"",
+    );
+    assert_eq!(status, 403, "non-loopback /api/config refused: {body}");
+
+    // Loopback POST /api/config configures keyless loopback model + Local Place live
+    let payload = json!({
+        "base_url": stub.base_url,
+        "model_id": "deepseek-v4.1-flash-free",
+        "workspace_mode": "local_place",
+    });
+    let (status, body) = http_request(port, "POST", "/api/config", Some(&payload.to_string()));
+    assert_eq!(status, 200, "{body}");
+    let cfg: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(cfg["model_configured"], json!(true));
+    assert_eq!(cfg["is_loopback_model"], json!(true));
+    assert_eq!(cfg["active_backend"], json!("local_place"));
+    assert!(dir.join("config.json").is_file(), "config.json persisted");
+
+    // Now chat runs directly against the keyless loopback model + Local Place Engine!
+    let (status, body) = http_request(
+        port,
+        "POST",
+        "/api/chat",
+        Some(&json!({ "message": "add a day night cycle" }).to_string()),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (status, tree_body) = http_request(port, "GET", "/api/place-tree", None);
+    assert_eq!(status, 200);
+    let tree: Value = serde_json::from_str(&tree_body).unwrap();
+    assert!(tree["scripts"]["ServerScriptService.DayNight"].as_str().unwrap().contains("ClockTime"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn write_script_compiles_rune_skill_inline_while_preserving_guards() {
+    let script = vec![
+        // Raw hand-written source MUST still be refused.
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.Raw", "source": "print('nope')" } }).to_string(),
+        // Inline skill compilation (without prior {"skill": ...} step) runs the Rune VM genuinely.
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.LeaderboardGold", "skill": "leaderboard", "args": { "currency": "Gold", "start_amount": 50 } } }).to_string(),
+        json!({ "tool": "write_script", "args": { "path": "ServerScriptService.DayNight", "skill": "day_night", "cycle_minutes": 6 } }).to_string(),
+        json!({ "tool": "playtest", "args": {} }).to_string(),
+        json!({ "done": true, "summary": "Gold leaderboard and 6-minute day night cycle added." }).to_string(),
+    ];
+    let (mut agent, stub) = agent_with_script(script);
+    let outcome = agent
+        .run_ask("chat-inline", "add gold leaderboard and 6-minute day night")
+        .expect("inline Rune skill compilation completes and passes playtest");
+    assert!(outcome.skills_used.contains(&"leaderboard".to_string()));
+    assert!(outcome.skills_used.contains(&"day_night".to_string()));
+    let recorded = stub.recorded_requests.lock().unwrap();
+    assert!(
+        recorded.iter().any(|r| r.contains("Luau comes only from")),
+        "hand-written source still refused: {recorded:?}"
+    );
+    let tree = agent.place_tree().unwrap();
+    let lb = tree["scripts"]["ServerScriptService.LeaderboardGold"].as_str().unwrap();
+    assert!(lb.contains("Gold") && lb.contains("50"), "Rune compiled Gold/50: {lb}");
+    let dn = tree["scripts"]["ServerScriptService.DayNight"].as_str().unwrap();
+    assert!(dn.contains("ClockTime") && dn.contains("CYCLE_MINUTES = 6"), "Rune compiled 6 min cycle: {dn}");
+    assert!(tree["scripts"].get("ServerScriptService.Raw").is_none());
 }

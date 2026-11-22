@@ -44,13 +44,28 @@ function useMorphingDialog() {
 export type MorphingDialogProviderProps = {
   children: React.ReactNode;
   transition?: Transition;
+  defaultOpen?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
 function MorphingDialogProvider({
   children,
   transition,
+  defaultOpen = false,
+  open,
+  onOpenChange,
 }: MorphingDialogProviderProps) {
-  const [isOpen, setIsOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
+  const isOpen = open !== undefined ? open : uncontrolledOpen;
+  const setIsOpen: React.Dispatch<React.SetStateAction<boolean>> = useCallback(
+    (next) => {
+      const value = typeof next === 'function' ? next(isOpen) : next;
+      if (open === undefined) setUncontrolledOpen(value);
+      onOpenChange?.(value);
+    },
+    [isOpen, open, onOpenChange]
+  );
   const uniqueId = useId();
   const triggerRef = useRef<HTMLButtonElement>(null!);
 
@@ -61,7 +76,7 @@ function MorphingDialogProvider({
       uniqueId,
       triggerRef,
     }),
-    [isOpen, uniqueId]
+    [isOpen, setIsOpen, uniqueId]
   );
 
   return (
@@ -74,11 +89,14 @@ function MorphingDialogProvider({
 export type MorphingDialogProps = {
   children: React.ReactNode;
   transition?: Transition;
+  defaultOpen?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
-function MorphingDialog({ children, transition }: MorphingDialogProps) {
+function MorphingDialog({ children, transition, defaultOpen, open, onOpenChange }: MorphingDialogProps) {
   return (
-    <MorphingDialogProvider>
+    <MorphingDialogProvider defaultOpen={defaultOpen} open={open} onOpenChange={onOpenChange}>
       <MotionConfig transition={transition}>{children}</MotionConfig>
     </MorphingDialogProvider>
   );
@@ -259,12 +277,12 @@ function MorphingDialogContainer({ children }: MorphingDialogContainerProps) {
         <>
           <motion.div
             key={`backdrop-${uniqueId}`}
-            className='fixed inset-0 h-full w-full bg-ink/30 dark:bg-ink/50'
+            className='fixed inset-0 z-[60] h-full w-full bg-ink/30 dark:bg-ink/50'
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           />
-          <div className='fixed inset-0 z-50 flex items-center justify-center'>
+          <div className='fixed inset-0 z-[70] flex items-center justify-center'>
             {children}
           </div>
         </>

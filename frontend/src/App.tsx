@@ -16,19 +16,17 @@ import {
   ExternalLink,
   FolderTree,
   Menu,
-  Moon,
   Plus,
   RefreshCw,
   Search,
   Send,
-  Sun,
+  SlidersHorizontal,
   Undo2,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupTextarea } from "@/components/ui/input-group";
 import { Kbd } from "@/components/ui/kbd";
-import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { AnimatedBackground } from "@/components/ui/animated-background";
 import { SlidingNumber } from "@/components/ui/sliding-number";
 import {
@@ -55,15 +53,18 @@ import {
   type ChatList,
   type Idea,
   type Place,
+  type WorkspaceMode,
 } from "./app/data";
 import { BlueprintWorkbench } from "./app/Blueprints";
 import { ThreadFeed } from "./app/Thread";
 import { PartsShelf, StudioChip } from "./app/Shelf";
+import { SettingsDialog } from "./app/SettingsDialog";
+import { StagePreview } from "./app/StagePreview";
 import { UpdateStrip, useUpdate } from "./app/Update";
 
 type Pending = { message?: string; build?: string; undo?: boolean };
 type Notice = { text: string; bad?: boolean; user?: boolean };
-type ShellWindow = Window & { openroSetTheme?: (t: string) => void; __OPENRO_DEMO__?: boolean };
+type ShellWindow = Window & { openroSetTheme?: (t: string) => void };
 
 const noticeKey = (id: string) => "openro-notices:" + id;
 const draftKey = (id: string) => "openro-draft:" + id;
@@ -99,11 +100,18 @@ const useMedia = (q: string) => {
 
 function readShell() {
   const s = document.getElementById("server-state");
+  const rawMode = s?.dataset.workspaceMode;
+  const workspaceMode: WorkspaceMode =
+    rawMode === "studio_mcp" || rawMode === "local_place" || rawMode === "browser_place" || rawMode === "disconnected"
+      ? rawMode
+      : s?.dataset.studio === "true"
+        ? "studio_mcp"
+        : "disconnected";
   return {
     gameName: s?.dataset.gameName || "Studio Place",
     canBuild: s?.dataset.canBuild === "true",
     studio: s?.dataset.studio === "true",
-    demo: s?.dataset.demo === "true" || Boolean((window as ShellWindow).__OPENRO_DEMO__),
+    workspaceMode,
     bannerHtml: document.getElementById("server-banners")?.innerHTML || "",
   };
 }
@@ -139,8 +147,17 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [shelfOpen, setShelfOpen] = useState(false);
   const [shelfCollapsed, setShelfCollapsed] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("settings") === "1";
+    } catch {
+      return false;
+    }
+  });
   const [studioOk, setStudioOk] = useState(shell.studio);
   const [modelOk, setModelOk] = useState(shell.canBuild || !shell.studio);
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(shell.workspaceMode);
+  const [activeModelLabel, setActiveModelLabel] = useState("");
   const [version, setVersion] = useState("");
   const [lastTriedIdea, setLastTriedIdea] = useState<Idea | null>(null);
 
@@ -297,6 +314,29 @@ export function App() {
         if (v && typeof v.version === "string") setVersion(v.version);
       })
       .catch(() => {});
+    read<{
+      studio_connected?: unknown;
+      model_configured?: unknown;
+      workspace_mode?: unknown;
+      model_id?: unknown;
+    }>("/api/status")
+      .then((s) => {
+        if (!s || typeof s !== "object") return;
+        if (typeof s.studio_connected === "boolean") setStudioOk(s.studio_connected);
+        if (typeof s.model_configured === "boolean") setModelOk(s.model_configured);
+        if (
+          s.workspace_mode === "studio_mcp" ||
+          s.workspace_mode === "local_place" ||
+          s.workspace_mode === "browser_place" ||
+          s.workspace_mode === "disconnected"
+        ) {
+          setWorkspaceMode(s.workspace_mode);
+        }
+        if (typeof s.model_id === "string" && s.model_id.trim()) {
+          setActiveModelLabel(s.model_id.trim().split("/").pop() || s.model_id.trim());
+        }
+      })
+      .catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const prevChatRef = useRef<string | null>(null);
@@ -330,20 +370,36 @@ export function App() {
   }, [phone]);
 
   const cantBuildWhy = !studioOk
-    ? "Building needs Roblox Studio open with the OpenRO MCP bridge. Use Check again once Studio is open."
+    ? "Building needs the Local Place Engine or Roblox Studio MCP connected. Open Settings or use Check again."
     : !modelOk
-      ? "Chat prompts need a model API key configured on this server. Built-in Studio blueprints still run once Studio connects."
+      ? "Chat prompts need a local gateway or API key configured in Settings. Built-in Studio blueprints still run right away."
       : "";
 
   const checkStudio = async () => {
     try {
-      const s = await read<{ studio_connected?: unknown; model_configured?: unknown }>("/api/status");
+      const s = await read<{
+        studio_connected?: unknown;
+        model_configured?: unknown;
+        workspace_mode?: unknown;
+        model_id?: unknown;
+      }>("/api/status");
       const nextStudio = s?.studio_connected === true;
       const nextModel = s?.model_configured === true;
       if (nextStudio && !studioOk) toast.success("Studio reconnected");
       else if (!nextStudio) toast.error("Studio is still disconnected");
       setStudioOk(nextStudio);
       setModelOk(nextModel);
+      if (
+        s?.workspace_mode === "studio_mcp" ||
+        s?.workspace_mode === "local_place" ||
+        s?.workspace_mode === "browser_place" ||
+        s?.workspace_mode === "disconnected"
+      ) {
+        setWorkspaceMode(s.workspace_mode);
+      }
+      if (typeof s?.model_id === "string" && s.model_id.trim()) {
+        setActiveModelLabel(s.model_id.trim().split("/").pop() || s.model_id.trim());
+      }
       if (nextStudio) await refreshPlace();
     } catch {
       toast.error("Could not reach the OpenRO server.");
@@ -515,9 +571,6 @@ export function App() {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <h1 className="text-base font-medium leading-tight text-ink">OpenRO</h1>
-            {shell.demo && (
-              <Pill className="bg-tag-ops-bg px-1.5 py-0 font-mono text-xs text-tag-ops-fg">fixture demo</Pill>
-            )}
           </div>
           <div className="truncate text-xs text-ink-2" title={shell.gameName}>
             {shell.gameName}
@@ -525,13 +578,13 @@ export function App() {
         </div>
       </div>
 
-      {/* Live Studio connection block inside Left Rail on desktop */}
+      {/* Live Studio / Local Place connection block inside Left Rail on desktop */}
       {!phone && (
         <div
           data-answers="2"
           className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-hairline bg-board/60 px-2.5 py-2"
         >
-          <StudioChip connected={studioOk} />
+          <StudioChip connected={studioOk} workspaceMode={workspaceMode} />
           {!studioOk && (
             <Button variant="outline" size="xs" onClick={() => void checkStudio()} className="bg-surface">
               <RefreshCw className="size-3" strokeWidth={1.5} aria-hidden />
@@ -630,38 +683,39 @@ export function App() {
       </div>
 
       <div className="flex flex-col gap-2.5 border-t border-hairline pt-3">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-medium text-ink-2">Appearance</span>
-          <SegmentedControl aria-label="Appearance" size="sm">
-            <SegmentedControlItem
-              data-checked={theme === "light" ? "" : undefined}
-              aria-pressed={theme === "light"}
-              onClick={() => setTheme("light")}
-              className="gap-1 max-md:!h-11 max-md:px-3"
-            >
-              <Sun className="size-3.5" strokeWidth={1.5} aria-hidden />
-              Light
-            </SegmentedControlItem>
-            <SegmentedControlItem
-              data-checked={theme === "dark" ? "" : undefined}
-              aria-pressed={theme === "dark"}
-              onClick={() => setTheme("dark")}
-              className="gap-1 max-md:!h-11 max-md:px-3"
-            >
-              <Moon className="size-3.5" strokeWidth={1.5} aria-hidden />
-              Dark
-            </SegmentedControlItem>
-          </SegmentedControl>
-        </div>
+        <Button
+          variant="outline"
+          aria-label="Settings"
+          onClick={() => {
+            setMenuOpen(false);
+            setSettingsOpen(true);
+          }}
+          className="w-full justify-between bg-board/60 font-medium text-ink hover:bg-board max-md:min-h-11"
+        >
+          <span className="inline-flex min-w-0 items-center gap-2">
+            <SlidersHorizontal className="size-4 flex-none text-icon" strokeWidth={1.5} aria-hidden />
+            <span className="truncate">Settings</span>
+          </span>
+          <span className="truncate font-mono text-xs text-ink-3">
+            {activeModelLabel ||
+              (workspaceMode === "studio_mcp"
+                ? "Studio MCP"
+                : workspaceMode === "local_place"
+                  ? "Local Place"
+                  : workspaceMode === "browser_place"
+                    ? "Browser"
+                    : "Offline")}
+          </span>
+        </Button>
 
         <div className="flex items-center justify-between gap-2 text-xs text-ink-2">
           <a
-            href={RELEASES_URL + (version || "0.3.0")}
+            href={RELEASES_URL + (version || "0.4.0")}
             target="_blank"
             rel="noreferrer"
             className="inline-flex min-h-11 items-center gap-1 rounded-sm px-1 font-mono text-xs text-ink-2 outline-none hover:text-ink hover:underline md:min-h-7"
           >
-            <span>OpenRO v{version || "0.3.0"}</span>
+            <span>OpenRO v{version || "0.4.0"}</span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
           <span className="truncate text-right text-xs text-ink-3">
@@ -709,7 +763,13 @@ export function App() {
                     <Drawer.Portal>
                       <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/30" />
                       <Drawer.Content
-                        onEscapeKeyDown={() => setMenuOpen(false)}
+                        onEscapeKeyDown={(e) => {
+                          if (settingsOpen) {
+                            e.preventDefault();
+                            return;
+                          }
+                          setMenuOpen(false);
+                        }}
                         onCloseAutoFocus={(e) => {
                           e.preventDefault();
                           (menuKeyRef.current ?? document.querySelector<HTMLElement>('[aria-label="Open the menu"]'))?.focus();
@@ -777,11 +837,11 @@ export function App() {
               )}
             </div>
 
-            {/* Mobile Studio status + Check again + fixture demo pill cleanly separated in first fold */}
+            {/* Mobile Studio / Local Place status + Check again in first fold */}
             {phone && (
               <div className="flex w-full flex-wrap items-center justify-between gap-2 border-t border-hairline pt-2">
                 <div data-answers="2" className="flex items-center gap-1.5">
-                  <StudioChip connected={studioOk} />
+                  <StudioChip connected={studioOk} workspaceMode={workspaceMode} />
                   {!studioOk && (
                     <Button variant="outline" size="sm" onClick={() => void checkStudio()} className="min-h-11">
                       <RefreshCw className="size-3.5" strokeWidth={1.5} aria-hidden />
@@ -789,9 +849,6 @@ export function App() {
                     </Button>
                   )}
                 </div>
-                {shell.demo && (
-                  <Pill className="shrink-0 bg-tag-ops-bg px-2 py-0.5 font-mono text-xs text-tag-ops-fg">fixture demo</Pill>
-                )}
               </div>
             )}
           </header>
@@ -834,6 +891,9 @@ export function App() {
                   <div className="sr-only" id="stage-title">
                     Studio build thread
                   </div>
+                  {place && place !== "error" && totalPieces > 0 && (
+                    <StagePreview place={place} theme={theme} />
+                  )}
                   <ThreadFeed
                     lines={lines}
                     notices={notices}
@@ -996,6 +1056,29 @@ export function App() {
           </div>
         )}
 
+        <SettingsDialog
+          theme={theme}
+          onThemeChange={setTheme}
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          workspaceMode={workspaceMode}
+          compactLabel={activeModelLabel}
+          showTrigger={false}
+          onApplied={({ studioConnected, modelConfigured, workspaceMode: nextMode }) => {
+            setStudioOk(studioConnected);
+            setModelOk(modelConfigured);
+            setWorkspaceMode(nextMode);
+            if (studioConnected) {
+              const noStudio = document.getElementById("no-studio-banner");
+              if (noStudio) noStudio.hidden = true;
+              void refreshPlace();
+            }
+            if (modelConfigured) {
+              const noKey = document.getElementById("no-key-banner");
+              if (noKey) noKey.hidden = true;
+            }
+          }}
+        />
         <Toaster position="bottom-right" theme={theme} />
       </div>
     </MotionConfig>

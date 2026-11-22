@@ -8,6 +8,10 @@
 //! start, so a restart loses nothing.
 
 use crate::agent::Agent;
+use crate::config::RuntimeConfig;
+use crate::mcp::McpClient;
+use crate::model::{probe_local_gateways, ModelClient, DEFAULT_BASE_URL, DEFAULT_MODEL_ID};
+use crate::place::{LocalPlace, PlaceBackend};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -69,6 +73,8 @@ pub struct Shared {
     /// Chats whose change-set stack is non-empty (Undo has something to do).
     /// The agent keeps this current, so polling never waits on a running ask.
     pub undoable: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Persistent Model + Studio settings (`data_dir/config.json`).
+    pub config: Mutex<RuntimeConfig>,
 }
 
 impl Shared {
@@ -94,6 +100,7 @@ impl Shared {
             undoable,
             updater,
             busy: AtomicUsize::new(0),
+            config: Mutex::new(RuntimeConfig::default()),
         })
     }
 
@@ -114,6 +121,7 @@ impl Shared {
             (vec![chat], active)
         });
         let ideas = load_ideas(&data_dir, &mut recovered);
+        let cfg = RuntimeConfig::load(&data_dir);
         Arc::new(Shared {
             agent: Mutex::new(agent),
             chats: Mutex::new(chats),
@@ -126,6 +134,7 @@ impl Shared {
             undoable,
             updater,
             busy: AtomicUsize::new(0),
+            config: Mutex::new(cfg),
         })
     }
 
@@ -638,6 +647,35 @@ fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &str)
     let _ = stream.flush();
 }
 
+fn respond_download(stream: &mut TcpStream, content_type: &str, filename: &str, body: &str) {
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+}
+
+fn slugify_filename(name: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash && !out.is_empty() {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "openro-place".to_string()
+    } else {
+        trimmed
+    }
+}
+
 fn respond_json(stream: &mut TcpStream, status: &str, value: &Value) {
     respond(stream, status, "application/json", &value.to_string());
 }
@@ -660,12 +698,13 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
 
     match (req.method.as_str(), path.as_str()) {
         ("GET", "/") => {
-            let (studio_connected, model_configured) = status_flags(shared);
-            let html = render_page_with(
+            let info = status_info(shared);
+            let html = render_page_full(
                 &shared.game_name,
-                studio_connected,
-                model_configured,
+                info.studio_connected,
+                info.model_configured,
                 &shared.store_recovered,
+                info.workspace_mode,
             );
             respond(&mut stream, "200 OK", "text/html; charset=utf-8", &html);
         }
@@ -674,6 +713,70 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
             "200 OK",
             &json!({ "name": "openro-rs", "version": env!("CARGO_PKG_VERSION") }),
         ),
+        ("GET", "/api/export/rbxlx") => {
+            let mut guard = shared.agent.lock().unwrap();
+            match guard.as_mut() {
+                Some(agent) => match agent.export_rbxlx(&shared.game_name) {
+                    Ok(xml) => {
+                        let fname = format!("{}.rbxlx", slugify_filename(&shared.game_name));
+                        respond_download(
+                            &mut stream,
+                            "application/xml; charset=utf-8",
+                            &fname,
+                            &xml,
+                        );
+                    }
+                    Err(e) => respond_json(
+                        &mut stream,
+                        "502 Bad Gateway",
+                        &json!({ "ok": false, "error": e }),
+                    ),
+                },
+                None => respond_json(
+                    &mut stream,
+                    "503 Service Unavailable",
+                    &json!({ "ok": false, "error": "Studio not connected" }),
+                ),
+            }
+        }
+        ("GET", "/api/config") => {
+            if !host_allowed(&req.host, &[]) {
+                respond_json(
+                    &mut stream,
+                    "403 Forbidden",
+                    &json!({ "ok": false, "error": "settings are only accessible from this machine (loopback)" }),
+                );
+                return Ok(());
+            }
+            respond_json(&mut stream, "200 OK", &config_snapshot(shared));
+        }
+        ("POST", "/api/config") => {
+            if !host_allowed(&req.host, &[]) {
+                respond_json(
+                    &mut stream,
+                    "403 Forbidden",
+                    &json!({ "ok": false, "error": "changing settings is only allowed from this machine (loopback)" }),
+                );
+                return Ok(());
+            }
+            if shared.busy.load(Ordering::SeqCst) > 0 {
+                respond_json(
+                    &mut stream,
+                    "409 Conflict",
+                    &json!({ "ok": false, "error": "an ask is still running; change settings after it finishes" }),
+                );
+                return Ok(());
+            }
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            match apply_config(shared, &body) {
+                Ok(snap) => respond_json(&mut stream, "200 OK", &snap),
+                Err(e) => respond_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": e }),
+                ),
+            }
+        }
         ("GET", "/api/update") => respond_json(&mut stream, "200 OK", &shared.updater.snapshot()),
         ("POST", "/api/update/check") => respond_json(&mut stream, "200 OK", &shared.updater.check_now()),
         ("POST", "/api/update/apply") | ("POST", "/api/update/restart") => {
@@ -720,13 +823,17 @@ fn handle(mut stream: TcpStream, shared: &Shared, allowed: &[String]) -> std::io
             }
         }
         ("GET", "/api/status") => {
-            let (studio_connected, model_configured) = status_flags(shared);
+            let info = status_info(shared);
             respond_json(
                 &mut stream,
                 "200 OK",
                 &json!({
-                    "studio_connected": studio_connected,
-                    "model_configured": model_configured,
+                    "studio_connected": info.studio_connected,
+                    "model_configured": info.model_configured,
+                    "workspace_mode": info.workspace_mode,
+                    "model_id": info.model_id,
+                    "model_base_url": info.model_base_url,
+                    "is_loopback_model": info.is_loopback_model,
                     "game_name": shared.game_name,
                     "version": env!("CARGO_PKG_VERSION"),
                     "store_recovered": shared.store_recovered,
@@ -1095,21 +1202,231 @@ fn drain_unread(stream: &mut TcpStream, mut budget: usize) {
     }
 }
 
-fn status_flags(shared: &Shared) -> (bool, bool) {
+struct StatusInfo {
+    studio_connected: bool,
+    model_configured: bool,
+    workspace_mode: &'static str,
+    model_id: String,
+    model_base_url: String,
+    is_loopback_model: bool,
+}
+
+fn status_info(shared: &Shared) -> StatusInfo {
     let mut guard = shared.agent.lock().unwrap();
     match guard.as_mut() {
-        Some(agent) => (agent.studio_connected(), agent.model.is_configured()),
-        None => (false, false),
+        Some(agent) => StatusInfo {
+            studio_connected: agent.studio_connected(),
+            model_configured: agent.model.is_configured(),
+            workspace_mode: agent.backend_mode(),
+            model_id: agent.model.model_id().to_string(),
+            model_base_url: agent.model.base_url().to_string(),
+            is_loopback_model: agent.model.is_loopback(),
+        },
+        None => StatusInfo {
+            studio_connected: false,
+            model_configured: false,
+            workspace_mode: "disconnected",
+            model_id: DEFAULT_MODEL_ID.to_string(),
+            model_base_url: DEFAULT_BASE_URL.to_string(),
+            is_loopback_model: false,
+        },
     }
+}
+
+fn config_snapshot(shared: &Shared) -> Value {
+    let cfg = shared.config.lock().unwrap().clone();
+    let mut guard = shared.agent.lock().unwrap();
+    let (base_url, model_id, has_key, masked, configured, is_loopback, studio_connected, active_backend, rbxlx_path) =
+        match guard.as_mut() {
+            Some(agent) => (
+                agent.model.base_url().to_string(),
+                agent.model.model_id().to_string(),
+                agent.model.has_api_key(),
+                agent.model.api_key_masked(),
+                agent.model.is_configured(),
+                agent.model.is_loopback(),
+                agent.studio_connected(),
+                agent.backend_mode(),
+                agent.rbxlx_path().map(|p| p.display().to_string()),
+            ),
+            None => (
+                cfg.base_url.clone().unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
+                cfg.model_id.clone().unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
+                cfg.api_key.as_ref().is_some_and(|k| !k.trim().is_empty()),
+                None,
+                false,
+                false,
+                false,
+                "disconnected",
+                None,
+            ),
+        };
+    drop(guard);
+    let vinegar = McpClient::detect_vinegar_studio_mcp();
+    let gateways: Vec<Value> = probe_local_gateways()
+        .into_iter()
+        .map(|g| {
+            json!({
+                "base_url": g.base_url,
+                "model_id": g.model_id,
+                "label": g.label,
+            })
+        })
+        .collect();
+    json!({
+        "ok": true,
+        "base_url": base_url,
+        "model_id": model_id,
+        "has_api_key": has_key,
+        "api_key_masked": masked,
+        "model_configured": configured,
+        "is_loopback_model": is_loopback,
+        "studio_connected": studio_connected,
+        "workspace_mode": cfg.workspace_mode.unwrap_or_else(|| "auto".to_string()),
+        "active_backend": active_backend,
+        "mcp_command": cfg.mcp_command.unwrap_or_default(),
+        "vinegar_detected": vinegar.is_some(),
+        "vinegar_mcp_path": vinegar,
+        "rbxlx_path": rbxlx_path,
+        "detected_gateways": gateways,
+    })
+}
+
+fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
+    let mut cfg = shared.config.lock().unwrap().clone();
+
+    let base_url = match body.get("base_url").and_then(|v| v.as_str()) {
+        Some(s) if !s.trim().is_empty() => {
+            let trimmed = s.trim();
+            if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+                return Err("base_url must start with http:// or https://".to_string());
+            }
+            cfg.base_url = Some(trimmed.to_string());
+            trimmed.to_string()
+        }
+        _ => cfg
+            .base_url
+            .clone()
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
+    };
+
+    let model_id = match body.get("model_id").and_then(|v| v.as_str()) {
+        Some(s) if !s.trim().is_empty() => {
+            cfg.model_id = Some(s.trim().to_string());
+            s.trim().to_string()
+        }
+        _ => cfg
+            .model_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string()),
+    };
+
+    let clear_key = body
+        .get("clear_api_key")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if clear_key {
+        cfg.api_key = None;
+    } else if let Some(raw_key) = body.get("api_key").and_then(|v| v.as_str()) {
+        let k = raw_key.trim();
+        if !k.is_empty() {
+            cfg.api_key = Some(k.to_string());
+        }
+    }
+
+    if let Some(mcp) = body.get("mcp_command").and_then(|v| v.as_str()) {
+        let trimmed = mcp.trim();
+        cfg.mcp_command = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+    }
+
+    if let Some(mode) = body.get("workspace_mode").and_then(|v| v.as_str()) {
+        match mode {
+            "auto" | "local_place" | "studio_mcp" => cfg.workspace_mode = Some(mode.to_string()),
+            other => return Err(format!("invalid workspace_mode '{other}' (expected auto, local_place, or studio_mcp)")),
+        }
+    }
+
+    let desired_mode = cfg.workspace_mode.as_deref().unwrap_or("auto");
+    let new_backend: Option<PlaceBackend> = match desired_mode {
+        "local_place" => {
+            let place = match &shared.data_dir {
+                Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
+                None => LocalPlace::in_memory(shared.game_name.clone()),
+            };
+            Some(PlaceBackend::Local(place))
+        }
+        "studio_mcp" => {
+            let cmd = cfg
+                .mcp_command
+                .clone()
+                .or_else(McpClient::detect_vinegar_studio_mcp)
+                .ok_or_else(|| {
+                    "No Studio MCP command set and Roblox Studio (Vinegar) is not running.".to_string()
+                })?;
+            Some(PlaceBackend::Mcp(McpClient::spawn(&cmd)?))
+        }
+        _ => {
+            // "auto": explicit mcp_command -> running Vinegar -> Local Place Engine
+            let mcp_try = cfg
+                .mcp_command
+                .clone()
+                .or_else(McpClient::detect_vinegar_studio_mcp);
+            if let Some(cmd) = mcp_try {
+                match McpClient::spawn(&cmd) {
+                    Ok(client) => Some(PlaceBackend::Mcp(client)),
+                    Err(_) => {
+                        let place = match &shared.data_dir {
+                            Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
+                            None => LocalPlace::in_memory(shared.game_name.clone()),
+                        };
+                        Some(PlaceBackend::Local(place))
+                    }
+                }
+            } else {
+                let place = match &shared.data_dir {
+                    Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
+                    None => LocalPlace::in_memory(shared.game_name.clone()),
+                };
+                Some(PlaceBackend::Local(place))
+            }
+        }
+    };
+
+    let new_model = ModelClient::new(base_url, model_id, cfg.api_key.clone());
+
+    if let Some(dir) = &shared.data_dir {
+        cfg.save(dir)?;
+    }
+    *shared.config.lock().unwrap() = cfg;
+
+    {
+        let mut guard = shared.agent.lock().unwrap();
+        match guard.as_mut() {
+            Some(agent) => {
+                agent.model = new_model;
+                agent.studio = new_backend;
+            }
+            None => {
+                let mut agent = Agent::with_backend(new_model, new_backend);
+                if let Some(dir) = &shared.data_dir {
+                    agent.set_changes_file(dir.join("changes.json"));
+                }
+                agent.attach_undo_sink(Arc::clone(&shared.undoable));
+                *guard = Some(agent);
+            }
+        }
+    }
+
+    Ok(config_snapshot(shared))
 }
 
 /// The single-page UI (assets/index.html); values are substituted in render_page.
 const INDEX_HTML: &str = include_str!("../assets/index.html");
 
-/// The single-page shell: left sidebar (the game's chats + New chat +
-/// the game's name + settings), one scrolling thread, one composer row
-/// pinned at the bottom, and ONE status chip reflecting the real bridge
-/// state. Light + dark themes; dark is the default.
 /// Escape a value interpolated into the page (the game name comes from
 /// the operator's environment; unescaped, it was a straight HTML
 /// injection into <title> and the sidebar).
@@ -1132,20 +1449,29 @@ pub fn render_page_with(
     model_configured: bool,
     recovered: &[String],
 ) -> String {
-    let chip = if studio_connected {
-        "Studio connected"
-    } else {
-        "Studio not connected"
+    let mode = if studio_connected { "studio_mcp" } else { "disconnected" };
+    render_page_full(game_name, studio_connected, model_configured, recovered, mode)
+}
+
+pub fn render_page_full(
+    game_name: &str,
+    studio_connected: bool,
+    model_configured: bool,
+    recovered: &[String],
+    workspace_mode: &str,
+) -> String {
+    let chip = match workspace_mode {
+        "studio_mcp" if studio_connected => "Studio connected",
+        "local_place" if studio_connected => "Local Place ready",
+        _ => "Studio not connected",
     };
     let chip_class = if studio_connected { "on" } else { "off" };
-    // Both blockers get a banner of the same weight, each naming its
-    // fix — the no-Studio state used to be a lone 12px chip.
     let mut banners = String::new();
     if !model_configured {
-        banners.push_str("<div class=\"banner\" id=\"no-key-banner\"><span><strong>Chat is off: no model key configured.</strong> Ask whoever runs OpenRO to set OPENRO_MODEL_API_KEY, then restart it.</span></div>");
+        banners.push_str("<div class=\"banner\" id=\"no-key-banner\"><span><strong>Chat is off: no model key configured.</strong> Open Settings to pick a local gateway or add an API key, or set OPENRO_MODEL_API_KEY.</span></div>");
     }
     if !studio_connected {
-        banners.push_str("<div class=\"banner\" id=\"no-studio-banner\"><span><strong>Studio not connected.</strong> OpenRO cannot build until Roblox Studio is connected. Set OPENRO_MCP_COMMAND to a Studio MCP server, then restart.</span></div>");
+        banners.push_str("<div class=\"banner\" id=\"no-studio-banner\"><span><strong>Studio not connected.</strong> OpenRO cannot build until Roblox Studio or the Local Place Engine is connected. Open Settings or set OPENRO_MCP_COMMAND.</span></div>");
     }
     if !recovered.is_empty() {
         let names: Vec<String> = recovered.iter().map(|n| format!("<code>{}</code>", esc_html(n))).collect();
@@ -1155,14 +1481,13 @@ pub fn render_page_with(
         ));
     }
     let can_build = model_configured && studio_connected;
-    // The game name is the only operator-supplied value: it is escaped,
-    // and substituted last so no other token can ever match inside it.
     INDEX_HTML
         .replace("__KEY_BANNER__", &banners)
         .replace("__CHIP_CLASS__", chip_class)
         .replace("__CHIP__", chip)
         .replace("__CAN_BUILD__", &can_build.to_string())
         .replace("__STUDIO_CONNECTED__", &studio_connected.to_string())
+        .replace("__WORKSPACE_MODE__", workspace_mode)
         .replace("__GAME_NAME__", &esc_html(game_name))
 }
 
