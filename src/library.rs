@@ -1,19 +1,20 @@
 //! Built-In Developer Skill & Tool Connection Library for OpenRO v0.9.0.
 //!
-//! Ships with 3 pre-installed core workflow packs so every OpenRO agent starts
-//! fluent in Roblox Luau/networking/DataStores/Studio MCP, Blender 3D UV/mesh
-//! generation, and Anime Fan-Art & Creative Homage direction — plus 5 one-click
-//! installable packs that dynamically unlock additional agent tools, `SKILL.md`
-//! prompt guidance, and `0600`-persisted provider connections:
+//! Ships with 3 universal pre-installed core workflow packs so every OpenRO agent
+//! starts fluent in general-purpose Roblox Studio Luau/networking/DataStores/MCP,
+//! Blender 3D UV/mesh generation, and live Roblox Top-Trending Market Taste across
+//! all 8 genres — plus 5 one-click installable packs that dynamically unlock
+//! specialized media tools, `SKILL.md` prompt guidance (including the Stylized
+//! Fan-Art & Title-Epithet Creative Knowledge Point inside `image-gen-studio`),
+//! and `0600`-persisted provider connections:
 //!
-//! Pre-installed defaults (always active):
+//! Pre-installed universal defaults (always active):
 //! - `roblox-studio-core`
 //! - `blender-3d-pipeline` (auto-detects Blender 5.x on Linux/Windows + headless `.obj` generation)
-//! - `anime-fan-art-knowledge`
-//! - `roblox-market-taste` (live Roblox Explore charts, 8 profitable niches, monetization & retention)
+//! - `roblox-market-taste` (live Roblox Explore charts, default `"top-trending"` across all 8 genres)
 //!
 //! One-click installable packs:
-//! - `image-gen-studio` (Gemini Nano Banana / OpenAI Image)
+//! - `image-gen-studio` (Gemini Nano Banana / OpenAI Image + Stylized Fan-Art & Title-Epithet Knowledge Point)
 //! - `model-3d-gen` (Local Blender / procedural `.obj` + Meshy / Tripo)
 //! - `video-gen-studio` (OpenMotion / Veo / Flow)
 //! - `audio-sfx-gen` (Built-in pure-Rust `.wav` synth + ElevenLabs / Lyria)
@@ -109,7 +110,7 @@ pub struct BlenderDetection {
     pub version: Option<String>,
 }
 
-/// Complete catalog of all 9 OpenRO Library packs (4 pre-installed defaults + 5 installable).
+/// Complete catalog of all 8 OpenRO Library packs (3 universal pre-installed defaults + 5 installable).
 pub fn all_pack_specs() -> &'static [PackSpec] {
     &PACK_SPECS
 }
@@ -410,10 +411,7 @@ impl LibraryManager {
         };
 
         let configured = match spec.id {
-            "roblox-studio-core"
-            | "anime-fan-art-knowledge"
-            | "roblox-market-taste"
-            | "audio-sfx-gen" => true,
+            "roblox-studio-core" | "roblox-market-taste" | "audio-sfx-gen" => true,
             "blender-3d-pipeline" | "model-3d-gen" => {
                 blender.detected || saved_key.is_some() || env_key_present
             }
@@ -640,14 +638,6 @@ impl LibraryManager {
                     )
                 }
             }
-            "anime-fan-art-knowledge" => (
-                true,
-                format!(
-                    "Fan-Art & Creative Homage Knowledge Point loaded ({} policy principles, {} anime archetype guides).",
-                    art_knowledge::policy_principles().len(),
-                    art_knowledge::anime_archetypes().len()
-                ),
-            ),
             "roblox-market-taste" => {
                 let mut store = self.market_taste();
                 if std::env::var("OPENRO_MARKET_API_URL")
@@ -697,17 +687,20 @@ impl LibraryManager {
                 Err(e) => (false, format!("local audio synthesizer error: {e}")),
             },
             "image-gen-studio" => {
+                let kp_count = art_knowledge::anime_archetypes().len();
                 if has_key {
                     (
                         true,
-                        "Image generation provider API key configured (Gemini Nano Banana / OpenAI Image)."
-                            .to_string(),
+                        format!(
+                            "Image generation API key configured (Gemini Nano Banana / OpenAI Image) + Stylized Fan-Art & Title-Epithet Knowledge Point loaded ({kp_count} archetype guides)."
+                        ),
                     )
                 } else {
                     (
                         false,
-                        "No GEMINI_API_KEY or OPENAI_API_KEY configured yet. Add an API key above or upload local artwork."
-                            .to_string(),
+                        format!(
+                            "Stylized Fan-Art & Title-Epithet Knowledge Point loaded ({kp_count} guides), but no GEMINI_API_KEY or OPENAI_API_KEY is configured yet."
+                        ),
                     )
                 }
             }
@@ -1421,11 +1414,11 @@ fn find_on_path(bin: &str) -> Option<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// Static Pack Catalog (4 Pre-Installed Defaults + 5 One-Click Installable)
+// Static Pack Catalog (3 Universal Pre-Installed Defaults + 5 Installable)
 // ---------------------------------------------------------------------------
 
-static PACK_SPECS: [PackSpec; 9] = [
-    // --- 3 Pre-Installed Default Packs ---
+static PACK_SPECS: [PackSpec; 8] = [
+    // --- 3 Universal Pre-Installed Default Packs ---
     PackSpec {
         id: "roblox-studio-core",
         name: "Roblox Studio Core",
@@ -1488,36 +1481,10 @@ static PACK_SPECS: [PackSpec; 9] = [
 - Map texture atlases by normalized UV rectangle rather than stretching a full atlas across one face, and key alpha decals with `BLEND` or `CLIP`.",
     },
     PackSpec {
-        id: "anime-fan-art-knowledge",
-        name: "Fan-Art & Creative Homage Knowledge Point",
-        category: "Art Direction",
-        description: "Pre-installed anime fan-art visual fidelity + title-epithet naming guide, rarity VFX specs, and Nano Banana character portrait prompt architecture.",
-        default_installed: true,
-        version: "0.9.0",
-        default_provider: "built-in-knowledge",
-        tools: &[
-            "fan_art_knowledge_point",
-            "anime_card_prompt_guide",
-            "rarity_vfx_spec",
-        ],
-        capabilities: &[
-            "anime-homage-direction",
-            "visual-fidelity-fan-art",
-            "title-epithet-naming",
-            "card-rarity-tiers",
-            "decal-surfacegui-binding",
-        ],
-        env_vars: &[],
-        skill_summary: "Unmistakable fan-art visual fidelity paired with iconic title/epithet display names (Joyful Pirate, Six-Eyes Sorcerer, Shadow Monarch, Nine-Tail Shinobi, Thunder Flash Blade, Steel Alchemist, Gravity Ronin, Golden Ascended Warrior).",
-        skill_markdown: "- **Visual Fidelity Rule:** Generated fan-art MUST actually look like and be unmistakably recognizable as the original character (faithful hair, eyes, expression, outfit silhouette, weapon/stance, and signature elemental aura).\n\
-- **Title-Epithet Naming Rule:** Display names MUST replace trademarked proper names with the character's iconic title/epithet (e.g., `Joyful Pirate`, `Six-Eyes Sorcerer`, `Shadow Monarch`, `Nine-Tail Shinobi`, `Thunder Flash Blade`, `Steel Alchemist`, `Gravity Ronin`, `Golden Ascended Warrior`).\n\
-- Pair every generated portrait with both a Workspace `Decal` and `SurfaceGui > ImageLabel` frame so cards read clearly in 3D and UI.",
-    },
-    PackSpec {
         id: "roblox-market-taste",
-        name: "Roblox Market Taste & Profitability",
+        name: "Roblox Market Taste & Craft Bar",
         category: "Market Intelligence",
-        description: "Pre-installed live Roblox Explore chart analyzer across 8 profitable niches with proven monetization loops, D1/D7 retention hooks, and anti-slop guardrails.",
+        description: "Pre-installed live Roblox Explore chart analyzer defaulting to Top Trending across all 8 profitable niches with 8-dimension Taste Dossiers, anti-slop guardrails, and automatic twists.",
         default_installed: true,
         version: "0.9.0",
         default_provider: "roblox-explore-api",
@@ -1525,26 +1492,27 @@ static PACK_SPECS: [PackSpec; 9] = [
             "market_taste_snapshot",
             "market_taste_refresh",
             "market_taste_set_niche",
+            "research_roblox_game",
             "pitch_profitable_game",
         ],
         capabilities: &[
             "live-roblox-charts",
+            "top-trending-all-genres",
             "8-niche-classifier",
-            "monetization-loops",
-            "d1-d7-retention-hooks",
+            "8-dimension-taste-dossier",
             "anti-slop-guardrails",
         ],
-        env_vars: &["OPENRO_MARKET_API_URL"],
-        skill_summary: "Live Roblox Explore chart benchmarks across 8 high-retention niches, server-authoritative monetization loops, D1/D7 retention rituals, and anti-slop taste rules.",
-        skill_markdown: "- Ground every game pitch and build in live-charting player demand for the active niche below.\n\
-- Include a fast 5-to-10-second first-touch joy hook, clean server-authoritative monetization hooks, and a concrete D1/D7 return ritual.",
+        env_vars: &["OPENRO_MARKET_API_URL", "OPENRO_ROBLOX_API_BASE"],
+        skill_summary: "Live Roblox Top-Trending chart benchmarks across all 8 genres, 8-dimension Taste Dossiers, server-authoritative monetization/retention loops, and anti-slop craft guardrails.",
+        skill_markdown: "- Ground every game pitch and build in live-charting player demand for the active niche below (defaulting to Top Trending across all genres).\n\
+- Enforce cohesive sunlit/stylized 3D worlds, non-overlapping HUDs, 5-second first-touch joy, clean server-authoritative monetization hooks, and D1/D7 return rituals.",
     },
     // --- 5 One-Click Installable Library Packs ---
     PackSpec {
         id: "image-gen-studio",
-        name: "Image Gen Studio",
+        name: "Image Gen & Stylized Fan-Art Studio",
         category: "2D Art & Textures",
-        description: "Unlock AI character card portraits, skybox textures, and prop decals via Google Gemini (Nano Banana) or OpenAI Image.",
+        description: "Unlock AI textures, decals, and stylized character illustrations via Gemini (Nano Banana) or OpenAI Image, including the Stylized Fan-Art Visual Fidelity & Title-Epithet Creative Knowledge Point.",
         default_installed: false,
         version: "0.9.0",
         default_provider: "gemini-nano-banana",
@@ -1552,15 +1520,20 @@ static PACK_SPECS: [PackSpec; 9] = [
             "generate_card_art",
             "generate_texture_pack",
             "edit_reference_art",
+            "fan_art_knowledge_point",
         ],
         capabilities: &[
             "gemini-nano-banana",
             "openai-image",
-            "card-portrait-art",
+            "stylized-fan-art-fidelity",
+            "title-epithet-naming",
+            "decal-surfacegui-binding",
         ],
         env_vars: &["GEMINI_API_KEY", "OPENAI_API_KEY"],
-        skill_summary: "Generate anime card portraits, UI icons, and PBR decals with Gemini Nano Banana or OpenAI Image and bind directly to place assets.",
-        skill_markdown: "- Use `gemini-2.5-flash-image` (Nano Banana) or `gpt-image-1` for 3:4 portrait card art and seamless arena decals.\n\
+        skill_summary: "Generate textures, icons, decals, and high-fidelity stylized character art with Gemini Nano Banana or OpenAI Image using iconic title/epithet display names.",
+        skill_markdown: "- Use `gemini-2.5-flash-image` (Nano Banana) or `gpt-image-1` for game textures, icons, decals, and stylized character art.\n\
+- **Stylized Fan-Art Visual Fidelity Rule:** Generated fan-art MUST actually look like and be unmistakably recognizable as the original character (faithful hair, eyes, expression, outfit silhouette, weapon/stance, and signature elemental aura).\n\
+- **Title-Epithet Naming Rule:** Display names MUST replace trademarked proper names with the character's iconic title/epithet (e.g., `Joyful Pirate`, `Six-Eyes Sorcerer`, `Shadow Monarch`, `Nine-Tail Shinobi`, `Thunder Flash Blade`, `Steel Alchemist`, `Gravity Ronin`, `Golden Ascended Warrior`).\n\
 - Save generated assets through `AssetManager` so SHA-256 manifests and Roblox `Decal`/`ImageLabel` bindings stay synchronized.",
     },
     PackSpec {

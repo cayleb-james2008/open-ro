@@ -423,6 +423,39 @@ impl StudioStreamHub {
         st.actions.iter().cloned().collect()
     }
 
+    /// Push a high-frequency live viewport frame (e.g. 12 FPS `x11grab` MJPEG stream)
+    /// into `latest_frame` and notify waiting MJPEG/SSE clients WITHOUT flooding the
+    /// 500-event agent action timeline.
+    pub fn push_frame(&self, mut frame: StudioFrame) -> StudioFrame {
+        let frame_seq = self.next_frame_seq.fetch_add(1, Ordering::SeqCst);
+        let frame_stream_seq = self.next_stream_seq.fetch_add(1, Ordering::SeqCst);
+        let ts_ms = if frame.ts_ms > 0 {
+            frame.ts_ms
+        } else {
+            now_ms()
+        };
+        frame.seq = frame_seq;
+        frame.ts_ms = ts_ms;
+
+        {
+            let mut st = self.state.lock().unwrap();
+            let frame_meta = frame.meta_json();
+            st.latest_frame = Some(frame.clone());
+            if st.stream_log.len() >= MAX_STREAM_LOG_ITEMS {
+                st.stream_log.pop_front();
+            }
+            st.stream_log.push_back(StudioStreamMessage {
+                stream_seq: frame_stream_seq,
+                event_name: "studio_frame",
+                data: frame_meta,
+            });
+            st.latest_stream_seq = frame_stream_seq;
+        }
+
+        self.notify.notify_all();
+        frame
+    }
+
     /// Store a newly captured live Roblox Studio viewport frame, broadcast
     /// `event: studio_frame`, and record a matching `StudioActionKind::StudioFrame` action.
     pub fn store_frame(&self, mut frame: StudioFrame) -> StudioFrame {
