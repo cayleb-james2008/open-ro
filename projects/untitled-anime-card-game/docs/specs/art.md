@@ -1,9 +1,8 @@
 # Art spec — Untitled Anime Card Game (prompt-ready)
 
 Director: art. Builder: OpenRO's agent only (nobody hand-writes files under `art/`).
-Rarity names, roster and card titles come from `docs/GDD.md` / `docs/ROSTER.md` (designer). Where this
-spec says "the rarity list", use the one in the GDD. Where it names a rarity, that is a placeholder
-until the GDD is final.
+Rarities, roster and card names come from `docs/GDD.md` / `docs/ROSTER.md` (designer): 8 rarities and
+72 cards. If they change, the designer's files win.
 
 ## 0. Rules for the builder
 
@@ -20,76 +19,79 @@ until the GDD is final.
 - Keep `art/ART-LOG.md` with one row per final file: path, source reference file name, prompt, sha256.
 - Plain wording in anything players see. No internal jargon.
 - Uploads go through OpenRO's asset pipeline only, and only after the owner has entered the Open Cloud
-  key in Settings. Upload the authorised set (`art/cards/**`, `art/frames/*/*.png`, `art/ui/*.png`,
+  key in Settings. Upload the authorised set (`art/cards/**`, `art/frames/r*/*.png`, `art/ui/*.png`,
   `art/store/*.png`). Record ids in `assets.lock.json`, then regenerate `src/shared/AssetIds.luau`
-  from it (a table `AssetIds["art/ui/icon_coin.png"] = "rbxassetid://123"`; never hand-edit it).
+  from it (a table `AssetIds["art/ui/icon_coins.png"] = "rbxassetid://123"`; never hand-edit it).
 
 ## 1. Card art
 
-Per card in ROSTER.md:
+72 cards (ROSTER.md; `docs/data/cards.json` has the ids). The owner sends one reference image per card,
+filename = card id (e.g. `w1_rock_lee.png`), into `art/references/`. Build P1 (32 cards) first.
 
 | File | Size | Content |
 |---|---|---|
-| `art/cards/<card-id>/art.png` | 640x960 (2:3) | Character full or three-quarter body, new action pose, background simple and on-theme (gradient plus light effects) so the frame can sit on top. Keep the lower 25% quiet: the name ribbon and stats cover it. |
-| `art/cards/<card-id>/icon.png` | 256x256 | Head-and-shoulders crop of the same character for lists and team slots. |
-| `art/cards/<card-id>/full.png` | 640x960 | Art plus its rarity frame, flattened. Used on 3D gallery stands and store images. |
+| `art/cards/<card-id>/art.png` | 512x712 | The character in a new action pose and angle, simple on-theme background (gradient plus light effects) so the frame can sit on top. Keep the lower 25% calm: the name ribbon and stats cover it. |
+| `art/cards/<card-id>/icon.png` | 128x128 | Head-and-shoulders crop of the same character for lists and team slots. |
+| `art/cards/<card-id>/full.png` | 512x712 | Art plus its rarity frame, flattened. For 3D gallery stands and store images. |
 
-Process: reference image(s) -> image generation with the reference attached and a prompt of this form
-(fill the brackets): "Keep this exact character, same face, hair, outfit, colours and art style. Redraw
-[her/him] [pose, e.g. mid-leap sword slash] in [angle, e.g. eye-level three-quarter view]. Vertical
-2:3 card composition, character centred, lower quarter calm. No text, no frame, no logo, no watermark."
-Then crop or resize to the exact sizes above. Check each result by eye against its reference (same
-face, same colours) and re-draw if the character drifted.
+Process: reference image -> image generation with the reference attached and a prompt like: "Keep this
+exact character, same face, hair, outfit, colours and art style. Redraw them [pose, e.g. mid-leap sword
+slash] in [angle, e.g. eye-level three-quarter view]. Vertical card composition, character centred,
+lower quarter calm. No text, no frame, no logo, no watermark." Then crop/resize to the exact size. Check
+each result by eye against its reference (same face, same colours, same line style); re-draw if the
+character drifted or a hand/face broke. Pose should suit the card's role and signature move in
+ROSTER.md (Striker = attack, Support = casting or guarding, Vanguard = braced stance, Ranger = ranged
+shot, Disruptor = control gesture). Background mood by rarity: Common/Uncommon calm and flat; Rare adds
+light rays; Epic adds particles and a coloured aura; Legendary and above add a strong rim light and a
+radial burst; Secret and Transcendent are the most dramatic.
 
-One card per rarity-tier looks (background mood): common calm and flat, rare adds light rays, epic adds
-particles and a coloured aura, legendary and above add a strong rim light and a radial burst.
-
-Until the owner's references arrive, make clearly-labelled placeholder silhouettes with
-`art/placeholders/<card-id>.png` (same sizes, flat gradient, anonymous silhouette, no character
-likeness) so UI can lay out. Replace them when references arrive.
+Until references arrive, `art/placeholders/<card-id>.png` (512x712): flat gradient with an anonymous
+silhouette, no likeness, so UI can lay out. Replace when references arrive.
 
 ## 2. Rarity frames (animation-ready layers)
 
-For each rarity, folder `art/frames/<rarity-id>/`, five PNG layers on the same 640x960 transparent
-canvas, so game-ui can stack them as ImageLabels and animate each separately:
+Eight rarities, ids r1..r8 = Common, Uncommon, Rare, Epic, Legendary, Mythic, Secret, Transcendent.
+
+Per rarity, folder `art/frames/r<N>/`, five PNG layers on the same 512x712 transparent canvas so
+game-ui can stack and animate them separately:
 
 | Layer | Content | Animation use |
 |---|---|---|
 | `glow.png` | soft inner-edge halo in the rarity colour | pulse transparency |
-| `base.png` | bevelled border ring, 14 px (common) growing to 26 px (top rarity), rounded corners radius 44, transparent window | static |
-| `ornament.png` | corner studs, brackets, diamonds, top crest and side spikes; more ornament with higher rarity | bob or scale |
-| `plate.png` | name ribbon (about 70 px tall) above a stat bar (about 110 px tall), dark translucent, rarity-coloured top line | static |
+| `base.png` | bevelled border ring, 12 px (r1) growing to 24 px (r8), rounded corners radius 36, transparent window | static |
+| `ornament.png` | corner studs, brackets, diamonds, top crest, side spikes; more ornament with higher rarity | bob or scale |
+| `plate.png` | name ribbon (about 56 px tall) above a stat bar (about 88 px tall), dark translucent, rarity-coloured top line | static |
 | `shine.png` | soft diagonal white highlight band, clipped to the card shape | slide across the card |
 
-Rarity colour language (main / dark / light), unless the GDD names others: common grey `#9aa3b2`, uncommon
-green `#4fd37a`, rare blue `#3f8cff`, epic purple `#a95cff`, legendary gold `#ffb627`, mythic crimson
-`#ff3d5a`, top secret tier prismatic (rainbow ring on near-black). Each step up must be visibly
-richer at a glance at 120 px wide: more ornament, thicker ring, brighter glow. Do not rely on colour alone.
+Also, as game-ui asked (docs/specs/game-ui.md section 6), in `art/ui/`: `frame_r1..frame_r8.png`
+(256x356 minimum; deliver 512x712) = base + ornament + plate flattened, transparent window; and
+`glow_r1..glow_r8.png` (256x256 minimum; deliver 512x512) = square soft halo for behind a card.
 
-Also `art/frames/preview/<rarity-id>.png`: a flattened preview over a placeholder, for reviews (not
-uploaded, not in the authorised set).
+Colour language (main), unless the GDD says otherwise: r1 grey `#9aa3b2`, r2 green `#4fd37a`, r3 blue
+`#3f8cff`, r4 purple `#a95cff`, r5 gold `#ffb627`, r6 crimson `#ff3d5a`, r7 cyan-to-magenta prismatic,
+r8 white-gold with a rainbow edge. Each step up must read as clearly richer at 120 px wide: more
+ornament, thicker ring, brighter glow. Never rely on colour alone.
+
+Also `art/frames/preview/r<N>.png`: flattened preview over a placeholder for reviews (not uploaded).
 
 ## 3. UI skin (for game-ui)
 
-All in `art/ui/`, PNG, RGBA. Style: glossy, chunky, outlined, dark-violet panels with bright accent
-buttons, readable at phone size. Dark outline `#120e1e` around every icon, soft drop shadow underneath.
+`docs/specs/game-ui.md` section 6 is the authoritative list of names and sizes (panels, buttons, pill,
+ribbon, close button, gloss, rarity frames and glows, icons, reveal rays, card back, banner plate). Build
+exactly that list, one PNG per name in `art/ui/`, RGBA, deliver at 2x its stated minimum size when it is
+not a 9-slice. If the list changes, game-ui's file wins; if a name is added later by game-ui, add it.
 
-9-slice images (record the slice margin for each in `art/ui/slices.json` as
-`{"name": {"slice": px, "size": [w, h]}}` so game-ui can set `SliceCenter`):
+Style: glossy, chunky, outlined, dark-violet panels with bright accent buttons, readable at phone size.
+Dark outline `#120e1e` around every icon, soft drop shadow underneath. Button face and lip are separate
+images (`ui_button_face`, `ui_button_lip`) so the game can press the face down onto the lip.
 
-- Panels: `panel_dark` (128x128, slice 32), `panel_light` (128x128, 32), `panel_inset` (96x96, 24),
-  `panel_glass` (128x128, 32, translucent), `pill` (96x40, 20).
-- Buttons, each with a `_pressed` twin where the face sits 8 px lower and the bottom lip is gone, all
-  192x72, slice 28: `button_primary` (green), `button_secondary` (blue), `button_danger` (red),
-  `button_gold`, plus `button_disabled` (grey, no twin).
-- Bars: `bar_track` and `bar_fill` (256x40, slice 18; the fill is white so the game can tint it).
+Write `art/ui/slices.json`: `{"<name>": {"slice": [left, top, right, bottom], "size": [w, h]}}` for
+every 9-slice image so game-ui sets `SliceCenter` from it.
 
-Icons, 256x256 each, centred, about 12 px margin: `icon_coin`, `icon_gem`, `icon_ticket` (roll
-ticket), `icon_luck` (four-leaf clover), `icon_potion_luck` (green), `icon_potion_speed` (yellow),
-`icon_potion_power` (red), `icon_pass_basic` (blue shield), `icon_pass_vip` (gold shield with crown),
-`icon_key`, `icon_crown`, `icon_atk`, `icon_hp`, `icon_speed`, `icon_star`, `icon_lock`,
-`icon_rebirth`, `icon_trophy`, `icon_shard`, `icon_chest`, `icon_deck`.
-Add more on request from game-ui (post the exact name and meaning); never rename existing ones.
+Icons: 128x128 (deliver 256), centred, about 8 px margin; names `icon_<name>` for gems, coins,
+roll_ticket, luck, potion, pass, star, lock, crown, sword, deck, cards, world, tower, raid, ranked,
+rebirth, skills, quests, shop, codes, settings. Also `icon_hp`, `icon_speed`, `icon_key`, `icon_shard`
+if game-ui adds them. Never rename an existing file.
 
 ## 4. Game icon, thumbnails and store imagery
 
