@@ -54,6 +54,7 @@ export function CommandPalette({
   onOpenSettings,
   onOpenArtStudio,
   onBuildApex,
+  onRunPlaytest,
   onTriggerUndo,
 }: {
   open: boolean;
@@ -71,6 +72,7 @@ export function CommandPalette({
   onOpenSettings: () => void;
   onOpenArtStudio: () => void;
   onBuildApex: () => void;
+  onRunPlaytest?: () => void;
   onTriggerUndo: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -150,6 +152,17 @@ export function CommandPalette({
         onRun: onOpenSettings,
       },
     );
+    if (pieceCount > 0 && onRunPlaytest) {
+      out.push({
+        kind: "action",
+        id: "act-playtest",
+        title: "Run Live Studio Playtest",
+        subtitle: "Execute Luau playtest and stream console output into the 3D Studio Viewport",
+        badge: "Studio 3D",
+        badgeCls: "bg-tag-sky-bg text-tag-sky-fg",
+        onRun: onRunPlaytest,
+      });
+    }
     if (pieceCount > 0) {
       out.push({
         kind: "action",
@@ -218,7 +231,7 @@ export function CommandPalette({
     const q = query.trim().toLowerCase();
     if (!q) return out;
     return out.filter((it) => `${it.title} ${it.subtitle} ${it.badge}`.toLowerCase().includes(q));
-  }, [canUndo, onBuildApex, onExportRbxlx, onImportRbxlxClick, onNewChat, onOpenArtStudio, onOpenSettings, onOpenSnapshots, onTriggerUndo, place, query]);
+  }, [canUndo, onBuildApex, onExportRbxlx, onImportRbxlxClick, onNewChat, onOpenArtStudio, onOpenSettings, onOpenSnapshots, onRunPlaytest, onTriggerUndo, place, query]);
 
   const visible = items.slice(0, 40);
   const clampedIdx = visible.length ? Math.min(activeIdx, visible.length - 1) : 0;
