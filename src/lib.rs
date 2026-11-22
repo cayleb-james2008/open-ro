@@ -10,6 +10,7 @@ pub mod library;
 pub mod luau_check;
 pub mod market_taste;
 pub mod mcp;
+pub mod mesh;
 pub mod model;
 pub mod opencloud;
 pub mod place;
