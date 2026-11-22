@@ -160,9 +160,23 @@ fn main() {
         .or_else(McpClient::detect_vinegar_studio_mcp)
     {
         match McpClient::spawn(&cmd) {
-            Ok(client) => {
-                eprintln!("openro: Studio connected via {cmd}");
-                Some(PlaceBackend::Mcp(client))
+            Ok(mut client) => {
+                if client.has_live_studio() {
+                    eprintln!("openro: Studio connected via {cmd}");
+                    Some(PlaceBackend::Mcp(client))
+                } else {
+                    eprintln!(
+                        "openro: Studio MCP ({cmd}) started but no open Roblox Studio place was found; falling back to Local Place Engine"
+                    );
+                    if no_local_place {
+                        None
+                    } else {
+                        Some(PlaceBackend::Local(LocalPlace::open(
+                            data_dir.clone(),
+                            game_name.clone(),
+                        )))
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("openro: Studio MCP ({cmd}) unavailable ({e}); falling back to Local Place Engine");
@@ -202,6 +216,17 @@ fn main() {
     // silently orphan every revert.
     agent.set_changes_file(data_dir.join("changes.json"));
     let shared = Shared::with_data_dir(Some(agent), game_name, data_dir.clone());
+    if let Some(installed) = openro_rs::studio_plugin::maybe_auto_install_vinegar_plugin(
+        &shared.studio_plugin,
+        &data_dir,
+        port,
+    ) {
+        eprintln!(
+            "openro: auto-installed {} into {}",
+            openro_rs::studio_plugin::COMPANION_PLUGIN_FILENAME,
+            installed.display()
+        );
+    }
     // Only the real binary checks GitHub in the background; tests never do.
     shared.updater.start_background();
 

@@ -1209,6 +1209,9 @@ fn handle(
         ("POST", "/api/studio/embed/launch") => {
             handle_studio_embed_launch(&mut stream, shared, &req);
         }
+        ("POST", "/api/studio/launch-and-continue") => {
+            handle_studio_launch_and_continue(&mut stream, shared, &req);
+        }
         ("POST", "/api/studio/embed/stop") => {
             handle_studio_embed_stop(&mut stream, shared, &req);
         }
@@ -2951,6 +2954,7 @@ fn handle_redo(stream: &mut TcpStream, shared: &Shared) {
 fn handle_export_bundle(stream: &mut TcpStream, shared: &Shared) {
     let stored_meta = all_stored_assets(shared);
     let pack_assets = all_ship_pack_assets(shared);
+    let (extra_files, extra_manifest) = collect_generated_media_for_bundle(shared);
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
         respond_json(
@@ -2963,7 +2967,34 @@ fn handle_export_bundle(stream: &mut TcpStream, shared: &Shared) {
     if !stored_meta.is_empty() {
         agent.bind_assets(&stored_meta);
     }
-    match agent.export_rojo_ship_pack(&shared.game_name, &pack_assets) {
+    let bundle_res = match agent.studio.as_mut() {
+        Some(PlaceBackend::Local(local)) => {
+            if local.game_name().trim().is_empty() && !shared.game_name.trim().is_empty() {
+                local.set_game_name(shared.game_name.clone());
+            }
+            crate::rojo_export::build_rojo_ship_pack_with_extras(
+                local,
+                &pack_assets,
+                &extra_files,
+                &extra_manifest,
+            )
+        }
+        Some(PlaceBackend::Mcp(_)) | Some(PlaceBackend::Plugin(_)) => match agent.place_tree() {
+            Ok(tree) => {
+                let mut tmp = LocalPlace::in_memory(shared.game_name.clone());
+                tmp.replace_tree(&tree);
+                crate::rojo_export::build_rojo_ship_pack_with_extras(
+                    &tmp,
+                    &pack_assets,
+                    &extra_files,
+                    &extra_manifest,
+                )
+            }
+            Err(e) => Err(e),
+        },
+        None => Err("Studio not connected".to_string()),
+    };
+    match bundle_res {
         Ok(bundle) => {
             let fname = bundle.filename_slug();
             respond_download_bytes(stream, "application/zip", &fname, &bundle.zip_bytes);
@@ -3271,6 +3302,7 @@ fn config_snapshot(shared: &Shared) -> Value {
         "mcp_command": cfg.mcp_command.unwrap_or_default(),
         "vinegar_detected": vinegar.is_some(),
         "vinegar_mcp_path": vinegar,
+        "auto_install_plugin": crate::studio_plugin::auto_install_pref(shared.data_dir.as_deref()),
         "rbxlx_path": rbxlx_path,
         "detected_gateways": gateways,
         "image_provider": cfg.image_provider.unwrap_or_else(|| "auto".to_string()),
@@ -3429,6 +3461,10 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
         }
     }
 
+    if let Some(auto_plugin) = body.get("auto_install_plugin").and_then(|v| v.as_bool()) {
+        crate::studio_plugin::set_auto_install_pref(shared.data_dir.as_deref(), auto_plugin)?;
+    }
+
     let desired_mode = cfg.workspace_mode.as_deref().unwrap_or("auto");
     let new_backend: Option<PlaceBackend> = match desired_mode {
         "local_place" => {
@@ -3446,17 +3482,34 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
                 .ok_or_else(|| {
                     "No Studio MCP command set and Roblox Studio (Vinegar) is not running.".to_string()
                 })?;
-            Some(PlaceBackend::Mcp(McpClient::spawn(&cmd)?))
+            let mut client = McpClient::spawn(&cmd)?;
+            if !client.has_live_studio() {
+                return Err(
+                    "Roblox Studio is not signed in or has no open place yet. Sign in and open a place in Roblox Studio, then try again."
+                        .to_string(),
+                );
+            }
+            Some(PlaceBackend::Mcp(client))
         }
         _ => {
-            // "auto": explicit mcp_command -> running Vinegar -> Local Place Engine
+            // "auto": explicit mcp_command -> running Vinegar with live open place -> Local Place Engine (#24)
             let mcp_try = cfg
                 .mcp_command
                 .clone()
                 .or_else(McpClient::detect_vinegar_studio_mcp);
             if let Some(cmd) = mcp_try {
                 match McpClient::spawn(&cmd) {
-                    Ok(client) => Some(PlaceBackend::Mcp(client)),
+                    Ok(mut client) => {
+                        if client.has_live_studio() {
+                            Some(PlaceBackend::Mcp(client))
+                        } else {
+                            let place = match &shared.data_dir {
+                                Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
+                                None => LocalPlace::in_memory(shared.game_name.clone()),
+                            };
+                            Some(PlaceBackend::Local(place))
+                        }
+                    }
                     Err(_) => {
                         let place = match &shared.data_dir {
                             Some(dir) => LocalPlace::open(dir.clone(), shared.game_name.clone()),
@@ -3581,7 +3634,7 @@ fn handle_studio_mcp_connect(stream: &mut TcpStream, shared: &Shared, req: &Requ
         return;
     }
 
-    let mcp = match McpClient::spawn(&cmd) {
+    let mut mcp = match McpClient::spawn(&cmd) {
         Ok(c) => c,
         Err(e) => {
             respond_json(
@@ -3597,6 +3650,19 @@ fn handle_studio_mcp_connect(stream: &mut TcpStream, shared: &Shared, req: &Requ
             return;
         }
     };
+    if !mcp.has_live_studio() {
+        respond_json(
+            stream,
+            "502 Bad Gateway",
+            &json!({
+                "ok": false,
+                "connected": false,
+                "studio_mode": shared.studio_stream.studio_mode(),
+                "error": "Studio MCP started, but no open Roblox Studio place was found. Sign in and open a place in Roblox Studio, then try again.",
+            }),
+        );
+        return;
+    }
     shared
         .studio_embed
         .lock()
@@ -4887,7 +4953,83 @@ fn handle_studio_plugin_status(stream: &mut TcpStream, shared: &Shared, req: &Re
         );
         return;
     }
-    respond_json(stream, "200 OK", &shared.studio_plugin.status_json());
+    let mut st = shared.studio_plugin.status_json();
+    if let Some(o) = st.as_object_mut() {
+        o.insert(
+            "auto_install_plugin".to_string(),
+            json!(crate::studio_plugin::auto_install_pref(shared.data_dir.as_deref())),
+        );
+    }
+    respond_json(stream, "200 OK", &st);
+}
+
+/// 1-click "Launch Studio & continue" endpoint (#29):
+/// If live Studio MCP is already connected, returns `ready: true`. Otherwise tries to
+/// attach an existing running Studio MCP session, or delegates to `handle_studio_embed_launch`.
+fn handle_studio_launch_and_continue(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "launching Studio is only allowed from this machine (loopback)" }),
+        );
+        return;
+    }
+    {
+        let mut guard = shared.agent.lock().unwrap();
+        if let Some(agent) = guard.as_mut() {
+            if let Some(PlaceBackend::Mcp(mcp)) = agent.studio.as_mut() {
+                if mcp.has_live_studio() {
+                    respond_json(
+                        stream,
+                        "200 OK",
+                        &json!({
+                            "ok": true,
+                            "already_connected": true,
+                            "studio_connected": true,
+                            "ready": true,
+                            "studio_id": mcp.studio_id(),
+                        }),
+                    );
+                    return;
+                }
+            }
+        }
+    }
+    if let Some(cmd) = shared
+        .config
+        .lock()
+        .unwrap()
+        .mcp_command
+        .clone()
+        .or_else(McpClient::detect_vinegar_studio_mcp)
+    {
+        if let Ok(mut mcp) = McpClient::spawn(&cmd) {
+            if mcp.has_live_studio() {
+                let sid = mcp.studio_id().map(String::from);
+                shared.studio_embed.lock().unwrap().sync_from_client(&mcp, Some(cmd));
+                let mut guard = shared.agent.lock().unwrap();
+                if let Some(agent) = guard.as_mut() {
+                    agent.studio = Some(PlaceBackend::Mcp(mcp));
+                    agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
+                    *shared.status_cache.lock().unwrap() = extract_status_from_agent(Some(agent));
+                }
+                respond_json(
+                    stream,
+                    "200 OK",
+                    &json!({
+                        "ok": true,
+                        "attached_existing": true,
+                        "studio_connected": true,
+                        "ready": true,
+                        "studio_id": sid,
+                    }),
+                );
+                return;
+            }
+        }
+    }
+    handle_studio_embed_launch(stream, shared, req);
 }
 
 fn handle_studio_plugin_download(stream: &mut TcpStream, shared: &Shared, req: &Request) {
@@ -5260,9 +5402,75 @@ fn bind_stored_assets_to_agent(shared: &Shared) {
     }
 }
 
+struct MediaCollector {
+    read_bytes: bool,
+    seen: std::collections::HashSet<String>,
+    rows: Vec<Value>,
+    files: Vec<(String, Vec<u8>)>,
+}
+
+impl MediaCollector {
+    fn scan(&mut self, dir: &std::path::Path, kind: &str, sub_prefix: &str, url_prefix: &str) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let mut entries: Vec<_> = rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_file())
+            .collect();
+        entries.sort();
+        for path in entries {
+            let Some(fname) = path.file_name().and_then(|n| n.to_str()) else { continue };
+            if fname.starts_with('.') {
+                continue;
+            }
+            let zip_rel = format!("assets/{sub_prefix}/{fname}");
+            if !self.seen.insert(zip_rel.clone()) {
+                continue;
+            }
+            let bytes_len = path.metadata().map(|m| m.len()).unwrap_or(0);
+            if self.read_bytes {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    self.files.push((zip_rel.clone(), bytes));
+                }
+            }
+            self.rows.push(json!({
+                "filename": format!("{sub_prefix}/{fname}"),
+                "name": fname,
+                "kind": kind,
+                "bytes": bytes_len,
+                "url": format!("{url_prefix}/{fname}"),
+                "content_uri": "rbxassetid://0",
+                "bundle_path": zip_rel,
+            }));
+        }
+    }
+}
+
+fn collect_generated_media(shared: &Shared, read_bytes: bool) -> (Vec<(String, Vec<u8>)>, Vec<Value>) {
+    let mut c = MediaCollector {
+        read_bytes,
+        seen: std::collections::HashSet::new(),
+        rows: Vec::new(),
+        files: Vec::new(),
+    };
+    c.scan(&shared.assets_root.join("game-assets/meshes"), "mesh", "meshes", "/api/assets/meshes");
+    c.scan(&shared.assets_root.join("game-assets/audio"), "audio", "audio", "/api/assets/audio");
+    if let Some(proj) = shared.active_project_dir() {
+        c.scan(&proj.join("assets/meshes"), "mesh", "meshes", "/api/assets/meshes");
+        c.scan(&proj.join("assets/audio"), "audio", "audio", "/api/assets/audio");
+    }
+    (c.files, c.rows)
+}
+
+fn collect_generated_media_for_bundle(shared: &Shared) -> (Vec<(String, Vec<u8>)>, Vec<Value>) {
+    collect_generated_media(shared, true)
+}
+
 fn handle_assets_list(stream: &mut TcpStream, shared: &Shared) {
     let assets = all_stored_assets(shared);
-    let items: Vec<Value> = assets.iter().map(crate::assets::AssetMetadata::to_json).collect();
+    let mut items: Vec<Value> = assets.iter().map(crate::assets::AssetMetadata::to_json).collect();
+    let (_, media_rows) = collect_generated_media(shared, false);
+    items.extend(media_rows);
     let dir_str = shared
         .data_dir
         .as_ref()
@@ -5281,7 +5489,17 @@ fn handle_assets_list(stream: &mut TcpStream, shared: &Shared) {
 
 fn handle_assets_manifest(stream: &mut TcpStream, shared: &Shared) {
     let assets = all_stored_assets(shared);
+    let (_, media_rows) = collect_generated_media(shared, false);
     let mut manifest = crate::assets::build_asset_manifest_json(&shared.game_name, &assets);
+    if !media_rows.is_empty() {
+        if let Some(arr) = manifest.get_mut("assets").and_then(|v| v.as_array_mut()) {
+            arr.extend(media_rows);
+            let total = arr.len();
+            if let Some(obj) = manifest.as_object_mut() {
+                obj.insert("asset_count".to_string(), json!(total));
+            }
+        }
+    }
     if let Some(obj) = manifest.as_object_mut() {
         obj.insert("ok".to_string(), json!(true));
     }
