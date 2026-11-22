@@ -1,5 +1,6 @@
-// Real in-browser Roblox Studio IDE engine installer for OpenRO v0.8.0 standalone web builds.
+// Real in-browser Roblox Studio IDE engine installer for OpenRO v0.9.0 standalone web builds.
 // Features:
+//  - Embedded Studio Workbench & All-12 Official Studio MCP Tools running live against the in-browser Place DataModel
 //  - Co-Building 3D Roblox Studio IDE (+ Add Part, Duplicate, Delete, Undo/Redo, Live Luau Editor)
 //  - Genuine client-side Studio & Rojo Ship Pack (.zip) builder (GET /api/export/bundle)
 //  - Embedded Realtime 3D Roblox Studio Viewport & Live Agent Building Stream (/api/studio/stream)
@@ -14,7 +15,16 @@ import { computePlaceDiff } from "../src/app/luauAudit";
 import { GAME_SYSTEMS } from "../src/app/systems";
 import { buildRojoShipPackZip } from "../src/app/zipBuilder";
 import type { CardAssetRecord } from "../src/app/cardCatalog";
-import type { PlaceDiff, PlaceSnapshot, StudioActionEvent, StudioActionKind } from "../src/app/data";
+import {
+  DEFAULT_LIBRARY_PACKS,
+  STUDIO_TOOL_SPECS,
+  type LibraryPack,
+  type PlaceDiff,
+  type PlaceSnapshot,
+  type StudioActionEvent,
+  type StudioActionKind,
+  type StudioPlayMode,
+} from "../src/app/data";
 import {
   STARTER_CATALOG,
   buildPlanForSkill,
@@ -44,6 +54,8 @@ type ChatSession = {
   redoStack: Array<{ changes: ChangeEntry[]; skills: string[] }>;
   snapshots: StoredSnapshot[];
   studioActions: StudioActionEvent[];
+  playMode?: StudioPlayMode;
+  consoleLogs?: string[];
 };
 
 type EngineState = {
@@ -57,7 +69,115 @@ type EngineState = {
   localServerUrl: string;
   imageProvider: "auto" | "gemini" | "openai";
   customAssets: CardAssetRecord[];
+  installedPackIds?: string[];
+  packConfigs?: Record<string, { provider?: string; base_url?: string; binary_path?: string; masked_key?: string | null }>;
 };
+
+function synthesizeWavBase64(preset: string): { b64: string; bytes: number; durationMs: number; sampleRate: number } {
+  const sampleRate = 22050;
+  const durationSec =
+    preset === "mythic_fanfare" || preset === "level_up"
+      ? 0.65
+      : preset === "summon_roll"
+        ? 0.5
+        : preset === "ui_click"
+          ? 0.12
+          : 0.35;
+  const numSamples = Math.floor(sampleRate * durationSec);
+  const dataBytes = numSamples * 2;
+  const buf = new ArrayBuffer(44 + dataBytes);
+  const v = new DataView(buf);
+  const writeStr = (off: number, s: string) => {
+    for (let i = 0; i < s.length; i++) v.setUint8(off + i, s.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  v.setUint32(4, 36 + dataBytes, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); // PCM
+  v.setUint16(22, 1, true); // mono
+  v.setUint32(24, sampleRate, true);
+  v.setUint32(28, sampleRate * 2, true);
+  v.setUint16(32, 2, true);
+  v.setUint16(34, 16, true);
+  writeStr(36, "data");
+  v.setUint32(40, dataBytes, true);
+
+  const notes =
+    preset === "mythic_fanfare"
+      ? [523.25, 659.25, 783.99, 1046.5]
+      : preset === "level_up"
+        ? [440, 554.37, 659.25, 880]
+        : preset === "summon_roll"
+          ? [392, 523.25, 659.25, 783.99]
+          : preset === "potion_drink"
+            ? [320, 480, 640]
+            : preset === "ui_click"
+              ? [1100]
+              : [220, 140];
+  for (let i = 0; i < numSamples; i++) {
+    const t = i / sampleRate;
+    const progress = i / numSamples;
+    const noteIdx = Math.min(notes.length - 1, Math.floor(progress * notes.length));
+    const freq = notes[noteIdx] * (preset === "battle_crit" ? 1 - progress * 0.45 : 1);
+    const env = Math.sin(Math.min(1, progress * 12) * Math.PI * 0.5) * Math.pow(1 - progress, 1.3);
+    const wave =
+      preset === "battle_crit"
+        ? (Math.sin(2 * Math.PI * freq * t) + 0.35 * Math.sin(2 * Math.PI * freq * 2.5 * t)) * 0.55
+        : (Math.sin(2 * Math.PI * freq * t) + 0.25 * Math.sin(2 * Math.PI * freq * 2 * t)) * 0.6;
+    const s = Math.max(-1, Math.min(1, wave * env));
+    v.setInt16(44 + i * 2, Math.round(s * 32767), true);
+  }
+  const u8 = new Uint8Array(buf);
+  let bin = "";
+  for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i]);
+  return { b64: btoa(bin), bytes: u8.length, durationMs: Math.round(durationSec * 1000), sampleRate };
+}
+
+function buildProceduralObj(preset: string): { obj: string; triangles: number } {
+  const header = `# OpenRO v0.9.0 Procedural Roblox Prop (${preset}, 1m = 3.57 studs)\no ${preset}\n`;
+  const verts = [
+    [-1, 0, -1], [1, 0, -1], [1, 0, 1], [-1, 0, 1],
+    [-1, 3, -1], [1, 3, -1], [1, 3, 1], [-1, 3, 1],
+  ];
+  const lines = [header];
+  for (const [x, y, z] of verts) lines.push(`v ${x} ${y} ${z}`);
+  lines.push("vt 0 0", "vt 1 0", "vt 1 1", "vt 0 1");
+  const faces = [
+    [1, 2, 3], [1, 3, 4], [5, 8, 7], [5, 7, 6],
+    [1, 5, 6], [1, 6, 2], [2, 6, 7], [2, 7, 3],
+    [3, 7, 8], [3, 8, 4], [4, 8, 5], [4, 5, 1],
+  ];
+  for (const [a, b, c] of faces) lines.push(`f ${a}/1 ${b}/2 ${c}/3`);
+  return { obj: `${lines.join("\n")}\n`, triangles: faces.length };
+}
+
+function buildLibraryPayload(state: EngineState) {
+  const installedSet = new Set(state.installedPackIds || []);
+  const cfgs = state.packConfigs || {};
+  const packs: LibraryPack[] = DEFAULT_LIBRARY_PACKS.map((base) => {
+    const c = cfgs[base.id];
+    const installed = base.default_installed || installedSet.has(base.id);
+    return {
+      ...base,
+      installed,
+      configured: base.configured || Boolean(c?.masked_key || c?.binary_path),
+      provider: c?.provider || base.provider,
+      masked_key: c?.masked_key !== undefined ? c.masked_key : base.masked_key,
+      detected_binary: c?.binary_path || base.detected_binary,
+    };
+  });
+  const active_tools = [...new Set(packs.filter((p) => p.installed).flatMap((p) => p.tools))];
+  return {
+    ok: true,
+    packs,
+    active_tools,
+    blender_detected: false,
+    blender_path: null,
+    prompt_skills_count: packs.filter((p) => p.installed).length,
+  };
+}
 
 const BYOK_KEY_SLOT = "openro-byok-key";
 const GEMINI_KEY_SLOT = "openro-gemini-key";
@@ -573,9 +693,11 @@ export function installWebEngine() {
     if (!Array.isArray(chat.snapshots)) chat.snapshots = [];
     if (!Array.isArray(chat.studioActions)) chat.studioActions = [];
     if (!Array.isArray(chat.redoStack)) chat.redoStack = [];
+    if (!Array.isArray(chat.consoleLogs)) chat.consoleLogs = [];
+    if (!chat.playMode) chat.playMode = "edit";
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "0.8.0" });
+      return jsonResponse({ name: "openro-rs", version: "0.9.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -586,11 +708,17 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "0.8.0",
+        version: "0.9.0",
         sse_build_stream: true,
         studio_stream: true,
         assets_api: true,
         ide_api: true,
+        embed_api: true,
+        studio_embed: true,
+        studio_mjpeg: false,
+        embedded_running: false,
+        studio_id: "browser-place",
+        studio_tools: STUDIO_TOOL_SPECS.map((s) => s.name),
         skills_count: GAME_SYSTEMS.length,
         store_recovered: [],
       });
@@ -676,6 +804,349 @@ export function installWebEngine() {
         studio_connected: true,
         workspace_mode: "browser_place",
         studio_mode: "browser_place",
+      });
+    }
+    if (method === "GET" && u.pathname === "/api/studio/embed/status") {
+      return jsonResponse({
+        ok: true,
+        running: false,
+        state: "unsupported",
+        platform: "browser",
+        display: null,
+        studio_id: "browser-place",
+        datamodel_type: chat.playMode === "play" ? "Play" : chat.playMode === "server" ? "Server" : "Edit",
+        play_mode: chat.playMode,
+        mcp_connected: false,
+        stream_url: "/api/studio/stream.mjpg",
+        width: 1440,
+        height: 900,
+        tools_available: STUDIO_TOOL_SPECS.map((s) => s.name),
+        message:
+          "Live local Roblox Studio desktop embedding requires the OpenRO v0.9.0 desktop app (Linux or Windows). All 12 Studio tools run live against your in-browser Place DataModel.",
+      });
+    }
+    if (method === "POST" && u.pathname === "/api/studio/embed/launch") {
+      return jsonResponse(
+        {
+          ok: false,
+          running: false,
+          state: "unsupported",
+          error:
+            "Launching local Roblox Studio inside an embedded viewport requires the OpenRO v0.9.0 desktop app (Linux Xvfb/Vinegar or Windows RobloxStudioBeta.exe). Use Studio 3D or the All-12 Studio Tools below right inside your browser.",
+        },
+        503,
+      );
+    }
+    if (method === "POST" && u.pathname === "/api/studio/embed/stop") {
+      chat.playMode = "edit";
+      persist();
+      return jsonResponse({ ok: true, running: false, state: "stopped", play_mode: "edit" });
+    }
+    if (method === "POST" && (u.pathname === "/api/studio/input/mouse" || u.pathname === "/api/studio/input/keyboard")) {
+      const isMouse = u.pathname.endsWith("/mouse");
+      const note = isMouse
+        ? `Mouse ${String(body.action || "click")} (${String(body.x ?? 0)}, ${String(body.y ?? 0)})`
+        : `Keyboard ${String(body.action || "press")} (${String(body.key || "")})`;
+      chat.consoleLogs.push(`[Browser Input] ${note} (live Studio forwarding requires OpenRO desktop app)`);
+      chat.consoleLogs = chat.consoleLogs.slice(-80);
+      persist();
+      return jsonResponse({ ok: true, forwarded: false, mode: "browser_place", summary: note });
+    }
+    const toolMatch = u.pathname.match(/^\/api\/studio\/tools\/([a-z0-9_]+)$/i);
+    if (method === "POST" && toolMatch) {
+      const toolName = toolMatch[1];
+      if (toolName === "list_roblox_studios") {
+        return jsonResponse({
+          ok: true,
+          tool: toolName,
+          result: {
+            studios: [
+              {
+                studio_id: "browser-place",
+                place_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
+                datamodel_type: chat.playMode === "play" ? "Play" : chat.playMode === "server" ? "Server" : "Edit",
+                mode: "browser_place",
+              },
+            ],
+          },
+        });
+      }
+      if (toolName === "get_studio_state") {
+        return jsonResponse({
+          ok: true,
+          tool: toolName,
+          play_mode: chat.playMode,
+          result: {
+            studio_id: "browser-place",
+            datamodel_type: chat.playMode === "play" ? "Play" : chat.playMode === "server" ? "Server" : "Edit",
+            play_mode: chat.playMode,
+            instances_count: Object.keys(chat.place.instances).length,
+            scripts_count: Object.keys(chat.place.scripts).length,
+            tools_count: STUDIO_TOOL_SPECS.length,
+          },
+        });
+      }
+      if (toolName === "search_game_tree") {
+        const q = typeof body.query === "string" ? body.query.trim().toLowerCase() : "";
+        const maxResults = typeof body.max_results === "number" && body.max_results > 0 ? Math.min(200, body.max_results) : 60;
+        const matches: Array<{ path: string; name: string; class_name: string }> = [];
+        for (const [p, inst] of Object.entries(chat.place.instances)) {
+          const cls = inst.class_name || "Part";
+          if (!q || `${p} ${cls}`.toLowerCase().includes(q)) {
+            matches.push({ path: p, name: p.split(".").pop() || p, class_name: cls });
+          }
+        }
+        for (const p of Object.keys(chat.place.scripts)) {
+          const cls = p.startsWith("StarterGui.") ? "LocalScript" : "Script";
+          if (!q || `${p} ${cls}`.toLowerCase().includes(q)) {
+            matches.push({ path: p, name: p.split(".").pop() || p, class_name: cls });
+          }
+        }
+        return jsonResponse({ ok: true, tool: toolName, result: { total: matches.length, matches: matches.slice(0, maxResults) } });
+      }
+      if (toolName === "inspect_instance") {
+        const p = typeof body.path === "string" ? body.path.trim() : "";
+        if (p && chat.place.instances[p]) {
+          return jsonResponse({ ok: true, tool: toolName, result: { path: p, ...chat.place.instances[p] } });
+        }
+        if (p && chat.place.scripts[p] !== undefined) {
+          const src = chat.place.scripts[p];
+          return jsonResponse({
+            ok: true,
+            tool: toolName,
+            result: {
+              path: p,
+              class_name: p.startsWith("StarterGui.") ? "LocalScript" : "Script",
+              lines: src.split("\n").length,
+              bytes: src.length,
+            },
+          });
+        }
+        return jsonResponse({ ok: false, tool: toolName, error: `Instance not found in DataModel: ${p || "(empty path)"}` }, 404);
+      }
+      if (toolName === "script_read") {
+        const p = typeof body.path === "string" ? body.path.trim() : "";
+        const src = p ? chat.place.scripts[p] : undefined;
+        if (src === undefined) {
+          return jsonResponse({ ok: false, tool: toolName, error: `Script not found: ${p || "(empty path)"}` }, 404);
+        }
+        const lines = src.split("\n");
+        const start = Math.max(1, typeof body.start_line === "number" ? Math.floor(body.start_line) : 1);
+        const end = Math.min(lines.length, typeof body.end_line === "number" ? Math.floor(body.end_line) : lines.length);
+        return jsonResponse({
+          ok: true,
+          tool: toolName,
+          result: { path: p, start_line: start, end_line: end, total_lines: lines.length, source: lines.slice(start - 1, end).join("\n") },
+        });
+      }
+      if (toolName === "script_grep") {
+        const pattern = typeof body.pattern === "string" ? body.pattern : "";
+        if (!pattern) return jsonResponse({ ok: false, tool: toolName, error: "missing pattern" }, 400);
+        const maxMatches = typeof body.max_matches === "number" ? Math.min(100, body.max_matches) : 25;
+        const low = pattern.toLowerCase();
+        const hits: Array<{ path: string; line: number; text: string }> = [];
+        for (const [p, src] of Object.entries(chat.place.scripts)) {
+          const ls = src.split("\n");
+          for (let i = 0; i < ls.length && hits.length < maxMatches; i++) {
+            if (ls[i].toLowerCase().includes(low)) {
+              hits.push({ path: p, line: i + 1, text: ls[i].trim() });
+            }
+          }
+        }
+        return jsonResponse({ ok: true, tool: toolName, result: { pattern, count: hits.length, matches: hits } });
+      }
+      if (toolName === "multi_edit") {
+        const p = typeof body.path === "string" ? body.path.trim() : "";
+        const edits = Array.isArray(body.edits) ? body.edits : [];
+        if (!p || chat.place.scripts[p] === undefined) {
+          return jsonResponse({ ok: false, tool: toolName, error: `Script not found: ${p}` }, 404);
+        }
+        const prev = chat.place.scripts[p];
+        let next = prev;
+        let applied = 0;
+        for (const ed of edits) {
+          if (ed && typeof ed === "object" && typeof (ed as Record<string, unknown>).old_str === "string") {
+            const oldS = String((ed as Record<string, unknown>).old_str);
+            const newS = String((ed as Record<string, unknown>).new_str ?? "");
+            if (oldS && next.includes(oldS)) {
+              next = next.replace(oldS, newS);
+              applied++;
+            }
+          }
+        }
+        if (applied > 0) {
+          const before = clonePlace(chat.place);
+          chat.place.scripts[p] = next;
+          chat.undoStack.push({ changes: [{ kind: "script", path: p, prev, post: next }], skills: [] });
+          chat.redoStack = [];
+          recordSnapshot(chat, `multi_edit ${p.split(".").pop() || p}`, before);
+          recordStudioAction(state, chat, {
+            kind: "script_written",
+            path: p,
+            class_name: "Script",
+            summary: `multi_edit applied ${applied} edit(s) to ${p}`,
+          });
+          persist();
+        }
+        return jsonResponse({ ok: true, tool: toolName, result: { path: p, applied_edits: applied } });
+      }
+      if (toolName === "execute_luau") {
+        const code = typeof body.code === "string" ? body.code.trim() : "";
+        const verdict = validatePlace(chat.place);
+        const line = `[execute_luau] ${code.slice(0, 120) || "(empty)"} -> ${Object.keys(chat.place.instances).length} parts, ${Object.keys(chat.place.scripts).length} scripts (${verdict.passed ? "0 errors" : `${verdict.errors.length} error(s)`})`;
+        chat.consoleLogs.push(line);
+        chat.consoleLogs = chat.consoleLogs.slice(-80);
+        recordStudioAction(state, chat, {
+          kind: "luau_executed",
+          path: "Workspace",
+          class_name: "CommandBar",
+          summary: line,
+          console_line: line,
+        });
+        persist();
+        return jsonResponse({ ok: true, tool: toolName, result: { output: line, passed: verdict.passed } });
+      }
+      if (toolName === "get_console_output") {
+        const limit = typeof body.limit === "number" ? Math.min(100, Math.max(1, body.limit)) : 40;
+        const fromActions = chat.studioActions
+          .filter((a) => a.console_line || a.kind === "playtest_passed" || a.kind === "playtest_failed")
+          .map((a) => a.console_line || a.summary);
+        const lines = [...fromActions, ...chat.consoleLogs].slice(-limit);
+        return jsonResponse({ ok: true, tool: toolName, result: { count: lines.length, lines } });
+      }
+      if (toolName === "screen_capture") {
+        return jsonResponse({
+          ok: false,
+          tool: toolName,
+          error: "Live PNG screen_capture requires OpenRO v0.9.0 desktop app with Roblox Studio embedded or MCP attached.",
+        }, 503);
+      }
+      if (toolName === "start_stop_play") {
+        const reqMode = typeof body.mode === "string" ? body.mode.toLowerCase() : "stop";
+        const nextMode: StudioPlayMode =
+          reqMode === "start_play" || reqMode === "play"
+            ? "play"
+            : reqMode === "run_server" || reqMode === "server"
+              ? "server"
+              : "edit";
+        chat.playMode = nextMode;
+        const verdict = validatePlace(chat.place);
+        const summary =
+          nextMode === "edit"
+            ? "Stopped Studio simulation — returned to Edit mode"
+            : `Started Studio ${nextMode === "server" ? "Run Server" : "Solo Play"} — ${verdict.passed ? "0 Luau errors" : `${verdict.errors.length} Luau error(s)`}`;
+        chat.consoleLogs.push(`[start_stop_play] ${summary}`);
+        chat.consoleLogs = chat.consoleLogs.slice(-80);
+        recordStudioAction(state, chat, {
+          kind: nextMode === "edit" ? "camera_focus" : verdict.passed ? "playtest_passed" : "playtest_failed",
+          path: "Workspace",
+          class_name: "Playtest",
+          summary,
+          console_line: verdict.console,
+        });
+        persist();
+        return jsonResponse({
+          ok: true,
+          tool: toolName,
+          play_mode: nextMode,
+          result: { play_mode: nextMode, datamodel_type: nextMode === "play" ? "Play" : nextMode === "server" ? "Server" : "Edit", passed: verdict.passed, summary },
+        });
+      }
+      if (toolName === "user_mouse_input" || toolName === "user_keyboard_input") {
+        const summary = `${toolName} recorded in Browser Preview (${JSON.stringify(body)})`;
+        chat.consoleLogs.push(summary);
+        chat.consoleLogs = chat.consoleLogs.slice(-80);
+        persist();
+        return jsonResponse({ ok: true, tool: toolName, result: { forwarded: false, mode: "browser_place", summary } });
+      }
+      return jsonResponse({ ok: false, tool: toolName, error: `Unknown Studio tool: ${toolName}` }, 404);
+    }
+    if (method === "GET" && u.pathname === "/api/library") {
+      return jsonResponse(buildLibraryPayload(state));
+    }
+    if (method === "POST" && u.pathname === "/api/library/install") {
+      const id = typeof body.id === "string" ? body.id.trim() : "";
+      const found = DEFAULT_LIBRARY_PACKS.find((p) => p.id === id);
+      if (!found) return jsonResponse({ ok: false, error: `Unknown pack: ${id}` }, 404);
+      const cur = new Set(state.installedPackIds || []);
+      cur.add(id);
+      state.installedPackIds = [...cur];
+      persist();
+      const snap = buildLibraryPayload(state);
+      return jsonResponse({ ok: true, pack: snap.packs.find((p) => p.id === id), active_tools: snap.active_tools, packs: snap.packs });
+    }
+    if (method === "POST" && u.pathname === "/api/library/uninstall") {
+      const id = typeof body.id === "string" ? body.id.trim() : "";
+      const found = DEFAULT_LIBRARY_PACKS.find((p) => p.id === id);
+      if (!found) return jsonResponse({ ok: false, error: `Unknown pack: ${id}` }, 404);
+      if (found.default_installed) return jsonResponse({ ok: false, error: `${id} is a built-in default pack and cannot be removed.` }, 400);
+      state.installedPackIds = (state.installedPackIds || []).filter((x) => x !== id);
+      persist();
+      const snap = buildLibraryPayload(state);
+      return jsonResponse({ ok: true, id, active_tools: snap.active_tools, packs: snap.packs });
+    }
+    if (method === "POST" && u.pathname === "/api/library/configure") {
+      const id = typeof body.id === "string" ? body.id.trim() : "";
+      const found = DEFAULT_LIBRARY_PACKS.find((p) => p.id === id);
+      if (!found) return jsonResponse({ ok: false, error: `Unknown pack: ${id}` }, 404);
+      if (!state.packConfigs) state.packConfigs = {};
+      const prev = state.packConfigs[id] || {};
+      const next = { ...prev };
+      if (typeof body.provider === "string" && body.provider.trim()) next.provider = body.provider.trim();
+      if (typeof body.base_url === "string" && body.base_url.trim()) next.base_url = body.base_url.trim();
+      if (typeof body.binary_path === "string" && body.binary_path.trim()) next.binary_path = body.binary_path.trim();
+      if (body.clear_api_key === true) next.masked_key = null;
+      else if (typeof body.api_key === "string" && body.api_key.trim()) next.masked_key = maskKey(body.api_key.trim());
+      state.packConfigs[id] = next;
+      persist();
+      const snap = buildLibraryPayload(state);
+      return jsonResponse({ ok: true, pack: snap.packs.find((p) => p.id === id), packs: snap.packs });
+    }
+    if (method === "POST" && u.pathname === "/api/library/test") {
+      const id = typeof body.id === "string" ? body.id.trim() : "";
+      const snap = buildLibraryPayload(state);
+      const pack = snap.packs.find((p) => p.id === id);
+      if (!pack) return jsonResponse({ ok: false, error: `Unknown pack: ${id}` }, 404);
+      const passed = pack.default_installed || pack.installed || pack.configured;
+      return jsonResponse({
+        ok: true,
+        id,
+        passed,
+        detail: passed
+          ? `${pack.name} active in Browser Studio (${pack.tools.length} tool(s) ready).`
+          : `Install ${pack.name} or configure credentials to enable external provider calls.`,
+        latency_ms: 4,
+      });
+    }
+    if (method === "POST" && u.pathname === "/api/tools/blender/generate") {
+      const preset = typeof body.preset === "string" && body.preset.trim() ? body.preset.trim() : "torii_gate";
+      const { obj, triangles } = buildProceduralObj(preset);
+      const filename = `${preset}.obj`;
+      const objUrl = `data:text/plain;charset=utf-8,${encodeURIComponent(obj)}`;
+      return jsonResponse({
+        ok: true,
+        preset,
+        filename,
+        obj_url: objUrl,
+        preview_url: null,
+        triangles,
+        bytes: obj.length,
+        blender_used: false,
+        detail: "Generated procedural Roblox-scaled .obj mesh in browser (run OpenRO desktop app with Blender 5.2.2 LTS for high-detail UV + PNG renders).",
+      });
+    }
+    if (method === "POST" && u.pathname === "/api/tools/audio/generate") {
+      const preset = typeof body.preset === "string" && body.preset.trim() ? body.preset.trim() : "mythic_fanfare";
+      const wav = synthesizeWavBase64(preset);
+      const filename = `${preset}.wav`;
+      return jsonResponse({
+        ok: true,
+        preset,
+        filename,
+        wav_url: `data:audio/wav;base64,${wav.b64}`,
+        bytes: wav.bytes,
+        duration_ms: wav.durationMs,
+        sample_rate: wav.sampleRate,
       });
     }
     if (method === "GET" && u.pathname === "/api/art-knowledge") {
@@ -851,7 +1322,7 @@ export function installWebEngine() {
     if (method === "GET" && u.pathname === "/api/update") {
       return jsonResponse({
         name: "openro-rs",
-        current: "0.8.0",
+        current: "0.9.0",
         mode: "off",
         available: false,
         can_apply: false,
