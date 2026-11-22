@@ -423,6 +423,22 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
         "list_roblox_studios" => {
             if std::env::var("MOCK_NO_STUDIOS").is_ok() {
                 text_result(json!({ "studios": [], "count": 0 }).to_string())
+            } else if std::env::var("MOCK_START_PAGE").is_ok() {
+                text_result(
+                    json!({
+                        "studios": [{
+                            "studio_id": STUDIO_ID,
+                            "place_name": Value::Null,
+                            "datamodel_types": [],
+                            "active_datamodel": "Unavailable",
+                            "state": "Place is not open",
+                            "mode": "Unavailable",
+                            "playing": false,
+                        }],
+                        "count": 1,
+                    })
+                    .to_string(),
+                )
             } else {
                 text_result(
                     json!({
@@ -439,31 +455,47 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
                 )
             }
         }
-        "get_studio_state" => text_result(
-            json!({
-                "studio_id": STUDIO_ID,
-                "playing": state.playing,
-                "mode": state.play_mode,
-                "datamodel_types": state.datamodel_types(),
-                "active_datamodel": state.active_datamodel,
-                "scripts_count": state.scripts.len(),
-                "instances_count": state.instances.len(),
-                "selected_instance": state.selected_instance,
-                "cursor": [state.cursor_x, state.cursor_y],
-                "last_key": state.last_key,
-                "typed_text": state.typed_text,
-                "camera": {
-                    "yaw": state.camera_yaw,
-                    "pitch": state.camera_pitch,
-                    "zoom": state.camera_zoom,
-                    "pan": [state.camera_pan_x, state.camera_pan_z],
-                },
-                "multi_edit_count": state.multi_edit_count,
-                "luau_exec_count": state.luau_exec_count,
-                "frame_counter": state.frame_counter,
-            })
-            .to_string(),
-        ),
+        "get_studio_state" => {
+            if std::env::var("MOCK_START_PAGE").is_ok() {
+                text_result(
+                    json!({
+                        "studio_id": STUDIO_ID,
+                        "playing": false,
+                        "mode": "Unavailable",
+                        "state": "Place is not open",
+                        "datamodel_types": [],
+                        "active_datamodel": "Unavailable",
+                    })
+                    .to_string(),
+                )
+            } else {
+                text_result(
+                    json!({
+                        "studio_id": STUDIO_ID,
+                        "playing": state.playing,
+                        "mode": state.play_mode,
+                        "datamodel_types": state.datamodel_types(),
+                        "active_datamodel": state.active_datamodel,
+                        "scripts_count": state.scripts.len(),
+                        "instances_count": state.instances.len(),
+                        "selected_instance": state.selected_instance,
+                        "cursor": [state.cursor_x, state.cursor_y],
+                        "last_key": state.last_key,
+                        "typed_text": state.typed_text,
+                        "camera": {
+                            "yaw": state.camera_yaw,
+                            "pitch": state.camera_pitch,
+                            "zoom": state.camera_zoom,
+                            "pan": [state.camera_pan_x, state.camera_pan_z],
+                        },
+                        "multi_edit_count": state.multi_edit_count,
+                        "luau_exec_count": state.luau_exec_count,
+                        "frame_counter": state.frame_counter,
+                    })
+                    .to_string(),
+                )
+            }
+        }
         "search_game_tree" => {
             let dm = args
                 .get("datamodel_type")
@@ -779,6 +811,9 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
             )
         }
         "execute_luau" => {
+            if std::env::var("MOCK_START_PAGE").is_ok() {
+                return error_result("Place is not open".to_string());
+            }
             let code = args.get("code").and_then(|v| v.as_str()).unwrap_or("");
             let dm = args
                 .get("datamodel_type")
