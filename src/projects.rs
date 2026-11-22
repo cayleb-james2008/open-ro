@@ -1116,10 +1116,52 @@ pub fn git_status(dir: &Path) -> Value {
     })
 }
 
-/// Stage ONLY `files` inside `dir` (via `safe_join`, skipping `.openro/`, `.git/`,
-/// `build/`, `art/references/`, `refs/`, and refusing files over 5 MB) and create one
-/// local commit with `message`. Returns `Ok(Some(sha))` on commit, or `Ok(None)` when
-/// `dir` is not in a git repo or none of the files have changes to commit.
+/// Return the subset of project-relative paths that exist inside `dir` and are neither
+/// OpenRO-blocked (`is_blocked_git_rel`, `art/previews/`, `*.rbxl*`) nor excluded by `.gitignore`.
+pub fn filter_unignored_rel_paths(dir: &Path, rels: &[String]) -> Vec<String> {
+    let mut candidates = Vec::new();
+    for raw in rels {
+        let Ok(full) = safe_join(dir, raw) else { continue };
+        let rel = rel_display(dir, &full);
+        if rel.is_empty()
+            || rel.starts_with(':')
+            || is_blocked_git_rel(&rel)
+            || rel == "art/previews"
+            || rel.starts_with("art/previews/")
+            || rel.ends_with(".rbxl")
+            || rel.ends_with(".rbxlx")
+            || !full.is_file()
+        {
+            continue;
+        }
+        if !candidates.contains(&rel) {
+            candidates.push(rel);
+        }
+    }
+    if candidates.is_empty() || git_repo_root(dir).is_none() {
+        return candidates;
+    }
+    let mut ls_args = vec!["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--"];
+    ls_args.extend(candidates.iter().map(String::as_str));
+    let Ok((true, out, _)) = run_git(dir, &ls_args) else {
+        return candidates;
+    };
+    let unignored: std::collections::BTreeSet<String> = out
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim_start_matches("./").replace('\\', "/"))
+        .collect();
+    candidates
+        .into_iter()
+        .filter(|c| unignored.contains(c))
+        .collect()
+}
+
+/// Stage ONLY `files` (or matching pathspecs/globs) inside `dir` (via `safe_join`, skipping
+/// `.openro/`, `.git/`, `build/`, `art/references/`, `refs/`, gitignored paths, non-matching
+/// globs, and refusing files over 5 MB) and create one local commit with `message`. Returns
+/// `Ok(Some(sha))` on commit, or `Ok(None)` when `dir` is not in a git repo or none of the
+/// matched files have changes to commit.
 pub fn git_commit(dir: &Path, files: &[String], message: &str) -> Result<Option<String>, String> {
     let msg = message.trim();
     if msg.is_empty() || msg.contains('\0') {
@@ -1128,13 +1170,43 @@ pub fn git_commit(dir: &Path, files: &[String], message: &str) -> Result<Option<
     if git_repo_root(dir).is_none() {
         return Ok(None);
     }
-    let mut clean_rels: Vec<String> = Vec::new();
+    let mut candidate_rels: Vec<String> = Vec::new();
     for raw in files {
         let full = safe_join(dir, raw)?;
         let rel = rel_display(dir, &full);
+        if rel.starts_with(':') {
+            return Err(format!("pathspec '{raw}' is not allowed"));
+        }
         if is_blocked_git_rel(&rel) {
             continue;
         }
+        if let Ok(meta) = std::fs::metadata(&full) {
+            if meta.is_file() && meta.len() > MAX_COMMIT_FILE_BYTES {
+                return Err(format!("refusing to commit '{rel}': file is over 5 MB"));
+            }
+        }
+        if !candidate_rels.contains(&rel) {
+            candidate_rels.push(rel);
+        }
+    }
+    if candidate_rels.is_empty() {
+        return Ok(None);
+    }
+
+    // Resolve pathspecs/globs via git ls-files so non-matching globs or ignored files are skipped cleanly.
+    let mut ls_args = vec!["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--"];
+    ls_args.extend(candidate_rels.iter().map(String::as_str));
+    let (ok, matched_raw, err) = run_git(dir, &ls_args)?;
+    if !ok {
+        return Err(format!("git ls-files failed: {}", err.trim()));
+    }
+    let mut clean_rels: Vec<String> = Vec::new();
+    for raw_m in matched_raw.split('\0').filter(|s| !s.is_empty()) {
+        let rel = raw_m.trim_start_matches("./").replace('\\', "/");
+        if is_blocked_git_rel(&rel) {
+            continue;
+        }
+        let full = safe_join(dir, &rel)?;
         if let Ok(meta) = std::fs::metadata(&full) {
             if meta.is_file() && meta.len() > MAX_COMMIT_FILE_BYTES {
                 return Err(format!("refusing to commit '{rel}': file is over 5 MB"));

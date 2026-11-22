@@ -273,7 +273,7 @@ impl Task {
             .claimed_files
             .iter()
             .chain(self.written_files.iter())
-            .any(|p| p.starts_with("src/") || p.starts_with("ui/"));
+            .any(|p| (p.starts_with("src/") || p.starts_with("ui/")) && p != "src/shared/AssetIds.luau");
         touches_runtime_code || (self.kind == TaskKind::GameCode && !has_files)
     }
 
@@ -2915,7 +2915,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "Asset arg signatures:\n",
             "- reference_search: {\"character\":\"...\",\"show\":\"...\",\"card_id\":\"...\"}\n",
             "- art_generate: {\"prompt\":\"single-line eye-level three-quarter prompt\",\"out_path\":\"art/cards/x/art.png\",\"references\":[\"art/references/...\"]}\n",
-            "- image_process: {\"output\":\"art/ui/x.png\",\"input\":\"...?\",\"ops\":[{\"op\":\"draw\",\"width\":256,\"height\":256,\"shapes\":[...]}]} (or \"script\")\n",
+            "- image_process: {\"output\":\"art/ui/x.png\",\"input\":\"...?\",\"ops\":[{\"op\":\"canvas\",\"width\":256,\"height\":256,\"color\":\"#00000000\"},{\"op\":\"draw\",\"shapes\":[...]}]} (or \"script\")\n",
             "- mesh_generate: {\"name\":\"PropName\",\"parts\":[{\"shape\":\"box|cylinder|sphere|cone|torus|wedge\",\"size\":[w,d,h],\"pos\":[x,y,z],\"color\":\"#hex\"}],\"script\":\"...?\"}\n",
             "- audio_generate: {\"name\":\"sfx_name\",\"preset\":\"summon_roll|mythic_fanfare|battle_crit|potion_drink|ui_click|level_up\",\"duration_ms\":1200,\"out_path\":\"assets/audio/sfx.wav\"}\n",
             "When your task is ready for verification, call `submit_task` to hand it to `@verifier`."
@@ -3253,15 +3253,39 @@ fn execute_agent_tool(
         "research_roblox_game" => tool_research_roblox_game(handle, args),
         "web_fetch" => tool_web_fetch(args),
         "web_search" => tool_web_search(args),
-        "blender_generate" | "mesh_generate" => tool_blender_generate(shared, handle, args),
-        "audio_generate" => tool_audio_generate(shared, handle, args),
+        "blender_generate" | "mesh_generate" => {
+            let res = tool_blender_generate(shared, handle, args)?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
+        "audio_generate" => {
+            let res = tool_audio_generate(shared, handle, args)?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
         "reference_search" => run_opencloud_route(shared, handle, "POST", "/api/art/references/search", args),
         "reference_select" => run_opencloud_route(shared, handle, "POST", "/api/art/references/select", args),
-        "art_generate" => run_opencloud_route(shared, handle, "POST", "/api/art/generate", args),
+        "art_generate" => {
+            let res = run_opencloud_route(shared, handle, "POST", "/api/art/generate", args)?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
         "art_approve" => run_opencloud_route(shared, handle, "POST", "/api/art/approve", args),
-        "image_process" => run_opencloud_route(shared, handle, "POST", "/api/art/process", args),
-        "art_pack_card" => run_opencloud_route(shared, handle, "POST", "/api/art/pack-card", args),
-        "assets_codegen" => run_opencloud_route(shared, handle, "POST", "/api/projects/active/assets/codegen", args),
+        "image_process" => {
+            let res = run_opencloud_route(shared, handle, "POST", "/api/art/process", args)?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
+        "art_pack_card" => {
+            let res = run_opencloud_route(shared, handle, "POST", "/api/art/pack-card", args)?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
+        "assets_codegen" => {
+            let res = run_opencloud_route(shared, handle, "POST", "/api/projects/active/assets/codegen", args)?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
         "assets_upload" => run_opencloud_route(shared, handle, "POST", "/api/projects/active/assets/upload", args),
         other => Err(format!("unknown Teamwork tool '{other}'")),
     }
@@ -4567,6 +4591,83 @@ fn tool_project_playtest(
     }))
 }
 
+fn collect_generated_asset_paths(tool: &str, res: &Value) -> Vec<String> {
+    let mut raw = Vec::new();
+    let push_str = |vec: &mut Vec<String>, v: Option<&str>| {
+        if let Some(s) = v.map(str::trim).filter(|s| !s.is_empty()) {
+            vec.push(s.to_string());
+        }
+    };
+    match tool {
+        "mesh_generate" | "blender_generate" => {
+            if let Some(arr) = res.get("project_files").and_then(Value::as_array) {
+                for item in arr {
+                    push_str(&mut raw, item.as_str());
+                }
+            }
+            push_str(&mut raw, res.get("project_manifest").and_then(Value::as_str));
+            push_str(
+                &mut raw,
+                res.pointer("/asset_ids_luau/path").and_then(Value::as_str),
+            );
+        }
+        "audio_generate" => {
+            push_str(&mut raw, res.get("project_path").and_then(Value::as_str));
+        }
+        "image_process" => {
+            push_str(&mut raw, res.get("path").and_then(Value::as_str));
+            push_str(&mut raw, res.get("slices_updated").and_then(Value::as_str));
+            raw.push("art/ART-LOG.jsonl".to_string());
+        }
+        "art_pack_card" => {
+            for ptr in ["/art/path", "/icon/path", "/full/path", "/contact_sheet/path"] {
+                push_str(&mut raw, res.pointer(ptr).and_then(Value::as_str));
+            }
+            raw.push("art/ART-LOG.jsonl".to_string());
+        }
+        "assets_codegen" => {
+            push_str(&mut raw, res.get("path").and_then(Value::as_str));
+        }
+        "art_generate" => {
+            push_str(&mut raw, res.get("path").and_then(Value::as_str));
+            push_str(&mut raw, res.get("meta_path").and_then(Value::as_str));
+            raw.push("art/ART-LOG.jsonl".to_string());
+        }
+        _ => {}
+    }
+    raw
+}
+
+fn record_generated_asset_files(
+    handle: &Arc<RunHandle>,
+    caller: &str,
+    tool: &str,
+    args: &Value,
+    res: &Value,
+) {
+    let raw_paths = collect_generated_asset_paths(tool, res);
+    if raw_paths.is_empty() {
+        return;
+    }
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let keep = projects::filter_unignored_rel_paths(&project_dir, &raw_paths);
+    if keep.is_empty() {
+        return;
+    }
+    let explicit_task = args.get("task_id").and_then(Value::as_str);
+    let mut st = handle.state.lock().unwrap();
+    if let Ok(tid) = resolve_caller_task_id(&st, caller, explicit_task) {
+        let can_record = st
+            .task_index(&tid)
+            .is_some_and(|i| st.tasks[i].owner.eq_ignore_ascii_case(caller) && st.tasks[i].status.holds_claims());
+        if can_record {
+            for rel in keep {
+                record_task_file_mutation(&mut st, &tid, &rel);
+            }
+        }
+    }
+}
+
 fn tool_blender_generate(
     shared: &Arc<Shared>,
     handle: &Arc<RunHandle>,
@@ -4793,5 +4894,52 @@ mod tests {
         assert_eq!(patch["products"][0]["key"], "pass_vip");
         assert!(patch["products"][0].get("id").is_none());
         assert_eq!(patch["products"][1]["key"], "prod_gems");
+    }
+
+    #[test]
+    fn generated_asset_collection_and_asset_ids_non_runtime_classification() {
+        let paths = collect_generated_asset_paths(
+            "mesh_generate",
+            &json!({
+                "project_files": ["assets/meshes/altar.obj", "assets/meshes/altar.manifest.json"],
+                "project_manifest": "assets/meshes/manifest.json",
+                "asset_ids_luau": { "path": "src/shared/AssetIds.luau" }
+            }),
+        );
+        assert_eq!(
+            paths,
+            vec![
+                "assets/meshes/altar.obj",
+                "assets/meshes/altar.manifest.json",
+                "assets/meshes/manifest.json",
+                "src/shared/AssetIds.luau",
+            ]
+        );
+
+        let mesh_task = Task {
+            id: "t1".into(),
+            title: "Hub mesh".into(),
+            description: "x".into(),
+            kind: TaskKind::Mesh,
+            owner: "art".into(),
+            verifier: "verifier".into(),
+            status: TaskStatus::AwaitingVerification,
+            claimed_files: vec!["assets/models/**".into()],
+            written_files: vec![
+                "assets/meshes/altar.obj".into(),
+                "assets/meshes/manifest.json".into(),
+                "src/shared/AssetIds.luau".into(),
+            ],
+            depends_on: Vec::new(),
+            result_summary: None,
+            verify_report: None,
+            last_playtest: None,
+            last_lune: None,
+            commit_sha: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            last_edit_ms: 0,
+        };
+        assert!(!mesh_task.is_game_code());
     }
 }
