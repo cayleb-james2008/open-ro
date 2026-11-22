@@ -266,9 +266,9 @@ fn tool_call(
             let waits_remote = scripts
                 .values()
                 .any(|s| s.contains("WaitForChild(\"OpenROShopBuy\")"));
-            let creates_remote = scripts
+            let creates_shop_remote = scripts
                 .values()
-                .any(|s| s.contains("Instance.new(\"RemoteEvent\")"));
+                .any(|s| s.contains("Instance.new(\"RemoteEvent\")") && s.contains("OpenROShopBuy"));
             let has_leaderstats = scripts
                 .values()
                 .any(|s| s.contains("Name = \"leaderstats\""));
@@ -280,9 +280,9 @@ fn tool_call(
                 (false, CHECKPOINT_FAIL_CONSOLE)
             } else if datastore_unbound {
                 (false, DATASTORE_FAIL_CONSOLE)
-            } else if waits_remote && !creates_remote {
+            } else if waits_remote && !creates_shop_remote {
                 (false, SHOP_FAIL_CONSOLE)
-            } else if creates_remote && !has_leaderstats {
+            } else if creates_shop_remote && !has_leaderstats {
                 (false, SHOP_NO_CURRENCY_CONSOLE)
             } else {
                 (true, OK_CONSOLE)
