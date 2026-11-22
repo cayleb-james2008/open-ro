@@ -4,6 +4,19 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 0.5.0 - 2026-11-22
+
+- **22 Verified Roblox Game-System Rune Skills (`src/*.rn`, `src/skills.rs`, `src/ideas.rs`):**
+  - Expanded the Rune Luau skill engine from 10 to **22 composable, server-authoritative Roblox systems** (preserving all 10 legacy skills backwards-compatibly), adding `jump_pad`, `moving_platform`, `datastore_save`, `npc_patrol`, `portal_teleporter`, `combat_sword`, `inventory_backpack`, `quest_tracker`, `vehicle_spawner`, `weather_cycle`, `tycoon_dropper`, and `admin_spectate`, plus `GET /api/skills` and one-click `POST /api/skills/build`.
+- **Static Luau Analyzer & Cross-Reference Prover (`src/luau_check.rs`, `GET/POST /api/luau/check`):**
+  - Full Luau lexer, block/delimiter balance checker, unyielded `while true do` loop detector, unguarded `DataStoreService` & missing `BindToClose` warnings, unvalidated `RemoteEvent` parameter checks, and Place cross-reference verification for `WaitForChild`/`FindFirstChild`/`workspace.<Member>` — wired directly into Local Place playtest verification and Explorer audit badges.
+- **True Roblox Studio `.rbxlx` XML Fidelity & Bidirectional Import (`src/place.rs`, `POST /api/import/rbxlx`):**
+  - Emits authentic Roblox `<Properties>` (`CoordinateFrame` CFrame, `Vector3` Size, `Color3uint8`, `Anchored`, `CanCollide`, `Material` token table, `Transparency`, CDATA-safe `ProtectedString` Luau source) and parses imported `.rbxlx` files back into the Place DataModel (up to 16 MB, fuzz-hardened against XXE/NUL/depth-64/truncation, 500+ instances & 50+ scripts round-tripped in milliseconds).
+- **Live SSE Build Stream, Versioned Snapshots & Live Property Editor (`src/sse.rs`, `src/snapshots.rs`):**
+  - Added true Server-Sent Events stream `GET /api/build/stream` (`Planning -> Compiling Rune -> Static Luau Check -> Playtest Proof -> Auto-Repair`) with `Last-Event-ID` replay and 15s keepalive, persistent versioned Place snapshots (`GET/POST /api/snapshots`, `POST /api/snapshots/:id/restore`, `GET /api/snapshots/:id/rbxlx`, `GET /api/place/diff`), and inline Instance property editing (`POST /api/place/instance`).
+- **Upgraded 60fps Studio Workbench & Standalone Browser Web Engine (`frontend/`):**
+  - Added 60fps `WASD`/Arrow/Space interactive Playable Stage Sandbox (`Top-Down` & `Side-View` cameras, canvas part hit-test selecting Explorer items), syntax-highlighted Luau viewer with line numbers, inline property editor, `Cmd+K` Studio Command Palette, 22-system Blueprint Library browser, `.rbxlx` drag-and-drop import, Version Snapshots timeline dialog, and upgraded standalone browser web bundle (all 22 Luau compilers, bidirectional `.rbxlx` import/export, IndexedDB snapshots, Settings-only Light/Dark).
+
 ## 0.4.0 - 2026-11-21
 
 - **Real Local Place Engine + `.rbxlx` Export + Studio MCP Auto-Detect:**
