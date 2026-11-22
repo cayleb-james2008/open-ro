@@ -742,7 +742,7 @@ export function EmbeddedStudioPanel({
           </p>
           <p className="text-xs leading-relaxed text-ink-2">
             {studioMode === "browser_place"
-              ? "In this standalone browser build, you have the full interactive Studio 3D Co-Building IDE, Untitled Anime Card Game playable stage, Card Art Studio with Anime Title-Epithet Guide, and all 13 Studio Tools running live against your in-browser Place DataModel below. Download the OpenRO v0.9.0 desktop app (Linux or Windows) to launch and embed Roblox Studio directly inside OpenRO."
+              ? "In this standalone browser build, you have the full interactive Studio 3D Co-Building IDE, Playable Roblox World sandbox, Market Taste Craft Bar, Tool & Skill Library, and all 13 Studio Tools running live against your in-browser Place DataModel below. Download the OpenRO v0.9.0 desktop app (Linux or Windows) to launch and embed live Roblox Studio directly inside OpenRO."
               : "Click Launch & Embed Studio above to start an isolated Roblox Studio session inside OpenRO with live MJPEG streaming and mouse/keyboard pass-through, or attach an existing Studio MCP bridge below. OpenRO never launches Roblox Studio automatically on startup."}
           </p>
           {embedStatus.error && (

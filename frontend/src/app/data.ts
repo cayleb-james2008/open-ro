@@ -4,8 +4,48 @@ export type Idea = { id: string; title: string; pitch: string; skills: string[] 
 export type PlaceInstance = { class_name?: string; properties?: Record<string, unknown> };
 export type Place = { scripts: Record<string, string>; instances: Record<string, PlaceInstance> };
 export type ChatList = { chats: Chat[]; active: string; can_undo: boolean; can_redo?: boolean };
-export type PartPreset = "block" | "sphere" | "cylinder" | "spawn" | "jump_pad" | "kill_brick" | "card_billboard";
+export type PartPreset = "block" | "sphere" | "cylinder" | "spawn" | "jump_pad" | "kill_brick" | "decal_board";
 export type WorkspaceMode = "studio_mcp" | "local_place" | "browser_place" | "disconnected";
+
+export type ProjectAssetRecord = {
+  id: string;
+  title: string;
+  file?: string;
+  image_url: string;
+  source?: string;
+};
+
+export function normalizeAssetList(raw: unknown): ProjectAssetRecord[] {
+  if (!raw || typeof raw !== "object") return [];
+  const obj = raw as Record<string, unknown>;
+  const list = Array.isArray(obj.assets) ? obj.assets : Array.isArray(raw) ? raw : [];
+  const out: ProjectAssetRecord[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const r = item as Record<string, unknown>;
+    const id = String(r.id || r.card_id || "").trim();
+    const file = typeof r.file === "string" ? r.file : typeof r.filename === "string" ? r.filename : undefined;
+    const imageUrl =
+      typeof r.image_url === "string"
+        ? r.image_url
+        : typeof r.url === "string"
+          ? r.url
+          : typeof r.data_url === "string"
+            ? r.data_url
+            : file && file.length > 0 && !file.startsWith("data:")
+              ? `/api/assets/${encodeURIComponent(file)}`
+              : "";
+    if (!id || !imageUrl) continue;
+    out.push({
+      id,
+      title: typeof r.title === "string" && r.title.trim() ? r.title.trim() : id,
+      file,
+      image_url: imageUrl,
+      source: typeof r.source === "string" ? r.source : undefined,
+    });
+  }
+  return out;
+}
 
 export type PlaceDiffItem = {
   kind: "instance" | "script";
@@ -771,25 +811,10 @@ export const DEFAULT_LIBRARY_PACKS: LibraryPack[] = [
     skill_summary: "Generates low-poly Roblox-ready .obj hero props (Torii gates, pedestals, arches, cauldrons) with clean UV maps.",
   },
   {
-    id: "anime-fan-art-knowledge",
-    name: "Anime Fan-Art & Title-Epithet Knowledge",
-    category: "Art Direction",
-    description: "Unmistakable fan-art visual fidelity paired with iconic title/epithet display naming (Joyful Pirate, Six-Eyes Sorcerer, Shadow Monarch), cel-shaded 3:4 portraits, and Decal/SurfaceGui binding.",
-    default_installed: true,
-    installed: true,
-    configured: true,
-    version: "0.9.0",
-    tools: ["art_knowledge_guide", "bind_card_decal"],
-    capabilities: ["Unmistakable Fan-Art Fidelity", "Iconic Title-Epithet Naming", "Text-Free 3:4 Decal Framing", "8 Bundled Nano Banana Cards"],
-    env_vars: [],
-    provider: "built-in",
-    skill_summary: "Ensures generated anime fan-art looks unmistakably like the original character while using iconic title epithets for in-game display names.",
-  },
-  {
     id: "roblox-market-taste",
     name: "Roblox Market Taste & Craft Bar",
     category: "Market Taste",
-    description: "Opinionated Top-Trending Roblox Craft & Anti-Slop Quality Bar with live Explore chart sync, 8-dimension Taste Dossiers, Roblox Game URL research, and automatic twists.",
+    description: "Opinionated Top-Trending Roblox Craft & Anti-Slop Quality Bar with live Explore chart sync across all genres, 8-dimension Taste Dossiers, Roblox Game URL research, and automatic twists.",
     default_installed: true,
     installed: true,
     configured: true,
@@ -798,22 +823,22 @@ export const DEFAULT_LIBRARY_PACKS: LibraryPack[] = [
     capabilities: ["Top-Trending Craft Bar", "8-Dimension Taste Dossier", "Auto Twists & Quality Boosts", "Live Roblox Game Research"],
     env_vars: ["OPENRO_MARKET_API_URL"],
     provider: "roblox-explore-api",
-    skill_summary: "Enforces top-trending Roblox craft, sunlit stylized worlds, clean HUD layering, automatic similar-but-different twists, and live Explore chart research.",
+    skill_summary: "Enforces top-trending Roblox craft, sunlit stylized worlds, clean HUD layering, automatic similar-but-different twists, and live Explore chart research across all genres.",
   },
   {
     id: "image-gen-studio",
     name: "Image Generation Studio",
     category: "Media Gen",
-    description: "Generate bespoke 3:4 trading card portraits, gamepass icons, and UI badges using Google Nano Banana (Gemini Image) or OpenAI Image API.",
+    description: "Generate gamepass icons, UI badges, decals, and stylized character portraits using Google Nano Banana (Gemini Image) or OpenAI Image API — includes the Stylized Fan-Art & Title-Epithet Creative Knowledge point when installed.",
     default_installed: false,
     installed: false,
     configured: false,
     version: "0.9.0",
-    tools: ["generate_card_art", "upload_game_asset"],
-    capabilities: ["Google Gemini Nano Banana", "OpenAI gpt-image-1", "PNG/WebP Asset Manifest"],
+    tools: ["generate_game_art", "upload_game_asset", "art_knowledge_guide"],
+    capabilities: ["Google Gemini Nano Banana", "OpenAI gpt-image-1", "Stylized Fan-Art & Title-Epithet Guide", "PNG/WebP Asset Manifest"],
     env_vars: ["GEMINI_API_KEY", "OPENAI_API_KEY"],
     provider: "gemini",
-    skill_summary: "Unlocks on-demand character portrait and texture generation with automatic Roblox asset-manifest binding.",
+    skill_summary: "Unlocks on-demand texture, icon, decal, and stylized character generation (with iconic title-epithet naming guidance) plus automatic Roblox asset-manifest binding.",
   },
   {
     id: "model-3d-gen",
@@ -1193,7 +1218,6 @@ export type BlueprintMeta = {
 
 // Exact deterministic counts from src/ideas.rs plan definitions.
 const BLUEPRINT_CATALOG: Record<string, BlueprintMeta> = {
-  "anime-card-battles-apex": { category: "Card Battler", tagClass: "bg-tag-design-bg text-tag-design-fg", counts: "6 systems · 8 cards" },
   "obby-starter": { category: "Obby", tagClass: "bg-tag-plan-bg text-tag-plan-fg", counts: "2 parts · 5 scripts" },
   "coin-tycoon": { category: "Economy", tagClass: "bg-tag-mint-bg text-tag-mint-fg", counts: "4 scripts · HUD" },
   "round-arena": { category: "Arena", tagClass: "bg-tag-sky-bg text-tag-sky-fg", counts: "2 parts · 4 scripts" },

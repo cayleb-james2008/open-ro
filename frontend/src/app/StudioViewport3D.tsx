@@ -46,8 +46,8 @@ import type {
   StudioMouseInputPayload,
   StudioToolName,
   StudioToolResult,
+  ProjectAssetRecord,
 } from "./data";
-import type { CardAssetRecord } from "./cardCatalog";
 import { EmbeddedStudioPanel } from "./EmbeddedStudioPanel";
 
 export type StudioTool = "select" | "move" | "scale" | "rotate";
@@ -62,7 +62,7 @@ const PART_PRESETS: Array<{ id: PartPreset; label: string; swatch: string }> = [
   { id: "spawn", label: "SpawnLocation", swatch: "#2D68DF" },
   { id: "jump_pad", label: "JumpPad", swatch: "#24946E" },
   { id: "kill_brick", label: "KillBrick", swatch: "#DF522D" },
-  { id: "card_billboard", label: "CardBillboard", swatch: "#7B4ED4" },
+  { id: "decal_board", label: "DecalBoard", swatch: "#7B4ED4" },
 ];
 
 type Part3D = {
@@ -154,7 +154,7 @@ function shadeHex(hex: string, factor: number, alpha = 1): string {
   return alpha < 0.99 ? `rgba(${rr},${gg},${bb},${alpha.toFixed(2)})` : `rgb(${rr},${gg},${bb})`;
 }
 
-function extractParts(place: Place, assets: CardAssetRecord[]): Part3D[] {
+function extractParts(place: Place, assets: ProjectAssetRecord[]): Part3D[] {
   const out: Part3D[] = [];
   const entries = Object.entries(place.instances || {});
   let fallbackIdx = 0;
@@ -181,28 +181,24 @@ function extractParts(place: Place, assets: CardAssetRecord[]): Part3D[] {
     const material = typeof props.Material === "string" ? props.Material : "SmoothPlastic";
     const color = parseColor(name, cls, props);
 
-    // Resolve card art texture for 3D CardGallery billboards
+    // Resolve generic Decal / SurfaceGui texture asset for display parts
     let decalUrl: string | undefined;
-    const cardTitle = typeof props.CardTitle === "string" ? props.CardTitle : undefined;
+    const cardTitle = typeof props.CardTitle === "string" ? props.CardTitle : typeof props.DisplayTitle === "string" ? props.DisplayTitle : undefined;
     const rawTex =
       typeof props.DecalTexture === "string"
         ? props.DecalTexture
         : typeof props.Texture === "string"
           ? props.Texture
           : undefined;
-    if (rawTex || cardTitle || /billboard|showcase|gallerycard/i.test(name)) {
+    if (rawTex || cardTitle || /billboard|decalboard|showcase/i.test(name)) {
       const matched = assets.find(
         (a) =>
           (cardTitle && a.title.toLowerCase() === cardTitle.toLowerCase()) ||
           (rawTex && a.file && rawTex.toLowerCase().includes(a.file.toLowerCase())) ||
-          (rawTex && rawTex.toLowerCase().includes(a.card_id.toLowerCase())),
+          (rawTex && rawTex.toLowerCase().includes(a.id.toLowerCase())),
       );
       if (matched) {
         decalUrl = matched.image_url;
-      } else if (/billboard(\d+)/i.test(name)) {
-        const idxMatch = name.match(/(\d+)/);
-        const n = idxMatch ? (Number(idxMatch[1]) - 1) % Math.max(1, assets.length) : 0;
-        decalUrl = assets[n]?.image_url;
       } else if (rawTex && (rawTex.startsWith("data:image/") || rawTex.startsWith("/api/assets/"))) {
         decalUrl = rawTex;
       }
@@ -409,7 +405,7 @@ export function StudioViewport3D({
   mode: "studio-3d" | "embedded-studio" | "studio-feed";
   place: Place;
   theme: "light" | "dark";
-  assets: CardAssetRecord[];
+  assets: ProjectAssetRecord[];
   selectedPath?: string | null;
   studioMode: StudioMode;
   actions: StudioActionEvent[];
@@ -1155,7 +1151,7 @@ export function StudioViewport3D({
     ctx.textBaseline = "middle";
     for (const [pPath, info] of partTopCenters.entries()) {
       const isSel = pPath === selectedPath;
-      // CardBillboards showcase their own 3D Nano Banana portrait; only show label when selected to keep 0 overlap
+      // Textured decal boards showcase their own image; only show label when selected to keep 0 overlap
       if (!isSel && /billboard|showcase/i.test(info.part.name)) continue;
       if (!isSel && partTopCenters.size > 10 && !/spawn|pedestal|tower|shrine|alchemist|lava/i.test(info.part.name)) {
         continue;

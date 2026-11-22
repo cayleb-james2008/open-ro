@@ -14,7 +14,6 @@
 import { computePlaceDiff } from "../src/app/luauAudit";
 import { GAME_SYSTEMS } from "../src/app/systems";
 import { buildRojoShipPackZip } from "../src/app/zipBuilder";
-import { APEX_CARDS, type CardAssetRecord } from "../src/app/cardCatalog";
 import { BASELINE_MARKET_NICHES } from "../src/app/marketTaste";
 import {
   DEFAULT_LIBRARY_PACKS,
@@ -22,6 +21,7 @@ import {
   type LibraryPack,
   type PlaceDiff,
   type PlaceSnapshot,
+  type ProjectAssetRecord,
   type StudioActionEvent,
   type StudioActionKind,
   type StudioPlayMode,
@@ -69,7 +69,7 @@ type EngineState = {
   byokModelId: string;
   localServerUrl: string;
   imageProvider: "auto" | "gemini" | "openai";
-  customAssets: CardAssetRecord[];
+  customAssets: ProjectAssetRecord[];
   installedPackIds?: string[];
   packConfigs?: Record<string, { provider?: string; base_url?: string; binary_path?: string; masked_key?: string | null }>;
   activeMarketNiche?: string;
@@ -182,7 +182,7 @@ function buildLibraryPayload(state: EngineState) {
 }
 
 function buildMarketTastePayload(state: EngineState, overrideNiche?: string) {
-  const wanted = (overrideNiche || state.activeMarketNiche || "anime-rng-cards").trim().toLowerCase();
+  const wanted = (overrideNiche || state.activeMarketNiche || "top-trending").trim().toLowerCase();
   const active = BASELINE_MARKET_NICHES.find((n) => n.id === wanted) || BASELINE_MARKET_NICHES[0];
   return {
     ok: true,
@@ -194,7 +194,7 @@ function buildMarketTastePayload(state: EngineState, overrideNiche?: string) {
     last_refreshed_ms: 0,
     live_supported: false,
     live_games_count: 0,
-    note: "Browser Studio runs 100% offline with zero external requests using the Nov 2026 Roblox Explore baseline + 8-dimension Craft Bar. Download OpenRO desktop to pull live Roblox Explore charts.",
+    note: "Browser Studio runs 100% offline with zero external requests using the Nov 2026 Roblox Explore baseline across all genres + 8-dimension Craft Bar. Download OpenRO desktop to pull live Roblox Explore charts.",
     niche: {
       ...active,
       top_games: active.games.map((g) => ({
@@ -209,10 +209,16 @@ function buildMarketTastePayload(state: EngineState, overrideNiche?: string) {
   };
 }
 
+function makeOfflineThumbSvg(title: string, subtitle: string, c1: string, c2: string): string {
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").slice(0, 26);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="${c1}"/><stop offset="100%" stop-color="${c2}"/></linearGradient></defs><rect width="320" height="180" rx="10" fill="url(#g)"/><rect x="14" y="14" width="292" height="152" rx="8" fill="rgba(15,23,42,0.22)" stroke="rgba(255,255,255,0.25)"/><text x="26" y="84" fill="#ffffff" font-family="system-ui,sans-serif" font-size="16" font-weight="600">${esc(title)}</text><text x="26" y="108" fill="rgba(255,255,255,0.88)" font-family="system-ui,sans-serif" font-size="12">${esc(subtitle)}</text></svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
 function buildOfflineResearchPayload(rawQuery: string, nicheHint?: string) {
   const cleaned = rawQuery.trim();
   const idMatch = cleaned.match(/(\d{5,15})/);
-  const numericId = idMatch ? Number(idMatch[1]) : 10092619788;
+  const numericId = idMatch ? Number(idMatch[1]) : 10563114921;
   let matchedNiche = BASELINE_MARKET_NICHES.find((n) => n.id === nicheHint) || BASELINE_MARKET_NICHES[0];
   let matchedGame = matchedNiche.games[0];
   for (const n of BASELINE_MARKET_NICHES) {
@@ -227,14 +233,19 @@ function buildOfflineResearchPayload(rawQuery: string, nicheHint?: string) {
       break;
     }
   }
-  const isKnownId = matchedGame.universe_id === numericId || cleaned.includes("10092619788");
+  const isKnownId = matchedGame.universe_id === numericId;
   const title = isKnownId
     ? matchedGame.name
     : /^\d+$/.test(cleaned)
       ? `${matchedNiche.name} Reference #${numericId}`
       : cleaned.replace(/^https?:\/\/(www\.)?roblox\.com\/games\/\d+\/?/i, "").replace(/[-_]+/g, " ").trim() ||
         matchedGame.name;
-  const thumbs = APEX_CARDS.slice(0, 4).map((c) => c.image_url);
+  const thumbs = [
+    makeOfflineThumbSvg(title, "Sunlit 3D World Style", "#0284c7", "#0d9488"),
+    makeOfflineThumbSvg(matchedNiche.name, "First-10s Core Loop", "#2563eb", "#4f46e5"),
+    makeOfflineThumbSvg("Clean HUD & Juice", "Non-Overlapping UI", "#ea580c", "#d97706"),
+    makeOfflineThumbSvg("Automatic Twists", "Similar But Different", "#7c3aed", "#db2777"),
+  ];
   return {
     ok: true,
     offline_fallback: true,
@@ -1308,38 +1319,29 @@ export function installWebEngine() {
         return jsonResponse({ ok: false, error: "Expected PNG, JPEG, or WebP image bytes." }, 400);
       }
       const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : filename.replace(/\.[^.]+$/, "");
-      const cardId =
-        typeof body.card_id === "string" && body.card_id.trim()
-          ? body.card_id.trim()
-          : title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `card-${Date.now()}`;
-      const record: CardAssetRecord = {
-        card_id: cardId,
+      const assetId =
+        typeof body.id === "string" && body.id.trim()
+          ? body.id.trim()
+          : typeof body.card_id === "string" && body.card_id.trim()
+            ? body.card_id.trim()
+            : title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `asset-${Date.now()}`;
+      const record: ProjectAssetRecord = {
+        id: assetId,
         title,
-        rarity: (typeof body.rarity === "string" ? body.rarity : "Mythic") as CardAssetRecord["rarity"],
-        odds: typeof body.odds === "string" ? body.odds : "Custom Upload",
-        element: (typeof body.element === "string" ? body.element : "Flame") as CardAssetRecord["element"],
-        atk: typeof body.atk === "number" ? body.atk : 430,
-        hp: typeof body.hp === "number" ? body.hp : 1460,
-        speed: typeof body.speed === "number" ? body.speed : 92,
-        passive: typeof body.passive === "string" ? body.passive : "Custom Card Resonance: +18% ATK",
-        ultimate: typeof body.ultimate === "string" ? body.ultimate : `${title} Burst`,
-        prompt: typeof body.prompt === "string" ? body.prompt : undefined,
         file: filename,
         image_url: dataUrl,
         source: "upload",
       };
-      state.customAssets = [record, ...(state.customAssets || []).filter((a) => a.card_id !== cardId)].slice(0, 24);
+      state.customAssets = [record, ...(state.customAssets || []).filter((a) => a.id !== assetId)].slice(0, 24);
       persist();
       return jsonResponse({ ok: true, asset: record, file: filename, url: dataUrl }, 201);
     }
     if (method === "POST" && u.pathname === "/api/assets/generate") {
-      const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : "Apex Vanguard";
-      const element = typeof body.element === "string" ? body.element : "Flame";
-      const rarity = typeof body.rarity === "string" ? body.rarity : "Mythic";
+      const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : "Game Asset";
       const promptText =
         typeof body.prompt === "string" && body.prompt.trim()
           ? body.prompt.trim()
-          : `High-craft modern anime cel-shaded trading card illustration (3:4 portrait), glowing ${element} aura, original stylized homage character '${title}' (${rarity} tier), no text, no watermark.`;
+          : `Crisp stylized Roblox game texture/icon illustration for '${title}', bold clean silhouette, vibrant lighting, zero text or watermarks.`;
       const reqProvider = typeof body.provider === "string" ? body.provider : state.imageProvider || "auto";
       const gemKey = readSlotKey(GEMINI_KEY_SLOT);
       const oaiKey = readSlotKey(OPENAI_IMG_KEY_SLOT);
@@ -1351,14 +1353,14 @@ export function installWebEngine() {
             ok: false,
             error:
               "No image generation API key configured in this browser session. Add a Google Gemini API key (Nano Banana) or OpenAI Image key in Settings, or upload PNG/JPG/WebP artwork directly.",
-            homage_prompt: promptText,
+            prompt: promptText,
           },
           503,
         );
       }
       try {
         let dataUrl = "";
-        let srcTag: CardAssetRecord["source"] = "gemini-api";
+        let srcTag = "gemini-api";
         if (useGem) {
           const resp = await origFetch(
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${encodeURIComponent(gemKey)}`,
@@ -1383,7 +1385,7 @@ export function installWebEngine() {
           const resp = await origFetch("https://api.openai.com/v1/images/generations", {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${oaiKey}` },
-            body: JSON.stringify({ model: "gpt-image-1", prompt: promptText, size: "1024x1536", response_format: "b64_json" }),
+            body: JSON.stringify({ model: "gpt-image-1", prompt: promptText, size: "1024x1024", response_format: "b64_json" }),
           });
           if (!resp.ok) throw new Error(`OpenAI Image API returned HTTP ${resp.status}`);
           const val = (await resp.json()) as { data?: Array<{ b64_json?: string }> };
@@ -1391,24 +1393,15 @@ export function installWebEngine() {
           if (!b64) throw new Error("OpenAI Image API returned no b64_json image bytes.");
           dataUrl = `data:image/png;base64,${b64}`;
         }
-        const cardId = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `gen-${Date.now()}`;
-        const record: CardAssetRecord = {
-          card_id: cardId,
+        const assetId = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `gen-${Date.now()}`;
+        const record: ProjectAssetRecord = {
+          id: assetId,
           title,
-          rarity: rarity as CardAssetRecord["rarity"],
-          odds: "Generated",
-          element: element as CardAssetRecord["element"],
-          atk: 450,
-          hp: 1520,
-          speed: 94,
-          passive: `${element} Surge: +20% squad ${element} ATK`,
-          ultimate: `${title} Overdrive`,
-          prompt: promptText,
-          file: `${cardId}.png`,
+          file: `${assetId}.png`,
           image_url: dataUrl,
           source: srcTag,
         };
-        state.customAssets = [record, ...(state.customAssets || []).filter((a) => a.card_id !== cardId)].slice(0, 24);
+        state.customAssets = [record, ...(state.customAssets || []).filter((a) => a.id !== assetId)].slice(0, 24);
         persist();
         return jsonResponse({ ok: true, asset: record }, 201);
       } catch (err) {
@@ -1618,8 +1611,8 @@ export function installWebEngine() {
                 ? "JumpPad"
                 : preset === "kill_brick"
                   ? "KillBrick"
-                  : preset === "card_billboard"
-                    ? "CardBillboard"
+                  : preset === "decal_board" || preset === "card_billboard"
+                    ? "DecalBoard"
                     : "StudioBlock";
       const rawName = typeof body.name === "string" && body.name.trim() ? body.name.trim() : defaultBase;
       const safeName = rawName.replace(/[^A-Za-z0-9_]/g, "") || defaultBase;
@@ -1637,7 +1630,7 @@ export function installWebEngine() {
           : {};
       const offsetX = (Object.keys(existing).length % 5 - 2) * 8;
       const offsetZ = 10 + Math.floor(Object.keys(existing).length / 5) * 6;
-      const pos = propVec3(body.position) || propVec3(bodyProps.Position) || [offsetX, preset === "card_billboard" ? 7 : 2, offsetZ];
+      const pos = propVec3(body.position) || propVec3(bodyProps.Position) || [offsetX, preset === "decal_board" || preset === "card_billboard" ? 7 : 2, offsetZ];
       const size =
         propVec3(body.size) ||
         propVec3(bodyProps.Size) ||
@@ -1647,7 +1640,7 @@ export function installWebEngine() {
             ? [6, 10, 6]
             : preset === "spawn"
               ? [8, 1, 8]
-              : preset === "card_billboard"
+              : preset === "decal_board" || preset === "card_billboard"
                 ? [7, 10, 1]
                 : [8, 4, 8]);
       const color =
