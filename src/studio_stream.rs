@@ -295,6 +295,7 @@ fn now_ms() -> u64 {
 pub fn normalize_studio_mode(mode: &str) -> String {
     match mode.trim() {
         "live_mcp" | "studio_mcp" => "live_mcp".to_string(),
+        "plugin_live" | "studio_plugin" => "plugin_live".to_string(),
         _ => "local_place".to_string(),
     }
 }

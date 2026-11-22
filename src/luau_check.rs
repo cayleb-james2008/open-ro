@@ -1259,6 +1259,12 @@ fn extract_created_names(tokens: &[Token], consts: &HashMap<String, String>) -> 
 
 /// Run single-script static analysis (syntax, block balance, infinite loops,
 /// DataStore pcall/BindToClose safety, RemoteEvent argument validation, service root).
+pub fn analyze_source(path: &str, source: &str) -> AnalysisReport {
+    analyze_script(path, source)
+}
+
+/// Analyze a single Luau script for syntax, delimiter/block balance, infinite loops,
+/// unguarded DataStore calls, and client-trusting RemoteEvent handlers.
 pub fn analyze_script(path: &str, source: &str) -> AnalysisReport {
     let mut diagnostics = Vec::new();
     let root = path.split('.').next().unwrap_or("");
