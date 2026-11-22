@@ -3633,7 +3633,11 @@ fn build_embed_status_payload(shared: &Shared) -> Value {
             .unwrap_or_default(),
         Err(_) => state.tools.clone(),
     };
-    let running = state.embedded || state.mcp_connected || studio_mode == "live_mcp";
+    // `running` reflects an actively launched Embedded Roblox Studio session
+    // managed by `studio_embed`, NOT merely an external MCP bridge attached at boot.
+    // That keeps the fresh landing screen focused on Blueprints until the user
+    // launches Embedded Studio or builds a game.
+    let running = state.embedded;
     let simple_state = if running {
         "running"
     } else if state.last_error.is_some() {
