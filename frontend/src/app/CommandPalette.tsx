@@ -116,8 +116,8 @@ export function CommandPalette({
       {
         kind: "action",
         id: "act-build-apex",
-        title: "Build Anime Card Battles: Rebirth — Apex Edition",
-        subtitle: "One-click 6-system Roblox card battler with gacha packs, deck fusion & 50-floor boss tower",
+        title: "Build Untitled Anime Card Game",
+        subtitle: "One-click 6-system sunlit anime card battler with Torii gacha, Fusion Storms & 4v4 Chain Overdrive",
         badge: "Flagship",
         badgeCls: "bg-tag-plan-bg text-tag-plan-fg",
         onRun: onBuildApex,

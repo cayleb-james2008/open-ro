@@ -107,6 +107,11 @@ import { SystemLibrary } from "./app/SystemLibrary";
 import type { GameSystemDef } from "./app/systems";
 import { ThreadFeed } from "./app/Thread";
 import { ToolLibraryDialog } from "./app/ToolLibraryDialog";
+import {
+  defaultMarketTasteSnapshot,
+  normalizeMarketTasteSnapshot,
+  type MarketTasteSnapshot,
+} from "./app/marketTaste";
 import { UpdateStrip, useUpdate } from "./app/Update";
 
 type Pending = { message?: string; build?: string; undo?: boolean };
@@ -208,6 +213,8 @@ export function App() {
   const [artStudioOpen, setArtStudioOpen] = useState(false);
   const [toolLibraryOpen, setToolLibraryOpen] = useState(false);
   const [librarySnap, setLibrarySnap] = useState<LibrarySnapshot>(() => normalizeLibrarySnapshot({}));
+  const [marketTaste, setMarketTaste] = useState<MarketTasteSnapshot>(() => defaultMarketTasteSnapshot());
+  const [marketBusy, setMarketBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(() => {
     try {
       return new URLSearchParams(window.location.search).get("settings") === "1";
@@ -497,6 +504,79 @@ export function App() {
     [v090Ready],
   );
 
+  const refreshMarketTaste = useCallback(
+    async (forceServer = false) => {
+      if (!v090Ready && !forceServer) return;
+      try {
+        const raw = await read("/api/market-taste");
+        setMarketTaste(normalizeMarketTasteSnapshot(raw));
+      } catch {
+        /* keep bundled Nov 2026 Roblox baseline */
+      }
+    },
+    [v090Ready],
+  );
+
+  const handleSelectMarketNiche = useCallback(
+    async (nicheId: string) => {
+      setMarketTaste((prev) => ({ ...prev, active_niche: nicheId }));
+      if (!v090Ready) return;
+      setMarketBusy(true);
+      try {
+        const raw = await post<Record<string, unknown>>("/api/market-taste/niche", { niche: nicheId });
+        if (raw && raw.ok !== false) {
+          setMarketTaste(normalizeMarketTasteSnapshot(raw));
+        }
+      } catch {
+        /* keep optimistic local selection */
+      } finally {
+        setMarketBusy(false);
+      }
+    },
+    [v090Ready],
+  );
+
+  const handleRefreshMarketTaste = useCallback(async () => {
+    if (!v090Ready) {
+      toast.info("Live Roblox chart refresh requires OpenRO v0.9.0.");
+      return;
+    }
+    setMarketBusy(true);
+    try {
+      const raw = await post<Record<string, unknown>>("/api/market-taste/refresh", {});
+      const norm = normalizeMarketTasteSnapshot(raw);
+      setMarketTaste(norm);
+      if (raw?.offline_fallback === true) {
+        toast.info("Browser Studio uses the Nov 2026 Roblox Explore baseline offline.");
+      } else if (raw?.ok === false) {
+        toast.error(typeof raw.error === "string" ? raw.error : "Could not refresh Roblox Explore charts.");
+      } else {
+        toast.success(`Refreshed Roblox Explore charts (${norm.niches.length} niches)`);
+      }
+    } catch {
+      toast.error("Could not reach /api/market-taste/refresh.");
+    } finally {
+      setMarketBusy(false);
+    }
+  }, [v090Ready]);
+
+  const handlePitchMarketPrompt = useCallback(
+    (prompt: string, nicheName: string) => {
+      const clean = prompt.trim();
+      if (!clean) return;
+      setText(clean);
+      if (activeId) slotWrite(draftKey(activeId), clean);
+      setToolLibraryOpen(false);
+      setMenuOpen(false);
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
+      toast.success(`Loaded ${nicheName} pitch into chat composer`);
+    },
+    [activeId],
+  );
+
   const refreshStudioActions = useCallback(
     async (forceServer = false) => {
       if (!v070Ready && !forceServer) return;
@@ -582,6 +662,7 @@ export function App() {
             setV090Ready(true);
             void refreshEmbedStatus(true);
             void refreshLibrary(true);
+            void refreshMarketTaste(true);
           }
         }
       })
@@ -644,6 +725,7 @@ export function App() {
           setV090Ready(true);
           void refreshEmbedStatus(true);
           void refreshLibrary(true);
+          void refreshMarketTaste(true);
         }
       })
       .catch(() => {});
@@ -950,11 +1032,23 @@ export function App() {
   };
 
   const serverApexIdea = useMemo(
-    () => ideas.find((i) => i.id === "anime-card-battles-apex" || /anime card battles/i.test(i.title)) || null,
+    () =>
+      ideas.find(
+        (i) =>
+          i.id === "untitled-anime-card-game" ||
+          i.id === "anime-card-battles-apex" ||
+          /untitled anime card game|anime card battles/i.test(i.title),
+      ) || null,
     [ideas],
   );
   const workbenchIdeas = useMemo(
-    () => ideas.filter((i) => i.id !== "anime-card-battles-apex" && !/anime card battles/i.test(i.title)),
+    () =>
+      ideas.filter(
+        (i) =>
+          i.id !== "untitled-anime-card-game" &&
+          i.id !== "anime-card-battles-apex" &&
+          !/untitled anime card game|anime card battles/i.test(i.title),
+      ),
     [ideas],
   );
 
@@ -962,9 +1056,9 @@ export function App() {
     if (!canBuild || busy) return;
     const apexIdea: Idea = serverApexIdea || {
       id: "anime-card-battles-apex",
-      title: "Anime Card Battles: Apex",
+      title: "Untitled Anime Card Game",
       pitch:
-        "Complete Roblox anime card battler: weighted 7-tier gacha packs with pity, foils & promo codes, 4-card deck synergies & star fusion, tactical boss arena, 50-floor tower & rebirth, live server weather & luck potions, and a 3D card gallery lobby.",
+        "Complete sunlit floating-archipelago Roblox anime card battler: Torii Summon Shrine gacha with pity & foils, 4-card deck synergies & star fusion, 4v4 Chain Overdrive boss arena, 50-floor tower & rebirth, 7 weather biomes + Fusion Weather Storms, and Living 3D Lead-Card Guardian Aura.",
       skills: [
         "card_gacha_roller",
         "deck_builder",
@@ -979,7 +1073,7 @@ export function App() {
       return;
     }
     await submitPromptText(
-      "Build Anime Card Battles: Rebirth — Apex Edition with weighted 7-tier gacha pack roller, 4-card deck with star fusion and rebirth, tactical boss battle arena, 50-floor tower progression, server weather and luck potions, and a 3D card gallery lobby.",
+      "Build Untitled Anime Card Game: a sunlit floating-archipelago anime card battler with Torii Summon Shrine gacha, 4-card deck with star fusion and rebirth, 4v4 Chain Overdrive boss arena, 50-floor tower progression, 7 weather biomes plus Fusion Weather Storms, and Living 3D Lead-Card Guardian Aura.",
       false,
     );
   };
@@ -1986,6 +2080,7 @@ export function App() {
             setMenuOpen(false);
             setToolLibraryOpen(true);
             void refreshLibrary();
+            void refreshMarketTaste();
           }}
           aria-label="Open Tool and Skill Library"
           className="w-full justify-between bg-board/50 font-normal text-ink-2 hover:bg-board hover:text-ink max-md:min-h-11"
@@ -2622,6 +2717,7 @@ export function App() {
           onOpenToolLibrary={() => {
             setToolLibraryOpen(true);
             void refreshLibrary();
+            void refreshMarketTaste();
           }}
           onOpenEmbeddedStudio={handleOpenEmbeddedStudio}
           onBuildApex={() => void buildApexCardBattles()}
@@ -2634,8 +2730,13 @@ export function App() {
           open={toolLibraryOpen}
           onOpenChange={setToolLibraryOpen}
           snapshot={librarySnap}
+          marketTaste={marketTaste}
+          marketBusy={marketBusy}
           v090Ready={v090Ready}
           onRefresh={() => refreshLibrary(true)}
+          onSelectMarketNiche={handleSelectMarketNiche}
+          onRefreshMarketTaste={handleRefreshMarketTaste}
+          onPitchMarketPrompt={handlePitchMarketPrompt}
         />
 
         <CardArtStudio
