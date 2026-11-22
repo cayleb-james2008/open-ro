@@ -1644,3 +1644,217 @@ fn board_read_spin_breaker_auto_parks_and_prompts_include_signatures() {
 
     shared.teamwork.shutdown();
 }
+
+#[test]
+fn asset_tools_record_written_files_and_autocommit_skips_unmatched_globs() {
+    let dir = scratch_dir("asset-written-autocommit");
+    let data_dir = dir.join("data");
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(proj.join("src/shared")).unwrap();
+    std::fs::write(
+        proj.join("default.project.json"),
+        json!({
+            "name": "AssetWrittenTest",
+            "tree": {
+                "$className": "DataModel",
+                "ReplicatedStorage": { "Shared": { "$path": "src/shared" } }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join(".gitignore"),
+        ".openro/\nbuild/\nart/references/\nart/previews/\nrefs/\n*.rbxl\n*.rbxlx\n",
+    )
+    .unwrap();
+    std::fs::write(proj.join("openro.project.json"), "{}\n").unwrap();
+    for args in [
+        &["init"][..],
+        &["config", "user.name", "OpenRO Test"],
+        &["config", "user.email", "test@openro.local"],
+        &["add", "default.project.json", ".gitignore", "openro.project.json"],
+        &["commit", "-m", "init"],
+    ] {
+        let out = std::process::Command::new("git")
+            .current_dir(&proj)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    std::fs::create_dir_all(&data_dir).unwrap();
+    write_projects_index(&data_dir, &proj);
+
+    let per_role: Arc<Mutex<std::collections::HashMap<String, usize>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let pr = Arc::clone(&per_role);
+    let stub = start_dynamic_stub(move |body, _| {
+        let req: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        let msgs = req["messages"].as_array().unwrap();
+        let sys = msgs[0]["content"].as_str().unwrap_or("");
+        let role = if sys.contains("[Agent: coordinator]") {
+            "coordinator"
+        } else if sys.contains("[Agent: art]") {
+            "art"
+        } else {
+            "verifier"
+        };
+        let step = {
+            let mut m = pr.lock().unwrap();
+            let e = m.entry(role.to_string()).or_insert(0);
+            *e += 1;
+            *e
+        };
+        if role == "coordinator" {
+            return match step {
+                1 => json!({
+                    "tool": "create_task",
+                    // Deliberately include an unmatched glob `assets/models/**` alongside real outputs in `assets/meshes/` + `art/`
+                    "args": { "id": "t1", "owner": "art", "title": "Build M1 assets & codegen", "kind": "art", "files": ["assets/models/**"] },
+                    "done": true,
+                    "summary": "created t1"
+                }),
+                _ => {
+                    let all_text = msgs.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
+                    if all_text.contains("Verified task t1") {
+                        json!({ "tool": "finish_run", "args": { "summary": "all generated assets committed" } })
+                    } else {
+                        json!({ "done": true, "summary": "waiting" })
+                    }
+                }
+            };
+        }
+        if role == "art" {
+            return match step {
+                1 => json!({
+                    "steps": [
+                        {
+                            "tool": "mesh_generate",
+                            "args": { "name": "mini_cube", "parts": [{ "shape": "box", "size": [2, 2, 2], "color": "#44aa88" }] }
+                        },
+                        {
+                            "tool": "audio_generate",
+                            "args": { "preset": "ui_click", "name": "click_sfx" }
+                        },
+                        {
+                            "tool": "image_process",
+                            "args": {
+                                "output": "art/ui/frame_r1.png",
+                                "ops": [
+                                    { "op": "canvas", "width": 64, "height": 64, "color": "#00000000" },
+                                    { "op": "draw", "shapes": [{ "kind": "rect", "box": [0, 0, 64, 64], "fill": "#ff4466ff" }] }
+                                ],
+                                "slice": [8, 8, 56, 56]
+                            }
+                        },
+                        {
+                            "tool": "art_pack_card",
+                            "args": { "card_id": "hero_r1", "source_image": "art/ui/frame_r1.png", "art_size": [64, 64], "icon_size": [32, 32] }
+                        },
+                        { "tool": "assets_codegen", "args": {} },
+                        { "tool": "submit_task", "args": { "task_id": "t1", "summary": "generated meshes, sfx, ui, card pack, AssetIds" } }
+                    ],
+                    "done": true,
+                    "summary": "assets done"
+                }),
+                _ => json!({ "done": true, "summary": "parked" }),
+            };
+        }
+        let last_user = msgs.iter().rev().find(|m| m["role"] == "user").and_then(|m| m["content"].as_str()).unwrap_or("");
+        if last_user.contains("- t1 [awaiting_verification]") {
+            json!({ "tool": "verify_task", "args": { "task_id": "t1", "passed": true, "notes": "assets ok without playtest" }, "done": true, "summary": "verified" })
+        } else {
+            json!({ "done": true, "summary": "waiting" })
+        }
+    });
+
+    let (port, shared) = boot_server(data_dir, None);
+    let (st, _) = http(
+        port,
+        "POST",
+        "/api/config",
+        Some(&json!({ "base_url": stub.base_url, "model_id": "stub-model" })),
+    );
+    assert_eq!(st, 200);
+
+    let (st, created) = http(
+        port,
+        "POST",
+        "/api/teamwork",
+        Some(&json!({ "goal": "Verify #49 written_files tracking & glob-safe git_commit", "roles": ["art", "verifier"], "max_concurrency": 2 })),
+    );
+    assert_eq!(st, 201, "{created}");
+    let run_id = created["run"]["id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut detail = Value::Null;
+    while Instant::now() < deadline {
+        let (_, d) = http(port, "GET", &format!("/api/teamwork/{run_id}"), None);
+        detail = d;
+        if detail["run"]["status"] == "completed" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(detail["run"]["status"], "completed", "{detail}");
+    assert_eq!(detail["tasks"][0]["status"], "done");
+    assert_eq!(detail["tasks"][0]["verify_report"]["playtest_passed"], Value::Null);
+    assert!(detail["tasks"][0]["commit_sha"].is_string(), "{detail}");
+
+    let written: Vec<&str> = detail["tasks"][0]["written_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    for required in [
+        "assets/meshes/mini_cube.obj",
+        "assets/meshes/manifest.json",
+        "assets/audio/click-sfx.wav",
+        "art/ui/frame_r1.png",
+        "art/ui/slices.json",
+        "art/cards/hero_r1/art.png",
+        "art/cards/hero_r1/icon.png",
+        "art/cards/hero_r1/full.png",
+        "art/ART-LOG.jsonl",
+        "src/shared/AssetIds.luau",
+    ] {
+        assert!(written.contains(&required), "missing {required} in written_files: {written:?}");
+    }
+    assert!(!written.iter().any(|p| p.starts_with("art/previews/")), "gitignored contact sheet leaked into written_files: {written:?}");
+
+    let show = std::process::Command::new("git")
+        .current_dir(&proj)
+        .args(["show", "--name-only", "--format=", "HEAD"])
+        .output()
+        .unwrap();
+    let changed: Vec<String> = String::from_utf8_lossy(&show.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .collect();
+    for committed in [
+        "assets/meshes/mini_cube.obj",
+        "assets/meshes/manifest.json",
+        "assets/audio/click-sfx.wav",
+        "art/ui/frame_r1.png",
+        "art/ui/slices.json",
+        "art/cards/hero_r1/full.png",
+        "src/shared/AssetIds.luau",
+    ] {
+        assert!(changed.iter().any(|c| c == committed), "missing {committed} in HEAD: {changed:?}");
+    }
+    let status = std::process::Command::new("git")
+        .current_dir(&proj)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&status.stdout).trim().is_empty(),
+        "dirty leftover git files: {}",
+        String::from_utf8_lossy(&status.stdout)
+    );
+
+    shared.teamwork.shutdown();
+}
