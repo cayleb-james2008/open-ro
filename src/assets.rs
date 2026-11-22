@@ -71,7 +71,9 @@ impl AssetMetadata {
             "ultimate": self.ultimate,
             "prompt": self.prompt,
             "source": self.source,
+            "file": self.filename,
             "filename": self.filename,
+            "mime": self.mime_type,
             "mime_type": self.mime_type,
             "bytes": self.bytes,
             "sha256": self.sha256,
@@ -79,6 +81,7 @@ impl AssetMetadata {
             "roblox_asset_id": self.roblox_asset_id,
             "content_uri": self.content_uri(),
             "url": format!("/api/assets/{}", self.filename),
+            "image_url": format!("/api/assets/{}", self.filename),
         })
     }
 

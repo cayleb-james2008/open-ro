@@ -102,11 +102,11 @@ fn art_knowledge_and_system_prompt_include_anime_homage_guidance() {
     let v: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(v["ok"], json!(true));
     assert_eq!(v["never_refuse_anime_homage"], json!(true));
-    assert!(v["archetype_translations"].as_array().unwrap().len() >= 8);
+    assert!(v["archetypes"].as_array().unwrap().len() >= 8);
 
     let sp = system_prompt();
-    assert!(sp.contains("ANIME FAN-ART & CREATIVE HOMAGE KNOWLEDGE POINT"));
-    assert!(sp.contains("Never knee-jerk refuse"));
+    assert!(sp.contains("CREATIVE HOMAGE & ANIME FAN-ART KNOWLEDGE POINT"));
+    assert!(sp.contains("NEVER refuse anime-inspired"));
 }
 
 #[test]
@@ -176,6 +176,20 @@ fn assets_upload_serve_persist_and_reject_traversal_fuzz() {
     assert_eq!(st, 200);
     let list2: Value = serde_json::from_slice(&list2_raw).unwrap();
     assert_eq!(list2["count"], json!(2), "assets persisted across restart");
+
+    // 4b. Asset manifest endpoint + .rbxlx export binds Decal Texture & ImageLabel Image.
+    let (st, _, man_raw) = http_raw_bytes(port2, "GET", "/api/assets/manifest", "application/json", b"");
+    assert_eq!(st, 200);
+    let man: Value = serde_json::from_slice(&man_raw).unwrap();
+    assert_eq!(man["asset_count"], json!(2));
+    assert_eq!(man["schema"], json!("openro-asset-manifest-v1"));
+
+    let (st, _, rbxlx_raw) = http_raw_bytes(port2, "GET", "/api/export/rbxlx", "application/json", b"");
+    assert_eq!(st, 200);
+    let xml = String::from_utf8(rbxlx_raw).unwrap();
+    assert!(xml.contains("CardArtDecal"), "rbxlx missing CardArtDecal");
+    assert!(xml.contains("rbxasset://openro-assets/crimson-sea-captain.png"), "rbxlx missing bound Decal/ImageLabel URI");
+    assert!(xml.contains("CardArtImage"), "rbxlx missing CardArtImage");
 
     // 5. Security fuzzing: path traversal, encoded dots, leading dot, bad ext, fake PNG bytes.
     for bad_path in [

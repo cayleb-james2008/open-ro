@@ -243,6 +243,7 @@ pub fn summary_json() -> Value {
             json!({
                 "id": a.id,
                 "card_id": a.card_id,
+                "archetype": a.visual_archetype,
                 "homage_title": a.homage_title,
                 "visual_archetype": a.visual_archetype,
                 "rarity": a.rarity,
@@ -253,18 +254,23 @@ pub fn summary_json() -> Value {
                 "speed": a.speed,
                 "palette": a.palette,
                 "silhouette_cues": a.silhouette_cues,
+                "visual_cues": a.silhouette_cues,
                 "safe_naming_pattern": a.safe_naming_pattern,
                 "passive": a.passive,
                 "ultimate": a.ultimate,
                 "art_prompt": a.art_prompt,
+                "prompt_template": a.art_prompt,
             })
         })
         .collect();
     json!({
+        "ok": true,
         "title": "Anime Fan-Art & Creative Homage Knowledge Point",
         "never_refuse_anime_homage": true,
         "summary": "Translates anime-inspired Roblox game concepts into original, DMCA-safe cel-shaded homage characters, balanced combat kits, and ready-to-generate card art prompts.",
+        "policy_note": POLICY_PRINCIPLES[0],
         "principles": POLICY_PRINCIPLES,
+        "style_pillars": STYLE_RULES,
         "style_rules": STYLE_RULES,
         "elements": ["Flame", "Void", "Storm", "Shadow", "Arcane"],
         "rarities": ["Common", "Rare", "Epic", "Legendary", "Mythic", "Celestial", "Secret"],
