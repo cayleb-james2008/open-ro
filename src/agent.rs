@@ -37,8 +37,11 @@ use crate::mcp::McpClient;
 use crate::model::ModelClient;
 use crate::place::{serialize_rbxlx, LocalPlace, PlaceBackend};
 use crate::skills;
+use crate::snapshots::{compute_diff, PlaceDiff};
+use crate::sse::BuildEventHub;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// 40 steps: a one-shot complete game (many skills, instances, a
 /// playtest, repairs) legitimately needs more than a one-script ask.
@@ -240,6 +243,11 @@ pub struct Agent {
     pub recovered: Vec<String>,
     /// Shared set of chats with a non-empty change-set stack (for the page's Undo).
     undo_sink: Option<std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>>,
+    /// Optional SSE build-progress event hub.
+    events: Option<Arc<BuildEventHub>>,
+    /// Active build correlation id & chat id for SSE phase updates.
+    active_build_id: String,
+    active_build_chat: String,
 }
 
 impl Agent {
@@ -267,6 +275,47 @@ impl Agent {
             proof_path: None,
             recovered: Vec::new(),
             undo_sink: None,
+            events: None,
+            active_build_id: String::new(),
+            active_build_chat: String::new(),
+        }
+    }
+
+    /// Attach an SSE `BuildEventHub` so build phases stream live to `/api/build/stream`.
+    pub fn attach_events(&mut self, hub: Arc<BuildEventHub>) {
+        self.events = Some(hub);
+    }
+
+    fn begin_build_trace(&mut self, chat_id: &str, label: &str) {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        self.active_build_id = format!("build-{nonce}");
+        self.active_build_chat = chat_id.to_string();
+        self.emit_event("planning", "Planning", label, None, None, 10);
+    }
+
+    fn emit_event(
+        &self,
+        phase: &str,
+        label: &str,
+        detail: &str,
+        skill: Option<&str>,
+        path: Option<&str>,
+        progress: u8,
+    ) {
+        if let Some(hub) = &self.events {
+            hub.publish(
+                self.active_build_id.clone(),
+                self.active_build_chat.clone(),
+                phase,
+                label,
+                detail,
+                skill.map(String::from),
+                path.map(String::from),
+                progress,
+            );
         }
     }
 
@@ -423,6 +472,130 @@ impl Agent {
         Ok(serialize_rbxlx(game_name, &tree))
     }
 
+    /// Create or update a single Instance at `path` (e.g. `Workspace.JumpPad`),
+    /// merging new properties onto any existing properties and preserving its
+    /// existing `class_name` when `class_name` is `None`.
+    pub fn set_instance_properties(
+        &mut self,
+        path: &str,
+        class_name: Option<&str>,
+        properties: &Value,
+    ) -> Result<Value, String> {
+        check_path(path)?;
+        let (parent, name) = path
+            .rsplit_once('.')
+            .ok_or_else(|| format!("instance path must be Parent.Name (got '{path}')"))?;
+        if !properties.is_object() {
+            return Err("properties must be a JSON object".to_string());
+        }
+        let existing = self.prev_instance(path)?;
+        let resolved_class = class_name
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .or_else(|| {
+                existing
+                    .as_ref()
+                    .and_then(|v| v.get("class_name").and_then(|c| c.as_str()).map(String::from))
+            })
+            .unwrap_or_else(|| "Part".to_string());
+        let mut merged_props = existing
+            .as_ref()
+            .and_then(|v| v.get("properties").and_then(|p| p.as_object()).cloned())
+            .unwrap_or_default();
+        if let Some(new_obj) = properties.as_object() {
+            for (k, v) in new_obj {
+                merged_props.insert(k.clone(), v.clone());
+            }
+        }
+        let props_val = Value::Object(merged_props);
+        self.studio_mut()?.call_tool(
+            "create_instance",
+            json!({
+                "class_name": resolved_class,
+                "name": name,
+                "parent": parent,
+                "properties": props_val,
+            }),
+        )?;
+        Ok(json!({
+            "path": path,
+            "class_name": resolved_class,
+            "properties": props_val,
+        }))
+    }
+
+    /// Delete an Instance at `path` cleanly.
+    pub fn delete_instance_at(&mut self, path: &str) -> Result<(), String> {
+        check_path(path)?;
+        self.studio_mut()?
+            .call_tool("delete_instance", json!({ "path": path }))?;
+        Ok(())
+    }
+
+    /// Replace the active Place tree with `target` (`{"instances": {...}, "scripts": {...}}`),
+    /// applying only the exact delta (deleting obsolete entries and writing new/modified ones)
+    /// and returning the computed `PlaceDiff`.
+    pub fn apply_place_tree(&mut self, target: &Value) -> Result<PlaceDiff, String> {
+        let before = self.place_tree()?;
+        let diff = compute_diff(&before, target);
+        let empty = serde_json::Map::new();
+        let target_instances = target
+            .get("instances")
+            .and_then(|v| v.as_object())
+            .unwrap_or(&empty);
+        let target_scripts = target
+            .get("scripts")
+            .and_then(|v| v.as_object())
+            .unwrap_or(&empty);
+
+        for path in &diff.removed_scripts {
+            self.studio_mut()?
+                .call_tool("delete_script", json!({ "path": path }))?;
+        }
+        for path in &diff.removed_instances {
+            self.studio_mut()?
+                .call_tool("delete_instance", json!({ "path": path }))?;
+        }
+        for path in diff
+            .added_instances
+            .iter()
+            .chain(diff.modified_instances.iter())
+        {
+            check_path(path)?;
+            let Some((parent, name)) = path.rsplit_once('.') else {
+                continue;
+            };
+            let rec = target_instances.get(path);
+            let class_name = rec
+                .and_then(|r| r.get("class_name").and_then(|c| c.as_str()))
+                .unwrap_or("Part");
+            let properties = rec
+                .and_then(|r| r.get("properties"))
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            self.studio_mut()?.call_tool(
+                "create_instance",
+                json!({
+                    "class_name": class_name,
+                    "name": name,
+                    "parent": parent,
+                    "properties": properties,
+                }),
+            )?;
+        }
+        for path in diff.added_scripts.iter().chain(diff.modified_scripts.iter()) {
+            check_path(path)?;
+            let src = target_scripts
+                .get(path)
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            self.studio_mut()?
+                .call_tool("write_script", json!({ "path": path, "source": src }))?;
+        }
+        Ok(diff)
+    }
+
     /// Refuse honestly when the connected bridge is known to lack a
     /// tool the agent cannot build without. The required set is every
     /// tool the loop can call — checking only some of them once let a
@@ -465,7 +638,13 @@ impl Agent {
     /// harvested into that chat's revertable change set.
     pub fn run_ask(&mut self, chat_id: &str, ask: &str) -> Result<RunOutcome, AskFailure> {
         self.current_changes.clear();
+        self.begin_build_trace(chat_id, ask);
         let result = self.run_ask_inner(chat_id, ask);
+        match &result {
+            Ok(o) if o.refused => self.emit_event("failed", "Build refused", &o.summary, None, None, 100),
+            Ok(o) => self.emit_event("done", "Build verified", &o.summary, None, None, 100),
+            Err(f) => self.emit_event("failed", "Build failed", &f.message, None, None, 100),
+        }
         let skills = match &result {
             Ok(o) => o.skills_used.clone(),
             Err(f) => f.skills_used.clone(),
@@ -533,6 +712,7 @@ impl Agent {
         steps: &[Value],
     ) -> Result<RunOutcome, AskFailure> {
         self.current_changes.clear();
+        self.begin_build_trace(chat_id, label);
         let result = self.run_plan_inner(chat_id, label, steps);
         // Every failed idea build says Undo last build when any of its
         // changes landed (the playtest message already says it).
@@ -552,6 +732,10 @@ impl Agent {
             }
             other => other,
         };
+        match &result {
+            Ok(o) => self.emit_event("done", "Blueprint verified", &o.summary, None, None, 100),
+            Err(f) => self.emit_event("failed", "Blueprint stopped", &f.message, None, None, 100),
+        }
         let skills = match &result {
             Ok(o) => o.skills_used.clone(),
             Err(f) => f.skills_used.clone(),
@@ -1166,6 +1350,14 @@ impl Agent {
         transcript: &mut Vec<String>,
         thread: &mut Vec<String>,
     ) -> Result<String, String> {
+        self.emit_event(
+            "compiling_rune",
+            "Compiling Rune",
+            &format!("Executing Rune skill '{skill}'"),
+            Some(skill),
+            None,
+            35,
+        );
         // The Luau is produced by executing the skill's Rune script.
         let source = skills::generate(skill, args)?;
         let args_note = args
@@ -1212,6 +1404,14 @@ impl Agent {
         self.studio_mut()?
             .call_tool("write_script", json!({ "path": path, "source": source.clone() }))?;
         self.record_script(&path, prev, Some(source.clone()));
+        self.emit_event(
+            "writing",
+            "Writing to Place",
+            &format!("Saved {path} ({} bytes)", source.len()),
+            args.get("skill").and_then(|v| v.as_str()),
+            Some(&path),
+            60,
+        );
         transcript.push(format!("tool write_script {path} ({} bytes)", source.len()));
         thread.push(format!("Wrote {path}."));
         let mut note = format!(
@@ -1283,10 +1483,34 @@ impl Agent {
         transcript: &mut Vec<String>,
         thread: &mut Vec<String>,
     ) -> Result<PlaytestOutcome, String> {
+        self.emit_event(
+            "static_luau_check",
+            "Static Luau Check",
+            "Checking Luau syntax, service references, and script wiring",
+            None,
+            None,
+            78,
+        );
+        self.emit_event(
+            "playtest_proof",
+            "Playtest Proof",
+            "Running Studio playtest verification",
+            None,
+            None,
+            88,
+        );
         let text = self.studio_mut()?.call_tool("playtest", json!({}))?;
         transcript.push(format!("tool playtest -> {text}"));
         match playtest_verdict(&text) {
             Verdict::Failed => {
+                self.emit_event(
+                    "auto_repair",
+                    "Auto-Repair",
+                    "Playtest reported an error — reading console to repair",
+                    None,
+                    None,
+                    70,
+                );
                 thread.push("Playtest failed — reading the console and repairing.".to_string());
                 // Feed the ACTUAL console output back to the model. A
                 // console-fetch failure must not abort the repair loop
@@ -1317,6 +1541,14 @@ impl Agent {
                 ))
             }
             Verdict::Passed => {
+                self.emit_event(
+                    "playtest_proof",
+                    "Playtest Passed",
+                    "Playtest ran cleanly with zero errors",
+                    None,
+                    None,
+                    95,
+                );
                 thread.push("Playtest passed.".to_string());
                 Ok(PlaytestOutcome::Passed(format!(
                     "tool_result: playtest PASSED ({text}). You may finish with done."
