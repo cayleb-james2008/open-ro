@@ -14,6 +14,7 @@ use crate::model::{probe_local_gateways, ModelClient, DEFAULT_BASE_URL, DEFAULT_
 use crate::place::{LocalPlace, PlaceBackend};
 use crate::snapshots::{compute_diff, parse_rbxlx_xml, SnapshotStore};
 use crate::sse::BuildEventHub;
+use crate::studio_stream::{StudioActionInput, StudioActionKind, StudioStreamHub};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -81,6 +82,8 @@ pub struct Shared {
     pub snapshots: Mutex<SnapshotStore>,
     /// Live SSE build-progress event hub (`/api/build/stream`).
     pub events: Arc<BuildEventHub>,
+    /// Live SSE realtime Studio 3D action & MCP frame hub (`/api/studio/stream`).
+    pub studio_stream: Arc<StudioStreamHub>,
     /// Cached lightweight status so concurrent polling never stalls behind an active build.
     status_cache: Mutex<StatusInfo>,
     /// Game art assets metadata & in-memory blob fallback (`data_dir/game-assets/`).
@@ -100,9 +103,12 @@ impl Shared {
         let updater = crate::update::Updater::from_env("OPENRO", "openro-rs", env!("CARGO_PKG_VERSION"), "cayleb-james2008/open-ro", true);
         let undoable = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let events = Arc::new(BuildEventHub::new());
+        let initial_mode = agent.as_ref().map(|a| a.studio_mode_tag()).unwrap_or("local_place");
+        let studio_stream = Arc::new(StudioStreamHub::new(initial_mode));
         if let Some(a) = agent.as_mut() {
             a.attach_undo_sink(Arc::clone(&undoable));
             a.attach_events(Arc::clone(&events));
+            a.attach_studio_stream(Arc::clone(&studio_stream));
         }
         let initial_status = extract_status_from_agent(agent.as_mut());
         let chat = default_chat();
@@ -122,6 +128,7 @@ impl Shared {
             config: Mutex::new(RuntimeConfig::default()),
             snapshots: Mutex::new(SnapshotStore::in_memory()),
             events,
+            studio_stream,
             status_cache: Mutex::new(initial_status),
             game_assets: Mutex::new(GameAssetsIndex::default()),
         })
@@ -135,9 +142,12 @@ impl Shared {
         let mut agent = agent;
         let undoable = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let events = Arc::new(BuildEventHub::new());
+        let initial_mode = agent.as_ref().map(|a| a.studio_mode_tag()).unwrap_or("local_place");
+        let studio_stream = Arc::new(StudioStreamHub::new(initial_mode));
         if let Some(a) = agent.as_mut() {
             a.attach_undo_sink(Arc::clone(&undoable));
             a.attach_events(Arc::clone(&events));
+            a.attach_studio_stream(Arc::clone(&studio_stream));
         }
         let initial_status = extract_status_from_agent(agent.as_mut());
         let mut recovered = agent.as_ref().map(|a| a.recovered.clone()).unwrap_or_default();
@@ -167,6 +177,7 @@ impl Shared {
             config: Mutex::new(cfg),
             snapshots: Mutex::new(snap_store),
             events,
+            studio_stream,
             status_cache: Mutex::new(initial_status),
             game_assets: Mutex::new(GameAssetsIndex::default()),
         })
@@ -715,8 +726,19 @@ fn respond_bytes(
     cache_control: &str,
     body: &[u8],
 ) {
+    respond_bytes_with_headers(stream, status, content_type, cache_control, "", body);
+}
+
+fn respond_bytes_with_headers(
+    stream: &mut TcpStream,
+    status: &str,
+    content_type: &str,
+    cache_control: &str,
+    extra_headers: &str,
+    body: &[u8],
+) {
     let header = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: {cache_control}\r\nX-Content-Type-Options: nosniff\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: {cache_control}\r\nX-Content-Type-Options: nosniff\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(header.as_bytes());
@@ -808,6 +830,31 @@ fn handle(
         return Ok(());
     }
 
+    // Live realtime Studio 3D action & MCP viewport frame SSE stream:
+    // drop short-lived HandlerSlot first so SSE never starves concurrent HTTP requests.
+    if req.method == "GET" && path == "/api/studio/stream" {
+        drop(slot);
+        if shared.studio_stream.active_subscribers() >= crate::studio_stream::MAX_STUDIO_SSE_CLIENTS {
+            respond_json(
+                &mut stream,
+                "503 Service Unavailable",
+                &json!({ "ok": false, "error": "Too many live Studio viewport streams are open right now. Close an extra tab and retry." }),
+            );
+            return Ok(());
+        }
+        let last_id = if req.last_event_id > 0 {
+            req.last_event_id
+        } else {
+            query_param(query, "since")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        if let Err(msg) = shared.studio_stream.serve_stream(stream, last_id) {
+            eprintln!("openro: Studio SSE stream refused: {msg}");
+        }
+        return Ok(());
+    }
+
     let _slot = slot;
 
     // Parameterized snapshot routes: POST /api/snapshots/:id/restore & GET /api/snapshots/:id/rbxlx
@@ -875,6 +922,98 @@ fn handle(
         }
         ("POST", "/api/assets/generate") => {
             handle_assets_generate(&mut stream, shared, &req.body);
+        }
+        ("GET", "/api/studio/actions") => {
+            let since = query_param(query, "since")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            let mut snap = shared.studio_stream.snapshot_json(since);
+            if let Some(obj) = snap.as_object_mut() {
+                obj.insert("ok".to_string(), json!(true));
+            }
+            respond_json(&mut stream, "200 OK", &snap);
+        }
+        ("GET", "/api/studio/frame") => {
+            match shared.studio_stream.latest_frame() {
+                Some(frame) => {
+                    let extra = format!("X-Frame-Seq: {}\r\n", frame.seq);
+                    respond_bytes_with_headers(
+                        &mut stream,
+                        "200 OK",
+                        &frame.mime,
+                        "no-store",
+                        &extra,
+                        &frame.bytes,
+                    );
+                }
+                None => respond_json(
+                    &mut stream,
+                    "404 Not Found",
+                    &json!({
+                        "ok": false,
+                        "has_live_frame": false,
+                        "studio_mode": shared.studio_stream.studio_mode(),
+                        "error": "No live Studio frame captured yet. Connect Roblox Studio MCP or click Capture Frame.",
+                    }),
+                ),
+            }
+        }
+        ("POST", "/api/studio/capture") => {
+            let mut guard = shared.agent.lock().unwrap();
+            match guard.as_mut() {
+                Some(agent) => match agent.capture_studio_frame() {
+                    Ok(frame) => respond_json(
+                        &mut stream,
+                        "200 OK",
+                        &json!({
+                            "ok": true,
+                            "frame_seq": frame.seq,
+                            "mime": frame.mime,
+                            "width": frame.width,
+                            "height": frame.height,
+                            "url": format!("/api/studio/frame?seq={}", frame.seq),
+                            "frame": frame.meta_json(),
+                        }),
+                    ),
+                    Err(e) => respond_json(
+                        &mut stream,
+                        "503 Service Unavailable",
+                        &json!({
+                            "ok": false,
+                            "studio_mode": shared.studio_stream.studio_mode(),
+                            "error": e,
+                        }),
+                    ),
+                },
+                None => respond_json(
+                    &mut stream,
+                    "503 Service Unavailable",
+                    &json!({
+                        "ok": false,
+                        "studio_mode": shared.studio_stream.studio_mode(),
+                        "error": "Studio not connected",
+                    }),
+                ),
+            }
+        }
+        ("POST", "/api/studio/playtest") => {
+            let _busy = BusyGuard::new(&shared.busy);
+            let mut guard = shared.agent.lock().unwrap();
+            match guard.as_mut() {
+                Some(agent) => match agent.run_studio_playtest() {
+                    Ok(val) => respond_json(&mut stream, "200 OK", &val),
+                    Err(e) => respond_json(
+                        &mut stream,
+                        "502 Bad Gateway",
+                        &json!({ "ok": false, "passed": false, "error": e }),
+                    ),
+                },
+                None => respond_json(
+                    &mut stream,
+                    "503 Service Unavailable",
+                    &json!({ "ok": false, "passed": false, "error": "Studio not connected" }),
+                ),
+            }
         }
         ("GET", "/api/build/events") => {
             let since = query_param(query, "since")
@@ -1114,6 +1253,9 @@ fn handle(
                     "game_name": shared.game_name,
                     "version": env!("CARGO_PKG_VERSION"),
                     "sse_build_stream": true,
+                    "assets_api": true,
+                    "studio_stream": true,
+                    "studio_mode": shared.studio_stream.studio_mode(),
                     "skills_count": crate::skills::registry().len(),
                     "store_recovered": shared.store_recovered,
                 }),
@@ -1609,6 +1751,15 @@ fn handle_snapshot_restore(stream: &mut TcpStream, shared: &Shared, snap_id: &st
                 None,
                 100,
             );
+            let mut st_ev = StudioActionInput::new(
+                StudioActionKind::Restored,
+                format!("Restored snapshot '{}' ({})", target.label, diff.summary()),
+            );
+            st_ev.path = "Workspace".to_string();
+            st_ev.class_name = "DataModel".to_string();
+            st_ev.instance_count = new_snap.instance_count;
+            st_ev.script_count = new_snap.script_count;
+            shared.studio_stream.record_action(st_ev);
             respond_json(
                 stream,
                 "200 OK",
@@ -1721,6 +1872,18 @@ fn handle_import_rbxlx(stream: &mut TcpStream, shared: &Shared, req: &Request) {
                 None,
                 100,
             );
+            let mut st_ev = StudioActionInput::new(
+                StudioActionKind::Imported,
+                format!(
+                    "Imported {} instance(s) and {} script(s) from .rbxlx",
+                    snap.instance_count, snap.script_count
+                ),
+            );
+            st_ev.path = "Workspace".to_string();
+            st_ev.class_name = "DataModel".to_string();
+            st_ev.instance_count = snap.instance_count;
+            st_ev.script_count = snap.script_count;
+            shared.studio_stream.record_action(st_ev);
             respond_json(
                 stream,
                 "200 OK",
@@ -2274,6 +2437,7 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
                 agent.model = new_model;
                 agent.studio = new_backend;
                 agent.attach_events(Arc::clone(&shared.events));
+                agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
             }
             None => {
                 let mut agent = Agent::with_backend(new_model, new_backend);
@@ -2282,6 +2446,7 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
                 }
                 agent.attach_undo_sink(Arc::clone(&shared.undoable));
                 agent.attach_events(Arc::clone(&shared.events));
+                agent.attach_studio_stream(Arc::clone(&shared.studio_stream));
                 *guard = Some(agent);
             }
         }

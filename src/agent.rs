@@ -39,6 +39,7 @@ use crate::place::{serialize_rbxlx, LocalPlace, PlaceBackend};
 use crate::skills;
 use crate::snapshots::{compute_diff, PlaceDiff};
 use crate::sse::BuildEventHub;
+use crate::studio_stream::{StudioActionInput, StudioActionKind, StudioFrame, StudioStreamHub};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -246,6 +247,8 @@ pub struct Agent {
     undo_sink: Option<std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>>,
     /// Optional SSE build-progress event hub.
     events: Option<Arc<BuildEventHub>>,
+    /// Optional realtime Studio 3D action & MCP frame stream hub.
+    studio_stream: Option<Arc<StudioStreamHub>>,
     /// Active build correlation id & chat id for SSE phase updates.
     active_build_id: String,
     active_build_chat: String,
@@ -277,6 +280,7 @@ impl Agent {
             recovered: Vec::new(),
             undo_sink: None,
             events: None,
+            studio_stream: None,
             active_build_id: String::new(),
             active_build_chat: String::new(),
         }
@@ -285,6 +289,193 @@ impl Agent {
     /// Attach an SSE `BuildEventHub` so build phases stream live to `/api/build/stream`.
     pub fn attach_events(&mut self, hub: Arc<BuildEventHub>) {
         self.events = Some(hub);
+    }
+
+    /// Attach a realtime `StudioStreamHub` so granular Studio mutations and live MCP
+    /// viewport frames stream to `/api/studio/stream`.
+    pub fn attach_studio_stream(&mut self, hub: Arc<StudioStreamHub>) {
+        hub.set_studio_mode(self.studio_mode_tag());
+        self.studio_stream = Some(hub);
+    }
+
+    pub fn studio_mode_tag(&self) -> &'static str {
+        match &self.studio {
+            Some(PlaceBackend::Mcp(_)) => "live_mcp",
+            _ => "local_place",
+        }
+    }
+
+    fn place_counts(&mut self) -> (usize, usize) {
+        match &mut self.studio {
+            Some(PlaceBackend::Local(local)) => (local.instances().len(), local.scripts().len()),
+            Some(PlaceBackend::Mcp(mcp)) => mcp
+                .get_place_tree()
+                .ok()
+                .map(|t| {
+                    let ic = t.get("instances").and_then(|v| v.as_object()).map(|m| m.len()).unwrap_or(0);
+                    let sc = t.get("scripts").and_then(|v| v.as_object()).map(|m| m.len()).unwrap_or(0);
+                    (ic, sc)
+                })
+                .unwrap_or((0, 0)),
+            None => (0, 0),
+        }
+    }
+
+    fn emit_studio_action(&mut self, mut input: StudioActionInput) {
+        if self.studio_stream.is_none() {
+            return;
+        }
+        let mode = self.studio_mode_tag().to_string();
+        let (inst_count, script_count) = self.place_counts();
+        input.studio_mode = Some(mode);
+        input.instance_count = inst_count;
+        input.script_count = script_count;
+        if let Some(hub) = &self.studio_stream {
+            hub.record_action(input);
+        }
+    }
+
+    /// Best-effort live MCP `screen_capture` right after a mutation when attached to
+    /// a live Roblox Studio MCP bridge (never fails the underlying build action).
+    fn auto_capture_mcp_frame(&mut self) -> Option<u64> {
+        let hub = self.studio_stream.as_ref().map(Arc::clone)?;
+        let Some(PlaceBackend::Mcp(mcp)) = self.studio.as_mut() else {
+            return None;
+        };
+        if !mcp.has_tool("screen_capture") {
+            return None;
+        }
+        match mcp.screen_capture() {
+            Ok(frame) => {
+                let stored = hub.store_frame(frame);
+                Some(stored.seq)
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Explicitly capture one live Roblox Studio MCP frame (`POST /api/studio/capture`).
+    pub fn capture_studio_frame(&mut self) -> Result<StudioFrame, String> {
+        let frame = match self.studio.as_mut() {
+            Some(PlaceBackend::Mcp(mcp)) => mcp.screen_capture()?,
+            Some(PlaceBackend::Local(_)) => {
+                return Err(
+                    "Live Studio Frame capture requires a connected Roblox Studio MCP session (currently running Local Place Engine). Switch to Studio 3D or attach Roblox Studio MCP."
+                        .to_string(),
+                );
+            }
+            None => return Err("Studio not connected".to_string()),
+        };
+        if let Some(hub) = &self.studio_stream {
+            Ok(hub.store_frame(frame))
+        } else {
+            Ok(frame)
+        }
+    }
+
+    /// Execute a Studio playtest directly (`POST /api/studio/playtest`), streaming
+    /// `PlaytestStarted`, `PlaytestLog`, and `PlaytestPassed`/`PlaytestFailed` actions
+    /// over `StudioStreamHub` (plus capturing a live MCP frame when connected).
+    pub fn run_studio_playtest(&mut self) -> Result<Value, String> {
+        let mode = self.studio_mode_tag().to_string();
+        let mut start_ev = StudioActionInput::new(
+            StudioActionKind::PlaytestStarted,
+            if mode == "live_mcp" {
+                "Started live Roblox Studio playtest via MCP"
+            } else {
+                "Running Local Place static Luau & playtest verification"
+            },
+        );
+        start_ev.path = "Workspace".to_string();
+        start_ev.class_name = "RunService".to_string();
+        self.emit_studio_action(start_ev);
+
+        let (passed, lines, frame_seq) = match self.studio.as_mut() {
+            Some(PlaceBackend::Mcp(mcp)) => {
+                let start_res = mcp.start_stop_play("start_play");
+                let start_ok = match &start_res {
+                    Ok(v) => {
+                        let st = v.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                        !st.eq_ignore_ascii_case("failed") && v.get("ok").and_then(|b| b.as_bool()) != Some(false)
+                    }
+                    Err(_) => false,
+                };
+                let console_lines = mcp.get_console_output().unwrap_or_default();
+                let fseq = self.auto_capture_mcp_frame();
+                if let Some(PlaceBackend::Mcp(mcp_stop)) = self.studio.as_mut() {
+                    let _ = mcp_stop.start_stop_play("stop");
+                }
+                let has_err = console_lines.iter().any(|l| {
+                    let low = l.to_ascii_lowercase();
+                    low.contains("[error]") || low.contains("syntax error") || low.contains("runtime error")
+                });
+                let mut out_lines = console_lines;
+                if let Err(e) = start_res {
+                    out_lines.push(format!("playtest error: {e}"));
+                }
+                (start_ok && !has_err, out_lines, fseq)
+            }
+            Some(PlaceBackend::Local(_)) => {
+                let text = self.studio_mut()?.call_tool("playtest", json!({}))?;
+                let verdict = playtest_verdict(&text);
+                let raw_console = self
+                    .studio_mut()?
+                    .call_tool("get_console", json!({}))
+                    .unwrap_or_default();
+                let mut out_lines: Vec<String> = raw_console
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(String::from)
+                    .collect();
+                if out_lines.is_empty() {
+                    out_lines.push(if matches!(verdict, Verdict::Passed) {
+                        "Local Place playtest passed with 0 Luau errors.".to_string()
+                    } else {
+                        text.clone()
+                    });
+                }
+                (matches!(verdict, Verdict::Passed), out_lines, None)
+            }
+            None => return Err("Studio not connected".to_string()),
+        };
+
+        for line in lines.iter().take(16) {
+            let mut log_ev = StudioActionInput::new(StudioActionKind::PlaytestLog, line.clone());
+            log_ev.path = "Output".to_string();
+            log_ev.class_name = "LogService".to_string();
+            log_ev.console_line = Some(line.clone());
+            log_ev.frame_seq = frame_seq;
+            self.emit_studio_action(log_ev);
+        }
+
+        let mut verdict_ev = StudioActionInput::new(
+            if passed {
+                StudioActionKind::PlaytestPassed
+            } else {
+                StudioActionKind::PlaytestFailed
+            },
+            if passed {
+                format!("Studio playtest passed ({} console line(s))", lines.len())
+            } else {
+                format!("Studio playtest failed ({} console line(s))", lines.len())
+            },
+        );
+        verdict_ev.path = "Workspace".to_string();
+        verdict_ev.class_name = "RunService".to_string();
+        verdict_ev.console_line = lines.last().cloned();
+        verdict_ev.frame_seq = frame_seq;
+        self.emit_studio_action(verdict_ev);
+
+        Ok(json!({
+            "ok": true,
+            "passed": passed,
+            "status": if passed { "passed" } else { "failed" },
+            "studio_mode": mode,
+            "console": lines.join("\n"),
+            "console_lines": lines,
+            "frame_seq": frame_seq,
+        }))
     }
 
     fn begin_build_trace(&mut self, chat_id: &str, label: &str) {
@@ -477,10 +668,28 @@ impl Agent {
     /// `Workspace.CardGallery` as 3D Showcase Parts with `Decal` (`Texture`) and
     /// `SurfaceGui` -> `ImageLabel` (`Image`) instances for `.rbxlx` export.
     pub fn bind_assets(&mut self, assets: &[crate::assets::AssetMetadata]) -> usize {
-        match self.studio.as_mut() {
+        let count = match self.studio.as_mut() {
             Some(PlaceBackend::Local(place)) => crate::assets::bind_assets_to_place(place, assets),
             _ => 0,
+        };
+        if count > 0 && self.studio_stream.is_some() {
+            let total = assets.len();
+            for (idx, asset) in assets.iter().enumerate() {
+                let safe_id = asset.card_id.replace('-', "_");
+                let x_pos = ((idx as f64) - ((total as f64 - 1.0) / 2.0)) * 9.0;
+                let mut ev = StudioActionInput::new(
+                    StudioActionKind::DecalBound,
+                    format!("Bound {} ({}) onto 3D CardGallery showcase", asset.title, asset.filename),
+                );
+                ev.path = format!("Workspace.CardGallery.Showcase_{safe_id}.CardArtDecal");
+                ev.class_name = "Decal".to_string();
+                ev.position = Some([x_pos, 5.0, 28.0]);
+                ev.size = Some([6.0, 8.5, 0.8]);
+                ev.color = Some("#4F7CF0".to_string());
+                self.emit_studio_action(ev);
+            }
         }
+        count
     }
 
     /// Create or update a single Instance at `path` (e.g. `Workspace.JumpPad`),
@@ -529,6 +738,26 @@ impl Agent {
                 "properties": props_val,
             }),
         )?;
+        let kind = if existing.is_some() {
+            StudioActionKind::PartUpdated
+        } else {
+            StudioActionKind::PartCreated
+        };
+        let mut ev = StudioActionInput::new(
+            kind,
+            if existing.is_some() {
+                format!("Updated {path} ({resolved_class})")
+            } else {
+                format!("Created {path} ({resolved_class})")
+            },
+        );
+        ev.path = path.to_string();
+        ev.class_name = resolved_class.clone();
+        ev.position = extract_vec3_prop(Some(&props_val), "Position");
+        ev.size = extract_vec3_prop(Some(&props_val), "Size");
+        ev.color = extract_color_prop(Some(&props_val));
+        self.emit_studio_action(ev);
+        let _ = self.auto_capture_mcp_frame();
         Ok(json!({
             "path": path,
             "class_name": resolved_class,
@@ -541,6 +770,14 @@ impl Agent {
         check_path(path)?;
         self.studio_mut()?
             .call_tool("delete_instance", json!({ "path": path }))?;
+        let mut ev = StudioActionInput::new(
+            StudioActionKind::PartUpdated,
+            format!("Removed {path} from Place"),
+        );
+        ev.path = path.to_string();
+        ev.class_name = "Instance".to_string();
+        self.emit_studio_action(ev);
+        let _ = self.auto_capture_mcp_frame();
         Ok(())
     }
 
@@ -1427,6 +1664,19 @@ impl Agent {
             Some(&path),
             60,
         );
+        let mut st_ev = StudioActionInput::new(
+            StudioActionKind::ScriptWritten,
+            format!("Wrote {path} ({} bytes)", source.len()),
+        );
+        st_ev.path = path.clone();
+        st_ev.class_name = if path.starts_with("StarterGui.") || path.starts_with("StarterPlayer.") {
+            "LocalScript".to_string()
+        } else {
+            "Script".to_string()
+        };
+        st_ev.code_snippet = Some(snippet_from_source(&source));
+        self.emit_studio_action(st_ev);
+        let _ = self.auto_capture_mcp_frame();
         transcript.push(format!("tool write_script {path} ({} bytes)", source.len()));
         thread.push(format!("Wrote {path}."));
         let mut note = format!(
@@ -1526,6 +1776,13 @@ impl Agent {
             None,
             88,
         );
+        let mut pt_start = StudioActionInput::new(
+            StudioActionKind::PlaytestStarted,
+            "Running Studio playtest verification",
+        );
+        pt_start.path = "Workspace".to_string();
+        pt_start.class_name = "RunService".to_string();
+        self.emit_studio_action(pt_start);
         let text = self.studio_mut()?.call_tool("playtest", json!({}))?;
         transcript.push(format!("tool playtest -> {text}"));
         match playtest_verdict(&text) {
@@ -1555,6 +1812,16 @@ impl Agent {
                         })
                         .unwrap_or_else(|| format!("(could not read the console: {e})")),
                 };
+                let fseq = self.auto_capture_mcp_frame();
+                let mut pt_fail = StudioActionInput::new(
+                    StudioActionKind::PlaytestFailed,
+                    "Playtest failed — reading console output",
+                );
+                pt_fail.path = "Output".to_string();
+                pt_fail.class_name = "RunService".to_string();
+                pt_fail.console_line = Some(console.chars().take(240).collect());
+                pt_fail.frame_seq = fseq;
+                self.emit_studio_action(pt_fail);
                 transcript.push(format!("console after failed playtest: {console}"));
                 thread.push(format!("Console from the failed test run: {console}"));
                 Ok(PlaytestOutcome::Failed(
@@ -1576,6 +1843,15 @@ impl Agent {
                     None,
                     95,
                 );
+                let fseq = self.auto_capture_mcp_frame();
+                let mut pt_pass = StudioActionInput::new(
+                    StudioActionKind::PlaytestPassed,
+                    "Playtest passed with 0 Luau errors",
+                );
+                pt_pass.path = "Workspace".to_string();
+                pt_pass.class_name = "RunService".to_string();
+                pt_pass.frame_seq = fseq;
+                self.emit_studio_action(pt_pass);
                 thread.push("Playtest passed.".to_string());
                 Ok(PlaytestOutcome::Passed(format!(
                     "tool_result: playtest PASSED ({text}). You may finish with done."
@@ -1671,7 +1947,24 @@ impl Agent {
                         "properties": args.get("properties").cloned().unwrap_or(json!({})),
                     })),
                 };
+                let was_existing = prev.is_some();
+                let post_props = post.as_ref().and_then(|r| r.get("properties")).cloned();
                 self.record_instance(&path, prev, post);
+                let mut ev = StudioActionInput::new(
+                    if was_existing {
+                        StudioActionKind::PartUpdated
+                    } else {
+                        StudioActionKind::PartCreated
+                    },
+                    format!("Placed {path} ({class_name})"),
+                );
+                ev.path = path.clone();
+                ev.class_name = class_name.clone();
+                ev.position = extract_vec3_prop(post_props.as_ref(), "Position");
+                ev.size = extract_vec3_prop(post_props.as_ref(), "Size");
+                ev.color = extract_color_prop(post_props.as_ref());
+                self.emit_studio_action(ev);
+                let _ = self.auto_capture_mcp_frame();
                 transcript.push(format!("tool create_instance {path} ({class_name})"));
                 thread.push(format!("Created {path} ({class_name})."));
                 Ok(format!("tool_result: create_instance {path} succeeded."))
@@ -1687,6 +1980,14 @@ impl Agent {
                 self.studio_mut()?
                     .call_tool("delete_instance", json!({ "path": path }))?;
                 self.record_instance(&path, prev, None);
+                let mut ev = StudioActionInput::new(
+                    StudioActionKind::PartUpdated,
+                    format!("Deleted {path}"),
+                );
+                ev.path = path.clone();
+                ev.class_name = "Instance".to_string();
+                self.emit_studio_action(ev);
+                let _ = self.auto_capture_mcp_frame();
                 transcript.push(format!("tool delete_instance {path}"));
                 thread.push(format!("Deleted {path}."));
                 Ok(format!("tool_result: delete_instance {path} succeeded."))
@@ -1855,6 +2156,14 @@ impl Agent {
         self.save_proof();
         self.save_changes();
         self.sync_undo();
+        let mut rev_ev = StudioActionInput::new(
+            StudioActionKind::Reverted,
+            format!("Reverted {} change(s) in Studio", restored.len()),
+        );
+        rev_ev.path = "Workspace".to_string();
+        rev_ev.class_name = "ChangeHistoryService".to_string();
+        self.emit_studio_action(rev_ev);
+        let _ = self.auto_capture_mcp_frame();
         Ok(restored)
     }
 
@@ -1973,6 +2282,61 @@ enum PlaytestOutcome {
     Passed(String),
     Failed(String, String),
     Unreadable(String, String),
+}
+
+fn extract_vec3_prop(props: Option<&Value>, key: &str) -> Option<[f64; 3]> {
+    let val = props?.get(key)?;
+    if let Some(arr) = val.as_array() {
+        if arr.len() >= 3 {
+            let x = arr[0].as_f64()?;
+            let y = arr[1].as_f64()?;
+            let z = arr[2].as_f64()?;
+            if x.is_finite() && y.is_finite() && z.is_finite() {
+                return Some([x, y, z]);
+            }
+        }
+    }
+    if let Some(obj) = val.as_object() {
+        let x = obj.get("x").or_else(|| obj.get("X")).and_then(|v| v.as_f64())?;
+        let y = obj.get("y").or_else(|| obj.get("Y")).and_then(|v| v.as_f64())?;
+        let z = obj.get("z").or_else(|| obj.get("Z")).and_then(|v| v.as_f64())?;
+        if x.is_finite() && y.is_finite() && z.is_finite() {
+            return Some([x, y, z]);
+        }
+    }
+    None
+}
+
+fn extract_color_prop(props: Option<&Value>) -> Option<String> {
+    let val = props?.get("Color").or_else(|| props?.get("BrickColor"))?;
+    if let Some(s) = val.as_str() {
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    if let Some(arr) = val.as_array() {
+        if arr.len() >= 3 {
+            let r = arr[0].as_f64().unwrap_or(0.5);
+            let g = arr[1].as_f64().unwrap_or(0.5);
+            let b = arr[2].as_f64().unwrap_or(0.5);
+            let scale = |c: f64| -> u8 {
+                if (0.0..=1.0).contains(&c) {
+                    (c * 255.0).round() as u8
+                } else {
+                    c.clamp(0.0, 255.0).round() as u8
+                }
+            };
+            return Some(format!("#{:02X}{:02X}{:02X}", scale(r), scale(g), scale(b)));
+        }
+    }
+    None
+}
+
+fn snippet_from_source(source: &str) -> String {
+    let lines: Vec<&str> = source.lines().take(6).collect();
+    let joined = lines.join("\n");
+    joined.chars().take(280).collect()
 }
 
 /// Does this summary claim building work? Sentence-scoped: a claim
