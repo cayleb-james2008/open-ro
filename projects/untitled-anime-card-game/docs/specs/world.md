@@ -52,31 +52,41 @@ A reference recipe that already produces this exists at `~/Work/scratch/swarm-v0
 | `skill_monolith`, `rebirth_obelisk` | Two tall glowing monuments with carved faces and floating rings | 8 x 24 x 8 | 4,000 each |
 | `card_standee` | The 3D card: thin slab with bevel, stone base, art face UV exactly 0 to 1 over the card area so the card art maps 1:1 | 5.6 x 8 x 0.6 | 800 |
 | `card_standee_foil` | Same silhouette, slightly larger, for the foil layer | 5.8 x 8.2 x 0.7 | 800 |
+| `quest_board` | Notice board with five parchment slots under a small roof (Quest board, GDD 6) | 12 x 10 x 3 | 2,500 |
+| `stage_floor` | Battle stage floor: long stone platform with a painted ring, edge trim | 90 x 2 x 30 | 3,000 |
+| `stage_backdrop` | Curved backdrop wall with six banner poles; neutral stone and cloth so Luau tints it per world and a SurfaceGui carries the world's key art | 100 x 30 x 8 | 5,000 |
+| `stage_banner` | Hanging cloth banner, neutral, tinted per world | 6 x 14 x 0.5 | 600 |
 | `guardian_fox` | Lobby companion: floating spirit fox with nine small tails, no legs, glow tail tips | 4 x 3 x 6 | 3,000 |
 
 If an item above is not possible, the agent says so in its reply and the director files a gap. The agent must not substitute a block of primitive parts and call it done.
 
 ## 3. Nexus Plaza layout
 
-Origin (0, 0, 0) is the centre of the Roll Altar top surface. Ground plane y = -3.3 (plaza top). All coordinates in studs. The agent stores the layout as data in `WorldBuild/Layout.luau` (key, position, yaw, scale) so tests can read it.
+Origin (0, 0, 0) is the plaza ground at the centre of the Roll Altar; every mesh pivot is its base centre, so a landmark at y = 0 sits on the ground. The altar's top step is at y = 3.3, its pedestal top at y = 6.1, and the roll orb centre floats at y = 11. Angles are measured from +X toward +Z (90 degrees is +Z, the side the leaderboard wall is on). Yaw 0 faces -Z; "toward X" below means the landmark's front faces that point. All coordinates in studs. The agent stores the layout as data in `WorldBuild/Layout.luau` (key, position, yaw, scale) so tests can read it.
 
 | Landmark | Position | Faces |
 |---|---|---|
-| Roll Altar (`shrine_altar`) | (0, -3.3, 0) | south to north |
-| Torii (`shrine_torii`) | (0, -3.3, -34) | toward altar |
-| Banner portals x3 (current banners) | (-34, -3.3, -30), (0, -3.3, -52), (34, -3.3, -30) | toward altar |
-| World gates x6 (5 live, 1 locked "Coming soon", dimmed and chained) | ring of radius 78, every 60 degrees starting at -150 | toward centre |
-| Wishing Fountain | (-30, -3.3, 36) | open |
-| Shop stalls x2 with NPCs (potions, gems) | (30, -3.3, 38), (48, -3.3, 22) | toward altar |
-| Leaderboard wall | (0, -3.3, 70) | toward altar |
-| Ranked arena gate and arena (`battle_arena`) | satellite island at (-120, -3.3, 40) with bridge | toward plaza |
-| Infinite Spire (`tower`) | satellite island at (120, -3.3, 40) with bridge | toward plaza |
-| Raid arena | satellite island at (0, -3.3, 150) with bridge | toward plaza |
-| Skill monolith, Rebirth obelisk | (-52, -3.3, 8), (52, -3.3, 8) | toward altar |
-| Spawn | (0, 0, 26), looking at the altar | |
+| Roll Altar (`shrine_altar`) | (0, 0, 0) | south to north |
+| Torii (`shrine_torii`) | (0, 0, -34) | toward altar |
+| Banner portals x3 (current banners) | (-34, 0, -30), (0, 0, -52), (34, 0, -30) | toward altar |
+| World gate 1 (Naruto) | (-86.6, 0, -50.0) | toward origin |
+| World gate 2 (Dragon Ball) | (-25.9, 0, -96.6) | toward origin |
+| World gate 3 (One Piece) | (25.9, 0, -96.6) | toward origin |
+| World gate 4 (Jujutsu Kaisen) | (86.6, 0, -50.0) | toward origin |
+| World gate 5 (Bleach) | (61.6, 0, 78.8) | toward origin |
+| World gate 6 (locked, "Coming soon", dimmed and chained) | (-61.6, 0, 78.8) | toward origin |
+| Quest board (`quest_board`) | (-62, 0, 52) | toward origin |
+| Wishing Fountain | (-30, 0, 36) | open |
+| Shop stalls x2 with NPCs (potions, gems) | (30, 0, 38), (48, 0, 22) | toward altar |
+| Leaderboard wall | (0, 0, 70) | toward altar |
+| Ranked arena (`battle_arena`) | satellite island centred (-120, 0, 40), bridge from (-70, 0, 20) | toward plaza |
+| Infinite Spire (`tower`) | satellite island centred (120, 0, 40), bridge from (70, 0, 20) | toward plaza |
+| Raid arena (`raid_arena`) | satellite island centred (0, 0, 150), bridge from (0, 0, 84) | toward plaza |
+| Skill monolith, Rebirth obelisk | (-52, 0, 8), (52, 0, 8) | toward altar |
+| Spawn | (0, 3, 26), looking toward -Z (the altar) | |
 | Trees, lanterns, rocks | scattered by a seeded rule, not on walkways, at most 14 trees | |
 
-Walkways are flat parts with a stone texture, 12 studs wide, from spawn to every landmark. Players must be able to reach every landmark on foot from spawn in under 20 seconds at the default walk speed. Satellite islands are connected by `bridge_arch`.
+Walkways are flat parts with a stone texture, 12 studs wide, from spawn to every landmark. Players must reach every landmark on foot from spawn in under 20 seconds at the default WalkSpeed of 16 studs per second (so every landmark path is at most 320 studs long; the farthest, the ranked arena, is about 150). Satellite islands are connected by `bridge_arch`.
 
 ## 4. Lighting and atmosphere
 
@@ -124,14 +134,20 @@ Each VFX module has a Lune or in-Studio test showing it constructs and cleans up
 
 ## 8. Battle diorama
 
-One reusable stage per world (GDD 6): floor, backdrop kit and banner mesh, a rail of ten standee slots (5 v 5) facing each other at 14 studs, camera three-quarter. Built by `WorldBuild/BattleStage.luau` and parameterised by world id and colour palette; reused for Spire, Raid and Ranked with a different palette.
+One reusable stage per world (GDD 6), built by `WorldBuild/BattleStage.luau` from `stage_floor`, `stage_backdrop` and `stage_banner` (neutral textures; the world's palette is a `Color` tint and the key art is a SurfaceGui on the backdrop). Ten standee slots in two rows of five: slots are 7 studs apart along X within a team, and the gap between the two teams' nearest slots is 14 studs. Camera three-quarter (about 35 degrees above the floor, 20 degrees yaw). Spire, Raid and Ranked reuse the stage with a different tint and backdrop art.
 
-## 9. Acceptance (the playtester checks these)
+## 9. Acceptance (the playtester checks these; each row is measurable)
 
-1. In Studio, `screen_capture` of the hub from spawn shows the altar, torii and at least two world gates, lit, with bloom and atmosphere visible; no untextured grey parts.
-2. `Workspace.Hub` descendant count at most 1,800 and triangle estimate under 250k; proxies count is 0 once meshes are uploaded.
-3. Every landmark in section 3 exists at its listed position within 3 studs.
-4. Roll 100 times: each rarity's effect plays, ends, and the `Workspace.Fx` count returns to baseline within 6 seconds of the last roll.
-5. A 5 v 5 scripted battle shows lunge, hit shake, damage numbers, one ultimate cut-in and a death shatter, with zero console errors.
-6. Reduced motion on: no camera shake, no screen flash, particles at 30 percent.
-7. `selene` and `stylua --check` clean; `rojo build` succeeds.
+Interim means before the Open Cloud key exists and meshes are still proxies; final means after upload.
+
+1. Capture: a Studio `screen_capture` from spawn shows the altar, torii and two world gates, lit, with bloom and atmosphere visible. Untextured grey: every `MeshPart` under `Workspace.Hub` has a non-empty `TextureID` (or a `SurfaceAppearance`), or is `Neon`; count of violations is 0. Interim: proxy parts (`Attribute Proxy = true`) are exempt but their count is reported; final: proxy count is 0.
+2. Budget: `Workspace.Hub` descendants at most 1,800. Triangle estimate = sum over MeshParts of manifest `tris` for that mesh key; at most 250,000 (the cap sum of one of each mesh is about 220,000, so the layout must use at most 14 trees and 20 rocks and lanterns together, as listed). No single mesh over 20,000.
+3. Layout: every landmark in section 3 exists at its listed position within 3 studs (checked against `Layout.luau` and the live instance positions); six gate coordinates match exactly.
+4. Reach: scripted walk from spawn to each landmark at WalkSpeed 16 completes in under 20 seconds.
+5. Lighting: `Lighting`, `Atmosphere` and the four post effects exist with the section 4 values (within 5 percent); a time-of-day change tweens over 4 seconds, with no value jumping more than one frame step.
+6. Roll: 100 rolls play each rarity's effect, it ends, and the `Workspace.Fx` descendant count returns to the pre-roll baseline within 6 seconds of the last roll; `:onPeak` fires exactly once per roll.
+7. Battle: a 5 v 5 scripted battle shows lunge, hit shake, damage numbers, one ultimate cut-in and a death shatter; zero console errors; `Fx` count returns to baseline.
+8. Limits: never more than 40 live `ParticleEmitter`s with `Enabled = true` and at most 12 lights in the whole place, every light except the sun with `Shadows = false`, sampled once a second during rolls and battles.
+9. Reduced motion on: camera shake offset is 0, no full-screen flash frames, emitter rates at 30 percent.
+10. API: `CardStandee.create` and `CardStandee.setState` accept the states in section 6 and leave no stray instances after `Destroy`; `Ambient.toggle(name, bool)` turns each ambient effect on and off with the emitter count changing accordingly.
+11. Code: `selene` and `stylua --check` clean; `rojo build` succeeds; VFX modules have passing tests that show instance counts return to start.
