@@ -4091,7 +4091,11 @@ impl Agent {
             }
             "project_files" => {
                 let root = self.require_project_root()?;
-                let dir = args.get("dir").and_then(|v| v.as_str()).unwrap_or("");
+                let dir = args
+                    .get("dir")
+                    .or_else(|| args.get("path"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let res = project_files_list(&root, dir)?;
                 let text = res.to_string();
                 transcript.push(format!("tool project_files({dir}) -> {} entries", res["entries"].as_array().map(|a| a.len()).unwrap_or(0)));
@@ -5029,6 +5033,35 @@ pub fn parse_step(content: &str) -> Result<Value, String> {
             return Ok(v);
         }
     }
+    // Gap #42: if the reply contains a `{"steps": [...]}` batch envelope, ONLY
+    // accept the complete outer batch object (direct or repaired). Never scan
+    // past the broken envelope into an inner step object and silently drop the
+    // rest of the batch.
+    if let Some(env_start) = find_steps_envelope_start(cleaned) {
+        let slice = &cleaned[env_start..];
+        let mut de = serde_json::Deserializer::from_str(slice).into_iter::<Value>();
+        let direct_err = match de.next() {
+            Some(Ok(v)) if v.is_object() && v.get("steps").is_some_and(|x| x.is_array()) => {
+                return Ok(v);
+            }
+            Some(Err(e)) => Some(e.to_string()),
+            _ => None,
+        };
+        let repaired = repair_llm_json(slice);
+        let mut de2 = serde_json::Deserializer::from_str(&repaired).into_iter::<Value>();
+        let repair_err = match de2.next() {
+            Some(Ok(v)) if v.is_object() && v.get("steps").is_some_and(|x| x.is_array()) => {
+                return Ok(v);
+            }
+            Some(Err(e)) => e.to_string(),
+            _ => direct_err.unwrap_or_else(|| "invalid JSON object".to_string()),
+        };
+        return Err(format!(
+            "batched {{\"steps\": [...]}} JSON failed to parse ({repair_err}). \
+             Nothing in the batch was executed — fix any unescaped quotes or backslashes inside strings, \
+             or write only 1-2 files per turn, and resend valid JSON."
+        ));
+    }
     if let Some(v) = scan_first_json_object(cleaned) {
         return Ok(v);
     }
@@ -5043,6 +5076,69 @@ pub fn parse_step(content: &str) -> Result<Value, String> {
     }
     let preview: String = content.trim().chars().take(240).collect();
     Err(format!("model reply was not a JSON step: {preview}"))
+}
+
+/// Return the byte offset of the outer `{` enclosing a `"steps": [` batch
+/// envelope (at JSON key position, ignoring any `"steps": [` text inside
+/// quoted string values or prose before the first `{`).
+fn find_steps_envelope_start(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut brace_stack: Vec<usize> = Vec::new();
+    let mut in_str = false;
+    let mut esc = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if brace_stack.is_empty() {
+            if b == b'{' {
+                brace_stack.push(i);
+            }
+            i += 1;
+            continue;
+        }
+        if in_str {
+            if esc {
+                esc = false;
+            } else if b == b'\\' {
+                esc = true;
+            } else if b == b'"' {
+                in_str = false;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'{' => {
+                brace_stack.push(i);
+                i += 1;
+            }
+            b'}' => {
+                brace_stack.pop();
+                i += 1;
+            }
+            b'"' => {
+                if bytes[i..].starts_with(b"\"steps\"") {
+                    let mut j = i + b"\"steps\"".len();
+                    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    if j < bytes.len() && bytes[j] == b':' {
+                        j += 1;
+                        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                            j += 1;
+                        }
+                        if j < bytes.len() && bytes[j] == b'[' {
+                            return brace_stack.last().copied();
+                        }
+                    }
+                }
+                in_str = true;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 fn scan_first_json_object(text: &str) -> Option<Value> {

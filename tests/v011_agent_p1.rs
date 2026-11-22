@@ -651,3 +651,42 @@ fn gaps_12_15_17_21_31_32_research_ssrf_art_ideas_place_tree_and_config() {
     assert!(t0.elapsed() < Duration::from_secs(2), "place-tree blocked while agent busy: {:?}", t0.elapsed());
     drop(_hold_agent);
 }
+
+#[test]
+fn gap42_broken_steps_batch_returns_error_instead_of_silently_running_step_1() {
+    // Repro of #175 turn 15: a 25KB `{"steps":[...]}` batch where step 1 is valid JSON
+    // (`project_read_file`) and step 2 has an unescaped quote inside Luau content.
+    // `parse_step` MUST return Err with clear guidance and NEVER silently return only step 1.
+    let big_luau = format!(
+        "local x = 1\\n{}local broken = \"unescaped quote here\"\\n",
+        "-- padding line\\n".repeat(700)
+    );
+    let broken_batch = format!(
+        r#"{{"steps":[{{"tool":"project_read_file","args":{{"path":"docs/RESEARCH.md"}}}},{{"tool":"project_write_file","args":{{"path":"tools/econ-sim/sim.luau","content":"{big_luau}"}}}}]}}"#
+    );
+    assert!(broken_batch.len() > 10_000);
+    let err = parse_step(&broken_batch).expect_err("broken batch must NOT silently return step 1");
+    assert!(
+        err.contains("steps") && err.contains("Nothing in the batch was executed"),
+        "expected actionable batch error, got: {err}"
+    );
+
+    // Same when wrapped in prose or when `"done"` appears before `"steps"`.
+    let prose_broken = "I will run these \"steps\" now:\n{\"done\":true,\"summary\":\"ok\",\"steps\":[{\"tool\":\"project_read_file\",\"args\":{\"path\":\"a\"}},{\"tool\":\"project_write_file\",\"args\":{\"path\":\"b\",\"content\":\"bad \"quote\"\"}}]}";
+    assert!(
+        parse_step(prose_broken).is_err(),
+        "prose-wrapped broken batch must return Err"
+    );
+
+    // Valid prose-wrapped & fenced batch with literal newlines + trailing comma still recovers ALL steps.
+    let recoverable_batch = "Sure, executing batch:\n```json\n{\n  \"steps\": [\n    {\"tool\": \"project_read_file\", \"args\": {\"path\": \"docs/RESEARCH.md\"}},\n    {\"tool\": \"project_write_file\", \"args\": {\"path\": \"src/a.luau\", \"content\": \"local a = 1\nreturn a\"}},\n  ],\n  \"done\": true,\n  \"summary\": \"all good\",\n}\n```";
+    let parsed = parse_step(recoverable_batch).expect("valid recoverable batch should parse intact");
+    assert_eq!(parsed["steps"].as_array().unwrap().len(), 2);
+    assert_eq!(parsed["done"], json!(true));
+    assert_eq!(parsed["steps"][1]["args"]["content"], "local a = 1\nreturn a");
+
+    // A valid single-step tool whose content happens to contain `"steps": [` inside a string still parses cleanly.
+    let single_mentioning_steps = r#"{"tool":"project_write_file","args":{"path":"docs/README.md","content":"Use {\"steps\": [1, 2]} to batch."}}"#;
+    let ok = parse_step(single_mentioning_steps).expect("single step mentioning steps in string");
+    assert_eq!(ok["tool"], "project_write_file");
+}
