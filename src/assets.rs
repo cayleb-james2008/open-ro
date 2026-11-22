@@ -8,12 +8,17 @@
 //! `asset-manifest.json` export.
 
 use crate::art_knowledge;
+use crate::opencloud::{now_iso, safe_rel, Multipart, Oc};
 use crate::place::LocalPlace;
+use crate::secrets::{self, SecretStore, GEMINI_KEY, OPENAI_IMAGE_KEY};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const MAX_ASSET_BYTES: usize = 8 * 1024 * 1024;
 const MAX_FILENAME_LEN: usize = 96;
@@ -264,6 +269,28 @@ pub fn sanitize_filename(raw: &str) -> Result<String, String> {
         ));
     }
     Ok(trimmed.to_string())
+}
+
+/// Normalize a v0.11 art/card slug preserving both `_` and `-` (lowercase ASCII alphanumeric).
+pub fn sanitize_art_slug(raw: &str) -> String {
+    let mut out = String::new();
+    for ch in raw.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if ch == '_' || ch == '-' {
+            out.push(ch);
+        } else if ch.is_whitespace() && !out.ends_with('_') && !out.is_empty() {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches(['_', '-']).to_string();
+    if trimmed.is_empty() {
+        "artwork".to_string()
+    } else if trimmed.len() > 64 {
+        trimmed[..64].trim_matches(['_', '-']).to_string()
+    } else {
+        trimmed
+    }
 }
 
 /// Normalize a slug/card_id into lowercase ASCII kebab-case safe for filenames and Roblox Instance names.
@@ -1008,4 +1035,1194 @@ pub fn build_asset_manifest_json(game_name: &str, assets: &[AssetMetadata]) -> V
         "asset_count": entries.len(),
         "assets": entries,
     })
+}
+
+// =========================================================================
+// v0.11 Project Art Pipeline: ChatGPT (shared browser) default + Gemini + OpenAI
+// =========================================================================
+
+pub const DEFAULT_CHATGPT_IMAGEGEN_CLI: &str =
+    "/home/cayleb/.agents/skills/chatgpt-image-gen/chatgpt-camoufox-imagegen";
+pub const DEFAULT_SHARED_BROWSER_PY: &str =
+    "/home/cayleb/Work/services/shared-browser/.venv/bin/python";
+
+static CHATGPT_SERIAL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+type ArtRes<T> = Result<T, Oc>;
+fn art_bad<T>(msg: impl Into<String>) -> ArtRes<T> {
+    Err(Oc { status: 400, msg: msg.into() })
+}
+fn art_err<T>(status: u16, msg: impl Into<String>) -> ArtRes<T> {
+    Err(Oc { status, msg: msg.into() })
+}
+
+const LOW_ANGLE_PHRASES: &[&str] = &[
+    "worm's-eye",
+    "worms-eye",
+    "worm's eye",
+    "low-angle",
+    "low angle",
+    "upward-looking",
+    "looking up",
+    "from-below",
+    "from below",
+    "ground-up",
+    "camera below the subject",
+    "upward perspective",
+    "floor-up",
+    "upshot",
+    "camera at ground height",
+    "camera near the floor",
+    "view from ground",
+];
+
+const NEUTRAL_CAMERA_PHRASES: &[&str] = &[
+    "eye-level",
+    "eye level",
+    "neutral three-quarter",
+    "chest-height",
+    "shoulder-height",
+    "straight-on",
+    "level camera",
+];
+
+/// Collapse all line breaks and runs of whitespace into single spaces (required by ChatGPT composer).
+pub fn collapse_one_line(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Validate and normalize a character-art prompt before acquiring the shared-browser lease:
+/// rejects low-angle / worm's-eye camera wording and appends neutral eye-level framing if absent.
+pub fn prepare_character_prompt(raw: &str) -> Result<String, String> {
+    let one = collapse_one_line(raw);
+    if one.is_empty() {
+        return Err("prompt cannot be empty.".to_string());
+    }
+    let lower = one.to_ascii_lowercase();
+    for bad in LOW_ANGLE_PHRASES {
+        if lower.contains(bad) {
+            return Err(format!(
+                "Character art prompt contains disallowed low-angle phrasing '{bad}'. Use eye-level or neutral three-quarter camera framing instead."
+            ));
+        }
+    }
+    if NEUTRAL_CAMERA_PHRASES.iter().any(|p| lower.contains(p)) {
+        Ok(one)
+    } else {
+        Ok(format!("{one}, eye-level camera, neutral three-quarter view"))
+    }
+}
+
+/// Extract `(width, height)` from PNG/JPEG/WebP header bytes without external dependencies.
+pub fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    // PNG: 8-byte signature + 4-byte len + "IHDR" + 4-byte w + 4-byte h
+    if bytes.len() >= 24 && &bytes[0..8] == b"\x89PNG\r\n\x1a\n" && &bytes[12..16] == b"IHDR" {
+        let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+        return Some((w, h));
+    }
+    // JPEG: scan SOF0/SOF1/SOF2 markers
+    if bytes.len() > 4 && bytes[0] == 0xFF && bytes[1] == 0xD8 {
+        let mut i = 2;
+        while i + 9 < bytes.len() {
+            if bytes[i] != 0xFF {
+                i += 1;
+                continue;
+            }
+            let marker = bytes[i + 1];
+            if marker == 0xD9 || marker == 0xDA {
+                break;
+            }
+            let seg_len = u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]) as usize;
+            if matches!(marker, 0xC0 | 0xC1 | 0xC2) && i + 8 < bytes.len() {
+                let h = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;
+                let w = u16::from_be_bytes([bytes[i + 7], bytes[i + 8]]) as u32;
+                return Some((w, h));
+            }
+            if seg_len < 2 {
+                break;
+            }
+            i += 2 + seg_len;
+        }
+    }
+    // WebP VP8X / VP8L / VP8
+    if bytes.len() >= 30 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        if &bytes[12..16] == b"VP8X" {
+            let w = 1 + (bytes[24] as u32 | ((bytes[25] as u32) << 8) | ((bytes[26] as u32) << 16));
+            let h = 1 + (bytes[27] as u32 | ((bytes[28] as u32) << 8) | ((bytes[29] as u32) << 16));
+            return Some((w, h));
+        }
+        if &bytes[12..16] == b"VP8L" && bytes.len() >= 25 {
+            let bits = u32::from_le_bytes([bytes[21], bytes[22], bytes[23], bytes[24]]);
+            let w = (bits & 0x3FFF) + 1;
+            let h = ((bits >> 14) & 0x3FFF) + 1;
+            return Some((w, h));
+        }
+    }
+    None
+}
+
+/// Append one JSONL record to `<root>/art/ART-LOG.jsonl`.
+pub fn append_art_log(root: &Path, entry: &Value) -> Result<(), String> {
+    let art_dir = root.join("art");
+    std::fs::create_dir_all(&art_dir).map_err(|e| format!("create art dir: {e}"))?;
+    let log_path = art_dir.join("ART-LOG.jsonl");
+    let line = serde_json::to_string(entry).map_err(|e| format!("encode art log: {e}"))?;
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("open ART-LOG.jsonl: {e}"))?;
+    writeln!(f, "{line}").map_err(|e| format!("write ART-LOG.jsonl: {e}"))
+}
+
+fn write_meta_atomic(path: &Path, meta: &Value) -> ArtRes<()> {
+    let text = serde_json::to_string_pretty(meta)
+        .map_err(|e| Oc { status: 500, msg: format!("encode metadata: {e}") })?;
+    let tmp = path.with_extension("meta.tmp-openro");
+    std::fs::write(&tmp, format!("{text}\n"))
+        .and_then(|_| std::fs::rename(&tmp, path))
+        .map_err(|e| Oc { status: 500, msg: format!("write metadata: {e}") })
+}
+
+fn meta_path_for(rel: &str) -> String {
+    let stem = rel.rsplit_once('.').map(|(s, _)| s).unwrap_or(rel);
+    format!("{stem}.meta.json")
+}
+
+fn art_image_url(project: &str, rel: &str) -> String {
+    if project.is_empty() {
+        format!("/api/art/image?path={rel}")
+    } else {
+        format!("/api/art/image?project={project}&path={rel}")
+    }
+}
+
+fn default_out_path(body: &Value) -> String {
+    if let Some(p) = body
+        .get("out_path")
+        .or_else(|| body.get("output"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return p.to_string();
+    }
+    let kind = body.get("kind").and_then(Value::as_str).unwrap_or("card").to_ascii_lowercase();
+    let slug = sanitize_art_slug(
+        body.get("card_id")
+            .or_else(|| body.get("name"))
+            .or_else(|| body.get("title"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("artwork"),
+    );
+    match kind.as_str() {
+        "icon" | "ui" => format!("art/ui/{slug}.png"),
+        "frame" => format!("art/frames/{slug}.png"),
+        "store" | "thumbnail" => format!("art/store/{slug}.png"),
+        "world" | "backdrop" => format!("art/worlds/{slug}.png"),
+        _ => format!("art/cards/{slug}.png"),
+    }
+}
+
+fn resolve_reference_images(root: &Path, body: &Value) -> ArtRes<Vec<(String, PathBuf, Vec<u8>, &'static str)>> {
+    let mut raw_paths: Vec<String> = Vec::new();
+    if let Some(arr) = body.get("reference_images").and_then(Value::as_array) {
+        for v in arr {
+            if let Some(s) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                raw_paths.push(s.to_string());
+            }
+        }
+    }
+    if let Some(single) = body.get("reference_image").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+        if !raw_paths.iter().any(|p| p == single) {
+            raw_paths.push(single.to_string());
+        }
+    }
+    if raw_paths.len() > 8 {
+        return art_bad("At most 8 reference images are supported per generation.");
+    }
+    let mut out = Vec::with_capacity(raw_paths.len());
+    for rel in raw_paths {
+        let abs = safe_rel(root, &rel)?;
+        if !abs.is_file() {
+            return art_err(404, format!("Reference image '{rel}' not found in project."));
+        }
+        let bytes = std::fs::read(&abs)
+            .map_err(|e| Oc { status: 500, msg: format!("read reference '{rel}': {e}") })?;
+        let (mime, _) = detect_image_mime(&bytes).map_err(|e| Oc { status: 400, msg: format!("reference '{rel}': {e}") })?;
+        out.push((rel, abs, bytes, mime));
+    }
+    Ok(out)
+}
+
+fn run_chatgpt_cli(
+    prompt: &str,
+    refs: &[PathBuf],
+    staged_out: &Path,
+    character_art: bool,
+    timeout_s: u64,
+) -> Result<(i32, Vec<u8>, Vec<u8>), String> {
+    let custom_bin = std::env::var("OPENRO_CHATGPT_IMAGEGEN_BIN")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let custom_py = std::env::var("OPENRO_SHARED_BROWSER_PY")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let mut cmd = if let Some(bin) = custom_bin {
+        if let Some(py) = custom_py {
+            let mut c = Command::new(py);
+            c.arg(bin);
+            c
+        } else {
+            Command::new(bin)
+        }
+    } else {
+        let py = custom_py.unwrap_or_else(|| DEFAULT_SHARED_BROWSER_PY.to_string());
+        if !Path::new(&py).is_file() {
+            return Err(format!(
+                "Shared browser Python not found at {py}. Use 'gemini' or 'openai' provider, or install shared-browser."
+            ));
+        }
+        if !Path::new(DEFAULT_CHATGPT_IMAGEGEN_CLI).is_file() {
+            return Err(format!(
+                "ChatGPT image driver not found at {DEFAULT_CHATGPT_IMAGEGEN_CLI}."
+            ));
+        }
+        let mut c = Command::new(py);
+        c.arg(DEFAULT_CHATGPT_IMAGEGEN_CLI);
+        c
+    };
+
+    cmd.arg(prompt)
+        .arg("-o")
+        .arg(staged_out)
+        .arg("--lease")
+        .arg("openro")
+        .arg("--timeout")
+        .arg(timeout_s.to_string())
+        .arg("--json");
+
+    if !refs.is_empty() {
+        cmd.arg("--mode").arg("edit");
+        for r in refs {
+            cmd.arg("--ref-image").arg(r);
+        }
+    } else {
+        cmd.arg("--mode").arg("generate");
+    }
+    if character_art {
+        cmd.arg("--character-art");
+    }
+
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| format!("failed to launch chatgpt-camoufox-imagegen: {e}"))?;
+    let started = Instant::now();
+    let hard_cap = Duration::from_secs(timeout_s.saturating_add(60));
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                let out = child.wait_with_output().map_err(|e| format!("read imagegen output: {e}"))?;
+                return Ok((out.status.code().unwrap_or(-1), out.stdout, out.stderr));
+            }
+            Ok(None) => {
+                if started.elapsed() >= hard_cap {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("ChatGPT image generation exceeded hard timeout ({}s).", hard_cap.as_secs()));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(format!("wait imagegen: {e}"));
+            }
+        }
+    }
+}
+
+/// Reference-image art generation (`POST /api/art/generate`).
+///
+/// Default provider: `"chatgpt"` (`ChatGPT (shared browser)` via `chatgpt-camoufox-imagegen`).
+/// Optional API providers: `"gemini"` (Nano Banana, 1-N inline reference images) and `"openai"`.
+/// Never uses Higgsfield / Soul Cinema.
+pub fn art_generate(store: &SecretStore, root: &Path, body: &Value) -> ArtRes<Value> {
+    let raw_provider = body
+        .get("provider")
+        .and_then(Value::as_str)
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "chatgpt".to_string());
+
+    if raw_provider.contains("higgsfield") || raw_provider.contains("soul") {
+        return art_bad("Higgsfield / Soul Cinema is prohibited. Use ChatGPT (shared browser), Gemini, or OpenAI.");
+    }
+
+    let raw_prompt = body.get("prompt").and_then(Value::as_str).unwrap_or("").trim();
+    if raw_prompt.is_empty() {
+        return art_bad("Send a non-empty 'prompt' describing the pose, composition, and style.");
+    }
+
+    let out_rel = default_out_path(body);
+    if !out_rel.starts_with("art/") {
+        return art_bad("out_path must stay under the project's art/ folder (e.g. art/cards/my_card.png).");
+    }
+    if out_rel.starts_with("art/references/") {
+        return art_bad("Cannot overwrite owner reference files under art/references/; write generated art to art/cards/ or art/ui/.");
+    }
+    let out_abs = safe_rel(root, &out_rel)?;
+    if let Some(parent) = out_abs.parent() {
+        std::fs::create_dir_all(parent).or_else(|e| art_err(500, format!("create art dir: {e}")))?;
+    }
+
+    let refs = resolve_reference_images(root, body)?;
+    let ref_rels: Vec<String> = refs.iter().map(|r| r.0.clone()).collect();
+    let project_param = body.get("project").and_then(Value::as_str).unwrap_or("");
+    let kind = body.get("kind").and_then(Value::as_str).unwrap_or("card");
+    let character_art = body
+        .get("character_art")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| kind.eq_ignore_ascii_case("card") || !refs.is_empty());
+
+    match raw_provider.as_str() {
+        "chatgpt" | "chatgpt-shared-browser" | "chatgpt_shared_browser" | "auto" => {
+            let prompt = if character_art {
+                prepare_character_prompt(raw_prompt).map_err(|e| Oc { status: 400, msg: e })?
+            } else {
+                collapse_one_line(raw_prompt)
+            };
+            let timeout_s = body
+                .get("timeout_s")
+                .and_then(Value::as_u64)
+                .unwrap_or(420)
+                .clamp(15, 600);
+
+            // Serialize shared-browser invocations inside OpenRO and allocate a fresh unused -o path.
+            let lock = CHATGPT_SERIAL_LOCK.get_or_init(|| Mutex::new(()));
+            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+
+            let parent = out_abs.parent().unwrap_or(root);
+            let stem = out_abs
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("art");
+            let staged_out = parent.join(format!(".openro_gen_{stem}_{}.png", now_ms()));
+            let ref_paths: Vec<PathBuf> = refs.iter().map(|r| r.1.clone()).collect();
+
+            let (code, stdout, stderr) = run_chatgpt_cli(&prompt, &ref_paths, &staged_out, character_art, timeout_s)
+                .map_err(|m| Oc { status: 503, msg: m })?;
+            let cli_json: Value = serde_json::from_slice(&stdout).unwrap_or_else(|_| {
+                let err_txt = String::from_utf8_lossy(&stderr);
+                json!({
+                    "ok": false,
+                    "exit_code": code,
+                    "error_kind": "DRIVER",
+                    "error": err_txt.trim(),
+                })
+            });
+
+            let err_detail = cli_json
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+
+            match code {
+                0 => {
+                    if !staged_out.is_file() {
+                        return art_err(502, "ChatGPT driver reported success but did not write the PNG file.");
+                    }
+                    let bytes = std::fs::read(&staged_out)
+                        .or_else(|e| art_err(500, format!("read generated PNG: {e}")))?;
+                    let _ = detect_image_mime(&bytes).map_err(|e| Oc { status: 502, msg: e })?;
+                    std::fs::rename(&staged_out, &out_abs)
+                        .or_else(|e| art_err(500, format!("save generated PNG: {e}")))?;
+                    let (w, h) = image_dimensions(&bytes).unwrap_or((
+                        cli_json.get("width").and_then(Value::as_u64).unwrap_or(0) as u32,
+                        cli_json.get("height").and_then(Value::as_u64).unwrap_or(0) as u32,
+                    ));
+                    let sha = sha256_hex(&bytes);
+                    let meta_rel = meta_path_for(&out_rel);
+                    let meta = json!({
+                        "version": 1,
+                        "status": "generated",
+                        "provider": "chatgpt",
+                        "model": cli_json.get("model_ui").cloned().unwrap_or_else(|| json!("chatgpt-shared-browser")),
+                        "kind": kind,
+                        "prompt": prompt,
+                        "reference_images": ref_rels,
+                        "path": out_rel,
+                        "sha256": sha,
+                        "bytes": bytes.len(),
+                        "width": w,
+                        "height": h,
+                        "created_at": now_iso(),
+                    });
+                    write_meta_atomic(&safe_rel(root, &meta_rel)?, &meta)?;
+                    let _ = append_art_log(root, &json!({
+                        "at": now_iso(),
+                        "action": "generate",
+                        "status": "generated",
+                        "provider": "chatgpt",
+                        "path": out_rel,
+                        "sha256": sha,
+                        "width": w,
+                        "height": h,
+                        "bytes": bytes.len(),
+                        "reference_images": ref_rels,
+                    }));
+                    Ok(json!({
+                        "ok": true,
+                        "status": "generated",
+                        "pending_review": false,
+                        "refused": false,
+                        "path": out_rel,
+                        "url": art_image_url(project_param, &out_rel),
+                        "meta_path": meta_rel,
+                        "provider": "chatgpt",
+                        "model": meta["model"],
+                        "sha256": sha,
+                        "width": w,
+                        "height": h,
+                        "bytes": bytes.len(),
+                        "reference_images": ref_rels,
+                        "metadata": meta,
+                    }))
+                }
+                9 => {
+                    // Exit 9 = ANGLE_REVIEW_REQUIRED: real verified PNG staged pending independent pixel review.
+                    let _ = std::fs::remove_file(&staged_out);
+                    let staged_cand = cli_json
+                        .pointer("/angle_review/candidate_path")
+                        .and_then(Value::as_str)
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from(format!("{}.pending-angle.png", staged_out.display())));
+                    if !staged_cand.is_file() {
+                        return art_err(502, "ChatGPT driver exited 9 (ANGLE_REVIEW_REQUIRED) but staged candidate PNG is missing.");
+                    }
+                    let bytes = std::fs::read(&staged_cand)
+                        .or_else(|e| art_err(500, format!("read staged candidate: {e}")))?;
+                    let _ = detect_image_mime(&bytes).map_err(|e| Oc { status: 502, msg: e })?;
+                    let sha = sha256_hex(&bytes);
+                    let short_sha = &sha[..12.min(sha.len())];
+                    let out_stem = out_rel.rsplit_once('.').map(|(s, _)| s).unwrap_or(&out_rel);
+                    let cand_rel = format!("{out_stem}.pending-angle.{short_sha}.png");
+                    let cand_abs = safe_rel(root, &cand_rel)?;
+                    if staged_cand != cand_abs {
+                        std::fs::rename(&staged_cand, &cand_abs)
+                            .or_else(|e| art_err(500, format!("move staged candidate: {e}")))?;
+                    }
+                    let (w, h) = image_dimensions(&bytes).unwrap_or((
+                        cli_json.pointer("/angle_review/width").and_then(Value::as_u64).unwrap_or(0) as u32,
+                        cli_json.pointer("/angle_review/height").and_then(Value::as_u64).unwrap_or(0) as u32,
+                    ));
+                    let cand_meta_rel = meta_path_for(&cand_rel);
+                    let meta = json!({
+                        "version": 1,
+                        "status": "pending_review",
+                        "provider": "chatgpt",
+                        "model": cli_json.get("model_ui").cloned().unwrap_or_else(|| json!("chatgpt-shared-browser")),
+                        "kind": kind,
+                        "prompt": prompt,
+                        "reference_images": ref_rels,
+                        "requested_path": out_rel,
+                        "candidate_path": cand_rel,
+                        "candidate_sha256": sha,
+                        "bytes": bytes.len(),
+                        "width": w,
+                        "height": h,
+                        "angle_review": {
+                            "status": "PENDING_VISION",
+                            "candidate_path": cand_rel,
+                            "candidate_sha256": sha,
+                            "width": w,
+                            "height": h,
+                        },
+                        "created_at": now_iso(),
+                    });
+                    write_meta_atomic(&safe_rel(root, &cand_meta_rel)?, &meta)?;
+                    let _ = append_art_log(root, &json!({
+                        "at": now_iso(),
+                        "action": "generate",
+                        "status": "pending_review",
+                        "provider": "chatgpt",
+                        "candidate_path": cand_rel,
+                        "requested_path": out_rel,
+                        "candidate_sha256": sha,
+                        "width": w,
+                        "height": h,
+                        "bytes": bytes.len(),
+                        "reference_images": ref_rels,
+                    }));
+                    let ref_urls: Vec<String> = ref_rels.iter().map(|r| art_image_url(project_param, r)).collect();
+                    Ok(json!({
+                        "ok": true,
+                        "status": "pending_review",
+                        "pending_review": true,
+                        "refused": false,
+                        "candidate_path": cand_rel,
+                        "candidate_url": art_image_url(project_param, &cand_rel),
+                        "candidate_sha256": sha,
+                        "requested_path": out_rel,
+                        "meta_path": cand_meta_rel,
+                        "provider": "chatgpt",
+                        "model": meta["model"],
+                        "width": w,
+                        "height": h,
+                        "bytes": bytes.len(),
+                        "reference_images": ref_rels,
+                        "reference_urls": ref_urls,
+                        "angle_review": meta["angle_review"],
+                        "note": "Verified character candidate staged for pixel review; inspect candidate vs reference and call POST /api/art/approve to promote.",
+                    }))
+                }
+                7 => {
+                    let _ = std::fs::remove_file(&staged_out);
+                    let reason = if err_detail.is_empty() {
+                        "ChatGPT refused the prompt or returned no image.".to_string()
+                    } else {
+                        err_detail
+                    };
+                    let _ = append_art_log(root, &json!({
+                        "at": now_iso(),
+                        "action": "generate",
+                        "status": "refused",
+                        "provider": "chatgpt",
+                        "requested_path": out_rel,
+                        "prompt": prompt,
+                        "moderation_reason": reason,
+                    }));
+                    Ok(json!({
+                        "ok": false,
+                        "refused": true,
+                        "status": "refused",
+                        "error_kind": "REFUSED",
+                        "provider": "chatgpt",
+                        "requested_path": out_rel,
+                        "moderation_reason": reason,
+                        "error": format!("ChatGPT did not produce an image: {reason}"),
+                    }))
+                }
+                2 => {
+                    let _ = std::fs::remove_file(&staged_out);
+                    art_err(503, "ChatGPT is logged out in the shared Camoufox browser. Log into chatgpt.com once in the visible window, then retry.")
+                }
+                3 => {
+                    let _ = std::fs::remove_file(&staged_out);
+                    art_bad(if err_detail.is_empty() {
+                        "Invalid image generation arguments or camera angle preflight failed.".to_string()
+                    } else {
+                        err_detail
+                    })
+                }
+                4 => {
+                    let _ = std::fs::remove_file(&staged_out);
+                    art_err(502, format!("ChatGPT page layout changed (UI_DRIFT) or non-image model tier selected: {err_detail}"))
+                }
+                5 => {
+                    let _ = std::fs::remove_file(&staged_out);
+                    art_err(504, format!("ChatGPT timed out before returning an image: {err_detail}"))
+                }
+                6 => {
+                    let _ = std::fs::remove_file(&staged_out);
+                    art_err(429, format!("ChatGPT rate limit reached. Wait a moment and retry. {err_detail}"))
+                }
+                8 => {
+                    let _ = std::fs::remove_file(&staged_out);
+                    art_err(503, format!("Shared Camoufox browser is busy or unreachable on port 9230: {err_detail}"))
+                }
+                other => {
+                    let _ = std::fs::remove_file(&staged_out);
+                    art_err(502, format!("ChatGPT image driver failed (exit {other}): {err_detail}"))
+                }
+            }
+        }
+        "gemini" | "gemini-api" | "nano-banana" | "google-nano-banana" => {
+            art_generate_gemini(store, root, project_param, kind, raw_prompt, &out_rel, &out_abs, &refs, body)
+        }
+        "openai" | "openai-image" => {
+            art_generate_openai(store, root, project_param, kind, raw_prompt, &out_rel, &out_abs, &refs, body)
+        }
+        other => art_bad(format!(
+            "Unsupported image provider '{other}': expected 'chatgpt' (default), 'gemini', or 'openai'."
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn art_generate_gemini(
+    store: &SecretStore,
+    root: &Path,
+    project_param: &str,
+    kind: &str,
+    prompt: &str,
+    out_rel: &str,
+    out_abs: &Path,
+    refs: &[(String, PathBuf, Vec<u8>, &'static str)],
+    body: &Value,
+) -> ArtRes<Value> {
+    let api_key = store
+        .get(GEMINI_KEY)
+        .or_else(|| std::env::var("GEMINI_API_KEY").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+        .ok_or_else(|| Oc {
+            status: 503,
+            msg: "Add your Gemini API key in Settings first (or use the default ChatGPT shared browser provider).".into(),
+        })?;
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|m| !m.is_empty() && !m.starts_with("gemini-nano-banana"))
+        .map(String::from)
+        .or_else(|| std::env::var("OPENRO_GEMINI_IMAGE_MODEL").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| DEFAULT_GEMINI_IMAGE_MODEL.to_string());
+    let base = body
+        .get("base_url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| std::env::var("OPENRO_GEMINI_IMAGE_BASE").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| "https://generativelanguage.googleapis.com".to_string());
+
+    let mut parts: Vec<Value> = Vec::with_capacity(refs.len() + 1);
+    for (_, _, bytes, mime) in refs {
+        parts.push(json!({
+            "inlineData": {
+                "mimeType": mime,
+                "data": encode_base64(bytes),
+            }
+        }));
+    }
+    parts.push(json!({ "text": prompt }));
+
+    let mut gen_cfg = json!({ "responseModalities": ["IMAGE"] });
+    if let Some(ar) = body.get("aspect_ratio").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+        gen_cfg["imageConfig"] = json!({ "aspectRatio": ar.trim() });
+    }
+    let req_body = json!({
+        "contents": [{ "parts": parts }],
+        "generationConfig": gen_cfg,
+    });
+    let url = format!("{}/v1beta/models/{model}:generateContent?key={api_key}", base.trim_end_matches('/'));
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(90)).build();
+    let res = agent.post(&url).set("Content-Type", "application/json").send_json(req_body);
+    let (status, resp_bytes) = match res {
+        Ok(r) => {
+            let st = r.status();
+            let mut b = Vec::new();
+            let _ = std::io::Read::take(r.into_reader(), 32 * 1024 * 1024).read_to_end(&mut b);
+            (st, b)
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            let mut b = Vec::new();
+            let _ = std::io::Read::take(r.into_reader(), 1024 * 1024).read_to_end(&mut b);
+            (code, b)
+        }
+        Err(ureq::Error::Transport(t)) => {
+            return art_err(502, secrets::scrub(&format!("Gemini image request failed: {t}"), &[&api_key]));
+        }
+    };
+    if !(200..300).contains(&status) {
+        let txt = String::from_utf8_lossy(&resp_bytes);
+        return art_err(502, secrets::scrub(&format!("Gemini image API answered {status}: {}", txt.chars().take(240).collect::<String>()), &[&api_key]));
+    }
+    let payload: Value = serde_json::from_slice(&resp_bytes)
+        .or_else(|_| art_err(502, "Gemini image API returned invalid JSON."))?;
+
+    let ref_rels: Vec<String> = refs.iter().map(|r| r.0.clone()).collect();
+    // Structured moderation / safety refusal check
+    let block_reason = payload
+        .pointer("/promptFeedback/blockReason")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            payload
+                .pointer("/candidates/0/finishReason")
+                .and_then(Value::as_str)
+                .filter(|r| matches!(*r, "SAFETY" | "IMAGE_SAFETY" | "PROHIBITED_CONTENT" | "RECITATION" | "BLOCKLIST"))
+        });
+    if let Some(reason) = block_reason {
+        let _ = append_art_log(root, &json!({
+            "at": now_iso(),
+            "action": "generate",
+            "status": "refused",
+            "provider": "gemini",
+            "model": model,
+            "requested_path": out_rel,
+            "moderation_reason": reason,
+        }));
+        return Ok(json!({
+            "ok": false,
+            "refused": true,
+            "status": "refused",
+            "error_kind": "REFUSED",
+            "provider": "gemini",
+            "requested_path": out_rel,
+            "moderation_reason": reason,
+            "error": format!("Gemini blocked the image generation ({reason}). Adjust the prompt and retry."),
+        }));
+    }
+
+    let Some((b64, _ext)) = extract_gemini_inline_image(&payload) else {
+        let text_reply = payload
+            .pointer("/candidates/0/content/parts/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("no inline image returned");
+        let _ = append_art_log(root, &json!({
+            "at": now_iso(),
+            "action": "generate",
+            "status": "refused",
+            "provider": "gemini",
+            "requested_path": out_rel,
+            "moderation_reason": text_reply,
+        }));
+        return Ok(json!({
+            "ok": false,
+            "refused": true,
+            "status": "refused",
+            "error_kind": "REFUSED",
+            "provider": "gemini",
+            "requested_path": out_rel,
+            "moderation_reason": text_reply,
+            "error": format!("Gemini returned no image: {text_reply}"),
+        }));
+    };
+
+    let bytes = decode_base64(&b64).map_err(|e| Oc { status: 502, msg: e })?;
+    let _ = detect_image_mime(&bytes).map_err(|e| Oc { status: 502, msg: e })?;
+    let tmp = out_abs.with_extension("img.tmp-openro");
+    std::fs::write(&tmp, &bytes)
+        .and_then(|_| std::fs::rename(&tmp, out_abs))
+        .or_else(|e| art_err(500, format!("save image: {e}")))?;
+
+    let (w, h) = image_dimensions(&bytes).unwrap_or((0, 0));
+    let sha = sha256_hex(&bytes);
+    let meta_rel = meta_path_for(out_rel);
+    let meta = json!({
+        "version": 1,
+        "status": "generated",
+        "provider": "gemini",
+        "model": model,
+        "kind": kind,
+        "prompt": prompt,
+        "reference_images": ref_rels,
+        "path": out_rel,
+        "sha256": sha,
+        "bytes": bytes.len(),
+        "width": w,
+        "height": h,
+        "created_at": now_iso(),
+    });
+    write_meta_atomic(&safe_rel(root, &meta_rel)?, &meta)?;
+    let _ = append_art_log(root, &json!({
+        "at": now_iso(),
+        "action": "generate",
+        "status": "generated",
+        "provider": "gemini",
+        "model": model,
+        "path": out_rel,
+        "sha256": sha,
+        "width": w,
+        "height": h,
+        "bytes": bytes.len(),
+        "reference_images": ref_rels,
+    }));
+
+    Ok(json!({
+        "ok": true,
+        "status": "generated",
+        "pending_review": false,
+        "refused": false,
+        "path": out_rel,
+        "url": art_image_url(project_param, out_rel),
+        "meta_path": meta_rel,
+        "provider": "gemini",
+        "model": model,
+        "sha256": sha,
+        "width": w,
+        "height": h,
+        "bytes": bytes.len(),
+        "reference_images": ref_rels,
+        "metadata": meta,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn art_generate_openai(
+    store: &SecretStore,
+    root: &Path,
+    project_param: &str,
+    kind: &str,
+    prompt: &str,
+    out_rel: &str,
+    out_abs: &Path,
+    refs: &[(String, PathBuf, Vec<u8>, &'static str)],
+    body: &Value,
+) -> ArtRes<Value> {
+    let api_key = store
+        .get(OPENAI_IMAGE_KEY)
+        .or_else(|| std::env::var("OPENAI_API_KEY").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+        .ok_or_else(|| Oc {
+            status: 503,
+            msg: "Add your OpenAI image key in Settings first (or use the default ChatGPT shared browser provider).".into(),
+        })?;
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .unwrap_or(DEFAULT_OPENAI_IMAGE_MODEL);
+    let size = body.get("size").and_then(Value::as_str).unwrap_or("1024x1536");
+    let base = body
+        .get("base_url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| std::env::var("OPENRO_OPENAI_IMAGE_BASE").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(90)).build();
+    let res = if refs.is_empty() {
+        let url = format!("{}/images/generations", base.trim_end_matches('/'));
+        agent
+            .post(&url)
+            .set("Authorization", &format!("Bearer {api_key}"))
+            .set("Content-Type", "application/json")
+            .send_json(json!({
+                "model": model,
+                "prompt": prompt,
+                "size": size,
+                "response_format": "b64_json",
+            }))
+    } else {
+        let url = format!("{}/images/edits", base.trim_end_matches('/'));
+        let mut mp = Multipart::new();
+        mp.text("model", model);
+        mp.text("prompt", prompt);
+        mp.text("size", size);
+        mp.text("response_format", "b64_json");
+        for (rel, _, bytes, mime) in refs {
+            let fname = rel.rsplit('/').next().unwrap_or("ref.png");
+            mp.file("image[]", fname, mime, bytes);
+        }
+        let (ct, body_bytes) = mp.finish();
+        agent
+            .post(&url)
+            .set("Authorization", &format!("Bearer {api_key}"))
+            .set("Content-Type", &ct)
+            .send_bytes(&body_bytes)
+    };
+
+    let (status, resp_bytes) = match res {
+        Ok(r) => {
+            let st = r.status();
+            let mut b = Vec::new();
+            let _ = std::io::Read::take(r.into_reader(), 32 * 1024 * 1024).read_to_end(&mut b);
+            (st, b)
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            let mut b = Vec::new();
+            let _ = std::io::Read::take(r.into_reader(), 1024 * 1024).read_to_end(&mut b);
+            (code, b)
+        }
+        Err(ureq::Error::Transport(t)) => {
+            return art_err(502, secrets::scrub(&format!("OpenAI image request failed: {t}"), &[&api_key]));
+        }
+    };
+    let ref_rels: Vec<String> = refs.iter().map(|r| r.0.clone()).collect();
+    if !(200..300).contains(&status) {
+        let txt = String::from_utf8_lossy(&resp_bytes);
+        if txt.to_ascii_lowercase().contains("content_policy") || txt.to_ascii_lowercase().contains("moderation") || txt.to_ascii_lowercase().contains("safety") {
+            let reason = secrets::scrub(&txt.chars().take(240).collect::<String>(), &[&api_key]);
+            let _ = append_art_log(root, &json!({
+                "at": now_iso(),
+                "action": "generate",
+                "status": "refused",
+                "provider": "openai",
+                "requested_path": out_rel,
+                "moderation_reason": reason,
+            }));
+            return Ok(json!({
+                "ok": false,
+                "refused": true,
+                "status": "refused",
+                "error_kind": "REFUSED",
+                "provider": "openai",
+                "requested_path": out_rel,
+                "moderation_reason": reason,
+                "error": format!("OpenAI blocked the image prompt: {reason}"),
+            }));
+        }
+        return art_err(502, secrets::scrub(&format!("OpenAI image API answered {status}: {}", txt.chars().take(240).collect::<String>()), &[&api_key]));
+    }
+    let payload: Value = serde_json::from_slice(&resp_bytes)
+        .or_else(|_| art_err(502, "OpenAI image API returned invalid JSON."))?;
+    let Some(b64) = payload.pointer("/data/0/b64_json").and_then(Value::as_str) else {
+        return art_err(502, "OpenAI image API returned no b64_json image data.");
+    };
+    let bytes = decode_base64(b64).map_err(|e| Oc { status: 502, msg: e })?;
+    let _ = detect_image_mime(&bytes).map_err(|e| Oc { status: 502, msg: e })?;
+    let tmp = out_abs.with_extension("img.tmp-openro");
+    std::fs::write(&tmp, &bytes)
+        .and_then(|_| std::fs::rename(&tmp, out_abs))
+        .or_else(|e| art_err(500, format!("save image: {e}")))?;
+
+    let (w, h) = image_dimensions(&bytes).unwrap_or((0, 0));
+    let sha = sha256_hex(&bytes);
+    let meta_rel = meta_path_for(out_rel);
+    let meta = json!({
+        "version": 1,
+        "status": "generated",
+        "provider": "openai",
+        "model": model,
+        "kind": kind,
+        "prompt": prompt,
+        "reference_images": ref_rels,
+        "path": out_rel,
+        "sha256": sha,
+        "bytes": bytes.len(),
+        "width": w,
+        "height": h,
+        "created_at": now_iso(),
+    });
+    write_meta_atomic(&safe_rel(root, &meta_rel)?, &meta)?;
+    let _ = append_art_log(root, &json!({
+        "at": now_iso(),
+        "action": "generate",
+        "status": "generated",
+        "provider": "openai",
+        "model": model,
+        "path": out_rel,
+        "sha256": sha,
+        "width": w,
+        "height": h,
+        "bytes": bytes.len(),
+        "reference_images": ref_rels,
+    }));
+
+    Ok(json!({
+        "ok": true,
+        "status": "generated",
+        "pending_review": false,
+        "refused": false,
+        "path": out_rel,
+        "url": art_image_url(project_param, out_rel),
+        "meta_path": meta_rel,
+        "provider": "openai",
+        "model": model,
+        "sha256": sha,
+        "width": w,
+        "height": h,
+        "bytes": bytes.len(),
+        "reference_images": ref_rels,
+        "metadata": meta,
+    }))
+}
+
+/// `POST /api/art/approve` — promote a reviewed `.pending-angle.*.png` candidate to its final path
+/// (or record a `redo` verdict without promoting). Never skips pixel review provenance.
+pub fn art_approve(root: &Path, body: &Value) -> ArtRes<Value> {
+    let cand_rel = body
+        .get("candidate_path")
+        .or_else(|| body.get("pending_path"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| Oc { status: 400, msg: "Send 'candidate_path' and 'reviewer'.".into() })?;
+    let reviewer = body
+        .get("reviewer")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| Oc { status: 400, msg: "Send 'reviewer' (who inspected the pixels, e.g. 'owner' or 'vision-critic').".into() })?;
+    let verdict = body
+        .get("verdict")
+        .and_then(Value::as_str)
+        .unwrap_or("pass")
+        .to_ascii_lowercase();
+    let notes = body.get("notes").and_then(Value::as_str).unwrap_or("");
+    let project_param = body.get("project").and_then(Value::as_str).unwrap_or("");
+
+    let cand_abs = safe_rel(root, cand_rel)?;
+    if !cand_abs.is_file() {
+        return art_err(404, format!("Candidate image '{cand_rel}' not found."));
+    }
+    let bytes = std::fs::read(&cand_abs)
+        .or_else(|e| art_err(500, format!("read candidate: {e}")))?;
+    let _ = detect_image_mime(&bytes).map_err(|e| Oc { status: 400, msg: e })?;
+    let sha = sha256_hex(&bytes);
+
+    if let Some(expected) = body.get("expected_sha256").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+        if !expected.eq_ignore_ascii_case(&sha) {
+            return art_err(409, format!("Candidate SHA-256 mismatch: expected {expected}, actual {sha}."));
+        }
+    }
+
+    if verdict == "redo" || verdict == "reject" {
+        let _ = append_art_log(root, &json!({
+            "at": now_iso(),
+            "action": "angle_review",
+            "verdict": "redo",
+            "candidate_path": cand_rel,
+            "sha256": sha,
+            "reviewer": reviewer,
+            "notes": notes,
+        }));
+        return Ok(json!({
+            "ok": true,
+            "status": "redo",
+            "candidate_path": cand_rel,
+            "sha256": sha,
+            "reviewer": reviewer,
+        }));
+    }
+
+    let cand_meta_abs = safe_rel(root, &meta_path_for(cand_rel))?;
+    let cand_meta: Value = std::fs::read_to_string(&cand_meta_abs)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| json!({}));
+
+    let target_rel = body
+        .get("target_path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| cand_meta.get("requested_path").and_then(Value::as_str).map(String::from))
+        .ok_or_else(|| Oc { status: 400, msg: "Send 'target_path' (destination path under art/).".into() })?;
+    if !target_rel.starts_with("art/") || target_rel.starts_with("art/references/") {
+        return art_bad("target_path must be under art/ (and not under art/references/).");
+    }
+    let target_abs = safe_rel(root, &target_rel)?;
+    if let Some(p) = target_abs.parent() {
+        std::fs::create_dir_all(p).or_else(|e| art_err(500, format!("create target dir: {e}")))?;
+    }
+    let tmp = target_abs.with_extension("approved.tmp-openro");
+    std::fs::write(&tmp, &bytes)
+        .and_then(|_| std::fs::rename(&tmp, &target_abs))
+        .or_else(|e| art_err(500, format!("promote candidate: {e}")))?;
+
+    let (w, h) = image_dimensions(&bytes).unwrap_or((0, 0));
+    let mut final_meta = cand_meta;
+    final_meta["status"] = json!("approved");
+    final_meta["path"] = json!(target_rel);
+    final_meta["sha256"] = json!(sha);
+    final_meta["bytes"] = json!(bytes.len());
+    final_meta["width"] = json!(w);
+    final_meta["height"] = json!(h);
+    final_meta["approved_by"] = json!(reviewer);
+    final_meta["approved_at"] = json!(now_iso());
+    final_meta["review_notes"] = json!(notes);
+    final_meta["promoted_from"] = json!(cand_rel);
+    let target_meta_rel = meta_path_for(&target_rel);
+    write_meta_atomic(&safe_rel(root, &target_meta_rel)?, &final_meta)?;
+
+    let _ = append_art_log(root, &json!({
+        "at": now_iso(),
+        "action": "angle_review",
+        "verdict": "pass",
+        "path": target_rel,
+        "promoted_from": cand_rel,
+        "sha256": sha,
+        "width": w,
+        "height": h,
+        "bytes": bytes.len(),
+        "reviewer": reviewer,
+        "notes": notes,
+    }));
+
+    Ok(json!({
+        "ok": true,
+        "status": "approved",
+        "path": target_rel,
+        "url": art_image_url(project_param, &target_rel),
+        "meta_path": target_meta_rel,
+        "sha256": sha,
+        "width": w,
+        "height": h,
+        "bytes": bytes.len(),
+        "reviewer": reviewer,
+    }))
+}
+
+/// `GET /api/art` — list generated & pending art metadata under `<root>/art/` plus recent `ART-LOG.jsonl` rows.
+pub fn art_list(root: &Path) -> ArtRes<Value> {
+    let art_dir = root.join("art");
+    let mut items = Vec::new();
+    let mut pending = Vec::new();
+    if art_dir.is_dir() {
+        let mut stack = vec![(art_dir.clone(), "art".to_string(), 0u8)];
+        while let Some((dir, rel, depth)) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            let mut entries: Vec<_> = rd.flatten().collect();
+            entries.sort_by_key(|e| e.file_name());
+            for e in entries {
+                let name = e.file_name().to_string_lossy().to_string();
+                let child_rel = format!("{rel}/{name}");
+                let Ok(ft) = e.file_type() else { continue };
+                if ft.is_symlink() {
+                    continue;
+                }
+                if ft.is_dir() {
+                    if depth < 6 && name != "references" && !name.starts_with('.') {
+                        stack.push((e.path(), child_rel, depth + 1));
+                    }
+                } else if ft.is_file() && name.ends_with(".meta.json") {
+                    if let Ok(t) = std::fs::read_to_string(e.path()) {
+                        if let Ok(v) = serde_json::from_str::<Value>(&t) {
+                            if v.get("status").and_then(Value::as_str) == Some("pending_review") {
+                                pending.push(v);
+                            } else {
+                                items.push(v);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut recent_log = Vec::new();
+    if let Ok(text) = std::fs::read_to_string(art_dir.join("ART-LOG.jsonl")) {
+        let lines: Vec<&str> = text.lines().collect();
+        for l in lines.iter().rev().take(50).rev() {
+            if let Ok(v) = serde_json::from_str::<Value>(l) {
+                recent_log.push(v);
+            }
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "count": items.len(),
+        "items": items,
+        "pending_review": pending,
+        "log": recent_log,
+    }))
+}
+
+/// `GET /api/art/image?path=<rel>` — safely read an image inside `<root>/art/`.
+pub fn art_image(root: &Path, rel: &str) -> ArtRes<(&'static str, Vec<u8>)> {
+    let rel = rel.trim();
+    if !rel.starts_with("art/") {
+        return art_bad("Image path must start with art/.");
+    }
+    let abs = safe_rel(root, rel)?;
+    let meta = std::fs::metadata(&abs)
+        .map_err(|_| Oc { status: 404, msg: format!("Image '{rel}' not found.") })?;
+    if !meta.is_file() || meta.len() > 20 * 1024 * 1024 {
+        return art_bad("Invalid image file.");
+    }
+    let bytes = std::fs::read(&abs).or_else(|e| art_err(500, format!("read image: {e}")))?;
+    let (mime, _) = detect_image_mime(&bytes).map_err(|e| Oc { status: 400, msg: e })?;
+    Ok((mime, bytes))
 }
