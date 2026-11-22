@@ -116,6 +116,8 @@ pub struct Shared {
     pub proposals: Mutex<ProposalStore>,
     /// Lightweight Companion Roblox Studio Plugin long-poll bridge (`OpenRoCompanion.lua`).
     pub studio_plugin: Arc<StudioPluginBridge>,
+    /// Multi-agent Teamwork coordinator, board, scheduler, and Studio lease.
+    pub teamwork: Arc<crate::teamwork::TeamworkManager>,
     /// Active loopback listen port recorded when `serve()` binds.
     pub bound_port: AtomicU16,
 }
@@ -190,6 +192,7 @@ impl Shared {
             cached_library_list: Mutex::new(None),
             proposals: Mutex::new(ProposalStore::in_memory()),
             studio_plugin,
+            teamwork: crate::teamwork::TeamworkManager::in_memory(),
             bound_port: AtomicU16::new(4040),
         })
     }
@@ -235,7 +238,8 @@ impl Shared {
         let _ = crate::assets::AssetManager::open(&data_dir);
         let assets_root = data_dir.clone();
         let projects = Mutex::new(crate::projects::ProjectStore::load(Some(&data_dir)));
-        Arc::new(Shared {
+        let teamwork = crate::teamwork::TeamworkManager::open(data_dir.clone());
+        let shared = Arc::new(Shared {
             agent: Mutex::new(agent),
             chats: Mutex::new(chats),
             active_chat: Mutex::new(active),
@@ -264,8 +268,11 @@ impl Shared {
             cached_library_list: Mutex::new(None),
             proposals: Mutex::new(proposal_store),
             studio_plugin,
+            teamwork,
             bound_port: AtomicU16::new(4040),
-        })
+        });
+        shared.teamwork.resume_pending_runs(&shared);
+        shared
     }
 
     pub fn active_project_dir(&self) -> Option<PathBuf> {
@@ -883,7 +890,7 @@ fn respond_json(stream: &mut TcpStream, status: &str, value: &Value) {
 
 fn handle(
     mut stream: TcpStream,
-    shared: &Shared,
+    shared: &Arc<Shared>,
     allowed: &[String],
     slot: HandlerSlot,
 ) -> std::io::Result<()> {
@@ -988,7 +995,31 @@ fn handle(
         return Ok(());
     }
 
+    if req.method == "GET" && crate::teamwork::is_sse_path(&path) {
+        drop(slot);
+        crate::teamwork::try_serve_sse(
+            stream,
+            shared,
+            &path,
+            query,
+            req.last_event_id,
+            host_allowed(&req.host, allowed),
+        );
+        return Ok(());
+    }
+
     let _slot = slot;
+
+    if let Some(rep) = crate::teamwork::route(
+        shared,
+        &req.method,
+        &req.path,
+        &req.body,
+        host_allowed(&req.host, allowed),
+    ) {
+        respond_bytes(&mut stream, rep.status, rep.content_type, "no-store", &rep.body);
+        return Ok(());
+    }
 
     // Parameterized staged diff proposal routes:
     // POST /api/proposals/:id/apply & POST /api/proposals/:id/reject

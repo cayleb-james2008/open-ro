@@ -37,10 +37,10 @@ Starts a multi-agent run for `goal`.
 
 - `goal` (required, non-empty string): plain-English goal for the team.
 - `project_id` (optional string): slug from `GET /api/projects`; defaults to the active project.
-- `roles` (optional array): defaults to `["researcher", "systems", "ui", "world", "art", "verifier"]`.
+- `roles` (optional array): defaults to `["researcher", "builder", "art", "verifier"]`.
   Elements may be role strings (`"systems"`) or `{ "name": "systems", "role": "systems", "brief"?: "...", "model"?: "..." }`.
   A `coordinator` agent is always created automatically, and at least one `verifier` agent is always included.
-- `max_concurrency` (optional integer, default `3`, clamped `1..=16`): maximum simultaneous model calls across agents.
+- `max_concurrency` (optional integer, default `2`, clamped `1..=16`): maximum simultaneous model calls across agents.
 - `model_id` (optional string): model override for the run; defaults to OpenRO's configured model (e.g. `gemini-4-hydrogen-high` via Antigravity `agy`).
 
 ### `GET /api/teamwork/:id`
@@ -167,7 +167,7 @@ history (`messages`: `[{ role, content }]`). Supports `?since=<trace_seq>`.
    files through the project git hook (`projects::git_commit`) with message:
    `openro(<role>): <task> [team <run> task <id>]`
    and stores `commit_sha` on the task.
-6. **Quota-aware scheduler**: At most `max_concurrency` (default `3`) model calls execute
+6. **Quota-aware scheduler**: At most `max_concurrency` (default `2`) model calls execute
    concurrently. On an `agy` quota/429 error, the scheduler extracts the reset phrase (e.g.
    `resets in 2h13m`), sets `run.quota`, posts a `quota` event to the board and SSE stream, and
    pauses model calls until the reset window or manual stop/resume.
