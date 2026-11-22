@@ -1320,8 +1320,103 @@ pub fn analyze_script(path: &str, source: &str) -> AnalysisReport {
     check_infinite_loops(path, &tokens, &mut diagnostics);
     check_datastore_safety(path, &tokens, &mut diagnostics);
     check_remote_validation(path, &tokens, &mut diagnostics);
+    check_cylinder_axis_and_vfx_loops(path, source, &mut diagnostics);
 
     AnalysisReport { diagnostics }
+}
+
+/// Static 3D/VFX craft guardrails (#12):
+/// 1. `UPRIGHT_CYLINDER_AXIS`: warns when a script creates a `PartType.Cylinder` with
+///    `Size = Vector3.new(d, h, d)` where `h > d` without rotating it (`CFrame.Angles` /
+///    `Orientation` / `Rotation` / `fromEulerAngles`), because Roblox cylinders run along local X.
+/// 2. `UNBOUNDED_LOOP_VFX`: warns when a script instantiates `ParticleEmitter` / `Beam` /
+///    `PointLight` / `SpotLight` / `SurfaceLight` / `Trail` inside a `while` loop without
+///    cleanup (`Debris` / `AddItem` / `:Destroy()`).
+fn check_cylinder_axis_and_vfx_loops(
+    path: &str,
+    source: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // 1. Unrotated upright cylinder check
+    if source.contains("PartType.Cylinder") {
+        let has_rotation = source.contains("CFrame.Angles")
+            || source.contains("fromEulerAngles")
+            || source.contains(".Orientation")
+            || source.contains(".Rotation");
+        if !has_rotation {
+            for (idx, line) in source.lines().enumerate() {
+                if let Some(pos) = line.find("Vector3.new(") {
+                    let rest = &line[pos + "Vector3.new(".len()..];
+                    if let Some(end) = rest.find(')') {
+                        let nums: Vec<f64> = rest[..end]
+                            .split(',')
+                            .filter_map(|p| p.trim().parse::<f64>().ok())
+                            .collect();
+                        if nums.len() == 3 && nums[1] > nums[0] && nums[1] > nums[2] {
+                            diagnostics.push(Diagnostic {
+                                path: path.to_string(),
+                                line: idx + 1,
+                                severity: Severity::Warning,
+                                code: "UPRIGHT_CYLINDER_AXIS",
+                                message: format!(
+                                    "{path}:{}: PartType.Cylinder runs along local X — Size Vector3.new({}, {}, {}) without CFrame.Angles(0, 0, math.rad(90)) will lie sideways in Studio (use Size=(height, diam, diam) + Z+90°)",
+                                    idx + 1, nums[0], nums[1], nums[2]
+                                ),
+                            });
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Uncleaned VFX created inside a while loop (repeatedly spawns emitters/lights)
+    let has_cleanup = source.contains("Debris")
+        || source.contains("AddItem")
+        || source.contains(":Destroy(")
+        || source.contains("Emit(");
+    if !has_cleanup {
+        let mut in_while_depth = 0usize;
+        for (idx, line) in source.lines().enumerate() {
+            let trimmed = line.split("--").next().unwrap_or("").trim();
+            if trimmed.starts_with("while ") && trimmed.contains(" do") {
+                in_while_depth += 1;
+            }
+            if in_while_depth > 0 {
+                let spawns_vfx = [
+                    "Instance.new(\"ParticleEmitter\"",
+                    "Instance.new('ParticleEmitter'",
+                    "Instance.new(\"Beam\"",
+                    "Instance.new('Beam'",
+                    "Instance.new(\"PointLight\"",
+                    "Instance.new('PointLight'",
+                    "Instance.new(\"SpotLight\"",
+                    "Instance.new('SpotLight'",
+                    "Instance.new(\"Trail\"",
+                    "Instance.new('Trail'",
+                ]
+                .iter()
+                .any(|pat| trimmed.contains(pat));
+                if spawns_vfx {
+                    diagnostics.push(Diagnostic {
+                        path: path.to_string(),
+                        line: idx + 1,
+                        severity: Severity::Warning,
+                        code: "UNBOUNDED_LOOP_VFX",
+                        message: format!(
+                            "{path}:{}: VFX/Light instantiated inside a while loop with no Debris:AddItem or :Destroy() cleanup — pool emitters or schedule cleanup to prevent mobile lag",
+                            idx + 1
+                        ),
+                    });
+                    break;
+                }
+            }
+            if trimmed == "end" || trimmed.starts_with("end)") || trimmed.starts_with("end;") {
+                in_while_depth = in_while_depth.saturating_sub(1);
+            }
+        }
+    }
 }
 
 /// Run full static Luau analysis and cross-reference verification across all

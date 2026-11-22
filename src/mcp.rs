@@ -665,12 +665,12 @@ impl McpClient {
             .and_then(|t| t.as_str())
             .ok_or_else(|| format!("tool {name} returned no text content: {result}"))?;
         if result.get("isError").and_then(|v| v.as_bool()) == Some(true) {
-            return Err(format!("Studio bridge error in {name}: {text}"));
+            return Err(format!("Studio bridge error in {name}: {}", humanize_mcp_error(text)));
         }
         if let Ok(payload) = serde_json::from_str::<Value>(text) {
             match payload.get("error") {
                 Some(Value::String(s)) if !s.is_empty() => {
-                    return Err(format!("Studio bridge error in {name}: {s}"));
+                    return Err(format!("Studio bridge error in {name}: {}", humanize_mcp_error(s)));
                 }
                 Some(Value::Object(o)) => {
                     if let Some(msg) = o
@@ -678,7 +678,7 @@ impl McpClient {
                         .and_then(|m| m.as_str())
                         .filter(|m| !m.is_empty())
                     {
-                        return Err(format!("Studio bridge error in {name}: {msg}"));
+                        return Err(format!("Studio bridge error in {name}: {}", humanize_mcp_error(msg)));
                     }
                 }
                 _ => {}
@@ -751,10 +751,21 @@ impl McpClient {
     /// 1. `list_roblox_studios` — list active Roblox Studio instances and update tracked `studio_id`.
     pub fn list_roblox_studios(&mut self) -> Result<Value, String> {
         let val = self.call_tool_json("list_roblox_studios", json!({}))?;
-        if let Some(id) = extract_first_studio_id(&val) {
-            self.studio_id = Some(id);
-        }
+        self.studio_id = extract_first_studio_id(&val);
         Ok(val)
+    }
+
+    /// True when the bridge process is alive AND (if it advertises `list_roblox_studios`)
+    /// at least one open Roblox Studio place session (`studio_id`) is reachable (#24).
+    pub fn has_live_studio(&mut self) -> bool {
+        if !self.is_alive() {
+            return false;
+        }
+        if self.tools_known && self.has_exact_tool("list_roblox_studios") {
+            let _ = self.list_roblox_studios();
+            return self.studio_id.is_some();
+        }
+        true
     }
 
     /// 2. `get_studio_state` — query Studio play mode and available DataModels.
@@ -1409,6 +1420,20 @@ return "OPENRO_TREE:" .. HttpService:JSONEncode({{ scripts = out, next_idx = nex
     pub fn is_alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
+}
+
+/// Convert raw AI-facing StudioMCP errors (e.g. "Ask the user to confirm that Studio is running...")
+/// into clear plain-words messages for human developers (#24).
+fn humanize_mcp_error(raw: &str) -> String {
+    let low = raw.to_ascii_lowercase();
+    if low.contains("ask the user")
+        || low.contains("no studio instance")
+        || low.contains("no roblox studio")
+        || low.contains("studio_id is required")
+    {
+        return "Roblox Studio is not signed in or has no open place. Sign in and open a place in Roblox Studio, or switch to Local Place Engine.".to_string();
+    }
+    raw.to_string()
 }
 
 /// Encode any arbitrary UTF-8 string as a collision-proof Luau long-bracket literal
