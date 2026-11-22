@@ -219,7 +219,7 @@ function executePlan(
 
   for (const step of steps) {
     if ("skill" in step) {
-      emitSsePhase("compiling", "Compiling Rune", `Generating Luau for ${step.skill}`, 48);
+      emitSsePhase("compiling", "Generating Luau", `Generating Luau for ${step.skill}`, 48);
       const luau = generateSkillLuau(step.skill, step.args || {});
       generated.set(step.skill, luau);
       lastSkill = step.skill;
@@ -419,7 +419,7 @@ export function installWebEngine() {
     if (!Array.isArray(chat.snapshots)) chat.snapshots = [];
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "0.5.0" });
+      return jsonResponse({ name: "openro-rs", version: "0.5.1" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -430,7 +430,7 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "0.5.0",
+        version: "0.5.1",
         sse_build_stream: true,
         store_recovered: [],
       });

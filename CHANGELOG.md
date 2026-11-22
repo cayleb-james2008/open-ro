@@ -4,6 +4,10 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 0.5.1 - 2026-11-22
+
+- **Clear Professional UI Terminology:** Replaced internal engine wording across the Studio Workbench UI, live SSE build progress labels (`Generating Luau`), standalone browser web bundle (`22 Game Systems`, `Studio Workbench`), and `README.md` with clear, standard Roblox Studio terminology while keeping all 22 embedded game-system generators, APIs, and `.rbxlx` fidelity 100% intact.
+
 ## 0.5.0 - 2026-11-22
 
 - **22 Verified Roblox Game-System Rune Skills (`src/*.rn`, `src/skills.rs`, `src/ideas.rs`):**

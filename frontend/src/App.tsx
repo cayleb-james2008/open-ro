@@ -1125,7 +1125,7 @@ export function App() {
             rel="noreferrer"
             className="inline-flex min-h-11 items-center gap-1 rounded-sm px-1 font-mono text-xs text-ink-2 outline-none hover:text-ink hover:underline md:min-h-7"
           >
-            <span>OpenRO v{version || "0.5.0"}</span>
+            <span>OpenRO v{version || "0.5.1"}</span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
           <span className="truncate text-right text-xs text-ink-3">
@@ -1137,7 +1137,7 @@ export function App() {
                   ? `${update.snap.latest} available`
                   : update.snap?.checked_at
                     ? "Up to date"
-                    : "Rust + Rune"}
+                    : "Studio Workbench"}
           </span>
         </div>
       </div>
