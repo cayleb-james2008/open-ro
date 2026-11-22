@@ -35,13 +35,17 @@
 
 use crate::mcp::McpClient;
 use crate::model::ModelClient;
-use crate::place::{serialize_rbxlx, LocalPlace, PlaceBackend};
+use crate::place::{
+    serialize_rbxlx, CreatedPreset, DeleteResult, DuplicateResult, LocalPlace, PlaceBackend,
+    ScriptUpdateResult,
+};
+use crate::rojo_export::{build_rojo_ship_pack, ShipPackAsset, ShipPackBundle};
 use crate::skills;
 use crate::snapshots::{compute_diff, PlaceDiff};
 use crate::sse::BuildEventHub;
 use crate::studio_stream::{StudioActionInput, StudioActionKind, StudioFrame, StudioStreamHub};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 /// 40 steps: a one-shot complete game (many skills, instances, a
@@ -51,6 +55,8 @@ const MAX_REPAIRS: usize = 3;
 
 /// Returned by `revert_chat` when the chat has no change set waiting.
 pub const NOTHING_TO_REVERT: &str = "nothing to revert";
+/// Returned by `redo_chat` when the chat has no undone change set waiting.
+pub const NOTHING_TO_REDO: &str = "nothing to redo";
 
 /// The system prompt, generated from the skill registry so the model is
 /// told exactly the skills that exist, with their real parameters.
@@ -234,6 +240,8 @@ pub struct Agent {
     /// would break per-ask prev state — each set's checkpoints are the
     /// place as it was when THAT ask started.)
     changes_by_chat: HashMap<String, Vec<ChangeSet>>,
+    /// Undone change sets per chat id, as a STACK for `POST /api/redo`.
+    redo_by_chat: HashMap<String, Vec<ChangeSet>>,
     /// Change set being accumulated by the ask currently running.
     current_changes: Vec<Change>,
     /// Where change sets persist across restarts, when set.
@@ -245,6 +253,8 @@ pub struct Agent {
     pub recovered: Vec<String>,
     /// Shared set of chats with a non-empty change-set stack (for the page's Undo).
     undo_sink: Option<std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>>,
+    /// Shared set of chats with a non-empty redo stack (for the page's Redo).
+    redo_sink: Option<std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>>,
     /// Optional SSE build-progress event hub.
     events: Option<Arc<BuildEventHub>>,
     /// Optional realtime Studio 3D action & MCP frame stream hub.
@@ -273,12 +283,14 @@ impl Agent {
             generated: HashMap::new(),
             last_skill: None,
             changes_by_chat: HashMap::new(),
+            redo_by_chat: HashMap::new(),
             current_changes: Vec::new(),
             changes_path: None,
             proof_by_chat: HashMap::new(),
             proof_path: None,
             recovered: Vec::new(),
             undo_sink: None,
+            redo_sink: None,
             events: None,
             studio_stream: None,
             active_build_id: String::new(),
@@ -599,16 +611,48 @@ impl Agent {
         self.sync_undo();
     }
 
+    /// Keep the shared Redo set in step with the undone change-set stacks.
+    pub fn attach_redo_sink(
+        &mut self,
+        sink: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    ) {
+        self.redo_sink = Some(sink);
+        self.sync_undo();
+    }
+
+    pub fn can_undo_chat(&self, chat_id: &str) -> bool {
+        self.changes_by_chat
+            .get(chat_id)
+            .is_some_and(|s| !s.is_empty())
+    }
+
+    pub fn can_redo_chat(&self, chat_id: &str) -> bool {
+        self.redo_by_chat
+            .get(chat_id)
+            .is_some_and(|s| !s.is_empty())
+    }
+
     fn sync_undo(&self) {
-        let Some(sink) = &self.undo_sink else { return };
-        let mut set = sink.lock().unwrap();
-        set.clear();
-        set.extend(
-            self.changes_by_chat
-                .iter()
-                .filter(|(_, stack)| !stack.is_empty())
-                .map(|(chat, _)| chat.clone()),
-        );
+        if let Some(sink) = &self.undo_sink {
+            let mut set = sink.lock().unwrap();
+            set.clear();
+            set.extend(
+                self.changes_by_chat
+                    .iter()
+                    .filter(|(_, stack)| !stack.is_empty())
+                    .map(|(chat, _)| chat.clone()),
+            );
+        }
+        if let Some(sink) = &self.redo_sink {
+            let mut set = sink.lock().unwrap();
+            set.clear();
+            set.extend(
+                self.redo_by_chat
+                    .iter()
+                    .filter(|(_, stack)| !stack.is_empty())
+                    .map(|(chat, _)| chat.clone()),
+            );
+        }
     }
 
     fn save_proof(&self) {
@@ -662,6 +706,259 @@ impl Agent {
     pub fn export_rbxlx(&mut self, game_name: &str) -> Result<String, String> {
         let tree = self.place_tree()?;
         Ok(serialize_rbxlx(game_name, &tree))
+    }
+
+    /// Export a complete Roblox Studio & Rojo 7 Ship Pack `.zip` archive containing
+    /// `game.rbxlx`, `default.project.json`, `src/{server,client,shared}/*.luau`,
+    /// `asset-manifest.json`, `assets/*`, `luau-audit-report.json`, and `STUDIO-UPLOAD-CHECKLIST.md`.
+    pub fn export_rojo_ship_pack(
+        &mut self,
+        game_name: &str,
+        assets: &[ShipPackAsset],
+    ) -> Result<ShipPackBundle, String> {
+        match self.studio.as_mut() {
+            Some(PlaceBackend::Local(local)) => {
+                if local.game_name().trim().is_empty() && !game_name.trim().is_empty() {
+                    local.set_game_name(game_name.to_string());
+                }
+                build_rojo_ship_pack(local, assets)
+            }
+            Some(PlaceBackend::Mcp(_)) => {
+                let tree = self.place_tree()?;
+                let mut tmp = LocalPlace::in_memory(game_name.to_string());
+                tmp.replace_tree(&tree);
+                build_rojo_ship_pack(&tmp, assets)
+            }
+            None => Err("Studio not connected".to_string()),
+        }
+    }
+
+    /// Record a direct Studio IDE edit (part preset, duplicate, delete, live Luau edit,
+    /// or property update) onto the active chat's per-chat Undo stack and clear Redo.
+    pub fn record_direct_edit(&mut self, chat_id: &str, before: &Value, after: &Value) {
+        let changes = changeset_from_trees(before, after);
+        if !changes.is_empty() {
+            let stack = self
+                .changes_by_chat
+                .entry(chat_id.to_string())
+                .or_default();
+            if stack.len() >= crate::place::MAX_HISTORY_DEPTH {
+                stack.remove(0);
+            }
+            stack.push(ChangeSet {
+                changes,
+                skills: Vec::new(),
+            });
+            self.redo_by_chat.remove(chat_id);
+            self.save_changes();
+            self.sync_undo();
+        }
+    }
+
+    /// Create a typed 3D part preset (`block`, `sphere`, `cylinder`, `spawn`,
+    /// `jump_pad`, `kill_brick`, `card_billboard`) plus any companion Luau script
+    /// and record it on the active chat's Undo stack.
+    pub fn create_part_preset(
+        &mut self,
+        chat_id: &str,
+        preset: &str,
+        name: Option<&str>,
+        position: Option<[f64; 3]>,
+        size: Option<[f64; 3]>,
+        color: Option<&str>,
+    ) -> Result<CreatedPreset, String> {
+        let before = self.place_tree()?;
+        let created = match self.studio.as_mut() {
+            Some(PlaceBackend::Local(local)) => {
+                local.create_part_preset(preset, name, position, size, color)?
+            }
+            Some(PlaceBackend::Mcp(_)) => {
+                let mut tmp = LocalPlace::in_memory("OpenRO".to_string());
+                tmp.replace_tree(&before);
+                let c = tmp.create_part_preset(preset, name, position, size, color)?;
+                let target_tree = tmp.tree_json();
+                self.apply_place_tree(&target_tree)?;
+                c
+            }
+            None => return Err("Studio not connected".to_string()),
+        };
+        let after = self.place_tree().unwrap_or_else(|_| before.clone());
+        self.record_direct_edit(chat_id, &before, &after);
+
+        let props = created.instance.get("properties");
+        let mut ev = StudioActionInput::new(
+            StudioActionKind::PartCreated,
+            format!("Added {} ({}) to Workspace", created.path, created.class_name),
+        );
+        ev.path = created.path.clone();
+        ev.class_name = created.class_name.clone();
+        ev.position = extract_vec3_prop(props, "Position");
+        ev.size = extract_vec3_prop(props, "Size");
+        ev.color = extract_color_prop(props);
+        self.emit_studio_action(ev);
+
+        if let Some(sc_path) = &created.companion_script {
+            let src = after
+                .pointer("/scripts")
+                .and_then(|s| s.get(sc_path))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let mut sev = StudioActionInput::new(
+                StudioActionKind::ScriptWritten,
+                format!("Wired companion script {sc_path} ({} bytes)", src.len()),
+            );
+            sev.path = sc_path.clone();
+            sev.class_name = "Script".to_string();
+            sev.code_snippet = Some(snippet_from_source(src));
+            self.emit_studio_action(sev);
+        }
+        let _ = self.auto_capture_mcp_frame();
+        Ok(created)
+    }
+
+    /// Duplicate an existing Workspace instance (and any descendants) with a +[4,0,4] offset.
+    pub fn duplicate_instance(
+        &mut self,
+        chat_id: &str,
+        path: &str,
+    ) -> Result<DuplicateResult, String> {
+        check_path(path)?;
+        let before = self.place_tree()?;
+        let dup = match self.studio.as_mut() {
+            Some(PlaceBackend::Local(local)) => local.duplicate_instance(path)?,
+            Some(PlaceBackend::Mcp(_)) => {
+                let mut tmp = LocalPlace::in_memory("OpenRO".to_string());
+                tmp.replace_tree(&before);
+                let d = tmp.duplicate_instance(path)?;
+                let target_tree = tmp.tree_json();
+                self.apply_place_tree(&target_tree)?;
+                d
+            }
+            None => return Err("Studio not connected".to_string()),
+        };
+        let after = self.place_tree().unwrap_or_else(|_| before.clone());
+        self.record_direct_edit(chat_id, &before, &after);
+
+        let props = dup.instance.get("properties");
+        let mut ev = StudioActionInput::new(
+            StudioActionKind::PartCreated,
+            format!("Duplicated {} -> {}", dup.source_path, dup.new_path),
+        );
+        ev.path = dup.new_path.clone();
+        ev.class_name = dup.class_name.clone();
+        ev.position = extract_vec3_prop(props, "Position");
+        ev.size = extract_vec3_prop(props, "Size");
+        ev.color = extract_color_prop(props);
+        self.emit_studio_action(ev);
+        let _ = self.auto_capture_mcp_frame();
+        Ok(dup)
+    }
+
+    /// Delete an instance (with descendants) or a standalone Luau script at `path`.
+    pub fn delete_at_path(&mut self, chat_id: &str, path: &str) -> Result<DeleteResult, String> {
+        check_path(path)?;
+        let before = self.place_tree()?;
+        let is_instance = before
+            .pointer("/instances")
+            .and_then(|m| m.as_object())
+            .is_some_and(|m| m.contains_key(path));
+        let is_script = before
+            .pointer("/scripts")
+            .and_then(|m| m.as_object())
+            .is_some_and(|m| m.contains_key(path));
+
+        if !is_instance && !is_script {
+            return Err(format!("no instance or script at {path}"));
+        }
+
+        let deleted = if is_instance {
+            match self.studio.as_mut() {
+                Some(PlaceBackend::Local(local)) => local.delete_instance(path)?,
+                Some(PlaceBackend::Mcp(_)) => {
+                    let mut tmp = LocalPlace::in_memory("OpenRO".to_string());
+                    tmp.replace_tree(&before);
+                    let d = tmp.delete_instance(path)?;
+                    let target_tree = tmp.tree_json();
+                    self.apply_place_tree(&target_tree)?;
+                    d
+                }
+                None => return Err("Studio not connected".to_string()),
+            }
+        } else {
+            self.studio_mut()?
+                .call_tool("delete_script", json!({ "path": path }))?;
+            DeleteResult {
+                path: path.to_string(),
+                removed_instances: Vec::new(),
+                removed_scripts: vec![path.to_string()],
+            }
+        };
+
+        let after = self.place_tree().unwrap_or_else(|_| before.clone());
+        self.record_direct_edit(chat_id, &before, &after);
+
+        let mut ev = StudioActionInput::new(
+            StudioActionKind::PartUpdated,
+            format!(
+                "Deleted {} ({} instance(s), {} script(s))",
+                path,
+                deleted.removed_instances.len(),
+                deleted.removed_scripts.len()
+            ),
+        );
+        ev.path = path.to_string();
+        ev.class_name = if is_instance {
+            "Instance".to_string()
+        } else {
+            "Script".to_string()
+        };
+        self.emit_studio_action(ev);
+        let _ = self.auto_capture_mcp_frame();
+        Ok(deleted)
+    }
+
+    /// Save live-edited Luau source for `path` and run immediate Static Luau Prover checks.
+    pub fn update_script_source(
+        &mut self,
+        chat_id: &str,
+        path: &str,
+        source: &str,
+    ) -> Result<ScriptUpdateResult, String> {
+        check_path(path)?;
+        let before = self.place_tree()?;
+        let res = match self.studio.as_mut() {
+            Some(PlaceBackend::Local(local)) => local.update_script_source(path, source)?,
+            Some(PlaceBackend::Mcp(_)) => {
+                let mut tmp = LocalPlace::in_memory("OpenRO".to_string());
+                tmp.replace_tree(&before);
+                let checked = tmp.update_script_source(path, source)?;
+                self.studio_mut()?
+                    .call_tool("write_script", json!({ "path": path, "source": source }))?;
+                checked
+            }
+            None => return Err("Studio not connected".to_string()),
+        };
+        let after = self.place_tree().unwrap_or_else(|_| before.clone());
+        self.record_direct_edit(chat_id, &before, &after);
+
+        let mut ev = StudioActionInput::new(
+            StudioActionKind::ScriptWritten,
+            format!(
+                "Saved Luau script {path} ({} lines, {} error(s))",
+                res.lines,
+                res.place_report.error_count()
+            ),
+        );
+        ev.path = path.to_string();
+        ev.class_name = if path.starts_with("StarterGui.") || path.starts_with("StarterPlayer.") {
+            "LocalScript".to_string()
+        } else {
+            "Script".to_string()
+        };
+        ev.code_snippet = Some(snippet_from_source(source));
+        self.emit_studio_action(ev);
+        let _ = self.auto_capture_mcp_frame();
+        Ok(res)
     }
 
     /// Bind uploaded/generated game card art assets into the active LocalPlace's
@@ -914,6 +1211,7 @@ impl Agent {
                 .entry(chat_id.to_string())
                 .or_default()
                 .push(ChangeSet { changes: harvested, skills });
+            self.redo_by_chat.remove(chat_id);
             self.save_changes();
             self.sync_undo();
         }
@@ -2132,10 +2430,16 @@ impl Agent {
             }
             restored.push(path);
         }
-        // Success: pop this ask's set. Earlier asks' sets stay on the
-        // stack, still revertable.
+        // Success: pop this ask's set and save it onto the chat's Redo stack.
+        // Earlier asks' sets stay on the undo stack, still revertable.
         if let Some(stack) = self.changes_by_chat.get_mut(chat_id) {
-            stack.pop();
+            if let Some(popped) = stack.pop() {
+                let rstack = self.redo_by_chat.entry(chat_id.to_string()).or_default();
+                if rstack.len() >= crate::place::MAX_HISTORY_DEPTH {
+                    rstack.remove(0);
+                }
+                rstack.push(popped);
+            }
             if stack.is_empty() {
                 self.changes_by_chat.remove(chat_id);
             }
@@ -2165,6 +2469,133 @@ impl Agent {
         self.emit_studio_action(rev_ev);
         let _ = self.auto_capture_mcp_frame();
         Ok(restored)
+    }
+
+    /// Re-apply the most recently undone change set for `chat_id` (`POST /api/redo`).
+    /// Returns `(reapplied_paths, reapplied_skills)`.
+    pub fn redo_chat(&mut self, chat_id: &str) -> Result<(Vec<String>, Vec<String>), String> {
+        if self.studio.is_none() {
+            return Err("Studio not connected: nothing to redo".to_string());
+        }
+        let set = match self.redo_by_chat.get(chat_id) {
+            Some(stack) => match stack.last() {
+                Some(c) if !c.changes.is_empty() => c.clone(),
+                _ => return Err(NOTHING_TO_REDO.to_string()),
+            },
+            None => return Err(NOTHING_TO_REDO.to_string()),
+        };
+        let mut restored = Vec::new();
+        for change in &set.changes {
+            let path = match change {
+                Change::Script(p, _, _) | Change::Instance(p, _, _) => p.clone(),
+            };
+            if let Err(e) = self.reapply_one(change) {
+                return Err(format!(
+                    "redo stopped at {path}: {e} — {} change(s) were re-applied",
+                    restored.len()
+                ));
+            }
+            restored.push(path);
+        }
+        if let Some(stack) = self.redo_by_chat.get_mut(chat_id) {
+            stack.pop();
+            if stack.is_empty() {
+                self.redo_by_chat.remove(chat_id);
+            }
+        }
+        let skills = set.skills.clone();
+        self.changes_by_chat
+            .entry(chat_id.to_string())
+            .or_default()
+            .push(set);
+        let proof = self.proof_by_chat.entry(chat_id.to_string()).or_default();
+        proof.undone.retain(|s| !skills.contains(s));
+        self.save_proof();
+        self.save_changes();
+        self.sync_undo();
+        let mut redo_ev = StudioActionInput::new(
+            StudioActionKind::Restored,
+            format!("Redid {} change(s) in Studio", restored.len()),
+        );
+        redo_ev.path = "Workspace".to_string();
+        redo_ev.class_name = "ChangeHistoryService".to_string();
+        self.emit_studio_action(redo_ev);
+        let _ = self.auto_capture_mcp_frame();
+        Ok((restored, skills))
+    }
+
+    /// Re-apply a single undone change (`prev` -> `post`), verifying that the
+    /// live place still holds `prev` (or already holds `post`).
+    fn reapply_one(&mut self, change: &Change) -> Result<(), String> {
+        match change {
+            Change::Script(path, prev, post) => {
+                let current = self.prev_script_current(path)?;
+                if current == *post {
+                    return Ok(());
+                }
+                if current != *prev {
+                    return Err(format!(
+                        "{path} changed since it was undone — refusing to overwrite newer edits"
+                    ));
+                }
+                match post {
+                    Some(source) => {
+                        self.studio_mut()?.call_tool(
+                            "write_script",
+                            json!({ "path": path, "source": source }),
+                        )?;
+                    }
+                    None => {
+                        self.studio_mut()?
+                            .call_tool("delete_script", json!({ "path": path }))?;
+                    }
+                }
+                Ok(())
+            }
+            Change::Instance(path, prev, post) => {
+                let current = self.prev_instance_current(path)?;
+                if current == *post {
+                    return Ok(());
+                }
+                if current != *prev {
+                    return Err(format!(
+                        "{path} changed since it was undone — refusing to overwrite newer edits"
+                    ));
+                }
+                match post {
+                    Some(record) => {
+                        let (parent, name) = match path.rsplit_once('.') {
+                            Some((p, n)) => (p.to_string(), n.to_string()),
+                            None => (String::new(), path.clone()),
+                        };
+                        let class_name = record
+                            .get("class_name")
+                            .and_then(|c| c.as_str())
+                            .ok_or_else(|| {
+                                format!("the redo record for {path} is unreadable (no class name)")
+                            })?;
+                        if current.is_some() {
+                            self.studio_mut()?
+                                .call_tool("delete_instance", json!({ "path": path }))?;
+                        }
+                        self.studio_mut()?.call_tool(
+                            "create_instance",
+                            json!({
+                                "class_name": class_name,
+                                "name": name,
+                                "parent": parent,
+                                "properties": record.get("properties").cloned().unwrap_or(json!({})),
+                            }),
+                        )?;
+                    }
+                    None => {
+                        self.studio_mut()?
+                            .call_tool("delete_instance", json!({ "path": path }))?;
+                    }
+                }
+                Ok(())
+            }
+        }
     }
 
     /// Restore a single change. Identity-checked, not just
@@ -2282,6 +2713,52 @@ enum PlaytestOutcome {
     Passed(String),
     Failed(String, String),
     Unreadable(String, String),
+}
+
+fn changeset_from_trees(before: &Value, after: &Value) -> Vec<Change> {
+    let empty = serde_json::Map::new();
+    let b_inst = before
+        .get("instances")
+        .and_then(|v| v.as_object())
+        .unwrap_or(&empty);
+    let a_inst = after
+        .get("instances")
+        .and_then(|v| v.as_object())
+        .unwrap_or(&empty);
+    let b_scr = before
+        .get("scripts")
+        .and_then(|v| v.as_object())
+        .unwrap_or(&empty);
+    let a_scr = after
+        .get("scripts")
+        .and_then(|v| v.as_object())
+        .unwrap_or(&empty);
+
+    let mut changes = Vec::new();
+    let mut inst_keys: BTreeSet<&str> = BTreeSet::new();
+    for k in b_inst.keys().chain(a_inst.keys()) {
+        inst_keys.insert(k.as_str());
+    }
+    for k in inst_keys {
+        let prev = b_inst.get(k).cloned();
+        let post = a_inst.get(k).cloned();
+        if prev != post {
+            changes.push(Change::Instance(k.to_string(), prev, post));
+        }
+    }
+
+    let mut scr_keys: BTreeSet<&str> = BTreeSet::new();
+    for k in b_scr.keys().chain(a_scr.keys()) {
+        scr_keys.insert(k.as_str());
+    }
+    for k in scr_keys {
+        let prev = b_scr.get(k).and_then(|v| v.as_str()).map(String::from);
+        let post = a_scr.get(k).and_then(|v| v.as_str()).map(String::from);
+        if prev != post {
+            changes.push(Change::Script(k.to_string(), prev, post));
+        }
+    }
+    changes
 }
 
 fn extract_vec3_prop(props: Option<&Value>, key: &str) -> Option<[f64; 3]> {
