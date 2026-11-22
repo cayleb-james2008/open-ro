@@ -1,0 +1,93 @@
+{
+  "frame_r1": {
+    "path": "art/ui/frame_r1.png",
+    "size": [
+      256,
+      356
+    ],
+    "slice": [
+      28,
+      28,
+      228,
+      328
+    ]
+  },
+  "frame_r2": {
+    "path": "art/ui/frame_r2.png",
+    "size": [
+      256,
+      356
+    ],
+    "slice": [
+      28,
+      28,
+      228,
+      328
+    ]
+  },
+  "frame_r3": {
+    "path": "art/ui/frame_r3.png",
+    "size": [
+      256,
+      356
+    ],
+    "slice": [
+      28,
+      28,
+      228,
+      328
+    ]
+  },
+  "frame_r4": {
+    "path": "art/ui/frame_r4.png",
+    "size": [
+      256,
+      356
+    ],
+    "slice": [
+      28,
+      28,
+      228,
+      328
+    ]
+  },
+  "frame_r5": {
+    "path": "art/ui/frame_r5.png",
+    "size": [
+      256,
+      356
+    ],
+    "slice": [
+      28,
+      28,
+      228,
+      328
+    ]
+  },
+  "frame_r6": {
+    "path": "art/ui/frame_r6.png",
+    "size": [
+      256,
+      356
+    ],
+    "slice": [
+      28,
+      28,
+      228,
+      328
+    ]
+  },
+  "ui_panel": {
+    "path": "art/ui/ui_panel.png",
+    "size": [
+      128,
+      128
+    ],
+    "slice": [
+      20,
+      20,
+      108,
+      108
+    ]
+  }
+}
