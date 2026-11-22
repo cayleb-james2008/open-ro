@@ -377,6 +377,23 @@ battleEvent.OnServerEvent:Connect(function(player, action, floorArg, modeArg)
         startBattle(player, floorNum, safeMode)
     elseif action == "attack" or action == "ultimate" then
         stepTurn(player, action)
+    elseif action == "chain_overdrive" then
+        local state = battles[player]
+        if state and not state.finished then
+            local lead = state.playerTeam[1]
+            local ally = state.playerTeam[2] or lead
+            local target = state.enemies[1]
+            if lead and target and target.hp > 0 then
+                local dmg = math.max(40, math.floor((lead.atk + ally.atk * 0.65) * 1.35))
+                target.hp = math.max(0, target.hp - dmg)
+                battleEvent:FireClient(player, "chain_overdrive", {
+                    pair = lead.title .. " x " .. ally.title,
+                    bonusPct = 35,
+                    damage = dmg,
+                    targetHp = target.hp,
+                })
+            end
+        end
     elseif action == "counter" then
         local state = battles[player]
         if state and not state.finished then
