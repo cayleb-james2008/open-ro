@@ -181,6 +181,8 @@ export function StudioBottomDrawer({
     ...consoleLines,
   ].slice(-60);
 
+  const errorCount = mergedConsole.filter((line) => /\b(error|failed|exception|nil)\b/i.test(line)).length;
+
   const openTab = (t: BottomDrawerTab) => {
     onTabChange(t);
     if (!open) onToggle();
@@ -192,67 +194,83 @@ export function StudioBottomDrawer({
       aria-label="Studio bottom drawer"
       className="flex flex-none flex-col border-t border-hairline bg-surface"
     >
-      {/* 36px Collapsed Bar */}
-      <div className="flex min-h-9 flex-wrap items-center justify-between gap-2 bg-board/60 px-2.5 py-1">
-        <SegmentedControl aria-label="Studio bottom drawer views" size="sm" className="max-w-full flex-wrap">
-          <SegmentedControlItem
-            data-checked={open && activeTab === "console" ? "" : undefined}
-            aria-pressed={open && activeTab === "console"}
-            onClick={() => openTab("console")}
-            className="gap-1 text-xs max-md:!h-11"
+      {!open ? (
+        <div className="flex items-center justify-end bg-board/40 px-2.5 py-1">
+          <Button
+            variant="ghost"
+            size="xs"
+            aria-label="Expand Console and Inspector"
+            onClick={() => openTab(errorCount > 0 ? "console" : activeTab)}
+            className="gap-1.5 text-ink-2 hover:text-ink max-md:min-h-11"
           >
-            <Terminal className="size-3" strokeWidth={1.5} aria-hidden />
-            Output Console
-          </SegmentedControlItem>
-          <SegmentedControlItem
-            data-checked={open && activeTab === "trace" ? "" : undefined}
-            aria-pressed={open && activeTab === "trace"}
-            onClick={() => openTab("trace")}
-            className="gap-1 text-xs max-md:!h-11"
-          >
-            <Activity className="size-3" strokeWidth={1.5} aria-hidden />
-            Agent Trace ({studioActions.length})
-          </SegmentedControlItem>
-          <SegmentedControlItem
-            data-checked={open && activeTab === "tools" ? "" : undefined}
-            aria-pressed={open && activeTab === "tools"}
-            onClick={() => openTab("tools")}
-            className="gap-1 text-xs max-md:!h-11"
-          >
-            <Wrench className="size-3" strokeWidth={1.5} aria-hidden />
-            Studio MCP Tools ({STUDIO_TOOL_SPECS.length})
-          </SegmentedControlItem>
-          <SegmentedControlItem
-            data-checked={open && activeTab === "properties" ? "" : undefined}
-            aria-pressed={open && activeTab === "properties"}
-            onClick={() => openTab("properties")}
-            className="gap-1 text-xs max-md:!h-11"
-          >
-            <Sliders className="size-3" strokeWidth={1.5} aria-hidden />
-            Properties{selectedPath ? ` · ${selectedPath.split(".").pop()}` : ""}
-          </SegmentedControlItem>
-        </SegmentedControl>
+            <Terminal className="size-3.5" strokeWidth={1.5} aria-hidden />
+            <span>Console / Inspector</span>
+            {errorCount > 0 && (
+              <Badge className="border-transparent bg-pill-pro-bg px-1.5 py-0 font-mono text-xs tabular-nums text-pill-pro-fg">
+                {errorCount}
+              </Badge>
+            )}
+            <ChevronUp className="size-3.5" strokeWidth={1.5} aria-hidden />
+          </Button>
+        </div>
+      ) : (
+        <div className="flex min-h-9 flex-wrap items-center justify-between gap-2 bg-board/60 px-2.5 py-1">
+          <SegmentedControl aria-label="Studio bottom drawer views" size="sm" className="max-w-full flex-wrap">
+            <SegmentedControlItem
+              data-checked={activeTab === "console" ? "" : undefined}
+              aria-pressed={activeTab === "console"}
+              onClick={() => openTab("console")}
+              className="gap-1 text-xs max-md:!h-11"
+            >
+              <Terminal className="size-3" strokeWidth={1.5} aria-hidden />
+              Console
+              {errorCount > 0 && (
+                <span className="rounded-chip bg-pill-pro-bg px-1 font-mono text-xs tabular-nums text-pill-pro-fg">
+                  {errorCount}
+                </span>
+              )}
+            </SegmentedControlItem>
+            <SegmentedControlItem
+              data-checked={activeTab === "trace" ? "" : undefined}
+              aria-pressed={activeTab === "trace"}
+              onClick={() => openTab("trace")}
+              className="gap-1 text-xs max-md:!h-11"
+            >
+              <Activity className="size-3" strokeWidth={1.5} aria-hidden />
+              Trace{studioActions.length > 0 ? ` (${studioActions.length})` : ""}
+            </SegmentedControlItem>
+            <SegmentedControlItem
+              data-checked={activeTab === "tools" ? "" : undefined}
+              aria-pressed={activeTab === "tools"}
+              onClick={() => openTab("tools")}
+              className="gap-1 text-xs max-md:!h-11"
+            >
+              <Wrench className="size-3" strokeWidth={1.5} aria-hidden />
+              Studio Tools
+            </SegmentedControlItem>
+            <SegmentedControlItem
+              data-checked={activeTab === "properties" ? "" : undefined}
+              aria-pressed={activeTab === "properties"}
+              onClick={() => openTab("properties")}
+              className="gap-1 text-xs max-md:!h-11"
+            >
+              <Sliders className="size-3" strokeWidth={1.5} aria-hidden />
+              Properties{selectedPath ? ` · ${selectedPath.split(".").pop()}` : ""}
+            </SegmentedControlItem>
+          </SegmentedControl>
 
-        <Button
-          variant="ghost"
-          size="xs"
-          aria-label={open ? "Collapse Studio bottom drawer" : "Expand Studio bottom drawer"}
-          onClick={onToggle}
-          className="text-ink-2 hover:text-ink max-md:min-h-11"
-        >
-          {open ? (
-            <>
-              <ChevronDown className="size-3.5" strokeWidth={1.5} aria-hidden />
-              <span>Hide</span>
-            </>
-          ) : (
-            <>
-              <ChevronUp className="size-3.5" strokeWidth={1.5} aria-hidden />
-              <span>Drawer</span>
-            </>
-          )}
-        </Button>
-      </div>
+          <Button
+            variant="ghost"
+            size="xs"
+            aria-label="Collapse Studio bottom drawer"
+            onClick={onToggle}
+            className="text-ink-2 hover:text-ink max-md:min-h-11"
+          >
+            <ChevronDown className="size-3.5" strokeWidth={1.5} aria-hidden />
+            <span>Hide</span>
+          </Button>
+        </div>
+      )}
 
       {/* 236px Expanded Drawer Body */}
       {open && (
@@ -281,7 +299,7 @@ export function StudioBottomDrawer({
                 </div>
               </div>
               {mergedConsole.length === 0 ? (
-                <p className="rounded-sm border border-hairline bg-board/35 p-3 font-mono text-xs text-ink-2">
+                <p className="rounded-sm border border-hairline bg-board/35 p-3 text-xs text-ink-2">
                   No Studio console lines yet. Run Playtest or click Refresh Output to inspect live logs.
                 </p>
               ) : (
@@ -493,7 +511,7 @@ export function StudioBottomDrawer({
                       </div>
                     </div>
                     <div className="flex flex-col gap-1">
-                      <span className="text-xs text-ink-2">Color · Material · Anchored</span>
+                      <span className="text-xs text-ink-2">Color, Material, Anchored</span>
                       <div className="flex items-center gap-1.5">
                         <input
                           type="color"

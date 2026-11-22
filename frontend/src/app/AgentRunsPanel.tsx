@@ -54,12 +54,14 @@ export function AgentRunsPanel({
   composerText,
   onClearComposer,
   onRunFinished,
+  refreshSignal,
 }: {
   chatId: string;
   projectId: string | null;
   composerText: string;
   onClearComposer: () => void;
   onRunFinished?: () => void;
+  refreshSignal?: number;
 }) {
   const [available, setAvailable] = useState(true);
   const [runs, setRuns] = useState<AgentRun[]>([]);
@@ -87,7 +89,7 @@ export function AgentRunsPanel({
     if (r.ok && r.run) setDetail(r.run);
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { void refresh(); }, [refresh, refreshSignal]);
   useEffect(() => { void loadDetail(selectedId); }, [selectedId, loadDetail]);
 
   const hasActive = runs.some((r) => r.status === "queued" || r.status === "planning" || r.status === "running");
@@ -100,7 +102,7 @@ export function AgentRunsPanel({
     return () => window.clearInterval(t);
   }, [hasActive, refresh, loadDetail, selectedId]);
 
-  if (!available) return null;
+  if (!available || runs.length === 0) return null;
 
   const queueRun = async () => {
     const message = composerText.trim();
