@@ -18,11 +18,14 @@ import { Pill, PillIndicator, PillStatus } from "@/components/kibo-ui/pill";
 import { ProgressCircle } from "@/components/ProgressCircle/ProgressCircle";
 import { layout, reveal } from "@/motion";
 import {
+  BUILD_PHASES,
   FAILURE,
   agentText,
   classify,
   plain,
   stepInfo,
+  type BuildPhaseId,
+  type BuildStreamPhase,
   type Idea,
   type Row,
 } from "./data";
@@ -35,22 +38,65 @@ const STEP_ICONS = {
   check: Check,
 } as const;
 
-export function WorkingBanner({ label }: { label: string }) {
+const PHASE_ORDER: BuildPhaseId[] = ["planning", "compiling", "checking", "playtest", "repair"];
+
+export function WorkingBanner({ label, phase }: { label: string; phase?: BuildStreamPhase | null }) {
   const reduce = useReducedMotion();
+  const activeIdx = phase ? Math.max(0, PHASE_ORDER.indexOf(phase.phase)) : 0;
+  const pct = phase?.progress ?? Math.min(96, 20 + activeIdx * 24);
   return (
     <div
       role="status"
       aria-live="polite"
-      className="flex items-center gap-3 rounded-card border border-hairline bg-surface px-4 py-3 text-sm text-ink"
+      className="flex flex-col gap-2.5 rounded-card border border-blue/40 bg-surface px-4 py-3 text-sm text-ink"
     >
-      <Spinner className="size-4 text-blue" />
-      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{label}</span>
-      <Pill className="bg-board text-xs text-ink-2">
-        <PillStatus className="border-transparent">
-          <PillIndicator variant="info" pulse={!reduce} />
-          <span>Running</span>
-        </PillStatus>
-      </Pill>
+      <div className="flex items-center gap-3">
+        <Spinner className="size-4 text-blue" />
+        <div className="min-w-0 flex-1">
+          <span className="block font-medium [overflow-wrap:anywhere]">{label}</span>
+          {phase?.detail && (
+            <span className="block text-xs text-ink-2 [overflow-wrap:anywhere]">{phase.detail}</span>
+          )}
+        </div>
+        <Pill className="bg-board text-xs text-ink-2">
+          <PillStatus className="border-transparent">
+            <PillIndicator variant="info" pulse={!reduce} />
+            <span>{phase?.label || "Running"}</span>
+          </PillStatus>
+        </Pill>
+      </div>
+
+      {phase && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hairline pt-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {BUILD_PHASES.map((step, idx) => {
+              const done = idx < activeIdx;
+              const current = idx === activeIdx || (phase.phase === "repair" && step.id === "playtest");
+              return (
+                <motion.span
+                  key={step.id}
+                  layout
+                  transition={layout}
+                  className={`inline-flex h-6 items-center gap-1 rounded-chip px-2 text-xs font-medium ${
+                    done
+                      ? "bg-pill-active-bg text-pill-active-fg"
+                      : current
+                        ? "bg-blue-soft text-ink"
+                        : "bg-track text-ink-3"
+                  }`}
+                >
+                  {done && <Check className="size-3" strokeWidth={2} aria-hidden />}
+                  <span>{step.label}</span>
+                </motion.span>
+              );
+            })}
+            {phase.phase === "repair" && (
+              <Pill className="bg-pill-warn-bg px-2 py-0.5 text-xs text-pill-warn-fg">Auto-Repair</Pill>
+            )}
+          </div>
+          <span className="font-mono text-xs tabular-nums text-ink-2">{Math.round(pct)}%</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -363,6 +409,7 @@ export function ThreadFeed({
   buildingIdea,
   freshFrom,
   lastTriedIdea,
+  buildPhase,
   onBuild,
 }: {
   lines: string[];
@@ -375,6 +422,7 @@ export function ThreadFeed({
   buildingIdea: string | undefined;
   freshFrom: number;
   lastTriedIdea: Idea | null;
+  buildPhase?: BuildStreamPhase | null;
   onBuild: (idea: Idea) => void;
 }) {
   // Find first user turn so pre-build pitch lines do not duplicate the starter workbench.
@@ -482,6 +530,7 @@ export function ThreadFeed({
     out.push(
       <WorkingBanner
         key="working"
+        phase={pending.undo ? null : buildPhase}
         label={
           pending.build
             ? `Building ${pending.build} in Roblox Studio and running playtest…`

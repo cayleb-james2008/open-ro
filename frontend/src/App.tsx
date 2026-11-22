@@ -4,6 +4,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
+  type DragEvent,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
@@ -13,6 +15,7 @@ import { Toaster, toast } from "sonner";
 import { Drawer } from "vaul";
 import {
   Blocks,
+  Command,
   ExternalLink,
   FolderTree,
   Menu,
@@ -22,6 +25,7 @@ import {
   Send,
   SlidersHorizontal,
   Undo2,
+  Upload,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -43,28 +47,41 @@ import { glide, open } from "@/motion";
 import {
   RELEASES_URL,
   SEND_FAILED,
+  isV050OrNewer,
   normalizeChatList,
   normalizeIdeas,
   normalizePlace,
+  normalizeSnapshots,
   normalizeThread,
   post,
   read,
+  subscribeBuildStream,
+  type BuildStreamPhase,
   type Chat,
   type ChatList,
   type Idea,
+  type InstanceEditPayload,
   type Place,
+  type PlaceDiff,
+  type PlaceSnapshot,
   type WorkspaceMode,
 } from "./app/data";
 import { BlueprintWorkbench } from "./app/Blueprints";
-import { ThreadFeed } from "./app/Thread";
-import { PartsShelf, StudioChip } from "./app/Shelf";
+import { CommandPalette } from "./app/CommandPalette";
+import { computePlaceDiff, type LuauDiagnostic } from "./app/luauAudit";
+import { parseRbxlxXml, serializeRbxlx } from "./app/rbxlxCodec";
 import { SettingsDialog } from "./app/SettingsDialog";
+import { PartsShelf, StudioChip } from "./app/Shelf";
+import { SnapshotsDialog } from "./app/SnapshotsDialog";
 import { StagePreview } from "./app/StagePreview";
+import { SystemLibrary } from "./app/SystemLibrary";
+import type { GameSystemDef } from "./app/systems";
+import { ThreadFeed } from "./app/Thread";
 import { UpdateStrip, useUpdate } from "./app/Update";
 
 type Pending = { message?: string; build?: string; undo?: boolean };
 type Notice = { text: string; bad?: boolean; user?: boolean };
-type ShellWindow = Window & { openroSetTheme?: (t: string) => void };
+type ShellWindow = Window & { openroSetTheme?: (t: string) => void; __OPENRO_WEB_ENGINE__?: boolean };
 
 const noticeKey = (id: string) => "openro-notices:" + id;
 const draftKey = (id: string) => "openro-draft:" + id;
@@ -116,6 +133,15 @@ function readShell() {
   };
 }
 
+function clonePlace(p: Place | null | "error"): Place | null {
+  if (!p || p === "error") return null;
+  try {
+    return JSON.parse(JSON.stringify(p)) as Place;
+  } catch {
+    return null;
+  }
+}
+
 export function App() {
   const shell = useMemo(readShell, []);
   const [theme, setThemeState] = useState<"light" | "dark">(() =>
@@ -127,7 +153,7 @@ export function App() {
     (window as ShellWindow).openroSetTheme?.(t);
   };
 
-  // <768px collapses Left Rail to Vaul drawer (at 768px the rail stays visible so probe.mjs reaches Light/Dark).
+  // <768px collapses Left Rail to Vaul drawer.
   const phone = useMedia("(max-width: 767px)");
   const compactInput = useMedia("(max-width: 960px)");
   // <1100px collapses Right Explorer Shelf to Vaul bottom drawer.
@@ -147,6 +173,8 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [shelfOpen, setShelfOpen] = useState(false);
   const [shelfCollapsed, setShelfCollapsed] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [snapshotsOpen, setSnapshotsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(() => {
     try {
       return new URLSearchParams(window.location.search).get("settings") === "1";
@@ -159,16 +187,26 @@ export function App() {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(shell.workspaceMode);
   const [activeModelLabel, setActiveModelLabel] = useState("");
   const [version, setVersion] = useState("");
+  const [v050Ready, setV050Ready] = useState(() => Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__));
   const [lastTriedIdea, setLastTriedIdea] = useState<Idea | null>(null);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [buildPhase, setBuildPhase] = useState<BuildStreamPhase | null>(null);
+  const [buildDiff, setBuildDiff] = useState<PlaceDiff | null>(null);
+  const [snapshots, setSnapshots] = useState<PlaceSnapshot[]>([]);
+  const [serverDiagnostics, setServerDiagnostics] = useState<LuauDiagnostic[]>([]);
+  const [dragActive, setDragActive] = useState(false);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const chatSearchRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const menuKeyRef = useRef<HTMLButtonElement>(null);
   const shelfKeyRef = useRef<HTMLButtonElement>(null);
   const wasMenuOpenRef = useRef(false);
   const wasShelfOpenRef = useRef(false);
   const showUpdateRef = useRef<HTMLButtonElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
+  const placeRef = useRef<Place | null | "error">(place);
+  placeRef.current = place;
 
   const update = useUpdate(showUpdateRef);
 
@@ -293,25 +331,96 @@ export function App() {
     }
   }, [refreshThread]);
 
-  const refreshPlace = useCallback(async () => {
+  const refreshPlace = useCallback(async (): Promise<Place | null> => {
     try {
       const raw = await read("/api/place-tree");
-      setPlace(normalizePlace(raw));
+      const norm = normalizePlace(raw);
+      setPlace(norm);
+      return norm;
     } catch {
       setPlace("error");
+      return null;
     }
   }, []);
 
+  const refreshSnapshots = useCallback(
+    async (forceServer = false) => {
+      if (!v050Ready && !forceServer) return;
+      try {
+        const raw = await read("/api/snapshots");
+        const norm = normalizeSnapshots(raw);
+        setSnapshots(norm.snapshots);
+        if (norm.latestDiff) {
+          setBuildDiff((prev) => prev ?? norm.latestDiff);
+        }
+      } catch {
+        /* keep local snapshots */
+      }
+    },
+    [v050Ready],
+  );
+
+  const refreshDiagnostics = useCallback(
+    async (forceServer = false) => {
+      if (!v050Ready && !forceServer) return;
+      try {
+        const raw = await read<{ diagnostics?: Array<Partial<LuauDiagnostic>> }>("/api/luau/check");
+        if (raw && Array.isArray(raw.diagnostics)) {
+          setServerDiagnostics(
+            raw.diagnostics
+              .filter((d): d is Partial<LuauDiagnostic> & { path: string; message: string } => Boolean(d && typeof d.path === "string" && typeof d.message === "string"))
+              .map((d) => ({
+                path: d.path,
+                line: typeof d.line === "number" && Number.isFinite(d.line) ? d.line : 1,
+                severity: d.severity === "warning" ? "warning" : "error",
+                code: typeof d.code === "string" ? d.code : "LUAU_CHECK",
+                message: d.message,
+              })),
+          );
+        }
+      } catch {
+        /* client-side analyzer remains active */
+      }
+    },
+    [v050Ready],
+  );
+
   const refreshAll = useCallback(async () => {
-    await Promise.all([refreshChats(), refreshThread(), refreshPlace()]);
+    const [, , nextPlace] = await Promise.all([refreshChats(), refreshThread(), refreshPlace()]);
     await refreshIdeas();
-  }, [refreshChats, refreshThread, refreshPlace, refreshIdeas]);
+    if (v050Ready) {
+      void refreshSnapshots(true);
+      if (nextPlace) void refreshDiagnostics(true);
+    }
+    return nextPlace;
+  }, [refreshChats, refreshThread, refreshPlace, refreshIdeas, refreshSnapshots, refreshDiagnostics, v050Ready]);
+
+  const pushLocalSnapshot = useCallback((label: string, snapPlace: Place | null, diff?: PlaceDiff | null) => {
+    if (!snapPlace) return;
+    const entry: PlaceSnapshot = {
+      id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      label,
+      created_at: Math.floor(Date.now() / 1000),
+      parts_count: Object.keys(snapPlace.instances || {}).length,
+      scripts_count: Object.keys(snapPlace.scripts || {}).length,
+      diff: diff || undefined,
+      place: clonePlace(snapPlace) || undefined,
+    };
+    setSnapshots((prev) => [entry, ...prev].slice(0, 30));
+  }, []);
 
   useEffect(() => {
     void refreshAll();
     read<{ version?: unknown }>("/api/version")
       .then((v) => {
-        if (v && typeof v.version === "string") setVersion(v.version);
+        if (v && typeof v.version === "string") {
+          setVersion(v.version);
+          if (isV050OrNewer(v.version)) {
+            setV050Ready(true);
+            void refreshSnapshots(true);
+            void refreshDiagnostics(true);
+          }
+        }
       })
       .catch(() => {});
     read<{
@@ -319,6 +428,8 @@ export function App() {
       model_configured?: unknown;
       workspace_mode?: unknown;
       model_id?: unknown;
+      version?: unknown;
+      sse_build_stream?: unknown;
     }>("/api/status")
       .then((s) => {
         if (!s || typeof s !== "object") return;
@@ -335,6 +446,9 @@ export function App() {
         if (typeof s.model_id === "string" && s.model_id.trim()) {
           setActiveModelLabel(s.model_id.trim().split("/").pop() || s.model_id.trim());
         }
+        if (s.sse_build_stream === true || (typeof s.version === "string" && isV050OrNewer(s.version))) {
+          setV050Ready(true);
+        }
       })
       .catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -342,7 +456,6 @@ export function App() {
   const prevChatRef = useRef<string | null>(null);
   const prevLenRef = useRef(0);
 
-  // Reset scroll to top on chat switch / initial load; auto-scroll to bottom when new lines arrive in the same chat.
   useEffect(() => {
     const el = threadRef.current;
     if (!el) return;
@@ -355,9 +468,14 @@ export function App() {
     prevLenRef.current = lines.length;
   }, [activeId, lines.length, notices.length, Boolean(building), hasConversation]);
 
-  // Global `/` shortcut jumps to chat filter on desktop or prompt box on mobile.
+  // Global keyboard shortcuts: Cmd+K / Ctrl+K opens Command Palette; `/` jumps to chat search
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+        return;
+      }
       if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
       const el = e.target as HTMLElement | null;
       if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
@@ -422,6 +540,8 @@ export function App() {
     if (activeId && text.trim()) slotWrite(draftKey(activeId), text);
     setText(slotRead<string>(draftKey(id), ""));
     slotWrite(draftKey(id), "");
+    setSelectedPath(null);
+    setBuildDiff(null);
     setMenuOpen(false);
     await refreshAll();
   };
@@ -439,6 +559,8 @@ export function App() {
       return;
     }
     setChatQuery("");
+    setSelectedPath(null);
+    setBuildDiff(null);
     setMenuOpen(false);
     await refreshAll();
     inputRef.current?.focus();
@@ -446,8 +568,10 @@ export function App() {
 
   const buildIdea = async (idea: Idea) => {
     const chatId = activeId || "default";
+    const beforePlace = clonePlace(placeRef.current);
     setLastTriedIdea(idea);
     begin(chatId, { build: idea.title });
+    const stopStream = subscribeBuildStream(setBuildPhase, v050Ready);
     let failure: string | null = null;
     try {
       const data = await post<{ ok?: boolean; error?: string }>("/api/ideas/build", { id: idea.id });
@@ -456,9 +580,16 @@ export function App() {
     } catch {
       failure = "Could not reach the OpenRO server.";
     }
+    stopStream();
+    setBuildPhase(null);
     end(chatId);
     if (failure) addNotice(chatId, { text: failure, bad: true });
-    await refreshAll();
+    const afterPlace = await refreshAll();
+    if (!failure && afterPlace) {
+      const diff = computePlaceDiff(beforePlace, afterPlace);
+      setBuildDiff(diff);
+      if (!v050Ready) pushLocalSnapshot(idea.title, afterPlace, diff);
+    }
     await new Promise((r) => setTimeout(r, 60));
     const active = document.activeElement;
     if (!active || active === document.body) {
@@ -468,12 +599,14 @@ export function App() {
     }
   };
 
-  const submitMessage = async () => {
-    const message = text.trim();
+  const submitPromptText = async (rawMessage: string, restoreOnFail = true) => {
+    const message = rawMessage.trim();
     if (!message || busy) return;
     const chatId = activeId || "default";
-    setText("");
+    const beforePlace = clonePlace(placeRef.current);
+    if (restoreOnFail) setText("");
     begin(chatId, { message });
+    const stopStream = subscribeBuildStream(setBuildPhase, v050Ready);
     let failure: string | null = null;
     try {
       const r = await fetch("/api/chat", {
@@ -496,14 +629,58 @@ export function App() {
     } catch {
       failure = SEND_FAILED;
     }
+    stopStream();
+    setBuildPhase(null);
     end(chatId);
     if (failure) {
       addNotice(chatId, { text: message, user: true });
       addNotice(chatId, { text: failure, bad: true });
-      setText(message);
+      if (restoreOnFail) setText(message);
     }
-    await refreshAll();
+    const afterPlace = await refreshAll();
+    if (!failure && afterPlace) {
+      const diff = computePlaceDiff(beforePlace, afterPlace);
+      setBuildDiff(diff);
+      if (!v050Ready) pushLocalSnapshot(message.slice(0, 36), afterPlace, diff);
+    }
     inputRef.current?.focus();
+  };
+
+  const submitMessage = () => submitPromptText(text, true);
+
+  const addSystem = async (sys: GameSystemDef) => {
+    if (!canBuild || busy) return;
+    const matchedIdea = ideas.find((i) => i.id === sys.defaultIdeaId || (i.skills.length === 1 && i.skills[0] === sys.id));
+    if (matchedIdea) {
+      await buildIdea(matchedIdea);
+      return;
+    }
+    if (v050Ready) {
+      const chatId = activeId || "default";
+      const beforePlace = clonePlace(placeRef.current);
+      begin(chatId, { build: sys.title });
+      const stopStream = subscribeBuildStream(setBuildPhase, true);
+      try {
+        const res = await post<{ ok?: boolean; error?: string }>("/api/skills/build", {
+          skill: sys.id,
+          name: sys.id,
+        });
+        stopStream();
+        setBuildPhase(null);
+        end(chatId);
+        if (res.ok) {
+          toast.success(`Added ${sys.title} (${sys.id}) to Studio`);
+          const afterPlace = await refreshAll();
+          if (afterPlace) setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+          return;
+        }
+      } catch {
+        stopStream();
+        setBuildPhase(null);
+        end(chatId);
+      }
+    }
+    await submitPromptText(sys.prompt, false);
   };
 
   const send = (e: FormEvent) => {
@@ -520,6 +697,7 @@ export function App() {
 
   const undoNow = async () => {
     const chatId = activeId || "default";
+    const beforePlace = clonePlace(placeRef.current);
     begin(chatId, { undo: true });
     let msg: string | null = null;
     let bad = false;
@@ -539,12 +717,226 @@ export function App() {
       bad = true;
     }
     end(chatId);
+    const afterPlace = await refreshAll();
+    if (!bad && afterPlace) {
+      setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+    }
     if (msg) {
       addNotice(chatId, { text: msg, bad });
       if (bad) toast.error(msg);
       else toast.success(msg);
     }
-    await refreshAll();
+  };
+
+  const handleSaveInstance = async (payload: InstanceEditPayload) => {
+    const beforePlace = clonePlace(placeRef.current);
+    const applyOptimistic = () => {
+      if (!beforePlace) return;
+      const updated: Place = {
+        scripts: { ...beforePlace.scripts },
+        instances: {
+          ...beforePlace.instances,
+          [payload.path]: { class_name: payload.class_name, properties: payload.properties },
+        },
+      };
+      setPlace(updated);
+      setBuildDiff(computePlaceDiff(beforePlace, updated));
+    };
+
+    if (!v050Ready) {
+      applyOptimistic();
+      toast.success(`Updated ${payload.path} properties in workbench`);
+      return;
+    }
+
+    try {
+      const res = await post<{ ok?: boolean; error?: string }>("/api/place/instance", payload);
+      if (res.ok) {
+        toast.success(`Saved ${payload.path} properties`);
+        const afterPlace = await refreshPlace();
+        if (afterPlace) setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+        void refreshSnapshots(true);
+      } else {
+        applyOptimistic();
+        toast.error(res.error || "Could not persist instance properties on server.");
+      }
+    } catch {
+      applyOptimistic();
+      toast.success(`Applied ${payload.path} locally in workbench`);
+    }
+  };
+
+  const handleImportRbxlx = async (filename: string, xml: string) => {
+    const parsed = parseRbxlxXml(xml);
+    if (!parsed.ok) {
+      toast.error(parsed.error);
+      return;
+    }
+    const beforePlace = clonePlace(placeRef.current);
+    const partN = Object.keys(parsed.place.instances).length;
+    const scrN = Object.keys(parsed.place.scripts).length;
+
+    if (v050Ready) {
+      try {
+        const res = await post<{ ok?: boolean; error?: string }>("/api/import/rbxlx", {
+          filename,
+          label: filename,
+          xml,
+        });
+        if (res.ok) {
+          toast.success(`Imported ${filename} (${partN} parts, ${scrN} scripts)`);
+          const afterPlace = await refreshAll();
+          if (afterPlace) setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+          return;
+        }
+        toast.error(res.error || "Server rejected .rbxlx import.");
+        return;
+      } catch {
+        /* fall back to local parsed place */
+      }
+    }
+
+    setPlace(parsed.place);
+    const diff = computePlaceDiff(beforePlace, parsed.place);
+    setBuildDiff(diff);
+    pushLocalSnapshot(`Imported ${filename}`, parsed.place, diff);
+    toast.success(`Imported ${filename} (${partN} parts, ${scrN} scripts)`);
+  };
+
+  const onFileInputChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    file.text().then(
+      (xml) => void handleImportRbxlx(file.name, xml),
+      () => toast.error("Could not read selected file."),
+    );
+  };
+
+  const onAppDragOver = (e: DragEvent<HTMLDivElement>) => {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    if (!dragActive) setDragActive(true);
+  };
+
+  const onAppDragLeave = (e: DragEvent<HTMLDivElement>) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+    setDragActive(false);
+  };
+
+  const onAppDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDragActive(false);
+    const file = [...e.dataTransfer.files].find((f) => /\.(rbxlx|xml)$/i.test(f.name)) || e.dataTransfer.files[0];
+    if (!file) return;
+    file.text().then(
+      (xml) => void handleImportRbxlx(file.name, xml),
+      () => toast.error("Could not read dropped file."),
+    );
+  };
+
+  const handleCreateSnapshot = async (label: string) => {
+    const cur = clonePlace(placeRef.current);
+    if (!cur) {
+      toast.error("Nothing in your place to snapshot yet.");
+      return;
+    }
+    if (v050Ready) {
+      try {
+        const res = await post<{ ok?: boolean; error?: string }>("/api/snapshots", { label });
+        if (res.ok) {
+          toast.success(`Saved snapshot "${label}"`);
+          await refreshSnapshots(true);
+          return;
+        }
+      } catch {
+        /* fallback */
+      }
+    }
+    pushLocalSnapshot(label, cur, buildDiff);
+    toast.success(`Saved snapshot "${label}"`);
+  };
+
+  const handleRestoreSnapshot = async (snap: PlaceSnapshot) => {
+    const beforePlace = clonePlace(placeRef.current);
+    if (v050Ready && !snap.id.startsWith("local-")) {
+      try {
+        const res = await post<{ ok?: boolean; error?: string }>(`/api/snapshots/${encodeURIComponent(snap.id)}/restore`, {});
+        if (res.ok) {
+          toast.success(`Restored snapshot "${snap.label}"`);
+          setSnapshotsOpen(false);
+          const afterPlace = await refreshAll();
+          if (afterPlace) setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+          return;
+        }
+        toast.error(res.error || "Could not restore snapshot.");
+        return;
+      } catch {
+        /* fallback */
+      }
+    }
+    if (snap.place) {
+      setPlace(clonePlace(snap.place));
+      setBuildDiff(computePlaceDiff(beforePlace, snap.place));
+      setSnapshotsOpen(false);
+      toast.success(`Restored snapshot "${snap.label}"`);
+    }
+  };
+
+  const handleExportSnapshot = async (snap: PlaceSnapshot) => {
+    try {
+      let xml = "";
+      if (v050Ready && !snap.id.startsWith("local-")) {
+        const r = await fetch(`/api/snapshots/${encodeURIComponent(snap.id)}/rbxlx`, { cache: "no-store" });
+        if (r.ok) xml = await r.text();
+      }
+      if (!xml && snap.place) {
+        xml = serializeRbxlx(snap.label, snap.place);
+      }
+      if (!xml.includes("<roblox")) throw new Error("no xml");
+      const slug = snap.label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "snapshot";
+      const blob = new Blob([xml], { type: "application/xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${slug}.rbxlx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast.success(`Exported ${slug}.rbxlx`);
+    } catch {
+      toast.error("Could not export snapshot .rbxlx.");
+    }
+  };
+
+  const handleSelectPartFromStage = (path: string) => {
+    setSelectedPath(path);
+    if (narrow) {
+      setShelfOpen(true);
+    } else if (shelfCollapsed) {
+      setShelfCollapsed(false);
+    }
+  };
+
+  const triggerExportFromPalette = async () => {
+    try {
+      const r = await fetch("/api/export/rbxlx", { cache: "no-store" });
+      if (!r.ok) throw new Error("export failed");
+      const xml = await r.text();
+      const blob = new Blob([xml], { type: "application/xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "openro-place.rbxlx";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast.success("Exported openro-place.rbxlx");
+    } catch {
+      toast.error("Could not export .rbxlx right now.");
+    }
   };
 
   const onUndoClick = (e: MouseEvent<HTMLDivElement>) => {
@@ -594,14 +986,32 @@ export function App() {
         </div>
       )}
 
-      <Button
-        variant="secondary"
-        onClick={() => void newChat()}
-        className="w-full justify-start border-ink-button bg-ink-button text-ink-button-fg hover:bg-ink-button/90 max-md:min-h-11"
-      >
-        <Plus className="size-4" strokeWidth={1.5} aria-hidden />
-        New chat
-      </Button>
+      <div className="flex flex-col gap-1.5">
+        <Button
+          variant="secondary"
+          onClick={() => void newChat()}
+          className="w-full justify-start border-ink-button bg-ink-button text-ink-button-fg hover:bg-ink-button/90 max-md:min-h-11"
+        >
+          <Plus className="size-4" strokeWidth={1.5} aria-hidden />
+          New chat
+        </Button>
+
+        <Button
+          variant="outline"
+          onClick={() => {
+            setMenuOpen(false);
+            setPaletteOpen(true);
+          }}
+          aria-label="Open command palette"
+          className="w-full justify-between bg-board/50 font-normal text-ink-2 hover:bg-board hover:text-ink max-md:min-h-11"
+        >
+          <span className="inline-flex min-w-0 items-center gap-2">
+            <Command className="size-3.5 flex-none text-icon" strokeWidth={1.5} aria-hidden />
+            <span className="truncate text-sm">Command palette</span>
+          </span>
+          <Kbd className="px-1.5 font-mono">⌘K</Kbd>
+        </Button>
+      </div>
 
       <InputGroup className="bg-board/45">
         <InputGroupAddon align="inline-start" className="ps-2.5">
@@ -710,12 +1120,12 @@ export function App() {
 
         <div className="flex items-center justify-between gap-2 text-xs text-ink-2">
           <a
-            href={RELEASES_URL + (version || "0.4.0")}
+            href={RELEASES_URL + (version || "0.5.0")}
             target="_blank"
             rel="noreferrer"
             className="inline-flex min-h-11 items-center gap-1 rounded-sm px-1 font-mono text-xs text-ink-2 outline-none hover:text-ink hover:underline md:min-h-7"
           >
-            <span>OpenRO v{version || "0.4.0"}</span>
+            <span>OpenRO v{version || "0.5.0"}</span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
           <span className="truncate text-right text-xs text-ink-3">
@@ -736,7 +1146,34 @@ export function App() {
 
   return (
     <MotionConfig reducedMotion="user">
-      <div className="flex h-dvh min-h-0 w-full overflow-hidden bg-canvas text-ink" data-app="openro">
+      <div
+        className="relative flex h-dvh min-h-0 w-full overflow-hidden bg-canvas text-ink"
+        data-app="openro"
+        onDragOver={onAppDragOver}
+        onDragLeave={onAppDragLeave}
+        onDrop={onAppDrop}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".rbxlx,.xml"
+          hidden
+          onChange={onFileInputChange}
+        />
+
+        {dragActive && (
+          <div
+            role="status"
+            className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-canvas/85 p-6"
+          >
+            <div className="flex flex-col items-center gap-2 rounded-panel border-2 border-dashed border-blue bg-surface px-8 py-6 text-center shadow-lift">
+              <Upload className="size-6 text-blue" strokeWidth={1.5} aria-hidden />
+              <p className="text-base font-medium text-ink">Drop .rbxlx XML file to import</p>
+              <p className="text-sm text-ink-2">Parses Workspace parts, CFrame/Size/Color, and Luau scripts directly into Studio.</p>
+            </div>
+          </div>
+        )}
+
         <a className="skip" href="#composer-input">
           Skip to message box
         </a>
@@ -764,7 +1201,7 @@ export function App() {
                       <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/30" />
                       <Drawer.Content
                         onEscapeKeyDown={(e) => {
-                          if (settingsOpen) {
+                          if (settingsOpen || paletteOpen || snapshotsOpen) {
                             e.preventDefault();
                             return;
                           }
@@ -778,7 +1215,7 @@ export function App() {
                       >
                         <Drawer.Title className="sr-only">Chats and Studio controls</Drawer.Title>
                         <Drawer.Description className="sr-only">
-                          Switch Studio chats, start a new chat, filter conversations, and toggle Light or Dark appearance.
+                          Switch Studio chats, start a new chat, search commands, and open Settings.
                         </Drawer.Description>
                         {rail}
                       </Drawer.Content>
@@ -829,6 +1266,17 @@ export function App() {
                           builtTitles={builtTitles}
                           place={place}
                           error={place === "error"}
+                          selectedPath={selectedPath}
+                          onSelectPath={setSelectedPath}
+                          onSaveInstance={handleSaveInstance}
+                          onImportClick={() => fileInputRef.current?.click()}
+                          onOpenSnapshots={() => {
+                            setShelfOpen(false);
+                            setSnapshotsOpen(true);
+                          }}
+                          snapshotCount={snapshots.length}
+                          buildDiff={buildDiff}
+                          serverDiagnostics={serverDiagnostics}
                         />
                       </div>
                     </Drawer.Content>
@@ -877,22 +1325,36 @@ export function App() {
                   </Button>
                 </div>
               ) : !hasConversation ? (
-                <BlueprintWorkbench
-                  ideas={ideas}
-                  builtTitles={builtTitles}
-                  canBuild={canBuild}
-                  cantBuildWhy={cantBuildWhy}
-                  busy={busy}
-                  buildingTitle={building?.build}
-                  onBuild={(idea) => void buildIdea(idea)}
-                />
+                <>
+                  <BlueprintWorkbench
+                    ideas={ideas}
+                    builtTitles={builtTitles}
+                    canBuild={canBuild}
+                    cantBuildWhy={cantBuildWhy}
+                    busy={busy}
+                    buildingTitle={building?.build}
+                    onBuild={(idea) => void buildIdea(idea)}
+                  />
+                  <SystemLibrary
+                    place={place}
+                    canBuild={canBuild}
+                    busy={busy}
+                    buildingTitle={building?.build}
+                    onAddSystem={(sys) => void addSystem(sys)}
+                  />
+                </>
               ) : (
                 <>
                   <div className="sr-only" id="stage-title">
                     Studio build thread
                   </div>
                   {place && place !== "error" && totalPieces > 0 && (
-                    <StagePreview place={place} theme={theme} />
+                    <StagePreview
+                      place={place}
+                      theme={theme}
+                      selectedPath={selectedPath}
+                      onSelectPart={handleSelectPartFromStage}
+                    />
                   )}
                   <ThreadFeed
                     lines={lines}
@@ -905,6 +1367,7 @@ export function App() {
                     buildingIdea={building?.build}
                     freshFrom={lines.length}
                     lastTriedIdea={lastTriedIdea}
+                    buildPhase={buildPhase}
                     onBuild={(idea) => void buildIdea(idea)}
                   />
                   {!building && ideas.some((i) => !builtTitles.includes(i.title)) && !lines.some((l) => l.startsWith("OpenRO: That landed.")) && (
@@ -917,12 +1380,19 @@ export function App() {
                       onBuild={(idea) => void buildIdea(idea)}
                     />
                   )}
+                  <SystemLibrary
+                    place={place}
+                    canBuild={canBuild}
+                    busy={busy}
+                    buildingTitle={building?.build}
+                    onAddSystem={(sys) => void addSystem(sys)}
+                  />
                 </>
               )}
             </div>
           </div>
 
-          {/* Hairline Bottom Composer Dock (zero torn-paper polygon, zero -me-2 overflow) */}
+          {/* Hairline Bottom Composer Dock */}
           <div data-answers="4" className="flex-none border-t border-hairline bg-surface">
             <div className="mx-auto flex w-full max-w-[840px] flex-col gap-2 px-3 py-2.5 md:px-6 md:py-3.5">
               <form id="composer" onSubmit={send} className="grid gap-2 sm:flex sm:items-end">
@@ -1006,11 +1476,14 @@ export function App() {
                     <span aria-hidden>·</span>
                     <Kbd className="px-1.5 font-mono">Shift+Enter</Kbd>
                     <span>new line</span>
+                    <span aria-hidden>·</span>
+                    <Kbd className="px-1.5 font-mono">⌘K</Kbd>
+                    <span>commands</span>
                   </span>
                   {undoReason && <span id="undo-reason">{undoReason}</span>}
                 </div>
 
-                {/* Always-reachable update controls at every viewport width (including 390px) per BANNER-FIX-BRIEF */}
+                {/* Always-reachable update controls at every viewport width */}
                 <div className="flex items-center gap-1.5">
                   {update.isDismissedAvailable && (
                     <Button
@@ -1043,7 +1516,7 @@ export function App() {
         </main>
 
         {!narrow && (
-          <div className="flex-none border-l border-hairline" style={{ width: shelfCollapsed ? "auto" : 300 }}>
+          <div className="flex-none border-l border-hairline" style={{ width: shelfCollapsed ? "auto" : 316 }}>
             <PartsShelf
               gameName={shell.gameName}
               builtTitles={builtTitles}
@@ -1052,9 +1525,44 @@ export function App() {
               collapsed={shelfCollapsed}
               onToggle={() => setShelfCollapsed((c) => !c)}
               answerAttr
+              selectedPath={selectedPath}
+              onSelectPath={setSelectedPath}
+              onSaveInstance={handleSaveInstance}
+              onImportClick={() => fileInputRef.current?.click()}
+              onOpenSnapshots={() => setSnapshotsOpen(true)}
+              snapshotCount={snapshots.length}
+              buildDiff={buildDiff}
+              serverDiagnostics={serverDiagnostics}
             />
           </div>
         )}
+
+        <CommandPalette
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
+          place={place}
+          canBuild={canBuild}
+          busy={busy}
+          canUndo={canUndo}
+          onAddSystem={(sys) => void addSystem(sys)}
+          onSelectPath={handleSelectPartFromStage}
+          onNewChat={() => void newChat()}
+          onExportRbxlx={() => void triggerExportFromPalette()}
+          onImportRbxlxClick={() => fileInputRef.current?.click()}
+          onOpenSnapshots={() => setSnapshotsOpen(true)}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onTriggerUndo={() => void undoNow()}
+        />
+
+        <SnapshotsDialog
+          open={snapshotsOpen}
+          onOpenChange={setSnapshotsOpen}
+          snapshots={snapshots}
+          busy={busy}
+          onCreateSnapshot={(lbl) => void handleCreateSnapshot(lbl)}
+          onRestoreSnapshot={(snap) => void handleRestoreSnapshot(snap)}
+          onExportSnapshot={(snap) => void handleExportSnapshot(snap)}
+        />
 
         <SettingsDialog
           theme={theme}
