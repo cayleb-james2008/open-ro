@@ -1,19 +1,60 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ChevronDown, Coins, Gamepad2, RotateCcw, ShoppingBag, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useReducedMotion } from "motion/react";
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  ChevronDown,
+  Coins,
+  Crosshair,
+  Eye,
+  Gamepad2,
+  Layers,
+  RotateCcw,
+  ShoppingBag,
+  Sparkles,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { Pill } from "@/components/kibo-ui/pill";
 import { Expandable, ExpandableContent, ExpandableTrigger } from "@/components/ui/expandable";
 import type { Place } from "./data";
 
+type CameraMode = "top-down" | "side-view";
+
+type StageObjKind =
+  | "spawn"
+  | "checkpoint"
+  | "lava"
+  | "ice"
+  | "jump"
+  | "moving"
+  | "speed"
+  | "portal"
+  | "coin"
+  | "dropper"
+  | "npc"
+  | "vehicle"
+  | "part";
+
 type StageObj = {
   id: string;
+  explorerPath: string;
   label: string;
-  kind: "spawn" | "checkpoint" | "lava" | "ice" | "jump" | "speed" | "portal" | "coin" | "part";
+  kind: StageObjKind;
+  // Logical world coordinates in a 620x240 top-down arena + elevation (yElev) for side-view
   x: number;
   y: number;
   w: number;
   h: number;
+  elev: number; // height above floor for side-view
+  color?: string;
   stage?: number;
+  portalPair?: string;
+  moveAmp?: number;
+  moveSpeed?: number;
+  moveAxis?: "x" | "y";
 };
 
 type ParsedWorld = {
@@ -23,23 +64,67 @@ type ParsedWorld = {
   shopItem: string | null;
   shopPrice: number;
   hasDayNight: boolean;
+  hasWeather: boolean;
   hasCheckpoints: number;
+  hasDropper: boolean;
   themeLabel: string;
 };
+
+type RenderHitbox = {
+  objId: string;
+  explorerPath: string;
+  label: string;
+  rx: number;
+  ry: number;
+  rw: number;
+  rh: number;
+};
+
+type DropperOrb = {
+  id: number;
+  x: number;
+  y: number;
+  vx: number;
+  collected: boolean;
+};
+
+type PhysicsState = {
+  x: number;
+  y: number;
+  z: number; // altitude above ground/platform (>= 0)
+  vx: number;
+  vy: number;
+  vz: number;
+  grounded: boolean;
+  coyote: number;
+  hazardFlash: number; // 0..1 red overlay fade
+  portalFlash: number; // 0..1 purple warp fade
+  portalCooldown: number;
+  speedBoost: number;
+  onIce: boolean;
+  time: number;
+  lastMoveDx: number;
+  lastMoveDy: number;
+  dropperTimer: number;
+  orbs: DropperOrb[];
+  nextOrbId: number;
+};
+
+const CANVAS_W = 640;
+const CANVAS_H = 248;
+const FLOOR_Y_SIDE = 196;
 
 function parseWorld(place: Place): ParsedWorld {
   const scripts = place.scripts || {};
   const instances = place.instances || {};
   const allSrc = Object.values(scripts).join("\n");
-  const leafNames = [...Object.keys(instances), ...Object.keys(scripts)]
-    .map((p) => p.split(".").pop() || p)
-    .join(" ");
+  const scriptKeys = Object.keys(scripts);
+  const instKeys = Object.keys(instances);
+  const leafNames = [...instKeys, ...scriptKeys].map((p) => p.split(".").pop() || p).join(" ");
 
   const curMatch = allSrc.match(/local CURRENCY\s*=\s*"([^"]+)"/) || allSrc.match(/stat\.Name\s*=\s*"([^"]+)"/);
   const currencyName = curMatch?.[1] || "Coins";
-  const startMatch =
-    allSrc.match(/local START_AMOUNT\s*=\s*(\d+)/) ||
-    allSrc.match(/stat\.Value\s*=\s*(\d+)/);
+  const startMatch = allSrc.match(/local START_AMOUNT\s*=\s*(\d+)/) || allSrc.match(/stat\.Value\s*=\s*(\d+)/);
   const startAmount = startMatch ? Number(startMatch[1]) : 40;
 
   const itemMatch = allSrc.match(/local ITEM_NAME\s*=\s*"([^"]+)"/);
@@ -50,162 +135,826 @@ function parseWorld(place: Place): ParsedWorld {
   const stagesMatch = allSrc.match(/local STAGES\s*=\s*(\d+)/);
   const hasCheckpoints = stagesMatch ? Math.min(8, Math.max(2, Number(stagesMatch[1]))) : 0;
   const hasDayNight = /ClockTime/.test(allSrc);
+  const hasWeather = /WeatherCycle|Atmosphere|Rain/i.test(leafNames + " " + allSrc);
+  const hasDropper = /Dropper|Conveyor|TycoonDropper/i.test(leafNames + " " + allSrc);
+
   const themeLabel = /\b(ice|frost)/i.test(leafNames)
     ? "Ice Parkour"
     : /\blava/i.test(leafNames)
       ? "Lava Obby"
-      : /\bround/i.test(leafNames)
-        ? "Arena"
-        : shopItem
-          ? "Tycoon"
-          : hasDayNight
+      : hasDropper || shopItem
+        ? "Tycoon"
+        : /\b(round|arena|sword)/i.test(leafNames)
+          ? "Combat Arena"
+          : hasWeather || hasDayNight
             ? "Live World"
             : "Roblox Place";
 
   const objects: StageObj[] = [];
-  let cursorX = 72;
+  let cursorX = 112;
 
   const pushObj = (o: Omit<StageObj, "x"> & { x?: number }) => {
-    const x = o.x ?? cursorX;
+    const x = o.x ?? Math.min(CANVAS_W - o.w - 20, cursorX);
     objects.push({ ...o, x });
-    if (o.x === undefined) cursorX += o.w + 26;
+    if (o.x === undefined) cursorX += o.w + 22;
   };
 
-  // Spawn pad first if present or implied
   const instEntries = Object.entries(instances);
-  const hasSpawn = instEntries.some(([k, v]) => k.toLowerCase().includes("spawn") || v.class_name === "SpawnLocation");
-  if (hasSpawn || instEntries.length > 0 || Object.keys(scripts).length > 0) {
-    pushObj({ id: "spawn", label: "SpawnPad", kind: "spawn", x: 54, y: 122, w: 58, h: 46 });
-    cursorX = 138;
+  const spawnEntry = instEntries.find(([k, v]) => k.toLowerCase().includes("spawn") || v.class_name === "SpawnLocation");
+  const spawnPath = spawnEntry?.[0] || scriptKeys.find((k) => /spawn/i.test(k)) || "Workspace.SpawnPad";
+
+  if (spawnEntry || instEntries.length > 0 || scriptKeys.length > 0) {
+    const col = typeof spawnEntry?.[1]?.properties?.Color === "string" ? spawnEntry[1].properties.Color : undefined;
+    pushObj({
+      id: "spawn",
+      explorerPath: spawnPath,
+      label: spawnEntry ? spawnEntry[0].split(".").pop() || "SpawnPad" : "SpawnPad",
+      kind: "spawn",
+      x: 34,
+      y: 126,
+      w: 58,
+      h: 48,
+      elev: 0,
+      color: col,
+    });
   }
 
-  // Real Workspace instances
+  let portalCount = 0;
   for (const [path, rec] of instEntries) {
     const name = path.split(".").pop() || path;
     const low = name.toLowerCase();
+    const col = typeof rec.properties?.Color === "string" ? rec.properties.Color : undefined;
     if (low.includes("spawn") || rec.class_name === "SpawnLocation") continue;
-    if (low.includes("checkpoint")) continue;
-    if (low.includes("lava") || low.includes("kill") || low.includes("hazard")) {
-      pushObj({ id: path, label: name, kind: "lava", y: 118, w: 58, h: 52 });
-    } else if (low.includes("ice") || low.includes("frost")) {
-      pushObj({ id: path, label: name, kind: "ice", y: 116, w: 74, h: 54 });
+    if (low.includes("checkpoint") || low.includes("stage")) continue;
+
+    if (low.includes("lava") || low.includes("kill") || low.includes("hazard") || low.includes("laser") || low.includes("acid")) {
+      pushObj({ id: path, explorerPath: path, label: name, kind: "lava", y: 124, w: 62, h: 52, elev: 0, color: col });
+    } else if (low.includes("moving") || low.includes("platform")) {
+      pushObj({
+        id: path,
+        explorerPath: path,
+        label: name,
+        kind: "moving",
+        y: 120,
+        w: 76,
+        h: 42,
+        elev: 52,
+        color: col,
+        moveAmp: 34,
+        moveSpeed: 1.7,
+        moveAxis: "x",
+      });
     } else if (low.includes("jump") || low.includes("bounce")) {
-      pushObj({ id: path, label: name, kind: "jump", y: 124, w: 52, h: 42 });
+      pushObj({ id: path, explorerPath: path, label: name, kind: "jump", y: 126, w: 54, h: 44, elev: 0, color: col });
+    } else if (low.includes("ice") || low.includes("frost")) {
+      pushObj({ id: path, explorerPath: path, label: name, kind: "ice", y: 122, w: 72, h: 52, elev: 0, color: col });
     } else if (low.includes("speed") || low.includes("boost")) {
-      pushObj({ id: path, label: name, kind: "speed", y: 124, w: 54, h: 42 });
+      pushObj({ id: path, explorerPath: path, label: name, kind: "speed", y: 126, w: 54, h: 44, elev: 0, color: col });
     } else if (low.includes("portal") || low.includes("teleport")) {
-      pushObj({ id: path, label: name, kind: "portal", y: 116, w: 46, h: 46 });
+      portalCount++;
+      pushObj({
+        id: path,
+        explorerPath: path,
+        label: name,
+        kind: "portal",
+        y: portalCount % 2 === 1 ? 62 : 164,
+        w: 44,
+        h: 44,
+        elev: portalCount % 2 === 1 ? 0 : 42,
+        color: col,
+      });
+    } else if (low.includes("dropper") || low.includes("conveyor") || low.includes("collector")) {
+      pushObj({ id: path, explorerPath: path, label: name, kind: "dropper", y: 54, w: 66, h: 38, elev: 28, color: col });
+    } else if (low.includes("npc") || low.includes("guard")) {
+      pushObj({
+        id: path,
+        explorerPath: path,
+        label: name,
+        kind: "npc",
+        y: 168,
+        w: 36,
+        h: 36,
+        elev: 0,
+        color: col,
+        moveAmp: 46,
+        moveSpeed: 1.4,
+        moveAxis: "x",
+      });
+    } else if (low.includes("vehicle")) {
+      pushObj({ id: path, explorerPath: path, label: name, kind: "vehicle", y: 174, w: 62, h: 36, elev: 0, color: col });
     } else if (low.includes("coin") || low.includes("gold") || low.includes("gem")) {
-      pushObj({ id: path, label: name, kind: "coin", y: 82, w: 28, h: 28 });
+      pushObj({ id: path, explorerPath: path, label: name, kind: "coin", y: 74, w: 24, h: 24, elev: 36, color: col });
     } else {
-      pushObj({ id: path, label: name, kind: "part", y: 120, w: 58, h: 46 });
+      pushObj({ id: path, explorerPath: path, label: name, kind: "part", y: 124, w: 58, h: 46, elev: 20, color: col });
     }
   }
 
+  // Pair any portals cleanly
+  const portals = objects.filter((o) => o.kind === "portal");
+  if (portals.length >= 2) {
+    portals[0].portalPair = portals[1].id;
+    portals[1].portalPair = portals[0].id;
+  }
+
+  // Script-driven virtual objects when not already placed as Workspace instances
+  const hasMovingScript = scriptKeys.some((k) => /moving/i.test(k));
+  if (hasMovingScript && !objects.some((o) => o.kind === "moving")) {
+    const p = scriptKeys.find((k) => /moving/i.test(k)) || "ServerScriptService.MovingPlatform";
+    objects.push({
+      id: "virtual-moving",
+      explorerPath: p,
+      label: "MovingPlat",
+      kind: "moving",
+      x: 270,
+      y: 120,
+      w: 66,
+      h: 40,
+      elev: 36,
+      moveAmp: 42,
+      moveSpeed: 1.7,
+      moveAxis: "x",
+    });
+  }
+
+  const hasDropperScript = scriptKeys.some((k) => /dropper|tycoon/i.test(k));
+  if (hasDropperScript && !objects.some((o) => o.kind === "dropper")) {
+    const p = scriptKeys.find((k) => /dropper|tycoon/i.test(k)) || "ServerScriptService.TycoonDropper";
+    objects.push({
+      id: "virtual-dropper",
+      explorerPath: p,
+      label: "Dropper",
+      kind: "dropper",
+      x: 340,
+      y: 44,
+      w: 64,
+      h: 34,
+      elev: 26,
+    });
+  }
+
   // Stage checkpoints spawned by Checkpoints Luau script
+  const cpPath = scriptKeys.find((k) => /checkpoint/i.test(k)) || "ServerScriptService.Checkpoints";
+  const cpXs = [194, 308, 434, 548];
   for (let s = 1; s <= Math.min(4, hasCheckpoints); s++) {
-    const cx = Math.min(540, 150 + s * 96);
+    const cx = cpXs[s - 1] ?? Math.min(CANVAS_W - 64, 150 + s * 102);
     objects.push({
       id: `cp-${s}`,
+      explorerPath: cpPath,
       label: `Stage ${s}`,
       kind: "checkpoint",
       x: cx,
-      y: s % 2 === 0 ? 74 : 162,
-      w: 50,
+      y: s % 2 === 0 ? 48 : 182,
+      w: 54,
       h: 34,
+      elev: s % 2 === 0 ? 64 : 28,
       stage: s,
     });
   }
 
-  // Collectible coins if currency or coins exist
-  if (/leaderstats|Coin|Gold|Gem/i.test(allSrc)) {
-    for (let c = 0; c < 3; c++) {
+  // Collectible coins if currency, coin spawner, or dropper exists
+  const curPath =
+    scriptKeys.find((k) => /coin|currency|dropper|quest/i.test(k)) ||
+    scriptKeys[0] ||
+    spawnPath;
+  if (/leaderstats|Coin|Gold|Gem|Dropper|Currency/i.test(allSrc)) {
+    for (let c = 0; c < 4; c++) {
       objects.push({
         id: `coin-${c}`,
+        explorerPath: curPath,
         label: currencyName,
         kind: "coin",
-        x: 185 + c * 130,
-        y: c % 2 === 0 ? 64 : 184,
+        x: 158 + c * 116,
+        y: c % 2 === 0 ? 64 : 186,
         w: 22,
         h: 22,
+        elev: c % 2 === 0 ? 54 : 26,
       });
     }
   }
 
-  return { objects, currencyName, startAmount, shopItem, shopPrice, hasDayNight, hasCheckpoints, themeLabel };
+  return {
+    objects,
+    currencyName,
+    startAmount,
+    shopItem,
+    shopPrice,
+    hasDayNight,
+    hasWeather,
+    hasCheckpoints,
+    hasDropper: hasDropper || hasDropperScript,
+    themeLabel,
+  };
 }
 
-export function StagePreview({ place, theme }: { place: Place; theme: "light" | "dark" }) {
+function liveObjPos(obj: StageObj, t: number): { x: number; y: number } {
+  if (!obj.moveAmp || !obj.moveSpeed) return { x: obj.x, y: obj.y };
+  const offset = Math.sin(t * obj.moveSpeed) * obj.moveAmp;
+  return obj.moveAxis === "y"
+    ? { x: obj.x, y: Math.max(24, Math.min(CANVAS_H - obj.h - 24, obj.y + offset)) }
+    : { x: Math.max(24, Math.min(CANVAS_W - obj.w - 24, obj.x + offset)), y: obj.y };
+}
+
+export function StagePreview({
+  place,
+  theme,
+  selectedPath,
+  onSelectPart,
+}: {
+  place: Place;
+  theme: "light" | "dark";
+  selectedPath?: string | null;
+  onSelectPart?: (path: string) => void;
+}) {
+  const reduce = useReducedMotion();
   const world = useMemo(() => parseWorld(place), [place]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const hitboxesRef = useRef<RenderHitbox[]>([]);
+  const keysRef = useRef<Set<string>>(new Set());
 
-  const [avatar, setAvatar] = useState({ x: 82, y: 144, jumpZ: 0 });
+  const [cameraMode, setCameraMode] = useState<CameraMode>("top-down");
   const [stage, setStage] = useState(1);
   const [balance, setBalance] = useState(world.startAmount);
+  const [respawns, setRespawns] = useState(0);
+  const [collected, setCollected] = useState<string[]>([]);
+  const [ownedItem, setOwnedItem] = useState<string | null>(null);
+  const [statusLine, setStatusLine] = useState("Click canvas + use WASD/Arrows & Space to playtest, or click any part to inspect it.");
+  const [clockHour, setClockHour] = useState(11);
+  const [stageOpen, setStageOpen] = useState(true);
+  const [renderTick, setRenderTick] = useState(0);
+
+  const stageRef = useRef(stage);
+  stageRef.current = stage;
+  const collectedRef = useRef<Set<string>>(new Set(collected));
+  collectedRef.current = new Set(collected);
+  const ownedRef = useRef(ownedItem);
+  ownedRef.current = ownedItem;
+
+  const physRef = useRef<PhysicsState>({
+    x: 64,
+    y: 150,
+    z: 0,
+    vx: 0,
+    vy: 0,
+    vz: 0,
+    grounded: true,
+    coyote: 0,
+    hazardFlash: 0,
+    portalFlash: 0,
+    portalCooldown: 0,
+    speedBoost: 0,
+    onIce: false,
+    time: 0,
+    lastMoveDx: 0,
+    lastMoveDy: 0,
+    dropperTimer: 0,
+    orbs: [],
+    nextOrbId: 1,
+  });
+
   useEffect(() => {
     setBalance(world.startAmount);
   }, [world.startAmount]);
-  const [collected, setCollected] = useState<string[]>([]);
-  const [ownedItem, setOwnedItem] = useState<string | null>(null);
-  const [statusLine, setStatusLine] = useState("Use arrow buttons or WASD to test your Workspace parts.");
-  const [clockHour, setClockHour] = useState(11);
-  const [stageOpen, setStageOpen] = useState(true);
+
+  const respawnPoint = useCallback(() => {
+    const cp = world.objects.find((o) => o.kind === "checkpoint" && o.stage === stageRef.current);
+    if (cp) return { x: cp.x + cp.w / 2, y: cp.y + cp.h / 2, z: cp.elev };
+    const sp = world.objects.find((o) => o.kind === "spawn");
+    if (sp) return { x: sp.x + sp.w / 2, y: sp.y + sp.h / 2, z: 0 };
+    return { x: 64, y: 150, z: 0 };
+  }, [world.objects]);
 
   const resetPlay = useCallback(() => {
-    setAvatar({ x: 82, y: 144, jumpZ: 0 });
+    const sp = world.objects.find((o) => o.kind === "spawn");
+    physRef.current = {
+      x: sp ? sp.x + sp.w / 2 : 64,
+      y: sp ? sp.y + sp.h / 2 : 150,
+      z: 0,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      grounded: true,
+      coyote: 0,
+      hazardFlash: 0,
+      portalFlash: 0,
+      portalCooldown: 0,
+      speedBoost: 0,
+      onIce: false,
+      time: 0,
+      lastMoveDx: 0,
+      lastMoveDy: 0,
+      dropperTimer: 0,
+      orbs: [],
+      nextOrbId: 1,
+    };
     setStage(1);
+    setBalance(world.startAmount);
+    setRespawns(0);
     setCollected([]);
-    setStatusLine("Avatar reset to SpawnPad.");
-  }, []);
+    setStatusLine("Playtest reset to SpawnPad.");
+    setRenderTick((n) => n + 1);
+  }, [world.objects, world.startAmount]);
 
-  const moveAvatar = useCallback(
-    (dx: number, dy: number, jump = false) => {
-      const speedMult = ownedItem ? 1.55 : 1;
-      setAvatar((prev) => {
-        const nx = Math.max(24, Math.min(596, prev.x + dx * speedMult));
-        const ny = Math.max(28, Math.min(208, prev.y + dy * speedMult));
-        let jumpZ = jump ? 18 : 0;
+  // Physics step (used both at 60fps via rAF and for single discrete button taps)
+  const stepPhysics = useCallback(
+    (dt: number, pulseDx = 0, pulseDy = 0, forceJump = false) => {
+      const p = physRef.current;
+      const prevTime = p.time;
+      p.time += dt;
 
-        // Check interactions against real parsed objects
-        for (const obj of world.objects) {
-          const hit = nx >= obj.x - 10 && nx <= obj.x + obj.w + 10 && ny >= obj.y - 10 && ny <= obj.y + obj.h + 10;
-          if (!hit) continue;
-          if (obj.kind === "lava" && jumpZ === 0) {
-            const cp = world.objects.find((o) => o.kind === "checkpoint" && o.stage === stage);
-            const rx = cp ? cp.x + cp.w / 2 : 82;
-            const ry = cp ? cp.y + cp.h / 2 : 144;
-            setStatusLine(`Touched ${obj.label} — respawned at ${cp ? cp.label : "SpawnPad"}.`);
-            return { x: rx, y: ry, jumpZ: 0 };
-          }
-          if (obj.kind === "checkpoint" && obj.stage && obj.stage > stage) {
-            setStage(obj.stage);
-            setStatusLine(`Reached ${obj.label} — checkpoint saved.`);
-          }
-          if (obj.kind === "jump") {
-            jumpZ = 24;
-            setStatusLine(`Bounced on ${obj.label} (+JumpPower boost).`);
-          }
-          if (obj.kind === "ice") {
-            setStatusLine(`Gliding on ${obj.label} (low friction).`);
-          }
-          if (obj.kind === "speed") {
-            setStatusLine(`Boosted by ${obj.label} (+WalkSpeed).`);
-          }
-          if (obj.kind === "coin") {
-            setCollected((prevCol) => {
-              if (prevCol.includes(obj.id)) return prevCol;
-              setBalance((b) => b + 25);
-              setStatusLine(`Collected +25 ${world.currencyName}.`);
-              return [...prevCol, obj.id];
+      if (p.hazardFlash > 0) p.hazardFlash = Math.max(0, p.hazardFlash - dt * 2.6);
+      if (p.portalFlash > 0) p.portalFlash = Math.max(0, p.portalFlash - dt * 2.4);
+      if (p.portalCooldown > 0) p.portalCooldown = Math.max(0, p.portalCooldown - dt);
+      if (p.speedBoost > 0) p.speedBoost = Math.max(0, p.speedBoost - dt);
+
+      const keys = keysRef.current;
+      let ix = pulseDx;
+      let iy = pulseDy;
+      if (keys.has("ArrowLeft") || keys.has("a") || keys.has("A")) ix -= 1;
+      if (keys.has("ArrowRight") || keys.has("d") || keys.has("D")) ix += 1;
+      if (keys.has("ArrowUp") || keys.has("w") || keys.has("W")) iy -= 1;
+      if (keys.has("ArrowDown") || keys.has("s") || keys.has("S")) iy += 1;
+
+      const wantJump = forceJump || keys.has(" ") || (cameraMode === "side-view" && (keys.has("ArrowUp") || keys.has("w") || keys.has("W")));
+
+      const baseSpeed = 185 * (ownedRef.current ? 1.45 : 1) * (p.speedBoost > 0 ? 1.5 : 1);
+      const accel = p.onIce ? 4.2 : 18;
+      const targetVx = ix * baseSpeed;
+      const targetVy = cameraMode === "side-view" ? 0 : iy * baseSpeed;
+
+      p.vx += (targetVx - p.vx) * Math.min(1, accel * dt);
+      p.vy += (targetVy - p.vy) * Math.min(1, accel * dt);
+      if (Math.abs(p.vx) < 1 && ix === 0) p.vx = 0;
+      if (Math.abs(p.vy) < 1 && iy === 0) p.vy = 0;
+
+      if (p.grounded) p.coyote = 0.1;
+      else p.coyote = Math.max(0, p.coyote - dt);
+
+      if (wantJump && p.coyote > 0) {
+        p.vz = 250;
+        p.grounded = false;
+        p.coyote = 0;
+        setStatusLine("Jumped (Spacebar).");
+      }
+
+      // Gravity
+      p.vz -= 680 * dt;
+      p.x = Math.max(18, Math.min(CANVAS_W - 18, p.x + p.vx * dt));
+      p.y = Math.max(22, Math.min(CANVAS_H - 22, p.y + p.vy * dt));
+      p.z += p.vz * dt;
+
+      let supportElev = 0;
+      p.onIce = false;
+
+      // Spawn tycoon dropper orbs periodically
+      if (world.hasDropper) {
+        const dropper = world.objects.find((o) => o.kind === "dropper");
+        if (dropper) {
+          p.dropperTimer += dt;
+          if (p.dropperTimer >= 2.2 && p.orbs.length < 5) {
+            p.dropperTimer = 0;
+            p.orbs.push({
+              id: p.nextOrbId++,
+              x: dropper.x + dropper.w,
+              y: dropper.y + dropper.h / 2,
+              vx: 46,
+              collected: false,
             });
           }
+          for (const orb of p.orbs) {
+            orb.x += orb.vx * dt;
+            if (!orb.collected && Math.hypot(p.x - orb.x, p.y - orb.y) < 22) {
+              orb.collected = true;
+              setBalance((b) => b + 15);
+              setStatusLine(`Collected Tycoon Dropper block (+15 ${world.currencyName}).`);
+            }
+          }
+          p.orbs = p.orbs.filter((o) => !o.collected && o.x < CANVAS_W - 24);
         }
-        if (world.hasDayNight) setClockHour((h) => (h + 1) % 24);
-        return { x: nx, y: ny, jumpZ };
-      });
+      }
+
+      // Check collisions & triggers against every placed object
+      for (const obj of world.objects) {
+        const cur = liveObjPos(obj, p.time);
+        const prev = liveObjPos(obj, prevTime);
+        const hitXY =
+          cameraMode === "side-view"
+            ? p.x >= cur.x - 10 && p.x <= cur.x + obj.w + 10
+            : p.x >= cur.x - 10 && p.x <= cur.x + obj.w + 10 && p.y >= cur.y - 10 && p.y <= cur.y + obj.h + 10;
+
+        if (!hitXY) continue;
+
+        if (obj.kind === "moving") {
+          const platTop = cameraMode === "side-view" ? obj.elev : 0;
+          if (p.z >= platTop - 10 && p.vz <= 20) {
+            supportElev = Math.max(supportElev, platTop);
+            // Carry avatar smoothly with moving platform delta!
+            p.x = Math.max(18, Math.min(CANVAS_W - 18, p.x + (cur.x - prev.x)));
+            p.y = Math.max(22, Math.min(CANVAS_H - 22, p.y + (cur.y - prev.y)));
+          }
+          continue;
+        }
+
+        if (obj.kind === "part" || obj.kind === "checkpoint" || obj.kind === "dropper") {
+          const top = cameraMode === "side-view" ? obj.elev : 0;
+          if (p.z >= top - 12 && p.vz <= 20) {
+            supportElev = Math.max(supportElev, top);
+          }
+        }
+
+        if (obj.kind === "lava" && p.z < 14) {
+          const rp = respawnPoint();
+          p.x = rp.x;
+          p.y = rp.y;
+          p.z = rp.z;
+          p.vx = 0;
+          p.vy = 0;
+          p.vz = 0;
+          p.hazardFlash = 1;
+          setRespawns((r) => r + 1);
+          setStatusLine(`Touched ${obj.label} — respawned at ${stageRef.current > 1 ? `Stage ${stageRef.current}` : "SpawnPad"}.`);
+          break;
+        }
+
+        if (obj.kind === "npc" && p.z < 18 && p.hazardFlash <= 0.1) {
+          p.vx = p.x < cur.x + obj.w / 2 ? -180 : 180;
+          p.vz = 140;
+          p.hazardFlash = 0.65;
+          setStatusLine(`${obj.label}: "Halt! Guard patrol zone."`);
+        }
+
+        if (obj.kind === "jump" && p.z < 18 && p.vz <= 40) {
+          p.vz = 360;
+          p.grounded = false;
+          setStatusLine(`Launched on ${obj.label} (JumpPad impulse).`);
+        }
+
+        if (obj.kind === "ice" && p.z < 10) {
+          p.onIce = true;
+        }
+
+        if (obj.kind === "speed" && p.z < 12) {
+          p.speedBoost = 2.5;
+          setStatusLine(`Boosted on ${obj.label} (+WalkSpeed).`);
+        }
+
+        if (obj.kind === "checkpoint" && obj.stage && obj.stage > stageRef.current) {
+          setStage(obj.stage);
+          setStatusLine(`Reached ${obj.label} — checkpoint saved.`);
+        }
+
+        if (obj.kind === "portal" && obj.portalPair && p.portalCooldown <= 0) {
+          const target = world.objects.find((o) => o.id === obj.portalPair);
+          if (target) {
+            p.x = target.x + target.w / 2;
+            p.y = target.y + target.h / 2;
+            p.z = cameraMode === "side-view" ? target.elev + 8 : 0;
+            p.portalCooldown = 1.2;
+            p.portalFlash = 1;
+            setStatusLine(`Warped ${obj.label} -> ${target.label}.`);
+          }
+        }
+
+        if (obj.kind === "coin" && !collectedRef.current.has(obj.id)) {
+          const zOk = cameraMode === "top-down" || Math.abs(p.z - obj.elev) < 34;
+          if (zOk) {
+            collectedRef.current.add(obj.id);
+            setCollected((prevCol) => (prevCol.includes(obj.id) ? prevCol : [...prevCol, obj.id]));
+            setBalance((b) => b + 25);
+            setStatusLine(`Collected +25 ${world.currencyName}.`);
+          }
+        }
+      }
+
+      if (p.z <= supportElev) {
+        p.z = supportElev;
+        p.vz = 0;
+        p.grounded = true;
+      } else {
+        p.grounded = false;
+      }
+
+      if (world.hasDayNight && (ix !== 0 || iy !== 0 || forceJump)) {
+        setClockHour((h) => (h + dt * 1.4) % 24);
+      }
     },
-    [ownedItem, stage, world],
+    [cameraMode, respawnPoint, world],
   );
+
+  // Render crisp HTML5 Canvas frame (supports BOTH Top-Down & Side-View + click hitboxes)
+  const drawFrame = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const p = physRef.current;
+    const dark = theme === "dark";
+    const isNight = world.hasDayNight && (clockHour < 6 || clockHour >= 19);
+    const hitboxes: RenderHitbox[] = [];
+
+    ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+    ctx.fillStyle = isNight ? "#151A24" : dark ? "#1A1917" : "#F4F2EA";
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+    // Subtle Studio grid
+    ctx.strokeStyle = isNight ? "rgba(255,255,255,0.06)" : dark ? "rgba(255,255,255,0.05)" : "rgba(20,20,19,0.06)";
+    ctx.lineWidth = 1;
+    for (let gx = 20; gx < CANVAS_W; gx += 28) {
+      ctx.beginPath();
+      ctx.moveTo(gx, 0);
+      ctx.lineTo(gx, CANVAS_H);
+      ctx.stroke();
+    }
+    for (let gy = 20; gy < CANVAS_H; gy += 28) {
+      ctx.beginPath();
+      ctx.moveTo(0, gy);
+      ctx.lineTo(CANVAS_W, gy);
+      ctx.stroke();
+    }
+
+    // Side-View baseplate horizon floor
+    if (cameraMode === "side-view") {
+      ctx.fillStyle = dark ? "#252420" : "#E5E2D6";
+      ctx.fillRect(0, FLOOR_Y_SIDE, CANVAS_W, CANVAS_H - FLOOR_Y_SIDE);
+      ctx.strokeStyle = dark ? "#3F3D38" : "#C5C1B4";
+      ctx.beginPath();
+      ctx.moveTo(0, FLOOR_Y_SIDE + 0.5);
+      ctx.lineTo(CANVAS_W, FLOOR_Y_SIDE + 0.5);
+      ctx.stroke();
+    }
+
+    const palette: Record<StageObjKind, { fill: string; stroke: string; text: string }> = {
+      spawn: { fill: "#2860D8", stroke: "#1C449E", text: "#FFFFFF" },
+      checkpoint: { fill: "#267F4F", stroke: "#185A36", text: "#FFFFFF" },
+      lava: { fill: "#D44824", stroke: "#922B12", text: "#FFFFFF" },
+      ice: { fill: "#5CAEE8", stroke: "#2B77AD", text: "#0F1B26" },
+      jump: { fill: "#1F8C6A", stroke: "#125E46", text: "#FFFFFF" },
+      moving: { fill: "#3B6EA8", stroke: "#244A75", text: "#FFFFFF" },
+      speed: { fill: "#C47D16", stroke: "#8A5409", text: "#FFFFFF" },
+      portal: { fill: "#7046C8", stroke: "#48298E", text: "#FFFFFF" },
+      coin: { fill: "#E5B42A", stroke: "#96700B", text: "#141413" },
+      dropper: { fill: "#B36A2E", stroke: "#7A4519", text: "#FFFFFF" },
+      npc: { fill: "#B94435", stroke: "#7D281D", text: "#FFFFFF" },
+      vehicle: { fill: "#4663C9", stroke: "#2D4291", text: "#FFFFFF" },
+      part: { fill: dark ? "#3A3936" : "#D6D3C9", stroke: dark ? "#5A5853" : "#A29E93", text: dark ? "#F4F3EE" : "#141413" },
+    };
+
+    // Draw portal link line if two portals exist
+    const portals = world.objects.filter((o) => o.kind === "portal");
+    if (portals.length >= 2) {
+      const a = liveObjPos(portals[0], p.time);
+      const b = liveObjPos(portals[1], p.time);
+      ctx.save();
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = "rgba(124, 82, 212, 0.55)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      if (cameraMode === "top-down") {
+        ctx.moveTo(a.x + portals[0].w / 2, a.y + portals[0].h / 2);
+        ctx.lineTo(b.x + portals[1].w / 2, b.y + portals[1].h / 2);
+      } else {
+        ctx.moveTo(a.x + portals[0].w / 2, FLOOR_Y_SIDE - portals[0].elev - 22);
+        ctx.lineTo(b.x + portals[1].w / 2, FLOOR_Y_SIDE - portals[1].elev - 22);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    for (const obj of world.objects) {
+      if (obj.kind === "coin" && collectedRef.current.has(obj.id)) continue;
+      const cur = liveObjPos(obj, p.time);
+      const basePal = palette[obj.kind];
+      const fill = obj.color || basePal.fill;
+      const stroke = basePal.stroke;
+
+      let rx = cur.x;
+      let ry = cur.y;
+      let rw = obj.w;
+      let rh = obj.h;
+
+      if (cameraMode === "side-view") {
+        if (obj.kind === "coin") {
+          ry = FLOOR_Y_SIDE - obj.elev - 18 + Math.sin(p.time * 4 + obj.x) * 3;
+          rw = 20;
+          rh = 20;
+        } else if (obj.kind === "portal") {
+          rw = 34;
+          rh = 44;
+          ry = FLOOR_Y_SIDE - obj.elev - rh;
+        } else if (obj.kind === "npc") {
+          rw = 24;
+          rh = 34;
+          ry = FLOOR_Y_SIDE - rh;
+        } else if (obj.kind === "checkpoint") {
+          rw = obj.w;
+          rh = 12;
+          ry = FLOOR_Y_SIDE - obj.elev - rh;
+        } else {
+          rh = obj.kind === "lava" ? 10 : 14;
+          ry = FLOOR_Y_SIDE - obj.elev - rh;
+        }
+      }
+
+      // Track rail for moving platform
+      if (obj.kind === "moving" && obj.moveAmp) {
+        ctx.strokeStyle = dark ? "rgba(255,255,255,0.16)" : "rgba(20,20,19,0.16)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(obj.x - obj.moveAmp + rw / 2, ry + rh / 2);
+        ctx.lineTo(obj.x + obj.moveAmp + rw / 2, ry + rh / 2);
+        ctx.stroke();
+      }
+
+      hitboxes.push({
+        objId: obj.id,
+        explorerPath: obj.explorerPath,
+        label: obj.label,
+        rx,
+        ry,
+        rw,
+        rh,
+      });
+
+      if (obj.kind === "coin") {
+        ctx.beginPath();
+        ctx.arc(rx + rw / 2, ry + rh / 2, rw / 2, 0, Math.PI * 2);
+        ctx.fillStyle = fill;
+        ctx.fill();
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      } else {
+        // 3D extrusion bevel
+        ctx.fillStyle = stroke;
+        ctx.fillRect(rx, ry + 4, rw, rh);
+        ctx.fillStyle = fill;
+        ctx.fillRect(rx, ry, rw, rh);
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(rx + 0.5, ry + 0.5, rw - 1, rh - 1);
+
+        // Checkpoint flagpole in side-view
+        if (cameraMode === "side-view" && obj.kind === "checkpoint") {
+          const reached = Boolean(obj.stage && obj.stage <= stageRef.current);
+          ctx.fillStyle = dark ? "#D5D2C8" : "#3F3D38";
+          ctx.fillRect(rx + rw - 8, ry - 26, 2, 26);
+          ctx.fillStyle = reached ? "#31B88A" : "#D97757";
+          ctx.fillRect(rx + rw - 6, ry - 26, 14, 9);
+        }
+
+        // Crisp non-overlapping label
+        const shortLabel = obj.label.replace(/^MovingPlatform$/i, "MovePlat").slice(0, 10);
+        ctx.font = "500 11px monospace";
+        ctx.textAlign = "center";
+        if (cameraMode === "side-view") {
+          ctx.fillStyle = dark ? "#C8C5BC" : "#403E39";
+          if (obj.elev >= 24) {
+            ctx.textBaseline = "bottom";
+            ctx.fillText(shortLabel, rx + rw / 2, obj.kind === "checkpoint" ? ry - 28 : ry - 5);
+          } else {
+            ctx.textBaseline = "top";
+            ctx.fillText(shortLabel, rx + rw / 2, ry + rh + 6);
+          }
+        } else if (obj.kind === "spawn") {
+          ctx.fillStyle = dark ? "#C8C5BC" : "#403E39";
+          ctx.textBaseline = "top";
+          ctx.fillText(shortLabel, rx + rw / 2, ry + rh + 6);
+        } else {
+          ctx.fillStyle = basePal.text;
+          ctx.textBaseline = "middle";
+          ctx.fillText(shortLabel, rx + rw / 2, ry + rh / 2);
+        }
+      }
+
+      // Studio selection bounding box if selected in Explorer
+      if (selectedPath && obj.explorerPath === selectedPath) {
+        ctx.save();
+        ctx.strokeStyle = "#1562FC";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 2]);
+        ctx.strokeRect(rx - 3, ry - 3, rw + 6, rh + 6);
+        ctx.restore();
+      }
+    }
+
+    // Draw drifting Tycoon Dropper orbs
+    for (const orb of p.orbs) {
+      const oy = cameraMode === "side-view" ? FLOOR_Y_SIDE - 34 : orb.y;
+      ctx.fillStyle = "#E5B42A";
+      ctx.fillRect(orb.x - 5, oy - 5, 10, 10);
+      ctx.strokeStyle = "#8A6208";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(orb.x - 5, oy - 5, 10, 10);
+    }
+
+    // Draw Roblox blocky avatar
+    const ax = p.x;
+    const ayBase = cameraMode === "side-view" ? FLOOR_Y_SIDE - 12 : p.y;
+    const jumpOffset = cameraMode === "side-view" ? p.z : p.z * 0.45;
+    const ay = ayBase - jumpOffset;
+
+    // Ground contact shadow
+    const shadowScale = Math.max(0.45, 1 - p.z / 260);
+    ctx.fillStyle = "rgba(0,0,0,0.22)";
+    ctx.beginPath();
+    ctx.ellipse(ax, ayBase + 10, 11 * shadowScale, 4 * shadowScale, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Torso + Head
+    ctx.fillStyle = ownedRef.current ? "#D97757" : dark ? "#F2F0E8" : "#141413";
+    ctx.fillRect(ax - 8, ay - 6, 16, 16);
+    ctx.fillStyle = "#F5C451";
+    ctx.fillRect(ax - 6, ay - 16, 12, 10);
+    ctx.strokeStyle = dark ? "#141413" : "#FFFFFF";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(ax - 8, ay - 6, 16, 16);
+
+    // Subtle rain lines when WeatherCycle is active
+    if (world.hasWeather) {
+      ctx.strokeStyle = dark ? "rgba(146, 208, 255, 0.28)" : "rgba(38, 96, 180, 0.22)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 18; i++) {
+        const rx = ((i * 47 + p.time * 90) % (CANVAS_W + 40)) - 20;
+        const ry = (i * 31 + p.time * 210) % CANVAS_H;
+        ctx.beginPath();
+        ctx.moveTo(rx, ry);
+        ctx.lineTo(rx - 4, ry + 11);
+        ctx.stroke();
+      }
+    }
+
+    // Hazard flash / portal warp feedback overlays
+    if (p.hazardFlash > 0.01) {
+      ctx.fillStyle = `rgba(212, 72, 36, ${Math.min(0.42, p.hazardFlash * 0.42)})`;
+      ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    }
+    if (p.portalFlash > 0.01) {
+      ctx.fillStyle = `rgba(112, 70, 200, ${Math.min(0.35, p.portalFlash * 0.35)})`;
+      ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    }
+
+    hitboxesRef.current = hitboxes;
+  }, [cameraMode, clockHour, selectedPath, theme, world]);
+
+  // 60fps requestAnimationFrame loop (respects prefers-reduced-motion; pauses cleanly when collapsed)
+  useEffect(() => {
+    drawFrame();
+    if (!stageOpen || reduce) return;
+    let rafId = 0;
+    let lastTs = performance.now();
+
+    const loop = (now: number) => {
+      const dt = Math.min(0.05, Math.max(0.001, (now - lastTs) / 1000));
+      lastTs = now;
+      const p = physRef.current;
+      const hasAnimatedWorld =
+        world.objects.some((o) => Boolean(o.moveAmp)) ||
+        world.hasDropper ||
+        world.hasWeather;
+      const isMoving =
+        keysRef.current.size > 0 ||
+        !p.grounded ||
+        Math.abs(p.vx) > 0.5 ||
+        Math.abs(p.vy) > 0.5 ||
+        p.hazardFlash > 0.01 ||
+        p.portalFlash > 0.01 ||
+        p.portalCooldown > 0.01;
+
+      if (hasAnimatedWorld || isMoving) {
+        stepPhysics(dt);
+        drawFrame();
+      }
+      rafId = requestAnimationFrame(loop);
+    };
+
+    rafId = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafId);
+  }, [drawFrame, reduce, stageOpen, stepPhysics, world, renderTick]);
+
+  const nudge = (dx: number, dy: number, jump = false) => {
+    stepPhysics(0.14, dx, dy, jump);
+    drawFrame();
+    setRenderTick((n) => n + 1);
+  };
+
+  const handleCanvasClick = (e: ReactMouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = ((e.clientX - rect.left) / rect.width) * CANVAS_W;
+    const my = ((e.clientY - rect.top) / rect.height) * CANVAS_H;
+
+    // Reverse scan so topmost drawn object wins
+    for (let i = hitboxesRef.current.length - 1; i >= 0; i--) {
+      const hb = hitboxesRef.current[i];
+      if (mx >= hb.rx - 4 && mx <= hb.rx + hb.rw + 4 && my >= hb.ry - 4 && my <= hb.ry + hb.rh + 4) {
+        onSelectPart?.(hb.explorerPath);
+        setStatusLine(`Selected ${hb.label} (${hb.explorerPath}) in Studio Explorer.`);
+        drawFrame();
+        return;
+      }
+    }
+  };
 
   const buyShopItem = () => {
     if (!world.shopItem) return;
@@ -223,105 +972,6 @@ export function StagePreview({ place, theme }: { place: Place; theme: "light" | 
     setStatusLine(`Bought ${world.shopItem} via OpenROShopBuy (-${world.shopPrice} ${world.currencyName}).`);
   };
 
-  // Draw crisp 2D/isometric stage canvas whenever state or theme changes (zero idle rAF loop!)
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const W = 620;
-    const H = 230;
-    const dark = theme === "dark";
-    const isNight = world.hasDayNight && (clockHour < 6 || clockHour >= 19);
-
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = isNight ? "#161B26" : dark ? "#1C1B19" : "#F3F1E8";
-    ctx.fillRect(0, 0, W, H);
-
-    // Subtle Studio baseplate grid
-    ctx.strokeStyle = isNight ? "rgba(255,255,255,0.06)" : dark ? "rgba(255,255,255,0.05)" : "rgba(20,20,19,0.06)";
-    ctx.lineWidth = 1;
-    for (let gx = 20; gx < W; gx += 28) {
-      ctx.beginPath();
-      ctx.moveTo(gx, 0);
-      ctx.lineTo(gx, H);
-      ctx.stroke();
-    }
-    for (let gy = 20; gy < H; gy += 28) {
-      ctx.beginPath();
-      ctx.moveTo(0, gy);
-      ctx.lineTo(W, gy);
-      ctx.stroke();
-    }
-
-    const palette: Record<StageObj["kind"], { fill: string; stroke: string; text: string }> = {
-      spawn: { fill: "#3B6CE2", stroke: "#284FB0", text: "#FFFFFF" },
-      checkpoint: { fill: "#2F8F5B", stroke: "#1F6840", text: "#FFFFFF" },
-      lava: { fill: "#D9532F", stroke: "#9B3318", text: "#FFFFFF" },
-      ice: { fill: "#5CAEE8", stroke: "#2E7DB5", text: "#0F1B26" },
-      jump: { fill: "#2D9D78", stroke: "#1C6E53", text: "#FFFFFF" },
-      speed: { fill: "#C9851E", stroke: "#8F5A0E", text: "#FFFFFF" },
-      portal: { fill: "#7C52D4", stroke: "#52329A", text: "#FFFFFF" },
-      coin: { fill: "#E5B42A", stroke: "#9E780E", text: "#141413" },
-      part: { fill: dark ? "#3A3936" : "#D6D3C9", stroke: dark ? "#5A5853" : "#A6A297", text: dark ? "#F4F3EE" : "#141413" },
-    };
-
-    for (const obj of world.objects) {
-      if (obj.kind === "coin" && collected.includes(obj.id)) continue;
-      const p = palette[obj.kind];
-      if (obj.kind === "coin") {
-        ctx.beginPath();
-        ctx.arc(obj.x + obj.w / 2, obj.y + obj.h / 2, obj.w / 2, 0, Math.PI * 2);
-        ctx.fillStyle = p.fill;
-        ctx.fill();
-        ctx.strokeStyle = p.stroke;
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        continue;
-      }
-      // Subtle 3D extrusion bevel
-      ctx.fillStyle = p.stroke;
-      ctx.fillRect(obj.x, obj.y + 4, obj.w, obj.h);
-      ctx.fillStyle = p.fill;
-      ctx.fillRect(obj.x, obj.y, obj.w, obj.h);
-      ctx.strokeStyle = p.stroke;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(obj.x + 0.5, obj.y + 0.5, obj.w - 1, obj.h - 1);
-
-      // Label below the SpawnPad so the standing avatar never obscures the text
-      if (obj.kind === "spawn") {
-        ctx.fillStyle = dark ? "#C8C5BC" : "#4A4843";
-        ctx.font = "500 11px monospace";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "top";
-        ctx.fillText(obj.label.slice(0, 10), obj.x + obj.w / 2, obj.y + obj.h + 8);
-      } else {
-        ctx.fillStyle = p.text;
-        ctx.font = "500 11px monospace";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(obj.label.slice(0, 10), obj.x + obj.w / 2, obj.y + obj.h / 2);
-      }
-    }
-
-    // Draw Roblox blocky avatar
-    const ay = avatar.y - avatar.jumpZ;
-    ctx.fillStyle = "rgba(0,0,0,0.22)";
-    ctx.beginPath();
-    ctx.ellipse(avatar.x, avatar.y + 12, 10, 4, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Torso + Head
-    ctx.fillStyle = ownedItem ? "#D97757" : dark ? "#F2F0E8" : "#141413";
-    ctx.fillRect(avatar.x - 8, ay - 6, 16, 16);
-    ctx.fillStyle = "#F5C451";
-    ctx.fillRect(avatar.x - 6, ay - 16, 12, 10);
-    ctx.strokeStyle = dark ? "#141413" : "#FFFFFF";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(avatar.x - 8, ay - 6, 16, 16);
-  }, [avatar, clockHour, collected, ownedItem, theme, world]);
-
   return (
     <section
       aria-label="Playable Roblox Stage Preview"
@@ -335,7 +985,7 @@ export function StagePreview({ place, theme }: { place: Place; theme: "light" | 
       >
         {({ isExpanded }) => (
           <>
-            <div className="flex items-start justify-between gap-2 border-b border-hairline bg-board/60 px-3.5 py-2.5 sm:items-center">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline bg-board/60 px-3.5 py-2.5">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <Gamepad2 className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
                 <span className="text-sm font-medium text-ink">Playable Stage</span>
@@ -349,14 +999,40 @@ export function StagePreview({ place, theme }: { place: Place; theme: "light" | 
                   <Coins className="size-3" strokeWidth={1.5} aria-hidden />
                   {balance} {world.currencyName}
                 </Pill>
+                {respawns > 0 && (
+                  <Pill className="bg-pill-pro-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-pro-fg">
+                    {respawns} {respawns === 1 ? "hazard" : "hazards"}
+                  </Pill>
+                )}
                 {world.hasDayNight && (
-                  <span className="font-mono text-xs text-ink-2">
-                    {String(clockHour).padStart(2, "0")}:00
+                  <span className="font-mono text-xs tabular-nums text-ink-2">
+                    {String(Math.floor(clockHour)).padStart(2, "0")}:00
                   </span>
                 )}
               </div>
 
-              <div className="flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <SegmentedControl aria-label="Stage camera mode" size="sm">
+                  <SegmentedControlItem
+                    data-checked={cameraMode === "top-down" ? "" : undefined}
+                    aria-pressed={cameraMode === "top-down"}
+                    onClick={() => setCameraMode("top-down")}
+                    className="gap-1 max-md:!h-11 max-md:px-2.5"
+                  >
+                    <Layers className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    Top-Down
+                  </SegmentedControlItem>
+                  <SegmentedControlItem
+                    data-checked={cameraMode === "side-view" ? "" : undefined}
+                    aria-pressed={cameraMode === "side-view"}
+                    onClick={() => setCameraMode("side-view")}
+                    className="gap-1 max-md:!h-11 max-md:px-2.5"
+                  >
+                    <Eye className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    Side-View
+                  </SegmentedControlItem>
+                </SegmentedControl>
+
                 {world.shopItem && (
                   <Button variant="outline" size="xs" onClick={buyShopItem} className="max-md:min-h-11">
                     {ownedItem ? (
@@ -367,8 +1043,15 @@ export function StagePreview({ place, theme }: { place: Place; theme: "light" | 
                     {ownedItem ? `${ownedItem} equipped` : `Buy ${world.shopItem} (${world.shopPrice})`}
                   </Button>
                 )}
-                <Button variant="ghost" size="icon-xs" onClick={resetPlay} aria-label="Reset avatar" className="max-md:size-11">
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={resetPlay}
+                  aria-label="Reset playtest"
+                  className="max-md:min-h-11"
+                >
                   <RotateCcw className="size-3.5" strokeWidth={1.5} aria-hidden />
+                  Reset Playtest
                 </Button>
                 <ExpandableTrigger
                   aria-label="Toggle playable stage preview"
@@ -387,51 +1070,54 @@ export function StagePreview({ place, theme }: { place: Place; theme: "light" | 
               <div className="flex flex-col gap-2.5 p-3">
                 <div
                   tabIndex={0}
-                  aria-label="Interactive Roblox stage canvas (use WASD or Arrow keys and Space)"
+                  aria-label="Interactive Roblox stage canvas (use WASD or Arrow keys and Space, or click any part to select)"
                   onKeyDown={(e) => {
-                    if (e.key === "ArrowLeft" || e.key === "a" || e.key === "A") {
+                    if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", " ", "a", "A", "d", "D", "w", "W", "s", "S"].includes(e.key)) {
                       e.preventDefault();
-                      moveAvatar(-24, 0);
-                    } else if (e.key === "ArrowRight" || e.key === "d" || e.key === "D") {
-                      e.preventDefault();
-                      moveAvatar(24, 0);
-                    } else if (e.key === "ArrowUp" || e.key === "w" || e.key === "W") {
-                      e.preventDefault();
-                      moveAvatar(0, -22);
-                    } else if (e.key === "ArrowDown" || e.key === "s" || e.key === "S") {
-                      e.preventDefault();
-                      moveAvatar(0, 22);
-                    } else if (e.key === " ") {
-                      e.preventDefault();
-                      moveAvatar(14, 0, true);
+                      keysRef.current.add(e.key);
+                      if (reduce) {
+                        const dx = e.key === "ArrowLeft" || e.key === "a" || e.key === "A" ? -1 : e.key === "ArrowRight" || e.key === "d" || e.key === "D" ? 1 : 0;
+                        const dy = e.key === "ArrowUp" || e.key === "w" || e.key === "W" ? -1 : e.key === "ArrowDown" || e.key === "s" || e.key === "S" ? 1 : 0;
+                        nudge(dx, dy, e.key === " ");
+                      }
                     }
+                  }}
+                  onKeyUp={(e) => {
+                    keysRef.current.delete(e.key);
+                  }}
+                  onBlur={() => {
+                    keysRef.current.clear();
                   }}
                   className="overflow-hidden rounded-sm border border-hairline outline-none"
                 >
                   <canvas
                     ref={canvasRef}
-                    width={620}
-                    height={230}
-                    className="block h-auto w-full"
+                    width={CANVAS_W}
+                    height={CANVAS_H}
+                    onClick={handleCanvasClick}
+                    className="block h-auto w-full cursor-crosshair"
                   />
                 </div>
 
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="min-w-0 flex-1 text-xs text-ink-2">{statusLine}</p>
+                  <p className="inline-flex min-w-0 flex-1 items-center gap-1.5 text-xs text-ink-2">
+                    <Crosshair className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
+                    <span className="truncate">{statusLine}</span>
+                  </p>
                   <div className="flex shrink-0 items-center gap-1">
-                    <Button variant="outline" size="icon-xs" aria-label="Move avatar left" onClick={() => moveAvatar(-28, 0)} className="max-md:size-11">
+                    <Button variant="outline" size="icon-xs" aria-label="Move avatar left" onClick={() => nudge(-1.4, 0)} className="max-md:size-11">
                       <ArrowLeft className="size-3.5" strokeWidth={1.5} aria-hidden />
                     </Button>
-                    <Button variant="outline" size="icon-xs" aria-label="Move avatar up" onClick={() => moveAvatar(0, -24)} className="max-md:size-11">
+                    <Button variant="outline" size="icon-xs" aria-label="Move avatar up" onClick={() => nudge(0, -1.4)} className="max-md:size-11">
                       <ArrowUp className="size-3.5" strokeWidth={1.5} aria-hidden />
                     </Button>
-                    <Button variant="outline" size="icon-xs" aria-label="Move avatar down" onClick={() => moveAvatar(0, 24)} className="max-md:size-11">
+                    <Button variant="outline" size="icon-xs" aria-label="Move avatar down" onClick={() => nudge(0, 1.4)} className="max-md:size-11">
                       <ArrowDown className="size-3.5" strokeWidth={1.5} aria-hidden />
                     </Button>
-                    <Button variant="outline" size="icon-xs" aria-label="Move avatar right" onClick={() => moveAvatar(28, 0)} className="max-md:size-11">
+                    <Button variant="outline" size="icon-xs" aria-label="Move avatar right" onClick={() => nudge(1.4, 0)} className="max-md:size-11">
                       <ArrowRight className="size-3.5" strokeWidth={1.5} aria-hidden />
                     </Button>
-                    <Button variant="outline" size="xs" onClick={() => moveAvatar(18, 0, true)} className="max-md:min-h-11">
+                    <Button variant="outline" size="xs" onClick={() => nudge(0.6, 0, true)} className="max-md:min-h-11">
                       Jump
                     </Button>
                   </div>
