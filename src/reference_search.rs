@@ -196,9 +196,14 @@ try:
 except Exception as e:
     fail(8, "DRIVER", f"sharedbrowser client unavailable: {e}")
 
-info = sb.health(timeout=3.0)
-if not info or not info.get("ok"):
-    fail(8, "DRIVER", "Shared Camoufox browser is not running on port 9230. Start shared-browser first.")
+info = None
+for _attempt in range(5):
+    info = sb.health(timeout=1.5)
+    if info and info.get("ok") and info.get("context_alive", True):
+        break
+    time.sleep(0.5)
+if not info or not info.get("ok") or not info.get("context_alive", True):
+    fail(8, "DRIVER", "Shared Camoufox browser is not running or still starting on port 9230.")
 
 tab = None
 raw_candidates = []
@@ -294,11 +299,145 @@ fn run_command_with_timeout(mut cmd: Command, timeout: Duration) -> Result<(i32,
     }
 }
 
-fn fetch_candidates_via_browser(query: &str, max_n: usize, cand_dir: &Path) -> R<Vec<RawCandidate>> {
+fn url_encode_query(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b' ' => out.push('+'),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+fn unescape_html_attr(raw: &str) -> String {
+    raw.replace("&quot;", "\"")
+        .replace("&amp;", "&")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+}
+
+/// Parse Bing image card `m="{...}"` JSON payloads from HTML (or JSON `{"candidates":[...]}`).
+pub fn parse_http_image_candidates(body: &str, max_items: usize) -> Result<Vec<RawCandidate>, String> {
+    let lower = body.to_ascii_lowercase();
+    if lower.contains("verify you are human")
+        || lower.contains("unusual traffic")
+        || lower.contains("g-recaptcha")
+        || lower.contains("cf-turnstile")
+        || lower.contains("hcaptcha")
+    {
+        return Err("Image search returned an anti-bot challenge; stopping without bypassing it.".into());
+    }
+
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Ok(v) = serde_json::from_str::<Value>(body) {
+        if let Some(arr) = v.get("candidates").and_then(Value::as_array) {
+            for item in arr {
+                let image_url = item.get("image_url").and_then(Value::as_str).unwrap_or("").trim().to_string();
+                let local_file = item.get("local_file").and_then(Value::as_str).map(String::from);
+                if (image_url.is_empty() && local_file.is_none()) || (!image_url.is_empty() && !seen.insert(image_url.clone())) {
+                    continue;
+                }
+                out.push(RawCandidate {
+                    image_url,
+                    source_url: item.get("source_url").and_then(Value::as_str).unwrap_or("").to_string(),
+                    title: item.get("title").and_then(Value::as_str).unwrap_or("").to_string(),
+                    width: item.get("width").and_then(Value::as_u64).unwrap_or(0) as u32,
+                    height: item.get("height").and_then(Value::as_u64).unwrap_or(0) as u32,
+                    local_file,
+                });
+                if out.len() >= max_items {
+                    break;
+                }
+            }
+            return Ok(out);
+        }
+    }
+
+    // Scan Bing `m="{&quot;murl&quot;:...}"` attributes.
+    let mut cursor = body;
+    while let Some(pos) = cursor.find("m=\"{") {
+        let rest = &cursor[pos + 3..];
+        let Some(end) = rest.find('"') else { break };
+        let attr = unescape_html_attr(&rest[..end]);
+        cursor = &rest[end + 1..];
+        let Ok(v) = serde_json::from_str::<Value>(&attr) else { continue };
+        let murl = v.get("murl").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        if !(murl.starts_with("http://") || murl.starts_with("https://")) || !seen.insert(murl.clone()) {
+            continue;
+        }
+        out.push(RawCandidate {
+            image_url: murl,
+            source_url: v.get("purl").and_then(Value::as_str).unwrap_or("").to_string(),
+            title: v
+                .get("t")
+                .or_else(|| v.get("desc"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            width: v.get("w").and_then(Value::as_u64).unwrap_or(0) as u32,
+            height: v.get("h").and_then(Value::as_u64).unwrap_or(0) as u32,
+            local_file: None,
+        });
+        if out.len() >= max_items {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// Read-only direct HTTP image-search fallback when shared Camoufox `:9230` is unavailable.
+fn fetch_candidates_via_http(query: &str, max_n: usize) -> R<Vec<RawCandidate>> {
+    let base = std::env::var("OPENRO_REFERENCE_SEARCH_HTTP_BASE")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "https://www.bing.com".to_string());
+    let url = format!("{base}/images/search?q={}&form=HDRSC3&first=1", url_encode_query(query));
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(12)).build();
+    let resp = agent
+        .get(&url)
+        .set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0")
+        .set("Accept", "text/html,application/xhtml+xml,application/json")
+        .set("Accept-Language", "en-US,en;q=0.9")
+        .call()
+        .map_err(|e| Oc { status: 502, msg: format!("Direct image search request failed: {e}") })?;
+    let mut buf = Vec::new();
+    let _ = std::io::Read::take(resp.into_reader(), 2 * 1024 * 1024).read_to_end(&mut buf);
+    let body = String::from_utf8_lossy(&buf);
+    parse_http_image_candidates(&body, (max_n * 3).max(18)).map_err(|m| Oc { status: 502, msg: m })
+}
+
+fn fetch_candidates(query: &str, max_n: usize, cand_dir: &Path, allow_http_fallback: bool) -> R<(Vec<RawCandidate>, &'static str)> {
     let custom_bin = std::env::var("OPENRO_REFERENCE_SEARCH_BIN")
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    let has_custom_bin = custom_bin.is_some();
+    match fetch_candidates_via_browser(query, max_n, cand_dir, custom_bin) {
+        Ok(list) => Ok((list, "shared_browser")),
+        Err(browser_err) => {
+            // Never silently bypass CAPTCHA or an explicitly configured mock binary.
+            if !allow_http_fallback || has_custom_bin || browser_err.status == 502 {
+                return Err(browser_err);
+            }
+            let list = fetch_candidates_via_http(query, max_n)?;
+            Ok((list, "http_fallback"))
+        }
+    }
+}
+
+fn fetch_candidates_via_browser(
+    query: &str,
+    max_n: usize,
+    cand_dir: &Path,
+    custom_bin: Option<String>,
+) -> R<Vec<RawCandidate>> {
     let cmd = if let Some(bin) = custom_bin {
         let mut c = Command::new(bin);
         c.arg(query)
@@ -433,7 +572,11 @@ pub fn search(root: &Path, body: &Value) -> R<Value> {
     let cand_dir = refs_dir.join(".candidates").join(&slug);
     std::fs::create_dir_all(&cand_dir).or_else(|e| err(500, format!("create references dir: {e}")))?;
 
-    let raw = fetch_candidates_via_browser(&query, max_n, &cand_dir)?;
+    let allow_http_fallback = body
+        .get("use_http_fallback")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let (raw, search_backend) = fetch_candidates(&query, max_n, &cand_dir, allow_http_fallback)?;
     let ranked = rank_candidates(raw);
 
     let mut saved_candidates = Vec::new();
@@ -499,6 +642,7 @@ pub fn search(root: &Path, body: &Value) -> R<Value> {
         "character": character,
         "show": show,
         "query": query,
+        "search_backend": search_backend,
         "chosen_index": chosen_index,
         "reference_path": active_rel,
         "sha256": chosen.3,
@@ -516,6 +660,7 @@ pub fn search(root: &Path, body: &Value) -> R<Value> {
         "character": character,
         "show": show,
         "query": query,
+        "search_backend": search_backend,
         "chosen_index": chosen_index,
         "reference_path": active_rel,
         "meta_path": meta_rel,
@@ -656,5 +801,20 @@ mod tests {
         assert!(ranked[0].raw.image_url.contains("rasengan-battle"));
         assert!(ranked[1].rejected_reason.is_some());
         assert!(ranked[2].rejected_reason.is_some());
+    }
+
+    #[test]
+    fn parses_bing_html_and_stops_on_captcha() {
+        let html = r#"
+            <a class="iusc" m="{&quot;murl&quot;:&quot;https://cdn.example/goku-battle.png&quot;,&quot;purl&quot;:&quot;https://anime.example/ep&quot;,&quot;t&quot;:&quot;Goku dynamic battle action scene&quot;,&quot;w&quot;:1280,&quot;h&quot;:720}"></a>
+            <a class="iusc" m="{&quot;murl&quot;:&quot;https://wiki.example/sheet.png&quot;,&quot;purl&quot;:&quot;https://wiki.example/goku&quot;,&quot;t&quot;:&quot;Goku official character sheet&quot;,&quot;w&quot;:600,&quot;h&quot;:1200}"></a>
+        "#;
+        let parsed = parse_http_image_candidates(html, 8).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].image_url, "https://cdn.example/goku-battle.png");
+        assert_eq!(parsed[0].width, 1280);
+
+        let captcha_html = "<html><body>Please verify you are human to continue</body></html>";
+        assert!(parse_http_image_candidates(captcha_html, 8).is_err());
     }
 }

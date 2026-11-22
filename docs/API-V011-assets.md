@@ -113,9 +113,12 @@ Required Roblox Open Cloud scopes: `asset:read`, `asset:write`, `universe-places
 ## 3. Reference Image Search (Shared Camoufox Browser `:9230`)
 
 Uses the owner's single shared Camoufox browser (`sharedbrowser` API on `:9230`, lease owner
-`"openro"`, never force-releases foreign leases, never restarts `shared-browser.service`,
-stops immediately on any CAPTCHA/anti-bot challenge). All outputs stay in the project's
-gitignored `art/references/` folder and are never committed or uploaded.
+`"openro"`, brief boot-wait retry, never force-releases foreign leases, never restarts
+`shared-browser.service`, stops immediately on any CAPTCHA/anti-bot challenge). When `:9230`
+is unavailable, automatically falls back to a read-only direct HTTP image search
+(`search_backend: "http_fallback"`, overridable via `OPENRO_REFERENCE_SEARCH_HTTP_BASE`;
+pass `use_http_fallback: false` to disable). All outputs stay in the project's gitignored
+`art/references/` folder and are never committed or uploaded.
 
 | Method + Path | Body / Query | Reply |
 |---|---|---|
@@ -173,8 +176,7 @@ and `"openai"` (via `OPENAI_IMAGE_KEY` / `OPENRO_OPENAI_IMAGE_BASE`).
 | `POST /api/art/process` (alias `POST /api/tools/image/process`) | `{ project?, input?, output, ops: [...], slice?: [l,t,r,b], slices_json?, max_bytes?: 5242880 }` **or** `{ project?, script, output?, timeout_s?: 30, max_bytes? }` | `{ ok, path, url, width, height, bytes, sha256, has_alpha, opaque_ratio, slices_updated }` |
 | `POST /api/art/pack-card` | `{ project?, card_id, source_image, reference_image?, frame_image?, out_dir?, art_size?: [512,712], icon_size?: [256,256], max_bytes? }` | `{ ok, card_id, art, icon, full, contact_sheet }` (writes `art.png`, `icon.png`, `full.png` + uncommitted `art/previews/<card_id>_contact.png`) |
 
-Supported `ops`: `canvas`, `draw` (`rect`, `rounded_rect`, `ellipse`, `ring`, `polygon`, `star`,
-`gradient`), `cover_resize` (`center`/`top`/`top_third`/`bottom`), `resize`, `crop`,
+Supported `ops`: `canvas` (`width`+`height` or `size: [w, h]`, `color?`), `draw` (`shapes: [{ kind|shape, ... }]` or flat single-shape `{ shape|kind, box|points|cx, fill|stroke|color, ... }` — shapes: `rect`, `rounded_rect`, `ellipse`, `ring`, `polygon`, `star`, `gradient`; returns `400` if 0 shapes drawn or unknown shape/op), `cover_resize` (`width`+`height` or `size`, `anchor`: `center`/`top`/`top_third`/`bottom`), `resize`, `crop`,
 `remove_bg` (`corner_flood` or `chroma` with `tolerance` + `feather`), `rounded_mask`,
 `composite`, `quantize`, `compress`, `contact_sheet`. Every output PNG is full-decoded,
 verified `<= max_bytes`, hashed, and logged to `art/ART-LOG.jsonl`.
