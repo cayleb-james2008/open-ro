@@ -213,5 +213,6 @@ Each Teamwork agent runs a pure-text JSON step loop on OpenRO's active model (`g
 
 Available tools:
 - Board & tasks: `board_read`, `board_post`, `create_task`, `claim_files`, `release_files`, `submit_task`, `verify_task`, `finish_run`
-- Project & verification: `project_list`, `project_files`, `project_read_file`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest` (enforces `priceApproved: false` for agents), `luau_check`, `project_check`, `project_run_lune`, `project_build`, `project_sync` (leased), `project_playtest` (leased)
+- Project & verification: `project_list`, `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest` (enforces `priceApproved: false` for agents), `luau_check`, `project_check`, `project_run_lune`, `project_build`, `project_sync` (leased), `project_playtest` (leased)
+- Research & web: `research_roblox_game`, `web_search`, `web_fetch` (SSRF-blocked)
 - Assets & media: `reference_search`, `reference_select`, `art_generate` (ChatGPT default, Higgsfield refused), `art_approve`, `image_process`, `art_pack_card`, `mesh_generate` / `blender_generate` (project-local + `manifest.json` + `AssetIds.luau`), `audio_generate` (project-local + `AssetIds.luau`), `assets_codegen`, `assets_upload`
