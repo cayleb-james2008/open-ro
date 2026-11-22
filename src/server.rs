@@ -83,6 +83,14 @@ pub struct Shared {
     pub events: Arc<BuildEventHub>,
     /// Cached lightweight status so concurrent polling never stalls behind an active build.
     status_cache: Mutex<StatusInfo>,
+    /// Game art assets metadata & in-memory blob fallback (`data_dir/game-assets/`).
+    pub game_assets: Mutex<GameAssetsIndex>,
+}
+
+#[derive(Clone, Default)]
+pub struct GameAssetsIndex {
+    pub items: Vec<Value>,
+    pub mem_blobs: std::collections::HashMap<String, Vec<u8>>,
 }
 
 impl Shared {
@@ -115,6 +123,7 @@ impl Shared {
             snapshots: Mutex::new(SnapshotStore::in_memory()),
             events,
             status_cache: Mutex::new(initial_status),
+            game_assets: Mutex::new(GameAssetsIndex::default()),
         })
     }
 
@@ -141,6 +150,7 @@ impl Shared {
         let cfg = RuntimeConfig::load(&data_dir);
         let mut snap_store = SnapshotStore::open(&data_dir);
         recovered.append(&mut snap_store.recovered);
+        let loaded_assets = load_game_assets(&data_dir);
         Arc::new(Shared {
             agent: Mutex::new(agent),
             chats: Mutex::new(chats),
@@ -157,6 +167,7 @@ impl Shared {
             snapshots: Mutex::new(snap_store),
             events,
             status_cache: Mutex::new(initial_status),
+            game_assets: Mutex::new(loaded_assets),
         })
     }
 
@@ -468,7 +479,7 @@ const MAX_IMPORT_BYTES: usize = 16 * 1024 * 1024;
 
 fn max_body_for_path(path: &str) -> usize {
     let clean = path.split('?').next().unwrap_or(path);
-    if clean == "/api/import/rbxlx" {
+    if clean == "/api/import/rbxlx" || clean == "/api/assets/upload" {
         MAX_IMPORT_BYTES
     } else {
         MAX_BODY_BYTES
@@ -652,7 +663,15 @@ fn refusal(req: &Request, allowed: &[String]) -> Option<(&'static str, &'static 
     let xml_import_ok = clean_path == "/api/import/rbxlx"
         && (req.content_type.starts_with("application/xml")
             || req.content_type.starts_with("text/xml"));
-    if req.content_length > 0 && !req.content_type.starts_with("application/json") && !xml_import_ok {
+    let image_upload_ok = clean_path == "/api/assets/upload"
+        && (req.content_type.starts_with("image/png")
+            || req.content_type.starts_with("image/jpeg")
+            || req.content_type.starts_with("image/webp"));
+    if req.content_length > 0
+        && !req.content_type.starts_with("application/json")
+        && !xml_import_ok
+        && !image_upload_ok
+    {
         return Some(("415 Unsupported Media Type", "OpenRO takes JSON requests only. The page sends them; a plain form post is refused."));
     }
     let origin_authority = req
@@ -685,6 +704,22 @@ fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &str)
         body.len()
     );
     let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+}
+
+fn respond_bytes(
+    stream: &mut TcpStream,
+    status: &str,
+    content_type: &str,
+    cache_control: &str,
+    body: &[u8],
+) {
+    let header = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: {cache_control}\r\nX-Content-Type-Options: nosniff\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body);
     let _ = stream.flush();
 }
 
@@ -809,7 +844,29 @@ fn handle(
         }
     }
 
+    // Parameterized game art asset route: GET /api/assets/:file
+    if req.method == "GET" {
+        if let Some(raw_file) = path.strip_prefix("/api/assets/") {
+            if !raw_file.is_empty() {
+                handle_asset_file(&mut stream, shared, raw_file);
+                return Ok(());
+            }
+        }
+    }
+
     match (req.method.as_str(), path.as_str()) {
+        ("GET", "/api/art-knowledge") => {
+            respond_json(&mut stream, "200 OK", &art_knowledge_json());
+        }
+        ("GET", "/api/assets") => {
+            handle_assets_list(&mut stream, shared);
+        }
+        ("POST", "/api/assets/upload") => {
+            handle_assets_upload(&mut stream, shared, &req, query);
+        }
+        ("POST", "/api/assets/generate") => {
+            handle_assets_generate(&mut stream, shared, &req.body);
+        }
         ("GET", "/api/build/events") => {
             let since = query_param(query, "since")
                 .and_then(|s| s.parse::<u64>().ok())
@@ -2017,6 +2074,14 @@ fn config_snapshot(shared: &Shared) -> Value {
             })
         })
         .collect();
+    let gemini_key = cfg
+        .gemini_api_key
+        .clone()
+        .or_else(|| std::env::var("GEMINI_API_KEY").ok().filter(|s| !s.trim().is_empty()));
+    let openai_img_key = cfg
+        .openai_image_api_key
+        .clone()
+        .or_else(|| std::env::var("OPENAI_API_KEY").ok().filter(|s| !s.trim().is_empty()));
     json!({
         "ok": true,
         "base_url": base_url,
@@ -2033,6 +2098,11 @@ fn config_snapshot(shared: &Shared) -> Value {
         "vinegar_mcp_path": vinegar,
         "rbxlx_path": rbxlx_path,
         "detected_gateways": gateways,
+        "image_provider": cfg.image_provider.unwrap_or_else(|| "auto".to_string()),
+        "has_gemini_api_key": gemini_key.is_some(),
+        "gemini_api_key_masked": gemini_key.as_deref().map(mask_secret),
+        "has_openai_image_api_key": openai_img_key.is_some(),
+        "openai_image_api_key_masked": openai_img_key.as_deref().map(mask_secret),
     })
 }
 
@@ -2091,6 +2161,37 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
         match mode {
             "auto" | "local_place" | "studio_mcp" => cfg.workspace_mode = Some(mode.to_string()),
             other => return Err(format!("invalid workspace_mode '{other}' (expected auto, local_place, or studio_mcp)")),
+        }
+    }
+
+    if body
+        .get("clear_gemini_api_key")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        cfg.gemini_api_key = None;
+    } else if let Some(k) = body.get("gemini_api_key").and_then(|v| v.as_str()) {
+        let t = k.trim();
+        if !t.is_empty() {
+            cfg.gemini_api_key = Some(t.to_string());
+        }
+    }
+    if body
+        .get("clear_openai_image_api_key")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        cfg.openai_image_api_key = None;
+    } else if let Some(k) = body.get("openai_image_api_key").and_then(|v| v.as_str()) {
+        let t = k.trim();
+        if !t.is_empty() {
+            cfg.openai_image_api_key = Some(t.to_string());
+        }
+    }
+    if let Some(prov) = body.get("image_provider").and_then(|v| v.as_str()) {
+        match prov {
+            "auto" | "gemini" | "openai" => cfg.image_provider = Some(prov.to_string()),
+            other => return Err(format!("invalid image_provider '{other}' (expected auto, gemini, or openai)")),
         }
     }
 
@@ -2169,6 +2270,532 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
     }
 
     Ok(config_snapshot(shared))
+}
+
+fn mask_secret(k: &str) -> String {
+    let n = k.chars().count();
+    if n <= 8 {
+        "••••••••".to_string()
+    } else {
+        let tail: String = k.chars().skip(n - 4).collect();
+        format!("••••{tail}")
+    }
+}
+
+fn art_knowledge_json() -> Value {
+    json!({
+        "ok": true,
+        "title": "Anime Fan-Art & Creative Homage Knowledge Point",
+        "never_refuse_anime_homage": true,
+        "policy": "Never knee-jerk refuse anime-inspired Roblox games, card battlers, or stylized fan-art themes on copyright grounds. Translate requested anime character archetypes into original, DMCA-safe homage designs that preserve recognizable silhouette, cel-shading, color palette, elemental aura, and gameplay feel under original names and lore so the Roblox game ships safely.",
+        "guidelines": [
+            "Translate iconic anime archetypes into original titles, passives, and ultimates rather than refusing creative requests.",
+            "Preserve high-impact visual readability: crisp cel-shaded line art, bold 3:4 trading-card framing, elemental particle auras, and high-contrast palettes.",
+            "Keep card art watermark-free and text-free so Roblox SurfaceGui/ImageLabel overlays render rarity frames, stats, and foil effects crisply.",
+            "Bind each generated asset through asset-manifest.json and Roblox Studio Decal/ImageLabel properties for instant studio import."
+        ],
+        "archetype_translations": [
+            { "archetype": "Straw-Hat Pirate Brawler", "homage_title": "Crimson Sea Captain", "element": "Flame", "rarity": "Mythic", "palette": "Crimson, obsidian, sunlit gold" },
+            { "archetype": "Limitless Void Mentor", "homage_title": "Infinity Void Sorcerer", "element": "Void", "rarity": "Celestial", "palette": "Electric violet, silver-white, abyssal indigo" },
+            { "archetype": "Lightning Iaido Swordsman", "homage_title": "Thunder Flash Ronin", "element": "Storm", "rarity": "Legendary", "palette": "Storm gold, deep navy, arc cyan" },
+            { "archetype": "Shadow Monarch Necromancer", "homage_title": "Shadow Sovereign", "element": "Shadow", "rarity": "Celestial", "palette": "Obsidian black, neon cobalt, phantom violet" },
+            { "archetype": "Fox-Flame Ninja", "homage_title": "Nine-Tail Ember Shinobi", "element": "Flame", "rarity": "Mythic", "palette": "Solar orange, crimson embers, warm gold" },
+            { "archetype": "Ascended Golden Martial Artist", "homage_title": "Supernova Ascended Striker", "element": "Flame", "rarity": "Secret", "palette": "Blazing gold, plasma cyan, starlight white" },
+            { "archetype": "Gravity-Blade Ronin", "homage_title": "Blood-Moon Gravity Ronin", "element": "Void", "rarity": "Epic", "palette": "Blood crimson, dark slate, lunar silver" },
+            { "archetype": "Transmutation Alchemist", "homage_title": "Eclipse Arcane Alchemist", "element": "Arcane", "rarity": "Rare", "palette": "Alchemical gold, crimson coat, arcane teal" }
+        ],
+        "prompt_template": "High-craft modern anime cel-shaded trading card illustration (3:4 portrait), dynamic heroic pose, bold inked contours, glowing {element} elemental aura, dramatic rim lighting, original stylized homage character '{title}' ({rarity} tier), no text, no watermark, no borders, clean studio quality."
+    })
+}
+
+fn game_assets_dir(shared: &Shared) -> Option<PathBuf> {
+    shared.data_dir.as_ref().map(|d| d.join("game-assets"))
+}
+
+fn load_game_assets(data_dir: &std::path::Path) -> GameAssetsIndex {
+    let manifest_path = data_dir.join("game-assets").join("manifest.json");
+    let Ok(text) = std::fs::read_to_string(&manifest_path) else {
+        return GameAssetsIndex::default();
+    };
+    let Ok(v) = serde_json::from_str::<Value>(&text) else {
+        return GameAssetsIndex::default();
+    };
+    let items = v
+        .get("assets")
+        .and_then(|a| a.as_array())
+        .cloned()
+        .unwrap_or_default();
+    GameAssetsIndex {
+        items,
+        mem_blobs: std::collections::HashMap::new(),
+    }
+}
+
+fn persist_game_assets_manifest(dir: &std::path::Path, items: &[Value]) {
+    let _ = std::fs::create_dir_all(dir);
+    let path = dir.join("manifest.json");
+    let tmp = dir.join("manifest.json.tmp");
+    let body = json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "assets": items,
+    });
+    if let Ok(text) = serde_json::to_string_pretty(&body) {
+        if std::fs::write(&tmp, text).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+}
+
+/// Strictly validate an asset filename against path traversal, NUL bytes,
+/// leading dots, directory separators, and unsupported extensions.
+fn validate_asset_filename(raw: &str) -> Result<String, String> {
+    if raw.is_empty() || raw.len() > 128 {
+        return Err("asset filename must be 1..=128 characters".to_string());
+    }
+    if raw.contains('/')
+        || raw.contains('\\')
+        || raw.contains("..")
+        || raw.contains('\0')
+        || raw.contains('%')
+        || raw.starts_with('.')
+    {
+        return Err("invalid asset filename (path traversal or special characters rejected)".to_string());
+    }
+    if !raw
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err("asset filename may only contain ASCII letters, digits, '-', '_', and '.'".to_string());
+    }
+    let lower = raw.to_ascii_lowercase();
+    if !(lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".webp")) {
+        return Err("asset filename must end with .png, .jpg, .jpeg, or .webp".to_string());
+    }
+    Ok(raw.to_string())
+}
+
+fn detect_image_mime(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
+    if bytes.len() >= 8 && bytes[..8] == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A] {
+        return Some(("image/png", "png"));
+    }
+    if bytes.len() >= 3 && bytes[..3] == [0xFF, 0xD8, 0xFF] {
+        return Some(("image/jpeg", "jpg"));
+    }
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some(("image/webp", "webp"));
+    }
+    None
+}
+
+fn mime_for_asset_name(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    }
+}
+
+fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
+    let trimmed = input.trim();
+    let payload = if let Some((_, after)) = trimmed.split_once("base64,") {
+        after
+    } else {
+        trimmed
+    };
+    let mut out = Vec::with_capacity((payload.len() * 3) / 4);
+    let mut buf: u32 = 0;
+    let mut bits: u32 = 0;
+    for b in payload.bytes() {
+        if b.is_ascii_whitespace() {
+            continue;
+        }
+        if b == b'=' {
+            break;
+        }
+        let val = match b {
+            b'A'..=b'Z' => (b - b'A') as u32,
+            b'a'..=b'z' => (b - b'a' + 26) as u32,
+            b'0'..=b'9' => (b - b'0' + 52) as u32,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            _ => return Err("invalid base64 character in image payload".to_string()),
+        };
+        buf = (buf << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xFF) as u8);
+        }
+    }
+    if out.is_empty() {
+        return Err("empty image payload after base64 decoding".to_string());
+    }
+    Ok(out)
+}
+
+fn handle_assets_list(stream: &mut TcpStream, shared: &Shared) {
+    let idx = shared.game_assets.lock().unwrap();
+    let dir_str = game_assets_dir(shared).map(|p| p.display().to_string());
+    respond_json(
+        stream,
+        "200 OK",
+        &json!({
+            "ok": true,
+            "count": idx.items.len(),
+            "assets": idx.items,
+            "assets_dir": dir_str,
+        }),
+    );
+}
+
+fn handle_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &str) {
+    let safe_name = match validate_asset_filename(raw_file) {
+        Ok(s) => s,
+        Err(e) => {
+            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
+            return;
+        }
+    };
+    if let Some(dir) = game_assets_dir(shared) {
+        let candidate = dir.join(&safe_name);
+        if let (Ok(canon_dir), Ok(canon_file)) = (std::fs::canonicalize(&dir), std::fs::canonicalize(&candidate)) {
+            if !canon_file.starts_with(&canon_dir) {
+                respond_json(
+                    stream,
+                    "403 Forbidden",
+                    &json!({ "ok": false, "error": "asset path escapes game-assets directory" }),
+                );
+                return;
+            }
+            if let Ok(bytes) = std::fs::read(&canon_file) {
+                respond_bytes(
+                    stream,
+                    "200 OK",
+                    mime_for_asset_name(&safe_name),
+                    "public, max-age=3600",
+                    &bytes,
+                );
+                return;
+            }
+        }
+    }
+    let idx = shared.game_assets.lock().unwrap();
+    if let Some(bytes) = idx.mem_blobs.get(&safe_name) {
+        respond_bytes(
+            stream,
+            "200 OK",
+            mime_for_asset_name(&safe_name),
+            "public, max-age=3600",
+            bytes,
+        );
+        return;
+    }
+    respond_json(
+        stream,
+        "404 Not Found",
+        &json!({ "ok": false, "error": format!("asset not found: {safe_name}") }),
+    );
+}
+
+fn store_uploaded_asset(
+    shared: &Shared,
+    safe_name: &str,
+    bytes: &[u8],
+    meta: Value,
+) -> Result<Value, String> {
+    let (mime, _) = detect_image_mime(bytes)
+        .ok_or_else(|| "uploaded bytes are not a valid PNG, JPEG, or WebP image".to_string())?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let stem = safe_name.rsplit_once('.').map(|(a, _)| a).unwrap_or(safe_name);
+    let card_id = meta
+        .get("card_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(stem)
+        .to_string();
+    let title = meta
+        .get("title")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(&card_id)
+        .to_string();
+
+    if let Some(dir) = game_assets_dir(shared) {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create game-assets dir: {e}"))?;
+        let dest = dir.join(safe_name);
+        let tmp = dir.join(format!("{safe_name}.tmp"));
+        std::fs::write(&tmp, bytes).map_err(|e| format!("write asset: {e}"))?;
+        std::fs::rename(&tmp, &dest).map_err(|e| format!("commit asset: {e}"))?;
+    }
+
+    let record = json!({
+        "filename": safe_name,
+        "url": format!("/api/assets/{safe_name}"),
+        "mime": mime,
+        "bytes": bytes.len(),
+        "card_id": card_id,
+        "title": title,
+        "rarity": meta.get("rarity").and_then(|v| v.as_str()).unwrap_or("Epic"),
+        "odds": meta.get("odds").and_then(|v| v.as_str()).unwrap_or("1 in 32"),
+        "element": meta.get("element").and_then(|v| v.as_str()).unwrap_or("Flame"),
+        "atk": meta.get("atk").and_then(|v| v.as_u64()).unwrap_or(300),
+        "hp": meta.get("hp").and_then(|v| v.as_u64()).unwrap_or(1100),
+        "speed": meta.get("speed").and_then(|v| v.as_u64()).unwrap_or(85),
+        "passive": meta.get("passive").and_then(|v| v.as_str()).unwrap_or(""),
+        "ultimate": meta.get("ultimate").and_then(|v| v.as_str()).unwrap_or(""),
+        "prompt": meta.get("prompt").and_then(|v| v.as_str()).unwrap_or(""),
+        "source": meta.get("source").and_then(|v| v.as_str()).unwrap_or("upload"),
+        "created_at_ms": now_ms,
+    });
+
+    {
+        let mut idx = shared.game_assets.lock().unwrap();
+        idx.items
+            .retain(|it| it.get("filename").and_then(|f| f.as_str()) != Some(safe_name));
+        idx.items.push(record.clone());
+        if shared.data_dir.is_none() {
+            idx.mem_blobs.insert(safe_name.to_string(), bytes.to_vec());
+        } else if let Some(dir) = game_assets_dir(shared) {
+            persist_game_assets_manifest(&dir, &idx.items);
+        }
+    }
+    let chat_id = shared.active_chat.lock().unwrap().clone();
+    shared.events.publish(
+        "asset",
+        chat_id,
+        "done",
+        "Card Art Uploaded",
+        format!("Stored {safe_name} ({} bytes)", bytes.len()),
+        None,
+        Some(format!("/api/assets/{safe_name}")),
+        100,
+    );
+    Ok(record)
+}
+
+fn handle_assets_upload(stream: &mut TcpStream, shared: &Shared, req: &Request, query: &str) {
+    let is_raw_image = req.content_type.starts_with("image/png")
+        || req.content_type.starts_with("image/jpeg")
+        || req.content_type.starts_with("image/webp");
+    let (raw_name, bytes, meta) = if is_raw_image {
+        let name = query_param(query, "filename").unwrap_or("card-art.png").to_string();
+        (name, req.body.clone(), json!({ "source": "upload" }))
+    } else {
+        let body: Value = match serde_json::from_slice(&req.body) {
+            Ok(v) => v,
+            Err(_) => {
+                respond_json(
+                    stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": "invalid JSON body for asset upload" }),
+                );
+                return;
+            }
+        };
+        let raw_name = body
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let b64 = body
+            .get("data_base64")
+            .or_else(|| body.get("data_url"))
+            .or_else(|| body.get("base64"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let decoded = match decode_base64(b64) {
+            Ok(d) => d,
+            Err(e) => {
+                respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
+                return;
+            }
+        };
+        (raw_name, decoded, body)
+    };
+
+    let safe_name = match validate_asset_filename(&raw_name) {
+        Ok(s) => s,
+        Err(e) => {
+            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
+            return;
+        }
+    };
+
+    match store_uploaded_asset(shared, &safe_name, &bytes, meta) {
+        Ok(record) => respond_json(
+            stream,
+            "201 Created",
+            &json!({ "ok": true, "asset": record }),
+        ),
+        Err(e) => respond_json(
+            stream,
+            "400 Bad Request",
+            &json!({ "ok": false, "error": e }),
+        ),
+    }
+}
+
+fn handle_assets_generate(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8]) {
+    let body: Value = match serde_json::from_slice(raw_body) {
+        Ok(v) => v,
+        Err(_) => {
+            respond_json(
+                stream,
+                "400 Bad Request",
+                &json!({ "ok": false, "error": "invalid JSON body" }),
+            );
+            return;
+        }
+    };
+    let title = body
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Apex Vanguard")
+        .to_string();
+    let element = body
+        .get("element")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Flame");
+    let rarity = body
+        .get("rarity")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Mythic");
+    let prompt = body
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| {
+            format!(
+                "High-craft modern anime cel-shaded trading card illustration (3:4 portrait), dynamic heroic pose, bold inked contours, glowing {element} elemental aura, dramatic rim lighting, original stylized homage character '{title}' ({rarity} tier), no text, no watermark, no borders."
+            )
+        });
+
+    let cfg = shared.config.lock().unwrap().clone();
+    let provider = body
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .or(cfg.image_provider.as_deref())
+        .unwrap_or("auto");
+    let gemini_key = cfg
+        .gemini_api_key
+        .or_else(|| std::env::var("GEMINI_API_KEY").ok().filter(|s| !s.trim().is_empty()));
+    let openai_key = cfg
+        .openai_image_api_key
+        .or_else(|| std::env::var("OPENAI_API_KEY").ok().filter(|s| !s.trim().is_empty()));
+
+    let use_gemini = matches!(provider, "gemini" | "auto") && gemini_key.is_some();
+    let use_openai = !use_gemini && matches!(provider, "openai" | "auto") && openai_key.is_some();
+
+    if !use_gemini && !use_openai {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({
+                "ok": false,
+                "error": "No image generation API key configured. Add a Google Gemini API key (Nano Banana) or OpenAI API key in Settings (or set GEMINI_API_KEY / OPENAI_API_KEY), or upload card artwork directly.",
+                "homage_prompt": prompt,
+                "setup_hint": "Settings -> Image Generation Key (Gemini Nano Banana / OpenAI) or POST /api/assets/upload",
+            }),
+        );
+        return;
+    }
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(60))
+        .build();
+    let img_res: Result<(Vec<u8>, &'static str), String> = if use_gemini {
+        let key = gemini_key.unwrap();
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key={key}"
+        );
+        let req_body = json!({
+            "contents": [{ "parts": [{ "text": prompt }] }],
+            "generationConfig": { "responseModalities": ["IMAGE"] }
+        });
+        match agent.post(&url).send_json(req_body) {
+            Ok(resp) => match resp.into_json::<Value>() {
+                Ok(val) => {
+                    let b64 = val
+                        .pointer("/candidates/0/content/parts")
+                        .and_then(|p| p.as_array())
+                        .and_then(|arr| {
+                            arr.iter().find_map(|item| {
+                                item.pointer("/inlineData/data")
+                                    .or_else(|| item.pointer("/inline_data/data"))
+                                    .and_then(|d| d.as_str())
+                            })
+                        });
+                    match b64 {
+                        Some(s) => decode_base64(s).map(|b| (b, "gemini-api")),
+                        None => Err("Gemini Image API returned no inline image bytes".to_string()),
+                    }
+                }
+                Err(e) => Err(format!("could not parse Gemini response: {e}")),
+            },
+            Err(e) => Err(format!("Gemini Image API request failed: {e}")),
+        }
+    } else {
+        let key = openai_key.unwrap();
+        let req_body = json!({
+            "model": "gpt-image-1",
+            "prompt": prompt,
+            "size": "1024x1536",
+            "response_format": "b64_json"
+        });
+        match agent
+            .post("https://api.openai.com/v1/images/generations")
+            .set("Authorization", &format!("Bearer {key}"))
+            .send_json(req_body)
+        {
+            Ok(resp) => match resp.into_json::<Value>() {
+                Ok(val) => match val.pointer("/data/0/b64_json").and_then(|d| d.as_str()) {
+                    Some(s) => decode_base64(s).map(|b| (b, "openai-image")),
+                    None => Err("OpenAI Images API returned no b64_json data".to_string()),
+                },
+                Err(e) => Err(format!("could not parse OpenAI Images response: {e}")),
+            },
+            Err(e) => Err(format!("OpenAI Images API request failed: {e}")),
+        }
+    };
+
+    match img_res {
+        Ok((bytes, source_tag)) => {
+            let ext = detect_image_mime(&bytes).map(|(_, e)| e).unwrap_or("png");
+            let slug = slugify_filename(&title);
+            let safe_name = format!("{slug}.{ext}");
+            let mut meta = body;
+            meta["source"] = json!(source_tag);
+            meta["prompt"] = json!(prompt);
+            match store_uploaded_asset(shared, &safe_name, &bytes, meta) {
+                Ok(record) => respond_json(
+                    stream,
+                    "201 Created",
+                    &json!({ "ok": true, "asset": record }),
+                ),
+                Err(e) => respond_json(
+                    stream,
+                    "502 Bad Gateway",
+                    &json!({ "ok": false, "error": e }),
+                ),
+            }
+        }
+        Err(e) => respond_json(
+            stream,
+            "502 Bad Gateway",
+            &json!({ "ok": false, "error": e, "homage_prompt": prompt }),
+        ),
+    }
 }
 
 /// The single-page UI (assets/index.html); values are substituted in render_page.

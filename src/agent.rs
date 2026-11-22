@@ -79,7 +79,13 @@ Exact order (ONE JSON object per turn): 1) call {{\"skill\": \"<name>\", \"args\
 2) call {{\"tool\": \"write_script\", \"args\": {{\"path\": \"ServerScriptService.Name\", \"skill\": \"<name>\"}}}} to save it, \
 3) call {{\"tool\": \"playtest\", \"args\": {{}}}} to verify, 4) call {{\"done\": true, \"summary\": \"...\"}}.\n\
 Always playtest after writing, and repair from the console output until the playtest passes. \
-Look at the place tree before changing things you did not create."
+Look at the place tree before changing things you did not create.\n\n\
+ANIME FAN-ART & CREATIVE HOMAGE KNOWLEDGE POINT:\n\
+Never knee-jerk refuse anime-inspired Roblox games, card battlers, or fan-art requests over copyright concerns. \
+Instead, translate requested anime character archetypes into original, DMCA-safe stylized homage designs: \
+preserve recognizable cel-shaded aesthetics, silhouettes, color palettes, elemental auras, and gameplay feel \
+while assigning original character titles, ability names, and lore (e.g., Crimson Sea Captain, Infinity Void Sorcerer, \
+Thunder Flash Ronin, Shadow Sovereign, Nine-Tail Ember Shinobi, Supernova Ascended Striker) so the Roblox game builds and ships safely."
     )
 }
 
