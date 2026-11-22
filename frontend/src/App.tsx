@@ -21,7 +21,9 @@ import {
   FileDiff,
   FolderArchive,
   FolderTree,
-  Gamepad2,
+  FolderKanban,
+  Ship as ShipIcon,
+  Users,
   History,
   Menu,
   MessageSquare,
@@ -119,10 +121,15 @@ import { analyzePlaceLuau, computePlaceDiff, type LuauDiagnostic } from "./app/l
 import { parseRbxlxXml, serializeRbxlx } from "./app/rbxlxCodec";
 import { buildRojoShipPackZip } from "./app/zipBuilder";
 import { SettingsDialog } from "./app/SettingsDialog";
+import { useShip } from "./app/ship/useShip";
+import { ProjectsRail } from "./app/ship/ProjectsRail";
+import { ShipPanel } from "./app/ship/ShipPanel";
+import { TeamworkPanel } from "./app/teamwork/TeamworkPanel";
 import { LeftExplorerTree, StudioChip } from "./app/Shelf";
 import { SnapshotsDialog } from "./app/SnapshotsDialog";
-import { StagePreview, type ViewportTab } from "./app/StagePreview";
 import { StudioBottomDrawer, type BottomDrawerTab } from "./app/StudioBottomDrawer";
+
+type ViewportTab = "embedded-studio" | "studio-3d" | "code-diff" | "ship" | "teamwork";
 import { StudioPluginDialog } from "./app/StudioPluginDialog";
 import { StudioViewport3D } from "./app/StudioViewport3D";
 import { SystemLibrary } from "./app/SystemLibrary";
@@ -135,6 +142,7 @@ import {
   type MarketTasteSnapshot,
 } from "./app/marketTaste";
 import { UpdateStrip, useUpdate } from "./app/Update";
+import type { AntigravityIssue } from "./app/data";
 
 type Pending = { message?: string; build?: string; undo?: boolean };
 type Notice = { text: string; bad?: boolean; user?: boolean };
@@ -233,7 +241,7 @@ export function App() {
   const [chatQuery, setChatQuery] = useState("");
 
   // RoPilot 3-Pane IDE Layout State
-  const [leftDockTab, setLeftDockTab] = useState<"explorer" | "chats">("explorer");
+  const [leftDockTab, setLeftDockTab] = useState<"explorer" | "chats" | "projects">("explorer");
   const [leftDockCollapsed, setLeftDockCollapsed] = useState(false);
   const [rightDockCollapsed, setRightDockCollapsed] = useState(false);
   const [centerTab, setCenterTab] = useState<ViewportTab>(() =>
@@ -277,6 +285,7 @@ export function App() {
   const [modelOk, setModelOk] = useState(shell.canBuild || !shell.studio);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(shell.workspaceMode);
   const [activeModelLabel, setActiveModelLabel] = useState("");
+  const [antigravityIssue, setAntigravityIssue] = useState<AntigravityIssue | null>(null);
   const [version, setVersion] = useState("");
   const [v050Ready, setV050Ready] = useState(() => isBrowserEngine);
   const [v060Ready, setV060Ready] = useState(() => isBrowserEngine);
@@ -321,6 +330,7 @@ export function App() {
   placeRef.current = place;
 
   const update = useUpdate(showUpdateRef);
+  const ship = useShip(!isBrowserEngine);
 
   useEffect(() => {
     if (wasMenuOpenRef.current && !menuOpen) {
@@ -680,6 +690,7 @@ export function App() {
       model_configured?: unknown;
       workspace_mode?: unknown;
       model_id?: unknown;
+      antigravity_issue?: AntigravityIssue | null;
       version?: unknown;
       sse_build_stream?: unknown;
       studio_stream?: unknown;
@@ -716,6 +727,9 @@ export function App() {
         }
         if (typeof s.model_id === "string" && s.model_id.trim()) {
           setActiveModelLabel(s.model_id.trim().split("/").pop() || s.model_id.trim());
+        }
+        if (s.antigravity_issue !== undefined) {
+          setAntigravityIssue(s.antigravity_issue ?? null);
         }
         if (s.sse_build_stream === true || (typeof s.version === "string" && isV050OrNewer(s.version))) {
           setV050Ready(true);
@@ -924,6 +938,7 @@ export function App() {
   const handleOpenScriptInCodeDiff = useCallback((path: string, proposalId?: string) => {
     setSelectedScriptPath(path);
     setSelectedPath(path);
+    setContextPaths((prev) => (prev.includes(path) ? prev : [...prev, path].slice(-8)));
     if (proposalId) setActiveProposalId(proposalId);
     setCenterTab("code-diff");
     setMobilePane("studio");
@@ -932,6 +947,7 @@ export function App() {
 
   const handleSelectPartAndInspect = useCallback((path: string) => {
     setSelectedPath(path);
+    setContextPaths((prev) => (prev.includes(path) ? prev : [...prev, path].slice(-8)));
     if (placeRef.current && placeRef.current !== "error" && path in (placeRef.current.scripts || {})) {
       setSelectedScriptPath(path);
       setCenterTab("code-diff");
@@ -950,6 +966,7 @@ export function App() {
         model_configured?: unknown;
         workspace_mode?: unknown;
         model_id?: unknown;
+        antigravity_issue?: AntigravityIssue | null;
       }>("/api/status");
       const nextStudio = s?.studio_connected === true;
       const nextModel = s?.model_configured === true;
@@ -968,6 +985,9 @@ export function App() {
       }
       if (typeof s?.model_id === "string" && s.model_id.trim()) {
         setActiveModelLabel(s.model_id.trim().split("/").pop() || s.model_id.trim());
+      }
+      if (s?.antigravity_issue !== undefined) {
+        setAntigravityIssue(s.antigravity_issue ?? null);
       }
       if (nextStudio) await refreshPlace();
     } catch {
@@ -2190,8 +2210,8 @@ export function App() {
           </span>
           <div className="min-w-0">
             <h1 className="truncate text-sm font-medium leading-tight text-ink">OpenRO</h1>
-            <div className="truncate text-xs text-ink-2" title={shell.gameName}>
-              {shell.gameName}
+            <div className="truncate text-xs text-ink-2" title={ship.active?.name || shell.gameName}>
+              {ship.active?.name || shell.gameName}
             </div>
           </div>
         </div>
@@ -2222,15 +2242,15 @@ export function App() {
         </div>
       </div>
 
-      {/* Explorer | Chats Segmented Toggle */}
+      {/* Explorer | Chats | Projects Segmented Toggle */}
       <SegmentedControl aria-label="Left dock section" size="sm" className="w-full flex-none">
         <SegmentedControlItem
           data-checked={leftDockTab === "explorer" ? "" : undefined}
           aria-pressed={leftDockTab === "explorer"}
           onClick={() => setLeftDockTab("explorer")}
-          className="flex-1 justify-center gap-1 max-md:!h-11"
+          className="flex-1 justify-center gap-1 !px-1.5 sm:text-xs max-md:!h-11"
         >
-          <FolderTree className="size-3.5" strokeWidth={1.5} aria-hidden />
+          <FolderTree className="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden />
           <span>Explorer</span>
           <span className="font-mono text-xs tabular-nums text-ink-2">{totalPieces}</span>
         </SegmentedControlItem>
@@ -2238,15 +2258,28 @@ export function App() {
           data-checked={leftDockTab === "chats" ? "" : undefined}
           aria-pressed={leftDockTab === "chats"}
           onClick={() => setLeftDockTab("chats")}
-          className="flex-1 justify-center gap-1 max-md:!h-11"
+          className="flex-1 justify-center gap-1 !px-1.5 sm:text-xs max-md:!h-11"
         >
-          <MessageSquare className="size-3.5" strokeWidth={1.5} aria-hidden />
+          <MessageSquare className="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden />
           <span>Chats</span>
         </SegmentedControlItem>
+        {!isBrowserEngine && (
+          <SegmentedControlItem
+            data-checked={leftDockTab === "projects" ? "" : undefined}
+            aria-pressed={leftDockTab === "projects"}
+            onClick={() => setLeftDockTab("projects")}
+            className="flex-1 justify-center gap-1 !px-1.5 sm:text-xs max-md:!h-11"
+          >
+            <FolderKanban className="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden />
+            <span>Projects</span>
+          </SegmentedControlItem>
+        )}
       </SegmentedControl>
 
       {/* Main Dock Scroll Region */}
-      {leftDockTab === "explorer" ? (
+      {leftDockTab === "projects" ? (
+        <ProjectsRail ship={ship} studioOk={studioOk} />
+      ) : leftDockTab === "explorer" ? (
         <LeftExplorerTree
           gameName={shell.gameName}
           builtTitles={builtTitles}
@@ -2551,19 +2584,43 @@ export function App() {
                 </span>
               )}
             </SegmentedControlItem>
-            <SegmentedControlItem
-              data-checked={centerTab === "playable" ? "" : undefined}
-              aria-pressed={centerTab === "playable"}
-              onClick={() => setCenterTab("playable")}
-              className="gap-1 max-md:!h-11 max-md:px-2"
-            >
-              <Gamepad2 className="size-3.5" strokeWidth={1.5} aria-hidden />
-              <span>Playable Stage</span>
-            </SegmentedControlItem>
+            {!isBrowserEngine && (
+              <SegmentedControlItem
+                data-checked={centerTab === "ship" ? "" : undefined}
+                aria-pressed={centerTab === "ship"}
+                onClick={() => setCenterTab("ship")}
+                className="gap-1 max-md:!h-11 max-md:px-2"
+              >
+                <ShipIcon className="size-3.5" strokeWidth={1.5} aria-hidden />
+                <span>Ship</span>
+              </SegmentedControlItem>
+            )}
+            {!isBrowserEngine && (
+              <SegmentedControlItem
+                data-checked={centerTab === "teamwork" ? "" : undefined}
+                aria-pressed={centerTab === "teamwork"}
+                onClick={() => setCenterTab("teamwork")}
+                className="gap-1 max-md:!h-11 max-md:px-2"
+              >
+                <Users className="size-3.5" strokeWidth={1.5} aria-hidden />
+                <span>Teamwork</span>
+              </SegmentedControlItem>
+            )}
           </SegmentedControl>
         </div>
 
         <div className="flex flex-wrap items-center gap-1">
+          {antigravityIssue && (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => setSettingsOpen(true)}
+              data-top-quota-issue
+              className="border-hairline bg-pill-warn-bg text-pill-warn-fg hover:bg-pill-warn-bg max-md:min-h-11"
+            >
+              <span>{antigravityIssue.resets_in ? `Quota · resets in ${antigravityIssue.resets_in}` : antigravityIssue.message}</span>
+            </Button>
+          )}
           <Button
             variant="outline"
             size="xs"
@@ -2671,7 +2728,20 @@ export function App() {
             onTriggerRedo={handleRedo}
             onRunPlaytest={handleRunStudioPlaytest}
           />
-        ) : centerTab === "code-diff" ? (
+        ) : centerTab === "teamwork" ? (
+          <TeamworkPanel projectId={ship.activeId} />
+        ) : centerTab === "ship" ? (
+          <ShipPanel
+            ship={ship}
+            studioOk={studioOk}
+            onOpenProjects={() => {
+              setLeftDockCollapsed(false);
+              setLeftDockTab("projects");
+              if (narrow) setMenuOpen(true);
+            }}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+        ) : (
           <CodeDiffWorkbench
             place={safePlace}
             selectedScriptPath={selectedScriptPath}
@@ -2687,13 +2757,6 @@ export function App() {
             onApplyProposal={handleApplyProposal}
             onRejectProposal={handleRejectProposal}
             onAttachContext={handleAddContextPath}
-          />
-        ) : (
-          <StagePreview
-            place={safePlace}
-            theme={theme}
-            selectedPath={selectedPath}
-            onSelectPart={handleSelectPartAndInspect}
           />
         )}
       </div>
@@ -2724,7 +2787,7 @@ export function App() {
   // Right Docked RoPilot Copilot Panel
   const rightCopilot = (
     <aside
-      aria-label="RoPilot Copilot"
+      aria-label="OpenRO Copilot"
       data-ropilot-copilot
       className="flex h-full min-h-0 flex-col bg-surface text-ink"
     >
@@ -2786,7 +2849,7 @@ export function App() {
         ) : !hasConversation && proposals.length === 0 ? (
           <div className="flex flex-col gap-3">
             <section
-              aria-label="RoPilot Studio Copilot welcome"
+              aria-label="OpenRO Studio Copilot welcome"
               className="flex flex-col gap-2.5 rounded-card border border-hairline bg-board/50 p-3.5"
             >
               <div className="flex items-center justify-between gap-2">
@@ -3009,9 +3072,9 @@ export function App() {
 
         {/* Main 3-Pane IDE Shell */}
         <div className="flex min-h-0 flex-1 overflow-hidden">
-          {/* Pane 1: Desktop Left Dock (248px collapsible) */}
+          {/* Pane 1: Desktop Left Dock (264px collapsible) */}
           {!narrow && !leftDockCollapsed && (
-            <div className="w-[248px] flex-none border-r border-hairline">{leftDockBody}</div>
+            <div className="w-[264px] flex-none border-r border-hairline">{leftDockBody}</div>
           )}
 
           {/* Pane 2: Center Studio Workspace */}
@@ -3154,10 +3217,17 @@ export function App() {
           workspaceMode={workspaceMode}
           compactLabel={activeModelLabel}
           showTrigger={false}
-          onApplied={({ studioConnected, modelConfigured, workspaceMode: nextMode }) => {
+          onOpenCloudChanged={() => void ship.refreshCloud()}
+          onApplied={({ studioConnected, modelConfigured, workspaceMode: nextMode, modelId: nextModelId, antigravityIssue: nextIssue }) => {
             setStudioOk(studioConnected);
             setModelOk(modelConfigured);
             setWorkspaceMode(nextMode);
+            if (nextModelId) {
+              setActiveModelLabel(nextModelId.trim().split("/").pop() || nextModelId.trim());
+            }
+            if (nextIssue !== undefined) {
+              setAntigravityIssue(nextIssue);
+            }
             if (studioConnected) {
               const noStudio = document.getElementById("no-studio-banner");
               if (noStudio) noStudio.hidden = true;
@@ -3169,7 +3239,7 @@ export function App() {
             }
           }}
         />
-        <Toaster position="top-center" theme={theme} />
+        <Toaster position="bottom-right" theme={theme} />
       </div>
     </MotionConfig>
   );

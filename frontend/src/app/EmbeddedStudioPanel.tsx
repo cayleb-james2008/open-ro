@@ -285,20 +285,7 @@ export function EmbeddedStudioPanel({
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
-          {studioMode !== "browser_place" && (
-            !embedStatus.running ? (
-              <Button
-                variant="default"
-                size="xs"
-                disabled={embedBusy}
-                aria-label="Launch and embed Roblox Studio"
-                onClick={() => void handleLaunch()}
-                className="max-md:min-h-11"
-              >
-                <Rocket className="size-3.5" strokeWidth={1.5} aria-hidden />
-                <span>{embedBusy ? "Launching…" : "Launch Studio"}</span>
-              </Button>
-            ) : (
+          {studioMode !== "browser_place" && embedStatus.running && (
               <Button
                 variant="outline"
                 size="xs"
@@ -310,7 +297,6 @@ export function EmbeddedStudioPanel({
                 <Square className="size-3.5" strokeWidth={1.5} aria-hidden />
                 <span>{embedBusy ? "Stopping…" : "Stop"}</span>
               </Button>
-            )
           )}
 
           {onInvokeStudioTool && (
@@ -526,7 +512,7 @@ export function EmbeddedStudioPanel({
               </h3>
               <p className="text-xs leading-relaxed text-ink-2">
                 {studioMode === "browser_place"
-                  ? "In this browser build, use Studio 3D, Code & Diff (with reviewable unified diffs), Playable Stage, Market Taste, and all 13 Studio Tools in the bottom drawer live against your in-browser Place. Download OpenRO v0.10.0 desktop to embed live Roblox Studio directly."
+                  ? "In this browser build, use Studio 3D, Code & Diff (with reviewable unified diffs), Market Taste, and all 13 Studio Tools in the bottom drawer live against your in-browser Place. Download OpenRO v0.10.0 desktop to embed live Roblox Studio directly."
                   : "Click Launch Studio above to start an isolated Roblox Studio viewport with 12 FPS live streaming and mouse/keyboard pass-through, or connect an open Roblox Studio window via the Companion Plugin or MCP Bridge."}
               </p>
             </div>
