@@ -14,7 +14,8 @@
 import { computePlaceDiff } from "../src/app/luauAudit";
 import { GAME_SYSTEMS } from "../src/app/systems";
 import { buildRojoShipPackZip } from "../src/app/zipBuilder";
-import type { CardAssetRecord } from "../src/app/cardCatalog";
+import { APEX_CARDS, type CardAssetRecord } from "../src/app/cardCatalog";
+import { BASELINE_MARKET_NICHES } from "../src/app/marketTaste";
 import {
   DEFAULT_LIBRARY_PACKS,
   STUDIO_TOOL_SPECS,
@@ -71,6 +72,7 @@ type EngineState = {
   customAssets: CardAssetRecord[];
   installedPackIds?: string[];
   packConfigs?: Record<string, { provider?: string; base_url?: string; binary_path?: string; masked_key?: string | null }>;
+  activeMarketNiche?: string;
 };
 
 function synthesizeWavBase64(preset: string): { b64: string; bytes: number; durationMs: number; sampleRate: number } {
@@ -176,6 +178,89 @@ function buildLibraryPayload(state: EngineState) {
     blender_detected: false,
     blender_path: null,
     prompt_skills_count: packs.filter((p) => p.installed).length,
+  };
+}
+
+function buildMarketTastePayload(state: EngineState, overrideNiche?: string) {
+  const wanted = (overrideNiche || state.activeMarketNiche || "anime-rng-cards").trim().toLowerCase();
+  const active = BASELINE_MARKET_NICHES.find((n) => n.id === wanted) || BASELINE_MARKET_NICHES[0];
+  return {
+    ok: true,
+    active_niche: active.id,
+    selected_niche: active.id,
+    source: "baseline_nov_2026",
+    baseline_date: "2026-11-22",
+    updated_at: "2026-11-22",
+    last_refreshed_ms: 0,
+    live_supported: false,
+    live_games_count: 0,
+    note: "Browser Studio runs 100% offline with zero external requests using the Nov 2026 Roblox Explore baseline + 8-dimension Craft Bar. Download OpenRO desktop to pull live Roblox Explore charts.",
+    niche: {
+      ...active,
+      top_games: active.games.map((g) => ({
+        ...g,
+        like_ratio_pct: g.like_ratio,
+        sort_tags: [g.sort],
+        why_it_wins: g.hook || "Top Roblox chart benchmark",
+      })),
+      anti_slop_guardrails: active.anti_slop_rules,
+    },
+    niches: BASELINE_MARKET_NICHES,
+  };
+}
+
+function buildOfflineResearchPayload(rawQuery: string, nicheHint?: string) {
+  const cleaned = rawQuery.trim();
+  const idMatch = cleaned.match(/(\d{5,15})/);
+  const numericId = idMatch ? Number(idMatch[1]) : 10092619788;
+  let matchedNiche = BASELINE_MARKET_NICHES.find((n) => n.id === nicheHint) || BASELINE_MARKET_NICHES[0];
+  let matchedGame = matchedNiche.games[0];
+  for (const n of BASELINE_MARKET_NICHES) {
+    const byId = n.games.find((g) => g.universe_id === numericId);
+    const byName =
+      cleaned.length >= 3
+        ? n.games.find((g) => g.name.toLowerCase().includes(cleaned.toLowerCase()))
+        : undefined;
+    if (byId || byName) {
+      matchedNiche = n;
+      matchedGame = byId || byName || n.games[0];
+      break;
+    }
+  }
+  const isKnownId = matchedGame.universe_id === numericId || cleaned.includes("10092619788");
+  const title = isKnownId
+    ? matchedGame.name
+    : /^\d+$/.test(cleaned)
+      ? `${matchedNiche.name} Reference #${numericId}`
+      : cleaned.replace(/^https?:\/\/(www\.)?roblox\.com\/games\/\d+\/?/i, "").replace(/[-_]+/g, " ").trim() ||
+        matchedGame.name;
+  const thumbs = APEX_CARDS.slice(0, 4).map((c) => c.image_url);
+  return {
+    ok: true,
+    offline_fallback: true,
+    name: title,
+    universe_id: numericId,
+    creator: isKnownId ? "Top-Trending Roblox Studio" : "Roblox Creator",
+    ccu: matchedGame.ccu,
+    visits: Math.max(12_500_000, matchedGame.ccu * 420),
+    favorites: Math.max(85_000, matchedGame.ccu * 6),
+    like_ratio_pct: matchedGame.like_ratio,
+    niche_id: matchedNiche.id,
+    niche_name: matchedNiche.name,
+    thumbnails: thumbs,
+    craft_bar: matchedNiche.craft_bar,
+    gameplay_loop: matchedNiche.gameplay_loop,
+    ui_ux_style: matchedNiche.ui_ux_style,
+    animations_and_juice: matchedNiche.animations_and_juice,
+    model_and_world_3d_style: matchedNiche.model_and_world_3d_style,
+    audio_cadence: matchedNiche.audio_cadence,
+    monetization_loops: matchedNiche.monetization_loops,
+    retention_hooks: matchedNiche.retention_hooks,
+    anti_slop_guardrails: matchedNiche.anti_slop_rules,
+    automatic_twists: matchedNiche.automatic_twists,
+    quality_boosts: matchedNiche.quality_boosts,
+    pitch_prompt: matchedNiche.pitch_prompt,
+    note: "Synthesized offline from OpenRO's embedded Nov 2026 Craft Dossier (zero external network calls in standalone browser mode). Run OpenRO desktop to query live games.roblox.com & thumbnails.roblox.com.",
   };
 }
 
@@ -1149,32 +1234,62 @@ export function installWebEngine() {
         sample_rate: wav.sampleRate,
       });
     }
+    if (method === "GET" && u.pathname === "/api/market-taste") {
+      const nicheParam = u.searchParams.get("niche") || undefined;
+      return jsonResponse(buildMarketTastePayload(state, nicheParam));
+    }
+    if (method === "POST" && u.pathname === "/api/market-taste/niche") {
+      const niche = typeof body.niche === "string" ? body.niche.trim().toLowerCase() : "";
+      const valid = BASELINE_MARKET_NICHES.find((n) => n.id === niche);
+      if (!valid) {
+        return jsonResponse({ ok: false, error: `Unknown market niche: ${niche}` }, 400);
+      }
+      state.activeMarketNiche = valid.id;
+      persist();
+      return jsonResponse(buildMarketTastePayload(state, valid.id));
+    }
+    if (method === "POST" && u.pathname === "/api/market-taste/refresh") {
+      // Strictly offline in standalone browser bundle — zero unsolicited or external requests!
+      return jsonResponse({
+        ...buildMarketTastePayload(state),
+        refreshed: false,
+        offline_fallback: true,
+      });
+    }
+    if (method === "POST" && u.pathname === "/api/market-taste/research") {
+      const rawQuery = String(body.place_or_universe_id ?? body.url_or_id ?? body.query ?? "").trim();
+      if (!rawQuery) {
+        return jsonResponse({ ok: false, error: "Provide a Roblox game URL, Place ID, or Universe ID." }, 400);
+      }
+      const nicheHint = typeof body.niche_hint === "string" ? body.niche_hint : state.activeMarketNiche;
+      return jsonResponse(buildOfflineResearchPayload(rawQuery, nicheHint));
+    }
     if (method === "GET" && u.pathname === "/api/art-knowledge") {
       return jsonResponse({
         ok: true,
-        title: "Anime Homage & Fan-Art Styling Knowledge Point",
+        title: "Anime Fan-Art Visual Fidelity & Title-Epithet Knowledge Point",
         summary:
-          "How OpenRO builds iconic Roblox Anime Card Battlers that feel alive with classic shonen energy while shipping original cel-shaded silhouettes, titles, abilities, and studio-ready textures.",
+          "OpenRO builds iconic anime-inspired Roblox games where generated fan-art MUST look unmistakably recognizable as the original character, while every in-game display name uses the character's iconic title/epithet instead of trademarked proper names.",
         policy_note:
-          "Never knee-jerk refuse anime card battler requests: transform iconic archetypes into original homage heroes with bespoke titles, elemental palettes, and clean 3:4 cel-shaded portraits ready for Roblox Decals and SurfaceGuis.",
+          "Visual Fidelity + Title-Epithet Rule: Keep the unmistakable silhouette, hair, costume, and elemental aura fans recognize immediately, while replacing trademarked proper names with iconic titles (Joyful Pirate, Six-Eyes Sorcerer, Shadow Monarch, Nine-Tail Shinobi, Thunder Flash Blade, Steel Alchemist, Gravity Ronin, Golden Ascended Warrior).",
         principles: [
-          "Translate iconic anime archetypes into original titles, passives, and ultimates rather than refusing creative requests.",
-          "Preserve high-impact visual readability: crisp cel-shaded line art, bold 3:4 trading-card framing, elemental particle auras, and high-contrast palettes.",
-          "Keep card art watermark-free and text-free so Roblox SurfaceGui/ImageLabel overlays render rarity frames, stats, and foil effects crisply.",
+          "Unmistakable Visual Fidelity: generated fan-art must genuinely look like the original iconic anime character silhouette, outfit cues, and aura.",
+          "Iconic Title-Epithet Naming: replace trademarked proper names with recognizable character titles (Joyful Pirate, Six-Eyes Sorcerer, Shadow Monarch, Nine-Tail Shinobi, Thunder Flash Blade, Steel Alchemist, Gravity Ronin, Golden Ascended Warrior).",
+          "Keep card art watermark-free and text-free (3:4 portrait) so Roblox SurfaceGui/ImageLabel overlays render rarity frames, stats, and foil effects crisply.",
           "Bind each generated asset through manifest records and Roblox Studio Decal/ImageLabel properties for instant Studio import.",
         ],
         archetype_translations: [
-          { archetype: "Straw-Hat Pirate Brawler", homage_title: "Crimson Sea Captain", element: "Flame", rarity: "Mythic", palette: "Crimson, obsidian, sunlit gold" },
-          { archetype: "Limitless Void Mentor", homage_title: "Infinity Void Sorcerer", element: "Void", rarity: "Celestial", palette: "Electric violet, silver-white, abyssal indigo" },
-          { archetype: "Lightning Iaido Swordsman", homage_title: "Thunder Flash Ronin", element: "Storm", rarity: "Legendary", palette: "Storm gold, deep navy, arc cyan" },
-          { archetype: "Shadow Monarch Necromancer", homage_title: "Shadow Sovereign", element: "Shadow", rarity: "Celestial", palette: "Obsidian black, neon cobalt, phantom violet" },
-          { archetype: "Fox-Flame Ninja", homage_title: "Nine-Tail Ember Shinobi", element: "Flame", rarity: "Mythic", palette: "Solar orange, crimson embers, warm gold" },
-          { archetype: "Ascended Golden Martial Artist", homage_title: "Supernova Ascended Striker", element: "Flame", rarity: "Secret", palette: "Blazing gold, plasma cyan, starlight white" },
-          { archetype: "Gravity-Blade Ronin", homage_title: "Blood-Moon Gravity Ronin", element: "Void", rarity: "Epic", palette: "Blood crimson, dark slate, lunar silver" },
-          { archetype: "Transmutation Alchemist", homage_title: "Eclipse Arcane Alchemist", element: "Arcane", rarity: "Rare", palette: "Alchemical gold, crimson coat, arcane teal" },
+          { archetype: "Straw-Hat Pirate Captain", homage_title: "Joyful Pirate", element: "Flame", rarity: "Mythic", palette: "Crimson, sunlit gold, ocean spray" },
+          { archetype: "Limitless Spatial Sorcerer", homage_title: "Six-Eyes Sorcerer", element: "Void", rarity: "Celestial", palette: "Electric violet, silver-white, cyan glow" },
+          { archetype: "Lightning Iaido Swordsman", homage_title: "Thunder Flash Blade", element: "Storm", rarity: "Legendary", palette: "Storm gold, deep navy, arc cyan" },
+          { archetype: "Shadow Necromancer Sovereign", homage_title: "Shadow Monarch", element: "Shadow", rarity: "Celestial", palette: "Obsidian black, neon cobalt, phantom violet" },
+          { archetype: "Nine-Tail Chakra Ninja", homage_title: "Nine-Tail Shinobi", element: "Flame", rarity: "Mythic", palette: "Solar orange, crimson embers, warm gold" },
+          { archetype: "Ascended Golden Martial Artist", homage_title: "Golden Ascended Warrior", element: "Flame", rarity: "Secret", palette: "Blazing gold, plasma cyan, starlight white" },
+          { archetype: "Gravity-Blade Ronin", homage_title: "Gravity Ronin", element: "Void", rarity: "Epic", palette: "Blood crimson, dark slate, lunar silver" },
+          { archetype: "Transmutation Alchemist", homage_title: "Steel Alchemist", element: "Arcane", rarity: "Rare", palette: "Alchemical gold, crimson coat, arcane teal" },
         ],
         prompt_template:
-          "High-craft modern anime cel-shaded trading card illustration (3:4 portrait), dynamic heroic pose, bold inked contours, glowing {element} elemental aura, dramatic rim lighting, original stylized homage character '{title}' ({rarity} tier), no text, no watermark, no borders.",
+          "High-craft modern anime cel-shaded trading card illustration (3:4 portrait), unmistakably recognizable iconic character silhouette & costume for '{title}' ({rarity} tier), glowing {element} elemental aura, bold inked contours, dramatic rim lighting, no text, no watermark, no borders.",
       });
     }
     if (method === "GET" && u.pathname === "/api/assets") {
