@@ -11,7 +11,7 @@
       "key": "pass_extra_storage",
       "kind": "game_pass",
       "name": "Extra Card Storage (+150)",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 49,
       "robloxId": null
     },
@@ -20,7 +20,7 @@
       "key": "pass_extra_deck_slots",
       "kind": "game_pass",
       "name": "+Deck Slots (+2)",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 79,
       "robloxId": null
     },
@@ -29,7 +29,7 @@
       "key": "pass_lucky",
       "kind": "game_pass",
       "name": "Lucky (1.5x)",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 99,
       "robloxId": null
     },
@@ -38,7 +38,7 @@
       "key": "pass_fast_roll",
       "kind": "game_pass",
       "name": "Fast Roll",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 129,
       "robloxId": null
     },
@@ -47,7 +47,7 @@
       "key": "pass_2x_luck",
       "kind": "game_pass",
       "name": "2x Luck",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 149,
       "robloxId": null
     },
@@ -56,7 +56,7 @@
       "key": "pass_auto_roll",
       "kind": "game_pass",
       "name": "Auto Roll",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 149,
       "robloxId": null
     },
@@ -65,7 +65,7 @@
       "key": "pass_mega_lucky",
       "kind": "game_pass",
       "name": "Mega Lucky (3x)",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 199,
       "robloxId": null
     },
@@ -74,7 +74,7 @@
       "key": "pass_multi_roll",
       "kind": "game_pass",
       "name": "Multi-Roll (5x)",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 299,
       "robloxId": null
     },
@@ -83,7 +83,7 @@
       "key": "pass_vip",
       "kind": "game_pass",
       "name": "VIP",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 349,
       "robloxId": null
     },
@@ -92,7 +92,7 @@
       "key": "pass_mutation_hunter",
       "kind": "game_pass",
       "name": "Mutation & Shiny Hunter",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 449,
       "robloxId": null
     },
@@ -101,7 +101,7 @@
       "key": "prod_starter_bundle",
       "kind": "developer_product",
       "name": "Shinobi Starter Bundle",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 149,
       "robloxId": null
     },
@@ -110,7 +110,7 @@
       "key": "prod_gems_pouch",
       "kind": "developer_product",
       "name": "Pouch of Gems (1,200)",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 99,
       "robloxId": null
     },
@@ -119,7 +119,7 @@
       "key": "prod_gems_chest",
       "kind": "developer_product",
       "name": "Chest of Gems (3,500)",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 249,
       "robloxId": null
     },
@@ -128,7 +128,7 @@
       "key": "prod_gems_vault",
       "kind": "developer_product",
       "name": "Vault of Gems (8,000)",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 499,
       "robloxId": null
     },
@@ -137,7 +137,7 @@
       "key": "prod_gems_treasury",
       "kind": "developer_product",
       "name": "Treasury of Gems (20,000)",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 999,
       "robloxId": null
     },
@@ -146,7 +146,7 @@
       "key": "prod_tickets_15",
       "kind": "developer_product",
       "name": "15 Roll Tickets",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 79,
       "robloxId": null
     },
@@ -155,7 +155,7 @@
       "key": "prod_tickets_50",
       "kind": "developer_product",
       "name": "50 Roll Tickets",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 229,
       "robloxId": null
     },
@@ -164,7 +164,7 @@
       "key": "prod_tickets_150",
       "kind": "developer_product",
       "name": "150 Roll Tickets",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 599,
       "robloxId": null
     },
@@ -173,7 +173,7 @@
       "key": "prod_potions_alchemist",
       "kind": "developer_product",
       "name": "Alchemist Luck Pack",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 99,
       "robloxId": null
     },
@@ -182,7 +182,7 @@
       "key": "prod_potions_boss",
       "kind": "developer_product",
       "name": "Boss Hunter Potion Pack",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 249,
       "robloxId": null
     },
@@ -191,7 +191,7 @@
       "key": "prod_trait_crystals_25",
       "kind": "developer_product",
       "name": "25 Trait Crystals",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 149,
       "robloxId": null
     },
@@ -200,7 +200,7 @@
       "key": "prod_season_pass_s1",
       "kind": "developer_product",
       "name": "Season 1 Pass: Dawn of Legends",
-      "priceApproved": false,
+      "priceApproved": true,
       "priceRobux": 399,
       "robloxId": null
     }
