@@ -155,6 +155,22 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
           <p className="text-sm text-ink-2">{studioOk ? "Starts the game, runs the project's checks, takes screenshots and saves a report." : "Connect Roblox Studio to run a playtest."}</p>
         </div>
         <Button variant={syncFirst ? "secondary" : "outline"} size="lg" aria-pressed={syncFirst} onClick={() => setSyncFirst((v) => !v)} className="max-md:min-h-11">Send to Studio first</Button>
+        {!studioOk && (
+          <Button
+            variant="outline"
+            size="lg"
+            disabled={running}
+            onClick={async () => {
+              setRunning(true); setError("");
+              const l = await call<{ studio_connected?: boolean }>("/api/studio/launch-and-continue", {});
+              if (!l.ok || !l.studio_connected) { setRunning(false); setError(l.error || "Could not launch Studio."); return; }
+              await run();
+            }}
+            className="max-md:min-h-11"
+          >
+            <Play className="size-4" strokeWidth={1.5} aria-hidden />Launch Studio &amp; playtest
+          </Button>
+        )}
         <Button variant="default" size="lg" disabled={!studioOk || running} onClick={() => void run()} data-run-playtest className="max-md:min-h-11"><Play className="size-4" strokeWidth={1.5} aria-hidden />{running ? "Playing…" : "Run playtest"}</Button>
         {error && <p role="alert" className="w-full rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
       </section>

@@ -188,8 +188,13 @@ export type ConfigSnap = {
   web_engine?: boolean;
   web_mode?: "browser" | "byok" | "local_server";
   local_server_url?: string;
-  image_provider?: "auto" | "gemini" | "openai";
+  image_provider?: "chatgpt" | "auto" | "gemini" | "openai";
   image_model?: string;
+  secrets_dir_shared?: boolean;
+  auto_install_plugin?: boolean;
+  has_opencloud_key?: boolean;
+  opencloud_key_masked?: string | null;
+  opencloud_creator?: { userId?: string | number; groupId?: string | number };
   has_gemini_api_key?: boolean;
   gemini_api_key_masked?: string | null;
   has_openai_image_api_key?: boolean;

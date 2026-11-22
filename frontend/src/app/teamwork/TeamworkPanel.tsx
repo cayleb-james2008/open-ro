@@ -190,7 +190,7 @@ export function TeamworkPanel({ projectId }: { projectId?: string | null }) {
 
   const loadRuns = useCallback(async () => {
     const r = await listRuns(projectId);
-    if (r.status === 404) { setAvailable(false); return; }
+    if (r.httpStatus === 404) { setAvailable(false); return; }
     if (!r.ok) { setErr(r.error || "Could not load team runs."); return; }
     setAvailable(true); setErr("");
     const list = r.runs ?? [];
