@@ -1538,7 +1538,100 @@ fn project_open_in_studio_builds_and_opens_rbxlx_with_dry_run_and_reuse() {
     let build_id = dry1["build_id"].as_str().unwrap().to_string();
     let rbxlx_path = dry1["rbxlx_path"].as_str().unwrap().to_string();
     assert!(std::path::Path::new(&rbxlx_path).is_file(), "missing built rbxlx: {rbxlx_path}");
-    assert!(!dry1["command"].as_array().unwrap().is_empty());
+    let cmd_arr = dry1["command"].as_array().unwrap();
+    assert!(!cmd_arr.is_empty());
+    #[cfg(target_os = "linux")]
+    {
+        let win_path = dry1["windows_path"].as_str().unwrap_or("");
+        assert!(
+            win_path.starts_with("C:\\users\\")
+                && win_path.contains("\\Documents\\OpenRO\\")
+                && win_path.ends_with(".rbxlx"),
+            "expected C:\\users\\<user>\\Documents\\OpenRO\\... Windows path on Linux Vinegar: {dry1}"
+        );
+        assert!(
+            cmd_arr.iter().any(|v| v.as_str() == Some(win_path)),
+            "expected Vinegar command to pass Windows path '{win_path}', not Unix path: {cmd_arr:?}"
+        );
+        assert!(
+            !cmd_arr.iter().any(|v| v.as_str() == Some("@@")),
+            "must not pass broken --file-forwarding @@ Unix path to Vinegar: {cmd_arr:?}"
+        );
+    }
+
+    // 2b. Unit verification of Vinegar drive_c staging, blank baseplate synthesis, & duplicate guard (#50, #51)
+    let fake_vinegar = root.join("fake-vinegar");
+    let (staged, win_p) = openro_rs::studio_embed::stage_vinegar_place_file(
+        std::path::Path::new(&rbxlx_path),
+        &fake_vinegar,
+    )
+    .expect("stage_vinegar_place_file");
+    assert!(staged.is_file(), "staged file missing: {}", staged.display());
+    assert!(
+        win_p.starts_with("C:\\users\\") && win_p.contains("\\Documents\\OpenRO\\"),
+        "unexpected win_p: {win_p}"
+    );
+    let bp = openro_rs::studio_embed::ensure_blank_baseplate_rbxlx(&root.join("bp"), "Test Place")
+        .expect("ensure_blank_baseplate_rbxlx");
+    let bp_xml = std::fs::read_to_string(&bp).unwrap();
+    assert!(bp_xml.contains("<Item class=\"Workspace\""));
+    assert!(bp_xml.contains("Baseplate"));
+    assert!(bp_xml.contains("SpawnLocation"));
+    assert_eq!(
+        openro_rs::studio_embed::sanitize_vinegar_place_filename(std::path::Path::new(
+            "/tmp/..my game!.rbxlx"
+        )),
+        "my_game_.rbxlx"
+    );
+    let args = openro_rs::studio_embed::build_vinegar_open_args(&win_p);
+    assert_eq!(
+        args,
+        vec![
+            "run".to_string(),
+            "--command=vinegar".to_string(),
+            "org.vinegarhq.Vinegar".to_string(),
+            win_p.clone(),
+        ]
+    );
+    // Duplicate guard: when studio_running=true and force=false, NEVER spawn a duplicate Studio
+    let dup = openro_rs::studio_embed::open_place_in_studio_inner(
+        std::path::Path::new(&rbxlx_path),
+        Some(":0"),
+        true,
+        false,
+        Some((true, false)),
+    )
+    .expect("open_place_in_studio_inner dry_run");
+    assert_eq!(dup["already_running"], json!(true));
+    assert_eq!(dup["place_open"], json!(false));
+    assert_eq!(dup["launched"], json!(false));
+
+    // Also prove non-dry-run duplicate refusal when studio_running=true, force=false (zero spawn, stages copy)
+    #[cfg(target_os = "linux")]
+    {
+        let dup_non_dry = openro_rs::studio_embed::open_place_in_studio_inner(
+            std::path::Path::new(&rbxlx_path),
+            Some(":0"),
+            false,
+            false,
+            Some((true, false)),
+        );
+        if let Ok(val) = dup_non_dry {
+            assert_eq!(val["launched"], json!(false));
+            assert_eq!(val["already_running"], json!(true));
+            assert!(val["pid"].is_null());
+            assert!(
+                val["windows_path"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("\\Documents\\OpenRO\\"),
+                "expected Documents\\OpenRO windows_path: {val}"
+            );
+            if let Some(sp) = val["staged_path"].as_str() {
+                let _ = std::fs::remove_file(sp);
+            }
+        }
+    }
 
     // 3. rebuild: false reuses existing built .rbxlx
     let (code, dry2) = api_json(
@@ -1574,6 +1667,12 @@ fn project_open_in_studio_builds_and_opens_rbxlx_with_dry_run_and_reuse() {
 
         let child_data = root.join("child-data");
         std::fs::create_dir_all(&child_data).unwrap();
+        // Keep the isolated test server strictly on local_place (never probe host Vinegar MCP).
+        std::fs::write(
+            child_data.join("config.json"),
+            r#"{"workspace_mode":"local_place"}"#,
+        )
+        .unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_openro-rs"))
             .args([
                 "--no-open",
@@ -1583,6 +1682,7 @@ fn project_open_in_studio_builds_and_opens_rbxlx_with_dry_run_and_reuse() {
                 &child_data.to_string_lossy(),
             ])
             .env("OPENRO_NO_OPEN", "1")
+            .env("OPENRO_NO_AUTO_MODEL", "1")
             .env("OPENRO_NO_AUTO_PLUGIN", "1")
             .env("OPENRO_NO_STATUS_MCP_PROBE", "1")
             .env("OPENRO_OPEN_STUDIO_CMD", &launcher)
@@ -1608,11 +1708,12 @@ fn project_open_in_studio_builds_and_opens_rbxlx_with_dry_run_and_reuse() {
             Some(json!({ "path": ws })),
         );
         assert_eq!(code, 200);
+        // Pass force: true so test launches cleanly even when desktop Studio is running on this host (#50)
         let (code, res) = api_json(
             child_port,
             "POST",
             &format!("/api/projects/{pid}/open-in-studio"),
-            Some(json!({ "rebuild": false })),
+            Some(json!({ "rebuild": false, "force": true })),
         );
         let _ = child.kill();
         let _ = child.wait();
@@ -1632,6 +1733,140 @@ fn project_open_in_studio_builds_and_opens_rbxlx_with_dry_run_and_reuse() {
             "launcher did not receive built .rbxlx path: '{recorded}'"
         );
     }
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn embed_transfer_and_sync_auto_open_against_mock_studio() {
+    let root = temp_dir("embed-transfer-auto-open");
+    let data = root.join("data");
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let port = start_server(None, data);
+    let (code, _) = api_json(port, "POST", "/api/projects/workspace", Some(json!({ "path": ws })));
+    assert_eq!(code, 200);
+    let (code, created) = api_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(json!({ "name": "TransferGame", "parent": ws })),
+    );
+    assert_eq!(code, 201);
+    let pid = created["project"]["id"].as_str().unwrap().to_string();
+
+    // 1. /api/studio/embed/transfer enforces loopback 403 and rejects '..' traversal
+    let (evil_code, _, _) = http_req(
+        port,
+        "POST",
+        "/api/studio/embed/transfer",
+        "evil.example:8077",
+        Some("{}"),
+    );
+    assert_eq!(evil_code, 403);
+    let (bad_code, bad_body) = api_json(
+        port,
+        "POST",
+        "/api/studio/embed/transfer",
+        Some(json!({ "place_file": "../escape.rbxlx" })),
+    );
+    assert_eq!(bad_code, 400, "expected 400 traversal refusal: {bad_body}");
+
+    // 2. /api/studio/embed/transfer attaches mock_studio with transferred=true & place_open=true
+    let (code, tr) = api_json(
+        port,
+        "POST",
+        "/api/studio/embed/transfer",
+        Some(json!({
+            "project_id": pid,
+            "transfer": true,
+            "mcp_command": mock_studio_command(),
+        })),
+    );
+    assert_eq!(code, 200, "embed/transfer failed: {tr}");
+    assert_eq!(tr["ok"], json!(true));
+    assert_eq!(tr["transferred"], json!(true));
+    assert_eq!(tr["connected"], json!(true));
+    assert_eq!(tr["place_open"], json!(true));
+    assert_eq!(tr["phase"], json!("connected"));
+    assert_eq!(tr["studio_id"], json!("mock-studio-01"));
+    assert_eq!(tr["has_live_frame"], json!(true));
+    assert_eq!(tr["status"]["transferred"], json!(true));
+    assert!(tr["status"]["can_transfer"].is_boolean());
+
+    let (code, _) = api_json(port, "POST", "/api/studio/embed/stop", Some(json!({})));
+    assert_eq!(code, 200);
+
+    // 3. Isolated child binary: sync/diff respects auto_open:false (503) and auto-attaches when auto_open:true (default)
+    let probe_sock = TcpListener::bind(("127.0.0.1", 0)).expect("ephemeral port");
+    let child_port = probe_sock.local_addr().unwrap().port();
+    drop(probe_sock);
+
+    let child_data = root.join("child-data");
+    std::fs::create_dir_all(&child_data).unwrap();
+    std::fs::write(
+        child_data.join("config.json"),
+        r#"{"workspace_mode":"local_place"}"#,
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_openro-rs"))
+        .args([
+            "--no-open",
+            "--port",
+            &child_port.to_string(),
+            "--data-dir",
+            &child_data.to_string_lossy(),
+        ])
+        .env("OPENRO_NO_OPEN", "1")
+        .env("OPENRO_NO_AUTO_MODEL", "1")
+        .env("OPENRO_NO_AUTO_PLUGIN", "1")
+        .env("OPENRO_NO_STATUS_MCP_PROBE", "1")
+        .env("OPENRO_AUTO_OPEN_MCP_CMD", mock_studio_command())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn openro-rs");
+
+    let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < ready_deadline {
+        if std::net::TcpStream::connect(("127.0.0.1", child_port)).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let (code, _) = api_json(
+        child_port,
+        "POST",
+        "/api/projects/workspace",
+        Some(json!({ "path": ws })),
+    );
+    assert_eq!(code, 200);
+
+    // auto_open: false opts out cleanly -> 503
+    let (code_off, _) = api_json(
+        child_port,
+        "POST",
+        &format!("/api/projects/{pid}/sync/diff"),
+        Some(json!({ "auto_open": false })),
+    );
+    assert_eq!(code_off, 503);
+
+    // default auto_open: true auto-attaches mock_studio and sync/diff succeeds 200 on first call!
+    let (code_on, diff) = api_json(
+        child_port,
+        "POST",
+        &format!("/api/projects/{pid}/sync/diff"),
+        Some(json!({})),
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert_eq!(code_on, 200, "sync/diff auto_open failed: {diff}");
+    assert_eq!(diff["ok"], json!(true));
+    assert_eq!(diff["dry_run"], json!(true));
 
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -267,7 +267,8 @@ pub fn detect_linux_running_studio_display() -> (bool, Option<String>) {
                 continue;
             }
             let cmd_text = String::from_utf8_lossy(&cmd_bytes);
-            let is_studio = cmd_text.contains("RobloxStudioBeta.exe")
+            let is_studio = (cmd_text.contains("RobloxStudioBeta.exe")
+                && !cmd_text.contains("msedgewebview2.exe"))
                 || (cmd_text.contains("vinegar") && cmd_text.contains("studio"));
             if !is_studio {
                 continue;
@@ -434,6 +435,7 @@ pub fn parse_running_studios(val: &Value) -> Vec<Value> {
         let place_name = item
             .get("place_name")
             .or_else(|| item.get("name"))
+            .or_else(|| item.get("file"))
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -444,6 +446,7 @@ pub fn parse_running_studios(val: &Value) -> Vec<Value> {
         } else {
             item.get("active_datamodel")
                 .or_else(|| item.get("datamodel_type"))
+                .or_else(|| item.get("mode"))
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or("Edit")
@@ -711,6 +714,7 @@ pub struct StudioEmbedState {
     pub embedded: bool,
     pub mcp_connected: bool,
     pub place_open: bool,
+    pub transferred: bool,
     pub display: Option<String>,
     pub resolution: [u32; 2],
     pub studio_id: Option<String>,
@@ -740,6 +744,7 @@ impl StudioEmbedState {
             embedded: false,
             mcp_connected: false,
             place_open: false,
+            transferred: false,
             display: if cfg!(unix) {
                 probe
                     .studio_display
@@ -779,6 +784,7 @@ impl StudioEmbedState {
             "embedded": self.embedded,
             "mcp_connected": self.mcp_connected,
             "place_open": self.place_open,
+            "transferred": self.transferred,
             "display": self.display,
             "resolution": self.resolution,
             "studio_id": self.studio_id,
@@ -886,6 +892,10 @@ impl StudioEmbedManager {
 
     pub fn set_place_open(&mut self, open: bool) {
         self.state.place_open = open;
+    }
+
+    pub fn set_transferred(&mut self, transferred: bool) {
+        self.state.transferred = transferred;
     }
 
     pub fn set_playing(&mut self, playing: bool) {
@@ -1469,18 +1479,12 @@ pub fn launch_or_attach_live(
         // 2. Spawn Vinegar on DISPLAY=<display> ONLY if requested and Studio is NOT already running (#118).
         if config.launch_studio_process && !already_running && !is_vinegar_flatpak_running() {
             let mut cmd = Command::new("flatpak");
-            cmd.arg("run");
+            cmd.args(["run", "--command=vinegar", "org.vinegarhq.Vinegar"]);
             if let Some(pf) = config.place_file.as_ref() {
-                if let Some(parent) = pf.parent() {
-                    cmd.arg(format!("--filesystem={}", parent.display()));
+                let vinegar_root = PathBuf::from(&home).join(".var/app/org.vinegarhq.Vinegar");
+                if let Ok((_, win_path)) = stage_vinegar_place_file(pf, &vinegar_root) {
+                    cmd.arg(win_path);
                 }
-                cmd.arg("--file-forwarding");
-                cmd.arg("org.vinegarhq.Vinegar");
-                cmd.arg("@@");
-                cmd.arg(pf);
-                cmd.arg("@@");
-            } else {
-                cmd.arg("org.vinegarhq.Vinegar");
             }
             cmd.env("DISPLAY", &display)
                 .stdin(Stdio::null())
@@ -1691,18 +1695,12 @@ pub fn launch_embedded_studio_with_hub(
         // 2. Spawn Flatpak Vinegar on DISPLAY=<display> (opening optional .rbxlx place_file) if not already running.
         if config.launch_studio_process && !is_vinegar_flatpak_running() {
             let mut cmd = Command::new("flatpak");
-            cmd.arg("run");
+            cmd.args(["run", "--command=vinegar", "org.vinegarhq.Vinegar"]);
             if let Some(pf) = config.place_file.as_ref() {
-                if let Some(parent) = pf.parent() {
-                    cmd.arg(format!("--filesystem={}", parent.display()));
+                let vinegar_root = PathBuf::from(&home).join(".var/app/org.vinegarhq.Vinegar");
+                if let Ok((_, win_path)) = stage_vinegar_place_file(pf, &vinegar_root) {
+                    cmd.arg(win_path);
                 }
-                cmd.arg("--file-forwarding");
-                cmd.arg("org.vinegarhq.Vinegar");
-                cmd.arg("@@");
-                cmd.arg(pf);
-                cmd.arg("@@");
-            } else {
-                cmd.arg("org.vinegarhq.Vinegar");
             }
             cmd.env("DISPLAY", &display)
                 .stdin(Stdio::null())
@@ -1801,7 +1799,7 @@ pub fn launch_embedded_studio_with_hub(
             if let Some(studio_exe) = paths.studio_exe.as_ref() {
                 let mut cmd = Command::new(studio_exe);
                 if let Some(pf) = config.place_file.as_ref() {
-                    cmd.arg(pf);
+                    cmd.args(["-task", "EditFile", "-localPlaceFile"]).arg(pf);
                 }
                 match cmd
                     .stdin(Stdio::null())
@@ -1882,6 +1880,7 @@ pub fn stop_embedded_studio(manager: &mut StudioEmbedManager) -> StudioEmbedStat
     manager.state.embedded = false;
     manager.state.mcp_connected = false;
     manager.state.place_open = false;
+    manager.state.transferred = false;
     manager.state.playing = false;
     manager.state.studio_id = None;
     manager.state.studio_pid = None;
@@ -1893,13 +1892,655 @@ pub fn stop_embedded_studio(manager: &mut StudioEmbedManager) -> StudioEmbedStat
     manager.state()
 }
 
+/// Sanitize a `.rbxlx`/`.rbxl` file name for staging inside Vinegar's Wine `C:\openro-places\`
+/// directory so there are never spaces, path separators, or leading flag dashes (#50).
+pub fn sanitize_vinegar_place_filename(rbxlx_path: &Path) -> String {
+    let raw = rbxlx_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("place.rbxlx");
+    let mut clean: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    while clean.starts_with('.') || clean.starts_with('-') {
+        clean.remove(0);
+    }
+    if clean.is_empty() {
+        clean = "place.rbxlx".to_string();
+    }
+    let low = clean.to_ascii_lowercase();
+    if !low.ends_with(".rbxlx") && !low.ends_with(".rbxl") {
+        clean.push_str(".rbxlx");
+    }
+    clean
+}
+
+/// Detect the active Wine username inside Vinegar's `drive_c/users/` prefix (#51).
+/// Prefers `$USER` if present, else the first non-`Public` directory, else `"Public"`.
+pub fn detect_vinegar_wine_user(vinegar_root: &Path) -> String {
+    let users_dir = vinegar_root.join("data/vinegar/prefixes/studio/drive_c/users");
+    if let Ok(env_user) = std::env::var("USER") {
+        let u = env_user.trim();
+        if !u.is_empty()
+            && u.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+            && users_dir.join(u).is_dir()
+        {
+            return u.to_string();
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(&users_dir) {
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().to_str().map(String::from))
+            .filter(|n| !n.eq_ignore_ascii_case("Public") && !n.starts_with('.'))
+            .collect();
+        names.sort();
+        if let Some(first) = names.into_iter().next() {
+            return first;
+        }
+    }
+    if let Ok(env_user) = std::env::var("USER") {
+        let u = env_user.trim();
+        if !u.is_empty()
+            && u.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        {
+            return u.to_string();
+        }
+    }
+    "Public".to_string()
+}
+
+/// Compute the host staging path under Vinegar's writable `drive_c/users/<user>/Documents/OpenRO/`
+/// (always mounted R/W inside Vinegar's Flatpak sandbox) and its corresponding Wine Windows path
+/// `C:\users\<user>\Documents\OpenRO\<file>.rbxlx` (#50, #51).
+pub fn vinegar_stage_paths(rbxlx_path: &Path, vinegar_root: &Path) -> (PathBuf, String) {
+    let fname = sanitize_vinegar_place_filename(rbxlx_path);
+    let win_user = detect_vinegar_wine_user(vinegar_root);
+    let host_path = vinegar_root
+        .join("data/vinegar/prefixes/studio/drive_c/users")
+        .join(&win_user)
+        .join("Documents/OpenRO")
+        .join(&fname);
+    let win_path = format!("C:\\users\\{win_user}\\Documents\\OpenRO\\{fname}");
+    (host_path, win_path)
+}
+
+/// Copy a built `.rbxlx`/`.rbxl` place into Vinegar's `drive_c/users/<user>/Documents/OpenRO/`
+/// so Wine `RobloxStudioBeta.exe` loads it directly into Edit mode (`place_open: true`) without
+/// needing extra Flatpak `--filesystem=` overrides (#50, #51).
+pub fn stage_vinegar_place_file(
+    rbxlx_path: &Path,
+    vinegar_root: &Path,
+) -> Result<(PathBuf, String), String> {
+    if !rbxlx_path.is_file() {
+        return Err(format!("place file '{}' does not exist", rbxlx_path.display()));
+    }
+    let (host_path, win_path) = vinegar_stage_paths(rbxlx_path, vinegar_root);
+    if let Some(parent) = host_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create Vinegar staging dir '{}': {e}", parent.display()))?;
+    }
+    std::fs::copy(rbxlx_path, &host_path).map_err(|e| {
+        format!(
+            "stage '{}' to '{}': {e}",
+            rbxlx_path.display(),
+            host_path.display()
+        )
+    })?;
+    Ok((host_path, win_path))
+}
+
+/// Synthesize a minimal, valid blank Baseplate `.rbxlx` file when no project build exists yet (#51).
+pub fn ensure_blank_baseplate_rbxlx(dir: &Path, name: &str) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("create baseplate dir '{}': {e}", dir.display()))?;
+    let slug: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let clean = slug.trim_matches('-');
+    let fname = if clean.is_empty() {
+        "openro-baseplate.rbxlx".to_string()
+    } else {
+        format!("{clean}-baseplate.rbxlx")
+    };
+    let out = dir.join(fname);
+    let xml = r#"<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+  <External>null</External>
+  <External>nil</External>
+  <Item class="Workspace" referent="RBX0">
+    <Properties><string name="Name">Workspace</string></Properties>
+    <Item class="Part" referent="RBX1">
+      <Properties>
+        <string name="Name">Baseplate</string>
+        <bool name="Anchored">true</bool>
+        <bool name="Locked">true</bool>
+        <Vector3 name="size"><X>512</X><Y>16</Y><Z>512</Z></Vector3>
+        <CoordinateFrame name="CFrame"><X>0</X><Y>-8</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame>
+      </Properties>
+    </Item>
+    <Item class="SpawnLocation" referent="RBX2">
+      <Properties>
+        <string name="Name">SpawnLocation</string>
+        <bool name="Anchored">true</bool>
+        <Vector3 name="size"><X>12</X><Y>1</Y><Z>12</Z></Vector3>
+        <CoordinateFrame name="CFrame"><X>0</X><Y>0.5</Y><Z>0</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame>
+      </Properties>
+    </Item>
+  </Item>
+  <Item class="Lighting" referent="RBX3">
+    <Properties><string name="Name">Lighting</string></Properties>
+  </Item>
+  <Item class="ReplicatedStorage" referent="RBX4">
+    <Properties><string name="Name">ReplicatedStorage</string></Properties>
+  </Item>
+  <Item class="ServerScriptService" referent="RBX5">
+    <Properties><string name="Name">ServerScriptService</string></Properties>
+  </Item>
+  <Item class="ServerStorage" referent="RBX6">
+    <Properties><string name="Name">ServerStorage</string></Properties>
+  </Item>
+  <Item class="StarterGui" referent="RBX7">
+    <Properties><string name="Name">StarterGui</string></Properties>
+  </Item>
+  <Item class="StarterPlayer" referent="RBX8">
+    <Properties><string name="Name">StarterPlayer</string></Properties>
+    <Item class="StarterPlayerScripts" referent="RBX9">
+      <Properties><string name="Name">StarterPlayerScripts</string></Properties>
+    </Item>
+  </Item>
+</roblox>
+"#;
+    std::fs::write(&out, xml).map_err(|e| format!("write blank baseplate '{}': {e}", out.display()))?;
+    Ok(out)
+}
+
+/// Options for seamless transfer / zero-manual-step open in Embedded Roblox Studio (#51).
+#[derive(Clone, Debug)]
+pub struct TransferOptions {
+    pub display: String,
+    pub width: u32,
+    pub height: u32,
+    pub place_file: Option<PathBuf>,
+    pub force_transfer: bool,
+    pub wait_secs: u64,
+    pub mcp_command: Option<String>,
+}
+
+impl Default for TransferOptions {
+    fn default() -> Self {
+        TransferOptions {
+            display: DEFAULT_EMBED_DISPLAY.to_string(),
+            width: DEFAULT_EMBED_WIDTH,
+            height: DEFAULT_EMBED_HEIGHT,
+            place_file: None,
+            force_transfer: false,
+            wait_secs: 45,
+            mcp_command: None,
+        }
+    }
+}
+
+/// Result of `transfer_to_embedded_studio` (#51).
+pub struct TransferResult {
+    pub outcome: EmbedLaunchOutcome,
+    pub transferred: bool,
+    pub attached_existing: bool,
+    pub staged_path: Option<String>,
+    pub windows_path: Option<String>,
+    pub rbxlx_path: Option<String>,
+    pub command: Vec<String>,
+}
+
+/// Seamlessly transfer or open a `.rbxlx` place directly inside OpenRO's Embedded Studio viewport (#51):
+/// - If Studio is not running, OR sitting on Start Page (`place_open == false`), OR `force_transfer == true`:
+///   cleanly stops Start-Page Vinegar (never `pkill -f`, never touching `Xvfb :99`), stages `.rbxlx` into
+///   Vinegar's signed-in prefix (`C:\users\<user>\Documents\OpenRO\<slug>.rbxlx`), launches on `DISPLAY=:99`,
+///   starts 12 FPS `x11grab` MJPEG + X11 input pass-through immediately, and polls `StudioMCP` until
+///   `place_open == true` (staying live in `awaiting_signin` if auth is still required).
+/// - If desktop Studio already has an open place (`place_open == true`) and `!force_transfer`:
+///   preserves the open desktop window and attaches live MCP (`screen_capture` pump on non-X11 / Wayland).
+pub fn transfer_to_embedded_studio(
+    manager: &mut StudioEmbedManager,
+    #[allow(unused_mut)] mut opts: TransferOptions,
+    hub: Option<Arc<StudioStreamHub>>,
+) -> Result<TransferResult, String> {
+    let rbxlx_path = opts
+        .place_file
+        .as_ref()
+        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()));
+    let rbxlx_str = rbxlx_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+
+    // Explicit custom MCP bridge (e.g. mock_studio in automated tests): never spawn/kill Vinegar.
+    if let Some(explicit_cmd) = opts.mcp_command.clone() {
+        let cfg = EmbedConfig {
+            display: opts.display.clone(),
+            width: opts.width,
+            height: opts.height,
+            depth: DEFAULT_EMBED_DEPTH,
+            mcp_command: Some(explicit_cmd.clone()),
+            place_file: rbxlx_path.clone(),
+            launch_studio_process: false,
+            startup_timeout_ms: opts.wait_secs.clamp(1, 90) * 1000,
+        };
+        let outcome = launch_or_attach_live(manager, cfg, hub)?;
+        manager.set_transferred(opts.force_transfer);
+        return Ok(TransferResult {
+            outcome,
+            transferred: opts.force_transfer,
+            attached_existing: !opts.force_transfer,
+            staged_path: None,
+            windows_path: None,
+            rbxlx_path: rbxlx_str,
+            command: vec![explicit_cmd],
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let display = validate_x11_display(&opts.display)?;
+        let home = std::env::var("HOME")
+            .map_err(|_| "HOME environment variable is not set".to_string())?;
+        let vinegar_root = std::env::var("OPENRO_VINEGAR_ROOT")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(&home).join(".var/app/org.vinegarhq.Vinegar"));
+        let mcp_cmd = PathBuf::from(&home)
+            .join(".local/bin/roblox-studio-mcp")
+            .to_string_lossy()
+            .into_owned();
+        if find_on_path("flatpak").is_none() || !vinegar_root.exists() {
+            return Err(
+                "Flatpak org.vinegarhq.Vinegar is not installed; install Vinegar or pass a custom mcp_command."
+                    .to_string(),
+            );
+        }
+
+        let (staged_path, windows_path) = if let Some(ref pf) = rbxlx_path {
+            let (st, win) = stage_vinegar_place_file(pf, &vinegar_root)?;
+            (Some(st.to_string_lossy().into_owned()), Some(win))
+        } else {
+            (None, None)
+        };
+
+        let det = detect_studio_environment();
+        let already_running = det.studio_running || is_vinegar_flatpak_running();
+
+        // Case B: Studio already has an open place (`place_open == true`) AND either:
+        //  - caller did not force transfer (preserve desktop Studio), OR
+        //  - Studio is ALREADY open on the target embedded display (e.g. `:99`) — avoid needless restart!
+        let already_on_target_display = det.studio_display.as_deref() == Some(display.as_str());
+        if already_running && det.place_open && (!opts.force_transfer || already_on_target_display) {
+            if let Ok(mut client) = McpClient::spawn_with_timeout(&mcp_cmd, Duration::from_secs(5)) {
+                if client.has_live_studio() {
+                    let open = probe_client_place_open(&mut client);
+                    manager.x11grab_stop.store(true, Ordering::SeqCst);
+                    if let Some(mut prev) = manager.ffmpeg_child.take() {
+                        let _ = prev.kill();
+                        let _ = prev.wait();
+                    }
+                    manager.x11grab_stop = Arc::new(AtomicBool::new(false));
+                    manager.state.ffmpeg_pid = None;
+                    manager.state.x11grab_active = false;
+                    let target_disp = det.studio_display.clone().unwrap_or_else(|| display.clone());
+                    manager.state.display = Some(target_disp.clone());
+                    if let Some(stream_hub) = hub {
+                        if !is_wayland_desktop_display(&target_disp)
+                            && x11_socket_exists(&target_disp)
+                            && find_on_path("ffmpeg").is_some()
+                        {
+                            if let Some([rw, rh]) = probe_x11_resolution(&target_disp) {
+                                opts.width = rw;
+                                opts.height = rh;
+                            }
+                            manager.state.resolution = [opts.width, opts.height];
+                            let _ = spawn_x11grab_pump(
+                                manager,
+                                stream_hub,
+                                &target_disp,
+                                opts.width,
+                                opts.height,
+                            );
+                        }
+                    }
+                    manager.state.started_at_ms = Some(now_ms());
+                    manager.state.place_file = rbxlx_str.clone();
+                    manager.sync_from_client(&client, Some(mcp_cmd.clone()));
+                    manager.set_place_open(open);
+                    manager.set_transferred(false);
+                    return Ok(TransferResult {
+                        outcome: EmbedLaunchOutcome::Connected(manager.state(), Box::new(client)),
+                        transferred: false,
+                        attached_existing: true,
+                        staged_path,
+                        windows_path,
+                        rbxlx_path: rbxlx_str,
+                        command: vec![mcp_cmd],
+                    });
+                }
+            }
+        }
+
+        // Case A: Transfer / cold-launch onto isolated Xvfb :99 with staged .rbxlx (#51).
+        // Cleanly stop any existing Vinegar instance first (never pkill -f, never touch Xvfb :99).
+        manager.x11grab_stop.store(true, Ordering::SeqCst);
+        if let Some(mut prev) = manager.ffmpeg_child.take() {
+            let _ = prev.kill();
+            let _ = prev.wait();
+        }
+        if let Some(mut prev_studio) = manager.studio_child.take() {
+            let _ = prev_studio.kill();
+            let _ = prev_studio.wait();
+        }
+        manager.x11grab_stop = Arc::new(AtomicBool::new(false));
+        manager.state.ffmpeg_pid = None;
+        manager.state.x11grab_active = false;
+        manager.state.studio_pid = None;
+
+        if already_running || is_vinegar_flatpak_running() {
+            stop_vinegar_gracefully();
+        }
+
+        // Ensure isolated Xvfb display exists (reusing existing Xvfb :99 cleanly).
+        if x11_socket_exists(&display) {
+            if let Some([rw, rh]) = probe_x11_resolution(&display) {
+                opts.width = rw;
+                opts.height = rh;
+            }
+        } else {
+            let screen_spec = format!("{}x{}x{}", opts.width, opts.height, DEFAULT_EMBED_DEPTH);
+            let child = Command::new("Xvfb")
+                .args([&display, "-screen", "0", &screen_spec, "-ac"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("failed to spawn Xvfb {display}: {e}"))?;
+            manager.state.xvfb_pid = Some(child.id());
+            manager.xvfb_child = Some(child);
+            let xvfb_deadline = Instant::now() + Duration::from_secs(5);
+            while !x11_socket_exists(&display) && Instant::now() < xvfb_deadline {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+
+        manager.state.display = Some(display.clone());
+        manager.state.resolution = [opts.width, opts.height];
+        manager.state.place_file = rbxlx_str.clone();
+        manager.state.phase = "starting".to_string();
+        manager.state.last_error = None;
+
+        let mut args = vec![
+            "run".to_string(),
+            "--nosocket=wayland".to_string(),
+            "--command=vinegar".to_string(),
+            "org.vinegarhq.Vinegar".to_string(),
+        ];
+        if let Some(ref wp) = windows_path {
+            args.push(wp.clone());
+        }
+        let mut command_vec = vec!["flatpak".to_string()];
+        command_vec.extend(args.iter().cloned());
+
+        let mut cmd = Command::new("flatpak");
+        cmd.args(&args)
+            .env_remove("WAYLAND_DISPLAY")
+            .env("GDK_BACKEND", "x11")
+            .env("DISPLAY", &display)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+            if let Some(uid) = current_unix_uid() {
+                cmd.env("XDG_RUNTIME_DIR", format!("/run/user/{uid}"));
+            }
+        }
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to launch Flatpak Vinegar on {display}: {e}"))?;
+        manager.state.studio_pid = Some(child.id());
+        manager.studio_child = Some(child);
+
+        // Start 12 FPS x11grab MJPEG stream IMMEDIATELY on :99 so the UI sees Studio boot live!
+        if let Some(stream_hub) = hub {
+            if !is_wayland_desktop_display(&display)
+                && x11_socket_exists(&display)
+                && find_on_path("ffmpeg").is_some()
+            {
+                let _ = spawn_x11grab_pump(manager, stream_hub, &display, opts.width, opts.height);
+            }
+        }
+
+        // Wait until RobloxStudioBeta.exe has actually spawned inside Vinegar before invoking
+        // `roblox-studio-mcp` (`flatpak enter ... wine StudioMCP.exe`), so MCP never collides
+        // with Vinegar's initial `Setting up Wine` / `wineserver` boot phase (#51).
+        let wait_secs = opts.wait_secs.clamp(3, 90);
+        let deadline = Instant::now() + Duration::from_secs(wait_secs);
+        let boot_deadline = Instant::now() + Duration::from_secs(12).min(Duration::from_secs(wait_secs));
+        while !detect_linux_running_studio_display().0 && Instant::now() < boot_deadline {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        if detect_linux_running_studio_display().0 {
+            std::thread::sleep(Duration::from_secs(2));
+        }
+
+        // Poll StudioMCP until a place is actually open (`place_open == true`), up to `wait_secs`.
+        // Note: on Vinegar cold start, `list_roblox_studios` can briefly flicker while the place
+        // initializes before settling in `mode: "Edit"`. Never kill x11grab/Studio on timeout.
+        if Path::new(&mcp_cmd).is_file() {
+            while Instant::now() < deadline {
+                if detect_linux_running_studio_display().0 {
+                    if let Ok(mut client) =
+                        McpClient::spawn_with_timeout(&mcp_cmd, Duration::from_secs(5))
+                    {
+                        if client.has_live_studio() && probe_client_place_open(&mut client) {
+                            manager.state.started_at_ms = Some(now_ms());
+                            manager.sync_from_client(&client, Some(mcp_cmd.clone()));
+                            manager.set_place_open(true);
+                            manager.set_transferred(true);
+                            return Ok(TransferResult {
+                                outcome: EmbedLaunchOutcome::Connected(
+                                    manager.state(),
+                                    Box::new(client),
+                                ),
+                                transferred: true,
+                                attached_existing: false,
+                                staged_path,
+                                windows_path,
+                                rbxlx_path: rbxlx_str,
+                                command: command_vec,
+                            });
+                        }
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1500));
+            }
+        }
+
+        manager.state.embedded = true;
+        manager.state.mcp_connected = false;
+        manager.state.place_open = false;
+        manager.state.transferred = true;
+        manager.state.phase = "awaiting_signin".to_string();
+        manager.state.started_at_ms = Some(now_ms());
+        manager.state.mcp_command = Some(mcp_cmd.clone());
+        manager.state.last_error = None;
+        Ok(TransferResult {
+            outcome: EmbedLaunchOutcome::StreamingAwaitingAuth {
+                state: manager.state(),
+                mcp_cmd,
+            },
+            transferred: true,
+            attached_existing: false,
+            staged_path,
+            windows_path,
+            rbxlx_path: rbxlx_str,
+            command: command_vec,
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let det = detect_studio_environment();
+        let command_vec = if let Some(ref pf) = rbxlx_path {
+            let p_str = pf.to_string_lossy().into_owned();
+            #[cfg(windows)]
+            {
+                vec![
+                    det.studio_exe
+                        .clone()
+                        .unwrap_or_else(|| "RobloxStudioBeta.exe".to_string()),
+                    "-task".to_string(),
+                    "EditFile".to_string(),
+                    "-localPlaceFile".to_string(),
+                    p_str,
+                ]
+            }
+            #[cfg(target_os = "macos")]
+            {
+                vec![
+                    "open".to_string(),
+                    "-a".to_string(),
+                    "/Applications/RobloxStudio.app".to_string(),
+                    p_str,
+                ]
+            }
+            #[cfg(not(any(windows, target_os = "macos")))]
+            {
+                vec![p_str]
+            }
+        } else {
+            Vec::new()
+        };
+        let cfg = EmbedConfig {
+            display: opts.display,
+            width: opts.width,
+            height: opts.height,
+            depth: DEFAULT_EMBED_DEPTH,
+            mcp_command: det.mcp_command,
+            place_file: rbxlx_path.clone(),
+            launch_studio_process: !det.studio_running || opts.force_transfer || !det.place_open,
+            startup_timeout_ms: opts.wait_secs.clamp(3, 90) * 1000,
+        };
+        let outcome = launch_or_attach_live(manager, cfg, hub)?;
+        let transferred = !det.place_open || opts.force_transfer;
+        manager.set_transferred(transferred);
+        Ok(TransferResult {
+            outcome,
+            transferred,
+            attached_existing: det.studio_running && !transferred,
+            staged_path: None,
+            windows_path: rbxlx_str.clone(),
+            rbxlx_path: rbxlx_str,
+            command: command_vec,
+        })
+    }
+}
+
+/// Gracefully ask any running `RobloxStudioBeta.exe` processes inside Vinegar to close
+/// (`SIGTERM`) before falling back to `flatpak kill org.vinegarhq.Vinegar`, so Studio
+/// can flush its auth/session state cleanly instead of losing cookies on SIGKILL (#51).
+#[cfg(target_os = "linux")]
+fn stop_vinegar_gracefully() {
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let pid_str = entry.file_name().to_string_lossy().to_string();
+            if !pid_str.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let Ok(cmd_bytes) = std::fs::read(entry.path().join("cmdline")) else {
+                continue;
+            };
+            let cmd_text = String::from_utf8_lossy(&cmd_bytes);
+            if cmd_text.contains("RobloxStudioBeta.exe") && !cmd_text.contains("msedgewebview2.exe") {
+                let _ = Command::new("kill")
+                    .args(["-TERM", &pid_str])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+    }
+    let graceful_deadline = Instant::now() + Duration::from_secs(4);
+    while (is_vinegar_flatpak_running() || detect_linux_running_studio_display().0)
+        && Instant::now() < graceful_deadline
+    {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    if is_vinegar_flatpak_running() || detect_linux_running_studio_display().0 {
+        let _ = Command::new("flatpak")
+            .args(["kill", "org.vinegarhq.Vinegar"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let kill_deadline = Instant::now() + Duration::from_secs(5);
+        while (is_vinegar_flatpak_running() || detect_linux_running_studio_display().0)
+            && Instant::now() < kill_deadline
+        {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+    // Brief settle so wineserver cleanly releases its prefix socket before relaunch.
+    std::thread::sleep(Duration::from_millis(600));
+}
+
+/// Build `flatpak` arguments that pass a Wine Windows `C:\...` path cleanly to Vinegar (#50, #51).
+pub fn build_vinegar_open_args(windows_path: &str) -> Vec<String> {
+    vec![
+        "run".to_string(),
+        "--command=vinegar".to_string(),
+        "org.vinegarhq.Vinegar".to_string(),
+        windows_path.to_string(),
+    ]
+}
+
 /// Open a built `.rbxlx` / `.rbxl` place file directly in Roblox Studio so developers never
-/// get stuck on Studio's Start Page (#47). Respects `OPENRO_OPEN_STUDIO_CMD` for tests and
-/// `dry_run: true` to inspect the resolved launch command without spawning anything.
+/// get stuck on Studio's Start Page (#47, #50). Avoids spawning duplicate Studio instances
+/// when Studio is already running unless `force` is `true`.
 pub fn open_place_in_studio(
     rbxlx_path: &Path,
     display_override: Option<&str>,
     dry_run: bool,
+) -> Result<Value, String> {
+    open_place_in_studio_with_options(rbxlx_path, display_override, dry_run, false)
+}
+
+/// Same as `open_place_in_studio`, with explicit `force` flag to allow launching even when
+/// a Studio instance is already running (#50).
+pub fn open_place_in_studio_with_options(
+    rbxlx_path: &Path,
+    display_override: Option<&str>,
+    dry_run: bool,
+    force: bool,
+) -> Result<Value, String> {
+    open_place_in_studio_inner(rbxlx_path, display_override, dry_run, force, None)
+}
+
+/// Testable implementation of `open_place_in_studio_with_options` accepting an optional
+/// `(studio_running, place_open)` override for deterministic duplicate-guard unit tests (#50).
+pub fn open_place_in_studio_inner(
+    rbxlx_path: &Path,
+    display_override: Option<&str>,
+    dry_run: bool,
+    force: bool,
+    running_override: Option<(bool, bool)>,
 ) -> Result<Value, String> {
     if !rbxlx_path.is_file() {
         return Err(format!(
@@ -1910,6 +2551,18 @@ pub fn open_place_in_studio(
     let abs = std::fs::canonicalize(rbxlx_path).unwrap_or_else(|_| rbxlx_path.to_path_buf());
     let abs_str = abs.to_string_lossy().into_owned();
     let platform = current_platform();
+    let fname = abs
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("place.rbxlx");
+
+    let (studio_running, place_open) = match running_override {
+        Some(pair) => pair,
+        None => {
+            let det = detect_studio_environment();
+            (det.studio_running, det.place_open)
+        }
+    };
 
     // Test / custom launcher override (`OPENRO_OPEN_STUDIO_CMD`): passed `<abs_path>` as argv[1].
     if let Ok(override_cmd) = std::env::var("OPENRO_OPEN_STUDIO_CMD") {
@@ -1920,10 +2573,35 @@ pub fn open_place_in_studio(
                 return Ok(json!({
                     "launched": false,
                     "dry_run": true,
+                    "already_running": studio_running,
+                    "place_open": place_open,
+                    "staged_path": Value::Null,
+                    "windows_path": Value::Null,
                     "pid": Value::Null,
                     "display": display_override,
                     "platform": platform,
                     "command": argv,
+                    "message": format!("Dry run: ready to open {fname} in Roblox Studio."),
+                }));
+            }
+            if studio_running && !force {
+                let msg = if place_open {
+                    "Roblox Studio already has an open place — use sync/playtest directly, or pass force: true to open another window.".to_string()
+                } else {
+                    format!("Roblox Studio is already running on the Start Page — open a blank Baseplate or {fname} in the running window (pass force: true to launch a new Studio window).")
+                };
+                return Ok(json!({
+                    "launched": false,
+                    "dry_run": false,
+                    "already_running": true,
+                    "place_open": place_open,
+                    "staged_path": Value::Null,
+                    "windows_path": Value::Null,
+                    "pid": Value::Null,
+                    "display": display_override,
+                    "platform": platform,
+                    "command": argv,
+                    "message": msg,
                 }));
             }
             let child = Command::new(trimmed)
@@ -1936,10 +2614,15 @@ pub fn open_place_in_studio(
             return Ok(json!({
                 "launched": true,
                 "dry_run": false,
+                "already_running": studio_running,
+                "place_open": place_open,
+                "staged_path": Value::Null,
+                "windows_path": Value::Null,
                 "pid": child.id(),
                 "display": display_override,
                 "platform": platform,
                 "command": argv,
+                "message": format!("Opened {fname} in Roblox Studio — wait a few seconds for the place to load, then sync or playtest."),
             }));
         }
     }
@@ -1958,18 +2641,14 @@ pub fn open_place_in_studio(
                 .unwrap_or_else(|| ":0".to_string()),
         };
         let home = std::env::var("HOME").unwrap_or_default();
-        let vinegar_prefix = PathBuf::from(&home).join(".var/app/org.vinegarhq.Vinegar");
-        let flatpak_ok = find_on_path("flatpak").is_some() && vinegar_prefix.exists();
-        let parent_dir = abs.parent().map(|p| p.display().to_string());
-        let mut args = vec!["run".to_string()];
-        if let Some(ref parent) = parent_dir {
-            args.push(format!("--filesystem={parent}"));
-        }
-        args.push("--file-forwarding".to_string());
-        args.push("org.vinegarhq.Vinegar".to_string());
-        args.push("@@".to_string());
-        args.push(abs_str.clone());
-        args.push("@@".to_string());
+        let vinegar_root = std::env::var("OPENRO_VINEGAR_ROOT")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(&home).join(".var/app/org.vinegarhq.Vinegar"));
+        let flatpak_ok = find_on_path("flatpak").is_some() && vinegar_root.exists();
+        let (staged_host, windows_path) = vinegar_stage_paths(&abs, &vinegar_root);
+        let args = build_vinegar_open_args(&windows_path);
         let mut command_vec = vec!["flatpak".to_string()];
         command_vec.extend(args.iter().cloned());
 
@@ -1977,11 +2656,16 @@ pub fn open_place_in_studio(
             return Ok(json!({
                 "launched": false,
                 "dry_run": true,
+                "already_running": studio_running,
+                "place_open": place_open,
+                "staged_path": staged_host.to_string_lossy(),
+                "windows_path": windows_path,
                 "pid": Value::Null,
                 "display": display,
                 "platform": platform,
                 "studio_installed": flatpak_ok,
                 "command": command_vec,
+                "message": format!("Dry run: ready to open {fname} ({windows_path}) in Roblox Studio via Vinegar."),
             }));
         }
         if !flatpak_ok {
@@ -1990,6 +2674,35 @@ pub fn open_place_in_studio(
                     .to_string(),
             );
         }
+        // Stage into Vinegar's persistent `drive_c/openro-places/` so Wine RobloxStudioBeta.exe
+        // can always read `C:\openro-places\<file>.rbxlx` inside the Flatpak sandbox (#50).
+        let (staged_path, win_path) = stage_vinegar_place_file(&abs, &vinegar_root)?;
+
+        if studio_running && !force {
+            let msg = if place_open {
+                format!(
+                    "Roblox Studio already has an open place — staged fresh copy at {win_path}; sync/playtest directly or pass force: true to open another window."
+                )
+            } else {
+                format!(
+                    "Roblox Studio is already running on the Start Page — staged {fname} at {win_path}; open a blank Baseplate or that file in the running window (or pass force: true to open a new Studio window)."
+                )
+            };
+            return Ok(json!({
+                "launched": false,
+                "dry_run": false,
+                "already_running": true,
+                "place_open": place_open,
+                "staged_path": staged_path.to_string_lossy(),
+                "windows_path": win_path,
+                "pid": Value::Null,
+                "display": display,
+                "platform": platform,
+                "command": command_vec,
+                "message": msg,
+            }));
+        }
+
         let mut cmd = Command::new("flatpak");
         cmd.args(&args)
             .env("DISPLAY", &display)
@@ -2007,10 +2720,15 @@ pub fn open_place_in_studio(
         Ok(json!({
             "launched": true,
             "dry_run": false,
+            "already_running": studio_running,
+            "place_open": place_open,
+            "staged_path": staged_path.to_string_lossy(),
+            "windows_path": win_path,
             "pid": child.id(),
             "display": display,
             "platform": platform,
             "command": command_vec,
+            "message": format!("Opened {fname} ({win_path}) in Roblox Studio — wait a few seconds for the place to load, then sync or playtest."),
         }))
     }
 
@@ -2029,11 +2747,16 @@ pub fn open_place_in_studio(
             return Ok(json!({
                 "launched": false,
                 "dry_run": true,
+                "already_running": studio_running,
+                "place_open": place_open,
+                "staged_path": Value::Null,
+                "windows_path": Value::Null,
                 "pid": Value::Null,
                 "display": Value::Null,
                 "platform": platform,
                 "studio_installed": studio_app.exists(),
                 "command": command_vec,
+                "message": format!("Dry run: ready to open {fname} in Roblox Studio."),
             }));
         }
         if !studio_app.exists() {
@@ -2041,6 +2764,26 @@ pub fn open_place_in_studio(
                 "RobloxStudio.app not found in /Applications; open the built .rbxlx manually."
                     .to_string(),
             );
+        }
+        if studio_running && !force {
+            let msg = if place_open {
+                "Roblox Studio already has an open place — use sync/playtest directly, or pass force: true to open another window.".to_string()
+            } else {
+                format!("Roblox Studio is already running on the Start Page — open a blank Baseplate or {fname} in the running window (pass force: true to open a new Studio window).")
+            };
+            return Ok(json!({
+                "launched": false,
+                "dry_run": false,
+                "already_running": true,
+                "place_open": place_open,
+                "staged_path": Value::Null,
+                "windows_path": Value::Null,
+                "pid": Value::Null,
+                "display": Value::Null,
+                "platform": platform,
+                "command": command_vec,
+                "message": msg,
+            }));
         }
         let child = Command::new("open")
             .args(&args)
@@ -2052,10 +2795,15 @@ pub fn open_place_in_studio(
         Ok(json!({
             "launched": true,
             "dry_run": false,
+            "already_running": studio_running,
+            "place_open": place_open,
+            "staged_path": Value::Null,
+            "windows_path": Value::Null,
             "pid": child.id(),
             "display": Value::Null,
             "platform": platform,
             "command": command_vec,
+            "message": format!("Opened {fname} in Roblox Studio — wait a few seconds for the place to load, then sync or playtest."),
         }))
     }
 
@@ -2071,16 +2819,28 @@ pub fn open_place_in_studio(
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| "RobloxStudioBeta.exe".to_string());
-        let command_vec = vec![exe_str, abs_str.clone()];
+        let args = vec![
+            "-task".to_string(),
+            "EditFile".to_string(),
+            "-localPlaceFile".to_string(),
+            abs_str.clone(),
+        ];
+        let mut command_vec = vec![exe_str];
+        command_vec.extend(args.iter().cloned());
         if dry_run {
             return Ok(json!({
                 "launched": false,
                 "dry_run": true,
+                "already_running": studio_running,
+                "place_open": place_open,
+                "staged_path": Value::Null,
+                "windows_path": abs_str,
                 "pid": Value::Null,
                 "display": Value::Null,
                 "platform": platform,
                 "studio_installed": studio_exe.is_some(),
                 "command": command_vec,
+                "message": format!("Dry run: ready to open {fname} in Roblox Studio."),
             }));
         }
         let Some(exe) = studio_exe else {
@@ -2089,8 +2849,28 @@ pub fn open_place_in_studio(
                     .to_string(),
             );
         };
+        if studio_running && !force {
+            let msg = if place_open {
+                "Roblox Studio already has an open place — use sync/playtest directly, or pass force: true to open another window.".to_string()
+            } else {
+                format!("Roblox Studio is already running on the Start Page — open a blank Baseplate or {fname} in the running window (pass force: true to open a new Studio window).")
+            };
+            return Ok(json!({
+                "launched": false,
+                "dry_run": false,
+                "already_running": true,
+                "place_open": place_open,
+                "staged_path": Value::Null,
+                "windows_path": abs_str,
+                "pid": Value::Null,
+                "display": Value::Null,
+                "platform": platform,
+                "command": command_vec,
+                "message": msg,
+            }));
+        }
         let child = Command::new(&exe)
-            .arg(&abs)
+            .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -2099,10 +2879,15 @@ pub fn open_place_in_studio(
         Ok(json!({
             "launched": true,
             "dry_run": false,
+            "already_running": studio_running,
+            "place_open": place_open,
+            "staged_path": Value::Null,
+            "windows_path": abs_str,
             "pid": child.id(),
             "display": Value::Null,
             "platform": platform,
             "command": command_vec,
+            "message": format!("Opened {fname} in Roblox Studio — wait a few seconds for the place to load, then sync or playtest."),
         }))
     }
 }
