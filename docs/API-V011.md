@@ -153,7 +153,8 @@ writable here.
 | `POST /api/projects/{id}/file` | `{ path, content, expect_sha256? }` | `{ path, created, bytes, sha256 }`; creates folders; `409` if `expect_sha256` no longer matches |
 | `POST /api/projects/{id}/file/edit` | `{ path, edits: [{ old, new }], expect_sha256? }` | each `old` must occur exactly once or nothing is written (`409`); `{ path, edits, bytes, sha256 }` |
 | `POST /api/projects/{id}/file/delete` | `{ path }` | `{ path, deleted: true }` |
-| `POST /api/projects/{id}/check` | `{}` | runs Luau static analyzer + `selene` + `stylua --check`; `{ passed, luau, selene, stylua }` |
+| `POST /api/projects/{id}/check` | `{ format?: false, paths?: [...] }` (empty body valid) | runs optional in-place `stylua` (when `format: true`, scoped to `paths` or `src/`/`ui/`/`tools/`) then Luau static analyzer + `selene` + `stylua --check`; `{ passed, formatted, format?, luau, selene, stylua }` |
+| `POST /api/projects/{id}/format` | `{ paths?: [...] }` (empty body valid) | runs `stylua` in-place on jailed project-relative `paths` (or `src/`/`ui/`/`tools/` when omitted/empty); fails closed on path escapes; `{ available, formatted, exit_code, timed_out, duration_ms, stdout, stderr, targets }` |
 | `POST /api/projects/{id}/run-lune` | `{ script, args?: [...], timeout_secs?: 30 }` | timeout-bounded `lune run <script>`; `{ script, passed, exit_code, timed_out, duration_ms, stdout, stderr }` |
 | `GET /api/projects/{id}/preview?path=art/cards/a.png` | `path` project-relative image | raw `image/png\|jpeg\|webp\|gif` (up to 10 MB) for OpenRO UI preview |
 
@@ -165,10 +166,12 @@ Agent tool contract (names for `@openro-agent` to wire; each calls the route on 
 `project_list` (`GET /api/projects`), `project_files` (`GET .../files`), `project_read_file` (`GET .../file`),
 `project_write_file` (`POST .../file`), `project_edit_file` (`POST .../file/edit`),
 `project_delete_file` (`POST .../file/delete`), `project_update_manifest` (`POST .../manifest` with `"actor": "agent"`),
-`project_check` (`POST .../check`), `project_run_lune` (`POST .../run-lune`),
+`project_check` (`POST .../check`), `project_format` (`POST .../format`), `project_run_lune` (`POST .../run-lune`),
 `project_build` (`POST .../build`), `project_sync` (`POST .../sync`, run after edits),
 `project_playtest` (`POST .../playtest`, run after a sync; read `console.errors` and failed `checks` to repair).
 A step that changes files should end with check, sync, then playtest.
+
+Rust hooks for `@openro-team` (#56): `projects::format_project(dir: &Path, paths: Option<&[String]>) -> Result<Value, String>` and `projects::check_project_with_options(dir: &Path, format: bool, format_paths: Option<&[String]>) -> Result<Value, String>` (`projects::check_project(dir)` remains backward-compatible and delegates with `format: false`).
 
 ## 6. Project git (commit-per-task & revert-a-task)
 
