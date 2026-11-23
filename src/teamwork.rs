@@ -27,6 +27,9 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const DEFAULT_MAX_CONCURRENCY: usize = 2;
 const MAX_AGENT_STEPS_PER_WAKE: usize = 24;
 const MAX_TRANSIENT_MODEL_RETRIES: usize = 2;
+const TEAMWORK_READ_FILE_MAX_BYTES: usize = 8 * 1024;
+const MAX_TURN_TOOL_RESULT_BYTES: usize = 28 * 1024;
+const READ_ONLY_SPIN_THRESHOLD: usize = 3;
 const MAX_FILE_BYTES: usize = 1_048_576;
 
 const DEFAULT_ROLES: [&str; 4] = ["researcher", "builder", "art", "verifier"];
@@ -2618,6 +2621,100 @@ fn rollback_unsent_board_turn(st: &mut RunState, agent_name: &str, pushed_board_
     }
 }
 
+fn is_write_or_submit_tool(tool: &str) -> bool {
+    matches!(
+        tool,
+        "project_write_file"
+            | "project_edit_file"
+            | "project_delete_file"
+            | "project_update_manifest"
+            | "submit_task"
+            | "mesh_generate"
+            | "blender_generate"
+            | "audio_generate"
+            | "art_generate"
+            | "image_process"
+            | "art_pack_card"
+            | "assets_codegen"
+            | "assets_upload"
+            | "adapter_invoke"
+            | "create_task"
+            | "verify_task"
+            | "finish_run"
+    )
+}
+
+fn utf8_prefix_max_bytes(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+fn cap_turn_tool_results(results_lines: &[String], batch_aborted: bool, batched: bool) -> String {
+    let abort_footer = if batch_aborted && batched {
+        "\n(batched steps aborted on first error)"
+    } else {
+        ""
+    };
+    let overflow_footer = "\n[tool_result output capped at 28 KiB — read fewer files per turn or use start_line/end_line / project_grep]";
+    let raw_total: usize = results_lines
+        .iter()
+        .map(|l| l.len() + 1)
+        .sum::<usize>()
+        + abort_footer.len();
+    if raw_total <= MAX_TURN_TOOL_RESULT_BYTES {
+        let mut s = results_lines.join("\n");
+        s.push_str(abort_footer);
+        return s;
+    }
+
+    // Reserve room for footers + optional read-only nudge so total stays <= 28 KiB.
+    let reserve = overflow_footer.len() + abort_footer.len() + 320;
+    let body_budget = MAX_TURN_TOOL_RESULT_BYTES.saturating_sub(reserve);
+    let mut kept: Vec<String> = Vec::with_capacity(results_lines.len());
+    let mut used = 0usize;
+    let mut overflowed = false;
+    let mut omitted_count = 0usize;
+
+    for (idx, line) in results_lines.iter().enumerate() {
+        let sep = if kept.is_empty() { 0 } else { 1 };
+        if !overflowed && used + sep + line.len() <= body_budget {
+            used += sep + line.len();
+            kept.push(line.clone());
+            continue;
+        }
+        overflowed = true;
+        if idx == 0 && body_budget > 512 {
+            let prefix = utf8_prefix_max_bytes(line, body_budget.saturating_sub(64));
+            let clipped = format!("{prefix}...[truncated from {} bytes]", line.len());
+            used += clipped.len();
+            kept.push(clipped);
+            continue;
+        }
+        let summary = format!("[omitted overflow: {}]", summarize_tool_result_line(line));
+        if used + 1 + summary.len() <= body_budget {
+            used += 1 + summary.len();
+            kept.push(summary);
+        } else {
+            omitted_count += results_lines.len() - idx;
+            break;
+        }
+    }
+
+    let mut out = kept.join("\n");
+    if omitted_count > 0 {
+        out.push_str(&format!("\n[...{omitted_count} additional tool result(s) omitted]"));
+    }
+    out.push_str(overflow_footer);
+    out.push_str(abort_footer);
+    out
+}
+
 fn run_agent_wake_cycle(
     shared: &Arc<Shared>,
     mgr: &Arc<TeamworkManager>,
@@ -2627,6 +2724,7 @@ fn run_agent_wake_cycle(
 ) -> Result<(), String> {
     let mut parse_failures = 0usize;
     let mut transient_retries = 0usize;
+    let mut consecutive_read_only_turns = 0usize;
     for _step in 0..MAX_AGENT_STEPS_PER_WAKE {
         if is_cancelled(handle, agent_name, gen) {
             return Ok(());
@@ -2845,6 +2943,7 @@ fn run_agent_wake_cycle(
             let batched = step.get("steps").is_some();
             let only_board_read = batch.iter().all(|(t, _)| t == "board_read");
             let mut last_board_read_head: Option<u64> = None;
+            let mut did_write_or_submit = false;
             let mut results_lines = Vec::with_capacity(batch.len());
             for (step_idx, (tool, args)) in batch.into_iter().enumerate() {
                 if is_cancelled(handle, agent_name, gen) {
@@ -2863,6 +2962,9 @@ fn run_agent_wake_cycle(
                 let tool_out =
                     execute_agent_tool(shared, mgr, handle, agent_name, gen, &tool, &args);
                 let ok = tool_out.is_ok();
+                if ok && is_write_or_submit_tool(&tool) {
+                    did_write_or_submit = true;
+                }
                 if ok && tool == "board_read" {
                     last_board_read_head = tool_out
                         .as_ref()
@@ -2890,18 +2992,38 @@ fn run_agent_wake_cycle(
             if only_board_read && !batch_aborted && last_board_read_head == Some(pending_cursor) {
                 spin_park_head = last_board_read_head;
             }
-            let combined = if batch_aborted && batched {
-                format!(
-                    "{}\n(batched steps aborted on first error)",
-                    results_lines.join("\n")
-                )
+            if did_write_or_submit {
+                consecutive_read_only_turns = 0;
             } else {
-                results_lines.join("\n")
-            };
+                consecutive_read_only_turns += 1;
+            }
+            let mut combined = cap_turn_tool_results(&results_lines, batch_aborted, batched);
             let mut parked_spin = false;
             {
                 let mut st = handle.state.lock().unwrap();
                 if let Some(idx) = st.agent_index(agent_name) {
+                    let is_worker = !matches!(st.roster[idx].role.as_str(), "coordinator" | "verifier");
+                    let has_actionable_task = st.tasks.iter().any(|t| {
+                        t.owner.eq_ignore_ascii_case(agent_name)
+                            && matches!(t.status, TaskStatus::InProgress | TaskStatus::ChangesRequested)
+                    });
+                    if is_worker
+                        && has_actionable_task
+                        && consecutive_read_only_turns >= READ_ONLY_SPIN_THRESHOLD
+                    {
+                        let nudge = format!(
+                            "Stop reading, write your files now! You have run {consecutive_read_only_turns} consecutive turns with 0 writes or submissions; emit project_write_file/project_edit_file or submit_task on this turn."
+                        );
+                        combined.push_str("\n\n");
+                        combined.push_str(&nudge);
+                        st.append_trace(
+                            agent_name,
+                            turn_num,
+                            "read_spin_nudge",
+                            &nudge,
+                            json!({ "consecutive_read_only_turns": consecutive_read_only_turns }),
+                        );
+                    }
                     st.roster[idx]
                         .messages
                         .push(json!({ "role": "user", "content": combined }));
@@ -4190,8 +4312,75 @@ fn tool_project_read_file(handle: &Arc<RunHandle>, args: &Value) -> Result<Value
         return Err(format!("'{norm}' exceeds 1 MB text read limit"));
     }
     let bytes = std::fs::read(&full).map_err(|e| e.to_string())?;
-    let content = String::from_utf8(bytes.clone()).map_err(|_| format!("'{norm}' is not UTF-8 text"))?;
-    Ok(json!({ "path": norm, "content": content, "bytes": bytes.len() }))
+    let full_text = String::from_utf8(bytes.clone()).map_err(|_| format!("'{norm}' is not UTF-8 text"))?;
+    let lines: Vec<&str> = full_text.lines().collect();
+    let total_lines = lines.len();
+    let start_arg = args.get("start_line").and_then(|v| v.as_u64()).map(|n| n as usize);
+    let end_arg = args.get("end_line").and_then(|v| v.as_u64()).map(|n| n as usize);
+
+    let (start_line, end_line, sliced) = match (start_arg, end_arg) {
+        (None, None) => (1usize, total_lines, full_text),
+        _ => {
+            let s = start_arg.unwrap_or(1).max(1);
+            let e = end_arg.unwrap_or(total_lines).min(total_lines);
+            let text = if s > e || total_lines == 0 {
+                String::new()
+            } else {
+                lines[s - 1..e].join("\n")
+            };
+            (s, e, text)
+        }
+    };
+
+    if sliced.len() <= TEAMWORK_READ_FILE_MAX_BYTES {
+        return Ok(json!({
+            "path": norm,
+            "content": sliced,
+            "bytes": bytes.len(),
+            "start_line": start_line,
+            "end_line": end_line,
+            "total_lines": total_lines,
+            "truncated": false,
+        }));
+    }
+
+    // Cap individual read outputs to ~8 KiB and guide pagination via start_line/end_line.
+    let slice_lines: Vec<&str> = sliced.lines().collect();
+    let mut kept_lines = Vec::new();
+    let mut used = 0usize;
+    for l in &slice_lines {
+        let sep = if kept_lines.is_empty() { 0 } else { 1 };
+        if used + sep + l.len() <= TEAMWORK_READ_FILE_MAX_BYTES {
+            used += sep + l.len();
+            kept_lines.push(*l);
+        } else {
+            break;
+        }
+    }
+    let (shown_end, truncated_text) = if kept_lines.is_empty() {
+        let end_l = if total_lines == 0 { 0 } else { start_line.min(total_lines) };
+        (
+            end_l,
+            utf8_prefix_max_bytes(&sliced, TEAMWORK_READ_FILE_MAX_BYTES).to_string(),
+        )
+    } else {
+        (start_line + kept_lines.len() - 1, kept_lines.join("\n"))
+    };
+    let next_start = (shown_end + 1).min(total_lines.max(1));
+    let next_end = (next_start + 150).min(total_lines.max(next_start));
+    let hint = format!(
+        "Truncated to {TEAMWORK_READ_FILE_MAX_BYTES} bytes (lines {start_line}..={shown_end} of {total_lines}); pass args.start_line={next_start} and args.end_line={next_end} or use project_grep."
+    );
+    Ok(json!({
+        "path": norm,
+        "content": truncated_text,
+        "bytes": bytes.len(),
+        "start_line": start_line,
+        "end_line": shown_end,
+        "total_lines": total_lines,
+        "truncated": true,
+        "hint": hint,
+    }))
 }
 
 fn ensure_write_claim(
@@ -5140,5 +5329,37 @@ mod tests {
         assert_eq!(transient_retry_backoff_ms_with_cap(0, None), 5_000);
         assert_eq!(transient_retry_backoff_ms_with_cap(1, None), 15_000);
         assert_eq!(transient_retry_backoff_ms_with_cap(0, Some(50)), 50);
+    }
+
+    #[test]
+    fn turn_tool_result_cap_and_read_only_classifier() {
+        assert!(!is_write_or_submit_tool("project_read_file"));
+        assert!(!is_write_or_submit_tool("project_files"));
+        assert!(!is_write_or_submit_tool("project_grep"));
+        assert!(!is_write_or_submit_tool("luau_check"));
+        assert!(!is_write_or_submit_tool("board_read"));
+        assert!(is_write_or_submit_tool("project_write_file"));
+        assert!(is_write_or_submit_tool("project_edit_file"));
+        assert!(is_write_or_submit_tool("submit_task"));
+        assert!(is_write_or_submit_tool("adapter_invoke"));
+
+        // 19 x 6 KB reads (~114 KB) get capped <= 28 KiB while summarizing overflowed steps.
+        let batch: Vec<String> = (0..19)
+            .map(|i| {
+                format!(
+                    "tool_result (project_read_file): {{\"path\":\"src/f{i:02}.luau\",\"content\":\"{}\"}}",
+                    "A".repeat(6_000)
+                )
+            })
+            .collect();
+        let capped = cap_turn_tool_results(&batch, false, true);
+        assert!(capped.len() <= MAX_TURN_TOOL_RESULT_BYTES, "len={}", capped.len());
+        assert!(capped.contains("capped at 28 KiB"));
+        assert!(capped.contains("[omitted overflow:"));
+
+        // Single huge 40 KB result also stays UTF-8 safe & <= 28 KiB.
+        let huge = vec![format!("tool_result (project_files): {}", "é".repeat(20_000))];
+        let capped_single = cap_turn_tool_results(&huge, false, false);
+        assert!(capped_single.len() <= MAX_TURN_TOOL_RESULT_BYTES);
     }
 }
