@@ -2069,3 +2069,155 @@ fn transient_model_errors_retry_twice_and_stop_on_third_failure() {
     assert!(tr2["trace"].as_array().unwrap().iter().any(|e| e["kind"] == "error"));
     shared2.teamwork.shutdown();
 }
+
+#[test]
+fn read_batch_truncation_turn_cap_and_read_only_spin_breaker() {
+    let dir = scratch_dir("read-batch-spin-cap");
+    let data_dir = dir.join("data");
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(proj.join("src")).unwrap();
+    std::fs::create_dir_all(proj.join("docs")).unwrap();
+
+    // 1 large >12 KiB file with 250 numbered lines
+    let mut big_lines = Vec::with_capacity(250);
+    for i in 1..=250 {
+        big_lines.push(format!("-- LINE_{i:03} {}", "X".repeat(42)));
+    }
+    std::fs::write(proj.join("src/Big.luau"), big_lines.join("\n")).unwrap();
+
+    // 12 x 3.2 KiB files (total ~38 KiB if read together in 1 turn)
+    for i in 0..12 {
+        std::fs::write(
+            proj.join(format!("docs/f{i:02}.md")),
+            format!("# Doc {i:02}\n{}\n", "M".repeat(3_200)),
+        )
+        .unwrap();
+    }
+    std::fs::create_dir_all(&data_dir).unwrap();
+    write_projects_index(&data_dir, &proj);
+
+    let step3_user_prompt: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let s3_capture = Arc::clone(&step3_user_prompt);
+    let per_role: Arc<Mutex<std::collections::HashMap<String, usize>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let pr = Arc::clone(&per_role);
+
+    let stub = start_dynamic_stub(move |body, _| {
+        let req: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        let msgs = req["messages"].as_array().unwrap();
+        let sys = msgs[0]["content"].as_str().unwrap_or("");
+        let role = if sys.contains("[Agent: coordinator]") {
+            "coordinator"
+        } else if sys.contains("[Agent: builder]") {
+            "builder"
+        } else {
+            "verifier"
+        };
+        let step = {
+            let mut m = pr.lock().unwrap();
+            let e = m.entry(role.to_string()).or_insert(0);
+            *e += 1;
+            *e
+        };
+        if role == "coordinator" {
+            let all_text = msgs.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
+            if all_text.contains("Verified task t1") {
+                return json!({ "tool": "finish_run", "args": { "summary": "read cap & spin-breaker verified" } });
+            }
+            return match step {
+                1 => json!({
+                    "tool": "create_task",
+                    "args": { "id": "t1", "owner": "builder", "title": "Read & write notes", "kind": "docs", "files": ["docs/OUT.md"] },
+                    "done": true,
+                    "summary": "dispatched t1"
+                }),
+                _ => json!({ "done": true, "summary": "waiting" }),
+            };
+        }
+        if role == "builder" {
+            let last_user = msgs.iter().rev().find(|m| m["role"] == "user").and_then(|m| m["content"].as_str()).unwrap_or("");
+            return match step {
+                // Read-only turn 1: read >12 KiB file without line range -> truncated >8 KiB w/ hint
+                1 => json!({ "tool": "project_read_file", "args": { "path": "src/Big.luau" } }),
+                // Read-only turn 2: follow hint with start_line / end_line
+                2 => json!({ "tool": "project_read_file", "args": { "path": "src/Big.luau", "start_line": 200, "end_line": 210 } }),
+                // Read-only turn 3: batch all 12 docs (~38 KiB raw) -> turn output capped <= 28 KiB + triggers 3-turn read-only nudge
+                3 => {
+                    let steps: Vec<Value> = (0..12)
+                        .map(|i| json!({ "tool": "project_read_file", "args": { "path": format!("docs/f{i:02}.md") } }))
+                        .collect();
+                    json!({ "steps": steps })
+                }
+                // Turn 4: inspect prompt from turn 3 and write deliverables + submit
+                4 => {
+                    *s3_capture.lock().unwrap() = last_user.to_string();
+                    json!({
+                        "steps": [
+                            { "tool": "project_write_file", "args": { "path": "docs/OUT.md", "content": "wrote after read nudge\n" } },
+                            { "tool": "submit_task", "args": { "task_id": "t1", "summary": "wrote OUT.md" } }
+                        ],
+                        "done": true,
+                        "summary": "submitted t1"
+                    })
+                }
+                _ => json!({ "done": true, "summary": "parked" }),
+            };
+        }
+        let last_user = msgs.iter().rev().find(|m| m["role"] == "user").and_then(|m| m["content"].as_str()).unwrap_or("");
+        if last_user.contains("- t1 [awaiting_verification]") {
+            json!({ "tool": "verify_task", "args": { "task_id": "t1", "passed": true, "notes": "ok" }, "done": true, "summary": "verified" })
+        } else {
+            json!({ "done": true, "summary": "waiting" })
+        }
+    });
+
+    let (port, shared) = boot_server(data_dir, None);
+    let (st, _) = http(port, "POST", "/api/config", Some(&json!({ "base_url": stub.base_url, "model_id": "stub-model" })));
+    assert_eq!(st, 200);
+    let (st, created) = http(port, "POST", "/api/teamwork", Some(&json!({ "goal": "Verify #55 read cap & read-only spin-breaker", "roles": ["builder", "verifier"], "max_concurrency": 2 })));
+    assert_eq!(st, 201, "{created}");
+    let run_id = created["run"]["id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut detail = Value::Null;
+    while Instant::now() < deadline {
+        let (_, d) = http(port, "GET", &format!("/api/teamwork/{run_id}"), None);
+        detail = d;
+        if detail["run"]["status"] == "completed" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(detail["run"]["status"], "completed", "{detail}");
+
+    let (_, tr) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/builder/trace"), None);
+    let trace = tr["trace"].as_array().unwrap();
+    // Turn 1 read was truncated at <= 8 KiB with start_line/end_line hint
+    let t1_read = trace
+        .iter()
+        .find(|e| e["turn"] == 1 && e["kind"] == "tool_result" && e["data"]["tool"] == "project_read_file")
+        .expect("turn 1 project_read_file result");
+    assert_eq!(t1_read["data"]["result"]["truncated"], true);
+    assert!(t1_read["data"]["result"]["content"].as_str().unwrap().len() <= 8192);
+    assert!(t1_read["data"]["result"]["hint"].as_str().unwrap().contains("start_line"));
+
+    // Turn 2 paginated range returned lines 200..=210 cleanly without truncation
+    let t2_read = trace
+        .iter()
+        .find(|e| e["turn"] == 2 && e["kind"] == "tool_result" && e["data"]["tool"] == "project_read_file")
+        .expect("turn 2 project_read_file result");
+    assert_eq!(t2_read["data"]["result"]["truncated"], false);
+    assert!(t2_read["data"]["result"]["content"].as_str().unwrap().contains("LINE_200"));
+    assert!(t2_read["data"]["result"]["content"].as_str().unwrap().contains("LINE_210"));
+    assert!(!t2_read["data"]["result"]["content"].as_str().unwrap().contains("LINE_001"));
+
+    // Turn 3 prompt after 12-file read batch + 3 consecutive read-only turns: <= 28 KiB + nudge present
+    let s4_prompt = step3_user_prompt.lock().unwrap();
+    let tool_part = s4_prompt.split("\n\nTasks:\n").next().unwrap_or(&s4_prompt);
+    assert!(tool_part.len() <= 28 * 1024, "turn tool_result exceeded 28 KiB: {} bytes", tool_part.len());
+    assert!(tool_part.contains("capped at 28 KiB"), "{tool_part}");
+    assert!(tool_part.to_ascii_lowercase().contains("stop reading, write your files now"), "{tool_part}");
+    assert!(trace.iter().any(|e| e["kind"] == "read_spin_nudge"), "{trace:?}");
+
+    shared.teamwork.shutdown();
+}
