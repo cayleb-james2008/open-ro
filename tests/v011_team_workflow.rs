@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
 fn scratch_dir(name: &str) -> PathBuf {
     let base = std::env::var("CARGO_TARGET_DIR")
         .map(PathBuf::from)
@@ -1861,6 +1863,7 @@ fn asset_tools_record_written_files_and_autocommit_skips_unmatched_globs() {
 
 #[test]
 fn transient_model_errors_retry_twice_and_stop_on_third_failure() {
+    let _env_guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     struct EnvCapGuard(Option<std::ffi::OsString>);
     impl Drop for EnvCapGuard {
         fn drop(&mut self) {
@@ -2575,5 +2578,266 @@ fn project_format_and_check_ownership_scoping_gap_56() {
         messy_unclaimed
     );
 
+    shared.teamwork.shutdown();
+}
+
+#[test]
+fn auto_open_studio_connects_on_teamwork_sync_and_playtest_with_opt_out_gap_57() {
+    let _env_guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    struct AutoOpenEnvGuard {
+        prev_cmd: Option<std::ffi::OsString>,
+        prev_no_auto: Option<std::ffi::OsString>,
+    }
+    impl Drop for AutoOpenEnvGuard {
+        fn drop(&mut self) {
+            match &self.prev_cmd {
+                Some(v) => std::env::set_var("OPENRO_AUTO_OPEN_MCP_CMD", v),
+                None => std::env::remove_var("OPENRO_AUTO_OPEN_MCP_CMD"),
+            }
+            match &self.prev_no_auto {
+                Some(v) => std::env::set_var("OPENRO_NO_AUTO_OPEN_STUDIO", v),
+                None => std::env::remove_var("OPENRO_NO_AUTO_OPEN_STUDIO"),
+            }
+        }
+    }
+    let _env_restore = AutoOpenEnvGuard {
+        prev_cmd: std::env::var_os("OPENRO_AUTO_OPEN_MCP_CMD"),
+        prev_no_auto: std::env::var_os("OPENRO_NO_AUTO_OPEN_STUDIO"),
+    };
+    let mock_bin = env!("CARGO_BIN_EXE_mock_studio");
+    std::env::remove_var("OPENRO_NO_AUTO_OPEN_STUDIO");
+    std::env::set_var("OPENRO_AUTO_OPEN_MCP_CMD", mock_bin);
+
+    let dir = scratch_dir("auto-open-gap57");
+    let data_dir = dir.join("data");
+    let ws = dir.join("workspace");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    // Shared atomic controls which sub-run scenario is executing:
+    // 0 -> Run A (tests project_sync auto_open: false opt-out + default auto_open connect)
+    // 1 -> Run B (tests project_playtest auto_open: false opt-out + default auto_open connect)
+    let phase = Arc::new(AtomicUsize::new(0));
+    let ph = Arc::clone(&phase);
+    let per_role_step: Arc<Mutex<std::collections::HashMap<String, usize>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let prs = Arc::clone(&per_role_step);
+
+    let stub = start_dynamic_stub(move |body, _| {
+        let req: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        let msgs = req["messages"].as_array().unwrap();
+        let sys = msgs[0]["content"].as_str().unwrap_or("");
+        let role = if sys.contains("[Agent: coordinator]") {
+            "coordinator"
+        } else if sys.contains("[Agent: builder]") {
+            "builder"
+        } else {
+            "verifier"
+        };
+        let cur_phase = ph.load(Ordering::SeqCst);
+        let key = format!("{cur_phase}:{role}");
+        let step = {
+            let mut m = prs.lock().unwrap();
+            let e = m.entry(key).or_insert(0);
+            *e += 1;
+            *e
+        };
+        let all_text = msgs
+            .iter()
+            .map(|m| m["content"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if role == "coordinator" {
+            if all_text.contains("Verified task t1") {
+                return json!({ "tool": "finish_run", "args": { "summary": "gap 57 run complete" } });
+            }
+            return match step {
+                1 => json!({
+                    "tool": "create_task",
+                    "args": {
+                        "id": "t1",
+                        "owner": "builder",
+                        "verifier": "verifier",
+                        "title": "Build and verify game script",
+                        "kind": "game_code",
+                        "files": ["src/shared/CardStats.luau"]
+                    },
+                    "done": true,
+                    "summary": "dispatched t1"
+                }),
+                _ => json!({ "done": true, "summary": "waiting" }),
+            };
+        }
+
+        if cur_phase == 0 {
+            if role == "builder" {
+                return match step {
+                    1 => json!({ "tool": "project_write_file", "args": { "path": "src/shared/CardStats.luau", "content": "return { Mythic = 100 }\n" } }),
+                    // First prove project_sync { auto_open: false } opts out while Studio is disconnected
+                    2 => json!({ "tool": "project_sync", "args": { "auto_open": false } }),
+                    // Then default project_sync {} triggers auto_open connect and succeeds cleanly
+                    3 => json!({ "tool": "project_sync", "args": {} }),
+                    4 => json!({ "tool": "submit_task", "args": { "task_id": "t1", "summary": "synced and ready" }, "done": true }),
+                    _ => json!({ "done": true, "summary": "parked" }),
+                };
+            }
+            let last_user = msgs.iter().rev().find(|m| m["role"] == "user").and_then(|m| m["content"].as_str()).unwrap_or("");
+            if last_user.contains("- t1 [awaiting_verification]") {
+                return json!({
+                    "steps": [
+                        { "tool": "project_playtest", "args": { "task_id": "t1" } },
+                        { "tool": "verify_task", "args": { "task_id": "t1", "passed": true, "notes": "t1 ok" } }
+                    ],
+                    "done": true,
+                    "summary": "verified t1"
+                });
+            }
+            return json!({ "done": true, "summary": "waiting" });
+        }
+
+        // Phase 1: Studio was stopped (back in local_place); builder submits without syncing,
+        // verifier tests project_playtest { auto_open: false } (refused) then default project_playtest {} (connects + passes).
+        if role == "builder" {
+            return match step {
+                1 => json!({
+                    "steps": [
+                        { "tool": "project_write_file", "args": { "path": "src/shared/CardStats.luau", "content": "return { Mythic = 200 }\n" } },
+                        { "tool": "submit_task", "args": { "task_id": "t1", "summary": "updated CardStats" } }
+                    ],
+                    "done": true,
+                    "summary": "submitted t1"
+                }),
+                _ => json!({ "done": true, "summary": "parked" }),
+            };
+        }
+        let last_user = msgs.iter().rev().find(|m| m["role"] == "user").and_then(|m| m["content"].as_str()).unwrap_or("");
+        if last_user.contains("- t1 [awaiting_verification]")
+            || (all_text.contains("- t1 [awaiting_verification]") && all_text.contains("tool_result (project_playtest) error:"))
+        {
+            if !all_text.contains("tool_result (project_playtest)") {
+                return json!({ "tool": "project_playtest", "args": { "task_id": "t1", "auto_open": false } });
+            }
+            if !all_text.contains("tool_result (verify_task)") {
+                return json!({
+                    "steps": [
+                        { "tool": "project_playtest", "args": { "task_id": "t1" } },
+                        { "tool": "verify_task", "args": { "task_id": "t1", "passed": true, "notes": "auto-opened playtest ok" } }
+                    ],
+                    "done": true,
+                    "summary": "verified t1"
+                });
+            }
+        }
+        json!({ "done": true, "summary": "waiting" })
+    });
+
+    // Boot WITHOUT any Studio MCP client (starts in LocalPlace!)
+    let (port, shared) = boot_server(data_dir, None);
+    let (st, _) = http(
+        port,
+        "POST",
+        "/api/config",
+        Some(&json!({ "base_url": stub.base_url, "model_id": "stub-model" })),
+    );
+    assert_eq!(st, 200);
+    let (st, _) = http(
+        port,
+        "POST",
+        "/api/projects/workspace",
+        Some(&json!({ "path": ws.to_string_lossy() })),
+    );
+    assert_eq!(st, 200);
+    let (st, proj_created) = http(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(&json!({ "name": "Auto Open Gap 57", "parent": ws.to_string_lossy() })),
+    );
+    assert_eq!(st, 201, "{proj_created}");
+
+    // --- Run 1: project_sync opt-out (`auto_open: false`) + default `auto_open` connect ---
+    let (st, run1) = http(
+        port,
+        "POST",
+        "/api/teamwork",
+        Some(&json!({
+            "goal": "Gap #57 Phase A: project_sync auto_open",
+            "roles": ["builder", "verifier"],
+            "max_concurrency": 2
+        })),
+    );
+    assert_eq!(st, 201, "{run1}");
+    let run1_id = run1["run"]["id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut detail1 = Value::Null;
+    while Instant::now() < deadline {
+        let (_, d) = http(port, "GET", &format!("/api/teamwork/{run1_id}"), None);
+        detail1 = d;
+        if detail1["run"]["status"] == "completed" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(detail1["run"]["status"], "completed", "{detail1}");
+
+    let (_, b_tr) = http(port, "GET", &format!("/api/teamwork/{run1_id}/agents/builder/trace"), None);
+    let b_trace = b_tr["trace"].as_array().unwrap();
+    let sync_opt_out = b_trace
+        .iter()
+        .find(|e| e["turn"] == 2 && e["kind"] == "tool_result" && e["data"]["tool"] == "project_sync")
+        .expect("turn 2 project_sync auto_open:false");
+    assert_eq!(sync_opt_out["data"]["ok"], false, "{sync_opt_out}");
+    let sync_auto_open = b_trace
+        .iter()
+        .find(|e| e["turn"] == 3 && e["kind"] == "tool_result" && e["data"]["tool"] == "project_sync")
+        .expect("turn 3 project_sync default auto_open");
+    assert_eq!(sync_auto_open["data"]["ok"], true, "{sync_auto_open}");
+
+    // Disconnect Studio cleanly before Run 2
+    let (st_stop, stopped) = http(port, "POST", "/api/studio/embed/stop", Some(&json!({})));
+    assert_eq!(st_stop, 200, "{stopped}");
+    assert_eq!(stopped["workspace_mode"], "local_place", "{stopped}");
+
+    // --- Run 2: project_playtest opt-out (`auto_open: false`) + default `auto_open` connect ---
+    phase.store(1, Ordering::SeqCst);
+    let (st, run2) = http(
+        port,
+        "POST",
+        "/api/teamwork",
+        Some(&json!({
+            "goal": "Gap #57 Phase B: project_playtest auto_open",
+            "roles": ["builder", "verifier"],
+            "max_concurrency": 2
+        })),
+    );
+    assert_eq!(st, 201, "{run2}");
+    let run2_id = run2["run"]["id"].as_str().unwrap().to_string();
+
+    let deadline2 = Instant::now() + Duration::from_secs(20);
+    let mut detail2 = Value::Null;
+    while Instant::now() < deadline2 {
+        let (_, d) = http(port, "GET", &format!("/api/teamwork/{run2_id}"), None);
+        detail2 = d;
+        if detail2["run"]["status"] == "completed" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(detail2["run"]["status"], "completed", "{detail2}");
+
+    let (_, v_tr) = http(port, "GET", &format!("/api/teamwork/{run2_id}/agents/verifier/trace"), None);
+    let v_trace = v_tr["trace"].as_array().unwrap();
+    let pt_results: Vec<&Value> = v_trace
+        .iter()
+        .filter(|e| e["kind"] == "tool_result" && e["data"]["tool"] == "project_playtest")
+        .collect();
+    assert!(pt_results.len() >= 2, "expected 2 playtest attempts: {v_trace:?}");
+    assert_eq!(pt_results[0]["data"]["ok"], false, "expected auto_open:false refusal: {}", pt_results[0]);
+    assert_eq!(pt_results[1]["data"]["ok"], true, "expected auto_open playtest pass: {}", pt_results[1]);
+    assert_eq!(pt_results[1]["data"]["result"]["passed"], true, "{}", pt_results[1]);
+
+    let _ = http(port, "POST", "/api/studio/embed/stop", Some(&json!({})));
     shared.teamwork.shutdown();
 }
