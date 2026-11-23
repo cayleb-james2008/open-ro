@@ -2086,3 +2086,69 @@ fn project_format_and_check_auto_format_gap_56() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn asset_ids_codegen_passes_project_check_stylua_gap_58() {
+    let root = temp_dir("codegen-gap58");
+    let ws = root.join("workspace");
+    let data = root.join("data");
+    std::fs::create_dir_all(&ws).unwrap();
+    let port = start_server(None, data);
+
+    let (code, _) = api_json(
+        port,
+        "POST",
+        "/api/projects/workspace",
+        Some(json!({ "path": ws.to_string_lossy() })),
+    );
+    assert_eq!(code, 200);
+
+    let (code, created) = api_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(json!({ "name": "Codegen Check", "parent": ws.to_string_lossy() })),
+    );
+    assert_eq!(code, 201);
+    let id = created["project"]["id"].as_str().unwrap().to_string();
+    let proj_dir = PathBuf::from(created["project"]["path"].as_str().unwrap());
+
+    // Simulate mesh_generate populating assets/meshes/manifest.json before any Open Cloud upload
+    std::fs::create_dir_all(proj_dir.join("assets/meshes")).unwrap();
+    std::fs::write(
+        proj_dir.join("assets/meshes/manifest.json"),
+        json!({
+            "meshes": {
+                "shrine_pedestal": { "size": [6.0, 4.5, 6.0], "tris": 920 }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let cg = openro_rs::opencloud::assets_codegen(&proj_dir, &json!({})).expect("assets_codegen");
+    assert_eq!(cg["ok"], json!(true));
+    assert_eq!(cg["count"], json!(0));
+    assert_eq!(cg["mesh_count"], json!(1));
+
+    let generated = std::fs::read_to_string(proj_dir.join("src/shared/AssetIds.luau")).unwrap();
+    assert!(generated.contains("AssetIds.byPath = {}\n\n"));
+    assert!(generated.contains("AssetIds.byKey = {}\n\n"));
+    assert!(!generated.contains("{\n}"));
+
+    // POST /api/projects/{id}/check with format:false (default) passes cleanly with 0 stylua/selene/luau issues
+    let (code, chk) = api_json(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/check"),
+        Some(json!({})),
+    );
+    assert_eq!(code, 200, "check failed: {chk}");
+    assert_eq!(chk["formatted"], json!(false));
+    assert_eq!(chk["luau"]["passed"], json!(true), "luau failed: {chk}");
+    assert_eq!(chk["selene"]["passed"], json!(true), "selene failed: {chk}");
+    assert_eq!(chk["stylua"]["passed"], json!(true), "stylua failed: {chk}");
+    assert_eq!(chk["passed"], json!(true), "overall check failed: {chk}");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
