@@ -5175,6 +5175,12 @@ fn tool_project_sync(
         .studio_lease
         .acquire(agent_name, task_id, "sync", || is_cancelled(handle, agent_name, gen))?;
     handle.notify_all();
+    crate::project_api::ensure_studio_place_open_for_dir(
+        shared,
+        &project_ref.id,
+        &project_ref.dir,
+        args,
+    );
     let res = reply_to_tool_result(crate::studio_sync::run(shared, &project_ref, prune, dry_run));
     drop(_lease);
     handle.notify_all();
@@ -5227,6 +5233,12 @@ fn tool_project_playtest(
         || is_cancelled(handle, agent_name, gen),
     )?;
     handle.notify_all();
+    crate::project_api::ensure_studio_place_open_for_dir(
+        shared,
+        &project_ref.id,
+        &project_ref.dir,
+        args,
+    );
 
     let mut pt_req = json!({
         "sync_first": args.get("sync_first").and_then(|v| v.as_bool()).unwrap_or(true),
