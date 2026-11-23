@@ -26,6 +26,7 @@ const MAX_SSE_RING: usize = 256;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const DEFAULT_MAX_CONCURRENCY: usize = 2;
 const MAX_AGENT_STEPS_PER_WAKE: usize = 24;
+const MAX_TRANSIENT_MODEL_RETRIES: usize = 2;
 const MAX_FILE_BYTES: usize = 1_048_576;
 
 const DEFAULT_ROLES: [&str; 4] = ["researcher", "builder", "art", "verifier"];
@@ -792,6 +793,94 @@ pub fn parse_quota_error(err: &str) -> Option<(Option<String>, u64)> {
         }
     }
     Some((phrase, backoff_ms))
+}
+
+fn has_http_status_token(low: &str, code: &str) -> bool {
+    let bytes = low.as_bytes();
+    for (idx, _) in low.match_indices(code) {
+        let before_ok = idx == 0
+            || (!bytes[idx - 1].is_ascii_digit()
+                && bytes[idx - 1] != b':'
+                && bytes[idx - 1] != b'.');
+        let after_idx = idx + code.len();
+        let after_ok = after_idx >= bytes.len()
+            || (!bytes[after_idx].is_ascii_digit() && bytes[after_idx] != b'.');
+        if before_ok && after_ok {
+            return true;
+        }
+    }
+    false
+}
+
+/// True when a non-quota model/CLI/HTTP failure looks transient and worth auto-retrying
+/// (`empty conversation id`, `timed out`, `connection reset`, `502`/`503`).
+pub fn is_transient_model_error(err: &str) -> bool {
+    if parse_quota_error(err).is_some() {
+        return false;
+    }
+    let low = err.to_ascii_lowercase();
+    low.contains("empty conversation id")
+        || low.contains("timed out")
+        || low.contains("took longer than")
+        || low.contains("connection reset")
+        || low.contains("econnreset")
+        || low.contains("etimedout")
+        || low.contains("broken pipe")
+        || low.contains("unexpected eof")
+        || low.contains("bad gateway")
+        || low.contains("service unavailable")
+        || low.contains("gateway timeout")
+        || has_http_status_token(&low, "502")
+        || has_http_status_token(&low, "503")
+        || has_http_status_token(&low, "504")
+}
+
+fn transient_retry_backoff_ms_with_cap(retry_idx: usize, cap_ms: Option<u64>) -> u64 {
+    let mut ms = match retry_idx {
+        0 => 5_000,
+        _ => 15_000,
+    };
+    if let Some(c) = cap_ms {
+        ms = ms.min(c.max(10));
+    }
+    ms
+}
+
+fn transient_retry_backoff_ms(retry_idx: usize) -> u64 {
+    let cap = std::env::var("OPENRO_TEAMWORK_BACKOFF_CAP_MS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    transient_retry_backoff_ms_with_cap(retry_idx, cap)
+}
+
+fn wait_transient_backoff(
+    handle: &Arc<RunHandle>,
+    agent_name: &str,
+    gen: u64,
+    backoff_ms: u64,
+) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_millis(backoff_ms);
+    let mut st = handle.state.lock().unwrap();
+    loop {
+        if st.stop_requested || st.status != RunStatus::Running {
+            return true;
+        }
+        let Some(idx) = st.agent_index(agent_name) else {
+            return true;
+        };
+        if st.roster[idx].killed || st.roster[idx].generation != gen {
+            return true;
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        let (guard, _) = handle
+            .wake_cv
+            .wait_timeout(st, deadline.saturating_duration_since(now))
+            .unwrap();
+        st = guard;
+    }
 }
 
 fn extract_reset_phrase(raw: &str) -> Option<String> {
@@ -2514,6 +2603,21 @@ fn worker_loop(
     }
 }
 
+fn rollback_unsent_board_turn(st: &mut RunState, agent_name: &str, pushed_board_msg: bool) {
+    if pushed_board_msg {
+        if let Some(idx) = st.agent_index(agent_name) {
+            if st.roster[idx]
+                .messages
+                .last()
+                .and_then(|m| m.get("role").and_then(|r| r.as_str()))
+                == Some("user")
+            {
+                st.roster[idx].messages.pop();
+            }
+        }
+    }
+}
+
 fn run_agent_wake_cycle(
     shared: &Arc<Shared>,
     mgr: &Arc<TeamworkManager>,
@@ -2522,6 +2626,7 @@ fn run_agent_wake_cycle(
     gen: u64,
 ) -> Result<(), String> {
     let mut parse_failures = 0usize;
+    let mut transient_retries = 0usize;
     for _step in 0..MAX_AGENT_STEPS_PER_WAKE {
         if is_cancelled(handle, agent_name, gen) {
             return Ok(());
@@ -2606,6 +2711,7 @@ fn run_agent_wake_cycle(
 
         let reply = match reply_res {
             Ok(text) => {
+                transient_retries = 0;
                 if handle.scheduler.clear_quota_on_success() {
                     let mut st = handle.state.lock().unwrap();
                     let (max_c, _, _, q) = handle.scheduler.snapshot();
@@ -2635,16 +2741,36 @@ fn run_agent_wake_cycle(
                         let (max_c, _, _, _) = handle.scheduler.snapshot();
                         st.save_run_file(max_c, &q);
                         st.emit_event("quota", json!({ "ts_ms": now_ms(), "quota": q.to_json() }));
-                        // Roll back the unsent board-wake turn so retry re-uses clean history.
-                        if pushed_board_msg {
-                            if let Some(idx) = st.agent_index(agent_name) {
-                                if st.roster[idx].messages.last().and_then(|m| m.get("role").and_then(|r| r.as_str())) == Some("user") {
-                                    st.roster[idx].messages.pop();
-                                }
-                            }
-                        }
+                        rollback_unsent_board_turn(&mut st, agent_name, pushed_board_msg);
                     }
                     handle.notify_all();
+                    continue;
+                }
+                if is_transient_model_error(&err) && transient_retries < MAX_TRANSIENT_MODEL_RETRIES {
+                    let backoff_ms = transient_retry_backoff_ms(transient_retries);
+                    transient_retries += 1;
+                    let notice = format!(
+                        "Transient model error for {agent_name}; retry {transient_retries}/{MAX_TRANSIENT_MODEL_RETRIES} in {backoff_ms}ms: {err}"
+                    );
+                    {
+                        let mut st = handle.state.lock().unwrap();
+                        st.append_trace(
+                            agent_name,
+                            turn_num,
+                            "transient_retry",
+                            &notice,
+                            json!({
+                                "attempt": transient_retries,
+                                "max_retries": MAX_TRANSIENT_MODEL_RETRIES,
+                                "backoff_ms": backoff_ms,
+                                "error": err,
+                            }),
+                        );
+                        rollback_unsent_board_turn(&mut st, agent_name, pushed_board_msg);
+                    }
+                    if wait_transient_backoff(handle, agent_name, gen, backoff_ms) {
+                        return Ok(());
+                    }
                     continue;
                 }
                 return Err(err);
@@ -4941,5 +5067,29 @@ mod tests {
             last_edit_ms: 0,
         };
         assert!(!mesh_task.is_game_code());
+    }
+
+    #[test]
+    fn transient_error_classifier_and_backoff_schedule() {
+        assert!(is_transient_model_error(
+            "failed to start conversation: backend returned an empty conversation id"
+        ));
+        assert!(is_transient_model_error(
+            "The model did not answer: http status 502 Bad Gateway"
+        ));
+        assert!(is_transient_model_error("503 Service Unavailable"));
+        assert!(is_transient_model_error("stream timed out while reading"));
+        assert!(is_transient_model_error("io error: connection reset by peer"));
+
+        // Quota errors must stay handled by quota backoff, not generic transient retry.
+        assert!(!is_transient_model_error("429 quota reached resets in 200ms"));
+        // Do not confuse port numbers or non-transient errors with HTTP 502/503.
+        assert!(!is_transient_model_error("dial tcp 127.0.0.1:50234 refused"));
+        assert!(!is_transient_model_error("dial tcp 127.0.0.1:502 refused"));
+        assert!(!is_transient_model_error("401 unauthorized invalid api key"));
+
+        assert_eq!(transient_retry_backoff_ms_with_cap(0, None), 5_000);
+        assert_eq!(transient_retry_backoff_ms_with_cap(1, None), 15_000);
+        assert_eq!(transient_retry_backoff_ms_with_cap(0, Some(50)), 50);
     }
 }
