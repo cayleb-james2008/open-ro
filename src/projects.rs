@@ -1427,9 +1427,153 @@ fn luau_target_dirs(dir: &Path) -> Vec<String> {
     targets
 }
 
+const MAX_FORMAT_PATHS: usize = 200;
+
+fn is_blocked_format_rel(rel: &str) -> bool {
+    let clean = rel.trim_start_matches("./");
+    clean == ".git"
+        || clean.starts_with(".git/")
+        || clean.split('/').any(|s| s == ".git")
+        || clean == ".openro"
+        || clean.starts_with(".openro/")
+        || clean == "build"
+        || clean.starts_with("build/")
+}
+
+fn resolve_format_targets(dir: &Path, paths: Option<&[String]>) -> Result<Vec<String>, String> {
+    let Some(list) = paths.filter(|p| !p.is_empty()) else {
+        return Ok(luau_target_dirs(dir));
+    };
+    if list.len() > MAX_FORMAT_PATHS {
+        return Err(format!("too many format paths (max {MAX_FORMAT_PATHS})"));
+    }
+    let root_canon = dir.canonicalize().map_err(|e| format!("project folder: {e}"))?;
+    let mut targets: Vec<String> = Vec::with_capacity(list.len());
+    for raw in list {
+        if raw.chars().any(|c| c.is_control()) {
+            return Err("format path cannot contain control characters".into());
+        }
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err("format path is empty".into());
+        }
+        if trimmed.starts_with('-') {
+            return Err(format!("invalid format path '{trimmed}'"));
+        }
+        let full = safe_join(dir, trimmed)?;
+        if !full.exists() {
+            let rel = rel_display(dir, &full);
+            let label = if rel.is_empty() { trimmed } else { rel.as_str() };
+            return Err(format!("format target '{label}' does not exist"));
+        }
+        let canon = full
+            .canonicalize()
+            .map_err(|e| format!("format target '{trimmed}': {e}"))?;
+        if !canon.starts_with(&root_canon) {
+            return Err(format!("path '{trimmed}' must stay inside the project folder"));
+        }
+        let rel = rel_display(dir, &full);
+        let target = if rel.is_empty() {
+            ".".to_string()
+        } else {
+            if is_blocked_format_rel(&rel) {
+                return Err(format!("refusing to format blocked path '{rel}'"));
+            }
+            if rel.starts_with('-') {
+                return Err(format!("invalid format path '{rel}'"));
+            }
+            if canon.is_file() {
+                let is_luau = canon
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| {
+                        e.eq_ignore_ascii_case("luau") || e.eq_ignore_ascii_case("lua")
+                    });
+                if !is_luau {
+                    return Err(format!(
+                        "format target '{rel}' must be a directory or a .luau/.lua file"
+                    ));
+                }
+            }
+            rel
+        };
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
+    }
+    Ok(targets)
+}
+
+/// Format project Luau files in-place with `stylua`, jailed to `dir` (#56).
+/// When `paths` is `None` or empty, formats `luau_target_dirs(dir)` (`src/`, `ui/`, `tools/` or `.`).
+pub fn format_project(dir: &Path, paths: Option<&[String]>) -> Result<Value, String> {
+    let targets = resolve_format_targets(dir, paths)?;
+    match find_tool("stylua", "OPENRO_STYLUA") {
+        Some(bin) => {
+            let mut args = vec!["--".to_string()];
+            args.extend(targets.iter().cloned());
+            match run_bounded(&bin, dir, &args, 60) {
+                Ok((code, timed_out, ms, out, err)) => Ok(json!({
+                    "available": true,
+                    "formatted": code == 0 && !timed_out,
+                    "exit_code": code,
+                    "timed_out": timed_out,
+                    "duration_ms": ms,
+                    "stdout": out,
+                    "stderr": err,
+                    "targets": targets,
+                })),
+                Err(e) => Ok(json!({
+                    "available": true,
+                    "formatted": false,
+                    "exit_code": -1,
+                    "timed_out": false,
+                    "duration_ms": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "targets": targets,
+                    "error": e,
+                })),
+            }
+        }
+        None => Ok(json!({
+            "available": false,
+            "formatted": false,
+            "exit_code": Value::Null,
+            "timed_out": false,
+            "duration_ms": 0,
+            "stdout": "",
+            "stderr": "",
+            "targets": targets,
+            "note": "stylua is not installed",
+        })),
+    }
+}
+
 /// Static project verification: Luau static analyzer + `selene` + `stylua --check` (#18).
 pub fn check_project(dir: &Path) -> Result<Value, String> {
+    check_project_with_options(dir, false, None)
+}
+
+/// Static project verification with optional pre-check `stylua` auto-formatting (#18, #56).
+/// When `format` is `true`, runs `format_project(dir, format_paths)` before static analysis,
+/// `selene`, and `stylua --check`, and includes `"formatted"` and `"format"` in the reply.
+pub fn check_project_with_options(
+    dir: &Path,
+    format: bool,
+    format_paths: Option<&[String]>,
+) -> Result<Value, String> {
     let m = manifest(dir)?;
+    let (formatted_flag, format_json) = if format {
+        let f = format_project(dir, format_paths)?;
+        let did_format = f["formatted"].as_bool().unwrap_or(false);
+        (did_format, Some(f))
+    } else {
+        if let Some(p) = format_paths.filter(|p| !p.is_empty()) {
+            let _ = resolve_format_targets(dir, Some(p))?;
+        }
+        (false, None)
+    };
     let rojo_file = m["rojoProject"].as_str().unwrap_or(DEFAULT_ROJO_FILE).to_string();
     let mut scripts: BTreeMap<String, String> = BTreeMap::new();
     let mut instances: BTreeMap<String, Value> = BTreeMap::new();
@@ -1492,7 +1636,7 @@ pub fn check_project(dir: &Path) -> Result<Value, String> {
 
     let stylua_json = match find_tool("stylua", "OPENRO_STYLUA") {
         Some(bin) => {
-            let mut args = vec!["--check".to_string()];
+            let mut args = vec!["--check".to_string(), "--".to_string()];
             args.extend(targets.iter().cloned());
             match run_bounded(&bin, dir, &args, 60) {
                 Ok((code, timed_out, ms, out, err)) => json!({
@@ -1513,12 +1657,17 @@ pub fn check_project(dir: &Path) -> Result<Value, String> {
     let passed = luau_passed
         && selene_json["passed"].as_bool().unwrap_or(false)
         && stylua_json["passed"].as_bool().unwrap_or(false);
-    Ok(json!({
+    let mut out = json!({
         "passed": passed,
+        "formatted": formatted_flag,
         "luau": luau_json,
         "selene": selene_json,
         "stylua": stylua_json,
-    }))
+    });
+    if let Some(f) = format_json {
+        out.as_object_mut().unwrap().insert("format".into(), f);
+    }
+    Ok(out)
 }
 
 /// Run a project-relative `.luau`/`.lua` script with `lune run`, timeout-bounded (#18).
@@ -1582,5 +1731,64 @@ mod tests {
         assert!(safe_join(&d, "../x").is_err());
         assert!(safe_join(&d, "/etc/passwd").is_err());
         assert!(safe_join(&d, "a/b.txt").is_ok());
+    }
+
+    #[test]
+    fn format_targets_fail_closed_and_dedup() {
+        let base = std::env::var("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join(format!("openro-fmt-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let proj = base.join("proj");
+        std::fs::create_dir_all(proj.join("src")).unwrap();
+        std::fs::create_dir_all(proj.join(".git")).unwrap();
+        std::fs::create_dir_all(proj.join(".openro")).unwrap();
+        std::fs::create_dir_all(proj.join("build")).unwrap();
+        std::fs::write(proj.join("src/A.luau"), "local x = 1\nreturn x\n").unwrap();
+        std::fs::write(proj.join("openro.project.json"), "{}\n").unwrap();
+        std::fs::write(base.join("outside.luau"), "local y = 2\n").unwrap();
+
+        // Default None / empty falls back to luau_target_dirs
+        assert_eq!(resolve_format_targets(&proj, None).unwrap(), vec!["src"]);
+        assert_eq!(resolve_format_targets(&proj, Some(&[])).unwrap(), vec!["src"]);
+
+        // Valid paths normalize and deduplicate
+        let ok = resolve_format_targets(
+            &proj,
+            Some(&["./src/A.luau".to_string(), "src/A.luau".to_string(), "src".to_string()]),
+        )
+        .unwrap();
+        assert_eq!(ok, vec!["src/A.luau", "src"]);
+
+        // Refuses escapes, CLI flags, blocked folders, non-luau files, missing targets, control chars
+        for bad in [
+            "../outside.luau",
+            "src/../../outside.luau",
+            "/etc/passwd",
+            "--check",
+            "-f",
+            "",
+            "   ",
+            "src/A.luau\0",
+            ".git",
+            ".openro",
+            "build",
+            "openro.project.json",
+            "src/missing.luau",
+        ] {
+            let res = resolve_format_targets(&proj, Some(&[bad.to_string()]));
+            assert!(res.is_err(), "expected refusal for '{bad}', got {res:?}");
+        }
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(base.join("outside.luau"), proj.join("src/link.luau"))
+                .unwrap();
+            let res = resolve_format_targets(&proj, Some(&["src/link.luau".to_string()]));
+            assert!(res.is_err(), "expected escaping symlink refusal, got {res:?}");
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
