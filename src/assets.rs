@@ -1041,11 +1041,6 @@ pub fn build_asset_manifest_json(game_name: &str, assets: &[AssetMetadata]) -> V
 // v0.11 Project Art Pipeline: ChatGPT (shared browser) default + Gemini + OpenAI
 // =========================================================================
 
-pub const DEFAULT_CHATGPT_IMAGEGEN_CLI: &str =
-    "/home/cayleb/.agents/skills/chatgpt-image-gen/chatgpt-camoufox-imagegen";
-pub const DEFAULT_SHARED_BROWSER_PY: &str =
-    "/home/cayleb/Work/services/shared-browser/.venv/bin/python";
-
 static CHATGPT_SERIAL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 type ArtRes<T> = Result<T, Oc>;
@@ -1285,19 +1280,29 @@ fn run_chatgpt_cli(
             Command::new(bin)
         }
     } else {
-        let py = custom_py.unwrap_or_else(|| DEFAULT_SHARED_BROWSER_PY.to_string());
-        if !Path::new(&py).is_file() {
+        let py = custom_py
+            .map(PathBuf::from)
+            .or_else(crate::tool_adapters::resolve_shared_browser_python)
+            .ok_or_else(|| {
+                "Shared browser Python not found. Use 'gemini' or 'openai' provider, configure a custom image adapter, or install shared-browser.".to_string()
+            })?;
+        if !py.is_file() {
             return Err(format!(
-                "Shared browser Python not found at {py}. Use 'gemini' or 'openai' provider, or install shared-browser."
+                "Shared browser Python not found at {}. Use 'gemini' or 'openai' provider, or install shared-browser.",
+                py.display()
             ));
         }
-        if !Path::new(DEFAULT_CHATGPT_IMAGEGEN_CLI).is_file() {
+        let driver = crate::tool_adapters::resolve_chatgpt_imagegen_bin().ok_or_else(|| {
+            "ChatGPT image driver (chatgpt-camoufox-imagegen) not found via OPENRO_CHATGPT_IMAGEGEN_BIN, $HOME/.agents/skills/chatgpt-image-gen, or PATH.".to_string()
+        })?;
+        if !driver.is_file() {
             return Err(format!(
-                "ChatGPT image driver not found at {DEFAULT_CHATGPT_IMAGEGEN_CLI}."
+                "ChatGPT image driver not found at {}.",
+                driver.display()
             ));
         }
         let mut c = Command::new(py);
-        c.arg(DEFAULT_CHATGPT_IMAGEGEN_CLI);
+        c.arg(driver);
         c
     };
 

@@ -229,6 +229,8 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - {{\"tool\": \"art_pack_card\", \"args\": {{\"card_id\": \"...\"}}}} packs card art/icon/full variants + contact sheet\n\
 - {{\"tool\": \"mesh_generate\", \"args\": {{\"name\": \"PropName\", \"description\": \"...\", \"script\": \"...\"}}}} (alias `blender_generate`) generates smart-UV AO-baked .obj + PNG + manifest.json (<=20k tris) into assets/meshes/\n\
 - {{\"tool\": \"audio_generate\", \"args\": {{\"name\": \"SfxName\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}}}} synthesizes 44.1kHz WAV into assets/audio/\n\
+- {{\"tool\": \"adapter_list\", \"args\": {{\"capability\": \"image_gen|reference_search|mesh_gen|audio_gen|custom\"}}}} lists installed CLI/HTTP tool adapters and availability\n\
+- {{\"tool\": \"adapter_invoke\", \"args\": {{\"capability\": \"...\", \"adapter_id\": \"...?\", \"params\": {{...}}}}}} runs an installed CLI/HTTP adapter (or capability priority chain)\n\
 - {{\"tool\": \"assets_upload\", \"args\": {{\"paths\": [\"art/cards/x/art.png\"]}}}} uploads authorised assets via Open Cloud into assets.lock.json\n\
 - {{\"tool\": \"playtest\", \"args\": {{}}}} runs static + live playtest verification\n\
 - {{\"done\": true, \"summary\": \"...\"}} finishes.\n\n\
@@ -275,6 +277,7 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - image_process {{\"input\": \"...\", \"output\": \"...\", \"ops\": [...]}} / art_pack_card {{\"card_id\": \"...\"}}\n\
 - mesh_generate {{\"name\": \"Prop\", \"description\": \"...\", \"script\": \"...\"}} (smart-UV AO-baked .obj + PNG + manifest.json <=20k tris -> assets/meshes/)\n\
 - audio_generate {{\"name\": \"Sfx\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}} (-> assets/audio/)\n\
+- adapter_list {{\"capability\": \"...?\"}} / adapter_invoke {{\"capability\": \"...\", \"adapter_id\": \"...?\", \"params\": {{...}}}} (custom CLI/HTTP tool adapters)\n\
 - assets_upload {{\"paths\": [...]}} (authorised Open Cloud upload -> assets.lock.json)\n\n\
 3D, VFX & UI GUARDRAILS:\n\
 - PartType.Cylinder runs along LOCAL X: upright pillars MUST set Size = Vector3.new(height, diameter, diameter) + CFrame.Angles(0, 0, math.rad(90)).\n\
@@ -496,6 +499,8 @@ pub struct AgentHooks {
     pub mesh_generate: Option<HookFn>,
     pub audio_generate: Option<HookFn>,
     pub assets_upload: Option<HookFn>,
+    pub adapter_list: Option<HookFn>,
+    pub adapter_invoke: Option<HookFn>,
 }
 
 impl Agent {
@@ -2916,6 +2921,7 @@ impl Agent {
                                         | "blender_generate"
                                         | "audio_generate"
                                         | "assets_upload"
+                                        | "adapter_invoke"
                                 ) {
                                     changes_made += 1;
                                 }
@@ -3372,6 +3378,7 @@ impl Agent {
                                 | "blender_generate"
                                 | "audio_generate"
                                 | "assets_upload"
+                                | "adapter_invoke"
                         ) {
                             changes_made += 1;
                         }
@@ -4354,6 +4361,46 @@ impl Agent {
                 thread.push(format!("Synthesized WAV audio {name}."));
                 Ok(format!("tool_result: audio_generate: {text}"))
             }
+            "adapter_list" => {
+                let res = if let Some(hook) = &self.hooks.adapter_list {
+                    hook(args)?
+                } else {
+                    let data_dir = self.effective_assets_root();
+                    let store = crate::secrets::SecretStore::for_data_dir(&data_dir);
+                    let cap = args.get("capability").and_then(|v| v.as_str());
+                    crate::tool_adapters::AdapterRegistry::load(&data_dir).list_json(&store, cap)
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool adapter_list -> {text}"));
+                Ok(format!("tool_result: adapter_list: {text}"))
+            }
+            "adapter_invoke" => {
+                let res = if let Some(hook) = &self.hooks.adapter_invoke {
+                    hook(args)?
+                } else {
+                    let data_dir = self.effective_assets_root();
+                    let store = crate::secrets::SecretStore::for_data_dir(&data_dir);
+                    let proj = self.effective_project_root();
+                    let cap = args.get("capability").and_then(|v| v.as_str());
+                    let id = args.get("adapter_id").and_then(|v| v.as_str());
+                    let params = args.get("params").unwrap_or(args);
+                    let ctx = crate::tool_adapters::InvokeCtx {
+                        data_dir: &data_dir,
+                        assets_root: &data_dir,
+                        store: &store,
+                        project_dir: proj.as_deref(),
+                    };
+                    crate::tool_adapters::invoke(&ctx, cap, id, params)?
+                };
+                let text = res.to_string();
+                let aid = res
+                    .get("adapter_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("adapter");
+                transcript.push(format!("tool adapter_invoke -> {text}"));
+                thread.push(format!("Ran tool adapter {aid}."));
+                Ok(format!("tool_result: adapter_invoke: {text}"))
+            }
             t if is_official_studio_tool(t) => {
                 let chat_id = self.active_build_chat.clone();
                 let (val, _) = self.invoke_studio_tool(&chat_id, t, args.clone())?;
@@ -5328,6 +5375,7 @@ fn is_read_only_tool(tool: &str) -> bool {
             | "web_fetch"
             | "web_search"
             | "reference_search"
+            | "adapter_list"
     )
 }
 
