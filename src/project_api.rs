@@ -9,6 +9,7 @@ use crate::server::Shared;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 pub struct Reply {
     pub status: &'static str,
@@ -122,8 +123,102 @@ fn project_of(shared: &Shared, id: &str) -> Result<ProjectRef, Reply> {
     shared.projects.lock().unwrap().find(id).ok_or_else(|| Reply::err("404 Not Found", format!("no project '{id}'")))
 }
 
+/// Auto-open / transfer a project's `.rbxlx` into Embedded Studio before `sync` / `playtest`
+/// when `auto_open` is `true` (default) and Studio is installed & signed in without an open place (#51).
+fn ensure_studio_place_open(shared: &Arc<Shared>, r: &ProjectRef, b: &Value) {
+    let auto_open = b.get("auto_open").and_then(|v| v.as_bool()).unwrap_or(true);
+    if !auto_open {
+        return;
+    }
+    if std::env::var("OPENRO_NO_AUTO_OPEN_STUDIO")
+        .ok()
+        .is_some_and(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
+    {
+        return;
+    }
+    let (has_mcp, mcp_open) = {
+        let mut guard = shared.agent.lock().unwrap();
+        match guard.as_mut().and_then(|a| a.studio.as_mut()) {
+            Some(PlaceBackend::Mcp(m)) => {
+                let open = m.has_live_studio() && crate::studio_embed::probe_client_place_open(m);
+                (true, open)
+            }
+            _ => (false, false),
+        }
+    };
+    if mcp_open {
+        return;
+    }
+    // Deterministic test hook (`OPENRO_AUTO_OPEN_MCP_CMD`) for integration tests (never spawns Vinegar).
+    if let Ok(test_cmd) = std::env::var("OPENRO_AUTO_OPEN_MCP_CMD") {
+        let trimmed = test_cmd.trim();
+        if !trimmed.is_empty() {
+            let _ = crate::server::perform_studio_embed_transfer(
+                shared,
+                crate::studio_embed::TransferOptions {
+                    mcp_command: Some(trimmed.to_string()),
+                    ..Default::default()
+                },
+            );
+            return;
+        }
+    }
+    // Respect explicit local_place workspace mode or custom mock MCP bridges.
+    if shared
+        .config
+        .lock()
+        .unwrap()
+        .workspace_mode
+        .as_deref()
+        == Some("local_place")
+    {
+        return;
+    }
+    if has_mcp {
+        let is_custom = shared.studio_embed.try_lock().ok().is_some_and(|g| {
+            let st = g.state();
+            st.mcp_command.as_deref().is_some_and(|cmd| {
+                let default_mcp = crate::studio_embed::detect_host_mcp_command();
+                default_mcp.as_deref() != Some(cmd)
+            })
+        });
+        if is_custom {
+            return;
+        }
+    }
+    let det = crate::studio_embed::detect_studio_environment();
+    if !det.studio_installed || (!det.already_logged_in && !det.studio_running) {
+        return;
+    }
+    let rbxlx = projects::builds(&r.dir)
+        .into_iter()
+        .find_map(|rec| {
+            let rel = rec.get("path")?.as_str()?;
+            let full = projects::safe_join(&r.dir, rel).ok()?;
+            full.is_file().then_some(full)
+        })
+        .or_else(|| {
+            projects::build(&r.dir, "auto", None).ok().and_then(|rec| {
+                let rel = rec.get("path")?.as_str()?;
+                projects::safe_join(&r.dir, rel).ok()
+            })
+        })
+        .or_else(|| {
+            crate::studio_embed::ensure_blank_baseplate_rbxlx(&r.dir.join("build"), &r.id).ok()
+        });
+    let _ = crate::server::perform_studio_embed_transfer(
+        shared,
+        crate::studio_embed::TransferOptions {
+            place_file: rbxlx,
+            force_transfer: false,
+            wait_secs: 45,
+            ..Default::default()
+        },
+    );
+}
+
 /// `Some(reply)` when this table owns the request.
-pub fn route(shared: &Shared, method: &str, full_path: &str, body: &[u8], loopback: bool) -> Option<Reply> {
+pub fn route(shared: &Arc<Shared>, method: &str, full_path: &str, body: &[u8], loopback: bool) -> Option<Reply> {
     let (path, query) = full_path.split_once('?').unwrap_or((full_path, ""));
     let rest = path.strip_prefix("/api/projects")?;
     if !rest.is_empty() && !rest.starts_with('/') {
@@ -158,7 +253,7 @@ pub fn route(shared: &Shared, method: &str, full_path: &str, body: &[u8], loopba
     Some(dispatch(shared, method, &segs, query, body).unwrap_or_else(|r| r))
 }
 
-fn dispatch(shared: &Shared, method: &str, segs: &[&str], query: &str, body: &[u8]) -> Result<Reply, Reply> {
+fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body: &[u8]) -> Result<Reply, Reply> {
     match (method, segs) {
         ("GET", []) => {
             let store = shared.projects.lock().unwrap();
@@ -246,14 +341,22 @@ fn dispatch(shared: &Shared, method: &str, segs: &[&str], query: &str, body: &[u
             let _busy = Busy::new(&shared.busy);
             let rebuild = b.get("rebuild").and_then(|v| v.as_bool()).unwrap_or(true);
             let dry_run = b.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+            let force = b.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let transfer_opt = b.get("transfer").and_then(|v| v.as_bool());
             let engine = b["engine"].as_str().unwrap_or("auto");
+            let wait_secs = b
+                .get("wait_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(45)
+                .clamp(1, 90);
             let display_opt = b
                 .get("display")
                 .and_then(|v| v.as_str())
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
 
-            // Reuse latest built .rbxlx when rebuild=false and it exists; otherwise build fresh.
+            // Reuse latest built .rbxlx when rebuild=false and it exists; otherwise build fresh
+            // (synthesizing a clean blank Baseplate .rbxlx if no project build can be loaded).
             let existing = if !rebuild {
                 projects::builds(&r.dir).into_iter().find_map(|rec| {
                     let rel = rec.get("path")?.as_str()?;
@@ -265,38 +368,97 @@ fn dispatch(shared: &Shared, method: &str, segs: &[&str], query: &str, body: &[u
             };
             let (build_rec, rbxlx_full, rebuilt) = match existing {
                 Some((rec, full)) => (rec, full, false),
-                None => {
-                    let rec = projects::build(&r.dir, engine, b["out"].as_str()).map_err(Reply::bad)?;
-                    let rel = rec["path"].as_str().unwrap_or("");
-                    let full = projects::safe_join(&r.dir, rel).map_err(Reply::bad)?;
-                    (rec, full, true)
-                }
-            };
-            let launch = crate::studio_embed::open_place_in_studio(&rbxlx_full, display_opt, dry_run)
-                .map_err(|e| Reply::err("502 Bad Gateway", e))?;
-            crate::server::invalidate_embed_detect_cache(shared);
-            let fname = rbxlx_full
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("place.rbxlx");
-            Ok(Reply::ok(json!({
-                "project_id": r.id,
-                "build_id": build_rec.get("build_id").cloned().unwrap_or(Value::Null),
-                "rebuilt": rebuilt,
-                "rbxlx_path": rbxlx_full.to_string_lossy(),
-                "rbxlx_rel": build_rec.get("path").cloned().unwrap_or(Value::Null),
-                "launched": launch["launched"],
-                "dry_run": launch["dry_run"],
-                "pid": launch["pid"],
-                "display": launch["display"],
-                "platform": launch["platform"],
-                "command": launch["command"],
-                "message": if dry_run {
-                    format!("Dry run: ready to open {fname} in Roblox Studio.")
-                } else {
-                    format!("Opened {fname} in Roblox Studio — wait a few seconds for the place to load, then sync or playtest.")
+                None => match projects::build(&r.dir, engine, b["out"].as_str()) {
+                    Ok(rec) => {
+                        let rel = rec["path"].as_str().unwrap_or("");
+                        let full = projects::safe_join(&r.dir, rel).map_err(Reply::bad)?;
+                        (rec, full, true)
+                    }
+                    Err(_) => {
+                        let bp = crate::studio_embed::ensure_blank_baseplate_rbxlx(
+                            &r.dir.join("build"),
+                            &r.id,
+                        )
+                        .map_err(Reply::bad)?;
+                        let rel = bp
+                            .strip_prefix(&r.dir)
+                            .map(|p| p.to_string_lossy().replace('\\', "/"))
+                            .unwrap_or_else(|_| bp.to_string_lossy().into_owned());
+                        (json!({ "build_id": Value::Null, "path": rel }), bp, true)
+                    }
                 },
-            })))
+            };
+
+            let has_test_launcher = std::env::var("OPENRO_OPEN_STUDIO_CMD")
+                .ok()
+                .is_some_and(|v| !v.trim().is_empty());
+            if dry_run || has_test_launcher {
+                let launch = crate::studio_embed::open_place_in_studio_with_options(
+                    &rbxlx_full,
+                    display_opt,
+                    dry_run,
+                    force || transfer_opt == Some(true),
+                )
+                .map_err(|e| Reply::err("502 Bad Gateway", e))?;
+                crate::server::invalidate_embed_detect_cache(shared);
+                return Ok(Reply::ok(json!({
+                    "project_id": r.id,
+                    "build_id": build_rec.get("build_id").cloned().unwrap_or(Value::Null),
+                    "rebuilt": rebuilt,
+                    "rbxlx_path": rbxlx_full.to_string_lossy(),
+                    "rbxlx_rel": build_rec.get("path").cloned().unwrap_or(Value::Null),
+                    "staged_path": launch["staged_path"],
+                    "windows_path": launch["windows_path"],
+                    "already_running": launch["already_running"],
+                    "place_open": launch["place_open"],
+                    "transferred": false,
+                    "launched": launch["launched"],
+                    "dry_run": launch["dry_run"],
+                    "pid": launch["pid"],
+                    "display": launch["display"],
+                    "platform": launch["platform"],
+                    "command": launch["command"],
+                    "message": launch["message"],
+                })));
+            }
+
+            // Live seamless zero-manual-step open/transfer into Embedded Studio (#51):
+            // auto-transfers Start Page -> :99, launches cold -> :99, or attaches open desktop place
+            // unless `transfer: true` is passed.
+            let display = match display_opt {
+                Some(d) => crate::studio_embed::validate_x11_display(d).map_err(Reply::bad)?,
+                None => crate::studio_embed::DEFAULT_EMBED_DISPLAY.to_string(),
+            };
+            let opts = crate::studio_embed::TransferOptions {
+                display,
+                width: crate::studio_embed::DEFAULT_EMBED_WIDTH,
+                height: crate::studio_embed::DEFAULT_EMBED_HEIGHT,
+                place_file: Some(rbxlx_full.clone()),
+                force_transfer: transfer_opt.unwrap_or(force),
+                wait_secs,
+                mcp_command: b
+                    .get("mcp_command")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from),
+            };
+            let mut payload = crate::server::perform_studio_embed_transfer(shared, opts)
+                .map_err(|(st, msg)| Reply::err(st, msg))?;
+            if let Some(map) = payload.as_object_mut() {
+                map.insert("project_id".to_string(), json!(r.id));
+                map.insert(
+                    "build_id".to_string(),
+                    build_rec.get("build_id").cloned().unwrap_or(Value::Null),
+                );
+                map.insert("rebuilt".to_string(), json!(rebuilt));
+                map.insert("rbxlx_path".to_string(), json!(rbxlx_full.to_string_lossy()));
+                map.insert(
+                    "rbxlx_rel".to_string(),
+                    build_rec.get("path").cloned().unwrap_or(Value::Null),
+                );
+            }
+            Ok(Reply::ok(payload))
         }
         ("GET", [id, "builds"]) => {
             let r = project_of(shared, id)?;
@@ -372,13 +534,16 @@ fn dispatch(shared: &Shared, method: &str, segs: &[&str], query: &str, body: &[u
         }
         ("POST", [id, "sync", "diff"]) => {
             let r = project_of(shared, id)?;
+            let b = parse_body(body)?;
             let _busy = Busy::new(&shared.busy);
+            ensure_studio_place_open(shared, &r, &b);
             crate::studio_sync::run(shared, &r, false, true)
         }
         ("POST", [id, "sync"]) => {
             let r = project_of(shared, id)?;
             let b = parse_body(body)?;
             let _busy = Busy::new(&shared.busy);
+            ensure_studio_place_open(shared, &r, &b);
             let dry = b["dry_run"].as_bool().unwrap_or(false);
             crate::studio_sync::run(shared, &r, b["prune"].as_bool().unwrap_or(false), dry)
         }
@@ -386,6 +551,7 @@ fn dispatch(shared: &Shared, method: &str, segs: &[&str], query: &str, body: &[u
             let r = project_of(shared, id)?;
             let b = parse_body(body)?;
             let _busy = Busy::new(&shared.busy);
+            ensure_studio_place_open(shared, &r, &b);
             crate::playtest::run(shared, &r, &b)
         }
         ("GET", [id, "playtests"]) => {
