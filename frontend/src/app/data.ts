@@ -857,6 +857,8 @@ export type RunningStudioInfo = {
   studio_id: string;
   place_name?: string;
   datamodel_type?: string;
+  place_open?: boolean;
+  studio_state?: string;
 };
 
 export type StudioEmbedStatus = {
@@ -866,6 +868,11 @@ export type StudioEmbedStatus = {
   studio_running?: boolean;
   studio_display?: string | null;
   already_logged_in?: boolean;
+  place_open?: boolean;
+  transferred?: boolean;
+  can_transfer?: boolean;
+  guidance?: string | null;
+  x11grab_active?: boolean;
   running_studios?: RunningStudioInfo[];
   platform?: string;
   display?: string | null;
@@ -1093,16 +1100,23 @@ export function normalizeEmbedStatus(raw: unknown): StudioEmbedStatus {
           studio_id: typeof r.studio_id === "string" ? r.studio_id : "",
           place_name: typeof r.place_name === "string" ? r.place_name : undefined,
           datamodel_type: typeof r.datamodel_type === "string" ? r.datamodel_type : undefined,
+          place_open: typeof r.place_open === "boolean" ? r.place_open : undefined,
+          studio_state: typeof r.studio_state === "string" ? r.studio_state : undefined,
         }))
         .filter((r) => r.studio_id.length > 0)
     : [];
   return {
-    running: o.running === true || state === "running" || state === "connected" || phase === "awaiting_signin",
+    running: o.running === true || state === "running" || state === "connected" || phase === "awaiting_signin" || o.x11grab_active === true,
     state,
     phase,
     studio_running: o.studio_running === true,
     studio_display: typeof o.studio_display === "string" ? o.studio_display : null,
     already_logged_in: o.already_logged_in === true,
+    place_open: typeof o.place_open === "boolean" ? o.place_open : undefined,
+    transferred: o.transferred === true,
+    can_transfer: o.can_transfer === true,
+    guidance: typeof o.guidance === "string" ? o.guidance : null,
+    x11grab_active: o.x11grab_active === true,
     running_studios: runningStudios,
     platform: typeof o.platform === "string" ? o.platform : undefined,
     display: typeof o.display === "string" ? o.display : null,

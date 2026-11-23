@@ -8,7 +8,7 @@ import { ProgressCircle } from "@/components/ProgressCircle/ProgressCircle";
 import { MorphingDialog, MorphingDialogClose, MorphingDialogContainer, MorphingDialogContent, MorphingDialogDescription, MorphingDialogTitle } from "@/components/ui/morphing-dialog";
 import { open as dialogSpring } from "@/motion";
 import { normalizeEmbedStatus, post, read, type AntigravityModel, type ConfigSnap, type StudioEmbedStatus, type WorkspaceMode } from "./data";
-import { call } from "./ship/api";
+import { call, enc } from "./ship/api";
 
 export const ONBOARDING_KEY = "openro-onboarding-done";
 
@@ -16,12 +16,16 @@ export function StartupWizard({
   open,
   onOpenChange,
   studioOk,
+  activeProjectId,
+  activeProjectName,
   onApplied,
   onDoneFocusComposer,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   studioOk: boolean;
+  activeProjectId?: string | null;
+  activeProjectName?: string | null;
   onApplied: (next: { studioConnected: boolean; modelConfigured: boolean; workspaceMode: WorkspaceMode; modelId?: string }) => void;
   onDoneFocusComposer: () => void;
 }) {
@@ -97,6 +101,29 @@ export function StartupWizard({
     } finally {
       setBusy("");
     }
+  };
+
+  const embedAndOpenProject = async () => {
+    setBusy("studio");
+    const url = activeProjectId
+      ? `/api/projects/${enc(activeProjectId)}/open-in-studio`
+      : "/api/studio/embed/transfer";
+    const t = await call<Record<string, unknown>>(url, { transfer: true, rebuild: true });
+    if (t.ok) {
+      const norm = normalizeEmbedStatus(t.status ?? t);
+      setEmbed(norm);
+      if (norm.mcp_connected || norm.phase === "connected" || t.connected === true || t.place_open === true) {
+        setLiveStudio(true);
+        onAppliedRef.current({ studioConnected: true, modelConfigured: true, workspaceMode: "studio_mcp" });
+        toast.success(activeProjectName ? `Opened ${activeProjectName} in Studio` : "Studio connected");
+      } else if (norm.phase === "awaiting_signin") {
+        toast("Sign in inside Studio to connect");
+      }
+      setBusy("");
+      await refreshEmbed();
+      return;
+    }
+    await launchOrGrabStudio();
   };
 
   const launchOrGrabStudio = async () => {
@@ -281,21 +308,26 @@ export function StartupWizard({
 
                 {!liveStudio && embed?.phase !== "awaiting_signin" && (
                   <p className="text-xs text-ink-2">
-                    {embed?.already_logged_in
-                      ? `${embed.running_studios?.[0]?.place_name || "Your open Studio session"} is ready.`
-                      : "Already have Studio open? OpenRO grabs it automatically."}
+                    {embed?.place_open === false
+                      ? embed.guidance || "Studio is on the Start Page. Open your project into Edit mode."
+                      : embed?.already_logged_in
+                        ? `${embed.running_studios?.[0]?.place_name || "Your open Studio session"} is ready.`
+                        : "Opens your project directly in embedded Roblox Studio."}
                   </p>
                 )}
 
-                {!liveStudio && embed?.phase !== "awaiting_signin" && (
-                  <Button variant="outline" size="sm" disabled={busy === "studio"} onClick={() => void launchOrGrabStudio()} className="self-start max-md:min-h-11">
-                    <Rocket className="size-3.5" strokeWidth={1.5} aria-hidden />
-                    {busy === "studio"
-                      ? "Connecting…"
-                      : embed?.already_logged_in || embed?.studio_running
-                        ? "Grab & Connect"
-                        : "Open My Roblox Studio"}
-                  </Button>
+                {(!liveStudio || embed?.place_open === false) && embed?.phase !== "awaiting_signin" && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button variant="default" size="sm" disabled={busy === "studio"} onClick={() => void embedAndOpenProject()} className="max-md:min-h-11">
+                      <Rocket className="size-3.5" strokeWidth={1.5} aria-hidden />
+                      {busy === "studio" ? "Opening…" : "Embed & Open Project in Studio"}
+                    </Button>
+                    {(embed?.already_logged_in || embed?.studio_running) && embed?.place_open !== false && (
+                      <Button variant="outline" size="sm" disabled={busy === "studio"} onClick={() => void launchOrGrabStudio()} className="max-md:min-h-11">
+                        Grab &amp; Connect
+                      </Button>
+                    )}
+                  </div>
                 )}
               </div>
               <div className="flex justify-between gap-2 pt-1">
