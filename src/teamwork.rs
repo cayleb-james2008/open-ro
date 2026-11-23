@@ -2627,6 +2627,7 @@ fn is_write_or_submit_tool(tool: &str) -> bool {
         "project_write_file"
             | "project_edit_file"
             | "project_delete_file"
+            | "project_format"
             | "project_update_manifest"
             | "submit_task"
             | "mesh_generate"
@@ -3159,7 +3160,8 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
         _ => concat!(
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `luau_check`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `assets_codegen`, `assets_upload`.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `assets_codegen`, `assets_upload`.\n",
+            "Formatting: `project_check` with `{\"format\":true}` or `project_format` auto-formats your claimed `.luau` files with `stylua` instead of hand-editing whitespace.\n",
             "Asset arg signatures:\n",
             "- reference_search: {\"character\":\"...\",\"show\":\"...\",\"card_id\":\"...\"}\n",
             "- art_generate: {\"prompt\":\"single-line eye-level three-quarter prompt\",\"out_path\":\"art/cards/x/art.png\",\"references\":[\"art/references/...\"]}\n",
@@ -3490,7 +3492,8 @@ fn execute_agent_tool(
         "project_edit_file" => tool_project_edit_file(handle, agent_name, args),
         "project_delete_file" => tool_project_delete_file(handle, agent_name, args),
         "luau_check" => tool_luau_check(handle, args),
-        "project_check" => tool_project_check(handle),
+        "project_format" => tool_project_format(handle, agent_name, args),
+        "project_check" => tool_project_check(handle, agent_name, args),
         "project_run_lune" => tool_project_run_lune(handle, agent_name, args),
         "project_update_manifest" => tool_project_update_manifest(handle, agent_name, args),
         "project_build" => tool_project_build(handle, args),
@@ -4668,9 +4671,370 @@ fn tool_project_build(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, St
     projects::build(&project_dir, engine, out_rel)
 }
 
-fn tool_project_check(handle: &Arc<RunHandle>) -> Result<Value, String> {
-    let project_dir = handle.state.lock().unwrap().project_dir.clone();
-    projects::check_project(&project_dir)
+fn parse_format_paths_arg(args: &Value) -> Result<Option<Vec<String>>, String> {
+    match args.get("paths") {
+        Some(Value::Array(arr)) => {
+            if arr.is_empty() {
+                return Ok(None);
+            }
+            let mut out = Vec::with_capacity(arr.len());
+            for item in arr {
+                let s = item.as_str().ok_or("args.paths entries must be strings")?;
+                out.push(s.to_string());
+            }
+            Ok(Some(out))
+        }
+        Some(Value::Null) | None => match args.get("path") {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(s)) => {
+                let t = s.trim();
+                if t.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(vec![t.to_string()]))
+                }
+            }
+            Some(_) => Err("args.path must be a string".to_string()),
+        },
+        Some(_) => Err("args.paths must be an array of strings".to_string()),
+    }
+}
+
+fn is_luau_file_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("luau") || e.eq_ignore_ascii_case("lua"))
+}
+
+fn collect_dir_luau_files(
+    root_canon: &Path,
+    dir: &Path,
+    out: &mut Vec<String>,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("read dir {}: {e}", dir.display()))?;
+    let mut children: Vec<PathBuf> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
+    children.sort();
+    for path in children {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if matches!(name, ".git" | ".openro" | "build") {
+            continue;
+        }
+        let Ok(canon) = path.canonicalize() else {
+            continue;
+        };
+        if !canon.starts_with(root_canon) {
+            continue;
+        }
+        if canon.is_dir() {
+            collect_dir_luau_files(root_canon, &canon, out)?;
+        } else if canon.is_file() && is_luau_file_path(&canon) {
+            if let Ok(rel) = canon.strip_prefix(root_canon) {
+                let rel_s = rel.to_string_lossy().replace('\\', "/");
+                if !rel_s.is_empty() && !out.contains(&rel_s) {
+                    out.push(rel_s);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn find_conflicting_subclaim(st: &RunState, caller: &str, dir_rel: &str) -> Option<String> {
+    let prefix = format!("{dir_rel}/");
+    st.claims
+        .values()
+        .find(|oc| !oc.owner.eq_ignore_ascii_case(caller) && oc.path.starts_with(&prefix))
+        .map(|oc| {
+            format!(
+                "file claim conflict: directory '{dir_rel}' contains '{}' owned by task {} (owner: {})",
+                oc.path, oc.task_id, oc.owner
+            )
+        })
+}
+
+fn caller_owns_format_path(st: &RunState, caller: &str, norm: &str) -> Result<String, String> {
+    let is_dir = st.project_dir.join(norm).is_dir();
+    if let Some(c) = st.claims.get(norm) {
+        if !c.owner.eq_ignore_ascii_case(caller) {
+            return Err(format!(
+                "file claim conflict: '{norm}' is owned by task {} (owner: {})",
+                c.task_id, c.owner
+            ));
+        }
+        if st
+            .task_index(&c.task_id)
+            .is_some_and(|i| st.tasks[i].owner.eq_ignore_ascii_case(caller) && st.tasks[i].status.holds_claims())
+        {
+            if is_dir {
+                if let Some(err) = find_conflicting_subclaim(st, caller, norm) {
+                    return Err(err);
+                }
+            }
+            return Ok(c.task_id.clone());
+        }
+    }
+
+    for c in st.claims.values() {
+        if norm.starts_with(&format!("{}/", c.path)) {
+            if !c.owner.eq_ignore_ascii_case(caller) {
+                return Err(format!(
+                    "file claim conflict: '{norm}' is under '{}' owned by task {} (owner: {})",
+                    c.path, c.task_id, c.owner
+                ));
+            }
+            if st
+                .task_index(&c.task_id)
+                .is_some_and(|i| st.tasks[i].owner.eq_ignore_ascii_case(caller) && st.tasks[i].status.holds_claims())
+            {
+                if is_dir {
+                    if let Some(err) = find_conflicting_subclaim(st, caller, norm) {
+                        return Err(err);
+                    }
+                }
+                return Ok(c.task_id.clone());
+            }
+        }
+    }
+
+    for t in &st.tasks {
+        if t.owner.eq_ignore_ascii_case(caller)
+            && t.status.holds_claims()
+            && t.claimed_files.iter().any(|f| f == norm)
+        {
+            if is_dir {
+                if let Some(err) = find_conflicting_subclaim(st, caller, norm) {
+                    return Err(err);
+                }
+            }
+            return Ok(t.id.clone());
+        }
+    }
+
+    Err(format!(
+        "file ownership error: '{norm}' is not claimed by any active task owned by {caller}; claim it first with claim_files"
+    ))
+}
+
+struct ScopedFormatPlan {
+    project_dir: PathBuf,
+    targets: Vec<String>,
+    owned_files: Vec<(String, String)>,
+}
+
+fn push_scoped_owned_file(
+    targets: &mut Vec<String>,
+    owned_files: &mut Vec<(String, String)>,
+    task_id: &str,
+    rel: String,
+    also_add_target: bool,
+) {
+    if !owned_files.iter().any(|(_, p)| p == &rel) {
+        owned_files.push((task_id.to_string(), rel.clone()));
+    }
+    if also_add_target && !targets.contains(&rel) {
+        targets.push(rel);
+    }
+}
+
+fn prepare_scoped_format_plan(
+    handle: &Arc<RunHandle>,
+    caller: &str,
+    requested: Option<&[String]>,
+) -> Result<ScopedFormatPlan, String> {
+    let st = handle.state.lock().unwrap();
+    let project_dir = st.project_dir.clone();
+    let root_canon = project_dir
+        .canonicalize()
+        .map_err(|e| format!("project folder {}: {e}", project_dir.display()))?;
+    let mut targets: Vec<String> = Vec::new();
+    let mut owned_files: Vec<(String, String)> = Vec::new();
+
+    if let Some(list) = requested.filter(|l| !l.is_empty()) {
+        for raw in list {
+            if raw.chars().any(|c| c.is_control()) {
+                return Err("format path cannot contain control characters".to_string());
+            }
+            let trimmed = raw.trim();
+            if trimmed.starts_with('-') {
+                return Err(format!("invalid format path '{trimmed}'"));
+            }
+            let norm = normalize_rel_path(&project_dir, raw, true)?;
+            if norm.starts_with('-') {
+                return Err(format!("invalid format path '{norm}'"));
+            }
+            let task_id = caller_owns_format_path(&st, caller, &norm)?;
+            let full = project_dir.join(&norm);
+            if !full.exists() {
+                return Err(format!("format target '{norm}' does not exist"));
+            }
+            let canon = full
+                .canonicalize()
+                .map_err(|e| format!("format target '{norm}': {e}"))?;
+            if !canon.starts_with(&root_canon) {
+                return Err(format!("path '{norm}' must stay inside the project folder"));
+            }
+            if canon.is_dir() {
+                if !targets.contains(&norm) {
+                    targets.push(norm);
+                }
+                let mut dir_files = Vec::new();
+                collect_dir_luau_files(&root_canon, &canon, &mut dir_files)?;
+                for f in dir_files {
+                    if st
+                        .claims
+                        .get(&f)
+                        .is_some_and(|c| !c.owner.eq_ignore_ascii_case(caller))
+                    {
+                        continue;
+                    }
+                    push_scoped_owned_file(&mut targets, &mut owned_files, &task_id, f, false);
+                }
+            } else {
+                if !is_luau_file_path(&canon) {
+                    return Err(format!(
+                        "format target '{norm}' must be a directory or a .luau/.lua file"
+                    ));
+                }
+                push_scoped_owned_file(&mut targets, &mut owned_files, &task_id, norm, true);
+            }
+        }
+        return Ok(ScopedFormatPlan {
+            project_dir,
+            targets,
+            owned_files,
+        });
+    }
+
+    // Default when args.paths is omitted: format only existing .luau/.lua files owned by caller.
+    let mut candidate_claims: Vec<(String, String)> = Vec::new();
+    for t in &st.tasks {
+        if t.owner.eq_ignore_ascii_case(caller) && t.status.holds_claims() {
+            for f in &t.claimed_files {
+                if !candidate_claims.iter().any(|(_, p)| p == f) {
+                    candidate_claims.push((t.id.clone(), f.clone()));
+                }
+            }
+        }
+    }
+    for c in st.claims.values() {
+        if c.owner.eq_ignore_ascii_case(caller)
+            && st
+                .task_index(&c.task_id)
+                .is_some_and(|i| st.tasks[i].owner.eq_ignore_ascii_case(caller) && st.tasks[i].status.holds_claims())
+            && !candidate_claims.iter().any(|(_, p)| p == &c.path)
+        {
+            candidate_claims.push((c.task_id.clone(), c.path.clone()));
+        }
+    }
+
+    let mut saw_claimed_luau = false;
+    for (tid, cp) in candidate_claims {
+        if cp.starts_with('-') || cp == "openro.project.json" {
+            continue;
+        }
+        if st
+            .claims
+            .get(&cp)
+            .is_some_and(|c| !c.owner.eq_ignore_ascii_case(caller))
+        {
+            continue;
+        }
+        let Ok(norm) = normalize_rel_path(&project_dir, &cp, true) else {
+            continue;
+        };
+        let full = project_dir.join(&norm);
+        if !full.exists() {
+            if is_luau_file_path(Path::new(&norm)) {
+                saw_claimed_luau = true;
+            }
+            continue;
+        }
+        let Ok(canon) = full.canonicalize() else {
+            continue;
+        };
+        if !canon.starts_with(&root_canon) {
+            continue;
+        }
+        if canon.is_file() {
+            if is_luau_file_path(&canon) {
+                saw_claimed_luau = true;
+                push_scoped_owned_file(&mut targets, &mut owned_files, &tid, norm, true);
+            }
+        } else if canon.is_dir() && find_conflicting_subclaim(&st, caller, &norm).is_none() {
+            let mut dir_files = Vec::new();
+            if collect_dir_luau_files(&root_canon, &canon, &mut dir_files).is_ok() {
+                for f in dir_files {
+                    if st
+                        .claims
+                        .get(&f)
+                        .is_some_and(|c| !c.owner.eq_ignore_ascii_case(caller))
+                    {
+                        continue;
+                    }
+                    saw_claimed_luau = true;
+                    push_scoped_owned_file(&mut targets, &mut owned_files, &tid, f, true);
+                }
+            }
+        }
+    }
+
+    if targets.is_empty() {
+        if saw_claimed_luau {
+            return Err(format!(
+                "claimed .luau/.lua files for '{caller}' do not exist on disk yet"
+            ));
+        }
+        return Err(format!(
+            "no claimed .luau/.lua files owned by '{caller}'; write or claim a .luau/.lua file first"
+        ));
+    }
+
+    Ok(ScopedFormatPlan {
+        project_dir,
+        targets,
+        owned_files,
+    })
+}
+
+fn record_formatted_owned_files(handle: &Arc<RunHandle>, caller: &str, plan: &ScopedFormatPlan) {
+    let mut st = handle.state.lock().unwrap();
+    for (task_id, rel_path) in &plan.owned_files {
+        let can_record = st
+            .task_index(task_id)
+            .is_some_and(|i| st.tasks[i].owner.eq_ignore_ascii_case(caller) && st.tasks[i].status.holds_claims());
+        if can_record {
+            record_task_file_mutation(&mut st, task_id, rel_path);
+        }
+    }
+}
+
+fn tool_project_format(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Result<Value, String> {
+    let requested = parse_format_paths_arg(args)?;
+    let plan = prepare_scoped_format_plan(handle, caller, requested.as_deref())?;
+    let res = projects::format_project(&plan.project_dir, Some(&plan.targets))?;
+    if res.get("formatted").and_then(Value::as_bool) == Some(true) {
+        record_formatted_owned_files(handle, caller, &plan);
+    }
+    Ok(res)
+}
+
+fn tool_project_check(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Result<Value, String> {
+    let format = match args.get("format") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err("project_check args.format must be a boolean".to_string()),
+    };
+    let requested = parse_format_paths_arg(args)?;
+    if !format {
+        let project_dir = handle.state.lock().unwrap().project_dir.clone();
+        return projects::check_project_with_options(&project_dir, false, requested.as_deref());
+    }
+    let plan = prepare_scoped_format_plan(handle, caller, requested.as_deref())?;
+    let res = projects::check_project_with_options(&plan.project_dir, true, Some(&plan.targets))?;
+    if res.get("formatted").and_then(Value::as_bool) == Some(true) {
+        record_formatted_owned_files(handle, caller, &plan);
+    }
+    Ok(res)
 }
 
 fn tool_project_run_lune(
@@ -5337,9 +5701,11 @@ mod tests {
         assert!(!is_write_or_submit_tool("project_files"));
         assert!(!is_write_or_submit_tool("project_grep"));
         assert!(!is_write_or_submit_tool("luau_check"));
+        assert!(!is_write_or_submit_tool("project_check"));
         assert!(!is_write_or_submit_tool("board_read"));
         assert!(is_write_or_submit_tool("project_write_file"));
         assert!(is_write_or_submit_tool("project_edit_file"));
+        assert!(is_write_or_submit_tool("project_format"));
         assert!(is_write_or_submit_tool("submit_task"));
         assert!(is_write_or_submit_tool("adapter_invoke"));
 
