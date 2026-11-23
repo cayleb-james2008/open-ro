@@ -2088,6 +2088,49 @@ export function App() {
     }
   };
 
+  const handleTransferEmbed = async () => {
+    if (!v090Ready) {
+      toast.error("Connecting live Studio requires OpenRO desktop server.");
+      return;
+    }
+    setEmbedStatus((prev) => ({ ...prev, state: "launching", error: null }));
+    try {
+      const url = ship.activeId
+        ? `/api/projects/${encodeURIComponent(ship.activeId)}/open-in-studio`
+        : "/api/studio/embed/transfer";
+      const res = await apiCall<Record<string, unknown>>(url, { transfer: true, rebuild: true });
+      if (res.httpStatus === 404) {
+        await handleAttachEmbed();
+        return;
+      }
+      if (res.ok) {
+        const norm = normalizeEmbedStatus(res.status ?? res);
+        setEmbedStatus(norm);
+        if (norm.mcp_connected || norm.phase === "connected" || res.connected === true) {
+          setStudioOk(true);
+          setStudioMode("live_mcp");
+          setWorkspaceMode("studio_mcp");
+          toast.success(ship.active?.name ? `Opened ${ship.active.name} in Studio` : "Studio connected");
+        } else if (norm.phase === "awaiting_signin") {
+          toast("Sign in inside Studio to connect");
+        }
+        if (typeof res.frame_seq === "number" && res.frame_seq > 0) {
+          setHasLiveFrame(true);
+          setFrameSeq(res.frame_seq);
+        }
+        setCenterTab("embedded-studio");
+        void refreshStudioActions(true);
+        void refreshPlace();
+        return;
+      }
+      const errText = typeof res.error === "string" && res.error ? res.error : "Could not open project in Studio.";
+      setEmbedStatus((prev) => ({ ...prev, error: errText }));
+      toast.error(errText);
+    } catch {
+      await handleAttachEmbed();
+    }
+  };
+
   const handleAttachEmbed = async () => {
     if (!v090Ready) {
       toast.error("Connecting live Studio requires OpenRO desktop server.");
@@ -2770,6 +2813,7 @@ export function App() {
             actions={studioActions}
             onLaunchEmbed={handleLaunchEmbed}
             onAttachEmbed={handleAttachEmbed}
+            onTransferEmbed={handleTransferEmbed}
             onStopEmbed={handleStopEmbed}
             onRefreshEmbedStatus={() => void refreshEmbedStatus(true)}
             onCaptureFrame={handleCaptureStudioFrame}
@@ -3303,6 +3347,8 @@ export function App() {
           open={wizardOpen}
           onOpenChange={setWizardOpen}
           studioOk={studioOk}
+          activeProjectId={ship.activeId}
+          activeProjectName={ship.active?.name}
           onApplied={({ studioConnected, modelConfigured, workspaceMode: nextMode, modelId: nextModelId }) => {
             setStudioOk(studioConnected);
             setModelOk(modelConfigured);
