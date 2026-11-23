@@ -1858,3 +1858,214 @@ fn asset_tools_record_written_files_and_autocommit_skips_unmatched_globs() {
 
     shared.teamwork.shutdown();
 }
+
+#[test]
+fn transient_model_errors_retry_twice_and_stop_on_third_failure() {
+    struct EnvCapGuard(Option<std::ffi::OsString>);
+    impl Drop for EnvCapGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(prev) => std::env::set_var("OPENRO_TEAMWORK_BACKOFF_CAP_MS", prev),
+                None => std::env::remove_var("OPENRO_TEAMWORK_BACKOFF_CAP_MS"),
+            }
+        }
+    }
+    let _cap_guard = EnvCapGuard(std::env::var_os("OPENRO_TEAMWORK_BACKOFF_CAP_MS"));
+    std::env::set_var("OPENRO_TEAMWORK_BACKOFF_CAP_MS", "25");
+
+    let start_status_stub = |fail_mode: bool| -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let builder_calls = Arc::new(AtomicUsize::new(0));
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let bcalls = Arc::clone(&builder_calls);
+                std::thread::spawn(move || {
+                    let mut s = stream;
+                    let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    let mut header_end = None;
+                    let mut content_len = 0usize;
+                    while let Ok(n) = s.read(&mut chunk) {
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        if header_end.is_none() {
+                            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                header_end = Some(pos + 4);
+                                let head = String::from_utf8_lossy(&buf[..pos]);
+                                for line in head.lines() {
+                                    if let Some((k, v)) = line.split_once(':') {
+                                        if k.trim().eq_ignore_ascii_case("content-length") {
+                                            content_len = v.trim().parse().unwrap_or(0);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(he) = header_end {
+                            if buf.len() >= he + content_len {
+                                break;
+                            }
+                        }
+                    }
+                    let body = header_end
+                        .map(|he| String::from_utf8_lossy(&buf[he..buf.len().min(he + content_len)]).to_string())
+                        .unwrap_or_default();
+                    let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                    let msgs = req["messages"].as_array().cloned().unwrap_or_default();
+                    let sys = msgs[0]["content"].as_str().unwrap_or("");
+                    let all_text = msgs.iter().map(|m| m["content"].as_str().unwrap_or("")).collect::<Vec<_>>().join("\n");
+
+                    let (status_line, content_val) = if sys.contains("[Agent: coordinator]") {
+                        let reply = if all_text.contains("Verified task t1") {
+                            json!({ "tool": "finish_run", "args": { "summary": "recovered from 2 transient failures" } })
+                        } else if msgs.iter().any(|m| m["role"] == "assistant") {
+                            json!({ "done": true, "summary": "waiting" })
+                        } else {
+                            json!({
+                                "tool": "create_task",
+                                "args": { "id": "t1", "owner": "builder", "title": "Write note", "kind": "docs", "files": ["docs/NOTE.md"] },
+                                "done": true,
+                                "summary": "assigned t1"
+                            })
+                        };
+                        ("200 OK", reply)
+                    } else if sys.contains("[Agent: builder]") {
+                        let n = bcalls.fetch_add(1, Ordering::SeqCst) + 1;
+                        if fail_mode || n <= 2 {
+                            let code = if n == 1 { "503 Service Unavailable" } else { "502 Bad Gateway" };
+                            let resp = format!(
+                                "HTTP/1.1 {code}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\nupstream error {code}",
+                                "upstream error ".len() + code.len()
+                            );
+                            let _ = s.write_all(resp.as_bytes());
+                            let _ = s.flush();
+                            return;
+                        }
+                        ("200 OK", json!({
+                            "steps": [
+                                { "tool": "project_write_file", "args": { "path": "docs/NOTE.md", "content": "ok after retries\n" } },
+                                { "tool": "submit_task", "args": { "task_id": "t1", "summary": "recovered on 3rd attempt" } }
+                            ],
+                            "done": true,
+                            "summary": "done"
+                        }))
+                    } else {
+                        let last_user = msgs.iter().rev().find(|m| m["role"] == "user").and_then(|m| m["content"].as_str()).unwrap_or("");
+                        let reply = if last_user.contains("- t1 [awaiting_verification]") {
+                            json!({ "tool": "verify_task", "args": { "task_id": "t1", "passed": true, "notes": "ok" }, "done": true, "summary": "verified" })
+                        } else {
+                            json!({ "done": true, "summary": "waiting" })
+                        };
+                        ("200 OK", reply)
+                    };
+
+                    let payload = json!({
+                        "id": "chatcmpl-stub",
+                        "object": "chat.completion",
+                        "choices": [{
+                            "index": 0,
+                            "message": { "role": "assistant", "content": content_val.to_string() },
+                            "finish_reason": "stop"
+                        }]
+                    })
+                    .to_string();
+                    let resp = format!(
+                        "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                        payload.len()
+                    );
+                    let _ = s.write_all(resp.as_bytes());
+                    let _ = s.flush();
+                });
+            }
+        });
+        format!("http://127.0.0.1:{port}/v1")
+    };
+
+    // Case 1: 2 consecutive transient errors (503 then 502) -> builder retries twice & completes cleanly
+    let dir1 = scratch_dir("transient-recover");
+    let data1 = dir1.join("data");
+    let proj1 = dir1.join("proj");
+    std::fs::create_dir_all(&proj1).unwrap();
+    std::fs::create_dir_all(&data1).unwrap();
+    write_projects_index(&data1, &proj1);
+    let url1 = start_status_stub(false);
+    let (port1, shared1) = boot_server(data1, None);
+    let (st, _) = http(port1, "POST", "/api/config", Some(&json!({ "base_url": url1, "model_id": "stub-model" })));
+    assert_eq!(st, 200);
+    let (st, c1) = http(port1, "POST", "/api/teamwork", Some(&json!({ "goal": "Recover after 2 transient 503/502 errors", "roles": ["builder", "verifier"], "max_concurrency": 2 })));
+    assert_eq!(st, 201, "{c1}");
+    let run1 = c1["run"]["id"].as_str().unwrap().to_string();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut d1 = Value::Null;
+    while Instant::now() < deadline {
+        let (_, d) = http(port1, "GET", &format!("/api/teamwork/{run1}"), None);
+        d1 = d;
+        if d1["run"]["status"] == "completed" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(d1["run"]["status"], "completed", "{d1}");
+    let (_, tr1) = http(port1, "GET", &format!("/api/teamwork/{run1}/agents/builder/trace"), None);
+    let retries1: Vec<_> = tr1["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "transient_retry")
+        .collect();
+    assert_eq!(retries1.len(), 2, "expected 2 transient retries: {tr1:?}");
+    assert_eq!(retries1[0]["data"]["attempt"], 1);
+    assert_eq!(retries1[1]["data"]["attempt"], 2);
+    shared1.teamwork.shutdown();
+
+    // Case 2: 3 consecutive transient errors -> stops builder cleanly after 2 retries (attempt 3 fails)
+    let dir2 = scratch_dir("transient-exhaust");
+    let data2 = dir2.join("data");
+    let proj2 = dir2.join("proj");
+    std::fs::create_dir_all(&proj2).unwrap();
+    std::fs::create_dir_all(&data2).unwrap();
+    write_projects_index(&data2, &proj2);
+    let url2 = start_status_stub(true);
+    let (port2, shared2) = boot_server(data2, None);
+    let (st, _) = http(port2, "POST", "/api/config", Some(&json!({ "base_url": url2, "model_id": "stub-model" })));
+    assert_eq!(st, 200);
+    let (st, c2) = http(port2, "POST", "/api/teamwork", Some(&json!({ "goal": "Stop after exhausting 2 transient retries", "roles": ["builder", "verifier"], "max_concurrency": 2 })));
+    assert_eq!(st, 201, "{c2}");
+    let run2 = c2["run"]["id"].as_str().unwrap().to_string();
+    let deadline2 = Instant::now() + Duration::from_secs(15);
+    let mut d2 = Value::Null;
+    while Instant::now() < deadline2 {
+        let (_, d) = http(port2, "GET", &format!("/api/teamwork/{run2}"), None);
+        d2 = d;
+        let stopped = d2["roster"]
+            .as_array()
+            .and_then(|r| r.iter().find(|a| a["name"] == "builder"))
+            .is_some_and(|a| a["state"] == "stopped" && a["last_error"].is_string());
+        if stopped {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let builder2 = d2["roster"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "builder")
+        .unwrap();
+    assert_eq!(builder2["state"], "stopped", "{builder2}");
+    assert!(builder2["last_error"].as_str().unwrap_or("").contains("502"), "{builder2}");
+    let (_, tr2) = http(port2, "GET", &format!("/api/teamwork/{run2}/agents/builder/trace"), None);
+    let retries2 = tr2["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "transient_retry")
+        .count();
+    assert_eq!(retries2, 2, "must stop after 2 retries: {tr2:?}");
+    assert!(tr2["trace"].as_array().unwrap().iter().any(|e| e["kind"] == "error"));
+    shared2.teamwork.shutdown();
+}
