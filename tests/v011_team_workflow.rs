@@ -2221,3 +2221,359 @@ fn read_batch_truncation_turn_cap_and_read_only_spin_breaker() {
 
     shared.teamwork.shutdown();
 }
+
+#[test]
+fn project_format_and_check_ownership_scoping_gap_56() {
+    let dir = scratch_dir("format-ownership-gap56");
+    let data_dir = dir.join("data");
+    let ws = dir.join("workspace");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let mock_bin = env!("CARGO_BIN_EXE_mock_studio");
+    let builder_sys_capture: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let b_sys = Arc::clone(&builder_sys_capture);
+    let sibling_before_t2: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let sib_cap = Arc::clone(&sibling_before_t2);
+    let proj_dir_holder: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+    let pd_holder = Arc::clone(&proj_dir_holder);
+
+    let per_role: Arc<Mutex<std::collections::HashMap<String, usize>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let pr = Arc::clone(&per_role);
+
+    let stub = start_dynamic_stub(move |body, _| {
+        let req: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        let msgs = req["messages"].as_array().unwrap();
+        let sys = msgs[0]["content"].as_str().unwrap_or("");
+        let role = if sys.contains("[Agent: coordinator]") {
+            "coordinator"
+        } else if sys.contains("[Agent: builder]") {
+            "builder"
+        } else if sys.contains("[Agent: systems]") {
+            "systems"
+        } else {
+            "verifier"
+        };
+        let step = {
+            let mut m = pr.lock().unwrap();
+            let e = m.entry(role.to_string()).or_insert(0);
+            *e += 1;
+            *e
+        };
+        let all_text = msgs
+            .iter()
+            .map(|m| m["content"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        if role == "coordinator" {
+            if all_text.contains("Verified task t1") && all_text.contains("Verified task t2") {
+                return json!({
+                    "tool": "finish_run",
+                    "args": { "summary": "gap 56 scoped format & check verified" }
+                });
+            }
+            return match step {
+                1 => json!({
+                    "steps": [
+                        {
+                            "tool": "create_task",
+                            "args": {
+                                "id": "t1",
+                                "owner": "builder",
+                                "verifier": "verifier",
+                                "title": "Format & write owned client/shared code",
+                                "kind": "game_code",
+                                "files": ["src/shared/OwnedPre.luau"]
+                            }
+                        },
+                        {
+                            "tool": "create_task",
+                            "args": {
+                                "id": "t2",
+                                "owner": "systems",
+                                "verifier": "verifier",
+                                "title": "Format & check server code",
+                                "kind": "game_code",
+                                "depends_on": ["t1"],
+                                "files": ["src/server/Sibling.server.luau"]
+                            }
+                        }
+                    ],
+                    "done": true,
+                    "summary": "dispatched t1 and t2"
+                }),
+                _ => json!({ "done": true, "summary": "waiting" }),
+            };
+        }
+
+        if role == "builder" {
+            if step == 1 {
+                *b_sys.lock().unwrap() = sys.to_string();
+            }
+            return match step {
+                // Must refuse formatting another worker's claimed file (explicit project_format)
+                1 => json!({ "tool": "project_format", "args": { "paths": ["src/server/Sibling.server.luau"] } }),
+                // Must refuse formatting another worker's claimed file via project_check { format: true }
+                2 => json!({ "tool": "project_check", "args": { "format": true, "paths": ["src/server/Sibling.server.luau"] } }),
+                // Must refuse formatting an unclaimed file or unowned directory
+                3 => json!({ "tool": "project_format", "args": { "paths": ["src/shared/Unclaimed.luau"] } }),
+                4 => json!({ "tool": "project_format", "args": { "paths": ["src/shared"] } }),
+                // Write a messy owned client file, then run project_format {} (paths omitted -> scopes to OwnedPre + Hud)
+                5 => json!({
+                    "steps": [
+                        { "tool": "project_write_file", "args": { "path": "src/client/Hud.client.luau", "content": "local   hud={7,8}\nreturn hud\n" } },
+                        { "tool": "project_format", "args": {} },
+                        { "tool": "submit_task", "args": { "task_id": "t1", "summary": "formatted owned files" } }
+                    ],
+                    "done": true,
+                    "summary": "submitted t1"
+                }),
+                _ => json!({ "done": true, "summary": "parked" }),
+            };
+        }
+
+        if role == "systems" {
+            if all_text.contains("- t2 [in_progress]") {
+                if let Some(pdir) = pd_holder.lock().unwrap().as_ref() {
+                    let s = std::fs::read_to_string(pdir.join("src/server/Sibling.server.luau"))
+                        .unwrap_or_default();
+                    *sib_cap.lock().unwrap() = s;
+                }
+                return json!({
+                    "steps": [
+                        { "tool": "project_check", "args": { "format": true } },
+                        { "tool": "submit_task", "args": { "task_id": "t2", "summary": "formatted & checked sibling server script" } }
+                    ],
+                    "done": true,
+                    "summary": "submitted t2"
+                });
+            }
+            return json!({ "done": true, "summary": "waiting for t1" });
+        }
+
+        // verifier: prove verifier cannot call project_format (no owned implementation claims),
+        // then run read-only project_check {} + project_playtest + verify_task cleanly.
+        let last_user = msgs
+            .iter()
+            .rev()
+            .find(|m| m["role"] == "user")
+            .and_then(|m| m["content"].as_str())
+            .unwrap_or("");
+        if last_user.contains("- t1 [awaiting_verification]") {
+            return match step {
+                1 => json!({ "tool": "project_format", "args": {} }),
+                _ => json!({
+                    "steps": [
+                        { "tool": "project_check", "args": {} },
+                        { "tool": "project_playtest", "args": { "task_id": "t1" } },
+                        { "tool": "verify_task", "args": { "task_id": "t1", "passed": true, "notes": "t1 ok" } }
+                    ],
+                    "done": true,
+                    "summary": "verified t1"
+                }),
+            };
+        }
+        if last_user.contains("- t2 [awaiting_verification]") {
+            return json!({
+                "steps": [
+                    { "tool": "project_playtest", "args": { "task_id": "t2" } },
+                    { "tool": "verify_task", "args": { "task_id": "t2", "passed": true, "notes": "t2 ok" } }
+                ],
+                "done": true,
+                "summary": "verified t2"
+            });
+        }
+        json!({ "done": true, "summary": "waiting" })
+    });
+
+    let (port, shared) = boot_server(data_dir, Some(mock_bin));
+    let (st, _) = http(
+        port,
+        "POST",
+        "/api/config",
+        Some(&json!({ "base_url": stub.base_url, "model_id": "stub-model" })),
+    );
+    assert_eq!(st, 200);
+    let (st, _) = http(
+        port,
+        "POST",
+        "/api/projects/workspace",
+        Some(&json!({ "path": ws.to_string_lossy() })),
+    );
+    assert_eq!(st, 200);
+    let (st, proj_created) = http(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(&json!({ "name": "Format Team Gap 56", "parent": ws.to_string_lossy() })),
+    );
+    assert_eq!(st, 201, "{proj_created}");
+    let proj_dir = PathBuf::from(proj_created["project"]["path"].as_str().unwrap());
+    *proj_dir_holder.lock().unwrap() = Some(proj_dir.clone());
+
+    let messy_pre = "local   a={1,2}\nreturn a\n";
+    let messy_sib = "local   b={3,4}\nreturn b\n";
+    let messy_unclaimed = "local   c={5,6}\nreturn c\n";
+    std::fs::write(proj_dir.join("src/shared/OwnedPre.luau"), messy_pre).unwrap();
+    std::fs::write(proj_dir.join("src/server/Sibling.server.luau"), messy_sib).unwrap();
+    std::fs::write(proj_dir.join("src/shared/Unclaimed.luau"), messy_unclaimed).unwrap();
+
+    let (st, created) = http(
+        port,
+        "POST",
+        "/api/teamwork",
+        Some(&json!({
+            "goal": "Verify #56 project_format & project_check ownership scoping",
+            "roles": ["builder", "systems", "verifier"],
+            "max_concurrency": 2
+        })),
+    );
+    assert_eq!(st, 201, "{created}");
+    let run_id = created["run"]["id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut detail = Value::Null;
+    while Instant::now() < deadline {
+        let (_, d) = http(port, "GET", &format!("/api/teamwork/{run_id}"), None);
+        detail = d;
+        if detail["run"]["status"] == "completed" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(detail["run"]["status"], "completed", "{detail}");
+
+    // Worker prompt contains project_format and stylua auto-format hint
+    let b_sys_str = builder_sys_capture.lock().unwrap().clone();
+    assert!(b_sys_str.contains("project_format"), "{b_sys_str}");
+    assert!(b_sys_str.contains("stylua"), "{b_sys_str}");
+
+    let (_, b_tr) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/builder/trace"), None);
+    let b_trace = b_tr["trace"].as_array().unwrap();
+    for turn in 1..=2 {
+        let err = b_trace
+            .iter()
+            .find(|e| e["turn"] == turn && e["kind"] == "tool_result")
+            .expect("conflict turn trace");
+        assert_eq!(err["data"]["ok"], false, "{err}");
+        assert!(
+            err["data"]["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("file claim conflict"),
+            "{err}"
+        );
+    }
+    for turn in 3..=4 {
+        let err = b_trace
+            .iter()
+            .find(|e| e["turn"] == turn && e["kind"] == "tool_result")
+            .expect("ownership turn trace");
+        assert_eq!(err["data"]["ok"], false, "{err}");
+        assert!(
+            err["data"]["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("file ownership error"),
+            "{err}"
+        );
+    }
+
+    let b_fmt = b_trace
+        .iter()
+        .find(|e| e["kind"] == "tool_result" && e["data"]["tool"] == "project_format" && e["data"]["ok"] == true)
+        .expect("builder project_format ok trace");
+    let mut b_targets: Vec<String> = b_fmt["data"]["result"]["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    b_targets.sort();
+    assert_eq!(
+        b_targets,
+        vec![
+            "src/client/Hud.client.luau".to_string(),
+            "src/shared/OwnedPre.luau".to_string(),
+        ]
+    );
+
+    // Sibling file was NEVER modified before t2 started
+    assert_eq!(*sibling_before_t2.lock().unwrap(), messy_sib);
+
+    let (_, v_tr) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/verifier/trace"), None);
+    let v_trace = v_tr["trace"].as_array().unwrap();
+    let v_fmt_err = v_trace
+        .iter()
+        .find(|e| e["kind"] == "tool_result" && e["data"]["tool"] == "project_format")
+        .expect("verifier project_format refusal");
+    assert_eq!(v_fmt_err["data"]["ok"], false, "{v_fmt_err}");
+    let v_chk = v_trace
+        .iter()
+        .find(|e| e["kind"] == "tool_result" && e["data"]["tool"] == "project_check")
+        .expect("verifier project_check read-only");
+    assert_eq!(v_chk["data"]["ok"], true, "{v_chk}");
+    assert_eq!(v_chk["data"]["result"]["formatted"], false, "{v_chk}");
+
+    let (_, s_tr) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/systems/trace"), None);
+    let s_trace = s_tr["trace"].as_array().unwrap();
+    let s_chk = s_trace
+        .iter()
+        .find(|e| e["kind"] == "tool_result" && e["data"]["tool"] == "project_check")
+        .expect("systems project_check format:true");
+    assert_eq!(s_chk["data"]["ok"], true, "{s_chk}");
+    assert_eq!(
+        s_chk["data"]["result"]["format"]["targets"],
+        json!(["src/server/Sibling.server.luau"]),
+        "{s_chk}"
+    );
+
+    let tasks = detail["tasks"].as_array().unwrap();
+    let t1 = tasks.iter().find(|t| t["id"] == "t1").unwrap();
+    let t2 = tasks.iter().find(|t| t["id"] == "t2").unwrap();
+    let has_stylua = openro_rs::projects::find_tool("stylua", "OPENRO_STYLUA").is_some();
+    if has_stylua {
+        assert_eq!(b_fmt["data"]["result"]["formatted"], true);
+        assert_eq!(s_chk["data"]["result"]["formatted"], true);
+
+        let t1_written: Vec<&str> = t1["written_files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(t1_written.contains(&"src/shared/OwnedPre.luau"), "{t1_written:?}");
+        assert!(t1_written.contains(&"src/client/Hud.client.luau"), "{t1_written:?}");
+
+        let t2_written: Vec<&str> = t2["written_files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(t2_written.contains(&"src/server/Sibling.server.luau"), "{t2_written:?}");
+
+        assert_eq!(
+            std::fs::read_to_string(proj_dir.join("src/shared/OwnedPre.luau")).unwrap(),
+            "local a = { 1, 2 }\nreturn a\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(proj_dir.join("src/client/Hud.client.luau")).unwrap(),
+            "local hud = { 7, 8 }\nreturn hud\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(proj_dir.join("src/server/Sibling.server.luau")).unwrap(),
+            "local b = { 3, 4 }\nreturn b\n"
+        );
+    }
+
+    // Unclaimed file must NEVER be formatted by either worker
+    assert_eq!(
+        std::fs::read_to_string(proj_dir.join("src/shared/Unclaimed.luau")).unwrap(),
+        messy_unclaimed
+    );
+
+    shared.teamwork.shutdown();
+}
