@@ -30,4 +30,5 @@ pub mod studio_plugin;
 pub mod studio_stream;
 pub mod studio_sync;
 pub mod teamwork;
+pub mod tool_adapters;
 pub mod update;

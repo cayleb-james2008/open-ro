@@ -1382,7 +1382,35 @@ pub fn route(ctx: &Ctx, method: &str, path: &str, query: &str, body: &Value) -> 
         ("POST", ["opencloud", "key"]) => set_key(ctx, body).map(|_| ok_json(status_json(ctx))),
         ("POST", ["opencloud", "settings"]) => set_creator(ctx, body).map(|_| ok_json(status_json(ctx))),
         ("POST", ["art", "generate"]) => art_root(ctx, body.get("project").and_then(Value::as_str))
-            .and_then(|root| crate::assets::art_generate(&ctx.store, &root, body))
+            .and_then(|root| {
+                let explicit = body
+                    .get("adapter_id")
+                    .or_else(|| body.get("provider"))
+                    .and_then(Value::as_str);
+                let actx = crate::tool_adapters::InvokeCtx {
+                    data_dir: ctx.data_dir,
+                    assets_root: ctx.data_dir,
+                    store: &ctx.store,
+                    project_dir: Some(&root),
+                };
+                if let Some(out_p) = body.get("out_path").and_then(Value::as_str) {
+                    let norm = out_p.trim().replace('\\', "/");
+                    if norm.starts_with("art/references/") || norm == "art/references" {
+                        return bad("art_generate cannot write into gitignored art/references/.");
+                    }
+                }
+                if let Some(res) = crate::tool_adapters::maybe_invoke_override(&actx, "image_gen", explicit, body) {
+                    return res.map_err(|e| Oc {
+                        status: if e.contains("prohibited") || e.contains("blocked_ssrf") || e.contains("invalid") {
+                            400
+                        } else {
+                            502
+                        },
+                        msg: e,
+                    });
+                }
+                crate::assets::art_generate(&ctx.store, &root, body)
+            })
             .map(ok_json),
         ("POST", ["art", "approve"]) => art_root(ctx, body.get("project").and_then(Value::as_str))
             .and_then(|root| crate::assets::art_approve(&root, body))
@@ -1396,7 +1424,26 @@ pub fn route(ctx: &Ctx, method: &str, path: &str, query: &str, body: &Value) -> 
             .and_then(|root| crate::image_ops::pack_card(&root, body))
             .map(ok_json),
         ("POST", ["art", "references", "search"]) => art_root(ctx, body.get("project").and_then(Value::as_str))
-            .and_then(|root| crate::reference_search::search(&root, body))
+            .and_then(|root| {
+                let explicit = body.get("adapter_id").and_then(Value::as_str);
+                let actx = crate::tool_adapters::InvokeCtx {
+                    data_dir: ctx.data_dir,
+                    assets_root: ctx.data_dir,
+                    store: &ctx.store,
+                    project_dir: Some(&root),
+                };
+                if let Some(res) = crate::tool_adapters::maybe_invoke_override(&actx, "reference_search", explicit, body) {
+                    return res.map_err(|e| Oc {
+                        status: if e.contains("prohibited") || e.contains("blocked_ssrf") || e.contains("invalid") {
+                            400
+                        } else {
+                            502
+                        },
+                        msg: e,
+                    });
+                }
+                crate::reference_search::search(&root, body)
+            })
             .map(ok_json),
         ("GET", ["art", "references"]) => art_root(ctx, query_param(query, "project").as_deref())
             .and_then(|root| crate::reference_search::list(&root))
