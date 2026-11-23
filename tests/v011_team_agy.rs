@@ -207,8 +207,13 @@ if "[Role: coordinator]" in prompt:
             emit_text({"done": True, "summary": "Waiting for t1."})
 
 elif "[Role: systems]" in prompt:
+    # Trigger one transient agy conversation glitch before step counting (#53)
+    transient_flag = os.path.join(state_dir, "transient_once.done")
+    if not os.path.exists(transient_flag):
+        open(transient_flag, "w").write("1")
+        emit_quota("failed to start conversation: backend returned an empty conversation id")
     step = count_file("systems.step")
-    # Trigger one quota backoff on first systems call!
+    # Trigger one quota backoff on first counted systems call!
     quota_flag = os.path.join(state_dir, "quota_once.done")
     if not os.path.exists(quota_flag):
         open(quota_flag, "w").write("1")
@@ -300,6 +305,7 @@ fn agy_fake_bin_drives_split_claims_quota_verifier_gate_and_autocommit() {
 
     std::env::set_var("OPENRO_AGY_BIN", &agy_bin);
     std::env::set_var("FAKE_AGY_STATE", &agy_state);
+    std::env::set_var("OPENRO_TEAMWORK_BACKOFF_CAP_MS", "50");
     std::env::remove_var("OPENRO_MODEL_BASE_URL");
     std::env::remove_var("OPENRO_NO_AGY");
 
@@ -414,6 +420,22 @@ fn agy_fake_bin_drives_split_claims_quota_verifier_gate_and_autocommit() {
             && t["data"]["error"]
                 .as_str()
                 .is_some_and(|e| e.contains("Verifier gate refused"))
+    }));
+
+    // Verify systems trace recorded transient agy auto-retry (#53) before succeeding
+    let (sys_st, sys_tr) = http(
+        port,
+        "GET",
+        &format!("/api/teamwork/{run_id}/agents/systems/trace"),
+        None,
+    );
+    assert_eq!(sys_st, 200);
+    assert!(sys_tr["trace"].as_array().unwrap().iter().any(|t| {
+        t["kind"] == "transient_retry"
+            && t["data"]["attempt"] == 1
+            && t["data"]["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("empty conversation id"))
     }));
 
     shared.teamwork.shutdown();
