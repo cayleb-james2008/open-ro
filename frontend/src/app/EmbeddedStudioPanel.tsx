@@ -44,6 +44,7 @@ export function EmbeddedStudioPanel({
   actions,
   onLaunchEmbed,
   onAttachEmbed,
+  onTransferEmbed,
   onStopEmbed,
   onRefreshEmbedStatus,
   onCaptureFrame,
@@ -61,6 +62,7 @@ export function EmbeddedStudioPanel({
   actions: StudioActionEvent[];
   onLaunchEmbed?: (command?: string) => Promise<void> | void;
   onAttachEmbed?: () => Promise<void> | void;
+  onTransferEmbed?: () => Promise<void> | void;
   onStopEmbed?: () => Promise<void> | void;
   onRefreshEmbedStatus?: () => Promise<void> | void;
   onCaptureFrame?: () => Promise<void> | void;
@@ -189,11 +191,23 @@ export function EmbeddedStudioPanel({
     if (embedBusy) return;
     setEmbedBusy(true);
     try {
-      if ((embedStatus.already_logged_in || embedStatus.studio_running) && onAttachEmbed) {
+      if (onTransferEmbed) {
+        await onTransferEmbed();
+      } else if ((embedStatus.already_logged_in || embedStatus.studio_running) && onAttachEmbed) {
         await onAttachEmbed();
       } else if (onLaunchEmbed) {
         await onLaunchEmbed(mcpCmdDraft.trim() || undefined);
       }
+    } finally {
+      setEmbedBusy(false);
+    }
+  };
+
+  const handleGrab = async () => {
+    if (embedBusy || !onAttachEmbed) return;
+    setEmbedBusy(true);
+    try {
+      await onAttachEmbed();
     } finally {
       setEmbedBusy(false);
     }
@@ -286,8 +300,21 @@ export function EmbeddedStudioPanel({
           </Pill>
 
           <Badge className="border-transparent bg-surface px-1.5 py-0.5 font-mono text-xs text-ink-2">
-            {embedStatus.datamodel_type || playLabel[embedStatus.play_mode]}
+            {embedStatus.place_open === false ? "Start Page" : embedStatus.datamodel_type || playLabel[embedStatus.play_mode]}
           </Badge>
+
+          {embedStatus.place_open === false && onTransferEmbed && studioMode !== "browser_place" && (
+            <Button
+              variant="default"
+              size="xs"
+              disabled={embedBusy}
+              onClick={() => void handleLaunch()}
+              className="max-md:min-h-11"
+            >
+              <Rocket className="size-3" strokeWidth={1.5} aria-hidden />
+              <span>{embedBusy ? "Opening…" : "Embed & Open Project in Studio"}</span>
+            </Button>
+          )}
 
           {lastPointer && (
             <span className="hidden font-mono text-xs text-ink-3 xl:inline">
@@ -544,27 +571,38 @@ export function EmbeddedStudioPanel({
               <h3 className="text-sm font-medium text-ink">
                 {studioMode === "browser_place"
                   ? "Browser mode"
-                  : embedStatus.already_logged_in
-                    ? "Found your logged-in Roblox Studio"
-                    : "Connect Roblox Studio"}
+                  : embedStatus.place_open === false
+                    ? "Studio is on the Start Page"
+                    : embedStatus.already_logged_in
+                      ? "Found your logged-in Roblox Studio"
+                      : "Connect Roblox Studio"}
               </h3>
               <p className="text-xs leading-relaxed text-ink-2">
                 {studioMode === "browser_place"
                   ? "Use 3D Preview, Code, or Ship in browser mode."
-                  : embedStatus.already_logged_in
-                    ? `${embedStatus.running_studios?.[0]?.place_name || "Your open Studio session"} is ready.`
-                    : "Already have Studio open? OpenRO grabs it automatically."}
+                  : embedStatus.place_open === false
+                    ? embedStatus.guidance || "Open your project directly into Edit mode."
+                    : embedStatus.already_logged_in
+                      ? `${embedStatus.running_studios?.[0]?.place_name || "Your open Studio session"} is ready.`
+                      : "Opens your project directly in embedded Roblox Studio."}
               </p>
             </div>
             <div className="flex flex-wrap items-center justify-center gap-2">
-              {studioMode !== "browser_place" && (onAttachEmbed || onLaunchEmbed) && (
+              {studioMode !== "browser_place" && (onTransferEmbed || onAttachEmbed || onLaunchEmbed) && (
                 <Button variant="default" size="sm" disabled={embedBusy} onClick={() => void handleLaunch()} className="max-md:min-h-11">
                   <Rocket className="size-3.5" strokeWidth={1.5} aria-hidden />
                   {embedBusy
-                    ? "Connecting…"
-                    : embedStatus.already_logged_in || embedStatus.studio_running
-                      ? "Grab & Connect"
-                      : "Open My Roblox Studio"}
+                    ? "Opening…"
+                    : onTransferEmbed
+                      ? "Embed & Open Project in Studio"
+                      : embedStatus.already_logged_in || embedStatus.studio_running
+                        ? "Grab & Connect"
+                        : "Open My Roblox Studio"}
+                </Button>
+              )}
+              {studioMode !== "browser_place" && onTransferEmbed && onAttachEmbed && (embedStatus.already_logged_in || embedStatus.studio_running) && embedStatus.place_open !== false && (
+                <Button variant="outline" size="sm" disabled={embedBusy} onClick={() => void handleGrab()} className="max-md:min-h-11">
+                  Grab &amp; Connect
                 </Button>
               )}
               {onOpen3DPreview && (

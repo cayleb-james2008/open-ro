@@ -53,8 +53,9 @@ import {
   type MarketTasteResearchResult,
   type MarketTasteSnapshot,
 } from "./marketTaste";
+import { AdaptersPanel } from "./AdaptersPanel";
 
-type LibraryTab = "installed" | "installable" | "market" | "generators";
+type LibraryTab = "installed" | "installable" | "adapters" | "market" | "generators";
 
 const BLENDER_PRESETS = [
   { id: "torii_gate", label: "Shrine Gate", desc: "Dual-pillar stylized archway scaled to Roblox studs" },
@@ -548,6 +549,14 @@ export function ToolLibraryDialog({
                   Installable Packs ({installablePacks.length})
                 </SegmentedControlItem>
                 <SegmentedControlItem
+                  data-checked={tab === "adapters" ? "" : undefined}
+                  aria-pressed={tab === "adapters"}
+                  onClick={() => setTab("adapters")}
+                  className="max-md:!h-11 max-md:px-2.5"
+                >
+                  Adapters
+                </SegmentedControlItem>
+                <SegmentedControlItem
                   data-checked={tab === "market" ? "" : undefined}
                   aria-pressed={tab === "market"}
                   onClick={() => setTab("market")}
@@ -604,6 +613,8 @@ export function ToolLibraryDialog({
                   ))}
                 </div>
               )}
+
+              {tab === "adapters" && <AdaptersPanel />}
 
               {tab === "market" && activeNiche && (
                 <div data-market-taste-panel className="flex flex-col gap-3">
