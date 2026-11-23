@@ -14,8 +14,35 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
+
+static AGY_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// Serializes every test that reads or mutates `OPENRO_AGY_BIN` and restores the
+/// prior value on drop so parallel tests never leak fake `agy` scripts (#54).
+struct AgyEnvGuard {
+    _lock: MutexGuard<'static, ()>,
+    prev: Option<String>,
+}
+
+impl AgyEnvGuard {
+    fn set(bin: &Path) -> Self {
+        let lock = AGY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("OPENRO_AGY_BIN").ok();
+        std::env::set_var("OPENRO_AGY_BIN", bin);
+        Self { _lock: lock, prev }
+    }
+}
+
+impl Drop for AgyEnvGuard {
+    fn drop(&mut self) {
+        match &self.prev {
+            Some(v) => std::env::set_var("OPENRO_AGY_BIN", v),
+            None => std::env::remove_var("OPENRO_AGY_BIN"),
+        }
+    }
+}
 
 fn scratch(name: &str) -> PathBuf {
     let base = std::env::var("CARGO_TARGET_DIR")
@@ -184,7 +211,7 @@ fn http(port: u16, method: &str, path: &str, body: Option<&str>) -> (u16, Value)
 fn model_picker_endpoints_and_persisted_selection() {
     let dir = scratch("http");
     let bin = fake_agy(&dir, OK_SCRIPT);
-    std::env::set_var("OPENRO_AGY_BIN", &bin);
+    let _env = AgyEnvGuard::set(&bin);
     let data = dir.join("data");
     std::fs::create_dir_all(&data).unwrap();
     let model = ModelClient::new("http://127.0.0.1:1/v1".into(), "m".into(), None);
@@ -246,7 +273,7 @@ fn model_picker_endpoints_and_persisted_selection() {
 fn model_from_config_honours_provider_and_parse_step_is_public() {
     let dir = scratch("cfg");
     let bin = fake_agy(&dir, OK_SCRIPT);
-    std::env::set_var("OPENRO_AGY_BIN", &bin);
+    let _env = AgyEnvGuard::set(&bin);
 
     let cfg = openro_rs::config::RuntimeConfig {
         provider: Some("antigravity".into()),

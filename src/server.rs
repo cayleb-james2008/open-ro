@@ -1023,6 +1023,18 @@ fn sync_agent_project(
                 .and_then(|v| v.as_str())
                 .and_then(|id| resolve_project_dir(&srv, id))
                 .or_else(|| srv.active_project_dir());
+            let data_dir = srv.data_dir.as_deref().unwrap_or(&srv.assets_root);
+            let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+            let actx = crate::tool_adapters::InvokeCtx {
+                data_dir,
+                assets_root: &srv.assets_root,
+                store: &store,
+                project_dir: proj.as_deref(),
+            };
+            let explicit = args.get("adapter_id").and_then(|v| v.as_str());
+            if let Some(res) = crate::tool_adapters::maybe_invoke_override(&actx, "mesh_gen", explicit, args) {
+                return res;
+            }
             if args.get("parts").is_some() || args.get("script").is_some() {
                 crate::mesh::generate_for_project(&srv.assets_root, proj.as_deref(), args, None)
             } else {
@@ -1042,11 +1054,55 @@ fn sync_agent_project(
                 .and_then(|v| v.as_str())
                 .and_then(|id| resolve_project_dir(&srv, id))
                 .or_else(|| srv.active_project_dir());
+            let data_dir = srv.data_dir.as_deref().unwrap_or(&srv.assets_root);
+            let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+            let actx = crate::tool_adapters::InvokeCtx {
+                data_dir,
+                assets_root: &srv.assets_root,
+                store: &store,
+                project_dir: proj.as_deref(),
+            };
+            let explicit = args.get("adapter_id").and_then(|v| v.as_str());
+            if let Some(res) = crate::tool_adapters::maybe_invoke_override(&actx, "audio_gen", explicit, args) {
+                return res;
+            }
             crate::audio_synth::generate_audio_asset_for_project(
                 &srv.assets_root,
                 proj.as_deref(),
                 args,
             )
+        }));
+    }
+    if agent.hooks.adapter_list.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.adapter_list = Some(Arc::new(move |args| {
+            let data_dir = srv.data_dir.as_deref().unwrap_or(&srv.assets_root);
+            let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+            let cap = args.get("capability").and_then(|v| v.as_str());
+            Ok(crate::tool_adapters::AdapterRegistry::load(data_dir).list_json(&store, cap))
+        }));
+    }
+    if agent.hooks.adapter_invoke.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.adapter_invoke = Some(Arc::new(move |args| {
+            let data_dir = srv.data_dir.as_deref().unwrap_or(&srv.assets_root);
+            let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+            let proj = args
+                .get("project")
+                .or_else(|| args.get("project_id"))
+                .and_then(|v| v.as_str())
+                .and_then(|id| resolve_project_dir(&srv, id))
+                .or_else(|| srv.active_project_dir());
+            let cap = args.get("capability").and_then(|v| v.as_str());
+            let id = args.get("adapter_id").and_then(|v| v.as_str());
+            let params = args.get("params").unwrap_or(args);
+            let ctx = crate::tool_adapters::InvokeCtx {
+                data_dir,
+                assets_root: &srv.assets_root,
+                store: &store,
+                project_dir: proj.as_deref(),
+            };
+            crate::tool_adapters::invoke(&ctx, cap, id, params)
         }));
     }
 }
@@ -1331,6 +1387,11 @@ fn handle(
 
     // Open Cloud, shared secrets, reference search, art generation & image processing routes.
     if try_route_opencloud_assets(&mut stream, shared, &req, &path, query) {
+        return Ok(());
+    }
+
+    // Universal Anything-to-API / Anything-to-CLI tool adapter registry routes (#52).
+    if try_route_tool_adapters(&mut stream, shared, &req, &path, query) {
         return Ok(());
     }
 
@@ -4234,6 +4295,58 @@ fn try_route_opencloud_assets(
     true
 }
 
+fn try_route_tool_adapters(
+    stream: &mut TcpStream,
+    shared: &Shared,
+    req: &Request,
+    path: &str,
+    query: &str,
+) -> bool {
+    if path != "/api/adapters" && !path.starts_with("/api/adapters/") {
+        return false;
+    }
+    if !host_allowed(&req.host, &[]) {
+        respond_json(
+            stream,
+            "403 Forbidden",
+            &json!({ "ok": false, "error": "tool adapters are only allowed from this machine (loopback)" }),
+        );
+        return true;
+    }
+    let body: Value = if req.body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+                return true;
+            }
+        }
+    };
+    let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+    let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+    let resolver = |id: &str| resolve_project_dir(shared, id);
+    let rctx = crate::tool_adapters::RouteCtx {
+        data_dir,
+        assets_root: &shared.assets_root,
+        store: &store,
+        project_resolver: &resolver,
+        active_project: shared.active_project_dir(),
+    };
+    let Some((code, val)) = crate::tool_adapters::route(
+        &rctx,
+        &req.method,
+        path,
+        query,
+        &body,
+    ) else {
+        return false;
+    };
+    respond_json(stream, status_line_for_code(code), &val);
+    true
+}
+
 fn handle_studio_mcp_connect(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
         respond_json(
@@ -6274,7 +6387,18 @@ fn handle_tools_blender_generate(stream: &mut TcpStream, shared: &Shared, req: &
         .and_then(|v| v.as_str())
         .and_then(|id| resolve_project_dir(shared, id))
         .or_else(|| shared.active_project_dir());
-    let result = if body.get("parts").is_some() || body.get("script").is_some() {
+    let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+    let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+    let actx = crate::tool_adapters::InvokeCtx {
+        data_dir,
+        assets_root: &shared.assets_root,
+        store: &store,
+        project_dir: project_root.as_deref(),
+    };
+    let explicit = body.get("adapter_id").and_then(|v| v.as_str());
+    let result = if let Some(res) = crate::tool_adapters::maybe_invoke_override(&actx, "mesh_gen", explicit, &body) {
+        res
+    } else if body.get("parts").is_some() || body.get("script").is_some() {
         crate::mesh::generate_for_project(
             &shared.assets_root,
             project_root.as_deref(),
@@ -6319,11 +6443,25 @@ fn handle_tools_audio_generate(stream: &mut TcpStream, shared: &Shared, req: &Re
         .and_then(|v| v.as_str())
         .and_then(|id| resolve_project_dir(shared, id))
         .or_else(|| shared.active_project_dir());
-    match crate::audio_synth::generate_audio_asset_for_project(
-        &shared.assets_root,
-        project_root.as_deref(),
-        &body,
-    ) {
+    let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+    let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+    let actx = crate::tool_adapters::InvokeCtx {
+        data_dir,
+        assets_root: &shared.assets_root,
+        store: &store,
+        project_dir: project_root.as_deref(),
+    };
+    let explicit = body.get("adapter_id").and_then(|v| v.as_str());
+    let result = if let Some(res) = crate::tool_adapters::maybe_invoke_override(&actx, "audio_gen", explicit, &body) {
+        res
+    } else {
+        crate::audio_synth::generate_audio_asset_for_project(
+            &shared.assets_root,
+            project_root.as_deref(),
+            &body,
+        )
+    };
+    match result {
         Ok(v) => respond_json(stream, "200 OK", &v),
         Err(e) => respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e })),
     }
