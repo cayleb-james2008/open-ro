@@ -141,8 +141,13 @@ fn project_of(shared: &Shared, id: &str) -> Result<ProjectRef, Reply> {
 }
 
 /// Auto-open / transfer a project's `.rbxlx` into Embedded Studio before `sync` / `playtest`
-/// when `auto_open` is `true` (default) and Studio is installed & signed in without an open place (#51).
-fn ensure_studio_place_open(shared: &Arc<Shared>, r: &ProjectRef, b: &Value) {
+/// when `auto_open` is `true` (default) and Studio is installed & signed in without an open place (#51, #57).
+pub(crate) fn ensure_studio_place_open_for_dir(
+    shared: &Arc<Shared>,
+    project_id: &str,
+    project_dir: &Path,
+    b: &Value,
+) {
     let auto_open = b.get("auto_open").and_then(|v| v.as_bool()).unwrap_or(true);
     if !auto_open {
         return;
@@ -207,21 +212,22 @@ fn ensure_studio_place_open(shared: &Arc<Shared>, r: &ProjectRef, b: &Value) {
     if !det.studio_installed || (!det.already_logged_in && !det.studio_running) {
         return;
     }
-    let rbxlx = projects::builds(&r.dir)
+    let rbxlx = projects::builds(project_dir)
         .into_iter()
         .find_map(|rec| {
             let rel = rec.get("path")?.as_str()?;
-            let full = projects::safe_join(&r.dir, rel).ok()?;
+            let full = projects::safe_join(project_dir, rel).ok()?;
             full.is_file().then_some(full)
         })
         .or_else(|| {
-            projects::build(&r.dir, "auto", None).ok().and_then(|rec| {
+            projects::build(project_dir, "auto", None).ok().and_then(|rec| {
                 let rel = rec.get("path")?.as_str()?;
-                projects::safe_join(&r.dir, rel).ok()
+                projects::safe_join(project_dir, rel).ok()
             })
         })
         .or_else(|| {
-            crate::studio_embed::ensure_blank_baseplate_rbxlx(&r.dir.join("build"), &r.id).ok()
+            crate::studio_embed::ensure_blank_baseplate_rbxlx(&project_dir.join("build"), project_id)
+                .ok()
         });
     let _ = crate::server::perform_studio_embed_transfer(
         shared,
@@ -232,6 +238,10 @@ fn ensure_studio_place_open(shared: &Arc<Shared>, r: &ProjectRef, b: &Value) {
             ..Default::default()
         },
     );
+}
+
+pub(crate) fn ensure_studio_place_open(shared: &Arc<Shared>, r: &ProjectRef, b: &Value) {
+    ensure_studio_place_open_for_dir(shared, &r.id, &r.dir, b);
 }
 
 /// `Some(reply)` when this table owns the request.
