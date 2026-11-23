@@ -1870,3 +1870,219 @@ fn embed_transfer_and_sync_auto_open_against_mock_studio() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn project_format_and_check_auto_format_gap_56() {
+    let root = temp_dir("format-gap56");
+    let ws = root.join("workspace");
+    let data = root.join("data");
+    std::fs::create_dir_all(&ws).unwrap();
+    let port = start_server(None, data);
+
+    let (code, _) = api_json(
+        port,
+        "POST",
+        "/api/projects/workspace",
+        Some(json!({ "path": ws.to_string_lossy() })),
+    );
+    assert_eq!(code, 200);
+
+    let (code, created) = api_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(json!({ "name": "Format Demo", "parent": ws.to_string_lossy() })),
+    );
+    assert_eq!(code, 201);
+    let id = created["project"]["id"].as_str().unwrap().to_string();
+    let proj_dir = PathBuf::from(created["project"]["path"].as_str().unwrap());
+    std::fs::create_dir_all(proj_dir.join(".openro")).unwrap();
+
+    // Non-loopback host refused on /format
+    let (code, _, _) = http_req(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/format"),
+        "evil.example.com",
+        Some("{}"),
+    );
+    assert_eq!(code, 403);
+
+    // Write two intentionally misformatted (but semantically valid) Luau scripts
+    let messy_a = "local   x={1,2,3}\nreturn   x\n";
+    let messy_b = "local   y={4,5,6}\nreturn   y\n";
+    let (code, _) = api_json(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/file"),
+        Some(json!({ "path": "src/shared/MessyA.luau", "content": messy_a })),
+    );
+    assert_eq!(code, 200);
+    let (code, _) = api_json(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/file"),
+        Some(json!({ "path": "src/shared/MessyB.luau", "content": messy_b })),
+    );
+    assert_eq!(code, 200);
+
+    // Empty body on /check stays backward-compatible (format defaults to false)
+    let (code, _, bytes) = http_req(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/check"),
+        &format!("127.0.0.1:{port}"),
+        None,
+    );
+    assert_eq!(code, 200);
+    let chk0: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(chk0["ok"], json!(true));
+    assert_eq!(chk0["formatted"], json!(false));
+    assert!(chk0.get("format").is_none());
+    assert_eq!(chk0["luau"]["passed"], json!(true), "luau failed: {chk0}");
+    assert_eq!(chk0["selene"]["passed"], json!(true), "selene failed: {chk0}");
+
+    let has_stylua = projects::find_tool("stylua", "OPENRO_STYLUA").is_some();
+    if has_stylua {
+        assert_eq!(chk0["stylua"]["passed"], json!(false), "expected unformatted failure: {chk0}");
+        assert_eq!(chk0["passed"], json!(false));
+    }
+
+    // Fail-closed validation on bad options & path escapes
+    let (code, _) = api_json(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/check"),
+        Some(json!({ "format": "yes" })),
+    );
+    assert_eq!(code, 400);
+    let (code, _) = api_json(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/check"),
+        Some(json!({ "format": true, "paths": 123 })),
+    );
+    assert_eq!(code, 400);
+    let (code, _) = api_json(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/check"),
+        Some(json!({ "format": true, "paths": ["../escape.luau"] })),
+    );
+    assert_eq!(code, 400);
+
+    for bad_path in [
+        "../escape.luau",
+        "/etc/passwd",
+        "--check",
+        "openro.project.json",
+        "src/shared/DoesNotExist.luau",
+        ".openro",
+    ] {
+        let (code, body) = api_json(
+            port,
+            "POST",
+            &format!("/api/projects/{id}/format"),
+            Some(json!({ "paths": [bad_path] })),
+        );
+        assert_eq!(code, 400, "expected 400 for '{bad_path}', got {body}");
+    }
+
+    // Scoped POST /api/projects/{id}/format formats ONLY MessyA.luau, leaving MessyB.luau untouched
+    let (code, fmt_a) = api_json(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/format"),
+        Some(json!({ "paths": ["src/shared/MessyA.luau"] })),
+    );
+    assert_eq!(code, 200, "scoped format failed: {fmt_a}");
+    assert_eq!(fmt_a["ok"], json!(true));
+    assert_eq!(fmt_a["targets"], json!(["src/shared/MessyA.luau"]));
+    assert!(fmt_a.get("duration_ms").is_some());
+    assert!(fmt_a.get("stdout").is_some());
+    assert!(fmt_a.get("stderr").is_some());
+
+    if has_stylua {
+        assert_eq!(fmt_a["available"], json!(true));
+        assert_eq!(fmt_a["formatted"], json!(true));
+        assert_eq!(fmt_a["exit_code"], json!(0));
+
+        let a_after = std::fs::read_to_string(proj_dir.join("src/shared/MessyA.luau")).unwrap();
+        let b_after = std::fs::read_to_string(proj_dir.join("src/shared/MessyB.luau")).unwrap();
+        assert_eq!(a_after, "local x = { 1, 2, 3 }\nreturn x\n");
+        assert_eq!(b_after, messy_b, "MessyB.luau should remain untouched by scoped format");
+
+        // Regular check still catches unformatted MessyB.luau
+        let (code, chk_mid) = api_json(
+            port,
+            "POST",
+            &format!("/api/projects/{id}/check"),
+            Some(json!({})),
+        );
+        assert_eq!(code, 200);
+        assert_eq!(chk_mid["formatted"], json!(false));
+        assert_eq!(chk_mid["stylua"]["passed"], json!(false));
+        assert_eq!(chk_mid["passed"], json!(false));
+    }
+
+    // POST /api/projects/{id}/check with { format: true } formats remaining scripts before checks
+    let (code, chk_fmt) = api_json(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/check"),
+        Some(json!({ "format": true })),
+    );
+    assert_eq!(code, 200, "check with format:true failed: {chk_fmt}");
+    assert_eq!(chk_fmt["ok"], json!(true));
+    assert!(chk_fmt.get("format").is_some());
+    assert_eq!(chk_fmt["format"]["targets"], json!(["src"]));
+    assert_eq!(chk_fmt["luau"]["passed"], json!(true), "luau failed: {chk_fmt}");
+    assert_eq!(chk_fmt["selene"]["passed"], json!(true), "selene failed: {chk_fmt}");
+    assert_eq!(chk_fmt["stylua"]["passed"], json!(true), "stylua failed: {chk_fmt}");
+    assert_eq!(chk_fmt["passed"], json!(true), "overall check failed: {chk_fmt}");
+
+    if has_stylua {
+        assert_eq!(chk_fmt["formatted"], json!(true));
+        assert_eq!(chk_fmt["format"]["available"], json!(true));
+        assert_eq!(chk_fmt["format"]["formatted"], json!(true));
+        assert_eq!(chk_fmt["format"]["exit_code"], json!(0));
+        let b_formatted = std::fs::read_to_string(proj_dir.join("src/shared/MessyB.luau")).unwrap();
+        assert_eq!(b_formatted, "local y = { 4, 5, 6 }\nreturn y\n");
+    }
+
+    // Empty body on POST /api/projects/{id}/format formats default luau_target_dirs
+    let (code, _, bytes) = http_req(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/format"),
+        &format!("127.0.0.1:{port}"),
+        None,
+    );
+    assert_eq!(code, 200);
+    let fmt_all: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(fmt_all["ok"], json!(true));
+    assert_eq!(fmt_all["targets"], json!(["src"]));
+    if has_stylua {
+        assert_eq!(fmt_all["formatted"], json!(true));
+    }
+
+    // Direct Rust library hooks used by openro-team (#56)
+    let direct_chk = projects::check_project(&proj_dir).unwrap();
+    assert_eq!(direct_chk["formatted"], json!(false));
+    assert_eq!(direct_chk["passed"], json!(true));
+
+    let direct_opt = projects::check_project_with_options(
+        &proj_dir,
+        true,
+        Some(&["src/shared".to_string()]),
+    )
+    .unwrap();
+    assert_eq!(direct_opt["format"]["targets"], json!(["src/shared"]));
+    assert_eq!(direct_opt["passed"], json!(true));
+    if has_stylua {
+        assert_eq!(direct_opt["formatted"], json!(true));
+    }
+    assert!(projects::format_project(&proj_dir, Some(&["../outside.luau".to_string()])).is_err());
+
+    let _ = std::fs::remove_dir_all(&root);
+}

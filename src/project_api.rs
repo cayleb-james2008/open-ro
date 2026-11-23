@@ -94,6 +94,23 @@ fn parse_body(body: &[u8]) -> Result<Value, Reply> {
     serde_json::from_slice(body).map_err(|_| Reply::bad("the request body is not valid JSON"))
 }
 
+fn parse_format_paths(b: &Value) -> Result<Option<Vec<String>>, Reply> {
+    match b.get("paths") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(arr)) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for item in arr {
+                let s = item
+                    .as_str()
+                    .ok_or_else(|| Reply::bad("paths must be an array of strings"))?;
+                out.push(s.to_string());
+            }
+            Ok(Some(out))
+        }
+        Some(_) => Err(Reply::bad("paths must be an array of strings")),
+    }
+}
+
 /// Run `f` against the connected Studio MCP bridge.
 pub fn with_studio<T>(shared: &Shared, f: impl FnOnce(&mut McpClient) -> Result<T, String>) -> Result<T, Reply> {
     let mut guard = shared.agent.lock().unwrap();
@@ -231,7 +248,7 @@ pub fn route(shared: &Arc<Shared>, method: &str, full_path: &str, body: &[u8], l
         ("GET", [])
             | ("POST", ["workspace"] | ["workspace", "remove"] | ["create"] | ["open"])
             | ("GET", [_])
-            | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "run-lune" | "open-in-studio"])
+            | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "format" | "run-lune" | "open-in-studio"])
             | ("POST", [_, "sync", "diff"])
             | ("GET", [_, "builds" | "playtests" | "files" | "file" | "preview"])
             | ("POST", [_, "file"] | [_, "file", "delete"] | [_, "file", "edit"])
@@ -310,8 +327,24 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
         }
         ("POST", [id, "check"]) => {
             let r = project_of(shared, id)?;
+            let b = parse_body(body)?;
+            let format = match b.get("format") {
+                None | Some(Value::Null) => false,
+                Some(Value::Bool(v)) => *v,
+                Some(_) => return Err(Reply::bad("format must be a boolean")),
+            };
+            let paths = parse_format_paths(&b)?;
             let _busy = Busy::new(&shared.busy);
-            let res = projects::check_project(&r.dir).map_err(Reply::bad)?;
+            let res = projects::check_project_with_options(&r.dir, format, paths.as_deref())
+                .map_err(Reply::bad)?;
+            Ok(Reply::ok(res))
+        }
+        ("POST", [id, "format"]) => {
+            let r = project_of(shared, id)?;
+            let b = parse_body(body)?;
+            let paths = parse_format_paths(&b)?;
+            let _busy = Busy::new(&shared.busy);
+            let res = projects::format_project(&r.dir, paths.as_deref()).map_err(Reply::bad)?;
             Ok(Reply::ok(res))
         }
         ("POST", [id, "run-lune"]) => {
