@@ -2911,7 +2911,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
         _ => concat!(
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `luau_check`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `assets_codegen`, `assets_upload`.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `luau_check`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `assets_codegen`, `assets_upload`.\n",
             "Asset arg signatures:\n",
             "- reference_search: {\"character\":\"...\",\"show\":\"...\",\"card_id\":\"...\"}\n",
             "- art_generate: {\"prompt\":\"single-line eye-level three-quarter prompt\",\"out_path\":\"art/cards/x/art.png\",\"references\":[\"art/references/...\"]}\n",
@@ -3287,6 +3287,29 @@ fn execute_agent_tool(
             Ok(res)
         }
         "assets_upload" => run_opencloud_route(shared, handle, "POST", "/api/projects/active/assets/upload", args),
+        "adapter_list" => {
+            let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+            let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+            let cap = args.get("capability").and_then(Value::as_str);
+            Ok(crate::tool_adapters::AdapterRegistry::load(data_dir).list_json(&store, cap))
+        }
+        "adapter_invoke" => {
+            let project_dir = handle.state.lock().unwrap().project_dir.clone();
+            let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+            let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+            let cap = args.get("capability").and_then(Value::as_str);
+            let id = args.get("adapter_id").and_then(Value::as_str);
+            let params = args.get("params").unwrap_or(args);
+            let ctx = crate::tool_adapters::InvokeCtx {
+                data_dir,
+                assets_root: &shared.assets_root,
+                store: &store,
+                project_dir: Some(&project_dir),
+            };
+            let res = crate::tool_adapters::invoke(&ctx, cap, id, params)?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
         other => Err(format!("unknown Teamwork tool '{other}'")),
     }
 }
@@ -4633,6 +4656,10 @@ fn collect_generated_asset_paths(tool: &str, res: &Value) -> Vec<String> {
             push_str(&mut raw, res.get("meta_path").and_then(Value::as_str));
             raw.push("art/ART-LOG.jsonl".to_string());
         }
+        "adapter_invoke" => {
+            push_str(&mut raw, res.pointer("/result/path").and_then(Value::as_str));
+            push_str(&mut raw, res.get("path").and_then(Value::as_str));
+        }
         _ => {}
     }
     raw
@@ -4675,6 +4702,17 @@ fn tool_blender_generate(
 ) -> Result<Value, String> {
     let project_dir = handle.state.lock().unwrap().project_dir.clone();
     let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+    let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+    let actx = crate::tool_adapters::InvokeCtx {
+        data_dir,
+        assets_root: &shared.assets_root,
+        store: &store,
+        project_dir: Some(&project_dir),
+    };
+    let explicit = args.get("adapter_id").and_then(Value::as_str);
+    if let Some(res) = crate::tool_adapters::maybe_invoke_override(&actx, "mesh_gen", explicit, args) {
+        return res;
+    }
     crate::mesh::generate_for_project(data_dir, Some(&project_dir), args, None)
 }
 
@@ -4685,6 +4723,17 @@ fn tool_audio_generate(
 ) -> Result<Value, String> {
     let project_dir = handle.state.lock().unwrap().project_dir.clone();
     let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+    let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+    let actx = crate::tool_adapters::InvokeCtx {
+        data_dir,
+        assets_root: &shared.assets_root,
+        store: &store,
+        project_dir: Some(&project_dir),
+    };
+    let explicit = args.get("adapter_id").and_then(Value::as_str);
+    if let Some(res) = crate::tool_adapters::maybe_invoke_override(&actx, "audio_gen", explicit, args) {
+        return res;
+    }
     crate::audio_synth::generate_audio_asset_for_project(data_dir, Some(&project_dir), args)
 }
 

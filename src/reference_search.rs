@@ -16,8 +16,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub const DEFAULT_SHARED_BROWSER_PY: &str =
-    "/home/cayleb/Work/services/shared-browser/.venv/bin/python";
 const DEFAULT_QUALIFIERS: &str = "anime action battle scene dynamic pose";
 const MAX_CANDIDATES: usize = 12;
 const MAX_CANDIDATE_BYTES: usize = 10 * 1024 * 1024;
@@ -445,15 +443,17 @@ fn fetch_candidates_via_browser(
             .arg(cand_dir.to_string_lossy().as_ref());
         c
     } else {
-        let py = std::env::var("OPENRO_SHARED_BROWSER_PY")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| DEFAULT_SHARED_BROWSER_PY.to_string());
-        if !Path::new(&py).is_file() {
+        let py = crate::tool_adapters::resolve_shared_browser_python().ok_or_else(|| Oc {
+            status: 503,
+            msg: "Shared browser Python not found. Install shared-browser, configure a custom reference_search adapter, or pass reference images directly.".into(),
+        })?;
+        if !py.is_file() {
             return err(
                 503,
-                format!("Shared browser Python not found at {py}. Install shared-browser or pass reference images directly."),
+                format!(
+                    "Shared browser Python not found at {}. Install shared-browser or pass reference images directly.",
+                    py.display()
+                ),
             );
         }
         let mut c = Command::new(py);
