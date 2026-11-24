@@ -798,3 +798,146 @@ esac
         "expected file-scoped pattern/path grep match in transcript:\n{joined}"
     );
 }
+
+#[test]
+fn gap63b_agent_study_ledger_tools_and_workflow_prompt() {
+    // 1. Prompts surface Study -> Build -> Check -> Refine + all 7 tools while staying lean (<7 KB).
+    let psp = project_system_prompt();
+    let sp = openro_rs::agent::system_prompt();
+    for prompt in [&psp, &sp] {
+        assert!(prompt.contains("Study -> Build -> Check -> Refine"));
+        for tool in [
+            "evidence_record",
+            "evidence_list",
+            "unknown_add",
+            "unknown_update",
+            "unknowns_list",
+            "mechanics_check",
+            "study_status",
+        ] {
+            assert!(prompt.contains(tool), "prompt missing tool {tool}");
+        }
+    }
+    assert!(psp.len() < 7_000, "project_system_prompt exceeded lean 7 KB cap: {}", psp.len());
+
+    // 2. End-to-end Agent run exercising all 7 study_check tools (including fail-closed unknown resolve).
+    let dir = scratch("gap63b");
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(proj.join("docs")).unwrap();
+    std::fs::write(
+        proj.join("default.project.json"),
+        r#"{"name":"G63B","tree":{"$className":"DataModel"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("openro.project.json"),
+        r#"{"name":"G63B","slug":"g63b","clean_room":true}"#,
+    )
+    .unwrap();
+
+    // Fake agy script reads Turn 1 tool results from `-p` to extract real `ev_*` and `unk_*` IDs!
+    let script_path = dir.join("agy_g63b.py");
+    std::fs::write(
+        &script_path,
+        format!(
+            r#"#!/usr/bin/env python3
+import json, pathlib, re, sys
+
+_ = sys.stdin.read() if not sys.stdin.isatty() else ""
+args = sys.argv[1:]
+prompt = args[args.index("-p") + 1] if "-p" in args else ""
+count_file = pathlib.Path({count:?})
+n = int(count_file.read_text().strip()) + 1 if count_file.exists() else 1
+count_file.write_text(str(n))
+
+def emit(obj):
+    print(json.dumps({{"event": "result", "result": {{"status": "SUCCESS", "response": json.dumps(obj)}}}}))
+
+if n == 1:
+    emit({{
+        "steps": [
+            {{"tool": "evidence_record", "args": {{"summary": "Observed pity triggers at roll 50 in live test", "confidence": "observed", "kind": "self_test", "source": "tools/sim.luau"}}}},
+            {{"tool": "unknown_add", "args": {{"title": "Pity threshold", "question": "Does pity trigger at roll 50?", "severity": "high", "domain": "mechanics"}}}},
+            {{"tool": "evidence_list", "args": {{"confidence": "observed", "limit": 10}}}},
+            {{"tool": "unknowns_list", "args": {{"status": "open"}}}}
+        ]
+    }})
+elif n == 2:
+    unk_id = re.search(r"unk_[0-9a-f]{{16}}", prompt).group(0)
+    # Fail-closed check: resolving without evidence_for must return an error!
+    emit({{
+        "tool": "unknown_update",
+        "args": {{"id": unk_id, "expected_revision": 1, "status": "resolved", "resolution": "guessed without proof"}}
+    }})
+else:
+    ev_id = re.search(r"ev_[0-9a-f]{{16}}", prompt).group(0)
+    unk_id = re.search(r"unk_[0-9a-f]{{16}}", prompt).group(0)
+    mech = json.dumps({{
+        "mechanics": [
+            {{"name": "PityGuarantee", "status": "sourced", "evidence_id": ev_id, "verified_runtime": True}},
+            {{"name": "BannerCost", "status": "estimated", "config_path": "Config.luau", "config_value": 100}}
+        ]
+    }})
+    emit({{
+        "steps": [
+            {{"tool": "unknown_update", "args": {{"id": unk_id, "expected_revision": 1, "status": "resolved", "resolution": "Confirmed at roll 50 via observed self-test", "evidence_for": [ev_id]}}}},
+            {{"tool": "project_write_file", "args": {{"path": "docs/mechanics.json", "content": mech}}}},
+            {{"tool": "mechanics_check", "args": {{"path": "docs/mechanics.json", "strict": False}}}},
+            {{"tool": "study_status", "args": {{}}}}
+        ],
+        "done": True,
+        "summary": "Recorded evidence, resolved unknown with proof, checked mechanics, and verified study status."
+    }})
+"#,
+            count = dir.join("count.txt").to_string_lossy(),
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let model = ModelClient::antigravity(None)
+        .with_agy_bin(script_path)
+        .with_agy_dir(dir.join("sb"));
+    let mut agent = Agent::with_local_place(model, LocalPlace::in_memory("G63B".into()));
+    agent.set_project(Some(proj.clone()), Some("g63b".into()));
+
+    let outcome = agent
+        .run_ask_with_options(
+            "g63b-chat",
+            "Run a full Study -> Build -> Check -> Refine pass on mechanics.",
+            AskOptions {
+                mode: AskMode::Agent,
+                ..Default::default()
+            },
+        )
+        .expect("agent study run should succeed");
+
+    assert!(outcome.changed);
+    let transcript = outcome.transcript.join("\n");
+    assert!(transcript.contains("tool evidence_record -> ev_"), "{transcript}");
+    assert!(transcript.contains("tool evidence_list -> matched=1"), "{transcript}");
+    assert!(transcript.contains("tool unknown_add -> unk_"), "{transcript}");
+    assert!(transcript.contains("tool unknowns_list -> open=1"), "{transcript}");
+    // Turn 2 fail-closed rejection must appear as a tool error before Turn 3 succeeds with evidence_for!
+    assert!(
+        transcript.contains("tool error:") && transcript.contains("evidence_for"),
+        "expected fail-closed unknown_update rejection in transcript:\n{transcript}"
+    );
+    assert!(transcript.contains("-> resolved"), "{transcript}");
+    assert!(transcript.contains("tool mechanics_check -> passed=true"), "{transcript}");
+    assert!(transcript.contains("tool study_status -> stage="), "{transcript}");
+
+    // Confirm final on-disk ledger state via study_check::study_status.
+    let status = openro_rs::study_check::study_status(&proj).expect("study_status");
+    assert_eq!(status["clean_room"], true);
+    assert_eq!(status["evidence"]["observed"], 1);
+    assert_eq!(status["unknowns"]["open_count"], 0);
+    assert_eq!(status["unknowns"]["resolved"], 1);
+    assert_eq!(status["mechanics"]["found"], true);
+    assert_eq!(status["mechanics"]["counts"]["sourced"], 1);
+    assert_eq!(status["mechanics"]["counts"]["config_only_warnings"], 1);
+}
