@@ -5,14 +5,7 @@ local Workspace = game:GetService("Workspace")
 local Theme = require(script.Parent:WaitForChild("Theme"))
 local Components = require(script.Parent:WaitForChild("Components"))
 
-export type HudCallbacks = {
-	onRoll: () -> (),
-	onToggleAuto: () -> (),
-	onToggleFast: () -> (),
-	onOpenDeck: () -> (),
-	onOpenBattle: () -> (),
-	onOpenSettings: () -> (),
-}
+local Hud = {}
 
 export type HudState = {
 	yen: number,
@@ -32,15 +25,37 @@ export type HudState = {
 	deckCount: number,
 	deckMax: number,
 	rollStatusText: string?,
+	selectedWorld: number?,
+	bannerName: string?,
+	weatherText: string?,
+}
+
+export type HudCallbacks = {
+	onRoll: () -> (),
+	onToggleAuto: () -> (),
+	onToggleFast: () -> (),
+	onOpenDeck: () -> (),
+	onOpenBattle: () -> (),
+	onOpenSettings: () -> (),
+	onOpenShop: (() -> ())?,
+	onCycleWorld: (() -> ())?,
+	onOpenTower: (() -> ())?,
+	onOpenRaid: (() -> ())?,
+	onOpenWorldBoss: (() -> ())?,
+	onOpenRanked: (() -> ())?,
+	onOpenRebirth: (() -> ())?,
+	onOpenCharms: (() -> ())?,
+	onOpenQuests: (() -> ())?,
+	onOpenIndex: (() -> ())?,
+	onOpenLeaderboards: (() -> ())?,
 }
 
 export type HudController = {
 	update: (state: HudState) -> (),
 	setVisible: (visible: boolean) -> (),
+	closeModesDrawer: () -> (),
 	destroy: () -> (),
 }
-
-local Hud = {}
 
 function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 	local root = Instance.new("Frame")
@@ -50,222 +65,206 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 	root.ZIndex = 5
 	root.Parent = parent
 
-	local hudScale = Instance.new("UIScale")
-	hudScale.Name = "ResponsiveScale"
-	hudScale.Scale = 1
-	hudScale.Parent = root
+	local uiScale = Instance.new("UIScale")
+	uiScale.Scale = 1
+	uiScale.Parent = root
 
-	local viewportConn: RBXScriptConnection? = nil
-	local cameraConn: RBXScriptConnection? = nil
-
-	local layoutUpdater: ((viewportX: number) -> ())? = nil
+	local layoutUpdater: ((viewportX: number) -> ())?
 
 	local function applyViewportScale()
 		local cam = Workspace.CurrentCamera
 		if not cam then
 			return
 		end
-		local viewport = cam.ViewportSize
-		if viewport.X <= 0 then
-			return
-		end
-		-- Keep UIScale at 1.0 across mobile and desktop so touch targets never shrink below 44px
-		hudScale.Scale = 1
-		root.Size = UDim2.fromScale(1, 1)
+		local vx = cam.ViewportSize.X
+		uiScale.Scale = 1
 		if layoutUpdater then
-			layoutUpdater(viewport.X)
+			layoutUpdater(vx)
 		end
 	end
-
-	local function bindCamera(cam: Camera?)
-		if viewportConn then
-			viewportConn:Disconnect()
-			viewportConn = nil
-		end
-		if cam then
-			viewportConn = cam:GetPropertyChangedSignal("ViewportSize"):Connect(applyViewportScale)
-			applyViewportScale()
-		end
+	local cam = Workspace.CurrentCamera
+	if cam then
+		cam:GetPropertyChangedSignal("ViewportSize"):Connect(applyViewportScale)
 	end
 
-	cameraConn = Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
-		bindCamera(Workspace.CurrentCamera)
-	end)
-	bindCamera(Workspace.CurrentCamera)
-
-	root.Destroying:Connect(function()
-		if viewportConn then
-			viewportConn:Disconnect()
-			viewportConn = nil
-		end
-		if cameraConn then
-			cameraConn:Disconnect()
-			cameraConn = nil
-		end
-	end)
-
-	-- Top-left resource stack (Currencies + Luck chip + Next Goal banner)
+	-- Top-left resource stack
 	local topLeft = Instance.new("Frame")
-	topLeft.Name = "TopLeftStack"
-	topLeft.Size = UDim2.fromOffset(330, 128)
+	topLeft.Name = "TopLeft"
+	topLeft.Size = UDim2.fromOffset(340, 174)
 	topLeft.Position = UDim2.fromOffset(12, 10)
 	topLeft.BackgroundTransparency = 1
 	topLeft.ZIndex = 6
 	topLeft.Parent = root
 
 	local topLeftLayout = Instance.new("UIListLayout")
-	topLeftLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	topLeftLayout.FillDirection = Enum.FillDirection.Vertical
 	topLeftLayout.Padding = UDim.new(0, 6)
+	topLeftLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	topLeftLayout.Parent = topLeft
 
 	local currencyRow = Instance.new("Frame")
 	currencyRow.Name = "CurrencyRow"
-	currencyRow.LayoutOrder = 1
-	currencyRow.Size = UDim2.new(1, 0, 0, 38)
+	currencyRow.Size = UDim2.new(1, 0, 0, 36)
 	currencyRow.BackgroundTransparency = 1
+	currencyRow.LayoutOrder = 1
 	currencyRow.ZIndex = 6
 	currencyRow.Parent = topLeft
 
 	local currencyLayout = Instance.new("UIListLayout")
 	currencyLayout.FillDirection = Enum.FillDirection.Horizontal
-	currencyLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	currencyLayout.Padding = UDim.new(0, 6)
+	currencyLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	currencyLayout.Parent = currencyRow
 
 	local themedPills: { Frame } = {}
 	local themedTexts: { TextLabel } = {}
 
-	local function makePill(order: number, name: string, tag: string, accent: Color3, width: number): (Frame, TextLabel)
-		local palette = Theme.getPalette()
-		local pill = Instance.new("Frame")
-		pill.Name = name
+	local function makeCurrencyPill(name: string, order: number, width: number, textColor: Color3): (Frame, TextLabel)
+		local pill = Components.makePanel(currencyRow, name, UDim2.fromOffset(width, 36), UDim2.fromOffset(0, 0), 10)
 		pill.LayoutOrder = order
-		pill.Size = UDim2.fromOffset(width, 36)
-		pill.BackgroundColor3 = palette.bgPanel
-		pill.BorderSizePixel = 0
-		pill.ZIndex = 6
-		pill.Parent = currencyRow
-		Components.addCorner(pill, 10)
-		Components.addStroke(pill, palette.border, 1.5, 0.15)
-
-		local dot = Instance.new("Frame")
-		dot.Name = "Dot"
-		dot.Size = UDim2.fromOffset(10, 10)
-		dot.Position = UDim2.new(0, 10, 0.5, -5)
-		dot.BackgroundColor3 = accent
-		dot.BorderSizePixel = 0
-		dot.ZIndex = 7
-		dot.Parent = pill
-		Components.addCorner(dot, 5)
-
+		pill.ZIndex = 7
 		local lbl = Components.makeLabel(
 			pill,
 			"Value",
-			tag .. " 0",
-			UDim2.new(1, -28, 1, 0),
-			UDim2.fromOffset(24, 0),
-			Theme.FONT_MONO,
-			13,
-			palette.textPrimary,
-			Enum.TextXAlignment.Left
+			"0",
+			UDim2.new(1, -12, 1, 0),
+			UDim2.fromOffset(6, 0),
+			Theme.FONT_NUM,
+			12,
+			textColor,
+			Enum.TextXAlignment.Center
 		)
-		lbl.ZIndex = 7
-
+		lbl.ZIndex = 8
 		table.insert(themedPills, pill)
-		table.insert(themedTexts, lbl)
 		return pill, lbl
 	end
 
-	local yenPill, yenLabel = makePill(1, "YenPill", "YEN", Theme.getPalette().accentGold, 114)
-	local gemsPill, gemsLabel = makePill(2, "GemsPill", "GEMS", Theme.getPalette().accentBlue, 100)
-	local ticketsPill, ticketsLabel = makePill(3, "TicketsPill", "TIX", Theme.getPalette().accentPurple, 88)
+	local yenPill, yenLabel = makeCurrencyPill("YenPill", 1, 114, Theme.getPalette().accentGold)
+	local gemsPill, gemsLabel = makeCurrencyPill("GemsPill", 2, 102, Theme.getPalette().accentBlue)
+	local ticketsPill, ticketsLabel = makeCurrencyPill("TicketsPill", 3, 94, Theme.getPalette().accentPurple)
 
-	local luckChip = Instance.new("Frame")
-	luckChip.Name = "LuckChip"
-	luckChip.LayoutOrder = 2
-	luckChip.Size = UDim2.new(1, 0, 0, 32)
-	luckChip.BackgroundColor3 = Theme.getPalette().bgPanel
-	luckChip.BorderSizePixel = 0
-	luckChip.ZIndex = 6
-	luckChip.Parent = topLeft
-	Components.addCorner(luckChip, 8)
-	Components.addStroke(luckChip, Theme.getPalette().accentGreen, 1.5, 0.35)
-	table.insert(themedPills, luckChip)
+	-- Row 2: Luck + Weather chips
+	local chipsRow = Instance.new("Frame")
+	chipsRow.Name = "ChipsRow"
+	chipsRow.Size = UDim2.new(1, 0, 0, 30)
+	chipsRow.BackgroundTransparency = 1
+	chipsRow.LayoutOrder = 2
+	chipsRow.ZIndex = 6
+	chipsRow.Parent = topLeft
 
+	local chipsLayout = Instance.new("UIListLayout")
+	chipsLayout.FillDirection = Enum.FillDirection.Horizontal
+	chipsLayout.Padding = UDim.new(0, 6)
+	chipsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	chipsLayout.Parent = chipsRow
+
+	local luckChip = Components.makePanel(chipsRow, "LuckChip", UDim2.new(0.56, -3, 1, 0), UDim2.fromOffset(0, 0), 10)
+	luckChip.LayoutOrder = 1
+	luckChip.ZIndex = 7
+	local luckStroke = luckChip:FindFirstChildOfClass("UIStroke")
+	if luckStroke then
+		luckStroke.Color = Theme.getPalette().accentGreen
+	end
 	local luckLabel = Components.makeLabel(
 		luckChip,
-		"LuckText",
-		"Luck 1.00x (Base 1.0x)",
-		UDim2.new(1, -16, 1, 0),
-		UDim2.fromOffset(10, 0),
+		"LuckLabel",
+		"Luck 1.0x",
+		UDim2.new(1, -12, 1, 0),
+		UDim2.fromOffset(6, 0),
 		Theme.FONT_BODY,
 		11,
 		Theme.getPalette().accentGreen,
 		Enum.TextXAlignment.Left
 	)
-	luckLabel.ZIndex = 7
+	luckLabel.ZIndex = 8
+	table.insert(themedPills, luckChip)
 
-	local goalChip = Instance.new("Frame")
-	goalChip.Name = "GoalChip"
+	local weatherChip =
+		Components.makePanel(chipsRow, "WeatherChip", UDim2.new(0.44, -3, 1, 0), UDim2.fromOffset(0, 0), 10)
+	weatherChip.LayoutOrder = 2
+	weatherChip.ZIndex = 7
+	local weatherLabel = Components.makeLabel(
+		weatherChip,
+		"WeatherLabel",
+		"Clear Skies",
+		UDim2.new(1, -12, 1, 0),
+		UDim2.fromOffset(6, 0),
+		Theme.FONT_BODY,
+		11,
+		Theme.getPalette().accentBlue,
+		Enum.TextXAlignment.Center
+	)
+	weatherLabel.ZIndex = 8
+	table.insert(themedPills, weatherChip)
+
+	-- Row 3: Next Goal
+	local goalChip = Components.makePanel(topLeft, "GoalChip", UDim2.new(1, 0, 0, 30), UDim2.fromOffset(0, 0), 10)
 	goalChip.LayoutOrder = 3
-	goalChip.Size = UDim2.new(1, 0, 0, 34)
-	goalChip.BackgroundColor3 = Theme.getPalette().bgPanel
-	goalChip.BorderSizePixel = 0
-	goalChip.ZIndex = 6
-	goalChip.Parent = topLeft
-	Components.addCorner(goalChip, 8)
-	Components.addStroke(goalChip, Theme.getPalette().border, 1.5, 0.2)
-	table.insert(themedPills, goalChip)
-
+	goalChip.ZIndex = 7
 	local goalLabel = Components.makeLabel(
 		goalChip,
-		"GoalText",
+		"GoalLabel",
 		"Next: Summon your first card!",
-		UDim2.new(1, -16, 1, 0),
-		UDim2.fromOffset(10, 0),
-		Theme.FONT_DISPLAY,
-		12,
+		UDim2.new(1, -14, 1, 0),
+		UDim2.fromOffset(7, 0),
+		Theme.FONT_BODY,
+		11,
 		Theme.getPalette().textPrimary,
 		Enum.TextXAlignment.Left
 	)
-	goalLabel.ZIndex = 7
+	goalLabel.ZIndex = 8
+	table.insert(themedPills, goalChip)
 	table.insert(themedTexts, goalLabel)
 
-	-- Top-right navigation cluster (>=44px touch targets)
+	-- Row 4: World / Banner selector (>=44px interactive button)
+	local worldBannerBtn = Components.makeButton(
+		topLeft,
+		"WorldBannerButton",
+		"World 1 • Hidden Leaf Banner (Tap to switch)",
+		UDim2.new(1, 0, 0, 44),
+		UDim2.fromOffset(0, 0),
+		Theme.getPalette().bgPanel,
+		Theme.getPalette().textPrimary
+	)
+	worldBannerBtn.LayoutOrder = 4
+	worldBannerBtn.TextSize = 12
+	worldBannerBtn.ZIndex = 7
+
+	-- Top-right navigation buttons (>=44px height)
 	local topRight = Instance.new("Frame")
-	topRight.Name = "TopRightNav"
-	topRight.Size = UDim2.fromOffset(330, 52)
+	topRight.Name = "TopRight"
+	topRight.Size = UDim2.fromOffset(540, 52)
 	topRight.Position = UDim2.new(1, -12, 0, 10)
 	topRight.AnchorPoint = Vector2.new(1, 0)
 	topRight.BackgroundTransparency = 1
 	topRight.ZIndex = 6
 	topRight.Parent = root
 
-	local navLayout = Instance.new("UIListLayout")
-	navLayout.FillDirection = Enum.FillDirection.Horizontal
-	navLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
-	navLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	navLayout.Padding = UDim.new(0, 8)
-	navLayout.Parent = topRight
+	local navGrid = Instance.new("UIGridLayout")
+	navGrid.CellSize = UDim2.fromOffset(102, 46)
+	navGrid.CellPadding = UDim2.fromOffset(6, 6)
+	navGrid.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	navGrid.SortOrder = Enum.SortOrder.LayoutOrder
+	navGrid.Parent = topRight
 
 	local deckBtn = Components.makeButton(
 		topRight,
 		"DeckButton",
 		"Deck (0/5)",
-		UDim2.fromOffset(108, 46),
+		UDim2.fromOffset(102, 46),
 		UDim2.fromOffset(0, 0),
 		Theme.getPalette().bgPanel,
 		Theme.getPalette().textPrimary
 	)
 	deckBtn.LayoutOrder = 1
-	deckBtn.TextSize = 13
+	deckBtn.TextSize = 12
 	deckBtn.ZIndex = 7
 
 	local battleBtn = Components.makeButton(
 		topRight,
 		"BattleButton",
-		"Battle W1",
-		UDim2.fromOffset(108, 46),
+		"Battle",
+		UDim2.fromOffset(102, 46),
 		UDim2.fromOffset(0, 0),
 		Theme.getPalette().accentBlue,
 		Color3.fromRGB(255, 255, 255)
@@ -274,18 +273,122 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 	battleBtn.TextSize = 13
 	battleBtn.ZIndex = 7
 
+	local modesBtn = Components.makeButton(
+		topRight,
+		"ModesButton",
+		"Modes",
+		UDim2.fromOffset(102, 46),
+		UDim2.fromOffset(0, 0),
+		Theme.getPalette().accentPurple,
+		Color3.fromRGB(255, 255, 255)
+	)
+	modesBtn.LayoutOrder = 3
+	modesBtn.TextSize = 13
+	modesBtn.ZIndex = 7
+
+	local shopBtn = Components.makeButton(
+		topRight,
+		"ShopButton",
+		"Shop",
+		UDim2.fromOffset(102, 46),
+		UDim2.fromOffset(0, 0),
+		Theme.getPalette().accentGold,
+		Theme.getPalette().textOnAccent
+	)
+	shopBtn.LayoutOrder = 4
+	shopBtn.TextSize = 13
+	shopBtn.ZIndex = 7
+
 	local settingsBtn = Components.makeButton(
 		topRight,
 		"SettingsButton",
 		"Settings",
-		UDim2.fromOffset(88, 46),
+		UDim2.fromOffset(102, 46),
 		UDim2.fromOffset(0, 0),
 		Theme.getPalette().bgPanel,
 		Theme.getPalette().textPrimary
 	)
-	settingsBtn.LayoutOrder = 3
-	settingsBtn.TextSize = 13
+	settingsBtn.LayoutOrder = 5
+	settingsBtn.TextSize = 12
 	settingsBtn.ZIndex = 7
+
+	-- Modes Drawer popup
+	local modesDrawer =
+		Components.makePanel(root, "ModesDrawer", UDim2.fromOffset(340, 326), UDim2.fromScale(0.5, 0.5), 14)
+	modesDrawer.AnchorPoint = Vector2.new(0.5, 0.5)
+	modesDrawer.Visible = false
+	modesDrawer.ZIndex = 24
+
+	local drawerTitle = Components.makeLabel(
+		modesDrawer,
+		"Title",
+		"All Game Modes & Features",
+		UDim2.new(1, -60, 0, 28),
+		UDim2.fromOffset(14, 10),
+		Theme.FONT_HEADING,
+		15,
+		Theme.getPalette().textPrimary,
+		Enum.TextXAlignment.Left
+	)
+	drawerTitle.ZIndex = 25
+
+	local closeModesBtn = Components.makeButton(
+		modesDrawer,
+		"CloseModesBtn",
+		"X",
+		UDim2.fromOffset(44, 44),
+		UDim2.new(1, -50, 0, 4),
+		Theme.getPalette().bgMuted,
+		Theme.getPalette().textPrimary
+	)
+	closeModesBtn.ZIndex = 25
+
+	local modesGridHost = Instance.new("Frame")
+	modesGridHost.Name = "ModesGridHost"
+	modesGridHost.Size = UDim2.new(1, -24, 1, -60)
+	modesGridHost.Position = UDim2.fromOffset(12, 52)
+	modesGridHost.BackgroundTransparency = 1
+	modesGridHost.ZIndex = 25
+	modesGridHost.Parent = modesDrawer
+
+	local modesGrid = Instance.new("UIGridLayout")
+	modesGrid.CellSize = UDim2.fromOffset(100, 48)
+	modesGrid.CellPadding = UDim2.fromOffset(8, 8)
+	modesGrid.SortOrder = Enum.SortOrder.LayoutOrder
+	modesGrid.Parent = modesGridHost
+
+	local modeButtons: { TextButton } = {}
+	local function addModeButton(name: string, label: string, order: number, cb: (() -> ())?)
+		local btn = Components.makeButton(
+			modesGridHost,
+			name,
+			label,
+			UDim2.fromOffset(100, 48),
+			UDim2.fromOffset(0, 0),
+			Theme.getPalette().bgMuted,
+			Theme.getPalette().textPrimary
+		)
+		btn.LayoutOrder = order
+		btn.TextSize = 12
+		btn.ZIndex = 26
+		btn.MouseButton1Click:Connect(function()
+			modesDrawer.Visible = false
+			if cb then
+				cb()
+			end
+		end)
+		table.insert(modeButtons, btn)
+	end
+
+	addModeButton("TowerModeBtn", "Tower", 1, callbacks.onOpenTower)
+	addModeButton("RaidModeBtn", "Raids", 2, callbacks.onOpenRaid)
+	addModeButton("WorldBossModeBtn", "World Boss", 3, callbacks.onOpenWorldBoss)
+	addModeButton("RankedModeBtn", "Ranked PvP", 4, callbacks.onOpenRanked)
+	addModeButton("RebirthModeBtn", "Rebirth", 5, callbacks.onOpenRebirth)
+	addModeButton("CharmsModeBtn", "Charms", 6, callbacks.onOpenCharms)
+	addModeButton("QuestsModeBtn", "Quests & Codes", 7, callbacks.onOpenQuests)
+	addModeButton("IndexModeBtn", "54-Card Index", 8, callbacks.onOpenIndex)
+	addModeButton("LeadersModeBtn", "Leaderboards", 9, callbacks.onOpenLeaderboards)
 
 	-- Bottom-center Roll & Pity dock
 	local rollDock = Components.makePanel(root, "RollDock", UDim2.fromOffset(396, 108), UDim2.new(0.5, 0, 1, -14), 14)
@@ -368,59 +471,123 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 	fastBtn.ZIndex = 8
 
 	layoutUpdater = function(viewportX: number)
-		local isMobile = viewportX < 700
-		if isMobile then
+		local isNarrow = viewportX < 700
+		local isMedium = viewportX >= 700 and viewportX < 960
+		if isNarrow then
 			local usableW = math.max(viewportX - 16, 300)
-			topLeft.Position = UDim2.fromOffset(8, 8)
-			topLeft.Size = UDim2.fromOffset(usableW, 100)
+			topLeft.Position = UDim2.fromOffset(8, 6)
+			topLeft.Size = UDim2.fromOffset(usableW, 60)
 			topLeftLayout.Padding = UDim.new(0, 4)
 
-			currencyRow.Size = UDim2.new(1, 0, 0, 34)
+			currencyRow.Size = UDim2.new(1, 0, 0, 28)
 			local pillGap = 6
 			local pillW = math.floor((usableW - pillGap * 2) / 3)
-			yenPill.Size = UDim2.fromOffset(pillW, 34)
-			gemsPill.Size = UDim2.fromOffset(pillW, 34)
-			ticketsPill.Size = UDim2.fromOffset(usableW - pillW * 2 - pillGap * 2, 34)
+			yenPill.Size = UDim2.fromOffset(pillW, 28)
+			gemsPill.Size = UDim2.fromOffset(pillW, 28)
+			ticketsPill.Size = UDim2.fromOffset(usableW - pillW * 2 - pillGap * 2, 28)
 
-			luckChip.Size = UDim2.new(1, 0, 0, 28)
-			goalChip.Size = UDim2.new(1, 0, 0, 28)
+			chipsRow.Size = UDim2.new(1, 0, 0, 26)
+			goalChip.Visible = false
 
-			-- Row 3: compact >=44px nav buttons cleanly below topLeft
+			worldBannerBtn.Parent = modesDrawer
+			worldBannerBtn.Position = UDim2.fromOffset(12, 50)
+			worldBannerBtn.Size = UDim2.new(1, -24, 0, 46)
+			modesGridHost.Position = UDim2.fromOffset(12, 102)
+			modesGridHost.Size = UDim2.new(1, -24, 1, -110)
+
 			topRight.AnchorPoint = Vector2.new(0, 0)
-			topRight.Position = UDim2.fromOffset(8, 112)
-			topRight.Size = UDim2.fromOffset(usableW, 46)
-			navLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
-			navLayout.Padding = UDim.new(0, 6)
-			local btnGap = 6
-			local btnW = math.floor((usableW - btnGap * 2) / 3)
-			deckBtn.Size = UDim2.fromOffset(btnW, 46)
-			battleBtn.Size = UDim2.fromOffset(btnW, 46)
-			settingsBtn.Size = UDim2.fromOffset(usableW - btnW * 2 - btnGap * 2, 46)
+			topRight.Position = UDim2.fromOffset(8, 70)
+			topRight.Size = UDim2.fromOffset(usableW, 48)
+			navGrid.HorizontalAlignment = Enum.HorizontalAlignment.Left
+			local btnGap = 4
+			local btnW = math.floor((usableW - btnGap * 4) / 5)
+			navGrid.CellSize = UDim2.fromOffset(btnW, 46)
+			navGrid.CellPadding = UDim2.fromOffset(btnGap, 4)
+			deckBtn.TextSize = 11
+			battleBtn.TextSize = 11
+			modesBtn.TextSize = 11
+			shopBtn.TextSize = 11
+			settingsBtn.TextSize = 11
+
+			local drawerW = math.min(usableW, 350)
+			modesDrawer.Size = UDim2.fromOffset(drawerW, 350)
+			local modeCellW = math.floor((drawerW - 40) / 3)
+			modesGrid.CellSize = UDim2.fromOffset(modeCellW, 46)
 
 			rollDock.Size = UDim2.fromOffset(math.min(usableW, 400), 104)
 			rollDock.Position = UDim2.new(0.5, 0, 1, -10)
 			dockConstraint.MinSize = Vector2.new(280, 100)
+		elseif isMedium then
+			topLeft.Position = UDim2.fromOffset(10, 8)
+			topLeft.Size = UDim2.fromOffset(300, 88)
+			topLeftLayout.Padding = UDim.new(0, 5)
+
+			currencyRow.Size = UDim2.new(1, 0, 0, 28)
+			yenPill.Size = UDim2.fromOffset(104, 28)
+			gemsPill.Size = UDim2.fromOffset(96, 28)
+			ticketsPill.Size = UDim2.fromOffset(88, 28)
+
+			chipsRow.Size = UDim2.new(1, 0, 0, 26)
+			goalChip.Visible = true
+			goalChip.Size = UDim2.new(1, 0, 0, 24)
+
+			worldBannerBtn.Parent = modesDrawer
+			worldBannerBtn.Position = UDim2.fromOffset(12, 50)
+			worldBannerBtn.Size = UDim2.new(1, -24, 0, 46)
+			modesGridHost.Position = UDim2.fromOffset(12, 102)
+			modesGridHost.Size = UDim2.new(1, -24, 1, -110)
+
+			topRight.AnchorPoint = Vector2.new(1, 0)
+			topRight.Position = UDim2.new(1, -10, 0, 8)
+			topRight.Size = UDim2.fromOffset(414, 50)
+			navGrid.HorizontalAlignment = Enum.HorizontalAlignment.Right
+			navGrid.CellSize = UDim2.fromOffset(78, 46)
+			navGrid.CellPadding = UDim2.fromOffset(6, 6)
+			deckBtn.TextSize = 11
+			battleBtn.TextSize = 12
+			modesBtn.TextSize = 12
+			shopBtn.TextSize = 12
+			settingsBtn.TextSize = 11
+
+			modesDrawer.Size = UDim2.fromOffset(348, 354)
+			modesGrid.CellSize = UDim2.fromOffset(102, 46)
+
+			rollDock.Size = UDim2.fromOffset(396, 104)
+			rollDock.Position = UDim2.new(0.5, 0, 1, -10)
+			dockConstraint.MinSize = Vector2.new(300, 100)
 		else
 			topLeft.Position = UDim2.fromOffset(12, 10)
-			topLeft.Size = UDim2.fromOffset(330, 128)
+			topLeft.Size = UDim2.fromOffset(340, 162)
 			topLeftLayout.Padding = UDim.new(0, 6)
 
-			currencyRow.Size = UDim2.new(1, 0, 0, 38)
+			currencyRow.Size = UDim2.new(1, 0, 0, 36)
 			yenPill.Size = UDim2.fromOffset(114, 36)
-			gemsPill.Size = UDim2.fromOffset(100, 36)
-			ticketsPill.Size = UDim2.fromOffset(88, 36)
+			gemsPill.Size = UDim2.fromOffset(102, 36)
+			ticketsPill.Size = UDim2.fromOffset(94, 36)
 
-			luckChip.Size = UDim2.new(1, 0, 0, 32)
-			goalChip.Size = UDim2.new(1, 0, 0, 34)
+			chipsRow.Size = UDim2.new(1, 0, 0, 30)
+			goalChip.Visible = true
+			goalChip.Size = UDim2.new(1, 0, 0, 30)
+
+			worldBannerBtn.Parent = topLeft
+			worldBannerBtn.Size = UDim2.new(1, 0, 0, 46)
+			modesGridHost.Position = UDim2.fromOffset(12, 52)
+			modesGridHost.Size = UDim2.new(1, -24, 1, -60)
 
 			topRight.AnchorPoint = Vector2.new(1, 0)
 			topRight.Position = UDim2.new(1, -12, 0, 10)
-			topRight.Size = UDim2.fromOffset(330, 52)
-			navLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
-			navLayout.Padding = UDim.new(0, 8)
-			deckBtn.Size = UDim2.fromOffset(108, 46)
-			battleBtn.Size = UDim2.fromOffset(108, 46)
-			settingsBtn.Size = UDim2.fromOffset(88, 46)
+			topRight.Size = UDim2.fromOffset(540, 52)
+			navGrid.HorizontalAlignment = Enum.HorizontalAlignment.Right
+			navGrid.CellSize = UDim2.fromOffset(102, 46)
+			navGrid.CellPadding = UDim2.fromOffset(6, 6)
+			deckBtn.TextSize = 12
+			battleBtn.TextSize = 13
+			modesBtn.TextSize = 13
+			shopBtn.TextSize = 13
+			settingsBtn.TextSize = 12
+
+			modesDrawer.Size = UDim2.fromOffset(348, 320)
+			modesGrid.CellSize = UDim2.fromOffset(102, 48)
 
 			rollDock.Size = UDim2.fromOffset(396, 108)
 			rollDock.Position = UDim2.new(0.5, 0, 1, -14)
@@ -446,6 +613,9 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 		deckCount = 0,
 		deckMax = 5,
 		rollStatusText = "",
+		selectedWorld = 1,
+		bannerName = "Hidden Leaf",
+		weatherText = "Clear Skies",
 	}
 
 	local function applyTheme()
@@ -461,11 +631,23 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 			lbl.TextColor3 = palette.textPrimary
 		end
 		luckLabel.TextColor3 = palette.accentGreen
+		weatherLabel.TextColor3 = palette.accentBlue
 
 		deckBtn.BackgroundColor3 = palette.bgPanel
 		deckBtn.TextColor3 = palette.textPrimary
 		settingsBtn.BackgroundColor3 = palette.bgPanel
 		settingsBtn.TextColor3 = palette.textPrimary
+		worldBannerBtn.BackgroundColor3 = palette.bgPanel
+		worldBannerBtn.TextColor3 = palette.textPrimary
+
+		modesDrawer.BackgroundColor3 = palette.bgPanel
+		drawerTitle.TextColor3 = palette.textPrimary
+		closeModesBtn.BackgroundColor3 = palette.bgMuted
+		closeModesBtn.TextColor3 = palette.textPrimary
+		for _, mb in modeButtons do
+			mb.BackgroundColor3 = palette.bgMuted
+			mb.TextColor3 = palette.textPrimary
+		end
 
 		rollDock.BackgroundColor3 = palette.bgPanel
 		local dockStroke = rollDock:FindFirstChildOfClass("UIStroke")
@@ -491,13 +673,12 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 		gemsLabel.Text = "GEMS " .. Components.formatNumber(state.gems)
 		ticketsLabel.Text = "TIX " .. Components.formatNumber(state.tickets)
 
-		local summary = state.luckSummary or state.luckBreakdown or "Base 1.0x"
-		if summary ~= "" then
-			luckLabel.Text = string.format("Luck %.2fx (%s)", state.luckMultiplier, summary)
-		else
-			luckLabel.Text = string.format("Luck %.2fx", state.luckMultiplier)
-		end
+		luckLabel.Text = string.format("Luck %.2fx", state.luckMultiplier)
+		weatherLabel.Text = state.weatherText or "Clear Skies"
 		goalLabel.Text = "Next: " .. state.nextGoal
+		local wNum = state.selectedWorld or 1
+		local bName = state.bannerName or ("World " .. tostring(wNum))
+		worldBannerBtn.Text = string.format("W%d • %s Banner (Switch)", wNum, bName)
 		deckBtn.Text = string.format("Deck (%d/%d)", state.deckCount, state.deckMax)
 
 		pityLabel.Text = string.format(
@@ -527,6 +708,22 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 	deckBtn.MouseButton1Click:Connect(callbacks.onOpenDeck)
 	battleBtn.MouseButton1Click:Connect(callbacks.onOpenBattle)
 	settingsBtn.MouseButton1Click:Connect(callbacks.onOpenSettings)
+	shopBtn.MouseButton1Click:Connect(function()
+		if callbacks.onOpenShop then
+			callbacks.onOpenShop()
+		end
+	end)
+	worldBannerBtn.MouseButton1Click:Connect(function()
+		if callbacks.onCycleWorld then
+			callbacks.onCycleWorld()
+		end
+	end)
+	modesBtn.MouseButton1Click:Connect(function()
+		modesDrawer.Visible = not modesDrawer.Visible
+	end)
+	closeModesBtn.MouseButton1Click:Connect(function()
+		modesDrawer.Visible = false
+	end)
 
 	local unbindTheme = Theme.onChanged(function()
 		applyTheme()
@@ -540,6 +737,9 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 		end,
 		setVisible = function(visible: boolean)
 			root.Visible = visible
+		end,
+		closeModesDrawer = function()
+			modesDrawer.Visible = false
 		end,
 		destroy = function()
 			unbindTheme()

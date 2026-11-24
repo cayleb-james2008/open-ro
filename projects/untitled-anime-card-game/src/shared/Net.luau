@@ -6,6 +6,12 @@ Net.RequestRemoteName = "Request"
 Net.SyncRemoteName = "StateSync"
 Net.EventRemoteName = "PushEvent"
 
+Net.PushEvents = {
+	WeatherUpdate = "WeatherUpdate",
+}
+
+export type PushEventName = "WeatherUpdate"
+
 export type RequestAction =
 	"GetState"
 	| "Roll"
@@ -24,10 +30,38 @@ export type RequestAction =
 	| "ClaimDaily"
 	| "Rebirth"
 	| "UpdateSettings"
+	| "SelectBanner"
+	| "TraitReroll"
+	| "SaveDefenseDeck"
+	| "ChallengeTower"
+	| "GetTowerStatus"
+	| "StartRaid"
+	| "GetRaidStatus"
+	| "ChallengeWorldBoss"
+	| "GetWorldBossStatus"
+	| "PlayRanked"
+	| "ClaimRankedReward"
+	| "GetRankedStatus"
+	| "PerformRebirth"
+	| "BuySkillNode"
+	| "GetRebirthStatus"
+	| "CraftCharm"
+	| "EquipCharm"
+	| "UnequipCharm"
+	| "GetCharmStatus"
+	| "ClaimQuest"
+	| "ClaimLoginStreak"
+	| "ClaimPlaytime"
+	| "GetRetentionStatus"
+	| "GetLeaderboards"
+	| "GetWeather"
+	| "PromptPurchase"
+	| "GetShopStatus"
 
 export type RequestPayload = {
 	action: RequestAction,
 	worldId: number?,
+	bannerId: string?,
 	useTicket: boolean?,
 	fastRoll: boolean?,
 	count: number?,
@@ -38,6 +72,17 @@ export type RequestPayload = {
 	stageId: string?,
 	code: string?,
 	potionId: string?,
+	raidId: string?,
+	bossId: string?,
+	nodeId: string?,
+	charmId: string?,
+	slot: number?,
+	questId: string?,
+	milestoneId: string?,
+	productId: string?,
+	boardType: string?,
+	targetUserId: number?,
+	floor: number?,
 	settings: { [string]: any }?,
 }
 

@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/w3_warrior_of_liberation.pending-angle.ffee1f21ef5d.png",
+    "candidate_sha256": "ffee1f21ef5d5db28b9abad6ba49875fab99e096c932d85700e36493daeaa462",
+    "height": 1448,
+    "status": "PENDING_VISION",
+    "width": 1086
+  },
+  "approved_at": "2026-11-24T02:25:07Z",
+  "approved_by": "designer",
+  "bytes": 2770646,
+  "candidate_path": "art/cards/w3_warrior_of_liberation.pending-angle.ffee1f21ef5d.png",
+  "candidate_sha256": "ffee1f21ef5d5db28b9abad6ba49875fab99e096c932d85700e36493daeaa462",
+  "created_at": "2026-11-24T02:23:46Z",
+  "height": 1448,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/w3_warrior_of_liberation.png",
+  "promoted_from": "art/cards/w3_warrior_of_liberation.pending-angle.ffee1f21ef5d.png",
+  "prompt": "Transform this reference character into a joyful legendary vertical anime trading card game illustration in soaring white-haired Gear 5 three-quarter action pose ringed by billowing white steam clouds wielding a colossal golden-lightning fist against a luminous full moon storm sky, crisp cel-shaded anime key art lighting, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/monkey_d_luffy.jpg"
+  ],
+  "requested_path": "art/cards/w3_warrior_of_liberation.png",
+  "review_notes": "Verified w3_warrior_of_liberation visually against ref art/references/monkey_d_luffy.jpg: exact character likeness, dynamic anime card composition, zero text/watermarks.",
+  "sha256": "ffee1f21ef5d5db28b9abad6ba49875fab99e096c932d85700e36493daeaa462",
+  "status": "approved",
+  "version": 1,
+  "width": 1086
+}

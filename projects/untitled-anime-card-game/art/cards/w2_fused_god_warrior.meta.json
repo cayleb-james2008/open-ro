@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/w2_fused_god_warrior.pending-angle.83d4800097ec.png",
+    "candidate_sha256": "83d4800097ec83e55bc77e059c278510af404d9628205617b9e37ae31e74c2a7",
+    "height": 1536,
+    "status": "PENDING_VISION",
+    "width": 1024
+  },
+  "approved_at": "2026-11-24T02:19:04Z",
+  "approved_by": "designer",
+  "bytes": 3012797,
+  "candidate_path": "art/cards/w2_fused_god_warrior.pending-angle.83d4800097ec.png",
+  "candidate_sha256": "83d4800097ec83e55bc77e059c278510af404d9628205617b9e37ae31e74c2a7",
+  "created_at": "2026-11-24T02:17:33Z",
+  "height": 1536,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/w2_fused_god_warrior.png",
+  "promoted_from": "art/cards/w2_fused_god_warrior.pending-angle.83d4800097ec.png",
+  "prompt": "Transform this reference character into a legendary vertical anime trading card game illustration in triumphant three-quarter action pose channeling blazing cyan-blue divine ki flames and a glowing energy spirit sword around his hand, crisp cel-shaded anime key art lighting, sapphire and gold cosmic sparks, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/vegito.jpg"
+  ],
+  "requested_path": "art/cards/w2_fused_god_warrior.png",
+  "review_notes": "Verified w2_fused_god_warrior visually against ref art/references/vegito.jpg: exact character likeness, dynamic anime card composition, zero text/watermarks.",
+  "sha256": "83d4800097ec83e55bc77e059c278510af404d9628205617b9e37ae31e74c2a7",
+  "status": "approved",
+  "version": 1,
+  "width": 1024
+}

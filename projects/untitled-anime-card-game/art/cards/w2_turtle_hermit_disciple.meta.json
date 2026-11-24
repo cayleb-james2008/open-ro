@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/w2_turtle_hermit_disciple.pending-angle.808bbf7332ce.png",
+    "candidate_sha256": "808bbf7332ce3bb344193e9e200a27e04aa30e34bee42048f564f5675ff922f2",
+    "height": 1585,
+    "status": "PENDING_VISION",
+    "width": 992
+  },
+  "approved_at": "2026-11-24T02:18:56Z",
+  "approved_by": "designer",
+  "bytes": 2628371,
+  "candidate_path": "art/cards/w2_turtle_hermit_disciple.pending-angle.808bbf7332ce.png",
+  "candidate_sha256": "808bbf7332ce3bb344193e9e200a27e04aa30e34bee42048f564f5675ff922f2",
+  "created_at": "2026-11-24T02:13:51Z",
+  "height": 1585,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/w2_turtle_hermit_disciple.png",
+  "promoted_from": "art/cards/w2_turtle_hermit_disciple.pending-angle.808bbf7332ce.png",
+  "prompt": "Transform this reference character into a high-impact vertical anime trading card game illustration in heroic three-quarter action pose holding a blazing razor-sharp golden energy disc overhead, crisp cel-shaded anime key art lighting, bright yellow ki sparks against an azure sky, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/krillin.jpg"
+  ],
+  "requested_path": "art/cards/w2_turtle_hermit_disciple.png",
+  "review_notes": "Verified w2_turtle_hermit_disciple visually against ref art/references/krillin.jpg: exact character likeness, dynamic anime card composition, zero text/watermarks.",
+  "sha256": "808bbf7332ce3bb344193e9e200a27e04aa30e34bee42048f564f5675ff922f2",
+  "status": "approved",
+  "version": 1,
+  "width": 992
+}

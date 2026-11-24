@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/w3_darkness_quake.pending-angle.a98ebc95e8dd.png",
+    "candidate_sha256": "a98ebc95e8dd32966bc73efbe9cf5aa9a83d04ad8fad9ec0b7b92dcee701027b",
+    "height": 1493,
+    "status": "PENDING_VISION",
+    "width": 1053
+  },
+  "approved_at": "2026-11-24T02:25:06Z",
+  "approved_by": "designer",
+  "bytes": 3100332,
+  "candidate_path": "art/cards/w3_darkness_quake.pending-angle.a98ebc95e8dd.png",
+  "candidate_sha256": "a98ebc95e8dd32966bc73efbe9cf5aa9a83d04ad8fad9ec0b7b92dcee701027b",
+  "created_at": "2026-11-24T02:23:16Z",
+  "height": 1493,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/w3_darkness_quake.png",
+  "promoted_from": "art/cards/w3_darkness_quake.pending-angle.a98ebc95e8dd.png",
+  "prompt": "Transform this reference character into an overwhelming vertical anime trading card game illustration in menacing three-quarter stance channeling swirling abyssal black-violet darkness smoke from his left hand and radiant shattering white air-quake shockwaves from his right fist, crisp cel-shaded anime key art lighting, apocalyptic storm sky, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/marshall_d_teach.jpg"
+  ],
+  "requested_path": "art/cards/w3_darkness_quake.png",
+  "review_notes": "Verified w3_darkness_quake visually against ref art/references/marshall_d_teach.jpg: exact character likeness, dynamic anime card composition, zero text/watermarks.",
+  "sha256": "a98ebc95e8dd32966bc73efbe9cf5aa9a83d04ad8fad9ec0b7b92dcee701027b",
+  "status": "approved",
+  "version": 1,
+  "width": 1053
+}

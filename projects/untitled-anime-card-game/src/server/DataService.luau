@@ -39,10 +39,13 @@ export type PlayerProfile = {
 	gems: number,
 	tickets: number,
 	bossTokens: number,
+	raidTokens: number,
 	traitCrystals: number,
 	rebirths: number,
 	luckUpgradeLevel: number,
 	currentWorld: number,
+	selectedWorld: number,
+	selectedBannerId: string,
 	unlockedWorlds: { [number]: boolean },
 	pity: LuckMath.PityState,
 	traitPity: number,
@@ -53,12 +56,29 @@ export type PlayerProfile = {
 	defenseDeck: { string },
 	clearedStages: { [string]: boolean },
 	discoveredCards: { [string]: boolean },
+	indexCount: number,
 	potions: { [string]: number },
 	luckPotionExpiresAt: number,
 	luckPotionBonus: number,
 	redeemedCodes: { [string]: boolean },
 	lastDailyClaim: number,
 	dailyStreak: number,
+	loginStreak: number,
+	lastLoginDay: number,
+	playtimeSeconds: number,
+	claimedPlaytime: { [string]: boolean },
+	towerFloor: number,
+	materials: { [string]: number },
+	charms: { [string]: number },
+	equippedCharms: { string },
+	skillNodes: { [string]: number },
+	elo: number,
+	rankedWins: number,
+	rankedLosses: number,
+	rankedRewardClaimed: boolean,
+	quests: { [string]: any },
+	processedReceipts: { [string]: boolean },
+	ownedPasses: { [string]: boolean },
 	settings: ProfileSettings,
 	savedAt: number,
 }
@@ -101,15 +121,18 @@ local function createDefaultProfile(): PlayerProfile
 	local now = os.time()
 
 	return {
-		schemaVersion = 1,
+		schemaVersion = 2,
 		yen = 500,
 		gems = 150,
 		tickets = 3,
 		bossTokens = 0,
+		raidTokens = 0,
 		traitCrystals = 1,
 		rebirths = 0,
 		luckUpgradeLevel = 0,
 		currentWorld = 1,
+		selectedWorld = 1,
+		selectedBannerId = "world_1",
 		unlockedWorlds = { [1] = true },
 		pity = { epic = 0, legendary = 0, mythic = 0 },
 		traitPity = 0,
@@ -132,12 +155,29 @@ local function createDefaultProfile(): PlayerProfile
 		defenseDeck = { starterUid },
 		clearedStages = {},
 		discoveredCards = { [starterCardId] = true },
+		indexCount = 1,
 		potions = { luck_potion_1 = 1 },
 		luckPotionExpiresAt = 0,
 		luckPotionBonus = 0,
 		redeemedCodes = {},
 		lastDailyClaim = 0,
 		dailyStreak = 0,
+		loginStreak = 0,
+		lastLoginDay = 0,
+		playtimeSeconds = 0,
+		claimedPlaytime = {},
+		towerFloor = 1,
+		materials = {},
+		charms = {},
+		equippedCharms = {},
+		skillNodes = {},
+		elo = 1000,
+		rankedWins = 0,
+		rankedLosses = 0,
+		rankedRewardClaimed = false,
+		quests = { daily = {}, weekly = {}, dailyDay = 0, weeklyWeek = 0 },
+		processedReceipts = {},
+		ownedPasses = {},
 		settings = {
 			theme = "Dark",
 			reducedMotion = false,
@@ -154,15 +194,22 @@ local function reconcileProfile(raw: any): PlayerProfile
 		return defaults
 	end
 	local p = deepCopy(raw) :: PlayerProfile
-	p.schemaVersion = p.schemaVersion or 1
+	p.schemaVersion = 2
 	p.yen = if type(p.yen) == "number" then math.max(0, math.floor(p.yen)) else defaults.yen
 	p.gems = if type(p.gems) == "number" then math.max(0, math.floor(p.gems)) else defaults.gems
 	p.tickets = if type(p.tickets) == "number" then math.max(0, math.floor(p.tickets)) else defaults.tickets
 	p.bossTokens = if type(p.bossTokens) == "number" then math.max(0, math.floor(p.bossTokens)) else 0
+	p.raidTokens = if type(p.raidTokens) == "number" then math.max(0, math.floor(p.raidTokens)) else 0
 	p.traitCrystals = if type(p.traitCrystals) == "number" then math.max(0, math.floor(p.traitCrystals)) else 1
 	p.rebirths = if type(p.rebirths) == "number" then math.max(0, math.floor(p.rebirths)) else 0
 	p.luckUpgradeLevel = if type(p.luckUpgradeLevel) == "number" then math.max(0, math.floor(p.luckUpgradeLevel)) else 0
 	p.currentWorld = if type(p.currentWorld) == "number" then math.max(1, math.floor(p.currentWorld)) else 1
+	p.selectedWorld = if type(p.selectedWorld) == "number"
+		then math.max(1, math.floor(p.selectedWorld))
+		else p.currentWorld
+	p.selectedBannerId = if type(p.selectedBannerId) == "string" and p.selectedBannerId ~= ""
+		then p.selectedBannerId
+		else ("world_" .. tostring(p.selectedWorld))
 	p.unlockedWorlds = if type(p.unlockedWorlds) == "table" then p.unlockedWorlds else { [1] = true }
 	p.unlockedWorlds[1] = true
 
@@ -181,12 +228,31 @@ local function reconcileProfile(raw: any): PlayerProfile
 	p.defenseDeck = if type(p.defenseDeck) == "table" then p.defenseDeck else {}
 	p.clearedStages = if type(p.clearedStages) == "table" then p.clearedStages else {}
 	p.discoveredCards = if type(p.discoveredCards) == "table" then p.discoveredCards else {}
+	p.indexCount = countKeys(p.discoveredCards)
 	p.potions = if type(p.potions) == "table" then p.potions else {}
 	p.luckPotionExpiresAt = p.luckPotionExpiresAt or 0
 	p.luckPotionBonus = p.luckPotionBonus or 0
 	p.redeemedCodes = if type(p.redeemedCodes) == "table" then p.redeemedCodes else {}
 	p.lastDailyClaim = p.lastDailyClaim or 0
 	p.dailyStreak = p.dailyStreak or 0
+	p.loginStreak = if type(p.loginStreak) == "number" then p.loginStreak else p.dailyStreak
+	p.lastLoginDay = p.lastLoginDay or 0
+	p.playtimeSeconds = p.playtimeSeconds or 0
+	p.claimedPlaytime = if type(p.claimedPlaytime) == "table" then p.claimedPlaytime else {}
+	p.towerFloor = if type(p.towerFloor) == "number" then math.max(1, math.floor(p.towerFloor)) else 1
+	p.materials = if type(p.materials) == "table" then p.materials else {}
+	p.charms = if type(p.charms) == "table" then p.charms else {}
+	p.equippedCharms = if type(p.equippedCharms) == "table" then p.equippedCharms else {}
+	p.skillNodes = if type(p.skillNodes) == "table" then p.skillNodes else {}
+	p.elo = if type(p.elo) == "number" then math.max(0, math.floor(p.elo)) else 1000
+	p.rankedWins = p.rankedWins or 0
+	p.rankedLosses = p.rankedLosses or 0
+	p.rankedRewardClaimed = if type(p.rankedRewardClaimed) == "table"
+		then ((p.rankedRewardClaimed :: any).grandmaster == true)
+		else (p.rankedRewardClaimed == true)
+	p.quests = if type(p.quests) == "table" then p.quests else defaults.quests
+	p.processedReceipts = if type(p.processedReceipts) == "table" then p.processedReceipts else {}
+	p.ownedPasses = if type(p.ownedPasses) == "table" then p.ownedPasses else {}
 
 	if type(p.settings) ~= "table" then
 		p.settings = defaults.settings
@@ -225,10 +291,8 @@ function DataService.loadProfile(player: Player): PlayerProfile
 	if profiles[userId] then
 		return profiles[userId]
 	end
-
 	local key = getStoreKey(userId)
 	local loaded: any = nil
-
 	if not useMemoryOnly and dataStore then
 		local ok, result = pcall(function()
 			return (dataStore :: DataStore):GetAsync(key)
@@ -239,11 +303,9 @@ function DataService.loadProfile(player: Player): PlayerProfile
 			useMemoryOnly = true
 		end
 	end
-
 	if loaded == nil and memoryFallback[key] ~= nil then
 		loaded = memoryFallback[key]
 	end
-
 	local profile = reconcileProfile(loaded)
 	profiles[userId] = profile
 	memoryFallback[key] = deepCopy(profile)
@@ -253,19 +315,15 @@ end
 function DataService.saveProfile(player: Player): boolean
 	local userId = player.UserId
 	local profile = profiles[userId]
-	if not profile then
-		return false
-	end
-	if savingPlayers[userId] then
+	if not profile or savingPlayers[userId] then
 		return false
 	end
 	savingPlayers[userId] = true
-
 	profile.savedAt = os.time()
+	profile.indexCount = countKeys(profile.discoveredCards)
 	local key = getStoreKey(userId)
 	local snapshot = deepCopy(profile)
 	memoryFallback[key] = snapshot
-
 	local saved = true
 	if not useMemoryOnly and dataStore then
 		local ok = pcall(function()
@@ -277,7 +335,6 @@ function DataService.saveProfile(player: Player): boolean
 			saved = false
 		end
 	end
-
 	savingPlayers[userId] = nil
 	return saved
 end
@@ -311,6 +368,7 @@ function DataService.addCard(profile: PlayerProfile, cardId: string, mutation: s
 	}
 	profile.cards[uid] = inst
 	profile.discoveredCards[cardId] = true
+	profile.indexCount = countKeys(profile.discoveredCards)
 	return inst
 end
 
@@ -318,35 +376,77 @@ function DataService.getLuckBreakdown(profile: PlayerProfile): LuckMath.LuckBrea
 	local discovered = countKeys(profile.discoveredCards)
 	local totalCards = math.max(1, #Config.Cards.List)
 	local indexBonus = math.min(0.5, (discovered / totalCards) * 0.5)
-
 	local now = os.time()
 	local potionBonus = if profile.luckPotionExpiresAt > now then profile.luckPotionBonus else 0
-	local rebirthMult = 1 + (profile.rebirths or 0) * 0.1
-
+	local rebirthBonus = (profile.rebirths or 0) * 0.1
+	local charmBonus = 0
+	local charmsCfg = (Config :: any).Charms
+	if charmsCfg and type(profile.equippedCharms) == "table" then
+		for _, charmId in ipairs(profile.equippedCharms) do
+			local cDef = if charmsCfg.get then charmsCfg.get(charmId) else charmsCfg.ById and charmsCfg.ById[charmId]
+			if cDef and type(cDef.luckBonus) == "number" then
+				charmBonus += cDef.luckBonus
+			end
+		end
+	end
+	local skillTreeBonus = 0
+	local treeCfg = (Config :: any).SkillTree
+	if treeCfg and type(profile.skillNodes) == "table" then
+		for nodeId, rank in pairs(profile.skillNodes) do
+			local nDef = if treeCfg.get then treeCfg.get(nodeId) else treeCfg.ById and treeCfg.ById[nodeId]
+			if nDef and type(nDef.luckBonus) == "number" then
+				skillTreeBonus += nDef.luckBonus * (rank or 0)
+			end
+		end
+	end
 	return LuckMath.computeLuck({
 		luckUpgradeLevel = profile.luckUpgradeLevel,
 		indexBonus = indexBonus,
-		streakBonus = math.min(0.25, (profile.dailyStreak or 0) * 0.05),
+		streakBonus = math.min(0.25, (profile.loginStreak or profile.dailyStreak or 0) * 0.05),
 		potionBonus = potionBonus,
-		eventMult = rebirthMult,
+		charmBonus = charmBonus,
+		skillTreeBonus = skillTreeBonus,
+		rebirthBonus = rebirthBonus,
+		eventMult = 1 + rebirthBonus,
 	})
 end
 
 function DataService.computeDeckSynergies(profile: PlayerProfile): { string }
 	local units: { BattleSim.CombatUnit } = {}
+	local cardIds: { string } = {}
 	for slot, uid in ipairs(profile.activeDeck) do
 		local inst = profile.cards[uid]
 		if inst then
+			table.insert(cardIds, inst.cardId)
 			local unit = BattleSim.buildPlayerUnit(slot, inst)
 			if unit then
 				table.insert(units, unit)
 			end
 		end
 	end
-	return BattleSim.computeSynergies(units).labels
+	local labels = BattleSim.computeSynergies(units).labels or {}
+	local simAny = BattleSim :: any
+	if type(simAny.evaluateBonds) == "function" then
+		local ok, bondsRes = pcall(simAny.evaluateBonds, cardIds)
+		if ok and type(bondsRes) == "table" and type(bondsRes.labels) == "table" then
+			for _, lbl in ipairs(bondsRes.labels) do
+				if not table.find(labels, lbl) then
+					table.insert(labels, lbl)
+				end
+			end
+		end
+	end
+	return labels
 end
 
 local function formatLuckSummary(profile: PlayerProfile, luck: LuckMath.LuckBreakdown): string
+	local lmAny = LuckMath :: any
+	if type(lmAny.luckSummary) == "function" then
+		local ok, res = pcall(lmAny.luckSummary, luck)
+		if ok and type(res) == "string" and res ~= "" then
+			return res
+		end
+	end
 	local parts: { string } = {}
 	if luck.upgradeBonus > 0 then
 		table.insert(parts, string.format("Upgrades +%d%%", math.round(luck.upgradeBonus * 100)))
@@ -360,23 +460,11 @@ local function formatLuckSummary(profile: PlayerProfile, luck: LuckMath.LuckBrea
 	if (profile.luckPotionExpiresAt or 0) > os.time() and (profile.luckPotionBonus or 0) > 0 then
 		table.insert(parts, string.format("Potion +%d%%", math.round(profile.luckPotionBonus * 100)))
 	end
-	if luck.passMult > 1.001 then
-		table.insert(parts, string.format("Passes %.2gx", luck.passMult))
-	end
-	if luck.potionMult > 1.001 then
-		table.insert(parts, string.format("Potion %.2gx", luck.potionMult))
-	end
 	if luck.eventMult > 1.001 then
-		table.insert(parts, string.format("Bonus %.2gx", luck.eventMult))
-	end
-	if luck.promoMult > 1.001 then
-		table.insert(parts, string.format("Promo %.2gx", luck.promoMult))
+		table.insert(parts, string.format("Rebirth %.2gx", luck.eventMult))
 	end
 	if #parts == 0 then
-		if luck.totalMult > 1.001 then
-			return string.format("Total %.2gx", luck.totalMult)
-		end
-		return "Base 1.0x"
+		return if luck.totalMult > 1.001 then string.format("Total %.2gx", luck.totalMult) else "Base 1.0x"
 	end
 	return table.concat(parts, " • ")
 end
@@ -439,11 +527,12 @@ function DataService.serializeForClient(profile: PlayerProfile): { [string]: any
 	local synergies = DataService.computeDeckSynergies(profile)
 	local synergySummary = if #synergies > 0
 		then table.concat(synergies, " • ")
-		else "Equip 2+ cards from the same world for synergy bonuses"
+		else "Equip 2+ cards from the same show or bond for synergy bonuses"
 
-	local worldDef = Config.Worlds.get(profile.currentWorld) or Config.Worlds.List[1]
+	local worldDef = Config.Worlds.get(profile.selectedWorld or profile.currentWorld) or Config.Worlds.List[1]
 	local rollCost = if worldDef then worldDef.rollCostYen else 100
 	local discoveredCount = countKeys(profile.discoveredCards)
+	profile.indexCount = discoveredCount
 	local cardCount = countKeys(profile.cards)
 
 	local normalizedSettings = deepCopy(profile.settings)
@@ -451,14 +540,18 @@ function DataService.serializeForClient(profile: PlayerProfile): { [string]: any
 	normalizedSettings.theme = if themeLower == "light" then "Light" else "Dark"
 
 	return {
+		schemaVersion = profile.schemaVersion,
 		yen = profile.yen,
 		gems = profile.gems,
 		tickets = profile.tickets,
 		bossTokens = profile.bossTokens,
+		raidTokens = profile.raidTokens,
 		traitCrystals = profile.traitCrystals,
 		rebirths = profile.rebirths,
 		luckUpgradeLevel = profile.luckUpgradeLevel,
 		currentWorld = profile.currentWorld,
+		selectedWorld = profile.selectedWorld,
+		selectedBannerId = profile.selectedBannerId,
 		unlockedWorlds = deepCopy(profile.unlockedWorlds),
 		pity = deepCopy(profile.pity),
 		traitPity = profile.traitPity,
@@ -467,6 +560,7 @@ function DataService.serializeForClient(profile: PlayerProfile): { [string]: any
 		cards = enrichedCards,
 		cardCount = cardCount,
 		discoveredCount = discoveredCount,
+		indexCount = discoveredCount,
 		activeDeck = deepCopy(profile.activeDeck),
 		defenseDeck = deepCopy(profile.defenseDeck),
 		deckPower = deckPower,
@@ -476,6 +570,17 @@ function DataService.serializeForClient(profile: PlayerProfile): { [string]: any
 		luckPotionExpiresAt = profile.luckPotionExpiresAt,
 		lastDailyClaim = profile.lastDailyClaim,
 		dailyStreak = profile.dailyStreak,
+		loginStreak = profile.loginStreak,
+		towerFloor = profile.towerFloor,
+		materials = deepCopy(profile.materials),
+		charms = deepCopy(profile.charms),
+		equippedCharms = deepCopy(profile.equippedCharms),
+		skillNodes = deepCopy(profile.skillNodes),
+		elo = profile.elo,
+		rankedWins = profile.rankedWins,
+		rankedLosses = profile.rankedLosses,
+		rankedRewardClaimed = profile.rankedRewardClaimed == true,
+		ownedPasses = deepCopy(profile.ownedPasses),
 		settings = normalizedSettings,
 		luckBreakdown = luck,
 		luckMultiplier = luck.totalMult,

@@ -1,0 +1,116 @@
+{
+  "mechanics": [
+    {
+      "id": "gacha_54_cards",
+      "name": "54-Card Gacha, 9 Rarities, 5 Mutations & Pity",
+      "domain": "gacha",
+      "provenance": "sourced",
+      "source": "docs/GDD.md#3-canonical-currencies-rarities--mutations",
+      "verified_runtime": true
+    },
+    {
+      "id": "worlds_5x5_and_bosses",
+      "name": "5 Worlds x 5 Acts + 5 World Bosses (30 Stages)",
+      "domain": "progression",
+      "provenance": "sourced",
+      "source": "docs/GDD.md#2-core-gameplay-loop",
+      "verified_runtime": true
+    },
+    {
+      "id": "bonds_10_synergies",
+      "name": "10 Combat Bonds (5 Show Bonds + 5 Cross-Card Bonds)",
+      "domain": "combat",
+      "provenance": "sourced",
+      "source": "docs/ROSTER.md#1-roster-rules-roles--stat-baselines",
+      "verified_runtime": true
+    },
+    {
+      "id": "heavens_arena_tower_100",
+      "name": "100-Floor Heavens Arena Tower & Floor 100 Exclusive",
+      "domain": "endgame",
+      "provenance": "sourced",
+      "source": "docs/GDD.md#2-core-gameplay-loop",
+      "verified_runtime": true
+    },
+    {
+      "id": "coop_raids_2",
+      "name": "2 Co-op Raids (Skull Island & Shibuya Breach)",
+      "domain": "endgame",
+      "provenance": "sourced",
+      "source": "docs/GDD.md#2-core-gameplay-loop",
+      "verified_runtime": true
+    },
+    {
+      "id": "async_ranked_pvp",
+      "name": "Async Ranked Arena PvP (Defense Snapshots, Elo & Grandmaster Exclusive)",
+      "domain": "pvp",
+      "provenance": "sourced",
+      "source": "docs/GDD.md#2-core-gameplay-loop",
+      "verified_runtime": true
+    },
+    {
+      "id": "rebirth_and_skill_tree",
+      "name": "Guided Rebirth Prestige & Permanent Skill Tree",
+      "domain": "meta",
+      "provenance": "sourced",
+      "source": "docs/ECONOMY.md#1-currency-sources--sinks",
+      "verified_runtime": true
+    },
+    {
+      "id": "charms_crafting_equip",
+      "name": "Charms Crafting & Equipping (Up to 3 Slots)",
+      "domain": "meta",
+      "provenance": "sourced",
+      "source": "docs/GDD.md#4-rolling-stacked-luck--weather-systems",
+      "verified_runtime": true
+    },
+    {
+      "id": "retention_quests_streak_codes_lb",
+      "name": "Daily/Weekly Quests, 7-Day Streak, Playtime Rewards, Promo Codes & Leaderboards",
+      "domain": "retention",
+      "provenance": "sourced",
+      "source": "docs/ECONOMY.md#1-currency-sources--sinks",
+      "verified_runtime": true
+    },
+    {
+      "id": "dynamic_weather_events",
+      "name": "Dynamic Weather Events & Stacked Luck Multiplier",
+      "domain": "world",
+      "provenance": "sourced",
+      "source": "docs/GDD.md#4-rolling-stacked-luck--weather-systems",
+      "verified_runtime": true
+    },
+    {
+      "id": "monetization_22_passes_products",
+      "name": "Monetization (22 Passes/Products, Idempotent ProcessReceipt, Premium & Group Perks)",
+      "domain": "monetization",
+      "provenance": "sourced",
+      "source": "docs/MONETIZATION.md#1-monetization-overview",
+      "verified_runtime": true
+    },
+    {
+      "id": "analytics_onboarding_funnel",
+      "name": "Analytics Onboarding Funnel & Progression Telemetry",
+      "domain": "analytics",
+      "provenance": "sourced",
+      "source": "docs/GDD.md#1-high-concept-vision--product-pillars",
+      "verified_runtime": true
+    },
+    {
+      "id": "nexus_plaza_hub_portals",
+      "name": "Expanded 5-World Nexus Plaza Hub & Endgame Shrines",
+      "domain": "world",
+      "provenance": "sourced",
+      "source": "docs/GDD.md#2-core-gameplay-loop",
+      "verified_runtime": true
+    },
+    {
+      "id": "settings_light_dark_theme",
+      "name": "Settings-Only Light/Dark Theme Toggle & Accessibility Controls",
+      "domain": "ui",
+      "provenance": "sourced",
+      "source": "docs/GDD.md#1-high-concept-vision--product-pillars",
+      "verified_runtime": true
+    }
+  ]
+}

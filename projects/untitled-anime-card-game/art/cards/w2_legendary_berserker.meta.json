@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/w2_legendary_berserker.pending-angle.a36b79cf0216.png",
+    "candidate_sha256": "a36b79cf02165e85900962182ae5cdc790601ee788f0378c97f5eaf576108126",
+    "height": 1448,
+    "status": "PENDING_VISION",
+    "width": 1086
+  },
+  "approved_at": "2026-11-24T02:19:03Z",
+  "approved_by": "designer",
+  "bytes": 3425725,
+  "candidate_path": "art/cards/w2_legendary_berserker.pending-angle.a36b79cf0216.png",
+  "candidate_sha256": "a36b79cf02165e85900962182ae5cdc790601ee788f0378c97f5eaf576108126",
+  "created_at": "2026-11-24T02:16:34Z",
+  "height": 1448,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/w2_legendary_berserker.png",
+  "promoted_from": "art/cards/w2_legendary_berserker.pending-angle.a36b79cf0216.png",
+  "prompt": "Transform this reference character into an overwhelming vertical anime trading card game illustration in colossal three-quarter berserker stance radiating volcanic emerald green energy waves and shattered stone debris, crisp cel-shaded anime key art lighting, intense lime-green lightning aura, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/broly.jpg"
+  ],
+  "requested_path": "art/cards/w2_legendary_berserker.png",
+  "review_notes": "Verified w2_legendary_berserker visually against ref art/references/broly.jpg: exact character likeness, dynamic anime card composition, zero text/watermarks.",
+  "sha256": "a36b79cf02165e85900962182ae5cdc790601ee788f0378c97f5eaf576108126",
+  "status": "approved",
+  "version": 1,
+  "width": 1086
+}
