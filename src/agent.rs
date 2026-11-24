@@ -232,13 +232,20 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - {{\"tool\": \"adapter_list\", \"args\": {{\"capability\": \"image_gen|reference_search|mesh_gen|audio_gen|custom\"}}}} lists installed CLI/HTTP tool adapters and availability\n\
 - {{\"tool\": \"adapter_invoke\", \"args\": {{\"capability\": \"...\", \"adapter_id\": \"...?\", \"params\": {{...}}}}}} runs an installed CLI/HTTP adapter (or capability priority chain)\n\
 - {{\"tool\": \"assets_upload\", \"args\": {{\"paths\": [\"art/cards/x/art.png\"]}}}} uploads authorised assets via Open Cloud into assets.lock.json\n\
+- {{\"tool\": \"evidence_record\", \"args\": {{\"summary\": \"...\", \"confidence\": \"observed|derived|inferred\", \"kind\": \"...\", \"source\": \"...\"}}}} appends canonical SHA-256 evidence (`ev_*`) to `.openro/investigation/evidence.jsonl`\n\
+- {{\"tool\": \"evidence_list\", \"args\": {{\"confidence\": \"...?\", \"kind\": \"...?\", \"limit\": 50}}}} lists recorded investigation evidence\n\
+- {{\"tool\": \"unknown_add\", \"args\": {{\"title\": \"...\", \"question\": \"...\", \"severity\": \"high\", \"domain\": \"mechanics\"}}}} logs an open unknown (`unk_*`)\n\
+- {{\"tool\": \"unknown_update\", \"args\": {{\"id\": \"unk_...\", \"expected_revision\": 1, \"status\": \"resolved\", \"resolution\": \"...\", \"evidence_for\": [\"ev_...\"]}}}} updates/resolves an unknown (resolving fails closed without `resolution` + verified `ev_*` IDs)\n\
+- {{\"tool\": \"unknowns_list\", \"args\": {{\"status\": \"open\"}}}} lists tracked unknowns\n\
+- {{\"tool\": \"mechanics_check\", \"args\": {{\"path\": \"docs/mechanics.json\", \"strict\": false}}}} validates mechanics.json provenance (warns if literal config is not runtime-verified)\n\
+- {{\"tool\": \"study_status\", \"args\": {{}}}} returns Study -> Build -> Check -> Ready stage, clean_room flag, evidence/unknowns, and kept-check status\n\
 - {{\"tool\": \"playtest\", \"args\": {{}}}} runs static + live playtest verification\n\
 - {{\"done\": true, \"summary\": \"...\"}} finishes.\n\n\
 3D, VFX & UI GUARDRAILS:\n\
 - PartType.Cylinder runs along its LOCAL X axis: upright columns/pillars MUST set Size = Vector3.new(height, diameter, diameter) with CFrame.Angles(0, 0, math.rad(90)).\n\
 - Mobile StreamingEnabled budgets: <=20,000 tris/mesh, <=40 active ParticleEmitters, <=12 non-shadow lights. Clean up every transient VFX/Part/Sound via Debris:AddItem or pooling.\n\
 - Respect Settings-only Light/Dark theme and FlashEnabled/ReducedMotion toggles; wire meshes via assets/meshes/manifest.json + src/shared/AssetIds.luau.\n\n\
-Workflow (ONE JSON object per turn): When a Rojo project is active, read docs/files with project_files/project_read_file/project_grep, author with project_write_file/project_edit_file, lint with project_check/project_run_lune, then sync & verify with project_sync/project_playtest before {{\"done\": true, \"summary\": \"...\"}}. For place-only builds, use skills/write_luau/multi_edit and playtest. Repair every lint or console error until verification passes.\n\n{}",
+Workflow — Study -> Build -> Check -> Refine (ONE JSON object per turn): First Study (respect `clean_room`; record verified facts with `evidence_record`, log open questions with `unknown_add`, validate `mechanics_check`), then Build (`project_write_file`/`project_edit_file`), then Check (`project_check`/`project_run_lune`/`project_sync`/`project_playtest`, resolving unknowns via `unknown_update` only with verified `ev_*` IDs), then Refine until `study_status` and verification pass cleanly before {{\"done\": true, \"summary\": \"...\"}}.\n\n{}",
         crate::art_knowledge::prompt_guidance()
     )
 }
@@ -279,11 +286,16 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - audio_generate {{\"name\": \"Sfx\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}} (-> assets/audio/)\n\
 - adapter_list {{\"capability\": \"...?\"}} / adapter_invoke {{\"capability\": \"...\", \"adapter_id\": \"...?\", \"params\": {{...}}}} (custom CLI/HTTP tool adapters)\n\
 - assets_upload {{\"paths\": [...]}} (authorised Open Cloud upload -> assets.lock.json)\n\n\
+STUDY, EVIDENCE & CONTRACT CHECK TOOLS (Study -> Build -> Check -> Refine):\n\
+- evidence_record {{\"summary\": \"...\", \"confidence\": \"observed|derived|inferred\", \"kind\": \"...\", \"source\": \"...\"}} / evidence_list {{\"confidence\": \"...?\", \"limit\": 50}}\n\
+- unknown_add {{\"title\": \"...\", \"question\": \"...\", \"severity\": \"high\", \"domain\": \"...\"}} / unknowns_list {{\"status\": \"open\"}}\n\
+- unknown_update {{\"id\": \"unk_...\", \"expected_revision\": 1, \"status\": \"resolved\", \"resolution\": \"...\", \"evidence_for\": [\"ev_...\"]}} (fail-closed: resolving requires resolution + verified ev_*)\n\
+- mechanics_check {{\"path\": \"docs/mechanics.json\", \"strict\": false}} / study_status {{}}\n\n\
 3D, VFX & UI GUARDRAILS:\n\
 - PartType.Cylinder runs along LOCAL X: upright pillars MUST set Size = Vector3.new(height, diameter, diameter) + CFrame.Angles(0, 0, math.rad(90)).\n\
 - Mobile StreamingEnabled budgets: <=20,000 tris/mesh, <=40 active ParticleEmitters, <=12 non-shadow lights. Clean up transient VFX/Parts/Sounds via Debris:AddItem or pooling.\n\
 - Enforce Settings-only Light/Dark theme and FlashEnabled/ReducedMotion toggles; wire meshes/art via assets/meshes/manifest.json and src/shared/AssetIds.luau.\n\
-- Batch related file writes together, then run project_check / project_run_lune and project_playtest (sync_first: true) before finishing.\n\n{}",
+- Follow Study -> Build -> Check -> Refine: record evidence, track/resolve unknowns with verified ev_* IDs, batch file writes, then verify with mechanics_check, project_check / project_run_lune, and project_playtest (sync_first: true) before finishing.\n\n{}",
         crate::art_knowledge::prompt_guidance()
     )
 }
@@ -2922,6 +2934,9 @@ impl Agent {
                                         | "audio_generate"
                                         | "assets_upload"
                                         | "adapter_invoke"
+                                        | "evidence_record"
+                                        | "unknown_add"
+                                        | "unknown_update"
                                 ) {
                                     changes_made += 1;
                                 }
@@ -3379,6 +3394,9 @@ impl Agent {
                                 | "audio_generate"
                                 | "assets_upload"
                                 | "adapter_invoke"
+                                | "evidence_record"
+                                | "unknown_add"
+                                | "unknown_update"
                         ) {
                             changes_made += 1;
                         }
@@ -4201,11 +4219,128 @@ impl Agent {
                     hook(args)?
                 } else {
                     let root = self.require_project_root()?;
-                    project_check_local(&root)?
+                    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+                    crate::projects::check_project_with_full_options(&root, false, None, force)?
                 };
                 let text = res.to_string();
                 transcript.push(format!("tool project_check -> passed={}", res["passed"]));
                 Ok(format!("tool_result: project_check: {text}"))
+            }
+            "evidence_record" => {
+                let root = self.require_project_root()?;
+                let res = crate::study_check::record_evidence(&root, args)
+                    .map_err(|e| e.message)?;
+                let text = res.to_string();
+                let eid = res
+                    .pointer("/evidence/id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("ev");
+                transcript.push(format!("tool evidence_record -> {eid}"));
+                Ok(format!("tool_result: evidence_record: {text}"))
+            }
+            "evidence_list" => {
+                let root = self.require_project_root()?;
+                let filter = crate::study_check::EvidenceFilter {
+                    confidence: args
+                        .get("confidence")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from),
+                    kind: args
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from),
+                    source: args
+                        .get("source")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from),
+                    limit: args.get("limit").and_then(|v| v.as_u64()).map(|n| n as usize),
+                };
+                let res = crate::study_check::list_evidence(&root, &filter)
+                    .map_err(|e| e.message)?;
+                let text = res.to_string();
+                transcript.push(format!("tool evidence_list -> matched={}", res["matched"]));
+                Ok(format!("tool_result: evidence_list: {text}"))
+            }
+            "unknown_add" => {
+                let root = self.require_project_root()?;
+                let res = crate::study_check::add_unknown(&root, args)
+                    .map_err(|e| e.message)?;
+                let text = res.to_string();
+                let uid = res
+                    .pointer("/unknown/id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unk");
+                transcript.push(format!("tool unknown_add -> {uid}"));
+                Ok(format!("tool_result: unknown_add: {text}"))
+            }
+            "unknown_update" => {
+                let root = self.require_project_root()?;
+                let id = args
+                    .get("id")
+                    .or_else(|| args.get("unknown_id"))
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or("unknown_update needs args.id")?;
+                let res = crate::study_check::update_unknown(&root, id, args)
+                    .map_err(|e| e.message)?;
+                let text = res.to_string();
+                let st = res
+                    .pointer("/unknown/status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("updated");
+                transcript.push(format!("tool unknown_update({id}) -> {st}"));
+                Ok(format!("tool_result: unknown_update: {text}"))
+            }
+            "unknowns_list" => {
+                let root = self.require_project_root()?;
+                let status = args
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let severity = args
+                    .get("severity")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let domain = args
+                    .get("domain")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let res = crate::study_check::list_unknowns(&root, status, severity, domain)
+                    .map_err(|e| e.message)?;
+                let text = res.to_string();
+                transcript.push(format!("tool unknowns_list -> open={}", res["open_count"]));
+                Ok(format!("tool_result: unknowns_list: {text}"))
+            }
+            "mechanics_check" => {
+                let root = self.require_project_root()?;
+                let rel_path = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let strict = args.get("strict").and_then(|v| v.as_bool()).unwrap_or(false);
+                let res = crate::study_check::check_mechanics(&root, rel_path, strict)
+                    .map_err(|e| e.message)?;
+                let text = res.to_string();
+                transcript.push(format!("tool mechanics_check -> passed={}", res["passed"]));
+                Ok(format!("tool_result: mechanics_check: {text}"))
+            }
+            "study_status" => {
+                let root = self.require_project_root()?;
+                let res = crate::study_check::study_status(&root).map_err(|e| e.message)?;
+                let text = res.to_string();
+                transcript.push(format!("tool study_status -> stage={}", res["stage"]));
+                Ok(format!("tool_result: study_status: {text}"))
             }
             "project_run_lune" => {
                 let res = if let Some(hook) = &self.hooks.project_run_lune {
@@ -5383,6 +5518,10 @@ fn is_read_only_tool(tool: &str) -> bool {
             | "web_search"
             | "reference_search"
             | "adapter_list"
+            | "evidence_list"
+            | "unknowns_list"
+            | "mechanics_check"
+            | "study_status"
     )
 }
 
