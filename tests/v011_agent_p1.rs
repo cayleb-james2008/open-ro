@@ -690,3 +690,111 @@ fn gap42_broken_steps_batch_returns_error_instead_of_silently_running_step_1() {
     let ok = parse_step(single_mentioning_steps).expect("single step mentioning steps in string");
     assert_eq!(ok["tool"], "project_write_file");
 }
+
+#[test]
+fn gap60_project_grep_aliases_and_agy_multi_turn_read_retention() {
+    let dir = scratch("gap60");
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(proj.join("src/server")).unwrap();
+    std::fs::create_dir_all(proj.join("src/client")).unwrap();
+    std::fs::write(
+        proj.join("default.project.json"),
+        r#"{"name":"G60","tree":{"$className":"DataModel"}}"#,
+    )
+    .unwrap();
+
+    // Three ~5 KiB files so reading them across turns 1-3 exceeds the old 2-turn / 2.2 KiB cutoff.
+    let pad = "-- filler line for retention test\n".repeat(75);
+    std::fs::write(
+        proj.join("src/server/Worlds.luau"),
+        format!("{pad}local WORLDS_MID_TOKEN = \"WORLD_ONE_ALIVE\"\n{pad}"),
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("src/server/BattleSim.luau"),
+        format!("{pad}local BATTLE_MID_TOKEN = \"CRIT_MULTIPLIER\"\n{pad}"),
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("src/client/Hud.client.luau"),
+        format!("{pad}local HUD_MID_TOKEN = \"BANNER_READY\"\n{pad}"),
+    )
+    .unwrap();
+
+    // Fake agy script that logs each turn's `-p` prompt so we can assert Turn 1's read
+    // is STILL verbatim inside Turn 4's prompt!
+    let log_dir = dir.join("prompts");
+    std::fs::create_dir_all(&log_dir).unwrap();
+    let script_path = dir.join("agy_g60");
+    let t1 = ok_event(r#"{"tool":"project_read_file","args":{"path":"src/server/Worlds.luau"}}"#);
+    let t2 = ok_event(r#"{"tool":"project_read_file","args":{"path":"src/server/BattleSim.luau"}}"#);
+    let t3 = ok_event(r#"{"tool":"project_read_file","args":{"path":"src/client/Hud.client.luau"}}"#);
+    let t4 = ok_event(
+        r#"{"steps":[{"tool":"project_grep","args":{"pattern":"WORLD_ONE_ALIVE","path":"src/server"}},{"tool":"project_grep","args":{"pattern":"CRIT_MULTIPLIER","path":"src/server/BattleSim.luau"}}],"done":true,"summary":"Verified multi-turn reads and grep aliases."}"#,
+    );
+    let body = format!(
+        r#"#!/bin/bash
+cat >/dev/null
+COUNT_FILE="{count}"
+N=0
+if [ -f "$COUNT_FILE" ]; then N=$(cat "$COUNT_FILE"); fi
+N=$((N + 1))
+echo "$N" > "$COUNT_FILE"
+# Capture the `-p` prompt argument ($2)
+printf '%s' "$2" > "{log}/turn_${{N}}.txt"
+case "$N" in
+  1) printf '%s\n' '{t1}' ;;
+  2) printf '%s\n' '{t2}' ;;
+  3) printf '%s\n' '{t3}' ;;
+  *) printf '%s\n' '{t4}' ;;
+esac
+"#,
+        count = dir.join("count.txt").display(),
+        log = log_dir.display(),
+        t1 = t1.replace('\'', r"'\''"),
+        t2 = t2.replace('\'', r"'\''"),
+        t3 = t3.replace('\'', r"'\''"),
+        t4 = t4.replace('\'', r"'\''"),
+    );
+    std::fs::write(&script_path, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let model = ModelClient::antigravity(None)
+        .with_agy_bin(script_path)
+        .with_agy_dir(dir.join("sb"));
+    let mut agent = Agent::with_local_place(model, LocalPlace::in_memory("G60".into()));
+    agent.set_project(Some(proj.clone()), Some("g60".into()));
+
+    let outcome = agent
+        .run_ask_with_options(
+            "g60-chat",
+            "Inspect all 3 files then grep with pattern+path aliases.",
+            AskOptions {
+                mode: AskMode::Agent,
+                ..Default::default()
+            },
+        )
+        .expect("agent turn should succeed");
+
+    // 1. Verify Turn 4's actual `agy -p` prompt retained Turn 1, Turn 2, and Turn 3 reads verbatim!
+    let p4 = std::fs::read_to_string(log_dir.join("turn_4.txt")).expect("turn 4 prompt logged");
+    assert!(p4.contains("WORLD_ONE_ALIVE"), "Turn 1 Worlds.luau middle was dropped by turn 4!");
+    assert!(p4.contains("CRIT_MULTIPLIER"), "Turn 2 BattleSim.luau middle was dropped by turn 4!");
+    assert!(p4.contains("BANNER_READY"), "Turn 3 Hud.client.luau middle was dropped by turn 4!");
+    assert!(!p4.contains("re-read file if needed"), "no read should be truncated inside budget");
+
+    // 2. Verify both `project_grep` calls using `pattern` + `path` (dir and single file) matched!
+    let joined = outcome.transcript.join("\n");
+    assert!(
+        joined.contains("tool project_grep(WORLD_ONE_ALIVE) -> 1 matches"),
+        "expected dir-scoped pattern/path grep match in transcript:\n{joined}"
+    );
+    assert!(
+        joined.contains("tool project_grep(CRIT_MULTIPLIER) -> 1 matches"),
+        "expected file-scoped pattern/path grep match in transcript:\n{joined}"
+    );
+}
