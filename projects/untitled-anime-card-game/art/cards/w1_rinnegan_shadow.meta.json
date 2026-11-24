@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/w1_rinnegan_shadow.pending-angle.7c03e2dff608.png",
+    "candidate_sha256": "7c03e2dff6080aa0410c8546f420c1fdf6e7118d117b48bf539682bf7a8c1354",
+    "height": 1505,
+    "status": "PENDING_VISION",
+    "width": 1045
+  },
+  "approved_at": "2026-11-24T01:31:16Z",
+  "approved_by": "designer",
+  "bytes": 2589422,
+  "candidate_path": "art/cards/w1_rinnegan_shadow.pending-angle.7c03e2dff608.png",
+  "candidate_sha256": "7c03e2dff6080aa0410c8546f420c1fdf6e7118d117b48bf539682bf7a8c1354",
+  "created_at": "2026-11-24T01:26:16Z",
+  "height": 1505,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/w1_rinnegan_shadow.png",
+  "promoted_from": "art/cards/w1_rinnegan_shadow.pending-angle.7c03e2dff608.png",
+  "prompt": "Transform this reference character into a high-impact vertical anime trading card game illustration in dramatic three-quarter action pose wielding crackling violet lightning energy and dark ethereal chakra aura, crisp cel-shaded anime key art lighting, electric purple and indigo storm glow, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/sasuke_uchiha.jpg"
+  ],
+  "requested_path": "art/cards/w1_rinnegan_shadow.png",
+  "review_notes": "Verified w1_rinnegan_shadow visually against owner curated ref art/references/sasuke_uchiha.jpg: faithful likeness, dynamic 3/4 pose, crisp anime lighting, zero text/watermarks.",
+  "sha256": "7c03e2dff6080aa0410c8546f420c1fdf6e7118d117b48bf539682bf7a8c1354",
+  "status": "approved",
+  "version": 1,
+  "width": 1045
+}
