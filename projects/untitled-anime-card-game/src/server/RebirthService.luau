@@ -192,12 +192,13 @@ function RebirthService.buySkillNode(
 	if node.prereq and pAny.skillNodes[node.prereq] ~= true then
 		return false, nil, "Unlock prerequisite node first."
 	end
+	local cost = (node :: any).cost or (node :: any).costPerRank or 1
 	local points = pAny.skillPoints or 0
-	if points < node.cost then
-		return false, nil, string.format("Need %d Skill Points.", node.cost)
+	if points < cost then
+		return false, nil, string.format("Need %d Skill Points.", cost)
 	end
 
-	pAny.skillPoints = points - node.cost
+	pAny.skillPoints = points - cost
 	pAny.skillNodes[nodeId] = true
 
 	return true, {
