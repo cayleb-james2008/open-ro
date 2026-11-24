@@ -941,3 +941,319 @@ else:
     assert_eq!(status["mechanics"]["counts"]["sourced"], 1);
     assert_eq!(status["mechanics"]["counts"]["config_only_warnings"], 1);
 }
+
+#[test]
+fn gap70_agent_opencloud_and_creator_hub_tools_end_to_end() {
+    use std::sync::Mutex;
+
+    // 1. Prompt surfaces all 11 Open Cloud & Creator Hub tools while staying lean (< 7 KB).
+    let psp = project_system_prompt();
+    let sp = openro_rs::agent::system_prompt();
+    for prompt in [&psp, &sp] {
+        for tool in [
+            "opencloud_status",
+            "creator_hub_status",
+            "creator_hub_setup",
+            "creator_hub_configure",
+            "assets_authorise",
+            "assets_codegen",
+            "products_sync",
+            "products_codegen",
+            "project_publish",
+            "universe_get",
+            "universe_set",
+        ] {
+            assert!(prompt.contains(tool), "prompt missing tool {tool}");
+        }
+    }
+    assert!(psp.len() < 7_000, "project_system_prompt exceeded lean 7 KB cap: {}", psp.len());
+
+    // 2. Query string encoding helper check.
+    let q = openro_rs::agent::creator_hub_status_query(&json!({
+        "cdp_url": "http://127.0.0.1:9222",
+        "check_login": true,
+        "save_creator": true
+    }));
+    assert!(q.contains("cdp_url=http%3A%2F%2F127.0.0.1%3A9222"), "{q}");
+    assert!(q.contains("check_login=1") && q.contains("save_creator=1"), "{q}");
+
+    // 3. End-to-end HTTP `POST /api/chat` Agent run wired via `server::sync_agent_project`
+    //    exercising ALL 11 tools against mock `OPENRO_CREATOR_HUB_CMD` + mock Open Cloud HTTP!
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    struct EnvRestore(Vec<(&'static str, Option<String>)>);
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (k, old) in &self.0 {
+                match old {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
+    let dir = scratch("gap70");
+    let data = dir.join("data");
+    let secrets_dir = dir.join("secrets");
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(proj.join("src/shared")).unwrap();
+    std::fs::create_dir_all(proj.join("build/builds")).unwrap();
+    std::fs::write(
+        proj.join("default.project.json"),
+        r#"{"name":"G70","tree":{"$className":"DataModel"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("openro.project.json"),
+        json!({
+            "version": 1,
+            "name": "G70 Demo",
+            "slug": "g70-demo",
+            "universeId": null,
+            "placeId": null,
+            "products": [
+                { "key": "vip_pass", "kind": "game_pass", "name": "VIP", "priceRobux": 199, "priceApproved": true, "id": "555001" },
+                { "key": "gems_100", "kind": "developer_product", "name": "100 Gems", "priceRobux": 99, "priceApproved": true, "robloxId": "666001" }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("build/latest.rbxlx"),
+        "<roblox version=\"4\"></roblox>",
+    )
+    .unwrap();
+    std::fs::write(
+        proj.join("build/builds/b-g70.json"),
+        json!({ "build_id": "b-g70", "path": "build/latest.rbxlx", "at": 100 }).to_string(),
+    )
+    .unwrap();
+
+    // Mock Creator Hub CDP script
+    let mock_cdp = dir.join("mock_creator_hub_g70.py");
+    std::fs::write(
+        &mock_cdp,
+        r#"#!/usr/bin/env python3
+import argparse, json, sys
+
+p = argparse.ArgumentParser()
+p.add_argument("--action", required=True)
+p.add_argument("--cdp-url", required=True)
+p.add_argument("--key-out", default=None)
+p.add_argument("--check-login", action="store_true")
+args = p.parse_args()
+spec = json.loads(sys.stdin.read() or "{}")
+
+if args.action == "status":
+    print(json.dumps({
+        "ok": True,
+        "cdp_reachable": True,
+        "browser_version": "Chrome/135-mock",
+        "logged_in": True,
+        "user": {"id": "1170918805", "name": "Chrono_H3X", "displayName": "Chrono"},
+        "experiences": [{"universeId": "10771116814", "rootPlaceId": "112916648108736", "name": "G70 Demo"}]
+    }))
+    sys.exit(0)
+
+if args.action == "setup":
+    if args.key_out:
+        with open(args.key_out, "w", encoding="utf-8") as f:
+            f.write("SECRET_OPENCLOUD_G70_KEY_XYZ1234")
+    print(json.dumps({
+        "ok": True,
+        "status": "ready",
+        "key_provisioned": True,
+        "user": {"id": "1170918805", "name": "Chrono_H3X", "displayName": "Chrono"},
+        "universeId": "10771116814",
+        "placeId": "112916648108736",
+        "experience_name": "G70 Demo",
+        "experiences": [{"universeId": "10771116814", "rootPlaceId": "112916648108736", "name": "G70 Demo"}]
+    }))
+    sys.exit(0)
+
+if args.action == "configure":
+    if spec.get("name") == "TRIGGER_2FA":
+        print(json.dumps({
+            "ok": False,
+            "status": "action_required",
+            "blocked_reason": "2fa_required",
+            "url": "https://create.roblox.com/dashboard/creations",
+            "message": "Complete 2FA in the open browser tab."
+        }))
+        sys.exit(0)
+    print(json.dumps({
+        "ok": True,
+        "status": "ready",
+        "configured": ["private_servers"],
+        "manual_steps_remaining": []
+    }))
+    sys.exit(0)
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&mock_cdp, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // Mock Open Cloud HTTP server for universe_get / universe_set / products_sync / project_publish
+    let oc_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let oc_port = oc_listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut stream in oc_listener.incoming().flatten() {
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let first = req.lines().next().unwrap_or("");
+            let parts: Vec<&str> = first.split_whitespace().collect();
+            let method = *parts.first().unwrap_or(&"GET");
+            let path = *parts.get(1).unwrap_or(&"/");
+            let body = if path.contains("/versions") {
+                json!({ "versionNumber": 7 }).to_string()
+            } else if path.contains("/game-passes") {
+                if method == "GET" {
+                    json!({ "gamePasses": [{ "gamePassId": 555001, "name": "VIP" }] }).to_string()
+                } else {
+                    json!({ "gamePassId": 555001, "name": "VIP" }).to_string()
+                }
+            } else if path.contains("/developer-products") {
+                if method == "GET" {
+                    json!({ "developerProducts": [{ "productId": 666001, "name": "100 Gems" }] }).to_string()
+                } else {
+                    json!({ "productId": 666001, "name": "100 Gems" }).to_string()
+                }
+            } else if method == "PATCH" {
+                json!({ "displayName": "G70 Updated", "description": "Updated desc" }).to_string()
+            } else {
+                json!({ "displayName": "G70 Demo", "description": "Initial desc", "visibility": "PRIVATE" }).to_string()
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+
+    // Mock OpenAI-compatible LLM driving 3 Agent turns across ALL 11 tools + unconfirmed live publish guard!
+    let turn = Arc::new(AtomicUsize::new(0));
+    let turn_c = Arc::clone(&turn);
+    let llm_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let llm_port = llm_listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut stream in llm_listener.incoming().flatten() {
+            let mut buf = [0u8; 16384];
+            let _ = stream.read(&mut buf);
+            let n = turn_c.fetch_add(1, Ordering::SeqCst);
+            let content = match n {
+                0 => json!({
+                    "steps": [
+                        { "tool": "opencloud_status", "args": {} },
+                        { "tool": "creator_hub_status", "args": { "cdp_url": "http://127.0.0.1:9222", "check_login": true, "save_creator": true } },
+                        { "tool": "creator_hub_setup", "args": { "cdp_url": "http://127.0.0.1:9222", "ensure_experience": true } },
+                        { "tool": "creator_hub_configure", "args": { "cdp_url": "http://127.0.0.1:9222", "name": "TRIGGER_2FA" } },
+                        { "tool": "creator_hub_configure", "args": { "cdp_url": "http://127.0.0.1:9222", "private_servers": { "enabled": true, "price_robux": 0 } } }
+                    ]
+                })
+                .to_string(),
+                1 => json!({
+                    "tool": "project_publish",
+                    "args": { "versionType": "Published" }
+                })
+                .to_string(),
+                2 => json!({
+                    "steps": [
+                        { "tool": "assets_authorise", "args": { "paths": ["art/cards/**"] } },
+                        { "tool": "assets_codegen", "args": {} },
+                        { "tool": "products_sync", "args": {} },
+                        { "tool": "products_codegen", "args": {} },
+                        { "tool": "universe_get", "args": {} },
+                        { "tool": "universe_set", "args": { "settings": { "displayName": "G70 Updated" } } },
+                        { "tool": "project_publish", "args": { "versionType": "Saved" } }
+                    ],
+                    "done": true,
+                    "summary": "All 11 Open Cloud and Creator Hub tools executed cleanly."
+                })
+                .to_string(),
+                _ => json!({ "done": true, "summary": "finished" }).to_string(),
+            };
+            let body = json!({
+                "choices": [{ "message": { "role": "assistant", "content": content } }]
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+
+    let _restore = EnvRestore(vec![
+        ("OPENRO_CREATOR_HUB_CMD", std::env::var("OPENRO_CREATOR_HUB_CMD").ok()),
+        ("OPENRO_SECRETS_DIR", std::env::var("OPENRO_SECRETS_DIR").ok()),
+        ("OPENRO_OPENCLOUD_BASE", std::env::var("OPENRO_OPENCLOUD_BASE").ok()),
+    ]);
+    std::env::set_var("OPENRO_CREATOR_HUB_CMD", &mock_cdp);
+    std::env::set_var("OPENRO_SECRETS_DIR", &secrets_dir);
+    std::env::set_var("OPENRO_OPENCLOUD_BASE", format!("http://127.0.0.1:{oc_port}"));
+
+    let model = ModelClient::new(format!("http://127.0.0.1:{llm_port}/v1"), "mock".into(), None);
+    let agent = Agent::with_local_place(model, LocalPlace::open(data.clone(), "G70".into()));
+    let shared = Shared::with_data_dir(Some(agent), "G70".into(), data.clone());
+    {
+        let mut store = shared.projects.lock().unwrap();
+        let entry = store.open(proj.to_str().unwrap()).unwrap();
+        store.set_active(&entry.id);
+    }
+    let srv_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = srv_listener.local_addr().unwrap().port();
+    let srv = Arc::clone(&shared);
+    std::thread::spawn(move || {
+        let _ = serve(srv_listener, srv);
+    });
+
+    let (st, chat) = http(
+        port,
+        "POST",
+        "/api/chat",
+        Some(&json!({ "message": "Set up Creator Hub, sync assets/products, and publish a Saved build." }).to_string()),
+    );
+    assert_eq!(st, 200, "{chat}");
+    assert_eq!(chat["ok"], true, "{chat}");
+    let chat_str = chat.to_string();
+    assert!(
+        !chat_str.contains("SECRET_OPENCLOUD_G70_KEY_XYZ1234"),
+        "raw Open Cloud key must NEVER appear in Agent response: {chat_str}"
+    );
+
+    // Verify Creator Hub setup linked manifest IDs + saved 0600 key, codegen wrote both Luau files,
+    // and unconfirmed Published was rejected before Saved succeeded!
+    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(proj.join("openro.project.json")).unwrap()).unwrap();
+    assert_eq!(manifest["universeId"], json!(10771116814u64));
+    assert_eq!(manifest["placeId"], json!(112916648108736u64));
+    assert!(proj.join("src/shared/AssetIds.luau").is_file(), "assets_codegen must generate AssetIds.luau");
+    assert!(proj.join("src/shared/ProductIds.luau").is_file(), "products_codegen must generate ProductIds.luau");
+
+    let transcript = chat["transcript"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default();
+    assert!(transcript.contains("tool opencloud_status ->"), "{transcript}");
+    assert!(transcript.contains("tool creator_hub_status ->") && transcript.contains("Chrono_H3X"), "{transcript}");
+    assert!(transcript.contains("tool creator_hub_setup ->") && transcript.contains("10771116814"), "{transcript}");
+    assert!(transcript.contains("action_required") && transcript.contains("2fa_required"), "{transcript}");
+    assert!(transcript.contains("confirm: true"), "unconfirmed Published must fail closed: {transcript}");
+    assert!(transcript.contains("tool assets_authorise ->"), "{transcript}");
+    assert!(transcript.contains("tool assets_codegen ->"), "{transcript}");
+    assert!(transcript.contains("tool products_sync ->"), "{transcript}");
+    assert!(transcript.contains("tool products_codegen ->"), "{transcript}");
+    assert!(transcript.contains("tool universe_get ->"), "{transcript}");
+    assert!(transcript.contains("tool universe_set ->"), "{transcript}");
+    assert!(transcript.contains("tool project_publish ->") && transcript.contains("versionNumber"), "{transcript}");
+}

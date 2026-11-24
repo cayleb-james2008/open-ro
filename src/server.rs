@@ -929,6 +929,7 @@ fn invoke_opencloud_tool(
     path: &str,
     body: &Value,
 ) -> Result<Value, String> {
+    let (clean_path, query) = path.split_once('?').unwrap_or((path, ""));
     let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
     let store = crate::secrets::SecretStore::for_data_dir(data_dir);
     let resolver = |id: &str| resolve_project_dir(shared, id);
@@ -938,11 +939,15 @@ fn invoke_opencloud_tool(
         resolve: &resolver,
         active_project: shared.active_project_dir(),
     };
-    let reply = crate::opencloud::route(&ctx, method, path, "", body)
-        .ok_or_else(|| format!("asset endpoint '{method} {path}' not available"))?;
+    let reply = crate::opencloud::route(&ctx, method, clean_path, query, body)
+        .ok_or_else(|| format!("asset endpoint '{method} {clean_path}' not available"))?;
     match reply {
         crate::opencloud::Reply::Json(code, val) => {
-            if code >= 400 || val.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+            let is_action_required =
+                val.get("status").and_then(|v| v.as_str()) == Some("action_required");
+            if code >= 400
+                || (val.get("ok").and_then(|v| v.as_bool()) == Some(false) && !is_action_required)
+            {
                 let err = val
                     .get("error")
                     .and_then(|v| v.as_str())
@@ -957,6 +962,17 @@ fn invoke_opencloud_tool(
             Ok(json!({ "ok": true, "mime": mime, "bytes": bytes.len() }))
         }
     }
+}
+
+fn resolve_agent_project_id(shared: &Shared, args: &Value, tool: &str) -> Result<String, String> {
+    args.get("project_id")
+        .or_else(|| args.get("project"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| shared.projects.lock().unwrap().active.clone())
+        .ok_or_else(|| format!("{tool} needs an active project or args.project_id"))
 }
 
 /// Bind the active project + real `openro-core` & `openro-assets` tool hooks onto `agent`.
@@ -1005,14 +1021,92 @@ fn sync_agent_project(
     if agent.hooks.assets_upload.is_none() {
         let srv = Arc::clone(shared);
         agent.hooks.assets_upload = Some(Arc::new(move |args| {
-            let pid = args
-                .get("project_id")
-                .or_else(|| args.get("project"))
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .or_else(|| srv.projects.lock().unwrap().active.clone())
-                .ok_or_else(|| "assets_upload needs an active project or args.project_id".to_string())?;
+            let pid = resolve_agent_project_id(&srv, args, "assets_upload")?;
             invoke_opencloud_tool(&srv, "POST", &format!("/api/projects/{pid}/assets/upload"), args)
+        }));
+    }
+    if agent.hooks.opencloud_status.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.opencloud_status = Some(Arc::new(move |args| {
+            invoke_opencloud_tool(&srv, "GET", "/api/opencloud", args)
+        }));
+    }
+    if agent.hooks.creator_hub_status.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.creator_hub_status = Some(Arc::new(move |args| {
+            let q = crate::agent::creator_hub_status_query(args);
+            let path = if q.is_empty() {
+                "/api/creator-hub/status".to_string()
+            } else {
+                format!("/api/creator-hub/status?{q}")
+            };
+            invoke_opencloud_tool(&srv, "GET", &path, args)
+        }));
+    }
+    if agent.hooks.creator_hub_setup.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.creator_hub_setup = Some(Arc::new(move |args| {
+            let path = match resolve_agent_project_id(&srv, args, "creator_hub_setup") {
+                Ok(pid) => format!("/api/projects/{pid}/creator-hub/setup"),
+                Err(_) => "/api/creator-hub/setup".to_string(),
+            };
+            invoke_opencloud_tool(&srv, "POST", &path, args)
+        }));
+    }
+    if agent.hooks.creator_hub_configure.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.creator_hub_configure = Some(Arc::new(move |args| {
+            let pid = resolve_agent_project_id(&srv, args, "creator_hub_configure")?;
+            invoke_opencloud_tool(&srv, "POST", &format!("/api/projects/{pid}/creator-hub/configure"), args)
+        }));
+    }
+    if agent.hooks.assets_authorise.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.assets_authorise = Some(Arc::new(move |args| {
+            let pid = resolve_agent_project_id(&srv, args, "assets_authorise")?;
+            invoke_opencloud_tool(&srv, "POST", &format!("/api/projects/{pid}/assets/authorise"), args)
+        }));
+    }
+    if agent.hooks.assets_codegen.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.assets_codegen = Some(Arc::new(move |args| {
+            let pid = resolve_agent_project_id(&srv, args, "assets_codegen")?;
+            invoke_opencloud_tool(&srv, "POST", &format!("/api/projects/{pid}/assets/codegen"), args)
+        }));
+    }
+    if agent.hooks.products_sync.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.products_sync = Some(Arc::new(move |args| {
+            let pid = resolve_agent_project_id(&srv, args, "products_sync")?;
+            invoke_opencloud_tool(&srv, "POST", &format!("/api/projects/{pid}/products/sync"), args)
+        }));
+    }
+    if agent.hooks.products_codegen.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.products_codegen = Some(Arc::new(move |args| {
+            let pid = resolve_agent_project_id(&srv, args, "products_codegen")?;
+            invoke_opencloud_tool(&srv, "POST", &format!("/api/projects/{pid}/products/codegen"), args)
+        }));
+    }
+    if agent.hooks.project_publish.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.project_publish = Some(Arc::new(move |args| {
+            let pid = resolve_agent_project_id(&srv, args, "project_publish")?;
+            invoke_opencloud_tool(&srv, "POST", &format!("/api/projects/{pid}/publish"), args)
+        }));
+    }
+    if agent.hooks.universe_get.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.universe_get = Some(Arc::new(move |args| {
+            let pid = resolve_agent_project_id(&srv, args, "universe_get")?;
+            invoke_opencloud_tool(&srv, "GET", &format!("/api/projects/{pid}/universe"), args)
+        }));
+    }
+    if agent.hooks.universe_set.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.universe_set = Some(Arc::new(move |args| {
+            let pid = resolve_agent_project_id(&srv, args, "universe_set")?;
+            invoke_opencloud_tool(&srv, "POST", &format!("/api/projects/{pid}/universe"), args)
         }));
     }
     if agent.hooks.mesh_generate.is_none() {
@@ -4264,6 +4358,8 @@ fn try_route_opencloud_assets(
 ) -> bool {
     let is_candidate = path == "/api/opencloud"
         || path.starts_with("/api/opencloud/")
+        || path == "/api/creator-hub"
+        || path.starts_with("/api/creator-hub/")
         || path == "/api/art"
         || path.starts_with("/api/art/")
         || path == "/api/tools/image/process"
@@ -4272,7 +4368,10 @@ fn try_route_opencloud_assets(
                 || path.ends_with("/publish")
                 || path.ends_with("/products")
                 || path.ends_with("/products/sync")
-                || path.ends_with("/universe")));
+                || path.ends_with("/products/codegen")
+                || path.ends_with("/universe")
+                || path.ends_with("/creator-hub/setup")
+                || path.ends_with("/creator-hub/configure")));
     if !is_candidate {
         return false;
     }
