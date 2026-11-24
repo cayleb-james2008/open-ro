@@ -4,6 +4,13 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## Unreleased (1.0.0)
+
+- **Browser-Backed Roblox Creator Hub Automation & Upgraded Open Cloud Pipeline (`src/creator_hub.rs`, `src/creator_hub_cdp.py`, `src/opencloud.rs`, `docs/API-V011-creator-hub.md`, `tests/v012_creator_hub.rs`, `OpenCloudSettings.tsx`, `PublishPanel.tsx`):**
+  - Added loopback-only Chromium CDP Creator Hub automation (`GET /api/creator-hub/status`, `POST /api/creator-hub/setup`, `POST /api/projects/:id/creator-hub/{setup,configure}`) with dedicated tab isolation, zero `.ROBLOSECURITY` cookie access, atomic `0600` temp-file Open Cloud key handoff into `SecretStore`, fail-closed `action_required` stops on login/2FA/OTP/CAPTCHA, auto-linking `universeId`/`placeId`, and dashboard configuration (Private Servers, Game Icon, Thumbnails, Content Rating check).
+  - Upgraded Open Cloud uploads with transparent `.wav -> .ogg` (`ffmpeg -nostdin`) & `.obj -> .fbx` (`blender`) conversion, Decal->Image XML resolution (`imageAssetId`), incremental `assets.lock.json` persistence, 6x `429` retry backoff, packed card aliases & mesh `assetId` in `AssetIds.luau`, `default_for_sale` + dual `id`/`robloxId` in `products_sync`, and `POST /api/projects/:id/products/codegen` (`stylua`-clean `src/shared/ProductIds.luau`).
+  - Exposed all 11 Open Cloud & Creator Hub tools (`opencloud_status`, `creator_hub_{status,setup,configure}`, `assets_{authorise,codegen}`, `products_{sync,codegen}`, `project_publish`, `universe_{get,set}`) to both Agent and Teamwork modes (preserving `confirm: true` live-publish gating and structured `action_required` stops), and surfaced 1-click **"Auto-setup from open browser"** & **"Configure via open browser"** inside OpenRO Settings & Ship UI.
+
 ## 0.12.0 - 2026-11-24
 
 - **Untitled Anime Card Game — M2 Content Complete + 54/54 Curated-Ref Card Portraits (`projects/untitled-anime-card-game/`):**
