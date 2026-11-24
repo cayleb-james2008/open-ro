@@ -4171,9 +4171,16 @@ impl Agent {
                 let root = self.require_project_root()?;
                 let query = args
                     .get("query")
+                    .or_else(|| args.get("pattern"))
                     .and_then(|v| v.as_str())
-                    .ok_or("project_grep needs args.query")?;
-                let dir = args.get("dir").and_then(|v| v.as_str()).unwrap_or("");
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or("project_grep needs args.query (or args.pattern)")?;
+                let dir = args
+                    .get("dir")
+                    .or_else(|| args.get("path"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let max_m = args.get("max_matches").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
                 let res = project_grep_files(&root, query, dir, max_m)?;
                 let text = res.to_string();
@@ -6061,7 +6068,13 @@ pub fn project_grep_files(
     };
     let canon_root = std::fs::canonicalize(root).map_err(|e| format!("project root: {e}"))?;
     let mut files = Vec::new();
-    collect_project_files(&canon_root, &start_dir, &mut files, 500);
+    if start_dir.is_file() {
+        if let Ok(rel) = start_dir.strip_prefix(&canon_root) {
+            files.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    } else {
+        collect_project_files(&canon_root, &start_dir, &mut files, 500);
+    }
     let cap = max_matches.clamp(1, 200);
     let mut matches = Vec::new();
     for rel in files {

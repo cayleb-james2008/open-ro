@@ -22,6 +22,11 @@ pub const AGY_DEFAULT_MODEL: &str = "gemini-4-hydrogen-high";
 const AGY_MISE_REL: &str = ".local/share/mise/installs/antigravity-cli/latest";
 /// Linux caps one argv string at 128 KiB; stay safely under it.
 const AGY_MAX_PROMPT_BYTES: usize = 96_000;
+/// Byte budget reserved for retaining recent `user` messages (e.g. multi-turn
+/// `project_read_file` `tool_result` outputs) intact before compacting older turns (#60).
+const AGY_USER_RETAIN_BUDGET_BYTES: usize = 60_000;
+/// Maximum number of recent `user` turns retained uncompacted inside the byte budget.
+const AGY_USER_RETAIN_MAX_TURNS: usize = 8;
 /// agy must act as a pure text model: every tool class is denied, so a model
 /// that tries to write a file, run a command or open a URL is refused by agy
 /// itself, whatever the prompt says.
@@ -350,36 +355,106 @@ fn compact_older_message(role: &str, content: &str) -> String {
 }
 
 /// Flatten an OpenAI-style conversation into one agy prompt.
+///
+/// Older `assistant` writes (>2 turns old) are compacted so large script bodies
+/// don't consume argv space, while recent `user` messages (`tool_result` reads)
+/// use a byte-budgeted retention window (`AGY_USER_RETAIN_BUDGET_BYTES` across
+/// up to `AGY_USER_RETAIN_MAX_TURNS` turns, bounded strictly within
+/// `AGY_MAX_PROMPT_BYTES`) so multi-turn reads are never prematurely dropped (#60).
 pub fn flatten_messages(messages: &[Value]) -> String {
     let text_of = |m: &Value| match m.get("content") {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Null) | None => String::new(),
         Some(other) => other.to_string(),
     };
-    let keep_recent_from = messages.len().saturating_sub(4);
-    let mut out = String::from(AGY_TEXT_ONLY);
+    let keep_assistant_from = messages.len().saturating_sub(4);
+
+    // Precompute non-user rendered text and compacted user baselines so we can
+    // budget how many recent `user` turns stay uncompacted within AGY_MAX_PROMPT_BYTES.
+    let mut roles: Vec<&str> = Vec::with_capacity(messages.len());
+    let mut raws: Vec<String> = Vec::with_capacity(messages.len());
+    let mut compacted_or_non_user: Vec<String> = Vec::with_capacity(messages.len());
+    let mut baseline_bytes = AGY_TEXT_ONLY.len() + "Assistant:".len();
+
     for (idx, m) in messages.iter().enumerate() {
         let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
         let raw = text_of(m);
-        let content = if role == "system" || role == "developer" || idx >= keep_recent_from {
-            raw
+        let rendered_base = if role == "system" || role == "developer" {
+            baseline_bytes += "[System Instructions]\n".len() + raw.len() + 2;
+            raw.clone()
+        } else if role == "user" {
+            let comp = compact_older_message(role, &raw);
+            baseline_bytes += "User: ".len() + comp.len() + 2;
+            comp
         } else {
-            compact_older_message(role, &raw)
+            let body = if idx >= keep_assistant_from {
+                raw.clone()
+            } else {
+                compact_older_message(role, &raw)
+            };
+            let prefix_len = if role == "assistant" {
+                "Assistant: ".len()
+            } else {
+                role.len() + 2
+            };
+            baseline_bytes += prefix_len + body.len() + 2;
+            body
+        };
+        roles.push(role);
+        raws.push(raw);
+        compacted_or_non_user.push(rendered_base);
+    }
+
+    // Decide which `user` messages stay intact walking backward from the newest turn.
+    let mut keep_user_raw = vec![false; messages.len()];
+    let prompt_headroom = AGY_MAX_PROMPT_BYTES.saturating_sub(baseline_bytes);
+    let mut kept_user_turns = 0usize;
+    let mut kept_user_bytes = 0usize;
+    let mut extra_used = 0usize;
+
+    for idx in (0..messages.len()).rev() {
+        if roles[idx] != "user" {
+            continue;
+        }
+        let raw_len = raws[idx].len();
+        let comp_len = compacted_or_non_user[idx].len();
+        let extra = raw_len.saturating_sub(comp_len);
+        if idx >= keep_assistant_from {
+            // Always preserve the newest 2 turns verbatim (fit_prompt still enforces cap).
+            keep_user_raw[idx] = true;
+            kept_user_turns += 1;
+            kept_user_bytes = kept_user_bytes.saturating_add(raw_len);
+            extra_used = extra_used.saturating_add(extra);
+            continue;
+        }
+        if kept_user_turns >= AGY_USER_RETAIN_MAX_TURNS {
+            break;
+        }
+        if kept_user_bytes.saturating_add(raw_len) > AGY_USER_RETAIN_BUDGET_BYTES {
+            break;
+        }
+        if extra_used.saturating_add(extra) > prompt_headroom {
+            break;
+        }
+        keep_user_raw[idx] = true;
+        kept_user_turns += 1;
+        kept_user_bytes = kept_user_bytes.saturating_add(raw_len);
+        extra_used = extra_used.saturating_add(extra);
+    }
+
+    let mut out = String::from(AGY_TEXT_ONLY);
+    for idx in 0..messages.len() {
+        let role = roles[idx];
+        let content = if role == "user" && keep_user_raw[idx] {
+            &raws[idx]
+        } else {
+            &compacted_or_non_user[idx]
         };
         match role {
-            "system" | "developer" => out.push_str(&format!("[System Instructions]
-{content}
-
-")),
-            "user" => out.push_str(&format!("User: {content}
-
-")),
-            "assistant" => out.push_str(&format!("Assistant: {content}
-
-")),
-            other => out.push_str(&format!("{other}: {content}
-
-")),
+            "system" | "developer" => out.push_str(&format!("[System Instructions]\n{content}\n\n")),
+            "user" => out.push_str(&format!("User: {content}\n\n")),
+            "assistant" => out.push_str(&format!("Assistant: {content}\n\n")),
+            other => out.push_str(&format!("{other}: {content}\n\n")),
         }
     }
     out.push_str("Assistant:");
@@ -876,5 +951,97 @@ mod tests {
         assert!(!remote.is_configured());
         let err = remote.chat(&[]).unwrap_err();
         assert!(err.contains("no model key configured"), "{err}");
+    }
+
+    #[test]
+    fn flatten_messages_retains_multi_turn_user_reads_within_budget() {
+        let mut msgs = vec![json!({"role": "system", "content": "sys instructions"})];
+        // Older assistant turn (>2 turns ago) writing a huge 40 KiB script: must still compact!
+        let huge_write = "w".repeat(40_000);
+        msgs.push(json!({
+            "role": "assistant",
+            "content": json!({"tool": "project_write_file", "args": {"path": "old.luau", "content": huge_write}}).to_string()
+        }));
+        msgs.push(json!({"role": "user", "content": "tool_result: project_write_file: ok"}));
+
+        // 6 subsequent turns of ~6.5 KiB `project_read_file` outputs (~39 KiB total <= 60 KiB budget).
+        for turn in 1..=6 {
+            msgs.push(json!({
+                "role": "assistant",
+                "content": format!(r#"{{"tool":"project_read_file","args":{{"path":"src/file{turn}.luau"}}}}"#)
+            }));
+            let pad = "a".repeat(3_000);
+            let sentinel = format!("MIDDLE_SENTINEL_FILE_{turn}");
+            msgs.push(json!({
+                "role": "user",
+                "content": format!("tool_result: project_read_file: {pad}{sentinel}{pad}")
+            }));
+        }
+
+        let flat = flatten_messages(&msgs);
+        assert!(
+            flat.len() <= AGY_MAX_PROMPT_BYTES,
+            "flattened prompt must stay <= {AGY_MAX_PROMPT_BYTES}, got {}",
+            flat.len()
+        );
+        // Older assistant 40 KiB write is still compacted (preserving v011_agent_p1:289).
+        assert!(
+            flat.contains("omitted 40000 bytes from earlier turn"),
+            "older assistant write must stay compacted"
+        );
+        // ALL 6 multi-turn user read outputs stay 100% intact with zero truncation!
+        for turn in 1..=6 {
+            let sentinel = format!("MIDDLE_SENTINEL_FILE_{turn}");
+            assert!(
+                flat.contains(&sentinel),
+                "expected turn {turn} read sentinel to survive compaction"
+            );
+        }
+        assert!(
+            !flat.contains("re-read file if needed"),
+            "multi-turn reads inside 60 KiB budget must not be truncated"
+        );
+    }
+
+    #[test]
+    fn flatten_messages_compacts_oldest_user_reads_beyond_budget_and_turn_cap() {
+        // Case A: byte budget exceeded (10 turns x 9 KiB = 90 KiB > 60 KiB).
+        let mut msgs = vec![json!({"role": "system", "content": "sys"})];
+        for turn in 1..=10 {
+            msgs.push(json!({"role": "assistant", "content": format!(r#"{{"tool":"project_read_file","args":{{"path":"f{turn:02}.luau"}}}}"#)}));
+            let pad = "b".repeat(4_400);
+            msgs.push(json!({
+                "role": "user",
+                "content": format!("tool_result: {pad}BUDGET_MARK_{turn:02}{pad}")
+            }));
+        }
+        let flat = flatten_messages(&msgs);
+        assert!(flat.len() <= AGY_MAX_PROMPT_BYTES, "got {}", flat.len());
+        // Newest 6 turns (~54 KiB <= 60 KiB) stay verbatim intact.
+        for turn in 5..=10 {
+            assert!(flat.contains(&format!("BUDGET_MARK_{turn:02}")), "missing turn {turn}");
+        }
+        // Oldest turn exceeded budget and was compacted cleanly without fit_prompt chopping recent turns.
+        assert!(!flat.contains("BUDGET_MARK_01"), "oldest turn should be compacted");
+        assert!(flat.contains("re-read file if needed"));
+        assert!(!flat.contains("of older conversation left out to fit"));
+
+        // Case B: turn cap exceeded (10 turns x 3.5 KiB = 35 KiB <= 60 KiB, > 8 turns).
+        let mut msgs_cap = vec![json!({"role": "system", "content": "sys"})];
+        for turn in 1..=10 {
+            msgs_cap.push(json!({"role": "assistant", "content": format!(r#"{{"tool":"project_read_file","args":{{"path":"c{turn:02}.luau"}}}}"#)}));
+            let pad = "c".repeat(1_700);
+            msgs_cap.push(json!({
+                "role": "user",
+                "content": format!("tool_result: {pad}CAP_MARK_{turn:02}{pad}")
+            }));
+        }
+        let flat_cap = flatten_messages(&msgs_cap);
+        assert!(flat_cap.len() <= AGY_MAX_PROMPT_BYTES);
+        for turn in 3..=10 {
+            assert!(flat_cap.contains(&format!("CAP_MARK_{turn:02}")), "missing turn {turn}");
+        }
+        assert!(!flat_cap.contains("CAP_MARK_01"), "turn 1 (>8 turns old) should compact");
+        assert!(!flat_cap.contains("CAP_MARK_02"), "turn 2 (>8 turns old) should compact");
     }
 }
