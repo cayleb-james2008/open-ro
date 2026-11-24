@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/boss_strongest_creature.pending-angle.8efd7e1bbad3.png",
+    "candidate_sha256": "8efd7e1bbad325691a8d4943c1407fa966853300645ac8b08014254fe9e5f72a",
+    "height": 1426,
+    "status": "PENDING_VISION",
+    "width": 1103
+  },
+  "approved_at": "2026-11-24T02:41:09Z",
+  "approved_by": "designer",
+  "bytes": 3099976,
+  "candidate_path": "art/cards/boss_strongest_creature.pending-angle.8efd7e1bbad3.png",
+  "candidate_sha256": "8efd7e1bbad325691a8d4943c1407fa966853300645ac8b08014254fe9e5f72a",
+  "created_at": "2026-11-24T02:37:01Z",
+  "height": 1426,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/boss_strongest_creature.png",
+  "promoted_from": "art/cards/boss_strongest_creature.pending-angle.8efd7e1bbad3.png",
+  "prompt": "Transform this reference character into a titanic vertical anime trading card boss illustration in roaring three-quarter combat pose swinging his spiked kanabo club crackling with violent violet-black conqueror lightning as colossal azure dragon storm clouds swirl behind him, crisp cel-shaded anime key art lighting, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/kaido.jpg"
+  ],
+  "requested_path": "art/cards/boss_strongest_creature.png",
+  "review_notes": "Verified boss_strongest_creature visually against owner curated ref art/references/kaido.jpg: faithful likeness, dynamic anime card composition, zero text/watermarks.",
+  "sha256": "8efd7e1bbad325691a8d4943c1407fa966853300645ac8b08014254fe9e5f72a",
+  "status": "approved",
+  "version": 1,
+  "width": 1103
+}

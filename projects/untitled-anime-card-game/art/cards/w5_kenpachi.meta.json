@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/w5_kenpachi.pending-angle.6edf282520ae.png",
+    "candidate_sha256": "6edf282520ae99aafa3b94aa28dcf4efd281a0bdbeacaeb8f68bb09375c2a8f9",
+    "height": 1536,
+    "status": "PENDING_VISION",
+    "width": 1024
+  },
+  "approved_at": "2026-11-24T02:36:25Z",
+  "approved_by": "designer",
+  "bytes": 3133935,
+  "candidate_path": "art/cards/w5_kenpachi.pending-angle.6edf282520ae.png",
+  "candidate_sha256": "6edf282520ae99aafa3b94aa28dcf4efd281a0bdbeacaeb8f68bb09375c2a8f9",
+  "created_at": "2026-11-24T02:32:50Z",
+  "height": 1536,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/w5_kenpachi.png",
+  "promoted_from": "art/cards/w5_kenpachi.pending-angle.6edf282520ae.png",
+  "prompt": "Transform this reference character into a ferocious vertical anime trading card game illustration in wild three-quarter battle stance swinging his colossal notched cleaver sword erupting with blinding golden-amber skull-like spiritual pressure waves and shattered stone, crisp cel-shaded anime key art lighting, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/kenpachi_zaraki.jpg"
+  ],
+  "requested_path": "art/cards/w5_kenpachi.png",
+  "review_notes": "Verified w5_kenpachi visually against owner curated ref art/references/kenpachi_zaraki.jpg: exact character likeness, dynamic anime card composition, zero text/watermarks.",
+  "sha256": "6edf282520ae99aafa3b94aa28dcf4efd281a0bdbeacaeb8f68bb09375c2a8f9",
+  "status": "approved",
+  "version": 1,
+  "width": 1024
+}
