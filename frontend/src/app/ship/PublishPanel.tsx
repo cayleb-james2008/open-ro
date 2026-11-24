@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { BadgeCheck, Check, CircleAlert, KeyRound, Rocket, Save, Settings2, Ticket, Package } from "lucide-react";
+import { BadgeCheck, Check, CircleAlert, ExternalLink, Globe, KeyRound, Rocket, Save, Settings2, Ticket, Package } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Pill } from "@/components/kibo-ui/pill";
@@ -9,7 +9,7 @@ import { Expandable, ExpandableTrigger } from "@/components/ui/expandable";
 import { ProgressCircle } from "@/components/ProgressCircle/ProgressCircle";
 import { MorphingDialog, MorphingDialogClose, MorphingDialogContainer, MorphingDialogContent, MorphingDialogDescription, MorphingDialogTitle, MorphingDialogTrigger } from "@/components/ui/morphing-dialog";
 import { open as dialogSpring } from "@/motion";
-import { call, prettyBytes, projUrl, type Product } from "./api";
+import { call, prettyBytes, projUrl, type CreatorHubConfigureResult, type CreatorHubSetupResult, type Product } from "./api";
 import { Field } from "./ProjectsRail";
 import type { Ship } from "./useShip";
 
@@ -61,8 +61,13 @@ function UniverseForm({ id }: { id: string }) {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [vis, setVis] = useState("PRIVATE");
-  const [state, setState] = useState<"loading" | "idle" | "saving">("loading");
+  const [psEnabled, setPsEnabled] = useState(true);
+  const [psPrice, setPsPrice] = useState("0");
+  const [iconPath, setIconPath] = useState("");
+  const [thumbPaths, setThumbPaths] = useState("");
+  const [state, setState] = useState<"loading" | "idle" | "saving" | "browser">("loading");
   const [msg, setMsg] = useState("");
+  const [hubResult, setHubResult] = useState<CreatorHubConfigureResult | null>(null);
   useEffect(() => {
     let live = true;
     void (async () => {
@@ -82,6 +87,30 @@ function UniverseForm({ id }: { id: string }) {
     if (!r.ok) { setMsg(r.error || "Could not save the game page."); return; }
     setMsg(""); toast.success("Game page saved");
   };
+  const configureBrowser = async () => {
+    setState("browser"); setMsg(""); setHubResult(null);
+    const thumbs = thumbPaths.split(",").map((s) => s.trim()).filter(Boolean);
+    const priceNum = Number.parseInt(psPrice.trim(), 10);
+    const r = await call<CreatorHubConfigureResult>(projUrl(id, "/creator-hub/configure"), {
+      ...(name.trim() ? { name: name.trim() } : {}),
+      ...(desc.trim() ? { description: desc.trim() } : {}),
+      visibility: vis,
+      private_servers: {
+        enabled: psEnabled,
+        ...(psEnabled && Number.isFinite(priceNum) && priceNum >= 0 ? { price_robux: priceNum } : {}),
+      },
+      ...(iconPath.trim() ? { icon_path: iconPath.trim() } : {}),
+      ...(thumbs.length > 0 ? { thumbnail_paths: thumbs } : {}),
+      check_questionnaire: true,
+    });
+    setState("idle");
+    if (!r.ok && r.status !== "action_required" && !r.blocked_reason) {
+      setMsg(r.error || "Could not configure game page via browser.");
+      return;
+    }
+    setHubResult(r as CreatorHubConfigureResult);
+    if (r.configured?.length) toast.success(`Configured ${r.configured.length} setting(s) via browser`);
+  };
   return (
     <div className="mt-3 flex flex-col gap-3">
       {msg && <p role="alert" className="rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{msg}</p>}
@@ -97,8 +126,57 @@ function UniverseForm({ id }: { id: string }) {
               ))}
             </SegmentedControl>
           </div>
-          <Button variant="default" size="lg" disabled={state === "saving" || !name.trim()} onClick={() => void save()} className="self-start max-md:min-h-11"><Save className="size-4" strokeWidth={1.5} aria-hidden />{state === "saving" ? "Saving…" : "Save game page"}</Button>
-          <p className="text-sm text-ink-2">The game icon, thumbnails, age questionnaire and payments policy are not available to OpenRO. Set those in the Roblox Creator Dashboard.</p>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium text-ink-2">Private servers</span>
+              <SegmentedControl aria-label="Private servers" size="sm">
+                <SegmentedControlItem data-checked={psEnabled ? "" : undefined} aria-pressed={psEnabled} onClick={() => setPsEnabled(true)} className="max-md:!h-11">Enabled</SegmentedControlItem>
+                <SegmentedControlItem data-checked={!psEnabled ? "" : undefined} aria-pressed={!psEnabled} onClick={() => setPsEnabled(false)} className="max-md:!h-11">Off</SegmentedControlItem>
+              </SegmentedControl>
+            </div>
+            <Field label="Private server Robux"><Input inputMode="numeric" value={psPrice} onChange={(e) => setPsPrice(e.target.value)} className="font-mono" disabled={!psEnabled} /></Field>
+            <Field label="Game icon path (optional)"><Input value={iconPath} onChange={(e) => setIconPath(e.target.value)} placeholder="art/icon.png" className="font-mono text-xs" /></Field>
+          </div>
+          <Field label="Thumbnail paths (comma-separated, optional)"><Input value={thumbPaths} onChange={(e) => setThumbPaths(e.target.value)} placeholder="art/thumb1.png, art/thumb2.png" className="font-mono text-xs" /></Field>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="default" size="lg" disabled={state === "saving" || state === "browser" || !name.trim()} onClick={() => void save()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><Save className="size-4" strokeWidth={1.5} aria-hidden />{state === "saving" ? "Saving…" : "Save game page"}</Button>
+            <Button variant="outline" size="lg" disabled={state === "saving" || state === "browser"} onClick={() => void configureBrowser()} data-configure-browser className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><Globe className="size-4" strokeWidth={1.5} aria-hidden />{state === "browser" ? "Configuring…" : "Configure via open browser"}</Button>
+          </div>
+          {hubResult && (
+            <div className="flex flex-col gap-2 rounded-sm border border-hairline bg-board/60 p-3 text-sm" data-creator-hub-configure-result>
+              {(hubResult.blocked_reason || hubResult.message) && (
+                <p className="text-pill-warn-fg">
+                  {hubResult.message || hubResult.blocked_reason}
+                  {hubResult.url && (
+                    <a href={hubResult.url} target="_blank" rel="noreferrer" className="ml-2 inline-flex items-center gap-1 font-medium underline">
+                      Open page <ExternalLink className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    </a>
+                  )}
+                </p>
+              )}
+              {(hubResult.configured?.length ?? 0) > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {hubResult.configured!.map((c) => (
+                    <Pill key={c} className="bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg">{c}</Pill>
+                  ))}
+                </div>
+              )}
+              {(hubResult.manual_steps_remaining?.length ?? 0) > 0 && (
+                <ul className="flex flex-col gap-1.5" aria-label="Manual steps remaining">
+                  {hubResult.manual_steps_remaining!.map((m) => (
+                    <li key={m.step} className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-hairline bg-surface px-2.5 py-1.5 text-xs">
+                      <span className="text-ink">{m.step}</span>
+                      {m.url && (
+                        <a href={m.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-medium text-ink underline">
+                          Open <ExternalLink className="size-3" strokeWidth={1.5} aria-hidden />
+                        </a>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </>
       )}
     </div>
@@ -167,7 +245,9 @@ export function PublishPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSetti
   const [rows, setRows] = useState<SyncRow[] | null>(null);
   const [error, setError] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
-  useEffect(() => { setPublished(null); setRows(null); setError(""); }, [active?.id]);
+  const [hubBusy, setHubBusy] = useState(false);
+  const [hubSetupNotice, setHubSetupNotice] = useState<{ text: string; url?: string } | null>(null);
+  useEffect(() => { setPublished(null); setRows(null); setError(""); setHubSetupNotice(null); }, [active?.id]);
   if (!active) return null;
 
   const products: Product[] = detail?.manifest?.products ?? detail?.products ?? [];
@@ -177,6 +257,25 @@ export function PublishPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSetti
   const ready = [hasKey, hasIds, hasBuild].filter(Boolean).length;
   const canPublish = hasKey && hasIds && hasBuild && !publishing;
   const pending = products.filter((p) => p.priceApproved !== true).length;
+
+  const runBrowserSetup = async () => {
+    setHubBusy(true); setError(""); setHubSetupNotice(null);
+    const r = await call<CreatorHubSetupResult>(projUrl(active.id, "/creator-hub/setup"), {});
+    setHubBusy(false);
+    if (r.status === "action_required" || r.blocked_reason) {
+      setHubSetupNotice({
+        text: r.message || r.blocked_reason || "Finish sign-in or verification in the open browser, then try again.",
+        url: r.url,
+      });
+      return;
+    }
+    if (!r.ok) {
+      setError(r.error || "Could not auto-setup from open browser.");
+      return;
+    }
+    await Promise.all([ship.refresh(), ship.refreshCloud()]);
+    toast.success("Project ready from open browser");
+  };
 
   const publish = async () => {
     setPublishing(true); setError("");
@@ -212,16 +311,48 @@ export function PublishPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSetti
           </div>
         </div>
         <ul className="mt-1 flex flex-col">
-          <Check1 ok={hasKey} label="Open Cloud key saved" fix="Add it in Settings" onFix={onOpenSettings} />
-          <li className="flex min-h-11 items-center gap-2 text-sm">
+          <li className="flex min-h-11 flex-wrap items-center gap-2 text-sm">
+            <span className={`grid size-6 flex-none place-items-center rounded-full ${hasKey ? "bg-pill-active-bg text-pill-active-fg" : "bg-pill-warn-bg text-pill-warn-fg"}`}>
+              {hasKey ? <Check className="size-3.5" strokeWidth={2} aria-hidden /> : <CircleAlert className="size-3.5" strokeWidth={2} aria-hidden />}
+            </span>
+            <span className="min-w-0 flex-1 text-ink">Open Cloud key saved</span>
+            {!hasKey && (
+              <div className="flex flex-wrap items-center gap-1">
+                <Button variant="outline" size="sm" disabled={hubBusy} onClick={() => void runBrowserSetup()} data-publish-auto-setup className="max-md:min-h-11">
+                  <Globe className="size-3.5" strokeWidth={1.5} aria-hidden />
+                  {hubBusy ? "Setting up…" : "Auto-setup from browser"}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={onOpenSettings} className="flex-none max-md:min-h-11">Add it in Settings</Button>
+              </div>
+            )}
+          </li>
+          <li className="flex min-h-11 flex-wrap items-center gap-2 text-sm">
             <span className={`grid size-6 flex-none place-items-center rounded-full ${hasIds ? "bg-pill-active-bg text-pill-active-fg" : "bg-pill-warn-bg text-pill-warn-fg"}`}>
               {hasIds ? <Check className="size-3.5" strokeWidth={2} aria-hidden /> : <CircleAlert className="size-3.5" strokeWidth={2} aria-hidden />}
             </span>
             <span className="min-w-0 flex-1 text-ink">Game number and place number set</span>
-            {!hasIds && <SetProjectIdsDialog active={active} ship={ship} />}
+            {!hasIds && (
+              <div className="flex flex-wrap items-center gap-1">
+                <Button variant="outline" size="sm" disabled={hubBusy} onClick={() => void runBrowserSetup()} className="max-md:min-h-11">
+                  <Globe className="size-3.5" strokeWidth={1.5} aria-hidden />
+                  {hubBusy ? "Setting up…" : "Auto-setup from browser"}
+                </Button>
+                <SetProjectIdsDialog active={active} ship={ship} />
+              </div>
+            )}
           </li>
           <Check1 ok={hasBuild} label="A build exists" />
         </ul>
+        {hubSetupNotice && (
+          <div role="status" className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-sm border border-hairline bg-pill-warn-bg px-3 py-2 text-sm text-pill-warn-fg">
+            <span>{hubSetupNotice.text}</span>
+            {hubSetupNotice.url && (
+              <a href={hubSetupNotice.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-medium underline">
+                Open Creator Hub <ExternalLink className="size-3.5" strokeWidth={1.5} aria-hidden />
+              </a>
+            )}
+          </div>
+        )}
         <div className="mt-2 flex flex-wrap items-center gap-3">
           <SegmentedControl aria-label="Publish kind" size="sm">
             <SegmentedControlItem data-checked={!live ? "" : undefined} aria-pressed={!live} onClick={() => setLive(false)} className="max-md:!h-11 max-md:px-3">Save version</SegmentedControlItem>
