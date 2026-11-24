@@ -31,12 +31,56 @@ export type AssetFile = {
 };
 export type UploadResult = { path: string; state: "uploaded" | "reused" | "unchanged" | "skipped" | "failed"; assetId?: number | string; error?: string };
 export type PlaytestRun = { run_id: string; build_id: string; passed: boolean; at: string | number; checks: number; errors: number };
+export type CoreLoopClaim = {
+  status: string;
+  tested?: boolean;
+  passed?: boolean;
+  checks?: string[];
+};
 export type PlaytestReport = {
   run_id: string; passed: boolean; build_id?: string; mode?: string; duration_ms?: number;
   checks?: { name: string; passed: boolean; value?: unknown; error?: string | null; datamodel?: string }[];
   console?: { lines: number; errors: string[]; warnings: string[] };
   screenshots?: { name: string; file: string; bytes?: number; width?: number; height?: number }[];
+  core_loop?: {
+    move?: CoreLoopClaim;
+    act?: CoreLoopClaim;
+    hud?: CoreLoopClaim;
+    all_core_tested?: boolean;
+    all_core_passed?: boolean;
+    require_core_loop?: boolean;
+  };
+  blank_screenshots?: number;
+  visual_likeness?: { best_pct?: number | null; best_reference?: string | null; references_compared?: number };
+  kept?: boolean;
+  cached?: boolean;
 };
+export type StudyStage = { id: string; label: string; done: boolean };
+export type StudyStatus = {
+  stage: "study" | "build" | "check" | "ready";
+  stages: StudyStage[];
+  clean_room: boolean;
+  fingerprint?: string;
+  evidence?: { total: number; observed: number; derived: number; inferred: number };
+  unknowns?: { revision?: number; total: number; open_count: number; critical_open: number; high_open: number };
+  mechanics?: {
+    found: boolean;
+    passed: boolean;
+    path?: string;
+    counts?: { total: number; sourced: number; estimated: number; unsourced: number };
+    warnings?: number;
+  };
+  checks?: {
+    static_check_kept?: boolean;
+    playtest_kept?: boolean;
+    last_playtest?: {
+      core_loop?: PlaytestReport["core_loop"];
+      visual_likeness?: PlaytestReport["visual_likeness"];
+      blank_screenshots?: number;
+    } | null;
+  };
+};
+export type UnknownItem = { id: string; title: string; severity?: string; status: string; domain?: string };
 
 export type Res<T> = { ok: boolean; httpStatus: number; error?: string } & Partial<T>;
 
