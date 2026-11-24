@@ -2152,3 +2152,134 @@ fn asset_ids_codegen_passes_project_check_stylua_gap_58() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn mcp_probe_timeout_resets_to_default_on_attach_and_connected_guidance_is_clean_gap_61() {
+    use openro_rs::place::PlaceBackend;
+    use openro_rs::studio_embed::{HostStudioDetection, StudioEmbedState};
+    use std::time::Duration;
+
+    let default_to = openro_rs::mcp::default_request_timeout();
+    assert!(
+        default_to >= Duration::from_secs(10),
+        "default MCP timeout should not be a short probe timeout: {default_to:?}"
+    );
+
+    // 1. Direct McpClient::spawn_with_timeout + reset_default_timeout
+    let mut client =
+        McpClient::spawn_with_timeout(&mock_studio_command(), Duration::from_secs(3))
+            .expect("spawn mock_studio");
+    assert_eq!(client.timeout(), Duration::from_secs(3));
+    assert!(client.has_live_studio());
+    client.reset_default_timeout();
+    assert_eq!(client.timeout(), default_to);
+    drop(client);
+
+    // 2. Server auto-mode config attach (`server.rs:4110` 4s probe) restores default timeout on PlaceBackend::Mcp
+    let root = temp_dir("mcp-timeout-gap61");
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback");
+    let port = listener.local_addr().unwrap().port();
+    let shared = Shared::with_data_dir(None, "Timeout Test".to_string(), data);
+    let shared_inspect = std::sync::Arc::clone(&shared);
+    std::thread::spawn(move || {
+        let _ = serve(listener, shared);
+    });
+
+    let (code, cfg_res) = api_json(
+        port,
+        "POST",
+        "/api/config",
+        Some(json!({
+            "workspace_mode": "auto",
+            "mcp_command": mock_studio_command(),
+        })),
+    );
+    assert_eq!(code, 200, "POST /api/config auto attach failed: {cfg_res}");
+    {
+        let guard = shared_inspect.agent.lock().unwrap();
+        let studio = guard
+            .as_ref()
+            .and_then(|a| a.studio.as_ref())
+            .expect("agent studio attached");
+        match studio {
+            PlaceBackend::Mcp(m) => assert_eq!(
+                m.timeout(),
+                default_to,
+                "auto-mode attach leaked short probe timeout"
+            ),
+            _ => panic!("expected PlaceBackend::Mcp after auto-mode attach"),
+        }
+    }
+
+    // 3. Embed attach + GET /api/studio/embed/status clears stale 'awaiting sign-in or open place' guidance
+    let (code, att) = api_json(
+        port,
+        "POST",
+        "/api/studio/embed/attach",
+        Some(json!({ "mcp_command": mock_studio_command() })),
+    );
+    assert_eq!(code, 200, "embed/attach failed: {att}");
+    {
+        let guard = shared_inspect.agent.lock().unwrap();
+        match guard.as_ref().and_then(|a| a.studio.as_ref()) {
+            Some(PlaceBackend::Mcp(m)) => assert_eq!(
+                m.timeout(),
+                default_to,
+                "embed attach leaked short probe timeout"
+            ),
+            _ => panic!("expected PlaceBackend::Mcp after embed attach"),
+        }
+    }
+
+    let (code, st) = api_json(port, "GET", "/api/studio/embed/status", None);
+    assert_eq!(code, 200, "embed/status failed: {st}");
+    assert_eq!(st["phase"], json!("connected"));
+    assert_eq!(st["place_open"], json!(true));
+    let top_guidance = st["guidance"].as_str().unwrap_or("");
+    let det_guidance = st["detection"]["guidance"].as_str().unwrap_or("");
+    assert!(
+        !top_guidance.to_ascii_lowercase().contains("awaiting sign-in"),
+        "stale guidance on connected+place_open status: {top_guidance}"
+    );
+    assert!(
+        !det_guidance.to_ascii_lowercase().contains("awaiting sign-in"),
+        "stale detection.guidance on connected+place_open status: {det_guidance}"
+    );
+    assert!(
+        top_guidance.to_ascii_lowercase().contains("connected"),
+        "expected connected guidance, got: {top_guidance}"
+    );
+
+    // 4. StudioEmbedState::to_json_with_detection overrides stale fast-detect guidance when connected & place_open
+    let stale_detect = HostStudioDetection {
+        platform: "linux",
+        studio_installed: true,
+        studio_running: true,
+        studio_display: Some(":99".to_string()),
+        already_logged_in: false,
+        place_open: false,
+        running_studios: Vec::new(),
+        xvfb_available: true,
+        display_ready: true,
+        studio_exe: Some("flatpak:org.vinegarhq.Vinegar".to_string()),
+        mcp_command: Some(mock_studio_command()),
+        guidance: "Roblox Studio is running (awaiting sign-in or open place) — click 'Launch & Embed Studio' to stream and sign in live.".to_string(),
+    };
+    let mut state = StudioEmbedState::idle();
+    state.phase = "connected".to_string();
+    state.mcp_connected = true;
+    state.place_open = true;
+    let payload = state.to_json_with_detection(&stale_detect);
+    let dg = payload["detection"]["guidance"].as_str().unwrap_or("");
+    assert!(
+        !dg.to_ascii_lowercase().contains("awaiting sign-in"),
+        "to_json_with_detection kept stale guidance: {dg}"
+    );
+    assert_eq!(payload["detection"]["place_open"], json!(true));
+    assert_eq!(payload["detection"]["already_logged_in"], json!(true));
+
+    let _ = api_json(port, "POST", "/api/studio/embed/stop", Some(json!({})));
+    let _ = std::fs::remove_dir_all(&root);
+}

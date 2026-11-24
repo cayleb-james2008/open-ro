@@ -150,6 +150,10 @@ pub fn official_studio_tool_catalog() -> Vec<Value> {
 
 /// How long one bridge request may take before it is declared wedged.
 /// `OPENRO_BRIDGE_TIMEOUT_SECS` overrides for tests and slow real servers.
+pub fn default_request_timeout() -> Duration {
+    request_timeout()
+}
+
 fn request_timeout() -> Duration {
     let secs = std::env::var("OPENRO_BRIDGE_TIMEOUT_SECS")
         .ok()
@@ -374,6 +378,18 @@ impl McpClient {
     /// Consume the most recent frame captured inside a translated official `playtest`.
     pub fn take_last_playtest_frame(&mut self) -> Option<StudioFrame> {
         self.last_playtest_frame.take()
+    }
+
+    /// Current per-request timeout on this MCP client.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    /// Restore the default request timeout (`30s`, or `OPENRO_BRIDGE_TIMEOUT_SECS`) after a
+    /// short startup/liveness probe so real Studio calls (`start_stop_play`, `execute_luau`,
+    /// `screen_capture`) are never constrained by the 3-5s probe window (#61).
+    pub fn reset_default_timeout(&mut self) {
+        self.timeout = request_timeout();
     }
 
     /// Whether the server's capabilities are known at all.
