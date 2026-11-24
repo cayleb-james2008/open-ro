@@ -113,12 +113,66 @@ fn merge_spec(dir: &Path, req: &Value) -> Result<Value, String> {
         None => json!({}),
     };
     let o = spec.as_object_mut().ok_or("the playtest suite must be a JSON object")?;
-    for key in ["checks", "screenshots", "allow_errors", "mode", "settle_ms", "build_id", "sync_first"] {
+    for key in [
+        "checks",
+        "screenshots",
+        "allow_errors",
+        "mode",
+        "settle_ms",
+        "build_id",
+        "sync_first",
+        "require_core_loop",
+        "force",
+    ] {
         if let Some(v) = req.get(key) {
             o.insert(key.into(), v.clone());
         }
     }
     Ok(spec)
+}
+
+fn build_kept_mode_spec(spec: &Value, mode: &str, build_id: &str, require_core_loop: bool) -> Value {
+    json!({
+        "mode": mode,
+        "build_id": build_id,
+        "checks": spec["checks"].as_array().cloned().unwrap_or_default(),
+        "screenshots": spec["screenshots"].as_array().cloned().unwrap_or_default(),
+        "allow_errors": spec["allow_errors"].as_array().cloned().unwrap_or_default(),
+        "sync_first": spec["sync_first"].as_bool().unwrap_or(false),
+        "require_core_loop": require_core_loop,
+    })
+}
+
+/// Fast-path `KeptChecks` lookup for `playtest`: returns `Ok(Some(Reply))` when a
+/// previous passing playtest matches the exact project SHA-256 fingerprint and spec
+/// (and `force != true`), avoiding unnecessary Studio auto-open or re-execution (#62).
+pub fn try_kept(r: &ProjectRef, req: &Value) -> Result<Option<Reply>, String> {
+    let spec = merge_spec(&r.dir, req)?;
+    let force = spec["force"].as_bool().unwrap_or(false);
+    if force {
+        return Ok(None);
+    }
+    let mode = spec["mode"].as_str().unwrap_or("start_play");
+    if !matches!(mode, "start_play" | "run_server") {
+        return Err("mode must be start_play or run_server".into());
+    }
+    let build_id = spec["build_id"]
+        .as_str()
+        .map(String::from)
+        .unwrap_or_else(|| latest_build_id(&r.dir));
+    if !plain_name(&build_id) {
+        return Err("build_id is not valid".into());
+    }
+    let require_core_loop = spec["require_core_loop"].as_bool().unwrap_or(false);
+    let fp = crate::study_check::project_fingerprint(&r.dir)?;
+    let mode_spec = build_kept_mode_spec(&spec, mode, &build_id, require_core_loop);
+    if let Some(mut cached) =
+        crate::study_check::lookup_kept_check(&r.dir, "playtest", &fp, &mode_spec, false)
+    {
+        cached["ok"] = json!(true);
+        return Ok(Some(Reply::json("200 OK", cached)));
+    }
+    Ok(None)
 }
 
 fn new_console_lines(before: &[String], after: &[String]) -> Vec<String> {
@@ -157,6 +211,17 @@ pub fn run(shared: &Shared, r: &ProjectRef, req: &Value) -> Result<Reply, Reply>
     if !plain_name(&build_id) {
         return Err(Reply::bad("build_id is not valid"));
     }
+    let require_core_loop = spec["require_core_loop"].as_bool().unwrap_or(false);
+    let force = spec["force"].as_bool().unwrap_or(false);
+    let fp = crate::study_check::project_fingerprint(&r.dir).map_err(Reply::bad)?;
+    let mode_spec = build_kept_mode_spec(&spec, &mode, &build_id, require_core_loop);
+    if let Some(mut cached) =
+        crate::study_check::lookup_kept_check(&r.dir, "playtest", &fp, &mode_spec, force)
+    {
+        cached["ok"] = json!(true);
+        return Ok(Reply::json("200 OK", cached));
+    }
+
     if spec["sync_first"].as_bool().unwrap_or(false) {
         let synced = crate::studio_sync::run(shared, r, false, false)?;
         let body: Value = serde_json::from_slice(&synced.body).unwrap_or(Value::Null);
@@ -169,14 +234,15 @@ pub fn run(shared: &Shared, r: &ProjectRef, req: &Value) -> Result<Reply, Reply>
     let run_dir = reports_root(&r.dir).join(&build_id).join(&run_id);
     std::fs::create_dir_all(run_dir.join("shots")).map_err(|e| Reply::err("500 Internal Server Error", format!("create report folder: {e}")))?;
 
-    type RunOutput = (Vec<Value>, Vec<String>, Vec<Value>);
-    let (check_results, console_lines, shot_results) = with_studio(shared, |mcp| {
+    type RunOutput = (Vec<Value>, Vec<String>, Vec<Value>, Vec<(String, crate::study_check::RgbImage)>);
+    let (check_results, console_lines, shot_results, decoded_shots) = with_studio(shared, |mcp| {
         let before_lines = mcp.get_console_output().unwrap_or_default();
         mcp.start_stop_play(&mode).map_err(|e| format!("could not start the playtest: {e}"))?;
         let outcome = (|| -> Result<RunOutput, String> {
             std::thread::sleep(std::time::Duration::from_millis(settle));
             let results: Vec<Value> = checks.iter().map(|c| run_check(mcp, c)).collect();
             let mut shot_results = Vec::new();
+            let mut decoded_shots: Vec<(String, crate::study_check::RgbImage)> = Vec::new();
             for s in &shots {
                 let name = s["name"].as_str().unwrap_or("shot");
                 let vec3 = |k: &str| -> Option<[f64; 3]> {
@@ -188,14 +254,34 @@ pub fn run(shared: &Shared, r: &ProjectRef, req: &Value) -> Result<Reply, Reply>
                         let ext = if frame.mime.contains("jpeg") { "jpg" } else { "png" };
                         let file = format!("shots/{name}.{ext}");
                         std::fs::write(run_dir.join(&file), &frame.bytes).map_err(|e| format!("save screenshot: {e}"))?;
-                        shot_results.push(json!({ "name": name, "file": file, "bytes": frame.bytes.len(), "width": frame.width, "height": frame.height }));
+                        let (maybe_img, visual_meta) = if ext == "png" {
+                            crate::study_check::inspect_screenshot_bytes(&frame.bytes)
+                        } else {
+                            (None, json!({ "valid": true, "blank": false, "note": "non-png capture" }))
+                        };
+                        let is_blank = visual_meta["blank"].as_bool().unwrap_or(false);
+                        if !is_blank {
+                            if let Some(img) = maybe_img {
+                                decoded_shots.push((name.to_string(), img));
+                            }
+                        }
+                        shot_results.push(json!({
+                            "name": name,
+                            "file": file,
+                            "bytes": frame.bytes.len(),
+                            "width": frame.width,
+                            "height": frame.height,
+                            "passed": !is_blank,
+                            "rejected": is_blank,
+                            "visual": visual_meta,
+                        }));
                     }
-                    Err(e) => shot_results.push(json!({ "name": name, "file": null, "error": e })),
+                    Err(e) => shot_results.push(json!({ "name": name, "file": null, "passed": false, "rejected": false, "error": e })),
                 }
             }
             let after_lines = mcp.get_console_output().unwrap_or_default();
             let lines = new_console_lines(&before_lines, &after_lines);
-            Ok((results, lines, shot_results))
+            Ok((results, lines, shot_results, decoded_shots))
         })();
         let stopped = mcp.start_stop_play("stop");
         let out = outcome?;
@@ -215,13 +301,26 @@ pub fn run(shared: &Shared, r: &ProjectRef, req: &Value) -> Result<Reply, Reply>
     let tail_start = console_lines.len().saturating_sub(50);
     let tail: Vec<String> = console_lines[tail_start..].to_vec();
     let checks_failed = check_results.iter().filter(|c| c["passed"] != json!(true)).count();
-    let passed = checks_failed == 0 && errors.is_empty();
+    let blank_screenshots = shot_results
+        .iter()
+        .filter(|s| s["rejected"].as_bool().unwrap_or(false))
+        .count();
+    let core_loop =
+        crate::study_check::evaluate_core_loop(&check_results, &checks, &errors, require_core_loop);
+    let visual_likeness = crate::study_check::evaluate_visual_likeness(&r.dir, &decoded_shots);
+    let core_ok = !require_core_loop || core_loop["all_core_passed"].as_bool().unwrap_or(false);
+    let passed = checks_failed == 0 && errors.is_empty() && blank_screenshots == 0 && core_ok;
+
     let rel = |f: &str| format!("build/reports/{build_id}/{run_id}/{f}");
     let at = projects::now_ms();
     let mut report = json!({
         "run_id": run_id, "passed": passed, "build_id": build_id, "mode": mode,
         "project": r.id, "at": at, "duration_ms": started.elapsed().as_millis() as u64,
+        "kept": false, "cached": false, "fingerprint": fp,
         "checks": check_results,
+        "core_loop": core_loop,
+        "blank_screenshots": blank_screenshots,
+        "visual_likeness": visual_likeness,
         "console": { "lines": console_lines.len(), "errors": errors, "warnings": warnings, "tail": tail },
         "screenshots": shot_results,
         "report": { "json": rel("report.json"), "html": rel("report.html") },
@@ -230,10 +329,65 @@ pub fn run(shared: &Shared, r: &ProjectRef, req: &Value) -> Result<Reply, Reply>
             "html": format!("/api/projects/{}/playtests/{run_id}/report.html", r.id),
         },
     });
+
+    // Auto-record `observed` playtest evidence in `<project>/.openro/investigation/evidence.jsonl` (#62).
+    let mut ev_limitations: Vec<String> = Vec::new();
+    for claim_key in ["move", "act", "hud"] {
+        if report["core_loop"][claim_key]["tested"].as_bool() != Some(true) {
+            ev_limitations.push(format!("core_loop.{claim_key} not tested"));
+        }
+    }
+    if shot_results.is_empty() {
+        ev_limitations.push("no screenshots captured".to_string());
+    }
+    if blank_screenshots > 0 {
+        ev_limitations.push(format!("{blank_screenshots} blank/single-color screenshot(s) rejected"));
+    }
+    let checks_ok = check_results.len().saturating_sub(checks_failed);
+    if let Ok(ev_res) = crate::study_check::record_evidence(
+        &r.dir,
+        &json!({
+            "kind": "playtest",
+            "source": format!("playtest:{run_id}"),
+            "summary": format!(
+                "Playtest {run_id} ({mode}, build {build_id}): {} — {checks_ok}/{} checks passed, {} console error(s), {} screenshot(s) ({blank_screenshots} blank)",
+                if passed { "passed" } else { "failed" },
+                check_results.len(),
+                errors.len(),
+                shot_results.len(),
+            ),
+            "confidence": "observed",
+            "authority": "self_test",
+            "coverage": format!("mode={mode};checks={};screenshots={}", check_results.len(), shot_results.len()),
+            "limitations": ev_limitations,
+            "refs": [rel("report.json"), rel("report.html")],
+            "data": {
+                "run_id": run_id,
+                "build_id": build_id,
+                "mode": mode,
+                "passed": passed,
+                "checks_passed": checks_ok,
+                "checks_total": check_results.len(),
+                "console_errors": errors.len(),
+                "blank_screenshots": blank_screenshots,
+                "core_loop": report["core_loop"],
+                "visual_likeness": report["visual_likeness"],
+            }
+        }),
+    ) {
+        if let Some(eid) = ev_res.pointer("/evidence/id").and_then(Value::as_str) {
+            report["evidence_id"] = json!(eid);
+        }
+    }
+
     let html = render_html(&report, &r.id);
     std::fs::write(run_dir.join("report.html"), html).map_err(|e| Reply::err("500 Internal Server Error", format!("save report: {e}")))?;
     std::fs::write(run_dir.join("report.json"), serde_json::to_string_pretty(&report).unwrap_or_default())
         .map_err(|e| Reply::err("500 Internal Server Error", format!("save report: {e}")))?;
+
+    // Persist in KeptChecks ONLY when passing (never caches failures, #62).
+    crate::study_check::store_kept_check(&r.dir, "playtest", &fp, &mode_spec, &report);
+
     report["ok"] = json!(true);
     Ok(Reply::json("200 OK", report))
 }
@@ -318,6 +472,34 @@ pub fn list_runs(dir: &Path) -> Vec<Value> {
     }
     out.sort_by(|a, b| b.0.cmp(&a.0));
     out.into_iter().map(|(_, v)| v).collect()
+}
+
+/// Summary of the most recent stored playtest report for `study/status` (#62).
+pub fn latest_report_summary(dir: &Path) -> Option<Value> {
+    let mut best: Option<(String, Value)> = None;
+    let Ok(builds) = std::fs::read_dir(reports_root(dir)) else { return None };
+    for b in builds.filter_map(|e| e.ok()) {
+        let Ok(runs) = std::fs::read_dir(b.path()) else { continue };
+        for run in runs.filter_map(|e| e.ok()) {
+            let Ok(text) = std::fs::read_to_string(run.path().join("report.json")) else { continue };
+            let Ok(rep) = serde_json::from_str::<Value>(&text) else { continue };
+            let id = rep["run_id"].as_str().unwrap_or("").to_string();
+            if best.as_ref().is_none_or(|(cur, _)| id > *cur) {
+                best = Some((id, rep));
+            }
+        }
+    }
+    let (_, rep) = best?;
+    Some(json!({
+        "run_id": rep["run_id"],
+        "build_id": rep["build_id"],
+        "passed": rep["passed"],
+        "at": rep["at"],
+        "core_loop": rep["core_loop"],
+        "visual_likeness": rep["visual_likeness"],
+        "blank_screenshots": rep["blank_screenshots"].as_u64().unwrap_or(0),
+        "evidence_id": rep["evidence_id"],
+    }))
 }
 
 /// Serve a stored report file after checking every path piece.
