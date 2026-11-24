@@ -429,12 +429,46 @@ expect(
 	"BattleService.startBattle(profile, 'w1_act1') failed: " .. tostring(battleErr)
 )
 
-profile.rankedElo = RankedService.GRANDMASTER_ELO
-profile.rankedRewardClaimed = false
-local gmOk, gmRes, gmErr = RankedService.claimGrandmasterReward(profile)
+local freshPlayer: any = {
+	UserId = 999002,
+	Name = "FreshRankedTester",
+	GetAttribute = function()
+		return false
+	end,
+}
+local freshProfile = DataService.loadProfile(freshPlayer)
 expect(
-	gmOk == true and type(gmRes) == "table" and gmRes.cardId == RankedService.REWARD_CARD_ID and gmErr == nil,
+	freshProfile.rankedRewardClaimed == false and type(freshProfile.rankedRewardClaimed) == "boolean",
+	"Fresh DataService.loadProfile must have rankedRewardClaimed == false (boolean)"
+)
+local freshCard = DataService.addCard(freshProfile, "w1_seventh_hokage", "Normal", nil)
+freshProfile.activeDeck = { freshCard.uid }
+freshProfile.defenseDeck = { freshCard.uid }
+local pmOk, pmRes, pmErr = RankedService.playMatch(freshPlayer, freshProfile)
+expect(
+	pmOk == true
+		and type(pmRes) == "table"
+		and freshProfile.elo == pmRes.newElo
+		and DataService.serializeForClient(freshProfile).elo == pmRes.newElo,
+	"RankedService.playMatch must update profile.elo and serializeForClient(profile).elo: " .. tostring(pmErr)
+)
+freshProfile.elo = 2250
+local gmOk, gmRes, gmErr = RankedService.claimGrandmasterReward(freshProfile)
+expect(
+	gmOk == true
+		and type(gmRes) == "table"
+		and gmRes.cardId == RankedService.REWARD_CARD_ID
+		and freshProfile.rankedRewardClaimed == true
+		and gmErr == nil,
 	"RankedService.claimGrandmasterReward failed: " .. tostring(gmErr)
+)
+local gm2Ok = RankedService.claimGrandmasterReward(freshProfile)
+expect(gm2Ok == false, "Second RankedService.claimGrandmasterReward call must return ok == false")
+
+local rollOk, rollErr, rollRes = RollService.rollSingle(freshProfile, 1, false, 0, "banner_w1", freshPlayer)
+expect(
+	rollOk == true and rollErr == nil and type(rollRes) == "table",
+	"RollService.rollSingle with bannerId + player failed: " .. tostring(rollErr)
 )
 
 profile.traitCrystals = 5
@@ -469,6 +503,11 @@ expect(
 	not string.find(mainSrc, "local ok, res, err = (RetentionService", 1, true),
 	"Main.server.luau must unpack RetentionService as (ok, err, res)"
 )
+expect(
+	string.find(mainSrc, "bannerId,%s*player") ~= nil,
+	"Main.server.luau must pass bannerId, player to rollSingle/rollBatch"
+)
+expect(string.find(mainSrc, "friendCount,%s*player") == nil, "Main.server.luau must not pass player in bannerId slot")
 
 print("M2_FULL_SYSTEMS_TEST_PASSED: 54 cards, 30 stages, 10 bonds, 14 M2 systems verified!")
 local process = require("@lune/process")

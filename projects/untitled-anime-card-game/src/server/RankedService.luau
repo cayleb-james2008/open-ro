@@ -146,7 +146,10 @@ function RankedService.saveDefenseSnapshot(
 	local snap: DefenseSnapshot = {
 		ownerId = userId,
 		ownerName = ownerName,
-		elo = pAny.rankedElo or 1000,
+		elo = if type(pAny.elo) == "number"
+			then pAny.elo
+			elseif type(pAny.rankedElo) == "number" then pAny.rankedElo
+			else 1000,
 		power = math.floor(power),
 		cards = cards,
 		updatedAt = os.time(),
@@ -177,9 +180,18 @@ function RankedService.pickOpponent(userId: number, playerElo: number): DefenseS
 	return best or NPC_OPPONENTS[1]
 end
 
+local function readElo(pAny: any): number
+	if type(pAny.elo) == "number" then
+		return pAny.elo
+	elseif type(pAny.rankedElo) == "number" then
+		return pAny.rankedElo
+	end
+	return 1000
+end
+
 function RankedService.getStatus(profile: DataService.PlayerProfile): { [string]: any }
 	local pAny = profile :: any
-	local elo = pAny.rankedElo or 1000
+	local elo = readElo(pAny)
 	local tier = RankedService.getTier(elo)
 	return {
 		elo = elo,
@@ -196,11 +208,11 @@ function RankedService.claimGrandmasterReward(
 	profile: DataService.PlayerProfile
 ): (boolean, { [string]: any }?, string?)
 	local pAny = profile :: any
-	local elo = pAny.rankedElo or 1000
+	local elo = readElo(pAny)
 	if elo < RankedService.GRANDMASTER_ELO then
 		return false, nil, string.format("Reach Grandmaster (%d Elo) to claim Minato", RankedService.GRANDMASTER_ELO)
 	end
-	if pAny.rankedRewardClaimed then
+	if pAny.rankedRewardClaimed == true then
 		return false, nil, "Grandmaster seasonal reward already claimed"
 	end
 	pAny.rankedRewardClaimed = true
@@ -213,7 +225,9 @@ function RankedService.playMatch(
 	profile: DataService.PlayerProfile
 ): (boolean, { [string]: any }?, string?)
 	local pAny = profile :: any
-	pAny.rankedElo = pAny.rankedElo or 1000
+	local currentElo = readElo(pAny)
+	pAny.elo = currentElo
+	pAny.rankedElo = currentElo
 	pAny.rankedWins = pAny.rankedWins or 0
 	pAny.rankedLosses = pAny.rankedLosses or 0
 
@@ -235,7 +249,7 @@ function RankedService.playMatch(
 		return false, nil, "Equip at least 1 card in your active deck!"
 	end
 
-	local opp = RankedService.pickOpponent(userId, pAny.rankedElo)
+	local opp = RankedService.pickOpponent(userId, currentElo)
 	local enemies: { BattleSim.CombatUnit } = {}
 	for idx, spec in ipairs(opp.cards) do
 		local cardDef = (Cards :: any).get(spec.cardId)
@@ -269,10 +283,10 @@ function RankedService.playMatch(
 		)
 	end
 
-	local seed = math.floor(os.clock() * 1000) + userId * 31 + pAny.rankedElo
+	local seed = math.floor(os.clock() * 1000) + userId * 31 + currentElo
 	local sim = BattleSim.run(allies, enemies, { seed = seed, maxRounds = 35 })
 
-	local expected = 1 / (1 + math.pow(10, (opp.elo - pAny.rankedElo) / 400))
+	local expected = 1 / (1 + math.pow(10, (opp.elo - currentElo) / 400))
 	local score = if sim.won then 1 else 0
 	local delta = math.round(32 * (score - expected))
 	if sim.won and delta < 8 then
@@ -281,8 +295,9 @@ function RankedService.playMatch(
 		delta = -4
 	end
 
-	local oldElo = pAny.rankedElo
+	local oldElo = currentElo
 	local newElo = math.max(0, oldElo + delta)
+	pAny.elo = newElo
 	pAny.rankedElo = newElo
 	if sim.won then
 		pAny.rankedWins += 1
@@ -297,7 +312,7 @@ function RankedService.playMatch(
 	profile.gems += gemEarned
 
 	local grandmasterCard: string? = nil
-	if newElo >= RankedService.GRANDMASTER_ELO and not pAny.rankedRewardClaimed then
+	if newElo >= RankedService.GRANDMASTER_ELO and pAny.rankedRewardClaimed ~= true then
 		pAny.rankedRewardClaimed = true
 		DataService.addCard(profile, RankedService.REWARD_CARD_ID, "Normal", nil)
 		grandmasterCard = RankedService.REWARD_CARD_ID

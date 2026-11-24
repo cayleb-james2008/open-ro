@@ -110,11 +110,15 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 		local worldId = if type(payload.worldId) == "number"
 			then payload.worldId
 			else (pAny.selectedWorld or profile.currentWorld)
+		local bannerId = if type(payload.bannerId) == "string" and payload.bannerId ~= ""
+			then payload.bannerId
+			else (pAny.selectedBannerId or ("banner_w" .. tostring(worldId)))
 		local ok, err, result = (RollService :: any).rollSingle(
 			profile,
 			worldId,
 			payload.useTicket == true,
 			friendCount,
+			bannerId,
 			player
 		)
 		if not ok or not result then
@@ -130,12 +134,16 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 			then payload.worldId
 			else (pAny.selectedWorld or profile.currentWorld)
 		local count = if type(payload.count) == "number" then payload.count else 5
+		local bannerId = if type(payload.bannerId) == "string" and payload.bannerId ~= ""
+			then payload.bannerId
+			else (pAny.selectedBannerId or ("banner_w" .. tostring(worldId)))
 		local ok, err, results = (RollService :: any).rollBatch(
 			profile,
 			worldId,
 			count,
 			payload.useTicket == true,
 			friendCount,
+			bannerId,
 			player
 		)
 		if not ok or not results then

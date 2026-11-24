@@ -75,7 +75,7 @@ export type PlayerProfile = {
 	elo: number,
 	rankedWins: number,
 	rankedLosses: number,
-	rankedRewardClaimed: { [string]: boolean },
+	rankedRewardClaimed: boolean,
 	quests: { [string]: any },
 	processedReceipts: { [string]: boolean },
 	ownedPasses: { [string]: boolean },
@@ -174,7 +174,7 @@ local function createDefaultProfile(): PlayerProfile
 		elo = 1000,
 		rankedWins = 0,
 		rankedLosses = 0,
-		rankedRewardClaimed = {},
+		rankedRewardClaimed = false,
 		quests = { daily = {}, weekly = {}, dailyDay = 0, weeklyWeek = 0 },
 		processedReceipts = {},
 		ownedPasses = {},
@@ -247,7 +247,9 @@ local function reconcileProfile(raw: any): PlayerProfile
 	p.elo = if type(p.elo) == "number" then math.max(0, math.floor(p.elo)) else 1000
 	p.rankedWins = p.rankedWins or 0
 	p.rankedLosses = p.rankedLosses or 0
-	p.rankedRewardClaimed = if type(p.rankedRewardClaimed) == "table" then p.rankedRewardClaimed else {}
+	p.rankedRewardClaimed = if type(p.rankedRewardClaimed) == "table"
+		then ((p.rankedRewardClaimed :: any).grandmaster == true)
+		else (p.rankedRewardClaimed == true)
 	p.quests = if type(p.quests) == "table" then p.quests else defaults.quests
 	p.processedReceipts = if type(p.processedReceipts) == "table" then p.processedReceipts else {}
 	p.ownedPasses = if type(p.ownedPasses) == "table" then p.ownedPasses else {}
@@ -577,6 +579,7 @@ function DataService.serializeForClient(profile: PlayerProfile): { [string]: any
 		elo = profile.elo,
 		rankedWins = profile.rankedWins,
 		rankedLosses = profile.rankedLosses,
+		rankedRewardClaimed = profile.rankedRewardClaimed == true,
 		ownedPasses = deepCopy(profile.ownedPasses),
 		settings = normalizedSettings,
 		luckBreakdown = luck,
