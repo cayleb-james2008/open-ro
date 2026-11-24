@@ -209,32 +209,36 @@ local function buildStagesForState(state: { [string]: any }, worldFilter: number
 		end
 	end
 	local stages: { BattleModal.BattleStageInfo } = {}
-	local worldsAny = Worlds :: any
-	local rawList = worldsAny.Stages or worldsAny.List or worldsAny.StagesList or {}
-	local highestCleared = 0
-	if type(rawList) == "table" then
-		for i, st in ipairs(rawList) do
-			if type(st) == "table" then
-				local wId = tonumber(st.worldId) or 1
-				if not worldFilter or wId == worldFilter then
-					local stId = tostring(st.id or st.stageId or ("w" .. tostring(wId) .. "_act" .. tostring(i)))
-					local cleared = clearedMap[stId] == true
-					if cleared then
-						highestCleared = #stages + 1
-					end
-					table.insert(stages, {
-						stageId = stId,
-						worldId = wId,
-						actNumber = tonumber(st.act or st.actNumber) or (#stages + 1),
-						name = tostring(st.name or stId),
-						recommendedPower = tonumber(st.recommendedPower) or (120 * wId),
-						yenReward = tonumber(st.yenReward) or (80 * wId),
-						gemsReward = tonumber(st.gemsReward) or (5 * wId),
-						unlocked = (wId <= (tonumber(state.unlockedWorld) or 1)) and (#stages <= highestCleared + 1),
-						cleared = cleared,
-						isBoss = st.isBoss == true,
-					})
+	local worldIds: { number } = if worldFilter then { worldFilter } else { 1, 2, 3, 4, 5 }
+	local unlockedWorld = tonumber(state.unlockedWorld) or 1
+	for _, wId in ipairs(worldIds) do
+		local worldDef = Worlds.getWorld(wId)
+		if worldDef and type(worldDef.stages) == "table" then
+			local highestCleared = 0
+			for idx, st in ipairs(worldDef.stages) do
+				local stId = tostring(st.id or ("w" .. tostring(wId) .. "_act" .. tostring(idx)))
+				local cleared = clearedMap[stId] == true
+				if cleared then
+					highestCleared = idx
 				end
+				local subtitle = string.format(
+					"World %d • %s",
+					wId,
+					if st.isBoss then "World Boss" else ("Act " .. tostring(st.act or idx))
+				)
+				table.insert(stages, {
+					id = stId,
+					name = tostring(st.name or stId),
+					subtitle = subtitle,
+					recommendedPower = tonumber(st.recommendedPower) or (120 * wId),
+					rewardSummary = string.format(
+						"+%d Yen  +%d Gems",
+						tonumber(st.yenReward) or 0,
+						tonumber(st.gemsReward) or 0
+					),
+					isBoss = st.isBoss == true,
+					unlocked = (wId <= unlockedWorld) and (idx <= highestCleared + 1),
+				})
 			end
 		end
 	end
@@ -392,6 +396,12 @@ settingsController = SettingsModal.create(
 	function(nextSettings: SettingsModal.SettingsState)
 		currentSettings = nextSettings
 		Theme.setMode(nextSettings.theme)
+		if endgameController and endgameController.applyTheme then
+			endgameController.applyTheme()
+		end
+		if metaController and metaController.applyTheme then
+			metaController.applyTheme()
+		end
 		sendRequest({ action = "UpdateSettings", settings = nextSettings :: any })
 		if currentState then
 			hudController.update(buildHudState(currentState))
@@ -708,7 +718,13 @@ if pushRemote then
 		if type(eventData) ~= "table" then
 			return
 		end
-		if eventData.type == Net.PushEvents.WeatherUpdate or eventData.event == Net.PushEvents.WeatherUpdate then
+		if
+			eventData.kind == "WeatherUpdate"
+			or eventData.type == "WeatherUpdate"
+			or eventData.event == "WeatherUpdate"
+			or eventData.type == Net.PushEvents.WeatherUpdate
+			or eventData.event == Net.PushEvents.WeatherUpdate
+		then
 			applyWeatherInfo(eventData.weather or eventData.data or eventData)
 		elseif eventData.type == "OpenModal" then
 			if type(eventData.modal) == "string" then
