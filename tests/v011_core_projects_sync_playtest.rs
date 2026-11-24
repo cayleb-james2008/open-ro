@@ -2334,8 +2334,8 @@ fn playtest_gui_click_and_keyboard_actions_gap_66() {
                             "$className": "TextButton",
                             "$properties": {
                                 "Visible": true,
-                                "AbsolutePosition": [500.0, 560.0],
-                                "AbsoluteSize": [160.0, 48.0]
+                                "AbsolutePosition": [232.9, 492.0],
+                                "AbsoluteSize": [167.2, 46.0]
                             }
                         }
                     }
@@ -2361,7 +2361,7 @@ fn playtest_gui_click_and_keyboard_actions_gap_66() {
                 "$className": "TextButton",
                 "$properties": {
                     "Visible": true,
-                    "AbsolutePosition": [400.0, 300.0],
+                    "AbsolutePosition": [400.0, -58.0],
                     "AbsoluteSize": [200.0, 60.0]
                 }
             }
@@ -2400,19 +2400,24 @@ fn playtest_gui_click_and_keyboard_actions_gap_66() {
         assert_eq!(c, 400, "expected 400 for malformed actions: {body}");
     }
 
-    // 2. Passing click_gui (with & without IgnoreGuiInset) + key (hold_ms) + text + before/after checks
+    // 2. Passing click_gui (#66 + #67: native instance_path + inset math on both IgnoreGuiInset
+    //    modes incl. negative top-of-screen AbsolutePosition.Y, explicit use_coordinates, Client DM
+    //    enforcement even after a Server before_actions check) + key (hold_ms) + text
     let good_spec = json!({
         "mode": "start_play",
         "settle_ms": 0,
         "actions": [
             { "kind": "click_gui", "gui_path": "UACGMainGui.HudRoot.RollDock.ButtonRow.RollButton", "wait_ms": 10 },
             { "kind": "click_gui", "gui_path": "OverlayGui.ActionBtn", "wait_ms": 10 },
+            { "kind": "click_gui", "gui_path": "OverlayGui.ActionBtn", "use_coordinates": true, "wait_ms": 10 },
             { "kind": "key", "key": "e", "hold_ms": 25, "wait_ms": 10 },
             { "kind": "text", "text": "Naruto", "wait_ms": 10 }
         ],
         "checks": [
-            { "name": "clicks before actions", "when": "before_actions", "luau": "return __mouse_clicks__", "expect": { "equals": 0 } },
-            { "name": "clicks after actions", "luau": "return __mouse_clicks__", "expect": { "equals": 2 } },
+            { "name": "clicks before actions", "datamodel": "Server", "when": "before_actions", "luau": "return __mouse_clicks__", "expect": { "equals": 0 } },
+            { "name": "clicks after actions", "luau": "return __mouse_clicks__", "expect": { "equals": 3 } },
+            { "name": "mouse input targeted Client DM", "luau": "return __last_mouse_dm__", "expect": { "equals": "Client" } },
+            { "name": "keyboard input targeted Client DM", "luau": "return __last_key_dm__", "expect": { "equals": "Client" } },
             { "name": "keys fired", "luau": "return __key_events__", "expect": { "equals": 2 } },
             { "name": "typed text captured", "luau": "return __typed_text__", "expect": { "equals": "Naruto" } }
         ]
@@ -2428,24 +2433,72 @@ fn playtest_gui_click_and_keyboard_actions_gap_66() {
     assert_eq!(pt["kept"], json!(false));
 
     let acts = pt["actions"].as_array().unwrap();
-    assert_eq!(acts.len(), 4);
-    // RollButton: IgnoreGuiInset=false -> x = 500 + 80 + 0 = 580, y = 560 + 24 + 58 = 642
+    assert_eq!(acts.len(), 5);
+    // RollButton (#365/#67): IgnoreGuiInset=false -> inset-relative gui_y = 492 + 23 = 515,
+    // true viewport y = 515 + 58 = 573; dispatched natively via instance_path on Client DM.
     assert_eq!(acts[0]["passed"], json!(true));
-    assert_eq!(acts[0]["resolved"]["x"], json!(580.0));
-    assert_eq!(acts[0]["resolved"]["y"], json!(642.0));
+    assert_eq!(acts[0]["resolved"]["dispatch"], json!("instance_path"));
+    assert_eq!(
+        acts[0]["resolved"]["instance_path"],
+        json!("LocalPlayer.PlayerGui.UACGMainGui.HudRoot.RollDock.ButtonRow.RollButton")
+    );
+    assert_eq!(acts[0]["resolved"]["datamodel_type"], json!("Client"));
+    assert!((acts[0]["resolved"]["x"].as_f64().unwrap() - 316.5).abs() < 1e-6);
+    assert_eq!(acts[0]["resolved"]["y"], json!(573.0));
+    assert_eq!(acts[0]["resolved"]["gui_y"], json!(515.0));
     assert_eq!(acts[0]["resolved"]["ignore_gui_inset"], json!(false));
-    // ActionBtn: IgnoreGuiInset=true -> x = 400 + 100 + 0 = 500, y = 300 + 30 + 0 = 330
+    assert_eq!(acts[0]["resolved"]["hit_verified"], json!(true));
+
+    // ActionBtn (#67): IgnoreGuiInset=true at top of screen has negative AbsolutePosition.Y = -58
+    // -> gui_y = -28, true viewport y = -28 + 58 = 30 (NOT falsely rejected as offscreen!).
     assert_eq!(acts[1]["passed"], json!(true));
+    assert_eq!(acts[1]["resolved"]["dispatch"], json!("instance_path"));
+    assert_eq!(
+        acts[1]["resolved"]["instance_path"],
+        json!("LocalPlayer.PlayerGui.OverlayGui.ActionBtn")
+    );
     assert_eq!(acts[1]["resolved"]["x"], json!(500.0));
-    assert_eq!(acts[1]["resolved"]["y"], json!(330.0));
+    assert_eq!(acts[1]["resolved"]["y"], json!(30.0));
+    assert_eq!(acts[1]["resolved"]["gui_y"], json!(-28.0));
     assert_eq!(acts[1]["resolved"]["ignore_gui_inset"], json!(true));
-    // Key action normalized "e" -> "E" with hold_ms=25
+    assert_eq!(acts[1]["resolved"]["hit_verified"], json!(true));
+
+    // Explicit use_coordinates=true opts into viewport (x, y) dispatch
     assert_eq!(acts[2]["passed"], json!(true));
-    assert_eq!(acts[2]["key"], json!("E"));
-    assert_eq!(acts[2]["hold_ms"], json!(25));
-    // Text action
+    assert_eq!(acts[2]["resolved"]["dispatch"], json!("coordinates"));
+    assert_eq!(acts[2]["resolved"]["x"], json!(500.0));
+    assert_eq!(acts[2]["resolved"]["y"], json!(30.0));
+
+    // Key action normalized "e" -> "E" with hold_ms=25
     assert_eq!(acts[3]["passed"], json!(true));
-    assert_eq!(acts[3]["text_len"], json!(6));
+    assert_eq!(acts[3]["key"], json!("E"));
+    assert_eq!(acts[3]["hold_ms"], json!(25));
+    // Text action
+    assert_eq!(acts[4]["passed"], json!(true));
+    assert_eq!(acts[4]["text_len"], json!(6));
+
+    // Verify native instance_path dispatch targets the exact RollButton instance in mock_studio
+    let (code, ip_pt) = api_json(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/playtest"),
+        Some(json!({
+            "mode": "start_play",
+            "settle_ms": 0,
+            "actions": [
+                { "kind": "click_gui", "gui_path": "UACGMainGui.HudRoot.RollDock.ButtonRow.RollButton", "wait_ms": 0 }
+            ],
+            "checks": [
+                {
+                    "name": "clicked instance_path recorded",
+                    "luau": "return __selected_instance__",
+                    "expect": { "equals": "LocalPlayer.PlayerGui.UACGMainGui.HudRoot.RollDock.ButtonRow.RollButton" }
+                }
+            ]
+        })),
+    );
+    assert_eq!(code, 200, "instance_path target check failed: {ip_pt}");
+    assert_eq!(ip_pt["passed"], json!(true), "instance_path check failed: {ip_pt}");
 
     // HTML report renders Actions table
     let run_id = pt["run_id"].as_str().unwrap();
@@ -2458,7 +2511,7 @@ fn playtest_gui_click_and_keyboard_actions_gap_66() {
     );
     assert_eq!(hcode, 200);
     let html = String::from_utf8_lossy(&hbytes);
-    assert!(html.contains("Actions (4)"), "missing Actions table in HTML");
+    assert!(html.contains("Actions (5)"), "missing Actions table in HTML");
     assert!(html.contains("RollButton"), "missing RollButton in HTML");
 
     // KeptChecks reuses identical passing action playtest
