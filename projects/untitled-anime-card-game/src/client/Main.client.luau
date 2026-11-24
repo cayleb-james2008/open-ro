@@ -1,7 +1,10 @@
 --!strict
 
+local Lighting = game:GetService("Lighting")
 local Players = game:GetService("Players")
+local ProximityPromptService = game:GetService("ProximityPromptService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local SoundService = game:GetService("SoundService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Net = require(Shared:WaitForChild("Net"))
@@ -15,6 +18,8 @@ local RevealModal = require(ClientFolder:WaitForChild("RevealModal"))
 local DeckModal = require(ClientFolder:WaitForChild("DeckModal"))
 local BattleModal = require(ClientFolder:WaitForChild("BattleModal"))
 local SettingsModal = require(ClientFolder:WaitForChild("SettingsModal"))
+local EndgameModals = require(ClientFolder:WaitForChild("EndgameModals"))
+local MetaModals = require(ClientFolder:WaitForChild("MetaModals"))
 
 local localPlayer = Players.LocalPlayer
 local playerGui = localPlayer:WaitForChild("PlayerGui")
@@ -44,12 +49,33 @@ local fastEnabled = false
 local rollBusy = false
 local autoLoopToken = 0
 local statusMessage = ""
+local selectedWorldId = 1
+local currentBannerName = "Standard Summon"
+local currentWeatherText = "Clear Skies (1.0x)"
 
 local hudController: Hud.HudController
 local revealController: RevealModal.RevealModalController
 local deckController: DeckModal.DeckModalController
 local battleController: BattleModal.BattleModalController
 local settingsController: SettingsModal.SettingsModalController
+local endgameController: any
+local metaController: any
+
+local function playSfx(soundId: string?)
+	if not soundId or soundId == "" then
+		return
+	end
+	pcall(function()
+		local s = Instance.new("Sound")
+		s.SoundId = soundId
+		s.Volume = 0.35
+		s.Parent = SoundService
+		s:Play()
+		task.delay(2, function()
+			s:Destroy()
+		end)
+	end)
+end
 
 local function sendRequest(payload: Net.RequestPayload): Net.ResponsePayload
 	if not requestRemote then
@@ -67,8 +93,7 @@ local function sendRequest(payload: Net.RequestPayload): Net.ResponsePayload
 	return result :: Net.ResponsePayload
 end
 
-local function extractActiveDeckUids(state: { [string]: any }): { string }
-	local raw = state.activeDeckUids or state.activeDeck or state.deckIds or state.deck
+local function extractStringList(raw: any): { string }
 	local out: { string } = {}
 	if type(raw) == "table" then
 		for _, uid in ipairs(raw :: { any }) do
@@ -78,6 +103,14 @@ local function extractActiveDeckUids(state: { [string]: any }): { string }
 		end
 	end
 	return out
+end
+
+local function extractActiveDeckUids(state: { [string]: any }): { string }
+	return extractStringList(state.activeDeckUids or state.activeDeck or state.deckIds or state.deck)
+end
+
+local function extractDefenseDeckUids(state: { [string]: any }): { string }
+	return extractStringList(state.defenseDeckUids or state.defenseDeck)
 end
 
 local function extractOwnedCards(state: { [string]: any }): { DeckModal.OwnedCard }
@@ -146,6 +179,7 @@ end
 local function buildDeckSnapshot(state: { [string]: any }): DeckModal.DeckSnapshot
 	local cards = extractOwnedCards(state)
 	local activeUids = extractActiveDeckUids(state)
+	local defenseUids = extractDefenseDeckUids(state)
 	local totalPower = tonumber(state.deckPower) or computeDeckPower(cards, activeUids)
 	local synergy = if type(state.synergySummary) == "string" and state.synergySummary ~= ""
 		then state.synergySummary
@@ -153,125 +187,75 @@ local function buildDeckSnapshot(state: { [string]: any }): DeckModal.DeckSnapsh
 	return {
 		cards = cards,
 		activeDeckUids = activeUids,
+		defenseDeckUids = defenseUids,
 		maxDeckSize = tonumber(state.maxDeckSize) or 5,
 		synergySummary = synergy,
+		bondsSummary = if type(state.bondsSummary) == "string" then state.bondsSummary else nil,
 		totalPower = totalPower,
 		yen = tonumber(state.yen) or 0,
 	}
 end
 
-local function findWorldDef(worldId: number): any
-	local worldsAny = Worlds :: any
-	if type(worldsAny.get) == "function" then
-		return worldsAny.get(worldId) or worldsAny.get(1)
-	end
-	if type(Worlds.List) == "table" then
-		for _, w in ipairs(Worlds.List) do
-			if w.id == worldId then
-				return w
+local function buildStagesForState(state: { [string]: any }, worldFilter: number?): { BattleModal.BattleStageInfo }
+	local clearedMap: { [string]: boolean } = {}
+	if type(state.clearedStages) == "table" then
+		for k, v in pairs(state.clearedStages :: { [any]: any }) do
+			if type(k) == "string" and v == true then
+				clearedMap[k] = true
+			elseif type(v) == "string" then
+				clearedMap[v] = true
 			end
 		end
-		return Worlds.List[1]
 	end
-	return nil
-end
-
-local function buildStagesForState(state: { [string]: any }): { BattleModal.BattleStageInfo }
 	local stages: { BattleModal.BattleStageInfo } = {}
-	local unlockedWorld = tonumber(state.unlockedWorld) or 1
-	local clearedStages = if type(state.clearedStages) == "table" then state.clearedStages else {}
-	local worldDef = findWorldDef(unlockedWorld)
-	if worldDef and type(worldDef.stages) == "table" then
-		for index, stageDef in ipairs(worldDef.stages) do
-			local prevCleared = index == 1 or clearedStages[worldDef.stages[index - 1].id] == true
-			local rewards = if type(stageDef.rewards) == "table" then stageDef.rewards else {}
-			local yenReward = tonumber(stageDef.yenReward or rewards.yen) or 0
-			local gemReward = tonumber(stageDef.gemReward or rewards.gems) or 0
-			local rewardText = string.format("%s Yen • %s Gems", tostring(yenReward), tostring(gemReward))
-			local subtitleText = stageDef.subtitle or (if stageDef.isBoss then "World Boss" else "Battle Stage")
+	local worldsAny = Worlds :: any
+	local rawList = worldsAny.Stages or worldsAny.List or worldsAny.StagesList or {}
+	local highestCleared = 0
+	if type(rawList) == "table" then
+		for i, st in ipairs(rawList) do
+			if type(st) == "table" then
+				local wId = tonumber(st.worldId) or 1
+				if not worldFilter or wId == worldFilter then
+					local stId = tostring(st.id or st.stageId or ("w" .. tostring(wId) .. "_act" .. tostring(i)))
+					local cleared = clearedMap[stId] == true
+					if cleared then
+						highestCleared = #stages + 1
+					end
+					table.insert(stages, {
+						stageId = stId,
+						worldId = wId,
+						actNumber = tonumber(st.act or st.actNumber) or (#stages + 1),
+						name = tostring(st.name or stId),
+						recommendedPower = tonumber(st.recommendedPower) or (120 * wId),
+						yenReward = tonumber(st.yenReward) or (80 * wId),
+						gemsReward = tonumber(st.gemsReward) or (5 * wId),
+						unlocked = (wId <= (tonumber(state.unlockedWorld) or 1)) and (#stages <= highestCleared + 1),
+						cleared = cleared,
+						isBoss = st.isBoss == true,
+					})
+				end
+			end
+		end
+	end
+	if #stages == 0 then
+		local wId = worldFilter or 1
+		for act = 1, 5 do
+			local stId = string.format("w%d_act%d", wId, act)
 			table.insert(stages, {
-				id = stageDef.id,
-				name = stageDef.name,
-				subtitle = subtitleText,
-				recommendedPower = stageDef.recommendedPower or 100,
-				rewardSummary = rewardText,
-				isBoss = stageDef.isBoss == true,
-				unlocked = prevCleared,
+				stageId = stId,
+				worldId = wId,
+				actNumber = act,
+				name = string.format("World %d - Act %d", wId, act),
+				recommendedPower = 120 * wId * act,
+				yenReward = 80 * wId * act,
+				gemsReward = 5 * act,
+				unlocked = act == 1 or clearedMap[string.format("w%d_act%d", wId, act - 1)] == true,
+				cleared = clearedMap[stId] == true,
+				isBoss = act == 5,
 			})
 		end
 	end
 	return stages
-end
-
-local function formatLuckFactor(value: number): string
-	if math.abs(value * 10 - math.round(value * 10)) < 0.001 then
-		return string.format("%.1fx", value)
-	end
-	return string.format("%.2fx", value)
-end
-
-local function formatLuckBreakdown(raw: any): string
-	if type(raw) == "string" and raw ~= "" then
-		return raw
-	end
-	if type(raw) ~= "table" then
-		return "Base 1.0x"
-	end
-	local tbl = raw :: { [any]: any }
-	if #tbl > 0 then
-		local parts: { string } = {}
-		for _, entry in ipairs(tbl) do
-			if type(entry) == "string" and entry ~= "" then
-				table.insert(parts, entry)
-			elseif type(entry) == "table" then
-				local label = tostring(entry.label or entry.name or entry.source or "Bonus")
-				local val = tonumber(entry.value or entry.multiplier or entry.bonus)
-				if val then
-					table.insert(parts, string.format("%s %s", label, formatLuckFactor(val)))
-				else
-					table.insert(parts, label)
-				end
-			end
-		end
-		if #parts > 0 then
-			return table.concat(parts, " + ")
-		end
-	end
-	local labelMap: { [string]: string } = {
-		base = "Base",
-		eventMult = "Event",
-		indexBonus = "Index",
-		boostMult = "Boost",
-		passMult = "Pass",
-		potionMult = "Potion",
-		vipMult = "VIP",
-	}
-	local keys: { string } = {}
-	for k, _ in pairs(tbl) do
-		if type(k) == "string" and k ~= "total" and k ~= "totalMult" then
-			table.insert(keys, k)
-		end
-	end
-	table.sort(keys)
-	local parts: { string } = {}
-	for _, k in ipairs(keys) do
-		local v = tbl[k]
-		local label = labelMap[k] or (string.upper(string.sub(k, 1, 1)) .. string.gsub(string.sub(k, 2), "(%u)", " %1"))
-		if type(v) == "number" then
-			local isMult = string.find(string.lower(k), "mult", 1, true) ~= nil
-			if (isMult and math.abs(v - 1) > 0.001) or (not isMult and v ~= 0 and k ~= "base") then
-				table.insert(parts, string.format("%s %s", label, formatLuckFactor(v)))
-			end
-		elseif type(v) == "string" and v ~= "" then
-			table.insert(parts, string.format("%s: %s", label, v))
-		elseif type(v) == "boolean" and v then
-			table.insert(parts, label)
-		end
-	end
-	if #parts == 0 then
-		return "Base 1.0x"
-	end
-	return table.concat(parts, " • ")
 end
 
 local function buildHudState(state: { [string]: any }): Hud.HudState
@@ -279,7 +263,7 @@ local function buildHudState(state: { [string]: any }): Hud.HudState
 	local pity = if type(state.pity) == "table" then state.pity else {}
 	local luckText = if type(state.luckSummary) == "string" and state.luckSummary ~= ""
 		then state.luckSummary
-		else formatLuckBreakdown(state.luckBreakdown)
+		else "Base 1.0x"
 	return {
 		yen = tonumber(state.yen) or 0,
 		gems = tonumber(state.gems) or 0,
@@ -298,11 +282,40 @@ local function buildHudState(state: { [string]: any }): Hud.HudState
 		deckCount = #activeUids,
 		deckMax = tonumber(state.maxDeckSize) or 5,
 		rollStatusText = statusMessage,
+		selectedWorld = selectedWorldId,
+		bannerName = currentBannerName,
+		weatherText = currentWeatherText,
 	}
+end
+
+local function applyWeatherInfo(wData: any)
+	if type(wData) ~= "table" then
+		return
+	end
+	local name = tostring(wData.name or wData.weather or "Clear Skies")
+	local mult = tonumber(wData.luckMult or wData.multiplier) or 1
+	currentWeatherText = string.format("%s (%.2gx)", name, mult)
+	revealController.setContext(currentBannerName, currentWeatherText)
+	pcall(function()
+		if mult > 1.2 then
+			Lighting.OutdoorAmbient = Color3.fromRGB(145, 160, 195)
+		else
+			Lighting.OutdoorAmbient = Color3.fromRGB(130, 136, 150)
+		end
+	end)
+	if currentState then
+		hudController.update(buildHudState(currentState))
+	end
 end
 
 local function applyState(newState: { [string]: any })
 	currentState = newState
+	if type(newState.selectedBanner) == "string" and newState.selectedBanner ~= "" then
+		currentBannerName = newState.selectedBanner
+	end
+	if type(newState.weather) == "table" then
+		applyWeatherInfo(newState.weather)
+	end
 	if type(newState.settings) == "table" then
 		local s = newState.settings
 		local rawTheme = if type(s.theme) == "string" then string.lower(s.theme) else ""
@@ -318,9 +331,16 @@ local function applyState(newState: { [string]: any })
 		Theme.setMode(currentSettings.theme)
 		settingsController.setState(currentSettings)
 	end
+	revealController.setContext(currentBannerName, currentWeatherText)
 	hudController.update(buildHudState(newState))
 	if deckController.isOpen() then
 		deckController.refresh(buildDeckSnapshot(newState))
+	end
+	if endgameController and endgameController.updateState then
+		endgameController.updateState(newState)
+	end
+	if metaController and metaController.updateState then
+		metaController.updateState(newState)
 	end
 end
 
@@ -338,6 +358,7 @@ local function performRoll(): boolean
 	rollBusy = true
 	local res = sendRequest({
 		action = "Roll",
+		bannerId = "world_" .. tostring(selectedWorldId),
 		fastRoll = fastEnabled,
 	})
 	rollBusy = false
@@ -370,10 +391,7 @@ settingsController = SettingsModal.create(
 	function(nextSettings: SettingsModal.SettingsState)
 		currentSettings = nextSettings
 		Theme.setMode(nextSettings.theme)
-		sendRequest({
-			action = "UpdateSettings",
-			settings = nextSettings :: any,
-		})
+		sendRequest({ action = "UpdateSettings", settings = nextSettings :: any })
 		if currentState then
 			hudController.update(buildHudState(currentState))
 		end
@@ -383,6 +401,20 @@ settingsController = SettingsModal.create(
 revealController = RevealModal.create(screenGui, function()
 	return currentSettings
 end)
+
+local modalApi = {
+	request = sendRequest,
+	sendRequest = sendRequest,
+	setStatus = setStatus,
+	applyState = applyState,
+	getState = function()
+		return currentState
+	end,
+	playSfx = playSfx,
+}
+
+endgameController = EndgameModals.build(screenGui, modalApi, Theme)
+metaController = MetaModals.build(screenGui, modalApi, Theme)
 
 deckController = DeckModal.create(screenGui, {
 	onEquipToggle = function(uid: string, shouldEquip: boolean)
@@ -401,14 +433,34 @@ deckController = DeckModal.create(screenGui, {
 			end
 			table.insert(nextIds, uid)
 		end
-		local res = sendRequest({
-			action = "SetDeck",
-			deckIds = nextIds,
-		})
+		local res = sendRequest({ action = "SetDeck", deckIds = nextIds })
 		if res.ok and type(res.data) == "table" and res.data.state then
 			applyState(res.data.state)
 		elseif not res.ok then
 			setStatus(res.error or "Unable to update deck")
+		end
+	end,
+	onDefenseEquipToggle = function(uid: string, shouldEquip: boolean)
+		local currentIds = if currentState then extractDefenseDeckUids(currentState) else {}
+		local maxDeck = if currentState then (tonumber(currentState.maxDeckSize) or 5) else 5
+		local nextIds: { string } = {}
+		for _, id in ipairs(currentIds) do
+			if id ~= uid then
+				table.insert(nextIds, id)
+			end
+		end
+		if shouldEquip then
+			if #nextIds >= maxDeck then
+				setStatus("Defense deck is full")
+				return
+			end
+			table.insert(nextIds, uid)
+		end
+		local res = sendRequest({ action = "SaveDefenseDeck", defenseDeckIds = nextIds })
+		if res.ok and type(res.data) == "table" and res.data.state then
+			applyState(res.data.state)
+		elseif not res.ok then
+			setStatus(res.error or "Unable to update defense deck")
 		end
 	end,
 	onLevelUp = function(uid: string)
@@ -452,18 +504,23 @@ battleController = BattleModal.create(screenGui, {
 			if res.data.state then
 				applyState(res.data.state)
 			end
-			local battleResult = res.data.battle or res.data.result
-			if type(battleResult) == "table" then
-				battleController.playBattle(battleResult :: BattleModal.BattleResult)
-			end
+			battleController.playBattle(res.data.battle or res.data)
 		else
-			battleController.setStatus(res.error or "Battle could not start")
+			battleController.setStatus(res.error or "Battle failed")
 		end
 	end,
-	getReducedMotion = function(): boolean
+	getReducedMotion = function()
 		return currentSettings.reducedMotion
 	end,
 })
+
+local function openBattleForWorld(worldId: number)
+	selectedWorldId = worldId
+	if currentState then
+		local snapshot = buildDeckSnapshot(currentState)
+		battleController.open(buildStagesForState(currentState, worldId), snapshot.totalPower)
+	end
+end
 
 hudController = Hud.create(screenGui, {
 	onRoll = function()
@@ -478,7 +535,7 @@ hudController = Hud.create(screenGui, {
 		end
 		if autoEnabled then
 			task.spawn(function()
-				while autoEnabled and autoLoopToken == token do
+				while autoEnabled and token == autoLoopToken do
 					local ok = performRoll()
 					if not ok then
 						autoEnabled = false
@@ -487,7 +544,7 @@ hudController = Hud.create(screenGui, {
 						end
 						break
 					end
-					task.wait(if fastEnabled then 0.35 else 1.25)
+					task.wait(if fastEnabled then 0.35 else 1.2)
 				end
 			end)
 		end
@@ -504,15 +561,96 @@ hudController = Hud.create(screenGui, {
 		end
 	end,
 	onOpenBattle = function()
-		if currentState then
-			local snapshot = buildDeckSnapshot(currentState)
-			battleController.open(buildStagesForState(currentState), snapshot.totalPower)
-		end
+		openBattleForWorld(selectedWorldId)
 	end,
 	onOpenSettings = function()
 		settingsController.open()
 	end,
+	onOpenShop = function()
+		metaController.openShop()
+	end,
+	onCycleWorld = function()
+		selectedWorldId = (selectedWorldId % 5) + 1
+		currentBannerName = "World " .. tostring(selectedWorldId) .. " Banner"
+		sendRequest({ action = "SelectBanner", bannerId = "world_" .. tostring(selectedWorldId) })
+		revealController.setContext(currentBannerName, currentWeatherText)
+		if currentState then
+			hudController.update(buildHudState(currentState))
+		end
+	end,
+	onOpenTower = function()
+		endgameController.openTower()
+	end,
+	onOpenRaid = function()
+		endgameController.openRaid()
+	end,
+	onOpenWorldBoss = function()
+		endgameController.openWorldBoss()
+	end,
+	onOpenRanked = function()
+		endgameController.openRanked()
+	end,
+	onOpenRebirth = function()
+		endgameController.openRebirth()
+	end,
+	onOpenCharms = function()
+		endgameController.openCharms()
+	end,
+	onOpenQuests = function()
+		metaController.openQuests()
+	end,
+	onOpenIndex = function()
+		metaController.openIndex()
+	end,
+	onOpenLeaderboards = function()
+		metaController.openLeaderboards()
+	end,
 })
+
+local function handlePropAction(prop: string)
+	if prop == "Roll" then
+		performRoll()
+	elseif prop == "Deck" and currentState then
+		deckController.open(buildDeckSnapshot(currentState))
+	elseif prop == "Battle" then
+		openBattleForWorld(selectedWorldId)
+	elseif prop == "Shop" then
+		metaController.openShop()
+	elseif prop == "Tower" then
+		endgameController.openTower()
+	elseif prop == "Raid" then
+		endgameController.openRaid()
+	elseif prop == "Ranked" then
+		endgameController.openRanked()
+	elseif prop == "Rebirth" then
+		endgameController.openRebirth()
+	elseif prop == "Charms" then
+		endgameController.openCharms()
+	elseif prop == "World2" then
+		openBattleForWorld(2)
+	elseif prop == "World3" then
+		openBattleForWorld(3)
+	elseif prop == "World4" then
+		openBattleForWorld(4)
+	elseif prop == "World5" then
+		openBattleForWorld(5)
+	end
+end
+
+ProximityPromptService.PromptTriggered:Connect(function(prompt: ProximityPrompt, player: Player)
+	if player ~= localPlayer then
+		return
+	end
+	local cur: Instance? = prompt
+	while cur do
+		local prop = cur:GetAttribute("OpenProp") or cur:GetAttribute("PropAction")
+		if type(prop) == "string" and prop ~= "" then
+			handlePropAction(prop)
+			return
+		end
+		cur = cur.Parent
+	end
+end)
 
 if syncRemote then
 	syncRemote.OnClientEvent:Connect(function(payload: any)
@@ -527,14 +665,11 @@ if pushRemote then
 		if type(eventData) ~= "table" then
 			return
 		end
-		if eventData.type == "OpenModal" then
-			if eventData.modal == "Deck" and currentState then
-				deckController.open(buildDeckSnapshot(currentState))
-			elseif eventData.modal == "Battle" and currentState then
-				local snapshot = buildDeckSnapshot(currentState)
-				battleController.open(buildStagesForState(currentState), snapshot.totalPower)
-			elseif eventData.modal == "Settings" then
-				settingsController.open()
+		if eventData.type == Net.PushEvents.WeatherUpdate or eventData.event == Net.PushEvents.WeatherUpdate then
+			applyWeatherInfo(eventData.weather or eventData.data or eventData)
+		elseif eventData.type == "OpenModal" then
+			if type(eventData.modal) == "string" then
+				handlePropAction(eventData.modal)
 			end
 		elseif eventData.type == "Toast" then
 			setStatus(tostring(eventData.message or ""))
@@ -547,5 +682,9 @@ task.spawn(function()
 	if res.ok and type(res.data) == "table" then
 		local state = res.data.state or res.data
 		applyState(state)
+	end
+	local wRes = sendRequest({ action = "GetWeather" })
+	if wRes.ok and type(wRes.data) == "table" then
+		applyWeatherInfo(wRes.data)
 	end
 end)
