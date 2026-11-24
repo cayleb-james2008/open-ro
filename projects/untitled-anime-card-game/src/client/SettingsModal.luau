@@ -375,7 +375,7 @@ function SettingsModal.create(
 			return table.clone(state)
 		end,
 		setState = function(nextState: SettingsState)
-			state.theme = if nextState.theme == "Light" then "Light" else "Dark"
+			state.theme = Theme.normalizeMode(nextState.theme)
 			state.reducedMotion = nextState.reducedMotion == true
 			state.reducedFlash = nextState.reducedFlash == true
 			state.skipBelowRarity = nextState.skipBelowRarity or "None"

@@ -259,9 +259,15 @@ function Components.makeCardView(parent: Instance, cardData: { [string]: any }, 
 	grad.Transparency = NumberSequence.new(0.25)
 	grad.Parent = portraitBox
 
-	local cardId = tostring(cardData.id or "")
-	local portraitAsset = AssetIds.get(cardId)
-	if portraitAsset == "" then
+	local cardId = tostring(cardData.cardId or cardData.id or "")
+	local portraitAsset = if cardData.artKey then AssetIds.get(tostring(cardData.artKey)) else ""
+	if portraitAsset == "" and cardId ~= "" then
+		portraitAsset = AssetIds.get("cards/" .. cardId)
+	end
+	if portraitAsset == "" and cardId ~= "" then
+		portraitAsset = AssetIds.get(cardId)
+	end
+	if portraitAsset == "" and cardId ~= "" then
 		portraitAsset = AssetIds.get("art/cards/" .. cardId .. "/art.png")
 	end
 	if portraitAsset ~= "" then

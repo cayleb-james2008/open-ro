@@ -6,11 +6,15 @@ local Components = require(script.Parent:WaitForChild("Components"))
 export type OwnedCard = {
 	uid: string,
 	id: string,
+	cardId: string?,
 	name: string,
+	displayName: string?,
 	rarity: string,
 	mutation: string?,
 	role: string?,
 	faction: string?,
+	showName: string?,
+	artKey: string?,
 	level: number,
 	stars: number,
 	hp: number,
@@ -19,6 +23,7 @@ export type OwnedCard = {
 	power: number,
 	locked: boolean?,
 	dupesAvailable: number?,
+	dupeCount: number?,
 	levelUpCostYen: number?,
 	sellValueYen: number?,
 }
@@ -326,17 +331,28 @@ function DeckModal.create(parent: Instance, callbacks: DeckCallbacks): DeckModal
 				Components.formatNumber(currentSnapshot.yen)
 			)
 			equipBtn.Active = false
+			equipBtn.BackgroundColor3 = palette.bgMuted
+			equipBtn.TextColor3 = palette.textMuted
 			levelBtn.Active = false
+			levelBtn.BackgroundColor3 = palette.bgMuted
+			levelBtn.TextColor3 = palette.textMuted
 			ascendBtn.Active = false
+			ascendBtn.BackgroundColor3 = palette.bgMuted
+			ascendBtn.TextColor3 = palette.textMuted
 			lockBtn.Active = false
+			lockBtn.BackgroundColor3 = palette.bgMuted
+			lockBtn.TextColor3 = palette.textMuted
 			sellBtn.Active = false
+			sellBtn.BackgroundColor3 = palette.bgMuted
+			sellBtn.TextColor3 = palette.textMuted
 			return
 		end
 
 		local equipped = isEquipped(card.uid)
+		local displayName = tostring(card.displayName or card.name or card.cardId or card.id or "Card")
 		local mutText = if card.mutation and card.mutation ~= "Normal" then " [" .. card.mutation .. "]" else ""
 		inspTitle.Text =
-			string.format("%s (%s)%s — Lv.%d (%d*)", card.name, card.rarity, mutText, card.level, card.stars)
+			string.format("%s (%s)%s — Lv.%d (%d*)", displayName, card.rarity, mutText, card.level, card.stars)
 		inspStats.Text = string.format(
 			"HP %s  ATK %s  SPD %s  |  Power %s",
 			Components.formatNumber(card.hp),
@@ -353,20 +369,29 @@ function DeckModal.create(parent: Instance, callbacks: DeckCallbacks): DeckModal
 		local lvCost = card.levelUpCostYen or 100
 		levelBtn.Active = true
 		levelBtn.Text = "Lv+ (" .. Components.formatNumber(lvCost) .. ")"
+		levelBtn.BackgroundColor3 = palette.accentGreen
+		levelBtn.TextColor3 = palette.textOnAccent
 
-		local dupes = card.dupesAvailable or 0
+		local dupes = card.dupesAvailable or card.dupeCount or 0
 		ascendBtn.Active = dupes > 0
 		ascendBtn.Text = if dupes > 0 then string.format("Ascend (%d)", dupes) else "Ascend (0)"
+		ascendBtn.BackgroundColor3 = if dupes > 0 then palette.accentGold else palette.bgMuted
+		ascendBtn.TextColor3 = if dupes > 0 then palette.textOnAccent else palette.textMuted
 
 		lockBtn.Active = true
 		lockBtn.Text = if card.locked then "Unlock" else "Lock"
+		lockBtn.BackgroundColor3 = palette.bgMuted
+		lockBtn.TextColor3 = palette.textPrimary
 
 		local sellVal = card.sellValueYen or 25
-		sellBtn.Active = (not equipped) and not card.locked
+		local canSell = (not equipped) and not card.locked
+		sellBtn.Active = canSell
 		sellBtn.Text = if equipped
 			then "Equipped"
 			elseif card.locked then "Locked"
 			else "Sell +" .. Components.formatNumber(sellVal)
+		sellBtn.BackgroundColor3 = if canSell then palette.accentRed else palette.bgMuted
+		sellBtn.TextColor3 = if canSell then Color3.fromRGB(255, 255, 255) else palette.textMuted
 	end
 
 	local function renderAll()
@@ -450,18 +475,29 @@ function DeckModal.create(parent: Instance, callbacks: DeckCallbacks): DeckModal
 			view.ZIndex = 33
 
 			if isEquipped(card.uid) then
-				local eqTag = Components.makeLabel(
-					view,
-					"EquippedTag",
+				local hasMutation = card.mutation ~= nil and card.mutation ~= "" and card.mutation ~= "Normal"
+				local eqBadge = Instance.new("Frame")
+				eqBadge.Name = "EquippedTag"
+				eqBadge.Size = UDim2.fromOffset(64, 18)
+				eqBadge.Position = UDim2.new(1, -70, 0, if hasMutation then 32 else 9)
+				eqBadge.BackgroundColor3 = Color3.fromRGB(20, 78, 48)
+				eqBadge.BorderSizePixel = 0
+				eqBadge.ZIndex = 35
+				eqBadge.Parent = view
+				Components.addCorner(eqBadge, 5)
+				Components.addStroke(eqBadge, Color3.fromRGB(92, 224, 152), 1.2, 0)
+				local eqLbl = Components.makeLabel(
+					eqBadge,
+					"Text",
 					"EQUIPPED",
-					UDim2.fromOffset(66, 18),
-					UDim2.new(0, 6, 0.56, -20),
+					UDim2.fromScale(1, 1),
+					UDim2.fromOffset(0, 0),
 					Theme.FONT_DISPLAY,
 					9,
-					Color3.fromRGB(110, 240, 165),
-					Enum.TextXAlignment.Left
+					Color3.fromRGB(142, 255, 192),
+					Enum.TextXAlignment.Center
 				)
-				eqTag.ZIndex = 35
+				eqLbl.ZIndex = 36
 			end
 
 			if selectedUid == card.uid then

@@ -16,9 +16,11 @@ export type BattleStageInfo = {
 }
 
 export type BattleUnitInit = {
-	id: string,
-	name: string,
-	rarity: string,
+	id: string?,
+	cardId: string?,
+	name: string?,
+	displayName: string?,
+	rarity: string?,
 	mutation: string?,
 	role: string?,
 	level: number?,
@@ -34,21 +36,28 @@ export type BattleUnitInit = {
 
 export type BattleEvent = {
 	turn: number?,
+	round: number?,
 	actorSide: string,
 	actorIndex: number,
+	actorName: string?,
 	targetSide: string?,
 	targetIndex: number?,
+	targetName: string?,
 	skillName: string?,
+	action: string?,
 	damage: number?,
 	heal: number?,
 	isCrit: boolean?,
+	crit: boolean?,
 	isDodge: boolean?,
 	status: string?,
 	actorHpAfter: number?,
 	targetHpAfter: number?,
+	targetHp: number?,
 	actorEnergyAfter: number?,
 	targetEnergyAfter: number?,
 	defeated: boolean?,
+	killed: boolean?,
 }
 
 export type BattleRewards = {
@@ -62,11 +71,14 @@ export type BattleRewards = {
 
 export type BattleResult = {
 	stageId: string,
-	stageName: string,
-	victory: boolean,
-	allies: { BattleUnitInit },
-	enemies: { BattleUnitInit },
-	events: { BattleEvent },
+	stageName: string?,
+	victory: boolean?,
+	won: boolean?,
+	rounds: number?,
+	mvpName: string?,
+	allies: { BattleUnitInit }?,
+	enemies: { BattleUnitInit }?,
+	events: { BattleEvent }?,
 	rewards: BattleRewards?,
 	summaryText: string?,
 }
@@ -413,7 +425,11 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 				0.1
 			)
 
-			local nameText = if stage.isBoss then "[BOSS] " .. stage.name else stage.name
+			local nameText = stage.name
+			if stage.isBoss then
+				local stripped = string.gsub(stage.name, "^%s*%[?[Bb][Oo][Ss][Ss]%]?:?%s*", "")
+				nameText = "BOSS: " .. stripped
+			end
 			local nameLbl = Components.makeLabel(
 				row,
 				"Name",
@@ -501,16 +517,20 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		container.ZIndex = 39
 		container.Parent = lane
 
+		local unitId = unit.cardId or unit.id or ("unit_" .. tostring(index))
+		local unitName = unit.name or unit.displayName or unitId
+		local unitMaxHp = math.max(unit.maxHp or unit.hp or 1, 1)
 		local cardData = {
-			uid = unit.id .. "_" .. tostring(index),
-			id = unit.id,
-			name = unit.name,
-			rarity = unit.rarity,
+			uid = unitId .. "_" .. tostring(index),
+			id = unitId,
+			cardId = unitId,
+			name = unitName,
+			rarity = unit.rarity or "Common",
 			mutation = unit.mutation or "Normal",
 			role = unit.role or "Striker",
 			level = unit.level or 1,
 			stars = unit.stars or 0,
-			hp = unit.maxHp,
+			hp = unitMaxHp,
 			atk = unit.atk or 0,
 			spd = unit.spd or 100,
 		}
@@ -527,8 +547,8 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		hpBack.Parent = container
 		Components.addCorner(hpBack, 4)
 
-		local startHp = unit.hp or unit.maxHp
-		local hpRatio = math.clamp(startHp / math.max(unit.maxHp, 1), 0, 1)
+		local startHp = unit.hp or unitMaxHp
+		local hpRatio = math.clamp(startHp / unitMaxHp, 0, 1)
 		local hpFill = Instance.new("Frame")
 		hpFill.Name = "Fill"
 		hpFill.Size = UDim2.fromScale(hpRatio, 1)
@@ -541,7 +561,7 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		local hpText = Components.makeLabel(
 			hpBack,
 			"HpText",
-			Components.formatNumber(startHp) .. " / " .. Components.formatNumber(unit.maxHp),
+			Components.formatNumber(startHp) .. " / " .. Components.formatNumber(unitMaxHp),
 			UDim2.fromScale(1, 1),
 			UDim2.fromOffset(0, 0),
 			Theme.FONT_MONO,
@@ -603,7 +623,7 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 			hpText = hpText,
 			energyFill = energyFill,
 			koOverlay = koOverlay,
-			maxHp = math.max(unit.maxHp, 1),
+			maxHp = unitMaxHp,
 			maxEnergy = math.max(maxEnergy, 1),
 			hp = startHp,
 			energy = startEnergy,
@@ -647,11 +667,24 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		end)
 	end
 
-	local function updateUnitBars(w: UnitWidget, newHp: number?, newEnergy: number?, defeated: boolean?)
+	local function updateUnitBars(
+		w: UnitWidget,
+		newHp: number?,
+		newEnergy: number?,
+		defeated: boolean?,
+		instant: boolean?
+	)
+		local barDur = if instant or callbacks.getReducedMotion() then 0 else (0.18 / speedMult)
 		if newHp ~= nil then
 			w.hp = math.max(0, newHp)
 			local ratio = math.clamp(w.hp / w.maxHp, 0, 1)
-			w.hpFill.Size = UDim2.fromScale(ratio, 1)
+			if barDur > 0 then
+				TweenService:Create(w.hpFill, TweenInfo.new(barDur, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+					Size = UDim2.fromScale(ratio, 1),
+				}):Play()
+			else
+				w.hpFill.Size = UDim2.fromScale(ratio, 1)
+			end
 			w.hpText.Text = Components.formatNumber(w.hp) .. " / " .. Components.formatNumber(w.maxHp)
 			if w.hp <= 0 or defeated then
 				w.koOverlay.Visible = true
@@ -664,18 +697,31 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		end
 		if newEnergy ~= nil then
 			w.energy = math.clamp(newEnergy, 0, w.maxEnergy)
-			w.energyFill.Size = UDim2.fromScale(w.energy / w.maxEnergy, 1)
+			local eRatio = w.energy / w.maxEnergy
+			if barDur > 0 then
+				TweenService
+					:Create(w.energyFill, TweenInfo.new(barDur, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+						Size = UDim2.fromScale(eRatio, 1),
+					})
+					:Play()
+			else
+				w.energyFill.Size = UDim2.fromScale(eRatio, 1)
+			end
 		end
 	end
 
 	local function showRewards(result: BattleResult)
 		local palette = Theme.getPalette()
-		rewardsTitle.Text = if result.victory then "VICTORY!" else "DEFEAT"
-		rewardsTitle.TextColor3 = if result.victory then palette.accentGold else palette.accentRed
+		local isVictory = if result.victory ~= nil then result.victory else (result.won == true)
+		rewardsTitle.Text = if isVictory then "VICTORY!" else "DEFEAT"
+		rewardsTitle.TextColor3 = if isVictory then palette.accentGold else palette.accentRed
 
 		local lines: { string } = {}
 		if result.summaryText and result.summaryText ~= "" then
 			table.insert(lines, result.summaryText)
+		end
+		if result.mvpName and result.mvpName ~= "" then
+			table.insert(lines, "MVP: " .. result.mvpName)
 		end
 		local rw = result.rewards
 		if rw then
@@ -701,7 +747,7 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 			if rw.dropCardName and rw.dropCardName ~= "" then
 				table.insert(lines, "Boss Drop: " .. rw.dropCardName)
 			end
-		elseif not result.victory then
+		elseif not isVictory then
 			table.insert(lines, "Roll or level up your cards in Deck to grow stronger!")
 		end
 
@@ -715,7 +761,11 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		playbackToken += 1
 		local token = playbackToken
 		skipRequested = false
-		lastStageId = result.stageId
+		lastStageId = result.stageId or lastStageId
+		local isVictory = if result.victory ~= nil then result.victory else (result.won == true)
+		local alliesList = result.allies or {}
+		local enemiesList = result.enemies or {}
+		local eventsList = result.events or {}
 
 		overlay.Visible = true
 		stageView.Visible = false
@@ -725,8 +775,8 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		skipBtn.Visible = true
 		applyTheme()
 
-		titleLbl.Text = result.stageName
-		subLbl.Text = if result.victory then "Auto-Battle Replay" else "Auto-Battle Replay"
+		titleLbl.Text = result.stageName or result.stageId or "Battle"
+		subLbl.Text = "Auto-Battle Replay"
 
 		clearChildren(allyLane, false)
 		clearChildren(enemyLane, false)
@@ -735,53 +785,58 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		local allyWidgets: { UnitWidget } = {}
 		local enemyWidgets: { UnitWidget } = {}
 
-		for i, u in result.allies do
-			allyWidgets[i] = buildUnitWidget(allyLane, u, i, #result.allies, "Ally")
+		for i, u in alliesList do
+			allyWidgets[i] = buildUnitWidget(allyLane, u, i, #alliesList, "Ally")
 		end
-		for i, u in result.enemies do
-			enemyWidgets[i] = buildUnitWidget(enemyLane, u, i, #result.enemies, "Enemy")
+		for i, u in enemiesList do
+			enemyWidgets[i] = buildUnitWidget(enemyLane, u, i, #enemiesList, "Enemy")
 		end
 
 		local function getWidget(side: string?, idx: number?): UnitWidget?
 			if not side or not idx then
 				return nil
 			end
-			if side == "Ally" then
+			local norm = string.lower(side)
+			if norm == "ally" then
 				return allyWidgets[idx]
+			elseif norm == "enemy" then
+				return enemyWidgets[idx]
 			end
-			return enemyWidgets[idx]
+			return nil
 		end
 
 		task.spawn(function()
 			local palette = Theme.getPalette()
-			for _, ev in result.events do
+			for _, ev in eventsList do
 				if token ~= playbackToken or not overlay.Visible then
 					return
 				end
 
+				local isAllyActor = string.lower(tostring(ev.actorSide or "")) == "ally"
 				local actor = getWidget(ev.actorSide, ev.actorIndex)
 				local target = getWidget(ev.targetSide, ev.targetIndex)
+				local targetHpAfter = if ev.targetHpAfter ~= nil then ev.targetHpAfter else ev.targetHp
+				local isDefeated = ev.defeated == true or ev.killed == true
+				local isCrit = ev.isCrit == true or ev.crit == true
 
 				if skipRequested then
-					updateUnitBars(actor :: UnitWidget, ev.actorHpAfter, ev.actorEnergyAfter, false)
+					if actor then
+						updateUnitBars(actor, ev.actorHpAfter, ev.actorEnergyAfter, false, true)
+					end
 					if target then
-						updateUnitBars(target, ev.targetHpAfter, ev.targetEnergyAfter, ev.defeated)
+						updateUnitBars(target, targetHpAfter, ev.targetEnergyAfter, isDefeated, true)
 					end
 					continue
 				end
 
-				local turnNum = ev.turn or 1
+				local turnNum = ev.turn or ev.round or 1
 				turnBanner.Text = "Turn " .. tostring(turnNum)
-				local skillText = ev.skillName or "Attack"
-				actionBanner.Text = string.format(
-					"%s uses %s",
-					if ev.actorSide == "Ally"
-						then "Ally #" .. tostring(ev.actorIndex)
-						else "Enemy #" .. tostring(ev.actorIndex),
-					skillText
-				)
+				local skillText = ev.skillName or ev.action or "Attack"
+				local actorLabel = ev.actorName
+					or ((if isAllyActor then "Ally #" else "Enemy #") .. tostring(ev.actorIndex or 1))
+				actionBanner.Text = string.format("%s uses %s", actorLabel, skillText)
 
-				local lungeDir = if ev.actorSide == "Ally" then 1 else -1
+				local lungeDir = if isAllyActor then 1 else -1
 				local lungeDur = 0.14 / speedMult
 				local hitstopDur = 0.06 / speedMult
 
@@ -806,21 +861,25 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 				end
 
 				if actor then
-					updateUnitBars(actor, ev.actorHpAfter, ev.actorEnergyAfter, false)
+					updateUnitBars(actor, ev.actorHpAfter, ev.actorEnergyAfter, false, false)
 				end
 				if target then
-					updateUnitBars(target, ev.targetHpAfter, ev.targetEnergyAfter, ev.defeated)
+					updateUnitBars(target, targetHpAfter, ev.targetEnergyAfter, isDefeated, false)
 					if ev.isDodge then
 						spawnFloatingText(target, "DODGE", palette.accentBlue, false)
 					elseif (ev.damage or 0) > 0 then
-						local prefix = if ev.isCrit then "CRIT -" else "-"
-						local col = if ev.isCrit then palette.accentGold else palette.accentRed
-						spawnFloatingText(
-							target,
-							prefix .. Components.formatNumber(ev.damage or 0),
-							col,
-							ev.isCrit == true
-						)
+						local prefix = if isCrit then "CRIT -" else "-"
+						local col = if isCrit then palette.accentGold else palette.accentRed
+						spawnFloatingText(target, prefix .. Components.formatNumber(ev.damage or 0), col, isCrit)
+						if not callbacks.getReducedMotion() then
+							local hitOffset = UDim2.fromOffset(if isAllyActor then 6 else -6, 0)
+							target.cardFrame.Position = hitOffset
+							TweenService:Create(
+								target.cardFrame,
+								TweenInfo.new(0.12 / speedMult, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+								{ Position = UDim2.fromOffset(0, 0) }
+							):Play()
+						end
 					elseif (ev.heal or 0) > 0 then
 						spawnFloatingText(
 							target,
@@ -851,8 +910,8 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 			if token ~= playbackToken then
 				return
 			end
-			turnBanner.Text = if result.victory then "Stage Cleared" else "Stage Failed"
-			actionBanner.Text = if result.victory then "Victory!" else "Try upgrading your deck."
+			turnBanner.Text = if isVictory then "Stage Cleared" else "Stage Failed"
+			actionBanner.Text = if isVictory then "Victory!" else "Try upgrading your deck."
 			showRewards(result)
 		end)
 	end

@@ -92,14 +92,24 @@ local function extractOwnedCards(state: { [string]: any }): { DeckModal.OwnedCar
 					local hp = tonumber(item.hp) or 100
 					local spd = tonumber(item.spd) or 10
 					local power = tonumber(item.power) or math.floor(hp * 0.25 + atk * 3 + spd)
+					local resolvedId = tostring(item.id or item.cardId or uid)
+					local resolvedName = tostring(item.displayName or item.name or item.cardId or "Unknown")
+					local resolvedDupes = tonumber(item.dupesAvailable)
+						or tonumber(item.dupeCount)
+						or tonumber(item.dupes)
+						or 0
 					table.insert(out, {
 						uid = uid,
-						id = tostring(item.id or item.cardId or uid),
-						name = tostring(item.name or item.cardId or "Unknown"),
+						id = resolvedId,
+						cardId = if item.cardId then tostring(item.cardId) else resolvedId,
+						name = resolvedName,
+						displayName = resolvedName,
 						rarity = tostring(item.rarity or "Common"),
 						mutation = if item.mutation then tostring(item.mutation) else nil,
 						role = if item.role then tostring(item.role) else nil,
 						faction = if item.faction then tostring(item.faction) else nil,
+						showName = if item.showName then tostring(item.showName) else nil,
+						artKey = if item.artKey then tostring(item.artKey) else ("cards/" .. resolvedId),
 						level = tonumber(item.level) or 1,
 						stars = tonumber(item.stars) or tonumber(item.ascension) or 0,
 						hp = hp,
@@ -107,9 +117,10 @@ local function extractOwnedCards(state: { [string]: any }): { DeckModal.OwnedCar
 						spd = spd,
 						power = power,
 						locked = item.locked == true,
-						dupesAvailable = tonumber(item.dupesAvailable) or tonumber(item.dupes) or 0,
-						levelUpCostYen = tonumber(item.levelUpCostYen) or 100,
-						sellValueYen = tonumber(item.sellValueYen) or 25,
+						dupesAvailable = resolvedDupes,
+						dupeCount = resolvedDupes,
+						levelUpCostYen = tonumber(item.levelUpCostYen) or tonumber(item.levelUpCost) or 100,
+						sellValueYen = tonumber(item.sellValueYen) or tonumber(item.sellValue) or 25,
 					})
 				end
 			end
@@ -226,9 +237,18 @@ local function formatLuckBreakdown(raw: any): string
 			return table.concat(parts, " + ")
 		end
 	end
+	local labelMap: { [string]: string } = {
+		base = "Base",
+		eventMult = "Event",
+		indexBonus = "Index",
+		boostMult = "Boost",
+		passMult = "Pass",
+		potionMult = "Potion",
+		vipMult = "VIP",
+	}
 	local keys: { string } = {}
 	for k, _ in pairs(tbl) do
-		if type(k) == "string" and k ~= "total" then
+		if type(k) == "string" and k ~= "total" and k ~= "totalMult" then
 			table.insert(keys, k)
 		end
 	end
@@ -236,10 +256,11 @@ local function formatLuckBreakdown(raw: any): string
 	local parts: { string } = {}
 	for _, k in ipairs(keys) do
 		local v = tbl[k]
-		local label = string.upper(string.sub(k, 1, 1)) .. string.sub(k, 2)
+		local label = labelMap[k] or (string.upper(string.sub(k, 1, 1)) .. string.gsub(string.sub(k, 2), "(%u)", " %1"))
 		if type(v) == "number" then
-			if v ~= 0 then
-				table.insert(parts, string.format("%s: %s", label, formatLuckFactor(v)))
+			local isMult = string.find(string.lower(k), "mult", 1, true) ~= nil
+			if (isMult and math.abs(v - 1) > 0.001) or (not isMult and v ~= 0 and k ~= "base") then
+				table.insert(parts, string.format("%s %s", label, formatLuckFactor(v)))
 			end
 		elseif type(v) == "string" and v ~= "" then
 			table.insert(parts, string.format("%s: %s", label, v))
@@ -256,12 +277,16 @@ end
 local function buildHudState(state: { [string]: any }): Hud.HudState
 	local activeUids = extractActiveDeckUids(state)
 	local pity = if type(state.pity) == "table" then state.pity else {}
+	local luckText = if type(state.luckSummary) == "string" and state.luckSummary ~= ""
+		then state.luckSummary
+		else formatLuckBreakdown(state.luckBreakdown)
 	return {
 		yen = tonumber(state.yen) or 0,
 		gems = tonumber(state.gems) or 0,
 		tickets = tonumber(state.tickets) or 0,
 		luckMultiplier = tonumber(state.luckMultiplier) or 1,
-		luckBreakdown = formatLuckBreakdown(state.luckBreakdown),
+		luckBreakdown = luckText,
+		luckSummary = luckText,
 		legendaryPity = tonumber(state.legendaryPity or pity.legendary) or 0,
 		legendaryPityMax = tonumber(state.legendaryPityMax or pity.legendaryMax) or 50,
 		mythicPity = tonumber(state.mythicPity or pity.mythic) or 0,
@@ -280,7 +305,8 @@ local function applyState(newState: { [string]: any })
 	currentState = newState
 	if type(newState.settings) == "table" then
 		local s = newState.settings
-		local themeMode: Theme.ThemeMode = if s.theme == "Light" or s.darkMode == false then "Light" else "Dark"
+		local rawTheme = if type(s.theme) == "string" then string.lower(s.theme) else ""
+		local themeMode: Theme.ThemeMode = if rawTheme == "light" or s.darkMode == false then "Light" else "Dark"
 		currentSettings = {
 			theme = themeMode,
 			reducedMotion = s.reducedMotion == true,
