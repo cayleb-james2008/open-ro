@@ -30,6 +30,10 @@ const MAX_TRANSIENT_MODEL_RETRIES: usize = 2;
 const TEAMWORK_READ_FILE_MAX_BYTES: usize = 8 * 1024;
 const MAX_TURN_TOOL_RESULT_BYTES: usize = 28 * 1024;
 const READ_ONLY_SPIN_THRESHOLD: usize = 3;
+const DUPLICATE_READ_WINDOW_TURNS: u64 = 6;
+const HISTORY_TOOL_RESULT_BUDGET_BYTES: usize = 56 * 1024;
+const HISTORY_RETAIN_TURNS: usize = 8;
+const HISTORY_TOTAL_PROMPT_BUDGET_BYTES: usize = 76 * 1024;
 const MAX_FILE_BYTES: usize = 1_048_576;
 
 const DEFAULT_ROLES: [&str; 4] = ["researcher", "builder", "art", "verifier"];
@@ -2726,6 +2730,7 @@ fn run_agent_wake_cycle(
     let mut parse_failures = 0usize;
     let mut transient_retries = 0usize;
     let mut consecutive_read_only_turns = 0usize;
+    let mut recent_reads: VecDeque<(u64, String, u64, u64)> = VecDeque::new();
     for _step in 0..MAX_AGENT_STEPS_PER_WAKE {
         if is_cancelled(handle, agent_name, gen) {
             return Ok(());
@@ -2945,6 +2950,7 @@ fn run_agent_wake_cycle(
             let only_board_read = batch.iter().all(|(t, _)| t == "board_read");
             let mut last_board_read_head: Option<u64> = None;
             let mut did_write_or_submit = false;
+            let mut dup_read_in_turn: Option<(String, u64, u64)> = None;
             let mut results_lines = Vec::with_capacity(batch.len());
             for (step_idx, (tool, args)) in batch.into_iter().enumerate() {
                 if is_cancelled(handle, agent_name, gen) {
@@ -2965,6 +2971,34 @@ fn run_agent_wake_cycle(
                 let ok = tool_out.is_ok();
                 if ok && is_write_or_submit_tool(&tool) {
                     did_write_or_submit = true;
+                }
+                if ok && (is_write_or_submit_tool(&tool) || tool == "board_post") {
+                    recent_reads.clear();
+                    dup_read_in_turn = None;
+                }
+                if ok && tool == "project_read_file" {
+                    if let Ok(v) = &tool_out {
+                        let path = v
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string();
+                        let start_line = v.get("start_line").and_then(Value::as_u64).unwrap_or(1);
+                        let end_line = v.get("end_line").and_then(Value::as_u64).unwrap_or(0);
+                        while recent_reads
+                            .front()
+                            .is_some_and(|(t, _, _, _)| turn_num.saturating_sub(*t) > DUPLICATE_READ_WINDOW_TURNS)
+                        {
+                            recent_reads.pop_front();
+                        }
+                        if recent_reads
+                            .iter()
+                            .any(|(_, p, s, e)| p == &path && *s == start_line && *e == end_line)
+                        {
+                            dup_read_in_turn = Some((path.clone(), start_line, end_line));
+                        }
+                        recent_reads.push_back((turn_num, path, start_line, end_line));
+                    }
                 }
                 if ok && tool == "board_read" {
                     last_board_read_head = tool_out
@@ -3003,27 +3037,55 @@ fn run_agent_wake_cycle(
             {
                 let mut st = handle.state.lock().unwrap();
                 if let Some(idx) = st.agent_index(agent_name) {
-                    let is_worker = !matches!(st.roster[idx].role.as_str(), "coordinator" | "verifier");
-                    let has_actionable_task = st.tasks.iter().any(|t| {
-                        t.owner.eq_ignore_ascii_case(agent_name)
-                            && matches!(t.status, TaskStatus::InProgress | TaskStatus::ChangesRequested)
-                    });
-                    if is_worker
-                        && has_actionable_task
-                        && consecutive_read_only_turns >= READ_ONLY_SPIN_THRESHOLD
-                    {
-                        let nudge = format!(
-                            "Stop reading, write your files now! You have run {consecutive_read_only_turns} consecutive turns with 0 writes or submissions; emit project_write_file/project_edit_file or submit_task on this turn."
-                        );
-                        combined.push_str("\n\n");
-                        combined.push_str(&nudge);
-                        st.append_trace(
-                            agent_name,
-                            turn_num,
-                            "read_spin_nudge",
-                            &nudge,
-                            json!({ "consecutive_read_only_turns": consecutive_read_only_turns }),
-                        );
+                    let role = st.roster[idx].role.as_str();
+                    let is_worker = !matches!(role, "coordinator" | "verifier");
+                    let has_worker_task = is_worker
+                        && st.tasks.iter().any(|t| {
+                            t.owner.eq_ignore_ascii_case(agent_name)
+                                && matches!(t.status, TaskStatus::InProgress | TaskStatus::ChangesRequested)
+                        });
+                    let has_verifier_task = role == "verifier"
+                        && st.tasks.iter().any(|t| {
+                            t.verifier.eq_ignore_ascii_case(agent_name)
+                                && t.status == TaskStatus::AwaitingVerification
+                        });
+                    if has_worker_task || has_verifier_task {
+                        let mut parts: Vec<String> = Vec::new();
+                        if let Some((ref d_path, d_start, d_end)) = dup_read_in_turn {
+                            parts.push(format!(
+                                "Stop re-reading; write/edit/verify/submit now — `{d_path}` lines {d_start}..={d_end} was already read within the last {DUPLICATE_READ_WINDOW_TURNS} turns and remains in history."
+                            ));
+                        }
+                        if consecutive_read_only_turns >= READ_ONLY_SPIN_THRESHOLD {
+                            if has_worker_task {
+                                parts.push(format!(
+                                    "Stop reading, write your files now! You have run {consecutive_read_only_turns} consecutive turns with 0 writes or submissions; emit project_write_file/project_edit_file or submit_task on this turn."
+                                ));
+                            } else if has_verifier_task && dup_read_in_turn.is_none() {
+                                parts.push(format!(
+                                    "Stop re-reading; write/edit/verify/submit now — you have run {consecutive_read_only_turns} consecutive read-only turns; run project_playtest/project_run_lune and verify_task on this turn."
+                                ));
+                            }
+                        }
+                        if !parts.is_empty() {
+                            let nudge = parts.join(" ");
+                            combined.push_str("\n\n");
+                            combined.push_str(&nudge);
+                            st.append_trace(
+                                agent_name,
+                                turn_num,
+                                "read_spin_nudge",
+                                &nudge,
+                                json!({
+                                    "consecutive_read_only_turns": consecutive_read_only_turns,
+                                    "duplicate_read": dup_read_in_turn.as_ref().map(|(p, s, e)| json!({
+                                        "path": p,
+                                        "start_line": s,
+                                        "end_line": e,
+                                    })),
+                                }),
+                            );
+                        }
                     }
                     st.roster[idx]
                         .messages
@@ -3327,9 +3389,68 @@ fn compact_step_args_obj(step: &mut serde_json::Map<String, Value>) -> bool {
     changed
 }
 
-/// Compact `tool_result` entries and large `project_write_file` / step args older
-/// than the last 2 assistant turns to crisp 1-line summaries so `agents/<name>.json`
-/// and model prompts stay lean across multi-turn Teamwork runs.
+fn compact_user_message_entry(raw: &str, compact_tool_entries: bool) -> Option<String> {
+    if raw.starts_with("[compacted ") {
+        return None;
+    }
+    let content = raw.split("\n\nTasks:\n").next().unwrap_or(raw);
+    if content.starts_with("Tasks:\n") {
+        return Some("[compacted task snapshot]".to_string());
+    }
+    if content.starts_with("tool_result (") {
+        if !compact_tool_entries {
+            return (content.len() != raw.len()).then(|| content.to_string());
+        }
+        let summaries: Vec<String> = content
+            .lines()
+            .filter(|l| l.starts_with("tool_result ("))
+            .map(summarize_tool_result_line)
+            .collect();
+        let line = if summaries.is_empty() {
+            format!(
+                "[compacted tool_result ({} bytes): {}]",
+                content.len(),
+                single_line_truncate(content, 160)
+            )
+        } else {
+            format!(
+                "[compacted tool_result ({} bytes): {}]",
+                content.len(),
+                single_line_truncate(&summaries.join("; "), 260)
+            )
+        };
+        return Some(line);
+    }
+    if content.starts_with("skill_result:") {
+        if !compact_tool_entries {
+            return (content.len() != raw.len()).then(|| content.to_string());
+        }
+        return Some(format!(
+            "[compacted skill_result ({} bytes): {}]",
+            content.len(),
+            single_line_truncate(content, 140)
+        ));
+    }
+    if content.starts_with("Step parse error:") && content.len() > 220 {
+        return Some(format!(
+            "[compacted parse error: {}]",
+            single_line_truncate(content, 140)
+        ));
+    }
+    if content.len() > 1_200 {
+        return Some(format!(
+            "[compacted update ({} bytes): {}]",
+            content.len(),
+            single_line_truncate(content, 200)
+        ));
+    }
+    (content.len() != raw.len()).then(|| content.to_string())
+}
+
+/// Compact large assistant write payloads older than 2 turns and retain a
+/// byte-budgeted window (~56 KiB / up to 8 recent turns) of `tool_result`
+/// messages intact before compacting older turns (#59), keeping `agents/<name>.json`
+/// and model prompts well under `model.rs`'s 96 KiB `-p` cap.
 fn compact_agent_history(messages: &mut [Value]) {
     if messages.len() <= 1 {
         return;
@@ -3340,11 +3461,13 @@ fn compact_agent_history(messages: &mut [Value]) {
         .filter(|(i, m)| *i > 0 && m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
         .map(|(i, _)| i)
         .collect();
-    if asst_indices.len() <= 2 {
-        return;
-    }
-    let cutoff = asst_indices[asst_indices.len() - 2];
-    for m in &mut messages[1..cutoff] {
+    let asst_cutoff = if asst_indices.len() > 2 {
+        asst_indices[asst_indices.len() - 2]
+    } else {
+        1
+    };
+
+    for m in &mut messages[1..asst_cutoff] {
         let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("");
         let Some(raw) = m.get("content").and_then(|v| v.as_str()).map(String::from) else {
             continue;
@@ -3380,55 +3503,68 @@ fn compact_agent_history(messages: &mut [Value]) {
                     single_line_truncate(&raw, 160)
                 ));
             }
+        } else if role == "user" {
+            let trimmed = raw.split("\n\nTasks:\n").next().unwrap_or(&raw);
+            let is_tool_msg =
+                trimmed.starts_with("tool_result (") || trimmed.starts_with("skill_result:");
+            if !is_tool_msg {
+                if let Some(next) = compact_user_message_entry(&raw, false) {
+                    m["content"] = Value::String(next);
+                }
+            }
+        }
+    }
+
+    let mut base_bytes = 0usize;
+    for m in messages.iter() {
+        let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        let raw = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        let is_uncompacted_tool = role == "user" && !raw.starts_with("[compacted ") && {
+            let trimmed = raw.split("\n\nTasks:\n").next().unwrap_or(raw);
+            trimmed.starts_with("tool_result (") || trimmed.starts_with("skill_result:")
+        };
+        if !is_uncompacted_tool {
+            base_bytes += raw.len();
+        }
+    }
+
+    let mut kept_tool_turns = 0usize;
+    let mut retained_tool_bytes = 0usize;
+    let mut hit_cutoff = false;
+    for m in messages[1..].iter_mut().rev() {
+        if m.get("role").and_then(|r| r.as_str()) != Some("user") {
             continue;
         }
-        if role == "user" {
-            let content = if let Some(pos) = raw.find("\n\nTasks:\n") {
-                raw[..pos].to_string()
-            } else {
-                raw
-            };
-            if content.starts_with("Tasks:\n") {
-                m["content"] = Value::String("[compacted task snapshot]".to_string());
-            } else if content.starts_with("tool_result (") {
-                let summaries: Vec<String> = content
-                    .lines()
-                    .filter(|l| l.starts_with("tool_result ("))
-                    .map(summarize_tool_result_line)
-                    .collect();
-                let line = if summaries.is_empty() {
-                    format!(
-                        "[compacted tool_result ({} bytes): {}]",
-                        content.len(),
-                        single_line_truncate(&content, 160)
-                    )
-                } else {
-                    format!(
-                        "[compacted tool_result ({} bytes): {}]",
-                        content.len(),
-                        single_line_truncate(&summaries.join("; "), 260)
-                    )
-                };
-                m["content"] = Value::String(line);
-            } else if content.starts_with("skill_result:") {
-                m["content"] = Value::String(format!(
-                    "[compacted skill_result ({} bytes): {}]",
-                    content.len(),
-                    single_line_truncate(&content, 140)
-                ));
-            } else if content.starts_with("Step parse error:") && content.len() > 220 {
-                m["content"] = Value::String(format!(
-                    "[compacted parse error: {}]",
-                    single_line_truncate(&content, 140)
-                ));
-            } else if content.len() > 1_200 {
-                m["content"] = Value::String(format!(
-                    "[compacted update ({} bytes): {}]",
-                    content.len(),
-                    single_line_truncate(&content, 200)
-                ));
-            } else if content.len() != m["content"].as_str().map(str::len).unwrap_or(0) {
-                m["content"] = Value::String(content);
+        let Some(raw) = m.get("content").and_then(|v| v.as_str()).map(String::from) else {
+            continue;
+        };
+        if raw.starts_with("[compacted ") {
+            continue;
+        }
+        let content_no_tasks = raw.split("\n\nTasks:\n").next().unwrap_or(&raw);
+        let is_tool = content_no_tasks.starts_with("tool_result (")
+            || content_no_tasks.starts_with("skill_result:");
+        if !is_tool {
+            continue;
+        }
+        let entry_len = content_no_tasks.len();
+        let fits = !hit_cutoff
+            && (kept_tool_turns == 0
+                || (kept_tool_turns < HISTORY_RETAIN_TURNS
+                    && retained_tool_bytes + entry_len <= HISTORY_TOOL_RESULT_BUDGET_BYTES
+                    && base_bytes + retained_tool_bytes + entry_len
+                        <= HISTORY_TOTAL_PROMPT_BUDGET_BYTES));
+        if fits {
+            kept_tool_turns += 1;
+            retained_tool_bytes += entry_len;
+            if content_no_tasks.len() != raw.len() {
+                m["content"] = Value::String(content_no_tasks.to_string());
+            }
+        } else {
+            hit_cutoff = true;
+            if let Some(compacted) = compact_user_message_entry(&raw, true) {
+                base_bytes += compacted.len();
+                m["content"] = Value::String(compacted);
             }
         }
     }
@@ -4200,6 +4336,7 @@ fn tool_project_grep(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, Str
     let project_dir = handle.state.lock().unwrap().project_dir.clone();
     let query = args
         .get("query")
+        .or_else(|| args.get("pattern"))
         .and_then(|v| v.as_str())
         .ok_or("project_grep requires args.query")?;
     let dir = args
@@ -5604,20 +5741,60 @@ mod tests {
         assert!(old_asst.contains("compacted"), "{old_asst}");
         assert!(!old_asst.contains('\n'), "{old_asst}");
 
-        let old_tool_res = msgs[3]["content"].as_str().unwrap();
-        assert!(old_tool_res.starts_with("[compacted tool_result"), "{old_tool_res}");
-        assert!(old_tool_res.contains("web_fetch"), "{old_tool_res}");
-        assert!(!old_tool_res.contains('\n'), "{old_tool_res}");
-        assert!(old_tool_res.len() < 400, "{old_tool_res}");
+        // Within the 56 KiB / 8-turn retention window (#59), the 8 KB web_fetch result stays intact!
+        let retained_web = msgs[3]["content"].as_str().unwrap();
+        assert!(retained_web.starts_with("tool_result (web_fetch):"), "{retained_web}");
+        assert!(retained_web.contains(&big_web));
 
         // Last 2 assistant turns remain uncompacted.
         assert!(msgs[4]["content"].as_str().unwrap().contains(&recent_doc));
         assert!(msgs[5]["content"].as_str().unwrap().starts_with("tool_result (project_write_file):"));
 
+        // Pushing total tool_result bytes over the 56 KiB retention window compacts oldest turns
+        // while keeping the newest turns intact and total prompt well below 96 KiB.
+        let mut big_msgs = vec![json!({ "role": "system", "content": "sys" })];
+        for i in 0..8 {
+            big_msgs.push(json!({ "role": "assistant", "content": format!("{{\"tool\":\"project_read_file\",\"args\":{{\"path\":\"src/f{i}.luau\"}}}}") }));
+            big_msgs.push(json!({
+                "role": "user",
+                "content": format!("tool_result (project_read_file): {{\"path\":\"src/f{i}.luau\",\"content\":\"M{i}_{}\"}}", "Z".repeat(10_000))
+            }));
+        }
+        compact_agent_history(&mut big_msgs);
+        assert!(big_msgs[2]["content"].as_str().unwrap().starts_with("[compacted tool_result"), "{}", big_msgs[2]);
+        assert!(big_msgs[4]["content"].as_str().unwrap().starts_with("[compacted tool_result"), "{}", big_msgs[4]);
+        let newest = big_msgs.last().unwrap()["content"].as_str().unwrap();
+        assert!(newest.starts_with("tool_result (project_read_file):"), "{newest}");
+        assert!(newest.contains("M7_"));
+        let total_bytes: usize = big_msgs
+            .iter()
+            .filter_map(|m| m["content"].as_str())
+            .map(str::len)
+            .sum();
+        assert!(total_bytes <= HISTORY_TOTAL_PROMPT_BUDGET_BYTES, "total={total_bytes}");
+
+        // Exceeding 8 recent turns also compacts older turns even when each tool_result is small.
+        let mut many_turns = vec![json!({ "role": "system", "content": "sys" })];
+        for i in 0..11 {
+            many_turns.push(json!({ "role": "assistant", "content": "{\"done\":false}" }));
+            many_turns.push(json!({
+                "role": "user",
+                "content": format!("tool_result (project_read_file): {{\"path\":\"src/s{i}.luau\",\"content\":\"tiny_{i}\"}}")
+            }));
+        }
+        compact_agent_history(&mut many_turns);
+        // Turns 0, 1, 2 exceed the 8-turn retention cap -> compacted; turns 3..=10 (8 turns) kept!
+        assert!(many_turns[2]["content"].as_str().unwrap().starts_with("[compacted tool_result"), "{}", many_turns[2]);
+        assert!(many_turns[6]["content"].as_str().unwrap().starts_with("[compacted tool_result"), "{}", many_turns[6]);
+        assert!(many_turns[8]["content"].as_str().unwrap().starts_with("tool_result (project_read_file):"), "{}", many_turns[8]);
+
         // Running compaction again is idempotent.
         let snapshot = msgs.clone();
         compact_agent_history(&mut msgs);
         assert_eq!(msgs, snapshot);
+        let big_snapshot = big_msgs.clone();
+        compact_agent_history(&mut big_msgs);
+        assert_eq!(big_msgs, big_snapshot);
     }
 
     #[test]
