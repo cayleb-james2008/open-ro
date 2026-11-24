@@ -71,23 +71,39 @@ function RollService.rollSingle(
 	profile.traitPity = outcome.nextTraitPity
 	profile.rollCount = (profile.rollCount or 0) + 1
 
-	local instance = DataService.addCard(profile, outcome.card.id, outcome.mutation, outcome.trait)
-	profile.discoveredCards[outcome.card.id] = true
+	local cardDef = outcome.card
+	local cardName = (cardDef :: any).name or cardDef.displayName or cardDef.id
+	local isNew = profile.discoveredCards[cardDef.id] ~= true
+	local instance = DataService.addCard(profile, cardDef.id, outcome.mutation, outcome.trait)
+	profile.discoveredCards[cardDef.id] = true
+	local stats =
+		LuckMath.computeCardStats(cardDef, instance.level, instance.mutation, instance.trait, instance.ascension)
 
 	return true,
 		nil,
 		{
-			instance = instance,
-			cardId = outcome.card.id,
-			displayName = outcome.card.displayName,
-			rarity = outcome.rarity,
+			uid = instance.uid,
+			id = cardDef.id,
+			cardId = cardDef.id,
+			name = cardName,
+			displayName = cardName,
+			rarity = outcome.rarity or cardDef.rarity,
+			role = cardDef.role,
+			showName = cardDef.showName,
 			mutation = outcome.mutation,
 			trait = outcome.trait,
 			oddsN = outcome.oddsN,
+			isNew = isNew,
+			hp = stats.hp,
+			atk = stats.atk,
+			spd = stats.spd,
+			power = stats.power,
+			artKey = "cards/" .. cardDef.id,
 			isPity = outcome.isPity,
 			pity = profile.pity,
 			spentYen = spentYen,
 			spentTicket = spentTicket,
+			instance = instance,
 		}
 end
 

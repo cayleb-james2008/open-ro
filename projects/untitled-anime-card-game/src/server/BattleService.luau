@@ -139,8 +139,86 @@ function BattleService.startBattle(player: Player, stageId: string): (boolean, {
 		return false, nil, "Stage has no enemies configured!"
 	end
 
+	local unitLookup: { [string]: { side: string, slot: number, name: string } } = {}
+	for _, u in ipairs(allies) do
+		unitLookup[u.uid] = { side = "ally", slot = u.slot, name = u.name }
+	end
+	for _, u in ipairs(enemies) do
+		unitLookup[u.uid] = { side = "enemy", slot = u.slot, name = u.name }
+	end
+
 	local seed = math.floor(os.clock() * 1000) + profile.rollCount * 31 + player.UserId
 	local simResult = BattleSim.run(allies, enemies, { seed = seed, maxRounds = 30 })
+
+	local initialAllies = {}
+	for _, u in ipairs(allies) do
+		table.insert(initialAllies, {
+			uid = u.uid,
+			team = "ally",
+			slot = u.slot,
+			cardId = u.cardId,
+			name = u.name,
+			rarity = u.rarity,
+			role = u.role,
+			showName = u.showName,
+			artKey = u.artKey,
+			hp = u.maxHp,
+			maxHp = u.maxHp,
+			atk = u.atk,
+			spd = u.spd,
+		})
+	end
+	local initialEnemies = {}
+	for _, u in ipairs(enemies) do
+		table.insert(initialEnemies, {
+			uid = u.uid,
+			team = "enemy",
+			slot = u.slot,
+			cardId = u.cardId,
+			name = u.name,
+			rarity = u.rarity,
+			role = u.role,
+			showName = u.showName,
+			artKey = u.artKey,
+			hp = u.maxHp,
+			maxHp = u.maxHp,
+			atk = u.atk,
+			spd = u.spd,
+		})
+	end
+
+	local normalizedEvents = {}
+	for _, ev in ipairs(simResult.events or {}) do
+		local actorInfo = if ev.actorUid then unitLookup[ev.actorUid] else nil
+		local targetInfo = if ev.targetUid then unitLookup[ev.targetUid] else nil
+		local killed = ev.killed == true
+		table.insert(normalizedEvents, {
+			kind = ev.kind,
+			action = ev.kind,
+			round = ev.round,
+			turn = ev.round,
+			actorUid = ev.actorUid,
+			targetUid = ev.targetUid,
+			actorSide = if actorInfo then actorInfo.side else nil,
+			actorIndex = if actorInfo then actorInfo.slot else nil,
+			actorName = if actorInfo then actorInfo.name else nil,
+			targetSide = if targetInfo then targetInfo.side else nil,
+			targetIndex = if targetInfo then targetInfo.slot else nil,
+			targetName = if targetInfo then targetInfo.name else nil,
+			skillName = ev.skillName or ev.note,
+			damage = ev.damage,
+			heal = ev.heal,
+			crit = ev.isCrit == true or ev.crit == true,
+			isCrit = ev.isCrit == true or ev.crit == true,
+			targetHp = ev.targetHp,
+			targetHpAfter = ev.targetHp,
+			targetMaxHp = ev.targetMaxHp,
+			targetShield = ev.targetShield,
+			killed = killed,
+			defeated = killed,
+			note = ev.note,
+		})
+	end
 
 	local rewards = {
 		yen = 0,
@@ -201,8 +279,11 @@ function BattleService.startBattle(player: Player, stageId: string): (boolean, {
 		stageId = stage.id,
 		stageName = stage.name,
 		won = simResult.won,
+		victory = simResult.won,
 		rounds = simResult.rounds,
-		events = simResult.events,
+		allies = initialAllies,
+		enemies = initialEnemies,
+		events = normalizedEvents,
 		alliesSummary = simResult.alliesSummary,
 		enemiesSummary = simResult.enemiesSummary,
 		synergies = simResult.synergies,
