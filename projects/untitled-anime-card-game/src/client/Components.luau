@@ -332,16 +332,19 @@ function Components.makeCardView(parent: Instance, cardData: { [string]: any }, 
 		portraitImage.Visible = false
 		local roleText = tostring(cardData.role or "Striker")
 
+		local isCompact = size.Y.Offset > 0 and size.Y.Offset <= 140
+		local crestSize = if isCompact then 30 else 58
+
 		local crest = Instance.new("Frame")
 		crest.Name = "RoleCrest"
-		crest.Size = UDim2.fromOffset(58, 58)
-		crest.Position = UDim2.fromScale(0.5, 0.44)
+		crest.Size = UDim2.fromOffset(crestSize, crestSize)
+		crest.Position = if isCompact then UDim2.new(1, -24, 0.5, 0) else UDim2.fromScale(0.5, 0.44)
 		crest.AnchorPoint = Vector2.new(0.5, 0.5)
 		crest.BackgroundColor3 = rarity.bgTint:Lerp(rarity.color, 0.28)
 		crest.BorderSizePixel = 0
 		crest.ZIndex = 2
 		crest.Parent = portraitBox
-		Components.addCorner(crest, 29)
+		Components.addCorner(crest, math.floor(crestSize / 2))
 		Components.addStroke(crest, rarity.glow, 2, 0.1)
 
 		local emblem = Components.makeLabel(
@@ -351,7 +354,7 @@ function Components.makeCardView(parent: Instance, cardData: { [string]: any }, 
 			UDim2.fromScale(1, 1),
 			UDim2.fromOffset(0, 0),
 			Theme.FONT_DISPLAY,
-			24,
+			if isCompact then 13 else 24,
 			rarity.glow,
 			Enum.TextXAlignment.Center
 		)
