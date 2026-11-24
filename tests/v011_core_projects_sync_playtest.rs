@@ -2283,3 +2283,222 @@ fn mcp_probe_timeout_resets_to_default_on_attach_and_connected_guidance_is_clean
     let _ = api_json(port, "POST", "/api/studio/embed/stop", Some(json!({})));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn playtest_gui_click_and_keyboard_actions_gap_66() {
+    let root = temp_dir("playtest-actions-gap66");
+    let ws = root.join("workspace");
+    let data = root.join("data");
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let mcp = McpClient::spawn(&mock_studio_command()).expect("spawn mock_studio");
+    let model = ModelClient::new(
+        "http://127.0.0.1:1/v1".to_string(),
+        "test-model".to_string(),
+        None,
+    );
+    let agent = Agent::new(model, Some(mcp));
+    let port = start_server(Some(agent), data);
+
+    api_json(port, "POST", "/api/projects/workspace", Some(json!({ "path": ws })));
+    let (code, created) = api_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(json!({ "name": "Gui Click Demo", "parent": ws })),
+    );
+    assert_eq!(code, 201);
+    let id = created["project"]["id"].as_str().unwrap().to_string();
+    let proj_dir = PathBuf::from(created["project"]["path"].as_str().unwrap());
+
+    // Add StarterGui hierarchy in default.project.json to sync into mock_studio
+    let mut rojo: Value = serde_json::from_str(
+        &std::fs::read_to_string(proj_dir.join("default.project.json")).unwrap(),
+    )
+    .unwrap();
+    rojo["tree"]["StarterGui"] = json!({
+        "$className": "StarterGui",
+        "UACGMainGui": {
+            "$className": "ScreenGui",
+            "$properties": { "Enabled": true, "IgnoreGuiInset": false },
+            "HudRoot": {
+                "$className": "Frame",
+                "$properties": { "Visible": true },
+                "RollDock": {
+                    "$className": "Frame",
+                    "$properties": { "Visible": true },
+                    "ButtonRow": {
+                        "$className": "Frame",
+                        "$properties": { "Visible": true },
+                        "RollButton": {
+                            "$className": "TextButton",
+                            "$properties": {
+                                "Visible": true,
+                                "AbsolutePosition": [500.0, 560.0],
+                                "AbsoluteSize": [160.0, 48.0]
+                            }
+                        }
+                    }
+                },
+                "HiddenPanel": {
+                    "$className": "Frame",
+                    "$properties": { "Visible": false },
+                    "HiddenBtn": {
+                        "$className": "TextButton",
+                        "$properties": {
+                            "Visible": true,
+                            "AbsolutePosition": [200.0, 200.0],
+                            "AbsoluteSize": [120.0, 44.0]
+                        }
+                    }
+                }
+            }
+        },
+        "OverlayGui": {
+            "$className": "ScreenGui",
+            "$properties": { "Enabled": true, "IgnoreGuiInset": true },
+            "ActionBtn": {
+                "$className": "TextButton",
+                "$properties": {
+                    "Visible": true,
+                    "AbsolutePosition": [400.0, 300.0],
+                    "AbsoluteSize": [200.0, 60.0]
+                }
+            }
+        },
+        "DisabledGui": {
+            "$className": "ScreenGui",
+            "$properties": { "Enabled": false },
+            "DeadBtn": {
+                "$className": "TextButton",
+                "$properties": {
+                    "Visible": true,
+                    "AbsolutePosition": [100.0, 100.0],
+                    "AbsoluteSize": [120.0, 40.0]
+                }
+            }
+        }
+    });
+    std::fs::write(
+        proj_dir.join("default.project.json"),
+        serde_json::to_string_pretty(&rojo).unwrap() + "\n",
+    )
+    .unwrap();
+
+    // Sync project tree into mock_studio
+    let (code, synced) = api_json(port, "POST", &format!("/api/projects/{id}/sync"), Some(json!({})));
+    assert_eq!(code, 200, "sync failed: {synced}");
+
+    // 1. Fail-fast 400 validation on malformed actions
+    for bad in [
+        json!({ "actions": "not-an-array" }),
+        json!({ "actions": [{ "kind": "unknown_op" }] }),
+        json!({ "actions": [{ "kind": "click_gui", "gui_path": "   " }] }),
+        json!({ "actions": [{ "kind": "key", "key": "" }] }),
+    ] {
+        let (c, body) = api_json(port, "POST", &format!("/api/projects/{id}/playtest"), Some(bad));
+        assert_eq!(c, 400, "expected 400 for malformed actions: {body}");
+    }
+
+    // 2. Passing click_gui (with & without IgnoreGuiInset) + key (hold_ms) + text + before/after checks
+    let good_spec = json!({
+        "mode": "start_play",
+        "settle_ms": 0,
+        "actions": [
+            { "kind": "click_gui", "gui_path": "UACGMainGui.HudRoot.RollDock.ButtonRow.RollButton", "wait_ms": 10 },
+            { "kind": "click_gui", "gui_path": "OverlayGui.ActionBtn", "wait_ms": 10 },
+            { "kind": "key", "key": "e", "hold_ms": 25, "wait_ms": 10 },
+            { "kind": "text", "text": "Naruto", "wait_ms": 10 }
+        ],
+        "checks": [
+            { "name": "clicks before actions", "when": "before_actions", "luau": "return __mouse_clicks__", "expect": { "equals": 0 } },
+            { "name": "clicks after actions", "luau": "return __mouse_clicks__", "expect": { "equals": 2 } },
+            { "name": "keys fired", "luau": "return __key_events__", "expect": { "equals": 2 } },
+            { "name": "typed text captured", "luau": "return __typed_text__", "expect": { "equals": "Naruto" } }
+        ]
+    });
+    let (code, pt) = api_json(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/playtest"),
+        Some(good_spec.clone()),
+    );
+    assert_eq!(code, 200, "playtest actions failed: {pt}");
+    assert_eq!(pt["passed"], json!(true), "expected passing playtest: {pt}");
+    assert_eq!(pt["kept"], json!(false));
+
+    let acts = pt["actions"].as_array().unwrap();
+    assert_eq!(acts.len(), 4);
+    // RollButton: IgnoreGuiInset=false -> x = 500 + 80 + 0 = 580, y = 560 + 24 + 58 = 642
+    assert_eq!(acts[0]["passed"], json!(true));
+    assert_eq!(acts[0]["resolved"]["x"], json!(580.0));
+    assert_eq!(acts[0]["resolved"]["y"], json!(642.0));
+    assert_eq!(acts[0]["resolved"]["ignore_gui_inset"], json!(false));
+    // ActionBtn: IgnoreGuiInset=true -> x = 400 + 100 + 0 = 500, y = 300 + 30 + 0 = 330
+    assert_eq!(acts[1]["passed"], json!(true));
+    assert_eq!(acts[1]["resolved"]["x"], json!(500.0));
+    assert_eq!(acts[1]["resolved"]["y"], json!(330.0));
+    assert_eq!(acts[1]["resolved"]["ignore_gui_inset"], json!(true));
+    // Key action normalized "e" -> "E" with hold_ms=25
+    assert_eq!(acts[2]["passed"], json!(true));
+    assert_eq!(acts[2]["key"], json!("E"));
+    assert_eq!(acts[2]["hold_ms"], json!(25));
+    // Text action
+    assert_eq!(acts[3]["passed"], json!(true));
+    assert_eq!(acts[3]["text_len"], json!(6));
+
+    // HTML report renders Actions table
+    let run_id = pt["run_id"].as_str().unwrap();
+    let (hcode, _, hbytes) = http_req(
+        port,
+        "GET",
+        &format!("/api/projects/{id}/playtests/{run_id}/report.html"),
+        &format!("127.0.0.1:{port}"),
+        None,
+    );
+    assert_eq!(hcode, 200);
+    let html = String::from_utf8_lossy(&hbytes);
+    assert!(html.contains("Actions (4)"), "missing Actions table in HTML");
+    assert!(html.contains("RollButton"), "missing RollButton in HTML");
+
+    // KeptChecks reuses identical passing action playtest
+    let (code, pt_kept) = api_json(
+        port,
+        "POST",
+        &format!("/api/projects/{id}/playtest"),
+        Some(good_spec),
+    );
+    assert_eq!(code, 200);
+    assert_eq!(pt_kept["kept"], json!(true));
+    assert_eq!(pt_kept["run_id"], pt["run_id"]);
+
+    // 3. Graceful failures for missing, invisible, and disabled ScreenGui targets (never cached!)
+    for (gui_path, expected_reason) in [
+        ("UACGMainGui.HudRoot.DoesNotExist", "not_found"),
+        ("UACGMainGui.HudRoot.HiddenPanel.HiddenBtn", "invisible"),
+        ("DisabledGui.DeadBtn", "screen_gui_disabled"),
+    ] {
+        let (code, fail_pt) = api_json(
+            port,
+            "POST",
+            &format!("/api/projects/{id}/playtest"),
+            Some(json!({
+                "mode": "start_play",
+                "settle_ms": 0,
+                "actions": [{ "kind": "click_gui", "gui_path": gui_path, "wait_ms": 0 }]
+            })),
+        );
+        assert_eq!(code, 200, "graceful failure should still return 200 report: {fail_pt}");
+        assert_eq!(fail_pt["ok"], json!(true));
+        assert_eq!(fail_pt["passed"], json!(false), "expected failure for {gui_path}: {fail_pt}");
+        assert_eq!(fail_pt["kept"], json!(false));
+        assert_eq!(fail_pt["actions"][0]["passed"], json!(false));
+        assert_eq!(
+            fail_pt["actions"][0]["reason"],
+            json!(expected_reason),
+            "unexpected reason for {gui_path}: {fail_pt}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&root);
+}
