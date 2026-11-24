@@ -15,6 +15,13 @@ export type LuckInputs = {
 	streakBonus: number?,
 	eventMult: number?,
 	promoMult: number?,
+	weatherBonus: number?,
+	skillTreeBonus: number?,
+	passBonus: number?,
+	charmBonus: number?,
+	rebirthBonus: number?,
+	premiumBonus: number?,
+	groupBonus: number?,
 }
 
 export type LuckBreakdown = {
@@ -23,6 +30,13 @@ export type LuckBreakdown = {
 	upgradeBonus: number,
 	indexBonus: number,
 	streakBonus: number,
+	weatherBonus: number,
+	skillTreeBonus: number,
+	passBonus: number,
+	charmBonus: number,
+	rebirthBonus: number,
+	premiumBonus: number,
+	groupBonus: number,
 	passMult: number,
 	potionMult: number,
 	eventMult: number,
@@ -73,7 +87,25 @@ function LuckMath.computeLuck(inputs: LuckInputs?): LuckBreakdown
 	local indexBonus = math.max(0, inp.indexBonus or 0)
 	local streakBonus = math.max(0, inp.streakBonus or 0)
 	local potionBonus = math.max(0, inp.potionBonus or 0)
-	local additive = base + upgradeBonus + indexBonus + streakBonus + potionBonus
+	local weatherBonus = math.max(0, inp.weatherBonus or 0)
+	local skillTreeBonus = math.max(0, inp.skillTreeBonus or 0)
+	local passBonus = math.max(0, inp.passBonus or 0)
+	local charmBonus = math.max(0, inp.charmBonus or 0)
+	local rebirthBonus = math.max(0, inp.rebirthBonus or 0)
+	local premiumBonus = math.max(0, inp.premiumBonus or 0)
+	local groupBonus = math.max(0, inp.groupBonus or 0)
+	local additive = base
+		+ upgradeBonus
+		+ indexBonus
+		+ streakBonus
+		+ potionBonus
+		+ weatherBonus
+		+ skillTreeBonus
+		+ passBonus
+		+ charmBonus
+		+ rebirthBonus
+		+ premiumBonus
+		+ groupBonus
 
 	local passMult = 1.0
 	if inp.vipPass then
@@ -97,11 +129,70 @@ function LuckMath.computeLuck(inputs: LuckInputs?): LuckBreakdown
 		upgradeBonus = upgradeBonus,
 		indexBonus = indexBonus,
 		streakBonus = streakBonus,
+		weatherBonus = weatherBonus,
+		skillTreeBonus = skillTreeBonus,
+		passBonus = passBonus,
+		charmBonus = charmBonus,
+		rebirthBonus = rebirthBonus,
+		premiumBonus = premiumBonus,
+		groupBonus = groupBonus,
 		passMult = passMult,
 		potionMult = potionMult,
 		eventMult = eventMult,
 		promoMult = promoMult,
 	}
+end
+
+function LuckMath.computeTotalLuck(inputs: LuckInputs?): number
+	return LuckMath.computeLuck(inputs).totalMult
+end
+
+function LuckMath.luckSummary(inputs: LuckInputs?): string
+	local b = LuckMath.computeLuck(inputs)
+	local parts: { string } = { string.format("Base %.2fx", b.base) }
+	if b.upgradeBonus > 0 then
+		table.insert(parts, string.format("Upgrades +%.2fx", b.upgradeBonus))
+	end
+	if b.indexBonus > 0 then
+		table.insert(parts, string.format("Index +%.2fx", b.indexBonus))
+	end
+	if b.streakBonus > 0 then
+		table.insert(parts, string.format("Streak +%.2fx", b.streakBonus))
+	end
+	if b.weatherBonus > 0 then
+		table.insert(parts, string.format("Weather +%.2fx", b.weatherBonus))
+	end
+	if b.skillTreeBonus > 0 then
+		table.insert(parts, string.format("Skill Tree +%.2fx", b.skillTreeBonus))
+	end
+	if b.charmBonus > 0 then
+		table.insert(parts, string.format("Charms +%.2fx", b.charmBonus))
+	end
+	if b.rebirthBonus > 0 then
+		table.insert(parts, string.format("Rebirth +%.2fx", b.rebirthBonus))
+	end
+	if b.passBonus > 0 then
+		table.insert(parts, string.format("Season Pass +%.2fx", b.passBonus))
+	end
+	if b.premiumBonus > 0 then
+		table.insert(parts, string.format("Premium +%.2fx", b.premiumBonus))
+	end
+	if b.groupBonus > 0 then
+		table.insert(parts, string.format("Group +%.2fx", b.groupBonus))
+	end
+	if b.passMult > 1 then
+		table.insert(parts, string.format("Passes x%.2f", b.passMult))
+	end
+	if b.potionMult > 1 then
+		table.insert(parts, string.format("Potions x%.2f", b.potionMult))
+	end
+	if b.eventMult > 1 then
+		table.insert(parts, string.format("Event x%.2f", b.eventMult))
+	end
+	if b.promoMult > 1 then
+		table.insert(parts, string.format("Promo x%.2f", b.promoMult))
+	end
+	return string.format("%.2fx Total (%s)", b.totalMult, table.concat(parts, ", "))
 end
 
 function LuckMath.computeRarityOdds(totalLuck: number, pity: PityState?): { [Rarities.RarityId]: number }
@@ -350,6 +441,58 @@ function LuckMath.performRoll(
 		oddsN = oddsN,
 		isPity = isPity,
 	}
+end
+
+function LuckMath.computeTotalLuck(inputs: LuckInputs?): number
+	return LuckMath.computeLuck(inputs).totalMult
+end
+
+function LuckMath.luckSummary(inputs: LuckInputs?): string
+	local b = LuckMath.computeLuck(inputs)
+	local parts: { string } = { string.format("Base %.1fx", b.base) }
+	if b.upgradeBonus > 0 then
+		table.insert(parts, string.format("Upgrades +%.2fx", b.upgradeBonus))
+	end
+	if b.indexBonus > 0 then
+		table.insert(parts, string.format("Index +%.2fx", b.indexBonus))
+	end
+	if b.streakBonus > 0 then
+		table.insert(parts, string.format("Streak +%.2fx", b.streakBonus))
+	end
+	if b.weatherBonus > 0 then
+		table.insert(parts, string.format("Weather +%.2fx", b.weatherBonus))
+	end
+	if b.skillTreeBonus > 0 then
+		table.insert(parts, string.format("Skill Tree +%.2fx", b.skillTreeBonus))
+	end
+	if b.passBonus > 0 then
+		table.insert(parts, string.format("Pass +%.2fx", b.passBonus))
+	end
+	if b.charmBonus > 0 then
+		table.insert(parts, string.format("Charms +%.2fx", b.charmBonus))
+	end
+	if b.rebirthBonus > 0 then
+		table.insert(parts, string.format("Rebirth +%.2fx", b.rebirthBonus))
+	end
+	if b.premiumBonus > 0 then
+		table.insert(parts, string.format("Premium +%.2fx", b.premiumBonus))
+	end
+	if b.groupBonus > 0 then
+		table.insert(parts, string.format("Group +%.2fx", b.groupBonus))
+	end
+	if b.passMult > 1 then
+		table.insert(parts, string.format("Passes x%.2f", b.passMult))
+	end
+	if b.potionMult > 1 then
+		table.insert(parts, string.format("Potion x%.2f", b.potionMult))
+	end
+	if b.eventMult > 1 then
+		table.insert(parts, string.format("Event x%.2f", b.eventMult))
+	end
+	if b.promoMult > 1 then
+		table.insert(parts, string.format("Promo x%.2f", b.promoMult))
+	end
+	return string.format("%.2fx Total (%s)", b.totalMult, table.concat(parts, ", "))
 end
 
 return LuckMath
