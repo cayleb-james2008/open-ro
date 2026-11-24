@@ -6,8 +6,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Net = require(Shared:WaitForChild("Net"))
 local Config = Shared:WaitForChild("Config")
-local Economy = require(Config:WaitForChild("Economy"))
 local Worlds = require(Config:WaitForChild("Worlds"))
+local Banners = require(Config:WaitForChild("Banners"))
 
 local ServerFolder = script.Parent
 local DataService = require(ServerFolder:WaitForChild("DataService"))
@@ -15,18 +15,38 @@ local RollService = require(ServerFolder:WaitForChild("RollService"))
 local DeckService = require(ServerFolder:WaitForChild("DeckService"))
 local BattleService = require(ServerFolder:WaitForChild("BattleService"))
 local WorldBuild = require(ServerFolder:WaitForChild("WorldBuild"))
+local TowerService = require(ServerFolder:WaitForChild("TowerService"))
+local RaidService = require(ServerFolder:WaitForChild("RaidService"))
+local WorldBossService = require(ServerFolder:WaitForChild("WorldBossService"))
+local RankedService = require(ServerFolder:WaitForChild("RankedService"))
+local RebirthService = require(ServerFolder:WaitForChild("RebirthService"))
+local CharmService = require(ServerFolder:WaitForChild("CharmService"))
+local WeatherService = require(ServerFolder:WaitForChild("WeatherService"))
+local RetentionService = require(ServerFolder:WaitForChild("RetentionService"))
+local MonetizationService = require(ServerFolder:WaitForChild("MonetizationService"))
 
 local requestRemote, syncRemote, pushRemote = Net.getOrCreateRemotes(ReplicatedStorage)
-
-local PROMO_CODES: { [string]: { yen: number, gems: number, tickets: number } } = {
-	RELEASE = { yen = 500, gems = 100, tickets = 2 },
-	NEXUS = { yen = 300, gems = 75, tickets = 1 },
-	WELCOME = { yen = 250, gems = 50, tickets = 1 },
-}
 
 local function logFunnel(player: Player, stepName: string, stepIndex: number)
 	pcall(function()
 		(AnalyticsService :: any):LogOnboardingFunnelStepEvent(player, stepIndex, stepName)
+	end)
+end
+
+local function logEconomy(
+	player: Player,
+	flowType: string,
+	currency: string,
+	amount: number,
+	balance: number,
+	sku: string
+)
+	pcall(function()
+		local ft = if flowType == "Source"
+			then Enum.AnalyticsEconomyFlowType.Source
+			else Enum.AnalyticsEconomyFlowType.Sink
+		local analytics: any = AnalyticsService
+		analytics:LogEconomyEvent(player, ft, currency, math.floor(amount), math.floor(balance), "Gameplay", sku)
 	end)
 end
 
@@ -66,38 +86,73 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 	end
 
 	local profile = DataService.getOrLoadProfile(player)
+	local pAny = profile :: any
 	local friendCount = math.max(0, #Players:GetPlayers() - 1)
 
 	if action == "GetState" then
 		return okWithState(player, profile)
+	elseif action == "SelectBanner" then
+		local bannerId = tostring(payload.bannerId or "")
+		local banner = (Banners :: any).get and (Banners :: any).get(bannerId) or (Banners :: any)[bannerId]
+		local worldId = if type(payload.worldId) == "number"
+			then math.floor(payload.worldId)
+			else (if banner and banner.worldId then banner.worldId else pAny.selectedWorld or profile.currentWorld)
+		if not profile.unlockedWorlds[worldId] then
+			return fail("World not unlocked yet")
+		end
+		pAny.selectedWorld = worldId
+		profile.currentWorld = worldId
+		if bannerId ~= "" then
+			pAny.selectedBannerId = bannerId
+		end
+		return okWithState(player, profile)
 	elseif action == "Roll" then
-		local worldId = if type(payload.worldId) == "number" then payload.worldId else profile.currentWorld
-		local ok, err, result = RollService.rollSingle(profile, worldId, payload.useTicket == true, friendCount)
+		local worldId = if type(payload.worldId) == "number"
+			then payload.worldId
+			else (pAny.selectedWorld or profile.currentWorld)
+		local ok, err, result = (RollService :: any).rollSingle(
+			profile,
+			worldId,
+			payload.useTicket == true,
+			friendCount,
+			player
+		)
 		if not ok or not result then
 			return fail(err or "Roll failed")
 		end
+		RetentionService.trackProgress(pAny, "Roll", 1)
 		if profile.rollCount == 1 then
 			logFunnel(player, "FirstRoll", 2)
 		end
-		return okWithState(player, profile, {
-			result = result,
-			results = { result },
-		})
+		return okWithState(player, profile, { result = result, results = { result } })
 	elseif action == "RollBatch" then
-		local worldId = if type(payload.worldId) == "number" then payload.worldId else profile.currentWorld
+		local worldId = if type(payload.worldId) == "number"
+			then payload.worldId
+			else (pAny.selectedWorld or profile.currentWorld)
 		local count = if type(payload.count) == "number" then payload.count else 5
-		local ok, err, results = RollService.rollBatch(profile, worldId, count, payload.useTicket == true, friendCount)
+		local ok, err, results = (RollService :: any).rollBatch(
+			profile,
+			worldId,
+			count,
+			payload.useTicket == true,
+			friendCount,
+			player
+		)
 		if not ok or not results then
 			return fail(err or "Batch roll failed")
 		end
-		return okWithState(player, profile, {
-			result = results[1],
-			results = results,
-		})
+		RetentionService.trackProgress(pAny, "Roll", #results)
+		return okWithState(player, profile, { result = results[1], results = results })
 	elseif action == "SetDeck" then
-		local ok, err = DeckService.setDeck(profile, payload.deckIds, payload.defenseDeckIds)
+		local ok, err = (DeckService :: any).setDeck(profile, payload.deckIds or {})
 		if not ok then
 			return fail(err or "Could not update deck")
+		end
+		return okWithState(player, profile)
+	elseif action == "SaveDefenseDeck" then
+		local ok, err = DeckService.saveDefenseDeck(profile, payload.defenseDeckIds or payload.deckIds or {})
+		if not ok then
+			return fail(err or "Could not update defense deck")
 		end
 		return okWithState(player, profile)
 	elseif action == "ToggleLock" then
@@ -123,6 +178,7 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 		if not ok then
 			return fail(err or "Level up failed")
 		end
+		RetentionService.trackProgress(pAny, "LevelUp", 1)
 		return okWithState(player, profile)
 	elseif action == "AscendCard" then
 		local ok, err = DeckService.ascendCard(profile, tostring(payload.instanceId or ""))
@@ -130,12 +186,12 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 			return fail(err or "Ascension failed")
 		end
 		return okWithState(player, profile)
-	elseif action == "RerollTrait" then
-		local ok, err = DeckService.rerollTrait(profile, tostring(payload.instanceId or ""))
+	elseif action == "RerollTrait" or action == "TraitReroll" then
+		local ok, err, newTrait = (RollService :: any).rerollTrait(profile, tostring(payload.instanceId or ""))
 		if not ok then
 			return fail(err or "Trait reroll failed")
 		end
-		return okWithState(player, profile)
+		return okWithState(player, profile, { trait = newTrait })
 	elseif action == "StartBattle" then
 		local stageId = if type(payload.stageId) == "string" and payload.stageId ~= ""
 			then payload.stageId
@@ -144,16 +200,18 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 		if not ok or not battleData then
 			return fail(err or "Battle failed")
 		end
+		RetentionService.trackProgress(pAny, "Battle", 1)
 		syncPlayer(player, profile)
 		return { ok = true, data = battleData }
 	elseif action == "UnlockWorld" then
 		local worldId = math.max(1, math.floor(tonumber(payload.worldId) or 1))
-		local worldDef = Worlds.get(worldId)
+		local worldDef = Worlds.getWorld(worldId)
 		if not worldDef then
 			return fail("Unknown world")
 		end
 		if profile.unlockedWorlds[worldId] then
 			profile.currentWorld = worldId
+			pAny.selectedWorld = worldId
 			return okWithState(player, profile)
 		end
 		local unlockCost = (worldDef :: any).unlockCostYen or 0
@@ -163,23 +221,140 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 		profile.yen -= unlockCost
 		profile.unlockedWorlds[worldId] = true
 		profile.currentWorld = worldId
+		pAny.selectedWorld = worldId
+		logEconomy(player, "Sink", "Yen", unlockCost, profile.yen, "UnlockWorld_" .. tostring(worldId))
 		return okWithState(player, profile)
+	elseif action == "ChallengeTower" then
+		local ok, res, err = (TowerService :: any).challengeFloor(player, profile, payload.floor)
+		if not ok then
+			return fail(err or "Tower challenge failed")
+		end
+		RetentionService.trackProgress(pAny, "Tower", 1)
+		return okWithState(player, profile, res)
+	elseif action == "GetTowerStatus" then
+		return { ok = true, data = TowerService.getStatus(profile) }
+	elseif action == "StartRaid" then
+		local ok, res, err = (RaidService :: any).startRaid(
+			player,
+			profile,
+			tostring(payload.raidId or "raid_skull_island")
+		)
+		if not ok then
+			return fail(err or "Raid failed")
+		end
+		RetentionService.trackProgress(pAny, "Raid", 1)
+		return okWithState(player, profile, res)
+	elseif action == "GetRaidStatus" then
+		return { ok = true, data = (RaidService :: any).getStatus(profile) }
+	elseif action == "ChallengeWorldBoss" then
+		local ok, res, err = (WorldBossService :: any).challenge(player, profile, payload.bossId)
+		if not ok then
+			return fail(err or "World boss challenge failed")
+		end
+		return okWithState(player, profile, res)
+	elseif action == "GetWorldBossStatus" then
+		return { ok = true, data = (WorldBossService :: any).getStatus(profile) }
+	elseif action == "PlayRanked" then
+		local ok, res, err = (RankedService :: any).playMatch(player, profile, payload.targetUserId)
+		if not ok then
+			return fail(err or "Ranked match failed")
+		end
+		RetentionService.trackProgress(pAny, "Ranked", 1)
+		return okWithState(player, profile, res)
+	elseif action == "ClaimRankedReward" then
+		local ok, res, err = (RankedService :: any).claimReward(profile)
+		if not ok then
+			return fail(err or "Could not claim ranked reward")
+		end
+		return okWithState(player, profile, res)
+	elseif action == "GetRankedStatus" then
+		return { ok = true, data = (RankedService :: any).getStatus(profile) }
+	elseif action == "PerformRebirth" or action == "Rebirth" then
+		local ok, res, err = (RebirthService :: any).performRebirth(profile)
+		if not ok then
+			return fail(err or "Rebirth failed")
+		end
+		return okWithState(player, profile, res)
+	elseif action == "BuySkillNode" then
+		local ok, res, err = (RebirthService :: any).buySkillNode(profile, tostring(payload.nodeId or ""))
+		if not ok then
+			return fail(err or "Could not buy skill node")
+		end
+		return okWithState(player, profile, res)
+	elseif action == "GetRebirthStatus" then
+		return { ok = true, data = (RebirthService :: any).getStatus(profile) }
+	elseif action == "CraftCharm" then
+		local ok, res, err = CharmService.craftCharm(profile, tostring(payload.charmId or ""))
+		if not ok then
+			return fail(err or "Could not craft charm")
+		end
+		return okWithState(player, profile, res)
+	elseif action == "EquipCharm" then
+		local ids = table.clone(pAny.equippedCharms or {})
+		local cid = tostring(payload.charmId or "")
+		if cid ~= "" and not table.find(ids, cid) then
+			table.insert(ids, cid)
+		end
+		local ok, res, err = CharmService.equipCharms(profile, ids)
+		if not ok then
+			return fail(err or "Could not equip charm")
+		end
+		return okWithState(player, profile, res)
+	elseif action == "UnequipCharm" then
+		local ids = {}
+		local cid = tostring(payload.charmId or "")
+		for _, existing in ipairs(pAny.equippedCharms or {}) do
+			if existing ~= cid then
+				table.insert(ids, existing)
+			end
+		end
+		local ok, res, err = CharmService.equipCharms(profile, ids)
+		if not ok then
+			return fail(err or "Could not unequip charm")
+		end
+		return okWithState(player, profile, res)
+	elseif action == "GetCharmStatus" then
+		return { ok = true, data = CharmService.getStatus(profile) }
+	elseif action == "ClaimQuest" then
+		local ok, res, err = (RetentionService :: any).claimQuest(pAny, tostring(payload.questId or ""))
+		if not ok then
+			return fail(err or "Could not claim quest")
+		end
+		return okWithState(player, profile, res)
+	elseif action == "ClaimLoginStreak" or action == "ClaimDaily" then
+		local ok, res, err = (RetentionService :: any).claimLoginStreak(pAny)
+		if not ok then
+			return fail(err or "Could not claim daily streak")
+		end
+		return okWithState(player, profile, res)
+	elseif action == "ClaimPlaytime" then
+		local ok, res, err = (RetentionService :: any).claimPlaytime(pAny, tostring(payload.milestoneId or ""))
+		if not ok then
+			return fail(err or "Could not claim playtime reward")
+		end
+		return okWithState(player, profile, res)
 	elseif action == "RedeemCode" then
-		local code = string.upper(tostring(payload.code or ""))
-		local reward = PROMO_CODES[code]
-		if not reward then
-			return fail("Invalid code")
+		local ok, res, err = (RetentionService :: any).redeemCode(pAny, tostring(payload.code or ""))
+		if not ok then
+			return fail(err or "Could not redeem code")
 		end
-		if profile.redeemedCodes[code] then
-			return fail("Code already redeemed")
+		return okWithState(player, profile, res)
+	elseif action == "GetRetentionStatus" then
+		return { ok = true, data = (RetentionService :: any).getStatus(pAny) }
+	elseif action == "GetLeaderboards" then
+		return { ok = true, data = (RetentionService :: any).getLeaderboards(tostring(payload.boardType or "rolls")) }
+	elseif action == "GetWeather" then
+		return { ok = true, data = (WeatherService :: any).getCurrentWeather() }
+	elseif action == "PromptPurchase" then
+		local ok, err, res = MonetizationService.promptPurchase(player, pAny, tostring(payload.productId or ""))
+		if not ok then
+			return fail(err or "Purchase failed")
 		end
-		profile.redeemedCodes[code] = true
-		profile.yen += reward.yen
-		profile.gems += reward.gems
-		profile.tickets += reward.tickets
-		return okWithState(player, profile, { reward = reward })
+		return okWithState(player, profile, res)
+	elseif action == "GetShopStatus" then
+		return { ok = true, data = MonetizationService.getShopStatus(player, pAny) }
 	elseif action == "UsePotion" then
-		local potionId = tostring(payload.potionId or "luck_potion_1")
+		local potionId = tostring(payload.potionId or "Minor")
 		local qty = profile.potions[potionId] or 0
 		if qty < 1 then
 			return fail("No potion available")
@@ -187,29 +362,6 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 		profile.potions[potionId] = qty - 1
 		profile.luckPotionExpiresAt = os.time() + 300
 		profile.luckPotionBonus = 1.0
-		return okWithState(player, profile)
-	elseif action == "ClaimDaily" then
-		local now = os.time()
-		if now - (profile.lastDailyClaim or 0) < 20 * 3600 then
-			return fail("Daily reward already claimed")
-		end
-		profile.lastDailyClaim = now
-		profile.dailyStreak = (profile.dailyStreak or 0) + 1
-		local yenReward = 250 + math.min(6, profile.dailyStreak) * 75
-		local gemReward = 50 + math.min(6, profile.dailyStreak) * 15
-		profile.yen += yenReward
-		profile.gems += gemReward
-		profile.tickets += 1
-		return okWithState(player, profile, { yen = yenReward, gems = gemReward, tickets = 1 })
-	elseif action == "Rebirth" then
-		local eco = Economy :: any
-		local reqYen = if type(eco.RebirthBaseYen) == "number" then eco.RebirthBaseYen else 10000
-		if profile.yen < reqYen then
-			return fail(string.format("Need %d Yen to Rebirth", reqYen))
-		end
-		profile.yen = 500
-		profile.rebirths = (profile.rebirths or 0) + 1
-		profile.tickets += 3
 		return okWithState(player, profile)
 	elseif action == "UpdateSettings" then
 		local s = payload.settings
@@ -239,6 +391,21 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 end
 
 requestRemote.OnServerInvoke = handleRequest
+
+MonetizationService.init(function(player)
+	return DataService.getProfile(player) :: any
+end, function(player, profile)
+	syncPlayer(player, profile :: any)
+end)
+
+if type((WeatherService :: any).start) == "function" then
+	(WeatherService :: any).start(function(weather)
+		pushRemote:FireAllClients({
+			kind = Net.PushEvents.WeatherUpdate,
+			weather = weather,
+		})
+	end)
+end
 
 local built = WorldBuild.build()
 local promptList: { ProximityPrompt } = if built and built.prompts then built.prompts else {}
