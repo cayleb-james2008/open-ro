@@ -31,6 +31,7 @@ export type RollCardResult = {
 
 export type RevealModalController = {
 	play: (results: { RollCardResult }, isAuto: boolean?, onComplete: (() -> ())?) -> (),
+	setContext: (bannerName: string, weatherText: string) -> (),
 	skip: () -> (),
 	isPlaying: () -> boolean,
 	destroy: () -> (),
@@ -99,6 +100,19 @@ function RevealModal.create(parent: Instance, getSettings: () -> SettingsModal.S
 	rayCrossVert.ZIndex = 36
 	rayCrossVert.Parent = rayCross
 	Components.addCorner(rayCrossVert, 12)
+
+	local contextPill = Components.makeLabel(
+		stage,
+		"ContextPill",
+		"Banner: Standard  |  Weather: Clear (1.0x)",
+		UDim2.new(0.9, 0, 0, 22),
+		UDim2.fromScale(0.05, 0.03),
+		Theme.FONT_BODY,
+		12,
+		Color3.fromRGB(165, 220, 255),
+		Enum.TextXAlignment.Center
+	)
+	contextPill.ZIndex = 38
 
 	local bannerTitle = Components.makeLabel(
 		stage,
@@ -421,6 +435,9 @@ function RevealModal.create(parent: Instance, getSettings: () -> SettingsModal.S
 					end
 				end)
 			end
+		end,
+		setContext = function(bannerName: string, weatherText: string)
+			contextPill.Text = string.format("Banner: %s  |  Weather: %s", bannerName, weatherText)
 		end,
 		skip = function()
 			if not playing then

@@ -404,9 +404,94 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		speedBtn.TextColor3 = if speedMult > 1 then Color3.fromRGB(255, 255, 255) else palette.textPrimary
 	end
 
+	local activeWorldId = 1
+	local activeBondsText = "Active Bonds: Equip matching cards for Show & Cross-Card bonuses"
+	local onSelectWorldCb: ((worldId: number) -> ())? = nil
+	local onChallengeWorldBossCb: ((worldId: number) -> ())? = nil
+
 	local function renderStageList()
 		clearChildren(stageView, true)
 		local palette = Theme.getPalette()
+
+		local worldBar = Instance.new("Frame")
+		worldBar.Name = "WorldTabsBar"
+		worldBar.LayoutOrder = -3
+		worldBar.Size = UDim2.new(1, 0, 0, 48)
+		worldBar.BackgroundTransparency = 1
+		worldBar.ZIndex = 38
+		worldBar.Parent = stageView
+
+		local worldLayout = Instance.new("UIListLayout")
+		worldLayout.FillDirection = Enum.FillDirection.Horizontal
+		worldLayout.Padding = UDim.new(0, 6)
+		worldLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+		worldLayout.Parent = worldBar
+
+		for wId = 1, 5 do
+			local isSelected = wId == activeWorldId
+			local wBtn = Components.makeButton(
+				worldBar,
+				"WorldTab_" .. tostring(wId),
+				"W" .. tostring(wId),
+				UDim2.fromOffset(46, 44),
+				UDim2.fromOffset(0, 0),
+				if isSelected then palette.accentBlue else palette.bgMuted,
+				if isSelected then Color3.fromRGB(255, 255, 255) else palette.textPrimary
+			)
+			wBtn.LayoutOrder = wId
+			wBtn.TextSize = 13
+			wBtn.ZIndex = 39
+			wBtn.Activated:Connect(function()
+				activeWorldId = wId
+				if onSelectWorldCb then
+					onSelectWorldCb(wId)
+				end
+				renderStageList()
+			end)
+		end
+
+		local wbBtn = Components.makeButton(
+			worldBar,
+			"WorldBossButton",
+			"World Boss",
+			UDim2.new(1, -260, 0, 44),
+			UDim2.fromOffset(0, 0),
+			palette.accentPurple,
+			Color3.fromRGB(255, 255, 255)
+		)
+		wbBtn.LayoutOrder = 10
+		wbBtn.TextSize = 13
+		wbBtn.ZIndex = 39
+		wbBtn.Activated:Connect(function()
+			if onChallengeWorldBossCb then
+				onChallengeWorldBossCb(activeWorldId)
+			end
+		end)
+
+		local bondsRow = Instance.new("Frame")
+		bondsRow.Name = "BondsSummaryRow"
+		bondsRow.LayoutOrder = -2
+		bondsRow.Size = UDim2.new(1, 0, 0, 36)
+		bondsRow.BackgroundColor3 = palette.bgCard
+		bondsRow.BorderSizePixel = 0
+		bondsRow.ZIndex = 38
+		bondsRow.Parent = stageView
+		Components.addCorner(bondsRow, 8)
+		Components.addStroke(bondsRow, palette.accentGold, 1, 0.45)
+
+		local bondsLbl = Components.makeLabel(
+			bondsRow,
+			"BondsLabel",
+			activeBondsText,
+			UDim2.new(1, -16, 1, 0),
+			UDim2.fromOffset(8, 0),
+			Theme.FONT_BODY,
+			12,
+			palette.accentGold,
+			Enum.TextXAlignment.Left
+		)
+		bondsLbl.TextTruncate = Enum.TextTruncate.AtEnd
+		bondsLbl.ZIndex = 39
 
 		for idx, stage in currentStages do
 			local row = Instance.new("Frame")
