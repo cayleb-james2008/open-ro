@@ -211,12 +211,14 @@ local ok, res = pcall(function()\n\
 \t\treturn {{ ok = false, reason = \"no_player_gui\", error = \"LocalPlayer has no PlayerGui\" }}\n\
 \tend\n\
 \tlocal cur = pgui\n\
+\tlocal segs = {{}}\n\
 \tfor seg in string.gmatch(raw, \"[^%.]+\") do\n\
 \t\tlocal nxt = cur:FindFirstChild(seg)\n\
 \t\tif not nxt then\n\
 \t\t\treturn {{ ok = false, reason = \"not_found\", stopped_at = seg, error = \"GUI element '\" .. tostring(spec.gui_path) .. \"' not found under PlayerGui (missing '\" .. seg .. \"')\" }}\n\
 \t\tend\n\
 \t\tcur = nxt\n\
+\t\ttable.insert(segs, cur.Name)\n\
 \tend\n\
 \tif not cur:IsA(\"GuiObject\") then\n\
 \t\treturn {{ ok = false, reason = \"not_gui_object\", class_name = cur.ClassName, error = \"target '\" .. tostring(spec.gui_path) .. \"' is a \" .. cur.ClassName .. \", not a GuiObject\" }}\n\
@@ -242,26 +244,46 @@ local ok, res = pcall(function()\n\
 \tif sz.X <= 0 or sz.Y <= 0 then\n\
 \t\treturn {{ ok = false, reason = \"zero_size\", width = sz.X, height = sz.Y, error = \"GUI element '\" .. tostring(spec.gui_path) .. \"' has zero AbsoluteSize\" }}\n\
 \tend\n\
+\t-- In Roblox, GuiObject.AbsolutePosition is always inset-relative (even when\n\
+\t-- IgnoreGuiInset=true, where top-of-screen is -topLeftInset.Y). Adding\n\
+\t-- topLeftInset converts to true 0..ViewportSize screen pixels for both modes (#67).\n\
 \tlocal topLeftInset, _ = GuiService:GetGuiInset()\n\
 \tlocal ignoreInset = (screenGui ~= nil) and (screenGui.IgnoreGuiInset == true) or false\n\
-\tlocal ix = ignoreInset and 0 or topLeftInset.X\n\
-\tlocal iy = ignoreInset and 0 or topLeftInset.Y\n\
-\tlocal cx = pos.X + sz.X * 0.5 + ix\n\
-\tlocal cy = pos.Y + sz.Y * 0.5 + iy\n\
+\tlocal guiX = pos.X + sz.X * 0.5\n\
+\tlocal guiY = pos.Y + sz.Y * 0.5\n\
+\tlocal vx = guiX + topLeftInset.X\n\
+\tlocal vy = guiY + topLeftInset.Y\n\
 \tlocal cam = workspace.CurrentCamera\n\
 \tlocal vp = cam and cam.ViewportSize or Vector2.new(0, 0)\n\
-\tif vp.X > 0 and vp.Y > 0 and (cx < 0 or cy < 0 or cx > vp.X or cy > vp.Y) then\n\
-\t\treturn {{ ok = false, reason = \"offscreen\", x = cx, y = cy, viewport = {{ vp.X, vp.Y }}, error = \"GUI element '\" .. tostring(spec.gui_path) .. \"' center is outside viewport\" }}\n\
+\tif vp.X > 0 and vp.Y > 0 and (vx < 0 or vy < 0 or vx > vp.X or vy > vp.Y) then\n\
+\t\treturn {{ ok = false, reason = \"offscreen\", x = vx, y = vy, gui_x = guiX, gui_y = guiY, viewport = {{ vp.X, vp.Y }}, error = \"GUI element '\" .. tostring(spec.gui_path) .. \"' center is outside viewport\" }}\n\
 \tend\n\
+\tlocal hitVerified = false\n\
+\tlocal okHit, hits = pcall(function()\n\
+\t\treturn pgui:GetGuiObjectsAtPosition(guiX, guiY)\n\
+\tend)\n\
+\tif okHit and type(hits) == \"table\" then\n\
+\t\tfor _, h in ipairs(hits) do\n\
+\t\t\tif h == cur or h:IsDescendantOf(cur) then\n\
+\t\t\t\thitVerified = true\n\
+\t\t\t\tbreak\n\
+\t\t\tend\n\
+\t\tend\n\
+\tend\n\
+\tlocal instPath = \"LocalPlayer.PlayerGui.\" .. table.concat(segs, \".\")\n\
 \treturn {{\n\
 \t\tok = true,\n\
-\t\tx = cx,\n\
-\t\ty = cy,\n\
+\t\tinstance_path = instPath,\n\
+\t\tx = vx,\n\
+\t\ty = vy,\n\
+\t\tgui_x = guiX,\n\
+\t\tgui_y = guiY,\n\
 \t\tpos = {{ pos.X, pos.Y }},\n\
 \t\tsize = {{ sz.X, sz.Y }},\n\
-\t\tinset = {{ ix, iy }},\n\
+\t\tinset = {{ topLeftInset.X, topLeftInset.Y }},\n\
 \t\tignore_gui_inset = ignoreInset,\n\
 \t\tviewport = {{ vp.X, vp.Y }},\n\
+\t\thit_verified = hitVerified,\n\
 \t\tclass_name = cur.ClassName,\n\
 \t}}\n\
 end)\n\
@@ -302,6 +324,10 @@ fn run_action(mcp: &mut McpClient, idx: usize, action: &Value) -> Value {
                 .get("double_click")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            let use_coordinates = action
+                .get("use_coordinates")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let wait_ms = action
                 .get("wait_ms")
                 .and_then(Value::as_u64)
@@ -311,10 +337,10 @@ fn run_action(mcp: &mut McpClient, idx: usize, action: &Value) -> Value {
             let prev_dm = mcp.datamodel_type().to_string();
             mcp.set_datamodel_type("Client");
             let luau_res = mcp.execute_luau(&luau_for_resolve_gui(&gui_path));
-            mcp.set_datamodel_type(&prev_dm);
 
             let resolved = match luau_res {
                 Err(e) => {
+                    mcp.set_datamodel_type(&prev_dm);
                     return json!({
                         "index": idx,
                         "kind": "click_gui",
@@ -329,6 +355,7 @@ fn run_action(mcp: &mut McpClient, idx: usize, action: &Value) -> Value {
                 Ok(v) => match extract_result(&v) {
                     Some(r) => r,
                     None => {
+                        mcp.set_datamodel_type(&prev_dm);
                         return json!({
                             "index": idx,
                             "kind": "click_gui",
@@ -344,6 +371,7 @@ fn run_action(mcp: &mut McpClient, idx: usize, action: &Value) -> Value {
             };
 
             if resolved["ok"].as_bool() != Some(true) {
+                mcp.set_datamodel_type(&prev_dm);
                 return json!({
                     "index": idx,
                     "kind": "click_gui",
@@ -357,6 +385,7 @@ fn run_action(mcp: &mut McpClient, idx: usize, action: &Value) -> Value {
             }
 
             let Some(cx) = resolved["x"].as_f64().filter(|v| v.is_finite()) else {
+                mcp.set_datamodel_type(&prev_dm);
                 return json!({
                     "index": idx,
                     "kind": "click_gui",
@@ -369,6 +398,7 @@ fn run_action(mcp: &mut McpClient, idx: usize, action: &Value) -> Value {
                 });
             };
             let Some(cy) = resolved["y"].as_f64().filter(|v| v.is_finite()) else {
+                mcp.set_datamodel_type(&prev_dm);
                 return json!({
                     "index": idx,
                     "kind": "click_gui",
@@ -382,14 +412,59 @@ fn run_action(mcp: &mut McpClient, idx: usize, action: &Value) -> Value {
             };
             let x = cx.clamp(0.0, 4096.0);
             let y = cy.clamp(0.0, 4096.0);
-            let mut mouse_acts = vec![
-                json!({ "action": "moveTo", "x": x, "y": y }),
-                json!({ "action": "mouseButtonClick", "mouse_button": button, "x": x, "y": y }),
-            ];
-            if double_click {
-                mouse_acts.push(json!({ "action": "mouseButtonClick", "mouse_button": button, "x": x, "y": y }));
-            }
-            match mcp.user_mouse_input(mouse_acts) {
+            let instance_path = resolved["instance_path"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+
+            let build_coord_acts = || -> Vec<Value> {
+                let mut acts = vec![
+                    json!({ "action": "moveTo", "x": x, "y": y }),
+                    json!({ "action": "wait", "wait_time_ms": 40 }),
+                    json!({ "action": "mouseButtonClick", "mouse_button": button }),
+                ];
+                if double_click {
+                    acts.push(json!({ "action": "mouseButtonClick", "mouse_button": button }));
+                }
+                acts
+            };
+
+            // Official Roblox StudioMCP `user_mouse_input` natively targets Client GUI instances via
+            // `instance_path` ("LocalPlayer.PlayerGui.<path>") and reuses moveTo position for click,
+            // avoiding DPI/inset coordinate drift; fall back to viewport (x, y) when requested or
+            // if a bridge does not support `instance_path` (#67).
+            let (dispatch_mode, mouse_res) = if !use_coordinates {
+                if let Some(ref ip) = instance_path {
+                    let mut ip_acts = vec![
+                        json!({ "action": "moveTo", "instance_path": ip }),
+                        json!({ "action": "wait", "wait_time_ms": 40 }),
+                        json!({ "action": "mouseButtonClick", "mouse_button": button }),
+                    ];
+                    if double_click {
+                        ip_acts.push(json!({ "action": "mouseButtonClick", "mouse_button": button }));
+                    }
+                    match mcp.user_mouse_input(ip_acts) {
+                        Ok(v)
+                            if v.get("ok").and_then(Value::as_bool) != Some(false)
+                                && v.get("success").and_then(Value::as_bool) != Some(false) =>
+                        {
+                            ("instance_path", Ok(v))
+                        }
+                        _ => (
+                            "coordinates_fallback",
+                            mcp.user_mouse_input(build_coord_acts()),
+                        ),
+                    }
+                } else {
+                    ("coordinates", mcp.user_mouse_input(build_coord_acts()))
+                }
+            } else {
+                ("coordinates", mcp.user_mouse_input(build_coord_acts()))
+            };
+            mcp.set_datamodel_type(&prev_dm);
+
+            match mouse_res {
                 Ok(_) => {
                     if wait_ms > 0 {
                         std::thread::sleep(std::time::Duration::from_millis(wait_ms));
@@ -402,13 +477,19 @@ fn run_action(mcp: &mut McpClient, idx: usize, action: &Value) -> Value {
                         "double_click": double_click,
                         "passed": true,
                         "resolved": {
+                            "instance_path": instance_path,
+                            "dispatch": dispatch_mode,
+                            "datamodel_type": "Client",
                             "x": x,
                             "y": y,
+                            "gui_x": resolved["gui_x"],
+                            "gui_y": resolved["gui_y"],
                             "pos": resolved["pos"],
                             "size": resolved["size"],
                             "inset": resolved["inset"],
                             "ignore_gui_inset": resolved["ignore_gui_inset"],
                             "viewport": resolved["viewport"],
+                            "hit_verified": resolved["hit_verified"],
                             "class_name": resolved["class_name"],
                         },
                         "wait_ms": wait_ms,
@@ -423,7 +504,12 @@ fn run_action(mcp: &mut McpClient, idx: usize, action: &Value) -> Value {
                     "double_click": double_click,
                     "passed": false,
                     "reason": "mouse_input_failed",
-                    "resolved": { "x": x, "y": y },
+                    "resolved": {
+                        "instance_path": instance_path,
+                        "dispatch": dispatch_mode,
+                        "x": x,
+                        "y": y,
+                    },
                     "wait_ms": 0,
                     "error": e,
                 }),
@@ -452,12 +538,17 @@ fn run_action(mcp: &mut McpClient, idx: usize, action: &Value) -> Value {
                 .min(MAX_ACTION_WAIT_MS);
             let mut mouse_acts = vec![
                 json!({ "action": "moveTo", "x": x, "y": y }),
-                json!({ "action": "mouseButtonClick", "mouse_button": button, "x": x, "y": y }),
+                json!({ "action": "wait", "wait_time_ms": 40 }),
+                json!({ "action": "mouseButtonClick", "mouse_button": button }),
             ];
             if double_click {
-                mouse_acts.push(json!({ "action": "mouseButtonClick", "mouse_button": button, "x": x, "y": y }));
+                mouse_acts.push(json!({ "action": "mouseButtonClick", "mouse_button": button }));
             }
-            match mcp.user_mouse_input(mouse_acts) {
+            let prev_dm = mcp.datamodel_type().to_string();
+            mcp.set_datamodel_type("Client");
+            let click_res = mcp.user_mouse_input(mouse_acts);
+            mcp.set_datamodel_type(&prev_dm);
+            match click_res {
                 Ok(_) => {
                     if wait_ms > 0 {
                         std::thread::sleep(std::time::Duration::from_millis(wait_ms));

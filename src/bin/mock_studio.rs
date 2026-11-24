@@ -53,6 +53,8 @@ struct MockState {
     last_key: Option<String>,
     typed_text: String,
     key_events: u64,
+    last_mouse_dm: Option<String>,
+    last_key_dm: Option<String>,
     camera_yaw: f64,
     camera_pitch: f64,
     camera_zoom: f64,
@@ -120,6 +122,8 @@ impl MockState {
             last_key: None,
             typed_text: String::new(),
             key_events: 0,
+            last_mouse_dm: None,
+            last_key_dm: None,
             camera_yaw: 0.0,
             camera_pitch: 0.0,
             camera_zoom: 1.0,
@@ -886,6 +890,12 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
             if actions.is_empty() {
                 return error_result("user_mouse_input actions must not be empty".to_string());
             }
+            let dm = args
+                .get("datamodel_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Edit");
+            state.last_mouse_dm = Some(dm.to_string());
+            let mut moved_to_instance = false;
             for act in actions {
                 let kind = act.get("action").and_then(|v| v.as_str()).unwrap_or("");
                 let new_x = act
@@ -899,7 +909,31 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
 
                 match kind {
                     "moveTo" => {
-                        if let (Some(nx), Some(ny)) = (new_x, new_y) {
+                        if let Some(ip) = act.get("instance_path").and_then(|v| v.as_str()) {
+                            let norm = ip.trim().replace(['\\', '/'], ".");
+                            state.selected_instance = Some(norm.clone());
+                            moved_to_instance = true;
+                            let gui_rel = norm
+                                .strip_prefix("Players.LocalPlayer.PlayerGui.")
+                                .or_else(|| norm.strip_prefix("LocalPlayer.PlayerGui."))
+                                .or_else(|| norm.strip_prefix("PlayerGui."))
+                                .or_else(|| norm.strip_prefix("StarterGui."))
+                                .unwrap_or(&norm);
+                            let tree_key = format!("StarterGui/{}", gui_rel.replace('.', "/"));
+                            if let Some(node) = state.v011_tree.get(&tree_key) {
+                                let vec2 = |k: &str, d: [f64; 2]| -> [f64; 2] {
+                                    node.props
+                                        .get(k)
+                                        .and_then(|v| v.as_array())
+                                        .and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]))
+                                        .unwrap_or(d)
+                                };
+                                let pos = vec2("AbsolutePosition", [100.0, 200.0]);
+                                let sz = vec2("AbsoluteSize", [160.0, 48.0]);
+                                state.cursor_x = scale_to_viewport(pos[0] + sz[0] * 0.5, FRAME_W);
+                                state.cursor_y = scale_to_viewport(pos[1] + sz[1] * 0.5 + 58.0, FRAME_H);
+                            }
+                        } else if let (Some(nx), Some(ny)) = (new_x, new_y) {
                             if state.mouse_down {
                                 let dx = nx - state.cursor_x;
                                 let dy = ny - state.cursor_y;
@@ -910,6 +944,7 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
                             }
                             state.cursor_x = nx;
                             state.cursor_y = ny;
+                            moved_to_instance = false;
                         }
                     }
                     "mouseButtonDown" => {
@@ -934,7 +969,7 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
                         state.mouse_clicks += 1;
                         if let Some(ip) = act.get("instance_path").and_then(|v| v.as_str()) {
                             state.selected_instance = Some(normalize_game_path(ip));
-                        } else {
+                        } else if !moved_to_instance {
                             state.selected_instance = pick_nearest_instance(state);
                         }
                     }
@@ -981,6 +1016,11 @@ fn tool_call(name: &str, args: &Value, state: &mut MockState) -> Value {
             if actions.is_empty() {
                 return error_result("user_keyboard_input actions must not be empty".to_string());
             }
+            let dm = args
+                .get("datamodel_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Edit");
+            state.last_key_dm = Some(dm.to_string());
             for act in actions {
                 let kind = act.get("action").and_then(|v| v.as_str()).unwrap_or("");
                 match kind {
@@ -2029,18 +2069,24 @@ fn handle_v011_luau(code: &str, dm: &str, state: &mut MockState) -> Option<Value
                 json!({ "ok": true, "datamodel_type": dm, "output": res }).to_string(),
             ));
         }
-        let inset = if ignore_inset { [0.0, 0.0] } else { [0.0, 58.0] };
-        let cx = pos[0] + sz[0] * 0.5 + inset[0];
-        let cy = pos[1] + sz[1] * 0.5 + inset[1];
+        // Roblox GuiObject.AbsolutePosition is always inset-relative (even when IgnoreGuiInset=true,
+        // where top-of-screen is -inset.Y); adding topLeftInset gives true viewport pixel center (#67).
+        let inset = [0.0_f64, 58.0_f64];
+        let gui_x = pos[0] + sz[0] * 0.5;
+        let gui_y = pos[1] + sz[1] * 0.5;
+        let vx = gui_x + inset[0];
+        let vy = gui_y + inset[1];
         let vp = [1280.0_f64, 720.0_f64];
-        if cx < 0.0 || cy < 0.0 || cx > vp[0] || cy > vp[1] {
+        if vx < 0.0 || vy < 0.0 || vx > vp[0] || vy > vp[1] {
             let res = format!(
                 "OPENRO_V011:{}",
                 json!({
                     "ok": false,
                     "reason": "offscreen",
-                    "x": cx,
-                    "y": cy,
+                    "x": vx,
+                    "y": vy,
+                    "gui_x": gui_x,
+                    "gui_y": gui_y,
                     "viewport": vp,
                     "error": format!("GUI element '{raw}' center is outside viewport")
                 })
@@ -2049,17 +2095,22 @@ fn handle_v011_luau(code: &str, dm: &str, state: &mut MockState) -> Option<Value
                 json!({ "ok": true, "datamodel_type": dm, "output": res }).to_string(),
             ));
         }
+        let inst_path = format!("LocalPlayer.PlayerGui.{}", segs.join("."));
         let res = format!(
             "OPENRO_V011:{}",
             json!({
                 "ok": true,
-                "x": cx,
-                "y": cy,
+                "instance_path": inst_path,
+                "x": vx,
+                "y": vy,
+                "gui_x": gui_x,
+                "gui_y": gui_y,
                 "pos": pos,
                 "size": sz,
                 "inset": inset,
                 "ignore_gui_inset": ignore_inset,
                 "viewport": vp,
+                "hit_verified": true,
                 "class_name": node.class,
             })
         );
@@ -2101,6 +2152,9 @@ fn handle_v011_luau(code: &str, dm: &str, state: &mut MockState) -> Option<Value
             Some("__last_key__") => json!(state.last_key),
             Some("__typed_text__") => json!(state.typed_text),
             Some("__cursor__") => json!([state.cursor_x, state.cursor_y]),
+            Some("__last_mouse_dm__") => json!(state.last_mouse_dm),
+            Some("__last_key_dm__") => json!(state.last_key_dm),
+            Some("__selected_instance__") => json!(state.selected_instance),
             Some(expr) if expr.starts_with("__exists__(") && expr.ends_with(')') => {
                 let p = expr["__exists__(".len()..expr.len() - 1].trim().trim_matches('"').trim_matches('\'');
                 json!(state.v011_tree.contains_key(p))
