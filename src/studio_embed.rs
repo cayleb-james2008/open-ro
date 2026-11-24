@@ -778,6 +778,17 @@ impl StudioEmbedState {
     }
 
     pub fn to_json_with_detection(&self, detection: &HostStudioDetection) -> Value {
+        let mut det_json = detection.to_json();
+        if self.phase == "connected" && self.place_open {
+            if let Some(m) = det_json.as_object_mut() {
+                m.insert("already_logged_in".to_string(), json!(true));
+                m.insert("place_open".to_string(), json!(true));
+                m.insert(
+                    "guidance".to_string(),
+                    json!("Roblox Studio is connected and ready to sync and playtest."),
+                );
+            }
+        }
         json!({
             "phase": self.phase,
             "platform": self.platform,
@@ -802,7 +813,7 @@ impl StudioEmbedState {
             "official_tools_count": self.official_tools_count,
             "official_tools_total": OFFICIAL_STUDIO_TOOLS.len(),
             "tool_catalog": official_studio_tool_catalog(),
-            "detection": detection.to_json(),
+            "detection": det_json,
             "last_error": self.last_error,
             "last_input": self.last_input,
             "started_at_ms": self.started_at_ms,
@@ -1523,6 +1534,7 @@ pub fn launch_or_attach_live(
             if let Ok(mut client) = McpClient::spawn_with_timeout(&mcp_cmd, Duration::from_secs(3)) {
                 if client.has_live_studio() {
                     let open = probe_client_place_open(&mut client);
+                    client.reset_default_timeout();
                     manager.state.started_at_ms = Some(now_ms());
                     manager.sync_from_client(&client, Some(mcp_cmd));
                     manager.set_place_open(open);
@@ -2189,6 +2201,7 @@ pub fn transfer_to_embedded_studio(
             if let Ok(mut client) = McpClient::spawn_with_timeout(&mcp_cmd, Duration::from_secs(5)) {
                 if client.has_live_studio() {
                     let open = probe_client_place_open(&mut client);
+                    client.reset_default_timeout();
                     manager.x11grab_stop.store(true, Ordering::SeqCst);
                     if let Some(mut prev) = manager.ffmpeg_child.take() {
                         let _ = prev.kill();
@@ -2349,6 +2362,7 @@ pub fn transfer_to_embedded_studio(
                         McpClient::spawn_with_timeout(&mcp_cmd, Duration::from_secs(5))
                     {
                         if client.has_live_studio() && probe_client_place_open(&mut client) {
+                            client.reset_default_timeout();
                             manager.state.started_at_ms = Some(now_ms());
                             manager.sync_from_client(&client, Some(mcp_cmd.clone()));
                             manager.set_place_open(true);
