@@ -4110,6 +4110,7 @@ fn apply_config(shared: &Shared, body: &Value) -> Result<Value, String> {
                     match McpClient::spawn_with_timeout(&cmd, std::time::Duration::from_secs(4)) {
                         Ok(mut client) => {
                             if client.has_live_studio() {
+                                client.reset_default_timeout();
                                 Some(PlaceBackend::Mcp(client))
                             } else {
                                 let place = match &shared.data_dir {
@@ -5101,11 +5102,15 @@ fn build_embed_status_payload(shared: &Shared) -> Value {
             "available_tools": crate::agent::OFFICIAL_STUDIO_MCP_TOOLS,
         });
     };
-    let detect = if (state.phase == "connected" && state.place_open)
+    let is_custom_mcp = state.mcp_command.as_deref().is_some_and(|cmd| {
+        let host_mcp = crate::studio_embed::detect_host_mcp_command();
+        host_mcp.as_deref() != Some(cmd)
+    });
+    let detect = if (state.phase == "connected" && (state.place_open || is_custom_mcp))
         || state.phase == "awaiting_signin"
     {
-        // Active open-place session or background auto-attacher already tracks MCP state;
-        // avoid spawning redundant passive MCP probes on every UI status poll.
+        // Active open-place session, custom MCP bridge, or background auto-attacher already
+        // tracks MCP state; avoid spawning redundant/unrelated host MCP probes on status poll.
         crate::studio_embed::detect_studio_environment_fast()
     } else {
         cached_embed_detection(shared)
@@ -5148,7 +5153,9 @@ fn build_embed_status_payload(shared: &Shared) -> Value {
     let already_logged_in = detect.already_logged_in || (state.mcp_connected && state.studio_id.is_some());
     let studio_running = detect.studio_running || state.embedded;
     let studio_display = detect.studio_display.clone().or_else(|| state.display.clone());
-    let guidance = if already_logged_in && !place_open {
+    let guidance = if state.phase == "connected" && place_open {
+        "Roblox Studio is connected and ready to sync and playtest.".to_string()
+    } else if already_logged_in && !place_open {
         "Studio is on the Start Page — open a blank Baseplate to sync/playtest.".to_string()
     } else {
         detect.guidance.clone()
@@ -5186,7 +5193,8 @@ fn handle_studio_embed_status(stream: &mut TcpStream, shared: &Shared) {
     respond_json(stream, "200 OK", &build_embed_status_payload(shared));
 }
 
-fn attach_embed_mcp_client(shared: &Shared, mcp: McpClient) -> (u64, Option<Value>, Vec<String>) {
+fn attach_embed_mcp_client(shared: &Shared, mut mcp: McpClient) -> (u64, Option<Value>, Vec<String>) {
+    mcp.reset_default_timeout();
     let mut guard = shared.agent.lock().unwrap();
     match guard.as_mut() {
         Some(agent) => {
@@ -5319,6 +5327,7 @@ fn spawn_embed_mcp_auto_attacher(
                 return;
             }
             let place_open = crate::studio_embed::probe_client_place_open(&mut client);
+            client.reset_default_timeout();
             let studio_id = client.studio_id().map(ToString::to_string);
             let datamodel_type = if place_open {
                 client.datamodel_type().to_string()
