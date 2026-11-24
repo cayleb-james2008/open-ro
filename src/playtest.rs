@@ -12,6 +12,9 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 const ERROR_HINTS: [&str; 5] = ["error", "attempt to", "is not a valid member", "stack begin", "failed to"];
+const MAX_PLAYTEST_ACTIONS: usize = 50;
+const MAX_ACTION_WAIT_MS: u64 = 15_000;
+const MAX_KEY_HOLD_MS: u64 = 10_000;
 
 fn reports_root(dir: &Path) -> PathBuf {
     dir.join("build/reports")
@@ -97,6 +100,503 @@ fn run_check(mcp: &mut McpClient, check: &Value) -> Value {
     json!({ "name": name, "passed": verdict.is_ok(), "value": value, "error": verdict.err(), "datamodel": dm })
 }
 
+fn validate_actions(actions: &[Value]) -> Result<(), String> {
+    if actions.len() > MAX_PLAYTEST_ACTIONS {
+        return Err(format!(
+            "too many playtest actions (max {MAX_PLAYTEST_ACTIONS})"
+        ));
+    }
+    for (idx, act) in actions.iter().enumerate() {
+        let Some(obj) = act.as_object() else {
+            return Err(format!("actions[{idx}] must be a JSON object"));
+        };
+        let kind = obj
+            .get("kind")
+            .or_else(|| obj.get("type"))
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        match kind.as_str() {
+            "click_gui" => {
+                let path = obj
+                    .get("gui_path")
+                    .or_else(|| obj.get("path"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or("");
+                if path.is_empty() || path.len() > 512 || path.chars().any(|c| c.is_control()) {
+                    return Err(format!(
+                        "actions[{idx}] click_gui requires a valid non-empty 'gui_path' (<= 512 chars)"
+                    ));
+                }
+                let has_seg = path
+                    .split(['.', '/', '\\'])
+                    .any(|s| !s.trim().is_empty());
+                if !has_seg {
+                    return Err(format!(
+                        "actions[{idx}] click_gui 'gui_path' has no valid path segments"
+                    ));
+                }
+            }
+            "key" => {
+                let raw = obj
+                    .get("key")
+                    .or_else(|| obj.get("key_code"))
+                    .or_else(|| obj.get("code"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if raw.is_empty() || raw.len() > 64 || raw.chars().any(|c| c.is_control()) {
+                    return Err(format!(
+                        "actions[{idx}] key action requires a non-empty 'key' string"
+                    ));
+                }
+            }
+            "text" => {
+                let text = obj
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if text.is_empty() || text.len() > 2048 || text.contains('\0') {
+                    return Err(format!(
+                        "actions[{idx}] text action requires a non-empty 'text' string (<= 2048 bytes, no NUL)"
+                    ));
+                }
+            }
+            "click_at" => {
+                let x = obj.get("x").and_then(Value::as_f64);
+                let y = obj.get("y").and_then(Value::as_f64);
+                match (x, y) {
+                    (Some(xv), Some(yv)) if xv.is_finite() && yv.is_finite() => {}
+                    _ => {
+                        return Err(format!(
+                            "actions[{idx}] click_at requires finite numeric 'x' and 'y'"
+                        ))
+                    }
+                }
+            }
+            "wait" => {}
+            other => {
+                return Err(format!(
+                    "actions[{idx}] unsupported action kind '{other}' (expected click_gui, key, text, click_at, or wait)"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn luau_for_resolve_gui(gui_path: &str) -> String {
+    let payload = crate::mcp::luau_long_string(&json!({ "gui_path": gui_path }).to_string());
+    format!(
+        "-- openro:v011:resolve_gui\n\
+local HttpService = game:GetService(\"HttpService\")\n\
+local Players = game:GetService(\"Players\")\n\
+local GuiService = game:GetService(\"GuiService\")\n\
+local PAYLOAD = {payload}\n\
+local ok, res = pcall(function()\n\
+\tlocal spec = HttpService:JSONDecode(PAYLOAD)\n\
+\tlocal raw = tostring(spec.gui_path or \"\")\n\
+\traw = string.gsub(raw, \"\\\\\", \".\")\n\
+\traw = string.gsub(raw, \"/\", \".\")\n\
+\traw = string.gsub(raw, \"^Players%.LocalPlayer%.PlayerGui%.\", \"\")\n\
+\traw = string.gsub(raw, \"^LocalPlayer%.PlayerGui%.\", \"\")\n\
+\traw = string.gsub(raw, \"^PlayerGui%.\", \"\")\n\
+\traw = string.gsub(raw, \"^StarterGui%.\", \"\")\n\
+\tlocal player = Players.LocalPlayer\n\
+\tif not player then\n\
+\t\treturn {{ ok = false, reason = \"no_local_player\", error = \"Players.LocalPlayer is nil (use mode='start_play' for client GUI clicks)\" }}\n\
+\tend\n\
+\tlocal pgui = player:FindFirstChildOfClass(\"PlayerGui\")\n\
+\tif not pgui then\n\
+\t\treturn {{ ok = false, reason = \"no_player_gui\", error = \"LocalPlayer has no PlayerGui\" }}\n\
+\tend\n\
+\tlocal cur = pgui\n\
+\tfor seg in string.gmatch(raw, \"[^%.]+\") do\n\
+\t\tlocal nxt = cur:FindFirstChild(seg)\n\
+\t\tif not nxt then\n\
+\t\t\treturn {{ ok = false, reason = \"not_found\", stopped_at = seg, error = \"GUI element '\" .. tostring(spec.gui_path) .. \"' not found under PlayerGui (missing '\" .. seg .. \"')\" }}\n\
+\t\tend\n\
+\t\tcur = nxt\n\
+\tend\n\
+\tif not cur:IsA(\"GuiObject\") then\n\
+\t\treturn {{ ok = false, reason = \"not_gui_object\", class_name = cur.ClassName, error = \"target '\" .. tostring(spec.gui_path) .. \"' is a \" .. cur.ClassName .. \", not a GuiObject\" }}\n\
+\tend\n\
+\tlocal screenGui = nil\n\
+\tlocal anc = cur\n\
+\twhile anc and anc ~= pgui do\n\
+\t\tif anc:IsA(\"GuiObject\") and not anc.Visible then\n\
+\t\t\treturn {{ ok = false, reason = \"invisible\", hidden_by = anc:GetFullName(), error = \"GUI element '\" .. tostring(spec.gui_path) .. \"' is invisible (hidden by \" .. anc:GetFullName() .. \")\" }}\n\
+\t\tend\n\
+\t\tif anc:IsA(\"LayerCollector\") then\n\
+\t\t\tif not anc.Enabled then\n\
+\t\t\t\treturn {{ ok = false, reason = \"screen_gui_disabled\", hidden_by = anc:GetFullName(), error = \"GUI element '\" .. tostring(spec.gui_path) .. \"' is inside disabled \" .. anc:GetFullName() }}\n\
+\t\t\tend\n\
+\t\t\tif anc:IsA(\"ScreenGui\") then\n\
+\t\t\t\tscreenGui = anc\n\
+\t\t\tend\n\
+\t\tend\n\
+\t\tanc = anc.Parent\n\
+\tend\n\
+\tlocal pos = cur.AbsolutePosition\n\
+\tlocal sz = cur.AbsoluteSize\n\
+\tif sz.X <= 0 or sz.Y <= 0 then\n\
+\t\treturn {{ ok = false, reason = \"zero_size\", width = sz.X, height = sz.Y, error = \"GUI element '\" .. tostring(spec.gui_path) .. \"' has zero AbsoluteSize\" }}\n\
+\tend\n\
+\tlocal topLeftInset, _ = GuiService:GetGuiInset()\n\
+\tlocal ignoreInset = (screenGui ~= nil) and (screenGui.IgnoreGuiInset == true) or false\n\
+\tlocal ix = ignoreInset and 0 or topLeftInset.X\n\
+\tlocal iy = ignoreInset and 0 or topLeftInset.Y\n\
+\tlocal cx = pos.X + sz.X * 0.5 + ix\n\
+\tlocal cy = pos.Y + sz.Y * 0.5 + iy\n\
+\tlocal cam = workspace.CurrentCamera\n\
+\tlocal vp = cam and cam.ViewportSize or Vector2.new(0, 0)\n\
+\tif vp.X > 0 and vp.Y > 0 and (cx < 0 or cy < 0 or cx > vp.X or cy > vp.Y) then\n\
+\t\treturn {{ ok = false, reason = \"offscreen\", x = cx, y = cy, viewport = {{ vp.X, vp.Y }}, error = \"GUI element '\" .. tostring(spec.gui_path) .. \"' center is outside viewport\" }}\n\
+\tend\n\
+\treturn {{\n\
+\t\tok = true,\n\
+\t\tx = cx,\n\
+\t\ty = cy,\n\
+\t\tpos = {{ pos.X, pos.Y }},\n\
+\t\tsize = {{ sz.X, sz.Y }},\n\
+\t\tinset = {{ ix, iy }},\n\
+\t\tignore_gui_inset = ignoreInset,\n\
+\t\tviewport = {{ vp.X, vp.Y }},\n\
+\t\tclass_name = cur.ClassName,\n\
+\t}}\n\
+end)\n\
+if ok then\n\
+\treturn \"OPENRO_V011:\" .. HttpService:JSONEncode(res)\n\
+end\n\
+return \"OPENRO_V011:\" .. HttpService:JSONEncode({{ ok = false, reason = \"luau_error\", error = tostring(res) }})\n"
+    )
+}
+
+fn run_action(mcp: &mut McpClient, idx: usize, action: &Value) -> Value {
+    let kind = action
+        .get("kind")
+        .or_else(|| action.get("type"))
+        .and_then(Value::as_str)
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+
+    match kind.as_str() {
+        "click_gui" => {
+            let gui_path = action
+                .get("gui_path")
+                .or_else(|| action.get("path"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
+            let button = match action
+                .get("button")
+                .and_then(Value::as_str)
+                .map(|s| s.trim().to_ascii_lowercase())
+                .as_deref()
+            {
+                Some("right") => "right",
+                _ => "left",
+            };
+            let double_click = action
+                .get("double_click")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let wait_ms = action
+                .get("wait_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(250)
+                .min(MAX_ACTION_WAIT_MS);
+
+            let prev_dm = mcp.datamodel_type().to_string();
+            mcp.set_datamodel_type("Client");
+            let luau_res = mcp.execute_luau(&luau_for_resolve_gui(&gui_path));
+            mcp.set_datamodel_type(&prev_dm);
+
+            let resolved = match luau_res {
+                Err(e) => {
+                    return json!({
+                        "index": idx,
+                        "kind": "click_gui",
+                        "gui_path": gui_path,
+                        "passed": false,
+                        "reason": "execute_luau_failed",
+                        "resolved": Value::Null,
+                        "wait_ms": 0,
+                        "error": e,
+                    });
+                }
+                Ok(v) => match extract_result(&v) {
+                    Some(r) => r,
+                    None => {
+                        return json!({
+                            "index": idx,
+                            "kind": "click_gui",
+                            "gui_path": gui_path,
+                            "passed": false,
+                            "reason": "no_luau_result",
+                            "resolved": Value::Null,
+                            "wait_ms": 0,
+                            "error": "Studio answered without a GUI resolution result",
+                        });
+                    }
+                },
+            };
+
+            if resolved["ok"].as_bool() != Some(true) {
+                return json!({
+                    "index": idx,
+                    "kind": "click_gui",
+                    "gui_path": gui_path,
+                    "passed": false,
+                    "reason": resolved.get("reason").cloned().unwrap_or_else(|| json!("resolve_failed")),
+                    "resolved": Value::Null,
+                    "wait_ms": 0,
+                    "error": resolved["error"].as_str().unwrap_or("could not resolve GUI target"),
+                });
+            }
+
+            let Some(cx) = resolved["x"].as_f64().filter(|v| v.is_finite()) else {
+                return json!({
+                    "index": idx,
+                    "kind": "click_gui",
+                    "gui_path": gui_path,
+                    "passed": false,
+                    "reason": "invalid_coords",
+                    "resolved": resolved,
+                    "wait_ms": 0,
+                    "error": "resolved GUI target returned non-finite x coordinate",
+                });
+            };
+            let Some(cy) = resolved["y"].as_f64().filter(|v| v.is_finite()) else {
+                return json!({
+                    "index": idx,
+                    "kind": "click_gui",
+                    "gui_path": gui_path,
+                    "passed": false,
+                    "reason": "invalid_coords",
+                    "resolved": resolved,
+                    "wait_ms": 0,
+                    "error": "resolved GUI target returned non-finite y coordinate",
+                });
+            };
+            let x = cx.clamp(0.0, 4096.0);
+            let y = cy.clamp(0.0, 4096.0);
+            let mut mouse_acts = vec![
+                json!({ "action": "moveTo", "x": x, "y": y }),
+                json!({ "action": "mouseButtonClick", "mouse_button": button, "x": x, "y": y }),
+            ];
+            if double_click {
+                mouse_acts.push(json!({ "action": "mouseButtonClick", "mouse_button": button, "x": x, "y": y }));
+            }
+            match mcp.user_mouse_input(mouse_acts) {
+                Ok(_) => {
+                    if wait_ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+                    }
+                    json!({
+                        "index": idx,
+                        "kind": "click_gui",
+                        "gui_path": gui_path,
+                        "button": button,
+                        "double_click": double_click,
+                        "passed": true,
+                        "resolved": {
+                            "x": x,
+                            "y": y,
+                            "pos": resolved["pos"],
+                            "size": resolved["size"],
+                            "inset": resolved["inset"],
+                            "ignore_gui_inset": resolved["ignore_gui_inset"],
+                            "viewport": resolved["viewport"],
+                            "class_name": resolved["class_name"],
+                        },
+                        "wait_ms": wait_ms,
+                        "error": Value::Null,
+                    })
+                }
+                Err(e) => json!({
+                    "index": idx,
+                    "kind": "click_gui",
+                    "gui_path": gui_path,
+                    "button": button,
+                    "double_click": double_click,
+                    "passed": false,
+                    "reason": "mouse_input_failed",
+                    "resolved": { "x": x, "y": y },
+                    "wait_ms": 0,
+                    "error": e,
+                }),
+            }
+        }
+        "click_at" => {
+            let x = action["x"].as_f64().unwrap_or(0.0).clamp(0.0, 4096.0);
+            let y = action["y"].as_f64().unwrap_or(0.0).clamp(0.0, 4096.0);
+            let button = match action
+                .get("button")
+                .and_then(Value::as_str)
+                .map(|s| s.trim().to_ascii_lowercase())
+                .as_deref()
+            {
+                Some("right") => "right",
+                _ => "left",
+            };
+            let double_click = action
+                .get("double_click")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let wait_ms = action
+                .get("wait_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(250)
+                .min(MAX_ACTION_WAIT_MS);
+            let mut mouse_acts = vec![
+                json!({ "action": "moveTo", "x": x, "y": y }),
+                json!({ "action": "mouseButtonClick", "mouse_button": button, "x": x, "y": y }),
+            ];
+            if double_click {
+                mouse_acts.push(json!({ "action": "mouseButtonClick", "mouse_button": button, "x": x, "y": y }));
+            }
+            match mcp.user_mouse_input(mouse_acts) {
+                Ok(_) => {
+                    if wait_ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+                    }
+                    json!({
+                        "index": idx,
+                        "kind": "click_at",
+                        "x": x,
+                        "y": y,
+                        "button": button,
+                        "double_click": double_click,
+                        "passed": true,
+                        "wait_ms": wait_ms,
+                        "error": Value::Null,
+                    })
+                }
+                Err(e) => json!({
+                    "index": idx,
+                    "kind": "click_at",
+                    "x": x,
+                    "y": y,
+                    "passed": false,
+                    "wait_ms": 0,
+                    "error": e,
+                }),
+            }
+        }
+        "key" => {
+            let raw_key = action
+                .get("key")
+                .or_else(|| action.get("key_code"))
+                .or_else(|| action.get("code"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let key_code = crate::studio_embed::normalize_roblox_keycode(raw_key);
+            let hold_ms = action
+                .get("hold_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                .min(MAX_KEY_HOLD_MS);
+            let wait_ms = action
+                .get("wait_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(150)
+                .min(MAX_ACTION_WAIT_MS);
+
+            let input_res = if hold_ms > 0 {
+                mcp.user_keyboard_input(vec![json!({ "action": "keyDown", "key_code": key_code })])
+                    .and_then(|_| {
+                        std::thread::sleep(std::time::Duration::from_millis(hold_ms));
+                        mcp.user_keyboard_input(vec![json!({ "action": "keyUp", "key_code": key_code })])
+                    })
+            } else {
+                mcp.user_keyboard_input(vec![json!({ "action": "keyPress", "key_code": key_code })])
+            };
+            match input_res {
+                Ok(_) => {
+                    if wait_ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+                    }
+                    json!({
+                        "index": idx,
+                        "kind": "key",
+                        "key": key_code,
+                        "hold_ms": hold_ms,
+                        "wait_ms": wait_ms,
+                        "passed": true,
+                        "error": Value::Null,
+                    })
+                }
+                Err(e) => json!({
+                    "index": idx,
+                    "kind": "key",
+                    "key": key_code,
+                    "hold_ms": hold_ms,
+                    "wait_ms": 0,
+                    "passed": false,
+                    "error": e,
+                }),
+            }
+        }
+        "text" => {
+            let text = action.get("text").and_then(Value::as_str).unwrap_or("");
+            let wait_ms = action
+                .get("wait_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(150)
+                .min(MAX_ACTION_WAIT_MS);
+            match mcp.user_keyboard_input(vec![json!({ "action": "textInput", "text_inputs": text })]) {
+                Ok(_) => {
+                    if wait_ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+                    }
+                    json!({
+                        "index": idx,
+                        "kind": "text",
+                        "text_len": text.len(),
+                        "wait_ms": wait_ms,
+                        "passed": true,
+                        "error": Value::Null,
+                    })
+                }
+                Err(e) => json!({
+                    "index": idx,
+                    "kind": "text",
+                    "text_len": text.len(),
+                    "wait_ms": 0,
+                    "passed": false,
+                    "error": e,
+                }),
+            }
+        }
+        "wait" => {
+            let wait_ms = action
+                .get("wait_ms")
+                .or_else(|| action.get("ms"))
+                .and_then(Value::as_u64)
+                .unwrap_or(250)
+                .min(MAX_ACTION_WAIT_MS);
+            if wait_ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+            }
+            json!({
+                "index": idx,
+                "kind": "wait",
+                "wait_ms": wait_ms,
+                "passed": true,
+                "error": Value::Null,
+            })
+        }
+        other => json!({
+            "index": idx,
+            "kind": other,
+            "passed": false,
+            "error": format!("unsupported action kind '{other}'"),
+        }),
+    }
+}
+
 fn latest_build_id(dir: &Path) -> String {
     projects::builds(dir).into_iter().next().and_then(|b| b["build_id"].as_str().map(String::from)).unwrap_or_else(|| "unbuilt".into())
 }
@@ -114,6 +614,7 @@ fn merge_spec(dir: &Path, req: &Value) -> Result<Value, String> {
     };
     let o = spec.as_object_mut().ok_or("the playtest suite must be a JSON object")?;
     for key in [
+        "actions",
         "checks",
         "screenshots",
         "allow_errors",
@@ -135,6 +636,7 @@ fn build_kept_mode_spec(spec: &Value, mode: &str, build_id: &str, require_core_l
     json!({
         "mode": mode,
         "build_id": build_id,
+        "actions": spec["actions"].as_array().cloned().unwrap_or_default(),
         "checks": spec["checks"].as_array().cloned().unwrap_or_default(),
         "screenshots": spec["screenshots"].as_array().cloned().unwrap_or_default(),
         "allow_errors": spec["allow_errors"].as_array().cloned().unwrap_or_default(),
@@ -148,6 +650,12 @@ fn build_kept_mode_spec(spec: &Value, mode: &str, build_id: &str, require_core_l
 /// (and `force != true`), avoiding unnecessary Studio auto-open or re-execution (#62).
 pub fn try_kept(r: &ProjectRef, req: &Value) -> Result<Option<Reply>, String> {
     let spec = merge_spec(&r.dir, req)?;
+    let actions = match spec.get("actions") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(a)) => a.clone(),
+        Some(_) => return Err("actions must be an array".into()),
+    };
+    validate_actions(&actions)?;
     let force = spec["force"].as_bool().unwrap_or(false);
     if force {
         return Ok(None);
@@ -198,6 +706,12 @@ pub fn run(shared: &Shared, r: &ProjectRef, req: &Value) -> Result<Reply, Reply>
     if !matches!(mode.as_str(), "start_play" | "run_server") {
         return Err(Reply::bad("mode must be start_play or run_server"));
     }
+    let actions = match spec.get("actions") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(a)) => a.clone(),
+        Some(_) => return Err(Reply::bad("actions must be an array")),
+    };
+    validate_actions(&actions).map_err(Reply::bad)?;
     let checks = spec["checks"].as_array().cloned().unwrap_or_default();
     let shots = spec["screenshots"].as_array().cloned().unwrap_or_default();
     for s in &shots {
@@ -234,60 +748,84 @@ pub fn run(shared: &Shared, r: &ProjectRef, req: &Value) -> Result<Reply, Reply>
     let run_dir = reports_root(&r.dir).join(&build_id).join(&run_id);
     std::fs::create_dir_all(run_dir.join("shots")).map_err(|e| Reply::err("500 Internal Server Error", format!("create report folder: {e}")))?;
 
-    type RunOutput = (Vec<Value>, Vec<String>, Vec<Value>, Vec<(String, crate::study_check::RgbImage)>);
-    let (check_results, console_lines, shot_results, decoded_shots) = with_studio(shared, |mcp| {
-        let before_lines = mcp.get_console_output().unwrap_or_default();
-        mcp.start_stop_play(&mode).map_err(|e| format!("could not start the playtest: {e}"))?;
-        let outcome = (|| -> Result<RunOutput, String> {
-            std::thread::sleep(std::time::Duration::from_millis(settle));
-            let results: Vec<Value> = checks.iter().map(|c| run_check(mcp, c)).collect();
-            let mut shot_results = Vec::new();
-            let mut decoded_shots: Vec<(String, crate::study_check::RgbImage)> = Vec::new();
-            for s in &shots {
-                let name = s["name"].as_str().unwrap_or("shot");
-                let vec3 = |k: &str| -> Option<[f64; 3]> {
-                    let a = s.get(k)?.as_array()?;
-                    Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
-                };
-                match mcp.screen_capture_with_camera(vec3("camera_position"), vec3("camera_look_at")) {
-                    Ok(frame) => {
-                        let ext = if frame.mime.contains("jpeg") { "jpg" } else { "png" };
-                        let file = format!("shots/{name}.{ext}");
-                        std::fs::write(run_dir.join(&file), &frame.bytes).map_err(|e| format!("save screenshot: {e}"))?;
-                        let (maybe_img, visual_meta) = if ext == "png" {
-                            crate::study_check::inspect_screenshot_bytes(&frame.bytes)
-                        } else {
-                            (None, json!({ "valid": true, "blank": false, "note": "non-png capture" }))
-                        };
-                        let is_blank = visual_meta["blank"].as_bool().unwrap_or(false);
-                        if !is_blank {
-                            if let Some(img) = maybe_img {
-                                decoded_shots.push((name.to_string(), img));
-                            }
-                        }
-                        shot_results.push(json!({
-                            "name": name,
-                            "file": file,
-                            "bytes": frame.bytes.len(),
-                            "width": frame.width,
-                            "height": frame.height,
-                            "passed": !is_blank,
-                            "rejected": is_blank,
-                            "visual": visual_meta,
-                        }));
+    type RunOutput = (
+        Vec<Value>,
+        Vec<Value>,
+        Vec<String>,
+        Vec<Value>,
+        Vec<(String, crate::study_check::RgbImage)>,
+    );
+    let (action_results, check_results, console_lines, shot_results, decoded_shots) =
+        with_studio(shared, |mcp| {
+            let before_lines = mcp.get_console_output().unwrap_or_default();
+            mcp.start_stop_play(&mode)
+                .map_err(|e| format!("could not start the playtest: {e}"))?;
+            let outcome = (|| -> Result<RunOutput, String> {
+                std::thread::sleep(std::time::Duration::from_millis(settle));
+                let mut check_slots: Vec<Option<Value>> = vec![None; checks.len()];
+                for (i, c) in checks.iter().enumerate() {
+                    if c.get("when").and_then(Value::as_str) == Some("before_actions") {
+                        check_slots[i] = Some(run_check(mcp, c));
                     }
-                    Err(e) => shot_results.push(json!({ "name": name, "file": null, "passed": false, "rejected": false, "error": e })),
                 }
-            }
-            let after_lines = mcp.get_console_output().unwrap_or_default();
-            let lines = new_console_lines(&before_lines, &after_lines);
-            Ok((results, lines, shot_results, decoded_shots))
-        })();
-        let stopped = mcp.start_stop_play("stop");
-        let out = outcome?;
-        stopped.map_err(|e| format!("the playtest ran but Studio would not stop it: {e}"))?;
-        Ok(out)
-    })?;
+                let action_results: Vec<Value> = actions
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, a)| run_action(mcp, idx, a))
+                    .collect();
+                for (i, c) in checks.iter().enumerate() {
+                    if check_slots[i].is_none() {
+                        check_slots[i] = Some(run_check(mcp, c));
+                    }
+                }
+                let results: Vec<Value> = check_slots.into_iter().flatten().collect();
+                let mut shot_results = Vec::new();
+                let mut decoded_shots: Vec<(String, crate::study_check::RgbImage)> = Vec::new();
+                for s in &shots {
+                    let name = s["name"].as_str().unwrap_or("shot");
+                    let vec3 = |k: &str| -> Option<[f64; 3]> {
+                        let a = s.get(k)?.as_array()?;
+                        Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?, a.get(2)?.as_f64()?])
+                    };
+                    match mcp.screen_capture_with_camera(vec3("camera_position"), vec3("camera_look_at")) {
+                        Ok(frame) => {
+                            let ext = if frame.mime.contains("jpeg") { "jpg" } else { "png" };
+                            let file = format!("shots/{name}.{ext}");
+                            std::fs::write(run_dir.join(&file), &frame.bytes).map_err(|e| format!("save screenshot: {e}"))?;
+                            let (maybe_img, visual_meta) = if ext == "png" {
+                                crate::study_check::inspect_screenshot_bytes(&frame.bytes)
+                            } else {
+                                (None, json!({ "valid": true, "blank": false, "note": "non-png capture" }))
+                            };
+                            let is_blank = visual_meta["blank"].as_bool().unwrap_or(false);
+                            if !is_blank {
+                                if let Some(img) = maybe_img {
+                                    decoded_shots.push((name.to_string(), img));
+                                }
+                            }
+                            shot_results.push(json!({
+                                "name": name,
+                                "file": file,
+                                "bytes": frame.bytes.len(),
+                                "width": frame.width,
+                                "height": frame.height,
+                                "passed": !is_blank,
+                                "rejected": is_blank,
+                                "visual": visual_meta,
+                            }));
+                        }
+                        Err(e) => shot_results.push(json!({ "name": name, "file": null, "passed": false, "rejected": false, "error": e })),
+                    }
+                }
+                let after_lines = mcp.get_console_output().unwrap_or_default();
+                let lines = new_console_lines(&before_lines, &after_lines);
+                Ok((action_results, results, lines, shot_results, decoded_shots))
+            })();
+            let stopped = mcp.start_stop_play("stop");
+            let out = outcome?;
+            stopped.map_err(|e| format!("the playtest ran but Studio would not stop it: {e}"))?;
+            Ok(out)
+        })?;
 
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
@@ -301,6 +839,7 @@ pub fn run(shared: &Shared, r: &ProjectRef, req: &Value) -> Result<Reply, Reply>
     let tail_start = console_lines.len().saturating_sub(50);
     let tail: Vec<String> = console_lines[tail_start..].to_vec();
     let checks_failed = check_results.iter().filter(|c| c["passed"] != json!(true)).count();
+    let actions_failed = action_results.iter().filter(|a| a["passed"] != json!(true)).count();
     let blank_screenshots = shot_results
         .iter()
         .filter(|s| s["rejected"].as_bool().unwrap_or(false))
@@ -309,7 +848,11 @@ pub fn run(shared: &Shared, r: &ProjectRef, req: &Value) -> Result<Reply, Reply>
         crate::study_check::evaluate_core_loop(&check_results, &checks, &errors, require_core_loop);
     let visual_likeness = crate::study_check::evaluate_visual_likeness(&r.dir, &decoded_shots);
     let core_ok = !require_core_loop || core_loop["all_core_passed"].as_bool().unwrap_or(false);
-    let passed = checks_failed == 0 && errors.is_empty() && blank_screenshots == 0 && core_ok;
+    let passed = checks_failed == 0
+        && actions_failed == 0
+        && errors.is_empty()
+        && blank_screenshots == 0
+        && core_ok;
 
     let rel = |f: &str| format!("build/reports/{build_id}/{run_id}/{f}");
     let at = projects::now_ms();
@@ -317,6 +860,7 @@ pub fn run(shared: &Shared, r: &ProjectRef, req: &Value) -> Result<Reply, Reply>
         "run_id": run_id, "passed": passed, "build_id": build_id, "mode": mode,
         "project": r.id, "at": at, "duration_ms": started.elapsed().as_millis() as u64,
         "kept": false, "cached": false, "fingerprint": fp,
+        "actions": action_results,
         "checks": check_results,
         "core_loop": core_loop,
         "blank_screenshots": blank_screenshots,
@@ -368,6 +912,8 @@ pub fn run(shared: &Shared, r: &ProjectRef, req: &Value) -> Result<Reply, Reply>
                 "passed": passed,
                 "checks_passed": checks_ok,
                 "checks_total": check_results.len(),
+                "actions_total": action_results.len(),
+                "actions_failed": actions_failed,
                 "console_errors": errors.len(),
                 "blank_screenshots": blank_screenshots,
                 "core_loop": report["core_loop"],
@@ -413,6 +959,40 @@ pub fn render_html(rep: &Value, project: &str) -> String {
     if rows.is_empty() {
         rows.push_str("<tr><td colspan=\"4\">No checks were requested.</td></tr>");
     }
+    let actions_section = {
+        let acts = rep["actions"].as_array().cloned().unwrap_or_default();
+        if acts.is_empty() {
+            String::new()
+        } else {
+            let mut arows = String::new();
+            for a in &acts {
+                let ok = a["passed"].as_bool().unwrap_or(false);
+                let target = a["gui_path"]
+                    .as_str()
+                    .or_else(|| a["key"].as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| {
+                        if a["kind"] == json!("click_at") {
+                            format!("({},{})", a["x"], a["y"])
+                        } else {
+                            format!("{}ms", a["wait_ms"].as_u64().unwrap_or(0))
+                        }
+                    });
+                arows.push_str(&format!(
+                    "<tr class=\"{}\"><td>{}</td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>",
+                    if ok { "ok" } else { "bad" },
+                    if ok { "Passed" } else { "Failed" },
+                    esc(a["kind"].as_str().unwrap_or("")),
+                    esc(&target),
+                    esc(a["error"].as_str().unwrap_or("")),
+                ));
+            }
+            format!(
+                "<h2>Actions ({})</h2><table><thead><tr><th>Result</th><th>Kind</th><th>Target</th><th>Problem</th></tr></thead><tbody>{arows}</tbody></table>",
+                acts.len()
+            )
+        }
+    };
     let list = |key: &str| -> String {
         let items: Vec<String> = rep["console"][key].as_array().cloned().unwrap_or_default().iter().map(|l| format!("<li><code>{}</code></li>", esc(l.as_str().unwrap_or("")))).collect();
         if items.is_empty() { "<p class=\"muted\">None.</p>".into() } else { format!("<ul>{}</ul>", items.join("")) }
@@ -437,6 +1017,7 @@ tr.bad td:first-child,.bad{{color:#b3261e;font-weight:600}}tr.ok td:first-child{
 code{{font:13px ui-monospace,monospace;word-break:break-word}}figure{{margin:0 0 16px}}img{{max-width:100%;border:1px solid #e3e1d8;border-radius:6px}}\
 </style></head><body><h1>Playtest {run}</h1><p class=\"muted\">Project {project} &middot; build {build} &middot; {mode} &middot; {ms} ms</p>\
 <p><span class=\"badge\">{verdict}</span></p>\
+{actions_section}\
 <h2>Checks</h2><table><thead><tr><th>Result</th><th>Check</th><th>Value</th><th>Problem</th></tr></thead><tbody>{rows}</tbody></table>\
 <h2>Console errors ({ne})</h2>{errs}<h2>Console warnings ({nw})</h2>{warns}<h2>Screenshots</h2>{gallery}</body></html>",
         run = esc(rep["run_id"].as_str().unwrap_or("")),
