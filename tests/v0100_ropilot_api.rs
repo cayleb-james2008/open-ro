@@ -222,7 +222,7 @@ fn status_reports_v0100_ropilot_flags_and_job_md_is_jargon_free() {
     let (port, _stub, _shared) = start_server_with(vec![], None, None);
     let (st, status) = http_json(port, "GET", "/api/status", "");
     assert_eq!(st, 200);
-    assert_eq!(status["version"], json!("0.10.0"));
+    assert_eq!(status["version"], json!(env!("CARGO_PKG_VERSION")));
     assert_eq!(status["ropilot_v0100"], json!(true));
     assert_eq!(status["proposals_api"], json!(true));
     assert_eq!(status["plugin_bridge"], json!(true));
