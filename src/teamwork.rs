@@ -785,7 +785,7 @@ pub fn parse_quota_error(err: &str) -> Option<(Option<String>, u64)> {
         || low.contains("quota exceeded")
         || low.contains("rate limit")
         || low.contains("rate_limit")
-        || low.contains("429");
+        || has_http_status_token(&low, "429");
     if !is_quota {
         return None;
     }
@@ -2646,6 +2646,9 @@ fn is_write_or_submit_tool(tool: &str) -> bool {
             | "create_task"
             | "verify_task"
             | "finish_run"
+            | "evidence_record"
+            | "unknown_add"
+            | "unknown_update"
     )
 }
 
@@ -3202,27 +3205,30 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
         "coordinator" => concat!(
             "You are the Teamwork coordinator.\n",
             "Split the goal into concrete non-overlapping tasks with `create_task` (specify owner, verifier, kind, and non-overlapping `files`); spread tasks across all available workers in parallel instead of stacking everything onto one worker.\n",
+            "Follow Study -> Build -> Check -> Refine: check `study_status` so gaps are investigated with `evidence_record`/`unknown_add` before coding and checked with `mechanics_check`/`project_check`.\n",
             "To wait for workers, return {\"done\":true,\"summary\":\"waiting\"} — NEVER poll board_read.\n",
             "Call `finish_run` once all tasks are `done`.\n",
-            "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, finish_run."
+            "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, study_status, unknowns_list, evidence_list, finish_run."
         ),
         "verifier" => concat!(
             "You are the Teamwork verifier.\n",
-            "Inspect submitted work (`project_read_file`, `project_grep`, `luau_check`, `project_check`, `project_run_lune`, `project_build`).\n",
+            "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `luau_check`, `project_check`, `project_run_lune`, `project_build`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`).\n",
             "For game_code tasks (or `src/` / `ui/` changes), you MUST run `project_playtest` with `{\"task_id\":\"<id>\"}` and confirm 0 console errors BEFORE calling `verify_task` with `passed: true`.\n",
             "For `tools/**/*.luau` tasks (not touching `src/` or `ui/`), run `project_run_lune` (confirm `passed: true`) instead of `project_playtest` BEFORE calling `verify_task(passed=true)`.\n",
-            "If anything fails, call `verify_task` with `passed: false` and clear failure notes."
+            "If checks, contracts (`mechanics_check`), or critical unknowns fail, call `verify_task` with `passed: false` and clear failure notes."
         ),
         "researcher" => concat!(
             "You are the Teamwork researcher/designer.\n",
-            "Use `research_roblox_game` (`target` = Roblox URL or place/universe ID -> saves dossier & thumbs in `refs/<universeId>/`), `web_search`, `web_fetch`, `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_update_manifest`.\n",
+            "Follow Study -> Build -> Check -> Refine: use `research_roblox_game` (`target` = Roblox URL or place/universe ID -> saves dossier & thumbs in `refs/<universeId>/`), `web_search`, `web_fetch`, `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_update_manifest`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`.\n",
+            "Record observed/derived/inferred findings with `evidence_record`, track open gaps with `unknown_add`/`unknown_update` (resolve only with `resolution` + `evidence_for`), and validate `docs/mechanics.json` provenance via `mechanics_check`.\n",
             "Budget <=3 research turns before writing deliverables (`web_fetch` is capped cleanly).\n",
             "Claim every file you write (`project_write_file` auto-claims onto your active task), then call `submit_task` to hand off to `@verifier`."
         ),
         _ => concat!(
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `assets_codegen`, `assets_upload`.\n",
+            "Follow Study -> Build -> Check -> Refine: check `study_status`/`unknowns_list`, record verified behavior with `evidence_record`/`unknown_add`/`unknown_update` (capping guesswork), cite `ev_*` IDs in `docs/mechanics.json` (`mechanics_check`), build, check (`project_check`/`project_playtest`, pass `\"force\":true` to bypass `KeptChecks`), and refine.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `assets_codegen`, `assets_upload`.\n",
             "Formatting: `project_check` with `{\"format\":true}` or `project_format` auto-formats your claimed `.luau` files with `stylua` instead of hand-editing whitespace.\n",
             "Asset arg signatures:\n",
             "- reference_search: {\"character\":\"...\",\"show\":\"...\",\"card_id\":\"...\"}\n",
@@ -3640,6 +3646,13 @@ fn execute_agent_tool(
         "research_roblox_game" => tool_research_roblox_game(handle, args),
         "web_fetch" => tool_web_fetch(args),
         "web_search" => tool_web_search(args),
+        "evidence_record" => tool_evidence_record(handle, args),
+        "evidence_list" => tool_evidence_list(handle, args),
+        "unknown_add" => tool_unknown_add(handle, args),
+        "unknown_update" => tool_unknown_update(handle, args),
+        "unknowns_list" => tool_unknowns_list(handle, args),
+        "mechanics_check" => tool_mechanics_check(handle, args),
+        "study_status" => tool_study_status(handle),
         "blender_generate" | "mesh_generate" => {
             let res = tool_blender_generate(shared, handle, args)?;
             record_generated_asset_files(handle, agent_name, tool, args, &res);
@@ -5155,19 +5168,108 @@ fn tool_project_format(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> R
     Ok(res)
 }
 
+fn tool_evidence_record(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    crate::study_check::record_evidence(&project_dir, args).map_err(|e| e.message)
+}
+
+fn tool_evidence_list(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let filter = crate::study_check::EvidenceFilter {
+        confidence: args
+            .get("confidence")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+        kind: args
+            .get("kind")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+        source: args
+            .get("source")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from),
+        limit: args.get("limit").and_then(Value::as_u64).map(|n| n as usize),
+    };
+    crate::study_check::list_evidence(&project_dir, &filter).map_err(|e| e.message)
+}
+
+fn tool_unknown_add(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    crate::study_check::add_unknown(&project_dir, args).map_err(|e| e.message)
+}
+
+fn tool_unknown_update(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let id = args
+        .get("id")
+        .or_else(|| args.get("unknown_id"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    crate::study_check::update_unknown(&project_dir, id, args).map_err(|e| e.message)
+}
+
+fn tool_unknowns_list(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let opt = |k: &str| {
+        args.get(k)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    crate::study_check::list_unknowns(&project_dir, opt("status"), opt("severity"), opt("domain"))
+        .map_err(|e| e.message)
+}
+
+fn tool_mechanics_check(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let path = args.get("path").and_then(Value::as_str);
+    let strict = match args.get("strict") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err("mechanics_check args.strict must be a boolean".to_string()),
+    };
+    crate::study_check::check_mechanics(&project_dir, path, strict).map_err(|e| e.message)
+}
+
+fn tool_study_status(handle: &Arc<RunHandle>) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    crate::study_check::study_status(&project_dir).map_err(|e| e.message)
+}
+
 fn tool_project_check(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Result<Value, String> {
     let format = match args.get("format") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
         Some(_) => return Err("project_check args.format must be a boolean".to_string()),
     };
+    let force = match args.get("force") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err("project_check args.force must be a boolean".to_string()),
+    };
     let requested = parse_format_paths_arg(args)?;
     if !format {
         let project_dir = handle.state.lock().unwrap().project_dir.clone();
-        return projects::check_project_with_options(&project_dir, false, requested.as_deref());
+        return projects::check_project_with_full_options(
+            &project_dir,
+            false,
+            requested.as_deref(),
+            force,
+        );
     }
     let plan = prepare_scoped_format_plan(handle, caller, requested.as_deref())?;
-    let res = projects::check_project_with_options(&plan.project_dir, true, Some(&plan.targets))?;
+    let res = projects::check_project_with_full_options(
+        &plan.project_dir,
+        true,
+        Some(&plan.targets),
+        force,
+    )?;
     if res.get("formatted").and_then(Value::as_bool) == Some(true) {
         record_formatted_owned_files(handle, caller, &plan);
     }
@@ -5380,7 +5482,17 @@ fn tool_project_playtest(
     let mut pt_req = json!({
         "sync_first": args.get("sync_first").and_then(|v| v.as_bool()).unwrap_or(true),
     });
-    for k in ["mode", "settle_ms", "checks", "screenshots", "allow_errors", "suite", "build_id"] {
+    for k in [
+        "mode",
+        "settle_ms",
+        "checks",
+        "screenshots",
+        "allow_errors",
+        "suite",
+        "build_id",
+        "require_core_loop",
+        "force",
+    ] {
         if let Some(v) = args.get(k) {
             pt_req[k] = v.clone();
         }
@@ -5431,7 +5543,7 @@ fn tool_project_playtest(
             st.save_tasks_file();
         }
     }
-    Ok(json!({
+    let mut out = json!({
         "ok": true,
         "run_id": pt_id,
         "task_id": target_task_id,
@@ -5439,7 +5551,22 @@ fn tool_project_playtest(
         "console": { "errors": errors },
         "report": val.get("report").cloned().unwrap_or(Value::Null),
         "summary": summary,
-    }))
+    });
+    for extra in [
+        "evidence_id",
+        "kept",
+        "cached",
+        "core_loop",
+        "blank_screenshots",
+        "visual_likeness",
+    ] {
+        if let Some(v) = val.get(extra) {
+            if !v.is_null() {
+                out[extra] = v.clone();
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn collect_generated_asset_paths(tool: &str, res: &Value) -> Vec<String> {
@@ -5625,6 +5752,10 @@ mod tests {
         assert_eq!(ms2, 250);
 
         assert!(parse_quota_error("connection refused").is_none());
+        // Never mistake TCP port numbers containing "429" for HTTP 429 quota errors.
+        assert!(parse_quota_error("http://127.0.0.1:42917/v1/chat/completions: status code 502").is_none());
+        assert!(parse_quota_error("http://127.0.0.1:34298/v1/chat/completions: status code 503").is_none());
+        assert!(parse_quota_error("http://127.0.0.1:42917/v1/chat/completions: status code 429").is_some());
     }
 
     #[test]
@@ -5892,9 +6023,16 @@ mod tests {
         assert!(!is_write_or_submit_tool("luau_check"));
         assert!(!is_write_or_submit_tool("project_check"));
         assert!(!is_write_or_submit_tool("board_read"));
+        assert!(!is_write_or_submit_tool("evidence_list"));
+        assert!(!is_write_or_submit_tool("unknowns_list"));
+        assert!(!is_write_or_submit_tool("mechanics_check"));
+        assert!(!is_write_or_submit_tool("study_status"));
         assert!(is_write_or_submit_tool("project_write_file"));
         assert!(is_write_or_submit_tool("project_edit_file"));
         assert!(is_write_or_submit_tool("project_format"));
+        assert!(is_write_or_submit_tool("evidence_record"));
+        assert!(is_write_or_submit_tool("unknown_add"));
+        assert!(is_write_or_submit_tool("unknown_update"));
         assert!(is_write_or_submit_tool("submit_task"));
         assert!(is_write_or_submit_tool("adapter_invoke"));
 
