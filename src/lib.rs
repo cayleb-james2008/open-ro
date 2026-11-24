@@ -4,6 +4,7 @@ pub mod assets;
 pub mod audio_synth;
 pub mod board;
 pub mod config;
+pub mod creator_hub;
 pub mod desktop;
 pub mod ideas;
 pub mod image_ops;

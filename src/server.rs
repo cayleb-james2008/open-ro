@@ -4264,6 +4264,8 @@ fn try_route_opencloud_assets(
 ) -> bool {
     let is_candidate = path == "/api/opencloud"
         || path.starts_with("/api/opencloud/")
+        || path == "/api/creator-hub"
+        || path.starts_with("/api/creator-hub/")
         || path == "/api/art"
         || path.starts_with("/api/art/")
         || path == "/api/tools/image/process"
@@ -4272,7 +4274,10 @@ fn try_route_opencloud_assets(
                 || path.ends_with("/publish")
                 || path.ends_with("/products")
                 || path.ends_with("/products/sync")
-                || path.ends_with("/universe")));
+                || path.ends_with("/products/codegen")
+                || path.ends_with("/universe")
+                || path.ends_with("/creator-hub/setup")
+                || path.ends_with("/creator-hub/configure")));
     if !is_candidate {
         return false;
     }
