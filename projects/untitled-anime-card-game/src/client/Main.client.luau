@@ -22,7 +22,10 @@ local playerGui = localPlayer:WaitForChild("PlayerGui")
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "UACGMainGui"
 screenGui.ResetOnSpawn = false
-screenGui.IgnoreGuiInset = true
+screenGui.IgnoreGuiInset = false
+pcall(function()
+	(screenGui :: any).ScreenInsets = (Enum :: any).ScreenInsets.CoreUISafeInsets
+end)
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.DisplayOrder = 5
 screenGui.Parent = playerGui
@@ -189,6 +192,67 @@ local function buildStagesForState(state: { [string]: any }): { BattleModal.Batt
 	return stages
 end
 
+local function formatLuckFactor(value: number): string
+	if math.abs(value * 10 - math.round(value * 10)) < 0.001 then
+		return string.format("%.1fx", value)
+	end
+	return string.format("%.2fx", value)
+end
+
+local function formatLuckBreakdown(raw: any): string
+	if type(raw) == "string" and raw ~= "" then
+		return raw
+	end
+	if type(raw) ~= "table" then
+		return "Base 1.0x"
+	end
+	local tbl = raw :: { [any]: any }
+	if #tbl > 0 then
+		local parts: { string } = {}
+		for _, entry in ipairs(tbl) do
+			if type(entry) == "string" and entry ~= "" then
+				table.insert(parts, entry)
+			elseif type(entry) == "table" then
+				local label = tostring(entry.label or entry.name or entry.source or "Bonus")
+				local val = tonumber(entry.value or entry.multiplier or entry.bonus)
+				if val then
+					table.insert(parts, string.format("%s %s", label, formatLuckFactor(val)))
+				else
+					table.insert(parts, label)
+				end
+			end
+		end
+		if #parts > 0 then
+			return table.concat(parts, " + ")
+		end
+	end
+	local keys: { string } = {}
+	for k, _ in pairs(tbl) do
+		if type(k) == "string" and k ~= "total" then
+			table.insert(keys, k)
+		end
+	end
+	table.sort(keys)
+	local parts: { string } = {}
+	for _, k in ipairs(keys) do
+		local v = tbl[k]
+		local label = string.upper(string.sub(k, 1, 1)) .. string.sub(k, 2)
+		if type(v) == "number" then
+			if v ~= 0 then
+				table.insert(parts, string.format("%s: %s", label, formatLuckFactor(v)))
+			end
+		elseif type(v) == "string" and v ~= "" then
+			table.insert(parts, string.format("%s: %s", label, v))
+		elseif type(v) == "boolean" and v then
+			table.insert(parts, label)
+		end
+	end
+	if #parts == 0 then
+		return "Base 1.0x"
+	end
+	return table.concat(parts, " • ")
+end
+
 local function buildHudState(state: { [string]: any }): Hud.HudState
 	local activeUids = extractActiveDeckUids(state)
 	local pity = if type(state.pity) == "table" then state.pity else {}
@@ -197,7 +261,7 @@ local function buildHudState(state: { [string]: any }): Hud.HudState
 		gems = tonumber(state.gems) or 0,
 		tickets = tonumber(state.tickets) or 0,
 		luckMultiplier = tonumber(state.luckMultiplier) or 1,
-		luckBreakdown = tostring(state.luckBreakdown or "Base 1.0x"),
+		luckBreakdown = formatLuckBreakdown(state.luckBreakdown),
 		legendaryPity = tonumber(state.legendaryPity or pity.legendary) or 0,
 		legendaryPityMax = tonumber(state.legendaryPityMax or pity.legendaryMax) or 50,
 		mythicPity = tonumber(state.mythicPity or pity.mythic) or 0,

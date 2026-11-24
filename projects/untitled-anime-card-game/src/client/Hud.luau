@@ -1,5 +1,7 @@
 --!strict
 
+local Workspace = game:GetService("Workspace")
+
 local Theme = require(script.Parent:WaitForChild("Theme"))
 local Components = require(script.Parent:WaitForChild("Components"))
 
@@ -46,6 +48,55 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 	root.BackgroundTransparency = 1
 	root.ZIndex = 5
 	root.Parent = parent
+
+	local hudScale = Instance.new("UIScale")
+	hudScale.Name = "ResponsiveScale"
+	hudScale.Scale = 1
+	hudScale.Parent = root
+
+	local viewportConn: RBXScriptConnection? = nil
+	local cameraConn: RBXScriptConnection? = nil
+
+	local function applyViewportScale()
+		local cam = Workspace.CurrentCamera
+		if not cam then
+			return
+		end
+		local viewport = cam.ViewportSize
+		if viewport.X <= 0 then
+			return
+		end
+		local scale = math.clamp(viewport.X / 740, 0.72, 1.0)
+		hudScale.Scale = scale
+		root.Size = UDim2.fromScale(1 / scale, 1 / scale)
+	end
+
+	local function bindCamera(cam: Camera?)
+		if viewportConn then
+			viewportConn:Disconnect()
+			viewportConn = nil
+		end
+		if cam then
+			viewportConn = cam:GetPropertyChangedSignal("ViewportSize"):Connect(applyViewportScale)
+			applyViewportScale()
+		end
+	end
+
+	cameraConn = Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+		bindCamera(Workspace.CurrentCamera)
+	end)
+	bindCamera(Workspace.CurrentCamera)
+
+	root.Destroying:Connect(function()
+		if viewportConn then
+			viewportConn:Disconnect()
+			viewportConn = nil
+		end
+		if cameraConn then
+			cameraConn:Disconnect()
+			cameraConn = nil
+		end
+	end)
 
 	-- Top-left resource stack (Currencies + Luck chip + Next Goal banner)
 	local topLeft = Instance.new("Frame")
@@ -177,7 +228,7 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 	-- Top-right navigation cluster (>=44px touch targets)
 	local topRight = Instance.new("Frame")
 	topRight.Name = "TopRightNav"
-	topRight.Size = UDim2.fromOffset(290, 52)
+	topRight.Size = UDim2.fromOffset(330, 52)
 	topRight.Position = UDim2.new(1, -12, 0, 10)
 	topRight.AnchorPoint = Vector2.new(1, 0)
 	topRight.BackgroundTransparency = 1
@@ -220,8 +271,8 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 	local settingsBtn = Components.makeButton(
 		topRight,
 		"SettingsButton",
-		"Gear",
-		UDim2.fromOffset(52, 46),
+		"Settings",
+		UDim2.fromOffset(88, 46),
 		UDim2.fromOffset(0, 0),
 		Theme.getPalette().bgPanel,
 		Theme.getPalette().textPrimary
