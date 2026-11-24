@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/w1_uchiha_prodigy.pending-angle.913198e2d15f.png",
+    "candidate_sha256": "913198e2d15fc6a9798f9b1a55260c3a8945976659f4a260bd97e67c28fb9adc",
+    "height": 1511,
+    "status": "PENDING_VISION",
+    "width": 1041
+  },
+  "approved_at": "2026-11-24T01:31:18Z",
+  "approved_by": "designer",
+  "bytes": 2317109,
+  "candidate_path": "art/cards/w1_uchiha_prodigy.pending-angle.913198e2d15f.png",
+  "candidate_sha256": "913198e2d15fc6a9798f9b1a55260c3a8945976659f4a260bd97e67c28fb9adc",
+  "created_at": "2026-11-24T01:27:23Z",
+  "height": 1511,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/w1_uchiha_prodigy.png",
+  "promoted_from": "art/cards/w1_uchiha_prodigy.pending-angle.913198e2d15f.png",
+  "prompt": "Transform this reference character into a high-impact vertical anime trading card game illustration in poised three-quarter pose framed by swirling black ravens and crimson illusion moon glow, crisp cel-shaded anime key art lighting, dramatic red and obsidian contrast, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/itachi_uchiha.jpg"
+  ],
+  "requested_path": "art/cards/w1_uchiha_prodigy.png",
+  "review_notes": "Verified w1_uchiha_prodigy visually against owner curated ref art/references/itachi_uchiha.jpg: faithful likeness, dynamic 3/4 pose, crisp anime lighting, zero text/watermarks.",
+  "sha256": "913198e2d15fc6a9798f9b1a55260c3a8945976659f4a260bd97e67c28fb9adc",
+  "status": "approved",
+  "version": 1,
+  "width": 1041
+}
