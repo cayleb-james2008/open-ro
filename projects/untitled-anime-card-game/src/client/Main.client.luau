@@ -4,7 +4,6 @@ local Lighting = game:GetService("Lighting")
 local Players = game:GetService("Players")
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local SoundService = game:GetService("SoundService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Net = require(Shared:WaitForChild("Net"))
@@ -21,6 +20,10 @@ local BattleModal = require(ClientFolder:WaitForChild("BattleModal"))
 local SettingsModal = require(ClientFolder:WaitForChild("SettingsModal"))
 local EndgameModals = require(ClientFolder:WaitForChild("EndgameModals"))
 local MetaModals = require(ClientFolder:WaitForChild("MetaModals"))
+local VfxController = require(ClientFolder:WaitForChild("VfxController"))
+local AudioController = require(ClientFolder:WaitForChild("AudioController"))
+
+VfxController.start()
 
 local localPlayer = Players.LocalPlayer
 local playerGui = localPlayer:WaitForChild("PlayerGui")
@@ -66,16 +69,7 @@ local function playSfx(soundId: string?)
 	if not soundId or soundId == "" then
 		return
 	end
-	pcall(function()
-		local s = Instance.new("Sound")
-		s.SoundId = soundId
-		s.Volume = 0.35
-		s.Parent = SoundService
-		s:Play()
-		task.delay(2, function()
-			s:Destroy()
-		end)
-	end)
+	AudioController.play(soundId)
 end
 
 local function sendRequest(payload: Net.RequestPayload): Net.ResponsePayload
@@ -298,15 +292,17 @@ local function applyWeatherInfo(wData: any)
 	if type(wData) ~= "table" then
 		return
 	end
+	local wId = tostring(wData.id or wData.weatherId or wData.weather or "clear")
 	local name = tostring(wData.name or wData.weather or "Clear Skies")
 	local mult = tonumber(wData.luckMult or wData.multiplier) or 1
 	currentWeatherText = string.format("%s (%.2gx)", name, mult)
 	revealController.setContext(currentBannerName, currentWeatherText)
+	VfxController.setWeather(wId, name)
 	pcall(function()
 		if mult > 1.2 then
-			Lighting.OutdoorAmbient = Color3.fromRGB(145, 160, 195)
+			Lighting.OutdoorAmbient = Color3.fromRGB(155, 162, 190)
 		else
-			Lighting.OutdoorAmbient = Color3.fromRGB(130, 136, 150)
+			Lighting.OutdoorAmbient = Color3.fromRGB(138, 138, 148)
 		end
 	end)
 	if currentState then
@@ -382,6 +378,18 @@ local function performRoll(): boolean
 			results = { res.data.card }
 		end
 		if results and #results > 0 then
+			local bestRarity = "Common"
+			local bestOrder = 0
+			for _, item in ipairs(results) do
+				local rName = tostring(item.rarity or "Common")
+				local rOrder = Theme.getRarity(rName).order
+				if rOrder > bestOrder then
+					bestOrder = rOrder
+					bestRarity = rName
+				end
+			end
+			VfxController.playAltarSummon(bestRarity, currentSettings.reducedMotion, currentSettings.reducedFlash)
+			AudioController.playRollReveal(bestRarity)
 			revealController.play(results, autoEnabled or fastEnabled)
 		end
 		return true
@@ -397,6 +405,7 @@ settingsController = SettingsModal.create(
 	function(nextSettings: SettingsModal.SettingsState)
 		currentSettings = nextSettings
 		Theme.setMode(nextSettings.theme)
+		AudioController.setMuted((nextSettings :: any).muteAudio == true)
 		if endgameController and endgameController.applyTheme then
 			endgameController.applyTheme()
 		end
@@ -412,7 +421,7 @@ settingsController = SettingsModal.create(
 
 revealController = RevealModal.create(screenGui, function()
 	return currentSettings
-end)
+end, AudioController.play)
 
 local modalApi = {
 	request = sendRequest,
@@ -524,6 +533,7 @@ battleController = BattleModal.create(screenGui, {
 	getReducedMotion = function()
 		return currentSettings.reducedMotion
 	end,
+	playSfx = AudioController.play,
 	onSelectWorld = function(wId: number)
 		selectedWorldId = wId
 		if currentState then
