@@ -189,6 +189,8 @@ local BattleSim = loadNode(sharedRoot.BattleSim)
 
 -- Load Server services
 local DataService = loadNode(serverRoot.DataService)
+local RollService = loadNode(serverRoot.RollService)
+local BattleService = loadNode(serverRoot.BattleService)
 local TowerService = loadNode(serverRoot.TowerService)
 local RaidService = loadNode(serverRoot.RaidService)
 local WorldBossService = loadNode(serverRoot.WorldBossService)
@@ -363,19 +365,44 @@ local eqOk, eqRes = CharmService.equipCharms(
 )
 expect(eqOk == true and eqRes ~= nil and #eqRes.equippedCharms == 3, "equipCharms must cap at 3")
 
--- 12. RetentionService (quests + 7-day streak + playtime + promo codes + leaderboards)
+-- 12. RetentionService (quests + 7-day streak + playtime + promo codes + leaderboards + (ok, err, res) tuple order)
 RetentionService.trackProgress(profile, "roll", 10)
-local streakRes = RetentionService.claimLoginStreak(profile)
-expect(streakRes ~= nil, "claimLoginStreak should succeed")
-local ptOk = RetentionService.claimPlaytime(profile, "pt_5m")
-expect(type(ptOk) == "boolean", "claimPlaytime callable")
-local codeRes = RetentionService.redeemCode(profile, "LAUNCH100")
-expect(codeRes ~= nil, "redeemCode returns result")
+local streakOk, streakErr, streakRes = RetentionService.claimLoginStreak(profile)
+expect(
+	streakOk == true and streakErr == nil and type(streakRes) == "table",
+	"claimLoginStreak must return (true, nil, table)"
+)
+local ptOk, ptErr, ptRes = RetentionService.claimPlaytime(profile, "pt_5m")
+expect(
+	ptOk == false and type(ptErr) == "string" and ptRes == nil,
+	"claimPlaytime must return (false, err, nil) before 5m"
+)
+local codeOk, codeErr, codeRes = RetentionService.redeemCode(profile, "LAUNCH100")
+expect(codeOk == true and codeErr == nil and type(codeRes) == "table", "redeemCode must return (true, nil, table)")
+local dupCodeOk, dupCodeErr, dupCodeRes = RetentionService.redeemCode(profile, "LAUNCH100")
+expect(
+	dupCodeOk == false and type(dupCodeErr) == "string" and dupCodeRes == nil,
+	"duplicate redeemCode must return (false, err, nil)"
+)
 RetentionService.recordLeaderboard(mockPlayer, profile)
 local lbs = RetentionService.getLeaderboards()
 expect(type(lbs) == "table", "getLeaderboards returns table")
 
--- 13. WeatherService (cycle + luck bonus)
+-- 13. WeatherService (cycle + luck bonus + start(pushRemote) WeatherUpdate)
+local pushedEvents: { any } = {}
+local mockPushRemote: any = {
+	FireAllClients = function(_, payload: any)
+		table.insert(pushedEvents, payload)
+	end,
+}
+WeatherService.start(mockPushRemote)
+WeatherService.advance()
+expect(
+	#pushedEvents >= 1
+		and pushedEvents[#pushedEvents].type == "WeatherUpdate"
+		and type(pushedEvents[#pushedEvents].weather) == "table",
+	"WeatherService.start(mockPushRemote) + advance must fire WeatherUpdate"
+)
 local setOk = WeatherService.setWeather("CrimsonEclipse")
 expect(setOk == true and WeatherService.getLuckBonus() == 1.0, "WeatherService CrimsonEclipse gives +1.0 luck")
 
@@ -395,4 +422,54 @@ expect(gOk == true and gDup == true and profile.gems == gemsBefore + 1200, "Idem
 local perks = MonetizationService.getPerks(mockPlayer, profile)
 expect(type(perks) == "table", "getPerks returns table")
 
+-- 15. Regression checks for M2 Live Acceptance Fix Pass (#364)
+local battleOk, battleData, battleErr = BattleService.startBattle(profile, "w1_act1")
+expect(
+	battleOk == true and type(battleData) == "table" and battleErr == nil,
+	"BattleService.startBattle(profile, 'w1_act1') failed: " .. tostring(battleErr)
+)
+
+profile.rankedElo = RankedService.GRANDMASTER_ELO
+profile.rankedRewardClaimed = false
+local gmOk, gmRes, gmErr = RankedService.claimGrandmasterReward(profile)
+expect(
+	gmOk == true and type(gmRes) == "table" and gmRes.cardId == RankedService.REWARD_CARD_ID and gmErr == nil,
+	"RankedService.claimGrandmasterReward failed: " .. tostring(gmErr)
+)
+
+profile.traitCrystals = 5
+local trOk, trErr, trRes = RollService.traitReroll(profile, c1.uid)
+expect(
+	trOk == true and trErr == nil and type(trRes) == "table" and type(trRes.trait) == "string",
+	"RollService.traitReroll failed: " .. tostring(trErr)
+)
+
+local mainSrc = fs.readFile("src/server/Main.server.luau")
+expect(
+	not string.find(mainSrc, "BattleService.startBattle(player,", 1, true),
+	"Main.server.luau must pass profile, not player, to BattleService.startBattle"
+)
+expect(
+	not string.find(mainSrc, "WorldBossService :: any).challenge(", 1, true),
+	"Main.server.luau must not call WorldBossService.challenge"
+)
+expect(
+	not string.find(mainSrc, "RankedService :: any).claimReward(", 1, true),
+	"Main.server.luau must not call RankedService.claimReward"
+)
+expect(
+	not string.find(mainSrc, "RollService :: any).rerollTrait(", 1, true),
+	"Main.server.luau must not call RollService.rerollTrait"
+)
+expect(
+	not string.find(mainSrc, "WeatherService :: any).start(function", 1, true),
+	"Main.server.luau must pass pushRemote, not function, to WeatherService.start"
+)
+expect(
+	not string.find(mainSrc, "local ok, res, err = (RetentionService", 1, true),
+	"Main.server.luau must unpack RetentionService as (ok, err, res)"
+)
+
 print("M2_FULL_SYSTEMS_TEST_PASSED: 54 cards, 30 stages, 10 bonds, 14 M2 systems verified!")
+local process = require("@lune/process")
+process.exit(0)
