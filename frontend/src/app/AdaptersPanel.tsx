@@ -41,7 +41,7 @@ export type AdapterView = {
   transport: "builtin" | "cli" | "http";
   enabled: boolean;
   priority: number;
-  preset?: string | null;
+  preset?: boolean | string | null;
   required_secrets?: string[];
   available?: boolean;
   missing_secrets?: string[];
@@ -141,6 +141,7 @@ export function AdaptersPanel() {
     }
     const res = await call<{ adapter?: AdapterView }>("/api/adapters", {
       preset_id: preset.id,
+      ...(cap === "custom" && preset.id === "playwright-cdp-cli" ? { capability: "custom" } : {}),
       enabled: true,
       ...(Object.keys(cleanSecrets).length > 0 ? { secret_values: cleanSecrets } : {}),
     });
@@ -296,7 +297,8 @@ export function AdaptersPanel() {
         return;
       }
       payload.cli = {
-        argv,
+        command: argv[0],
+        argv: argv.slice(1),
         output_mode: cliOutputMode,
         ...(cliJsonPath.trim() ? { result_json_path: cliJsonPath.trim() } : {}),
       };
@@ -361,12 +363,27 @@ export function AdaptersPanel() {
     );
   }
 
-  const installedIds = new Set(adapters.map((a) => a.preset || a.id));
+  const installedIds = new Set(adapters.map((a) => (typeof a.preset === "string" ? a.preset : a.id)));
   const filteredAdapters = adapters
     .filter((a) => cap === "all" || a.capability === cap)
     .slice()
     .sort((a, b) => a.priority - b.priority);
-  const filteredPresets = presets.filter((p) => (cap === "all" || p.capability === cap) && !p.installed && !installedIds.has(p.id));
+  const FEATURED_ORDER = ["playwright-cdp-cli", "craft-anything-cli", "rea-cli"];
+  const filteredPresets = presets
+    .filter((p) => {
+      if (p.installed || installedIds.has(p.id)) return false;
+      if (cap === "all") return true;
+      return p.capability === cap || (p.id === "playwright-cdp-cli" && cap === "custom");
+    })
+    .slice()
+    .sort((a, b) => {
+      const ia = FEATURED_ORDER.indexOf(a.id);
+      const ib = FEATURED_ORDER.indexOf(b.id);
+      if (ia !== -1 || ib !== -1) {
+        return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+      }
+      return a.name.localeCompare(b.name);
+    });
 
   return (
     <div data-adapters-panel className="flex flex-col gap-3">
@@ -662,6 +679,9 @@ export function AdaptersPanel() {
                     <span className="text-sm font-medium text-ink">{p.name}</span>
                     <Badge className="border-transparent bg-surface px-1.5 py-0.5 text-xs text-ink-2">
                       {CAP_LABELS[p.capability] || p.capability}
+                    </Badge>
+                    <Badge className="border-transparent bg-surface px-1.5 py-0.5 text-xs text-ink-2">
+                      {p.transport.toUpperCase()}
                     </Badge>
                   </div>
                   {p.description && <p className="text-xs text-ink-2">{p.description}</p>}

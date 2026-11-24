@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { CircleCheck, CircleX, ExternalLink, Play } from "lucide-react";
+import { ChevronDown, CircleCheck, CircleX, ExternalLink, Play, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { Expandable, ExpandableTrigger } from "@/components/ui/expandable";
 import { MorphingDialog, MorphingDialogClose, MorphingDialogContainer, MorphingDialogContent, MorphingDialogTitle, MorphingDialogTrigger } from "@/components/ui/morphing-dialog";
 import { open as dialogSpring } from "@/motion";
-import { call, enc, projUrl, stamp, type PlaytestReport, type PlaytestRun } from "./api";
+import { call, enc, projUrl, stamp, type CoreLoopClaim, type PlaytestReport, type PlaytestRun, type StudyStatus, type UnknownItem } from "./api";
 import type { Ship } from "./useShip";
 
 type View = "summary" | "html" | "json";
@@ -116,6 +116,21 @@ function RunDetail({ id, run }: { id: string; run: PlaytestRun }) {
   );
 }
 
+function ClaimChip({ label, claim }: { label: string; claim?: CoreLoopClaim }) {
+  const status = claim?.status || "not tested";
+  const tone =
+    claim?.passed === true
+      ? "bg-pill-active-bg text-pill-active-fg"
+      : claim?.tested === true && claim?.passed === false
+        ? "bg-pill-pro-bg text-pill-pro-fg"
+        : "bg-track text-ink-2";
+  return (
+    <Pill className={`px-2 py-0.5 text-xs ${tone}`}>
+      <span>{label}: {status}</span>
+    </Pill>
+  );
+}
+
 export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioOk: boolean; onCount?: (n: number) => void }) {
   const id = ship.active?.id;
   const [runs, setRuns] = useState<PlaytestRun[] | null>(null);
@@ -123,6 +138,22 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
   const [running, setRunning] = useState(false);
   const [syncFirst, setSyncFirst] = useState(false);
   const [error, setError] = useState("");
+  const [study, setStudy] = useState<StudyStatus | null>(null);
+  const [openUnknowns, setOpenUnknowns] = useState<UnknownItem[]>([]);
+
+  const loadStudy = useCallback(async () => {
+    if (!id) {
+      setStudy(null);
+      setOpenUnknowns([]);
+      return;
+    }
+    const [st, unks] = await Promise.all([
+      call<StudyStatus>(projUrl(id, "/study/status")),
+      call<{ unknowns?: UnknownItem[] }>(projUrl(id, "/investigation/unknowns?status=open")),
+    ]);
+    setStudy(st.ok && Array.isArray(st.stages) ? (st as StudyStatus) : null);
+    setOpenUnknowns(unks.ok && Array.isArray(unks.unknowns) ? unks.unknowns : []);
+  }, [id]);
 
   const load = useCallback(async (pick?: string) => {
     if (!id) return;
@@ -133,7 +164,7 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
     setRuns(list); onCount?.(list.length);
     setSelected((cur) => pick ?? (cur && list.some((x) => x.run_id === cur) ? cur : list[0]?.run_id ?? null));
   }, [id, onCount]);
-  useEffect(() => { setRuns(null); setSelected(null); void load(); }, [load]);
+  useEffect(() => { setRuns(null); setSelected(null); void load(); void loadStudy(); }, [load, loadStudy]);
 
   const run = async () => {
     if (!id) return;
@@ -142,11 +173,15 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
     setRunning(false);
     if (!r.ok) { setError(r.error || "The playtest could not run."); return; }
     if (r.passed) toast.success("Playtest passed"); else toast.error("Playtest failed. The report shows why.");
-    await load(r.run_id);
+    await Promise.all([load(r.run_id), loadStudy()]);
   };
 
   if (!ship.active) return null;
   const current = runs?.find((x) => x.run_id === selected) ?? null;
+  const latestMeta = study?.checks?.last_playtest;
+  const likenessPct = latestMeta?.visual_likeness?.best_pct;
+  const openCount = study?.unknowns?.open_count ?? openUnknowns.length;
+
   return (
     <div className="flex flex-col gap-4" data-panel="playtests">
       <section aria-label="Run a playtest" className="card-stock flex flex-wrap items-center gap-3 p-4">
@@ -154,7 +189,7 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
           <h3 className="font-heading text-ui font-semibold">Playtest in Studio</h3>
           <p className="text-sm text-ink-2">{studioOk ? "Starts the game, runs the project's checks, takes screenshots and saves a report." : "Connect Roblox Studio to run a playtest."}</p>
         </div>
-        <Button variant={syncFirst ? "secondary" : "outline"} size="lg" aria-pressed={syncFirst} onClick={() => setSyncFirst((v) => !v)} className="max-md:min-h-11">Send to Studio first</Button>
+        <Button variant={syncFirst ? "secondary" : "outline"} size="lg" aria-pressed={syncFirst} onClick={() => setSyncFirst((v) => !v)} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">Send to Studio first</Button>
         {!studioOk && (
           <Button
             variant="outline"
@@ -166,14 +201,81 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
               if (!l.ok || !l.studio_connected) { setRunning(false); setError(l.error || "Could not launch Studio."); return; }
               await run();
             }}
-            className="max-md:min-h-11"
+            className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"
           >
             <Play className="size-4" strokeWidth={1.5} aria-hidden />Launch Studio &amp; playtest
           </Button>
         )}
-        <Button variant="default" size="lg" disabled={!studioOk || running} onClick={() => void run()} data-run-playtest className="max-md:min-h-11"><Play className="size-4" strokeWidth={1.5} aria-hidden />{running ? "Playing…" : "Run playtest"}</Button>
+        <Button variant="default" size="lg" disabled={!studioOk || running} onClick={() => void run()} data-run-playtest className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><Play className="size-4" strokeWidth={1.5} aria-hidden />{running ? "Playing…" : "Run playtest"}</Button>
         {error && <p role="alert" className="w-full rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
       </section>
+
+      {study && (
+        <section aria-label="Checks and unknowns summary" data-checks-unknowns className="card-stock px-4 py-2.5">
+          <Expandable expandDirection="vertical" expandBehavior="push">
+            {({ isExpanded }) => (
+              <>
+                <ExpandableTrigger
+                  aria-label="Toggle Checks and Unknowns"
+                  className="flex min-h-11 w-full cursor-pointer flex-wrap items-center justify-between gap-2 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <ShieldCheck className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
+                    <span className="font-medium text-ink">Checks &amp; Unknowns</span>
+                    <ClaimChip label="Move" claim={latestMeta?.core_loop?.move} />
+                    <ClaimChip label="Act" claim={latestMeta?.core_loop?.act} />
+                    <ClaimChip label="HUD" claim={latestMeta?.core_loop?.hud} />
+                    {typeof likenessPct === "number" && (
+                      <Pill className="bg-tag-sky-bg px-2 py-0.5 text-xs text-tag-sky-fg">
+                        Likeness <span className="font-mono tabular-nums">{likenessPct}%</span>
+                      </Pill>
+                    )}
+                    <Pill className={openCount > 0 ? "bg-pill-warn-bg px-2 py-0.5 text-xs text-pill-warn-fg" : "bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg"}>
+                      <span className="font-mono tabular-nums">{openCount}</span> open unknowns
+                    </Pill>
+                  </div>
+                  <ChevronDown className={`size-4 shrink-0 text-ink-2 motion-safe:transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`} strokeWidth={1.5} aria-hidden />
+                </ExpandableTrigger>
+
+                {isExpanded && (
+                  <div className="mt-3 flex flex-col gap-2.5 border-t border-hairline pt-3 text-sm" data-checks-unknowns-body>
+                    <div className="flex flex-wrap gap-2 text-xs text-ink-2">
+                      <span>Evidence: <span className="font-mono tabular-nums text-ink">{study.evidence?.total ?? 0}</span></span>
+                      {study.mechanics?.found && (
+                        <span>
+                          Mechanics: <span className="font-mono tabular-nums text-ink">{study.mechanics.counts?.sourced ?? 0}</span> sourced,{" "}
+                          <span className="font-mono tabular-nums text-ink">{study.mechanics.counts?.unsourced ?? 0}</span> unsourced
+                        </span>
+                      )}
+                      {latestMeta?.visual_likeness?.best_reference && (
+                        <span>Best ref match: <span className="font-mono text-ink">{latestMeta.visual_likeness.best_reference}</span></span>
+                      )}
+                      {(latestMeta?.blank_screenshots ?? 0) > 0 && (
+                        <span className="text-pill-pro-fg">
+                          Blank screenshots rejected: <span className="font-mono tabular-nums">{latestMeta?.blank_screenshots}</span>
+                        </span>
+                      )}
+                    </div>
+
+                    {openUnknowns.length > 0 ? (
+                      <ul className="flex flex-col gap-1.5" aria-label="Open unknowns">
+                        {openUnknowns.map((u) => (
+                          <li key={u.id} className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-hairline bg-board/50 px-3 py-1.5 text-xs">
+                            <span className="min-w-0 flex-1 truncate text-ink">{u.title}</span>
+                            <Pill className="bg-pill-warn-bg px-2 py-0.5 text-xs text-pill-warn-fg">{u.severity || u.status}</Pill>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-xs text-ink-2">No open unknowns recorded for this project.</p>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </Expandable>
+        </section>
+      )}
       {runs === null ? (
         <div className="grid gap-2" aria-hidden><span className="h-14 rounded-card bg-track" /><span className="h-14 rounded-card bg-track" /></div>
       ) : runs.length === 0 ? (
