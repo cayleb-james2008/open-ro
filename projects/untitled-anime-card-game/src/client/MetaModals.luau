@@ -28,7 +28,9 @@ end
 local function tryLoadConfig(name: string): any
 	local ok, result = pcall(function()
 		local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
-		local configs = if sharedFolder then sharedFolder:FindFirstChild("Configs") else nil
+		local configs = if sharedFolder
+			then (sharedFolder:FindFirstChild("Config") or sharedFolder:FindFirstChild("Configs"))
+			else nil
 		local mod = if configs then configs:FindFirstChild(name) else nil
 		if mod and mod:IsA("ModuleScript") then
 			return require(mod)
@@ -364,15 +366,23 @@ function MetaModals.build(parent: Instance, api: any, _theme: any): MetaControll
 			)
 			order += 1
 
-			local playtime = if type(data.playtimeMilestones) == "table" then data.playtimeMilestones else {}
-			for _, ms in ipairs(playtime) do
+			local questsCfg = tryLoadConfig("Quests")
+			local playtimeSec = tonumber(data.playtimeSeconds) or 0
+			local claimedPlaytime = if type(data.claimedPlaytime) == "table" then data.claimedPlaytime else {}
+			local ptDefs = if questsCfg and type(questsCfg.Playtime) == "table"
+				then questsCfg.Playtime
+				elseif questsCfg and type(questsCfg.PlaytimeMilestones) == "table" then questsCfg.PlaytimeMilestones
+				else {}
+			for _, ms in ipairs(ptDefs) do
 				local mId = tostring(ms.id or "")
-				local ready = ms.ready == true and ms.claimed ~= true
-				local btnTxt = if ms.claimed then "Claimed" elseif ready then "Claim" else "Locked"
+				local reqSec = tonumber(ms.seconds or ms.durationSeconds) or 0
+				local isClaimed = claimedPlaytime[mId] == true
+				local ready = (not isClaimed) and (playtimeSec >= reqSec)
+				local btnTxt = if isClaimed then "Claimed" elseif ready then "Claim" else "Locked"
 				addActionRow(
 					order,
-					"Playtime: " .. tostring(ms.label or mId),
-					tostring(ms.rewardText or "Session milestone reward"),
+					"Playtime: " .. tostring(ms.label or ms.title or mId),
+					tostring(ms.rewardText or ms.description or string.format("%ds milestone", reqSec)),
 					btnTxt,
 					pal.accentBlue,
 					ready,
@@ -390,19 +400,34 @@ function MetaModals.build(parent: Instance, api: any, _theme: any): MetaControll
 			end
 
 			local quests = if type(data.quests) == "table" then data.quests else {}
-			for _, q in ipairs(quests) do
-				local qId = tostring(q.id or "")
-				local prog = tonumber(q.progress) or 0
-				local goal = tonumber(q.goal) or 1
-				local ready = prog >= goal and q.claimed ~= true
-				local btnTxt = if q.claimed
+			local questDefs: { any } = {}
+			if questsCfg then
+				if type(questsCfg.Daily) == "table" then
+					for _, qDef in ipairs(questsCfg.Daily) do
+						table.insert(questDefs, qDef)
+					end
+				end
+				if type(questsCfg.Weekly) == "table" then
+					for _, qDef in ipairs(questsCfg.Weekly) do
+						table.insert(questDefs, qDef)
+					end
+				end
+			end
+			for _, qDef in ipairs(questDefs) do
+				local qId = tostring(qDef.id or "")
+				local qState = if type(quests[qId]) == "table" then quests[qId] else {}
+				local prog = tonumber(qState.progress) or 0
+				local goal = tonumber(qDef.target or qDef.goal) or 1
+				local isClaimed = qState.claimed == true
+				local ready = prog >= goal and not isClaimed
+				local btnTxt = if isClaimed
 					then "Claimed"
 					elseif ready then "Claim"
 					else string.format("%d/%d", prog, goal)
 				addActionRow(
 					order,
-					tostring(q.title or qId),
-					tostring(q.description or "Complete objective for rewards"),
+					tostring(qDef.title or qDef.name or qId),
+					tostring(qDef.description or qDef.summary or "Complete objective for rewards"),
 					btnTxt,
 					pal.accentPurple,
 					ready,
@@ -459,11 +484,13 @@ function MetaModals.build(parent: Instance, api: any, _theme: any): MetaControll
 				local gCards: { string } = {}
 				for _, c in ipairs(list) do
 					local w = tonumber(c.worldId)
-					local matches = (gName == "Exclusives" and (c.isExclusive or not w))
-						or (gName == ("World " .. tostring(w)))
+					local isExcl = (c.bannerPool == false) or (c.isExclusive == true) or not w
+					local matches = if gName == "Exclusives"
+						then isExcl
+						else (not isExcl and gName == ("World " .. tostring(w)))
 					if matches then
 						local mark = if discoveredMap[c.id] then "[Found] " else "[???] "
-						table.insert(gCards, mark .. tostring(c.name or c.id))
+						table.insert(gCards, mark .. tostring(c.displayName or c.name or c.id))
 					end
 				end
 				local summary = if #gCards > 0
@@ -474,34 +501,62 @@ function MetaModals.build(parent: Instance, api: any, _theme: any): MetaControll
 			end
 		elseif mode == "Shop" then
 			titleLabel.Text = "Card Shop & Passes"
-			local hasPremium = data.hasPremium == true
-			local inGroup = data.inGroup == true
+			local perks = if type(data.perks) == "table" then data.perks else {}
+			local hasPremium = perks.isPremium == true or data.hasPremium == true
+			local inGroup = perks.inGroup == true or data.inGroup == true
 			addInfoCard(
 				order,
 				"Account Perks",
 				string.format(
 					"Roblox Premium: %s  |  Group Member: %s",
-					if hasPremium then "Active (+10% Luck)" else "Inactive",
-					if inGroup then "Active (+10% Yen)" else "Join Group"
+					if hasPremium then "Active (+15% Luck/Yen)" else "Inactive (+15% Luck/Yen)",
+					if inGroup then "Active (+1.0x Luck)" else "Join Group (+1.0x Luck)"
 				)
 			)
 			order += 1
 
 			local prodCfg = tryLoadConfig("Products")
-			local items = if type(data.products) == "table" and #data.products > 0
-				then data.products
-				elseif prodCfg and type(prodCfg.List) == "table" then prodCfg.List
+			local ownedPasses = if type(data.ownedPasses) == "table" then data.ownedPasses else {}
+			local gpMap = if type(data.gamepasses) == "table"
+				then data.gamepasses
+				elseif prodCfg and type(prodCfg.Gamepasses) == "table" then prodCfg.Gamepasses
 				else {}
+			local dpMap = if type(data.devProducts) == "table"
+				then data.devProducts
+				elseif prodCfg and type(prodCfg.DevProducts) == "table" then prodCfg.DevProducts
+				else {}
+			local items: { { [string]: any } } = {}
+			local function collectProducts(src: { [any]: any })
+				local batch: { { [string]: any } } = {}
+				for _, entry in pairs(src) do
+					if type(entry) == "table" then
+						table.insert(batch, entry)
+					end
+				end
+				table.sort(batch, function(a, b)
+					local pa = tonumber(a.robuxPrice or a.robux or a.priceRobux) or 0
+					local pb = tonumber(b.robuxPrice or b.robux or b.priceRobux) or 0
+					if pa ~= pb then
+						return pa < pb
+					end
+					return tostring(a.id or "") < tostring(b.id or "")
+				end)
+				for _, entry in ipairs(batch) do
+					table.insert(items, entry)
+				end
+			end
+			collectProducts(gpMap)
+			collectProducts(dpMap)
 			for _, p in ipairs(items) do
 				local pId = tostring(p.id or p.key or "")
-				local pName = tostring(p.name or pId)
-				local price = tonumber(p.robux or p.priceRobux) or 0
-				local owned = p.owned == true
+				local pName = tostring(p.displayName or p.name or pId)
+				local price = tonumber(p.robuxPrice or p.robux or p.priceRobux) or 0
+				local owned = (ownedPasses[pId] == true) or (p.owned == true)
 				local btnTxt = if owned then "Owned" else string.format("%d R$", price)
 				addActionRow(
 					order,
 					pName,
-					tostring(p.description or "Studio test purchase preview supported."),
+					tostring(p.summary or p.description or "Studio test purchase preview supported."),
 					btnTxt,
 					pal.accentGold,
 					not owned,
@@ -550,7 +605,16 @@ function MetaModals.build(parent: Instance, api: any, _theme: any): MetaControll
 			end
 			order += 1
 
-			local entries = if type(data.entries) == "table" then data.entries else {}
+			local boardKeyMap: { [string]: string } = {
+				Power = "rolls",
+				Tower = "tower",
+				Ranked = "elo",
+			}
+			local boardKey = boardKeyMap[activeBoardType] or "rolls"
+			local entries = if type(data[boardKey]) == "table"
+				then data[boardKey]
+				elseif type(data.entries) == "table" then data.entries
+				else {}
 			if #entries == 0 then
 				addInfoCard(
 					order,

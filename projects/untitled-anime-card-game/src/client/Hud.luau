@@ -53,6 +53,7 @@ export type HudCallbacks = {
 export type HudController = {
 	update: (state: HudState) -> (),
 	setVisible: (visible: boolean) -> (),
+	closeModesDrawer: () -> (),
 	destroy: () -> (),
 }
 
@@ -76,14 +77,7 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 			return
 		end
 		local vx = cam.ViewportSize.X
-		local vy = cam.ViewportSize.Y
-		if vx < 420 then
-			uiScale.Scale = 1
-		elseif vx < 700 or vy < 540 then
-			uiScale.Scale = 0.9
-		else
-			uiScale.Scale = 1
-		end
+		uiScale.Scale = 1
 		if layoutUpdater then
 			layoutUpdater(vx)
 		end
@@ -500,7 +494,7 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 			topRight.Size = UDim2.fromOffset(usableW, 96)
 			navGrid.HorizontalAlignment = Enum.HorizontalAlignment.Left
 			local btnW = math.floor((usableW - 12) / 3)
-			navGrid.CellSize = UDim2.fromOffset(btnW, 44)
+			navGrid.CellSize = UDim2.fromOffset(btnW, 46)
 			navGrid.CellPadding = UDim2.fromOffset(6, 6)
 
 			modesDrawer.Size = UDim2.fromOffset(math.min(usableW, 350), 310)
@@ -618,12 +612,7 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 		gemsLabel.Text = "GEMS " .. Components.formatNumber(state.gems)
 		ticketsLabel.Text = "TIX " .. Components.formatNumber(state.tickets)
 
-		local summary = state.luckSummary or state.luckBreakdown or "Base 1.0x"
-		if summary ~= "" then
-			luckLabel.Text = string.format("Luck %.2fx (%s)", state.luckMultiplier, summary)
-		else
-			luckLabel.Text = string.format("Luck %.2fx", state.luckMultiplier)
-		end
+		luckLabel.Text = string.format("Luck %.2fx", state.luckMultiplier)
 		weatherLabel.Text = state.weatherText or "Clear Skies"
 		goalLabel.Text = "Next: " .. state.nextGoal
 		local wNum = state.selectedWorld or 1
@@ -687,6 +676,9 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 		end,
 		setVisible = function(visible: boolean)
 			root.Visible = visible
+		end,
+		closeModesDrawer = function()
+			modesDrawer.Visible = false
 		end,
 		destroy = function()
 			unbindTheme()

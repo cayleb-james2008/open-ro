@@ -9,6 +9,7 @@ local SoundService = game:GetService("SoundService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Net = require(Shared:WaitForChild("Net"))
 local Config = Shared:WaitForChild("Config")
+local Banners = require(Config:WaitForChild("Banners"))
 local Worlds = require(Config:WaitForChild("Worlds"))
 
 local ClientFolder = script.Parent
@@ -514,7 +515,29 @@ battleController = BattleModal.create(screenGui, {
 	end,
 })
 
+local function closeAllModals()
+	pcall(function()
+		deckController.close()
+	end)
+	pcall(function()
+		battleController.close()
+	end)
+	pcall(function()
+		settingsController.close()
+	end)
+	pcall(function()
+		endgameController.closeAll()
+	end)
+	pcall(function()
+		metaController.closeAll()
+	end)
+	pcall(function()
+		hudController.closeModesDrawer()
+	end)
+end
+
 local function openBattleForWorld(worldId: number)
+	closeAllModals()
 	selectedWorldId = worldId
 	if currentState then
 		local snapshot = buildDeckSnapshot(currentState)
@@ -556,6 +579,7 @@ hudController = Hud.create(screenGui, {
 		end
 	end,
 	onOpenDeck = function()
+		closeAllModals()
 		if currentState then
 			deckController.open(buildDeckSnapshot(currentState))
 		end
@@ -564,50 +588,69 @@ hudController = Hud.create(screenGui, {
 		openBattleForWorld(selectedWorldId)
 	end,
 	onOpenSettings = function()
+		closeAllModals()
 		settingsController.open()
 	end,
 	onOpenShop = function()
+		closeAllModals()
 		metaController.openShop()
 	end,
 	onCycleWorld = function()
 		selectedWorldId = (selectedWorldId % 5) + 1
-		currentBannerName = "World " .. tostring(selectedWorldId) .. " Banner"
-		sendRequest({ action = "SelectBanner", bannerId = "world_" .. tostring(selectedWorldId) })
+		local bannerId = "banner_w" .. tostring(selectedWorldId)
+		local bInfo = if type(Banners.get) == "function"
+			then Banners.get(bannerId)
+			elseif type(Banners.ById) == "table" then Banners.ById[bannerId]
+			else nil
+		currentBannerName = if type(bInfo) == "table" and bInfo.name
+			then tostring(bInfo.name)
+			else ("World " .. tostring(selectedWorldId) .. " Banner")
+		sendRequest({ action = "SelectBanner", bannerId = bannerId })
 		revealController.setContext(currentBannerName, currentWeatherText)
 		if currentState then
 			hudController.update(buildHudState(currentState))
 		end
 	end,
 	onOpenTower = function()
+		closeAllModals()
 		endgameController.openTower()
 	end,
 	onOpenRaid = function()
+		closeAllModals()
 		endgameController.openRaid()
 	end,
 	onOpenWorldBoss = function()
+		closeAllModals()
 		endgameController.openWorldBoss()
 	end,
 	onOpenRanked = function()
+		closeAllModals()
 		endgameController.openRanked()
 	end,
 	onOpenRebirth = function()
+		closeAllModals()
 		endgameController.openRebirth()
 	end,
 	onOpenCharms = function()
+		closeAllModals()
 		endgameController.openCharms()
 	end,
 	onOpenQuests = function()
+		closeAllModals()
 		metaController.openQuests()
 	end,
 	onOpenIndex = function()
+		closeAllModals()
 		metaController.openIndex()
 	end,
 	onOpenLeaderboards = function()
+		closeAllModals()
 		metaController.openLeaderboards()
 	end,
 })
 
 local function handlePropAction(prop: string)
+	closeAllModals()
 	if prop == "Roll" then
 		performRoll()
 	elseif prop == "Deck" and currentState then
