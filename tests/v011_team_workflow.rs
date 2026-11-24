@@ -1331,7 +1331,8 @@ fn self_claim_routing_history_compaction_tools_kind_and_ergonomics() {
             && e["data"]["error"].as_str().unwrap_or("").contains("file claim conflict")
     }));
 
-    // #43: model saw live "Tasks:" transiently, while agents/researcher.json persisted ZERO "Tasks:" and compacted >2-turn-old entries
+    // #43 / #59: model saw live "Tasks:" transiently, agents/researcher.json persisted ZERO "Tasks:",
+    // >2-turn-old assistant write payloads still compact, while recent tool_result stays intact inside the #59 retention window.
     let checks = prompt_checks.lock().unwrap();
     assert!(checks.iter().filter(|(r, _)| r == "researcher").all(|(_, has_tasks)| *has_tasks), "researcher prompts missing transient Tasks: {checks:?}");
 
@@ -1342,7 +1343,7 @@ fn self_claim_routing_history_compaction_tools_kind_and_ergonomics() {
     assert!(persisted_msgs.iter().all(|m| !m["content"].as_str().unwrap_or("").contains("Tasks:\n")), "{persisted_msgs:?}");
     assert!(persisted_msgs.iter().any(|m| {
         let c = m["content"].as_str().unwrap_or("");
-        c.starts_with("[compacted tool_result") && !c.contains('\n')
+        c.starts_with("tool_result (project_files):") && c.contains("docs/SEED.md")
     }), "{persisted_msgs:?}");
     assert!(persisted_msgs.iter().any(|m| {
         let c = m["content"].as_str().unwrap_or("");
@@ -2839,5 +2840,275 @@ fn auto_open_studio_connects_on_teamwork_sync_and_playtest_with_opt_out_gap_57()
     assert_eq!(pt_results[1]["data"]["result"]["passed"], true, "{}", pt_results[1]);
 
     let _ = http(port, "POST", "/api/studio/embed/stop", Some(&json!({})));
+    shared.teamwork.shutdown();
+}
+
+#[test]
+fn history_window_reread_breaker_and_grep_pattern_gap_59() {
+    let dir = scratch_dir("history-window-reread-gap59");
+    let data_dir = dir.join("data");
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(proj.join("src/shared")).unwrap();
+    std::fs::create_dir_all(proj.join("src/client")).unwrap();
+    std::fs::write(
+        proj.join("default.project.json"),
+        json!({
+            "name": "HistoryWindowGap59",
+            "tree": {
+                "$className": "DataModel",
+                "ReplicatedStorage": {
+                    "$ignoreUnknownInstances": true,
+                    "Shared": { "$path": "src/shared" }
+                },
+                "StarterPlayer": {
+                    "$ignoreUnknownInstances": true,
+                    "StarterPlayerScripts": {
+                        "$className": "StarterPlayerScripts",
+                        "$ignoreUnknownInstances": true,
+                        "Client": { "$path": "src/client" }
+                    }
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // Create 4 x ~6 KiB Luau files (24 KiB total across 4 turns)
+    for k in 1..=4 {
+        let mut lines = Vec::with_capacity(80);
+        lines.push(format!("-- MARKER_MOD{k} {}", "P".repeat(50)));
+        for line_i in 2..=79 {
+            lines.push(format!("-- mod{k}_l{line_i:02} {}", "Q".repeat(60)));
+        }
+        lines.push(format!("return \"TAIL_MOD{k}\""));
+        std::fs::write(proj.join(format!("src/shared/Mod{k}.luau")), lines.join("\n")).unwrap();
+    }
+    std::fs::create_dir_all(&data_dir).unwrap();
+    write_projects_index(&data_dir, &proj);
+
+    let mock_bin = env!("CARGO_BIN_EXE_mock_studio");
+    let turn6_msgs_capture: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let t6_cap = Arc::clone(&turn6_msgs_capture);
+    let turn7_user_capture: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let t7_cap = Arc::clone(&turn7_user_capture);
+    let turn9_user_capture: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let t9_cap = Arc::clone(&turn9_user_capture);
+    let verifier_nudge_capture: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let v_cap = Arc::clone(&verifier_nudge_capture);
+
+    let per_role: Arc<Mutex<std::collections::HashMap<String, usize>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let pr = Arc::clone(&per_role);
+
+    let stub = start_dynamic_stub(move |body, _| {
+        let req: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        let msgs = req["messages"].as_array().unwrap();
+        let sys = msgs[0]["content"].as_str().unwrap_or("");
+        let role = if sys.contains("[Agent: coordinator]") {
+            "coordinator"
+        } else if sys.contains("[Agent: builder]") {
+            "builder"
+        } else {
+            "verifier"
+        };
+        let step = {
+            let mut m = pr.lock().unwrap();
+            let e = m.entry(role.to_string()).or_insert(0);
+            *e += 1;
+            *e
+        };
+        let all_text = msgs
+            .iter()
+            .map(|m| m["content"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let last_user = msgs
+            .iter()
+            .rev()
+            .find(|m| m["role"] == "user")
+            .and_then(|m| m["content"].as_str())
+            .unwrap_or("");
+
+        if role == "coordinator" {
+            if all_text.contains("Verified task t1") {
+                return json!({ "tool": "finish_run", "args": { "summary": "gap 59 verified" } });
+            }
+            return match step {
+                1 => json!({
+                    "tool": "create_task",
+                    "args": {
+                        "id": "t1",
+                        "owner": "builder",
+                        "verifier": "verifier",
+                        "title": "Read 4 modules & write Main.client.luau",
+                        "kind": "game_code",
+                        "files": ["src/client/Main.client.luau"]
+                    },
+                    "done": true,
+                    "summary": "dispatched t1"
+                }),
+                _ => json!({ "done": true, "summary": "waiting" }),
+            };
+        }
+
+        if role == "builder" {
+            return match step {
+                // Turn 1: project_grep using `pattern` alias (#59.3)
+                1 => json!({ "tool": "project_grep", "args": { "pattern": "MARKER_MOD1" } }),
+                // Turns 2..=5: read 4 distinct ~6 KiB modules (~24 KiB across 4 turns)
+                2 => json!({ "tool": "project_read_file", "args": { "path": "src/shared/Mod1.luau" } }),
+                3 => json!({ "tool": "project_read_file", "args": { "path": "src/shared/Mod2.luau" } }),
+                4 => json!({ "tool": "project_read_file", "args": { "path": "src/shared/Mod3.luau" } }),
+                5 => json!({ "tool": "project_read_file", "args": { "path": "src/shared/Mod4.luau" } }),
+                // Turn 6: verify Turn 2's Mod1.luau is STILL intact in msgs (4 turns later!),
+                // then deliberately trigger duplicate (path, start_line, end_line) re-read of Mod1.luau
+                6 => {
+                    *t6_cap.lock().unwrap() = msgs
+                        .iter()
+                        .filter_map(|m| m["content"].as_str().map(String::from))
+                        .collect();
+                    json!({ "tool": "project_read_file", "args": { "path": "src/shared/Mod1.luau" } })
+                }
+                // Turn 7: capture duplicate-read nudge, then write Main.client.luau (which clears recent_reads)
+                7 => {
+                    *t7_cap.lock().unwrap() = last_user.to_string();
+                    json!({
+                        "tool": "project_write_file",
+                        "args": {
+                            "path": "src/client/Main.client.luau",
+                            "content": "-- Line 1\n-- Line 2\n-- Line 3\nlocal x = 1\nreturn x\n"
+                        }
+                    })
+                }
+                // Turn 8: reading Mod2.luau once AFTER a write must NOT trigger a duplicate re-read nudge
+                8 => json!({ "tool": "project_read_file", "args": { "path": "src/shared/Mod2.luau" } }),
+                9 => {
+                    *t9_cap.lock().unwrap() = last_user.to_string();
+                    json!({
+                        "tool": "submit_task",
+                        "args": { "task_id": "t1", "summary": "wrote Main.client.luau" },
+                        "done": true
+                    })
+                }
+                _ => json!({ "done": true, "summary": "parked" }),
+            };
+        }
+
+        // verifier: read exact slice twice without verify/post in between -> receives duplicate nudge,
+        // then completes playtest + verify_task cleanly.
+        if last_user.contains("- t1 [awaiting_verification]")
+            || (all_text.contains("- t1 [awaiting_verification]") && !all_text.contains("tool_result (verify_task)"))
+        {
+            let read_count = all_text.matches("tool_result (project_read_file)").count();
+            return match read_count {
+                0 | 1 => json!({
+                    "tool": "project_read_file",
+                    "args": { "path": "src/client/Main.client.luau", "start_line": 1, "end_line": 5 }
+                }),
+                _ => {
+                    *v_cap.lock().unwrap() = last_user.to_string();
+                    json!({
+                        "steps": [
+                            { "tool": "project_playtest", "args": { "task_id": "t1" } },
+                            { "tool": "verify_task", "args": { "task_id": "t1", "passed": true, "notes": "verified after reread breaker" } }
+                        ],
+                        "done": true,
+                        "summary": "verified t1"
+                    })
+                }
+            };
+        }
+        json!({ "done": true, "summary": "waiting" })
+    });
+
+    let (port, shared) = boot_server(data_dir, Some(mock_bin));
+    let (st, _) = http(
+        port,
+        "POST",
+        "/api/config",
+        Some(&json!({ "base_url": stub.base_url, "model_id": "stub-model" })),
+    );
+    assert_eq!(st, 200);
+    let (st, created) = http(
+        port,
+        "POST",
+        "/api/teamwork",
+        Some(&json!({
+            "goal": "Verify #59 history window, duplicate re-read breaker, and project_grep pattern alias",
+            "roles": ["builder", "verifier"],
+            "max_concurrency": 2
+        })),
+    );
+    assert_eq!(st, 201, "{created}");
+    let run_id = created["run"]["id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut detail = Value::Null;
+    while Instant::now() < deadline {
+        let (_, d) = http(port, "GET", &format!("/api/teamwork/{run_id}"), None);
+        detail = d;
+        if detail["run"]["status"] == "completed" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(detail["run"]["status"], "completed", "{detail}");
+
+    // 1. project_grep `pattern` alias succeeded
+    let (_, b_tr) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/builder/trace"), None);
+    let b_trace = b_tr["trace"].as_array().unwrap();
+    let grep_res = b_trace
+        .iter()
+        .find(|e| e["kind"] == "tool_result" && e["data"]["tool"] == "project_grep")
+        .expect("builder project_grep result");
+    assert_eq!(grep_res["data"]["ok"], true, "{grep_res}");
+    assert!(grep_res["data"]["result"].to_string().contains("Mod1.luau"), "{grep_res}");
+
+    // 2. Turn 6 prompt STILL retains Turn 2's full 6 KiB Mod1.luau uncompacted (#59 byte/turn window)
+    let t6_msgs = turn6_msgs_capture.lock().unwrap().join("\n");
+    assert!(
+        t6_msgs.contains("MARKER_MOD1") && t6_msgs.contains("TAIL_MOD1"),
+        "Mod1.luau from 4 turns earlier was prematurely compacted! len={}",
+        t6_msgs.len()
+    );
+    assert!(
+        !t6_msgs.contains("[compacted tool_result") || t6_msgs.contains("TAIL_MOD1"),
+        "{t6_msgs}"
+    );
+
+    // 3. Duplicate (path, start_line, end_line) re-read triggers firm nudge on BOTH builder & verifier,
+    // and resets cleanly after a write (`Turn 9` has zero false-positive duplicate nudge).
+    let t7_prompt = turn7_user_capture.lock().unwrap().clone();
+    assert!(
+        t7_prompt.contains("Stop re-reading; write/edit/verify/submit now"),
+        "missing duplicate re-read nudge on builder turn 7: {t7_prompt}"
+    );
+    let t9_prompt = turn9_user_capture.lock().unwrap().clone();
+    assert!(
+        !t9_prompt.contains("Stop re-reading; write/edit/verify/submit now"),
+        "unexpected duplicate re-read nudge after write reset: {t9_prompt}"
+    );
+    let v_prompt = verifier_nudge_capture.lock().unwrap().clone();
+    assert!(
+        v_prompt.contains("Stop re-reading; write/edit/verify/submit now"),
+        "missing duplicate re-read nudge on verifier: {v_prompt}"
+    );
+
+    assert!(
+        b_trace
+            .iter()
+            .any(|e| e["kind"] == "read_spin_nudge" && e["data"]["duplicate_read"]["path"] == "src/shared/Mod1.luau"),
+        "{b_trace:?}"
+    );
+    let (_, v_tr) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/verifier/trace"), None);
+    let v_trace = v_tr["trace"].as_array().unwrap();
+    assert!(
+        v_trace
+            .iter()
+            .any(|e| e["kind"] == "read_spin_nudge" && e["data"]["duplicate_read"]["path"] == "src/client/Main.client.luau"),
+        "{v_trace:?}"
+    );
+
     shared.teamwork.shutdown();
 }
