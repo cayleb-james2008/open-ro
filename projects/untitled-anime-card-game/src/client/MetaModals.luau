@@ -662,7 +662,13 @@ function MetaModals.build(parent: Instance, api: any, _theme: any): MetaControll
 		applyTheme = function()
 			local pal = Theme.getPalette()
 			panel.BackgroundColor3 = pal.bgPanel
+			local panelStroke = panel:FindFirstChildOfClass("UIStroke")
+			if panelStroke then
+				panelStroke.Color = pal.border
+			end
 			titleLabel.TextColor3 = pal.textPrimary
+			statusLabel.TextColor3 = pal.textSecondary
+			closeBtn.BackgroundColor3 = pal.accentRed
 			if activeMode and backdrop.Visible then
 				renderCurrent(activeMode, lastData)
 			end
@@ -671,6 +677,10 @@ function MetaModals.build(parent: Instance, api: any, _theme: any): MetaControll
 			cachedState = state
 		end,
 	}
+
+	Theme.onChanged(function()
+		controller.applyTheme()
+	end)
 
 	return controller
 end

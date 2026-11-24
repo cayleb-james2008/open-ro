@@ -471,42 +471,93 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 	fastBtn.ZIndex = 8
 
 	layoutUpdater = function(viewportX: number)
-		local isMobile = viewportX < 700
-		if isMobile then
+		local isNarrow = viewportX < 700
+		local isMedium = viewportX >= 700 and viewportX < 960
+		if isNarrow then
 			local usableW = math.max(viewportX - 16, 300)
-			topLeft.Position = UDim2.fromOffset(8, 8)
-			topLeft.Size = UDim2.fromOffset(usableW, 152)
+			topLeft.Position = UDim2.fromOffset(8, 6)
+			topLeft.Size = UDim2.fromOffset(usableW, 60)
 			topLeftLayout.Padding = UDim.new(0, 4)
 
-			currencyRow.Size = UDim2.new(1, 0, 0, 34)
+			currencyRow.Size = UDim2.new(1, 0, 0, 28)
 			local pillGap = 6
 			local pillW = math.floor((usableW - pillGap * 2) / 3)
-			yenPill.Size = UDim2.fromOffset(pillW, 34)
-			gemsPill.Size = UDim2.fromOffset(pillW, 34)
-			ticketsPill.Size = UDim2.fromOffset(usableW - pillW * 2 - pillGap * 2, 34)
+			yenPill.Size = UDim2.fromOffset(pillW, 28)
+			gemsPill.Size = UDim2.fromOffset(pillW, 28)
+			ticketsPill.Size = UDim2.fromOffset(usableW - pillW * 2 - pillGap * 2, 28)
 
-			chipsRow.Size = UDim2.new(1, 0, 0, 28)
-			goalChip.Size = UDim2.new(1, 0, 0, 28)
-			worldBannerBtn.Size = UDim2.new(1, 0, 0, 44)
+			chipsRow.Size = UDim2.new(1, 0, 0, 26)
+			goalChip.Visible = false
+
+			worldBannerBtn.Parent = modesDrawer
+			worldBannerBtn.Position = UDim2.fromOffset(12, 50)
+			worldBannerBtn.Size = UDim2.new(1, -24, 0, 46)
+			modesGridHost.Position = UDim2.fromOffset(12, 102)
+			modesGridHost.Size = UDim2.new(1, -24, 1, -110)
 
 			topRight.AnchorPoint = Vector2.new(0, 0)
-			topRight.Position = UDim2.fromOffset(8, 166)
-			topRight.Size = UDim2.fromOffset(usableW, 96)
+			topRight.Position = UDim2.fromOffset(8, 70)
+			topRight.Size = UDim2.fromOffset(usableW, 48)
 			navGrid.HorizontalAlignment = Enum.HorizontalAlignment.Left
-			local btnW = math.floor((usableW - 12) / 3)
+			local btnGap = 4
+			local btnW = math.floor((usableW - btnGap * 4) / 5)
 			navGrid.CellSize = UDim2.fromOffset(btnW, 46)
-			navGrid.CellPadding = UDim2.fromOffset(6, 6)
+			navGrid.CellPadding = UDim2.fromOffset(btnGap, 4)
+			deckBtn.TextSize = 11
+			battleBtn.TextSize = 11
+			modesBtn.TextSize = 11
+			shopBtn.TextSize = 11
+			settingsBtn.TextSize = 11
 
-			modesDrawer.Size = UDim2.fromOffset(math.min(usableW, 350), 310)
-			local modeCellW = math.floor((math.min(usableW, 350) - 40) / 3)
+			local drawerW = math.min(usableW, 350)
+			modesDrawer.Size = UDim2.fromOffset(drawerW, 350)
+			local modeCellW = math.floor((drawerW - 40) / 3)
 			modesGrid.CellSize = UDim2.fromOffset(modeCellW, 46)
 
 			rollDock.Size = UDim2.fromOffset(math.min(usableW, 400), 104)
 			rollDock.Position = UDim2.new(0.5, 0, 1, -10)
 			dockConstraint.MinSize = Vector2.new(280, 100)
+		elseif isMedium then
+			topLeft.Position = UDim2.fromOffset(10, 8)
+			topLeft.Size = UDim2.fromOffset(300, 88)
+			topLeftLayout.Padding = UDim.new(0, 5)
+
+			currencyRow.Size = UDim2.new(1, 0, 0, 28)
+			yenPill.Size = UDim2.fromOffset(104, 28)
+			gemsPill.Size = UDim2.fromOffset(96, 28)
+			ticketsPill.Size = UDim2.fromOffset(88, 28)
+
+			chipsRow.Size = UDim2.new(1, 0, 0, 26)
+			goalChip.Visible = true
+			goalChip.Size = UDim2.new(1, 0, 0, 24)
+
+			worldBannerBtn.Parent = modesDrawer
+			worldBannerBtn.Position = UDim2.fromOffset(12, 50)
+			worldBannerBtn.Size = UDim2.new(1, -24, 0, 46)
+			modesGridHost.Position = UDim2.fromOffset(12, 102)
+			modesGridHost.Size = UDim2.new(1, -24, 1, -110)
+
+			topRight.AnchorPoint = Vector2.new(1, 0)
+			topRight.Position = UDim2.new(1, -10, 0, 8)
+			topRight.Size = UDim2.fromOffset(414, 50)
+			navGrid.HorizontalAlignment = Enum.HorizontalAlignment.Right
+			navGrid.CellSize = UDim2.fromOffset(78, 46)
+			navGrid.CellPadding = UDim2.fromOffset(6, 6)
+			deckBtn.TextSize = 11
+			battleBtn.TextSize = 12
+			modesBtn.TextSize = 12
+			shopBtn.TextSize = 12
+			settingsBtn.TextSize = 11
+
+			modesDrawer.Size = UDim2.fromOffset(348, 354)
+			modesGrid.CellSize = UDim2.fromOffset(102, 46)
+
+			rollDock.Size = UDim2.fromOffset(396, 104)
+			rollDock.Position = UDim2.new(0.5, 0, 1, -10)
+			dockConstraint.MinSize = Vector2.new(300, 100)
 		else
 			topLeft.Position = UDim2.fromOffset(12, 10)
-			topLeft.Size = UDim2.fromOffset(340, 174)
+			topLeft.Size = UDim2.fromOffset(340, 162)
 			topLeftLayout.Padding = UDim.new(0, 6)
 
 			currencyRow.Size = UDim2.new(1, 0, 0, 36)
@@ -515,15 +566,25 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 			ticketsPill.Size = UDim2.fromOffset(94, 36)
 
 			chipsRow.Size = UDim2.new(1, 0, 0, 30)
+			goalChip.Visible = true
 			goalChip.Size = UDim2.new(1, 0, 0, 30)
-			worldBannerBtn.Size = UDim2.new(1, 0, 0, 44)
+
+			worldBannerBtn.Parent = topLeft
+			worldBannerBtn.Size = UDim2.new(1, 0, 0, 46)
+			modesGridHost.Position = UDim2.fromOffset(12, 52)
+			modesGridHost.Size = UDim2.new(1, -24, 1, -60)
 
 			topRight.AnchorPoint = Vector2.new(1, 0)
 			topRight.Position = UDim2.new(1, -12, 0, 10)
-			topRight.Size = UDim2.fromOffset(550, 52)
+			topRight.Size = UDim2.fromOffset(540, 52)
 			navGrid.HorizontalAlignment = Enum.HorizontalAlignment.Right
 			navGrid.CellSize = UDim2.fromOffset(102, 46)
 			navGrid.CellPadding = UDim2.fromOffset(6, 6)
+			deckBtn.TextSize = 12
+			battleBtn.TextSize = 13
+			modesBtn.TextSize = 13
+			shopBtn.TextSize = 13
+			settingsBtn.TextSize = 12
 
 			modesDrawer.Size = UDim2.fromOffset(348, 320)
 			modesGrid.CellSize = UDim2.fromOffset(102, 48)

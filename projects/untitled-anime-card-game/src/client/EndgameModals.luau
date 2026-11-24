@@ -539,7 +539,7 @@ function EndgameModals.build(parent: Instance, api: any, _theme: any): EndgameCo
 						"Unequip",
 						pal.accentRed or Color3.fromRGB(205, 65, 65),
 						function()
-							local res = callServer({ action = "UnequipCharm", slot = slot })
+							local res = callServer({ action = "UnequipCharm", charmId = tostring(cId), slot = slot })
 							if res.ok then
 								setStatus("Charm unequipped", false)
 								refreshMode("Charms")
@@ -557,29 +557,43 @@ function EndgameModals.build(parent: Instance, api: any, _theme: any): EndgameCo
 				end
 				order += 1
 			end
+			local recipes = if type(data.recipes or data.catalog) == "table" then (data.recipes or data.catalog) else {}
+			local catalogById: { [string]: { [string]: any } } = {}
+			for _, rec in ipairs(recipes) do
+				if type(rec) == "table" and rec.id then
+					catalogById[tostring(rec.id)] = rec
+				end
+			end
 			local owned = if type(data.owned) == "table" then data.owned else {}
-			for _, item in ipairs(owned) do
-				local cId = tostring(item.id or item)
-				local cName = tostring(item.name or cId)
-				addActionRow(
-					order,
-					"Owned: " .. cName,
-					tostring(item.description or "Tap Equip to place in next open slot."),
-					"Equip",
-					pal.accentBlue,
-					function()
-						local res = callServer({ action = "EquipCharm", charmId = cId, slot = 1 })
-						if res.ok then
-							setStatus("Charm equipped!", false)
-							refreshMode("Charms")
-						else
-							setStatus(tostring(res.error or "Equip failed"), true)
-						end
+			local ownedIds: { string } = {}
+			local ownedMeta: { [string]: { [string]: any } } = {}
+			for k, v in pairs(owned) do
+				if type(k) == "string" and v == true then
+					table.insert(ownedIds, k)
+				elseif type(v) == "table" then
+					local idStr = tostring(v.id or k)
+					table.insert(ownedIds, idStr)
+					ownedMeta[idStr] = v
+				elseif type(v) == "string" then
+					table.insert(ownedIds, v)
+				end
+			end
+			table.sort(ownedIds)
+			for _, cId in ipairs(ownedIds) do
+				local meta = ownedMeta[cId] or catalogById[cId]
+				local cName = tostring((meta and meta.name) or cId)
+				local cDesc = tostring((meta and meta.description) or "Tap Equip to place in next open slot.")
+				addActionRow(order, "Owned: " .. cName, cDesc, "Equip", pal.accentBlue, function()
+					local res = callServer({ action = "EquipCharm", charmId = cId, slot = 1 })
+					if res.ok then
+						setStatus("Charm equipped!", false)
+						refreshMode("Charms")
+					else
+						setStatus(tostring(res.error or "Equip failed"), true)
 					end
-				)
+				end)
 				order += 1
 			end
-			local recipes = if type(data.recipes or data.catalog) == "table" then (data.recipes or data.catalog) else {}
 			for _, rec in ipairs(recipes) do
 				local rId = tostring(rec.id or "")
 				local rName = tostring(rec.name or rId)
@@ -638,7 +652,13 @@ function EndgameModals.build(parent: Instance, api: any, _theme: any): EndgameCo
 		applyTheme = function()
 			local pal = Theme.getPalette()
 			panel.BackgroundColor3 = pal.bgPanel
+			local panelStroke = panel:FindFirstChildOfClass("UIStroke")
+			if panelStroke then
+				panelStroke.Color = pal.border
+			end
 			titleLabel.TextColor3 = pal.textPrimary
+			statusLabel.TextColor3 = pal.textSecondary or pal.textPrimary
+			closeBtn.BackgroundColor3 = pal.accentRed or Color3.fromRGB(205, 65, 65)
 			if activeMode and backdrop.Visible then
 				renderCurrent(activeMode, lastData)
 			end
@@ -647,6 +667,10 @@ function EndgameModals.build(parent: Instance, api: any, _theme: any): EndgameCo
 			cachedState = state
 		end,
 	}
+
+	Theme.onChanged(function()
+		controller.applyTheme()
+	end)
 
 	return controller
 end

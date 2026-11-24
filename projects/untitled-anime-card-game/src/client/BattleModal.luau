@@ -494,8 +494,20 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		bondsLbl.ZIndex = 39
 
 		for idx, stage in currentStages do
+			local stageAny = stage :: any
+			local stageId = tostring(stage.id or stageAny.stageId or ("stage_" .. tostring(idx)))
+			local stageName = tostring(stage.name or stageId)
+			local stageSubtitle = tostring(stage.subtitle or ("Act " .. tostring(stageAny.actNumber or idx)))
+			local stageRewardSummary = tostring(
+				stage.rewardSummary
+					or string.format(
+						"+%d Yen  +%d Gems",
+						tonumber(stageAny.yenReward) or 0,
+						tonumber(stageAny.gemsReward) or 0
+					)
+			)
 			local row = Instance.new("Frame")
-			row.Name = "Stage_" .. stage.id
+			row.Name = "Stage_" .. stageId
 			row.LayoutOrder = idx
 			row.Size = UDim2.new(1, 0, 0, 88)
 			row.BackgroundColor3 = palette.bgCard
@@ -510,9 +522,9 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 				0.1
 			)
 
-			local nameText = stage.name
+			local nameText = stageName
 			if stage.isBoss then
-				local stripped = string.gsub(stage.name, "^%s*%[?[Bb][Oo][Ss][Ss]%]?:?%s*", "")
+				local stripped = string.gsub(stageName, "^%s*%[?[Bb][Oo][Ss][Ss]%]?:?%s*", "")
 				nameText = "BOSS: " .. stripped
 			end
 			local nameLbl = Components.makeLabel(
@@ -533,8 +545,8 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 				"Info",
 				string.format(
 					"%s  |  Rec Power: %s  (Yours: %s)",
-					stage.subtitle,
-					Components.formatNumber(stage.recommendedPower),
+					stageSubtitle,
+					Components.formatNumber(tonumber(stage.recommendedPower) or 0),
 					Components.formatNumber(currentDeckPower)
 				),
 				UDim2.new(1, -152, 0, 20),
@@ -549,7 +561,7 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 			local rewardLbl = Components.makeLabel(
 				row,
 				"Reward",
-				"Rewards: " .. stage.rewardSummary,
+				"Rewards: " .. stageRewardSummary,
 				UDim2.new(1, -152, 0, 18),
 				UDim2.fromOffset(12, 58),
 				Theme.FONT_MONO,
@@ -573,9 +585,9 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 			fightBtn.ZIndex = 40
 			if unlocked then
 				fightBtn.MouseButton1Click:Connect(function()
-					lastStageId = stage.id
-					subLbl.Text = "Starting " .. stage.name .. "..."
-					callbacks.onStartBattle(stage.id)
+					lastStageId = stageId
+					subLbl.Text = "Starting " .. stageName .. "..."
+					callbacks.onStartBattle(stageId)
 				end)
 			end
 		end
