@@ -452,16 +452,25 @@ def add_operations_for_input(page: Any, op_input_id: str, sys_name: str, ops: li
 
 
 def extract_generated_api_key(page: Any) -> str | None:
-    """Read generated Open Cloud secret directly from the Creator Hub confirmation dialog."""
+    """Read generated Open Cloud secret directly from Creator Hub (dialog or Copy Key section)."""
     try:
         candidates = page.evaluate(
             """() => {
                 const vals = [];
-                const scopes = Array.from(document.querySelectorAll('[role="dialog"], .MuiDialog-root, main'));
+                const scopes = Array.from(document.querySelectorAll('[role="dialog"], .MuiDialog-root, main, body'));
                 for (const root of scopes) {
                     for (const el of root.querySelectorAll('input, textarea, code, pre')) {
                         const v = (el.value !== undefined ? el.value : el.innerText) || '';
                         if (v && v.trim().length >= 32) vals.push(v.trim());
+                    }
+                    // Creator Hub displays the generated key inside a leaf span/p right next to Copy Key To Clipboard
+                    for (const el of root.querySelectorAll('span, p, div')) {
+                        if (el.children.length === 0) {
+                            const t = (el.innerText || '').trim();
+                            if (/^[A-Za-z0-9+/_=-]{64,}$/.test(t) && !t.startsWith('http')) {
+                                vals.push(t);
+                            }
+                        }
                     }
                 }
                 return vals;
@@ -476,6 +485,34 @@ def extract_generated_api_key(page: Any) -> str | None:
     except Exception:
         return None
     return None
+
+
+def confirm_unrestricted_access_dialog_if_present(page: Any) -> bool:
+    """Acknowledge Creator Hub's Unrestricted Experience Access warning dialog if open."""
+    try:
+        dlg = page.locator('[role="dialog"], .MuiDialog-root').filter(
+            has_text=re.compile(r"Unrestricted Experience Access|I understand the security risks", re.I)
+        ).first
+        if dlg.count() == 0 or not dlg.is_visible():
+            return False
+        cb = dlg.locator('input[type="checkbox"]').first
+        if cb.count() > 0:
+            if not cb.is_checked():
+                cb.check(force=True)
+                page.wait_for_timeout(250)
+        else:
+            lbl = dlg.get_by_text(re.compile(r"I understand the security risks", re.I)).first
+            if lbl.count() > 0:
+                lbl.click(timeout=3000)
+                page.wait_for_timeout(250)
+        confirm_btn = dlg.get_by_role("button", name=re.compile(r"Save\s*&\s*Generate Key", re.I)).first
+        if confirm_btn.count() > 0 and confirm_btn.is_visible() and confirm_btn.is_enabled():
+            confirm_btn.click(timeout=5000)
+            page.wait_for_timeout(600)
+            return True
+    except Exception:
+        return False
+    return False
 
 
 def write_secret_file(path: str, secret: str) -> None:
@@ -564,12 +601,17 @@ def provision_api_key(
     save_btn.scroll_into_view_if_needed(timeout=5000)
     save_btn.click(timeout=5000)
 
-    # Poll for either generated key OR 2FA/captcha prompt
-    deadline = time.monotonic() + 20.0
+    # Poll for Unrestricted Access confirmation dialog, generated key, OR 2FA/captcha prompt
+    deadline = time.monotonic() + 25.0
+    confirmed_unrestricted = False
     while time.monotonic() < deadline:
         blocker = detect_blocker(page)
         if blocker:
             return blocker
+        if not confirmed_unrestricted and confirm_unrestricted_access_dialog_if_present(page):
+            confirmed_unrestricted = True
+            deadline = max(deadline, time.monotonic() + 15.0)
+            continue
         secret = extract_generated_api_key(page)
         if secret:
             write_secret_file(key_out, secret)
