@@ -140,9 +140,9 @@ end
 local function attachSign(parentPart: BasePart, title: string, subtitle: string, accent: Color3, offset: Vector3?)
 	local gui = Instance.new("BillboardGui")
 	gui.Name = "TitleSign"
-	gui.Size = UDim2.fromOffset(220, 62)
+	gui.Size = UDim2.fromScale(7.2, 2.1)
 	gui.StudsOffset = offset or Vector3.new(0, 6, 0)
-	gui.MaxDistance = 75
+	gui.MaxDistance = 50
 	gui.AlwaysOnTop = false
 	gui.Parent = parentPart
 
@@ -163,8 +163,8 @@ local function attachSign(parentPart: BasePart, title: string, subtitle: string,
 	stroke.Parent = frame
 
 	local titleLbl = Instance.new("TextLabel")
-	titleLbl.Size = UDim2.new(1, -12, 0.56, 0)
-	titleLbl.Position = UDim2.fromOffset(6, 4)
+	titleLbl.Size = UDim2.fromScale(0.92, 0.52)
+	titleLbl.Position = UDim2.fromScale(0.04, 0.06)
 	titleLbl.BackgroundTransparency = 1
 	titleLbl.Font = Enum.Font.GothamBold
 	titleLbl.Text = title
@@ -173,8 +173,8 @@ local function attachSign(parentPart: BasePart, title: string, subtitle: string,
 	titleLbl.Parent = frame
 
 	local subLbl = Instance.new("TextLabel")
-	subLbl.Size = UDim2.new(1, -12, 0.36, 0)
-	subLbl.Position = UDim2.new(0, 6, 0.58, 0)
+	subLbl.Size = UDim2.fromScale(0.92, 0.36)
+	subLbl.Position = UDim2.fromScale(0.04, 0.58)
 	subLbl.BackgroundTransparency = 1
 	subLbl.Font = Enum.Font.GothamMedium
 	subLbl.Text = subtitle
