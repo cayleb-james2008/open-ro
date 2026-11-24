@@ -281,7 +281,13 @@ impl Task {
             .claimed_files
             .iter()
             .chain(self.written_files.iter())
-            .any(|p| (p.starts_with("src/") || p.starts_with("ui/")) && p != "src/shared/AssetIds.luau");
+            .any(|p| {
+                (p.starts_with("src/") || p.starts_with("ui/"))
+                    && !matches!(
+                        p.as_str(),
+                        "src/shared/AssetIds.luau" | "src/shared/ProductIds.luau"
+                    )
+            });
         touches_runtime_code || (self.kind == TaskKind::GameCode && !has_files)
     }
 
@@ -2640,8 +2646,15 @@ fn is_write_or_submit_tool(tool: &str) -> bool {
             | "art_generate"
             | "image_process"
             | "art_pack_card"
+            | "assets_authorise"
             | "assets_codegen"
             | "assets_upload"
+            | "creator_hub_setup"
+            | "creator_hub_configure"
+            | "products_sync"
+            | "products_codegen"
+            | "project_publish"
+            | "universe_set"
             | "adapter_invoke"
             | "create_task"
             | "verify_task"
@@ -2650,6 +2663,10 @@ fn is_write_or_submit_tool(tool: &str) -> bool {
             | "unknown_add"
             | "unknown_update"
     )
+}
+
+fn is_action_required_value(val: &Value) -> bool {
+    val.get("status").and_then(Value::as_str) == Some("action_required")
 }
 
 fn utf8_prefix_max_bytes(s: &str, max_bytes: usize) -> &str {
@@ -2972,10 +2989,11 @@ fn run_agent_wake_cycle(
                 let tool_out =
                     execute_agent_tool(shared, mgr, handle, agent_name, gen, &tool, &args);
                 let ok = tool_out.is_ok();
-                if ok && is_write_or_submit_tool(&tool) {
+                let action_required = tool_out.as_ref().is_ok_and(is_action_required_value);
+                if ok && !action_required && is_write_or_submit_tool(&tool) {
                     did_write_or_submit = true;
                 }
-                if ok && (is_write_or_submit_tool(&tool) || tool == "board_post") {
+                if ok && !action_required && (is_write_or_submit_tool(&tool) || tool == "board_post") {
                     recent_reads.clear();
                     dup_read_in_turn = None;
                 }
@@ -3022,7 +3040,7 @@ fn run_agent_wake_cycle(
                     &format!("{tool} -> {}", if ok { "ok" } else { "error" }),
                     json!({ "tool": tool, "ok": ok, "result": tool_out.as_ref().ok(), "error": tool_out.as_ref().err() }),
                 );
-                if !ok {
+                if !ok || action_required {
                     batch_aborted = true;
                     break;
                 }
@@ -3208,11 +3226,12 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "Follow Study -> Build -> Check -> Refine: check `study_status` so gaps are investigated with `evidence_record`/`unknown_add` before coding and checked with `mechanics_check`/`project_check`.\n",
             "To wait for workers, return {\"done\":true,\"summary\":\"waiting\"} — NEVER poll board_read.\n",
             "Call `finish_run` once all tasks are `done`.\n",
-            "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, study_status, unknowns_list, evidence_list, finish_run."
+            "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, study_status, unknowns_list, evidence_list, opencloud_status, creator_hub_status, creator_hub_setup, creator_hub_configure, assets_authorise, assets_upload, assets_codegen, products_sync, products_codegen, project_publish, universe_get, universe_set, finish_run.\n",
+            "Cloud/Publish rules: check `opencloud_status` / `creator_hub_status` before publishing; `creator_hub_*` uses loopback CDP and NEVER bypasses login/2FA/CAPTCHA (if `status:\"action_required\"`, stop and report `blocked_reason`/`url` to owner); `project_publish` with `versionType:\"Published\"` REQUIRES explicit owner approval and `{\"versionType\":\"Published\",\"confirm\":true}` (default `versionType` is `\"Saved\"`); never self-approve product prices."
         ),
         "verifier" => concat!(
             "You are the Teamwork verifier.\n",
-            "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `luau_check`, `project_check`, `project_run_lune`, `project_build`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`).\n",
+            "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `luau_check`, `project_check`, `project_run_lune`, `project_build`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`, `opencloud_status`, `creator_hub_status`, `universe_get`).\n",
             "For game_code tasks (or `src/` / `ui/` changes), you MUST run `project_playtest` with `{\"task_id\":\"<id>\"}` and confirm 0 console errors BEFORE calling `verify_task` with `passed: true`.\n",
             "For `tools/**/*.luau` tasks (not touching `src/` or `ui/`), run `project_run_lune` (confirm `passed: true`) instead of `project_playtest` BEFORE calling `verify_task(passed=true)`.\n",
             "If checks, contracts (`mechanics_check`), or critical unknowns fail, call `verify_task` with `passed: false` and clear failure notes."
@@ -3228,7 +3247,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
             "Follow Study -> Build -> Check -> Refine: check `study_status`/`unknowns_list`, record verified behavior with `evidence_record`/`unknown_add`/`unknown_update` (capping guesswork), cite `ev_*` IDs in `docs/mechanics.json` (`mechanics_check`), build, check (`project_check`/`project_playtest`, pass `\"force\":true` to bypass `KeptChecks`), and refine.\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `assets_codegen`, `assets_upload`.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`.\n",
             "Formatting: `project_check` with `{\"format\":true}` or `project_format` auto-formats your claimed `.luau` files with `stylua` instead of hand-editing whitespace.\n",
             "Asset arg signatures:\n",
             "- reference_search: {\"character\":\"...\",\"show\":\"...\",\"card_id\":\"...\"}\n",
@@ -3236,6 +3255,11 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "- image_process: {\"output\":\"art/ui/x.png\",\"input\":\"...?\",\"ops\":[{\"op\":\"canvas\",\"width\":256,\"height\":256,\"color\":\"#00000000\"},{\"op\":\"draw\",\"shapes\":[...]}]} (or \"script\")\n",
             "- mesh_generate: {\"name\":\"PropName\",\"parts\":[{\"shape\":\"box|cylinder|sphere|cone|torus|wedge\",\"size\":[w,d,h],\"pos\":[x,y,z],\"color\":\"#hex\"}],\"script\":\"...?\"}\n",
             "- audio_generate: {\"name\":\"sfx_name\",\"preset\":\"summon_roll|mythic_fanfare|battle_crit|potion_drink|ui_click|level_up\",\"duration_ms\":1200,\"out_path\":\"assets/audio/sfx.wav\"}\n",
+            "Cloud & Creator Hub rules & signatures:\n",
+            "- creator_hub_status {\"cdp_url\":\"http://127.0.0.1:9222\",\"check_login\":true,\"save_creator\":true} / creator_hub_setup / creator_hub_configure: loopback CDP only; NEVER bypass login/2FA/CAPTCHA — if `status:\"action_required\"`, stop and report `blocked_reason`/`url` to owner; keys stay in 0600 SecretStore (never logged)\n",
+            "- assets_authorise {\"paths\":[\"art/**\"]} -> assets_upload {\"paths\":[...]} -> assets_codegen {}\n",
+            "- products_sync {\"dry_run\":false,\"default_for_sale\":false,\"auto_codegen\":true} -> products_codegen {} (emits src/shared/ProductIds.luau; never self-approve product prices)\n",
+            "- project_publish {\"versionType\":\"Saved\"|\"Published\",\"confirm\":true?} (`versionType:\"Published\"` REQUIRES explicit owner approval + `confirm:true`); universe_get {} / universe_set {\"settings\":{...}}\n",
             "When your task is ready for verification, call `submit_task` to hand it to `@verifier`."
         ),
     };
@@ -3681,12 +3705,72 @@ fn execute_agent_tool(
             record_generated_asset_files(handle, agent_name, tool, args, &res);
             Ok(res)
         }
+        "opencloud_status" => run_opencloud_route(shared, handle, "GET", "/api/opencloud", args),
+        "creator_hub_status" => {
+            let path = creator_hub_status_path(args);
+            run_opencloud_route(shared, handle, "GET", &path, &json!({}))
+        }
+        "creator_hub_setup" => {
+            let route_path = if args.get("link_project").and_then(Value::as_bool) == Some(false) {
+                "/api/creator-hub/setup"
+            } else {
+                "/api/projects/active/creator-hub/setup"
+            };
+            let res = run_opencloud_route(shared, handle, "POST", route_path, args)?;
+            if !is_action_required_value(&res) {
+                record_generated_asset_files(handle, agent_name, tool, args, &res);
+            }
+            Ok(res)
+        }
+        "creator_hub_configure" => {
+            run_opencloud_route(shared, handle, "POST", "/api/projects/active/creator-hub/configure", args)
+        }
+        "assets_authorise" => {
+            let res = run_opencloud_route(shared, handle, "POST", "/api/projects/active/assets/authorise", args)?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
         "assets_codegen" => {
             let res = run_opencloud_route(shared, handle, "POST", "/api/projects/active/assets/codegen", args)?;
             record_generated_asset_files(handle, agent_name, tool, args, &res);
             Ok(res)
         }
-        "assets_upload" => run_opencloud_route(shared, handle, "POST", "/api/projects/active/assets/upload", args),
+        "assets_upload" => {
+            let res = run_opencloud_route(shared, handle, "POST", "/api/projects/active/assets/upload", args)?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
+        "products_sync" => {
+            let res = run_opencloud_route(shared, handle, "POST", "/api/projects/active/products/sync", args)?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
+        "products_codegen" => {
+            let res = run_opencloud_route(shared, handle, "POST", "/api/projects/active/products/codegen", args)?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
+        "project_publish" => {
+            if args
+                .get("versionType")
+                .and_then(Value::as_str)
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case("Published"))
+                && args.get("confirm").and_then(Value::as_bool) != Some(true)
+            {
+                return Err(
+                    "Published makes the game live. Ask the owner first, then send confirm: true."
+                        .to_string(),
+                );
+            }
+            run_opencloud_route(shared, handle, "POST", "/api/projects/active/publish", args)
+        }
+        "universe_get" => {
+            run_opencloud_route(shared, handle, "GET", "/api/projects/active/universe", args)
+        }
+        "universe_set" => {
+            let payload = normalize_universe_set_args(args);
+            run_opencloud_route(shared, handle, "POST", "/api/projects/active/universe", &payload)
+        }
         "adapter_list" => {
             let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
             let store = crate::secrets::SecretStore::for_data_dir(data_dir);
@@ -5603,8 +5687,39 @@ fn collect_generated_asset_paths(tool: &str, res: &Value) -> Vec<String> {
             }
             raw.push("art/ART-LOG.jsonl".to_string());
         }
-        "assets_codegen" => {
+        "assets_codegen" | "products_codegen" => {
             push_str(&mut raw, res.get("path").and_then(Value::as_str));
+        }
+        "assets_upload" => {
+            if res.pointer("/summary/dry_run").and_then(Value::as_bool) != Some(true) {
+                raw.push("assets.lock.json".to_string());
+                push_str(
+                    &mut raw,
+                    res.pointer("/summary/asset_ids_luau/path")
+                        .and_then(Value::as_str),
+                );
+            }
+        }
+        "products_sync" => {
+            if res.get("dry_run").and_then(Value::as_bool) != Some(true) {
+                raw.push("openro.project.json".to_string());
+                push_str(
+                    &mut raw,
+                    res.pointer("/product_ids_luau/path")
+                        .and_then(Value::as_str),
+                );
+            }
+        }
+        "assets_authorise" => {
+            raw.push("openro.project.json".to_string());
+        }
+        "creator_hub_setup" => {
+            if !is_action_required_value(res)
+                && (res.get("universeId").is_some_and(|v| !v.is_null())
+                    || res.get("placeId").is_some_and(|v| !v.is_null()))
+            {
+                raw.push("openro.project.json".to_string());
+            }
         }
         "art_generate" => {
             push_str(&mut raw, res.get("path").and_then(Value::as_str));
@@ -5692,6 +5807,81 @@ fn tool_audio_generate(
     crate::audio_synth::generate_audio_asset_for_project(data_dir, Some(&project_dir), args)
 }
 
+fn percent_encode_query_value(s: &str) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            let _ = write!(&mut out, "%{b:02X}");
+        }
+    }
+    out
+}
+
+fn parse_arg_flag(args: &Value, key: &str) -> Option<bool> {
+    let v = args.get(key)?;
+    if let Some(b) = v.as_bool() {
+        return Some(b);
+    }
+    if let Some(n) = v.as_i64() {
+        return Some(n != 0);
+    }
+    v.as_str().and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" => Some(true),
+        "0" | "false" | "no" => Some(false),
+        _ => None,
+    })
+}
+
+fn creator_hub_status_path(args: &Value) -> String {
+    let check_login = parse_arg_flag(args, "check_login").unwrap_or(true);
+    let save_creator = parse_arg_flag(args, "save_creator").unwrap_or(check_login);
+    let mut params = Vec::with_capacity(3);
+    if let Some(cdp) = args
+        .get("cdp_url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        params.push(format!("cdp_url={}", percent_encode_query_value(cdp)));
+    }
+    params.push(format!("check_login={}", if check_login { "1" } else { "0" }));
+    params.push(format!("save_creator={}", if save_creator { "1" } else { "0" }));
+    format!("/api/creator-hub/status?{}", params.join("&"))
+}
+
+fn normalize_universe_set_args(args: &Value) -> Value {
+    if args.get("settings").is_some() {
+        return args.clone();
+    }
+    let Some(obj) = args.as_object() else {
+        return args.clone();
+    };
+    const FIELDS: &[&str] = &[
+        "displayName",
+        "description",
+        "visibility",
+        "voiceChatEnabled",
+        "desktopEnabled",
+        "mobileEnabled",
+        "tabletEnabled",
+        "consoleEnabled",
+        "vrEnabled",
+    ];
+    if !FIELDS.iter().any(|k| obj.contains_key(*k)) {
+        return args.clone();
+    }
+    let mut settings = serde_json::Map::new();
+    for (k, v) in obj {
+        if k != "task_id" {
+            settings.insert(k.clone(), v.clone());
+        }
+    }
+    json!({ "settings": settings })
+}
+
 fn run_opencloud_route(
     shared: &Arc<Shared>,
     handle: &Arc<RunHandle>,
@@ -5699,9 +5889,10 @@ fn run_opencloud_route(
     path: &str,
     args: &Value,
 ) -> Result<Value, String> {
+    let (route_path, route_query) = path.split_once('?').unwrap_or((path, ""));
     let project_dir = handle.state.lock().unwrap().project_dir.clone();
     let mut body = args.clone();
-    if path == "/api/art/generate" && body.get("provider").is_none() {
+    if route_path == "/api/art/generate" && body.get("provider").is_none() {
         if let Some(prov) = shared.config.lock().unwrap().image_provider.clone() {
             if !prov.is_empty() {
                 body["provider"] = json!(prov);
@@ -5711,19 +5902,28 @@ fn run_opencloud_route(
     let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
     let store = crate::secrets::SecretStore::for_data_dir(data_dir);
     let resolver = |_: &str| Some(project_dir.clone());
+    let active_project = if route_path == "/api/creator-hub/setup" {
+        None
+    } else {
+        Some(project_dir.clone())
+    };
     let ctx = crate::opencloud::Ctx {
         data_dir,
         store,
         resolve: &resolver,
-        active_project: Some(project_dir.clone()),
+        active_project,
     };
-    match crate::opencloud::route(&ctx, method, path, "", &body) {
+    match crate::opencloud::route(&ctx, method, route_path, route_query, &body) {
         Some(crate::opencloud::Reply::Json(code, val)) => {
-            if code < 400 && val.get("ok").and_then(|v| v.as_bool()) != Some(false) {
+            if code < 400
+                && (val.get("ok").and_then(|v| v.as_bool()) != Some(false)
+                    || is_action_required_value(&val))
+            {
                 Ok(val)
             } else {
                 Err(val
                     .get("error")
+                    .or_else(|| val.get("message"))
                     .and_then(|v| v.as_str())
                     .map(String::from)
                     .unwrap_or_else(|| format!("request failed with HTTP {code}: {val}")))
@@ -5732,7 +5932,7 @@ fn run_opencloud_route(
         Some(crate::opencloud::Reply::Bytes(mime, bytes)) => {
             Ok(json!({ "ok": true, "mime": mime, "bytes": bytes.len() }))
         }
-        None => Err(format!("opencloud route not available: {path}")),
+        None => Err(format!("opencloud route not available: {route_path}")),
     }
 }
 
@@ -6054,5 +6254,725 @@ mod tests {
         let huge = vec![format!("tool_result (project_files): {}", "é".repeat(20_000))];
         let capped_single = cap_turn_tool_results(&huge, false, false);
         assert!(capped_single.len() <= MAX_TURN_TOOL_RESULT_BYTES);
+    }
+
+    struct EnvRestore(Vec<(String, Option<String>)>);
+    impl EnvRestore {
+        fn set(pairs: &[(&str, &str)]) -> Self {
+            let mut prev = Vec::new();
+            for (k, v) in pairs {
+                prev.push(((*k).to_string(), std::env::var(k).ok()));
+                std::env::set_var(k, v);
+            }
+            EnvRestore(prev)
+        }
+    }
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (k, old) in self.0.drain(..).rev() {
+                match old {
+                    Some(v) => std::env::set_var(&k, v),
+                    None => std::env::remove_var(&k),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cloud_and_creator_hub_tools_end_to_end_gap_70() {
+        use std::io::Read as _;
+        use std::net::TcpListener;
+        use std::sync::atomic::AtomicBool;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _env_guard = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base_tmp = std::env::var("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir());
+        let root = base_tmp.join(format!("openro-team-gap70-{}-{nanos}", std::process::id()));
+        let data_dir = root.join("data");
+        let secrets_dir = root.join("secrets");
+        let project_dir = data_dir.join("projects").join("uacg-team");
+        std::fs::create_dir_all(project_dir.join("art/store")).unwrap();
+        std::fs::create_dir_all(project_dir.join("src/shared")).unwrap();
+        std::fs::create_dir_all(project_dir.join("build/builds")).unwrap();
+
+        let png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let png = crate::assets::decode_base64(png_b64).unwrap();
+        std::fs::write(project_dir.join("art/store/icon.png"), &png).unwrap();
+        std::fs::write(project_dir.join("build/game.rbxl"), b"MOCK_RBXL").unwrap();
+        std::fs::write(
+            project_dir.join("build/builds/b1.json"),
+            json!({ "build_id": "b1", "path": "build/game.rbxl", "at": 1 }).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            project_dir.join("openro.project.json"),
+            json!({
+                "version": 1,
+                "name": "Untitled Anime Card Game",
+                "universeId": null,
+                "placeId": null,
+                "products": [
+                    { "key": "vip", "kind": "game_pass", "name": "VIP", "description": "VIP pass", "priceRobux": 349, "priceApproved": true }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mock_cmd = root.join("mock_creator_hub.py");
+        std::fs::write(
+            &mock_cmd,
+            r#"#!/usr/bin/env python3
+import argparse, json, os, sys
+p = argparse.ArgumentParser()
+p.add_argument("--action", required=True)
+p.add_argument("--cdp-url", required=True)
+p.add_argument("--key-out", default=None)
+p.add_argument("--check-login", action="store_true")
+args = p.parse_args()
+spec = json.loads(sys.stdin.read() or "{}")
+
+if args.action == "status":
+    print(json.dumps({
+        "ok": True,
+        "cdp_reachable": True,
+        "browser_version": "Chrome/135.0-mock",
+        "logged_in": args.check_login,
+        "user": {"id": "1170918805", "name": "Chrono_H3X", "displayName": "Chrono"} if args.check_login else None,
+        "experiences": [{"universeId": "10771116814", "rootPlaceId": "112916648108736", "name": "Untitled Anime Card Game"}] if args.check_login else []
+    }))
+    sys.exit(0)
+
+if args.action == "setup":
+    if spec.get("key_name") == "TRIGGER_2FA":
+        print(json.dumps({
+            "ok": False,
+            "status": "action_required",
+            "blocked_reason": "2fa_required",
+            "url": "https://create.roblox.com/dashboard/credentials",
+            "message": "Complete 2FA in the open browser tab."
+        }))
+        sys.exit(0)
+    raw_secret = "TEAMWORK_OPENCLOUD_KEY_ABC9876"
+    if args.key_out and spec.get("need_key", True):
+        with open(args.key_out, "w", encoding="utf-8") as f:
+            f.write(raw_secret)
+    print(json.dumps({
+        "ok": True,
+        "status": "ready",
+        "user": {"id": "1170918805", "name": "Chrono_H3X", "displayName": "Chrono"},
+        "universeId": "10771116814",
+        "placeId": "112916648108736",
+        "experience_name": "Untitled Anime Card Game " + raw_secret,
+        "experiences": [{"universeId": "10771116814", "rootPlaceId": "112916648108736", "name": "Untitled Anime Card Game"}]
+    }))
+    sys.exit(0)
+
+if args.action == "configure":
+    configured = []
+    if spec.get("private_servers"):
+        configured.append("private_servers")
+    if spec.get("icon_abs_path"):
+        configured.append("icon")
+    print(json.dumps({
+        "ok": True,
+        "status": "ready",
+        "configured": configured,
+        "manual_steps_remaining": []
+    }))
+    sys.exit(0)
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&mock_cmd, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        // Local mock Open Cloud + OpenAI fake model HTTP endpoint.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let oc_port = listener.local_addr().unwrap().port();
+        let stop_oc = Arc::new(AtomicBool::new(false));
+        let stop_oc_thr = Arc::clone(&stop_oc);
+        let model_turns = Arc::new(AtomicUsize::new(0));
+        let model_turns_thr = Arc::clone(&model_turns);
+        let oc_thread = std::thread::spawn(move || {
+            while !stop_oc_thr.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        let mut header_end = None;
+                        let mut expected_len = 0usize;
+                        loop {
+                            let n = match stream.read(&mut chunk) {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => n,
+                            };
+                            buf.extend_from_slice(&chunk[..n]);
+                            if header_end.is_none() {
+                                if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                    header_end = Some(pos + 4);
+                                    let head = String::from_utf8_lossy(&buf[..pos]);
+                                    for line in head.lines() {
+                                        if let Some((k, v)) = line.split_once(':') {
+                                            if k.trim().eq_ignore_ascii_case("content-length") {
+                                                expected_len = v.trim().parse().unwrap_or(0);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(he) = header_end {
+                                if buf.len() >= he + expected_len {
+                                    break;
+                                }
+                            }
+                        }
+                        let req_line = String::from_utf8_lossy(&buf)
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
+                        let mut parts = req_line.split_whitespace();
+                        let method = parts.next().unwrap_or("");
+                        let path = parts.next().unwrap_or("");
+                        let resp_body = if method == "POST" && path == "/v1/chat/completions" {
+                            let step_i = model_turns_thr.fetch_add(1, Ordering::SeqCst);
+                            let content = if step_i == 0 {
+                                json!({
+                                    "steps": [
+                                        { "tool": "creator_hub_setup", "args": { "key_name": "TRIGGER_2FA" } },
+                                        { "tool": "project_write_file", "args": { "path": "src/ShouldNotExist.luau", "content": "return 1" } }
+                                    ]
+                                })
+                                .to_string()
+                            } else {
+                                json!({ "done": true, "summary": "Stopped on 2fa_required blocker" }).to_string()
+                            };
+                            json!({
+                                "choices": [{
+                                    "index": 0,
+                                    "message": { "role": "assistant", "content": content },
+                                    "finish_reason": "stop"
+                                }]
+                            })
+                        } else if method == "POST" && path == "/assets/v1/assets" {
+                            json!({
+                                "done": true,
+                                "path": "operations/op-1",
+                                "response": {
+                                    "assetId": "777001",
+                                    "moderationResult": { "moderationState": "Approved" }
+                                }
+                            })
+                        } else if method == "GET" && path.contains("/game-passes/creator") {
+                            json!({ "gamePasses": [] })
+                        } else if method == "POST" && path.ends_with("/game-passes") {
+                            json!({ "gamePassId": "990011" })
+                        } else if method == "POST" && path.contains("versionType=Saved") {
+                            json!({ "versionNumber": 7 })
+                        } else if method == "POST" && path.contains("versionType=Published") {
+                            json!({ "versionNumber": 8 })
+                        } else if method == "GET" && path.starts_with("/cloud/v2/universes/") {
+                            json!({ "displayName": "Untitled Anime Card Game", "visibility": "PRIVATE" })
+                        } else if method == "PATCH" && path.starts_with("/cloud/v2/universes/") {
+                            json!({ "displayName": "Untitled Anime Card Game", "visibility": "PUBLIC" })
+                        } else {
+                            json!({ "ok": true })
+                        };
+                        let body_s = resp_body.to_string();
+                        let raw = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body_s.len(),
+                            body_s
+                        );
+                        let _ = stream.write_all(raw.as_bytes());
+                        let _ = stream.flush();
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let oc_base = format!("http://127.0.0.1:{oc_port}");
+        let model_base = format!("http://127.0.0.1:{oc_port}/v1");
+        let _env = EnvRestore::set(&[
+            ("OPENRO_SECRETS_DIR", secrets_dir.to_str().unwrap()),
+            ("OPENRO_CREATOR_HUB_CMD", mock_cmd.to_str().unwrap()),
+            ("OPENRO_OPENCLOUD_BASE", &oc_base),
+        ]);
+
+        let model = ModelClient::new(model_base.clone(), "test".into(), Some("mock-key".into()));
+        let place = crate::place::LocalPlace::in_memory("TestGame".into());
+        let agent = crate::agent::Agent::with_local_place(model, place);
+        let shared = Arc::new(Shared::with_data_dir(
+            Some(agent),
+            "TestGame".into(),
+            data_dir.clone(),
+        ));
+        {
+            let mut cfg = shared.config.lock().unwrap();
+            cfg.provider = Some("openai".into());
+            cfg.base_url = Some(model_base);
+            cfg.model_id = Some("test".into());
+            cfg.api_key = Some("mock-key".into());
+        }
+        let mgr = Arc::clone(&shared.teamwork);
+
+        let run_dir = project_dir.join(".openro/teamwork/team-test-70");
+        std::fs::create_dir_all(run_dir.join("agents")).unwrap();
+        std::fs::create_dir_all(run_dir.join("traces")).unwrap();
+        let board = Board::open(run_dir.join("board.jsonl")).unwrap();
+
+        let roster = vec![
+            AgentRecord {
+                name: "coordinator".into(),
+                role: "coordinator".into(),
+                brief: None,
+                model_id: "test".into(),
+                state: AgentWorkState::Waiting,
+                killed: false,
+                chat_id: "team-70-coord".into(),
+                cursor_seq: 0,
+                turns: 0,
+                trace_count: 0,
+                last_post_seq: None,
+                current_task_id: None,
+                last_error: None,
+                updated_at_ms: 1,
+                generation: 1,
+                parked_at_seq: None,
+                messages: Vec::new(),
+            },
+            AgentRecord {
+                name: "publisher".into(),
+                role: "publisher".into(),
+                brief: None,
+                model_id: "test".into(),
+                state: AgentWorkState::Working,
+                killed: false,
+                chat_id: "team-70-pub".into(),
+                cursor_seq: 0,
+                turns: 0,
+                trace_count: 0,
+                last_post_seq: None,
+                current_task_id: Some("t1".into()),
+                last_error: None,
+                updated_at_ms: 1,
+                generation: 1,
+                parked_at_seq: None,
+                messages: Vec::new(),
+            },
+        ];
+        let task = Task {
+            id: "t1".into(),
+            title: "Publish pipeline".into(),
+            description: "Wire Creator Hub + Open Cloud".into(),
+            kind: TaskKind::Other,
+            owner: "publisher".into(),
+            verifier: "verifier".into(),
+            status: TaskStatus::InProgress,
+            claimed_files: vec!["openro.project.json".into()],
+            written_files: Vec::new(),
+            depends_on: Vec::new(),
+            result_summary: None,
+            verify_report: None,
+            last_playtest: None,
+            last_lune: None,
+            commit_sha: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            last_edit_ms: 0,
+        };
+        let state = RunState {
+            id: "team-test-70".into(),
+            goal: "Test Open Cloud & Creator Hub tools".into(),
+            project_id: Some("uacg-team".into()),
+            project_dir: project_dir.clone(),
+            storage_dir: run_dir,
+            status: RunStatus::Running,
+            model_id: "test".into(),
+            provider: "test".into(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            board,
+            roster,
+            tasks: vec![task],
+            claims: BTreeMap::new(),
+            next_task_num: 2,
+            events: VecDeque::new(),
+            next_event_seq: 1,
+            stop_requested: false,
+        };
+        let handle = Arc::new(RunHandle {
+            state: Mutex::new(state),
+            wake_cv: Condvar::new(),
+            sse_cv: Condvar::new(),
+            scheduler: Arc::new(QuotaScheduler::new(2)),
+            sse_clients: AtomicUsize::new(0),
+        });
+
+        // 1. Prompt documentation & tool classifiers
+        {
+            let st = handle.state.lock().unwrap();
+            for idx in [0usize, 1usize] {
+                let prompt = build_role_system_prompt(&st, idx);
+                for tool in [
+                    "opencloud_status",
+                    "creator_hub_status",
+                    "creator_hub_setup",
+                    "creator_hub_configure",
+                    "assets_authorise",
+                    "assets_upload",
+                    "assets_codegen",
+                    "products_sync",
+                    "products_codegen",
+                    "project_publish",
+                    "universe_get",
+                    "universe_set",
+                ] {
+                    assert!(prompt.contains(tool), "role idx={idx} missing {tool}");
+                }
+                assert!(prompt.contains("confirm"));
+                assert!(prompt.contains("action_required"));
+            }
+            let product_task = Task {
+                written_files: vec!["src/shared/ProductIds.luau".into()],
+                ..st.tasks[0].clone()
+            };
+            assert!(!product_task.is_game_code());
+        }
+        assert!(!is_write_or_submit_tool("opencloud_status"));
+        assert!(!is_write_or_submit_tool("creator_hub_status"));
+        assert!(!is_write_or_submit_tool("universe_get"));
+        for w in [
+            "creator_hub_setup",
+            "creator_hub_configure",
+            "assets_authorise",
+            "assets_upload",
+            "assets_codegen",
+            "products_sync",
+            "products_codegen",
+            "project_publish",
+            "universe_set",
+        ] {
+            assert!(is_write_or_submit_tool(w), "{w} must count as write tool");
+        }
+
+        // 2. Query string construction & non-loopback rejection
+        assert_eq!(
+            creator_hub_status_path(&json!({})),
+            "/api/creator-hub/status?check_login=1&save_creator=1"
+        );
+        assert_eq!(
+            creator_hub_status_path(&json!({
+                "cdp_url": "http://127.0.0.1:9222",
+                "check_login": false
+            })),
+            "/api/creator-hub/status?cdp_url=http%3A%2F%2F127.0.0.1%3A9222&check_login=0&save_creator=0"
+        );
+        let bad_cdp = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "coordinator",
+            1,
+            "creator_hub_status",
+            &json!({ "cdp_url": "http://192.168.1.99:9222" }),
+        );
+        assert!(bad_cdp.is_err());
+
+        // 3. Coordinator checks creator_hub_status (query check_login=1&save_creator=1) & opencloud_status
+        let ch_status = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "coordinator",
+            1,
+            "creator_hub_status",
+            &json!({}),
+        )
+        .expect("creator_hub_status");
+        assert_eq!(ch_status["logged_in"], true);
+        assert_eq!(ch_status["creator"]["userId"], "1170918805");
+        let oc_before = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "coordinator",
+            1,
+            "opencloud_status",
+            &json!({}),
+        )
+        .expect("opencloud_status");
+        assert_eq!(oc_before["has_key"], false);
+        assert_eq!(oc_before["creator"]["userId"], "1170918805");
+
+        // 4. 2FA blocker propagates cleanly as action_required (no bypass, no saved key),
+        //    and aborts remaining batched steps cleanly inside `run_agent_wake_cycle`.
+        let blocker = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "coordinator",
+            1,
+            "creator_hub_setup",
+            &json!({ "key_name": "TRIGGER_2FA" }),
+        )
+        .expect("action_required returned cleanly");
+        assert_eq!(blocker["ok"], false);
+        assert_eq!(blocker["status"], "action_required");
+        assert_eq!(blocker["blocked_reason"], "2fa_required");
+        assert_eq!(blocker["has_key"], false);
+
+        run_agent_wake_cycle(&shared, &mgr, &handle, "coordinator", 1)
+            .expect("wake cycle handles action_required");
+        assert!(
+            !project_dir.join("src/ShouldNotExist.luau").exists(),
+            "action_required must abort remaining batched steps"
+        );
+        {
+            let st = handle.state.lock().unwrap();
+            let msgs = serde_json::to_string(&st.roster[0].messages).unwrap();
+            assert!(msgs.contains("2fa_required"), "{msgs}");
+        }
+
+        // 4b. Unscoped setup (`link_project: false` -> POST /api/creator-hub/setup) leaves manifest null.
+        let unscoped = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "coordinator",
+            1,
+            "creator_hub_setup",
+            &json!({ "link_project": false, "reuse_universe_id": "10771116814" }),
+        )
+        .expect("unscoped creator_hub_setup");
+        assert_eq!(unscoped["has_key"], true);
+        let manifest_mid: Value = serde_json::from_str(
+            &std::fs::read_to_string(project_dir.join("openro.project.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(manifest_mid["universeId"].is_null());
+
+        // 5. Worker runs creator_hub_setup -> key stored in SecretStore, zero raw key echo, manifest linked
+        let setup_res = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "publisher",
+            1,
+            "creator_hub_setup",
+            &json!({ "reuse_universe_id": "10771116814" }),
+        )
+        .expect("creator_hub_setup");
+        assert_eq!(setup_res["has_key"], true);
+        assert_eq!(setup_res["key_masked"], "••••9876");
+        assert_eq!(setup_res["universeId"], "10771116814");
+        assert_eq!(setup_res["placeId"], "112916648108736");
+        assert!(
+            !setup_res.to_string().contains("TEAMWORK_OPENCLOUD_KEY_ABC9876"),
+            "raw secret must be scrubbed: {setup_res}"
+        );
+
+        let oc_after = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "publisher",
+            1,
+            "opencloud_status",
+            &json!({}),
+        )
+        .unwrap();
+        assert_eq!(oc_after["has_key"], true);
+        assert_eq!(oc_after["key_masked"], "••••9876");
+
+        // 6. creator_hub_configure
+        let cfg_res = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "publisher",
+            1,
+            "creator_hub_configure",
+            &json!({
+                "private_servers": { "enabled": true, "price_robux": 50 },
+                "icon_path": "art/store/icon.png"
+            }),
+        )
+        .expect("creator_hub_configure");
+        assert_eq!(cfg_res["configured"], json!(["private_servers", "icon"]));
+
+        // 7. assets_authorise -> assets_upload -> assets_codegen
+        let auth_res = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "publisher",
+            1,
+            "assets_authorise",
+            &json!({ "paths": ["art/**"] }),
+        )
+        .expect("assets_authorise");
+        assert_eq!(auth_res["authorised"], json!(["art/**"]));
+        let up_res = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "publisher",
+            1,
+            "assets_upload",
+            &json!({ "paths": ["art/store/icon.png"] }),
+        )
+        .expect("assets_upload");
+        assert_eq!(up_res["summary"]["uploaded"], 1);
+        let cg_res = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "publisher",
+            1,
+            "assets_codegen",
+            &json!({}),
+        )
+        .expect("assets_codegen");
+        assert_eq!(cg_res["path"], "src/shared/AssetIds.luau");
+        assert!(project_dir.join("src/shared/AssetIds.luau").is_file());
+
+        // 8. products_sync + products_codegen
+        let ps_res = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "publisher",
+            1,
+            "products_sync",
+            &json!({ "auto_codegen": true }),
+        )
+        .expect("products_sync");
+        assert_eq!(ps_res["results"][0]["id"], "990011");
+        let pc_res = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "publisher",
+            1,
+            "products_codegen",
+            &json!({}),
+        )
+        .expect("products_codegen");
+        assert_eq!(pc_res["path"], "src/shared/ProductIds.luau");
+        let product_ids_luau = std::fs::read_to_string(project_dir.join("src/shared/ProductIds.luau")).unwrap();
+        assert!(product_ids_luau.contains("990011"));
+
+        // 9. project_publish enforces confirm: true on Published
+        let unconfirmed = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "publisher",
+            1,
+            "project_publish",
+            &json!({ "versionType": "Published" }),
+        )
+        .unwrap_err();
+        assert!(unconfirmed.contains("confirm: true"), "{unconfirmed}");
+        let unconfirmed_ci = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "coordinator",
+            1,
+            "project_publish",
+            &json!({ "versionType": "published" }),
+        )
+        .unwrap_err();
+        assert!(unconfirmed_ci.contains("confirm: true"), "{unconfirmed_ci}");
+
+        let saved_pub = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "publisher",
+            1,
+            "project_publish",
+            &json!({ "versionType": "Saved" }),
+        )
+        .expect("Saved publish");
+        assert_eq!(saved_pub["versionNumber"], 7);
+
+        let live_pub = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "coordinator",
+            1,
+            "project_publish",
+            &json!({ "versionType": "Published", "confirm": true }),
+        )
+        .expect("Confirmed Published");
+        assert_eq!(live_pub["versionNumber"], 8);
+
+        // 10. universe_get & universe_set (both nested settings and flat args)
+        let ug = execute_agent_tool(&shared, &mgr, &handle, "publisher", 1, "universe_get", &json!({}))
+            .expect("universe_get");
+        assert_eq!(ug["universe"]["visibility"], "PRIVATE");
+        let us1 = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "publisher",
+            1,
+            "universe_set",
+            &json!({ "settings": { "visibility": "PUBLIC" } }),
+        )
+        .expect("universe_set nested");
+        assert_eq!(us1["universe"]["visibility"], "PUBLIC");
+        let us2 = execute_agent_tool(
+            &shared,
+            &mgr,
+            &handle,
+            "coordinator",
+            1,
+            "universe_set",
+            &json!({ "visibility": "PUBLIC" }),
+        )
+        .expect("universe_set flat");
+        assert_eq!(us2["updated"], json!(["visibility"]));
+
+        // Worker task recorded generated/mutated files cleanly.
+        {
+            let st = handle.state.lock().unwrap();
+            let written = &st.tasks[0].written_files;
+            for f in [
+                "openro.project.json",
+                "assets.lock.json",
+                "src/shared/AssetIds.luau",
+                "src/shared/ProductIds.luau",
+            ] {
+                assert!(written.iter().any(|p| p == f), "missing {f} in {written:?}");
+            }
+        }
+
+        stop_oc.store(true, Ordering::SeqCst);
+        let _ = oc_thread.join();
+        shared.teamwork.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
