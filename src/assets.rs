@@ -1226,16 +1226,24 @@ type ResolvedRefImage = (String, PathBuf, Vec<u8>, &'static str);
 
 fn resolve_reference_images(root: &Path, body: &Value) -> ArtRes<Vec<ResolvedRefImage>> {
     let mut raw_paths: Vec<String> = Vec::new();
-    if let Some(arr) = body.get("reference_images").and_then(Value::as_array) {
-        for v in arr {
-            if let Some(s) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
-                raw_paths.push(s.to_string());
+    let mut push_unique = |s: &str| {
+        let t = s.trim();
+        if !t.is_empty() && !raw_paths.iter().any(|p| p == t) {
+            raw_paths.push(t.to_string());
+        }
+    };
+    for arr_key in ["reference_images", "ref_images", "references"] {
+        if let Some(arr) = body.get(arr_key).and_then(Value::as_array) {
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    push_unique(s);
+                }
             }
         }
     }
-    if let Some(single) = body.get("reference_image").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
-        if !raw_paths.iter().any(|p| p == single) {
-            raw_paths.push(single.to_string());
+    for single_key in ["reference_image", "ref_image"] {
+        if let Some(single) = body.get(single_key).and_then(Value::as_str) {
+            push_unique(single);
         }
     }
     if raw_paths.len() > 8 {
@@ -1255,12 +1263,47 @@ fn resolve_reference_images(root: &Path, body: &Value) -> ArtRes<Vec<ResolvedRef
     Ok(out)
 }
 
+const ALLOWED_CHATGPT_SUBMIT_METHODS: [&str; 6] = [
+    "keyboard-button",
+    "button",
+    "enter",
+    "auto",
+    "ctrl-enter",
+    "meta-enter",
+];
+
+fn resolve_chatgpt_submit_method(body: &Value) -> ArtRes<String> {
+    let raw = body
+        .get("submit_method")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| {
+            std::env::var("OPENRO_CHATGPT_SUBMIT_METHOD")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| "keyboard-button".to_string());
+    let norm = raw.to_ascii_lowercase();
+    if ALLOWED_CHATGPT_SUBMIT_METHODS.contains(&norm.as_str()) {
+        Ok(norm)
+    } else {
+        art_bad(format!(
+            "Invalid submit_method '{raw}'. Allowed values: {}.",
+            ALLOWED_CHATGPT_SUBMIT_METHODS.join(", ")
+        ))
+    }
+}
+
 fn run_chatgpt_cli(
     prompt: &str,
     refs: &[PathBuf],
     staged_out: &Path,
     character_art: bool,
     timeout_s: u64,
+    submit_method: &str,
 ) -> Result<(i32, Vec<u8>, Vec<u8>), String> {
     let custom_bin = std::env::var("OPENRO_CHATGPT_IMAGEGEN_BIN")
         .ok()
@@ -1313,6 +1356,8 @@ fn run_chatgpt_cli(
         .arg("openro")
         .arg("--timeout")
         .arg(timeout_s.to_string())
+        .arg("--submit-method")
+        .arg(submit_method)
         .arg("--json");
 
     if !refs.is_empty() {
@@ -1411,6 +1456,7 @@ pub fn art_generate(store: &SecretStore, root: &Path, body: &Value) -> ArtRes<Va
                 .and_then(Value::as_u64)
                 .unwrap_or(420)
                 .clamp(15, 600);
+            let submit_method = resolve_chatgpt_submit_method(body)?;
 
             // Serialize shared-browser invocations inside OpenRO and allocate a fresh unused -o path.
             let lock = CHATGPT_SERIAL_LOCK.get_or_init(|| Mutex::new(()));
@@ -1424,8 +1470,15 @@ pub fn art_generate(store: &SecretStore, root: &Path, body: &Value) -> ArtRes<Va
             let staged_out = parent.join(format!(".openro_gen_{stem}_{}.png", now_ms()));
             let ref_paths: Vec<PathBuf> = refs.iter().map(|r| r.1.clone()).collect();
 
-            let (code, stdout, stderr) = run_chatgpt_cli(&prompt, &ref_paths, &staged_out, character_art, timeout_s)
-                .map_err(|m| Oc { status: 503, msg: m })?;
+            let (code, stdout, stderr) = run_chatgpt_cli(
+                &prompt,
+                &ref_paths,
+                &staged_out,
+                character_art,
+                timeout_s,
+                &submit_method,
+            )
+            .map_err(|m| Oc { status: 503, msg: m })?;
             let cli_json: Value = serde_json::from_slice(&stdout).unwrap_or_else(|_| {
                 let err_txt = String::from_utf8_lossy(&stderr);
                 json!({
