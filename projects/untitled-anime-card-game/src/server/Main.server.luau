@@ -235,24 +235,29 @@ end
 
 requestRemote.OnServerInvoke = handleRequest
 
-local hub = WorldBuild.build()
-if hub then
-	for _, desc in ipairs(hub:GetDescendants()) do
+local built = WorldBuild.build()
+local promptList: { ProximityPrompt } = if built and built.prompts then built.prompts else {}
+if #promptList == 0 and built and built.hub then
+	for _, desc in ipairs(built.hub:GetDescendants()) do
 		if desc:IsA("ProximityPrompt") then
-			desc.Triggered:Connect(function(player: Player)
-				local propAction = desc:GetAttribute("PropAction")
-				if type(propAction) == "string" then
-					pushRemote:FireClient(player, {
-						kind = "OpenProp",
-						propAction = propAction,
-					})
-				end
-			end)
+			table.insert(promptList, desc)
 		end
 	end
 end
+for _, prompt in ipairs(promptList) do
+	prompt.Triggered:Connect(function(player: Player)
+		local propAction = prompt:GetAttribute("PropAction")
+		if type(propAction) == "string" then
+			pushRemote:FireClient(player, {
+				kind = "OpenProp",
+				propAction = propAction,
+			})
+		end
+	end)
+end
 
-DataService.start(function(player: Player, profile: DataService.PlayerProfile)
+DataService.onProfileReady(function(player: Player, profile: DataService.PlayerProfile)
 	logFunnel(player, "JoinedHub", 1)
 	syncPlayer(player, profile)
 end)
+DataService.init()

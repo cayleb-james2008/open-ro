@@ -4,6 +4,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = Shared:WaitForChild("Config")
+local Cards = require(Config:WaitForChild("Cards"))
 local Worlds = require(Config:WaitForChild("Worlds"))
 local BattleSim = require(Shared:WaitForChild("BattleSim"))
 
@@ -78,9 +79,68 @@ function BattleService.startBattle(player: Player, stageId: string): (boolean, {
 		return false, nil, "Equip at least 1 card in your deck before battling!"
 	end
 
+	local allies: { BattleSim.CombatUnit } = {}
+	for idx, card in ipairs(deckCards) do
+		local unit = BattleSim.buildPlayerUnit(idx, {
+			uid = card.uid,
+			cardId = card.cardId,
+			level = card.level,
+			mutation = card.mutation,
+			trait = card.trait,
+			ascension = card.ascension,
+		})
+		if unit then
+			table.insert(allies, unit)
+		end
+	end
+	if #allies == 0 then
+		return false, nil, "No valid cards in your active deck!"
+	end
+
+	local enemies: { BattleSim.CombatUnit } = {}
+	for idx, enemySpec in ipairs((stage :: any).enemies or {}) do
+		local enemyCard: any = nil
+		if type(enemySpec.cardId) == "string" and enemySpec.cardId ~= "" then
+			local cardsAny = Cards :: any
+			if type(cardsAny.get) == "function" then
+				enemyCard = cardsAny.get(enemySpec.cardId)
+			elseif type(cardsAny.ById) == "table" then
+				enemyCard = cardsAny.ById[enemySpec.cardId]
+			elseif type(cardsAny.List) == "table" then
+				for _, cardDef in ipairs(cardsAny.List) do
+					if cardDef.id == enemySpec.cardId then
+						enemyCard = cardDef
+						break
+					end
+				end
+			end
+		end
+		table.insert(
+			enemies,
+			BattleSim.buildEnemyUnit(idx, {
+				id = enemySpec.cardId or ("enemy_" .. tostring(idx)),
+				name = enemySpec.name,
+				rarity = if enemyCard then enemyCard.rarity else "Common",
+				role = if enemyCard then enemyCard.role else "Striker",
+				hp = enemySpec.hp,
+				atk = enemySpec.atk,
+				spd = enemySpec.spd,
+				skill = {
+					name = enemySpec.skillName or "Strike",
+					description = enemySpec.skillName or "Strike",
+					cooldown = 3,
+					dmgMult = enemySpec.skillMult or 1.25,
+					targeting = "Single",
+				},
+			})
+		)
+	end
+	if #enemies == 0 then
+		return false, nil, "Stage has no enemies configured!"
+	end
+
 	local seed = math.floor(os.clock() * 1000) + profile.rollCount * 31 + player.UserId
-	local simFn = (BattleSim :: any).simulate or (BattleSim :: any).run
-	local simResult = simFn(deckCards, stage, seed)
+	local simResult = BattleSim.run(allies, enemies, { seed = seed, maxRounds = 30 })
 
 	local rewards = {
 		yen = 0,
