@@ -4,8 +4,10 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
-## Unreleased (0.12.0)
+## 0.12.0 - 2026-11-24
 
+- **Untitled Anime Card Game — M2 Content Complete + 54/54 Curated-Ref Card Portraits (`projects/untitled-anime-card-game/`):**
+  - Built end-to-end by OpenRO Teamwork (`3e53dec`, 31/31 `openro(...)` commits): complete **54-card** 5-world roster + 9 exclusive drops + 10 bonds (5 Show + 5 Cross-Card), all **54/54** curated-ref card portraits generated via OpenRO, visually QC'd, approved, and packed (`art/cards/<id>/`), all **14 M2 server services** (5 Worlds × 5 Acts + 5 World Bosses, 100-Floor Heavens Arena Tower, 2 Raids, Async Ranked PvP + Elo + Grandmaster reward, Rebirth + Skill Tree, Charms crafting, Daily/Weekly Quests + 7-Day Streak + Playtime + Codes + Leaderboards, Weather Events, Studio/offline-safe MonetizationService wiring all 22 owner-approved products/passes with idempotent `ProcessReceipt`, and `AnalyticsService`), full Client UI (`EndgameModals`, `MetaModals`, W1–W5 `BattleModal`, Active/Defense `DeckModal`, compact responsive HUD `15.5%` height, Settings-only Light/Dark theme `#67` across all modals, zero `#155` jargon), expanded 5-World Nexus Plaza Hub + Endgame Shrines (`230` parts, `12` non-shadow lights), `docs/mechanics.json` (`14/14` sourced & runtime-verified), `selene`/`stylua`/`rojo` (`463K`, 0 warnings)/3 Lune suites green, and `30/30` live Client remotes verified with `0` console errors / `0` warnings across 7 consecutive Studio runs (M2 Playtest Pass `3.50/5`).
 - **Playtest Runner Native `click_gui` Targeting & Client DataModel Enforcement (`src/playtest.rs`, `src/mcp.rs`, `src/bin/mock_studio.rs`, `docs/API-V011.md`):**
   - Switched `click_gui` to native StudioMCP `user_mouse_input` `instance_path` targeting (`LocalPlayer.PlayerGui.<path>`) with automatic viewport coordinate fallback (`use_coordinates: true`), enforced `datamodel_type: "Client"` across all mouse/keyboard actions (preventing `Server`/`Edit` leaks after `before_actions` Server checks), and aligned Roblox inset-relative `AbsolutePosition` + `GuiInset` math (`PlayerGui:GetGuiObjectsAtPosition` `hit_verified`, fixing top-edge `IgnoreGuiInset=true` buttons).
 
