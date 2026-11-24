@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/w5_eleventh_lieutenant.pending-angle.9440e71b8367.png",
+    "candidate_sha256": "9440e71b83672a758fa68eadcda69ce6725706da95744c3b0ed50c39e3cae4a5",
+    "height": 1535,
+    "status": "PENDING_VISION",
+    "width": 1024
+  },
+  "approved_at": "2026-11-24T02:36:21Z",
+  "approved_by": "designer",
+  "bytes": 2824693,
+  "candidate_path": "art/cards/w5_eleventh_lieutenant.pending-angle.9440e71b8367.png",
+  "candidate_sha256": "9440e71b83672a758fa68eadcda69ce6725706da95744c3b0ed50c39e3cae4a5",
+  "created_at": "2026-11-24T02:30:08Z",
+  "height": 1535,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/w5_eleventh_lieutenant.png",
+  "promoted_from": "art/cards/w5_eleventh_lieutenant.pending-angle.9440e71b8367.png",
+  "prompt": "Transform this reference character into a fierce vertical anime trading card game illustration in dynamic three-quarter combat lunge swinging his extended segmented bone-blade whip wreathed in roaring crimson spiritual energy sparks against a sunlit Soul Society sky, crisp cel-shaded anime key art lighting, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/renji_abarai.jpg"
+  ],
+  "requested_path": "art/cards/w5_eleventh_lieutenant.png",
+  "review_notes": "Verified w5_eleventh_lieutenant visually against owner curated ref art/references/renji_abarai.jpg: exact character likeness, dynamic anime card composition, zero text/watermarks.",
+  "sha256": "9440e71b83672a758fa68eadcda69ce6725706da95744c3b0ed50c39e3cae4a5",
+  "status": "approved",
+  "version": 1,
+  "width": 1024
+}

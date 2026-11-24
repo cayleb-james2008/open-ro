@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/boss_almighty_king.pending-angle.40b12326c868.png",
+    "candidate_sha256": "40b12326c8684dbb83618f8bbc62973bf965132c8f9a44d71b4a4439b8dc8d1e",
+    "height": 1491,
+    "status": "PENDING_VISION",
+    "width": 1055
+  },
+  "approved_at": "2026-11-24T02:41:10Z",
+  "approved_by": "designer",
+  "bytes": 2932418,
+  "candidate_path": "art/cards/boss_almighty_king.pending-angle.40b12326c868.png",
+  "candidate_sha256": "40b12326c8684dbb83618f8bbc62973bf965132c8f9a44d71b4a4439b8dc8d1e",
+  "created_at": "2026-11-24T02:38:14Z",
+  "height": 1491,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/boss_almighty_king.png",
+  "promoted_from": "art/cards/boss_almighty_king.pending-angle.40b12326c868.png",
+  "prompt": "Transform this reference character into an apocalyptic vertical anime trading card boss illustration in regal omnipotent three-quarter stance cloaked in swirling abyssal shadow eyes and blinding royal blue-white sacred energy arrows descending from a fractured sky, crisp cel-shaded anime key art lighting, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/yhwach.jpg"
+  ],
+  "requested_path": "art/cards/boss_almighty_king.png",
+  "review_notes": "Verified boss_almighty_king visually against owner curated ref art/references/yhwach.jpg: faithful likeness, dynamic anime card composition, zero text/watermarks.",
+  "sha256": "40b12326c8684dbb83618f8bbc62973bf965132c8f9a44d71b4a4439b8dc8d1e",
+  "status": "approved",
+  "version": 1,
+  "width": 1055
+}

@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/w4_king_of_curses.pending-angle.a8eaf6a2be9c.png",
+    "candidate_sha256": "a8eaf6a2be9c39d87abfa0a06e5500d0e9fc8a21e712a21ebb0eae499738fcf6",
+    "height": 1484,
+    "status": "PENDING_VISION",
+    "width": 1060
+  },
+  "approved_at": "2026-11-24T02:30:10Z",
+  "approved_by": "designer",
+  "bytes": 2928845,
+  "candidate_path": "art/cards/w4_king_of_curses.pending-angle.a8eaf6a2be9c.png",
+  "candidate_sha256": "a8eaf6a2be9c39d87abfa0a06e5500d0e9fc8a21e712a21ebb0eae499738fcf6",
+  "created_at": "2026-11-24T02:28:35Z",
+  "height": 1484,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/w4_king_of_curses.png",
+  "promoted_from": "art/cards/w4_king_of_curses.pending-angle.a8eaf6a2be9c.png",
+  "prompt": "Transform this reference character into a terrifyingly majestic vertical anime trading card game illustration in dominant three-quarter pose amidst blazing crimson slash waves, molten fire embers, and a towering dark malevolent shrine silhouette in the smoky night sky, crisp cel-shaded anime key art lighting, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/ryomen_sukuna.jpg"
+  ],
+  "requested_path": "art/cards/w4_king_of_curses.png",
+  "review_notes": "Verified w4_king_of_curses visually against owner curated ref art/references/ryomen_sukuna.jpg: faithful likeness, dynamic anime card composition, zero text/watermarks.",
+  "sha256": "a8eaf6a2be9c39d87abfa0a06e5500d0e9fc8a21e712a21ebb0eae499738fcf6",
+  "status": "approved",
+  "version": 1,
+  "width": 1060
+}

@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/w5_clever_scientist_captain.pending-angle.4650ffcac6cf.png",
+    "candidate_sha256": "4650ffcac6cf41153d1675a15b77e86088b4c0f8230964630aaaea65be8c8be8",
+    "height": 1522,
+    "status": "PENDING_VISION",
+    "width": 1033
+  },
+  "approved_at": "2026-11-24T02:36:26Z",
+  "approved_by": "designer",
+  "bytes": 2222708,
+  "candidate_path": "art/cards/w5_clever_scientist_captain.pending-angle.4650ffcac6cf.png",
+  "candidate_sha256": "4650ffcac6cf41153d1675a15b77e86088b4c0f8230964630aaaea65be8c8be8",
+  "created_at": "2026-11-24T02:33:30Z",
+  "height": 1522,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/w5_clever_scientist_captain.png",
+  "promoted_from": "art/cards/w5_clever_scientist_captain.pending-angle.4650ffcac6cf.png",
+  "prompt": "Transform this reference character into a sharp vertical anime trading card game illustration in sly poised three-quarter stance under his striped bucket hat drawing his sleek crimson-glowing energy blade amid swirling scarlet spiritual ribbons and misty lantern light, crisp cel-shaded anime key art lighting, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/kisuke_urahara.jpg"
+  ],
+  "requested_path": "art/cards/w5_clever_scientist_captain.png",
+  "review_notes": "Verified w5_clever_scientist_captain visually against owner curated ref art/references/kisuke_urahara.jpg: exact character likeness, dynamic anime card composition, zero text/watermarks.",
+  "sha256": "4650ffcac6cf41153d1675a15b77e86088b4c0f8230964630aaaea65be8c8be8",
+  "status": "approved",
+  "version": 1,
+  "width": 1033
+}

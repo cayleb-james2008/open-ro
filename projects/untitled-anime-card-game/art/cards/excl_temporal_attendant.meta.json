@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/excl_temporal_attendant.pending-angle.8ae3cf6d5f2e.png",
+    "candidate_sha256": "8ae3cf6d5f2e7a5b8632d6df934a819aff6e802dd4c011856b548dcb6f315099",
+    "height": 1672,
+    "status": "PENDING_VISION",
+    "width": 941
+  },
+  "approved_at": "2026-11-24T02:41:11Z",
+  "approved_by": "designer",
+  "bytes": 2959102,
+  "candidate_path": "art/cards/excl_temporal_attendant.pending-angle.8ae3cf6d5f2e.png",
+  "candidate_sha256": "8ae3cf6d5f2e7a5b8632d6df934a819aff6e802dd4c011856b548dcb6f315099",
+  "created_at": "2026-11-24T02:38:42Z",
+  "height": 1672,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/excl_temporal_attendant.png",
+  "promoted_from": "art/cards/excl_temporal_attendant.pending-angle.8ae3cf6d5f2e.png",
+  "prompt": "Transform this reference character into a celestial vertical anime trading card exclusive illustration in graceful serene three-quarter pose twirling his ornate golden cosmic staff glowing with shimmering turquoise-and-gold temporal nebula rings against a luminous starry galaxy, crisp cel-shaded anime key art lighting, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/whis.jpg"
+  ],
+  "requested_path": "art/cards/excl_temporal_attendant.png",
+  "review_notes": "Verified excl_temporal_attendant visually against owner curated ref art/references/whis.jpg: faithful likeness, dynamic anime card composition, zero text/watermarks.",
+  "sha256": "8ae3cf6d5f2e7a5b8632d6df934a819aff6e802dd4c011856b548dcb6f315099",
+  "status": "approved",
+  "version": 1,
+  "width": 941
+}

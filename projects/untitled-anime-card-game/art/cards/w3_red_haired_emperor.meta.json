@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/w3_red_haired_emperor.pending-angle.c6b9176bf904.png",
+    "candidate_sha256": "c6b9176bf9045260300c46c2d9b8fd732b827731cb0fd0c06feb998125e68cd5",
+    "height": 1597,
+    "status": "PENDING_VISION",
+    "width": 985
+  },
+  "approved_at": "2026-11-24T02:25:05Z",
+  "approved_by": "designer",
+  "bytes": 2964803,
+  "candidate_path": "art/cards/w3_red_haired_emperor.pending-angle.c6b9176bf904.png",
+  "candidate_sha256": "c6b9176bf9045260300c46c2d9b8fd732b827731cb0fd0c06feb998125e68cd5",
+  "created_at": "2026-11-24T02:22:42Z",
+  "height": 1597,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/w3_red_haired_emperor.png",
+  "promoted_from": "art/cards/w3_red_haired_emperor.pending-angle.c6b9176bf904.png",
+  "prompt": "Transform this reference character into an awe-inspiring vertical anime trading card game illustration in commanding three-quarter pose drawing his saber unleashing colossal crimson-and-black lightning shockwaves across turbulent stormy seas, crisp cel-shaded anime key art lighting, dramatic cloak billowing, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/shanks.jpg"
+  ],
+  "requested_path": "art/cards/w3_red_haired_emperor.png",
+  "review_notes": "Verified w3_red_haired_emperor visually against ref art/references/shanks.jpg: exact character likeness, dynamic anime card composition, zero text/watermarks.",
+  "sha256": "c6b9176bf9045260300c46c2d9b8fd732b827731cb0fd0c06feb998125e68cd5",
+  "status": "approved",
+  "version": 1,
+  "width": 985
+}
