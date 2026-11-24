@@ -4,8 +4,10 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
-## Unreleased (0.11.0)
+## 0.11.0 - 2026-11-23
 
+- **Untitled Anime Card Game — M1 Vertical Slice (`projects/untitled-anime-card-game/`):**
+  - Built end-to-end by OpenRO Teamwork (`43a9be0`, 17 `openro(...)` commits): full GDD, 54-card 5-world roster, economy simulation (`tools/econ-sim/sim.luau`), 22 owner-approved Robux product prices, 27 Luau scripts (`selene` 0 warnings / `stylua` clean / `rojo build` 263 KB 0 warnings), Lune contract suite (`tools/tests/vertical_slice_test.luau`), sunlit `NexusPlazaHub` (177+ parts, Torii portal arch, golden Roll Altar, showcase standee, shop kiosk), 10 approved & packed World 1 curated-ref card portraits, Settings-only Light/Dark theme (`#67`), plain user-facing wording (`#155`), and verified live in Roblox Studio with `0` console errors / `0` warnings (M1 Playtest Pass `3.25/5`).
 - **Canonical Study & Evidence Ledger + Contract-Driven Checks (`src/study_check.rs`, `docs/API-V011-study.md`, `tests/v011_study_check.rs`):**
   - Added `<project>/.openro/investigation/` canonical ledger (`evidence.jsonl` with SHA-256 `ev_<16hex>` IDs & deduplication, `unknowns.json` with `unk_<16hex>` optimistic `revision` & fail-closed resolution requiring non-empty `resolution` + valid `evidence_for`), `clean_room: bool` default `true` in `openro.project.json`, auto-recording of `observed` evidence in `research_roblox_game_to_project` and `playtest::run`, and loopback routes (`/investigation/evidence`, `/investigation/unknowns`, `/study/check-mechanics`, `/study/status`).
   - Added `mechanics.json` provenance verification (`sourced`/`estimated`/`unsourced`, config-vs-runtime warnings), playtest core-loop claim evaluation (`move`/`act`/`hud` + `suite_steps`, optional `require_core_loop`), pure-Rust DEFLATE+PNG blank/single-color screenshot rejection & normalized `640x360` perceptual likeness scoring vs `refs/<universeId>/` thumbnails, and `KeptChecks` SHA-256 fingerprinting (reusing passing `check`/`playtest` runs when inputs/mode are unchanged, never caching failures, with `force: true` bypass).
