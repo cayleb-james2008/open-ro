@@ -25,13 +25,16 @@ Every adapter serves one capability:
 | `comfyui-local-http` | `image_gen` | `http` | Optional template (prio 40) | Local ComfyUI `http://127.0.0.1:8188/prompt` (`allow_loopback: true`) + async poll |
 | `fal-flux-http` | `image_gen` | `http` | Optional template (prio 50) | `https://queue.fal.run/fal-ai/flux/schnell` (`fal_api_key`) + async poll |
 | `camoufox-browser-cli` | `reference_search` | `builtin` | Yes (prio 10) | Shared Camoufox `:9230` search |
+| `playwright-cdp-cli` | `reference_search` / `custom` | `cli` | Optional preset (prio 5) | Headless Chromium/Playwright loopback CDP passive inspection & search (`OPENRO_PLAYWRIGHT_CDP_BIN` / `$HOME` / `PATH`); replaces Camoufox when installed |
 | `builtin-http-search` | `reference_search` | `builtin` | Yes (prio 20) | Direct read-only HTTP image search fallback |
 | `blender-cycles-cli` | `mesh_gen` | `builtin` | Yes (prio 10) | Local Blender UV + Cycles AO bake |
 | `meshy-http` | `mesh_gen` | `http` | Optional template (prio 20) | `https://api.meshy.ai/v2/text-to-3d` (`meshy_api_key`) + async poll |
 | `rust-synth-builtin` | `audio_gen` | `builtin` | Yes (prio 10) | Built-in Rust 44.1 kHz WAV synthesizer |
 | `elevenlabs-sfx-http` | `audio_gen` | `http` | Optional template (prio 20) | `https://api.elevenlabs.io/v1/sound-generation` (`elevenlabs_api_key`) |
+| `craft-anything-cli` | `custom` | `cli` | Optional preset (prio 20) | Deterministic Craft Anything study ledger, unknowns tracker, mechanics/screenshot verifier & `KeptChecks` fingerprinter (`OPENRO_CRAFT_ANYTHING_BIN` / `craft-anything` / `$HOME/.agents/skills/*/scripts/craft_ledger.py`) |
+| `rea-cli` | `custom` | `cli` | Optional preset (prio 30) | Reverse Engineer Anything (REA) shipped-artifact & passive runtime CLI (`OPENRO_REA_BIN` / `rea` / `rea-agents` / `$HOME` / `PATH`) |
 
-Blank templates returned in `GET /api/adapters` -> `templates`: `custom-cli` and `custom-http`.
+Blank templates returned in `GET /api/adapters` -> `templates`: `custom-cli` and `custom-http`. All 3 Craft Anything / browser presets resolve binaries dynamically via env overrides, `$HOME`, and `PATH` (zero personal paths) and execute via strict `argv` arrays (zero shell interpolation). `POST /api/adapters` with `preset_id` also accepts an optional `capability` override (e.g. installing `playwright-cdp-cli` under `"custom"` instead of `"reference_search"`).
 
 ---
 
