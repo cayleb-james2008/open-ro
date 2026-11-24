@@ -51,8 +51,16 @@ for tier = 1, SeasonPass.MaxTier do
 		freeReward = makeReward("TraitCrystals", 5, "5 Trait Crystals")
 		premiumReward = makeReward("RollTickets", 20, "20 Roll Tickets")
 	elseif tier % 5 == 0 then
-		freeReward = makeReward("RollTickets", 5 + math.floor(tier / 5) * 2, string.format("%d Roll Tickets", 5 + math.floor(tier / 5) * 2))
-		premiumReward = makeReward("TraitCrystals", 3 + math.floor(tier / 5), string.format("%d Trait Crystals", 3 + math.floor(tier / 5)))
+		freeReward = makeReward(
+			"RollTickets",
+			5 + math.floor(tier / 5) * 2,
+			string.format("%d Roll Tickets", 5 + math.floor(tier / 5) * 2)
+		)
+		premiumReward = makeReward(
+			"TraitCrystals",
+			3 + math.floor(tier / 5),
+			string.format("%d Trait Crystals", 3 + math.floor(tier / 5))
+		)
 	elseif tier % 3 == 0 then
 		freeReward = makeReward("Gems", 150 + tier * 20, string.format("%d Gems", 150 + tier * 20))
 		premiumReward = makeReward("Potion", 1, "Super Luck Potion", "Super")
@@ -60,8 +68,16 @@ for tier = 1, SeasonPass.MaxTier do
 		freeReward = makeReward("Yen", 1500 * tier, string.format("%d Yen", 1500 * tier))
 		premiumReward = makeReward("Gems", 300 + tier * 25, string.format("%d Gems", 300 + tier * 25))
 	else
-		freeReward = makeReward("RollTickets", 2 + math.floor(tier / 6), string.format("%d Roll Tickets", 2 + math.floor(tier / 6)))
-		premiumReward = makeReward("BossTokens", 2 + math.floor(tier / 10), string.format("%d Boss Tokens", 2 + math.floor(tier / 10)))
+		freeReward = makeReward(
+			"RollTickets",
+			2 + math.floor(tier / 6),
+			string.format("%d Roll Tickets", 2 + math.floor(tier / 6))
+		)
+		premiumReward = makeReward(
+			"BossTokens",
+			2 + math.floor(tier / 10),
+			string.format("%d Boss Tokens", 2 + math.floor(tier / 10))
+		)
 	end
 
 	table.insert(SeasonPass.Tiers, {

@@ -271,19 +271,28 @@ function EndgameModals.build(parent: Instance, api: any, _theme: any): EndgameCo
 
 		if mode == "Tower" then
 			titleLabel.Text = "Heavens Arena Tower"
-			local currentFloor = tonumber(data.currentFloor or data.highestFloor) or 1
-			local nextFloor = tonumber(data.nextFloor) or currentFloor
+			local clearedFloor = tonumber(data.clearedFloor or data.currentFloor or data.highestFloor) or 0
+			local nextFloor = tonumber(data.nextFloor) or (clearedFloor + 1)
 			local maxFloor = tonumber(data.maxFloor) or 100
+			local nextCfg = if type(data.nextConfig) == "table" then data.nextConfig else nil
+			local enemyInfo = "Uses your active 5-card deck."
+			if nextCfg then
+				local eName = tostring(nextCfg.bossName or nextCfg.enemyName or nextCfg.name or "Guardian")
+				local ePow = tonumber(nextCfg.recommendedPower or nextCfg.power)
+				enemyInfo = if ePow
+					then string.format("Enemy: %s (Rec. Power: %d)", eName, ePow)
+					else string.format("Enemy: %s — Uses your active 5-card deck.", eName)
+			end
 			addInfoCard(
 				order,
-				string.format("Floor %d / %d", currentFloor, maxFloor),
+				string.format("Cleared: Floor %d / %d", clearedFloor, maxFloor),
 				"Climb 100 floors for Gems, Tickets, and the Floor 100 Exclusive Card."
 			)
 			order += 1
 			addActionRow(
 				order,
 				"Next Challenge: Floor " .. tostring(nextFloor),
-				"Uses your active 5-card deck.",
+				enemyInfo,
 				"Challenge",
 				pal.accentBlue,
 				function()
@@ -299,15 +308,33 @@ function EndgameModals.build(parent: Instance, api: any, _theme: any): EndgameCo
 			)
 		elseif mode == "Raid" then
 			titleLabel.Text = "Dimensional Raids"
-			local raids = if type(data.raids) == "table"
+			local rawRaids = if type(data.raids) == "table"
 				then data.raids
 				else {
-					{ id = "raid_skull_island", name = "Skull Island Breach", recommendedPower = 1500 },
-					{ id = "raid_shibuya_breach", name = "Shibuya Breach", recommendedPower = 3500 },
+					{ id = "raid_skull_island", name = "Skull Island Breach", recommendedPower = 1500, worldReq = 3 },
+					{ id = "raid_shibuya_breach", name = "Shibuya Breach", recommendedPower = 3500, worldReq = 4 },
 				}
-			for _, raid in ipairs(raids) do
+			local raidList: { { [string]: any } } = {}
+			for k, r in pairs(rawRaids) do
+				if type(r) == "table" then
+					local copy = table.clone(r)
+					if not copy.id and type(k) == "string" then
+						copy.id = k
+					end
+					table.insert(raidList, copy)
+				end
+			end
+			table.sort(raidList, function(a, b)
+				local wa = tonumber(a.worldReq) or 0
+				local wb = tonumber(b.worldReq) or 0
+				if wa ~= wb then
+					return wa < wb
+				end
+				return tostring(a.id or "") < tostring(b.id or "")
+			end)
+			for _, raid in ipairs(raidList) do
 				local rId = tostring(raid.id or "raid_skull_island")
-				local rName = tostring(raid.name or rId)
+				local rName = tostring(raid.displayName or raid.name or rId)
 				local rPow = tonumber(raid.recommendedPower) or 1000
 				addActionRow(
 					order,
@@ -329,13 +356,26 @@ function EndgameModals.build(parent: Instance, api: any, _theme: any): EndgameCo
 			end
 		elseif mode == "WorldBoss" then
 			titleLabel.Text = "World Bosses"
-			local bosses = if type(data.bosses) == "table" then data.bosses else {}
-			if #bosses == 0 then
+			local rawBosses = if type(data.bosses) == "table" then data.bosses else {}
+			local bossList: { { [string]: any } } = {}
+			for k, b in pairs(rawBosses) do
+				if type(b) == "table" then
+					local copy = table.clone(b)
+					if not copy.worldId then
+						copy.worldId = tonumber(k)
+					end
+					table.insert(bossList, copy)
+				end
+			end
+			table.sort(bossList, function(a, b)
+				return (tonumber(a.worldId) or 0) < (tonumber(b.worldId) or 0)
+			end)
+			if #bossList == 0 then
 				addInfoCard(order, "World Bosses", "Unlock worlds in Battle mode to challenge each World Boss.")
 			else
-				for _, boss in ipairs(bosses) do
+				for _, boss in ipairs(bossList) do
 					local bId = tostring(boss.id or boss.bossId or "")
-					local bName = tostring(boss.name or bId)
+					local bName = tostring(boss.displayName or boss.name or bId)
 					local bWorld = tonumber(boss.worldId) or 1
 					addActionRow(
 						order,
@@ -344,7 +384,7 @@ function EndgameModals.build(parent: Instance, api: any, _theme: any): EndgameCo
 						"Challenge",
 						pal.accentGold,
 						function()
-							local res = callServer({ action = "ChallengeWorldBoss", bossId = bId })
+							local res = callServer({ action = "ChallengeWorldBoss", worldId = bWorld, bossId = bId })
 							if res.ok then
 								setStatus("World Boss battle finished!", false)
 								refreshMode("WorldBoss")
@@ -427,8 +467,9 @@ function EndgameModals.build(parent: Instance, api: any, _theme: any): EndgameCo
 			end
 		elseif mode == "Rebirth" then
 			titleLabel.Text = "Rebirth & Skill Tree"
-			local rebirths = tonumber(data.rebirthCount or cachedState.rebirthCount) or 0
+			local rebirths = tonumber(data.rebirths or data.rebirthCount or cachedState.rebirthCount) or 0
 			local points = tonumber(data.skillPoints or data.rebirthTokens) or 0
+			local skillNodes = if type(data.skillNodes) == "table" then data.skillNodes else {}
 			addActionRow(
 				order,
 				string.format("Rebirths: %d • Skill Points: %d", rebirths, points),
@@ -446,11 +487,26 @@ function EndgameModals.build(parent: Instance, api: any, _theme: any): EndgameCo
 				end
 			)
 			order += 1
-			local nodes = if type(data.nodes or data.skillTree) == "table" then (data.nodes or data.skillTree) else {}
-			for _, node in ipairs(nodes) do
+			local rawNodes = data.catalog or data.nodes or data.skillTree
+			local nodeList: { { [string]: any } } = {}
+			if type(rawNodes) == "table" then
+				for k, n in pairs(rawNodes) do
+					if type(n) == "table" then
+						local copy = table.clone(n)
+						if not copy.id and type(k) == "string" then
+							copy.id = k
+						end
+						table.insert(nodeList, copy)
+					end
+				end
+				table.sort(nodeList, function(a, b)
+					return tostring(a.id or "") < tostring(b.id or "")
+				end)
+			end
+			for _, node in ipairs(nodeList) do
 				local nId = tostring(node.id or "")
-				local nName = tostring(node.name or nId)
-				local lv = tonumber(node.level) or 0
+				local nName = tostring(node.displayName or node.name or nId)
+				local lv = tonumber(node.level or skillNodes[nId]) or 0
 				local maxLv = tonumber(node.maxLevel) or 5
 				addActionRow(
 					order,
