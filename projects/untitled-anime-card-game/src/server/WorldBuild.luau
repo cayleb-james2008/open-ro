@@ -1,4 +1,5 @@
 --!strict
+local CollectionService = game:GetService("CollectionService")
 local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
 
@@ -29,6 +30,10 @@ local PALETTE = {
 	EmeraldLeaf = Color3.fromRGB(64, 162, 94),
 	EmeraldBright = Color3.fromRGB(92, 192, 118),
 	CrystalBlue = Color3.fromRGB(118, 208, 255),
+	Obsidian = Color3.fromRGB(26, 22, 34),
+	Navy = Color3.fromRGB(24, 44, 82),
+	Brass = Color3.fromRGB(204, 158, 66),
+	LotusPink = Color3.fromRGB(236, 176, 255),
 }
 
 local function findChildByName(parent: Instance, targetName: string): Instance?
@@ -184,15 +189,15 @@ local function attachSign(parentPart: BasePart, title: string, subtitle: string,
 end
 
 local function setupLighting()
-	Lighting.ClockTime = 15.8
+	Lighting.ClockTime = 16.6
 	Lighting.GeographicLatitude = 32
 	Lighting.Brightness = 2.6
-	Lighting.Ambient = Color3.fromRGB(132, 146, 174)
-	Lighting.OutdoorAmbient = Color3.fromRGB(148, 164, 192)
-	Lighting.ColorShift_Top = Color3.fromRGB(255, 240, 214)
-	Lighting.ColorShift_Bottom = Color3.fromRGB(118, 134, 166)
-	Lighting.EnvironmentDiffuseScale = 0.85
-	Lighting.EnvironmentSpecularScale = 0.9
+	Lighting.Ambient = Color3.fromRGB(152, 138, 128)
+	Lighting.OutdoorAmbient = Color3.fromRGB(174, 156, 140)
+	Lighting.ColorShift_Top = Color3.fromRGB(255, 224, 178)
+	Lighting.ColorShift_Bottom = Color3.fromRGB(122, 118, 146)
+	Lighting.EnvironmentDiffuseScale = 0.75
+	Lighting.EnvironmentSpecularScale = 0.8
 	Lighting.GlobalShadows = true
 
 	local managedNames = {
@@ -201,6 +206,7 @@ local function setupLighting()
 		"NexusBloom",
 		"NexusSunRays",
 		"NexusColorCorrection",
+		"UACGColorCorrection",
 	}
 	for _, itemName in ipairs(managedNames) do
 		local existing = findChildByName(Lighting, itemName)
@@ -211,40 +217,40 @@ local function setupLighting()
 
 	local sky = Instance.new("Sky")
 	sky.Name = "NexusSky"
-	sky.SunAngularSize = 18
+	sky.SunAngularSize = 20
 	sky.MoonAngularSize = 8
 	sky.CelestialBodiesShown = true
 	sky.Parent = Lighting
 
 	local atmosphere = Instance.new("Atmosphere")
 	atmosphere.Name = "NexusAtmosphere"
-	atmosphere.Density = 0.26
-	atmosphere.Offset = 0.25
-	atmosphere.Color = Color3.fromRGB(184, 216, 255)
-	atmosphere.Decay = Color3.fromRGB(255, 224, 184)
-	atmosphere.Glare = 0.22
-	atmosphere.Haze = 1.2
+	atmosphere.Density = 0.24
+	atmosphere.Offset = 0.22
+	atmosphere.Color = Color3.fromRGB(255, 226, 176)
+	atmosphere.Decay = Color3.fromRGB(255, 188, 128)
+	atmosphere.Glare = 0.45
+	atmosphere.Haze = 1.4
 	atmosphere.Parent = Lighting
 
 	local bloom = Instance.new("BloomEffect")
 	bloom.Name = "NexusBloom"
-	bloom.Intensity = 0.45
+	bloom.Intensity = 0.35
 	bloom.Size = 24
-	bloom.Threshold = 1.1
+	bloom.Threshold = 1.15
 	bloom.Parent = Lighting
 
 	local sunRays = Instance.new("SunRaysEffect")
 	sunRays.Name = "NexusSunRays"
-	sunRays.Intensity = 0.12
+	sunRays.Intensity = 0.14
 	sunRays.Spread = 0.65
 	sunRays.Parent = Lighting
 
 	local cc = Instance.new("ColorCorrectionEffect")
-	cc.Name = "NexusColorCorrection"
-	cc.Saturation = 0.14
-	cc.Contrast = 0.08
+	cc.Name = "UACGColorCorrection"
+	cc.Saturation = 0.12
+	cc.Contrast = 0.06
 	cc.Brightness = 0.02
-	cc.TintColor = Color3.fromRGB(255, 250, 242)
+	cc.TintColor = Color3.fromRGB(255, 248, 236)
 	cc.Parent = Lighting
 end
 
@@ -265,7 +271,7 @@ local function buildCourtyard(hub: Model)
 	makePart(
 		ground,
 		"EmeraldMeadow",
-		Vector3.new(240, 4, 240),
+		Vector3.new(260, 4, 260),
 		CFrame.new(0, -2.5, 0),
 		PALETTE.Meadow,
 		Enum.Material.Grass
@@ -329,6 +335,42 @@ local function buildCourtyard(hub: Model)
 		CFrame.new(0, 0.28, 4),
 		PALETTE.MarbleWarm,
 		Enum.Material.SmoothPlastic
+	)
+	makePart(
+		ground,
+		"CrossGoldNorth",
+		Vector3.new(48, 0.17, 0.35),
+		CFrame.new(0, 0.29, -1.1),
+		PALETTE.Gold,
+		Enum.Material.Metal
+	)
+	makePart(
+		ground,
+		"CrossGoldSouth",
+		Vector3.new(48, 0.17, 0.35),
+		CFrame.new(0, 0.29, 9.1),
+		PALETTE.Gold,
+		Enum.Material.Metal
+	)
+
+	-- Radial mosaic ring around central altar
+	makeUprightCylinder(
+		ground,
+		"CenterPlazaMosaic",
+		Vector3.new(0, 0.24, 2),
+		0.14,
+		24,
+		PALETTE.MarbleWarm,
+		Enum.Material.Marble
+	)
+	makeUprightCylinder(
+		ground,
+		"CenterPlazaGoldRing",
+		Vector3.new(0, 0.26, 2),
+		0.14,
+		22.6,
+		PALETTE.Gold,
+		Enum.Material.Metal
 	)
 
 	local corners = {
@@ -405,6 +447,133 @@ local function buildSpawnMedallion(hub: Model)
 	spawnLoc.Parent = spawnModel
 end
 
+local function buildShowcaseStandee(hub: Model)
+	local standee = Instance.new("Model")
+	standee.Name = "ShowcaseStandee"
+	standee.Parent = hub
+
+	local origin = CFrame.lookAt(Vector3.new(11.5, 0.25, -4), Vector3.new(0, 0.25, 10))
+
+	makeUprightCylinder(
+		standee,
+		"PedestalBase",
+		(origin * CFrame.new(0, 0.45, 0)).Position,
+		0.9,
+		6.4,
+		PALETTE.MarbleWarm,
+		Enum.Material.Marble
+	)
+	makeUprightCylinder(
+		standee,
+		"PedestalGoldRim",
+		(origin * CFrame.new(0, 0.95, 0)).Position,
+		0.2,
+		6.0,
+		PALETTE.Gold,
+		Enum.Material.Metal
+	)
+	makePart(
+		standee,
+		"PlinthColumn",
+		Vector3.new(3.8, 2.2, 2.2),
+		origin * CFrame.new(0, 2.1, 0),
+		PALETTE.SlateTrim,
+		Enum.Material.Marble
+	)
+	local trimFrame = makePart(
+		standee,
+		"ShowcaseTrimFrame",
+		Vector3.new(4.9, 6.2, 0.45),
+		origin * CFrame.new(0, 6.3, 0),
+		PALETTE.GoldGlow,
+		Enum.Material.Neon,
+		0.15
+	)
+	local plaque = makePart(
+		standee,
+		"ShowcasePlaque",
+		Vector3.new(4.4, 5.7, 0.55),
+		origin * CFrame.new(0, 6.3, 0),
+		PALETTE.Obsidian,
+		Enum.Material.SmoothPlastic
+	)
+
+	local gui = Instance.new("SurfaceGui")
+	gui.Name = "ShowcaseGui"
+	gui.Face = Enum.NormalId.Front
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = 40
+	gui.Parent = plaque
+
+	local bg = Instance.new("Frame")
+	bg.Size = UDim2.fromScale(1, 1)
+	bg.BackgroundColor3 = Color3.fromRGB(16, 20, 32)
+	bg.BorderSizePixel = 0
+	bg.Parent = gui
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = PALETTE.GoldGlow
+	stroke.Thickness = 4
+	stroke.Parent = bg
+
+	local header = Instance.new("TextLabel")
+	header.Size = UDim2.fromScale(0.9, 0.16)
+	header.Position = UDim2.fromScale(0.05, 0.06)
+	header.BackgroundTransparency = 1
+	header.Font = Enum.Font.GothamBold
+	header.Text = "FEATURED LEGEND"
+	header.TextColor3 = PALETTE.GoldGlow
+	header.TextScaled = true
+	header.Parent = bg
+
+	local nameLbl = Instance.new("TextLabel")
+	nameLbl.Size = UDim2.fromScale(0.88, 0.44)
+	nameLbl.Position = UDim2.fromScale(0.06, 0.28)
+	nameLbl.BackgroundTransparency = 1
+	nameLbl.Font = Enum.Font.GothamBlack
+	nameLbl.Text = "Seventh Hokage"
+	nameLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+	nameLbl.TextWrapped = true
+	nameLbl.TextScaled = true
+	nameLbl.Parent = bg
+
+	local rarityLbl = Instance.new("TextLabel")
+	rarityLbl.Size = UDim2.fromScale(0.76, 0.14)
+	rarityLbl.Position = UDim2.fromScale(0.12, 0.78)
+	rarityLbl.BackgroundColor3 = Color3.fromRGB(34, 28, 18)
+	rarityLbl.Font = Enum.Font.GothamBold
+	rarityLbl.Text = "NEXUS / MYTHIC"
+	rarityLbl.TextColor3 = PALETTE.GoldGlow
+	rarityLbl.TextScaled = true
+	rarityLbl.Parent = bg
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = rarityLbl
+
+	local legends = {
+		{ name = "Seventh Hokage", rarity = "MYTHIC", color = Color3.fromRGB(255, 178, 68) },
+		{ name = "Autonomous Master", rarity = "UNIVERSAL", color = Color3.fromRGB(168, 224, 255) },
+		{ name = "Warrior of Liberation", rarity = "NEXUS", color = Color3.fromRGB(255, 214, 102) },
+		{ name = "Honored One", rarity = "SECRET", color = Color3.fromRGB(204, 128, 255) },
+		{ name = "True Bankai", rarity = "LEGENDARY", color = Color3.fromRGB(255, 118, 92) },
+	}
+
+	task.spawn(function()
+		local idx = 1
+		while plaque.Parent and standee.Parent do
+			local entry = legends[idx]
+			nameLbl.Text = entry.name
+			rarityLbl.Text = entry.rarity
+			rarityLbl.TextColor3 = entry.color
+			stroke.Color = entry.color
+			trimFrame.Color = entry.color
+			idx = (idx % #legends) + 1
+			task.wait(4)
+		end
+	end)
+end
+
 local function buildRollAltar(hub: Model, prompts: { ProximityPrompt })
 	local altar = Instance.new("Model")
 	altar.Name = "RollAltar"
@@ -478,14 +647,67 @@ local function buildRollAltar(hub: Model, prompts: { ProximityPrompt })
 	)
 	local crystal = makePart(
 		altar,
-		"SummonPrism",
-		Vector3.new(2.2, 2.2, 2.2),
-		CFrame.new(center + Vector3.new(0, 6.2, 0)) * CFrame.Angles(math.rad(35), math.rad(45), math.rad(20)),
+		"RollAltarCrystal",
+		Vector3.new(2.3, 3.1, 2.3),
+		CFrame.new(center + Vector3.new(0, 6.4, 0)) * CFrame.Angles(math.rad(35), math.rad(45), math.rad(20)),
 		PALETTE.GoldGlow,
 		Enum.Material.Neon,
-		0.1
+		0.08
 	)
 	crystal.CanCollide = false
+
+	local coreAttachment = Instance.new("Attachment")
+	coreAttachment.Name = "AltarSparkAttachment"
+	coreAttachment.Parent = crystal
+
+	local sparks = Instance.new("ParticleEmitter")
+	sparks.Name = "AltarCoreSparks"
+	sparks.Color = ColorSequence.new(PALETTE.GoldGlow, Color3.fromRGB(255, 246, 204))
+	sparks.Rate = 14
+	sparks.Lifetime = NumberRange.new(1.4, 2.4)
+	sparks.Speed = NumberRange.new(1.4, 3.0)
+	sparks.SpreadAngle = Vector2.new(35, 35)
+	sparks.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.16),
+		NumberSequenceKeypoint.new(0.6, 0.28),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	sparks.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.15),
+		NumberSequenceKeypoint.new(0.7, 0.35),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	sparks.LightEmission = 0.85
+	sparks.EmissionDirection = Enum.NormalId.Top
+	sparks.Parent = coreAttachment
+
+	local ringA = makePart(
+		altar,
+		"AltarOrbitRingA",
+		Vector3.new(0.18, 7.6, 7.6),
+		CFrame.new(center + Vector3.new(0, 6.4, 0)) * CFrame.Angles(math.rad(28), 0, math.rad(18)),
+		PALETTE.GoldGlow,
+		Enum.Material.Neon,
+		0.62
+	)
+	ringA.Shape = Enum.PartType.Cylinder
+	ringA.CanCollide = false
+	ringA:SetAttribute("AltarOrbitRing", true)
+	CollectionService:AddTag(ringA, "AltarOrbitRing")
+
+	local ringB = makePart(
+		altar,
+		"AltarOrbitRingB",
+		Vector3.new(0.18, 8.8, 8.8),
+		CFrame.new(center + Vector3.new(0, 6.4, 0)) * CFrame.Angles(math.rad(-26), math.rad(45), math.rad(-22)),
+		PALETTE.CrystalBlue,
+		Enum.Material.Neon,
+		0.66
+	)
+	ringB.Shape = Enum.PartType.Cylinder
+	ringB.CanCollide = false
+	ringB:SetAttribute("AltarOrbitRing", true)
+	CollectionService:AddTag(ringB, "AltarOrbitRing")
 
 	local prismLight = Instance.new("PointLight")
 	prismLight.Color = PALETTE.GoldGlow
@@ -563,7 +785,7 @@ local function buildToriiPortal(hub: Model, prompts: { ProximityPrompt })
 		Enum.Material.Metal
 	)
 
-	-- Twin towering crimson & gold Torii columns
+	-- Twin towering crimson & gold Torii columns + flanking chakra stone lanterns
 	for _, xSide in ipairs({ -7.4, 7.4 }) do
 		local tag = if xSide < 0 then "Left" else "Right"
 		makeUprightCylinder(
@@ -601,6 +823,33 @@ local function buildToriiPortal(hub: Model, prompts: { ProximityPrompt })
 			2.75,
 			PALETTE.Gold,
 			Enum.Material.Metal
+		)
+
+		-- Flanking chakra stone lanterns on the Torii platform
+		local lanternX = if xSide < 0 then -10.2 else 10.2
+		makePart(
+			torii,
+			"ChakraLanternPost_" .. tag,
+			Vector3.new(1.1, 2.6, 1.1),
+			CFrame.new(center + Vector3.new(lanternX, 2.3, 2.6)),
+			PALETTE.Stone,
+			Enum.Material.Slate
+		)
+		makePart(
+			torii,
+			"ChakraLanternCore_" .. tag,
+			Vector3.new(0.85, 0.85, 0.85),
+			CFrame.new(center + Vector3.new(lanternX, 4.0, 2.6)),
+			PALETTE.PortalCyan,
+			Enum.Material.Neon
+		)
+		makePart(
+			torii,
+			"ChakraLanternCap_" .. tag,
+			Vector3.new(1.5, 0.45, 1.5),
+			CFrame.new(center + Vector3.new(lanternX, 4.65, 2.6)),
+			PALETTE.StoneDark,
+			Enum.Material.Slate
 		)
 	end
 
@@ -707,6 +956,7 @@ local function buildToriiPortal(hub: Model, prompts: { ProximityPrompt })
 	portalLight.Shadows = false
 	portalLight.Parent = veil
 
+	attachSign(veil, "World 1: Hidden Leaf", "Torii Battle Gate", PALETTE.GoldGlow, Vector3.new(0, 8.0, 0))
 	attachPrompt(veil, "Battle", "World 1: Leaf Village Gate", "Enter Battle", prompts)
 end
 
@@ -1026,20 +1276,20 @@ local function buildWorldPortals(hub: Model, prompts: { ProximityPrompt })
 			title = "World 2: West City & Namek",
 			subtitle = "Capsule Gate",
 			pos = Vector3.new(-15, 0.25, -33),
-			primary = Color3.fromRGB(240, 244, 250),
-			secondary = Color3.fromRGB(48, 128, 224),
-			accent = Color3.fromRGB(96, 224, 152),
+			primary = Color3.fromRGB(240, 246, 250),
+			secondary = Color3.fromRGB(48, 176, 152),
+			accent = Color3.fromRGB(255, 212, 82),
 			style = "capsule",
 		},
 		{
 			prop = "World3",
 			name = "World3PirateArch",
 			title = "World 3: Grand Line",
-			subtitle = "Pirate Arch",
+			subtitle = "Nautical Arch",
 			pos = Vector3.new(15, 0.25, -33),
-			primary = Color3.fromRGB(116, 74, 46),
-			secondary = Color3.fromRGB(228, 178, 64),
-			accent = Color3.fromRGB(72, 198, 255),
+			primary = PALETTE.Navy,
+			secondary = PALETTE.Brass,
+			accent = Color3.fromRGB(64, 196, 255),
 			style = "pirate",
 		},
 		{
@@ -1048,9 +1298,9 @@ local function buildWorldPortals(hub: Model, prompts: { ProximityPrompt })
 			title = "World 4: Tokyo Jujutsu",
 			subtitle = "Cursed Torii",
 			pos = Vector3.new(-14, 0.25, 34),
-			primary = Color3.fromRGB(42, 34, 56),
-			secondary = Color3.fromRGB(124, 58, 214),
-			accent = Color3.fromRGB(178, 110, 255),
+			primary = PALETTE.Obsidian,
+			secondary = Color3.fromRGB(132, 34, 96),
+			accent = Color3.fromRGB(178, 102, 255),
 			style = "torii",
 		},
 		{
@@ -1059,9 +1309,9 @@ local function buildWorldPortals(hub: Model, prompts: { ProximityPrompt })
 			title = "World 5: Soul Society",
 			subtitle = "Senkaimon Gate",
 			pos = Vector3.new(14, 0.25, 34),
-			primary = Color3.fromRGB(238, 240, 246),
-			secondary = Color3.fromRGB(36, 40, 52),
-			accent = Color3.fromRGB(110, 214, 255),
+			primary = Color3.fromRGB(244, 242, 236),
+			secondary = PALETTE.Gold,
+			accent = Color3.fromRGB(255, 226, 148),
 			style = "senkaimon",
 		},
 	}
@@ -1110,6 +1360,25 @@ local function buildWorldPortals(hub: Model, prompts: { ProximityPrompt })
 		end
 
 		if spec.style == "capsule" then
+			-- Emerald Namekian twin spires flanking the sleek teal/white Capsule dome arch
+			for _, xSpire in ipairs({ -5.5, 5.5 }) do
+				makePart(
+					model,
+					"NamekSpire",
+					Vector3.new(0.85, 6.8, 0.85),
+					origin * CFrame.new(xSpire, 4.0, 0),
+					Color3.fromRGB(52, 178, 108),
+					Enum.Material.SmoothPlastic
+				)
+				makeBall(
+					model,
+					"NamekOrb",
+					(origin * CFrame.new(xSpire, 7.9, 0)).Position,
+					1.1,
+					spec.accent,
+					Enum.Material.Neon
+				)
+			end
 			makePart(
 				model,
 				"DomeArch",
@@ -1127,6 +1396,25 @@ local function buildWorldPortals(hub: Model, prompts: { ProximityPrompt })
 				Enum.Material.SmoothPlastic
 			)
 		elseif spec.style == "pirate" then
+			-- Deep navy & brass anchor accents + rope-gold trim
+			for _, xSide in ipairs({ -3.8, 3.8 }) do
+				makePart(
+					model,
+					"BrassAnchorRing",
+					Vector3.new(1.75, 0.55, 1.75),
+					origin * CFrame.new(xSide, 3.2, 0),
+					spec.secondary,
+					Enum.Material.Metal
+				)
+				makePart(
+					model,
+					"RopeGoldBand",
+					Vector3.new(1.6, 0.4, 1.6),
+					origin * CFrame.new(xSide, 6.2, 0),
+					PALETTE.Gold,
+					Enum.Material.Metal
+				)
+			end
 			makePart(
 				model,
 				"CrossBeam",
@@ -1144,6 +1432,18 @@ local function buildWorldPortals(hub: Model, prompts: { ProximityPrompt })
 				Enum.Material.Metal
 			)
 		elseif spec.style == "torii" then
+			-- Dark obsidian & crimson-violet cursed torii + floating violet seal pillars
+			for _, xSeal in ipairs({ -5.4, 5.4 }) do
+				makePart(
+					model,
+					"CursedSealPillar",
+					Vector3.new(0.75, 4.4, 0.75),
+					origin * CFrame.new(xSeal, 4.6, 1.1),
+					spec.accent,
+					Enum.Material.Neon,
+					0.2
+				)
+			end
 			makePart(
 				model,
 				"Nuki",
@@ -1161,19 +1461,28 @@ local function buildWorldPortals(hub: Model, prompts: { ProximityPrompt })
 				Enum.Material.SmoothPlastic
 			)
 		else
+			-- Luminous white-marble & brushed-gold Senkaimon gateway
 			makePart(
 				model,
 				"Lintel",
-				Vector3.new(10.4, 1.5, 1.8),
+				Vector3.new(10.8, 1.5, 1.9),
 				origin * CFrame.new(0, 9.8, 0),
+				spec.primary,
+				Enum.Material.Marble
+			)
+			makePart(
+				model,
+				"GoldLintelBand",
+				Vector3.new(11.0, 0.35, 2.05),
+				origin * CFrame.new(0, 10.6, 0),
 				spec.secondary,
-				Enum.Material.Slate
+				Enum.Material.Metal
 			)
 			makePart(
 				model,
 				"Crest",
 				Vector3.new(3.0, 1.4, 2.0),
-				origin * CFrame.new(0, 11.1, 0),
+				origin * CFrame.new(0, 11.4, 0),
 				spec.accent,
 				Enum.Material.Neon
 			)
@@ -1214,7 +1523,7 @@ local function buildEndgameShrines(hub: Model, prompts: { ProximityPrompt })
 			title = "Heavens Arena",
 			subtitle = "100-Floor Tower",
 			pos = Vector3.new(-22, 0.35, -14),
-			body = Color3.fromRGB(236, 232, 224),
+			body = Color3.fromRGB(238, 232, 218),
 			accent = Color3.fromRGB(255, 204, 72),
 			shape = "obelisk",
 		},
@@ -1224,8 +1533,8 @@ local function buildEndgameShrines(hub: Model, prompts: { ProximityPrompt })
 			title = "Raid Breach",
 			subtitle = "Co-op Boss Raids",
 			pos = Vector3.new(22, 0.35, -14),
-			body = Color3.fromRGB(58, 36, 46),
-			accent = Color3.fromRGB(255, 86, 98),
+			body = Color3.fromRGB(48, 28, 38),
+			accent = Color3.fromRGB(255, 76, 92),
 			shape = "gate",
 		},
 		{
@@ -1234,7 +1543,7 @@ local function buildEndgameShrines(hub: Model, prompts: { ProximityPrompt })
 			title = "Ranked Arena",
 			subtitle = "Async PvP Ladder",
 			pos = Vector3.new(-22, 0.35, 22),
-			body = Color3.fromRGB(48, 62, 92),
+			body = Color3.fromRGB(234, 236, 244),
 			accent = Color3.fromRGB(92, 198, 255),
 			shape = "plinth",
 		},
@@ -1278,11 +1587,28 @@ local function buildEndgameShrines(hub: Model, prompts: { ProximityPrompt })
 
 		local anchor: Part
 		if sh.shape == "obelisk" then
+			-- Multi-tier golden Tower spire obelisk
+			makePart(
+				model,
+				"ObeliskTier1",
+				Vector3.new(3.6, 2.2, 3.6),
+				origin * CFrame.new(0, 1.9, 0),
+				sh.body,
+				Enum.Material.Marble
+			)
+			makePart(
+				model,
+				"ObeliskTierGold1",
+				Vector3.new(3.8, 0.3, 3.8),
+				origin * CFrame.new(0, 3.1, 0),
+				PALETTE.Gold,
+				Enum.Material.Metal
+			)
 			anchor = makePart(
 				model,
 				"ObeliskShaft",
-				Vector3.new(2.2, 8.6, 2.2),
-				origin * CFrame.new(0, 5.1, 0),
+				Vector3.new(2.1, 6.8, 2.1),
+				origin * CFrame.new(0, 6.6, 0),
 				sh.body,
 				Enum.Material.Marble
 			)
@@ -1290,11 +1616,12 @@ local function buildEndgameShrines(hub: Model, prompts: { ProximityPrompt })
 				model,
 				"ObeliskTip",
 				Vector3.new(1.5, 1.5, 1.5),
-				origin * CFrame.new(0, 10.2, 0) * CFrame.Angles(math.rad(45), math.rad(45), 0),
+				origin * CFrame.new(0, 10.8, 0) * CFrame.Angles(math.rad(45), math.rad(45), 0),
 				sh.accent,
 				Enum.Material.Neon
 			)
 		elseif sh.shape == "gate" then
+			-- Crimson dimensional rift arch
 			makePart(
 				model,
 				"LeftSpike",
@@ -1311,24 +1638,49 @@ local function buildEndgameShrines(hub: Model, prompts: { ProximityPrompt })
 				sh.body,
 				Enum.Material.Slate
 			)
+			makePart(
+				model,
+				"RiftArchCrossbar",
+				Vector3.new(5.6, 1.0, 1.4),
+				origin * CFrame.new(0, 7.6, 0),
+				sh.body,
+				Enum.Material.Slate
+			)
 			anchor = makePart(
 				model,
 				"BreachCore",
-				Vector3.new(3.2, 5.2, 0.5),
-				origin * CFrame.new(0, 4.0, 0),
+				Vector3.new(3.2, 5.4, 0.5),
+				origin * CFrame.new(0, 4.1, 0),
 				sh.accent,
 				Enum.Material.Neon,
-				0.2
+				0.18
 			)
 		elseif sh.shape == "plinth" then
+			-- Marble champion plinth with dual crossed banners
 			makeUprightCylinder(
 				model,
 				"Column",
 				sh.pos + Vector3.new(0, 2.8, 0),
 				4.0,
-				2.6,
+				2.8,
 				sh.body,
 				Enum.Material.Marble
+			)
+			makePart(
+				model,
+				"BannerLeft",
+				Vector3.new(1.1, 5.2, 0.18),
+				origin * CFrame.new(-1.4, 4.4, -1.2) * CFrame.Angles(0, 0, math.rad(16)),
+				PALETTE.Navy,
+				Enum.Material.SmoothPlastic
+			)
+			makePart(
+				model,
+				"BannerRight",
+				Vector3.new(1.1, 5.2, 0.18),
+				origin * CFrame.new(1.4, 4.4, -1.2) * CFrame.Angles(0, 0, math.rad(-16)),
+				PALETTE.Gold,
+				Enum.Material.Metal
 			)
 			anchor = makePart(
 				model,
@@ -1339,6 +1691,7 @@ local function buildEndgameShrines(hub: Model, prompts: { ProximityPrompt })
 				Enum.Material.Neon
 			)
 		else
+			-- Celestial lotus shrine with hovering lotus petals
 			makeUprightCylinder(
 				model,
 				"AltarColumn",
@@ -1348,6 +1701,21 @@ local function buildEndgameShrines(hub: Model, prompts: { ProximityPrompt })
 				sh.body,
 				Enum.Material.Marble
 			)
+			for petalIdx = 1, 6 do
+				local angle = math.rad((petalIdx - 1) * 60)
+				local petalOffset = Vector3.new(math.cos(angle) * 2.5, 4.8, math.sin(angle) * 2.5)
+				local petal = makePart(
+					model,
+					"LotusPetal_" .. tostring(petalIdx),
+					Vector3.new(1.0, 1.8, 0.3),
+					CFrame.lookAt(sh.pos + petalOffset, sh.pos + Vector3.new(0, 6.2, 0))
+						* CFrame.Angles(math.rad(-25), 0, 0),
+					PALETTE.LotusPink,
+					Enum.Material.Neon,
+					0.15
+				)
+				petal.CanCollide = false
+			end
 			anchor = makeBall(
 				model,
 				"AscensionOrb",
@@ -1381,6 +1749,7 @@ function WorldBuild.build(): BuildResult
 	buildCourtyard(hub)
 	buildSpawnMedallion(hub)
 	buildRollAltar(hub, prompts)
+	buildShowcaseStandee(hub)
 	buildToriiPortal(hub, prompts)
 	buildCardStandee(hub, prompts)
 	buildShopKiosk(hub, prompts)
