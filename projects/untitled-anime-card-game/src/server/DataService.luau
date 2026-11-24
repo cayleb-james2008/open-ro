@@ -6,8 +6,11 @@ local RunService = game:GetService("RunService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = require(Shared:WaitForChild("Config"))
+local ConfigFolder = Shared:WaitForChild("Config")
+local Economy = require(ConfigFolder:WaitForChild("Economy"))
 local LuckMath = require(Shared:WaitForChild("LuckMath"))
 local BattleSim = require(Shared:WaitForChild("BattleSim"))
+local DeckService = require(script.Parent:WaitForChild("DeckService"))
 
 export type CardInstance = {
 	uid: string,
@@ -136,7 +139,7 @@ local function createDefaultProfile(): PlayerProfile
 		lastDailyClaim = 0,
 		dailyStreak = 0,
 		settings = {
-			theme = "dark",
+			theme = "Dark",
 			reducedMotion = false,
 			reducedFlash = false,
 			skipBelowRarity = "None",
@@ -188,7 +191,8 @@ local function reconcileProfile(raw: any): PlayerProfile
 	if type(p.settings) ~= "table" then
 		p.settings = defaults.settings
 	else
-		p.settings.theme = if p.settings.theme == "light" then "light" else "dark"
+		local themeLower = string.lower(tostring(p.settings.theme or ""))
+		p.settings.theme = if themeLower == "light" then "Light" else "Dark"
 		p.settings.reducedMotion = p.settings.reducedMotion == true
 		p.settings.reducedFlash = p.settings.reducedFlash == true
 		p.settings.skipBelowRarity = tostring(p.settings.skipBelowRarity or "None")
@@ -342,6 +346,41 @@ function DataService.computeDeckSynergies(profile: PlayerProfile): { string }
 	return BattleSim.computeSynergies(units).labels
 end
 
+local function formatLuckSummary(profile: PlayerProfile, luck: LuckMath.LuckBreakdown): string
+	local parts: { string } = {}
+	if luck.upgradeBonus > 0 then
+		table.insert(parts, string.format("Upgrades +%d%%", math.round(luck.upgradeBonus * 100)))
+	end
+	if luck.indexBonus > 0 then
+		table.insert(parts, string.format("Index +%d%%", math.round(luck.indexBonus * 100)))
+	end
+	if luck.streakBonus > 0 then
+		table.insert(parts, string.format("Streak +%d%%", math.round(luck.streakBonus * 100)))
+	end
+	if (profile.luckPotionExpiresAt or 0) > os.time() and (profile.luckPotionBonus or 0) > 0 then
+		table.insert(parts, string.format("Potion +%d%%", math.round(profile.luckPotionBonus * 100)))
+	end
+	if luck.passMult > 1.001 then
+		table.insert(parts, string.format("Passes %.2gx", luck.passMult))
+	end
+	if luck.potionMult > 1.001 then
+		table.insert(parts, string.format("Potion %.2gx", luck.potionMult))
+	end
+	if luck.eventMult > 1.001 then
+		table.insert(parts, string.format("Bonus %.2gx", luck.eventMult))
+	end
+	if luck.promoMult > 1.001 then
+		table.insert(parts, string.format("Promo %.2gx", luck.promoMult))
+	end
+	if #parts == 0 then
+		if luck.totalMult > 1.001 then
+			return string.format("Total %.2gx", luck.totalMult)
+		end
+		return "Base 1.0x"
+	end
+	return table.concat(parts, " • ")
+end
+
 function DataService.serializeForClient(profile: PlayerProfile): { [string]: any }
 	local luck = DataService.getLuckBreakdown(profile)
 	local odds = LuckMath.computeRarityOdds(luck.totalMult, profile.pity)
@@ -350,10 +389,66 @@ function DataService.serializeForClient(profile: PlayerProfile): { [string]: any
 		formattedOdds[rarityId] = LuckMath.formatOddsN(prob)
 	end
 
+	local unlockedDupesByCardId: { [string]: number } = {}
+	for _, inst in pairs(profile.cards) do
+		if not inst.locked then
+			unlockedDupesByCardId[inst.cardId] = (unlockedDupesByCardId[inst.cardId] or 0) + 1
+		end
+	end
+
+	local enrichedCards: { [string]: any } = {}
+	for uid, inst in pairs(profile.cards) do
+		local cardDef = Config.Cards.get(inst.cardId)
+		local level = inst.level or 1
+		local mutation = inst.mutation or "Normal"
+		local ascension = inst.ascension or 0
+		local stats = if cardDef
+			then LuckMath.computeCardStats(cardDef, level, mutation, inst.trait, ascension)
+			else { hp = 100, atk = 20, spd = 10, power = 130 }
+		local worldTier = if cardDef and (cardDef :: any).worldId then (cardDef :: any).worldId else 1
+		local totalUnlocked = unlockedDupesByCardId[inst.cardId] or 0
+		local otherUnlocked = if inst.locked then totalUnlocked else math.max(0, totalUnlocked - 1)
+		local displayName = if cardDef then ((cardDef :: any).name or cardDef.displayName) else inst.cardId
+
+		local entry = deepCopy(inst)
+		entry.id = inst.cardId
+		entry.name = displayName
+		entry.displayName = displayName
+		entry.rarity = if cardDef then cardDef.rarity else "Common"
+		entry.role = if cardDef then cardDef.role else "Striker"
+		entry.showName = if cardDef then cardDef.showName else "Unknown"
+		entry.hp = stats.hp
+		entry.atk = stats.atk
+		entry.spd = stats.spd
+		entry.power = stats.power
+		entry.levelUpCost = Economy.getLevelUpCost(level, worldTier)
+		entry.sellValue = DeckService.getSellValue(inst)
+		entry.dupeCount = otherUnlocked
+		entry.artKey = if cardDef and cardDef.artKey then cardDef.artKey else ("cards/" .. inst.cardId)
+		enrichedCards[uid] = entry
+	end
+
+	local deckPower = 0
+	for _, uid in ipairs(profile.activeDeck) do
+		local cardEntry = enrichedCards[uid]
+		if cardEntry and type(cardEntry.power) == "number" then
+			deckPower += cardEntry.power
+		end
+	end
+
+	local synergies = DataService.computeDeckSynergies(profile)
+	local synergySummary = if #synergies > 0
+		then table.concat(synergies, " • ")
+		else "Equip 2+ cards from the same world for synergy bonuses"
+
 	local worldDef = Config.Worlds.get(profile.currentWorld) or Config.Worlds.List[1]
 	local rollCost = if worldDef then worldDef.rollCostYen else 100
 	local discoveredCount = countKeys(profile.discoveredCards)
 	local cardCount = countKeys(profile.cards)
+
+	local normalizedSettings = deepCopy(profile.settings)
+	local themeLower = string.lower(tostring(normalizedSettings.theme or ""))
+	normalizedSettings.theme = if themeLower == "light" then "Light" else "Dark"
 
 	return {
 		yen = profile.yen,
@@ -369,21 +464,25 @@ function DataService.serializeForClient(profile: PlayerProfile): { [string]: any
 		traitPity = profile.traitPity,
 		rollCount = profile.rollCount,
 		rollCostYen = rollCost,
-		cards = deepCopy(profile.cards),
+		cards = enrichedCards,
 		cardCount = cardCount,
 		discoveredCount = discoveredCount,
 		activeDeck = deepCopy(profile.activeDeck),
 		defenseDeck = deepCopy(profile.defenseDeck),
+		deckPower = deckPower,
 		clearedStages = deepCopy(profile.clearedStages),
 		discoveredCards = deepCopy(profile.discoveredCards),
 		potions = deepCopy(profile.potions),
 		luckPotionExpiresAt = profile.luckPotionExpiresAt,
 		lastDailyClaim = profile.lastDailyClaim,
 		dailyStreak = profile.dailyStreak,
-		settings = deepCopy(profile.settings),
+		settings = normalizedSettings,
 		luckBreakdown = luck,
+		luckMultiplier = luck.totalMult,
+		luckSummary = formatLuckSummary(profile, luck),
 		oddsN = formattedOdds,
-		synergies = DataService.computeDeckSynergies(profile),
+		synergies = synergies,
+		synergySummary = synergySummary,
 	}
 end
 

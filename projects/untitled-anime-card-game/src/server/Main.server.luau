@@ -137,7 +137,9 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 		end
 		return okWithState(player, profile)
 	elseif action == "StartBattle" then
-		local stageId = if type(payload.stageId) == "string" and payload.stageId ~= "" then payload.stageId else "w1_s1"
+		local stageId = if type(payload.stageId) == "string" and payload.stageId ~= ""
+			then payload.stageId
+			else "w1_act1"
 		local ok, battleData, err = BattleService.startBattle(player, stageId)
 		if not ok or not battleData then
 			return fail(err or "Battle failed")
@@ -212,10 +214,13 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 	elseif action == "UpdateSettings" then
 		local s = payload.settings
 		if type(s) == "table" then
-			if s.theme == "light" or s.theme == "Light" then
-				profile.settings.theme = "light"
-			elseif s.theme == "dark" or s.theme == "Dark" then
-				profile.settings.theme = "dark"
+			if type(s.theme) == "string" then
+				local themeLower = string.lower(s.theme)
+				if themeLower == "light" then
+					profile.settings.theme = "Light"
+				elseif themeLower == "dark" then
+					profile.settings.theme = "Dark"
+				end
 			end
 			if type(s.reducedMotion) == "boolean" then
 				profile.settings.reducedMotion = s.reducedMotion
@@ -250,7 +255,9 @@ for _, prompt in ipairs(promptList) do
 		if type(propAction) == "string" then
 			pushRemote:FireClient(player, {
 				kind = "OpenProp",
+				type = "OpenModal",
 				propAction = propAction,
+				modal = propAction,
 			})
 		end
 	end)

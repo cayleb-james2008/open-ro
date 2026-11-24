@@ -294,12 +294,112 @@ local mockProfile = {
 	cards = {
 		c1 = { uid = "c1", cardId = "w1_academy_genin", level = 4, xp = 35, mutation = "Normal", ascension = 0 },
 	},
-	settings = { theme = "dark", reducedMotion = false, reducedFlash = false, skipBelowRarity = "None" },
+	settings = { theme = "Light", reducedMotion = false, reducedFlash = false, skipBelowRarity = "None" },
 }
+local function normalizeTheme(raw: any): string
+	return if string.lower(tostring(raw or "")) == "light" then "Light" else "Dark"
+end
+expect(
+	normalizeTheme("light") == "Light" and normalizeTheme("Light") == "Light",
+	"Light theme case-insensitive normalization"
+)
+expect(normalizeTheme("dark") == "Dark" and normalizeTheme(nil) == "Dark", "Dark theme normalization")
 local encoded = serde.encode("json", mockProfile)
 local decoded = serde.decode("json", encoded)
 expect(decoded.yen == 1850 and decoded.gems == 240, "Save/rejoin currencies preserved")
 expect(#decoded.activeDeck == 4 and decoded.clearedStages.w1_act1 == true, "Save/rejoin deck and stage clear preserved")
 expect(decoded.cards.c1.cardId == "w1_academy_genin", "Save/rejoin card inventory preserved")
+expect(normalizeTheme(decoded.settings.theme) == "Light", "Light theme round-trip preserved")
 
-print("VERTICAL_SLICE_TEST_PASS: 100 rolls + pity + luck + deck + W1A1 + W1Boss + save/rejoin verified.")
+-- 7. M1 playtest contract checks (Roll, Battle replay, Deck, Luck, OpenProp)
+local starterDef = Cards.get("w1_academy_genin")
+expect(starterDef ~= nil, "w1_academy_genin card definition exists")
+if starterDef then
+	local cStats = LuckMath.computeCardStats(starterDef, 2, "Normal", nil, 0)
+	expect(
+		cStats.hp > 0 and cStats.atk > 0 and cStats.spd > 0 and cStats.power > 0,
+		"computeCardStats returns positive stats"
+	)
+	expect(Economy.getLevelUpCost(2, 1) > 0, "Economy.getLevelUpCost returns positive cost")
+end
+
+local rollSrc = fs.readFile("src/server/RollService.luau")
+for _, field in ipairs({
+	"uid =",
+	"id =",
+	"cardId =",
+	"name =",
+	"displayName =",
+	"rarity =",
+	"role =",
+	"showName =",
+	"mutation =",
+	"trait =",
+	"oddsN =",
+	"isNew =",
+	"hp =",
+	"atk =",
+	"spd =",
+	"power =",
+	"artKey =",
+	"instance =",
+}) do
+	expect(string.find(rollSrc, field, 1, true) ~= nil, "RollService contract includes " .. field)
+end
+
+local battleSrc = fs.readFile("src/server/BattleService.luau")
+for _, field in ipairs({
+	"won = simResult.won",
+	"victory = simResult.won",
+	"allies = initialAllies",
+	"enemies = initialEnemies",
+	"hp = u.maxHp",
+	"turn = ev.round",
+	"actorSide =",
+	"actorIndex =",
+	"targetSide =",
+	"targetIndex =",
+	"targetHpAfter = ev.targetHp",
+	"defeated = killed",
+}) do
+	expect(string.find(battleSrc, field, 1, true) ~= nil, "BattleService contract includes " .. field)
+end
+
+local dataSrc = fs.readFile("src/server/DataService.luau")
+for _, field in ipairs({
+	"deckPower =",
+	"synergies =",
+	"synergySummary =",
+	"luckMultiplier =",
+	"luckSummary =",
+	"dupeCount =",
+	"levelUpCost =",
+	"sellValue =",
+	"artKey =",
+}) do
+	expect(string.find(dataSrc, field, 1, true) ~= nil, "DataService contract includes " .. field)
+end
+local luckFnStart = string.find(dataSrc, "local function formatLuckSummary", 1, true)
+local luckFnEnd = string.find(dataSrc, "function DataService.serializeForClient", 1, true)
+expect(luckFnStart ~= nil and luckFnEnd ~= nil, "DataService defines formatLuckSummary")
+if luckFnStart and luckFnEnd then
+	local luckFnSrc = string.sub(dataSrc, luckFnStart, luckFnEnd)
+	expect(
+		string.find(luckFnSrc, "EventMult", 1, true) == nil
+			and string.find(luckFnSrc, "IndexBonus", 1, true) == nil
+			and string.find(luckFnSrc, "Base 1.0x", 1, true) ~= nil,
+		"formatLuckSummary emits plain-English text without EventMult/IndexBonus"
+	)
+end
+
+local mainSrc = fs.readFile("src/server/Main.server.luau")
+expect(string.find(mainSrc, 'else "w1_act1"', 1, true) ~= nil, "Main.server defaults StartBattle stageId to w1_act1")
+expect(
+	string.find(mainSrc, 'kind = "OpenProp"', 1, true) ~= nil
+		and string.find(mainSrc, 'type = "OpenModal"', 1, true) ~= nil
+		and string.find(mainSrc, "propAction = propAction", 1, true) ~= nil
+		and string.find(mainSrc, "modal = propAction", 1, true) ~= nil,
+	"Main.server ProximityPrompt fires OpenProp + OpenModal payload"
+)
+
+print("VERTICAL_SLICE_TEST_PASS: 100 rolls + pity + luck + deck + W1A1 + W1Boss + save/rejoin + M1 contracts verified.")
