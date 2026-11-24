@@ -2,6 +2,10 @@
 local Rarities = require(script.Parent.Config.Rarities)
 local Cards = require(script.Parent.Config.Cards)
 local Traits = require(script.Parent.Config.Traits)
+local okBonds, loadedBonds = pcall(function()
+	return require((script.Parent.Config :: any).Bonds)
+end)
+local Bonds: any = if okBonds and type(loadedBonds) == "table" then loadedBonds else { List = {} }
 local LuckMath = require(script.Parent.LuckMath)
 
 export type OwnedCardInput = {
@@ -60,13 +64,33 @@ export type CombatUnit = {
 	damageDealt: number,
 }
 
+export type SquadBonuses = {
+	atkPct: number?,
+	hpPct: number?,
+	spdPct: number?,
+	critPct: number?,
+	defPct: number?,
+}
+
+export type BondEvaluation = {
+	activeBonds: { Bonds.BondDef },
+	labels: { string },
+	atkMult: number,
+	hpMult: number,
+	spdMult: number,
+	critBonus: number,
+	defBonus: number,
+}
+
 export type SynergyResult = {
 	labels: { string },
 	atkMult: number,
 	hpMult: number,
 	spdMult: number,
 	critBonus: number,
+	defBonus: number,
 	leafCount: number,
+	activeBonds: { string },
 }
 
 export type BattleEvent = {
@@ -200,8 +224,70 @@ function BattleSim.buildEnemyUnit(slot: number, spec: EnemySpec): CombatUnit
 	}
 end
 
+function BattleSim.evaluateBonds(cardIds: { string }): BondEvaluation
+	local showCounts: { [string]: number } = {}
+	local cardSet: { [string]: boolean } = {}
+	for _, cardId in ipairs(cardIds) do
+		cardSet[cardId] = true
+		local cardDef = Cards.get(cardId)
+		if cardDef then
+			showCounts[cardDef.showName] = (showCounts[cardDef.showName] or 0) + 1
+		end
+	end
+
+	local activeBonds: { any } = {}
+	local labels: { string } = {}
+	local atkMult = 1.0
+	local hpMult = 1.0
+	local spdMult = 1.0
+	local critBonus = 0.0
+	local defBonus = 0.0
+
+	for _, bond in ipairs(Bonds.List) do
+		local matched = false
+		if bond.kind == "Show" then
+			local show = bond.show or ""
+			local minCount = bond.minCount or 2
+			if (showCounts[show] or 0) >= minCount then
+				matched = true
+			end
+		elseif bond.kind == "CrossCard" then
+			local reqs = bond.requiredCards
+			if reqs and #reqs > 0 then
+				matched = true
+				for _, reqId in ipairs(reqs) do
+					if not cardSet[reqId] then
+						matched = false
+						break
+					end
+				end
+			end
+		end
+		if matched then
+			table.insert(activeBonds, bond)
+			table.insert(labels, bond.name .. ": " .. bond.description)
+			atkMult += bond.bonus.atkPct or 0
+			hpMult += bond.bonus.hpPct or 0
+			spdMult += bond.bonus.spdPct or 0
+			critBonus += bond.bonus.critPct or 0
+			defBonus += bond.bonus.defPct or 0
+		end
+	end
+
+	return {
+		activeBonds = activeBonds,
+		labels = labels,
+		atkMult = atkMult,
+		hpMult = hpMult,
+		spdMult = spdMult,
+		critBonus = critBonus,
+		defBonus = defBonus,
+	}
+end
+
 function BattleSim.computeSynergies(units: { CombatUnit }): SynergyResult
 	local showCounts: { [string]: number } = {}
+	local cardIds: { string } = {}
 	local roleSet: { [string]: boolean } = {}
 	local hasVanguard = false
 	local hasStriker = false
@@ -210,6 +296,7 @@ function BattleSim.computeSynergies(units: { CombatUnit }): SynergyResult
 	local topShowName = ""
 
 	for _, unit in ipairs(units) do
+		table.insert(cardIds, unit.cardId)
 		local sCount = (showCounts[unit.showName] or 0) + 1
 		showCounts[unit.showName] = sCount
 		if sCount > maxShowCount then
@@ -232,6 +319,7 @@ function BattleSim.computeSynergies(units: { CombatUnit }): SynergyResult
 	local hpMult = 1.0
 	local spdMult = 1.0
 	local critBonus = 0.0
+	local defBonus = 0.0
 
 	if maxShowCount >= 4 then
 		atkMult += 0.25
@@ -258,13 +346,27 @@ function BattleSim.computeSynergies(units: { CombatUnit }): SynergyResult
 		table.insert(labels, "Spear & Shield (+8% Crit)")
 	end
 
+	local bondEval = BattleSim.evaluateBonds(cardIds)
+	local activeBonds: { string } = {}
+	for _, bond in ipairs(bondEval.activeBonds) do
+		table.insert(activeBonds, bond.id)
+		table.insert(labels, "Bond: " .. bond.name)
+	end
+	atkMult += bondEval.atkMult - 1.0
+	hpMult += bondEval.hpMult - 1.0
+	spdMult += bondEval.spdMult - 1.0
+	critBonus += bondEval.critBonus
+	defBonus += bondEval.defBonus
+
 	return {
 		labels = labels,
 		atkMult = atkMult,
 		hpMult = hpMult,
 		spdMult = spdMult,
 		critBonus = critBonus,
+		defBonus = defBonus,
 		leafCount = showCounts["Leaf Shinobi"] or 0,
+		activeBonds = activeBonds,
 	}
 end
 
@@ -326,18 +428,26 @@ local function applyDamage(
 	return dmg, killed
 end
 
-local function applyTeamBuffs(allies: { CombatUnit }, enemies: { CombatUnit }, synergy: SynergyResult)
+local function applyTeamBuffs(
+	allies: { CombatUnit },
+	enemies: { CombatUnit },
+	synergy: SynergyResult,
+	squadBonuses: SquadBonuses?
+)
+	local extraHp = if squadBonuses and squadBonuses.hpPct then math.max(0, squadBonuses.hpPct) else 0
+	local extraAtk = if squadBonuses and squadBonuses.atkPct then math.max(0, squadBonuses.atkPct) else 0
+	local extraSpd = if squadBonuses and squadBonuses.spdPct then math.max(0, squadBonuses.spdPct) else 0
 	local enemySpdDebuff = 0
 	for _, ally in ipairs(allies) do
-		local hpBoost = synergy.hpMult
-		local atkBoost = synergy.atkMult
+		local hpBoost = synergy.hpMult + extraHp
+		local atkBoost = synergy.atkMult + extraAtk
 		if (ally.passiveFlags.leafAtkSynergy or 0) > 0 and synergy.leafCount >= 2 then
 			atkBoost += ally.passiveFlags.leafAtkSynergy
 		end
 		ally.maxHp = math.max(1, math.floor(ally.maxHp * hpBoost))
 		ally.hp = ally.maxHp
 		ally.atk = math.max(1, math.floor(ally.atk * atkBoost))
-		ally.spd = math.max(1, math.floor(ally.spd * synergy.spdMult))
+		ally.spd = math.max(1, math.floor(ally.spd * (synergy.spdMult + extraSpd)))
 		enemySpdDebuff = math.max(enemySpdDebuff, ally.passiveFlags.enemySpdDebuff or 0)
 	end
 	if enemySpdDebuff > 0 then
@@ -350,16 +460,18 @@ end
 function BattleSim.run(
 	alliesInput: { CombatUnit },
 	enemiesInput: { CombatUnit },
-	opts: { seed: number?, maxRounds: number? }?
+	opts: { seed: number?, maxRounds: number?, squadBonuses: SquadBonuses? }?
 ): BattleResult
 	local cfg = opts or {}
+	local extraCrit = if cfg.squadBonuses and cfg.squadBonuses.critPct then math.max(0, cfg.squadBonuses.critPct) else 0
+	local extraDef = if cfg.squadBonuses and cfg.squadBonuses.defPct then math.max(0, cfg.squadBonuses.defPct) else 0
 	local randFn = LuckMath.makeSeededRng(cfg.seed or 42)
 	local maxRounds = cfg.maxRounds or 30
 
 	local allies = alliesInput
 	local enemies = enemiesInput
 	local synergy = BattleSim.computeSynergies(allies)
-	applyTeamBuffs(allies, enemies, synergy)
+	applyTeamBuffs(allies, enemies, synergy, cfg.squadBonuses)
 
 	local events: { BattleEvent } = {}
 	table.insert(events, {
@@ -561,7 +673,7 @@ function BattleSim.run(
 				local critChance = 0.10
 					+ (actor.passiveFlags.critBonus or 0)
 					+ (if actor.trait then actor.trait.critBonus else 0)
-					+ (if actor.team == "ally" then synergy.critBonus else 0)
+					+ (if actor.team == "ally" then (synergy.critBonus + extraCrit) else 0)
 				local isCrit = randFn() < critChance
 				if isCrit then
 					dmg *= (1.5 + (actor.passiveFlags.critDmgBonus or 0))
@@ -569,6 +681,7 @@ function BattleSim.run(
 
 				local dmgRed = (targetUnit.passiveFlags.damageReduction or 0)
 					+ (if targetUnit.trait then targetUnit.trait.damageReduction else 0)
+					+ (if targetUnit.team == "ally" then (synergy.defBonus + extraDef) else 0)
 				local defIgnore = if actor.trait then actor.trait.defIgnore else 0
 				if useSkill and actor.skill.pierce then
 					defIgnore = math.max(defIgnore, 0.5)
@@ -686,7 +799,6 @@ function BattleSim.run(
 		events = events,
 		alliesSummary = alliesSummary,
 		enemiesSummary = enemiesSummary,
-		synergies = synergy.labels,
 		mvpName = mvpName,
 	}
 end

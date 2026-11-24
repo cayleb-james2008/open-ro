@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/w3_black_leg_chef.pending-angle.6deffbdb17d9.png",
+    "candidate_sha256": "6deffbdb17d9d64a37dad17363c37bc519f579b93c77951497ce4a07889ca3b9",
+    "height": 1674,
+    "status": "PENDING_VISION",
+    "width": 939
+  },
+  "approved_at": "2026-11-24T02:25:00Z",
+  "approved_by": "designer",
+  "bytes": 2635253,
+  "candidate_path": "art/cards/w3_black_leg_chef.pending-angle.6deffbdb17d9.png",
+  "candidate_sha256": "6deffbdb17d9d64a37dad17363c37bc519f579b93c77951497ce4a07889ca3b9",
+  "created_at": "2026-11-24T02:20:06Z",
+  "height": 1674,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/w3_black_leg_chef.png",
+  "promoted_from": "art/cards/w3_black_leg_chef.pending-angle.6deffbdb17d9.png",
+  "prompt": "Transform this reference character into a sleek vertical anime trading card game illustration in dynamic three-quarter mid-air spinning kick pose with his leg engulfed in blazing incandescent orange-gold flames and swirling ember trails, crisp cel-shaded anime key art lighting, dramatic night harbor backdrop, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/sanji.jpg"
+  ],
+  "requested_path": "art/cards/w3_black_leg_chef.png",
+  "review_notes": "Verified w3_black_leg_chef visually against ref art/references/sanji.jpg: exact character likeness, dynamic anime card composition, zero text/watermarks.",
+  "sha256": "6deffbdb17d9d64a37dad17363c37bc519f579b93c77951497ce4a07889ca3b9",
+  "status": "approved",
+  "version": 1,
+  "width": 939
+}

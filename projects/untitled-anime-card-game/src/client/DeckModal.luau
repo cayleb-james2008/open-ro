@@ -31,14 +31,17 @@ export type OwnedCard = {
 export type DeckSnapshot = {
 	cards: { OwnedCard },
 	activeDeckUids: { string },
+	defenseDeckUids: { string }?,
 	maxDeckSize: number,
 	synergySummary: string,
+	bondsSummary: string?,
 	totalPower: number,
 	yen: number,
 }
 
 export type DeckCallbacks = {
 	onEquipToggle: (uid: string, shouldEquip: boolean) -> (),
+	onDefenseEquipToggle: ((uid: string, shouldEquip: boolean) -> ())?,
 	onLevelUp: (uid: string) -> (),
 	onAscend: (uid: string) -> (),
 	onToggleLock: (uid: string) -> (),
@@ -57,11 +60,14 @@ local DeckModal = {}
 
 function DeckModal.create(parent: Instance, callbacks: DeckCallbacks): DeckModalController
 	local selectedUid: string? = nil
+	local deckTab = "Active"
 	local currentSnapshot: DeckSnapshot = {
 		cards = {},
 		activeDeckUids = {},
+		defenseDeckUids = {},
 		maxDeckSize = 5,
 		synergySummary = "No synergy active",
+		bondsSummary = "",
 		totalPower = 0,
 		yen = 0,
 	}
@@ -107,14 +113,38 @@ function DeckModal.create(parent: Instance, callbacks: DeckCallbacks): DeckModal
 		header,
 		"Title",
 		"Collection & Deck (0/5)",
-		UDim2.new(1, -130, 1, 0),
+		UDim2.new(1, -260, 1, 0),
 		UDim2.fromOffset(16, 0),
 		Theme.FONT_DISPLAY,
-		19,
+		17,
 		Theme.getPalette().textPrimary,
 		Enum.TextXAlignment.Left
 	)
 	titleLbl.ZIndex = 32
+
+	local activeTabBtn = Components.makeButton(
+		header,
+		"ActiveTabBtn",
+		"Active",
+		UDim2.fromOffset(82, 44),
+		UDim2.new(1, -234, 0.5, -22),
+		Theme.getPalette().accentBlue,
+		Color3.fromRGB(255, 255, 255)
+	)
+	activeTabBtn.TextSize = 12
+	activeTabBtn.ZIndex = 33
+
+	local defenseTabBtn = Components.makeButton(
+		header,
+		"DefenseTabBtn",
+		"Defense",
+		UDim2.fromOffset(82, 44),
+		UDim2.new(1, -146, 0.5, -22),
+		Theme.getPalette().bgMuted,
+		Theme.getPalette().textPrimary
+	)
+	defenseTabBtn.TextSize = 12
+	defenseTabBtn.ZIndex = 33
 
 	local closeBtn = Components.makeButton(
 		header,
@@ -475,11 +505,10 @@ function DeckModal.create(parent: Instance, callbacks: DeckCallbacks): DeckModal
 			view.ZIndex = 33
 
 			if isEquipped(card.uid) then
-				local hasMutation = card.mutation ~= nil and card.mutation ~= "" and card.mutation ~= "Normal"
 				local eqBadge = Instance.new("Frame")
 				eqBadge.Name = "EquippedTag"
-				eqBadge.Size = UDim2.fromOffset(64, 18)
-				eqBadge.Position = UDim2.new(1, -70, 0, if hasMutation then 32 else 9)
+				eqBadge.Size = UDim2.fromOffset(60, 18)
+				eqBadge.Position = UDim2.fromOffset(6, 6)
 				eqBadge.BackgroundColor3 = Color3.fromRGB(20, 78, 48)
 				eqBadge.BorderSizePixel = 0
 				eqBadge.ZIndex = 35
@@ -515,7 +544,11 @@ function DeckModal.create(parent: Instance, callbacks: DeckCallbacks): DeckModal
 
 	equipBtn.MouseButton1Click:Connect(function()
 		if selectedUid then
-			callbacks.onEquipToggle(selectedUid, not isEquipped(selectedUid))
+			if deckTab == "Defense" and callbacks.onDefenseEquipToggle then
+				callbacks.onDefenseEquipToggle(selectedUid, not isEquipped(selectedUid))
+			else
+				callbacks.onEquipToggle(selectedUid, not isEquipped(selectedUid))
+			end
 		end
 	end)
 
@@ -542,6 +575,26 @@ function DeckModal.create(parent: Instance, callbacks: DeckCallbacks): DeckModal
 		if card and not isEquipped(card.uid) and not card.locked then
 			callbacks.onSell(card.uid)
 		end
+	end)
+
+	local function updateTabVisuals()
+		local p = Theme.getPalette()
+		activeTabBtn.BackgroundColor3 = if deckTab == "Active" then p.accentBlue else p.bgMuted
+		activeTabBtn.TextColor3 = if deckTab == "Active" then Color3.fromRGB(255, 255, 255) else p.textPrimary
+		defenseTabBtn.BackgroundColor3 = if deckTab == "Defense" then p.accentPurple else p.bgMuted
+		defenseTabBtn.TextColor3 = if deckTab == "Defense" then Color3.fromRGB(255, 255, 255) else p.textPrimary
+	end
+
+	activeTabBtn.MouseButton1Click:Connect(function()
+		deckTab = "Active"
+		updateTabVisuals()
+		renderAll()
+	end)
+
+	defenseTabBtn.MouseButton1Click:Connect(function()
+		deckTab = "Defense"
+		updateTabVisuals()
+		renderAll()
 	end)
 
 	closeBtn.MouseButton1Click:Connect(function()

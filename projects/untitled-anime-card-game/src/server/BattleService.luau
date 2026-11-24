@@ -1,286 +1,200 @@
 --!strict
-local AnalyticsService = game:GetService("AnalyticsService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
-local Config = Shared:WaitForChild("Config")
-local Cards = require(Config:WaitForChild("Cards"))
-local Worlds = require(Config:WaitForChild("Worlds"))
+local ConfigFolder = Shared:WaitForChild("Config")
+local Worlds = require(ConfigFolder:WaitForChild("Worlds"))
 local BattleSim = require(Shared:WaitForChild("BattleSim"))
-
 local DataService = require(script.Parent:WaitForChild("DataService"))
+local DeckService = require(script.Parent:WaitForChild("DeckService"))
 
 local BattleService = {}
 
-local function findStage(stageId: string): (Worlds.WorldDef?, Worlds.StageDef?, number?)
-	for _, world in ipairs(Worlds.List) do
-		for idx, stage in ipairs(world.stages) do
-			if stage.id == stageId then
-				return world, stage, idx
-			end
-		end
-	end
-	return nil, nil, nil
-end
-
-local function isStageUnlocked(profile: DataService.PlayerProfile, world: Worlds.WorldDef, stageIdx: number): boolean
-	local unlockedWorlds = profile.unlockedWorlds or {}
-	if world.id > 1 and not unlockedWorlds[world.id] and (profile.currentWorld or 1) < world.id then
-		return false
-	end
-	if stageIdx <= 1 then
-		return true
-	end
-	local prevStage = world.stages[stageIdx - 1]
-	if not prevStage then
-		return true
-	end
-	return profile.clearedStages[prevStage.id] == true
-end
-
-local function logBattleAnalytics(player: Player?, stageId: string, won: boolean, yenEarned: number)
-	if not player then
-		return
-	end
-	pcall(function()
-		(AnalyticsService :: any):LogCustomEvent(player, "StageBattle", 1, {
-			stageId = stageId,
-			won = won,
-			yenEarned = yenEarned,
+local function cloneUnits(units: { BattleSim.CombatUnit }): { { [string]: any } }
+	local out: { { [string]: any } } = {}
+	for _, u in ipairs(units) do
+		table.insert(out, {
+			slot = u.slot,
+			name = u.name,
+			cardId = u.cardId,
+			role = u.role,
+			showName = u.showName,
+			hp = u.maxHp,
+			maxHp = u.maxHp,
+			atk = u.atk,
+			spd = u.spd,
 		})
-	end)
+	end
+	return out
 end
 
-function BattleService.startBattle(player: Player, stageId: string): (boolean, { [string]: any }?, string?)
-	local profile = DataService.getProfile(player)
-	if not profile then
-		return false, nil, "Profile not loaded"
-	end
-	if type(stageId) ~= "string" or stageId == "" then
-		return false, nil, "Invalid stage"
-	end
-
-	local world, stage, stageIdx = findStage(stageId)
-	if not world or not stage or not stageIdx then
-		return false, nil, "Unknown stage"
-	end
-	if not isStageUnlocked(profile, world, stageIdx) then
-		return false, nil, "Clear the previous stage first!"
-	end
-
-	local deckCards: { DataService.CardInstance } = {}
-	for _, uid in ipairs(profile.activeDeck) do
-		local inst = profile.cards[uid]
-		if inst then
-			table.insert(deckCards, inst)
-		end
-	end
-	if #deckCards == 0 then
-		return false, nil, "Equip at least 1 card in your deck before battling!"
-	end
-
-	local allies: { BattleSim.CombatUnit } = {}
-	for idx, card in ipairs(deckCards) do
-		local unit = BattleSim.buildPlayerUnit(idx, {
-			uid = card.uid,
-			cardId = card.cardId,
-			level = card.level,
-			mutation = card.mutation,
-			trait = card.trait,
-			ascension = card.ascension,
-		})
-		if unit then
-			table.insert(allies, unit)
-		end
-	end
-	if #allies == 0 then
-		return false, nil, "No valid cards in your active deck!"
-	end
-
+local function buildEnemiesFromStage(stage: any): { BattleSim.CombatUnit }
 	local enemies: { BattleSim.CombatUnit } = {}
-	for idx, enemySpec in ipairs((stage :: any).enemies or {}) do
-		local enemyCard: any = nil
-		if type(enemySpec.cardId) == "string" and enemySpec.cardId ~= "" then
-			local cardsAny = Cards :: any
-			if type(cardsAny.get) == "function" then
-				enemyCard = cardsAny.get(enemySpec.cardId)
-			elseif type(cardsAny.ById) == "table" then
-				enemyCard = cardsAny.ById[enemySpec.cardId]
-			elseif type(cardsAny.List) == "table" then
-				for _, cardDef in ipairs(cardsAny.List) do
-					if cardDef.id == enemySpec.cardId then
-						enemyCard = cardDef
-						break
-					end
-				end
-			end
-		end
+	local list = stage.enemies or {}
+	for idx, e in ipairs(list) do
+		local hp = math.max(10, math.floor(e.hp or 100))
+		local atk = math.max(5, math.floor(e.atk or 20))
+		local spd = math.max(5, math.floor(e.spd or 10))
 		table.insert(
 			enemies,
 			BattleSim.buildEnemyUnit(idx, {
-				id = enemySpec.cardId or ("enemy_" .. tostring(idx)),
-				name = enemySpec.name,
-				rarity = if enemyCard then enemyCard.rarity else "Common",
-				role = if enemyCard then enemyCard.role else "Striker",
-				hp = enemySpec.hp,
-				atk = enemySpec.atk,
-				spd = enemySpec.spd,
-				skill = {
-					name = enemySpec.skillName or "Strike",
-					description = enemySpec.skillName or "Strike",
-					cooldown = 3,
-					dmgMult = enemySpec.skillMult or 1.25,
-					targeting = "Single",
-				},
+				id = e.cardId or e.id or ("enemy_" .. tostring(idx)),
+				name = e.name or ("Enemy " .. tostring(idx)),
+				rarity = e.rarity,
+				role = e.role,
+				showName = e.showName,
+				hp = hp,
+				atk = atk,
+				spd = spd,
+				skill = e.skill,
+				passiveFlags = e.passiveFlags,
+				artKey = e.artKey,
 			})
 		)
 	end
+	return enemies
+end
+
+function BattleService.startBattle(
+	profile: DataService.PlayerProfile,
+	stageId: string
+): (boolean, { [string]: any }?, string?)
+	if type(stageId) ~= "string" or stageId == "" then
+		return false, nil, "Missing stageId."
+	end
+	local stage = Worlds.getStage(stageId)
+	if not stage then
+		return false, nil, "Unknown stage."
+	end
+	local worldId = (stage :: any).worldId or 1
+	if not profile.unlockedWorlds[worldId] then
+		return false, nil, "World is locked."
+	end
+
+	local allies: { BattleSim.CombatUnit } = {}
+	for slot, uid in ipairs(profile.activeDeck) do
+		local inst = profile.cards[uid]
+		if inst then
+			local unit = BattleSim.buildPlayerUnit(slot, inst)
+			if unit then
+				table.insert(allies, unit)
+			end
+		end
+	end
+	if #allies == 0 then
+		return false, nil, "Your active deck is empty."
+	end
+
+	local enemies = buildEnemiesFromStage(stage)
 	if #enemies == 0 then
-		return false, nil, "Stage has no enemies configured!"
+		return false, nil, "Stage has no enemies."
 	end
 
-	local unitLookup: { [string]: { side: string, slot: number, name: string } } = {}
-	for _, u in ipairs(allies) do
-		unitLookup[u.uid] = { side = "ally", slot = u.slot, name = u.name }
-	end
-	for _, u in ipairs(enemies) do
-		unitLookup[u.uid] = { side = "enemy", slot = u.slot, name = u.name }
-	end
+	local squadBonuses = DeckService.getSquadBonuses(profile)
+	local initialAllies = cloneUnits(allies)
+	local initialEnemies = cloneUnits(enemies)
 
-	local seed = math.floor(os.clock() * 1000) + profile.rollCount * 31 + player.UserId
-	local simResult = BattleSim.run(allies, enemies, { seed = seed, maxRounds = 30 })
+	local simResult = BattleSim.run(allies, enemies, { squadBonuses = squadBonuses :: any })
+	local won = simResult.winner == "allies" or simResult.won == true
 
-	local initialAllies = {}
-	for _, u in ipairs(allies) do
-		table.insert(initialAllies, {
-			uid = u.uid,
-			team = "ally",
-			slot = u.slot,
-			cardId = u.cardId,
-			name = u.name,
-			rarity = u.rarity,
-			role = u.role,
-			showName = u.showName,
-			artKey = u.artKey,
-			hp = u.maxHp,
-			maxHp = u.maxHp,
-			atk = u.atk,
-			spd = u.spd,
-		})
-	end
-	local initialEnemies = {}
-	for _, u in ipairs(enemies) do
-		table.insert(initialEnemies, {
-			uid = u.uid,
-			team = "enemy",
-			slot = u.slot,
-			cardId = u.cardId,
-			name = u.name,
-			rarity = u.rarity,
-			role = u.role,
-			showName = u.showName,
-			artKey = u.artKey,
-			hp = u.maxHp,
-			maxHp = u.maxHp,
-			atk = u.atk,
-			spd = u.spd,
-		})
-	end
-
-	local normalizedEvents = {}
-	for _, ev in ipairs(simResult.events or {}) do
-		local actorInfo = if ev.actorUid then unitLookup[ev.actorUid] else nil
-		local targetInfo = if ev.targetUid then unitLookup[ev.targetUid] else nil
-		local killed = ev.killed == true
-		table.insert(normalizedEvents, {
-			kind = ev.kind,
-			action = ev.kind,
-			round = ev.round,
-			turn = ev.round,
-			actorUid = ev.actorUid,
-			targetUid = ev.targetUid,
-			actorSide = if actorInfo then actorInfo.side else nil,
-			actorIndex = if actorInfo then actorInfo.slot else nil,
-			actorName = if actorInfo then actorInfo.name else nil,
-			targetSide = if targetInfo then targetInfo.side else nil,
-			targetIndex = if targetInfo then targetInfo.slot else nil,
-			targetName = if targetInfo then targetInfo.name else nil,
-			skillName = ev.skillName or ev.note,
-			damage = ev.damage,
-			heal = ev.heal,
-			crit = ev.isCrit == true or ev.crit == true,
-			isCrit = ev.isCrit == true or ev.crit == true,
-			targetHp = ev.targetHp,
-			targetHpAfter = ev.targetHp,
-			targetMaxHp = ev.targetMaxHp,
-			targetShield = ev.targetShield,
-			killed = killed,
-			defeated = killed,
-			note = ev.note,
-		})
-	end
-
-	local rewards = {
+	local rewards: { [string]: any } = {
 		yen = 0,
 		gems = 0,
 		tickets = 0,
 		bossTokens = 0,
-		xp = 0,
-		firstClear = false,
-		droppedCardId = nil :: string?,
+		materials = {},
+		unlockedWorld = nil,
 	}
 
-	if simResult.won then
-		local isFirstClear = profile.clearedStages[stage.id] ~= true
-		profile.clearedStages[stage.id] = true
+	if won then
+		local firstClear = profile.clearedStages[stageId] ~= true
+		profile.clearedStages[stageId] = true
 
-		local yenEarned = stage.yenReward
-		local gemsEarned = stage.gemReward + (if isFirstClear then stage.firstClearGems else 0)
-		local ticketsEarned = if isFirstClear then stage.firstClearTickets else 0
-		local bossTokensEarned = stage.bossTokenReward or 0
+		local baseYen = (stage :: any).rewardYen or 100
+		local yenMult = squadBonuses.yenMult or 1
+		local okW, weatherMod = pcall(function()
+			return require(script.Parent:FindFirstChild("WeatherService") :: any)
+		end)
+		if okW and type(weatherMod) == "table" and type(weatherMod.getYenMult) == "function" then
+			yenMult *= weatherMod.getYenMult()
+		end
+		local yenEarned = math.max(10, math.floor(baseYen * yenMult))
+		local gemsEarned = if firstClear
+			then ((stage :: any).firstClearGems or 25)
+			else ((stage :: any).rewardGems or 0)
+		local ticketsEarned = if firstClear then ((stage :: any).firstClearTickets or 0) else 0
+		local bossTokensEarned = if (stage :: any).isBoss then ((stage :: any).rewardBossTokens or 1) else 0
 
-		profile.yen += yenEarned
-		profile.gems += gemsEarned
-		profile.tickets += ticketsEarned
-		profile.bossTokens += bossTokensEarned
+		profile.yen = (profile.yen or 0) + yenEarned
+		profile.gems = (profile.gems or 0) + gemsEarned
+		profile.tickets = (profile.tickets or 0) + ticketsEarned
+		profile.bossTokens = (profile.bossTokens or 0) + bossTokensEarned
 
 		rewards.yen = yenEarned
 		rewards.gems = gemsEarned
 		rewards.tickets = ticketsEarned
 		rewards.bossTokens = bossTokensEarned
-		local xpEarned = stage.xpReward or 0
-		rewards.xp = xpEarned
-		rewards.firstClear = isFirstClear
 
-		for _, inst in ipairs(deckCards) do
-			inst.xp = (inst.xp or 0) + xpEarned
+		local matId = (stage :: any).materialDrop
+		if type(matId) == "string" and matId ~= "" then
+			profile.materials[matId] = (profile.materials[matId] or 0) + 1
+			rewards.materials[matId] = 1
 		end
 
-		if stage.dropCardId and stage.dropChance and math.random() < stage.dropChance then
-			DataService.addCard(profile, stage.dropCardId, "Normal", nil)
-			rewards.droppedCardId = stage.dropCardId
-		end
-
-		if stage.isBoss then
-			local nextWorldId = world.id + 1
-			if Worlds.get(nextWorldId) then
-				profile.unlockedWorlds[nextWorldId] = true
+		if (stage :: any).isBoss then
+			local nextWorld = worldId + 1
+			if Worlds.get(nextWorld) and not profile.unlockedWorlds[nextWorld] then
+				profile.unlockedWorlds[nextWorld] = true
+				profile.currentWorld = math.max(profile.currentWorld or 1, nextWorld)
+				rewards.unlockedWorld = nextWorld
+			end
+			local bossCardId = (stage :: any).bossCardId
+			if type(bossCardId) == "string" and bossCardId ~= "" and firstClear then
+				DataService.addCard(profile, bossCardId, "Normal", nil)
+				rewards.bossCardId = bossCardId
 			end
 		end
-	else
-		local consolationYen = math.max(15, math.floor(stage.yenReward * 0.2))
-		profile.yen += consolationYen
-		rewards.yen = consolationYen
+
+		local okRet, retMod = pcall(function()
+			return require(script.Parent:FindFirstChild("RetentionService") :: any)
+		end)
+		if okRet and type(retMod) == "table" and type(retMod.trackProgress) == "function" then
+			pcall(retMod.trackProgress, profile, "battles_won", 1)
+			if (stage :: any).isBoss then
+				pcall(retMod.trackProgress, profile, "bosses_cleared", 1)
+			end
+		end
 	end
 
-	logBattleAnalytics(player, stage.id, simResult.won, rewards.yen)
+	local normalizedEvents: { { [string]: any } } = {}
+	for _, ev in ipairs(simResult.events or {}) do
+		local killed = ev.killed == true or (ev.targetHp ~= nil and ev.targetHp <= 0)
+		table.insert(normalizedEvents, {
+			round = ev.round,
+			turn = ev.round,
+			kind = ev.kind,
+			actorSide = ev.actorSide,
+			actorIndex = ev.actorSlot or ev.actorIndex,
+			actorName = ev.actorName,
+			targetSide = ev.targetSide,
+			targetIndex = ev.targetSlot or ev.targetIndex,
+			targetName = ev.targetName,
+			damage = ev.damage,
+			isCrit = ev.isCrit,
+			skillName = ev.skillName,
+			targetHp = ev.targetHp,
+			targetHpAfter = ev.targetHp,
+			killed = killed,
+			defeated = killed,
+		})
+	end
 
 	local battlePayload = {
-		stageId = stage.id,
-		stageName = stage.name,
+		stageId = stageId,
+		worldId = worldId,
 		won = simResult.won,
 		victory = simResult.won,
-		rounds = simResult.rounds,
+		winner = if won then "allies" else "enemies",
 		allies = initialAllies,
 		enemies = initialEnemies,
 		events = normalizedEvents,

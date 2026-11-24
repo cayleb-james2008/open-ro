@@ -1,0 +1,41 @@
+{
+  "angle_review": {
+    "candidate_path": "art/cards/w5_true_bankai_substitute.pending-angle.90e42bbc43e7.png",
+    "candidate_sha256": "90e42bbc43e7c00e8f7d52e8070f2723a447f45c9723ed9cd0ce239a1615120f",
+    "height": 1457,
+    "status": "PENDING_VISION",
+    "width": 1079
+  },
+  "approved_at": "2026-11-24T02:36:31Z",
+  "approved_by": "designer",
+  "bytes": 2867383,
+  "candidate_path": "art/cards/w5_true_bankai_substitute.pending-angle.90e42bbc43e7.png",
+  "candidate_sha256": "90e42bbc43e7c00e8f7d52e8070f2723a447f45c9723ed9cd0ce239a1615120f",
+  "created_at": "2026-11-24T02:35:19Z",
+  "height": 1457,
+  "kind": "card",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/cards/w5_true_bankai_substitute.png",
+  "promoted_from": "art/cards/w5_true_bankai_substitute.pending-angle.90e42bbc43e7.png",
+  "prompt": "Transform this reference character into an iconic legendary vertical anime trading card game illustration in explosive three-quarter combat stance with blazing black-and-gold crescent Getsuga Tensho spiritual slash waves tearing through a stormy crimson-indigo sky, crisp cel-shaded anime key art lighting, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/ichigo_kurosaki.jpg"
+  ],
+  "requested_path": "art/cards/w5_true_bankai_substitute.png",
+  "review_notes": "Verified w5_true_bankai_substitute visually against owner curated ref art/references/ichigo_kurosaki.jpg: exact character likeness, dynamic anime card composition, zero text/watermarks.",
+  "sha256": "90e42bbc43e7c00e8f7d52e8070f2723a447f45c9723ed9cd0ce239a1615120f",
+  "status": "approved",
+  "version": 1,
+  "width": 1079
+}

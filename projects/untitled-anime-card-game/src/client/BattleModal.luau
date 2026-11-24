@@ -86,10 +86,13 @@ export type BattleResult = {
 export type BattleCallbacks = {
 	onStartBattle: (stageId: string) -> (),
 	getReducedMotion: () -> boolean,
+	onSelectWorld: ((worldId: number) -> ())?,
+	onChallengeWorldBoss: ((worldId: number) -> ())?,
 }
 
 export type BattleModalController = {
-	open: (stages: { BattleStageInfo }, deckPower: number) -> (),
+	open: (stages: { BattleStageInfo }, deckPower: number, worldId: number?) -> (),
+	setWorld: (worldId: number) -> (),
 	playBattle: (result: BattleResult) -> (),
 	setStatus: (text: string) -> (),
 	close: () -> (),
@@ -404,13 +407,122 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		speedBtn.TextColor3 = if speedMult > 1 then Color3.fromRGB(255, 255, 255) else palette.textPrimary
 	end
 
+	local WORLD_TITLES: { [number]: string } = {
+		[1] = "World 1: Hidden Leaf Arena",
+		[2] = "World 2: West City & Namek",
+		[3] = "World 3: Grand Line Seas",
+		[4] = "World 4: Tokyo Jujutsu High",
+		[5] = "World 5: Soul Society",
+	}
+	local function getWorldTitle(wId: number): string
+		return WORLD_TITLES[wId] or ("World " .. tostring(wId))
+	end
+
+	local activeWorldId = 1
+	local activeBondsText = "Active Bonds: Equip matching cards for Show & Cross-Card bonuses"
+	local onSelectWorldCb: ((worldId: number) -> ())? = callbacks.onSelectWorld
+	local onChallengeWorldBossCb: ((worldId: number) -> ())? = callbacks.onChallengeWorldBoss
+
 	local function renderStageList()
 		clearChildren(stageView, true)
 		local palette = Theme.getPalette()
 
+		local worldBar = Instance.new("Frame")
+		worldBar.Name = "WorldTabsBar"
+		worldBar.LayoutOrder = -3
+		worldBar.Size = UDim2.new(1, 0, 0, 48)
+		worldBar.BackgroundTransparency = 1
+		worldBar.ZIndex = 38
+		worldBar.Parent = stageView
+
+		local worldLayout = Instance.new("UIListLayout")
+		worldLayout.FillDirection = Enum.FillDirection.Horizontal
+		worldLayout.Padding = UDim.new(0, 6)
+		worldLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+		worldLayout.Parent = worldBar
+
+		for wId = 1, 5 do
+			local isSelected = wId == activeWorldId
+			local wBtn = Components.makeButton(
+				worldBar,
+				"WorldTab_" .. tostring(wId),
+				"W" .. tostring(wId),
+				UDim2.fromOffset(46, 44),
+				UDim2.fromOffset(0, 0),
+				if isSelected then palette.accentBlue else palette.bgMuted,
+				if isSelected then Color3.fromRGB(255, 255, 255) else palette.textPrimary
+			)
+			wBtn.LayoutOrder = wId
+			wBtn.TextSize = 13
+			wBtn.ZIndex = 39
+			wBtn.Activated:Connect(function()
+				activeWorldId = wId
+				titleLbl.Text = getWorldTitle(activeWorldId)
+				if onSelectWorldCb then
+					onSelectWorldCb(wId)
+				end
+				renderStageList()
+			end)
+		end
+
+		local wbBtn = Components.makeButton(
+			worldBar,
+			"WorldBossButton",
+			"World Boss",
+			UDim2.new(1, -260, 0, 44),
+			UDim2.fromOffset(0, 0),
+			palette.accentPurple,
+			Color3.fromRGB(255, 255, 255)
+		)
+		wbBtn.LayoutOrder = 10
+		wbBtn.TextSize = 13
+		wbBtn.ZIndex = 39
+		wbBtn.Activated:Connect(function()
+			if onChallengeWorldBossCb then
+				onChallengeWorldBossCb(activeWorldId)
+			end
+		end)
+
+		local bondsRow = Instance.new("Frame")
+		bondsRow.Name = "BondsSummaryRow"
+		bondsRow.LayoutOrder = -2
+		bondsRow.Size = UDim2.new(1, 0, 0, 36)
+		bondsRow.BackgroundColor3 = palette.bgCard
+		bondsRow.BorderSizePixel = 0
+		bondsRow.ZIndex = 38
+		bondsRow.Parent = stageView
+		Components.addCorner(bondsRow, 8)
+		Components.addStroke(bondsRow, palette.accentGold, 1, 0.45)
+
+		local bondsLbl = Components.makeLabel(
+			bondsRow,
+			"BondsLabel",
+			activeBondsText,
+			UDim2.new(1, -16, 1, 0),
+			UDim2.fromOffset(8, 0),
+			Theme.FONT_BODY,
+			12,
+			palette.accentGold,
+			Enum.TextXAlignment.Left
+		)
+		bondsLbl.TextTruncate = Enum.TextTruncate.AtEnd
+		bondsLbl.ZIndex = 39
+
 		for idx, stage in currentStages do
+			local stageAny = stage :: any
+			local stageId = tostring(stage.id or stageAny.stageId or ("stage_" .. tostring(idx)))
+			local stageName = tostring(stage.name or stageId)
+			local stageSubtitle = tostring(stage.subtitle or ("Act " .. tostring(stageAny.actNumber or idx)))
+			local stageRewardSummary = tostring(
+				stage.rewardSummary
+					or string.format(
+						"+%d Yen  +%d Gems",
+						tonumber(stageAny.yenReward) or 0,
+						tonumber(stageAny.gemsReward) or 0
+					)
+			)
 			local row = Instance.new("Frame")
-			row.Name = "Stage_" .. stage.id
+			row.Name = "Stage_" .. stageId
 			row.LayoutOrder = idx
 			row.Size = UDim2.new(1, 0, 0, 88)
 			row.BackgroundColor3 = palette.bgCard
@@ -425,9 +537,9 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 				0.1
 			)
 
-			local nameText = stage.name
+			local nameText = stageName
 			if stage.isBoss then
-				local stripped = string.gsub(stage.name, "^%s*%[?[Bb][Oo][Ss][Ss]%]?:?%s*", "")
+				local stripped = string.gsub(stageName, "^%s*%[?[Bb][Oo][Ss][Ss]%]?:?%s*", "")
 				nameText = "BOSS: " .. stripped
 			end
 			local nameLbl = Components.makeLabel(
@@ -448,8 +560,8 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 				"Info",
 				string.format(
 					"%s  |  Rec Power: %s  (Yours: %s)",
-					stage.subtitle,
-					Components.formatNumber(stage.recommendedPower),
+					stageSubtitle,
+					Components.formatNumber(tonumber(stage.recommendedPower) or 0),
 					Components.formatNumber(currentDeckPower)
 				),
 				UDim2.new(1, -152, 0, 20),
@@ -464,7 +576,7 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 			local rewardLbl = Components.makeLabel(
 				row,
 				"Reward",
-				"Rewards: " .. stage.rewardSummary,
+				"Rewards: " .. stageRewardSummary,
 				UDim2.new(1, -152, 0, 18),
 				UDim2.fromOffset(12, 58),
 				Theme.FONT_MONO,
@@ -482,15 +594,15 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 				UDim2.fromOffset(122, 48),
 				UDim2.new(1, -134, 0.5, -24),
 				if not unlocked then palette.bgMuted elseif stage.isBoss then palette.accentRed else palette.accentBlue,
-				Color3.fromRGB(255, 255, 255)
+				if unlocked then Color3.fromRGB(255, 255, 255) else palette.textSecondary
 			)
 			fightBtn.TextSize = 14
 			fightBtn.ZIndex = 40
 			if unlocked then
 				fightBtn.MouseButton1Click:Connect(function()
-					lastStageId = stage.id
-					subLbl.Text = "Starting " .. stage.name .. "..."
-					callbacks.onStartBattle(stage.id)
+					lastStageId = stageId
+					subLbl.Text = "Starting " .. stageName .. "..."
+					callbacks.onStartBattle(stageId)
 				end)
 			end
 		end
@@ -937,7 +1049,7 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		stageView.Visible = true
 		speedBtn.Visible = false
 		skipBtn.Visible = false
-		titleLbl.Text = "World 1: Hidden Leaf Arena"
+		titleLbl.Text = getWorldTitle(activeWorldId)
 		subLbl.Text = "Choose an Act or Boss stage to deploy your Active Deck"
 	end)
 
@@ -957,8 +1069,11 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 	end)
 
 	return {
-		open = function(stages: { BattleStageInfo }, deckPower: number)
+		open = function(stages: { BattleStageInfo }, deckPower: number, worldId: number?)
 			playbackToken += 1
+			if worldId ~= nil then
+				activeWorldId = worldId
+			end
 			currentStages = stages
 			currentDeckPower = deckPower
 			stageView.Visible = true
@@ -966,11 +1081,18 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 			rewardsCard.Visible = false
 			speedBtn.Visible = false
 			skipBtn.Visible = false
-			titleLbl.Text = "World 1: Hidden Leaf Arena"
+			titleLbl.Text = getWorldTitle(activeWorldId)
 			subLbl.Text = "Choose an Act or Boss stage to deploy your Active Deck"
 			applyTheme()
 			renderStageList()
 			overlay.Visible = true
+		end,
+		setWorld = function(worldId: number)
+			activeWorldId = worldId
+			titleLbl.Text = getWorldTitle(activeWorldId)
+			if stageView.Visible then
+				renderStageList()
+			end
 		end,
 		playBattle = playBattle,
 		setStatus = function(text: string)
