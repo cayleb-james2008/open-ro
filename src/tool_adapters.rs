@@ -1144,7 +1144,7 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
             id: "playwright-cdp-cli".into(),
             name: "Playwright CDP (Headless Browser)".into(),
             capability: "reference_search".into(),
-            description: "Headless Chromium/Playwright loopback CDP passive inspection and reference search (modern replacement for Camoufox; installable under reference_search or custom).".into(),
+            description: "Headless Chromium/Playwright loopback CDP passive inspection and reference search (compatible with OPENRO_BROWSER_CDP_URL / http://127.0.0.1:9222 live browser CDP probe; modern replacement for Camoufox; installable under reference_search or custom).".into(),
             transport: "cli".into(),
             enabled: true,
             priority: 5,
