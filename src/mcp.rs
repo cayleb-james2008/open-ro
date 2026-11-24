@@ -591,7 +591,14 @@ impl McpClient {
                 | "user_keyboard_input"
         );
         if needs_datamodel && !obj.contains_key("datamodel_type") {
-            obj.insert("datamodel_type".to_string(), json!(self.datamodel_type));
+            // Official StudioMCP schema constrains user_mouse_input & user_keyboard_input
+            // strictly to `datamodel_type: "Client"` (#67).
+            let dm = if matches!(tool, "user_mouse_input" | "user_keyboard_input") {
+                "Client"
+            } else {
+                self.datamodel_type.as_str()
+            };
+            obj.insert("datamodel_type".to_string(), json!(dm));
         }
 
         if tool == "screen_capture" && !obj.contains_key("capture_id") {
@@ -1142,20 +1149,26 @@ impl McpClient {
         }))
     }
 
-    /// 12. `user_mouse_input` — forward ordered mouse actions into Studio.
+    /// 12. `user_mouse_input` — forward ordered mouse actions into Studio (`Client` DataModel per official MCP schema, #67).
     pub fn user_mouse_input(&mut self, actions: Vec<Value>) -> Result<Value, String> {
         if actions.is_empty() {
             return Err("user_mouse_input requires at least one mouse action".to_string());
         }
-        self.call_tool_json("user_mouse_input", json!({ "actions": actions }))
+        self.call_tool_json(
+            "user_mouse_input",
+            json!({ "actions": actions, "datamodel_type": "Client" }),
+        )
     }
 
-    /// 13. `user_keyboard_input` — forward ordered keyboard actions into Studio.
+    /// 13. `user_keyboard_input` — forward ordered keyboard actions into Studio (`Client` DataModel per official MCP schema, #67).
     pub fn user_keyboard_input(&mut self, actions: Vec<Value>) -> Result<Value, String> {
         if actions.is_empty() {
             return Err("user_keyboard_input requires at least one keyboard action".to_string());
         }
-        self.call_tool_json("user_keyboard_input", json!({ "actions": actions }))
+        self.call_tool_json(
+            "user_keyboard_input",
+            json!({ "actions": actions, "datamodel_type": "Client" }),
+        )
     }
 
     /// The place tree as JSON: `{ "scripts": { "<path>": "<source>", ... }, "instances": { ... } }`.
