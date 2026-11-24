@@ -251,14 +251,19 @@ function Theme.getPalette(): Palette
 	return DARK_PALETTE
 end
 
-function Theme.setMode(mode: ThemeMode)
-	if mode ~= "Dark" and mode ~= "Light" then
+function Theme.normalizeMode(mode: any): ThemeMode
+	if type(mode) == "string" and string.lower(mode) == "light" then
+		return "Light"
+	end
+	return "Dark"
+end
+
+function Theme.setMode(mode: ThemeMode | string)
+	local normalized = Theme.normalizeMode(mode)
+	if currentMode == normalized then
 		return
 	end
-	if currentMode == mode then
-		return
-	end
-	currentMode = mode
+	currentMode = normalized
 	local palette = Theme.getPalette()
 	for _, fn in listeners do
 		fn(palette)

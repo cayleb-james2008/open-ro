@@ -8,19 +8,25 @@ local SettingsModal = require(script.Parent:WaitForChild("SettingsModal"))
 
 export type RollCardResult = {
 	uid: string?,
-	id: string,
-	name: string,
+	id: string?,
+	cardId: string?,
+	name: string?,
+	displayName: string?,
 	rarity: string,
 	mutation: string?,
 	role: string?,
+	showName: string?,
+	artKey: string?,
 	hp: number?,
 	atk: number?,
 	spd: number?,
+	power: number?,
 	level: number?,
 	stars: number?,
 	oddsN: number?,
 	isNew: boolean?,
 	autoSoldYen: number?,
+	instance: { [string]: any }?,
 }
 
 export type RevealModalController = {
@@ -72,15 +78,27 @@ function RevealModal.create(parent: Instance, getSettings: () -> SettingsModal.S
 
 	local rayCross = Instance.new("Frame")
 	rayCross.Name = "RayCross"
-	rayCross.Size = UDim2.fromOffset(300, 22)
+	rayCross.Size = UDim2.fromOffset(320, 24)
 	rayCross.Position = UDim2.fromScale(0.5, 0.44)
 	rayCross.AnchorPoint = Vector2.new(0.5, 0.5)
 	rayCross.BackgroundColor3 = Color3.fromRGB(255, 220, 120)
-	rayCross.BackgroundTransparency = 0.65
+	rayCross.BackgroundTransparency = 0.62
 	rayCross.BorderSizePixel = 0
 	rayCross.ZIndex = 36
 	rayCross.Parent = stage
-	Components.addCorner(rayCross, 11)
+	Components.addCorner(rayCross, 12)
+
+	local rayCrossVert = Instance.new("Frame")
+	rayCrossVert.Name = "RayCrossVert"
+	rayCrossVert.Size = UDim2.fromOffset(24, 320)
+	rayCrossVert.Position = UDim2.fromScale(0.5, 0.5)
+	rayCrossVert.AnchorPoint = Vector2.new(0.5, 0.5)
+	rayCrossVert.BackgroundColor3 = Color3.fromRGB(255, 220, 120)
+	rayCrossVert.BackgroundTransparency = 0.62
+	rayCrossVert.BorderSizePixel = 0
+	rayCrossVert.ZIndex = 36
+	rayCrossVert.Parent = rayCross
+	Components.addCorner(rayCrossVert, 12)
 
 	local bannerTitle = Components.makeLabel(
 		stage,
@@ -189,7 +207,7 @@ function RevealModal.create(parent: Instance, getSettings: () -> SettingsModal.S
 		return highestOrder < threshold
 	end
 
-	local function renderResults(results: { RollCardResult }, highestRarity: Theme.RarityStyle)
+	local function renderResults(results: { RollCardResult }, highestRarity: Theme.RarityStyle, reducedMotion: boolean)
 		clearCards()
 		local count = #results
 		local cardW = if count <= 1 then 210 else 154
@@ -197,10 +215,24 @@ function RevealModal.create(parent: Instance, getSettings: () -> SettingsModal.S
 
 		local newCount = 0
 		local soldYen = 0
-		for _, item in results do
+		for idx, item in results do
 			local cardFrame =
 				Components.makeCardView(cardsHolder, item, UDim2.fromOffset(cardW, cardH), UDim2.fromOffset(0, 0))
 			cardFrame.ZIndex = 38
+			if not reducedMotion then
+				local popScale = Instance.new("UIScale")
+				popScale.Scale = 0.25
+				popScale.Parent = cardFrame
+				task.delay((idx - 1) * 0.045, function()
+					if popScale.Parent then
+						TweenService:Create(
+							popScale,
+							TweenInfo.new(0.26, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+							{ Scale = 1 }
+						):Play()
+					end
+				end)
+			end
 			if item.isNew then
 				newCount += 1
 				local newTag = Components.makeLabel(
@@ -223,8 +255,9 @@ function RevealModal.create(parent: Instance, getSettings: () -> SettingsModal.S
 
 		local lead = results[1]
 		if count == 1 and lead then
-			bannerTitle.Text = string.upper(highestRarity.name) .. " — " .. lead.name
-			local oddsN = lead.oddsN or 0
+			local leadName = tostring(lead.displayName or lead.name or lead.cardId or lead.id or "Card")
+			bannerTitle.Text = string.upper(highestRarity.name) .. " — " .. leadName
+			local oddsN = tonumber(lead.oddsN) or 0
 			local oddsText = if oddsN > 0 then Components.formatOdds(oddsN) else highestRarity.oddsLabel
 			oddsBanner.Text = oddsText
 		else
@@ -301,6 +334,7 @@ function RevealModal.create(parent: Instance, getSettings: () -> SettingsModal.S
 			auraRing.BackgroundColor3 = highestRarity.color
 			auraStroke.Color = highestRarity.glow
 			rayCross.BackgroundColor3 = highestRarity.glow
+			rayCrossVert.BackgroundColor3 = highestRarity.glow
 
 			if skipBuildup then
 				skipped = true
@@ -349,7 +383,7 @@ function RevealModal.create(parent: Instance, getSettings: () -> SettingsModal.S
 
 			skipped = true
 			cardsHolder.Visible = true
-			renderResults(results, highestRarity)
+			renderResults(results, highestRarity, settings.reducedMotion)
 			actionBtn.Text = "Continue"
 
 			if not settings.reducedFlash and highestOrder >= 4 then

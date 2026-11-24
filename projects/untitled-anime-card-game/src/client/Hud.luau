@@ -19,7 +19,8 @@ export type HudState = {
 	gems: number,
 	tickets: number,
 	luckMultiplier: number,
-	luckBreakdown: string,
+	luckBreakdown: string?,
+	luckSummary: string?,
 	legendaryPity: number,
 	legendaryPityMax: number,
 	mythicPity: number,
@@ -57,6 +58,8 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 	local viewportConn: RBXScriptConnection? = nil
 	local cameraConn: RBXScriptConnection? = nil
 
+	local layoutUpdater: ((viewportX: number) -> ())? = nil
+
 	local function applyViewportScale()
 		local cam = Workspace.CurrentCamera
 		if not cam then
@@ -66,9 +69,12 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 		if viewport.X <= 0 then
 			return
 		end
-		local scale = math.clamp(viewport.X / 740, 0.72, 1.0)
-		hudScale.Scale = scale
-		root.Size = UDim2.fromScale(1 / scale, 1 / scale)
+		-- Keep UIScale at 1.0 across mobile and desktop so touch targets never shrink below 44px
+		hudScale.Scale = 1
+		root.Size = UDim2.fromScale(1, 1)
+		if layoutUpdater then
+			layoutUpdater(viewport.X)
+		end
 	end
 
 	local function bindCamera(cam: Camera?)
@@ -170,9 +176,9 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 		return pill, lbl
 	end
 
-	local _, yenLabel = makePill(1, "YenPill", "YEN", Theme.getPalette().accentGold, 114)
-	local _, gemsLabel = makePill(2, "GemsPill", "GEMS", Theme.getPalette().accentBlue, 100)
-	local _, ticketsLabel = makePill(3, "TicketsPill", "TIX", Theme.getPalette().accentPurple, 88)
+	local yenPill, yenLabel = makePill(1, "YenPill", "YEN", Theme.getPalette().accentGold, 114)
+	local gemsPill, gemsLabel = makePill(2, "GemsPill", "GEMS", Theme.getPalette().accentBlue, 100)
+	local ticketsPill, ticketsLabel = makePill(3, "TicketsPill", "TIX", Theme.getPalette().accentPurple, 88)
 
 	local luckChip = Instance.new("Frame")
 	luckChip.Name = "LuckChip"
@@ -189,11 +195,11 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 	local luckLabel = Components.makeLabel(
 		luckChip,
 		"LuckText",
-		"Luck 1.0x (Base 1.0x)",
+		"Luck 1.00x (Base 1.0x)",
 		UDim2.new(1, -16, 1, 0),
 		UDim2.fromOffset(10, 0),
 		Theme.FONT_BODY,
-		12,
+		11,
 		Theme.getPalette().accentGreen,
 		Enum.TextXAlignment.Left
 	)
@@ -361,6 +367,68 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 	fastBtn.TextSize = 12
 	fastBtn.ZIndex = 8
 
+	layoutUpdater = function(viewportX: number)
+		local isMobile = viewportX < 700
+		if isMobile then
+			local usableW = math.max(viewportX - 16, 300)
+			topLeft.Position = UDim2.fromOffset(8, 8)
+			topLeft.Size = UDim2.fromOffset(usableW, 100)
+			topLeftLayout.Padding = UDim.new(0, 4)
+
+			currencyRow.Size = UDim2.new(1, 0, 0, 34)
+			local pillGap = 6
+			local pillW = math.floor((usableW - pillGap * 2) / 3)
+			yenPill.Size = UDim2.fromOffset(pillW, 34)
+			gemsPill.Size = UDim2.fromOffset(pillW, 34)
+			ticketsPill.Size = UDim2.fromOffset(usableW - pillW * 2 - pillGap * 2, 34)
+
+			luckChip.Size = UDim2.new(1, 0, 0, 28)
+			goalChip.Size = UDim2.new(1, 0, 0, 28)
+
+			-- Row 3: compact >=44px nav buttons cleanly below topLeft
+			topRight.AnchorPoint = Vector2.new(0, 0)
+			topRight.Position = UDim2.fromOffset(8, 112)
+			topRight.Size = UDim2.fromOffset(usableW, 46)
+			navLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+			navLayout.Padding = UDim.new(0, 6)
+			local btnGap = 6
+			local btnW = math.floor((usableW - btnGap * 2) / 3)
+			deckBtn.Size = UDim2.fromOffset(btnW, 46)
+			battleBtn.Size = UDim2.fromOffset(btnW, 46)
+			settingsBtn.Size = UDim2.fromOffset(usableW - btnW * 2 - btnGap * 2, 46)
+
+			rollDock.Size = UDim2.fromOffset(math.min(usableW, 400), 104)
+			rollDock.Position = UDim2.new(0.5, 0, 1, -10)
+			dockConstraint.MinSize = Vector2.new(280, 100)
+		else
+			topLeft.Position = UDim2.fromOffset(12, 10)
+			topLeft.Size = UDim2.fromOffset(330, 128)
+			topLeftLayout.Padding = UDim.new(0, 6)
+
+			currencyRow.Size = UDim2.new(1, 0, 0, 38)
+			yenPill.Size = UDim2.fromOffset(114, 36)
+			gemsPill.Size = UDim2.fromOffset(100, 36)
+			ticketsPill.Size = UDim2.fromOffset(88, 36)
+
+			luckChip.Size = UDim2.new(1, 0, 0, 32)
+			goalChip.Size = UDim2.new(1, 0, 0, 34)
+
+			topRight.AnchorPoint = Vector2.new(1, 0)
+			topRight.Position = UDim2.new(1, -12, 0, 10)
+			topRight.Size = UDim2.fromOffset(330, 52)
+			navLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+			navLayout.Padding = UDim.new(0, 8)
+			deckBtn.Size = UDim2.fromOffset(108, 46)
+			battleBtn.Size = UDim2.fromOffset(108, 46)
+			settingsBtn.Size = UDim2.fromOffset(88, 46)
+
+			rollDock.Size = UDim2.fromOffset(396, 108)
+			rollDock.Position = UDim2.new(0.5, 0, 1, -14)
+			dockConstraint.MinSize = Vector2.new(300, 100)
+		end
+	end
+	applyViewportScale()
+
 	local lastState: HudState = {
 		yen = 0,
 		gems = 0,
@@ -423,7 +491,12 @@ function Hud.create(parent: Instance, callbacks: HudCallbacks): HudController
 		gemsLabel.Text = "GEMS " .. Components.formatNumber(state.gems)
 		ticketsLabel.Text = "TIX " .. Components.formatNumber(state.tickets)
 
-		luckLabel.Text = string.format("Luck %.2fx (%s)", state.luckMultiplier, state.luckBreakdown)
+		local summary = state.luckSummary or state.luckBreakdown or "Base 1.0x"
+		if summary ~= "" then
+			luckLabel.Text = string.format("Luck %.2fx (%s)", state.luckMultiplier, summary)
+		else
+			luckLabel.Text = string.format("Luck %.2fx", state.luckMultiplier)
+		end
 		goalLabel.Text = "Next: " .. state.nextGoal
 		deckBtn.Text = string.format("Deck (%d/%d)", state.deckCount, state.deckMax)
 
