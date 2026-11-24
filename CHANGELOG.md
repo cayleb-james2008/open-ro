@@ -4,6 +4,11 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## Unreleased (0.12.0)
+
+- **Playtest Runner Native `click_gui` Targeting & Client DataModel Enforcement (`src/playtest.rs`, `src/mcp.rs`, `src/bin/mock_studio.rs`, `docs/API-V011.md`):**
+  - Switched `click_gui` to native StudioMCP `user_mouse_input` `instance_path` targeting (`LocalPlayer.PlayerGui.<path>`) with automatic viewport coordinate fallback (`use_coordinates: true`), enforced `datamodel_type: "Client"` across all mouse/keyboard actions (preventing `Server`/`Edit` leaks after `before_actions` Server checks), and aligned Roblox inset-relative `AbsolutePosition` + `GuiInset` math (`PlayerGui:GetGuiObjectsAtPosition` `hit_verified`, fixing top-edge `IgnoreGuiInset=true` buttons).
+
 ## 0.11.0 - 2026-11-23
 
 - **Untitled Anime Card Game — M1 Vertical Slice (`projects/untitled-anime-card-game/`):**
