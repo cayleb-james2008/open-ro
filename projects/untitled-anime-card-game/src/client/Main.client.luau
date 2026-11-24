@@ -211,7 +211,11 @@ local function buildStagesForState(state: { [string]: any }, worldFilter: number
 	local stages: { BattleModal.BattleStageInfo } = {}
 	local worldIds: { number } = if worldFilter then { worldFilter } else { 1, 2, 3, 4, 5 }
 	local unlockedWorld = tonumber(state.unlockedWorld) or 1
+	local unlockedWorlds = state.unlockedWorlds
 	for _, wId in ipairs(worldIds) do
+		local worldUnlocked = (wId == 1)
+			or (type(unlockedWorlds) == "table" and (unlockedWorlds[wId] == true or unlockedWorlds[tostring(wId)] == true))
+			or (wId <= unlockedWorld)
 		local worldDef = Worlds.getWorld(wId)
 		if worldDef and type(worldDef.stages) == "table" then
 			local highestCleared = 0
@@ -226,18 +230,15 @@ local function buildStagesForState(state: { [string]: any }, worldFilter: number
 					wId,
 					if st.isBoss then "World Boss" else ("Act " .. tostring(st.act or idx))
 				)
+				local gemReward = tonumber(st.gemReward or st.gemsReward) or 0
 				table.insert(stages, {
 					id = stId,
 					name = tostring(st.name or stId),
 					subtitle = subtitle,
 					recommendedPower = tonumber(st.recommendedPower) or (120 * wId),
-					rewardSummary = string.format(
-						"+%d Yen  +%d Gems",
-						tonumber(st.yenReward) or 0,
-						tonumber(st.gemsReward) or 0
-					),
+					rewardSummary = string.format("+%d Yen  +%d Gems", tonumber(st.yenReward) or 0, gemReward),
 					isBoss = st.isBoss == true,
-					unlocked = (wId <= unlockedWorld) and (idx <= highestCleared + 1),
+					unlocked = worldUnlocked and (idx <= highestCleared + 1),
 				})
 			end
 		end
@@ -363,7 +364,7 @@ local function performRoll(): boolean
 	rollBusy = true
 	local res = sendRequest({
 		action = "Roll",
-		bannerId = "world_" .. tostring(selectedWorldId),
+		bannerId = "banner_w" .. tostring(selectedWorldId),
 		fastRoll = fastEnabled,
 	})
 	rollBusy = false
@@ -523,6 +524,17 @@ battleController = BattleModal.create(screenGui, {
 	getReducedMotion = function()
 		return currentSettings.reducedMotion
 	end,
+	onSelectWorld = function(wId: number)
+		selectedWorldId = wId
+		if currentState then
+			local snapshot = buildDeckSnapshot(currentState)
+			battleController.open(buildStagesForState(currentState, wId), snapshot.totalPower, wId)
+		end
+	end,
+	onChallengeWorldBoss = function(_wId: number)
+		battleController.close()
+		endgameController.openWorldBoss()
+	end,
 })
 
 local function closeAllModals()
@@ -551,7 +563,7 @@ local function openBattleForWorld(worldId: number)
 	selectedWorldId = worldId
 	if currentState then
 		local snapshot = buildDeckSnapshot(currentState)
-		battleController.open(buildStagesForState(currentState, worldId), snapshot.totalPower)
+		battleController.open(buildStagesForState(currentState, worldId), snapshot.totalPower, worldId)
 	end
 end
 
