@@ -37,24 +37,19 @@ local function buildEnemiesFromStage(stage: any): { BattleSim.CombatUnit }
 		local spd = math.max(5, math.floor(e.spd or 10))
 		table.insert(
 			enemies,
-			{
-				slot = idx,
-				uid = "enemy_" .. tostring(idx),
-				cardId = e.cardId or "enemy",
+			BattleSim.buildEnemyUnit(idx, {
+				id = e.cardId or e.id or ("enemy_" .. tostring(idx)),
 				name = e.name or ("Enemy " .. tostring(idx)),
-				role = e.role or "Striker",
-				showName = e.showName or "Enemy",
+				rarity = e.rarity,
+				role = e.role,
+				showName = e.showName,
 				hp = hp,
-				maxHp = hp,
 				atk = atk,
 				spd = spd,
-				shield = 0,
-				critChance = 0.05,
-				critMult = 1.5,
-				lifesteal = 0,
-				alive = true,
-				isBoss = e.isBoss == true or stage.isBoss == true,
-			} :: any
+				skill = e.skill,
+				passiveFlags = e.passiveFlags,
+				artKey = e.artKey,
+			})
 		)
 	end
 	return enemies
@@ -99,7 +94,7 @@ function BattleService.startBattle(
 	local initialAllies = cloneUnits(allies)
 	local initialEnemies = cloneUnits(enemies)
 
-	local simResult = (BattleSim.run :: any)(allies, enemies, squadBonuses)
+	local simResult = BattleSim.run(allies, enemies, { squadBonuses = squadBonuses :: any })
 	local won = simResult.winner == "allies" or simResult.won == true
 
 	local rewards: { [string]: any } = {

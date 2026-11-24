@@ -252,11 +252,12 @@ function DeckService.getSquadBonuses(profile: any): { [string]: any }
 	if treeCfg and type(profile.skillNodes) == "table" then
 		for nodeId, rank in pairs(profile.skillNodes) do
 			local nDef = if treeCfg.get then treeCfg.get(nodeId) else treeCfg.ById and treeCfg.ById[nodeId]
-			if nDef and (rank or 0) > 0 then
-				hpBonus += (nDef.hpBonus or 0) * rank
-				atkBonus += (nDef.atkBonus or 0) * rank
-				spdBonus += (nDef.spdBonus or 0) * rank
-				yenBonus += (nDef.yenBonus or 0) * rank
+			local rankNum = if type(rank) == "number" then rank elseif rank == true then 1 else 0
+			if nDef and rankNum > 0 then
+				hpBonus += (nDef.hpBonus or 0) * rankNum
+				atkBonus += (nDef.atkBonus or 0) * rankNum
+				spdBonus += (nDef.spdBonus or 0) * rankNum
+				yenBonus += (nDef.yenBonus or 0) * rankNum
 			end
 		end
 	end

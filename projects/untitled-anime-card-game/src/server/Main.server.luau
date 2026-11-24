@@ -187,16 +187,16 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 		end
 		return okWithState(player, profile)
 	elseif action == "RerollTrait" or action == "TraitReroll" then
-		local ok, err, newTrait = (RollService :: any).rerollTrait(profile, tostring(payload.instanceId or ""))
+		local ok, err, res = (RollService :: any).traitReroll(profile, tostring(payload.instanceId or ""))
 		if not ok then
 			return fail(err or "Trait reroll failed")
 		end
-		return okWithState(player, profile, { trait = newTrait })
+		return okWithState(player, profile, res)
 	elseif action == "StartBattle" then
 		local stageId = if type(payload.stageId) == "string" and payload.stageId ~= ""
 			then payload.stageId
 			else "w1_act1"
-		local ok, battleData, err = BattleService.startBattle(player, stageId)
+		local ok, battleData, err = BattleService.startBattle(profile, stageId)
 		if not ok or not battleData then
 			return fail(err or "Battle failed")
 		end
@@ -247,7 +247,16 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 	elseif action == "GetRaidStatus" then
 		return { ok = true, data = (RaidService :: any).getStatus(profile) }
 	elseif action == "ChallengeWorldBoss" then
-		local ok, res, err = (WorldBossService :: any).challenge(player, profile, payload.bossId)
+		local worldId = tonumber(payload.worldId)
+		if not worldId and type(payload.bossId) == "string" then
+			worldId = tonumber(string.match(payload.bossId, "%d+"))
+		end
+		local ok, res, err = (WorldBossService :: any).challengeBoss(
+			player,
+			profile,
+			worldId or 1,
+			payload.useBossToken == true
+		)
 		if not ok then
 			return fail(err or "World boss challenge failed")
 		end
@@ -262,7 +271,7 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 		RetentionService.trackProgress(pAny, "Ranked", 1)
 		return okWithState(player, profile, res)
 	elseif action == "ClaimRankedReward" then
-		local ok, res, err = (RankedService :: any).claimReward(profile)
+		local ok, res, err = (RankedService :: any).claimGrandmasterReward(profile)
 		if not ok then
 			return fail(err or "Could not claim ranked reward")
 		end
@@ -303,10 +312,12 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 	elseif action == "UnequipCharm" then
 		local ids = {}
 		local cid = tostring(payload.charmId or "")
-		for _, existing in ipairs(pAny.equippedCharms or {}) do
-			if existing ~= cid then
-				table.insert(ids, existing)
+		local slot = tonumber(payload.slot)
+		for idx, existing in ipairs(pAny.equippedCharms or {}) do
+			if (cid ~= "" and existing == cid) or (slot ~= nil and idx == slot) then
+				continue
 			end
+			table.insert(ids, existing)
 		end
 		local ok, res, err = CharmService.equipCharms(profile, ids)
 		if not ok then
@@ -316,25 +327,25 @@ local function handleRequest(player: Player, rawPayload: any): Net.ResponsePaylo
 	elseif action == "GetCharmStatus" then
 		return { ok = true, data = CharmService.getStatus(profile) }
 	elseif action == "ClaimQuest" then
-		local ok, res, err = (RetentionService :: any).claimQuest(pAny, tostring(payload.questId or ""))
+		local ok, err, res = (RetentionService :: any).claimQuest(pAny, tostring(payload.questId or ""))
 		if not ok then
 			return fail(err or "Could not claim quest")
 		end
 		return okWithState(player, profile, res)
 	elseif action == "ClaimLoginStreak" or action == "ClaimDaily" then
-		local ok, res, err = (RetentionService :: any).claimLoginStreak(pAny)
+		local ok, err, res = (RetentionService :: any).claimLoginStreak(pAny)
 		if not ok then
 			return fail(err or "Could not claim daily streak")
 		end
 		return okWithState(player, profile, res)
 	elseif action == "ClaimPlaytime" then
-		local ok, res, err = (RetentionService :: any).claimPlaytime(pAny, tostring(payload.milestoneId or ""))
+		local ok, err, res = (RetentionService :: any).claimPlaytime(pAny, tostring(payload.milestoneId or ""))
 		if not ok then
 			return fail(err or "Could not claim playtime reward")
 		end
 		return okWithState(player, profile, res)
 	elseif action == "RedeemCode" then
-		local ok, res, err = (RetentionService :: any).redeemCode(pAny, tostring(payload.code or ""))
+		local ok, err, res = (RetentionService :: any).redeemCode(pAny, tostring(payload.code or ""))
 		if not ok then
 			return fail(err or "Could not redeem code")
 		end
@@ -399,12 +410,7 @@ end, function(player, profile)
 end)
 
 if type((WeatherService :: any).start) == "function" then
-	(WeatherService :: any).start(function(weather)
-		pushRemote:FireAllClients({
-			kind = Net.PushEvents.WeatherUpdate,
-			weather = weather,
-		})
-	end)
+	(WeatherService :: any).start(pushRemote)
 end
 
 local built = WorldBuild.build()
