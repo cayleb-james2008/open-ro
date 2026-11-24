@@ -17,7 +17,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_BASE: &str = "https://apis.roblox.com";
 pub const MANIFEST: &str = "openro.project.json";
-const CREATOR_SECRET: &str = "opencloud_creator";
+pub(crate) const CREATOR_SECRET: &str = "opencloud_creator";
 const MAX_UPLOAD_BYTES: u64 = 20 * 1024 * 1024;
 const DEFAULT_MAX_PUBLISH_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_WALK_FILES: usize = 20_000;
@@ -195,10 +195,10 @@ impl Client {
     }
 
     /// One HTTP exchange. Any HTTP status comes back as `(status, body)`; only a
-    /// transport failure is an `Err`. A 429 is retried a few times with a short wait.
+    /// transport failure is an `Err`. A 429 is retried up to 6 times with backoff (#69).
     fn call(&self, method: &str, path: &str, content_type: Option<&str>, body: Option<&[u8]>) -> R<(u16, Vec<u8>)> {
         let url = format!("{}{}", self.base, path);
-        for attempt in 0..4u32 {
+        for attempt in 0..7u32 {
             let mut rq = self.http.request(method, &url).set("x-api-key", &self.key);
             if let Some(ct) = content_type {
                 rq = rq.set("Content-Type", ct);
@@ -214,9 +214,13 @@ impl Client {
                     return err(502, self.scrub(&format!("Could not reach Roblox Open Cloud: {t}")));
                 }
             };
-            if status == 429 && attempt < 3 {
-                let wait = resp.header("retry-after").and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(1);
-                let cap = poll_ms().map(|p| p * 2).unwrap_or(5_000);
+            if status == 429 && attempt < 6 {
+                let default_wait = 1u64.checked_shl(attempt.min(4)).unwrap_or(10);
+                let wait = resp
+                    .header("retry-after")
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+                    .unwrap_or(default_wait);
+                let cap = poll_ms().map(|p| p * 2).unwrap_or(10_000);
                 std::thread::sleep(Duration::from_millis((wait * 1000).min(cap)));
                 continue;
             }
@@ -301,7 +305,7 @@ fn status_json(ctx: &Ctx) -> Value {
 
 // ---------------------------------------------------------- project helpers
 
-fn read_manifest(root: &Path) -> Value {
+pub(crate) fn read_manifest(root: &Path) -> Value {
     std::fs::read_to_string(root.join(MANIFEST))
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
@@ -318,7 +322,7 @@ fn write_json_atomic(path: &Path, v: &Value) -> R<()> {
 }
 
 /// Merge `f` into a freshly read manifest (unknown fields stay) and save it.
-fn update_manifest(root: &Path, f: impl FnOnce(&mut Map<String, Value>)) -> R<()> {
+pub(crate) fn update_manifest(root: &Path, f: impl FnOnce(&mut Map<String, Value>)) -> R<()> {
     let mut m = read_manifest(root);
     f(m.as_object_mut().expect("object"));
     write_json_atomic(&root.join(MANIFEST), &m)
@@ -372,7 +376,7 @@ fn str_list(v: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn id_of(v: &Value, key: &str) -> Option<String> {
+pub(crate) fn id_of(v: &Value, key: &str) -> Option<String> {
     match v.get(key)? {
         Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
         Value::Number(n) => Some(n.to_string()),
@@ -451,7 +455,7 @@ fn kind_by_ext(path: &str) -> Option<&'static str> {
     Some(match ext_of(path).as_str() {
         "png" | "jpg" | "jpeg" | "bmp" | "tga" => "Image",
         "mp3" | "ogg" | "wav" | "flac" => "Audio",
-        "fbx" | "gltf" | "glb" | "rbxm" | "rbxmx" => "Model",
+        "obj" | "fbx" | "gltf" | "glb" | "rbxm" | "rbxmx" => "Model",
         "mp4" | "mov" => "Video",
         _ => return None,
     })
@@ -467,6 +471,7 @@ fn mime_for(path: &str) -> &'static str {
         "ogg" => "audio/ogg",
         "wav" => "audio/wav",
         "flac" => "audio/flac",
+        "obj" => "model/obj",
         "fbx" => "model/fbx",
         "gltf" => "model/gltf+json",
         "glb" => "model/gltf-binary",
@@ -605,9 +610,203 @@ fn assets_authorise(root: &Path, body: &Value) -> R<Value> {
 
 struct Uploaded {
     asset_id: String,
+    image_asset_id: Option<String>,
     state: String,
     operation: String,
     asset_type: String,
+    converted_format: Option<&'static str>,
+}
+
+struct PreparedUpload {
+    filename: String,
+    mime: &'static str,
+    bytes: Vec<u8>,
+    converted_format: Option<&'static str>,
+}
+
+struct TempDirGuard(PathBuf);
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+const BLENDER_OBJ_TO_FBX_PY: &str = r#"import os, bpy
+bpy.ops.wm.read_factory_settings(use_empty=True)
+obj_in = os.environ["OPENRO_OBJ_IN"]
+png_in = os.environ.get("OPENRO_PNG_IN", "")
+fbx_out = os.environ["OPENRO_FBX_OUT"]
+if hasattr(bpy.ops.wm, "obj_import"):
+    bpy.ops.wm.obj_import(filepath=obj_in)
+else:
+    bpy.ops.import_scene.obj(filepath=obj_in)
+if png_in and os.path.isfile(png_in):
+    img = bpy.data.images.load(png_in, check_existing=True)
+    mat = bpy.data.materials.new(name="OpenRODiffuse")
+    if mat.node_tree is None:
+        mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    if bsdf is None:
+        bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = img
+    nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+    for o in bpy.context.scene.objects:
+        if o.type == "MESH":
+            o.data.materials.clear()
+            o.data.materials.append(mat)
+    try:
+        bpy.ops.file.pack_all()
+    except Exception:
+        pass
+bpy.ops.export_scene.fbx(filepath=fbx_out, path_mode="COPY", embed_textures=True)
+"#;
+
+fn make_upload_temp_dir(data_dir: &Path, tag: &str) -> R<TempDirGuard> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = data_dir
+        .join("tmp-upload")
+        .join(format!("{tag}-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| Oc { status: 500, msg: format!("create upload conversion dir: {e}") })?;
+    Ok(TempDirGuard(dir))
+}
+
+fn convert_wav_to_ogg(data_dir: &Path, abs: &Path, stem: &str) -> R<PreparedUpload> {
+    let tmp = make_upload_temp_dir(data_dir, "wav")?;
+    let out_name = format!("{stem}.ogg");
+    let out_path = tmp.0.join(&out_name);
+    let ffmpeg = crate::projects::find_tool("ffmpeg", "OPENRO_FFMPEG_BIN")
+        .unwrap_or_else(|| PathBuf::from("ffmpeg"));
+    let out = std::process::Command::new(&ffmpeg)
+        .arg("-nostdin")
+        .arg("-y")
+        .arg("-v")
+        .arg("error")
+        .arg("-i")
+        .arg(abs)
+        .args(["-c:a", "libvorbis", "-q:a", "5"])
+        .arg(&out_path)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| Oc { status: 502, msg: format!("failed to run ffmpeg for WAV->OGG conversion: {e}") })?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return err(502, format!("ffmpeg WAV->OGG conversion failed: {}", stderr.trim()));
+    }
+    let bytes = std::fs::read(&out_path)
+        .map_err(|e| Oc { status: 502, msg: format!("read converted OGG audio: {e}") })?;
+    if bytes.is_empty() {
+        return err(502, "ffmpeg produced an empty OGG file.");
+    }
+    Ok(PreparedUpload {
+        filename: out_name,
+        mime: "audio/ogg",
+        bytes,
+        converted_format: Some("ogg"),
+    })
+}
+
+fn convert_obj_to_fbx(data_dir: &Path, abs: &Path, stem: &str) -> R<PreparedUpload> {
+    let tmp = make_upload_temp_dir(data_dir, "obj")?;
+    let out_name = format!("{stem}.fbx");
+    let out_path = tmp.0.join(&out_name);
+    let sibling_png = abs.with_extension("png");
+    let blender = crate::projects::find_tool("blender", "OPENRO_BLENDER_BIN")
+        .unwrap_or_else(|| PathBuf::from("blender"));
+    let mut cmd = std::process::Command::new(&blender);
+    cmd.args(["--background", "--python-expr", BLENDER_OBJ_TO_FBX_PY])
+        .env("OPENRO_OBJ_IN", abs)
+        .env("OPENRO_FBX_OUT", &out_path)
+        .stdin(std::process::Stdio::null());
+    if sibling_png.is_file() {
+        cmd.env("OPENRO_PNG_IN", &sibling_png);
+    } else {
+        cmd.env("OPENRO_PNG_IN", "");
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| Oc { status: 502, msg: format!("failed to run blender for OBJ->FBX conversion: {e}") })?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let detail = if !stderr.trim().is_empty() { stderr.trim() } else { stdout.trim() };
+        return err(502, format!("blender OBJ->FBX conversion failed: {detail}"));
+    }
+    let bytes = std::fs::read(&out_path)
+        .map_err(|e| Oc { status: 502, msg: format!("read converted FBX mesh: {e}") })?;
+    if bytes.is_empty() {
+        return err(502, "blender produced an empty FBX file.");
+    }
+    Ok(PreparedUpload {
+        filename: out_name,
+        mime: "model/fbx",
+        bytes,
+        converted_format: Some("fbx"),
+    })
+}
+
+fn prepare_upload_payload(
+    data_dir: &Path,
+    rel: &str,
+    abs: &Path,
+    kind: &str,
+    raw_bytes: &[u8],
+) -> R<PreparedUpload> {
+    let filename = rel.rsplit('/').next().unwrap_or(rel);
+    let stem = filename.rsplit_once('.').map(|(s, _)| s).unwrap_or(filename);
+    match (kind, ext_of(rel).as_str()) {
+        ("Audio", "wav") => convert_wav_to_ogg(data_dir, abs, stem),
+        ("Model", "obj") => convert_obj_to_fbx(data_dir, abs, stem),
+        _ => Ok(PreparedUpload {
+            filename: filename.to_string(),
+            mime: mime_for(rel),
+            bytes: raw_bytes.to_vec(),
+            converted_format: None,
+        }),
+    }
+}
+
+/// Extract the underlying Image asset id from Roblox Decal XML returned by assetdelivery.
+pub(crate) fn extract_decal_image_id(xml: &str, decal_id: &str) -> Option<String> {
+    fn find_numeric_id(haystack: &str, decal_id: &str) -> Option<String> {
+        for needle in ["id=", "rbxassetid://"] {
+            let mut rest = haystack;
+            while let Some(pos) = rest.find(needle) {
+                let after = &rest[pos + needle.len()..];
+                let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if !digits.is_empty() && digits != decal_id {
+                    return Some(digits);
+                }
+                rest = &rest[pos + needle.len()..];
+            }
+        }
+        None
+    }
+    if let Some(tex_pos) = xml.find("name=\"Texture\"") {
+        let slice = &xml[tex_pos..xml.len().min(tex_pos + 512)];
+        if let Some(id) = find_numeric_id(slice, decal_id) {
+            return Some(id);
+        }
+    }
+    find_numeric_id(xml, decal_id)
+}
+
+fn assetdelivery_base(opencloud_base: &str) -> String {
+    if let Ok(v) = std::env::var("OPENRO_ASSETDELIVERY_BASE") {
+        let t = v.trim().trim_end_matches('/');
+        if !t.is_empty() {
+            return t.to_string();
+        }
+    }
+    if opencloud_base != DEFAULT_BASE {
+        return opencloud_base.trim_end_matches('/').to_string();
+    }
+    "https://assetdelivery.roblox.com".to_string()
 }
 
 fn norm_state(raw: Option<&str>) -> String {
@@ -643,18 +842,33 @@ impl Client {
         self.call("POST", "/assets/v1/assets", Some(&ct), Some(&body))
     }
 
-    fn upload_asset(&self, rel: &str, kind: &str, bytes: &[u8]) -> R<Uploaded> {
+    fn resolve_decal_image_id(&self, decal_id: &str) -> Option<String> {
+        // Fresh unauthenticated client: never forward `x-api-key` to assetdelivery / CDN.
+        let url = format!("{}/v1/asset/?id={decal_id}", assetdelivery_base(&self.base));
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(15))
+            .redirects(5)
+            .build();
+        let resp = agent.get(&url).call().ok()?;
+        let mut buf = Vec::new();
+        let _ = std::io::Read::take(resp.into_reader(), 512 * 1024).read_to_end(&mut buf);
+        let text = String::from_utf8_lossy(&buf);
+        extract_decal_image_id(&text, decal_id)
+    }
+
+    fn upload_asset(&self, data_dir: &Path, rel: &str, abs: &Path, kind: &str, bytes: &[u8]) -> R<Uploaded> {
         let stem = rel.rsplit('/').next().unwrap_or(rel);
         let stem = stem.rsplit_once('.').map(|(s, _)| s).unwrap_or(stem);
         let name: String = stem.chars().take(50).collect();
-        let filename = rel.rsplit('/').next().unwrap_or(rel);
-        let mime = mime_for(rel);
+        let prepared = prepare_upload_payload(data_dir, rel, abs, kind, bytes)?;
         let mut used = kind.to_string();
-        let (mut status, mut resp) = self.create_asset(kind, &name, filename, mime, bytes)?;
+        let (mut status, mut resp) =
+            self.create_asset(kind, &name, &prepared.filename, prepared.mime, &prepared.bytes)?;
         if status == 400 && kind == "Image" {
             // Some accounts only accept images as Decals.
             used = "Decal".to_string();
-            (status, resp) = self.create_asset("Decal", &name, filename, mime, bytes)?;
+            (status, resp) =
+                self.create_asset("Decal", &name, &prepared.filename, prepared.mime, &prepared.bytes)?;
         }
         self.check(status, &resp)?;
         let op: Value = serde_json::from_slice(&resp).or_else(|_| err(502, "Roblox answered the upload with something that is not JSON."))?;
@@ -671,11 +885,26 @@ impl Client {
             let m = e.get("message").and_then(Value::as_str).unwrap_or("the upload was rejected");
             return err(502, self.scrub(&format!("Roblox rejected {rel}: {m}")));
         }
-        let Some(asset_id) = id_of(done.get("response").unwrap_or(&Value::Null), "assetId") else {
+        let resp_obj = done.get("response").unwrap_or(&Value::Null);
+        let Some(asset_id) = id_of(resp_obj, "assetId") else {
             return err(502, format!("Roblox finished the upload of {rel} without an asset id."));
         };
         let state = norm_state(done.pointer("/response/moderationResult/moderationState").and_then(Value::as_str));
-        Ok(Uploaded { asset_id, state, operation: op_id, asset_type: used })
+        let image_asset_id = if used == "Decal" && state != "rejected" {
+            id_of(resp_obj, "imageAssetId")
+                .or_else(|| id_of(resp_obj, "imageId"))
+                .or_else(|| self.resolve_decal_image_id(&asset_id))
+        } else {
+            None
+        };
+        Ok(Uploaded {
+            asset_id,
+            image_asset_id,
+            state,
+            operation: op_id,
+            asset_type: used,
+            converted_format: prepared.converted_format,
+        })
     }
 
     fn poll_operation(&self, id: &str) -> R<Value> {
@@ -791,9 +1020,11 @@ fn assets_upload(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
             if let Some(t) = twin {
                 if !dry_run {
                     lock["assets"][&rel] = t.clone();
+                    lock["version"] = json!(1);
+                    write_json_atomic(&lock_file, &lock)?;
                     lock_dirty = true;
                 }
-                results.push(json!({ "path": rel, "state": "reused", "assetId": t.get("assetId"), "assetType": kind, "sha256": sha }));
+                results.push(json!({ "path": rel, "state": "reused", "assetId": t.get("assetId"), "imageAssetId": t.get("imageAssetId"), "assetType": kind, "sha256": sha }));
                 continue;
             }
         }
@@ -801,11 +1032,13 @@ fn assets_upload(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
             results.push(json!({ "path": rel, "state": "would_upload", "assetType": kind, "sha256": sha }));
             continue;
         };
-        match client.upload_asset(&rel, &kind, &data) {
+        match client.upload_asset(ctx.data_dir, &rel, &abs, &kind, &data) {
             Ok(u) if u.state == "rejected" => {
                 // Never keep a rejected asset id in assets.lock.json.
                 if let Some(map) = lock.get_mut("assets").and_then(Value::as_object_mut) {
                     if map.remove(&rel).is_some() {
+                        lock["version"] = json!(1);
+                        write_json_atomic(&lock_file, &lock)?;
                         lock_dirty = true;
                     }
                 }
@@ -817,16 +1050,29 @@ fn assets_upload(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
                 }));
             }
             Ok(u) => {
-                lock["assets"][&rel] = json!({
+                let mut lock_entry = json!({
                     "sha256": sha, "assetId": u.asset_id, "assetType": u.asset_type,
                     "state": u.state, "uploadedAt": now_iso(),
                 });
-                lock_dirty = true;
-                eprintln!("opencloud: uploaded {rel} as asset {}", u.asset_id);
-                results.push(json!({
+                let mut row = json!({
                     "path": rel, "state": "uploaded", "assetId": u.asset_id, "assetType": u.asset_type,
                     "sha256": sha, "operation": u.operation, "moderation": u.state,
-                }));
+                });
+                if let Some(ref img_id) = u.image_asset_id {
+                    lock_entry["imageAssetId"] = json!(img_id);
+                    row["imageAssetId"] = json!(img_id);
+                }
+                if let Some(fmt) = u.converted_format {
+                    lock_entry["convertedFormat"] = json!(fmt);
+                    row["convertedFormat"] = json!(fmt);
+                }
+                lock["assets"][&rel] = lock_entry;
+                // Persist incrementally after every upload so partial batches never lose IDs (#69).
+                lock["version"] = json!(1);
+                write_json_atomic(&lock_file, &lock)?;
+                lock_dirty = true;
+                eprintln!("opencloud: uploaded {rel} as asset {}", u.asset_id);
+                results.push(row);
             }
             Err(e) => results.push(json!({ "path": rel, "state": "failed", "assetType": kind, "sha256": sha, "error": e.msg })),
         }
@@ -836,10 +1082,6 @@ fn assets_upload(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
                 break;
             }
         }
-    }
-    if lock_dirty {
-        lock["version"] = json!(1);
-        write_json_atomic(&lock_file, &lock)?;
     }
     let auto_codegen = body.get("auto_codegen").and_then(Value::as_bool).unwrap_or(true);
     let codegen_res = if lock_dirty && auto_codegen {
@@ -907,29 +1149,74 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
 
     let mut by_path: Vec<(String, String)> = Vec::new();
     let mut by_key: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut mesh_asset_ids: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut card_art_aliases: Vec<(String, String)> = Vec::new();
     let mut skipped_rejected = 0usize;
     if let Some(map) = lock.get("assets").and_then(Value::as_object) {
-        for (rel, entry) in map {
+        let mut sorted: Vec<(&String, &Value)> = map.iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(b.0));
+        for (rel, entry) in sorted {
             let state = entry.get("state").and_then(Value::as_str).unwrap_or("unknown");
             if state == "rejected" {
                 skipped_rejected += 1;
                 continue;
             }
-            let Some(id) = id_of(entry, "assetId") else { continue };
+            // Prefer resolved Image asset id when an upload fell back to Decal (#69).
+            let Some(id) = id_of(entry, "imageAssetId").or_else(|| id_of(entry, "assetId")) else {
+                continue;
+            };
             let uri = format!("rbxassetid://{id}");
             by_path.push((rel.clone(), uri.clone()));
             let key = short_asset_key(rel);
-            by_key.entry(key).or_insert(uri);
+            by_key.entry(key).or_insert_with(|| uri.clone());
+            // Packed card portrait aliases: art/cards/<cardId>/art.png -> "cards/<cardId>" & "<cardId>" (#69).
+            if let Some(card_id) = rel
+                .strip_prefix("art/cards/")
+                .and_then(|s| s.strip_suffix("/art.png"))
+                .filter(|id| !id.is_empty() && !id.contains('/'))
+            {
+                card_art_aliases.push((card_id.to_string(), uri.clone()));
+            }
+            // Locked mesh asset ids: assets/meshes/<stem>.<mesh_ext> -> AssetIds.meshes["<stem>"].assetId (#69).
+            if let Some(fname) = rel
+                .strip_prefix("assets/meshes/")
+                .filter(|f| !f.contains('/'))
+            {
+                if let Some((stem, ext)) = fname.rsplit_once('.') {
+                    if matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "obj" | "fbx" | "glb" | "gltf" | "rbxm" | "rbxmx"
+                    ) && !stem.is_empty()
+                    {
+                        mesh_asset_ids.entry(stem.to_string()).or_insert_with(|| uri.clone());
+                    }
+                }
+            }
         }
+    }
+    for (card_id, uri) in card_art_aliases {
+        by_key
+            .entry(format!("cards/{card_id}"))
+            .or_insert_with(|| uri.clone());
+        by_key.entry(card_id).or_insert(uri);
     }
     by_path.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // Optional mesh metadata from assets/meshes/manifest.json (stud bbox & tris for pre-upload proxies).
+    // Optional mesh metadata from assets/meshes/manifest.json (stud bbox & tris for pre-upload proxies),
+    // enriched with locked assetId from assets/meshes/<stem>.obj (#69).
+    struct MeshCodegenRow {
+        meta: Option<([f64; 3], u64)>,
+        asset_uri: Option<String>,
+    }
     let mesh_manifest = std::fs::read_to_string(root.join("assets/meshes/manifest.json"))
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok());
-    let mut meshes: Vec<(String, [f64; 3], u64)> = Vec::new();
-    if let Some(entries) = mesh_manifest.as_ref().and_then(|v| v.get("meshes").and_then(Value::as_object).or_else(|| v.as_object())) {
+    let mut mesh_rows: std::collections::BTreeMap<String, MeshCodegenRow> =
+        std::collections::BTreeMap::new();
+    if let Some(entries) = mesh_manifest
+        .as_ref()
+        .and_then(|v| v.get("meshes").and_then(Value::as_object).or_else(|| v.as_object()))
+    {
         for (k, v) in entries {
             if let Some(arr) = v
                 .get("size")
@@ -943,12 +1230,34 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
                         arr[1].as_f64().unwrap_or(4.0),
                         arr[2].as_f64().unwrap_or(4.0),
                     ];
-                    let tris = v.get("tris").or_else(|| v.get("triangles")).and_then(Value::as_u64).unwrap_or(0);
-                    meshes.push((k.clone(), sz, tris));
+                    let tris = v
+                        .get("tris")
+                        .or_else(|| v.get("triangles"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    mesh_rows.insert(
+                        k.clone(),
+                        MeshCodegenRow {
+                            meta: Some((sz, tris)),
+                            asset_uri: mesh_asset_ids.get(k).cloned(),
+                        },
+                    );
                 }
             }
         }
-        meshes.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+    for (stem, uri) in &mesh_asset_ids {
+        mesh_rows
+            .entry(stem.clone())
+            .and_modify(|row| {
+                if row.asset_uri.is_none() {
+                    row.asset_uri = Some(uri.clone());
+                }
+            })
+            .or_insert(MeshCodegenRow {
+                meta: None,
+                asset_uri: Some(uri.clone()),
+            });
     }
 
     let mut out = String::new();
@@ -973,19 +1282,52 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
         }
         out.push_str("}\n\n");
     }
-    if meshes.is_empty() {
+    if mesh_rows.is_empty() {
         out.push_str("AssetIds.meshes = {}\n\n");
     } else {
         out.push_str("AssetIds.meshes = {\n");
-        for (k, sz, tris) in &meshes {
-            out.push_str(&format!(
-                "\t[{}] = {{ size = Vector3.new({:.3}, {:.3}, {:.3}), tris = {} }},\n",
-                luau_str(k),
-                sz[0],
-                sz[1],
-                sz[2],
-                tris
-            ));
+        for (k, row) in &mesh_rows {
+            let key_s = luau_str(k);
+            match (&row.meta, &row.asset_uri) {
+                (Some((sz, tris)), None) => {
+                    out.push_str(&format!(
+                        "\t[{key_s}] = {{ size = Vector3.new({:.3}, {:.3}, {:.3}), tris = {} }},\n",
+                        sz[0], sz[1], sz[2], tris
+                    ));
+                }
+                (Some((sz, tris)), Some(uri)) => {
+                    let single = format!(
+                        "\t[{key_s}] = {{ size = Vector3.new({:.3}, {:.3}, {:.3}), tris = {}, assetId = {} }},",
+                        sz[0],
+                        sz[1],
+                        sz[2],
+                        tris,
+                        luau_str(uri)
+                    );
+                    // Respect stylua.toml column_width = 120 (tab = 4 columns).
+                    let visual_cols = single.len() + 3;
+                    if visual_cols <= 120 {
+                        out.push_str(&single);
+                        out.push('\n');
+                    } else {
+                        out.push_str(&format!(
+                            "\t[{key_s}] = {{\n\t\tsize = Vector3.new({:.3}, {:.3}, {:.3}),\n\t\ttris = {},\n\t\tassetId = {},\n\t}},\n",
+                            sz[0],
+                            sz[1],
+                            sz[2],
+                            tris,
+                            luau_str(uri)
+                        ));
+                    }
+                }
+                (None, Some(uri)) => {
+                    out.push_str(&format!(
+                        "\t[{key_s}] = {{ assetId = {} }},\n",
+                        luau_str(uri)
+                    ));
+                }
+                (None, None) => {}
+            }
         }
         out.push_str("}\n\n");
     }
@@ -1004,7 +1346,7 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
         "ok": true,
         "path": out_rel,
         "count": by_path.len(),
-        "mesh_count": meshes.len(),
+        "mesh_count": mesh_rows.len(),
         "skipped_rejected": skipped_rejected,
         "keys": keys,
     }))
@@ -1156,13 +1498,17 @@ fn products_sync(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
     let manifest = read_manifest(root);
     let universe = universe_id(&manifest)?;
     let dry_run = body.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
+    let default_for_sale = body
+        .get("default_for_sale")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let only = str_list(body.get("keys"));
     let products = manifest.get("products").and_then(Value::as_array).cloned().unwrap_or_default();
     let client = Client::new(ctx)?;
     let mut remote_dp: Option<Vec<Remote>> = None;
     let mut remote_gp: Option<Vec<Remote>> = None;
     let mut results = Vec::new();
-    let mut new_ids: Vec<(String, String)> = Vec::new();
+    let mut synced_ids: Vec<(String, String)> = Vec::new();
 
     for p in &products {
         let key = p.get("key").and_then(Value::as_str).unwrap_or("").to_string();
@@ -1177,7 +1523,8 @@ fn products_sync(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
             }
             r
         };
-        let current_id = id_of(p, "id");
+        // Read either `id` or `robloxId` (#69).
+        let current_id = id_of(p, "id").or_else(|| id_of(p, "robloxId"));
         if p.get("priceApproved").and_then(Value::as_bool) != Some(true) {
             results.push(res("skipped", current_id.as_deref(), Some("price not approved".into())));
             continue;
@@ -1190,7 +1537,7 @@ fn products_sync(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
             name: p.get("name").and_then(Value::as_str).unwrap_or("").trim().to_string(),
             description: p.get("description").and_then(Value::as_str).unwrap_or("").to_string(),
             price: p.get("priceRobux").and_then(Value::as_i64).unwrap_or(0),
-            for_sale: p.get("forSale").and_then(Value::as_bool).unwrap_or(false),
+            for_sale: p.get("forSale").and_then(Value::as_bool).unwrap_or(default_for_sale),
         };
         if want.name.is_empty() || want.price < 1 {
             results.push(res("failed", current_id.as_deref(), Some("needs a name and a priceRobux of at least 1".into())));
@@ -1241,8 +1588,10 @@ fn products_sync(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
                     mp.text("isForSale", &want.for_sale.to_string());
                     changed = true;
                 }
-                if adopted {
-                    new_ids.push((key.clone(), r.id.clone()));
+                let missing_mirror = id_of(p, "id").as_deref() != Some(r.id.as_str())
+                    || id_of(p, "robloxId").as_deref() != Some(r.id.as_str());
+                if adopted || missing_mirror {
+                    synced_ids.push((key.clone(), r.id.clone()));
                 }
                 if !changed {
                     results.push(res(if adopted { "adopted" } else { "unchanged" }, Some(&r.id), None));
@@ -1274,7 +1623,7 @@ fn products_sync(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
                 match client.json("POST", &path_base, Some(&ct), Some(&bytes)) {
                     Ok(v) => match id_of(&v, if is_pass { "gamePassId" } else { "productId" }).or_else(|| id_of(&v, "id")) {
                         Some(id) => {
-                            new_ids.push((key.clone(), id.clone()));
+                            synced_ids.push((key.clone(), id.clone()));
                             results.push(res("created", Some(&id), None));
                         }
                         None => results.push(res("failed", None, Some("Roblox created it but sent no id back; list the products to find it.".into()))),
@@ -1284,19 +1633,123 @@ fn products_sync(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
             }
         }
     }
-    if !new_ids.is_empty() && !dry_run {
+    if !synced_ids.is_empty() && !dry_run {
         update_manifest(root, |m| {
             if let Some(arr) = m.get_mut("products").and_then(Value::as_array_mut) {
                 for item in arr {
                     let k = item.get("key").and_then(Value::as_str).unwrap_or("").to_string();
-                    if let Some((_, id)) = new_ids.iter().find(|(nk, _)| *nk == k) {
-                        item["id"] = id.parse::<u64>().map(|n| json!(n)).unwrap_or_else(|_| json!(id));
+                    if let Some((_, id)) = synced_ids.iter().find(|(nk, _)| *nk == k) {
+                        let val = id.parse::<u64>().map(|n| json!(n)).unwrap_or_else(|_| json!(id));
+                        item["id"] = val.clone();
+                        item["robloxId"] = val;
                     }
                 }
             }
         })?;
     }
-    Ok(json!({ "ok": true, "results": results, "dry_run": dry_run }))
+    let auto_codegen = body.get("auto_codegen").and_then(Value::as_bool);
+    let run_codegen = match auto_codegen {
+        Some(true) => !dry_run,
+        Some(false) => false,
+        None => !dry_run && !synced_ids.is_empty(),
+    };
+    let mut out = json!({ "ok": true, "results": results, "dry_run": dry_run });
+    if run_codegen {
+        if let Ok(cg) = products_codegen(root, &json!({})) {
+            out["product_ids_luau"] = cg;
+        }
+    }
+    Ok(out)
+}
+
+/// Generate `stylua`-clean `src/shared/ProductIds.luau` (or custom `out`) from synced
+/// `products` entries in `openro.project.json` (#69).
+pub fn products_codegen(root: &Path, body: &Value) -> R<Value> {
+    let manifest = read_manifest(root);
+    let out_rel = body
+        .get("out")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("src/shared/ProductIds.luau");
+    if !out_rel.ends_with(".luau") && !out_rel.ends_with(".lua") {
+        return bad("out path must end in .luau or .lua.");
+    }
+    let out_abs = safe_rel(root, out_rel)?;
+    if let Some(parent) = out_abs.parent() {
+        std::fs::create_dir_all(parent).or_else(|e| err(500, format!("create codegen dir: {e}")))?;
+    }
+
+    let mut by_key: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let mut game_passes: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let mut dev_products: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    for p in manifest
+        .get("products")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let key = p.get("key").and_then(Value::as_str).map(str::trim).unwrap_or("");
+        if key.is_empty() {
+            continue;
+        }
+        let Some(num_id) = id_of(p, "id")
+            .or_else(|| id_of(p, "robloxId"))
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|n| *n > 0)
+        else {
+            continue;
+        };
+        by_key.insert(key.to_string(), num_id);
+        match p.get("kind").and_then(Value::as_str) {
+            Some("game_pass") => {
+                game_passes.insert(key.to_string(), num_id);
+            }
+            Some("developer_product") => {
+                dev_products.insert(key.to_string(), num_id);
+            }
+            _ => {}
+        }
+    }
+
+    let write_table = |buf: &mut String, name: &str, map: &std::collections::BTreeMap<String, u64>| {
+        if map.is_empty() {
+            buf.push_str(&format!("ProductIds.{name} = {{}}\n\n"));
+        } else {
+            buf.push_str(&format!("ProductIds.{name} = {{\n"));
+            for (k, id) in map {
+                buf.push_str(&format!("\t[{}] = {id},\n", luau_str(k)));
+            }
+            buf.push_str("}\n\n");
+        }
+    };
+
+    let mut out = String::new();
+    out.push_str("--!strict\n");
+    out.push_str("-- Auto-generated by OpenRO from openro.project.json. Do not edit by hand.\n\n");
+    out.push_str("local ProductIds = {}\n\n");
+    write_table(&mut out, "byKey", &by_key);
+    write_table(&mut out, "gamePasses", &game_passes);
+    write_table(&mut out, "developerProducts", &dev_products);
+    out.push_str("function ProductIds.get(key: string): number?\n");
+    out.push_str("\treturn ProductIds.byKey[key]\n");
+    out.push_str("end\n\n");
+    out.push_str("return ProductIds\n");
+
+    let tmp = out_abs.with_extension("luau.tmp-openro");
+    std::fs::write(&tmp, out.as_bytes())
+        .and_then(|_| std::fs::rename(&tmp, &out_abs))
+        .or_else(|e| err(500, format!("write {out_rel}: {e}")))?;
+
+    let keys: Vec<String> = by_key.keys().cloned().collect();
+    Ok(json!({
+        "ok": true,
+        "path": out_rel,
+        "count": by_key.len(),
+        "game_passes": game_passes.len(),
+        "developer_products": dev_products.len(),
+        "keys": keys,
+    }))
 }
 
 // ----------------------------------------------------------------- universe
@@ -1356,7 +1809,7 @@ fn universe_set(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
 
 // ------------------------------------------------------------------- routes
 
-fn query_param(query: &str, key: &str) -> Option<String> {
+pub(crate) fn query_param(query: &str, key: &str) -> Option<String> {
     query.split('&').find_map(|kv| {
         let (k, v) = kv.split_once('=')?;
         (k == key).then(|| percent_decode(v))
@@ -1385,8 +1838,11 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
-/// `None` = not an Open Cloud / art / reference / image-ops route (the caller keeps matching).
+/// `None` = not an Open Cloud / Creator Hub / art / reference / image-ops route (the caller keeps matching).
 pub fn route(ctx: &Ctx, method: &str, path: &str, query: &str, body: &Value) -> Option<Reply> {
+    if let Some(reply) = crate::creator_hub::route(ctx, method, path, query, body) {
+        return Some(reply);
+    }
     let rest = path.strip_prefix("/api/")?;
     let segs: Vec<&str> = rest.split('/').collect();
     let out: R<Reply> = match (method, segs.as_slice()) {
@@ -1469,7 +1925,7 @@ pub fn route(ctx: &Ctx, method: &str, path: &str, query: &str, body: &Value) -> 
         ("GET", ["art", "image"]) => art_root(ctx, query_param(query, "project").as_deref())
             .and_then(|r| crate::assets::art_image(&r, &query_param(query, "path").unwrap_or_default()))
             .map(|(m, b)| Reply::Bytes(m, b)),
-        (_, ["projects", id, tail @ ..]) if matches!(tail, ["assets"] | ["assets", _] | ["publish"] | ["products"] | ["products", "sync"] | ["universe"]) => {
+        (_, ["projects", id, tail @ ..]) if matches!(tail, ["assets"] | ["assets", _] | ["publish"] | ["products"] | ["products", "sync"] | ["products", "codegen"] | ["universe"]) => {
             let Some(root) = (ctx.resolve)(id) else {
                 return Some(fail(Oc { status: 404, msg: "Unknown project.".into() }));
             };
@@ -1482,6 +1938,7 @@ pub fn route(ctx: &Ctx, method: &str, path: &str, query: &str, body: &Value) -> 
                 ("POST", ["publish"]) => publish(ctx, &root, body).map(ok_json),
                 ("GET", ["products"]) => products_get(ctx, &root).map(ok_json),
                 ("POST", ["products", "sync"]) => products_sync(ctx, &root, body).map(ok_json),
+                ("POST", ["products", "codegen"]) => products_codegen(&root, body).map(ok_json),
                 ("GET", ["universe"]) => universe_get(ctx, &root).map(ok_json),
                 ("POST", ["universe"]) => universe_set(ctx, &root, body).map(ok_json),
                 _ => err(405, "That method is not available here."),
@@ -1657,6 +2114,97 @@ mod tests {
         assert!(txt.contains("AssetIds.byKey = {\n\t[\"hero\"] = \"rbxassetid://123456789\",\n}\n\n"));
         assert_stylua_clean(&base);
 
+        // 4. Packed card art/cards/<id>/art.png aliases, Decal imageAssetId override, and locked mesh assetId (#69)
+        std::fs::write(
+            base.join("assets/meshes/manifest.json"),
+            json!({
+                "meshes": {
+                    "gacha_pedestal": { "size": [6.0, 4.5, 6.0], "tris": 1280 },
+                    "world1_portal_arch": { "size": [6.18, 4.668, 2.1], "tris": 4468 }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("assets.lock.json"),
+            json!({
+                "assets": {
+                    "art/cards/w1_naruto/art.png": {
+                        "assetId": "555000",
+                        "imageAssetId": "555001",
+                        "assetType": "Decal",
+                        "state": "approved"
+                    },
+                    "assets/meshes/world1_portal_arch.obj": {
+                        "assetId": "999888777666",
+                        "assetType": "Model",
+                        "state": "approved"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let res = assets_codegen(&base, &json!({})).expect("codegen v012 #69");
+        assert_eq!(res["count"], json!(2));
+        assert_eq!(res["mesh_count"], json!(2));
+        let txt = std::fs::read_to_string(base.join("src/shared/AssetIds.luau")).unwrap();
+        assert!(txt.contains("[\"cards/w1_naruto\"] = \"rbxassetid://555001\""), "missing cards/<id> alias:\n{txt}");
+        assert!(txt.contains("[\"w1_naruto\"] = \"rbxassetid://555001\""), "missing <id> alias:\n{txt}");
+        assert!(txt.contains("[\"w1_naruto_art\"] = \"rbxassetid://555001\""), "missing <id>_art alias:\n{txt}");
+        assert!(txt.contains("assetId = \"rbxassetid://999888777666\""), "missing mesh assetId:\n{txt}");
+        assert_stylua_clean(&base);
+
+        // 5. ProductIds.luau codegen (empty + populated, stylua-clean, #69)
+        let res = products_codegen(&base, &json!({})).expect("products codegen empty");
+        assert_eq!(res["count"], json!(0));
+        std::fs::write(
+            base.join("openro.project.json"),
+            json!({
+                "name": "Demo",
+                "products": [
+                    { "key": "pass_vip", "kind": "game_pass", "robloxId": 4200 },
+                    { "key": "prod_gems", "kind": "developer_product", "id": 5001 },
+                    { "key": "unsynced", "kind": "game_pass", "robloxId": null }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let res = products_codegen(&base, &json!({})).expect("products codegen populated");
+        assert_eq!(res["count"], json!(2));
+        assert_eq!(res["game_passes"], json!(1));
+        assert_eq!(res["developer_products"], json!(1));
+        let ptxt = std::fs::read_to_string(base.join("src/shared/ProductIds.luau")).unwrap();
+        assert!(ptxt.contains("[\"pass_vip\"] = 4200"), "got:\n{ptxt}");
+        assert!(ptxt.contains("[\"prod_gems\"] = 5001"), "got:\n{ptxt}");
+        assert!(!ptxt.contains("unsynced"));
+        if let Some(stylua) = crate::projects::find_tool("stylua", "OPENRO_STYLUA") {
+            let out = std::process::Command::new(&stylua)
+                .current_dir(&base)
+                .args(["--check", "--", "src/shared/ProductIds.luau"])
+                .output()
+                .expect("run stylua --check on ProductIds.luau");
+            assert!(
+                out.status.success(),
+                "stylua --check failed on ProductIds.luau:\n{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn decal_xml_extracts_underlying_image_id() {
+        let xml = r#"<roblox version="4"><Item class="Decal"><Properties><Content name="Texture"><url>http://www.roblox.com/asset/?id=88776655</url></Content></Properties></Item></roblox>"#;
+        assert_eq!(
+            extract_decal_image_id(xml, "11223344").as_deref(),
+            Some("88776655")
+        );
+        let xml_same = r#"<roblox><Content name="Texture"><url>rbxassetid://11223344</url></Content></roblox>"#;
+        assert_eq!(extract_decal_image_id(xml_same, "11223344"), None);
     }
 }

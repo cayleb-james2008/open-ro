@@ -231,7 +231,12 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - {{\"tool\": \"audio_generate\", \"args\": {{\"name\": \"SfxName\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}}}} synthesizes 44.1kHz WAV into assets/audio/\n\
 - {{\"tool\": \"adapter_list\", \"args\": {{\"capability\": \"image_gen|reference_search|mesh_gen|audio_gen|custom\"}}}} lists installed CLI/HTTP tool adapters and availability\n\
 - {{\"tool\": \"adapter_invoke\", \"args\": {{\"capability\": \"...\", \"adapter_id\": \"...?\", \"params\": {{...}}}}}} runs an installed CLI/HTTP adapter (or capability priority chain)\n\
-- {{\"tool\": \"assets_upload\", \"args\": {{\"paths\": [\"art/cards/x/art.png\"]}}}} uploads authorised assets via Open Cloud into assets.lock.json\n\
+- {{\"tool\": \"opencloud_status\", \"args\": {{}}}} / {{\"tool\": \"creator_hub_status\", \"args\": {{\"check_login\": true, \"save_creator\": true}}}} checks Open Cloud key/creator & open loopback Chromium Creator Hub status\n\
+- {{\"tool\": \"creator_hub_setup\", \"args\": {{\"ensure_experience\": true}}}} / {{\"tool\": \"creator_hub_configure\", \"args\": {{\"private_servers\": {{\"enabled\": true, \"price_robux\": 0}}}}}} automates Creator Hub via loopback CDP (stops cleanly on `action_required` — never bypass login/2FA/CAPTCHA)\n\
+- {{\"tool\": \"assets_authorise\", \"args\": {{\"paths\": [\"art/cards/**\"]}}}} / {{\"tool\": \"assets_upload\", \"args\": {{\"paths\": [...]}}}} / {{\"tool\": \"assets_codegen\", \"args\": {{}}}} authorises, uploads, and generates `src/shared/AssetIds.luau`\n\
+- {{\"tool\": \"products_sync\", \"args\": {{}}}} / {{\"tool\": \"products_codegen\", \"args\": {{}}}} syncs approved Game Passes/Dev Products and generates `src/shared/ProductIds.luau`\n\
+- {{\"tool\": \"universe_get\", \"args\": {{}}}} / {{\"tool\": \"universe_set\", \"args\": {{\"settings\": {{\"displayName\": \"...\", \"description\": \"...\"}}}}}} reads/updates Roblox Experience metadata\n\
+- {{\"tool\": \"project_publish\", \"args\": {{\"versionType\": \"Saved\"}}}} publishes built `.rbxlx` (`versionType: \"Published\"` requires `confirm: true` ONLY after explicit owner approval)\n\
 - {{\"tool\": \"evidence_record\", \"args\": {{\"summary\": \"...\", \"confidence\": \"observed|derived|inferred\", \"kind\": \"...\", \"source\": \"...\"}}}} appends canonical SHA-256 evidence (`ev_*`) to `.openro/investigation/evidence.jsonl`\n\
 - {{\"tool\": \"evidence_list\", \"args\": {{\"confidence\": \"...?\", \"kind\": \"...?\", \"limit\": 50}}}} lists recorded investigation evidence\n\
 - {{\"tool\": \"unknown_add\", \"args\": {{\"title\": \"...\", \"question\": \"...\", \"severity\": \"high\", \"domain\": \"mechanics\"}}}} logs an open unknown (`unk_*`)\n\
@@ -285,7 +290,10 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - mesh_generate {{\"name\": \"Prop\", \"description\": \"...\", \"script\": \"...\"}} (smart-UV AO-baked .obj + PNG + manifest.json <=20k tris -> assets/meshes/)\n\
 - audio_generate {{\"name\": \"Sfx\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}} (-> assets/audio/)\n\
 - adapter_list {{\"capability\": \"...?\"}} / adapter_invoke {{\"capability\": \"...\", \"adapter_id\": \"...?\", \"params\": {{...}}}} (custom CLI/HTTP tool adapters)\n\
-- assets_upload {{\"paths\": [...]}} (authorised Open Cloud upload -> assets.lock.json)\n\n\
+- opencloud_status {{}} / creator_hub_status {{\"check_login\": true, \"save_creator\": true}} / creator_hub_setup {{...}} / creator_hub_configure {{...}} (loopback browser CDP; stop cleanly on action_required)\n\
+- assets_authorise {{\"paths\": [...]}} / assets_upload {{\"paths\": [...]}} / assets_codegen {{}} (-> assets.lock.json + AssetIds.luau)\n\
+- products_sync {{}} / products_codegen {{}} (-> ProductIds.luau) / universe_get {{}} / universe_set {{...}}\n\
+- project_publish {{\"versionType\": \"Saved\"}} (live \"Published\" requires confirm: true ONLY after owner approval)\n\n\
 STUDY, EVIDENCE & CONTRACT CHECK TOOLS (Study -> Build -> Check -> Refine):\n\
 - evidence_record {{\"summary\": \"...\", \"confidence\": \"observed|derived|inferred\", \"kind\": \"...\", \"source\": \"...\"}} / evidence_list {{\"confidence\": \"...?\", \"limit\": 50}}\n\
 - unknown_add {{\"title\": \"...\", \"question\": \"...\", \"severity\": \"high\", \"domain\": \"...\"}} / unknowns_list {{\"status\": \"open\"}}\n\
@@ -511,6 +519,17 @@ pub struct AgentHooks {
     pub mesh_generate: Option<HookFn>,
     pub audio_generate: Option<HookFn>,
     pub assets_upload: Option<HookFn>,
+    pub opencloud_status: Option<HookFn>,
+    pub creator_hub_status: Option<HookFn>,
+    pub creator_hub_setup: Option<HookFn>,
+    pub creator_hub_configure: Option<HookFn>,
+    pub assets_authorise: Option<HookFn>,
+    pub assets_codegen: Option<HookFn>,
+    pub products_sync: Option<HookFn>,
+    pub products_codegen: Option<HookFn>,
+    pub project_publish: Option<HookFn>,
+    pub universe_get: Option<HookFn>,
+    pub universe_set: Option<HookFn>,
     pub adapter_list: Option<HookFn>,
     pub adapter_invoke: Option<HookFn>,
 }
@@ -601,6 +620,49 @@ impl Agent {
             let _ = std::fs::create_dir_all(&dir);
             dir
         })
+    }
+
+    fn invoke_opencloud_local(
+        &self,
+        method: &str,
+        path: &str,
+        query: &str,
+        body: &Value,
+    ) -> Result<Value, String> {
+        let data_dir = self.effective_assets_root();
+        let store = crate::secrets::SecretStore::for_data_dir(&data_dir);
+        let active = self.effective_project_root();
+        let active_for_res = active.clone();
+        let resolver = move |_id: &str| active_for_res.clone();
+        let ctx = crate::opencloud::Ctx {
+            data_dir: &data_dir,
+            store,
+            resolve: &resolver,
+            active_project: active,
+        };
+        let reply = crate::opencloud::route(&ctx, method, path, query, body)
+            .ok_or_else(|| format!("Open Cloud endpoint '{method} {path}' not available"))?;
+        match reply {
+            crate::opencloud::Reply::Json(code, val) => {
+                let is_action_required =
+                    val.get("status").and_then(|v| v.as_str()) == Some("action_required");
+                if code >= 400
+                    || (val.get("ok").and_then(|v| v.as_bool()) == Some(false) && !is_action_required)
+                {
+                    let err = val
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                        .unwrap_or_else(|| format!("HTTP {code}: {val}"));
+                    Err(err)
+                } else {
+                    Ok(val)
+                }
+            }
+            crate::opencloud::Reply::Bytes(mime, bytes) => {
+                Ok(json!({ "ok": true, "mime": mime, "bytes": bytes.len() }))
+            }
+        }
     }
 
     pub fn set_library_prompt(&mut self, prompt: String) {
@@ -2933,6 +2995,14 @@ impl Agent {
                                         | "blender_generate"
                                         | "audio_generate"
                                         | "assets_upload"
+                                        | "creator_hub_setup"
+                                        | "creator_hub_configure"
+                                        | "assets_authorise"
+                                        | "assets_codegen"
+                                        | "products_sync"
+                                        | "products_codegen"
+                                        | "project_publish"
+                                        | "universe_set"
                                         | "adapter_invoke"
                                         | "evidence_record"
                                         | "unknown_add"
@@ -3393,6 +3463,14 @@ impl Agent {
                                 | "blender_generate"
                                 | "audio_generate"
                                 | "assets_upload"
+                                | "creator_hub_setup"
+                                | "creator_hub_configure"
+                                | "assets_authorise"
+                                | "assets_codegen"
+                                | "products_sync"
+                                | "products_codegen"
+                                | "project_publish"
+                                | "universe_set"
                                 | "adapter_invoke"
                                 | "evidence_record"
                                 | "unknown_add"
@@ -4458,14 +4536,146 @@ impl Agent {
                 Ok(format!("tool_result: art_pack_card: {text}"))
             }
             "assets_upload" => {
-                let hook = self.hooks.assets_upload.as_ref().ok_or(
-                    "assets_upload tool is not connected on this server instance yet (configure Open Cloud in Settings).",
-                )?;
-                let res = hook(args)?;
+                let res = if let Some(hook) = &self.hooks.assets_upload {
+                    hook(args)?
+                } else {
+                    let _ = self.require_project_root()?;
+                    self.invoke_opencloud_local("POST", "/api/projects/_active/assets/upload", "", args)?
+                };
                 let text = res.to_string();
                 transcript.push(format!("tool assets_upload -> {text}"));
                 thread.push("Uploaded authorised assets to Roblox Open Cloud.".to_string());
                 Ok(format!("tool_result: assets_upload: {text}"))
+            }
+            "opencloud_status" => {
+                let res = if let Some(hook) = &self.hooks.opencloud_status {
+                    hook(args)?
+                } else {
+                    self.invoke_opencloud_local("GET", "/api/opencloud", "", args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool opencloud_status -> {text}"));
+                Ok(format!("tool_result: opencloud_status: {text}"))
+            }
+            "creator_hub_status" => {
+                let res = if let Some(hook) = &self.hooks.creator_hub_status {
+                    hook(args)?
+                } else {
+                    let q = creator_hub_status_query(args);
+                    self.invoke_opencloud_local("GET", "/api/creator-hub/status", &q, args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool creator_hub_status -> {text}"));
+                Ok(format!("tool_result: creator_hub_status: {text}"))
+            }
+            "creator_hub_setup" => {
+                let res = if let Some(hook) = &self.hooks.creator_hub_setup {
+                    hook(args)?
+                } else if self.effective_project_root().is_some() {
+                    self.invoke_opencloud_local("POST", "/api/projects/_active/creator-hub/setup", "", args)?
+                } else {
+                    self.invoke_opencloud_local("POST", "/api/creator-hub/setup", "", args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool creator_hub_setup -> {text}"));
+                thread.push("Checked/configured Roblox Creator Hub setup.".to_string());
+                Ok(format!("tool_result: creator_hub_setup: {text}"))
+            }
+            "creator_hub_configure" => {
+                let res = if let Some(hook) = &self.hooks.creator_hub_configure {
+                    hook(args)?
+                } else {
+                    let _ = self.require_project_root()?;
+                    self.invoke_opencloud_local("POST", "/api/projects/_active/creator-hub/configure", "", args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool creator_hub_configure -> {text}"));
+                thread.push("Configured Roblox Creator Hub experience settings.".to_string());
+                Ok(format!("tool_result: creator_hub_configure: {text}"))
+            }
+            "assets_authorise" => {
+                let res = if let Some(hook) = &self.hooks.assets_authorise {
+                    hook(args)?
+                } else {
+                    let _ = self.require_project_root()?;
+                    self.invoke_opencloud_local("POST", "/api/projects/_active/assets/authorise", "", args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool assets_authorise -> {text}"));
+                thread.push("Updated authorised asset paths in openro.project.json.".to_string());
+                Ok(format!("tool_result: assets_authorise: {text}"))
+            }
+            "assets_codegen" => {
+                let res = if let Some(hook) = &self.hooks.assets_codegen {
+                    hook(args)?
+                } else {
+                    let _ = self.require_project_root()?;
+                    self.invoke_opencloud_local("POST", "/api/projects/_active/assets/codegen", "", args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool assets_codegen -> {text}"));
+                thread.push("Generated src/shared/AssetIds.luau.".to_string());
+                Ok(format!("tool_result: assets_codegen: {text}"))
+            }
+            "products_sync" => {
+                let res = if let Some(hook) = &self.hooks.products_sync {
+                    hook(args)?
+                } else {
+                    let _ = self.require_project_root()?;
+                    self.invoke_opencloud_local("POST", "/api/projects/_active/products/sync", "", args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool products_sync -> {text}"));
+                thread.push("Synced approved Game Passes and Developer Products via Open Cloud.".to_string());
+                Ok(format!("tool_result: products_sync: {text}"))
+            }
+            "products_codegen" => {
+                let res = if let Some(hook) = &self.hooks.products_codegen {
+                    hook(args)?
+                } else {
+                    let _ = self.require_project_root()?;
+                    self.invoke_opencloud_local("POST", "/api/projects/_active/products/codegen", "", args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool products_codegen -> {text}"));
+                thread.push("Generated src/shared/ProductIds.luau.".to_string());
+                Ok(format!("tool_result: products_codegen: {text}"))
+            }
+            "project_publish" => {
+                // Never auto-inject `confirm: true` — live `versionType: "Published"` stays gated.
+                let res = if let Some(hook) = &self.hooks.project_publish {
+                    hook(args)?
+                } else {
+                    let _ = self.require_project_root()?;
+                    self.invoke_opencloud_local("POST", "/api/projects/_active/publish", "", args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool project_publish -> {text}"));
+                thread.push("Published place build via Roblox Open Cloud.".to_string());
+                Ok(format!("tool_result: project_publish: {text}"))
+            }
+            "universe_get" => {
+                let res = if let Some(hook) = &self.hooks.universe_get {
+                    hook(args)?
+                } else {
+                    let _ = self.require_project_root()?;
+                    self.invoke_opencloud_local("GET", "/api/projects/_active/universe", "", args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool universe_get -> {text}"));
+                Ok(format!("tool_result: universe_get: {text}"))
+            }
+            "universe_set" => {
+                let res = if let Some(hook) = &self.hooks.universe_set {
+                    hook(args)?
+                } else {
+                    let _ = self.require_project_root()?;
+                    self.invoke_opencloud_local("POST", "/api/projects/_active/universe", "", args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool universe_set -> {text}"));
+                thread.push("Updated Roblox Experience settings.".to_string());
+                Ok(format!("tool_result: universe_set: {text}"))
             }
             "blender_generate" | "mesh_generate" => {
                 let res = if let Some(hook) = &self.hooks.mesh_generate {
@@ -5522,7 +5732,38 @@ fn is_read_only_tool(tool: &str) -> bool {
             | "unknowns_list"
             | "mechanics_check"
             | "study_status"
+            | "opencloud_status"
+            | "creator_hub_status"
+            | "universe_get"
     )
+}
+
+/// Build the query string for `GET /api/creator-hub/status?...` from tool args.
+pub fn creator_hub_status_query(args: &Value) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(url) = args
+        .get("cdp_url")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let mut enc = String::with_capacity(url.len() + 16);
+        for b in url.bytes() {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                enc.push(b as char);
+            } else {
+                enc.push_str(&format!("%{b:02X}"));
+            }
+        }
+        parts.push(format!("cdp_url={enc}"));
+    }
+    if args.get("check_login").and_then(|v| v.as_bool()) == Some(true) {
+        parts.push("check_login=1".to_string());
+    }
+    if args.get("save_creator").and_then(|v| v.as_bool()) == Some(true) {
+        parts.push("save_creator=1".to_string());
+    }
+    parts.join("&")
 }
 
 fn format_luau_errors(report: &crate::luau_check::AnalysisReport) -> String {
