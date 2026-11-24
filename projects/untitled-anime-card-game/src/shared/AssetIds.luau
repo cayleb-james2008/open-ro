@@ -3,11 +3,9 @@
 
 local AssetIds = {}
 
-AssetIds.byPath = {
-}
+AssetIds.byPath = {}
 
-AssetIds.byKey = {
-}
+AssetIds.byKey = {}
 
 AssetIds.meshes = {
 	["card_standee"] = { size = Vector3.new(2.478, 2.606, 2.478), tris = 1692 },

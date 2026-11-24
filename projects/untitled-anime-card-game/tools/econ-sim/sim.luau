@@ -68,7 +68,14 @@ local function computeEffectiveLuck(
 	ticketMult: number
 ): number
 	local rebirthMult = 1.0 + 0.15 * math.min(rebirths, 250)
-	return (1.0 + flatLuck) * passMult * platformMult * potionMult * weatherMult * rebirthMult * milestoneMult * ticketMult
+	return (1.0 + flatLuck)
+		* passMult
+		* platformMult
+		* potionMult
+		* weatherMult
+		* rebirthMult
+		* milestoneMult
+		* ticketMult
 end
 
 type PityState = {
@@ -162,7 +169,10 @@ local function runFirstLegendarySim(trials: number, isPaid: boolean): (number, n
 			rollCount += 1
 			local luck = computeEffectiveLuck(flatLuck, passMult, 1.0, potionMult, 1.0, 0, 1.0, 2.0) * noviceMult
 			local tier = rollOnce(luck, pity)
-			if (tier == "Legendary" or tier == "Mythic" or tier == "Secret" or tier == "Universal" or tier == "Nexus") and not foundAtMin then
+			if
+				(tier == "Legendary" or tier == "Mythic" or tier == "Secret" or tier == "Universal" or tier == "Nexus")
+				and not foundAtMin
+			then
 				foundAtMin = tSec / 60.0
 				break
 			end
@@ -187,10 +197,17 @@ local function runFirstLegendarySim(trials: number, isPaid: boolean): (number, n
 				queuedTickets -= 1
 				tSec += 0.12
 				rollCount += 1
-				local weather = if (math.floor(tSec / 600) == 0 and tSec >= 300) then 2.0 else 1.0
-				local luck = computeEffectiveLuck(flatLuck, passMult, 1.0, potionMult, weather, 0, 1.0, 2.0) * noviceMult
+				local weather = if math.floor(tSec / 600) == 0 and tSec >= 300 then 2.0 else 1.0
+				local luck = computeEffectiveLuck(flatLuck, passMult, 1.0, potionMult, weather, 0, 1.0, 2.0)
+					* noviceMult
 				local tier = rollOnce(luck, pity)
-				if tier == "Legendary" or tier == "Mythic" or tier == "Secret" or tier == "Universal" or tier == "Nexus" then
+				if
+					tier == "Legendary"
+					or tier == "Mythic"
+					or tier == "Secret"
+					or tier == "Universal"
+					or tier == "Nexus"
+				then
 					foundAtMin = tSec / 60.0
 					break
 				end
@@ -206,15 +223,22 @@ local function runFirstLegendarySim(trials: number, isPaid: boolean): (number, n
 				if tSec >= 300.0 then
 					potionMult = 2.5
 				end
-				local weather = if (tSec >= 300 and tSec <= 540) then 2.0 else 1.0
-				local luck = computeEffectiveLuck(flatLuck, passMult, 1.0, potionMult, weather, 0, 1.0, 1.0) * noviceMult
+				local weather = if tSec >= 300 and tSec <= 540 then 2.0 else 1.0
+				local luck = computeEffectiveLuck(flatLuck, passMult, 1.0, potionMult, weather, 0, 1.0, 1.0)
+					* noviceMult
 				local tier = rollOnce(luck, pity)
 				if tier == "Common" then
 					queuedYen += 25
 				elseif tier == "Uncommon" then
 					queuedYen += 75
 				end
-				if tier == "Legendary" or tier == "Mythic" or tier == "Secret" or tier == "Universal" or tier == "Nexus" then
+				if
+					tier == "Legendary"
+					or tier == "Mythic"
+					or tier == "Secret"
+					or tier == "Universal"
+					or tier == "Nexus"
+				then
 					foundAtMin = tSec / 60.0
 					break
 				end
@@ -308,10 +332,40 @@ local paidRebirthMin, paidRebirthGems = runFirstRebirthSim(true)
 local gemPacks, starterRate = runProductAudit()
 
 print("=== UACG Headless Economy Simulation (Lune) ===")
-print(string.format("First Legendary (F2P, n=500):  mean=%.2fm | P50=%.2fm | P90=%.2fm | <=15m=%.1f%%", f2pMean, f2pP50, f2pP90, f2pPct15))
-print(string.format("First Legendary (Paid, n=500): mean=%.2fm | P50=%.2fm | P90=%.2fm | <=15m=%.1f%%", paidMean, paidP50, paidP90, paidPct15))
-print(string.format("First Rebirth (F2P):           %d min (%.2f h) at %d Gems", f2pRebirthMin, f2pRebirthMin / 60.0, f2pRebirthGems))
-print(string.format("First Rebirth (Paid):          %d min (%.2f h) at %d Gems", paidRebirthMin, paidRebirthMin / 60.0, paidRebirthGems))
+print(
+	string.format(
+		"First Legendary (F2P, n=500):  mean=%.2fm | P50=%.2fm | P90=%.2fm | <=15m=%.1f%%",
+		f2pMean,
+		f2pP50,
+		f2pP90,
+		f2pPct15
+	)
+)
+print(
+	string.format(
+		"First Legendary (Paid, n=500): mean=%.2fm | P50=%.2fm | P90=%.2fm | <=15m=%.1f%%",
+		paidMean,
+		paidP50,
+		paidP90,
+		paidPct15
+	)
+)
+print(
+	string.format(
+		"First Rebirth (F2P):           %d min (%.2f h) at %d Gems",
+		f2pRebirthMin,
+		f2pRebirthMin / 60.0,
+		f2pRebirthGems
+	)
+)
+print(
+	string.format(
+		"First Rebirth (Paid):          %d min (%.2f h) at %d Gems",
+		paidRebirthMin,
+		paidRebirthMin / 60.0,
+		paidRebirthGems
+	)
+)
 print("--- Robux Value Anchor ---")
 for _, p in ipairs(gemPacks) do
 	print(string.format("  %-18s %4d R$ -> %6d Gems (%.2f Gems/R$)", p.name, p.robux, p.gems, p.gems / p.robux))
@@ -323,6 +377,9 @@ assert(f2pP50 < 15.0, "FAIL: F2P median time to First Legendary must be < 15 min
 assert(f2pP90 <= 15.0, "FAIL: F2P P90 time to First Legendary must be <= 15 min")
 assert(paidP50 < f2pP50, "FAIL: Paid accelerator must beat F2P median time")
 assert(f2pRebirthMin >= 120 and f2pRebirthMin <= 240, "FAIL: F2P First Rebirth must be within 2-4 hours (120-240 min)")
-assert(paidRebirthMin < f2pRebirthMin and paidRebirthMin >= 60, "FAIL: Paid First Rebirth must accelerate fairly without sub-hour collapse")
+assert(
+	paidRebirthMin < f2pRebirthMin and paidRebirthMin >= 60,
+	"FAIL: Paid First Rebirth must accelerate fairly without sub-hour collapse"
+)
 
 print("ALL ECONOMY MILESTONE CHECKS PASSED (exit 0)")
