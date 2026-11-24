@@ -3112,3 +3112,393 @@ fn history_window_reread_breaker_and_grep_pattern_gap_59() {
 
     shared.teamwork.shutdown();
 }
+
+#[test]
+fn study_check_tools_kept_force_and_discipline_gap_63b() {
+    fn extract_prefixed_hex_id(haystack: &str, prefix: &str) -> Option<String> {
+        let idx = haystack.rfind(prefix)?;
+        let rest = &haystack[idx + prefix.len()..];
+        let hex: String = rest
+            .chars()
+            .take(16)
+            .take_while(|c| c.is_ascii_hexdigit())
+            .collect();
+        (hex.len() == 16).then(|| format!("{prefix}{hex}"))
+    }
+
+    let dir = scratch_dir("study-check-gap63b");
+    let data_dir = dir.join("data");
+    let ws = dir.join("workspace");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let mock_bin = env!("CARGO_BIN_EXE_mock_studio");
+    let prompts_by_role: Arc<Mutex<std::collections::HashMap<String, String>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let p_cap = Arc::clone(&prompts_by_role);
+    let per_role: Arc<Mutex<std::collections::HashMap<String, usize>>> =
+        Arc::new(Mutex::new(std::collections::HashMap::new()));
+    let pr = Arc::clone(&per_role);
+
+    let stub = start_dynamic_stub(move |body, _| {
+        let req: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        let msgs = req["messages"].as_array().unwrap();
+        let sys = msgs[0]["content"].as_str().unwrap_or("");
+        let role = if sys.contains("[Agent: coordinator]") {
+            "coordinator"
+        } else if sys.contains("[Agent: researcher]") {
+            "researcher"
+        } else if sys.contains("[Agent: builder]") {
+            "builder"
+        } else {
+            "verifier"
+        };
+        p_cap
+            .lock()
+            .unwrap()
+            .entry(role.to_string())
+            .or_insert_with(|| sys.to_string());
+        let step = {
+            let mut m = pr.lock().unwrap();
+            let e = m.entry(role.to_string()).or_insert(0);
+            *e += 1;
+            *e
+        };
+        let all_text = msgs
+            .iter()
+            .map(|m| m["content"].as_str().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let last_user = msgs
+            .iter()
+            .rev()
+            .find(|m| m["role"] == "user")
+            .and_then(|m| m["content"].as_str())
+            .unwrap_or("");
+
+        if role == "coordinator" {
+            if all_text.contains("Verified task t1") && all_text.contains("Verified task t2") {
+                if !all_text.contains("tool_result (study_status)") {
+                    return json!({ "tool": "study_status", "args": {} });
+                }
+                return json!({ "tool": "finish_run", "args": { "summary": "gap 63b complete" } });
+            }
+            return match step {
+                1 => json!({
+                    "steps": [
+                        {
+                            "tool": "create_task",
+                            "args": {
+                                "id": "t1",
+                                "owner": "researcher",
+                                "verifier": "verifier",
+                                "title": "Study mechanics & unknowns",
+                                "kind": "docs",
+                                "files": ["docs/mechanics.json"]
+                            }
+                        },
+                        {
+                            "tool": "create_task",
+                            "args": {
+                                "id": "t2",
+                                "owner": "builder",
+                                "verifier": "verifier",
+                                "title": "Write verified client module",
+                                "kind": "game_code",
+                                "depends_on": ["t1"],
+                                "files": ["src/client/Main.client.luau"]
+                            }
+                        }
+                    ],
+                    "done": true,
+                    "summary": "dispatched t1 & t2"
+                }),
+                _ => json!({ "done": true, "summary": "waiting" }),
+            };
+        }
+
+        if role == "researcher" {
+            return match step {
+                1 => json!({
+                    "steps": [
+                        {
+                            "tool": "unknown_add",
+                            "args": {
+                                "title": "Pity threshold",
+                                "question": "Does guaranteed roll trigger at 50?",
+                                "severity": "high",
+                                "domain": "rng"
+                            }
+                        },
+                        {
+                            "tool": "evidence_record",
+                            "args": {
+                                "summary": "Verified hard pity at 50 rolls in simulation",
+                                "confidence": "observed",
+                                "kind": "simulation",
+                                "source": "tools/sim.luau"
+                            }
+                        },
+                        { "tool": "evidence_list", "args": { "confidence": "observed" } }
+                    ]
+                }),
+                // Attempt fail-closed resolution without evidence_for -> must error cleanly
+                2 => {
+                    let unk_id = extract_prefixed_hex_id(&all_text, "unk_").unwrap_or_default();
+                    json!({
+                        "tool": "unknown_update",
+                        "args": {
+                            "id": unk_id,
+                            "expected_revision": 1,
+                            "status": "resolved",
+                            "resolution": "missing evidence test"
+                        }
+                    })
+                }
+                // Resolve with valid ev_* + write docs/mechanics.json + run mechanics_check + study_status + submit
+                3 => {
+                    let unk_id = extract_prefixed_hex_id(&all_text, "unk_").unwrap_or_default();
+                    let ev_id = extract_prefixed_hex_id(&all_text, "ev_").unwrap_or_default();
+                    let mech_json = json!({
+                        "mechanics": [
+                            {
+                                "name": "HardPity",
+                                "status": "sourced",
+                                "evidence_id": ev_id,
+                                "verified_runtime": true
+                            },
+                            {
+                                "name": "DropBoost",
+                                "status": "estimated",
+                                "config_path": "src/shared/Config.luau",
+                                "config_value": 1.25
+                            }
+                        ]
+                    });
+                    json!({
+                        "steps": [
+                            {
+                                "tool": "unknown_update",
+                                "args": {
+                                    "id": unk_id,
+                                    "expected_revision": 1,
+                                    "status": "resolved",
+                                    "resolution": "Verified hard pity at 50",
+                                    "evidence_for": [ev_id]
+                                }
+                            },
+                            { "tool": "unknowns_list", "args": { "status": "resolved" } },
+                            {
+                                "tool": "project_write_file",
+                                "args": {
+                                    "path": "docs/mechanics.json",
+                                    "content": serde_json::to_string_pretty(&mech_json).unwrap()
+                                }
+                            },
+                            { "tool": "mechanics_check", "args": {} },
+                            { "tool": "study_status", "args": {} },
+                            { "tool": "submit_task", "args": { "task_id": "t1", "summary": "study & mechanics checked" } }
+                        ],
+                        "done": true,
+                        "summary": "submitted t1"
+                    })
+                }
+                _ => json!({ "done": true, "summary": "parked" }),
+            };
+        }
+
+        if role == "builder" {
+            if all_text.contains("- t2 [in_progress]") && !all_text.contains("tool_result (submit_task)") {
+                return json!({
+                    "steps": [
+                        {
+                            "tool": "project_write_file",
+                            "args": {
+                                "path": "src/client/Main.client.luau",
+                                "content": "local x = 1\nreturn x\n"
+                            }
+                        },
+                        { "tool": "project_check", "args": {} },
+                        { "tool": "project_check", "args": {} },
+                        { "tool": "project_check", "args": { "force": true } },
+                        { "tool": "submit_task", "args": { "task_id": "t2", "summary": "checked with force passthrough" } }
+                    ],
+                    "done": true,
+                    "summary": "submitted t2"
+                });
+            }
+            return json!({ "done": true, "summary": "waiting for t1" });
+        }
+
+        // verifier
+        if last_user.contains("- t1 [awaiting_verification]") {
+            return json!({
+                "steps": [
+                    { "tool": "unknowns_list", "args": {} },
+                    { "tool": "mechanics_check", "args": {} },
+                    { "tool": "study_status", "args": {} },
+                    { "tool": "verify_task", "args": { "task_id": "t1", "passed": true, "notes": "t1 verified" } }
+                ],
+                "done": true,
+                "summary": "verified t1"
+            });
+        }
+        if last_user.contains("- t2 [awaiting_verification]") {
+            let checks = json!([
+                { "name": "movement ready", "claim": "move", "luau": "return true", "expect": { "truthy": true } },
+                { "name": "roll action", "claim": "act", "luau": "return true", "expect": { "truthy": true } },
+                { "name": "hud ready", "claim": "hud", "luau": "return true", "expect": { "truthy": true } }
+            ]);
+            return json!({
+                "steps": [
+                    {
+                        "tool": "project_playtest",
+                        "args": {
+                            "task_id": "t2",
+                            "checks": checks,
+                            "require_core_loop": true
+                        }
+                    },
+                    {
+                        "tool": "project_playtest",
+                        "args": {
+                            "task_id": "t2",
+                            "checks": checks,
+                            "require_core_loop": true,
+                            "force": true
+                        }
+                    },
+                    { "tool": "verify_task", "args": { "task_id": "t2", "passed": true, "notes": "t2 playtest verified" } }
+                ],
+                "done": true,
+                "summary": "verified t2"
+            });
+        }
+        json!({ "done": true, "summary": "waiting" })
+    });
+
+    let (port, shared) = boot_server(data_dir, Some(mock_bin));
+    let (st, _) = http(
+        port,
+        "POST",
+        "/api/config",
+        Some(&json!({ "base_url": stub.base_url, "model_id": "stub-model" })),
+    );
+    assert_eq!(st, 200);
+    let (st, _) = http(
+        port,
+        "POST",
+        "/api/projects/workspace",
+        Some(&json!({ "path": ws.to_string_lossy() })),
+    );
+    assert_eq!(st, 200);
+    let (st, proj_created) = http(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(&json!({ "name": "Study Check Gap 63B", "parent": ws.to_string_lossy() })),
+    );
+    assert_eq!(st, 201, "{proj_created}");
+    let proj_dir = PathBuf::from(proj_created["project"]["path"].as_str().unwrap());
+    let proj_id = proj_created["project"]["id"].as_str().unwrap().to_string();
+
+    let (st, created) = http(
+        port,
+        "POST",
+        "/api/teamwork",
+        Some(&json!({
+            "goal": "Verify #63 Part B study_check tools & KeptChecks force passthrough",
+            "roles": ["researcher", "builder", "verifier"],
+            "max_concurrency": 2
+        })),
+    );
+    assert_eq!(st, 201, "{created}");
+    let run_id = created["run"]["id"].as_str().unwrap().to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut detail = Value::Null;
+    while Instant::now() < deadline {
+        let (_, d) = http(port, "GET", &format!("/api/teamwork/{run_id}"), None);
+        detail = d;
+        if detail["run"]["status"] == "completed" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    assert_eq!(detail["run"]["status"], "completed", "{detail}");
+
+    // 1. All 4 roles have Study -> Build -> Check -> Refine discipline & their study tools in system prompt
+    let prompts = prompts_by_role.lock().unwrap();
+    for role in ["coordinator", "researcher", "builder", "verifier"] {
+        let p = prompts.get(role).expect(role);
+        assert!(p.contains("Study -> Build -> Check -> Refine"), "{role} prompt missing discipline: {p}");
+        assert!(p.contains("study_status"), "{role} prompt missing study_status: {p}");
+    }
+    for role in ["researcher", "builder"] {
+        let p = prompts.get(role).unwrap();
+        for tool in ["evidence_record", "unknown_add", "unknown_update", "mechanics_check"] {
+            assert!(p.contains(tool), "{role} prompt missing {tool}");
+        }
+    }
+
+    // 2. Researcher trace: fail-closed unknown_update rejected, then valid resolve + mechanics_check + study_status pass
+    let (_, r_tr) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/researcher/trace"), None);
+    let r_trace = r_tr["trace"].as_array().unwrap();
+    let fail_upd = r_trace
+        .iter()
+        .find(|e| e["turn"] == 2 && e["kind"] == "tool_result" && e["data"]["tool"] == "unknown_update")
+        .expect("turn 2 fail-closed unknown_update");
+    assert_eq!(fail_upd["data"]["ok"], false, "{fail_upd}");
+    let ok_upd = r_trace
+        .iter()
+        .find(|e| e["turn"] == 3 && e["kind"] == "tool_result" && e["data"]["tool"] == "unknown_update")
+        .expect("turn 3 resolved unknown_update");
+    assert_eq!(ok_upd["data"]["ok"], true, "{ok_upd}");
+    assert_eq!(ok_upd["data"]["result"]["unknown"]["revision"], 2);
+    let mech_res = r_trace
+        .iter()
+        .find(|e| e["kind"] == "tool_result" && e["data"]["tool"] == "mechanics_check" && e["data"]["ok"] == true)
+        .expect("researcher mechanics_check");
+    assert_eq!(mech_res["data"]["result"]["found"], true, "{mech_res}");
+    assert_eq!(mech_res["data"]["result"]["counts"]["sourced"], 1, "{mech_res}");
+    assert_eq!(mech_res["data"]["result"]["counts"]["config_only_warnings"], 1, "{mech_res}");
+
+    // 3. Builder trace: KeptChecks warms -> caches -> force: true bypasses cache cleanly
+    let (_, b_tr) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/builder/trace"), None);
+    let b_checks: Vec<&Value> = b_tr["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "tool_result" && e["data"]["tool"] == "project_check")
+        .collect();
+    assert_eq!(b_checks.len(), 3, "{b_checks:?}");
+    assert_eq!(b_checks[0]["data"]["result"]["kept"], false, "{}", b_checks[0]);
+    assert_eq!(b_checks[1]["data"]["result"]["kept"], true, "{}", b_checks[1]);
+    assert_eq!(b_checks[1]["data"]["result"]["cached"], true, "{}", b_checks[1]);
+    assert_eq!(b_checks[2]["data"]["result"]["kept"], false, "{}", b_checks[2]);
+    assert_eq!(b_checks[2]["data"]["result"]["cached"], false, "{}", b_checks[2]);
+
+    // 4. Verifier trace: project_playtest core_loop + force passthrough + auto-evidence recorded
+    let (_, v_tr) = http(port, "GET", &format!("/api/teamwork/{run_id}/agents/verifier/trace"), None);
+    let v_pts: Vec<&Value> = v_tr["trace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "tool_result" && e["data"]["tool"] == "project_playtest")
+        .collect();
+    assert_eq!(v_pts.len(), 2, "{v_pts:?}");
+    assert_eq!(v_pts[0]["data"]["result"]["core_loop"]["all_core_passed"], true, "{}", v_pts[0]);
+    assert!(v_pts[0]["data"]["result"]["evidence_id"].as_str().unwrap_or("").starts_with("ev_"), "{}", v_pts[0]);
+    assert_eq!(v_pts[1]["data"]["result"]["kept"], false, "{}", v_pts[1]);
+
+    // 5. Persisted ledger and /study/status HTTP endpoint match Teamwork state cleanly
+    assert!(proj_dir.join(".openro/investigation/evidence.jsonl").is_file());
+    assert!(proj_dir.join(".openro/investigation/unknowns.json").is_file());
+    let (st_ss, ss) = http(port, "GET", &format!("/api/projects/{proj_id}/study/status"), None);
+    assert_eq!(st_ss, 200, "{ss}");
+    assert_eq!(ss["unknowns"]["open_count"], 0, "{ss}");
+    assert_eq!(ss["unknowns"]["resolved"], 1, "{ss}");
+    assert!(ss["evidence"]["total"].as_u64().unwrap_or(0) >= 2, "{ss}");
+
+    shared.teamwork.shutdown();
+}
