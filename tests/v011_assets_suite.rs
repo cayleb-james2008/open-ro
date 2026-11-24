@@ -1017,3 +1017,152 @@ sys.exit(0)
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn gap65_chatgpt_cli_submit_method_and_ref_image_aliases() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = scratch_dir("gap65");
+    let data_dir = root.join("data");
+    let project_dir = root.join("proj");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::create_dir_all(project_dir.join("art/references")).unwrap();
+    std::fs::create_dir_all(project_dir.join("art/cards")).unwrap();
+    let ref1 = project_dir.join("art/references/naruto_uzumaki.png");
+    let ref2 = project_dir.join("art/references/sasuke_uchiha.png");
+    std::fs::write(&ref1, sample_png_bytes()).unwrap();
+    std::fs::write(&ref2, sample_png_bytes()).unwrap();
+
+    let argv_dump = root.join("last_argv.json");
+    let mock_cli = root.join("mock_chatgpt_g65.py");
+    std::fs::write(
+        &mock_cli,
+        format!(
+            r#"#!/usr/bin/env python3
+import json, shutil, sys
+args = sys.argv[1:]
+open({dump:?}, "w").write(json.dumps(args))
+out = args[args.index("-o") + 1]
+shutil.copyfile({src:?}, out)
+print(json.dumps({{"ok": True, "out": out, "width": 1, "height": 1, "model_ui": "GPT-6.2 Instant"}}))
+"#,
+            dump = argv_dump.to_string_lossy(),
+            src = ref1.to_string_lossy(),
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&mock_cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let _env = EnvGuard::set(&[
+        ("OPENRO_CHATGPT_IMAGEGEN_BIN", mock_cli.to_str().unwrap()),
+        ("OPENRO_SHARED_BROWSER_PY", ""),
+        ("OPENRO_CHATGPT_SUBMIT_METHOD", ""),
+    ]);
+
+    let store = openro_rs::secrets::SecretStore::for_data_dir(&data_dir);
+
+    // 1. Default `--submit-method keyboard-button` + `ref_image` alias passes `--mode edit --ref-image <path>`!
+    let res = openro_rs::assets::art_generate(
+        &store,
+        &project_dir,
+        &json!({
+            "prompt": "eye-level neutral three-quarter anime ninja",
+            "out_path": "art/cards/naruto_g65.png",
+            "character_art": false,
+            "ref_image": "art/references/naruto_uzumaki.png"
+        }),
+    )
+    .expect("ref_image alias should succeed");
+    assert_eq!(res["ok"], true);
+    let args: Vec<String> = serde_json::from_str(&std::fs::read_to_string(&argv_dump).unwrap()).unwrap();
+    let sm_pos = args.iter().position(|a| a == "--submit-method").expect("missing --submit-method");
+    assert_eq!(args[sm_pos + 1], "keyboard-button");
+    let mode_pos = args.iter().position(|a| a == "--mode").expect("missing --mode");
+    assert_eq!(args[mode_pos + 1], "edit", "ref_image must trigger --mode edit, not generate");
+    let passed_refs: Vec<&String> = args
+        .windows(2)
+        .filter(|w| w[0] == "--ref-image")
+        .map(|w| &w[1])
+        .collect();
+    assert_eq!(passed_refs.len(), 1);
+    assert!(passed_refs[0].ends_with("naruto_uzumaki.png"));
+
+    // 2. `ref_images` alias + deduplication + `body.submit_method` override.
+    let res2 = openro_rs::assets::art_generate(
+        &store,
+        &project_dir,
+        &json!({
+            "prompt": "eye-level neutral three-quarter duo",
+            "out_path": "art/cards/duo_g65.png",
+            "character_art": false,
+            "submit_method": "button",
+            "ref_images": ["art/references/naruto_uzumaki.png", "art/references/sasuke_uchiha.png"],
+            "ref_image": "art/references/naruto_uzumaki.png"
+        }),
+    )
+    .expect("ref_images + dedup + submit_method override should succeed");
+    assert_eq!(res2["ok"], true);
+    let args2: Vec<String> = serde_json::from_str(&std::fs::read_to_string(&argv_dump).unwrap()).unwrap();
+    let sm_pos2 = args2.iter().position(|a| a == "--submit-method").unwrap();
+    assert_eq!(args2[sm_pos2 + 1], "button");
+    let passed_refs2: Vec<&String> = args2
+        .windows(2)
+        .filter(|w| w[0] == "--ref-image")
+        .map(|w| &w[1])
+        .collect();
+    assert_eq!(passed_refs2.len(), 2, "duplicate ref_image should be deduplicated");
+
+    // 3. `OPENRO_CHATGPT_SUBMIT_METHOD` env override applies when `body.submit_method` is omitted.
+    {
+        let _sm_env = EnvGuard::set(&[("OPENRO_CHATGPT_SUBMIT_METHOD", "enter")]);
+        let res3 = openro_rs::assets::art_generate(
+            &store,
+            &project_dir,
+            &json!({
+                "prompt": "clean anime emblem",
+                "out_path": "art/cards/env_g65.png",
+                "character_art": false
+            }),
+        )
+        .expect("env submit_method override should succeed");
+        assert_eq!(res3["ok"], true);
+        let args3: Vec<String> = serde_json::from_str(&std::fs::read_to_string(&argv_dump).unwrap()).unwrap();
+        let sm_pos3 = args3.iter().position(|a| a == "--submit-method").unwrap();
+        assert_eq!(args3[sm_pos3 + 1], "enter");
+    }
+
+    // 4. Invalid / flag-injection `submit_method` rejected with 400 (both body and env).
+    let bad_body = openro_rs::assets::art_generate(
+        &store,
+        &project_dir,
+        &json!({
+            "prompt": "test",
+            "out_path": "art/cards/bad_g65.png",
+            "character_art": false,
+            "submit_method": "--evil-flag;rm"
+        }),
+    )
+    .unwrap_err();
+    assert_eq!(bad_body.status, 400, "{bad_body:?}");
+    assert!(bad_body.msg.contains("Invalid submit_method"));
+
+    {
+        let _bad_env = EnvGuard::set(&[("OPENRO_CHATGPT_SUBMIT_METHOD", "bogus-method")]);
+        let bad_env_res = openro_rs::assets::art_generate(
+            &store,
+            &project_dir,
+            &json!({
+                "prompt": "test",
+                "out_path": "art/cards/bad_env_g65.png",
+                "character_art": false
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(bad_env_res.status, 400, "{bad_env_res:?}");
+    }
+
+    let _ = std::fs::remove_dir_all(&root);
+}
