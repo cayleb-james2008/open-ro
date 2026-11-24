@@ -81,6 +81,38 @@ export type StudyStatus = {
   };
 };
 export type UnknownItem = { id: string; title: string; severity?: string; status: string; domain?: string };
+export type CreatorHubExperience = { universeId: string; rootPlaceId?: string; name: string };
+export type CreatorHubStatus = {
+  cdp_reachable: boolean;
+  browser_version?: string;
+  logged_in?: boolean;
+  user?: { id: string | number; name: string; displayName?: string };
+  experiences?: CreatorHubExperience[];
+  blocked_reason?: string;
+  error?: string;
+};
+export type CreatorHubSetupResult = {
+  status?: "ready" | "action_required";
+  has_key?: boolean;
+  key_masked?: string;
+  creator?: { userId?: number; groupId?: number };
+  universeId?: number | string;
+  placeId?: number | string;
+  experience_name?: string;
+  blocked_reason?: string;
+  url?: string;
+  message?: string;
+  error?: string;
+};
+export type CreatorHubConfigureResult = {
+  status?: string;
+  configured?: string[];
+  manual_steps_remaining?: { step: string; url?: string }[];
+  blocked_reason?: string;
+  url?: string;
+  message?: string;
+  error?: string;
+};
 
 export type Res<T> = { ok: boolean; httpStatus: number; error?: string } & Partial<T>;
 
