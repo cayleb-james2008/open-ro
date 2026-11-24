@@ -969,7 +969,20 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		skipBtn.Visible = true
 		applyTheme()
 
-		titleLbl.Text = result.stageName or result.stageId or "Battle"
+		local displayStageName: string? = if result.stageName
+				and result.stageName ~= ""
+				and result.stageName ~= result.stageId
+			then result.stageName
+			else nil
+		if not displayStageName and result.stageId then
+			for _, st in currentStages do
+				if st.id == result.stageId and st.name ~= "" then
+					displayStageName = st.name
+					break
+				end
+			end
+		end
+		titleLbl.Text = displayStageName or "World Battle"
 		subLbl.Text = "Auto-Battle Replay"
 
 		clearChildren(allyLane, false)
@@ -1026,8 +1039,14 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 				local turnNum = ev.turn or ev.round or 1
 				turnBanner.Text = "Turn " .. tostring(turnNum)
 				local skillText = ev.skillName or ev.action or "Attack"
-				local actorLabel = ev.actorName
-					or ((if isAllyActor then "Ally #" else "Enemy #") .. tostring(ev.actorIndex or 1))
+				local actorUnit = if isAllyActor
+					then alliesList[ev.actorIndex or 1]
+					else enemiesList[ev.actorIndex or 1]
+				local unitName = if actorUnit then (actorUnit.name or actorUnit.displayName) else nil
+				local actorLabel = if ev.actorName and ev.actorName ~= ""
+					then ev.actorName
+					elseif unitName and unitName ~= "" then unitName
+					else ((if isAllyActor then "Ally #" else "Enemy #") .. tostring(ev.actorIndex or 1))
 				actionBanner.Text = string.format("%s uses %s", actorLabel, skillText)
 
 				local playSfx = (callbacks :: any).playSfx :: ((cue: string) -> ())?
