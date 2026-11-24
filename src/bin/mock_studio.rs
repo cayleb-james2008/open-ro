@@ -1912,6 +1912,162 @@ fn handle_v011_luau(code: &str, dm: &str, state: &mut MockState) -> Option<Value
         ));
     }
 
+    if first == "-- openro:v011:resolve_gui" {
+        let p = parse_luau_payload(code)?;
+        let raw = p["gui_path"].as_str().unwrap_or("").trim();
+        let cleaned = raw.replace(['\\', '/'], ".");
+        let trimmed = cleaned
+            .strip_prefix("Players.LocalPlayer.PlayerGui.")
+            .or_else(|| cleaned.strip_prefix("LocalPlayer.PlayerGui."))
+            .or_else(|| cleaned.strip_prefix("PlayerGui."))
+            .or_else(|| cleaned.strip_prefix("StarterGui."))
+            .unwrap_or(&cleaned);
+        let segs: Vec<&str> = trimmed.split('.').filter(|s| !s.is_empty()).collect();
+        if segs.is_empty() {
+            let res = format!(
+                "OPENRO_V011:{}",
+                json!({ "ok": false, "reason": "not_found", "error": "empty gui_path" })
+            );
+            return Some(text_result(
+                json!({ "ok": true, "datamodel_type": dm, "output": res }).to_string(),
+            ));
+        }
+
+        // Walk StarterGui/<segs...> in synced v011_tree, checking ancestor Visible & Enabled
+        let mut cur_path = "StarterGui".to_string();
+        let mut ignore_inset = false;
+        let mut target_node: Option<&MockNode> = None;
+        for (i, seg) in segs.iter().enumerate() {
+            cur_path.push('/');
+            cur_path.push_str(seg);
+            let Some(node) = state.v011_tree.get(&cur_path) else {
+                let res = format!(
+                    "OPENRO_V011:{}",
+                    json!({
+                        "ok": false,
+                        "reason": "not_found",
+                        "stopped_at": seg,
+                        "error": format!("GUI element '{raw}' not found under PlayerGui (missing '{seg}')")
+                    })
+                );
+                return Some(text_result(
+                    json!({ "ok": true, "datamodel_type": dm, "output": res }).to_string(),
+                ));
+            };
+            if node.class == "ScreenGui" {
+                if node.props.get("Enabled").and_then(|v| v.as_bool()) == Some(false) {
+                    let res = format!(
+                        "OPENRO_V011:{}",
+                        json!({
+                            "ok": false,
+                            "reason": "screen_gui_disabled",
+                            "hidden_by": cur_path.replace('/', "."),
+                            "error": format!("GUI element '{raw}' is inside disabled {}", cur_path.replace('/', "."))
+                        })
+                    );
+                    return Some(text_result(
+                        json!({ "ok": true, "datamodel_type": dm, "output": res }).to_string(),
+                    ));
+                }
+                if node.props.get("IgnoreGuiInset").and_then(|v| v.as_bool()) == Some(true) {
+                    ignore_inset = true;
+                }
+            } else if node.props.get("Visible").and_then(|v| v.as_bool()) == Some(false) {
+                let res = format!(
+                    "OPENRO_V011:{}",
+                    json!({
+                        "ok": false,
+                        "reason": "invisible",
+                        "hidden_by": cur_path.replace('/', "."),
+                        "error": format!("GUI element '{raw}' is invisible (hidden by {})", cur_path.replace('/', "."))
+                    })
+                );
+                return Some(text_result(
+                    json!({ "ok": true, "datamodel_type": dm, "output": res }).to_string(),
+                ));
+            }
+            if i + 1 == segs.len() {
+                target_node = Some(node);
+            }
+        }
+        let node = target_node?;
+        if matches!(node.class.as_str(), "ScreenGui" | "Folder" | "Script" | "LocalScript" | "ModuleScript") {
+            let res = format!(
+                "OPENRO_V011:{}",
+                json!({
+                    "ok": false,
+                    "reason": "not_gui_object",
+                    "class_name": node.class,
+                    "error": format!("target '{raw}' is a {}, not a GuiObject", node.class)
+                })
+            );
+            return Some(text_result(
+                json!({ "ok": true, "datamodel_type": dm, "output": res }).to_string(),
+            ));
+        }
+        let vec2 = |key: &str, default: [f64; 2]| -> [f64; 2] {
+            node.props
+                .get(key)
+                .and_then(|v| v.as_array())
+                .and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]))
+                .unwrap_or(default)
+        };
+        let pos = vec2("AbsolutePosition", [100.0, 200.0]);
+        let sz = vec2("AbsoluteSize", [160.0, 48.0]);
+        if sz[0] <= 0.0 || sz[1] <= 0.0 {
+            let res = format!(
+                "OPENRO_V011:{}",
+                json!({
+                    "ok": false,
+                    "reason": "zero_size",
+                    "width": sz[0],
+                    "height": sz[1],
+                    "error": format!("GUI element '{raw}' has zero AbsoluteSize")
+                })
+            );
+            return Some(text_result(
+                json!({ "ok": true, "datamodel_type": dm, "output": res }).to_string(),
+            ));
+        }
+        let inset = if ignore_inset { [0.0, 0.0] } else { [0.0, 58.0] };
+        let cx = pos[0] + sz[0] * 0.5 + inset[0];
+        let cy = pos[1] + sz[1] * 0.5 + inset[1];
+        let vp = [1280.0_f64, 720.0_f64];
+        if cx < 0.0 || cy < 0.0 || cx > vp[0] || cy > vp[1] {
+            let res = format!(
+                "OPENRO_V011:{}",
+                json!({
+                    "ok": false,
+                    "reason": "offscreen",
+                    "x": cx,
+                    "y": cy,
+                    "viewport": vp,
+                    "error": format!("GUI element '{raw}' center is outside viewport")
+                })
+            );
+            return Some(text_result(
+                json!({ "ok": true, "datamodel_type": dm, "output": res }).to_string(),
+            ));
+        }
+        let res = format!(
+            "OPENRO_V011:{}",
+            json!({
+                "ok": true,
+                "x": cx,
+                "y": cy,
+                "pos": pos,
+                "size": sz,
+                "inset": inset,
+                "ignore_gui_inset": ignore_inset,
+                "viewport": vp,
+                "class_name": node.class,
+            })
+        );
+        return Some(text_result(
+            json!({ "ok": true, "datamodel_type": dm, "output": res }).to_string(),
+        ));
+    }
+
     if first == "-- openro:v011:check" {
         let start = code.find("--[[USER]]\n")? + "--[[USER]]\n".len();
         let end = code[start..].find("\n--[[/USER]]")? + start;
@@ -1940,6 +2096,11 @@ fn handle_v011_luau(code: &str, dm: &str, state: &mut MockState) -> Option<Value
         let val: Value = match ret_line.and_then(|l| l.strip_prefix("return ")).map(str::trim) {
             Some("__dm__") => json!(dm),
             Some("__compare_order__") => json!(state.v011_compare_order),
+            Some("__mouse_clicks__") => json!(state.mouse_clicks),
+            Some("__key_events__") => json!(state.key_events),
+            Some("__last_key__") => json!(state.last_key),
+            Some("__typed_text__") => json!(state.typed_text),
+            Some("__cursor__") => json!([state.cursor_x, state.cursor_y]),
             Some(expr) if expr.starts_with("__exists__(") && expr.ends_with(')') => {
                 let p = expr["__exists__(".len()..expr.len() - 1].trim().trim_matches('"').trim_matches('\'');
                 json!(state.v011_tree.contains_key(p))

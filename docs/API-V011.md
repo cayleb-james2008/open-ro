@@ -90,6 +90,10 @@ sync is `0`). A `Workspace` write only touches instances the project declares.
   "settle_ms": 1500,
   "sync_first": false,
   "build_id": "b-1700000000000",
+  "actions": [
+    { "kind": "click_gui", "gui_path": "UACGMainGui.HudRoot.RollDock.ButtonRow.RollButton", "wait_ms": 500 },
+    { "kind": "key", "key": "E", "hold_ms": 150, "wait_ms": 300 }
+  ],
   "checks": [
     { "name": "cards table loads", "luau": "return #require(game.ReplicatedStorage.Cards).list", "datamodel": "Server",
       "expect": { "equals": 40 } },
@@ -100,16 +104,25 @@ sync is `0`). A `Workspace` write only touches instances the project declares.
 }
 ```
 
-`suite` (optional) is a project-relative JSON file with the same `checks` / `screenshots` /
-`allow_errors` / `mode` / `settle_ms`; request fields override it. `expect` is one of
-`{ "equals": v }`, `{ "truthy": true }`, `{ "contains": "text" }`, `{ "matches": "regex-free substring" }`
-(omitted = the check passes when the Luau runs without error). `luau` runs through
-`execute_luau` in the given `datamodel` (`Server` default, `Client`, `Edit`) while Studio is playing.
+`suite` (optional) is a project-relative JSON file with the same `actions` / `checks` / `screenshots` /
+`allow_errors` / `mode` / `settle_ms`; request fields override it. `actions` (optional, max 50) drives
+real client UI & input inside the live playtest session before post-action checks, screenshots, and
+console-error capture (#66):
+- `{ "kind": "click_gui", "gui_path": "ScreenGui.Frame.Button", "button"?: "left"|"right", "double_click"?: false, "wait_ms"?: 250 }` — resolves `AbsolutePosition + AbsoluteSize/2 + GuiInset` (honoring `ScreenGui.IgnoreGuiInset`, ancestor `Visible`, and `Enabled`) on `Client` via `execute_luau` and clicks via StudioMCP `user_mouse_input` (`moveTo` + `mouseButtonClick`). Missing, invisible, disabled, zero-size, or offscreen elements record a graceful per-action failure (`passed: false`, `reason`, `error`) without aborting Studio stop or console capture.
+- `{ "kind": "key", "key": "E", "hold_ms"?: 0, "wait_ms"?: 150 }` — drives StudioMCP `user_keyboard_input` (`keyPress`, or `keyDown` -> sleep `hold_ms` -> `keyUp`).
+- Also supports `{ "kind": "text", "text": "...", "wait_ms"?: 150 }`, `{ "kind": "click_at", "x": 640, "y": 360, "wait_ms"?: 250 }`, and `{ "kind": "wait", "wait_ms": 500 }`.
 
-The run: optional sync, `start_stop_play` start, wait `settle_ms`, run each check, capture each
-screenshot (`screen_capture`), read `get_console_output`, `start_stop_play` stop. Console lines that
-look like errors (`error`, `attempt to`, `is not a valid member`, `Stack Begin`) and are not matched by
-`allow_errors` fail the run. Reply:
+`expect` is one of `{ "equals": v }`, `{ "truthy": true }`, `{ "contains": "text" }`,
+`{ "matches": "regex-free substring" }` (omitted = the check passes when the Luau runs without error).
+`luau` runs through `execute_luau` in the given `datamodel` (`Server` default, `Client`, `Edit`) while
+Studio is playing (set `"when": "before_actions"` on a check to run it prior to `actions`).
+
+The run: optional sync, `start_stop_play` start, wait `settle_ms`, run `before_actions` checks, run
+`actions`, run remaining checks, capture each screenshot (`screen_capture`), read `get_console_output`,
+`start_stop_play` stop. Console lines that look like errors (`error`, `attempt to`,
+`is not a valid member`, `Stack Begin`) and are not matched by `allow_errors` fail the run, as does any
+failed action or failed check. Reply includes `"actions": [...]` alongside `"checks"`, `"console"`,
+`"screenshots"`, `"core_loop"`, `"visual_likeness"`, and `"kept"`/`"fingerprint"`:
 
 ```json
 { "ok": true, "run_id": "p-1700000000123", "passed": false, "build_id": "b-...",
