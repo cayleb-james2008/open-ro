@@ -1,0 +1,932 @@
+--!strict
+
+local TweenService = game:GetService("TweenService")
+
+local Theme = require(script.Parent:WaitForChild("Theme"))
+local Components = require(script.Parent:WaitForChild("Components"))
+
+export type BattleStageInfo = {
+	id: string,
+	name: string,
+	subtitle: string,
+	recommendedPower: number,
+	rewardSummary: string,
+	isBoss: boolean?,
+	unlocked: boolean?,
+}
+
+export type BattleUnitInit = {
+	id: string,
+	name: string,
+	rarity: string,
+	mutation: string?,
+	role: string?,
+	level: number?,
+	stars: number?,
+	maxHp: number,
+	hp: number?,
+	maxEnergy: number?,
+	energy: number?,
+	atk: number?,
+	spd: number?,
+	isBoss: boolean?,
+}
+
+export type BattleEvent = {
+	turn: number?,
+	actorSide: string,
+	actorIndex: number,
+	targetSide: string?,
+	targetIndex: number?,
+	skillName: string?,
+	damage: number?,
+	heal: number?,
+	isCrit: boolean?,
+	isDodge: boolean?,
+	status: string?,
+	actorHpAfter: number?,
+	targetHpAfter: number?,
+	actorEnergyAfter: number?,
+	targetEnergyAfter: number?,
+	defeated: boolean?,
+}
+
+export type BattleRewards = {
+	yen: number?,
+	gems: number?,
+	xp: number?,
+	tickets: number?,
+	dropCardName: string?,
+	firstClearBonus: boolean?,
+}
+
+export type BattleResult = {
+	stageId: string,
+	stageName: string,
+	victory: boolean,
+	allies: { BattleUnitInit },
+	enemies: { BattleUnitInit },
+	events: { BattleEvent },
+	rewards: BattleRewards?,
+	summaryText: string?,
+}
+
+export type BattleCallbacks = {
+	onStartBattle: (stageId: string) -> (),
+	getReducedMotion: () -> boolean,
+}
+
+export type BattleModalController = {
+	open: (stages: { BattleStageInfo }, deckPower: number) -> (),
+	playBattle: (result: BattleResult) -> (),
+	setStatus: (text: string) -> (),
+	close: () -> (),
+	isOpen: () -> boolean,
+	destroy: () -> (),
+}
+
+type UnitWidget = {
+	container: Frame,
+	cardFrame: Frame,
+	hpFill: Frame,
+	hpText: TextLabel,
+	energyFill: Frame,
+	koOverlay: Frame,
+	maxHp: number,
+	maxEnergy: number,
+	hp: number,
+	energy: number,
+	basePos: UDim2,
+	side: string,
+}
+
+local BattleModal = {}
+
+function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): BattleModalController
+	local speedMult = 1
+	local playbackToken = 0
+	local skipRequested = false
+	local currentStages: { BattleStageInfo } = {}
+	local currentDeckPower = 0
+	local lastStageId = "w1_act1"
+
+	local overlay = Instance.new("TextButton")
+	overlay.Name = "BattleOverlay"
+	overlay.Size = UDim2.fromScale(1, 1)
+	overlay.BackgroundColor3 = Color3.fromRGB(4, 8, 18)
+	overlay.BackgroundTransparency = 0.35
+	overlay.BorderSizePixel = 0
+	overlay.Text = ""
+	overlay.AutoButtonColor = false
+	overlay.Visible = false
+	overlay.ZIndex = 35
+	overlay.Parent = parent
+
+	local panel =
+		Components.makePanel(overlay, "BattlePanel", UDim2.fromScale(0.95, 0.88), UDim2.fromScale(0.5, 0.5), 14)
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	panel.ZIndex = 36
+
+	local panelBounds = Instance.new("UISizeConstraint")
+	panelBounds.MinSize = Vector2.new(320, 380)
+	panelBounds.MaxSize = Vector2.new(900, 620)
+	panelBounds.Parent = panel
+
+	local inputSink = Instance.new("TextButton")
+	inputSink.Name = "InputSink"
+	inputSink.Size = UDim2.fromScale(1, 1)
+	inputSink.BackgroundTransparency = 1
+	inputSink.Text = ""
+	inputSink.AutoButtonColor = false
+	inputSink.ZIndex = 36
+	inputSink.Parent = panel
+
+	-- Top Header
+	local header = Instance.new("Frame")
+	header.Name = "Header"
+	header.Size = UDim2.new(1, 0, 0, 56)
+	header.BackgroundTransparency = 1
+	header.ZIndex = 37
+	header.Parent = panel
+
+	local titleLbl = Components.makeLabel(
+		header,
+		"Title",
+		"World 1: Hidden Leaf Arena",
+		UDim2.new(1, -240, 0, 28),
+		UDim2.fromOffset(16, 6),
+		Theme.FONT_DISPLAY,
+		18,
+		Theme.getPalette().textPrimary,
+		Enum.TextXAlignment.Left
+	)
+	titleLbl.ZIndex = 38
+
+	local subLbl = Components.makeLabel(
+		header,
+		"Subtitle",
+		"Choose an Act or Boss stage to deploy your Active Deck",
+		UDim2.new(1, -240, 0, 18),
+		UDim2.fromOffset(16, 34),
+		Theme.FONT_BODY,
+		12,
+		Theme.getPalette().textSecondary,
+		Enum.TextXAlignment.Left
+	)
+	subLbl.ZIndex = 38
+
+	local speedBtn = Components.makeButton(
+		header,
+		"SpeedButton",
+		"1x",
+		UDim2.fromOffset(56, 44),
+		UDim2.new(1, -184, 0.5, -22),
+		Theme.getPalette().bgMuted,
+		Theme.getPalette().textPrimary
+	)
+	speedBtn.TextSize = 13
+	speedBtn.Visible = false
+	speedBtn.ZIndex = 39
+
+	local skipBtn = Components.makeButton(
+		header,
+		"SkipButton",
+		"Skip",
+		UDim2.fromOffset(64, 44),
+		UDim2.new(1, -120, 0.5, -22),
+		Theme.getPalette().bgMuted,
+		Theme.getPalette().textPrimary
+	)
+	skipBtn.TextSize = 13
+	skipBtn.Visible = false
+	skipBtn.ZIndex = 39
+
+	local closeBtn = Components.makeButton(
+		header,
+		"CloseButton",
+		"X",
+		UDim2.fromOffset(44, 44),
+		UDim2.new(1, -52, 0.5, -22),
+		Theme.getPalette().bgMuted,
+		Theme.getPalette().textPrimary
+	)
+	closeBtn.ZIndex = 39
+
+	-- Stage Picker View
+	local stageView = Instance.new("ScrollingFrame")
+	stageView.Name = "StageView"
+	stageView.Size = UDim2.new(1, -28, 1, -76)
+	stageView.Position = UDim2.fromOffset(14, 64)
+	stageView.BackgroundColor3 = Theme.getPalette().bgDeep
+	stageView.BorderSizePixel = 0
+	stageView.ScrollBarThickness = 5
+	stageView.CanvasSize = UDim2.fromOffset(0, 0)
+	stageView.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	stageView.ZIndex = 37
+	stageView.Parent = panel
+	Components.addCorner(stageView, 10)
+	Components.addPadding(stageView, 12, 12, 12, 12)
+
+	local stageLayout = Instance.new("UIListLayout")
+	stageLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	stageLayout.Padding = UDim.new(0, 10)
+	stageLayout.Parent = stageView
+
+	-- Arena View
+	local arenaView = Instance.new("Frame")
+	arenaView.Name = "ArenaView"
+	arenaView.Size = UDim2.new(1, -28, 1, -76)
+	arenaView.Position = UDim2.fromOffset(14, 64)
+	arenaView.BackgroundColor3 = Theme.getPalette().bgDeep
+	arenaView.BorderSizePixel = 0
+	arenaView.Visible = false
+	arenaView.ClipsDescendants = true
+	arenaView.ZIndex = 37
+	arenaView.Parent = panel
+	Components.addCorner(arenaView, 10)
+	Components.addStroke(arenaView, Theme.getPalette().border, 1, 0.25)
+
+	local turnBanner = Components.makeLabel(
+		arenaView,
+		"TurnBanner",
+		"Turn 1",
+		UDim2.new(1, -20, 0, 26),
+		UDim2.fromOffset(10, 8),
+		Theme.FONT_DISPLAY,
+		14,
+		Theme.getPalette().accentGold,
+		Enum.TextXAlignment.Center
+	)
+	turnBanner.ZIndex = 38
+
+	local actionBanner = Components.makeLabel(
+		arenaView,
+		"ActionBanner",
+		"Preparing battle...",
+		UDim2.new(1, -20, 0, 20),
+		UDim2.fromOffset(10, 32),
+		Theme.FONT_BODY,
+		12,
+		Theme.getPalette().textSecondary,
+		Enum.TextXAlignment.Center
+	)
+	actionBanner.ZIndex = 38
+
+	local lanesFrame = Instance.new("Frame")
+	lanesFrame.Name = "Lanes"
+	lanesFrame.Size = UDim2.new(1, -20, 1, -72)
+	lanesFrame.Position = UDim2.fromOffset(10, 58)
+	lanesFrame.BackgroundTransparency = 1
+	lanesFrame.ZIndex = 38
+	lanesFrame.Parent = arenaView
+
+	local allyLane = Instance.new("Frame")
+	allyLane.Name = "AllyLane"
+	allyLane.Size = UDim2.fromScale(0.46, 1)
+	allyLane.Position = UDim2.fromScale(0, 0)
+	allyLane.BackgroundTransparency = 1
+	allyLane.ZIndex = 38
+	allyLane.Parent = lanesFrame
+
+	local enemyLane = Instance.new("Frame")
+	enemyLane.Name = "EnemyLane"
+	enemyLane.Size = UDim2.fromScale(0.46, 1)
+	enemyLane.Position = UDim2.fromScale(0.54, 0)
+	enemyLane.BackgroundTransparency = 1
+	enemyLane.ZIndex = 38
+	enemyLane.Parent = lanesFrame
+
+	local popupLayer = Instance.new("Frame")
+	popupLayer.Name = "PopupLayer"
+	popupLayer.Size = UDim2.fromScale(1, 1)
+	popupLayer.BackgroundTransparency = 1
+	popupLayer.ZIndex = 48
+	popupLayer.Parent = arenaView
+
+	-- Rewards Overlay inside Arena
+	local rewardsCard =
+		Components.makePanel(arenaView, "RewardsPopup", UDim2.fromOffset(360, 260), UDim2.fromScale(0.5, 0.5), 14)
+	rewardsCard.AnchorPoint = Vector2.new(0.5, 0.5)
+	rewardsCard.Visible = false
+	rewardsCard.ZIndex = 50
+
+	local rewardsTitle = Components.makeLabel(
+		rewardsCard,
+		"RewardsTitle",
+		"VICTORY!",
+		UDim2.new(1, -24, 0, 34),
+		UDim2.fromOffset(12, 14),
+		Theme.FONT_DISPLAY,
+		24,
+		Theme.getPalette().accentGold,
+		Enum.TextXAlignment.Center
+	)
+	rewardsTitle.ZIndex = 51
+
+	local rewardsSummary = Components.makeLabel(
+		rewardsCard,
+		"RewardsSummary",
+		"",
+		UDim2.new(1, -28, 0, 120),
+		UDim2.fromOffset(14, 54),
+		Theme.FONT_BODY,
+		14,
+		Theme.getPalette().textPrimary,
+		Enum.TextXAlignment.Center
+	)
+	rewardsSummary.TextWrapped = true
+	rewardsSummary.ZIndex = 51
+
+	local replayBtn = Components.makeButton(
+		rewardsCard,
+		"ReplayButton",
+		"Battle Again",
+		UDim2.fromOffset(146, 46),
+		UDim2.new(0.5, -154, 1, -60),
+		Theme.getPalette().accentBlue,
+		Color3.fromRGB(255, 255, 255)
+	)
+	replayBtn.TextSize = 14
+	replayBtn.ZIndex = 52
+
+	local stagesBackBtn = Components.makeButton(
+		rewardsCard,
+		"StagesButton",
+		"Stages",
+		UDim2.fromOffset(146, 46),
+		UDim2.new(0.5, 8, 1, -60),
+		Theme.getPalette().bgMuted,
+		Theme.getPalette().textPrimary
+	)
+	stagesBackBtn.TextSize = 14
+	stagesBackBtn.ZIndex = 52
+
+	local function clearChildren(container: Instance, keepLayout: boolean)
+		for _, child in container:GetChildren() do
+			if not (keepLayout and child:IsA("UILayout")) then
+				child:Destroy()
+			end
+		end
+	end
+
+	local function applyTheme()
+		local palette = Theme.getPalette()
+		panel.BackgroundColor3 = palette.bgPanel
+		local pStroke = panel:FindFirstChildOfClass("UIStroke")
+		if pStroke then
+			pStroke.Color = palette.border
+		end
+		titleLbl.TextColor3 = palette.textPrimary
+		subLbl.TextColor3 = palette.textSecondary
+		stageView.BackgroundColor3 = palette.bgDeep
+		arenaView.BackgroundColor3 = palette.bgDeep
+		rewardsCard.BackgroundColor3 = palette.bgPanel
+		rewardsSummary.TextColor3 = palette.textPrimary
+		closeBtn.BackgroundColor3 = palette.bgMuted
+		closeBtn.TextColor3 = palette.textPrimary
+		skipBtn.BackgroundColor3 = palette.bgMuted
+		skipBtn.TextColor3 = palette.textPrimary
+		stagesBackBtn.BackgroundColor3 = palette.bgMuted
+		stagesBackBtn.TextColor3 = palette.textPrimary
+		speedBtn.BackgroundColor3 = if speedMult > 1 then palette.accentPurple else palette.bgMuted
+		speedBtn.TextColor3 = if speedMult > 1 then Color3.fromRGB(255, 255, 255) else palette.textPrimary
+	end
+
+	local function renderStageList()
+		clearChildren(stageView, true)
+		local palette = Theme.getPalette()
+
+		for idx, stage in currentStages do
+			local row = Instance.new("Frame")
+			row.Name = "Stage_" .. stage.id
+			row.LayoutOrder = idx
+			row.Size = UDim2.new(1, 0, 0, 88)
+			row.BackgroundColor3 = palette.bgCard
+			row.BorderSizePixel = 0
+			row.ZIndex = 38
+			row.Parent = stageView
+			Components.addCorner(row, 10)
+			Components.addStroke(
+				row,
+				if stage.isBoss then palette.accentRed else palette.border,
+				if stage.isBoss then 2 else 1.5,
+				0.1
+			)
+
+			local nameText = if stage.isBoss then "[BOSS] " .. stage.name else stage.name
+			local nameLbl = Components.makeLabel(
+				row,
+				"Name",
+				nameText,
+				UDim2.new(1, -152, 0, 26),
+				UDim2.fromOffset(12, 8),
+				Theme.FONT_DISPLAY,
+				15,
+				if stage.isBoss then palette.accentGold else palette.textPrimary,
+				Enum.TextXAlignment.Left
+			)
+			nameLbl.ZIndex = 39
+
+			local infoLbl = Components.makeLabel(
+				row,
+				"Info",
+				string.format(
+					"%s  |  Rec Power: %s  (Yours: %s)",
+					stage.subtitle,
+					Components.formatNumber(stage.recommendedPower),
+					Components.formatNumber(currentDeckPower)
+				),
+				UDim2.new(1, -152, 0, 20),
+				UDim2.fromOffset(12, 34),
+				Theme.FONT_BODY,
+				12,
+				palette.textSecondary,
+				Enum.TextXAlignment.Left
+			)
+			infoLbl.ZIndex = 39
+
+			local rewardLbl = Components.makeLabel(
+				row,
+				"Reward",
+				"Rewards: " .. stage.rewardSummary,
+				UDim2.new(1, -152, 0, 18),
+				UDim2.fromOffset(12, 58),
+				Theme.FONT_MONO,
+				11,
+				palette.accentGreen,
+				Enum.TextXAlignment.Left
+			)
+			rewardLbl.ZIndex = 39
+
+			local unlocked = stage.unlocked ~= false
+			local fightBtn = Components.makeButton(
+				row,
+				"FightButton",
+				if unlocked then "Battle" else "Locked",
+				UDim2.fromOffset(122, 48),
+				UDim2.new(1, -134, 0.5, -24),
+				if not unlocked then palette.bgMuted elseif stage.isBoss then palette.accentRed else palette.accentBlue,
+				Color3.fromRGB(255, 255, 255)
+			)
+			fightBtn.TextSize = 14
+			fightBtn.ZIndex = 40
+			if unlocked then
+				fightBtn.MouseButton1Click:Connect(function()
+					lastStageId = stage.id
+					subLbl.Text = "Starting " .. stage.name .. "..."
+					callbacks.onStartBattle(stage.id)
+				end)
+			end
+		end
+	end
+
+	local function buildUnitWidget(
+		lane: Frame,
+		unit: BattleUnitInit,
+		index: number,
+		total: number,
+		side: string
+	): UnitWidget
+		local palette = Theme.getPalette()
+		local slotHeight = if total <= 2 then 118 else math.clamp(math.floor(330 / math.max(total, 1)), 68, 104)
+		local yStep = 1 / math.max(total, 1)
+		local yCenter = (index - 0.5) * yStep
+
+		local container = Instance.new("Frame")
+		container.Name = side .. "_" .. tostring(index)
+		container.Size = UDim2.new(0.94, 0, 0, slotHeight)
+		container.Position = UDim2.fromScale(0.5, yCenter)
+		container.AnchorPoint = Vector2.new(0.5, 0.5)
+		container.BackgroundTransparency = 1
+		container.ZIndex = 39
+		container.Parent = lane
+
+		local cardData = {
+			uid = unit.id .. "_" .. tostring(index),
+			id = unit.id,
+			name = unit.name,
+			rarity = unit.rarity,
+			mutation = unit.mutation or "Normal",
+			role = unit.role or "Striker",
+			level = unit.level or 1,
+			stars = unit.stars or 0,
+			hp = unit.maxHp,
+			atk = unit.atk or 0,
+			spd = unit.spd or 100,
+		}
+		local cardFrame = Components.makeCardView(container, cardData, UDim2.new(1, 0, 1, -24), UDim2.fromOffset(0, 0))
+		cardFrame.ZIndex = 40
+
+		local hpBack = Instance.new("Frame")
+		hpBack.Name = "HpBar"
+		hpBack.Size = UDim2.new(1, 0, 0, 12)
+		hpBack.Position = UDim2.new(0, 0, 1, -22)
+		hpBack.BackgroundColor3 = palette.bgMuted
+		hpBack.BorderSizePixel = 0
+		hpBack.ZIndex = 40
+		hpBack.Parent = container
+		Components.addCorner(hpBack, 4)
+
+		local startHp = unit.hp or unit.maxHp
+		local hpRatio = math.clamp(startHp / math.max(unit.maxHp, 1), 0, 1)
+		local hpFill = Instance.new("Frame")
+		hpFill.Name = "Fill"
+		hpFill.Size = UDim2.fromScale(hpRatio, 1)
+		hpFill.BackgroundColor3 = if side == "Ally" then palette.accentGreen else palette.accentRed
+		hpFill.BorderSizePixel = 0
+		hpFill.ZIndex = 41
+		hpFill.Parent = hpBack
+		Components.addCorner(hpFill, 4)
+
+		local hpText = Components.makeLabel(
+			hpBack,
+			"HpText",
+			Components.formatNumber(startHp) .. " / " .. Components.formatNumber(unit.maxHp),
+			UDim2.fromScale(1, 1),
+			UDim2.fromOffset(0, 0),
+			Theme.FONT_MONO,
+			9,
+			Color3.fromRGB(255, 255, 255),
+			Enum.TextXAlignment.Center
+		)
+		hpText.TextStrokeTransparency = 0.35
+		hpText.ZIndex = 42
+
+		local maxEnergy = unit.maxEnergy or 100
+		local startEnergy = unit.energy or 0
+		local energyBack = Instance.new("Frame")
+		energyBack.Name = "EnergyBar"
+		energyBack.Size = UDim2.new(1, 0, 0, 6)
+		energyBack.Position = UDim2.new(0, 0, 1, -7)
+		energyBack.BackgroundColor3 = palette.bgMuted
+		energyBack.BorderSizePixel = 0
+		energyBack.ZIndex = 40
+		energyBack.Parent = container
+		Components.addCorner(energyBack, 3)
+
+		local energyFill = Instance.new("Frame")
+		energyFill.Name = "Fill"
+		energyFill.Size = UDim2.fromScale(math.clamp(startEnergy / math.max(maxEnergy, 1), 0, 1), 1)
+		energyFill.BackgroundColor3 = palette.accentGold
+		energyFill.BorderSizePixel = 0
+		energyFill.ZIndex = 41
+		energyFill.Parent = energyBack
+		Components.addCorner(energyFill, 3)
+
+		local koOverlay = Instance.new("Frame")
+		koOverlay.Name = "KO"
+		koOverlay.Size = UDim2.fromScale(1, 1)
+		koOverlay.BackgroundColor3 = Color3.fromRGB(10, 12, 20)
+		koOverlay.BackgroundTransparency = 0.45
+		koOverlay.BorderSizePixel = 0
+		koOverlay.Visible = startHp <= 0
+		koOverlay.ZIndex = 44
+		koOverlay.Parent = cardFrame
+		Components.addCorner(koOverlay, 10)
+		Components.makeLabel(
+			koOverlay,
+			"Label",
+			"KO",
+			UDim2.fromScale(1, 1),
+			UDim2.fromOffset(0, 0),
+			Theme.FONT_DISPLAY,
+			18,
+			palette.accentRed,
+			Enum.TextXAlignment.Center
+		).ZIndex =
+			45
+
+		return {
+			container = container,
+			cardFrame = cardFrame,
+			hpFill = hpFill,
+			hpText = hpText,
+			energyFill = energyFill,
+			koOverlay = koOverlay,
+			maxHp = math.max(unit.maxHp, 1),
+			maxEnergy = math.max(maxEnergy, 1),
+			hp = startHp,
+			energy = startEnergy,
+			basePos = container.Position,
+			side = side,
+		}
+	end
+
+	local function spawnFloatingText(target: UnitWidget, text: string, color: Color3, big: boolean)
+		local absArena = arenaView.AbsolutePosition
+		local absTarget = target.container.AbsolutePosition
+		local absSize = target.container.AbsoluteSize
+		local relX = (absTarget.X - absArena.X) + absSize.X * 0.5
+		local relY = (absTarget.Y - absArena.Y) + absSize.Y * 0.25
+
+		local lbl = Components.makeLabel(
+			popupLayer,
+			"DamagePopup",
+			text,
+			UDim2.fromOffset(140, 28),
+			UDim2.fromOffset(relX - 70, relY),
+			Theme.FONT_DISPLAY,
+			if big then 20 else 15,
+			color,
+			Enum.TextXAlignment.Center
+		)
+		lbl.TextStrokeTransparency = 0.2
+		lbl.ZIndex = 49
+
+		local dur = if callbacks.getReducedMotion() then 0.25 else (0.65 / speedMult)
+		local tween = TweenService:Create(lbl, TweenInfo.new(dur, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Position = UDim2.fromOffset(relX - 70, relY - 38),
+			TextTransparency = 1,
+			TextStrokeTransparency = 1,
+		})
+		tween:Play()
+		task.delay(dur + 0.05, function()
+			if lbl.Parent then
+				lbl:Destroy()
+			end
+		end)
+	end
+
+	local function updateUnitBars(w: UnitWidget, newHp: number?, newEnergy: number?, defeated: boolean?)
+		if newHp ~= nil then
+			w.hp = math.max(0, newHp)
+			local ratio = math.clamp(w.hp / w.maxHp, 0, 1)
+			w.hpFill.Size = UDim2.fromScale(ratio, 1)
+			w.hpText.Text = Components.formatNumber(w.hp) .. " / " .. Components.formatNumber(w.maxHp)
+			if w.hp <= 0 or defeated then
+				w.koOverlay.Visible = true
+			end
+		elseif defeated then
+			w.hp = 0
+			w.hpFill.Size = UDim2.fromScale(0, 1)
+			w.hpText.Text = "0 / " .. Components.formatNumber(w.maxHp)
+			w.koOverlay.Visible = true
+		end
+		if newEnergy ~= nil then
+			w.energy = math.clamp(newEnergy, 0, w.maxEnergy)
+			w.energyFill.Size = UDim2.fromScale(w.energy / w.maxEnergy, 1)
+		end
+	end
+
+	local function showRewards(result: BattleResult)
+		local palette = Theme.getPalette()
+		rewardsTitle.Text = if result.victory then "VICTORY!" else "DEFEAT"
+		rewardsTitle.TextColor3 = if result.victory then palette.accentGold else palette.accentRed
+
+		local lines: { string } = {}
+		if result.summaryText and result.summaryText ~= "" then
+			table.insert(lines, result.summaryText)
+		end
+		local rw = result.rewards
+		if rw then
+			local parts: { string } = {}
+			if (rw.yen or 0) > 0 then
+				table.insert(parts, "+" .. Components.formatNumber(rw.yen or 0) .. " Yen")
+			end
+			if (rw.gems or 0) > 0 then
+				table.insert(parts, "+" .. Components.formatNumber(rw.gems or 0) .. " Gems")
+			end
+			if (rw.xp or 0) > 0 then
+				table.insert(parts, "+" .. Components.formatNumber(rw.xp or 0) .. " XP")
+			end
+			if (rw.tickets or 0) > 0 then
+				table.insert(parts, "+" .. Components.formatNumber(rw.tickets or 0) .. " Tickets")
+			end
+			if #parts > 0 then
+				table.insert(lines, table.concat(parts, "   "))
+			end
+			if rw.firstClearBonus then
+				table.insert(lines, "First Clear Bonus Awarded!")
+			end
+			if rw.dropCardName and rw.dropCardName ~= "" then
+				table.insert(lines, "Boss Drop: " .. rw.dropCardName)
+			end
+		elseif not result.victory then
+			table.insert(lines, "Roll or level up your cards in Deck to grow stronger!")
+		end
+
+		rewardsSummary.Text = table.concat(lines, "\n")
+		rewardsCard.Visible = true
+		skipBtn.Visible = false
+		speedBtn.Visible = false
+	end
+
+	local function playBattle(result: BattleResult)
+		playbackToken += 1
+		local token = playbackToken
+		skipRequested = false
+		lastStageId = result.stageId
+
+		overlay.Visible = true
+		stageView.Visible = false
+		arenaView.Visible = true
+		rewardsCard.Visible = false
+		speedBtn.Visible = true
+		skipBtn.Visible = true
+		applyTheme()
+
+		titleLbl.Text = result.stageName
+		subLbl.Text = if result.victory then "Auto-Battle Replay" else "Auto-Battle Replay"
+
+		clearChildren(allyLane, false)
+		clearChildren(enemyLane, false)
+		clearChildren(popupLayer, false)
+
+		local allyWidgets: { UnitWidget } = {}
+		local enemyWidgets: { UnitWidget } = {}
+
+		for i, u in result.allies do
+			allyWidgets[i] = buildUnitWidget(allyLane, u, i, #result.allies, "Ally")
+		end
+		for i, u in result.enemies do
+			enemyWidgets[i] = buildUnitWidget(enemyLane, u, i, #result.enemies, "Enemy")
+		end
+
+		local function getWidget(side: string?, idx: number?): UnitWidget?
+			if not side or not idx then
+				return nil
+			end
+			if side == "Ally" then
+				return allyWidgets[idx]
+			end
+			return enemyWidgets[idx]
+		end
+
+		task.spawn(function()
+			local palette = Theme.getPalette()
+			for _, ev in result.events do
+				if token ~= playbackToken or not overlay.Visible then
+					return
+				end
+
+				local actor = getWidget(ev.actorSide, ev.actorIndex)
+				local target = getWidget(ev.targetSide, ev.targetIndex)
+
+				if skipRequested then
+					updateUnitBars(actor :: UnitWidget, ev.actorHpAfter, ev.actorEnergyAfter, false)
+					if target then
+						updateUnitBars(target, ev.targetHpAfter, ev.targetEnergyAfter, ev.defeated)
+					end
+					continue
+				end
+
+				local turnNum = ev.turn or 1
+				turnBanner.Text = "Turn " .. tostring(turnNum)
+				local skillText = ev.skillName or "Attack"
+				actionBanner.Text = string.format(
+					"%s uses %s",
+					if ev.actorSide == "Ally"
+						then "Ally #" .. tostring(ev.actorIndex)
+						else "Enemy #" .. tostring(ev.actorIndex),
+					skillText
+				)
+
+				local lungeDir = if ev.actorSide == "Ally" then 1 else -1
+				local lungeDur = 0.14 / speedMult
+				local hitstopDur = 0.06 / speedMult
+
+				if actor and not callbacks.getReducedMotion() then
+					local lungePos = UDim2.new(
+						actor.basePos.X.Scale + lungeDir * 0.22,
+						actor.basePos.X.Offset,
+						actor.basePos.Y.Scale,
+						actor.basePos.Y.Offset
+					)
+					local t1 = TweenService:Create(
+						actor.container,
+						TweenInfo.new(lungeDur, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+						{ Position = lungePos }
+					)
+					t1:Play()
+					task.wait(lungeDur)
+				end
+
+				if token ~= playbackToken then
+					return
+				end
+
+				if actor then
+					updateUnitBars(actor, ev.actorHpAfter, ev.actorEnergyAfter, false)
+				end
+				if target then
+					updateUnitBars(target, ev.targetHpAfter, ev.targetEnergyAfter, ev.defeated)
+					if ev.isDodge then
+						spawnFloatingText(target, "DODGE", palette.accentBlue, false)
+					elseif (ev.damage or 0) > 0 then
+						local prefix = if ev.isCrit then "CRIT -" else "-"
+						local col = if ev.isCrit then palette.accentGold else palette.accentRed
+						spawnFloatingText(
+							target,
+							prefix .. Components.formatNumber(ev.damage or 0),
+							col,
+							ev.isCrit == true
+						)
+					elseif (ev.heal or 0) > 0 then
+						spawnFloatingText(
+							target,
+							"+" .. Components.formatNumber(ev.heal or 0),
+							palette.accentGreen,
+							false
+						)
+					end
+				end
+
+				if not callbacks.getReducedMotion() then
+					task.wait(hitstopDur)
+				end
+
+				if actor and not callbacks.getReducedMotion() then
+					local t2 = TweenService:Create(
+						actor.container,
+						TweenInfo.new(lungeDur, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut),
+						{ Position = actor.basePos }
+					)
+					t2:Play()
+					task.wait(lungeDur)
+				elseif not skipRequested then
+					task.wait(0.08 / speedMult)
+				end
+			end
+
+			if token ~= playbackToken then
+				return
+			end
+			turnBanner.Text = if result.victory then "Stage Cleared" else "Stage Failed"
+			actionBanner.Text = if result.victory then "Victory!" else "Try upgrading your deck."
+			showRewards(result)
+		end)
+	end
+
+	speedBtn.MouseButton1Click:Connect(function()
+		speedMult = if speedMult == 1 then 2 else 1
+		speedBtn.Text = tostring(speedMult) .. "x"
+		applyTheme()
+	end)
+
+	skipBtn.MouseButton1Click:Connect(function()
+		skipRequested = true
+	end)
+
+	replayBtn.MouseButton1Click:Connect(function()
+		rewardsCard.Visible = false
+		callbacks.onStartBattle(lastStageId)
+	end)
+
+	stagesBackBtn.MouseButton1Click:Connect(function()
+		playbackToken += 1
+		arenaView.Visible = false
+		stageView.Visible = true
+		speedBtn.Visible = false
+		skipBtn.Visible = false
+		titleLbl.Text = "World 1: Hidden Leaf Arena"
+		subLbl.Text = "Choose an Act or Boss stage to deploy your Active Deck"
+	end)
+
+	local function closeModal()
+		playbackToken += 1
+		overlay.Visible = false
+	end
+
+	closeBtn.MouseButton1Click:Connect(closeModal)
+	overlay.MouseButton1Click:Connect(closeModal)
+
+	local unbindTheme = Theme.onChanged(function()
+		applyTheme()
+		if stageView.Visible then
+			renderStageList()
+		end
+	end)
+
+	return {
+		open = function(stages: { BattleStageInfo }, deckPower: number)
+			playbackToken += 1
+			currentStages = stages
+			currentDeckPower = deckPower
+			stageView.Visible = true
+			arenaView.Visible = false
+			rewardsCard.Visible = false
+			speedBtn.Visible = false
+			skipBtn.Visible = false
+			titleLbl.Text = "World 1: Hidden Leaf Arena"
+			subLbl.Text = "Choose an Act or Boss stage to deploy your Active Deck"
+			applyTheme()
+			renderStageList()
+			overlay.Visible = true
+		end,
+		playBattle = playBattle,
+		setStatus = function(text: string)
+			subLbl.Text = text
+		end,
+		close = closeModal,
+		isOpen = function(): boolean
+			return overlay.Visible
+		end,
+		destroy = function()
+			playbackToken += 1
+			unbindTheme()
+			overlay:Destroy()
+		end,
+	}
+end
+
+return BattleModal
