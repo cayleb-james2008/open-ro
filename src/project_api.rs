@@ -264,6 +264,11 @@ pub fn route(shared: &Arc<Shared>, method: &str, full_path: &str, body: &[u8], l
             | ("POST", [_, "file"] | [_, "file", "delete"] | [_, "file", "edit"])
             | ("GET", [_, "git", "status" | "log"])
             | ("POST", [_, "git", "commit" | "revert"])
+            | ("GET", [_, "investigation", "evidence" | "unknowns"])
+            | ("POST", [_, "investigation", "evidence" | "unknowns"])
+            | ("PATCH", [_, "investigation", "unknowns"] | [_, "investigation", "unknowns", _])
+            | ("POST", [_, "study", "check-mechanics"])
+            | ("GET", [_, "study", "status"])
             | (
                 "GET",
                 [_, "playtests", _]
@@ -343,10 +348,20 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
                 Some(Value::Bool(v)) => *v,
                 Some(_) => return Err(Reply::bad("format must be a boolean")),
             };
+            let force = match b.get("force") {
+                None | Some(Value::Null) => false,
+                Some(Value::Bool(v)) => *v,
+                Some(_) => return Err(Reply::bad("force must be a boolean")),
+            };
             let paths = parse_format_paths(&b)?;
             let _busy = Busy::new(&shared.busy);
-            let res = projects::check_project_with_options(&r.dir, format, paths.as_deref())
-                .map_err(Reply::bad)?;
+            let res = projects::check_project_with_full_options(
+                &r.dir,
+                format,
+                paths.as_deref(),
+                force,
+            )
+            .map_err(Reply::bad)?;
             Ok(Reply::ok(res))
         }
         ("POST", [id, "format"]) => {
@@ -594,8 +609,89 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
             let r = project_of(shared, id)?;
             let b = parse_body(body)?;
             let _busy = Busy::new(&shared.busy);
+            if let Some(kept) = crate::playtest::try_kept(&r, &b).map_err(Reply::bad)? {
+                return Ok(kept);
+            }
             ensure_studio_place_open(shared, &r, &b);
             crate::playtest::run(shared, &r, &b)
+        }
+        ("GET", [id, "investigation", "evidence"]) => {
+            let r = project_of(shared, id)?;
+            let filter = crate::study_check::EvidenceFilter {
+                confidence: query_param(query, "confidence").filter(|s| !s.trim().is_empty()),
+                kind: query_param(query, "kind").filter(|s| !s.trim().is_empty()),
+                source: query_param(query, "source").filter(|s| !s.trim().is_empty()),
+                limit: query_param(query, "limit").and_then(|s| s.parse::<usize>().ok()),
+            };
+            let res = crate::study_check::list_evidence(&r.dir, &filter)
+                .map_err(|e| Reply::json(e.http_status(), e.to_json()))?;
+            Ok(Reply::ok(res))
+        }
+        ("POST", [id, "investigation", "evidence"]) => {
+            let r = project_of(shared, id)?;
+            let b = parse_body(body)?;
+            let res = crate::study_check::record_evidence(&r.dir, &b)
+                .map_err(|e| Reply::json(e.http_status(), e.to_json()))?;
+            if res["deduplicated"].as_bool() == Some(true) {
+                Ok(Reply::ok(res))
+            } else {
+                Ok(Reply::created(res))
+            }
+        }
+        ("GET", [id, "investigation", "unknowns"]) => {
+            let r = project_of(shared, id)?;
+            let status = query_param(query, "status").filter(|s| !s.trim().is_empty());
+            let severity = query_param(query, "severity").filter(|s| !s.trim().is_empty());
+            let domain = query_param(query, "domain").filter(|s| !s.trim().is_empty());
+            let res = crate::study_check::list_unknowns(
+                &r.dir,
+                status.as_deref(),
+                severity.as_deref(),
+                domain.as_deref(),
+            )
+            .map_err(|e| Reply::json(e.http_status(), e.to_json()))?;
+            Ok(Reply::ok(res))
+        }
+        ("POST", [id, "investigation", "unknowns"]) => {
+            let r = project_of(shared, id)?;
+            let b = parse_body(body)?;
+            let res = crate::study_check::add_unknown(&r.dir, &b)
+                .map_err(|e| Reply::json(e.http_status(), e.to_json()))?;
+            Ok(Reply::created(res))
+        }
+        ("PATCH", [id, "investigation", "unknowns"]) => {
+            let r = project_of(shared, id)?;
+            let b = parse_body(body)?;
+            let unk_id = b["id"].as_str().unwrap_or("");
+            let res = crate::study_check::update_unknown(&r.dir, unk_id, &b)
+                .map_err(|e| Reply::json(e.http_status(), e.to_json()))?;
+            Ok(Reply::ok(res))
+        }
+        ("PATCH", [id, "investigation", "unknowns", unk_id]) => {
+            let r = project_of(shared, id)?;
+            let b = parse_body(body)?;
+            let res = crate::study_check::update_unknown(&r.dir, unk_id, &b)
+                .map_err(|e| Reply::json(e.http_status(), e.to_json()))?;
+            Ok(Reply::ok(res))
+        }
+        ("POST", [id, "study", "check-mechanics"]) => {
+            let r = project_of(shared, id)?;
+            let b = parse_body(body)?;
+            let path = b["path"].as_str();
+            let strict = match b.get("strict") {
+                None | Some(Value::Null) => false,
+                Some(Value::Bool(v)) => *v,
+                Some(_) => return Err(Reply::bad("strict must be a boolean")),
+            };
+            let res = crate::study_check::check_mechanics(&r.dir, path, strict)
+                .map_err(|e| Reply::json(e.http_status(), e.to_json()))?;
+            Ok(Reply::ok(res))
+        }
+        ("GET", [id, "study", "status"]) => {
+            let r = project_of(shared, id)?;
+            let res = crate::study_check::study_status(&r.dir)
+                .map_err(|e| Reply::json(e.http_status(), e.to_json()))?;
+            Ok(Reply::ok(res))
         }
         ("GET", [id, "playtests"]) => {
             let r = project_of(shared, id)?;

@@ -29,6 +29,7 @@ pub mod studio_embed;
 pub mod studio_plugin;
 pub mod studio_stream;
 pub mod studio_sync;
+pub mod study_check;
 pub mod teamwork;
 pub mod tool_adapters;
 pub mod update;

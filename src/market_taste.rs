@@ -2470,7 +2470,7 @@ pub fn research_roblox_game_to_project_with_base(
         md.push('\n');
     }
 
-    let payload = json!({
+    let mut payload = json!({
         "ok": true,
         "source": "live_roblox_game_api",
         "researched_at_ms": now_ms(),
@@ -2492,6 +2492,46 @@ pub fn research_roblox_game_to_project_with_base(
         "dossier_path": dossier_rel,
         "markdown_path": readme_rel,
     });
+
+    // Auto-record `observed` evidence in `<project>/.openro/investigation/evidence.jsonl` (#62).
+    if let Ok(ev_res) = crate::study_check::record_evidence(
+        project_dir,
+        &json!({
+            "kind": "roblox_game_research",
+            "source": "research_roblox_game",
+            "summary": format!(
+                "Observed Roblox game '{}' (universe {}, place {}): {} playing, {} visits, {:.1}% likes, {} local thumbnail(s)",
+                name,
+                universe_id,
+                root_place_id,
+                format_ccu(playing),
+                format_ccu(visits),
+                like_ratio_pct,
+                local_thumbs.len()
+            ),
+            "confidence": "observed",
+            "authority": "external_surface",
+            "coverage": format!("public_roblox_api+{}thumbnails", local_thumbs.len()),
+            "limitations": [
+                "Public Roblox storefront metadata, votes, and thumbnails only; live gameplay mechanics not directly observed"
+            ],
+            "refs": [dossier_rel, readme_rel],
+            "data": {
+                "universe_id": universe_id,
+                "root_place_id": root_place_id,
+                "name": name,
+                "playing": playing,
+                "visits": visits,
+                "like_ratio_pct": like_ratio_pct,
+                "niche": niche_id,
+                "local_thumbnails": local_thumbs,
+            }
+        }),
+    ) {
+        if let Some(eid) = ev_res.pointer("/evidence/id").and_then(Value::as_str) {
+            payload["evidence_id"] = json!(eid);
+        }
+    }
 
     let json_text = serde_json::to_string_pretty(&payload)
         .map_err(|e| format!("serialize project dossier: {e}"))?;

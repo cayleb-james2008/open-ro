@@ -352,7 +352,7 @@ impl ProjectStore {
         )?;
         let manifest = json!({
             "version": 1, "name": name, "rojoProject": DEFAULT_ROJO_FILE,
-            "universeId": universe, "placeId": place, "products": [],
+            "universeId": universe, "placeId": place, "clean_room": true, "products": [],
             "assets": { "lockFile": "assets.lock.json", "authorised": [] }
         });
         write_manifest(&dir, &manifest)?;
@@ -387,6 +387,7 @@ pub fn manifest(dir: &Path) -> Result<Value, String> {
     obj.entry("rojoProject").or_insert(json!(DEFAULT_ROJO_FILE));
     obj.entry("universeId").or_insert(Value::Null);
     obj.entry("placeId").or_insert(Value::Null);
+    obj.entry("clean_room").or_insert(json!(true));
     obj.entry("products").or_insert(json!([]));
     let assets = obj.entry("assets").or_insert(json!({}));
     if let Some(a) = assets.as_object_mut() {
@@ -416,6 +417,11 @@ pub fn merge_manifest(current: &Value, patch: &Value) -> Result<Value, String> {
     let patch_obj = patch.as_object().ok_or("send a JSON object")?;
     opt_id(patch, "universeId")?;
     opt_id(patch, "placeId")?;
+    if let Some(cr) = patch.get("clean_room") {
+        if !cr.is_boolean() {
+            return Err("clean_room must be a boolean".into());
+        }
+    }
     if let Some(p) = patch.get("products") {
         let arr = p.as_array().ok_or("products must be a list")?;
         let mut keys = Vec::new();
@@ -952,6 +958,7 @@ pub fn summary(r: &ProjectRef) -> Value {
         "path": r.dir.to_string_lossy(),
         "universeId": m.get("universeId").cloned().unwrap_or(Value::Null),
         "placeId": m.get("placeId").cloned().unwrap_or(Value::Null),
+        "clean_room": m.get("clean_room").and_then(|v| v.as_bool()).unwrap_or(true),
         "has_manifest": r.dir.join(MANIFEST_FILE).is_file(),
         "has_rojo": r.dir.join(DEFAULT_ROJO_FILE).is_file(),
         "last_build": builds(&r.dir).into_iter().next(),
@@ -1552,7 +1559,7 @@ pub fn format_project(dir: &Path, paths: Option<&[String]>) -> Result<Value, Str
 
 /// Static project verification: Luau static analyzer + `selene` + `stylua --check` (#18).
 pub fn check_project(dir: &Path) -> Result<Value, String> {
-    check_project_with_options(dir, false, None)
+    check_project_with_full_options(dir, false, None, false)
 }
 
 /// Static project verification with optional pre-check `stylua` auto-formatting (#18, #56).
@@ -1563,15 +1570,40 @@ pub fn check_project_with_options(
     format: bool,
     format_paths: Option<&[String]>,
 ) -> Result<Value, String> {
+    check_project_with_full_options(dir, format, format_paths, false)
+}
+
+/// Static project verification with optional `stylua` auto-formatting and `KeptChecks`
+/// SHA-256 project fingerprinting (#18, #56, #62). Reuses a previously passing result
+/// when inputs & options are unchanged; NEVER caches failures; `force: true` bypasses cache.
+pub fn check_project_with_full_options(
+    dir: &Path,
+    format: bool,
+    format_paths: Option<&[String]>,
+    force: bool,
+) -> Result<Value, String> {
     let m = manifest(dir)?;
+    let resolved_paths = if format || format_paths.is_some_and(|p| !p.is_empty()) {
+        Some(resolve_format_targets(dir, format_paths)?)
+    } else {
+        None
+    };
+    let mode_spec = json!({
+        "format": format,
+        "targets": resolved_paths,
+    });
+    let fp_before = crate::study_check::project_fingerprint(dir)?;
+    if let Some(cached) =
+        crate::study_check::lookup_kept_check(dir, "check", &fp_before, &mode_spec, force)
+    {
+        return Ok(cached);
+    }
+
     let (formatted_flag, format_json) = if format {
         let f = format_project(dir, format_paths)?;
         let did_format = f["formatted"].as_bool().unwrap_or(false);
         (did_format, Some(f))
     } else {
-        if let Some(p) = format_paths.filter(|p| !p.is_empty()) {
-            let _ = resolve_format_targets(dir, Some(p))?;
-        }
         (false, None)
     };
     let rojo_file = m["rojoProject"].as_str().unwrap_or(DEFAULT_ROJO_FILE).to_string();
@@ -1657,9 +1689,17 @@ pub fn check_project_with_options(
     let passed = luau_passed
         && selene_json["passed"].as_bool().unwrap_or(false)
         && stylua_json["passed"].as_bool().unwrap_or(false);
+    let fp_after = if format {
+        crate::study_check::project_fingerprint(dir).unwrap_or(fp_before)
+    } else {
+        fp_before
+    };
     let mut out = json!({
         "passed": passed,
         "formatted": formatted_flag,
+        "kept": false,
+        "cached": false,
+        "fingerprint": fp_after,
         "luau": luau_json,
         "selene": selene_json,
         "stylua": stylua_json,
@@ -1667,6 +1707,7 @@ pub fn check_project_with_options(
     if let Some(f) = format_json {
         out.as_object_mut().unwrap().insert("format".into(), f);
     }
+    crate::study_check::store_kept_check(dir, "check", &fp_after, &mode_spec, &out);
     Ok(out)
 }
 
