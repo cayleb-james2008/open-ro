@@ -327,7 +327,15 @@ fn registry_crud_presets_secrets_loopback_and_prohibited_providers() {
         .iter()
         .filter_map(|a| a["id"].as_str())
         .collect();
-    for expected in ["comfyui-local-http", "fal-flux-http", "meshy-http", "elevenlabs-sfx-http"] {
+    for expected in [
+        "comfyui-local-http",
+        "fal-flux-http",
+        "meshy-http",
+        "elevenlabs-sfx-http",
+        "playwright-cdp-cli",
+        "craft-anything-cli",
+        "rea-cli",
+    ] {
         assert!(preset_ids.contains(&expected), "missing preset {expected}: {preset_ids:?}");
     }
     assert_eq!(list["templates"].as_array().unwrap().len(), 2);
@@ -1122,4 +1130,170 @@ fn ordered_priority_fallback_capability_routing_and_agent_tools() {
     );
     assert!(openro_rs::agent::project_system_prompt().contains("adapter_invoke"));
     assert!(openro_rs::agent::system_prompt().contains("adapter_list"));
+}
+
+#[test]
+fn craft_anything_playwright_cdp_and_rea_presets_install_test_and_invoke() {
+    let dir = scratch("craft-presets");
+    let (port, data, _proj, _shared) = boot_server(&dir);
+
+    // 1. Capability filters expose `playwright-cdp-cli` under both `reference_search` and `custom`,
+    //    and `craft-anything-cli` + `rea-cli` under `custom`.
+    let (st, ref_list) = http_req(port, "GET", "/api/adapters?capability=reference_search", None, None);
+    assert_eq!(st, 200, "{ref_list}");
+    let ref_presets: Vec<&str> = ref_list["presets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["id"].as_str())
+        .collect();
+    assert!(ref_presets.contains(&"playwright-cdp-cli"), "{ref_presets:?}");
+
+    let (st, cust_list) = http_req(port, "GET", "/api/adapters?capability=custom", None, None);
+    assert_eq!(st, 200, "{cust_list}");
+    let cust_presets: Vec<&str> = cust_list["presets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["id"].as_str())
+        .collect();
+    for expected in ["playwright-cdp-cli", "craft-anything-cli", "rea-cli"] {
+        assert!(cust_presets.contains(&expected), "missing {expected} in custom presets: {cust_presets:?}");
+    }
+
+    // 2. 1-click install of all 3 presets persists portable command names (zero personal home paths).
+    for pid in ["playwright-cdp-cli", "craft-anything-cli", "rea-cli"] {
+        let (st, ins) = http_req(
+            port,
+            "POST",
+            "/api/adapters",
+            None,
+            Some(&json!({ "preset_id": pid })),
+        );
+        assert_eq!(st, 200, "install {pid}: {ins}");
+        assert_eq!(ins["adapter"]["id"], pid);
+    }
+    let adapters_disk = std::fs::read_to_string(data.join("adapters.json")).unwrap();
+    assert!(!adapters_disk.contains("/home/cayleb"), "adapters.json must not hardcode personal home path");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::Mutex;
+        static PRESET_ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = PRESET_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        struct EnvRestore(Vec<(&'static str, Option<String>)>);
+        impl Drop for EnvRestore {
+            fn drop(&mut self) {
+                for (k, v) in &self.0 {
+                    match v {
+                        Some(val) => std::env::set_var(k, val),
+                        None => std::env::remove_var(k),
+                    }
+                }
+            }
+        }
+
+        let pwned = dir.join("PRESET_INJECTED");
+        let argv_log = dir.join("preset_argv.txt");
+        let make_mock = |name: &str, json_reply: &str| -> PathBuf {
+            let p = dir.join(name);
+            std::fs::write(
+                &p,
+                format!(
+                    "#!/bin/bash\nif [ \"$1\" = \"--version\" ] || [ \"$1\" = \"--help\" ]; then echo \"{name} ok\"; exit 0; fi\nprintf '%s\\n' \"$@\" > \"{}\"\necho '{}'\n",
+                    argv_log.display(),
+                    json_reply
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+
+        let mock_pw = make_mock(
+            "mock-playwright-cdp",
+            r#"{"engine":"playwright-cdp","candidates":[{"image_url":"https://example.com/1.png","title":"action"}]}"#,
+        );
+        let mock_craft = make_mock(
+            "mock-craft-anything",
+            r#"{"tool":"craft-anything","fingerprint":"abc123","kept":true}"#,
+        );
+        let mock_rea = make_mock(
+            "mock-rea-cli",
+            r#"{"tool":"rea","symbols":42,"confidence":"observed"}"#,
+        );
+
+        let _restore = EnvRestore(vec![
+            ("OPENRO_PLAYWRIGHT_CDP_BIN", std::env::var("OPENRO_PLAYWRIGHT_CDP_BIN").ok()),
+            ("OPENRO_CRAFT_ANYTHING_BIN", std::env::var("OPENRO_CRAFT_ANYTHING_BIN").ok()),
+            ("OPENRO_REA_BIN", std::env::var("OPENRO_REA_BIN").ok()),
+        ]);
+        std::env::set_var("OPENRO_PLAYWRIGHT_CDP_BIN", &mock_pw);
+        std::env::set_var("OPENRO_CRAFT_ANYTHING_BIN", &mock_craft);
+        std::env::set_var("OPENRO_REA_BIN", &mock_rea);
+
+        // Health checks pass for all 3 dynamically resolved presets.
+        for pid in ["playwright-cdp-cli", "craft-anything-cli", "rea-cli"] {
+            let (st, tested) = http_req(port, "POST", &format!("/api/adapters/{pid}/test"), None, None);
+            assert_eq!(st, 200, "test {pid}: {tested}");
+            assert_eq!(tested["available"], true, "{tested}");
+            assert_eq!(tested["status"], "ready", "{tested}");
+        }
+
+        // `POST /api/art/references/search` routes through installed `playwright-cdp-cli` (prio 5 > camoufox prio 10).
+        let evil_query = format!("$(touch {}) action pose", pwned.display());
+        let (st, searched) = http_req(
+            port,
+            "POST",
+            "/api/art/references/search",
+            None,
+            Some(&json!({ "query": evil_query })),
+        );
+        assert_eq!(st, 200, "{searched}");
+        assert_eq!(searched["adapter_id"], "playwright-cdp-cli");
+        assert_eq!(searched["result"]["data"]["engine"], "playwright-cdp");
+        assert!(!pwned.exists(), "shell metacharacters in query must NEVER execute");
+        let captured = std::fs::read_to_string(&argv_log).unwrap();
+        assert!(captured.contains(&evil_query), "query must be passed literally in argv: {captured}");
+
+        // Invoke `craft-anything-cli` and `rea-cli` via strict argv.
+        let (st, craft_res) = http_req(
+            port,
+            "POST",
+            "/api/adapters/invoke",
+            None,
+            Some(&json!({
+                "adapter_id": "craft-anything-cli",
+                "params": { "subcommand": "fingerprint", "mode": "clean-room", "target": "." }
+            })),
+        );
+        assert_eq!(st, 200, "{craft_res}");
+        assert_eq!(craft_res["result"]["data"]["kept"], true);
+
+        let (st, rea_res) = http_req(
+            port,
+            "POST",
+            "/api/adapters/invoke",
+            None,
+            Some(&json!({
+                "adapter_id": "rea-cli",
+                "params": { "subcommand": "inspect", "target": "app.bin" }
+            })),
+        );
+        assert_eq!(st, 200, "{rea_res}");
+        assert_eq!(rea_res["result"]["data"]["symbols"], 42);
+
+        // Capability override allows installing `playwright-cdp-cli` under `custom` too.
+        let (st, pw_custom) = http_req(
+            port,
+            "POST",
+            "/api/adapters",
+            None,
+            Some(&json!({ "preset_id": "playwright-cdp-cli", "capability": "custom" })),
+        );
+        assert_eq!(st, 200, "{pw_custom}");
+        assert_eq!(pw_custom["adapter"]["capability"], "custom");
+    }
 }

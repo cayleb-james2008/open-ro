@@ -140,6 +140,108 @@ pub fn resolve_shared_browser_python() -> Option<PathBuf> {
     None
 }
 
+fn resolve_env_bin(var: &str) -> Option<PathBuf> {
+    let raw = std::env::var(var).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    resolve_cli_binary(trimmed)
+}
+
+fn resolve_mise_shim(name: &str) -> Option<PathBuf> {
+    let home = user_home_dir()?;
+    let shims = home.join(".local").join("share").join("mise").join("shims");
+    let candidates: Vec<String> = if cfg!(windows) {
+        vec![format!("{name}.exe"), format!("{name}.cmd"), name.to_string()]
+    } else {
+        vec![name.to_string()]
+    };
+    for cand in candidates {
+        let p = shims.join(cand);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Dynamically locate Playwright / Chromium CDP CLI via `OPENRO_PLAYWRIGHT_CDP_BIN`,
+/// `PATH`, `$HOME/.local/bin`, `$HOME/.local/share/mise/shims`, or `$HOME/.agents/skills`.
+pub fn resolve_playwright_cdp_bin() -> Option<PathBuf> {
+    if let Some(p) = resolve_env_bin("OPENRO_PLAYWRIGHT_CDP_BIN") {
+        return Some(p);
+    }
+    if let Some(p) = resolve_cli_binary("playwright-cdp")
+        .or_else(|| resolve_cli_binary("playwright"))
+        .or_else(|| resolve_mise_shim("playwright-cdp"))
+        .or_else(|| resolve_mise_shim("playwright"))
+    {
+        return Some(p);
+    }
+    if let Some(home) = user_home_dir() {
+        let skill = home
+            .join(".agents")
+            .join("skills")
+            .join("playwright-cdp")
+            .join("playwright-cdp");
+        if skill.is_file() {
+            return Some(skill);
+        }
+    }
+    None
+}
+
+/// Dynamically locate Craft Anything CLI / ledger helper via `OPENRO_CRAFT_ANYTHING_BIN`,
+/// `PATH`, `$HOME/.local/bin`, or `$HOME/.agents/skills/*/scripts/craft_ledger.py`.
+pub fn resolve_craft_anything_bin() -> Option<PathBuf> {
+    if let Some(p) = resolve_env_bin("OPENRO_CRAFT_ANYTHING_BIN") {
+        return Some(p);
+    }
+    if let Some(p) = resolve_cli_binary("craft-anything")
+        .or_else(|| resolve_mise_shim("craft-anything"))
+    {
+        return Some(p);
+    }
+    if let Some(home) = user_home_dir() {
+        for skill_dir in ["reverse-engineer-anything", "craft-anything"] {
+            let script = home
+                .join(".agents")
+                .join("skills")
+                .join(skill_dir)
+                .join("scripts")
+                .join("craft_ledger.py");
+            if script.is_file() {
+                return Some(script);
+            }
+        }
+    }
+    None
+}
+
+/// Dynamically locate Reverse Engineer Anything (REA) CLI via `OPENRO_REA_BIN`,
+/// `PATH`, `$HOME/.local/bin`, or `$HOME/.local/share/mise/shims`.
+pub fn resolve_rea_bin() -> Option<PathBuf> {
+    if let Some(p) = resolve_env_bin("OPENRO_REA_BIN") {
+        return Some(p);
+    }
+    resolve_cli_binary("rea")
+        .or_else(|| resolve_cli_binary("rea-agents"))
+        .or_else(|| resolve_mise_shim("rea"))
+        .or_else(|| resolve_mise_shim("rea-agents"))
+}
+
+/// Resolve the executable path for a CLI adapter, checking dynamic preset resolvers
+/// first when `command` is the preset's canonical command name.
+pub fn resolve_adapter_cli_binary(adapter_id: &str, command: &str) -> Option<PathBuf> {
+    match (adapter_id, command.trim()) {
+        ("playwright-cdp-cli", "playwright" | "playwright-cdp") => resolve_playwright_cdp_bin(),
+        ("craft-anything-cli", "craft-anything" | "craft_ledger.py") => resolve_craft_anything_bin(),
+        ("rea-cli", "rea" | "rea-agents") => resolve_rea_bin(),
+        _ => resolve_cli_binary(command),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CliConfig {
     pub command: String,
@@ -1038,6 +1140,102 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
                 health_url: None,
             }),
         },
+        ToolAdapter {
+            id: "playwright-cdp-cli".into(),
+            name: "Playwright CDP (Headless Browser)".into(),
+            capability: "reference_search".into(),
+            description: "Headless Chromium/Playwright loopback CDP passive inspection and reference search (modern replacement for Camoufox; installable under reference_search or custom).".into(),
+            transport: "cli".into(),
+            enabled: true,
+            priority: 5,
+            preset: true,
+            required_secrets: vec![],
+            cli: Some(CliConfig {
+                command: "playwright".into(),
+                argv: vec![
+                    "screenshot".into(),
+                    "--browser".into(),
+                    "chromium".into(),
+                    "--viewport-size".into(),
+                    "1280,720".into(),
+                    "--query".into(),
+                    "{{?query}}".into(),
+                    "--cdp".into(),
+                    "{{?arg:cdp_url}}".into(),
+                    "{{?arg:url}}".into(),
+                    "{{?out_path}}".into(),
+                ],
+                env_secrets: BTreeMap::new(),
+                cwd: "project".into(),
+                timeout_secs: 90,
+                output_mode: "stdout_json".into(),
+                result_json_path: None,
+                exit_code_map: BTreeMap::from([
+                    (2, "login_required".into()),
+                    (6, "rate_limited".into()),
+                ]),
+                health_argv: vec!["--version".into()],
+            }),
+            http: None,
+        },
+        ToolAdapter {
+            id: "craft-anything-cli".into(),
+            name: "Craft Anything Study & Check CLI".into(),
+            capability: "custom".into(),
+            description: "Deterministic Craft Anything study ledger, unknowns tracker, mechanics verifier, screenshot likeness checker, and KeptChecks fingerprinter.".into(),
+            transport: "cli".into(),
+            enabled: true,
+            priority: 20,
+            preset: true,
+            required_secrets: vec![],
+            cli: Some(CliConfig {
+                command: "craft-anything".into(),
+                argv: vec![
+                    "{{arg:subcommand}}".into(),
+                    "--mode".into(),
+                    "{{?arg:mode}}".into(),
+                    "{{?arg:target}}".into(),
+                ],
+                env_secrets: BTreeMap::new(),
+                cwd: "project".into(),
+                timeout_secs: 120,
+                output_mode: "stdout_json".into(),
+                result_json_path: None,
+                exit_code_map: BTreeMap::new(),
+                health_argv: vec!["--help".into()],
+            }),
+            http: None,
+        },
+        ToolAdapter {
+            id: "rea-cli".into(),
+            name: "Reverse Engineer Anything (REA) CLI".into(),
+            capability: "custom".into(),
+            description: "Shipped-artifact and passive runtime reverse-engineering CLI (REA) resolved dynamically via OPENRO_REA_BIN, $HOME, or PATH.".into(),
+            transport: "cli".into(),
+            enabled: true,
+            priority: 30,
+            preset: true,
+            required_secrets: vec![],
+            cli: Some(CliConfig {
+                command: "rea".into(),
+                argv: vec![
+                    "{{arg:subcommand}}".into(),
+                    "--target".into(),
+                    "{{?arg:target}}".into(),
+                    "--out".into(),
+                    "{{?out_path}}".into(),
+                    "--json".into(),
+                ],
+                env_secrets: BTreeMap::new(),
+                cwd: "project".into(),
+                timeout_secs: 180,
+                output_mode: "stdout_json".into(),
+                result_json_path: None,
+                exit_code_map: BTreeMap::new(),
+                health_argv: vec!["--version".into()],
+            }),
+            http: None,
+        },
     ]
 }
 
@@ -1108,7 +1306,7 @@ fn adapter_endpoint_available(a: &ToolAdapter) -> bool {
         "cli" => a
             .cli
             .as_ref()
-            .and_then(|c| resolve_cli_binary(&c.command))
+            .and_then(|c| resolve_adapter_cli_binary(&a.id, &c.command))
             .is_some(),
         "http" => true,
         _ => false,
@@ -1206,7 +1404,11 @@ impl AdapterRegistry {
         let all_presets: Vec<ToolAdapter> = default_installed_adapters()
             .into_iter()
             .chain(optional_preset_adapters())
-            .filter(|p| capability.is_none_or(|c| p.capability == c))
+            .filter(|p| {
+                capability.is_none_or(|c| {
+                    p.capability == c || (p.id == "playwright-cdp-cli" && c == "custom")
+                })
+            })
             .collect();
         let presets: Vec<Value> = all_presets
             .iter()
@@ -1259,6 +1461,12 @@ impl AdapterRegistry {
             }
             if let Some(name) = body.get("name").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
                 base.name = name.trim().to_string();
+            }
+            if let Some(cap) = body.get("capability").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+                if !CAPABILITIES.contains(&cap) {
+                    return Err(format!("invalid capability '{cap}'"));
+                }
+                base.capability = cap.to_string();
             }
             base
         } else {
@@ -1462,7 +1670,7 @@ pub fn test_adapter(
         }
         "cli" => {
             let cfg = adapter.cli.as_ref().unwrap();
-            let Some(bin) = resolve_cli_binary(&cfg.command) else {
+            let Some(bin) = resolve_adapter_cli_binary(&adapter.id, &cfg.command) else {
                 return Ok(json!({
                     "ok": true,
                     "id": adapter.id,
@@ -1860,7 +2068,7 @@ fn build_vars(ctx: &InvokeCtx, params: &Value) -> Result<BuiltVars, InvokeErr> {
 
 fn invoke_cli(ctx: &InvokeCtx, adapter: &ToolAdapter, params: &Value) -> Result<Value, InvokeErr> {
     let cfg = adapter.cli.as_ref().unwrap();
-    let bin = resolve_cli_binary(&cfg.command).ok_or_else(|| {
+    let bin = resolve_adapter_cli_binary(&adapter.id, &cfg.command).ok_or_else(|| {
         InvokeErr::Fallback(
             "binary_not_found".into(),
             format!("CLI binary '{}' not found", cfg.command),
