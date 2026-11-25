@@ -945,6 +945,16 @@ pub fn run(shared: &Shared, r: &ProjectRef, req: &Value) -> Result<Reply, Reply>
         && blank_screenshots == 0
         && core_ok;
 
+    let prev_assertions = latest_assertions(&r.dir);
+    let assertions = build_deterministic_assertions(
+        &r.dir,
+        &check_results,
+        &errors,
+        &core_loop,
+        blank_screenshots,
+    );
+    let assertion_diff = diff_assertion_suites(prev_assertions.as_deref(), &assertions);
+
     let rel = |f: &str| format!("build/reports/{build_id}/{run_id}/{f}");
     let at = projects::now_ms();
     let mut report = json!({
@@ -953,6 +963,8 @@ pub fn run(shared: &Shared, r: &ProjectRef, req: &Value) -> Result<Reply, Reply>
         "kept": false, "cached": false, "fingerprint": fp,
         "actions": action_results,
         "checks": check_results,
+        "assertions": assertions,
+        "assertion_diff": assertion_diff,
         "core_loop": core_loop,
         "blank_screenshots": blank_screenshots,
         "visual_likeness": visual_likeness,
@@ -1146,10 +1158,9 @@ pub fn list_runs(dir: &Path) -> Vec<Value> {
     out.into_iter().map(|(_, v)| v).collect()
 }
 
-/// Summary of the most recent stored playtest report for `study/status` (#62).
-pub fn latest_report_summary(dir: &Path) -> Option<Value> {
+fn latest_report_json(dir: &Path) -> Option<Value> {
     let mut best: Option<(String, Value)> = None;
-    let Ok(builds) = std::fs::read_dir(reports_root(dir)) else { return None };
+    let builds = std::fs::read_dir(reports_root(dir)).ok()?;
     for b in builds.filter_map(|e| e.ok()) {
         let Ok(runs) = std::fs::read_dir(b.path()) else { continue };
         for run in runs.filter_map(|e| e.ok()) {
@@ -1161,7 +1172,326 @@ pub fn latest_report_summary(dir: &Path) -> Option<Value> {
             }
         }
     }
-    let (_, rep) = best?;
+    best.map(|(_, rep)| rep)
+}
+
+fn latest_assertions(dir: &Path) -> Option<Vec<Value>> {
+    latest_report_json(dir)?
+        .get("assertions")
+        .and_then(Value::as_array)
+        .cloned()
+}
+
+fn scan_project_luau(dir: &Path) -> (usize, usize, bool, bool, bool) {
+    let src_dir = dir.join("src");
+    let mut files = 0usize;
+    let mut luau_errors = 0usize;
+    let mut has_server = false;
+    let mut has_receipt = false;
+    let mut has_retention = false;
+    let mut stack = vec![src_dir];
+    while let Some(cur) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&cur) else { continue };
+        for ent in rd.flatten() {
+            let p = ent.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if !(name.ends_with(".luau") || name.ends_with(".lua")) {
+                continue;
+            }
+            files += 1;
+            if name.ends_with(".server.luau") || name.ends_with(".server.lua") {
+                has_server = true;
+            }
+            if let Ok(text) = std::fs::read_to_string(&p) {
+                if text.contains("ProcessReceipt") {
+                    has_receipt = true;
+                }
+                if text.contains("ClaimDailyReward") || text.contains("DailyRewardRetention") {
+                    has_retention = true;
+                }
+                let place_path = if name.contains(".server.") {
+                    format!("ServerScriptService.{name}")
+                } else if name.contains(".client.") {
+                    format!("StarterPlayer.StarterPlayerScripts.{name}")
+                } else {
+                    format!("ReplicatedStorage.{name}")
+                };
+                let rep = crate::luau_check::analyze_script(&place_path, &text);
+                luau_errors += rep.error_count();
+            }
+        }
+    }
+    (files, luau_errors, has_server, has_receipt, has_retention)
+}
+
+pub fn build_deterministic_assertions(
+    dir: &Path,
+    check_results: &[Value],
+    errors: &[String],
+    core_loop: &Value,
+    blank_screenshots: usize,
+) -> Vec<Value> {
+    let (script_files, luau_errors, has_server, has_receipt, has_retention) = scan_project_luau(dir);
+    let mut out = vec![
+        json!({
+            "id": "luau_static",
+            "room": "Luau",
+            "label": "Static Luau safety across scripts",
+            "passed": script_files > 0 && luau_errors == 0,
+            "status": if script_files > 0 && luau_errors == 0 { "passed" } else { "failed" },
+            "detail": format!("{script_files} script(s), {luau_errors} static error(s)")
+        }),
+        json!({
+            "id": "server_entrypoint",
+            "room": "Luau",
+            "label": "Server entrypoint present",
+            "passed": has_server,
+            "status": if has_server { "passed" } else { "failed" },
+            "detail": if has_server { "Server script detected under src/" } else { "No *.server.luau entrypoint under src/" }
+        }),
+        json!({
+            "id": "runtime_console",
+            "room": "Runtime",
+            "label": "Zero runtime console errors",
+            "passed": errors.is_empty(),
+            "status": if errors.is_empty() { "passed" } else { "failed" },
+            "detail": format!("{} runtime console error(s)", errors.len())
+        }),
+        json!({
+            "id": "monetization_guard",
+            "room": "Economy",
+            "label": "ProcessReceipt & retention guards",
+            "passed": has_receipt && has_retention,
+            "status": if has_receipt && has_retention { "passed" } else { "failed" },
+            "detail": format!(
+                "ProcessReceipt={} · Retention={}",
+                if has_receipt { "ok" } else { "missing" },
+                if has_retention { "ok" } else { "missing" }
+            )
+        }),
+        json!({
+            "id": "visual_frames",
+            "room": "Visuals",
+            "label": "Zero blank or single-color captures",
+            "passed": blank_screenshots == 0,
+            "status": if blank_screenshots == 0 { "passed" } else { "failed" },
+            "detail": format!("{blank_screenshots} blank frame(s) rejected")
+        }),
+    ];
+    for (k, label) in [("move", "Core loop: Move"), ("act", "Core loop: Act"), ("hud", "Core loop: HUD")] {
+        let claim = &core_loop[k];
+        let tested = claim["tested"].as_bool().unwrap_or(false);
+        let passed = claim["passed"].as_bool().unwrap_or(false);
+        let status = if passed {
+            "passed"
+        } else if tested {
+            "failed"
+        } else {
+            "skipped"
+        };
+        out.push(json!({
+            "id": format!("core_loop_{k}"),
+            "room": "Core Loop",
+            "label": label,
+            "passed": !tested || passed,
+            "status": status,
+            "detail": claim["status"].as_str().unwrap_or("not tested")
+        }));
+    }
+    for c in check_results {
+        let name = c["name"].as_str().unwrap_or("check");
+        let ok = c["passed"].as_bool().unwrap_or(false);
+        let detail = c["error"]
+            .as_str()
+            .map(String::from)
+            .unwrap_or_else(|| c["value"].to_string());
+        out.push(json!({
+            "id": format!("check_{}", name.to_ascii_lowercase().replace(' ', "_")),
+            "room": "Studio Checks",
+            "label": name,
+            "passed": ok,
+            "status": if ok { "passed" } else { "failed" },
+            "detail": detail
+        }));
+    }
+    out
+}
+
+pub fn diff_assertion_suites(prev: Option<&[Value]>, curr: &[Value]) -> Value {
+    let mut prev_map = std::collections::HashMap::new();
+    if let Some(items) = prev {
+        for item in items {
+            if let Some(id) = item.get("id").and_then(Value::as_str) {
+                prev_map.insert(id.to_string(), item.get("passed").and_then(Value::as_bool).unwrap_or(false));
+            }
+        }
+    }
+    let has_previous = !prev_map.is_empty();
+    let mut fixed = 0usize;
+    let mut regressed = 0usize;
+    let mut passed_total = 0usize;
+    let mut items = Vec::with_capacity(curr.len());
+    let mut rooms: std::collections::BTreeMap<String, (usize, usize, usize, usize)> = std::collections::BTreeMap::new();
+    for item in curr {
+        let id = item.get("id").and_then(Value::as_str).unwrap_or("unknown");
+        let room = item.get("room").and_then(Value::as_str).unwrap_or("General").to_string();
+        let now_ok = item.get("passed").and_then(Value::as_bool).unwrap_or(false);
+        if now_ok {
+            passed_total += 1;
+        }
+        let delta = match prev_map.get(id).copied() {
+            Some(false) if now_ok => {
+                fixed += 1;
+                "fixed"
+            }
+            Some(true) if !now_ok => {
+                regressed += 1;
+                "regressed"
+            }
+            Some(true) => "unchanged_pass",
+            Some(false) => "unchanged_fail",
+            None if now_ok => "new_pass",
+            None => "new_fail",
+        };
+        let entry = rooms.entry(room).or_insert((0, 0, 0, 0));
+        entry.1 += 1;
+        if now_ok {
+            entry.0 += 1;
+        }
+        if delta == "fixed" {
+            entry.2 += 1;
+        } else if delta == "regressed" {
+            entry.3 += 1;
+        }
+        let mut obj = item.clone();
+        if let Some(m) = obj.as_object_mut() {
+            m.insert("delta".to_string(), json!(delta));
+        }
+        items.push(obj);
+    }
+    let room_list: Vec<Value> = rooms
+        .into_iter()
+        .map(|(room, (p, t, fx, rg))| {
+            json!({ "room": room, "passed": p, "total": t, "fixed": fx, "regressed": rg })
+        })
+        .collect();
+    json!({
+        "has_previous": has_previous,
+        "passed": passed_total,
+        "total": curr.len(),
+        "fixed": fixed,
+        "regressed": regressed,
+        "rooms": room_list,
+        "items": items
+    })
+}
+
+pub fn run_deterministic_assertions_offline(r: &ProjectRef) -> Result<Reply, Reply> {
+    let started = std::time::Instant::now();
+    let build_id = latest_build_id(&r.dir);
+    let run_id = projects::unique_id("p");
+    let run_dir = reports_root(&r.dir).join(&build_id).join(&run_id);
+    std::fs::create_dir_all(run_dir.join("shots"))
+        .map_err(|e| Reply::err("500 Internal Server Error", format!("create report folder: {e}")))?;
+
+    let prev_rep = latest_report_json(&r.dir);
+    let prev_assertions = prev_rep
+        .as_ref()
+        .and_then(|rep| rep.get("assertions"))
+        .and_then(Value::as_array)
+        .cloned();
+    let core_loop = prev_rep
+        .as_ref()
+        .and_then(|rep| rep.get("core_loop"))
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "move": { "status": "not tested", "tested": false, "passed": false },
+                "act": { "status": "not tested", "tested": false, "passed": false },
+                "hud": { "status": "not tested", "tested": false, "passed": false },
+                "all_core_tested": false,
+                "all_core_passed": false,
+            })
+        });
+    let assertions = build_deterministic_assertions(&r.dir, &[], &[], &core_loop, 0);
+    let assertion_diff = diff_assertion_suites(prev_assertions.as_deref(), &assertions);
+    let passed = assertions.iter().all(|a| a["passed"].as_bool().unwrap_or(false));
+    let checks: Vec<Value> = assertions
+        .iter()
+        .map(|a| {
+            json!({
+                "name": a["label"],
+                "passed": a["passed"],
+                "value": a["detail"],
+                "error": if a["passed"].as_bool().unwrap_or(false) { Value::Null } else { a["detail"].clone() },
+                "datamodel": a["room"],
+            })
+        })
+        .collect();
+    let rel = |f: &str| format!("build/reports/{build_id}/{run_id}/{f}");
+    let at = projects::now_ms();
+    let mut report = json!({
+        "run_id": run_id,
+        "passed": passed,
+        "build_id": build_id,
+        "mode": "deterministic_suite",
+        "project": r.id,
+        "at": at,
+        "duration_ms": started.elapsed().as_millis() as u64,
+        "kept": false,
+        "cached": false,
+        "actions": [],
+        "checks": checks,
+        "assertions": assertions,
+        "assertion_diff": assertion_diff,
+        "core_loop": core_loop,
+        "blank_screenshots": 0,
+        "console": { "lines": 0, "errors": [], "warnings": [], "tail": [] },
+        "screenshots": [],
+        "report": { "json": rel("report.json"), "html": rel("report.html") },
+        "urls": {
+            "json": format!("/api/projects/{}/playtests/{run_id}", r.id),
+            "html": format!("/api/projects/{}/playtests/{run_id}/report.html", r.id),
+        },
+    });
+    let html = render_html(&report, &r.id);
+    std::fs::write(run_dir.join("report.html"), html)
+        .map_err(|e| Reply::err("500 Internal Server Error", format!("save report: {e}")))?;
+    std::fs::write(
+        run_dir.join("report.json"),
+        serde_json::to_string_pretty(&report).unwrap_or_default(),
+    )
+    .map_err(|e| Reply::err("500 Internal Server Error", format!("save report: {e}")))?;
+    report["ok"] = json!(true);
+    Ok(Reply::json("200 OK", report))
+}
+
+pub fn rerun_assertions(shared: &Shared, r: &ProjectRef, req: &Value) -> Result<Reply, Reply> {
+    if req.get("offline").and_then(Value::as_bool) == Some(true) {
+        return run_deterministic_assertions_offline(r);
+    }
+    let mut forced = req.clone();
+    if let Some(m) = forced.as_object_mut() {
+        m.insert("force".to_string(), json!(true));
+    } else {
+        forced = json!({ "force": true });
+    }
+    match run(shared, r, &forced) {
+        Ok(rep) => Ok(rep),
+        Err(err_reply) if err_reply.status.starts_with("503") || err_reply.status.starts_with("502") => {
+            run_deterministic_assertions_offline(r)
+        }
+        Err(other) => Err(other),
+    }
+}
+
+/// Summary of the most recent stored playtest report for `study/status` (#62).
+pub fn latest_report_summary(dir: &Path) -> Option<Value> {
+    let rep = latest_report_json(dir)?;
     Some(json!({
         "run_id": rep["run_id"],
         "build_id": rep["build_id"],

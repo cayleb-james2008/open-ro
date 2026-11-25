@@ -37,9 +37,36 @@ export type CoreLoopClaim = {
   passed?: boolean;
   checks?: string[];
 };
+export type AssertionItem = {
+  id: string;
+  room: string;
+  label: string;
+  passed: boolean;
+  status: "passed" | "failed" | "skipped" | string;
+  detail: string;
+  delta?: "fixed" | "regressed" | "new_pass" | "new_fail" | "unchanged_pass" | "unchanged_fail" | string;
+};
+export type AssertionRoomSummary = {
+  room: string;
+  passed: number;
+  total: number;
+  fixed: number;
+  regressed: number;
+};
+export type AssertionDiff = {
+  has_previous: boolean;
+  passed: number;
+  total: number;
+  fixed: number;
+  regressed: number;
+  rooms: AssertionRoomSummary[];
+  items: AssertionItem[];
+};
 export type PlaytestReport = {
   run_id: string; passed: boolean; build_id?: string; mode?: string; duration_ms?: number;
   checks?: { name: string; passed: boolean; value?: unknown; error?: string | null; datamodel?: string }[];
+  assertions?: AssertionItem[];
+  assertion_diff?: AssertionDiff;
   console?: { lines: number; errors: string[]; warnings: string[] };
   screenshots?: { name: string; file: string; bytes?: number; width?: number; height?: number }[];
   core_loop?: {

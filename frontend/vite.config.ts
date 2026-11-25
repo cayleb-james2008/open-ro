@@ -8,7 +8,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 const root = import.meta.dirname;
-const STAMP = "/* Hallmark Desktop-Workbench: OpenRO v1.7.0 Studio Copilot (Geist + Geist Mono, Light & Dark) */";
+const STAMP = "/* Hallmark Desktop-Workbench: OpenRO v1.8.0 Studio Copilot (Geist + Geist Mono, Light & Dark) */";
 const FORCE_SINGLE_FILE = process.env.OPENRO_SINGLE_FILE === "1";
 
 function localAlias(): Plugin {
@@ -40,7 +40,9 @@ function singleFile(): Plugin {
         return `<script type="module">${js}</script>`;
       });
       html = html.replace(/<link[^>]*rel="stylesheet"[^>]*href="([^"]+)"[^>]*>/g, (_m, href) => {
-        const css = fs.readFileSync(path.join(dist, href.replace(/^\.?\//, "")), "utf8");
+        const css = fs
+          .readFileSync(path.join(dist, href.replace(/^\.?\//, "")), "utf8")
+          .replace(/url\((['"]?)(?:\.\.\/chunks\/|\.\/)(Geist[^)"']+)/g, "url($1./chunks/$2");
         return `<style>${STAMP}\n${css}</style>`;
       });
       html = html.replace(/--tw-ring-offset-color:\s*#fff\b/g, "--tw-ring-offset-color:var(--surface)");
@@ -68,6 +70,11 @@ function singleFile(): Plugin {
             fs.writeFileSync(path.join(chunksDst, `${f}.gz`), gz);
             gzBytes += gz.length;
             chunkCount++;
+          } else if (f.endsWith(".woff2")) {
+            const full = path.join(chunksSrc, f);
+            const raw = fs.readFileSync(full);
+            fs.writeFileSync(path.join(chunksDst, f), raw);
+            chunkCount++;
           }
         }
       }
@@ -84,7 +91,7 @@ export default defineConfig({
   plugins: [localAlias(), react(), tailwindcss(), singleFile()],
   base: "./",
   build: {
-    assetsInlineLimit: 100_000_000,
+    assetsInlineLimit: FORCE_SINGLE_FILE ? 100_000_000 : 0,
     cssCodeSplit: false,
     chunkSizeWarningLimit: 4000,
     modulePreload: false,
@@ -94,7 +101,7 @@ export default defineConfig({
         : {
             entryFileNames: "entry.js",
             chunkFileNames: "chunks/[name]-[hash].js",
-            assetFileNames: "assets/[name]-[hash].[ext]",
+            assetFileNames: "chunks/[name]-[hash].[ext]",
             codeSplitting: {
               groups: [
                 {

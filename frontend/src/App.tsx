@@ -281,9 +281,22 @@ export function App() {
   const [leftDockTab, setLeftDockTab] = useState<"explorer" | "chats" | "projects">("explorer");
   const [leftDockCollapsed, setLeftDockCollapsed] = useState(false);
   const [rightDockCollapsed, setRightDockCollapsed] = useState(false);
-  const [centerTab, setCenterTab] = useState<ViewportTab>(() =>
-    isBrowserEngine ? "studio-3d" : "embedded-studio",
-  );
+  const [centerTab, setCenterTab] = useState<ViewportTab>(() => {
+    try {
+      const h = window.location.hash;
+      const p = window.location.pathname;
+      if (p === "/play" || h === "#/lab" || h === "#/play") return "ship";
+    } catch {}
+    return isBrowserEngine ? "studio-3d" : "embedded-studio";
+  });
+  const [shipSection, setShipSection] = useState<"publish" | "assets" | "art" | "playtests">(() => {
+    try {
+      const h = window.location.hash;
+      const p = window.location.pathname;
+      if (p === "/play" || h === "#/lab" || h === "#/play") return "playtests";
+    } catch {}
+    return "publish";
+  });
   const [bottomDrawerOpen, setBottomDrawerOpen] = useState(false);
   const [bottomDrawerTab, setBottomDrawerTab] = useState<BottomDrawerTab>("console");
   const [mobilePane, setMobilePane] = useState<"studio" | "copilot">("copilot");
@@ -2673,12 +2686,12 @@ export function App() {
             <StudioChip connected={studioOk} workspaceMode={workspaceMode} />
           </Button>
           <a
-            href={RELEASES_URL + (version || "1.7.0")}
+            href={RELEASES_URL + (version || "1.8.0")}
             target="_blank"
             rel="noreferrer"
             className="inline-flex min-h-7 items-center gap-1 rounded-sm text-xs text-ink-2 outline-none hover:text-ink hover:underline active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus max-md:min-h-11"
           >
-            <span>v<span className="font-mono">{version || "1.7.0"}</span></span>
+            <span>v<span className="font-mono">{version || "1.8.0"}</span></span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
         </div>
@@ -2815,7 +2828,7 @@ export function App() {
               ship={ship}
               studioOk={studioOk}
               place={place}
-              initialSection={centerTab === "assets" ? "assets" : "publish"}
+              initialSection={centerTab === "assets" ? "assets" : shipSection}
               onOpenProjects={() => {
                 setLeftDockCollapsed(false);
                 setLeftDockTab("projects");

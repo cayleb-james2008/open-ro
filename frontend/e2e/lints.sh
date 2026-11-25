@@ -10,6 +10,7 @@ export CHROME_PATH=${CHROME_PATH:-${E2E_CHROME:-$HOME/.cache/ms-playwright/chrom
 have() { [ -e "$1" ] || { echo "SKIP $2: $1 not found"; return 1; }; }
 cd "$G"
 cp "$ROOT/assets/index.html" "$G/index.html"
+rm -rf "$G/chunks" && ln -s "$ROOT/assets/chunks" "$G/chunks"
 have "$TASTE_DIR/scripts/lint.mjs" lint && timeout 120 node "$TASTE_DIR/scripts/lint.mjs" "$ROOT/frontend/src/app/Blueprints.tsx" "$ROOT/frontend/src/app/Thread.tsx" "$ROOT/frontend/src/App.tsx" --json > "$G/lint.json" 2>&1
 have "$IMPECCABLE" detect && timeout 120 "$IMPECCABLE" detect --json "$U" > "$G/detect.json" 2>/dev/null
 have "$TASTE_DIR/scripts/inspect.mjs" inspect && timeout 300 node "$TASTE_DIR/scripts/inspect.mjs" "$U" --out "$G/inspect" --json > "$G/inspect.json" 2>/dev/null

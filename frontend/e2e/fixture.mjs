@@ -14,7 +14,14 @@ const STATE = path.join(RUN, 'ports.json'), FIX = path.join(E2E, 'fixtures')
 const TARGET_DIR = process.env.CARGO_TARGET_DIR || path.join(ROOT, 'target')
 const BIN = path.join(TARGET_DIR, 'debug/openro-rs')
 export const CHROME = process.env.CHROME_PATH || process.env.E2E_CHROME || path.join(os.homedir(), '.cache/ms-playwright/chromium-1234/chrome-linux64/chrome')
-export const launch = (opts = {}) => chromium.launch({ headless: true, executablePath: CHROME, ...opts })
+const ZERO_GPU_ARGS = ['--disable-gpu', '--disable-gpu-compositing', '--disable-gpu-sandbox', '--disable-accelerated-2d-canvas', '--disable-accelerated-video-decode', '--num-raster-threads=1']
+export const launch = (opts = {}) => chromium.launch({
+  headless: true,
+  executablePath: CHROME,
+  ...opts,
+  args: [...ZERO_GPU_ARGS, ...(opts.args || [])],
+  env: { ...process.env, LIBGL_ALWAYS_SOFTWARE: '1', VK_ICD_FILENAMES: '/dev/null', ...(opts.env || {}) },
+})
 
 let st = fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, 'utf8')) : null
 export let BASE = st && `http://127.0.0.1:${st.app}/`

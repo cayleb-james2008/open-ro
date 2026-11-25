@@ -1971,7 +1971,7 @@ fn handle(
         ("GET", "/api/luau/check") | ("POST", "/api/luau/check") => {
             handle_luau_check(&mut stream, shared, req.method == "POST", &req.body);
         }
-        ("GET", "/") => {
+        ("GET", "/") | ("GET", "/play") => {
             let info = status_info(shared);
             serve_index_page(
                 &mut stream,
@@ -8238,9 +8238,23 @@ fn serve_chunk_asset(stream: &mut TcpStream, req: &Request, name: &str) -> bool 
 
     let content_type = if name.ends_with(".css") {
         "text/css; charset=utf-8"
+    } else if name.ends_with(".woff2") {
+        "font/woff2"
     } else {
         "application/javascript; charset=utf-8"
     };
+    if name.ends_with(".woff2") {
+        let extra_plain = format!("ETag: {etag}\r\nVary: Accept-Encoding\r\n");
+        respond_bytes_with_headers(
+            stream,
+            "200 OK",
+            content_type,
+            "public, max-age=31536000, immutable",
+            &extra_plain,
+            blob,
+        );
+        return true;
+    }
     if accepts_gzip(&req.accept_encoding) {
         let extra = format!("ETag: {etag}\r\nVary: Accept-Encoding\r\nContent-Encoding: gzip\r\n");
         if is_gz {
