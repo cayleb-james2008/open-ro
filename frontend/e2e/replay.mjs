@@ -26,13 +26,23 @@ try {
 
   await page.locator("#composer-input").fill("Build a glowing checkpoint obby stage");
   await page.locator('button[aria-label="Send"]').click();
-  await page.locator("#thread .rounded-panel").first().waitFor({ state: "visible", timeout: 15000 });
-  await page.locator("#thread .rounded-card").first().waitFor({ state: "visible", timeout: 15000 });
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll("#thread .rounded-panel, #thread .rounded-card").length >= 2 &&
+      !document.querySelector('button[aria-label="Stop"]'),
+    null,
+    { timeout: 15000 },
+  );
+  await page.waitForTimeout(150);
   const countBefore = await page.locator("#thread .rounded-panel, #thread .rounded-card").count();
   check("Thread records user prompt & response", countBefore >= 2, `${countBefore} msgs`);
 
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.locator("#thread .rounded-panel").first().waitFor({ state: "visible", timeout: 15000 });
+  await page.waitForFunction(
+    () => document.querySelectorAll("#thread .rounded-panel, #thread .rounded-card").length >= 2,
+    null,
+    { timeout: 15000 },
+  );
   const countAfter = await page.locator("#thread .rounded-panel, #thread .rounded-card").count();
   check("Reload persists conversation", countAfter >= countBefore, `${countAfter} msgs`);
 

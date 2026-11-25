@@ -7,7 +7,7 @@ import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmente
 import { Expandable, ExpandableTrigger } from "@/components/ui/expandable";
 import { MorphingDialog, MorphingDialogClose, MorphingDialogContainer, MorphingDialogContent, MorphingDialogTitle, MorphingDialogTrigger } from "@/components/ui/morphing-dialog";
 import { open as dialogSpring } from "@/motion";
-import { call, enc, projUrl, stamp, type AssertionDiff, type AssertionItem, type CoreLoopClaim, type PlaytestReport, type PlaytestRun, type StudyStatus, type UnknownItem } from "./api";
+import { call, enc, projUrl, stamp, type AssertionDiff, type AssertionFixApplyResult, type AssertionFixPlan, type AssertionItem, type CoreLoopClaim, type PlaytestReport, type PlaytestRun, type StudyStatus, type UnknownItem } from "./api";
 import type { Ship } from "./useShip";
 
 type View = "summary" | "html" | "json";
@@ -37,19 +37,47 @@ function Lines({ title, lines, tone }: { title: string; lines: string[]; tone: s
   );
 }
 
-function RunDetail({ id, run }: { id: string; run: PlaytestRun }) {
+function RunDetail({ id, run, onAppliedFix }: { id: string; run: PlaytestRun; onAppliedFix?: (nextRunId: string, diff?: AssertionDiff) => Promise<void> | void }) {
   const [report, setReport] = useState<PlaytestReport | null>(null);
   const [err, setErr] = useState("");
   const [view, setView] = useState<View>("summary");
+  const [fixPlan, setFixPlan] = useState<AssertionFixPlan | null>(null);
+  const [planBusy, setPlanBusy] = useState(false);
+  const [applyBusy, setApplyBusy] = useState(false);
   useEffect(() => {
     let live = true;
-    setReport(null); setErr(""); setView("summary");
+    setReport(null); setErr(""); setView("summary"); setFixPlan(null);
     void call<PlaytestReport>(projUrl(id, `/playtests/${enc(run.run_id)}`)).then((r) => {
       if (!live) return;
       if (r.ok) setReport(r as PlaytestReport); else setErr(r.error || "Could not read that report.");
     });
     return () => { live = false; };
   }, [id, run.run_id]);
+  const draftFix = async (assertionId: string) => {
+    setPlanBusy(true);
+    const r = await call<{ plan?: AssertionFixPlan }>(projUrl(id, "/playtests/fix-plan"), { assertion_id: assertionId });
+    setPlanBusy(false);
+    if (!r.ok || !r.plan) {
+      toast.error(r.error || "Could not draft Luau fix plan.");
+      return;
+    }
+    setFixPlan(r.plan);
+  };
+  const applyFixAndRerun = async () => {
+    if (!fixPlan) return;
+    setApplyBusy(true);
+    const r = await call<AssertionFixApplyResult>(projUrl(id, "/playtests/fix-apply"), {
+      assertion_id: fixPlan.assertion_id,
+    });
+    setApplyBusy(false);
+    if (!r.ok || !r.rerun) {
+      toast.error(r.error || "Could not apply assertion fix.");
+      return;
+    }
+    setFixPlan(null);
+    toast.success(`Applied ${r.applied_files?.length ?? 0} Luau file(s) & re-ran assertions`);
+    await onAppliedFix?.(r.rerun.run_id, r.rerun.assertion_diff);
+  };
   const htmlUrl = projUrl(id, `/playtests/${enc(run.run_id)}/report.html`);
   const shots = report?.screenshots ?? [];
   return (
@@ -173,20 +201,51 @@ function RunDetail({ id, run }: { id: string; run: PlaytestRun }) {
                       <div className="truncate font-medium text-ink">{a.label}</div>
                       <div className="truncate text-ink-2">{a.room} · {a.detail}</div>
                     </div>
-                    <Pill
-                      className={`shrink-0 px-2 py-0.5 text-[11px] ${
-                        a.delta === "regressed" || !a.passed
-                          ? "bg-pill-pro-bg text-pill-pro-fg"
-                          : a.delta === "fixed"
-                            ? "bg-tag-sky-bg text-tag-sky-fg"
-                            : "bg-pill-active-bg text-pill-active-fg"
-                      }`}
-                    >
-                      {a.delta === "fixed" ? "Fixed" : a.delta === "regressed" ? "Regressed" : a.passed ? "Pass" : "Fail"}
-                    </Pill>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      {!a.passed && (
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          disabled={planBusy || applyBusy}
+                          data-draft-fix={a.id}
+                          onClick={() => void draftFix(a.id)}
+                        >
+                          Fix Plan
+                        </Button>
+                      )}
+                      <Pill
+                        className={`shrink-0 px-2 py-0.5 text-xs ${
+                          a.delta === "regressed" || !a.passed
+                            ? "bg-pill-pro-bg text-pill-pro-fg"
+                            : a.delta === "fixed"
+                              ? "bg-tag-sky-bg text-tag-sky-fg"
+                              : "bg-pill-active-bg text-pill-active-fg"
+                        }`}
+                      >
+                        {a.delta === "fixed" ? "Fixed" : a.delta === "regressed" ? "Regressed" : a.passed ? "Pass" : "Fail"}
+                      </Pill>
+                    </div>
                   </li>
                 ))}
               </ul>
+              {fixPlan && (
+                <div className="mt-1 flex flex-col gap-2 rounded-sm border border-hairline bg-surface p-3 text-xs" data-assertion-fix-plan>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-medium text-ink">{fixPlan.title}</div>
+                      <div className="font-mono text-ink-2">{fixPlan.target_file}</div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Button variant="ghost" size="xs" onClick={() => setFixPlan(null)}>Dismiss</Button>
+                      <Button variant="default" size="xs" loading={applyBusy} onClick={() => void applyFixAndRerun()} data-apply-assertion-fix>
+                        Apply &amp; Re-Run Assertion
+                      </Button>
+                    </div>
+                  </div>
+                  <p className="text-ink-2">{fixPlan.summary}</p>
+                  <pre className="max-h-40 overflow-auto rounded border border-hairline bg-board/60 p-2 font-mono text-xs text-ink">{fixPlan.diff_preview}</pre>
+                </div>
+              )}
             </section>
           )}
 
@@ -465,7 +524,16 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
               </li>
             ))}
           </ul>
-          {current && id && <RunDetail id={id} run={current} />}
+          {current && id && (
+            <RunDetail
+              id={id}
+              run={current}
+              onAppliedFix={async (nextRunId, diff) => {
+                if (diff) setLatestAssertionDiff(diff);
+                await Promise.all([load(nextRunId), loadStudy()]);
+              }}
+            />
+          )}
         </div>
       )}
     </div>

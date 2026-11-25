@@ -647,8 +647,8 @@ impl Drop for HandlerSlot {
     }
 }
 
-const POOL_WORKERS_BOOT: usize = 2;
-const POOL_WORKERS: usize = 44;
+const POOL_WORKERS_BOOT: usize = 4;
+const POOL_WORKERS: usize = 32;
 
 struct WorkerJob {
     stream: TcpStream,
@@ -698,6 +698,7 @@ pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> 
     let queue: Arc<(Mutex<VecDeque<WorkerJob>>, Condvar)> =
         Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
     let busy_workers = Arc::new(AtomicUsize::new(0));
+    let mut spawned_workers = 0usize;
     for idx in 0..POOL_WORKERS_BOOT {
         spawn_pool_worker(
             idx,
@@ -706,26 +707,7 @@ pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> 
             Arc::clone(&allowed),
             Arc::clone(&busy_workers),
         );
-    }
-    {
-        let q = Arc::clone(&queue);
-        let sh = Arc::clone(&shared);
-        let al = Arc::clone(&allowed);
-        let bw = Arc::clone(&busy_workers);
-        let _ = std::thread::Builder::new()
-            .name("openro-pool-warm".to_string())
-            .stack_size(128 * 1024)
-            .spawn(move || {
-                for idx in POOL_WORKERS_BOOT..POOL_WORKERS {
-                    spawn_pool_worker(
-                        idx,
-                        Arc::clone(&q),
-                        Arc::clone(&sh),
-                        Arc::clone(&al),
-                        Arc::clone(&bw),
-                    );
-                }
-            });
+        spawned_workers += 1;
     }
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
@@ -747,18 +729,34 @@ pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> 
         }
         shared.active_handlers.fetch_add(1, Ordering::SeqCst);
         let slot = HandlerSlot(Arc::clone(&shared));
-        // Reuse persistent pool workers for zero thread-spawn churn & bounded glibc arenas;
-        // spawn an overflow thread only if all POOL_WORKERS threads are occupied (e.g., many SSE streams).
-        if busy_workers.load(Ordering::Relaxed) >= POOL_WORKERS {
+        // Reuse persistent pool workers and grow lazily on demand up to POOL_WORKERS
+        // so cold boot avoids a 40-thread spawn storm while concurrent bursts stay saturated.
+        let busy = busy_workers.load(Ordering::Relaxed);
+        if busy >= POOL_WORKERS {
             let sh = Arc::clone(&shared);
             let al = Arc::clone(&allowed);
             std::thread::spawn(move || {
                 let _ = handle(stream, &sh, &al, slot);
             });
         } else {
-            let (lock, cvar) = &*queue;
-            lock.lock().unwrap().push_back(WorkerJob { stream, slot });
-            cvar.notify_one();
+            let queued = {
+                let (lock, cvar) = &*queue;
+                let mut q = lock.lock().unwrap();
+                q.push_back(WorkerJob { stream, slot });
+                let len = q.len();
+                cvar.notify_one();
+                len
+            };
+            if spawned_workers < POOL_WORKERS && busy + queued > spawned_workers {
+                spawn_pool_worker(
+                    spawned_workers,
+                    Arc::clone(&queue),
+                    Arc::clone(&shared),
+                    Arc::clone(&allowed),
+                    Arc::clone(&busy_workers),
+                );
+                spawned_workers += 1;
+            }
         }
     }
     Ok(())
