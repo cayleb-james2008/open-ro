@@ -912,3 +912,191 @@ fn opencloud_moderation_circuit_breaker_and_weapon_sheet_gap_72_73() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn prop_weapon_reference_search_ranking_and_auto_reference_gap_76() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = scratch_dir("gap76");
+    let data_dir = root.join("data");
+    let secrets_dir = root.join("secrets");
+    let project_dir = data_dir.join("projects").join("uacg-prop");
+    std::fs::create_dir_all(project_dir.join("art/references")).unwrap();
+    std::fs::create_dir_all(project_dir.join("art/weapons")).unwrap();
+
+    let png_prop = sample_png_bytes();
+    let mut png_action = sample_png_bytes();
+    png_action.extend_from_slice(b"cluttered-action");
+    let mut png_wm = sample_png_bytes();
+    png_wm.extend_from_slice(b"watermark-stock");
+    let cand_prop = root.join("cand_kusanagi_wiki.png");
+    let cand_action = root.join("cand_sasuke_battle.png");
+    let cand_wm = root.join("cand_shutterstock.png");
+    std::fs::write(&cand_prop, &png_prop).unwrap();
+    std::fs::write(&cand_action, &png_action).unwrap();
+    std::fs::write(&cand_wm, &png_wm).unwrap();
+
+    // Mock reference search CLI: asserts prop query phrasing and returns cluttered action, watermark, and isolated wiki prop render
+    let mock_ref = root.join("mock_prop_ref_search.py");
+    std::fs::write(
+        &mock_ref,
+        format!(
+            r#"#!/usr/bin/env python3
+import json, sys
+query = sys.argv[1]
+assert "weapon" in query.lower() and "prop" in query.lower(), f"expected prop query qualifiers, got: {{query!r}}"
+print(json.dumps({{
+  "ok": True,
+  "candidates": [
+    {{
+      "image_url": "https://shutterstock.com/kusanagi-watermark.png",
+      "source_url": "https://shutterstock.com/item/1",
+      "title": "Kusanagi weapon prop reference sheet watermark",
+      "width": 1000,
+      "height": 600,
+      "local_file": {wm:?}
+    }},
+    {{
+      "image_url": "https://anime.example/ep477-battle-scene.jpg",
+      "source_url": "https://anime.example/ep477",
+      "title": "Sasuke dynamic battle scene episode screenshot sakuga clash",
+      "width": 1280,
+      "height": 720,
+      "local_file": {action:?}
+    }},
+    {{
+      "image_url": "https://static.wikia.nocookie.net/naruto/images/kusanagi_prop.png",
+      "source_url": "https://naruto.fandom.com/wiki/Sword_of_Kusanagi",
+      "title": "Sword of Kusanagi isolated weapon wiki prop reference sheet blade hilt scabbard",
+      "width": 1200,
+      "height": 420,
+      "local_file": {prop:?}
+    }}
+  ]
+}}))
+"#,
+            wm = cand_wm.to_string_lossy(),
+            action = cand_action.to_string_lossy(),
+            prop = cand_prop.to_string_lossy(),
+        ),
+    )
+    .unwrap();
+
+    // Mock ChatGPT CLI: verifies auto-sourced prop ref under art/references/ was passed via --ref-image (and NOT --character-art)
+    let mock_chatgpt = root.join("mock_chatgpt_prop.py");
+    std::fs::write(
+        &mock_chatgpt,
+        format!(
+            r#"#!/usr/bin/env python3
+import json, shutil, sys
+args = sys.argv[1:]
+out = args[args.index("-o") + 1]
+refs = [args[i + 1] for i, a in enumerate(args) if a == "--ref-image"]
+assert "--character-art" not in args, f"weapon_sheet must not set --character-art: {{args}}"
+assert len(refs) == 1, f"expected 1 auto-sourced prop ref, got {{refs}}"
+assert "art/references/" in refs[0].replace("\\", "/"), f"ref must live in gitignored art/references/: {{refs}}"
+shutil.copyfile({prop:?}, out)
+print(json.dumps({{"ok": True, "out": out, "width": 1, "height": 1, "model_ui": "GPT-6 Instant", "refs": refs}}))
+"#,
+            prop = cand_prop.to_string_lossy(),
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&mock_ref, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&mock_chatgpt, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let _g = EnvGuard::set(&[
+        ("OPENRO_DATA_DIR", data_dir.to_str().unwrap()),
+        ("OPENRO_SECRETS_DIR", secrets_dir.to_str().unwrap()),
+        ("OPENRO_REFERENCE_SEARCH_BIN", mock_ref.to_str().unwrap()),
+        ("OPENRO_CHATGPT_IMAGEGEN_BIN", mock_chatgpt.to_str().unwrap()),
+        ("OPENRO_SHARED_BROWSER_PY", ""),
+    ]);
+    let port = start_server(&data_dir);
+
+    // 1. Direct POST /api/art/references/search with kind: "weapon" ranks isolated wiki prop render #1 over cluttered battle scene & watermark
+    let (st_s, s_res) = http_json(
+        port,
+        "POST",
+        "/api/art/references/search",
+        &json!({
+            "project": "uacg-prop",
+            "kind": "weapon",
+            "subject": "Sasuke Sword of Kusanagi",
+            "show": "Naruto Shippuden",
+            "slug": "weapon_sasuke_kusanagi"
+        }),
+    );
+    assert_eq!(st_s, 200, "prop reference search failed: {s_res}");
+    assert_eq!(s_res["kind"], "prop");
+    assert_eq!(s_res["reference_path"], "art/references/weapon_sasuke_kusanagi.png");
+    assert!(
+        s_res["candidates"][0]["image_url"]
+            .as_str()
+            .unwrap()
+            .contains("kusanagi_prop"),
+        "isolated wiki prop ref must rank #1: {s_res}"
+    );
+    assert!(
+        s_res["candidates"][2]["rejected_reason"].is_string(),
+        "watermarked stock image must be rejected: {s_res}"
+    );
+
+    // 2. POST /api/art/generate with kind: "weapon_sheet" + subject (no reference_image) auto-sources prop ref & records prop_reference_auto_sourced: true
+    let (st_gen, gen_res) = http_json(
+        port,
+        "POST",
+        "/api/art/generate",
+        &json!({
+            "project": "uacg-prop",
+            "kind": "weapon_sheet",
+            "card_id": "w1_rinnegan_shadow",
+            "subject": "Sasuke Kusanagi straight sword and black sheath",
+            "show": "Naruto Shippuden",
+            "prompt": "Isolated weapon prop reference sheet of straight black-scabbard Kusanagi sword, front and detail views"
+        }),
+    );
+    assert_eq!(st_gen, 200, "weapon_sheet auto_reference generate failed: {gen_res}");
+    assert_eq!(gen_res["status"], "generated");
+    assert_eq!(gen_res["prop_reference_auto_sourced"], true);
+    assert_eq!(gen_res["metadata"]["prop_reference_auto_sourced"], true);
+    let refs_used = gen_res["reference_images"].as_array().unwrap();
+    assert_eq!(refs_used.len(), 1);
+    assert!(
+        refs_used[0].as_str().unwrap().starts_with("art/references/weapon_w1_rinnegan_shadow."),
+        "unexpected auto-sourced reference path: {refs_used:?}"
+    );
+    assert!(project_dir.join(refs_used[0].as_str().unwrap()).is_file());
+    let meta_disk: Value = serde_json::from_str(
+        &std::fs::read_to_string(project_dir.join(gen_res["meta_path"].as_str().unwrap())).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(meta_disk["prop_reference_auto_sourced"], true);
+    assert_eq!(meta_disk["reference_images"], json!(refs_used));
+
+    // 3. Explicit reference_image on weapon_sheet stays untouched and does not set prop_reference_auto_sourced
+    let (st_exp, exp_res) = http_json(
+        port,
+        "POST",
+        "/api/art/generate",
+        &json!({
+            "project": "uacg-prop",
+            "kind": "weapon_sheet",
+            "card_id": "w1_explicit_blade",
+            "subject": "Explicit Blade",
+            "reference_image": "art/references/weapon_sasuke_kusanagi.png",
+            "prompt": "Isolated weapon prop reference sheet of Kusanagi sword"
+        }),
+    );
+    assert_eq!(st_exp, 200, "explicit ref weapon_sheet failed: {exp_res}");
+    assert!(exp_res.get("prop_reference_auto_sourced").is_none());
+    assert_eq!(
+        exp_res["reference_images"],
+        json!(["art/references/weapon_sasuke_kusanagi.png"])
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
