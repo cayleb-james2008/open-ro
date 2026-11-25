@@ -508,7 +508,8 @@ function DeckModal.create(parent: Instance, callbacks: DeckCallbacks): DeckModal
 				local eqBadge = Instance.new("Frame")
 				eqBadge.Name = "EquippedTag"
 				eqBadge.Size = UDim2.fromOffset(60, 18)
-				eqBadge.Position = UDim2.fromOffset(6, 6)
+				eqBadge.AnchorPoint = Vector2.new(1, 0)
+				eqBadge.Position = UDim2.new(1, -6, 0, 6)
 				eqBadge.BackgroundColor3 = Color3.fromRGB(20, 78, 48)
 				eqBadge.BorderSizePixel = 0
 				eqBadge.ZIndex = 35

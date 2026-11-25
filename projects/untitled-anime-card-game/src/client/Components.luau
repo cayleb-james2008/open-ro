@@ -292,6 +292,7 @@ function Components.makeCardView(parent: Instance, cardData: { [string]: any }, 
 	portraitBox.Position = UDim2.fromOffset(5, 5)
 	portraitBox.BackgroundColor3 = rarity.bgTint
 	portraitBox.BorderSizePixel = 0
+	portraitBox.ClipsDescendants = true
 	portraitBox.Parent = frame
 	Components.addCorner(portraitBox, 7)
 
@@ -317,12 +318,19 @@ function Components.makeCardView(parent: Instance, cardData: { [string]: any }, 
 	end
 	local portraitImage = Instance.new("ImageLabel")
 	portraitImage.Name = "PortraitImage"
+	portraitImage.AnchorPoint = Vector2.new(0.5, 0)
+	portraitImage.Position = UDim2.fromScale(0.5, 0)
 	portraitImage.Size = UDim2.fromScale(1, 1)
 	portraitImage.BackgroundTransparency = 1
 	portraitImage.ScaleType = Enum.ScaleType.Crop
 	portraitImage.ZIndex = 2
 	portraitImage.Parent = portraitBox
 	Components.addCorner(portraitImage, 7)
+	local portraitAspect = Instance.new("UIAspectRatioConstraint")
+	portraitAspect.AspectRatio = 512 / 712
+	portraitAspect.DominantAxis = Enum.DominantAxis.Width
+	portraitAspect.AspectType = Enum.AspectType.ScaleWithParentSize
+	portraitAspect.Parent = portraitImage
 
 	local hasLivePortrait = string.match(portraitAsset, "^rbxassetid://[1-9]%d*$") ~= nil
 	if hasLivePortrait then
