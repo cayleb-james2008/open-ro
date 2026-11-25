@@ -105,7 +105,7 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.6.0"));
+    assert_eq!(ver_json["version"], json!("1.7.0"));
 
     // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
     if let Ok(entries) = std::fs::read_dir("assets/chunks") {
@@ -341,6 +341,80 @@ fn ship_readiness_autopilot_fixes_luau_installs_monetization_builds_and_preserve
     assert_eq!(pg["economy_bindings_ok"], json!(true), "{pg}");
     assert_eq!(pg["retention_ok"], json!(true), "{pg}");
     assert_eq!(pg["build_and_zip_ok"], json!(true), "{pg}");
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn v170_wave6_tier_presets_and_comeback_retention() {
+    let base = std::env::temp_dir().join(format!(
+        "openro-v170-wave6-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let data = base.join("data");
+    let ws = base.join("ws");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let port = start_server_with_dir(Some(data));
+    let (st_ws, _) = send_json(port, "POST", "/api/projects/workspace", Some(&json!({ "path": ws })));
+    assert_eq!(st_ws, 200);
+
+    let (st_cr, cr) = send_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(&json!({ "name": "Anime Gacha Demo", "universeId": 555666, "placeId": 777888 })),
+    );
+    assert_eq!(st_cr, 201, "{cr}");
+    let pid = cr["project"]["id"].as_str().unwrap().to_string();
+
+    // Apply Anime Gacha / RPG tier preset in project mode
+    let (st_pk, pk) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/monetization/pack"),
+        Some(&json!({ "tier_preset": "anime_gacha_rpg", "daily_base_reward": 150 })),
+    );
+    assert_eq!(st_pk, 200, "{pk}");
+    assert_eq!(pk["tier_preset"], json!("anime_gacha_rpg"), "{pk}");
+    assert_eq!(pk["comeback_multiplier"], json!(3), "{pk}");
+    assert_eq!(
+        pk["retention_curve"],
+        json!([150, 300, 450, 750, 1050, 1500, 2250]),
+        "{pk}"
+    );
+    let diags = pk["diagnostics"].as_array().unwrap();
+    assert!(
+        !diags.iter().any(|d| d["severity"] == "error"),
+        "expected 0 Luau errors: {pk}"
+    );
+
+    // Every seeded draft product must keep priceApproved = false
+    let (st_rd, rd) = send_json(port, "GET", &format!("/api/projects/{pid}/readiness"), None);
+    assert_eq!(st_rd, 200, "{rd}");
+    assert!(rd["unapproved_prices"].as_u64().unwrap() >= 5, "{rd}");
+
+    // Also verify Place-level /api/monetization/pack supports competitive_arena preset
+    let (st_loc, loc) = send_json(
+        port,
+        "POST",
+        "/api/monetization/pack",
+        Some(&json!({ "tier_preset": "competitive_arena" })),
+    );
+    assert_eq!(st_loc, 200, "{loc}");
+    assert_eq!(loc["tier_preset"], json!("competitive_arena"), "{loc}");
+    assert_eq!(loc["comeback_multiplier"], json!(2), "{loc}");
+    assert_eq!(
+        loc["retention_curve"],
+        json!([120, 240, 360, 480, 720, 960, 1440]),
+        "{loc}"
+    );
+    assert_eq!(loc["audit"]["error_count"], json!(0), "{loc}");
+    assert_eq!(loc["audit"]["ok"], json!(true), "{loc}");
 
     let _ = std::fs::remove_dir_all(&base);
 }

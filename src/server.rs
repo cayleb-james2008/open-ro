@@ -647,7 +647,7 @@ impl Drop for HandlerSlot {
     }
 }
 
-const POOL_WORKERS_BOOT: usize = 8;
+const POOL_WORKERS_BOOT: usize = 2;
 const POOL_WORKERS: usize = 44;
 
 struct WorkerJob {
@@ -7245,11 +7245,23 @@ fn handle_monetization_pack(stream: &mut TcpStream, shared: &Shared, raw_body: &
             }
         }
     };
-    let currency = body.get("currency").and_then(|v| v.as_str()).unwrap_or("Coins");
+    let tier_preset = body.get("tier_preset").and_then(|v| v.as_str());
+    let spec = crate::opencloud::resolve_tier_preset(tier_preset);
+    let currency = body
+        .get("currency")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(spec.default_currency);
     let vip_pass_id = body.get("vip_pass_id").and_then(|v| v.as_u64()).unwrap_or(0);
     let starter_pack_id = body.get("starter_pack_id").and_then(|v| v.as_u64()).unwrap_or(0);
-    let daily_reward = body.get("daily_base_reward").and_then(|v| v.as_i64()).unwrap_or(100);
-    let scripts = crate::opencloud::monetization_pack_luau_scripts(
+    let daily_reward = body
+        .get("daily_base_reward")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(spec.default_daily_reward);
+    let curve = crate::opencloud::retention_curve_values(&spec, daily_reward);
+    let scripts = crate::opencloud::monetization_pack_luau_scripts_with_preset(
+        tier_preset,
         currency,
         vip_pass_id,
         starter_pack_id,
@@ -7307,6 +7319,9 @@ fn handle_monetization_pack(stream: &mut TcpStream, shared: &Shared, raw_body: &
         "200 OK",
         &json!({
             "ok": true,
+            "tier_preset": spec.id,
+            "comeback_multiplier": spec.comeback_multiplier,
+            "retention_curve": curve,
             "scripts": written_paths,
             "diff": diff.to_json(),
             "snapshot_id": snap.id,
@@ -7903,8 +7918,19 @@ fn handle_assets_generate(stream: &mut TcpStream, shared: &Shared, raw_body: &[u
     }
 }
 
-/// The single-page UI (assets/index.html); values are substituted in render_page.
-const INDEX_HTML: &str = include_str!("../assets/index.html");
+/// The single-page UI (pre-gzipped assets/index.html.gz); values are substituted in render_page.
+const INDEX_HTML_GZ: &[u8] = include_bytes!("../assets/index.html.gz");
+
+fn index_html() -> &'static str {
+    static CACHE: OnceLock<String> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        use flate2::read::GzDecoder;
+        let mut decoder = GzDecoder::new(INDEX_HTML_GZ);
+        let mut html = String::with_capacity(INDEX_HTML_GZ.len() * 3);
+        let _ = decoder.read_to_string(&mut html);
+        html
+    })
+}
 
 /// Escape a value interpolated into the page (the game name comes from
 /// the operator's environment; unescaped, it was a straight HTML
@@ -7962,8 +7988,9 @@ pub fn render_page_full(
     let can_build = (model_configured && studio_connected).to_string();
     let studio_str = studio_connected.to_string();
     let game_escaped = esc_html(game_name);
-    let mut out = String::with_capacity(INDEX_HTML.len() + banners.len() + 64);
-    let mut rest = INDEX_HTML;
+    let template = index_html();
+    let mut out = String::with_capacity(template.len() + banners.len() + 64);
+    let mut rest = template;
     while let Some(pos) = rest.find("__") {
         out.push_str(&rest[..pos]);
         let after = &rest[pos..];
@@ -8028,6 +8055,7 @@ fn cached_index(
     use std::collections::HashMap;
 
     static CACHE: OnceLock<Mutex<HashMap<IndexCacheKey, Arc<CachedIndex>>>> = OnceLock::new();
+    static BUILD_GATE: OnceLock<Mutex<()>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let key = IndexCacheKey {
         game_name: game_name.to_string(),
@@ -8036,6 +8064,10 @@ fn cached_index(
         recovered: recovered.to_vec(),
         workspace_mode,
     };
+    if let Some(hit) = cache.lock().unwrap().get(&key).cloned() {
+        return hit;
+    }
+    let _build_guard = BUILD_GATE.get_or_init(|| Mutex::new(())).lock().unwrap();
     if let Some(hit) = cache.lock().unwrap().get(&key).cloned() {
         return hit;
     }
@@ -8057,7 +8089,7 @@ fn cached_index(
         u64::from_be_bytes(digest[..8].try_into().unwrap_or([0; 8]))
     );
 
-    let mut enc = GzEncoder::new(Vec::with_capacity(plain.len() / 3), Compression::default());
+    let mut enc = GzEncoder::new(Vec::with_capacity(plain.len() / 3), Compression::new(5));
     let gzip = if enc.write_all(&plain).is_ok() {
         enc.finish().unwrap_or_default()
     } else {
