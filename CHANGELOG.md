@@ -4,6 +4,15 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.8.0 - 2026-11-25
+
+- **Deterministic Playtest Assertion Suite + 1-Click Re-Run (`src/playtest.rs`, `src/project_api.rs`, `src/agent.rs`, `frontend/src/app/ship/PlaytestPanel.tsx`, `frontend/web-engine/install.ts`):**
+  - Added structured per-room JSON assertions (`Luau`, `Runtime`, `Core Loop`, `Economy`, `Visuals`, `Studio Checks`), deterministic `assertion_diff` tracking (`fixed` / `regressed` / `unchanged_pass`), `POST /api/projects/:id/playtests/rerun` (with automatic offline deterministic fallback when Studio MCP is disconnected), `/play` + `#/lab` deep links, and **1-Click "Re-Run All Assertions"** + **JSON Export** UI in `PlaytestPanel`.
+- **Initial `/` Bundle Diet & Font Chunking (`frontend/vite.config.ts`, `build.rs`, `src/server.rs`):**
+  - Externalized self-hosted `Geist` / `Geist Mono` `.woff2` assets out of base64 CSS into immutable `/chunks/*.woff2` routes (`font/woff2`, `ETag`), trimming initial `/` HTML payload by `~40%` raw (`<260 KB`) and `~70%` gzip (`<115 KB`) while preserving self-contained zero-external-call `web-dist/index.html`.
+- **Flagship `README.md` & Verified Light/Dark Visuals (`README.md`, `docs/screenshots/`):**
+  - Captured verified Light & Dark `1440x900` studio screenshots across hero, Ship Readiness Autopilot, and Monetization Tier Designer (`docs/screenshots/`) and rewrote `README.md` with theme-adaptive `<picture>` previews, Mermaid architecture diagram, and verified benchmarks.
+
 ## 1.7.0 - 2026-11-25
 
 - **Monetization Tier Presets & Comeback Retention Curve Designer (`src/opencloud.rs`, `src/server.rs`, `frontend/src/app/MonetizationPackCard.tsx`, `frontend/web-engine/install.ts`):**

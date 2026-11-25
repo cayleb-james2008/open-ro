@@ -18,7 +18,7 @@ fn main() {
                         if let Some(logical) = fname.strip_suffix(".gz") {
                             println!("cargo:rerun-if-changed=assets/chunks/{fname}");
                             entries.push((logical.to_string(), fname.to_string()));
-                        } else if fname.ends_with(".js") || fname.ends_with(".css") {
+                        } else if fname.ends_with(".js") || fname.ends_with(".css") || fname.ends_with(".woff2") {
                             println!("cargo:rerun-if-changed=assets/chunks/{fname}");
                             entries.push((fname.to_string(), fname.to_string()));
                         }

@@ -497,6 +497,8 @@ pub struct Agent {
     step_sink: Option<StepSink>,
     /// Optional override for maximum agent steps in long runs.
     max_steps_override: Option<usize>,
+    /// Previous `/api/studio/playtest` assertion vector for deterministic diffing.
+    last_playtest_assertions: Vec<Value>,
 }
 
 pub type HookFn = Arc<dyn Fn(&Value) -> Result<Value, String> + Send + Sync>;
@@ -574,6 +576,7 @@ impl Agent {
             cancel_flag: None,
             step_sink: None,
             max_steps_override: None,
+            last_playtest_assertions: Vec::new(),
         }
     }
 
@@ -946,6 +949,52 @@ impl Agent {
         verdict_ev.frame_seq = frame_seq;
         self.emit_studio_action(verdict_ev);
 
+        let mut assertions = vec![
+            json!({
+                "id": "runtime_console",
+                "room": "Runtime",
+                "label": "Studio runtime & Luau check",
+                "passed": passed,
+                "status": if passed { "passed" } else { "failed" },
+                "detail": lines.last().cloned().unwrap_or_else(|| "Playtest completed".to_string())
+            }),
+        ];
+        if let Ok(tree) = self.place_tree() {
+            let scripts = tree.get("scripts").and_then(Value::as_object);
+            let insts = tree.get("instances").and_then(Value::as_object);
+            let script_count = scripts.map(|s| s.len()).unwrap_or(0);
+            let inst_count = insts.map(|i| i.len()).unwrap_or(0);
+            let has_monetization = scripts.is_some_and(|s| s.contains_key("ServerScriptService.MonetizationService"));
+            let has_retention = scripts.is_some_and(|s| s.contains_key("ServerScriptService.DailyRewardRetention"));
+            assertions.push(json!({
+                "id": "place_scripts",
+                "room": "Luau",
+                "label": "Place script tree populated",
+                "passed": script_count > 0,
+                "status": if script_count > 0 { "passed" } else { "failed" },
+                "detail": format!("{script_count} script(s), {inst_count} instance(s)")
+            }));
+            assertions.push(json!({
+                "id": "economy_guard",
+                "room": "Economy",
+                "label": "Monetization & retention guards",
+                "passed": has_monetization && has_retention,
+                "status": if has_monetization && has_retention { "passed" } else { "failed" },
+                "detail": format!(
+                    "Service={} · Retention={}",
+                    if has_monetization { "ok" } else { "missing" },
+                    if has_retention { "ok" } else { "missing" }
+                )
+            }));
+        }
+        let prev = if self.last_playtest_assertions.is_empty() {
+            None
+        } else {
+            Some(self.last_playtest_assertions.as_slice())
+        };
+        let assertion_diff = crate::playtest::diff_assertion_suites(prev, &assertions);
+        self.last_playtest_assertions = assertions.clone();
+
         Ok(json!({
             "ok": true,
             "passed": passed,
@@ -954,6 +1003,8 @@ impl Agent {
             "console": lines.join("\n"),
             "console_lines": lines,
             "frame_seq": frame_seq,
+            "assertions": assertions,
+            "assertion_diff": assertion_diff,
         }))
     }
 

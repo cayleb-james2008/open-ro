@@ -259,7 +259,7 @@ pub fn route(shared: &Arc<Shared>, method: &str, full_path: &str, body: &[u8], l
             | ("POST", ["workspace"] | ["workspace", "remove"] | ["create"] | ["open"])
             | ("GET", [_])
             | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "format" | "run-lune" | "open-in-studio"])
-            | ("POST", [_, "sync", "diff"])
+            | ("POST", [_, "sync", "diff"] | [_, "playtests", "rerun"])
             | ("GET", [_, "builds" | "playtests" | "files" | "file" | "preview"])
             | ("POST", [_, "file"] | [_, "file", "delete"] | [_, "file", "edit"])
             | ("GET", [_, "git", "status" | "log"])
@@ -614,6 +614,12 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
             }
             ensure_studio_place_open(shared, &r, &b);
             crate::playtest::run(shared, &r, &b)
+        }
+        ("POST", [id, "playtests", "rerun"]) => {
+            let r = project_of(shared, id)?;
+            let b = if body.is_empty() { json!({}) } else { parse_body(body)? };
+            let _busy = Busy::new(&shared.busy);
+            crate::playtest::rerun_assertions(shared, &r, &b)
         }
         ("GET", [id, "investigation", "evidence"]) => {
             let r = project_of(shared, id)?;

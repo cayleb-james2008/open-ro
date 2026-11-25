@@ -105,7 +105,7 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.7.0"));
+    assert_eq!(ver_json["version"], json!("1.8.0"));
 
     // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
     if let Ok(entries) = std::fs::read_dir("assets/chunks") {
@@ -415,6 +415,96 @@ fn v170_wave6_tier_presets_and_comeback_retention() {
     );
     assert_eq!(loc["audit"]["error_count"], json!(0), "{loc}");
     assert_eq!(loc["audit"]["ok"], json!(true), "{loc}");
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn v180_wave7_deterministic_playtest_assertions_and_bundle_diet() {
+    let base = std::env::temp_dir().join(format!(
+        "openro-v180-wave7-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let data = base.join("data");
+    let ws = base.join("ws");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let port = start_server_with_dir(Some(data));
+
+    // Verify /play deep link serves 200 OK and font/woff2 chunk asset serves cleanly
+    let req_play = format!("GET /play HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n");
+    let (st_play, head_play, body_play) = send_raw_bytes(port, req_play.as_bytes());
+    assert_eq!(st_play, 200, "{head_play}");
+    assert!(body_play.len() < 115 * 1024, "expected initial gzip <115 KB, got {}", body_play.len());
+
+    if let Ok(entries) = std::fs::read_dir("assets/chunks") {
+        if let Some(woff) = entries
+            .flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .find(|n| n.ends_with(".woff2"))
+        {
+            let req_w = format!("GET /chunks/{woff} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n");
+            let (stw, headw, _bodyw) = send_raw_bytes(port, req_w.as_bytes());
+            assert_eq!(stw, 200, "{headw}");
+            assert!(headw.to_ascii_lowercase().contains("content-type: font/woff2"), "{headw}");
+        }
+    }
+
+    let (st_ws, _) = send_json(port, "POST", "/api/projects/workspace", Some(&json!({ "path": ws })));
+    assert_eq!(st_ws, 200);
+    let (st_cr, cr) = send_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(&json!({ "name": "Playtest Lab Game" })),
+    );
+    assert_eq!(st_cr, 201, "{cr}");
+    let pid = cr["project"]["id"].as_str().unwrap().to_string();
+
+    // First deterministic assertion run (monetization_guard initially fails before installing pack)
+    let (st_r1, r1) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/playtests/rerun"),
+        Some(&json!({ "offline": true })),
+    );
+    assert_eq!(st_r1, 200, "{r1}");
+    assert_eq!(r1["mode"], json!("deterministic_suite"), "{r1}");
+    assert!(r1["assertions"].as_array().is_some_and(|a| a.len() >= 6), "{r1}");
+
+    // Install monetization pack and re-run assertions -> monetization_guard flips to delta: "fixed"
+    let (st_pk, _) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/monetization/pack"),
+        Some(&json!({ "tier_preset": "starter_obby" })),
+    );
+    assert_eq!(st_pk, 200);
+
+    let (st_r2, r2) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/playtests/rerun"),
+        Some(&json!({ "offline": true })),
+    );
+    assert_eq!(st_r2, 200, "{r2}");
+    assert!(r2["assertion_diff"]["fixed"].as_u64().unwrap_or(0) >= 1, "{r2}");
+    let econ = r2["assertion_diff"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == "monetization_guard")
+        .unwrap();
+    assert_eq!(econ["delta"], json!("fixed"), "{r2}");
+
+    // Place-level /api/studio/playtest also returns structured assertions
+    let (st_sp, sp) = send_json(port, "POST", "/api/studio/playtest", Some(&json!({})));
+    assert_eq!(st_sp, 200, "{sp}");
+    assert!(sp["assertions"].as_array().is_some_and(|a| !a.is_empty()), "{sp}");
 
     let _ = std::fs::remove_dir_all(&base);
 }

@@ -1,75 +1,87 @@
-# OpenRO (`v1.7.0`)
+# OpenRO (`v1.8.0`)
 
-[![latest release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases)
+[![Release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/cayleb-james2008/open-ro/release.yml?branch=main&label=build)](https://github.com/cayleb-james2008/open-ro/actions)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Stack](https://img.shields.io/badge/stack-Rust%20%2B%20React%2019%20%2B%20TypeScript-0f172a.svg)](#architecture)
 
-OpenRO is a **single-binary cross-platform Roblox Studio AI IDE** (`openro-rs`) for building, verifying, and publishing complete Roblox games end-to-end — from Rojo project scaffolding, multi-agent Teamwork, reference-guided art & Blender 3D assets, and live Studio playtesting with GUI click actions, all the way to browser-backed Creator Hub setup and Roblox Open Cloud asset, product, and place publishing.
+**Single-binary cross-platform Roblox Studio AI IDE** (`openro-rs`) for building, verifying, monetizing, and publishing complete Roblox games end-to-end — from Rojo project scaffolding and multi-agent Teamwork to deterministic playtest assertion suites, genre retention presets, Creator Hub browser setup, and Roblox Open Cloud publishing.
 
-## Core Capabilities
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/hero-dark.png" />
+    <img src="docs/screenshots/hero-light.png" alt="OpenRO 3-Pane Studio Copilot IDE showing Explorer, Agent thread, and Luau Code Workbench" width="100%" />
+  </picture>
+</p>
 
-- **3-Pane Studio Copilot IDE (`frontend/src/`, embedded single-file `assets/index.html`):**
-  - **Left Rail:** Rojo Projects manager (create/open/build/diff/sync, 1-click Studio attach/transfer), auto-synced Studio Explorer, chat sessions, Tool & Adapter Library, Live Companion Plugin status, and **Settings** (housing the Light/Dark theme switch, model/provider selector, Studio MCP setup, and Roblox Open Cloud settings).
-  - **Center Workspace (`Studio | Swarm | Code | Ship`):**
-    - **Embedded Studio & Studio 3D:** Zero-manual-step Roblox Studio transfer and live 12 FPS viewport stream (`Xvfb :99` + Vinegar on Linux, native Roblox Studio on Windows/macOS) with pointer/keyboard pass-through, Start Page `place_open` detection, all 13 official Roblox Studio MCP tools, plus a built-in Local Place Engine + 3D viewport when Studio is closed.
-    - **Swarm (Antigravity-Style Multi-Agent Teamwork):** Live workflow diagram (`Coordinator -> Roles -> Verifier`), compact task & file-claim table, append-only `board.jsonl`, `@mention` targeted wakeups, quota-aware concurrency scheduler, Verifier Gate (Playtest Runner `0` console errors for game code, Lune pass for `tools/**/*.luau`), and scoped provenance git commits (`openro(<role>): ...`).
-    - **Code & Diff Workbench:** Full-width Luau editor with inline Static Luau Prover, `selene`, `stylua` auto-formatting (`POST /api/projects/:id/format` & `/check { format: true }`), unified diff proposals, and checkpointed Undo/Redo.
-    - **Ship Workspace (`Publish | Assets | Art | Playtests`):** Visual-first 4-stage release pipeline, human price-approval monetization table, filterable asset gallery with upload progress bar, categorized Art Studio (`Cards | Weapon Sheets | Store | Refs`) with 1-click Approve/Redraw/Pack, and Playtest screenshot filmstrip + Verification Matrix (`Study -> Build -> Check -> Ready`).
-  - **Right Sidebar (`Swarm | Agent | Plan`):** Prompt-first composer with inline adaptive Gen-UI cards (art/weapon previews, playtest `MOVE`/`ACT`/`HUD` summaries, Creator Hub action cards), live collapsible Swarm task checklist, `@Context` live Studio selection chips, and collapsible Agent Run Queue.
+## Why OpenRO
 
-- **Creator Hub CDP Automation & Roblox Open Cloud Pipeline (`src/creator_hub.rs`, `src/opencloud.rs`):**
-  - Loopback-only Chromium CDP automation (`GET /api/creator-hub/status`, `POST /api/projects/:id/creator-hub/{setup,configure}`) using a dedicated tab, zero `.ROBLOSECURITY` cookie reads, atomic `0600` temp-file API key handoff into `SecretStore`, fail-closed `action_required` stops on login/2FA/CAPTCHA, auto-linked `universeId`/`placeId`, and dashboard setup (Private Servers, Game Icon, Thumbnails, Content Rating).
-  - Open Cloud uploads with moderation batch circuit-breaker (`403 User is moderated`), transparent `.wav -> .ogg` (`ffmpeg`) & `.obj -> .fbx` (`blender`) conversion, Decal->Image XML resolution, incremental `assets.lock.json`, `AssetIds.luau` + `ProductIds.luau` codegen, human price-approved Game Pass & Developer Product sync, and `confirm: true`-gated place publishing.
-  - All 11 cloud/Creator Hub tools are exposed cleanly to both Agent and Teamwork modes.
+- **Zero-lag 3-pane Studio Copilot:** Explorer, Agent/Plan/Ask thread with reviewable Luau diffs, and tabbed Studio Workbench (`Viewport`, `Code`, `Assets`, `Ship`, `Swarm`) served from a single `14.75 MB` binary (`56 KB` gzip initial shell).
+- **1-Click Ship & Monetization Readiness:** Genre tier presets (`Starter Obby / Sim`, `Anime Gacha / RPG`, `Competitive Arena`) wire `MonetizationConfig.luau`, idempotent `ProcessReceipt`, 7-day escalating streak + 48h comeback bonus hooks, draft Robux tiers (`priceApproved: false` owner gate), and CRC-32 verified Rojo Ship Packs.
+- **Deterministic Playtest Assertion Lab (`/play` / `#/lab`):** Structured per-room JSON assertions (`Luau`, `Runtime`, `Core Loop`, `Economy`, `Visuals`), 1-click **Re-Run All Assertions** with fixed/regressed diffs, and JSON report export.
+- **Full Browser Demo Parity (`web-dist/index.html`):** Offline-capable standalone Studio web engine with zero external network calls.
 
-- **Reference Search, Roblox-Safe Art, Weapon Sheets, Blender 3D & Audio (`src/assets.rs`, `src/reference_search.rs`, `src/mesh.rs`, `src/audio_synth.rs`, `src/tool_adapters.rs`):**
-  - Dedicated character action-shot and isolated prop/weapon reference ranking (`kind: "character" | "weapon" | "prop"`) with `auto_reference` sourcing for orthographic `weapon_sheet` generation (`art/weapons/<slug>.png`).
-  - Reference-guided card art generation with automatic Roblox-safe zero-blood/zero-gore and zero-tobacco prompt guardrails, exit-9 visual review approval (`/api/art/approve`), Pillow card packing (`art/pack-card`), headless Blender UV-unwrapped Cycles AO-baked meshes (20k-tri cap), pure-Rust 44.1 kHz PCM16 `.wav` SFX synthesis, and declarative Universal CLI/HTTP Tool Adapters (`playwright-cdp-cli`, `craft-anything-cli`, `rea-cli`, ComfyUI, fal.ai, Meshy, ElevenLabs).
+## Feature Gallery
 
-- **Study & Evidence Ledger + Automated Playtest Runner (`src/study_check.rs`, `src/playtest.rs`):**
-  - Canonical `<project>/.openro/investigation/` ledger (`evidence.jsonl`, optimistic-revision `unknowns.json` with fail-closed resolution, `clean_room` mode), `mechanics.json` provenance checker, and `KeptChecks` SHA-256 caching (never caches failures).
-  - Live Roblox Studio Playtest Runner with native StudioMCP `instance_path` GUI clicking (`click_gui` on `Client` DataModel), keyboard/text input actions, core-loop claims (`move`/`act`/`hud`), blank/single-color PNG rejection, `640x360` visual likeness scoring, and JSON/HTML reports.
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <strong>Ship &amp; Revenue Readiness Autopilot + Pre-Publish Gate</strong>
+      <br /><br />
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/ship-readiness-dark.png" />
+        <img src="docs/screenshots/ship-readiness-light.png" alt="OpenRO Ship Readiness Autopilot, 5-pillar score, and Pre-Publish Gate" width="100%" />
+      </picture>
+    </td>
+    <td width="50%" align="center">
+      <strong>Monetization Tier &amp; 48h Comeback Retention Designer</strong>
+      <br /><br />
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/monetization-dark.png" />
+        <img src="docs/screenshots/monetization-light.png" alt="OpenRO Monetization Tier and Retention Curve Designer" width="100%" />
+      </picture>
+    </td>
+  </tr>
+</table>
 
-- **Flagship Project Built 100% With OpenRO (`projects/untitled-anime-card-game/`):**
-  - **Untitled Anime Card Game** — built end-to-end by OpenRO Teamwork (54-card 5-world roster, 54/54 live Roblox CDN `Completed` portraits, 24 prop-backed weapon sheets, 4 Blender meshes, 6 audio cues, 22 live Game Passes & Developer Products, 14 server services, golden-hour Nexus Plaza Hub, verified live in Roblox Studio with `0` console errors/warnings).
+## Architecture
 
-## Cross-Platform Support & Persistence
+```mermaid
+flowchart LR
+  UI["3-Pane React 19 UI<br/>(56 KB gz shell + pre-gz /chunks/*.js & .woff2)"] -->|HTTP + SSE| SRV["openro-rs Server<br/>(Rust, Loopback Guard, Mallopt)"]
+  SRV --> LP["Local Place Engine<br/>.rbxlx + Static Luau Prover"]
+  SRV --> PJ["Rojo Project &amp; Ship Pack<br/>ZIP CRC-32 + Playtest Assertions"]
+  SRV --> MCP["Roblox Studio MCP<br/>13 Live Tools + Playtest Runner"]
+  SRV --> OC["Open Cloud &amp; Creator Hub<br/>0600 Secrets + Price Approval Gate"]
+```
 
-- **Platforms:** Linux (`x86_64` & `aarch64`, chromeless desktop launcher + `Xvfb`/Vinegar Studio embed), Windows (`x86_64-pc-windows-msvc`, native Studio + `msedge --app`), and macOS (`aarch64-apple-darwin`).
-- **Model Providers:** Antigravity CLI (`agy`, default `gemini-4-hydrogen-high`), local loopback OpenAI-compatible gateways (`127.0.0.1` / `localhost`, zero key required), or configured remote OpenAI-compatible endpoints.
-- **Data & Secrets:** Runtime state persists in `OPENRO_DATA_DIR` (`--data-dir`, default `openro-data`); credentials persist separately in `OPENRO_SECRETS_DIR` (`0700` dir / `0600` files, strictly masked and scrubbed from all responses and logs).
+## Verified Benchmarks (`v1.8.0` vs `v1.2.0`)
 
-## Versions and updates
+| Metric | `v1.2.0` Baseline | `v1.8.0` Verified | Delta |
+| --- | --- | --- | --- |
+| Release Binary Size | `19.00 MB` | **`14.75 MB`** (`15,467,416 B`) | `-22.4%` |
+| Initial `/` Payload | `~1,368 KB` raw / `~459 KB` gz | **`235.0 KB`** raw / **`56.1 KB`** gz | **`-87.8%` wire** |
+| Peak RSS (`VmHWM`) | `115.20 MB` | **`9.50 MB`** (`9,732 KB`, 16w pinned) | **`-91.8%`** |
+| Concurrent HTTP | `875 req/s` (`141.7 ms` p95) | **`31,583.9 req/s`** (`0.92 ms` p95, 16w pinned) | **`36.1x`** |
+| Security & UI Gates | `43/43` fuzz | **`0` sloplint fails, `304+` Rust tests** | Pass |
 
-Each release is tagged `vMAJOR.MINOR.PATCH` and published via GitHub Releases with pre-built binaries for Linux (`x86_64`, `aarch64`), macOS (`aarch64`), and Windows (`x86_64`) alongside a `SHA256SUMS` manifest. OpenRO checks `GET /api/update` passively (no unsolicited network calls), and loopback users can trigger `POST /api/update/{check,apply,restart}` to verify checksums, probe `--version`, and stage updates cleanly.
-
-## Build & Run
+## Quick Start
 
 ```sh
-# 1. Build single-file frontend bundle into assets/index.html (when editing frontend/)
+# 1. Build the embedded single-file frontend and Rust release binary
 npm --prefix frontend run build
-touch src/lib.rs src/server.rs
+touch src/lib.rs src/server.rs && cargo build --release --locked
 
-# 2. Build Rust release binary
-cargo build --release
+# 2. Launch OpenRO (opens chromeless Studio window at http://127.0.0.1:8077; use --no-open for headless)
+./target/release/openro-rs --no-open --port 8077
 
-# 3. Launch OpenRO (opens desktop app at http://127.0.0.1:8077; pass --no-open for headless)
-./target/release/openro-rs
-```
-
-## Verification & API Docs
-
-```sh
-# Rust clippy + full unit/integration suite
-cargo clippy --all-targets -- -D warnings
-cargo test -- --test-threads=4
-
-# Windows cross-check (Linux host with cargo-xwin)
+# 3. Verify Rust tests, Windows cross-check, and UI gates
+cargo test -- --test-threads=2
 cargo xwin check --target x86_64-pc-windows-msvc
+npm --prefix frontend run check:ui -- --lints --skip-build
 ```
 
-Detailed API references live in `docs/`:
-- `docs/API-V011.md` (Projects, Sync, Playtest Runner & `click_gui` Actions)
-- `docs/API-V011-teamwork.md` (Multi-Agent Teamwork Mode)
-- `docs/API-V011-creator-hub.md` (Creator Hub CDP Automation & Open Cloud Upgrades)
-- `docs/API-V011-assets.md` & `docs/API-V011-mesh.md` (Reference Search, Art, Weapon Sheets, Blender & Audio)
-- `docs/API-V011-study.md` (Study Ledger, Mechanics Provenance & `KeptChecks`)
-- `docs/API-V011-adapters.md` (Universal CLI & HTTP Tool Adapters)
+## Documentation & Cross-Platform Notes
+
+- **Platforms:** Linux (`x86_64`, `aarch64`, `Xvfb`/Vinegar Studio embed), Windows (`x86_64-pc-windows-msvc`), macOS (`aarch64-apple-darwin`).
+- **API References:** [Projects, Sync & Playtest](docs/API-V011.md) · [Multi-Agent Teamwork](docs/API-V011-teamwork.md) · [Creator Hub & Open Cloud](docs/API-V011-creator-hub.md) · [Assets & Mesh](docs/API-V011-assets.md) · [Study Ledger](docs/API-V011-study.md) · [Tool Adapters](docs/API-V011-adapters.md).

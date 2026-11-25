@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Check, ChevronDown, CircleCheck, CircleX, ExternalLink, Play, ShieldCheck } from "lucide-react";
+import { Check, ChevronDown, CircleCheck, CircleX, Download, ExternalLink, Play, RotateCw, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { Expandable, ExpandableTrigger } from "@/components/ui/expandable";
 import { MorphingDialog, MorphingDialogClose, MorphingDialogContainer, MorphingDialogContent, MorphingDialogTitle, MorphingDialogTrigger } from "@/components/ui/morphing-dialog";
 import { open as dialogSpring } from "@/motion";
-import { call, enc, projUrl, stamp, type CoreLoopClaim, type PlaytestReport, type PlaytestRun, type StudyStatus, type UnknownItem } from "./api";
+import { call, enc, projUrl, stamp, type AssertionDiff, type AssertionItem, type CoreLoopClaim, type PlaytestReport, type PlaytestRun, type StudyStatus, type UnknownItem } from "./api";
 import type { Ship } from "./useShip";
 
 type View = "summary" | "html" | "json";
@@ -103,6 +103,93 @@ function RunDetail({ id, run }: { id: string; run: PlaytestRun }) {
             </section>
           )}
 
+          {(report.assertions?.length ?? 0) > 0 && (
+            <section className="card-stock flex flex-col gap-2.5 p-3" data-assertion-suite aria-label="Deterministic assertion suite">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h4 className="text-sm font-medium text-ink">Deterministic Assertions</h4>
+                  {report.assertion_diff && (
+                    <span className="font-mono text-xs tabular-nums text-ink-2">
+                      {report.assertion_diff.passed}/{report.assertion_diff.total} pass
+                      {report.assertion_diff.fixed > 0 ? ` · +${report.assertion_diff.fixed} fixed` : ""}
+                      {report.assertion_diff.regressed > 0 ? ` · -${report.assertion_diff.regressed} regressed` : ""}
+                    </span>
+                  )}
+                </div>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  data-export-assertions
+                  onClick={() => {
+                    const payload = JSON.stringify(
+                      {
+                        project: id,
+                        run_id: report.run_id,
+                        passed: report.passed,
+                        assertions: report.assertions ?? [],
+                        assertion_diff: report.assertion_diff ?? null,
+                      },
+                      null,
+                      2,
+                    );
+                    const blob = new Blob([payload], { type: "application/json" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `${id}-playtest-assertions.json`;
+                    a.click();
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                  }}
+                >
+                  <Download className="size-3.5" strokeWidth={1.5} aria-hidden />
+                  Export JSON
+                </Button>
+              </div>
+              {report.assertion_diff?.rooms && report.assertion_diff.rooms.length > 0 && (
+                <div className="flex flex-wrap gap-1.5" data-assertion-rooms>
+                  {report.assertion_diff.rooms.map((rm) => (
+                    <Pill
+                      key={rm.room}
+                      className={`gap-1 px-2 py-0.5 text-xs ${
+                        rm.regressed > 0
+                          ? "bg-pill-pro-bg text-pill-pro-fg"
+                          : rm.passed === rm.total
+                            ? "bg-pill-active-bg text-pill-active-fg"
+                            : "bg-pill-warn-bg text-pill-warn-fg"
+                      }`}
+                    >
+                      <span>{rm.room}</span>
+                      <span className="font-mono tabular-nums">{rm.passed}/{rm.total}</span>
+                      {rm.fixed > 0 && <span className="font-mono">+{rm.fixed}</span>}
+                      {rm.regressed > 0 && <span className="font-mono">-{rm.regressed}</span>}
+                    </Pill>
+                  ))}
+                </div>
+              )}
+              <ul className="grid gap-1.5 sm:grid-cols-2">
+                {(report.assertion_diff?.items ?? report.assertions ?? []).map((a: AssertionItem) => (
+                  <li key={a.id} className="flex items-center justify-between gap-2 rounded-sm border border-hairline bg-board/50 px-2.5 py-1.5 text-xs">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium text-ink">{a.label}</div>
+                      <div className="truncate text-ink-2">{a.room} · {a.detail}</div>
+                    </div>
+                    <Pill
+                      className={`shrink-0 px-2 py-0.5 text-[11px] ${
+                        a.delta === "regressed" || !a.passed
+                          ? "bg-pill-pro-bg text-pill-pro-fg"
+                          : a.delta === "fixed"
+                            ? "bg-tag-sky-bg text-tag-sky-fg"
+                            : "bg-pill-active-bg text-pill-active-fg"
+                      }`}
+                    >
+                      {a.delta === "fixed" ? "Fixed" : a.delta === "regressed" ? "Regressed" : a.passed ? "Pass" : "Fail"}
+                    </Pill>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
           {(report.checks?.length ?? 0) > 0 && (
             <div className="card-stock overflow-x-auto" data-verification-matrix>
               <table className="w-full border-collapse text-left text-sm" aria-label="Verification matrix">
@@ -163,6 +250,8 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
   const [runs, setRuns] = useState<PlaytestRun[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [rerunBusy, setRerunBusy] = useState(false);
+  const [latestAssertionDiff, setLatestAssertionDiff] = useState<AssertionDiff | null>(null);
   const [syncFirst, setSyncFirst] = useState(false);
   const [error, setError] = useState("");
   const [study, setStudy] = useState<StudyStatus | null>(null);
@@ -196,10 +285,26 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
   const run = async () => {
     if (!id) return;
     setRunning(true); setError("");
-    const r = await call<{ run_id: string; passed: boolean }>(projUrl(id, "/playtest"), { sync_first: syncFirst });
+    const r = await call<{ run_id: string; passed: boolean; assertion_diff?: AssertionDiff }>(projUrl(id, "/playtest"), { sync_first: syncFirst });
     setRunning(false);
     if (!r.ok) { setError(r.error || "The playtest could not run."); return; }
+    if (r.assertion_diff) setLatestAssertionDiff(r.assertion_diff);
     if (r.passed) toast.success("Playtest passed"); else toast.error("Playtest failed. The report shows why.");
+    await Promise.all([load(r.run_id), loadStudy()]);
+  };
+
+  const rerunAssertions = async () => {
+    if (!id) return;
+    setRerunBusy(true); setError("");
+    const r = await call<{ run_id: string; passed: boolean; assertion_diff?: AssertionDiff }>(
+      projUrl(id, "/playtests/rerun"),
+      { sync_first: syncFirst },
+    );
+    setRerunBusy(false);
+    if (!r.ok) { setError(r.error || "Assertion suite re-run failed."); return; }
+    if (r.assertion_diff) setLatestAssertionDiff(r.assertion_diff);
+    if (r.passed) toast.success("All deterministic assertions passed");
+    else toast.error("Assertion suite found failures — see per-room diff");
     await Promise.all([load(r.run_id), loadStudy()]);
   };
 
@@ -233,7 +338,18 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
             <Play className="size-4" strokeWidth={1.5} aria-hidden />Launch Studio &amp; playtest
           </Button>
         )}
-        <Button variant="default" size="lg" disabled={!studioOk || running} onClick={() => void run()} data-run-playtest className="active:opacity-80 max-md:min-h-11"><Play className="size-4" strokeWidth={1.5} aria-hidden />{running ? "Playing…" : "Run playtest"}</Button>
+        <Button variant="outline" size="lg" loading={rerunBusy} disabled={running || rerunBusy} onClick={() => void rerunAssertions()} data-rerun-assertions className="active:opacity-80 max-md:min-h-11">
+          <RotateCw className="size-4" strokeWidth={1.5} aria-hidden />
+          {rerunBusy ? "Re-running…" : "Re-Run All Assertions"}
+        </Button>
+        <Button variant="default" size="lg" disabled={!studioOk || running || rerunBusy} onClick={() => void run()} data-run-playtest className="active:opacity-80 max-md:min-h-11"><Play className="size-4" strokeWidth={1.5} aria-hidden />{running ? "Playing…" : "Run playtest"}</Button>
+        {latestAssertionDiff && (
+          <span className="font-mono text-xs tabular-nums text-ink-2" data-rerun-summary>
+            {latestAssertionDiff.passed}/{latestAssertionDiff.total} assertions
+            {latestAssertionDiff.fixed > 0 ? ` (+${latestAssertionDiff.fixed} fixed)` : ""}
+            {latestAssertionDiff.regressed > 0 ? ` (-${latestAssertionDiff.regressed} regressed)` : ""}
+          </span>
+        )}
         {error && <p role="alert" className="w-full rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
       </section>
 
