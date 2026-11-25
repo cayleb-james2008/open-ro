@@ -476,7 +476,7 @@ export function CodeDiffWorkbench({
             ) : (
               <Pill className="bg-pill-pro-bg px-2 py-0.5 font-mono text-xs text-pill-pro-fg">
                 <AlertTriangle className="size-3" strokeWidth={1.5} aria-hidden />
-                {errCount} err · {warnCount} warn
+                {errCount} err / {warnCount} warn
               </Pill>
             )}
           </div>

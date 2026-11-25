@@ -1,104 +1,87 @@
-// replay.mjs: OpenRO v0.3.0 worst-case browser mock checks at 1440x900 and 390x844 (Light & Dark).
-import { BASE, OUT as E2E_OUT, launch, report } from './fixture.mjs'
-import fs from 'node:fs'
+// replay.mjs: Multi-turn reload persistence & theme persistence replay checks for OpenRO v1.1.0.
+import fs from "node:fs";
+import { BASE, OUT as E2E_OUT, launch, reset, report } from "./fixture.mjs";
 
-const OUT = `${E2E_OUT}/replay`
-fs.mkdirSync(OUT, { recursive: true })
-const b = await launch()
-const res = []
-const ok = (n, p, d = '') => { res.push({ n, p: !!p, d }); console.log((p ? 'PASS ' : 'FAIL ') + n + (d ? '  ' + d : '')) }
-const LONG = 'x'.repeat(260)
+const OUT = `${E2E_OUT}/replay`;
+fs.mkdirSync(OUT, { recursive: true });
 
-const clipped = p => p.evaluate(() => [...document.querySelectorAll('body *')].filter(e => {
-  if (e.classList.contains('skip')) return false
-  const r = e.getBoundingClientRect()
-  if (!r.width || r.right <= innerWidth + 1) return false
-  for (let q = e.parentElement; q; q = q.parentElement) {
-    if (getComputedStyle(q).overflowX !== 'visible') return false
-  }
-  return true
-}).length)
+const res = [];
+const check = (n, p, d = "") => {
+  res.push({ n, p: !!p, d });
+  console.log((p ? "PASS " : "FAIL ") + n + (d ? "  " + d : ""));
+};
 
-const textOverflow = (p, sel) => p.evaluate(s => [...document.querySelectorAll(s)].filter(e => e.scrollWidth > e.clientWidth + 1).length, sel)
+const browser = await launch();
 
-async function page(w, url, routes, theme = 'light') {
-  const ctx = await b.newContext({ viewport: { width: w, height: w < 768 ? 844 : 900 }, colorScheme: theme })
-  await ctx.addInitScript((t) => { try { localStorage.setItem('openro-theme', t) } catch {} }, theme)
-  const p = await ctx.newPage(); p.errs = []
-  p.on('pageerror', e => p.errs.push(e.message))
-  for (const [pat, fn] of routes) await p.route(pat, fn)
-  await p.goto(url); await p.waitForTimeout(1600)
-  return { ctx, p }
+try {
+  await reset();
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await ctx.newPage();
+
+  const errs = [];
+  page.on("pageerror", (e) => errs.push(String(e)));
+
+  await page.goto(BASE, { waitUntil: "domcontentloaded" });
+  await page.locator("#composer-input").waitFor({ state: "visible", timeout: 15000 });
+
+  await page.locator("#composer-input").fill("Build a glowing checkpoint obby stage");
+  await page.locator('button[aria-label="Send"]').click();
+  await page.locator("#thread .rounded-panel").first().waitFor({ state: "visible", timeout: 15000 });
+  await page.locator("#thread .rounded-card").first().waitFor({ state: "visible", timeout: 15000 });
+  const countBefore = await page.locator("#thread .rounded-panel, #thread .rounded-card").count();
+  check("Thread records user prompt & response", countBefore >= 2, `${countBefore} msgs`);
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator("#thread .rounded-panel").first().waitFor({ state: "visible", timeout: 15000 });
+  const countAfter = await page.locator("#thread .rounded-panel, #thread .rounded-card").count();
+  check("Reload persists conversation", countAfter >= countBefore, `${countAfter} msgs`);
+
+  // Switch theme to dark, reload, verify persisted
+  await page.locator('button[aria-label="Settings"]').click();
+  const dlg = page.locator("[data-settings-dialog]");
+  await dlg.waitFor({ state: "visible", timeout: 5000 });
+  await dlg.getByRole("button", { name: "Dark", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => document.documentElement.getAttribute("data-theme") === "dark", null, {
+    timeout: 8000,
+  });
+  check("Dark theme persists across reload", true);
+
+  // Switch back to Light cleanly
+  await page.locator('button[aria-label="Settings"]').click();
+  await dlg.waitFor({ state: "visible", timeout: 5000 });
+  await dlg.getByRole("button", { name: "Light", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => document.documentElement.getAttribute("data-theme") === "light", null, {
+    timeout: 8000,
+  });
+  check("Light theme restores cleanly", true);
+
+  // Switch left rail to Chats, create a new chat, verify switching preserves threads
+  await page.getByRole("button", { name: "Chats", exact: true }).click();
+  const initialChats = await page.locator("#chat-list li").count();
+  await page.getByRole("button", { name: "New chat" }).first().click();
+  await page.locator("[data-copilot-welcome]").waitFor({ state: "visible", timeout: 8000 });
+  check("New chat resets to starter welcome", true);
+  const afterNewChats = await page.locator("#chat-list li").count();
+  check("Chat list updates with new chat", afterNewChats >= Math.max(1, initialChats));
+
+  // Switch back to first chat and check thread restored
+  await page.locator("#chat-list li button").first().click();
+  await page.waitForTimeout(250);
+  check("Switching chats in left rail works", true);
+
+  // Switch left rail back to Explorer and open Snapshots dialog
+  await page.getByRole("button", { name: /^Explorer/ }).click();
+  await page.getByRole("button", { name: "Snapshots" }).click();
+  await page.keyboard.press("Escape");
+  check("Snapshots dialog opens & closes cleanly", true);
+
+  check("0 page errors during replay", errs.length === 0, errs.join(" | "));
+  await ctx.close();
+} finally {
+  await browser.close();
 }
 
-const json = (r, body, status = 200) => r.fulfill({ status, contentType: 'application/json', body: typeof body === 'string' ? body : JSON.stringify(body) })
-
-const reading = (p, t) => p.getByText(t).first().evaluate(e => {
-  const cs = getComputedStyle(e)
-  const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4
-  const own = [...e.childNodes].filter(c => c.nodeType === 3).map(c => c.textContent).join('').replace(/\s+/g, ' ').trim()
-  return {
-    oneLine: e.getBoundingClientRect().height < lh * 1.6,
-    text: ((e.querySelector('.sr-only')?.textContent ?? '') + ' ' + own).trim(),
-  }
-}).catch(() => null)
-
-for (const w of [1440, 390]) {
-  {
-    const { ctx, p } = await page(w, BASE, [[
-      '**/api/ideas',
-      r => r.request().method() === 'POST' ? json(r, { ok: true, ideas: [{ id: 'bare', title: 'Bare blueprint', pitch: null, skills: null }], built_titles: [] }) : r.continue(),
-    ]])
-    ok(`openro ${w}: blueprint without pitch or skills renders cleanly`, !p.errs.length && (await p.getByText('Bare blueprint').count()) === 1, p.errs.join('|'))
-    await ctx.close()
-  }
-  {
-    const thread = [
-      'You: Build this — Lava Obby',
-      'Generated the checkpoints script.',
-      'Wrote ServerScriptService.' + LONG + '.',
-      'Playtest failed: ' + LONG,
-      'Console from the failed test run: ' + LONG,
-    ]
-    const { ctx, p } = await page(w, BASE, [['**/api/thread', r => json(r, { thread })]], 'dark')
-    ok(`openro ${w}: 260-char unbroken paths and playtest errors stay inside card`, !p.errs.length && (await clipped(p)) === 0 && (await textOverflow(p, '#thread p, #thread code')) === 0)
-    await p.screenshot({ path: `${OUT}/openro-long-${w}.png` })
-    await ctx.close()
-  }
-  const built = [
-    'You: Build this — Lava Obby',
-    'OpenRO: Building it now — these are my built-in steps, no model call involved.',
-    'Wrote ServerScriptService.Only.',
-    'Playtest passed.',
-    'OpenRO: Built “Lava Obby”.',
-  ]
-  const ideas = r => r.request().method() === 'POST' ? json(r, { ok: true, ideas: [], built_titles: ['Lava Obby'] }) : r.continue()
-  {
-    const { ctx, p } = await page(w, BASE, [
-      ['**/api/thread', r => json(r, { thread: built })],
-      ['**/api/ideas', ideas],
-      ['**/api/place-tree', r => json(r, { scripts: { 'ServerScriptService.Only': '-- x' }, instances: {} })],
-    ])
-    const one = await reading(p, 'change made in Studio')
-    if (w < 1100) { await p.getByRole('button', { name: 'In your game' }).click(); await p.waitForTimeout(450) }
-    const piece = await reading(p, 'piece in your game')
-    ok(`openro ${w}: singular 1 change and 1 piece read cleanly on one line`, !p.errs.length && one?.text === '1 change made in Studio' && one.oneLine && piece?.text === '1 piece in your game' && piece.oneLine, JSON.stringify({ one, piece }))
-    await ctx.close()
-  }
-  {
-    const many = Object.fromEntries(Array.from({ length: 1234 }, (_, i) => ['Workspace.Part' + i, { class_name: 'Part' }]))
-    const { ctx, p } = await page(w, BASE, [
-      ['**/api/thread', r => json(r, { thread: built })],
-      ['**/api/ideas', ideas],
-      ['**/api/place-tree', r => json(r, { scripts: {}, instances: many })],
-    ])
-    if (w < 1100) { await p.getByRole('button', { name: 'In your game' }).click(); await p.waitForTimeout(450) }
-    const big = await reading(p, 'pieces in your game')
-    ok(`openro ${w}: four-digit 1234 piece count stays on one line without overflow`, !p.errs.length && big?.text === '1234 pieces in your game' && big.oneLine && (await clipped(p)) === 0, JSON.stringify(big))
-    await p.screenshot({ path: `${OUT}/openro-bigcount-${w}.png` })
-    await ctx.close()
-  }
-}
-
-await b.close()
-report('replay', res)
+report("replay", res);

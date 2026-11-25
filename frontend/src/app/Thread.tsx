@@ -1,4 +1,3 @@
-import { motion, useReducedMotion } from "motion/react";
 import {
   AlertTriangle,
   Box,
@@ -20,7 +19,7 @@ import { Expandable, ExpandableContent, ExpandableTrigger } from "@/components/u
 import { SlidingNumber } from "@/components/ui/sliding-number";
 import { Pill, PillIndicator, PillStatus } from "@/components/kibo-ui/pill";
 import { ProgressCircle } from "@/components/ProgressCircle/ProgressCircle";
-import { layout, reveal } from "@/motion";
+import { useReducedMotion } from "@/motion";
 import {
   BUILD_PHASES,
   FAILURE,
@@ -79,10 +78,8 @@ export function WorkingBanner({ label, phase }: { label: string; phase?: BuildSt
               const done = idx < activeIdx;
               const current = idx === activeIdx || (phase.phase === "repair" && step.id === "playtest");
               return (
-                <motion.span
+                <span
                   key={step.id}
-                  layout
-                  transition={layout}
                   className={`inline-flex h-6 items-center gap-1 rounded-chip px-2 text-xs font-medium ${
                     done
                       ? "bg-pill-active-bg text-pill-active-fg"
@@ -93,7 +90,7 @@ export function WorkingBanner({ label, phase }: { label: string; phase?: BuildSt
                 >
                   {done && <Check className="size-3" strokeWidth={2} aria-hidden />}
                   <span>{step.label}</span>
-                </motion.span>
+                </span>
               );
             })}
             {phase.phase === "repair" && (
@@ -107,18 +104,13 @@ export function WorkingBanner({ label, phase }: { label: string; phase?: BuildSt
   );
 }
 
-export function UserPrompt({ text, fresh }: { text: string; fresh?: boolean }) {
+export function UserPrompt({ text }: { text: string; fresh?: boolean }) {
   return (
-    <motion.div
-      initial={fresh ? { opacity: 0, y: 4 } : false}
-      animate={{ opacity: 1, y: 0 }}
-      transition={reveal}
-      className="flex justify-end"
-    >
+    <div className="flex justify-end">
       <div className="max-w-[min(86%,580px)] rounded-panel rounded-tr-sm border border-hairline bg-ink-button px-4 py-2.5 text-sm leading-relaxed text-ink-button-fg whitespace-pre-wrap [overflow-wrap:anywhere]">
         {text}
       </div>
-    </motion.div>
+    </div>
   );
 }
 
@@ -157,10 +149,7 @@ export function AgentMessage({
     : say;
   const detailsBody = raw || (needsSummary ? say : "");
   return (
-    <motion.div
-      initial={fresh ? { opacity: 0, y: 4 } : false}
-      animate={{ opacity: 1, y: 0 }}
-      transition={reveal}
+    <div
       role={bad ? "alert" : undefined}
       className={`flex flex-col gap-2 rounded-card border p-3.5 text-sm leading-relaxed ${
         bad
@@ -218,7 +207,7 @@ export function AgentMessage({
           )}
         </Expandable>
       )}
-    </motion.div>
+    </div>
   );
 }
 
@@ -422,10 +411,7 @@ export function ProposalDiffCard({
         : { label: "Pending review", cls: "bg-pill-warn-bg text-pill-warn-fg" };
 
   return (
-    <motion.section
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={reveal}
+    <section
       data-proposal-card={proposal.id}
       aria-label={`Proposed change set ${proposal.id}`}
       className={`overflow-hidden rounded-card border bg-surface ${
@@ -531,22 +517,20 @@ export function ProposalDiffCard({
           )}
         </div>
       </div>
-    </motion.section>
+    </section>
   );
 }
 
 function TraceStagePill({ label, done }: { label: string; done: boolean }) {
   return (
-    <motion.span
-      layout
-      transition={layout}
+    <span
       className={`inline-flex h-6 items-center gap-1 rounded-chip px-2 text-xs font-medium ${
         done ? "bg-pill-active-bg text-pill-active-fg" : "bg-track text-ink-3"
       }`}
     >
       {done && <Check className="size-3" strokeWidth={2} aria-hidden />}
       {label}
-    </motion.span>
+    </span>
   );
 }
 

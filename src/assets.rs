@@ -549,7 +549,12 @@ impl AssetManager {
             .map_err(|e| format!("create game-assets dir: {e}"))?;
 
         let target = self.assets_dir.join(&filename);
-        let tmp = self.assets_dir.join(format!(".{filename}.tmp"));
+        if let Ok(meta) = std::fs::symlink_metadata(&target) {
+            if meta.file_type().is_symlink() {
+                return Err(format!("refusing to overwrite symlink asset '{filename}'"));
+            }
+        }
+        let tmp = self.assets_dir.join(format!(".{filename}.{}.tmp", std::process::id()));
         std::fs::write(&tmp, bytes).map_err(|e| format!("write asset tmp: {e}"))?;
         std::fs::rename(&tmp, &target).map_err(|e| format!("commit asset file: {e}"))?;
 
@@ -657,7 +662,15 @@ impl AssetManager {
     pub fn delete(&self, raw_filename: &str) -> Result<bool, String> {
         let filename = sanitize_filename(raw_filename)?;
         let path = self.assets_dir.join(&filename);
-        let existed = path.is_file();
+        let existed = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() {
+                    return Err(format!("refusing to delete symlink asset '{filename}'"));
+                }
+                meta.file_type().is_file()
+            }
+            Err(_) => false,
+        };
         if existed {
             std::fs::remove_file(&path).map_err(|e| format!("remove asset: {e}"))?;
         }

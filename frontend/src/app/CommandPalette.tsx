@@ -482,11 +482,10 @@ export function CommandPalette({
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-hairline bg-board/40 px-4 py-2 text-xs text-ink-2">
-              <span className="inline-flex items-center gap-1.5">
+              <span className="inline-flex items-center gap-2">
                 <Kbd className="px-1 font-mono">↑</Kbd>
                 <Kbd className="px-1 font-mono">↓</Kbd>
                 <span>navigate</span>
-                <span aria-hidden>·</span>
                 <Kbd className="px-1.5 font-mono">Enter</Kbd>
                 <span>run</span>
               </span>

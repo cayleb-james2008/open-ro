@@ -1635,15 +1635,15 @@ export type BlueprintMeta = {
 
 // Exact deterministic counts from src/ideas.rs plan definitions.
 const BLUEPRINT_CATALOG: Record<string, BlueprintMeta> = {
-  "obby-starter": { category: "Obby", tagClass: "bg-tag-plan-bg text-tag-plan-fg", counts: "2 parts · 5 scripts" },
-  "coin-tycoon": { category: "Economy", tagClass: "bg-tag-mint-bg text-tag-mint-fg", counts: "4 scripts · HUD" },
-  "round-arena": { category: "Arena", tagClass: "bg-tag-sky-bg text-tag-sky-fg", counts: "2 parts · 4 scripts" },
-  "add-shop": { category: "Economy", tagClass: "bg-tag-mint-bg text-tag-mint-fg", counts: "2 scripts · HUD" },
-  "add-currency": { category: "Economy", tagClass: "bg-tag-mint-bg text-tag-mint-fg", counts: "1 script · DataStore" },
-  "add-checkpoints": { category: "Obby", tagClass: "bg-tag-plan-bg text-tag-plan-fg", counts: "1 folder · 1 script" },
-  "add-soundtrack": { category: "Audio", tagClass: "bg-tag-research-bg text-tag-research-fg", counts: "1 script · Sound" },
-  "add-day-night": { category: "World", tagClass: "bg-tag-dev-bg text-tag-dev-fg", counts: "1 script · Lighting" },
-  "add-lava": { category: "Hazard", tagClass: "bg-tag-plan-bg text-tag-plan-fg", counts: "1 part · 1 script" },
+  "obby-starter": { category: "Obby", tagClass: "bg-tag-plan-bg text-tag-plan-fg", counts: "2 parts, 5 scripts" },
+  "coin-tycoon": { category: "Economy", tagClass: "bg-tag-mint-bg text-tag-mint-fg", counts: "4 scripts, HUD" },
+  "round-arena": { category: "Arena", tagClass: "bg-tag-sky-bg text-tag-sky-fg", counts: "2 parts, 4 scripts" },
+  "add-shop": { category: "Economy", tagClass: "bg-tag-mint-bg text-tag-mint-fg", counts: "2 scripts, HUD" },
+  "add-currency": { category: "Economy", tagClass: "bg-tag-mint-bg text-tag-mint-fg", counts: "1 script, DataStore" },
+  "add-checkpoints": { category: "Obby", tagClass: "bg-tag-plan-bg text-tag-plan-fg", counts: "1 folder, 1 script" },
+  "add-soundtrack": { category: "Audio", tagClass: "bg-tag-research-bg text-tag-research-fg", counts: "1 script, Sound" },
+  "add-day-night": { category: "World", tagClass: "bg-tag-dev-bg text-tag-dev-fg", counts: "1 script, Lighting" },
+  "add-lava": { category: "Hazard", tagClass: "bg-tag-plan-bg text-tag-plan-fg", counts: "1 part, 1 script" },
 };
 
 export function blueprintMeta(idea: Idea): BlueprintMeta {

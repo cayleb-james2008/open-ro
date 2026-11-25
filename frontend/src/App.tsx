@@ -9,12 +9,13 @@ import {
   type FormEvent,
   type MouseEvent,
 } from "react";
-import { MotionConfig } from "motion/react";
 import * as Popover from "@radix-ui/react-popover";
 import { Toaster, toast } from "sonner";
 import { Drawer } from "vaul";
 import {
   Blocks,
+  Check,
+  Coins,
   Command,
   Download,
   ExternalLink,
@@ -22,8 +23,9 @@ import {
   FolderArchive,
   FolderTree,
   FolderKanban,
-  Ship as ShipIcon,
-  Users,
+  Hammer,
+  Images,
+  Layers,
   Menu,
   MessageSquare,
   Monitor,
@@ -35,10 +37,13 @@ import {
   PanelRightOpen,
   Play,
   Plus,
+  RefreshCw,
   Search,
+  Ship as ShipIcon,
   SlidersHorizontal,
   Sparkles,
   Upload,
+  Users,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -122,7 +127,7 @@ import { useShip } from "./app/ship/useShip";
 import { ProjectsRail } from "./app/ship/ProjectsRail";
 import { ShipPanel } from "./app/ship/ShipPanel";
 import { call as apiCall, projUrl, type CreatorHubSetupResult } from "./app/ship/api";
-import { StartupWizard, ONBOARDING_KEY } from "./app/StartupWizard";
+import { StartupWizard } from "./app/StartupWizard";
 import { SwarmSidebarFeed } from "./app/SwarmSidebarFeed";
 import { TeamworkPanel } from "./app/teamwork/TeamworkPanel";
 import {
@@ -137,7 +142,7 @@ import { LeftExplorerTree, StudioChip } from "./app/Shelf";
 import { SnapshotsDialog } from "./app/SnapshotsDialog";
 import { StudioBottomDrawer, type BottomDrawerTab } from "./app/StudioBottomDrawer";
 
-type ViewportTab = "embedded-studio" | "studio-3d" | "code-diff" | "ship" | "teamwork";
+type ViewportTab = "embedded-studio" | "studio-3d" | "code-diff" | "assets" | "ship" | "teamwork";
 import { StudioPluginDialog } from "./app/StudioPluginDialog";
 import { StudioViewport3D } from "./app/StudioViewport3D";
 import { SystemLibrary } from "./app/SystemLibrary";
@@ -257,7 +262,7 @@ export function App() {
   );
   const [bottomDrawerOpen, setBottomDrawerOpen] = useState(false);
   const [bottomDrawerTab, setBottomDrawerTab] = useState<BottomDrawerTab>("console");
-  const [mobilePane, setMobilePane] = useState<"studio" | "copilot">("studio");
+  const [mobilePane, setMobilePane] = useState<"studio" | "copilot">("copilot");
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Dialogs
@@ -273,21 +278,10 @@ export function App() {
       return false;
     }
   });
-  const [wizardOpen, setWizardOpen] = useState(() => {
-    if (isBrowserEngine) return false;
-    try {
-      const qs = new URLSearchParams(window.location.search);
-      if (qs.get("settings") === "1") return false;
-      return localStorage.getItem(ONBOARDING_KEY) !== "1";
-    } catch {
-      return false;
-    }
-  });
+  const [wizardOpen, setWizardOpen] = useState(false);
 
-  // RoPilot Copilot Modes, Proposals & Diffs
-  const [composerMode, setComposerMode] = useState<ComposerMode>(() =>
-    isBrowserEngine ? "agent" : "swarm",
-  );
+  // Studio Copilot Modes, Proposals & Diffs
+  const [composerMode, setComposerMode] = useState<ComposerMode>("agent");
   const [activeSwarmId, setActiveSwarmId] = useState<string | null>(null);
   const [activeSwarmSnap, setActiveSwarmSnap] = useState<TeamworkSnapshot | null>(null);
   const [runsRefreshSignal, setRunsRefreshSignal] = useState(0);
@@ -1822,7 +1816,7 @@ export function App() {
       if (res.ok) {
         const dupPath = typeof res.path === "string" && res.path ? res.path : path;
         setSelectedPath(dupPath);
-        toast.success(`Duplicated ${path.split(".").pop() || path} → ${dupPath.split(".").pop() || dupPath}`);
+        toast.success(`Duplicated ${path.split(".").pop() || path} as ${dupPath.split(".").pop() || dupPath}`);
         const afterPlace = await refreshPlace();
         void refreshChats();
         void refreshStudioActions(true);
@@ -2384,52 +2378,12 @@ export function App() {
     return q ? all.filter((c) => (c.title || "New chat").toLowerCase().includes(q)) : all;
   }, [chats, chatQuery]);
 
-  // Left Dock Contents (reused inside Desktop 248px Left Dock and Mobile Vaul Left Drawer)
+  // Left Rail (244px collapsible desktop, Vaul drawer <1100px)
   const leftDockBody = (
     <nav
-      aria-label="Explorer, Chats, and Studio controls"
+      aria-label="Explorer, Chats, and Projects"
       className="flex h-full min-h-0 flex-col gap-2.5 bg-surface p-2.5 text-ink"
     >
-      {/* Brand + Collapse + Palette */}
-      <div className="flex min-w-0 flex-none items-center justify-between gap-1.5 px-0.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="grid size-8 flex-none place-items-center rounded-card border border-hairline bg-board text-ink">
-            <Blocks className="size-4" strokeWidth={1.5} aria-hidden />
-          </span>
-          <div className="min-w-0">
-            <h1 className="truncate text-sm font-medium leading-tight text-ink">OpenRO</h1>
-            <div className="truncate text-xs text-ink-2" title={ship.active?.name || shell.gameName}>
-              {ship.active?.name || shell.gameName}
-            </div>
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => {
-              setMenuOpen(false);
-              setPaletteOpen(true);
-            }}
-            aria-label="Open command palette"
-            className="size-7 text-ink-2 hover:text-ink max-md:size-11"
-          >
-            <Command className="size-3.5" strokeWidth={1.5} aria-hidden />
-          </Button>
-          {!narrow && (
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => setLeftDockCollapsed(true)}
-              aria-label="Collapse left dock"
-              className="size-7 text-ink-2 hover:text-ink"
-            >
-              <PanelLeftClose className="size-3.5" strokeWidth={1.5} aria-hidden />
-            </Button>
-          )}
-        </div>
-      </div>
-
       {/* Explorer | Chats | Projects Segmented Toggle */}
       <SegmentedControl aria-label="Left dock section" size="sm" className="w-full flex-none">
         <SegmentedControlItem
@@ -2560,7 +2514,7 @@ export function App() {
                         data-id={c.id}
                         aria-current={c.id === activeId ? "true" : undefined}
                         onClick={() => void switchChat(c.id)}
-                        className="chat-btn h-auto min-h-8 w-full justify-between rounded-card border-transparent px-2 py-1 text-left font-normal text-ink-2 hover:bg-board/70 hover:text-ink data-[checked=true]:font-medium data-[checked=true]:text-ink max-md:min-h-11"
+                        className="chat-btn h-auto min-h-8 w-full justify-between rounded-card border-transparent px-2 py-1 text-left font-normal text-ink-2 hover:bg-board/70 hover:text-ink aria-[current=true]:bg-blue-soft aria-[current=true]:font-medium aria-[current=true]:text-ink max-md:min-h-11"
                       >
                         <span className="min-w-0 flex-1 truncate text-xs">{c.title || "New chat"}</span>
                         {inflight[c.id] && (
@@ -2576,7 +2530,7 @@ export function App() {
         </div>
       )}
 
-      {/* Slim 2-Row Left Dock Footer */}
+      {/* Compact Left Rail Footer */}
       <div className="flex flex-none flex-col gap-1.5 border-t border-hairline pt-2">
         <div className="grid grid-cols-2 gap-1.5">
           <Button
@@ -2597,15 +2551,15 @@ export function App() {
           <Button
             variant="outline"
             size="xs"
-            aria-label="Settings"
             onClick={() => {
               setMenuOpen(false);
-              setSettingsOpen(true);
+              setSnapshotsOpen(true);
             }}
-            className="justify-start gap-1.5 bg-board/60 px-2 font-medium text-ink hover:bg-board max-md:min-h-11"
+            aria-label="Open Snapshots"
+            className="justify-start gap-1.5 bg-board/50 px-2 font-normal text-ink hover:bg-board max-md:min-h-11"
           >
-            <SlidersHorizontal className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
-            <span className="truncate">Settings</span>
+            <Layers className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
+            <span className="truncate">Snapshots</span>
           </Button>
         </div>
 
@@ -2623,12 +2577,12 @@ export function App() {
             <StudioChip connected={studioOk} workspaceMode={workspaceMode} />
           </Button>
           <a
-            href={RELEASES_URL + (version || "1.0.0")}
+            href={RELEASES_URL + (version || "1.1.0")}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex min-h-7 items-center gap-1 rounded-sm text-xs text-ink-2 outline-none hover:text-ink hover:underline active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-50 max-md:min-h-11"
+            className="inline-flex min-h-7 items-center gap-1 rounded-sm text-xs text-ink-2 outline-none hover:text-ink hover:underline active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus max-md:min-h-11"
           >
-            <span>OpenRO v<span className="font-mono">{version || "1.0.0"}</span></span>
+            <span>v<span className="font-mono">{version || "1.1.0"}</span></span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
         </div>
@@ -2636,173 +2590,86 @@ export function App() {
     </nav>
   );
 
-  // Center Studio Workspace (Top Tab Bar + Full-Height Active Surface + Collapsible Bottom Drawer)
-  const centerWorkspace = (
-    <main
-      aria-label="Studio Workspace"
+  // Tabbed Right Workbench (Viewport, Code & Diff, Assets, Ship & Monetize, Swarm + Bottom Drawer)
+  const rightWorkbench = (
+    <section
+      aria-label="Studio Workbench"
       data-studio-workspace
-      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-canvas"
+      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-surface"
     >
-      {/* Top Studio Tab Bar + Compact Ship Actions */}
-      <header className="flex min-h-11 flex-none flex-wrap items-center justify-between gap-2 border-b border-hairline bg-surface px-2.5 py-1.5">
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          {!narrow && leftDockCollapsed && (
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => setLeftDockCollapsed(false)}
-              aria-label="Expand left dock"
-              className="size-7 text-ink-2 hover:text-ink"
-            >
-              <PanelLeftOpen className="size-4" strokeWidth={1.5} aria-hidden />
-            </Button>
-          )}
-
-          <SegmentedControl aria-label="Center Studio workspace tab" size="sm" className="max-w-full flex-wrap">
-            <SegmentedControlItem
-              data-checked={centerTab === "embedded-studio" || centerTab === "studio-3d" ? "" : undefined}
-              aria-pressed={centerTab === "embedded-studio" || centerTab === "studio-3d"}
-              onClick={() => setCenterTab(isBrowserEngine ? "studio-3d" : "embedded-studio")}
-              className="gap-1 max-md:!h-11 max-md:px-2"
-            >
-              <Monitor className="size-3.5" strokeWidth={1.5} aria-hidden />
-              <span>Studio</span>
-            </SegmentedControlItem>
-            {!isBrowserEngine && (
-              <SegmentedControlItem
-                data-checked={centerTab === "teamwork" ? "" : undefined}
-                aria-pressed={centerTab === "teamwork"}
-                onClick={() => setCenterTab("teamwork")}
-                className="gap-1 max-md:!h-11 max-md:px-2"
-              >
-                <Users className="size-3.5" strokeWidth={1.5} aria-hidden />
-                <span>Swarm</span>
-              </SegmentedControlItem>
-            )}
-            <SegmentedControlItem
-              data-checked={centerTab === "code-diff" ? "" : undefined}
-              aria-pressed={centerTab === "code-diff"}
-              onClick={() => setCenterTab("code-diff")}
-              className="gap-1 max-md:!h-11 max-md:px-2"
-            >
-              <FileDiff className="size-3.5" strokeWidth={1.5} aria-hidden />
-              <span>Code</span>
-              {pendingProposalCount > 0 && (
-                <span className="rounded-chip bg-blue px-1.5 py-0 font-mono text-xs tabular-nums text-blue-fg">
-                  {pendingProposalCount}
-                </span>
-              )}
-            </SegmentedControlItem>
-            {!isBrowserEngine && (
-              <SegmentedControlItem
-                data-checked={centerTab === "ship" ? "" : undefined}
-                aria-pressed={centerTab === "ship"}
-                onClick={() => setCenterTab("ship")}
-                className="gap-1 max-md:!h-11 max-md:px-2"
-              >
-                <ShipIcon className="size-3.5" strokeWidth={1.5} aria-hidden />
-                <span>Ship</span>
-              </SegmentedControlItem>
-            )}
-          </SegmentedControl>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-1">
-          {antigravityIssue && (
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() => setSettingsOpen(true)}
-              data-top-quota-issue
-              className="border-hairline bg-pill-warn-bg text-pill-warn-fg hover:bg-pill-warn-bg max-md:min-h-11"
-            >
-              <span>{antigravityIssue.resets_in ? `Quota (${antigravityIssue.resets_in})` : antigravityIssue.message}</span>
-            </Button>
-          )}
-          <Button
-            variant="outline"
-            size="xs"
-            disabled={totalPieces === 0}
-            onClick={() => void handleRunStudioPlaytest()}
-            aria-label="Run Studio playtest"
-            title="Play"
-            className="bg-surface max-md:min-h-11 max-md:min-w-11"
+      {/* Workbench Tab Header */}
+      <div className="flex min-h-10 flex-none flex-wrap items-center justify-between gap-1.5 border-b border-hairline bg-board/40 px-2.5 py-1">
+        <SegmentedControl aria-label="Studio workbench tab" size="sm" className="max-w-full flex-wrap">
+          <SegmentedControlItem
+            data-checked={centerTab === "embedded-studio" || centerTab === "studio-3d" ? "" : undefined}
+            aria-pressed={centerTab === "embedded-studio" || centerTab === "studio-3d"}
+            onClick={() => setCenterTab(isBrowserEngine ? "studio-3d" : "embedded-studio")}
+            className="gap-1 max-md:!h-11 max-md:px-2"
           >
-            <Play className="size-3.5" strokeWidth={1.5} aria-hidden />
-            <span className="hidden sm:inline">Play</span>
-          </Button>
-          <Popover.Root>
-            <Popover.Trigger asChild>
-              <Button
-                variant="outline"
-                size="icon-sm"
-                aria-label="Project export and import menu"
-                className="shrink-0 bg-surface max-md:size-11"
-              >
-                <MoreHorizontal className="size-4" strokeWidth={1.5} aria-hidden />
-              </Button>
-            </Popover.Trigger>
-            <Popover.Portal>
-              <Popover.Content
-                align="end"
-                sideOffset={6}
-                className="z-50 flex w-44 flex-col gap-1 rounded-card border border-hairline bg-surface p-1.5 shadow-lift"
-              >
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  disabled={totalPieces === 0}
-                  onClick={() => void handleExportRbxlx()}
-                  className="w-full justify-start gap-2"
-                >
-                  <Download className="size-3.5" strokeWidth={1.5} aria-hidden />
-                  <span>Export .rbxlx</span>
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  disabled={totalPieces === 0}
-                  onClick={() => void handleDownloadShipPack()}
-                  className="w-full justify-start gap-2"
-                >
-                  <FolderArchive className="size-3.5" strokeWidth={1.5} aria-hidden />
-                  <span>Rojo .zip</span>
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="w-full justify-start gap-2"
-                >
-                  <Upload className="size-3.5" strokeWidth={1.5} aria-hidden />
-                  <span>Import .rbxlx</span>
-                </Button>
-              </Popover.Content>
-            </Popover.Portal>
-          </Popover.Root>
-          {!narrow && rightDockCollapsed && (
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() => setRightDockCollapsed(false)}
-              aria-label="Expand Agent sidebar"
-              className="bg-surface"
+            <Monitor className="size-3.5" strokeWidth={1.5} aria-hidden />
+            <span>Viewport</span>
+          </SegmentedControlItem>
+          <SegmentedControlItem
+            data-checked={centerTab === "code-diff" ? "" : undefined}
+            aria-pressed={centerTab === "code-diff"}
+            onClick={() => setCenterTab("code-diff")}
+            className="gap-1 max-md:!h-11 max-md:px-2"
+          >
+            <FileDiff className="size-3.5" strokeWidth={1.5} aria-hidden />
+            <span>Code</span>
+            {pendingProposalCount > 0 && (
+              <span className="rounded-chip bg-blue px-1.5 py-0 font-mono text-xs tabular-nums text-blue-fg">
+                {pendingProposalCount}
+              </span>
+            )}
+          </SegmentedControlItem>
+          {!isBrowserEngine && (
+            <SegmentedControlItem
+              data-checked={centerTab === "assets" ? "" : undefined}
+              aria-pressed={centerTab === "assets"}
+              onClick={() => setCenterTab("assets")}
+              className="gap-1 max-md:!h-11 max-md:px-2"
             >
-              <PanelRightOpen className="size-3.5" strokeWidth={1.5} aria-hidden />
-              <span>Agent</span>
-            </Button>
+              <Images className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>Assets</span>
+            </SegmentedControlItem>
           )}
-        </div>
-      </header>
+          <SegmentedControlItem
+            data-checked={centerTab === "ship" ? "" : undefined}
+            aria-pressed={centerTab === "ship"}
+            onClick={() => setCenterTab("ship")}
+            className="gap-1 max-md:!h-11 max-md:px-2"
+          >
+            <ShipIcon className="size-3.5" strokeWidth={1.5} aria-hidden />
+            <span>Ship</span>
+          </SegmentedControlItem>
+          {!isBrowserEngine && (
+            <SegmentedControlItem
+              data-checked={centerTab === "teamwork" ? "" : undefined}
+              aria-pressed={centerTab === "teamwork"}
+              onClick={() => setCenterTab("teamwork")}
+              className="gap-1 max-md:!h-11 max-md:px-2"
+            >
+              <Users className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>Swarm</span>
+            </SegmentedControlItem>
+          )}
+        </SegmentedControl>
 
-      <div
-        className="server-banners"
-        onClick={onBannerClick}
-        dangerouslySetInnerHTML={{ __html: shell.bannerHtml }}
-      />
-      {update.show && <UpdateStrip u={update} />}
+        {!narrow && (
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => setRightDockCollapsed(true)}
+            aria-label="Collapse Workbench"
+            className="size-8 text-ink-2 hover:text-ink"
+          >
+            <PanelRightClose className="size-3.5" strokeWidth={1.5} aria-hidden />
+          </Button>
+        )}
+      </div>
 
-      {/* Full-Height Active Center Surface */}
+      {/* Active Workbench Surface */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-2.5">
         {centerTab === "embedded-studio" ? (
           <EmbeddedStudioPanel
@@ -2845,16 +2712,21 @@ export function App() {
           />
         ) : centerTab === "teamwork" ? (
           <TeamworkPanel projectId={ship.activeId} />
-        ) : centerTab === "ship" ? (
+        ) : centerTab === "assets" || centerTab === "ship" ? (
           <ShipPanel
             ship={ship}
             studioOk={studioOk}
+            place={place}
+            initialSection={centerTab === "assets" ? "assets" : "publish"}
             onOpenProjects={() => {
               setLeftDockCollapsed(false);
               setLeftDockTab("projects");
               if (narrow) setMenuOpen(true);
             }}
             onOpenSettings={() => setSettingsOpen(true)}
+            onInstalledMonetization={() => { void refreshPlace(); }}
+            onRunPlaytest={() => handleRunStudioPlaytest()}
+            onOpenCodeDiff={(p) => handleOpenScriptInCodeDiff(p)}
           />
         ) : (
           <CodeDiffWorkbench
@@ -2876,7 +2748,7 @@ export function App() {
         )}
       </div>
 
-      {/* Collapsible Bottom Studio Drawer (Output Console, Agent Trace, 13 MCP Tools, Properties) */}
+      {/* Collapsible Bottom Console / MCP Tools / Properties Drawer */}
       <StudioBottomDrawer
         open={bottomDrawerOpen}
         onToggle={() => setBottomDrawerOpen((v) => !v)}
@@ -2896,7 +2768,7 @@ export function App() {
         onDeletePart={handleDeletePart}
         onInvokeStudioTool={handleInvokeStudioTool}
       />
-    </main>
+    </section>
   );
 
   const handleQuickCreatorHubSetup = async (): Promise<CreatorHubSetupResult | void> => {
@@ -2916,15 +2788,47 @@ export function App() {
     return r;
   };
 
-  // Right Docked Prompt-First Agent Sidebar
-  const rightCopilot = (
-    <aside
-      aria-label="OpenRO Agent"
+  const handleInstallMonetizationPack = async () => {
+    try {
+      const endpoint = ship.activeId
+        ? `/api/projects/${encodeURIComponent(ship.activeId)}/monetization/pack`
+        : "/api/monetization/pack";
+      const res = await post<{ ok?: boolean; error?: string }>(endpoint, {
+        currency: "Coins",
+        daily_base_reward: 100,
+      });
+      if (res.ok === false) {
+        toast.error(res.error || "Could not install Monetization Pack.");
+        return;
+      }
+      await refreshPlace();
+      setCenterTab("ship");
+      toast.success("Installed Monetization & Retention Luau Pack");
+    } catch {
+      toast.error("Could not install Monetization Pack.");
+    }
+  };
+
+  const pipelineStageIdx =
+    totalPieces === 0
+      ? 0
+      : buildPhase?.phase === "planning" || buildPhase?.phase === "compiling"
+        ? 1
+        : buildPhase?.phase === "playtest" || buildPhase?.phase === "checking"
+          ? 2
+          : buildPhase?.phase === "repair"
+            ? 3
+            : 4;
+
+  // Central Focused Agent / Plan / Ask Thread
+  const centerCopilot = (
+    <main
+      aria-label="OpenRO Studio Copilot"
       data-ropilot-copilot
-      className="flex h-full min-h-0 flex-col bg-surface text-ink"
+      className="flex min-h-0 min-w-0 flex-1 flex-col bg-canvas text-ink"
     >
-      {/* Agent Header */}
-      <div className="flex min-h-11 flex-none items-center justify-between gap-2 border-b border-hairline px-3 py-1.5">
+      {/* Copilot Header */}
+      <div className="flex h-10 flex-none items-center justify-between gap-2 border-b border-hairline bg-surface px-3.5">
         <div className="flex min-w-0 items-center gap-2">
           <Sparkles className="size-4 shrink-0 text-blue" strokeWidth={1.5} aria-hidden />
           <h2 className="truncate text-sm font-medium text-ink" title={activeTitle}>
@@ -2932,33 +2836,41 @@ export function App() {
           </h2>
           {pendingProposalCount > 0 && (
             <Pill className="bg-pill-warn-bg px-1.5 py-0 text-xs text-pill-warn-fg">
-              <span className="font-mono tabular-nums">{pendingProposalCount}</span> diff
+              <span className="font-mono tabular-nums">{pendingProposalCount}</span> pending diff
             </Pill>
           )}
         </div>
 
-        <div className="flex shrink-0 items-center gap-1">
-          {!narrow && (
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => setRightDockCollapsed(true)}
-              aria-label="Collapse Agent sidebar"
-              className="size-7 text-ink-2 hover:text-ink"
-            >
-              <PanelRightClose className="size-3.5" strokeWidth={1.5} aria-hidden />
-            </Button>
-          )}
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={() => setStartersOpen(true)}
+            className="gap-1 text-xs text-ink-2 hover:text-ink max-md:min-h-11"
+          >
+            <Layers className="size-3.5" strokeWidth={1.5} aria-hidden />
+            <span>Starters</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => void newChat()}
+            aria-label="New chat"
+            className="gap-1 bg-surface text-xs max-md:min-h-11"
+          >
+            <Plus className="size-3.5" strokeWidth={1.5} aria-hidden />
+            <span>New chat</span>
+          </Button>
         </div>
       </div>
 
-      {/* Scrollable Feed */}
+      {/* Scrollable Thread */}
       <div
         id="thread"
         ref={threadRef}
         aria-live="polite"
         aria-busy={!chats && !chatsError}
-        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3"
+        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4"
       >
         {activeSwarmId && (
           <SwarmSidebarFeed
@@ -2967,6 +2879,7 @@ export function App() {
             projectId={ship.activeId}
             onOpenFullSwarm={() => {
               setCenterTab("teamwork");
+              setRightDockCollapsed(false);
               setMobilePane("studio");
             }}
             onPrefillPrompt={(p) => {
@@ -2976,39 +2889,144 @@ export function App() {
             onQuickCreatorHubSetup={handleQuickCreatorHubSetup}
             onOpenShip={() => {
               setCenterTab("ship");
+              setRightDockCollapsed(false);
               setMobilePane("studio");
             }}
           />
         )}
 
         {threadError ? (
-          <div role="alert" className="flex flex-col items-start gap-2.5 rounded-card border border-hairline bg-board p-3.5">
-            <strong className="text-sm font-medium text-pill-pro-fg">Could not load conversation.</strong>
-            <p className="text-xs text-ink-2">The OpenRO server did not answer. Try again or reload.</p>
+          <div role="alert" className="flex flex-col items-start gap-2.5 rounded-card border border-hairline bg-surface p-4">
+            <strong className="text-sm font-medium text-pill-pro-fg">Could not load the conversation.</strong>
+            <p className="text-sm text-ink-2">The OpenRO server did not answer. Try again or reload.</p>
             <Button variant="default" size="sm" onClick={() => void refreshAll()} className="max-md:min-h-11">
               Try again
             </Button>
           </div>
         ) : !hasConversation && proposals.length === 0 && !activeSwarmId ? (
-          <div className="mt-auto flex flex-wrap gap-1.5" data-prompt-chips>
-            {[
-              { label: "Anime card game", prompt: "Build a polished anime card battle game with packs, equip deck, and NPC fights" },
-              { label: "Obby with coins", prompt: "Build an obby with 4 checkpoints, jump pads, and coin leaderstats" },
-              { label: "Boss arena", prompt: "Build a boss fight arena with melee sword, health bar, and wave phases" },
-            ].map((chip) => (
-              <Button
-                key={chip.label}
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setText(chip.prompt);
-                  inputRef.current?.focus();
-                }}
-                className="bg-board/60 text-xs font-normal text-ink-2 hover:text-ink max-md:min-h-11"
-              >
-                {chip.label}
-              </Button>
-            ))}
+          <div className="mx-auto flex w-full max-w-[740px] flex-col gap-4 py-2" data-copilot-welcome>
+            {/* 1-Click Pipeline Bar */}
+            <section
+              aria-label="Studio build pipeline"
+              className="flex flex-col gap-3 rounded-card border border-hairline bg-surface p-4"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <h3 className="text-base font-medium text-ink">Describe, build, playtest, and ship to Roblox Studio</h3>
+                  <p className="mt-0.5 text-sm text-ink-2">
+                    Pick a complete starter below or describe any game system in plain words.
+                  </p>
+                </div>
+                {workbenchIdeas[0] && (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    disabled={!canBuild || busy}
+                    onClick={() => void buildIdea(workbenchIdeas[0])}
+                    className="max-md:min-h-11"
+                  >
+                    <Hammer className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    <span>Build &amp; Playtest {workbenchIdeas[0].title}</span>
+                  </Button>
+                )}
+              </div>
+
+              <div className="flex flex-wrap gap-1.5" data-pipeline-steps>
+                {["Describe", "Build Luau", "Auto-Playtest", "Fix & Audit", "Ship Ready"].map((label, idx) => {
+                  const done = totalPieces > 0 && idx <= pipelineStageIdx;
+                  return (
+                    <div
+                      key={label}
+                      className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
+                        done
+                          ? "border-pill-active-bg bg-pill-active-bg text-pill-active-fg"
+                          : "border-hairline bg-board/55 text-ink-2"
+                      }`}
+                    >
+                      <span className="font-mono tabular-nums">{idx + 1}.</span>
+                      <span className="whitespace-nowrap">{label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+
+            {/* Starter Blueprints Grid */}
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              {workbenchIdeas.slice(0, 3).map((idea) => (
+                <div
+                  key={idea.id}
+                  className="flex flex-col justify-between gap-2.5 rounded-card border border-hairline bg-surface p-3.5"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium text-ink">{idea.title}</span>
+                      <Pill className="bg-board px-2 py-0 text-xs text-ink-2">Starter</Pill>
+                    </div>
+                    <p className="mt-1 text-sm leading-snug text-ink-2">{idea.pitch}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={!canBuild || busy}
+                      onClick={() => void buildIdea(idea)}
+                      aria-label={`Build ${idea.title} in Studio`}
+                      className="w-full max-md:min-h-11"
+                    >
+                      <Hammer className="size-3.5" strokeWidth={1.5} aria-hidden />
+                      <span>Build in Studio</span>
+                    </Button>
+                  </div>
+                </div>
+              ))}
+
+              {/* Built-in Monetization & Retention Pack Starter */}
+              <div className="flex flex-col justify-between gap-2.5 rounded-card border border-hairline bg-surface p-3.5">
+                <div className="min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-ink">Monetization &amp; Retention Pack</span>
+                    <Pill className="bg-tag-mint-bg px-2 py-0 text-xs text-tag-mint-fg">Revenue</Pill>
+                  </div>
+                  <p className="mt-1 text-sm leading-snug text-ink-2">
+                    Adds GamePass caching, idempotent ProcessReceipt DataStore ledger, and 24h Daily Login streaks.
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!studioOk && !ship.activeId}
+                  onClick={() => void handleInstallMonetizationPack()}
+                  className="w-full max-md:min-h-11"
+                >
+                  <Coins className="size-3.5" strokeWidth={1.5} aria-hidden />
+                  <span>Install Monetization Pack</span>
+                </Button>
+              </div>
+            </div>
+
+            {/* 1-Click Starter Prompt Chips */}
+            <div className="flex flex-wrap items-center gap-1.5" data-prompt-chips>
+              {[
+                { label: "Anime card battler", prompt: "Build a polished anime card battle game with packs, equip deck, and NPC fights" },
+                { label: "Obby with coins", prompt: "Build an obby with 4 checkpoints, jump pads, and coin leaderstats" },
+                { label: "Boss fight arena", prompt: "Build a boss fight arena with melee sword, health bar, and wave phases" },
+                { label: "VIP GamePass & daily streak", prompt: "Add a VIP GamePass, ProcessReceipt developer product, and 7-day daily reward streak" },
+              ].map((chip) => (
+                <Button
+                  key={chip.label}
+                  variant="outline"
+                  size="xs"
+                  onClick={() => {
+                    setText(chip.prompt);
+                    inputRef.current?.focus();
+                  }}
+                  className="bg-surface text-xs font-normal text-ink-2 hover:text-ink max-md:min-h-11"
+                >
+                  {chip.label}
+                </Button>
+              ))}
+            </div>
           </div>
         ) : (
           (hasConversation || proposals.length > 0) && (
@@ -3035,6 +3053,7 @@ export function App() {
               onQuickCreatorHubSetup={handleQuickCreatorHubSetup}
               onOpenShip={() => {
                 setCenterTab("ship");
+                setRightDockCollapsed(false);
                 setMobilePane("studio");
               }}
               onBuild={(idea) => void buildIdea(idea)}
@@ -3043,6 +3062,7 @@ export function App() {
                 setActiveProposalId(pid);
                 if (scriptPath) setSelectedScriptPath(scriptPath);
                 setCenterTab("code-diff");
+                setRightDockCollapsed(false);
                 setMobilePane("studio");
               }}
               onApplyProposal={(pid) => void handleApplyProposal(pid)}
@@ -3052,7 +3072,7 @@ export function App() {
         )}
       </div>
 
-      {/* Background Plan-Execute Run Queue & Checkpoints (hidden when empty) */}
+      {/* Background Plan-Execute Run Queue & Checkpoints */}
       {!isBrowserEngine && (
         <AgentRunsPanel
           chatId={activeId}
@@ -3064,7 +3084,7 @@ export function App() {
         />
       )}
 
-      {/* Docked Prompt-First Composer */}
+      {/* Docked Copilot Composer */}
       <CopilotComposer
         text={text}
         onTextChange={setText}
@@ -3094,97 +3114,131 @@ export function App() {
         onConfirmUndo={() => void undoNow()}
         onQueuePlan={isBrowserEngine ? undefined : () => void handleQueuePlan(text)}
       />
-    </aside>
+    </main>
   );
 
   return (
-    <MotionConfig reducedMotion="user">
-      <div
-        className="relative flex h-dvh min-h-0 w-full flex-col overflow-hidden bg-canvas text-ink"
-        data-app="openro"
-        data-ide-layout="ropilot-3pane"
-        onDragOver={onAppDragOver}
-        onDragLeave={onAppDragLeave}
-        onDrop={onAppDrop}
-      >
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".rbxlx,.xml"
-          hidden
-          onChange={onFileInputChange}
-        />
+    <div
+      className="relative flex h-dvh min-h-0 w-full flex-col overflow-hidden bg-canvas text-ink"
+      data-app="openro"
+      data-ide-layout="studio-copilot-3pane"
+      onDragOver={onAppDragOver}
+      onDragLeave={onAppDragLeave}
+      onDrop={onAppDrop}
+    >
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".rbxlx,.xml"
+        hidden
+        onChange={onFileInputChange}
+      />
 
-        {dragActive && (
-          <div
-            role="status"
-            className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-canvas/85 p-6"
-          >
-            <div className="flex flex-col items-center gap-2 rounded-panel border-2 border-dashed border-blue bg-surface px-8 py-6 text-center shadow-lift">
-              <Upload className="size-6 text-blue" strokeWidth={1.5} aria-hidden />
-              <p className="text-base font-medium text-ink">Drop .rbxlx XML file to import</p>
-              <p className="text-sm text-ink-2">Parses Workspace parts, CFrame/Size/Color, and Luau scripts directly into Studio.</p>
-            </div>
+      {dragActive && (
+        <div
+          role="status"
+          className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-canvas/85 p-6"
+        >
+          <div className="flex flex-col items-center gap-2 rounded-panel border-2 border-dashed border-blue bg-surface px-8 py-6 text-center shadow-lift">
+            <Upload className="size-6 text-blue" strokeWidth={1.5} aria-hidden />
+            <p className="text-base font-medium text-ink">Drop .rbxlx XML file to import</p>
+            <p className="text-sm text-ink-2">Parses Workspace parts, CFrame/Size/Color, and Luau scripts directly into Studio.</p>
           </div>
-        )}
+        </div>
+      )}
 
-        <a className="skip" href="#composer-input">
-          Skip to Copilot composer
-        </a>
+      <a className="skip" href="#composer-input">
+        Skip to message box
+      </a>
 
-        {/* Responsive Compact Mobile/Tablet Header (< 1100px) */}
-        {narrow && (
-          <div className="flex min-h-12 flex-none items-center justify-between gap-2 border-b border-hairline bg-surface px-2.5 py-1.5">
-            <div className="flex min-w-0 items-center gap-1.5">
-              <Drawer.Root open={menuOpen} onOpenChange={setMenuOpen} direction="left" autoFocus>
-                <Drawer.Trigger asChild>
-                  <Button
-                    ref={menuKeyRef}
-                    variant="ghost"
-                    size="icon"
-                    aria-label="Open the menu"
-                    className="size-11 shrink-0"
-                  >
-                    <Menu className="size-5" strokeWidth={1.5} aria-hidden />
-                  </Button>
-                </Drawer.Trigger>
-                <Drawer.Portal>
-                  <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/30" />
-                  <Drawer.Content
-                    onEscapeKeyDown={(e) => {
-                      if (settingsOpen || paletteOpen || snapshotsOpen || toolLibraryOpen || pluginDialogOpen || startersOpen) {
-                        e.preventDefault();
-                        return;
-                      }
-                      setMenuOpen(false);
-                    }}
-                    onCloseAutoFocus={(e) => {
+      {/* Slim 44px Top Chrome */}
+      <header
+        data-top-chrome
+        className="flex h-11 flex-none items-center justify-between gap-2 border-b border-hairline bg-surface px-3"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          {narrow ? (
+            <Drawer.Root open={menuOpen} onOpenChange={setMenuOpen} direction="left" autoFocus>
+              <Drawer.Trigger asChild>
+                <Button
+                  ref={menuKeyRef}
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Open the menu"
+                  className="size-11 shrink-0"
+                >
+                  <Menu className="size-5" strokeWidth={1.5} aria-hidden />
+                </Button>
+              </Drawer.Trigger>
+              <Drawer.Portal>
+                <Drawer.Overlay className="fixed inset-0 z-40 bg-ink/30" />
+                <Drawer.Content
+                  onEscapeKeyDown={(e) => {
+                    if (settingsOpen || paletteOpen || snapshotsOpen || toolLibraryOpen || pluginDialogOpen || startersOpen) {
                       e.preventDefault();
-                      (menuKeyRef.current ?? document.querySelector<HTMLElement>('[aria-label="Open the menu"]'))?.focus();
-                    }}
-                    className="fixed inset-y-0 left-0 z-50 w-[min(86vw,288px)] border-r border-hairline bg-surface outline-none"
-                  >
-                    <Drawer.Title className="sr-only">Explorer, Chats, and Studio controls</Drawer.Title>
-                    <Drawer.Description className="sr-only">
-                      Browse Studio Explorer, switch chats, open Tool Library, Studio Plugin, or Settings.
-                    </Drawer.Description>
-                    {leftDockBody}
-                  </Drawer.Content>
-                </Drawer.Portal>
-              </Drawer.Root>
-              <span className="truncate text-sm font-medium text-ink">OpenRO</span>
-            </div>
+                      return;
+                    }
+                    setMenuOpen(false);
+                  }}
+                  onCloseAutoFocus={(e) => {
+                    e.preventDefault();
+                    (menuKeyRef.current ?? document.querySelector<HTMLElement>('[aria-label="Open the menu"]'))?.focus();
+                  }}
+                  className="fixed inset-y-0 left-0 z-50 w-[min(86vw,288px)] border-r border-hairline bg-surface outline-none"
+                >
+                  <Drawer.Title className="sr-only">Explorer, Chats, and Projects</Drawer.Title>
+                  <Drawer.Description className="sr-only">
+                    Browse Studio Explorer, switch chats, open Tool Library, or inspect snapshots.
+                  </Drawer.Description>
+                  {leftDockBody}
+                </Drawer.Content>
+              </Drawer.Portal>
+            </Drawer.Root>
+          ) : (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => setLeftDockCollapsed((v) => !v)}
+              aria-label={leftDockCollapsed ? "Expand left dock" : "Collapse left dock"}
+              className="size-8 text-ink-2 hover:text-ink"
+            >
+              {leftDockCollapsed ? (
+                <PanelLeftOpen className="size-4" strokeWidth={1.5} aria-hidden />
+              ) : (
+                <PanelLeftClose className="size-4" strokeWidth={1.5} aria-hidden />
+              )}
+            </Button>
+          )}
 
-            <SegmentedControl aria-label="Switch Studio or Copilot view" size="sm">
-              <SegmentedControlItem
-                data-checked={mobilePane === "studio" ? "" : undefined}
-                aria-pressed={mobilePane === "studio"}
-                onClick={() => setMobilePane("studio")}
-                className="gap-1 max-md:!h-11 max-md:px-2.5"
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="grid size-7 flex-none place-items-center rounded-lg border border-hairline bg-board text-ink">
+              <Blocks className="size-4" strokeWidth={1.5} aria-hidden />
+            </span>
+            <h1 className="truncate text-sm font-medium text-ink">OpenRO</h1>
+            <span className="hidden truncate rounded-chip bg-board px-2 py-0.5 text-xs text-ink-2 sm:inline-block" title={ship.active?.name || shell.gameName}>
+              {ship.active?.name || shell.gameName}
+            </span>
+          </div>
+
+          <div className="hidden items-center gap-1.5 md:flex" data-answers="2">
+            <StudioChip connected={studioOk} workspaceMode={workspaceMode} />
+            {!studioOk && (
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={() => void checkStudio()}
+                className="gap-1 bg-surface text-xs"
               >
-                <Monitor className="size-3.5" strokeWidth={1.5} aria-hidden />
-                <span>Studio</span>
-              </SegmentedControlItem>
+                <RefreshCw className="size-3" strokeWidth={1.5} aria-hidden />
+                <span>Check again</span>
+              </Button>
+            )}
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1.5">
+          {narrow && (
+            <SegmentedControl aria-label="Switch Copilot or Workbench view" size="sm">
               <SegmentedControlItem
                 data-checked={mobilePane === "copilot" ? "" : undefined}
                 aria-pressed={mobilePane === "copilot"}
@@ -3193,6 +3247,15 @@ export function App() {
               >
                 <Sparkles className="size-3.5" strokeWidth={1.5} aria-hidden />
                 <span>Copilot</span>
+              </SegmentedControlItem>
+              <SegmentedControlItem
+                data-checked={mobilePane === "studio" ? "" : undefined}
+                aria-pressed={mobilePane === "studio"}
+                onClick={() => setMobilePane("studio")}
+                className="gap-1 max-md:!h-11 max-md:px-2.5"
+              >
+                <Monitor className="size-3.5" strokeWidth={1.5} aria-hidden />
+                <span>Workbench</span>
                 {pendingProposalCount > 0 && (
                   <span className="rounded-chip bg-blue px-1 font-mono text-xs text-blue-fg">
                     {pendingProposalCount}
@@ -3200,31 +3263,158 @@ export function App() {
                 )}
               </SegmentedControlItem>
             </SegmentedControl>
-          </div>
-        )}
-
-        {/* Main 3-Pane IDE Shell */}
-        <div className="flex min-h-0 flex-1 overflow-hidden">
-          {/* Pane 1: Desktop Left Dock (264px collapsible) */}
-          {!narrow && !leftDockCollapsed && (
-            <div className="w-[264px] flex-none border-r border-hairline">{leftDockBody}</div>
           )}
 
-          {/* Pane 2: Center Studio Workspace */}
-          {(!narrow || mobilePane === "studio") && centerWorkspace}
+          {!narrow && antigravityIssue && (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => setSettingsOpen(true)}
+              data-top-quota-issue
+              className="border-hairline bg-pill-warn-bg text-pill-warn-fg hover:bg-pill-warn-bg"
+            >
+              <span>{antigravityIssue.resets_in ? `Quota (${antigravityIssue.resets_in})` : antigravityIssue.message}</span>
+            </Button>
+          )}
 
-          {/* Pane 3: Right Docked RoPilot Copilot (380px collapsible on desktop, full width on mobile Copilot tab) */}
-          {!narrow ? (
-            !rightDockCollapsed && (
-              <div className="w-[380px] flex-none border-l border-hairline">{rightCopilot}</div>
-            )
-          ) : (
-            mobilePane === "copilot" && <div className="flex min-h-0 min-w-0 flex-1 flex-col">{rightCopilot}</div>
+          {!narrow && (
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={totalPieces === 0}
+              onClick={() => void handleRunStudioPlaytest()}
+              aria-label="Run Studio playtest"
+              className="bg-surface"
+            >
+              <Play className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>Play</span>
+            </Button>
+          )}
+
+          {!narrow && (
+            <Popover.Root>
+              <Popover.Trigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label="Project export and import menu"
+                  className="shrink-0 bg-surface"
+                >
+                  <MoreHorizontal className="size-4" strokeWidth={1.5} aria-hidden />
+                </Button>
+              </Popover.Trigger>
+              <Popover.Portal>
+                <Popover.Content
+                  align="end"
+                  sideOffset={6}
+                  className="z-50 flex w-44 flex-col gap-1 rounded-card border border-hairline bg-surface p-1.5 shadow-lift"
+                >
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    disabled={totalPieces === 0}
+                    onClick={() => void handleExportRbxlx()}
+                    className="w-full justify-start gap-2"
+                  >
+                    <Download className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    <span>Export .rbxlx</span>
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    disabled={totalPieces === 0}
+                    onClick={() => void handleDownloadShipPack()}
+                    className="w-full justify-start gap-2"
+                  >
+                    <FolderArchive className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    <span>Rojo .zip</span>
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="w-full justify-start gap-2"
+                  >
+                    <Upload className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    <span>Import .rbxlx</span>
+                  </Button>
+                </Popover.Content>
+              </Popover.Portal>
+            </Popover.Root>
+          )}
+
+          {!narrow && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => setPaletteOpen(true)}
+              aria-label="Open command palette"
+              className="size-8 text-ink-2 hover:text-ink"
+            >
+              <Command className="size-3.5" strokeWidth={1.5} aria-hidden />
+            </Button>
+          )}
+
+          <Button
+            variant="outline"
+            size="xs"
+            aria-label="Settings"
+            onClick={() => setSettingsOpen(true)}
+            className="gap-1.5 bg-surface px-2 font-medium text-ink max-md:min-h-11"
+          >
+            <SlidersHorizontal className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
+            <span className="hidden sm:inline">Settings</span>
+          </Button>
+
+          {!narrow && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => setRightDockCollapsed((v) => !v)}
+              aria-label={rightDockCollapsed ? "Expand Workbench" : "Collapse Workbench"}
+              className="size-8 text-ink-2 hover:text-ink"
+            >
+              {rightDockCollapsed ? (
+                <PanelRightOpen className="size-4" strokeWidth={1.5} aria-hidden />
+              ) : (
+                <PanelRightClose className="size-4" strokeWidth={1.5} aria-hidden />
+              )}
+            </Button>
           )}
         </div>
+      </header>
 
-        {/* Starters & 28 Game Systems Dialog (on demand from Copilot Header / Welcome / Palette) */}
-        <MorphingDialog open={startersOpen} onOpenChange={setStartersOpen} transition={dialogSpring}>
+      <div
+        className="server-banners"
+        onClick={onBannerClick}
+        dangerouslySetInnerHTML={{ __html: shell.bannerHtml }}
+      />
+      {update.show && <UpdateStrip u={update} />}
+
+      {/* Main 3-Pane Studio Copilot IDE */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/* Pane 1: Collapsible Left Project / Explorer / Chats Rail */}
+        {!narrow && !leftDockCollapsed && (
+          <div className="w-[260px] flex-none border-r border-hairline">{leftDockBody}</div>
+        )}
+
+        {/* Pane 2: Focused Central Copilot Thread */}
+        {(!narrow || mobilePane === "copilot") && centerCopilot}
+
+        {/* Pane 3: Tabbed Right Studio Workbench */}
+        {!narrow ? (
+          !rightDockCollapsed && (
+            <div className="flex w-[450px] flex-none border-l border-hairline xl:w-[500px]">
+              {rightWorkbench}
+            </div>
+          )
+        ) : (
+          mobilePane === "studio" && rightWorkbench
+        )}
+      </div>
+
+      {/* Starters & 28 Game Systems Dialog */}
+      <MorphingDialog open={startersOpen} onOpenChange={setStartersOpen} transition={dialogSpring}>
           <MorphingDialogContainer>
             <MorphingDialogContent className="relative mx-4 flex max-h-[86dvh] w-full max-w-[920px] flex-col overflow-hidden rounded-dialog border border-hairline bg-surface text-ink shadow-lift">
               <div className="flex flex-none items-center justify-between gap-2 border-b border-hairline bg-board/60 px-5 py-3.5">
@@ -3401,7 +3591,6 @@ export function App() {
           onDoneFocusComposer={() => inputRef.current?.focus()}
         />
         <Toaster position="bottom-right" theme={theme} />
-      </div>
-    </MotionConfig>
+    </div>
   );
 }

@@ -155,7 +155,7 @@ export function CopilotComposer({
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onDrop={(e) => onDrop(e as unknown as DragEvent<HTMLDivElement>)}
-        className={`flex flex-col gap-1.5 rounded-card border bg-board/40 p-2 transition-colors duration-(--dur-press) ease-(--ease-house) ${dragOver ? "border-blue bg-blue-soft/30" : "border-hairline"}`}
+        className={`flex flex-col gap-1.5 rounded-card border bg-board/40 p-2 transition-[border-color,background-color] duration-(--dur-press) ease-(--ease-house) ${dragOver ? "border-blue bg-blue-soft/30" : "border-hairline"}`}
       >
         {contextPaths.length > 0 && (
           <div className="flex flex-wrap items-center gap-1">
@@ -226,25 +226,37 @@ export function CopilotComposer({
             </Popover.Root>
 
             <SegmentedControl aria-label="Agent mode" size="sm">
-              {(["swarm", "agent", "plan"] as const).map((m) => (
+              {(["agent", "plan", "ask", "swarm"] as const).map((m) => (
                 <SegmentedControlItem
                   key={m}
                   data-checked={mode === m ? "" : undefined}
                   aria-pressed={mode === m}
                   onClick={() => onModeChange(m)}
-                  className="!px-1.5 sm:text-xs max-md:!h-11"
+                  className="!px-2 sm:text-xs max-md:!h-11"
                 >
-                  {m === "swarm" ? "Swarm" : m === "agent" ? "Agent" : "Plan"}
+                  {m === "swarm" ? "Swarm" : m === "agent" ? "Agent" : m === "plan" ? "Plan" : "Ask"}
                 </SegmentedControlItem>
               ))}
             </SegmentedControl>
           </div>
 
           <div className="ml-auto flex items-center gap-1">
+            {canUndo && (
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={() => setUndoOpen(true)}
+                aria-label="Undo"
+                className="gap-1 px-2 text-xs text-ink max-md:min-h-11"
+              >
+                <Undo2 className="size-3.5" strokeWidth={1.5} aria-hidden />
+                <span>Undo</span>
+              </Button>
+            )}
             <Popover.Root open={modelOpen} onOpenChange={(o) => { setModelOpen(o); if (o) void loadModels(); }}>
               <Popover.Trigger asChild>
-                <Button variant="ghost" size="xs" aria-label="Switch AI model" className="max-w-[116px] gap-1 px-1.5 text-xs text-ink-2 hover:text-ink max-md:min-h-11">
-                  <span className="truncate">{modelLabel ? modelLabel.replace(/^gemini-4-/, "").replace(/-/g, " ") : "Hydrogen"}</span>
+                <Button variant="ghost" size="xs" aria-label="Switch AI model" className="max-w-[148px] gap-1 px-2 text-xs text-ink-2 hover:text-ink max-md:min-h-11">
+                  <span className="truncate">{modelLabel ? modelLabel.replace(/^gemini-4-/, "").replace(/-/g, " ") : "Model"}</span>
                   <ChevronDown className="size-3 shrink-0" strokeWidth={1.5} aria-hidden />
                 </Button>
               </Popover.Trigger>

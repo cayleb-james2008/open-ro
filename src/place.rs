@@ -2160,7 +2160,7 @@ impl<'a> XmlParser<'a> {
                     return Err("unclosed XML comment <!--".to_string());
                 };
                 self.pos += end + 3;
-            } else if self.starts_with("<!DOCTYPE") || self.starts_with("<!doctype") || self.starts_with("<!ENTITY") || self.starts_with("<!entity") {
+            } else if self.starts_with("<!") && !self.starts_with("<![CDATA[") {
                 return Err("XML DOCTYPE/ENTITY declarations are forbidden (XXE protection)".to_string());
             } else {
                 break;

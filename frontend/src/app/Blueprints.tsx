@@ -1,9 +1,7 @@
-import { motion, useReducedMotion } from "motion/react";
 import { Check, Hammer, Layers } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
-import { instant, press } from "@/motion";
 import { ADDS, blueprintMeta, plain, type Idea } from "./data";
 
 export function BlueprintCard({
@@ -23,15 +21,12 @@ export function BlueprintCard({
   featured?: boolean;
   onBuild: () => void;
 }) {
-  const reduce = useReducedMotion();
   const meta = blueprintMeta(idea);
   const pitch = plain(idea.pitch || "Generates Luau scripts, places instances in Studio, and runs a playtest.");
   const adds = [...new Set(idea.skills.map((s) => ADDS[s] || s.replace(/_/g, " ")))];
 
   return (
-    <motion.article
-      whileTap={unavailable || !canBuild || busy || reduce ? undefined : { scale: 0.985 }}
-      transition={reduce ? instant : press}
+    <article
       className={`flex h-full min-w-0 flex-col justify-between gap-2.5 rounded-card border bg-surface p-3.5 transition-[color,background-color,border-color] duration-(--dur-press) ease-(--ease-house) ${
         building
           ? "border-blue ring-2 ring-blue/30"
@@ -95,7 +90,7 @@ export function BlueprintCard({
           </Button>
         )}
       </div>
-    </motion.article>
+    </article>
   );
 }
 

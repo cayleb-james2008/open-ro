@@ -118,12 +118,12 @@ export function OpenCloudSettings({ onChanged }: { onChanged?: () => void }) {
         <Input type="password" name="openro-opencloud-key" autoComplete="new-password" spellCheck={false} value={key} onChange={(e) => setKey(e.target.value)} placeholder={cloud?.has_key ? "Type a new key to replace it" : "Paste your key"} className="font-mono" aria-describedby="opencloud-scopes" />
       </label>
       <div className="flex flex-wrap gap-2">
-        <Button variant="default" size="lg" disabled={!key.trim() || busy === "key"} onClick={() => void saveKey()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">{busy === "key" ? "Saving…" : "Save key"}</Button>
-        <Button variant="outline" size="lg" disabled={!!busy} onClick={() => void autoSetup()} data-auto-setup-browser className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">
+        <Button variant="default" size="lg" disabled={!key.trim() || busy === "key"} onClick={() => void saveKey()} className="active:opacity-80 max-md:min-h-11">{busy === "key" ? "Saving…" : "Save key"}</Button>
+        <Button variant="outline" size="lg" disabled={!!busy} onClick={() => void autoSetup()} data-auto-setup-browser className="active:opacity-80 max-md:min-h-11">
           <Globe className="size-4" strokeWidth={1.5} aria-hidden />
           {busy === "hub" ? "Connecting…" : "Auto-setup from open browser"}
         </Button>
-        {cloud?.has_key && <Button variant="outline" size="lg" disabled={!!busy} onClick={() => void send("/api/opencloud/key", { clear: true }, "clear", "Open Cloud key removed")} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">Remove key</Button>}
+        {cloud?.has_key && <Button variant="outline" size="lg" disabled={!!busy} onClick={() => void send("/api/opencloud/key", { clear: true }, "clear", "Open Cloud key removed")} className="active:opacity-80 max-md:min-h-11">Remove key</Button>}
       </div>
       {cloud?.scopes_needed && cloud.scopes_needed.length > 0 && (
         <p id="opencloud-scopes" className="text-sm text-ink-2">The key needs these permissions: <span className="font-mono">{cloud.scopes_needed.join(", ")}</span></p>
@@ -136,7 +136,7 @@ export function OpenCloudSettings({ onChanged }: { onChanged?: () => void }) {
             <SegmentedControlItem data-checked={who === "groupId" ? "" : undefined} aria-pressed={who === "groupId"} onClick={() => setWho("groupId")} className="max-md:!h-11 max-md:px-3">A group</SegmentedControlItem>
           </SegmentedControl>
           <Input inputMode="numeric" aria-label={who === "userId" ? "Your Roblox user number" : "Group number"} value={num} onChange={(e) => setNum(e.target.value)} placeholder={who === "userId" ? "Your user number" : "Group number"} className="min-w-[140px] flex-1 font-mono" />
-          <Button variant="outline" size="lg" disabled={!/^\d+$/.test(num.trim()) || busy === "who"} onClick={() => void saveWho()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">Save</Button>
+          <Button variant="outline" size="lg" disabled={!/^\d+$/.test(num.trim()) || busy === "who"} onClick={() => void saveWho()} className="active:opacity-80 max-md:min-h-11">Save</Button>
         </div>
       </div>
     </section>

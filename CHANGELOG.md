@@ -4,6 +4,18 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.1.0 - 2026-11-25
+
+- **Desktop-Workbench 3-Pane Studio Copilot IDE Overhaul (`frontend/src/App.tsx`, `theme.css`, `components/ui.tsx`, `CopilotComposer.tsx`, `Thread.tsx`, `Blueprints.tsx`):**
+  - Replaced bloated third-party wrappers (`motion/react`, `@base-ui/react`, `recharts`, `cmdk`, `@dnd-kit`, `rune/used`) with crisp zero-bloat Desktop-Workbench primitives (`src/components/ui.tsx` + `src/motion.ts`), shrinking `assets/index.html` by ~18% (`1,482 KB` -> `1,213 KB`).
+  - Rebuilt layout around a slim 44px top bar (`data-top-chrome`), collapsible left `Explorer | Chats | Projects` rail, focused central `Agent | Plan | Ask | Swarm` Copilot thread (1-click starter blueprints, `Describe -> Build -> Auto-Playtest -> Fix -> Ship` pipeline strip, inline tool-call/diff timeline), and tabbed right workbench (`Viewport | Code | Assets | Ship | Swarm`).
+  - Switched palette to cool neutral slate + electric cobalt (`--blue`), Geist + Geist Mono (`tabular-nums`), body `>= 14px`, floor `>= 12px`, accessible contrast (`--raised`), `prefers-reduced-motion` support, Settings-only Light/Dark theme switch (`#67`), and zero user-facing jargon (`#155`).
+- **Profit & Speed-to-Value Monetization Pack (`src/opencloud.rs`, `src/server.rs`, `src/luau_check.rs`, `MonetizationPackCard.tsx`, `ShipPanel.tsx`, `web-engine/install.ts`):**
+  - Added 1-click Built-in Monetization & Retention Luau Pack (`POST /api/monetization/pack`, `POST /api/projects/:id/monetization/pack`, `GET /api/projects/:id/readiness`) bundling `GamePassService`, `ProcessReceiptGuard` (`PurchaseId` DataStore `UpdateAsync` idempotency guard), `DailyRewardRetention`, and `PolicyCompliance`.
+  - Added `UNSAFE_PROCESS_RECEIPT` static check in `src/luau_check.rs` to catch `ProcessReceipt` callbacks missing idempotent `PurchaseId` ledger handling before publishing.
+- **Backend Security Hardening (`src/server.rs`, `src/opencloud.rs`, `src/assets.rs`, `src/place.rs`, `tests/v110_hardening_monetization.rs`):**
+  - Hardened HTTP parser against duplicate `Host`, invalid/conflicting `Content-Length`, and `Transfer-Encoding: chunked` smuggling (`400`/`501`), enforced loopback-only `Host` guards across `/api/opencloud*`, `/api/creator-hub*`, `/api/monetization/pack`, `/api/assets/*`, and `/api/studio/*` mutations, refused symlink ancestor traversal/overwrite (`safe_rel`, `AssetManager`, `MediaCollector`), and tightened mixed-case XML `<!DOCTYPE>`/`<!ELEMENT>` XXE refusal in `place.rs`.
+
 ## 1.0.0 - 2026-11-25
 
 - **Untitled Anime Card Game — Live Flagship Built 100% by OpenRO (`projects/untitled-anime-card-game/`):**

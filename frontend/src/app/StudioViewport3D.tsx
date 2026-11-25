@@ -8,7 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
-import { useReducedMotion } from "motion/react";
+import { useReducedMotion } from "@/motion";
 import {
   ChevronDown,
   CopyPlus,
@@ -2003,7 +2003,7 @@ export function StudioViewport3D({
             </div>
           ) : (
             <span className="min-w-0 max-w-full truncate text-xs text-ink-2">
-              Drag to orbit · Shift+drag pan · Wheel zoom · Click any 3D part to edit
+              Drag to orbit, Shift+drag to pan, wheel to zoom, click any 3D part to edit
             </span>
           )}
         </div>

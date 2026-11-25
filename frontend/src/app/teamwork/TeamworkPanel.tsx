@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
-import { AlertTriangle, ArrowRight, CheckCircle2, ChevronDown, FileLock2, GitCommitHorizontal, Play, Plus, RefreshCw, RotateCcw, Send, Square, Terminal, Users, X, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, FileLock2, GitCommitHorizontal, Play, Plus, RefreshCw, RotateCcw, Send, Square, Terminal, Users, X, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
@@ -145,7 +145,7 @@ function TraceDrawer({ runId, agent, liveTraces, onClose }: { runId: string; age
           {combined.map((t) => (
             <li key={t.seq} className="rounded-card border border-hairline bg-board/60 px-2.5 py-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="font-mono text-xs font-medium text-ink">#{t.seq} · {t.kind}</span>
+                <span className="font-mono text-xs font-medium text-ink">#{t.seq} {t.kind}</span>
                 {t.ts_ms && <span className="font-mono text-xs text-ink-2">{stamp(t.ts_ms)}</span>}
               </div>
               <p className="mt-1 break-words text-sm text-ink-2">{t.summary}</p>
@@ -378,9 +378,9 @@ export function TeamworkPanel({ projectId }: { projectId?: string | null }) {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {run.status === "running" ? (
-                  <Button variant="outline" size="sm" disabled={!!busy} onClick={() => void toggleRun()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><Square className="size-3.5" strokeWidth={1.5} aria-hidden />Stop run</Button>
+                  <Button variant="outline" size="sm" disabled={!!busy} onClick={() => void toggleRun()} className="active:opacity-80 max-md:min-h-11"><Square className="size-3.5" strokeWidth={1.5} aria-hidden />Stop run</Button>
                 ) : run.status === "stopped" ? (
-                  <Button variant="default" size="sm" disabled={!!busy} onClick={() => void toggleRun()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><Play className="size-3.5" strokeWidth={1.5} aria-hidden />Resume run</Button>
+                  <Button variant="default" size="sm" disabled={!!busy} onClick={() => void toggleRun()} className="active:opacity-80 max-md:min-h-11"><Play className="size-3.5" strokeWidth={1.5} aria-hidden />Resume run</Button>
                 ) : null}
               </div>
             </div>
@@ -413,7 +413,6 @@ export function TeamworkPanel({ projectId }: { projectId?: string | null }) {
                       <span className={`size-2 rounded-full ${nodeDot(coord)}`} aria-hidden />
                       <span>Coordinator</span>
                     </Button>
-                    <ArrowRight className="size-3.5 shrink-0 text-ink-3" strokeWidth={1.5} aria-hidden />
                     <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5" aria-label="Active role nodes">
                       {workers.length === 0 ? (
                         <span className="rounded-sm border border-hairline bg-surface px-2 py-1 text-xs text-ink-2">Workers</span>
@@ -432,7 +431,6 @@ export function TeamworkPanel({ projectId }: { projectId?: string | null }) {
                         ))
                       )}
                     </div>
-                    <ArrowRight className="size-3.5 shrink-0 text-ink-3" strokeWidth={1.5} aria-hidden />
                     <Button
                       variant="outline"
                       size="xs"
@@ -545,7 +543,7 @@ export function TeamworkPanel({ projectId }: { projectId?: string | null }) {
                     <InputGroupAddon align="inline-start"><span className="text-xs text-ink-2">human</span></InputGroupAddon>
                     <InputGroupInput aria-label="Post to team board" value={postText} onChange={(e) => setPostText(e.target.value)} placeholder="Message the team, e.g. @systems use 1000 pity" />
                   </InputGroup>
-                  <Button type="submit" variant="default" size="lg" disabled={!postText.trim() || busy === "post"} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><Send className="size-4" strokeWidth={1.5} aria-hidden />Post</Button>
+                  <Button type="submit" variant="default" size="lg" disabled={!postText.trim() || busy === "post"} className="active:opacity-80 max-md:min-h-11"><Send className="size-4" strokeWidth={1.5} aria-hidden />Post</Button>
                 </form>
               </div>
             </div>

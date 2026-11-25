@@ -396,7 +396,7 @@ export function AdaptersPanel() {
               variant={cap === k ? "secondary" : "ghost"}
               size="xs"
               onClick={() => setCap(k)}
-              className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"
+              className="active:opacity-80 max-md:min-h-11"
             >
               {label}
             </Button>
@@ -417,7 +417,7 @@ export function AdaptersPanel() {
             variant={addOpen ? "secondary" : "default"}
             size="sm"
             onClick={() => setAddOpen((v) => !v)}
-            className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"
+            className="active:opacity-80 max-md:min-h-11"
           >
             {addOpen && <X className="size-3.5" strokeWidth={1.5} aria-hidden />}
             <span>{addOpen ? "Close form" : "+ Add CLI / API Tool"}</span>

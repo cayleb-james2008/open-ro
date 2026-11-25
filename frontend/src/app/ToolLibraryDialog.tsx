@@ -833,7 +833,7 @@ export function ToolLibraryDialog({
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex flex-col gap-0.5">
                         <h4 className="text-sm font-medium text-ink">
-                          1. Market Leaders · {activeNiche.name}
+                          1. Market Leaders — {activeNiche.name}
                         </h4>
                         <p className="text-xs text-ink-2">{activeNiche.tagline}</p>
                       </div>
@@ -1043,7 +1043,7 @@ export function ToolLibraryDialog({
                             {blenderRes.filename || blenderRes.preset}
                           </span>
                           <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs text-pill-active-fg">
-                            {blenderRes.triangles ?? 0} tris · {Math.max(1, Math.round((blenderRes.bytes ?? 0) / 1024))} KB
+                            {blenderRes.triangles ?? 0} tris, {Math.max(1, Math.round((blenderRes.bytes ?? 0) / 1024))} KB
                           </Pill>
                         </div>
                         {blenderRes.detail && <p className="text-ink-2">{blenderRes.detail}</p>}
@@ -1117,7 +1117,7 @@ export function ToolLibraryDialog({
                             {audioRes.filename || `${audioRes.preset}.wav`}
                           </span>
                           <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs text-pill-active-fg">
-                            {audioRes.duration_ms ?? 450}ms · {Math.max(1, Math.round((audioRes.bytes ?? 0) / 1024))} KB
+                            {audioRes.duration_ms ?? 450}ms, {Math.max(1, Math.round((audioRes.bytes ?? 0) / 1024))} KB
                           </Pill>
                         </div>
                         {audioRes.wav_url && (
