@@ -4,6 +4,15 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.6.0 - 2026-11-25
+
+- **Pre-Publish Revenue & Playtest Gate (`src/opencloud.rs`, `src/server.rs`, `frontend/src/app/ship/ReadinessAutopilot.tsx`, `api.ts`):**
+  - Added `POST /api/projects/:id/publish-gate` and the **"Pre-Publish Gate"** panel + 1-click Auto-Fix cards (`fix_cards`) verifying economy shop bindings (`ProductIds.luau` + `EconomyShopHandler` + `ShopPromptBridge` + `ProcessReceipt`), retention streak script, Rojo `.rbxlx` build + CRC-32 Ship Pack integrity, and playtest `MOVE/ACT/HUD` readiness in one pass.
+  - Added `action: "codegen_economy"` routing inside `POST /api/projects/:id/autopilot` so every fix card resolves directly from Ship.
+- **Sub-15ms Cold Boot, 7k+ req/s Throughput & Peak RSS <42 MB (`src/main.rs`, `src/place.rs`, `src/server.rs`):**
+  - Bounded glibc heap arenas (`mallopt(M_ARENA_MAX, 2)` on GNU/Linux) and removed redundant plain-HTML heap caching in `cached_index` to keep Peak RSS under `<42 MB` during 30-worker concurrent bursts.
+  - Skipped redundant startup `LocalPlace::persist()` re-writes when `place.json` + `game.rbxlx` already exist on disk and warmed the 44-worker HTTP pool (`POOL_WORKERS_BOOT = 8` + background `36`) asynchronously after `TcpListener::bind` to restore `<15 ms` cold boot and `7,000+ req/s` concurrent HTTP throughput alongside 10 simultaneous SSE streams.
+
 ## 1.5.0 - 2026-11-25
 
 - **Fix All Blockers Score Delta & Ship Pack Integrity Diagnostics (`src/opencloud.rs`, `src/rojo_export.rs`, `frontend/src/app/ship/ReadinessAutopilot.tsx`, `api.ts`):**

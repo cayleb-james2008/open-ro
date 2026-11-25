@@ -33,7 +33,18 @@ fn env_flag(key: &str) -> bool {
         .is_some_and(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
 }
 
+#[cfg(target_env = "gnu")]
+unsafe extern "C" {
+    fn mallopt(param: i32, value: i32) -> i32;
+}
+
 fn main() {
+    #[cfg(target_env = "gnu")]
+    unsafe {
+        // Bound glibc heap arenas (M_ARENA_MAX = -8) so 30+ concurrent worker threads
+        // share compact arenas instead of bloating Peak RSS across 64+ arenas.
+        let _ = mallopt(-8, 2);
+    }
     let cli_args: Vec<String> = std::env::args().collect();
     if cli_args
         .iter()

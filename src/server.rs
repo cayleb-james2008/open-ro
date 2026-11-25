@@ -647,11 +647,39 @@ impl Drop for HandlerSlot {
     }
 }
 
-const POOL_WORKERS: usize = 20;
+const POOL_WORKERS_BOOT: usize = 8;
+const POOL_WORKERS: usize = 44;
 
 struct WorkerJob {
     stream: TcpStream,
     slot: HandlerSlot,
+}
+
+fn spawn_pool_worker(
+    idx: usize,
+    q: Arc<(Mutex<VecDeque<WorkerJob>>, Condvar)>,
+    sh: Arc<Shared>,
+    al: Arc<Vec<String>>,
+    bw: Arc<AtomicUsize>,
+) {
+    let _ = std::thread::Builder::new()
+        .name(format!("openro-http-{idx}"))
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || loop {
+            let job = {
+                let (lock, cvar) = &*q;
+                let mut guard = lock.lock().unwrap();
+                while guard.is_empty() {
+                    guard = cvar.wait(guard).unwrap();
+                }
+                guard.pop_front()
+            };
+            if let Some(job) = job {
+                bw.fetch_add(1, Ordering::Relaxed);
+                let _ = handle(job.stream, &sh, &al, job.slot);
+                bw.fetch_sub(1, Ordering::Relaxed);
+            }
+        });
 }
 
 pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> {
@@ -670,27 +698,32 @@ pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> 
     let queue: Arc<(Mutex<VecDeque<WorkerJob>>, Condvar)> =
         Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
     let busy_workers = Arc::new(AtomicUsize::new(0));
-    for idx in 0..POOL_WORKERS {
+    for idx in 0..POOL_WORKERS_BOOT {
+        spawn_pool_worker(
+            idx,
+            Arc::clone(&queue),
+            Arc::clone(&shared),
+            Arc::clone(&allowed),
+            Arc::clone(&busy_workers),
+        );
+    }
+    {
         let q = Arc::clone(&queue);
         let sh = Arc::clone(&shared);
         let al = Arc::clone(&allowed);
         let bw = Arc::clone(&busy_workers);
         let _ = std::thread::Builder::new()
-            .name(format!("openro-http-{idx}"))
-            .stack_size(384 * 1024)
-            .spawn(move || loop {
-                let job = {
-                    let (lock, cvar) = &*q;
-                    let mut guard = lock.lock().unwrap();
-                    while guard.is_empty() {
-                        guard = cvar.wait(guard).unwrap();
-                    }
-                    guard.pop_front()
-                };
-                if let Some(job) = job {
-                    bw.fetch_add(1, Ordering::Relaxed);
-                    let _ = handle(job.stream, &sh, &al, job.slot);
-                    bw.fetch_sub(1, Ordering::Relaxed);
+            .name("openro-pool-warm".to_string())
+            .stack_size(128 * 1024)
+            .spawn(move || {
+                for idx in POOL_WORKERS_BOOT..POOL_WORKERS {
+                    spawn_pool_worker(
+                        idx,
+                        Arc::clone(&q),
+                        Arc::clone(&sh),
+                        Arc::clone(&al),
+                        Arc::clone(&bw),
+                    );
                 }
             });
     }
@@ -4586,6 +4619,7 @@ fn try_route_opencloud_assets(
                 || path.ends_with("/products/codegen")
                 || path.ends_with("/monetization/pack")
                 || path.ends_with("/monetization/codegen")
+                || path.ends_with("/publish-gate")
                 || path.ends_with("/readiness")
                 || path.ends_with("/autopilot")
                 || path.ends_with("/universe")
@@ -7969,7 +8003,6 @@ pub fn prewarm_index_cache(shared: &Shared) {
 
 #[derive(Clone)]
 struct CachedIndex {
-    plain: Vec<u8>,
     gzip: Vec<u8>,
     etag: String,
 }
@@ -7993,7 +8026,6 @@ fn cached_index(
     use flate2::{write::GzEncoder, Compression};
     use sha2::{Digest, Sha256};
     use std::collections::HashMap;
-    use std::sync::OnceLock;
 
     static CACHE: OnceLock<Mutex<HashMap<IndexCacheKey, Arc<CachedIndex>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -8027,14 +8059,14 @@ fn cached_index(
 
     let mut enc = GzEncoder::new(Vec::with_capacity(plain.len() / 3), Compression::default());
     let gzip = if enc.write_all(&plain).is_ok() {
-        enc.finish().unwrap_or_else(|_| plain.clone())
+        enc.finish().unwrap_or_default()
     } else {
         Vec::new()
     };
 
-    let entry = Arc::new(CachedIndex { plain, gzip, etag });
+    let entry = Arc::new(CachedIndex { gzip, etag });
     let mut map = cache.lock().unwrap();
-    if map.len() >= 32 {
+    if map.len() >= 16 {
         map.clear();
     }
     map.insert(key, Arc::clone(&entry));
@@ -8115,13 +8147,21 @@ fn serve_index_page(
         );
     } else {
         let extra = format!("ETag: {}\r\nVary: Accept-Encoding\r\n", cached.etag);
+        let plain = render_page_full(
+            game_name,
+            studio_connected,
+            model_configured,
+            recovered,
+            workspace_mode,
+        )
+        .into_bytes();
         respond_bytes_with_headers(
             stream,
             "200 OK",
             "text/html; charset=utf-8",
             "no-cache",
             &extra,
-            &cached.plain,
+            &plain,
         );
     }
 }

@@ -197,6 +197,23 @@ export type MonetizationCodegenResult = {
   diagnostics?: ReadinessDiagnostic[];
   readiness?: ProjectReadiness;
 };
+export type PublishGateFixCard = {
+  id: string;
+  title: string;
+  reason: string;
+  fix_action: string;
+};
+export type PublishGateResult = {
+  gate_passed: boolean;
+  economy_bindings_ok: boolean;
+  retention_ok: boolean;
+  build_and_zip_ok: boolean;
+  playtest_passed: boolean;
+  parity_ok: boolean;
+  checks: { id: string; label: string; ok: boolean; detail: string }[];
+  fix_cards: PublishGateFixCard[];
+  readiness?: ProjectReadiness;
+};
 
 export type Res<T> = { ok: boolean; httpStatus: number; error?: string } & Partial<T>;
 
