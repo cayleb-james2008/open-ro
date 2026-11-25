@@ -146,3 +146,42 @@ end
     assert_eq!(resp["audit"]["ok"], json!(true));
     assert_eq!(resp["scripts"].as_array().unwrap().len(), 3);
 }
+
+#[cfg(unix)]
+#[test]
+fn symlink_asset_delete_and_get_return_403_forbidden() {
+    use std::os::unix::fs::symlink;
+
+    let base = std::env::temp_dir().join(format!(
+        "openro-v110-symlink-delete-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+    let data_dir = base.join("data");
+    let assets_dir = data_dir.join("game-assets");
+    std::fs::create_dir_all(&assets_dir).unwrap();
+    let outside = base.join("outside.png");
+    std::fs::write(&outside, b"\x89PNG\r\n\x1a\n").unwrap();
+    symlink(&outside, assets_dir.join("escape_writable.png")).unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let place = LocalPlace::in_memory("Symlink Guard".to_string());
+    let model = ModelClient::new("http://127.0.0.1:1".into(), "stub".into(), None);
+    let agent = Agent::with_local_place(model, place);
+    let shared = Shared::with_data_dir(Some(agent), "Symlink Guard".to_string(), data_dir);
+    std::thread::spawn(move || {
+        let _ = serve(listener, shared);
+    });
+
+    let get_req = format!("GET /api/assets/escape_writable.png HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    let (st_get, _) = send_raw(port, get_req.as_bytes());
+    assert_eq!(st_get, 403, "GET symlink asset should return 403");
+
+    let del_req = format!("DELETE /api/assets/escape_writable.png HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    let (st_del, body_del) = send_raw(port, del_req.as_bytes());
+    assert_eq!(st_del, 403, "DELETE symlink asset should return 403, got {body_del}");
+    assert!(outside.exists(), "outside target must not be deleted");
+
+    let _ = std::fs::remove_dir_all(&base);
+}

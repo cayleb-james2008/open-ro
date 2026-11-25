@@ -7338,7 +7338,7 @@ fn handle_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &str) {
                 return;
             }
             Err(e) => {
-                let status = if e.contains("escapes") {
+                let status = if e.contains("escapes") || e.contains("symlink") {
                     "403 Forbidden"
                 } else {
                     "404 Not Found"
@@ -7378,7 +7378,12 @@ fn handle_asset_delete(stream: &mut TcpStream, shared: &Shared, raw_file: &str) 
         match crate::assets::AssetManager::open(dir).delete(&safe_name) {
             Ok(d) => d,
             Err(e) => {
-                respond_json(stream, "500 Internal Server Error", &json!({ "ok": false, "error": e }));
+                let status = if e.contains("symlink") || e.contains("escape") {
+                    "403 Forbidden"
+                } else {
+                    "500 Internal Server Error"
+                };
+                respond_json(stream, status, &json!({ "ok": false, "error": e }));
                 return;
             }
         }
