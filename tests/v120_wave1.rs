@@ -105,7 +105,7 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.5.0"));
+    assert_eq!(ver_json["version"], json!("1.6.0"));
 
     // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
     if let Ok(entries) = std::fs::read_dir("assets/chunks") {
@@ -175,6 +175,7 @@ fn loopback_403_enforced_across_studio_mcp_creator_hub_opencloud_and_projects() 
         ("GET", "/api/opencloud"),
         ("GET", "/api/projects"),
         ("POST", "/api/projects/demo/autopilot"),
+        ("POST", "/api/projects/demo/publish-gate"),
     ] {
         let req = format!(
             "{method} {path} HTTP/1.1\r\nHost: attacker.example:{port}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
@@ -328,6 +329,18 @@ fn ship_readiness_autopilot_fixes_luau_installs_monetization_builds_and_preserve
     let written = ec["written"].as_array().unwrap();
     assert!(written.iter().any(|v| v == "src/server/EconomyShopHandler.server.luau"), "{ec}");
     assert!(written.iter().any(|v| v == "src/client/ShopPromptBridge.client.luau"), "{ec}");
+
+    // Pre-Publish Revenue & Playtest Gate checks all shop bindings, retention, build + ZIP CRC-32, and playtest status
+    let (st_pg, pg) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/publish-gate"),
+        Some(&json!({})),
+    );
+    assert_eq!(st_pg, 200, "{pg}");
+    assert_eq!(pg["economy_bindings_ok"], json!(true), "{pg}");
+    assert_eq!(pg["retention_ok"], json!(true), "{pg}");
+    assert_eq!(pg["build_and_zip_ok"], json!(true), "{pg}");
 
     let _ = std::fs::remove_dir_all(&base);
 }

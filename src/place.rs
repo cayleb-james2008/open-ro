@@ -358,6 +358,8 @@ impl LocalPlace {
     /// Persistent place stored as `place.json` + `game.rbxlx` inside `data_dir`.
     pub fn open(data_dir: PathBuf, game_name: String) -> Self {
         let _ = std::fs::create_dir_all(&data_dir);
+        let has_json = data_dir.join("place.json").is_file();
+        let has_rbxlx = data_dir.join("game.rbxlx").is_file();
         let mut recovered = Vec::new();
         let (scripts, instances) = load_place(&data_dir, &mut recovered);
         let place = LocalPlace {
@@ -371,7 +373,9 @@ impl LocalPlace {
             redo_stack: VecDeque::new(),
             revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         };
-        place.persist();
+        if !has_json || !has_rbxlx || !place.recovered.is_empty() {
+            place.persist();
+        }
         place
     }
 

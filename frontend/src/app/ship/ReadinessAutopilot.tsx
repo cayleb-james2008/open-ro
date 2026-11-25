@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { AlertTriangle, Check, Coins, Rocket, Sparkles, Wrench } from "lucide-react";
+import { AlertTriangle, Check, Coins, Rocket, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
 import { ProgressCircle } from "@/components/ProgressCircle/ProgressCircle";
-import { call, projUrl, type AutopilotResult, type MonetizationCodegenResult, type ProjectReadiness } from "./api";
+import { call, projUrl, type AutopilotResult, type MonetizationCodegenResult, type ProjectReadiness, type PublishGateResult } from "./api";
 
 /**
  * 1-click Ship & Monetization Readiness Autopilot:
@@ -31,6 +31,8 @@ export function ReadinessAutopilot({
   const [running, setRunning] = useState(false);
   const [fixingAction, setFixingAction] = useState<string | null>(null);
   const [codegenBusy, setCodegenBusy] = useState(false);
+  const [gateBusy, setGateBusy] = useState(false);
+  const [gateResult, setGateResult] = useState<PublishGateResult | null>(null);
   const [lastResult, setLastResult] = useState<AutopilotResult | null>(null);
   const [codegenInfo, setCodegenInfo] = useState<string>("");
   const [error, setError] = useState("");
@@ -49,9 +51,33 @@ export function ReadinessAutopilot({
 
   useEffect(() => {
     setLastResult(null);
+    setGateResult(null);
     setCodegenInfo("");
     void loadReadiness();
   }, [loadReadiness]);
+
+  const runPublishGate = async (silentToast = false) => {
+    setGateBusy(true);
+    setError("");
+    const r = await call<PublishGateResult>(projUrl(projectId, "/publish-gate"), {});
+    setGateBusy(false);
+    if (!r.ok) {
+      setError(r.error || "Pre-publish gate check failed.");
+      toast.error(r.error || "Pre-publish gate failed");
+      return;
+    }
+    setGateResult(r as PublishGateResult);
+    if (r.readiness && Array.isArray(r.readiness.checks)) {
+      setReadiness(r.readiness);
+    }
+    if (!silentToast) {
+      if (r.gate_passed) {
+        toast.success("Pre-Publish Revenue & Playtest Gate passed");
+      } else {
+        toast.info(`Gate found ${r.fix_cards?.length ?? 0} auto-fixable item(s)`);
+      }
+    }
+  };
 
   const runEconomyCodegen = async () => {
     setCodegenBusy(true);
@@ -113,6 +139,9 @@ export function ReadinessAutopilot({
           ? `Autopilot completed ${fixedCount} step(s)`
           : `${projectName} readiness verified`,
     );
+    if (gateResult) {
+      await runPublishGate(true);
+    }
     await onCompleted?.();
   };
 
@@ -182,12 +211,23 @@ export function ReadinessAutopilot({
             variant="outline"
             size="sm"
             loading={codegenBusy}
-            disabled={running || Boolean(fixingAction)}
+            disabled={running || gateBusy || Boolean(fixingAction)}
             onClick={() => void runEconomyCodegen()}
             data-run-economy-codegen
           >
             <Coins className="size-3.5" strokeWidth={1.5} aria-hidden />
             Generate Shop &amp; Economy
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            loading={gateBusy}
+            disabled={running || codegenBusy || Boolean(fixingAction)}
+            onClick={() => void runPublishGate()}
+            data-run-publish-gate
+          >
+            <ShieldCheck className="size-3.5" strokeWidth={1.5} aria-hidden />
+            Pre-Publish Gate
           </Button>
           {onOpenSettings && readiness?.checks?.some((c) => c.id === "opencloud_auth" && !c.ok) && (
             <Button variant="outline" size="sm" onClick={onOpenSettings}>
@@ -364,12 +404,64 @@ export function ReadinessAutopilot({
         <div className="flex flex-col gap-1 rounded-sm border border-hairline bg-board/40 px-3 py-2 text-xs" data-autopilot-summary>
           {lastResult.actions_taken?.length > 0 && (
             <div className="text-pill-active-fg">
-              Completed: {lastResult.actions_taken.map((a) => a.action.replace(/_/g, " ")).join(" · ")}
+              Completed: {lastResult.actions_taken.map((a) => a.action.replace(/_/g, " ")).join(", ")}
             </div>
           )}
           {lastResult.remaining_manual?.map((m) => (
             <div key={m} className="text-ink-2">Next manual step: {m}</div>
           ))}
+        </div>
+      )}
+
+      {gateResult && (
+        <div className="flex flex-col gap-2 rounded-lg border border-hairline bg-board/40 p-3 text-xs" data-publish-gate-panel>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className={`font-medium ${gateResult.gate_passed ? "text-pill-active-fg" : "text-ink"}`}>
+              Pre-Publish Revenue &amp; Playtest Gate: {gateResult.gate_passed ? "Ready to Publish" : "Action Needed"}
+            </span>
+            <Pill className={gateResult.gate_passed ? "bg-pill-active-bg text-pill-active-fg" : "bg-pill-warn-bg text-pill-warn-fg"}>
+              <span>{gateResult.checks.filter((c) => c.ok).length}/{gateResult.checks.length} passed</span>
+            </Pill>
+          </div>
+          <ul className="grid gap-1.5 sm:grid-cols-2">
+            {gateResult.checks.map((gc) => (
+              <li key={gc.id} className="flex items-start gap-2 rounded-sm border border-hairline bg-surface/60 px-2 py-1.5">
+                <span className={`mt-0.5 font-mono ${gc.ok ? "text-pill-active-fg" : "text-ink-3"}`}>
+                  {gc.ok ? "OK" : "--"}
+                </span>
+                <div className="min-w-0">
+                  <div className="font-medium text-ink">{gc.label}</div>
+                  <div className="text-ink-2">{gc.detail}</div>
+                </div>
+              </li>
+            ))}
+          </ul>
+          {gateResult.fix_cards?.length > 0 && (
+            <div className="grid gap-1.5 sm:grid-cols-2">
+              {gateResult.fix_cards.map((fc) => (
+                <div
+                  key={fc.id}
+                  data-gate-fix-card={fc.id}
+                  className="flex items-center justify-between gap-2 rounded-sm border border-hairline bg-surface px-2.5 py-2"
+                >
+                  <div className="min-w-0">
+                    <div className="font-medium text-ink">{fc.title}</div>
+                    <div className="truncate text-ink-2">{fc.reason}</div>
+                  </div>
+                  <Button
+                    variant="default"
+                    size="xs"
+                    loading={fixingAction === fc.fix_action}
+                    disabled={running || codegenBusy || gateBusy}
+                    onClick={() => void runAutopilot(fc.fix_action)}
+                    className="shrink-0"
+                  >
+                    Auto-Fix
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </section>
