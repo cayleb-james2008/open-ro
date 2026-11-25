@@ -1108,7 +1108,7 @@ pub fn prepare_character_prompt(raw: &str) -> Result<String, String> {
     }
 }
 
-/// Append a concise Roblox-safe zero-blood/zero-gore directive to art prompts unless already stated (#72).
+/// Append a concise Roblox-safe zero-blood/zero-gore/zero-tobacco directive to art prompts unless already stated (#72).
 pub fn ensure_roblox_safe_prompt(prompt: &str) -> String {
     let one = collapse_one_line(prompt);
     let lower = one.to_ascii_lowercase();
@@ -1116,7 +1116,7 @@ pub fn ensure_roblox_safe_prompt(prompt: &str) -> String {
         one
     } else {
         format!(
-            "{one}, Roblox-safe anime style: strictly zero blood, zero gore, zero open wounds, zero crimson splatters on skin, clothes, or weapons; use stylized glowing energy or chakra effects instead"
+            "{one}, Roblox-safe anime style: strictly zero blood, zero gore, zero open wounds, zero crimson splatters on skin, clothes, or weapons, and strictly zero tobacco, cigarettes, or smoking; use stylized glowing energy or chakra effects instead"
         )
     }
 }
