@@ -267,12 +267,12 @@
    duration-(--dur-press) and ease-(--ease-house); a literal duration-200, delay-75 or ease-out in screen code fails the source check.
    Each value's source is in references/motion.md. */
 :root {
-  --dur-press: 120ms;      /* press feedback on a flat control. motion.md section 4 (tap 120 ms) */
-  --dur-reveal: 150ms;     /* a status line, a menu or a tooltip appearing. motion.md sections 3 (Tremor hover card 150 ms) and 4 (menus 150 to 250 ms) */
-  --dur-swap: 200ms;       /* one thing replacing another. motion.md section 4 (swap 200 ms) */
-  --dur-enter: 250ms;      /* something entering. motion.md section 4 (enter 250 ms) */
-  --dur-sheet: 350ms;      /* a sheet or panel travelling. motion.md section 4 (sheet 350 ms) */
-  --ease-house: cubic-bezier(0.23, 1, 0.32, 1); /* the one easing for CSS written by hand. motion.md section 4 */
+  --dur-press: 150ms;      /* press feedback: scale(0.97) 150ms on :active */
+  --dur-reveal: 180ms;     /* hover inside fine pointer, tooltips & small popovers */
+  --dur-swap: 200ms;       /* view/panel swaps */
+  --dur-enter: 220ms;      /* drawer/modal entrance */
+  --dur-sheet: 220ms;      /* sheet/pane transition */
+  --ease-house: cubic-bezier(0.23, 1, 0.32, 1); /* Emil Kowalski strong exponential UI ease-out */
 }
 
 /* ---------- 4. Tailwind v4 theme mapping ---------- */

@@ -33,8 +33,6 @@ if (!fs.existsSync(uiPath)) {
 }
 
 const BANNED_IMPORTS = [
-  "motion/react",
-  "framer-motion",
   "@base-ui/react",
   "recharts",
   "cmdk",

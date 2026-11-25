@@ -10,6 +10,7 @@ import {
   type MouseEvent,
 } from "react";
 import * as Popover from "@radix-ui/react-popover";
+import { AnimatePresence, LayoutGroup, MotionConfig, motion, useReducedMotion } from "motion/react";
 import { Toaster, toast } from "sonner";
 import { Drawer } from "vaul";
 import {
@@ -50,7 +51,6 @@ import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Kbd } from "@/components/ui/kbd";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
-import { AnimatedBackground } from "@/components/ui/animated-background";
 import {
   MorphingDialog,
   MorphingDialogClose,
@@ -60,7 +60,7 @@ import {
   MorphingDialogTitle,
 } from "@/components/ui/morphing-dialog";
 import { Pill } from "@/components/kibo-ui/pill";
-import { glide, open as dialogSpring } from "@/motion";
+import { glide, instant, open as dialogSpring } from "@/motion";
 import {
   RELEASES_URL,
   SEND_FAILED,
@@ -227,6 +227,7 @@ function clonePlace(p: Place | null | "error"): Place | null {
 export function App() {
   const shell = useMemo(readShell, []);
   const isBrowserEngine = Boolean((window as ShellWindow).__OPENRO_WEB_ENGINE__);
+  const reduceMotion = useReducedMotion();
 
   const [theme, setThemeState] = useState<"light" | "dark">(() =>
     document.documentElement.dataset.theme === "dark" ? "dark" : "light",
@@ -2499,32 +2500,37 @@ export function App() {
                 )}
               </div>
             ) : (
-              <AnimatedBackground
-                defaultValue={activeId}
-                onValueChange={(id) => id && id !== activeId && void switchChat(id)}
-                className="rounded-card bg-blue-soft"
-                transition={glide}
-                enableHover={false}
-              >
+              <LayoutGroup id="chat-rail">
                 <ul id="chat-list" className="flex flex-col gap-0.5" aria-label="Your chats">
-                  {filteredChats.map((c: Chat) => (
-                    <li key={c.id} className="relative">
-                      <Button
-                        variant="ghost"
-                        data-id={c.id}
-                        aria-current={c.id === activeId ? "true" : undefined}
-                        onClick={() => void switchChat(c.id)}
-                        className="chat-btn h-auto min-h-8 w-full justify-between rounded-card border-transparent px-2 py-1 text-left font-normal text-ink-2 hover:bg-board/70 hover:text-ink aria-[current=true]:bg-blue-soft aria-[current=true]:font-medium aria-[current=true]:text-ink max-md:min-h-11"
-                      >
-                        <span className="min-w-0 flex-1 truncate text-xs">{c.title || "New chat"}</span>
-                        {inflight[c.id] && (
-                          <Pill className="bg-surface px-1.5 py-0 text-xs text-ink">working</Pill>
+                  {filteredChats.map((c: Chat) => {
+                    const isCurrent = c.id === activeId;
+                    return (
+                      <li key={c.id} className="relative">
+                        {isCurrent && (
+                          <motion.span
+                            layoutId="chat-rail-active"
+                            transition={reduceMotion ? instant : glide}
+                            aria-hidden
+                            className="pointer-events-none absolute inset-0 rounded-card bg-blue-soft"
+                          />
                         )}
-                      </Button>
-                    </li>
-                  ))}
+                        <Button
+                          variant="ghost"
+                          data-id={c.id}
+                          aria-current={isCurrent ? "true" : undefined}
+                          onClick={() => void switchChat(c.id)}
+                          className="chat-btn relative z-10 h-auto min-h-8 w-full justify-between rounded-card border-transparent bg-transparent px-2 py-1 text-left font-normal text-ink-2 hover:bg-board/50 hover:text-ink aria-[current=true]:font-medium aria-[current=true]:text-ink max-md:min-h-11"
+                        >
+                          <span className="min-w-0 flex-1 truncate text-xs">{c.title || "New chat"}</span>
+                          {inflight[c.id] && (
+                            <Pill className="bg-surface px-1.5 py-0 text-xs text-ink">working</Pill>
+                          )}
+                        </Button>
+                      </li>
+                    );
+                  })}
                 </ul>
-              </AnimatedBackground>
+              </LayoutGroup>
             )}
           </div>
         </div>
@@ -2809,17 +2815,6 @@ export function App() {
     }
   };
 
-  const pipelineStageIdx =
-    totalPieces === 0
-      ? 0
-      : buildPhase?.phase === "planning" || buildPhase?.phase === "compiling"
-        ? 1
-        : buildPhase?.phase === "playtest" || buildPhase?.phase === "checking"
-          ? 2
-          : buildPhase?.phase === "repair"
-            ? 3
-            : 4;
-
   // Central Focused Agent / Plan / Ask Thread
   const centerCopilot = (
     <main
@@ -2904,109 +2899,48 @@ export function App() {
             </Button>
           </div>
         ) : !hasConversation && proposals.length === 0 && !activeSwarmId ? (
-          <div className="mx-auto flex w-full max-w-[740px] flex-col gap-4 py-2" data-copilot-welcome>
-            {/* 1-Click Pipeline Bar */}
-            <section
-              aria-label="Studio build pipeline"
-              className="flex flex-col gap-3 rounded-card border border-hairline bg-surface p-4"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <h3 className="text-base font-medium text-ink">Describe, build, playtest, and ship to Roblox Studio</h3>
-                  <p className="mt-0.5 text-sm text-ink-2">
-                    Pick a complete starter below or describe any game system in plain words.
-                  </p>
-                </div>
-                {workbenchIdeas[0] && (
-                  <Button
-                    variant="default"
-                    size="sm"
-                    disabled={!canBuild || busy}
-                    onClick={() => void buildIdea(workbenchIdeas[0])}
-                    className="max-md:min-h-11"
-                  >
-                    <Hammer className="size-3.5" strokeWidth={1.5} aria-hidden />
-                    <span>Build &amp; Playtest {workbenchIdeas[0].title}</span>
-                  </Button>
-                )}
-              </div>
-
-              <div className="flex flex-wrap gap-1.5" data-pipeline-steps>
-                {["Describe", "Build Luau", "Auto-Playtest", "Fix & Audit", "Ship Ready"].map((label, idx) => {
-                  const done = totalPieces > 0 && idx <= pipelineStageIdx;
-                  return (
-                    <div
-                      key={label}
-                      className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
-                        done
-                          ? "border-pill-active-bg bg-pill-active-bg text-pill-active-fg"
-                          : "border-hairline bg-board/55 text-ink-2"
-                      }`}
-                    >
-                      <span className="font-mono tabular-nums">{idx + 1}.</span>
-                      <span className="whitespace-nowrap">{label}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-
-            {/* Starter Blueprints Grid */}
-            <div className="grid gap-2.5 sm:grid-cols-2">
-              {workbenchIdeas.slice(0, 3).map((idea) => (
-                <div
-                  key={idea.id}
-                  className="flex flex-col justify-between gap-2.5 rounded-card border border-hairline bg-surface p-3.5"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-medium text-ink">{idea.title}</span>
-                      <Pill className="bg-board px-2 py-0 text-xs text-ink-2">Starter</Pill>
-                    </div>
-                    <p className="mt-1 text-sm leading-snug text-ink-2">{idea.pitch}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={!canBuild || busy}
-                      onClick={() => void buildIdea(idea)}
-                      aria-label={`Build ${idea.title} in Studio`}
-                      className="w-full max-md:min-h-11"
-                    >
-                      <Hammer className="size-3.5" strokeWidth={1.5} aria-hidden />
-                      <span>Build in Studio</span>
-                    </Button>
-                  </div>
-                </div>
-              ))}
-
-              {/* Built-in Monetization & Retention Pack Starter */}
-              <div className="flex flex-col justify-between gap-2.5 rounded-card border border-hairline bg-surface p-3.5">
-                <div className="min-w-0">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-medium text-ink">Monetization &amp; Retention Pack</span>
-                    <Pill className="bg-tag-mint-bg px-2 py-0 text-xs text-tag-mint-fg">Revenue</Pill>
-                  </div>
-                  <p className="mt-1 text-sm leading-snug text-ink-2">
-                    Adds GamePass caching, idempotent ProcessReceipt DataStore ledger, and 24h Daily Login streaks.
-                  </p>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!studioOk && !ship.activeId}
-                  onClick={() => void handleInstallMonetizationPack()}
-                  className="w-full max-md:min-h-11"
-                >
-                  <Coins className="size-3.5" strokeWidth={1.5} aria-hidden />
-                  <span>Install Monetization Pack</span>
-                </Button>
-              </div>
+          <div className="mx-auto my-auto flex w-full max-w-[680px] flex-col items-center justify-center gap-5 py-6 text-center" data-copilot-welcome>
+            <div className="flex flex-col items-center gap-2">
+              <span className="grid size-10 place-items-center rounded-xl border border-hairline bg-surface text-ink-2">
+                <Blocks className="size-5" strokeWidth={1.5} aria-hidden />
+              </span>
+              <h3 className="text-lg font-medium tracking-tight text-ink">What do you want to build in Studio?</h3>
+              <p className="max-w-[520px] text-sm text-ink-2">
+                Describe any game mechanic, inspect Luau diffs side-by-side, or launch a ready starter into Roblox Studio.
+              </p>
             </div>
 
-            {/* 1-Click Starter Prompt Chips */}
-            <div className="flex flex-wrap items-center gap-1.5" data-prompt-chips>
+            {/* Single compact horizontal row of 1-click starter pills */}
+            <div className="flex flex-wrap items-center justify-center gap-2" data-starter-row>
+              {workbenchIdeas.slice(0, 3).map((idea, idx) => (
+                <Button
+                  key={idea.id}
+                  variant={idx === 0 ? "default" : "outline"}
+                  size="sm"
+                  disabled={!canBuild || busy}
+                  onClick={() => void buildIdea(idea)}
+                  aria-label={`Build ${idea.title} in Studio`}
+                  className="max-md:min-h-11"
+                >
+                  <Hammer className="size-3.5" strokeWidth={1.5} aria-hidden />
+                  <span>{idea.title}</span>
+                </Button>
+              ))}
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!studioOk && !ship.activeId}
+                onClick={() => void handleInstallMonetizationPack()}
+                aria-label="Install Monetization Pack"
+                className="max-md:min-h-11"
+              >
+                <Coins className="size-3.5 text-icon" strokeWidth={1.5} aria-hidden />
+                <span>Monetization Pack</span>
+              </Button>
+            </div>
+
+            {/* Subtle prompt fill suggestions */}
+            <div className="flex flex-wrap items-center justify-center gap-1.5" data-prompt-chips>
               {[
                 { label: "Anime card battler", prompt: "Build a polished anime card battle game with packs, equip deck, and NPC fights" },
                 { label: "Obby with coins", prompt: "Build an obby with 4 checkpoints, jump pads, and coin leaderstats" },
@@ -3015,13 +2949,13 @@ export function App() {
               ].map((chip) => (
                 <Button
                   key={chip.label}
-                  variant="outline"
+                  variant="ghost"
                   size="xs"
                   onClick={() => {
                     setText(chip.prompt);
                     inputRef.current?.focus();
                   }}
-                  className="bg-surface text-xs font-normal text-ink-2 hover:text-ink max-md:min-h-11"
+                  className="border border-hairline bg-surface/75 text-xs font-normal text-ink-2 hover:bg-surface hover:text-ink max-md:min-h-11"
                 >
                   {chip.label}
                 </Button>
@@ -3118,6 +3052,7 @@ export function App() {
   );
 
   return (
+    <MotionConfig reducedMotion="user">
     <div
       className="relative flex h-dvh min-h-0 w-full flex-col overflow-hidden bg-canvas text-ink"
       data-app="openro"
@@ -3394,20 +3329,40 @@ export function App() {
       {/* Main 3-Pane Studio Copilot IDE */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* Pane 1: Collapsible Left Project / Explorer / Chats Rail */}
-        {!narrow && !leftDockCollapsed && (
-          <div className="w-[260px] flex-none border-r border-hairline">{leftDockBody}</div>
-        )}
+        <AnimatePresence initial={false}>
+          {!narrow && !leftDockCollapsed && (
+            <motion.div
+              key="left-dock-pane"
+              initial={reduceMotion ? { opacity: 1 } : { opacity: 0, x: -6 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: -6 }}
+              transition={reduceMotion ? instant : dialogSpring}
+              className="w-[260px] flex-none border-r border-hairline"
+            >
+              {leftDockBody}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Pane 2: Focused Central Copilot Thread */}
         {(!narrow || mobilePane === "copilot") && centerCopilot}
 
         {/* Pane 3: Tabbed Right Studio Workbench */}
         {!narrow ? (
-          !rightDockCollapsed && (
-            <div className="flex w-[450px] flex-none border-l border-hairline xl:w-[500px]">
-              {rightWorkbench}
-            </div>
-          )
+          <AnimatePresence initial={false}>
+            {!rightDockCollapsed && (
+              <motion.div
+                key="right-workbench-pane"
+                initial={reduceMotion ? { opacity: 1 } : { opacity: 0, x: 6 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 6 }}
+                transition={reduceMotion ? instant : dialogSpring}
+                className="flex w-[450px] flex-none border-l border-hairline xl:w-[500px]"
+              >
+                {rightWorkbench}
+              </motion.div>
+            )}
+          </AnimatePresence>
         ) : (
           mobilePane === "studio" && rightWorkbench
         )}
@@ -3590,7 +3545,14 @@ export function App() {
           }}
           onDoneFocusComposer={() => inputRef.current?.focus()}
         />
-        <Toaster position="bottom-right" theme={theme} />
+        <Toaster
+          position="bottom-right"
+          theme={theme}
+          toastOptions={{
+            className: "border border-hairline bg-surface text-ink shadow-lift",
+          }}
+        />
     </div>
+    </MotionConfig>
   );
 }

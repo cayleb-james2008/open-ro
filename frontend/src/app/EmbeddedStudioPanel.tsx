@@ -303,19 +303,6 @@ export function EmbeddedStudioPanel({
             {embedStatus.place_open === false ? "Start Page" : embedStatus.datamodel_type || playLabel[embedStatus.play_mode]}
           </Badge>
 
-          {embedStatus.place_open === false && onTransferEmbed && studioMode !== "browser_place" && (
-            <Button
-              variant="default"
-              size="xs"
-              disabled={embedBusy}
-              onClick={() => void handleLaunch()}
-              className="max-md:min-h-11"
-            >
-              <Rocket className="size-3" strokeWidth={1.5} aria-hidden />
-              <span>{embedBusy ? "Opening…" : "Embed & Open Project in Studio"}</span>
-            </Button>
-          )}
-
           {lastPointer && (
             <span className="hidden font-mono text-xs text-ink-3 xl:inline">
               {lastPointer.action} ({lastPointer.x},{lastPointer.y})
