@@ -1,0 +1,27 @@
+{
+  "bytes": 2064796,
+  "created_at": "2026-11-25T01:19:14Z",
+  "height": 1024,
+  "kind": "weapon_sheet",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "mode": null,
+    "power_max": null,
+    "power_min": null,
+    "power_value": null,
+    "selected_model": null,
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/weapons/w5_eleventh_lieutenant_weapon.png",
+  "prompt": "Vibrant 2D cel-shaded anime fantasy RPG collectible item reference sheet in Roblox-safe anime game style on a clean soft light-gray studio backdrop, faithfully matching the attached anime reference: an iconic segmented jagged anime whip-blade relic (Zabimaru Shikai) made of six interlocking wide metallic steel fang-shaped blade segments linked by flexible stretchable steel joints, crimson-wrapped hilt, and ornate spiral bronze guard Show clean orthographic side profile, angled three-quarter showcase view, and hilt/guard detail inset. Crisp vibrant anime cel-shading linework, spotless bright polished finish with subtle anime energy glints, standalone fantasy game item only, no characters, no hands, no text labels, no watermarks.",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/weapon_renji_zabimaru.jpg"
+  ],
+  "sha256": "8ad42cc68d2c1880a68774385c43f12a603ee3b3d09477378015507878addaab",
+  "status": "generated",
+  "version": 1,
+  "width": 1536
+}

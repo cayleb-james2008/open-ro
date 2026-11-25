@@ -1,6 +1,6 @@
 --!strict
--- Draft monetization catalog matching docs/MONETIZATION.md.
--- All entries remain disabled for live sale until priceApproved is flipped to true.
+-- Owner-approved monetization catalog matching docs/MONETIZATION.md.
+-- Live purchase prompts remain gated by entry.robloxId ~= nil and entry.robloxId > 0.
 
 export type ProductKind = "Gamepass" | "DevProduct"
 
@@ -16,9 +16,9 @@ export type ProductEntry = {
 
 local Products = {}
 
-Products.PriceApproved = false
+Products.PriceApproved = true
 Products.PrivateServerPrice = 0
-Products.PrivateServerApproved = false
+Products.PrivateServerApproved = true
 
 Products.Gamepasses = {
 	pass_extra_storage = {
@@ -26,7 +26,7 @@ Products.Gamepasses = {
 		displayName = "Extra Card Storage (+150)",
 		kind = "Gamepass",
 		robuxPrice = 49,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Expands card inventory cap by +150 slots (300 total).",
 	},
 	pass_extra_deck_slots = {
@@ -34,7 +34,7 @@ Products.Gamepasses = {
 		displayName = "+Deck Slots (+2)",
 		kind = "Gamepass",
 		robuxPrice = 79,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Unlocks 2 extra saved Active/Defense deck presets.",
 	},
 	pass_lucky = {
@@ -42,7 +42,7 @@ Products.Gamepasses = {
 		displayName = "Lucky (1.5x)",
 		kind = "Gamepass",
 		robuxPrice = 99,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Permanent 1.5x multiplicative Luck on all World Banners.",
 	},
 	pass_fast_roll = {
@@ -50,7 +50,7 @@ Products.Gamepasses = {
 		displayName = "Fast Roll",
 		kind = "Gamepass",
 		robuxPrice = 129,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Cuts roll cooldown and reveal animation from 1.60s to 0.60s.",
 	},
 	pass_2x_luck = {
@@ -58,7 +58,7 @@ Products.Gamepasses = {
 		displayName = "2x Luck",
 		kind = "Gamepass",
 		robuxPrice = 149,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Permanent 2.0x multiplicative Luck on all World Banners.",
 	},
 	pass_auto_roll = {
@@ -66,7 +66,7 @@ Products.Gamepasses = {
 		displayName = "Auto Roll",
 		kind = "Gamepass",
 		robuxPrice = 149,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Continuous rolling with rarity and mutation auto-sell filters.",
 	},
 	pass_mega_lucky = {
@@ -74,7 +74,7 @@ Products.Gamepasses = {
 		displayName = "Mega Lucky (3x)",
 		kind = "Gamepass",
 		robuxPrice = 199,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Permanent 3.0x multiplicative Luck on all World Banners.",
 	},
 	pass_multi_roll = {
@@ -82,7 +82,7 @@ Products.Gamepasses = {
 		displayName = "Multi-Roll (5x)",
 		kind = "Gamepass",
 		robuxPrice = 299,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Rolls 5 cards simultaneously per pull cycle on Yen banners.",
 	},
 	pass_vip = {
@@ -90,7 +90,7 @@ Products.Gamepasses = {
 		displayName = "VIP",
 		kind = "Gamepass",
 		robuxPrice = 349,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "1.20x Luck, +15% Potion duration, +25% Yen & Gem drops, 100 Gems daily.",
 	},
 	pass_mutation_hunter = {
@@ -98,7 +98,7 @@ Products.Gamepasses = {
 		displayName = "Mutation & Shiny Hunter",
 		kind = "Gamepass",
 		robuxPrice = 449,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Doubles (2.0x) Shiny, Golden, Rainbow, and Void mutation weights.",
 	},
 } :: { [string]: ProductEntry }
@@ -109,7 +109,7 @@ Products.DevProducts = {
 		displayName = "Shinobi Starter Bundle",
 		kind = "DevProduct",
 		robuxPrice = 149,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "2,500 Gems, 25 Roll Tickets, 2x Major Luck Potions, 10,000 Yen, 1x Epic+ Card.",
 	},
 	prod_gems_pouch = {
@@ -117,7 +117,7 @@ Products.DevProducts = {
 		displayName = "Pouch of Gems (1,200)",
 		kind = "DevProduct",
 		robuxPrice = 99,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Grants 1,200 Gems.",
 	},
 	prod_gems_chest = {
@@ -125,7 +125,7 @@ Products.DevProducts = {
 		displayName = "Chest of Gems (3,500)",
 		kind = "DevProduct",
 		robuxPrice = 249,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Grants 3,500 Gems.",
 	},
 	prod_gems_vault = {
@@ -133,7 +133,7 @@ Products.DevProducts = {
 		displayName = "Vault of Gems (8,000)",
 		kind = "DevProduct",
 		robuxPrice = 499,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Grants 8,000 Gems.",
 	},
 	prod_gems_treasury = {
@@ -141,7 +141,7 @@ Products.DevProducts = {
 		displayName = "Treasury of Gems (20,000)",
 		kind = "DevProduct",
 		robuxPrice = 999,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Grants 20,000 Gems.",
 	},
 	prod_tickets_15 = {
@@ -149,7 +149,7 @@ Products.DevProducts = {
 		displayName = "15 Roll Tickets",
 		kind = "DevProduct",
 		robuxPrice = 79,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Grants 15 Roll Tickets (2.0x built-in Ticket Luck).",
 	},
 	prod_tickets_50 = {
@@ -157,7 +157,7 @@ Products.DevProducts = {
 		displayName = "50 Roll Tickets",
 		kind = "DevProduct",
 		robuxPrice = 229,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Grants 50 Roll Tickets.",
 	},
 	prod_tickets_150 = {
@@ -165,7 +165,7 @@ Products.DevProducts = {
 		displayName = "150 Roll Tickets",
 		kind = "DevProduct",
 		robuxPrice = 599,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Grants 150 Roll Tickets.",
 	},
 	prod_potions_alchemist = {
@@ -173,7 +173,7 @@ Products.DevProducts = {
 		displayName = "Alchemist Luck Pack",
 		kind = "DevProduct",
 		robuxPrice = 99,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "3x Major Luck Potions + 1x Super Luck Potion.",
 	},
 	prod_potions_boss = {
@@ -181,7 +181,7 @@ Products.DevProducts = {
 		displayName = "Boss Hunter Potion Pack",
 		kind = "DevProduct",
 		robuxPrice = 249,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "3x Super Luck Potions + 2x Boss Luck Potions.",
 	},
 	prod_trait_crystals_25 = {
@@ -189,7 +189,7 @@ Products.DevProducts = {
 		displayName = "25 Trait Crystals",
 		kind = "DevProduct",
 		robuxPrice = 149,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Grants 25 Trait Crystals.",
 	},
 	prod_season_pass_s1 = {
@@ -197,10 +197,29 @@ Products.DevProducts = {
 		displayName = "Season 1 Pass: Dawn of Legends",
 		kind = "DevProduct",
 		robuxPrice = 399,
-		priceApproved = false,
+		priceApproved = true,
 		summary = "Unlocks the 30-Tier Premium Battle Pass track.",
 	},
 } :: { [string]: ProductEntry }
+
+local Shared = script.Parent and script.Parent.Parent
+if Shared then
+	local productIdsMod = Shared:FindFirstChild("ProductIds")
+	if productIdsMod then
+		local ok, productIds = pcall(require, productIdsMod :: any)
+		if ok and type(productIds) == "table" and type((productIds :: any).byKey) == "table" then
+			local byKey = (productIds :: any).byKey
+			for _, catalog in { Products.Gamepasses, Products.DevProducts } do
+				for id, entry in catalog do
+					local liveId = byKey[id]
+					if type(liveId) == "number" and liveId > 0 then
+						entry.robloxId = liveId
+					end
+				end
+			end
+		end
+	end
+end
 
 function Products.getById(id: string): ProductEntry?
 	return Products.Gamepasses[id] or Products.DevProducts[id]

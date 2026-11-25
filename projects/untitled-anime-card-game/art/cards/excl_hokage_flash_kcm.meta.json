@@ -1,18 +1,18 @@
 {
   "angle_review": {
-    "candidate_path": "art/cards/excl_hokage_flash_kcm.pending-angle.ce80612a9b50.png",
-    "candidate_sha256": "ce80612a9b506e6c64693a51429082f5004beb636acdae1c58adde7474759dec",
-    "height": 1454,
+    "candidate_path": "art/cards/excl_hokage_flash_kcm.pending-angle.74129153e055.png",
+    "candidate_sha256": "74129153e055fbe0bbea998fcb803b11597fcc0b374e51ecd7661c4c671f2012",
+    "height": 1536,
     "status": "PENDING_VISION",
-    "width": 1082
+    "width": 1024
   },
-  "approved_at": "2026-11-24T02:41:14Z",
+  "approved_at": "2026-11-25T02:53:49Z",
   "approved_by": "designer",
-  "bytes": 2899255,
-  "candidate_path": "art/cards/excl_hokage_flash_kcm.pending-angle.ce80612a9b50.png",
-  "candidate_sha256": "ce80612a9b506e6c64693a51429082f5004beb636acdae1c58adde7474759dec",
-  "created_at": "2026-11-24T02:40:25Z",
-  "height": 1454,
+  "bytes": 2324819,
+  "candidate_path": "art/cards/excl_hokage_flash_kcm.pending-angle.74129153e055.png",
+  "candidate_sha256": "74129153e055fbe0bbea998fcb803b11597fcc0b374e51ecd7661c4c671f2012",
+  "created_at": "2026-11-25T02:38:33Z",
+  "height": 1536,
   "kind": "card",
   "model": {
     "composer_pill": "Instant",
@@ -26,16 +26,17 @@
     "url": "https://chatgpt.com/images/"
   },
   "path": "art/cards/excl_hokage_flash_kcm.png",
-  "promoted_from": "art/cards/excl_hokage_flash_kcm.pending-angle.ce80612a9b50.png",
-  "prompt": "Transform this reference character into an electrifying vertical anime trading card exclusive illustration in blazing high-speed three-quarter dash wreathed in radiant golden nine-tails chakra cloak holding a glowing tri-pronged kunai leaving streaks of golden lightning flash across a moonlit battlefield, crisp cel-shaded anime key art lighting, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "promoted_from": "art/cards/excl_hokage_flash_kcm.pending-angle.74129153e055.png",
+  "prompt": "Radiant eye-level three-quarter portrait of the golden spiky-haired Fourth Hokage hero from the first reference image blazing in bright golden-yellow Nine-Tails Chakra Mode cloak with crisp black magatama markings and flowing glowing white-gold Hokage haori coat. In his forward hand he prominently grips the EXACT iconic three-pronged silver Flying Raijin Kunai with its white brush-calligraphy wrapped handle and pommel ring from the second weapon reference sheet, crackling with blazing golden lightning trails as he teleports mid-flash. Ultra-crisp vibrant shonen anime key-visual cel shading, vertical 2:3 trading card illustration in Roblox-safe family-friendly anime style, spotless face and outfit, zero text, zero borders.",
   "provider": "chatgpt",
   "reference_images": [
-    "art/references/minato_namikaze.jpg"
+    "art/references/minato_namikaze.jpg",
+    "art/weapons/excl_hokage_flash_kcm_weapon.png"
   ],
   "requested_path": "art/cards/excl_hokage_flash_kcm.png",
-  "review_notes": "Verified excl_hokage_flash_kcm visually against owner curated ref art/references/minato_namikaze.jpg: faithful likeness, dynamic anime card composition, zero text/watermarks.",
-  "sha256": "ce80612a9b506e6c64693a51429082f5004beb636acdae1c58adde7474759dec",
+  "review_notes": "Canon 3-pronged Flying Raijin Kunai with calligraphy handle in KCM cloak, zero blood",
+  "sha256": "74129153e055fbe0bbea998fcb803b11597fcc0b374e51ecd7661c4c671f2012",
   "status": "approved",
   "version": 1,
-  "width": 1082
+  "width": 1024
 }

@@ -1,0 +1,27 @@
+{
+  "bytes": 1916142,
+  "created_at": "2026-11-25T01:24:12Z",
+  "height": 941,
+  "kind": "weapon_sheet",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/weapons/w5_kenpachi_weapon.png",
+  "prompt": "Vibrant 2D cel-shaded anime fantasy RPG collectible item reference sheet in Roblox-safe anime game style on a clean soft light-gray studio backdrop, faithfully matching the attached anime reference: an oversized rugged anime greatsword (Kenpachi's Zanpakuto / Nozarashi) with an extra-long broad steel blade featuring iconic jagged chipped notches along its weathered edge, tarnished antique gold open-oval guard, and long messy white cloth bandage-wrapped handle Show clean orthographic side profile, angled three-quarter showcase view, and hilt/guard detail inset. Crisp vibrant anime cel-shading linework, spotless bright polished finish with subtle anime energy glints, standalone fantasy game item only, no characters, no hands, no text labels, no watermarks.",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/weapon_kenpachi_nozarashi.jpg"
+  ],
+  "sha256": "0009006bb8e6cd6a30eb12038e00ab1d772fd172ea999f8a00b2f0b55514743d",
+  "status": "generated",
+  "version": 1,
+  "width": 1672
+}

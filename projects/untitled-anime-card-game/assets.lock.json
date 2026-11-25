@@ -1,0 +1,463 @@
+{
+  "assets": {
+    "art/cards/boss_almighty_king/art.png": {
+      "assetId": "128461535594967",
+      "assetType": "Image",
+      "sha256": "a17cda7e1b35d209a792e6824aee2f9f41f18487571f6054eb25862b673c5fef",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:30:57Z"
+    },
+    "art/cards/boss_divine_general/art.png": {
+      "assetId": "92249086053361",
+      "assetType": "Image",
+      "sha256": "6aa9c2ff9f766480f33455ca2b4a54ec7970908fab3cadc48e27c64ad13e287c",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:56:52Z"
+    },
+    "art/cards/boss_golden_tyrant/art.png": {
+      "assetId": "140268546024460",
+      "assetType": "Image",
+      "sha256": "728386d88cc4bbee7f68997565c324ea2f3a6eb468250d07f523d6989417b455",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:56:54Z"
+    },
+    "art/cards/boss_strongest_creature/art.png": {
+      "assetId": "110908729514827",
+      "assetType": "Image",
+      "sha256": "7f4851d6f86d5f9d3e83dcf370b607c0652bbeee685facc0bd28b67d2cb46dae",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:56:56Z"
+    },
+    "art/cards/boss_ten_tails_vessel/art.png": {
+      "assetId": "131883316804602",
+      "assetType": "Image",
+      "sha256": "fd2ba822e466a7709029d054dc184523b1bcf8d899880ffefcb7c476b36911d9",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:56:58Z"
+    },
+    "art/cards/excl_disaster_flame/art.png": {
+      "assetId": "75321239373030",
+      "assetType": "Image",
+      "sha256": "1b8b0b6d9afeda1c194ca55f231bfbed67c11c6355111251ebe588a50ed60152",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:57:02Z"
+    },
+    "art/cards/excl_hokage_flash_kcm/art.png": {
+      "assetId": "107874612201296",
+      "assetType": "Image",
+      "sha256": "0c7e6c66d7580f119777fed092c0cd36cde01ab63cd3d1e4742e1ae650d8a6ed",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:31:03Z"
+    },
+    "art/cards/excl_pirate_king/art.png": {
+      "assetId": "121607087634929",
+      "assetType": "Image",
+      "sha256": "1a7067b4e7da15f2abe39ddb6d11e753c85d7d272a037e7afcab52c4ab34e44d",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:57:06Z"
+    },
+    "art/cards/excl_temporal_attendant/art.png": {
+      "assetId": "93556142401356",
+      "assetType": "Image",
+      "sha256": "05ad95353a7af7d4820102ffaea945bd8145dcfe1df962068f084f2001e578e6",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:57:10Z"
+    },
+    "art/cards/w1_academy_genin/art.png": {
+      "assetId": "118868389752230",
+      "assetType": "Image",
+      "sha256": "f91967668a4b629088e9e00da2a57ba07c9e83e003e7780c1ec710137785f04f",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:57:14Z"
+    },
+    "art/cards/w1_crimson_copy_ninja/art.png": {
+      "assetId": "95180235874788",
+      "assetType": "Image",
+      "sha256": "5c29d2b14df6e6f36f266aa6b9a4409d5f921ac9e5c101d4acbc79a90beab0c2",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:57:18Z"
+    },
+    "art/cards/w1_ghost_uchiha/art.png": {
+      "assetId": "109137474332505",
+      "assetType": "Image",
+      "sha256": "82128a7c23c6662d851e42e5f371938fa903e61d1feeaa5bbd1339d9dc3d7868",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:31:09Z"
+    },
+    "art/cards/w1_lotus_taijutsu/art.png": {
+      "assetId": "76160840272914",
+      "assetType": "Image",
+      "sha256": "480010a17af556f5978e4c6fec0339c48823c9cdc60969d339656f44cad09932",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:57:24Z"
+    },
+    "art/cards/w1_rinnegan_shadow/art.png": {
+      "assetId": "101558086255679",
+      "assetType": "Image",
+      "sha256": "eb4085b75c022fa569276971c0b47fc6e10c4562af2639176fd6e0392361cba6",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:57:28Z"
+    },
+    "art/cards/w1_sage_of_toads/art.png": {
+      "assetId": "98451883630767",
+      "assetType": "Image",
+      "sha256": "f6e726eaa8541bf57846aca307dd7c8cee297fdbfc1dac6d752c4dd2aa59d76a",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:57:30Z"
+    },
+    "art/cards/w1_seventh_hokage/art.png": {
+      "assetId": "112638085779144",
+      "assetType": "Image",
+      "sha256": "3baa516606263f238e572e997cb71eebd1a2f7381fe1db9cc640c77ecd3b3d22",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:57:32Z"
+    },
+    "art/cards/w1_tactical_chunin/art.png": {
+      "assetId": "110975600215618",
+      "assetType": "Image",
+      "sha256": "54ed5673fcad923c5cab59d7d61ed282348a88192647ce8b70393a693df592a3",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T05:53:28Z"
+    },
+    "art/cards/w1_uchiha_prodigy/art.png": {
+      "assetId": "130601020394416",
+      "assetType": "Image",
+      "sha256": "dc2349a66cc0600714f5884a65105bd2615cdb8c4967f05386643f2d6590086e",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:31:14Z"
+    },
+    "art/cards/w2_desert_bandit/art.png": {
+      "assetId": "104054912425179",
+      "assetType": "Image",
+      "sha256": "961137031ac7e17f150d2867d4fa14fc57543ea70b6e1c22bc43c5b467d01b5e",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:57:44Z"
+    },
+    "art/cards/w2_fused_god_warrior/art.png": {
+      "assetId": "77461750675997",
+      "assetType": "Image",
+      "sha256": "c23fe7ac1a9c5e5f77de175d6a6c06ec9777391feb70cdedb5fc573ba50a8453",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:57:45Z"
+    },
+    "art/cards/w2_future_savior/art.png": {
+      "assetId": "124263416742066",
+      "assetType": "Image",
+      "sha256": "b5473a8e49c41b914484e01aa185eca931a4e0dd82b8c67370cfc9c02bb463c0",
+      "state": "approved",
+      "uploadedAt": "2026-11-25T04:31:18Z"
+    },
+    "art/cards/w2_legendary_berserker/art.png": {
+      "assetId": "129655086871010",
+      "assetType": "Image",
+      "sha256": "98de7f03723c713be8f29d79ca41a4befa338d05f05a469329bc71309393cc9d",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:31:22Z"
+    },
+    "art/cards/w2_mystic_prodigy/art.png": {
+      "assetId": "110572827913797",
+      "assetType": "Image",
+      "sha256": "2760aabc4f296771252d593e8c47e68479f6ec37255cad3dbb209ad478ea30d0",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:31:27Z"
+    },
+    "art/cards/w2_namekian_guardian/art.png": {
+      "assetId": "94090580407540",
+      "assetType": "Image",
+      "sha256": "21db3636b70f8a078eb0e91a3dcbf627380d57c4b2d7ee8d4fbf8161dbf4f7c4",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:31:35Z"
+    },
+    "art/cards/w2_saiyan_prince/art.png": {
+      "assetId": "113611166030574",
+      "assetType": "Image",
+      "sha256": "cc7adf63b9e4f20528f2431d1f5c6512940117dc18324385095fb22b71821703",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:31:42Z"
+    },
+    "art/cards/w2_silver_autonomous_master/art.png": {
+      "assetId": "109428227080397",
+      "assetType": "Image",
+      "sha256": "2d22e405b9e8690639e5eb37e0bb4e74322783b26e891808a53ae332e618b855",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:31:48Z"
+    },
+    "art/cards/w2_turtle_hermit_disciple/art.png": {
+      "assetId": "75252266256085",
+      "assetType": "Image",
+      "sha256": "608cb0a46edae086fe121e92f286cf5ad0b0c60c1d2ae698f554c5270f62ed47",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:31:56Z"
+    },
+    "art/cards/w3_black_leg_chef/art.png": {
+      "assetId": "123311175476829",
+      "assetType": "Image",
+      "sha256": "a28b4b658af25bd0b17a7bb694a4e641f596061fd6c6130d1a22547d3bbba465",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T05:53:34Z"
+    },
+    "art/cards/w3_cotton_candy_doctor/art.png": {
+      "assetId": "85826719378484",
+      "assetType": "Image",
+      "sha256": "c013e13795b4492b8453a9481f3be635b6484b3e100478d4ae062dfa9e394056",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:32:03Z"
+    },
+    "art/cards/w3_darkness_quake/art.png": {
+      "assetId": "97440993927645",
+      "assetType": "Image",
+      "sha256": "54557b8509b566d7d9b50c1aa1949ea2a18e65230ddfd2facd1164f5a8848d4a",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:32:07Z"
+    },
+    "art/cards/w3_flame_emperor/art.png": {
+      "assetId": "109630288752710",
+      "assetType": "Image",
+      "sha256": "093a9a282696e011d9867787c19d350544100b9ad5abd57f19129ca9f84db44e",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:32:11Z"
+    },
+    "art/cards/w3_pirate_hunter/art.png": {
+      "assetId": "84786953456451",
+      "assetType": "Image",
+      "sha256": "03ca7b67fbcbc7952cacb742b3f98c6b7d3fb38c9347553e616c7c394d1f3a57",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:32:16Z"
+    },
+    "art/cards/w3_red_haired_emperor/art.png": {
+      "assetId": "109116203261943",
+      "assetType": "Image",
+      "sha256": "25e4b4a98a255c268ebac61523e8c16c1e2cc85462b91727a2a2c275614944e6",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:32:21Z"
+    },
+    "art/cards/w3_sniper_king/art.png": {
+      "assetId": "82775259393195",
+      "assetType": "Image",
+      "sha256": "c9325aff0d9857b979cc079ae32935403e4959c9962b0dbcd9fff250e7e9eb09",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:32:26Z"
+    },
+    "art/cards/w3_surgeon_of_death/art.png": {
+      "assetId": "74979847576196",
+      "assetType": "Image",
+      "sha256": "2f1a674ae0d8631cae7a7ce66e8c2d8e45de9e7067ff0bbbc7cd447671f11afc",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:32:31Z"
+    },
+    "art/cards/w3_warrior_of_liberation/art.png": {
+      "assetId": "109818362345589",
+      "assetType": "Image",
+      "sha256": "bdd5e8bc54364b48fe176debc67374cc251bb0eeffb92d2e0d118fd6d0ddfcb6",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:32:36Z"
+    },
+    "art/cards/w4_black_flash_vessel/art.png": {
+      "assetId": "108354274430669",
+      "assetType": "Image",
+      "sha256": "695bbefcfc533d8fc8a7b2cf9697a0ec184c08b3ece3cf01c33ffbf6590853a3",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:32:43Z"
+    },
+    "art/cards/w4_brain_of_curses/art.png": {
+      "assetId": "103740810333582",
+      "assetType": "Image",
+      "sha256": "3302a11d329d06e5f6bedcefa3fa81c248be11b517ba1a9cc73db66f4a8a66e8",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:32:48Z"
+    },
+    "art/cards/w4_cursed_speech_student/art.png": {
+      "assetId": "83855878856578",
+      "assetType": "Image",
+      "sha256": "7825a92525a902b8acf533a46bb286f1d454c36a8ac2226a0a86494afa253636",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:32:52Z"
+    },
+    "art/cards/w4_honored_one/art.png": {
+      "assetId": "95810080504996",
+      "assetType": "Image",
+      "sha256": "3e3549fc57ae9fd3d9783dc2a145fb46fe192e8ab9e15a50dc9f50b9caea538d",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:32:57Z"
+    },
+    "art/cards/w4_king_of_curses/art.png": {
+      "assetId": "138564823349992",
+      "assetType": "Image",
+      "sha256": "053c155170659feea5e6dd52e713f871d66fd3d6ca481b31e70209c37f278450",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:33:02Z"
+    },
+    "art/cards/w4_queen_of_curses/art.png": {
+      "assetId": "128558562311421",
+      "assetType": "Image",
+      "sha256": "d5d38538562afce1b97563db5fcd872dd3ad391cce8aa51a9a4b5f84a35ed974",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:33:06Z"
+    },
+    "art/cards/w4_sorcerer_killer/art.png": {
+      "assetId": "81925897476316",
+      "assetType": "Image",
+      "sha256": "9c52f2a9a56ef15a08087b73c6613dd8833f30f519e0daaeeabf4c3d278de7c7",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:33:10Z"
+    },
+    "art/cards/w4_ten_shadows_initiate/art.png": {
+      "assetId": "93170081409098",
+      "assetType": "Image",
+      "sha256": "a98d43d6faedaee06094aad63daa31ded5b0223d9e0754360b472dbc291e1ff4",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:33:15Z"
+    },
+    "art/cards/w4_thunder_god_sorcerer/art.png": {
+      "assetId": "125642977295561",
+      "assetType": "Image",
+      "sha256": "1f004c208f0b7fa90548e405d5949595e247a18aa6701be4befaff6fcc0d9121",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:33:21Z"
+    },
+    "art/cards/w5_clever_scientist_captain/art.png": {
+      "assetId": "88903759408378",
+      "assetType": "Image",
+      "sha256": "3ab60c815ba971f73483b610d45714c2bb88e44ec6c5be5b6be633ab8a3b75e4",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:33:25Z"
+    },
+    "art/cards/w5_eleventh_lieutenant/art.png": {
+      "assetId": "138541593360849",
+      "assetType": "Image",
+      "sha256": "4c0e31d5c7d3fc762d6558be7f9240ffb6708e20b6ebb2154961ac89adc3afc2",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:33:28Z"
+    },
+    "art/cards/w5_head_captain_inferno/art.png": {
+      "assetId": "133319275178178",
+      "assetType": "Image",
+      "sha256": "5faddaaa486f2c397af396987e86602bd4bc1978e081b53d7da7c927935325a5",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:33:32Z"
+    },
+    "art/cards/w5_ice_prodigy_captain/art.png": {
+      "assetId": "112742755231380",
+      "assetType": "Image",
+      "sha256": "232fc504ed40343f28ad523696b529d8987bebc6b5adf134528f1d47ee10d658",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:33:37Z"
+    },
+    "art/cards/w5_kenpachi/art.png": {
+      "assetId": "114113163712357",
+      "assetType": "Image",
+      "sha256": "af9d4cbf7d8415762988075531bebd3c4f5a0d03bcd0a0679a7152bfddc39e72",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:33:41Z"
+    },
+    "art/cards/w5_noble_senbonzakura/art.png": {
+      "assetId": "74600536431113",
+      "assetType": "Image",
+      "sha256": "ed61e2b2b6c5338ac6fafd91118d92377e46756d130396c27f0404d4de93e65e",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:33:45Z"
+    },
+    "art/cards/w5_thunder_flash_goddess/art.png": {
+      "assetId": "85092009142340",
+      "assetType": "Image",
+      "sha256": "fff3a3b36c7e0d002b28852b5d22d270e773b0a4d8a1759b42c1acb4a35ce387",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:33:50Z"
+    },
+    "art/cards/w5_transcendent_strategist/art.png": {
+      "assetId": "105668910523993",
+      "assetType": "Image",
+      "sha256": "efed9467086076479966f32dcd2b8b7d94f518e144f09b26c132bebd46a69465",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:33:56Z"
+    },
+    "art/cards/w5_true_bankai_substitute/art.png": {
+      "assetId": "113339559325933",
+      "assetType": "Image",
+      "sha256": "0af3a73cbbb98a74049f6ccc3abffd4ac275d6924d75d2124781d92d7f73e8e4",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:34:03Z"
+    },
+    "assets/audio/battle-crit.wav": {
+      "assetId": "137889702454368",
+      "assetType": "Audio",
+      "convertedFormat": "ogg",
+      "sha256": "a504272e0af67c38ce41c384c10cb4f6f0e23a60db9424119a631382441e64d7",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:34:08Z"
+    },
+    "assets/audio/card-flip.wav": {
+      "assetId": "73785820234546",
+      "assetType": "Audio",
+      "convertedFormat": "ogg",
+      "sha256": "61629d4f8bce11e7fca25022d852b7bde30334b73e7e9b1182a29bd0dc1c4b27",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:34:13Z"
+    },
+    "assets/audio/legendary-drop.wav": {
+      "assetId": "108670708413397",
+      "assetType": "Audio",
+      "convertedFormat": "ogg",
+      "sha256": "2add4c3b67cfe6316e90fdd248f914248dfbc61ed042aa57d67a45811d08f3e5",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:34:17Z"
+    },
+    "assets/audio/level-up.wav": {
+      "assetId": "74460142604282",
+      "assetType": "Audio",
+      "convertedFormat": "ogg",
+      "sha256": "d47168687a0c0a7c7719d32f68cdeea5890a0f0fd10b0987c9384356abad4da1",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:34:21Z"
+    },
+    "assets/audio/summon-roll.wav": {
+      "assetId": "101563373223900",
+      "assetType": "Audio",
+      "convertedFormat": "ogg",
+      "sha256": "bc8051a2f843bc0e60df632c7ca3aa79b6d037c346bb111bc71dfd02fd304d44",
+      "state": "pending",
+      "uploadedAt": "2026-11-25T04:34:25Z"
+    },
+    "assets/audio/ui-click.wav": {
+      "assetId": "89174049888189",
+      "assetType": "Audio",
+      "convertedFormat": "ogg",
+      "sha256": "d10a9e29970074ee148f78b9702f79f809b810756e6921510800f307465732b6",
+      "state": "pending",
+      "uploadedAt": "2026-11-24T09:56:26Z"
+    },
+    "assets/meshes/card_standee.obj": {
+      "assetId": "108707871390006",
+      "assetType": "Model",
+      "convertedFormat": "fbx",
+      "sha256": "cb091e9ffc4722a7cb571ec4af2bf1cb34bef76e12ae692a910a0528006dbfa2",
+      "state": "approved",
+      "uploadedAt": "2026-11-24T09:56:39Z"
+    },
+    "assets/meshes/roll_altar.obj": {
+      "assetId": "117723807690485",
+      "assetType": "Model",
+      "convertedFormat": "fbx",
+      "sha256": "122f837d5d69a1129fa35d1dae04d59d8bd0d2684ad40d2f372e40ee78e4cc91",
+      "state": "approved",
+      "uploadedAt": "2026-11-25T04:34:37Z"
+    },
+    "assets/meshes/shop_kiosk.obj": {
+      "assetId": "70931452096514",
+      "assetType": "Model",
+      "convertedFormat": "fbx",
+      "sha256": "2aced57c6aabf6ae5c215e7552357fbdd579c212ea18faf7a114fc8d060753ff",
+      "state": "approved",
+      "uploadedAt": "2026-11-25T04:34:45Z"
+    },
+    "assets/meshes/world1_portal_arch.obj": {
+      "assetId": "87087570141149",
+      "assetType": "Model",
+      "convertedFormat": "fbx",
+      "sha256": "1d10b0474e3efe02bc228b9420e203e1a68f6a6bab3bd7c65daabbf0d03fa7f6",
+      "state": "approved",
+      "uploadedAt": "2026-11-25T04:34:56Z"
+    }
+  },
+  "version": 1
+}
