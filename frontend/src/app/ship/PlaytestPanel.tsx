@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { ChevronDown, CircleCheck, CircleX, ExternalLink, Play, ShieldCheck } from "lucide-react";
+import { ArrowRight, Check, ChevronDown, CircleCheck, CircleX, ExternalLink, Play, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
@@ -71,36 +71,28 @@ function RunDetail({ id, run }: { id: string; run: PlaytestRun }) {
       {report && view === "json" && <pre className="max-h-[60dvh] overflow-auto rounded-card border border-hairline bg-board p-3 font-mono text-sm text-ink-2" data-json>{JSON.stringify(report, null, 2)}</pre>}
       {report && view === "summary" && (
         <>
-          <p className="text-sm text-ink-2">
-            {report.mode ? `${report.mode.replace(/_/g, " ")} · ` : ""}{report.duration_ms ? `${(report.duration_ms / 1000).toFixed(1)} s · ` : ""}build <span className="font-mono">{report.build_id ?? run.build_id}</span> · {stamp(run.at)}
-          </p>
-          {(report.checks?.length ?? 0) > 0 && (
-            <ul className="flex flex-col gap-2" aria-label="Checks">
-              {report.checks!.map((c, i) => (
-                <li key={c.name + i} className="card-stock flex flex-wrap items-center justify-between gap-2 px-3 py-2.5">
-                  <span className="inline-flex min-w-0 items-center gap-2 text-sm"><span className={c.passed ? "text-dot-green" : "text-dot-red"}>{c.passed ? <CircleCheck className="size-4" strokeWidth={1.5} aria-label="passed" /> : <CircleX className="size-4" strokeWidth={1.5} aria-label="failed" />}</span><span className="min-w-0 truncate">{c.name}</span></span>
-                  <span className="max-w-full truncate font-mono text-sm text-ink-2">{c.error ? String(c.error) : c.value === undefined ? "" : JSON.stringify(c.value)}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-          <Lines title="Console errors" lines={report.console?.errors ?? []} tone="text-pill-pro-fg" />
-          <Lines title="Console warnings" lines={report.console?.warnings ?? []} tone="text-pill-warn-fg" />
           {shots.length > 0 && (
-            <section aria-label="Screenshots" className="flex flex-col gap-2">
-              <h4 className="text-sm font-medium text-ink-2">Screenshots <span className="font-mono">{shots.length}</span></h4>
-              <ul className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-2" data-gallery>
+            <section aria-label="Screenshot filmstrip" className="flex flex-col gap-2" data-shot-filmstrip>
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="text-sm font-medium text-ink">Screenshots <span className="font-mono text-ink-2">{shots.length}</span></h4>
+                <span className="font-mono text-xs text-ink-3">
+                  {report.mode ? `${report.mode.replace(/_/g, " ")} ` : ""}
+                  {report.duration_ms ? `${(report.duration_ms / 1000).toFixed(1)}s ` : ""}
+                  {stamp(run.at)}
+                </span>
+              </div>
+              <ul className="flex gap-2 overflow-x-auto pb-1" data-gallery>
                 {shots.map((s, i) => (
-                  <li key={s.file}>
+                  <li key={s.file} className="w-48 shrink-0">
                     <MorphingDialog transition={dialogSpring}>
-                      <MorphingDialogTrigger className="block w-full overflow-hidden rounded-card border border-hairline bg-board text-left outline-none focus-visible:ring-2 focus-visible:ring-focus" aria-label={`Open screenshot ${s.name}`}>
+                      <MorphingDialogTrigger className="block w-full overflow-hidden rounded-sm border border-hairline bg-board text-left outline-none active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus" aria-label={`Open screenshot ${s.name}`}>
                         <img src={shotUrl(id, run.run_id, s.file)} alt={s.name} loading={i === 0 ? "eager" : "lazy"} fetchPriority={i === 0 ? "high" : undefined} className="aspect-video w-full object-cover" />
-                        <span className="block truncate px-2 py-1.5 text-sm text-ink-2">{s.name}</span>
+                        <span className="block truncate px-2 py-1 text-xs text-ink-2">{s.name}</span>
                       </MorphingDialogTrigger>
                       <MorphingDialogContainer>
                         <MorphingDialogContent className="relative mx-3 flex max-h-[88dvh] w-full max-w-[960px] flex-col gap-3 rounded-dialog border border-hairline bg-surface p-4 text-ink shadow-lift">
                           <MorphingDialogTitle className="font-heading text-ui font-semibold">{s.name}</MorphingDialogTitle>
-                          <img src={shotUrl(id, run.run_id, s.file)} alt={s.name} className="min-h-0 w-full flex-1 rounded-card object-contain" />
+                          <img src={shotUrl(id, run.run_id, s.file)} alt={s.name} className="min-h-0 w-full flex-1 rounded-sm object-contain" />
                           <MorphingDialogClose aria-label="Close screenshot" className="static inline-flex min-h-11 cursor-pointer items-center justify-center self-end rounded-lg border border-hairline bg-surface px-4 text-sm font-medium text-ink outline-none hover:bg-board focus-visible:ring-2 focus-visible:ring-focus">Close</MorphingDialogClose>
                         </MorphingDialogContent>
                       </MorphingDialogContainer>
@@ -110,6 +102,41 @@ function RunDetail({ id, run }: { id: string; run: PlaytestRun }) {
               </ul>
             </section>
           )}
+
+          {(report.checks?.length ?? 0) > 0 && (
+            <div className="card-stock overflow-x-auto" data-verification-matrix>
+              <table className="w-full border-collapse text-left text-sm" aria-label="Verification matrix">
+                <thead>
+                  <tr className="border-b border-hairline bg-board/50 text-xs font-medium text-ink-2">
+                    <th className="px-3 py-2">Check</th>
+                    <th className="px-3 py-2">Loop</th>
+                    <th className="px-3 py-2">Console</th>
+                    <th className="px-3 py-2 text-right">Result</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.checks!.map((c, i) => (
+                    <tr key={c.name + i} className="border-b border-hairline/70 last:border-b-0">
+                      <td className="px-3 py-2 font-medium text-ink">{c.name}</td>
+                      <td className="px-3 py-2 font-mono text-xs text-ink-2">{c.datamodel || (report.mode ? report.mode.replace(/_/g, " ") : "studio")}</td>
+                      <td className="px-3 py-2 font-mono text-xs text-ink-2">
+                        {c.error ? String(c.error) : c.value === undefined ? `${report.console?.errors?.length ?? 0} errors` : JSON.stringify(c.value)}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <Pill className={`gap-1 px-2 py-0.5 text-xs ${c.passed ? "bg-pill-active-bg text-pill-active-fg" : "bg-pill-pro-bg text-pill-pro-fg"}`}>
+                          {c.passed ? <CircleCheck className="size-3" strokeWidth={1.5} aria-label="passed" /> : <CircleX className="size-3" strokeWidth={1.5} aria-label="failed" />}
+                          {c.passed ? "Passed" : "Failed"}
+                        </Pill>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <Lines title="Console errors" lines={report.console?.errors ?? []} tone="text-pill-pro-fg" />
+          <Lines title="Console warnings" lines={report.console?.warnings ?? []} tone="text-pill-warn-fg" />
         </>
       )}
     </div>
@@ -187,7 +214,7 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
       <section aria-label="Run a playtest" className="card-stock flex flex-wrap items-center gap-3 p-4">
         <div className="min-w-0 flex-1">
           <h3 className="font-heading text-ui font-semibold">Playtest in Studio</h3>
-          <p className="text-sm text-ink-2">{studioOk ? "Starts the game, runs the project's checks, takes screenshots and saves a report." : "Connect Roblox Studio to run a playtest."}</p>
+          <p className="text-sm text-ink-2">{studioOk ? "Runs Studio checks and captures gameplay screenshots." : "Connect Roblox Studio to playtest."}</p>
         </div>
         <Button variant={syncFirst ? "secondary" : "outline"} size="lg" aria-pressed={syncFirst} onClick={() => setSyncFirst((v) => !v)} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">Send to Studio first</Button>
         {!studioOk && (
@@ -209,6 +236,37 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
         <Button variant="default" size="lg" disabled={!studioOk || running} onClick={() => void run()} data-run-playtest className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><Play className="size-4" strokeWidth={1.5} aria-hidden />{running ? "Playing…" : "Run playtest"}</Button>
         {error && <p role="alert" className="w-full rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
       </section>
+
+      {study && (
+        <div className="card-stock flex flex-wrap items-center justify-between gap-2 px-4 py-2.5" data-playtest-stepper>
+          <div className="flex flex-wrap items-center gap-1.5" aria-label="Study build check ready stepper">
+            {study.stages.map((st, idx) => {
+              const active = study.stage === st.id;
+              return (
+                <span key={st.id} className="inline-flex items-center gap-1.5">
+                  {idx > 0 && <ArrowRight className="size-3.5 text-ink-3" strokeWidth={1.5} aria-hidden />}
+                  <Pill
+                    className={`gap-1 px-2 py-0.5 text-xs ${
+                      st.done
+                        ? "bg-pill-active-bg text-pill-active-fg"
+                        : active
+                          ? "bg-tag-sky-bg text-tag-sky-fg"
+                          : "bg-board text-ink-2"
+                    }`}
+                  >
+                    {st.done && <Check className="size-3" strokeWidth={2} aria-hidden />}
+                    {st.label}
+                  </Pill>
+                </span>
+              );
+            })}
+          </div>
+          <Pill className={study.clean_room ? "bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg" : "bg-pill-warn-bg px-2 py-0.5 text-xs text-pill-warn-fg"}>
+            <ShieldCheck className="size-3" strokeWidth={1.5} aria-hidden />
+            {study.clean_room ? "Clean Room" : "Deep Mode"}
+          </Pill>
+        </div>
+      )}
 
       {study && (
         <section aria-label="Checks and unknowns summary" data-checks-unknowns className="card-stock px-4 py-2.5">

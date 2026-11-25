@@ -602,7 +602,7 @@ export function AdaptersPanel() {
                       <span>{!a.enabled ? "Disabled" : a.missing_secrets?.length ? "Key needed" : "Ready"}</span>
                     </Pill>
                   </div>
-                  {a.description && <p className="text-xs text-ink-2">{a.description}</p>}
+                  {a.description && <p className="line-clamp-1 text-xs text-ink-2">{a.description}</p>}
                 </div>
 
                 <div className="flex shrink-0 flex-wrap items-center gap-1">
@@ -684,7 +684,7 @@ export function AdaptersPanel() {
                       {p.transport.toUpperCase()}
                     </Badge>
                   </div>
-                  {p.description && <p className="text-xs text-ink-2">{p.description}</p>}
+                  {p.description && <p className="line-clamp-1 text-xs text-ink-2">{p.description}</p>}
                 </div>
                 <Button
                   variant="outline"

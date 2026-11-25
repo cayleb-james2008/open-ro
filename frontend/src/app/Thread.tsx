@@ -146,6 +146,16 @@ export function AgentMessage({
   retryDisabled?: boolean;
 }) {
   const { plain: say, raw } = agentText(text, !!bad, !!whole);
+  const needsSummary = !whole && (say.length > 160 || say.includes("\n"));
+  const shortSay = needsSummary
+    ? (() => {
+        const firstLine = say.split("\n")[0].trim();
+        const sentEnd = firstLine.search(/[.!?](?:\s|$)/);
+        const cut = sentEnd > 24 && sentEnd < 150 ? firstLine.slice(0, sentEnd + 1) : firstLine.slice(0, 148).trimEnd() + "...";
+        return cut;
+      })()
+    : say;
+  const detailsBody = raw || (needsSummary ? say : "");
   return (
     <motion.div
       initial={fresh ? { opacity: 0, y: 4 } : false}
@@ -159,7 +169,7 @@ export function AgentMessage({
       }`}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <p className="min-w-0 flex-1 [overflow-wrap:anywhere]">{say}</p>
+        <p className="min-w-0 flex-1 [overflow-wrap:anywhere]">{shortSay}</p>
         {bad && onRetry && (
           <Button
             variant="outline"
@@ -184,7 +194,7 @@ export function AgentMessage({
         retryDisabled={retryDisabled}
       />
 
-      {raw && (
+      {detailsBody && (
         <Expandable expandDirection="vertical" expandBehavior="push">
           {({ isExpanded }) => (
             <div className="border-t border-hairline/70 pt-2">
@@ -194,14 +204,14 @@ export function AgentMessage({
               >
                 <span>Details</span>
                 <ChevronDown
-                  className={`size-3.5 transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`}
+                  className={`size-3.5 duration-(--dur-swap) ease-(--ease-house) motion-safe:transition-transform ${isExpanded ? "rotate-180" : ""}`}
                   strokeWidth={1.5}
                   aria-hidden
                 />
               </ExpandableTrigger>
               <ExpandableContent preset="fade">
                 <pre className="mt-1.5 whitespace-pre-wrap break-all rounded-sm bg-board p-2.5 font-mono text-xs text-ink-2">
-                  {raw}
+                  {detailsBody}
                 </pre>
               </ExpandableContent>
             </div>

@@ -1,14 +1,31 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Clock, CloudUpload, Lock, Search, ShieldCheck, ShieldOff } from "lucide-react";
+import { Box, Clock, CloudUpload, Image as ImageIcon, Lock, Music, Search, ShieldCheck, ShieldOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Pill } from "@/components/kibo-ui/pill";
+import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
+import { ProgressCircle } from "@/components/ProgressCircle/ProgressCircle";
 import { SlidingNumber } from "@/components/ui/sliding-number";
 import { MorphingDialog, MorphingDialogClose, MorphingDialogContainer, MorphingDialogContent, MorphingDialogDescription, MorphingDialogTitle, MorphingDialogTrigger } from "@/components/ui/morphing-dialog";
 import { open as dialogSpring } from "@/motion";
-import { call, prettyBytes, projUrl, type AssetFile, type UploadResult } from "./api";
+import { call, enc, prettyBytes, projUrl, type AssetFile, type UploadResult } from "./api";
 import type { Ship } from "./useShip";
+
+type AssetFilter = "all" | "cards" | "weapons" | "audio" | "3d" | "pending";
+
+function isImagePath(p: string): boolean {
+  return /\.(png|jpe?g|webp|gif)$/i.test(p);
+}
+
+function assetCategory(f: AssetFile): Exclude<AssetFilter, "all" | "pending"> {
+  const p = f.path.toLowerCase();
+  const k = (f.kind || "").toLowerCase();
+  if (p.includes("/weapons/") || p.startsWith("art/weapons") || k.includes("weapon")) return "weapons";
+  if (/\.(wav|ogg|mp3|flac)$/i.test(p) || k.includes("audio") || k.includes("sound")) return "audio";
+  if (/\.(obj|fbx|glb|gltf|rbxm|rbxmx)$/i.test(p) || k.includes("mesh") || k.includes("model")) return "3d";
+  return "cards";
+}
 
 /** Moderation words from the lock state Roblox returns with an upload. */
 export function moderation(state: string | undefined): { label: string; cls: string } {
@@ -22,7 +39,7 @@ const RESULT_WORDS: Record<string, string> = { uploaded: "uploaded", reused: "al
 
 function Tally({ label, value, tone }: { label: string; value: number; tone: string }) {
   return (
-    <div className={`flex min-w-[88px] flex-1 flex-col rounded-card px-3 py-2 ${tone}`}>
+    <div className={`flex min-w-[88px] flex-1 flex-col rounded-sm px-3 py-2 ${tone}`}>
       <span className="font-mono text-title font-medium tabular-nums"><SlidingNumber value={value} /></span>
       <span className="text-sm">{label}</span>
     </div>
@@ -34,6 +51,8 @@ export function AssetsPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSettin
   const [files, setFiles] = useState<AssetFile[] | null>(null);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<AssetFilter>("all");
+  const [brokenImgs, setBrokenImgs] = useState<Record<string, boolean>>({});
   const [uploading, setUploading] = useState(false);
   const [results, setResults] = useState<UploadResult[] | null>(null);
   const [note, setNote] = useState("");
@@ -52,8 +71,19 @@ export function AssetsPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSettin
   const list = files ?? [];
   const hasKey = !!cloud?.has_key;
   const queue = list.filter((f) => f.authorised && (!f.locked || f.stale));
-  const shown = useMemo(() => list.filter((f) => !query.trim() || f.path.toLowerCase().includes(query.trim().toLowerCase())), [list, query]);
+  const shown = useMemo(
+    () =>
+      list.filter((f) => {
+        if (query.trim() && !f.path.toLowerCase().includes(query.trim().toLowerCase())) return false;
+        if (filter === "all") return true;
+        if (filter === "pending") return !f.locked || Boolean(f.stale);
+        return assetCategory(f) === filter;
+      }),
+    [list, query, filter],
+  );
   const tally = { files: list.length, allowed: list.filter((f) => f.authorised).length, uploaded: list.filter((f) => f.locked).length, waiting: queue.length };
+  const progressDenominator = tally.allowed > 0 ? tally.allowed : tally.files;
+  const uploadPct = progressDenominator > 0 ? Math.min(100, Math.round((tally.uploaded / progressDenominator) * 100)) : 0;
 
   const upload = async (body: Record<string, unknown>) => {
     if (!id) return;
@@ -92,17 +122,27 @@ export function AssetsPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSettin
           <Tally label="waiting" value={tally.waiting} tone="bg-pill-warn-bg text-pill-warn-fg" />
           <Tally label="on Roblox" value={tally.uploaded} tone="bg-pill-active-bg text-pill-active-fg" />
         </div>
+        {tally.files > 0 && (
+          <div className="flex items-center gap-2.5 text-xs text-ink-2" data-upload-progress>
+            <ProgressCircle value={uploadPct} radius={12} strokeWidth={3} className="size-7 flex-none">
+              <span className="font-mono text-xs tabular-nums text-ink">{uploadPct}</span>
+            </ProgressCircle>
+            <span>
+              <span className="font-mono tabular-nums text-ink">{tally.uploaded}/{progressDenominator}</span> uploaded (<span className="font-mono tabular-nums text-ink">{uploadPct}%</span>)
+            </span>
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="default" size="lg" disabled={!hasKey || uploading || tally.waiting === 0} onClick={() => void upload({ authorised: true })} data-upload className="max-md:min-h-11"><CloudUpload className="size-4" strokeWidth={1.5} aria-hidden />{uploading ? "Uploading…" : `Upload ${tally.waiting} allowed`}</Button>
-          <Button variant="outline" size="lg" disabled={!hasKey || uploading} onClick={() => void upload({ authorised: true, dry_run: true })} className="max-md:min-h-11">Preview only</Button>
-          <Button variant="outline" size="lg" disabled={uploading} onClick={() => void codegen()} className="max-md:min-h-11">Write AssetIds.luau</Button>
+          <Button variant="default" size="lg" disabled={!hasKey || uploading || tally.waiting === 0} onClick={() => void upload({ authorised: true })} data-upload className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><CloudUpload className="size-4" strokeWidth={1.5} aria-hidden />{uploading ? "Uploading…" : `Upload ${tally.waiting} allowed`}</Button>
+          <Button variant="outline" size="lg" disabled={!hasKey || uploading} onClick={() => void upload({ authorised: true, dry_run: true })} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">Preview only</Button>
+          <Button variant="outline" size="lg" disabled={uploading} onClick={() => void codegen()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">Write AssetIds.luau</Button>
           <MorphingDialog transition={dialogSpring}>
-            <MorphingDialogTrigger blocked={!hasKey || uploading} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hairline bg-surface px-3 text-sm font-medium text-pill-pro-fg outline-none hover:bg-pill-pro-bg focus-visible:ring-2 focus-visible:ring-focus disabled:border-hairline disabled:bg-track disabled:text-ink-3" thing="upload-everything">Upload everything…</MorphingDialogTrigger>
+            <MorphingDialogTrigger blocked={!hasKey || uploading} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hairline bg-surface px-3 text-sm font-medium text-pill-pro-fg outline-none hover:bg-pill-pro-bg active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus disabled:border-hairline disabled:bg-track disabled:text-ink-3" thing="upload-everything">Upload everything…</MorphingDialogTrigger>
             <MorphingDialogContainer>
               <MorphingDialogContent className="relative mx-3 flex w-full max-w-[440px] flex-col gap-4 rounded-dialog border border-hairline bg-surface p-5 text-ink shadow-lift">
                 <div>
                   <MorphingDialogTitle className="font-heading text-title font-semibold">Upload every file?</MorphingDialogTitle>
-                  <MorphingDialogDescription className="mt-1 text-sm text-ink-2">This sends all {tally.files} uploadable files, including the {tally.files - tally.allowed} you have not allowed. Reference images and drafts may be among them. Normally you allow files first.</MorphingDialogDescription>
+                  <MorphingDialogDescription className="mt-1 text-sm text-ink-2">Sends all {tally.files} files, including {tally.files - tally.allowed} unapproved drafts.</MorphingDialogDescription>
                 </div>
                 <div className="flex flex-wrap justify-end gap-2">
                   <MorphingDialogClose aria-label="Cancel" className="static inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-hairline bg-surface px-4 text-sm font-medium text-ink outline-none hover:bg-board focus-visible:ring-2 focus-visible:ring-focus">Cancel</MorphingDialogClose>
@@ -112,7 +152,7 @@ export function AssetsPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSettin
             </MorphingDialogContainer>
           </MorphingDialog>
         </div>
-        {!hasKey && <p className="text-sm text-ink-2">Uploads need an Open Cloud key. <Button variant="link" size="sm" onClick={onOpenSettings} className="inline h-auto p-0 underline max-md:min-h-11">Add it in Settings</Button></p>}
+        {!hasKey && <p className="text-sm text-ink-2">Save an Open Cloud key in <Button variant="link" size="sm" onClick={onOpenSettings} className="inline h-auto p-0 underline max-md:min-h-11">Settings</Button> to upload.</p>}
         {error && <p role="alert" className="rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
         {note && <p className="rounded-sm bg-board px-3 py-2 text-sm text-ink-2">{note}</p>}
         {results && (
@@ -124,39 +164,117 @@ export function AssetsPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSettin
         )}
       </section>
 
-      <section aria-label="Files" className="flex flex-col gap-2">
-        <InputGroup>
-          <InputGroupAddon align="inline-start">
-            <Search className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
-          </InputGroupAddon>
-          <InputGroupInput type="search" aria-label="Search files" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search files" />
-        </InputGroup>
+      <section aria-label="Files" className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <SegmentedControl aria-label="Asset type filter" size="sm" data-asset-filters className="max-w-full flex-wrap">
+            {(
+              [
+                { k: "all", label: "All" },
+                { k: "cards", label: "Cards" },
+                { k: "weapons", label: "Weapons" },
+                { k: "audio", label: "Audio" },
+                { k: "3d", label: "3D" },
+                { k: "pending", label: "Pending" },
+              ] as const
+            ).map((opt) => (
+              <SegmentedControlItem
+                key={opt.k}
+                data-checked={filter === opt.k ? "" : undefined}
+                aria-pressed={filter === opt.k}
+                onClick={() => setFilter(opt.k)}
+                className="max-md:!h-11 max-md:px-2.5"
+              >
+                {opt.label}
+              </SegmentedControlItem>
+            ))}
+          </SegmentedControl>
+          <InputGroup className="min-w-[200px] flex-1 sm:max-w-xs">
+            <InputGroupAddon align="inline-start">
+              <Search className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
+            </InputGroupAddon>
+            <InputGroupInput type="search" aria-label="Search files" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter assets" />
+          </InputGroup>
+        </div>
+
         {files === null ? (
-          <div className="grid gap-2" aria-hidden><span className="h-14 rounded-card bg-track" /><span className="h-14 rounded-card bg-track" /></div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3" aria-hidden>
+            <span className="h-44 rounded-card bg-track" />
+            <span className="h-44 rounded-card bg-track" />
+            <span className="h-44 rounded-card bg-track" />
+          </div>
         ) : shown.length === 0 ? (
-          <p className="card-stock p-4 text-sm text-ink-2">{list.length === 0 ? "No images, audio or models in this project yet." : "No file matches that search."}</p>
+          <p className="card-stock p-4 text-sm text-ink-2">{list.length === 0 ? "No images, audio, or 3D assets in this project yet." : "No matching assets."}</p>
         ) : (
-          <ul className="flex flex-col gap-2">
-            {shown.map((f) => {
+          <ul className="grid grid-cols-[repeat(auto-fill,minmax(216px,1fr))] gap-3" data-asset-gallery>
+            {shown.map((f, idx) => {
               const m = f.locked ? moderation(f.locked.state) : null;
+              const isImg = isImagePath(f.path);
+              const cat = assetCategory(f);
+              const imgUrl = id && isImg ? `/api/art/image?project=${enc(id)}&path=${enc(f.path)}` : "";
+              const fileName = f.path.split("/").pop() || f.path;
+              const imgBroken = !imgUrl || Boolean(brokenImgs[f.path]);
+
               return (
-                <li key={f.path} className="card-stock flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5" data-asset={f.path}>
-                  <div className="min-w-0 flex-1">
-                    <code className="block truncate font-mono text-sm text-ink">{f.path}</code>
-                    <span className="text-sm text-ink-2">{f.kind} · {prettyBytes(f.bytes)}</span>
+                <li key={f.path} className="card-stock flex flex-col justify-between gap-2 overflow-hidden p-2.5" data-asset={f.path}>
+                  {isImg && !imgBroken ? (
+                    <MorphingDialog transition={dialogSpring}>
+                      <MorphingDialogTrigger
+                        aria-label={`Preview ${fileName}`}
+                        className="block w-full overflow-hidden rounded-sm border border-hairline bg-board outline-none active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus"
+                      >
+                        <img
+                          src={imgUrl}
+                          alt={fileName}
+                          loading={idx === 0 ? "eager" : "lazy"}
+                          fetchPriority={idx === 0 ? "high" : undefined}
+                          onError={() => setBrokenImgs((p) => ({ ...p, [f.path]: true }))}
+                          className="aspect-[4/3] w-full object-cover"
+                        />
+                      </MorphingDialogTrigger>
+                      <MorphingDialogContainer>
+                        <MorphingDialogContent className="relative mx-3 flex max-h-[88dvh] w-full max-w-[780px] flex-col gap-3 rounded-dialog border border-hairline bg-surface p-4 text-ink shadow-lift">
+                          <MorphingDialogTitle className="font-heading text-ui font-semibold">{fileName}</MorphingDialogTitle>
+                          <img src={imgUrl} alt={fileName} className="min-h-0 w-full flex-1 rounded-sm object-contain" />
+                          <code className="truncate font-mono text-xs text-ink-3">{f.path}</code>
+                          <MorphingDialogClose aria-label="Close preview" className="static inline-flex min-h-11 cursor-pointer items-center justify-center self-end rounded-lg border border-hairline bg-surface px-4 text-sm font-medium text-ink outline-none hover:bg-board focus-visible:ring-2 focus-visible:ring-focus">Close</MorphingDialogClose>
+                        </MorphingDialogContent>
+                      </MorphingDialogContainer>
+                    </MorphingDialog>
+                  ) : (
+                    <div className="flex aspect-[4/3] w-full flex-col items-center justify-center gap-1.5 rounded-sm border border-hairline bg-board/60 text-ink-2">
+                      {cat === "audio" ? (
+                        <Music className="size-7 text-blue" strokeWidth={1.5} aria-hidden />
+                      ) : cat === "3d" ? (
+                        <Box className="size-7 text-blue" strokeWidth={1.5} aria-hidden />
+                      ) : (
+                        <ImageIcon className="size-7 text-ink-3" strokeWidth={1.5} aria-hidden />
+                      )}
+                      <span className="text-xs text-ink-3">{f.kind}</span>
+                    </div>
+                  )}
+
+                  <div className="flex min-w-0 flex-col gap-1">
+                    <span className="truncate text-sm font-medium text-ink" title={f.path}>{fileName}</span>
+                    <div className="flex items-center justify-between gap-2 text-xs text-ink-2">
+                      <span className="truncate font-mono">{f.path}</span>
+                      <span className="shrink-0 font-mono tabular-nums">{prettyBytes(f.bytes)}</span>
+                    </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {f.locked ? (
-                      <>
-                        <Pill className="bg-pill-inactive-bg px-2 py-0.5 font-mono text-sm text-pill-inactive-fg"><Lock className="size-3.5" strokeWidth={1.5} aria-hidden />{f.locked.assetId}</Pill>
-                        {m && <Pill className={`px-2 py-0.5 text-sm ${m.cls}`}>{m.label}</Pill>}
-                        {f.stale && <Pill className="bg-pill-warn-bg px-2 py-0.5 text-sm text-pill-warn-fg">changed since upload</Pill>}
-                      </>
-                    ) : (
-                      <Pill className="bg-pill-inactive-bg px-2 py-0.5 text-sm text-pill-inactive-fg"><Clock className="size-3.5" strokeWidth={1.5} aria-hidden />not uploaded</Pill>
-                    )}
-                    <Button variant={f.authorised ? "secondary" : "outline"} size="sm" aria-pressed={f.authorised} aria-label={`${f.authorised ? "Stop allowing" : "Allow"} ${f.path}`} onClick={() => void setAuthorised([f.path], f.authorised)} className="max-md:min-h-11">
-                      {f.authorised ? <ShieldCheck className="size-4" strokeWidth={1.5} aria-hidden /> : <ShieldOff className="size-4" strokeWidth={1.5} aria-hidden />}{f.authorised ? "Allowed" : "Allow"}
+
+                  <div className="flex flex-wrap items-center justify-between gap-1.5 border-t border-hairline pt-2">
+                    <div className="flex flex-wrap items-center gap-1">
+                      {f.locked ? (
+                        <>
+                          <Pill className="bg-pill-inactive-bg px-1.5 py-0 font-mono text-xs text-pill-inactive-fg"><Lock className="size-3" strokeWidth={1.5} aria-hidden />{f.locked.assetId}</Pill>
+                          {m && <Pill className={`px-1.5 py-0 text-xs ${m.cls}`}>{m.label}</Pill>}
+                          {f.stale && <Pill className="bg-pill-warn-bg px-1.5 py-0 text-xs text-pill-warn-fg">changed</Pill>}
+                        </>
+                      ) : (
+                        <Pill className="bg-pill-inactive-bg px-1.5 py-0 text-xs text-pill-inactive-fg"><Clock className="size-3" strokeWidth={1.5} aria-hidden />pending</Pill>
+                      )}
+                    </div>
+                    <Button variant={f.authorised ? "secondary" : "outline"} size="xs" aria-pressed={f.authorised} aria-label={`${f.authorised ? "Stop allowing" : "Allow"} ${f.path}`} onClick={() => void setAuthorised([f.path], f.authorised)} className="active:opacity-80 max-md:min-h-11">
+                      {f.authorised ? <ShieldCheck className="size-3.5" strokeWidth={1.5} aria-hidden /> : <ShieldOff className="size-3.5" strokeWidth={1.5} aria-hidden />}{f.authorised ? "Allowed" : "Allow"}
                     </Button>
                   </div>
                 </li>

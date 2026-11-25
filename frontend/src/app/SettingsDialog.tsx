@@ -372,7 +372,7 @@ export function SettingsDialog({
                         />
                       </label>
                       <p className="text-xs text-ink-2">
-                        Run <code className="rounded-sm bg-surface px-1 font-mono">openro-rs</code> on this machine, then click Apply to bridge prompts and .rbxlx exports to your local Rust server.
+                        Point to a local <code className="rounded-sm bg-surface px-1 font-mono">openro-rs</code> server for desktop tools and builds.
                       </p>
                     </div>
                   )}
@@ -666,8 +666,8 @@ export function SettingsDialog({
                     </div>
                   </div>
 
-                  <p className="text-xs leading-relaxed text-ink-2">
-                    Default uses ChatGPT in the shared browser with reference images. Optional Google Gemini or OpenAI Image API keys are stored write-only.
+                  <p className="text-xs text-ink-2">
+                    Default uses ChatGPT in the shared browser; API keys are stored write-only.
                   </p>
 
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
