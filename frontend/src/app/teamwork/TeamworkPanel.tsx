@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
-import { AlertTriangle, CheckCircle2, FileLock2, GitCommitHorizontal, Play, Plus, RefreshCw, RotateCcw, Send, Square, Terminal, Users, X, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, ChevronDown, FileLock2, GitCommitHorizontal, Play, Plus, RefreshCw, RotateCcw, Send, Square, Terminal, Users, X, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Pill } from "@/components/kibo-ui/pill";
+import { ProgressCircle } from "@/components/ProgressCircle/ProgressCircle";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { SlidingNumber } from "@/components/ui/sliding-number";
 import { Expandable, ExpandableTrigger } from "@/components/ui/expandable";
 import { MorphingDialog, MorphingDialogClose, MorphingDialogContainer, MorphingDialogContent, MorphingDialogDescription, MorphingDialogTitle, MorphingDialogTrigger } from "@/components/ui/morphing-dialog";
 import { open as dialogSpring } from "@/motion";
 import { stamp } from "../ship/api";
+import { AdaptiveAgentCards } from "../AdaptiveAgentCards";
 import {
   createRun, getAgentTrace, getRun, killAgent, listRuns, postToBoard, restartAgent, resumeRun, stopRun, teamUrl,
   type AgentState, type BoardPost, type ChatMessage, type FileClaim, type QuotaState, type RunSummary, type Task, type TeamworkSnapshot, type TraceEntry,
@@ -68,7 +70,7 @@ function NewRunDialog({ projectId, onCreated }: { projectId?: string | null; onC
         <MorphingDialogContent className="relative mx-3 flex w-full max-w-[480px] flex-col gap-4 rounded-dialog border border-hairline bg-surface p-5 text-ink shadow-lift">
           <div>
             <MorphingDialogTitle className="font-heading text-title font-semibold">Start a team run</MorphingDialogTitle>
-            <MorphingDialogDescription className="mt-1 text-sm text-ink-2">Give OpenRO a plain goal. A coordinator splits the work across roles, guards file ownership, and verifies every task.</MorphingDialogDescription>
+            <MorphingDialogDescription className="mt-1 text-sm text-ink-2">Coordinator assigns tasks across roles, guards file ownership, and verifies changes.</MorphingDialogDescription>
           </div>
           <label className="flex flex-col gap-1 text-sm font-medium text-ink-2">
             <span>Goal</span>
@@ -352,36 +354,115 @@ export function TeamworkPanel({ projectId }: { projectId?: string | null }) {
 
       {!run ? (
         <div className="card-stock flex flex-col items-start gap-3 p-6" data-teamwork-empty>
-          <h3 className="font-heading text-ui font-semibold">Build a game with a team of agents</h3>
-          <p className="max-w-[58ch] text-sm text-ink-2">Start a team run with a plain goal. A coordinator splits tasks across roles, guards file ownership, verifies changes in Studio, and commits each finished task.</p>
+          <h3 className="font-heading text-ui font-semibold">Build with a team of agents</h3>
+          <p className="max-w-[58ch] text-sm text-ink-2">Coordinator splits goals across specialized roles with file locks and Studio verification.</p>
         </div>
       ) : (
         <>
-          <section aria-label="Run status" className="card-stock flex flex-wrap items-center justify-between gap-3 p-3.5">
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <Pill className={`px-2 py-0.5 text-sm ${RUN_TONE[run.status] || RUN_TONE.stopped}`}>{run.status}</Pill>
-                <span className="font-mono text-sm text-ink-2">{run.model_id}</span>
-                <span className="inline-flex items-baseline gap-1 text-sm text-ink-2">
-                  <span className="inline-flex items-baseline font-mono tabular-nums"><SlidingNumber value={run.active_model_calls ?? 0} />/{run.max_concurrency}</span> active
-                </span>
-                {run.studio_lease && (
-                  <Pill className="bg-tag-research-bg px-2 py-0.5 font-mono text-xs text-tag-research-fg">
-                    Studio: {run.studio_lease.holder_agent} ({run.studio_lease.operation})
-                  </Pill>
-                )}
+          <section aria-label="Run status" className="card-stock flex flex-col gap-3 p-3.5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Pill className={`px-2 py-0.5 text-sm ${RUN_TONE[run.status] || RUN_TONE.stopped}`}>{run.status}</Pill>
+                  <span className="font-mono text-sm text-ink-2">{run.model_id}</span>
+                  <span className="inline-flex items-baseline gap-1 text-sm text-ink-2">
+                    <span className="inline-flex items-baseline font-mono tabular-nums"><SlidingNumber value={run.active_model_calls ?? 0} />/{run.max_concurrency}</span> active
+                  </span>
+                  {run.studio_lease && (
+                    <Pill className="bg-tag-research-bg px-2 py-0.5 font-mono text-xs text-tag-research-fg">
+                      Studio: {run.studio_lease.holder_agent} ({run.studio_lease.operation})
+                    </Pill>
+                  )}
+                </div>
+                <p className="mt-1 truncate text-sm text-ink">{run.goal}</p>
               </div>
-              <p className="mt-1 truncate text-sm text-ink">{run.goal}</p>
+              <div className="flex flex-wrap items-center gap-2">
+                {run.status === "running" ? (
+                  <Button variant="outline" size="sm" disabled={!!busy} onClick={() => void toggleRun()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><Square className="size-3.5" strokeWidth={1.5} aria-hidden />Stop run</Button>
+                ) : run.status === "stopped" ? (
+                  <Button variant="default" size="sm" disabled={!!busy} onClick={() => void toggleRun()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><Play className="size-3.5" strokeWidth={1.5} aria-hidden />Resume run</Button>
+                ) : null}
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {run.status === "running" ? (
-                <Button variant="outline" size="sm" disabled={!!busy} onClick={() => void toggleRun()} className="max-md:min-h-11"><Square className="size-3.5" strokeWidth={1.5} aria-hidden />Stop run</Button>
-              ) : run.status === "stopped" ? (
-                <Button variant="default" size="sm" disabled={!!busy} onClick={() => void toggleRun()} className="max-md:min-h-11"><Play className="size-3.5" strokeWidth={1.5} aria-hidden />Resume run</Button>
-              ) : null}
-            </div>
+
+            {/* Visual Live Agent Workflow Diagram */}
+            {(() => {
+              const coord = roster.find((a) => a.name === "coordinator");
+              const verifier = roster.find((a) => a.name === "verifier" || a.role.toLowerCase().includes("verif"));
+              const workers = roster.filter((a) => a !== coord && a !== verifier);
+              const doneCount = tasks.filter((t) => t.status === "done").length;
+              const pct = tasks.length > 0 ? Math.round((doneCount / tasks.length) * 100) : 0;
+              const nodeDot = (a?: AgentState) => {
+                if (!a) return "bg-ink-3";
+                if (a.killed) return "bg-pill-pro-fg";
+                if (a.state === "working") return "bg-dot-green";
+                if (a.state === "waiting") return "bg-blue";
+                return "bg-ink-3";
+              };
+              const nodeRing = (a?: AgentState) =>
+                a && !a.killed && a.state === "working" ? "border-dot-green/60 bg-pill-active-bg/35" : "border-hairline bg-surface";
+              return (
+                <div className="flex flex-col gap-2 rounded-sm border border-hairline bg-board/40 p-2.5" data-swarm-workflow>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={() => coord && setSelectedAgent((c) => (c === coord.name ? null : coord.name))}
+                      className={`min-h-8 gap-1.5 px-2 text-xs active:opacity-80 max-md:min-h-11 ${nodeRing(coord)}`}
+                    >
+                      <span className={`size-2 rounded-full ${nodeDot(coord)}`} aria-hidden />
+                      <span>Coordinator</span>
+                    </Button>
+                    <ArrowRight className="size-3.5 shrink-0 text-ink-3" strokeWidth={1.5} aria-hidden />
+                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5" aria-label="Active role nodes">
+                      {workers.length === 0 ? (
+                        <span className="rounded-sm border border-hairline bg-surface px-2 py-1 text-xs text-ink-2">Workers</span>
+                      ) : (
+                        workers.map((w) => (
+                          <Button
+                            key={w.name}
+                            variant="outline"
+                            size="xs"
+                            onClick={() => setSelectedAgent((c) => (c === w.name ? null : w.name))}
+                            className={`min-h-8 gap-1.5 px-2 text-xs active:opacity-80 max-md:min-h-11 ${nodeRing(w)}`}
+                          >
+                            <span className={`size-2 rounded-full ${nodeDot(w)}`} aria-hidden />
+                            <span>@{w.name}</span>
+                          </Button>
+                        ))
+                      )}
+                    </div>
+                    <ArrowRight className="size-3.5 shrink-0 text-ink-3" strokeWidth={1.5} aria-hidden />
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={() => verifier && setSelectedAgent((c) => (c === verifier.name ? null : verifier.name))}
+                      className={`min-h-8 gap-1.5 px-2 text-xs active:opacity-80 max-md:min-h-11 ${nodeRing(verifier)}`}
+                    >
+                      <span className={`size-2 rounded-full ${nodeDot(verifier)}`} aria-hidden />
+                      <span>{verifier ? `@${verifier.name}` : "Verifier"}</span>
+                    </Button>
+                  </div>
+
+                  {tasks.length > 0 && (
+                    <div className="flex items-center justify-between gap-2.5 border-t border-hairline pt-2 text-xs text-ink-2">
+                      <span className="inline-flex items-center gap-2">
+                        <ProgressCircle value={pct} radius={11} strokeWidth={2.5} className="size-6 flex-none">
+                          <span className="font-mono text-xs tabular-nums text-ink">{doneCount}</span>
+                        </ProgressCircle>
+                        <span>
+                          <span className="font-mono tabular-nums text-ink">{doneCount}/{tasks.length}</span> tasks done (<span className="font-mono tabular-nums text-ink">{pct}%</span>)
+                        </span>
+                      </span>
+                      <span className="text-ink-3">Click any role node to inspect trace</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {run.quota?.active && (
-              <div role="alert" data-teamwork-quota className="flex w-full flex-wrap items-center justify-between gap-2 rounded-card bg-pill-warn-bg px-3 py-2 text-sm text-pill-warn-fg">
+              <div role="alert" data-teamwork-quota className="flex w-full flex-wrap items-center justify-between gap-2 rounded-sm bg-pill-warn-bg px-3 py-2 text-sm text-pill-warn-fg">
                 <span className="inline-flex items-center gap-1.5"><AlertTriangle className="size-4 flex-none" strokeWidth={1.5} aria-hidden />{run.quota.message || "Model quota reached. Scheduler is backing off."}</span>
                 {run.quota.reset_in && <span className="text-xs font-medium">resets in <span className="font-mono">{run.quota.reset_in}</span></span>}
               </div>
@@ -411,20 +492,41 @@ export function TeamworkPanel({ projectId }: { projectId?: string | null }) {
                   <p className="card-stock p-4 text-sm text-ink-2">No board messages yet.</p>
                 ) : (
                   <ul className="flex flex-col gap-2">
-                    {board.map((m) => (
-                      <li key={m.seq} className="card-stock flex flex-col gap-1 px-3 py-2.5">
-                        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="font-mono text-xs text-ink-2">#{m.seq}</span>
-                            <span className="font-medium text-ink">@{m.author}</span>
-                            <Pill className="bg-tag-neutral-bg px-2 py-0.5 text-xs text-tag-neutral-fg">{m.kind}</Pill>
-                            {m.is_done && <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg">done</Pill>}
-                          </div>
-                          {m.ts_ms && <span className="font-mono text-xs text-ink-2">{stamp(m.ts_ms)}</span>}
-                        </div>
-                        <p className="whitespace-pre-wrap break-words text-sm text-ink">{m.text}</p>
-                      </li>
-                    ))}
+                    {board.map((m) => {
+                      const headline = (m.text || "").replace(/^@\S+\s*(\[done\]\s*)?/i, "").split("\n")[0].trim();
+                      return (
+                        <li key={m.seq} className="card-stock flex flex-col gap-1.5 px-3 py-2.5">
+                          <Expandable expandDirection="vertical" expandBehavior="push">
+                            {({ isExpanded }) => (
+                              <>
+                                <ExpandableTrigger
+                                  aria-label={`Post ${m.seq} from ${m.author}`}
+                                  className="flex min-h-8 w-full cursor-pointer items-center justify-between gap-2 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-focus max-md:min-h-11"
+                                >
+                                  <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                                    <span className="shrink-0 font-mono text-xs text-ink-2">#{m.seq}</span>
+                                    <span className="shrink-0 font-medium text-ink">@{m.author}</span>
+                                    <Pill className="shrink-0 bg-tag-neutral-bg px-1.5 py-0 text-xs text-tag-neutral-fg">{m.kind}</Pill>
+                                    {m.is_done && <Pill className="shrink-0 bg-pill-active-bg px-1.5 py-0 text-xs text-pill-active-fg">done</Pill>}
+                                    <span className="min-w-0 flex-1 truncate text-ink-2">{headline || m.kind}</span>
+                                  </div>
+                                  <div className="flex shrink-0 items-center gap-1.5">
+                                    {m.ts_ms && <span className="font-mono text-xs text-ink-3">{stamp(m.ts_ms)}</span>}
+                                    <ChevronDown className={`size-3.5 text-ink-3 duration-(--dur-swap) ease-(--ease-house) motion-safe:transition-transform ${isExpanded ? "rotate-180" : ""}`} strokeWidth={1.5} aria-hidden />
+                                  </div>
+                                </ExpandableTrigger>
+                                {isExpanded && (
+                                  <p className="mt-1.5 whitespace-pre-wrap break-words border-t border-hairline pt-2 text-sm text-ink-2">
+                                    {m.text}
+                                  </p>
+                                )}
+                              </>
+                            )}
+                          </Expandable>
+                          <AdaptiveAgentCards text={m.text} projectId={run.project_id} />
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </div>
@@ -432,7 +534,7 @@ export function TeamworkPanel({ projectId }: { projectId?: string | null }) {
                 {roster.length > 0 && (
                   <div className="flex flex-wrap gap-1">
                     {roster.map((a) => (
-                      <Button key={a.name} variant="ghost" size="xs" onClick={() => setPostText((t) => (t ? `${t} @${a.name} ` : `@${a.name} `))} className="font-mono max-md:min-h-11">
+                      <Button key={a.name} variant="ghost" size="xs" onClick={() => setPostText((t) => (t ? `${t} @${a.name} ` : `@${a.name} `))} className="font-mono active:opacity-80 max-md:min-h-11">
                         @{a.name}
                       </Button>
                     ))}
@@ -443,7 +545,7 @@ export function TeamworkPanel({ projectId }: { projectId?: string | null }) {
                     <InputGroupAddon align="inline-start"><span className="text-xs text-ink-2">human</span></InputGroupAddon>
                     <InputGroupInput aria-label="Post to team board" value={postText} onChange={(e) => setPostText(e.target.value)} placeholder="Message the team, e.g. @systems use 1000 pity" />
                   </InputGroup>
-                  <Button type="submit" variant="default" size="lg" disabled={!postText.trim() || busy === "post"} className="max-md:min-h-11"><Send className="size-4" strokeWidth={1.5} aria-hidden />Post</Button>
+                  <Button type="submit" variant="default" size="lg" disabled={!postText.trim() || busy === "post"} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><Send className="size-4" strokeWidth={1.5} aria-hidden />Post</Button>
                 </form>
               </div>
             </div>
@@ -452,34 +554,68 @@ export function TeamworkPanel({ projectId }: { projectId?: string | null }) {
           {tab === "tasks" && (
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pb-2" data-teamwork-tasks>
               {tasks.length === 0 ? (
-                <p className="card-stock p-4 text-sm text-ink-2">The coordinator has not split tasks yet.</p>
+                <p className="card-stock p-4 text-sm text-ink-2">No tasks assigned yet.</p>
               ) : (
-                <ul className="flex flex-col gap-2">
-                  {tasks.map((t) => (
-                    <li key={t.id} className="card-stock flex flex-col gap-1.5 p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="font-mono text-xs text-ink-2">{t.id}</span>
-                          <span className="truncate text-ui font-medium text-ink">{t.title}</span>
-                        </div>
-                        <Pill className={`px-2 py-0.5 text-xs ${TASK_TONE[t.status] || TASK_TONE.pending}`}>{t.status.replace(/_/g, " ")}</Pill>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2 text-sm text-ink-2">
-                        <span>owner <strong className="font-medium text-ink">@{t.owner}</strong></span>
-                        {t.commit_sha && <Pill className="bg-tag-mint-bg px-2 py-0.5 font-mono text-xs text-tag-mint-fg"><GitCommitHorizontal className="size-3" strokeWidth={1.5} aria-hidden />{t.commit_sha.slice(0, 7)}</Pill>}
-                        {t.verify_report && (
-                          <span className={`inline-flex items-center gap-1 text-xs ${t.verify_report.passed ? "text-pill-active-fg" : "text-pill-pro-fg"}`}>
-                            {t.verify_report.passed ? <CheckCircle2 className="size-3.5" strokeWidth={1.5} aria-hidden /> : <XCircle className="size-3.5" strokeWidth={1.5} aria-hidden />}
-                            {t.verify_report.passed ? "Verified" : "Rejected"}{t.verify_report.console_errors ? ` · ${t.verify_report.console_errors} errors` : ""}
-                          </span>
-                        )}
-                      </div>
-                      {t.claimed_files && t.claimed_files.length > 0 && (
-                        <div className="flex flex-wrap gap-1">{t.claimed_files.map((f) => <code key={f} className="rounded-sm bg-board px-1.5 py-0.5 font-mono text-xs text-ink-2">{f}</code>)}</div>
-                      )}
-                    </li>
-                  ))}
-                </ul>
+                <div className="card-stock overflow-x-auto" data-teamwork-tasks-table>
+                  <table className="w-full border-collapse text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-hairline bg-board/50 text-xs font-medium text-ink-2">
+                        <th className="px-3 py-2">Status</th>
+                        <th className="px-3 py-2">Task</th>
+                        <th className="px-3 py-2">Owner</th>
+                        <th className="px-3 py-2">Files</th>
+                        <th className="px-3 py-2">Gate</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tasks.map((t) => (
+                        <tr key={t.id} className="border-b border-hairline/70 last:border-b-0">
+                          <td className="px-3 py-2 align-top">
+                            <Pill className={`px-2 py-0.5 text-xs ${TASK_TONE[t.status] || TASK_TONE.pending}`}>
+                              {t.status.replace(/_/g, " ")}
+                            </Pill>
+                          </td>
+                          <td className="max-w-[260px] px-3 py-2 align-top">
+                            <div className="font-medium text-ink">{t.title}</div>
+                            <span className="font-mono text-xs text-ink-3">{t.id}</span>
+                          </td>
+                          <td className="px-3 py-2 align-top">
+                            <Pill className="bg-board px-2 py-0.5 text-xs text-ink">@{t.owner}</Pill>
+                          </td>
+                          <td className="px-3 py-2 align-top">
+                            {t.claimed_files && t.claimed_files.length > 0 ? (
+                              <div className="flex flex-wrap gap-1">
+                                {t.claimed_files.map((f) => (
+                                  <code key={f} className="rounded-sm bg-board px-1.5 py-0.5 font-mono text-xs text-ink-2">{f}</code>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-ink-3">-</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 align-top">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {t.verify_report && (
+                                <Pill className={`gap-1 px-2 py-0.5 text-xs ${t.verify_report.passed ? "bg-pill-active-bg text-pill-active-fg" : "bg-pill-pro-bg text-pill-pro-fg"}`}>
+                                  {t.verify_report.passed ? <CheckCircle2 className="size-3" strokeWidth={1.5} aria-hidden /> : <XCircle className="size-3" strokeWidth={1.5} aria-hidden />}
+                                  {t.verify_report.passed ? "Verified" : "Rejected"}
+                                  {t.verify_report.console_errors ? ` (${t.verify_report.console_errors})` : ""}
+                                </Pill>
+                              )}
+                              {t.commit_sha && (
+                                <Pill className="bg-tag-mint-bg px-1.5 py-0.5 font-mono text-xs text-tag-mint-fg">
+                                  <GitCommitHorizontal className="size-3" strokeWidth={1.5} aria-hidden />
+                                  {t.commit_sha.slice(0, 7)}
+                                </Pill>
+                              )}
+                              {!t.verify_report && !t.commit_sha && <span className="text-xs text-ink-3">Pending</span>}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
               {claims.length > 0 && (
                 <section aria-label="Active file claims" className="card-stock flex flex-col gap-1.5 p-3">
