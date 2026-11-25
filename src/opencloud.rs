@@ -1868,6 +1868,345 @@ pub fn retention_curve_values(spec: &MonetizationTierSpec, daily_base_reward: i6
     ]
 }
 
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}
+
+fn detect_preset_from_scripts(scripts: &[(&str, &str)]) -> Option<&'static str> {
+    for (name, src) in scripts {
+        if name.contains("MonetizationConfig") || src.contains("TierPreset") {
+            if src.contains("anime_gacha_rpg") {
+                return Some("anime_gacha_rpg");
+            }
+            if src.contains("competitive_arena") {
+                return Some("competitive_arena");
+            }
+            if src.contains("starter_obby") {
+                return Some("starter_obby");
+            }
+        }
+    }
+    None
+}
+
+/// Deterministic Studio Economy & Funnel Dry-Run Simulator shared by Rojo projects
+/// and Local Place (`/api/studio/economy/simulate`).
+pub fn simulate_economy_funnel(
+    tier_preset: Option<&str>,
+    scripts: &[(&str, &str)],
+    instance_count: usize,
+    products: &[Value],
+) -> Value {
+    let detected = tier_preset.or_else(|| detect_preset_from_scripts(scripts));
+    let spec = resolve_tier_preset(detected);
+
+    let mut has_process_receipt = false;
+    let mut has_daily_retention = false;
+    let mut has_comeback_hook = false;
+    let mut has_monetization_config = false;
+    let mut has_policy_guard = false;
+    let mut has_hud = false;
+    let mut has_shop = false;
+    let mut starter_items = 0usize;
+    let mut loop_signals = 0usize;
+
+    for &(path, src) in scripts {
+        let low_p = path.to_ascii_lowercase();
+        if src.contains("ProcessReceipt") && src.contains("PurchaseId") {
+            has_process_receipt = true;
+        }
+        if src.contains("ClaimDailyReward") || src.contains("DailyStreak") {
+            has_daily_retention = true;
+        }
+        if src.contains("COMEBACK_MULTIPLIER") || src.contains("ComebackThresholdHours") {
+            has_comeback_hook = true;
+        }
+        if low_p.contains("monetizationconfig") {
+            has_monetization_config = true;
+        }
+        if src.contains("PolicyService") {
+            has_policy_guard = true;
+        }
+        if low_p.contains("startergui") || low_p.contains("hud") || low_p.contains("gamegui") {
+            has_hud = true;
+        }
+        if low_p.contains("shop") || low_p.contains("economy") || src.contains("PromptGamePassPurchase") || src.contains("PromptProductPurchase") {
+            has_shop = true;
+        }
+        if low_p.contains("starterpack") || low_p.contains("inventory") || low_p.contains("sword") || low_p.contains("tool") || low_p.contains("starter") {
+            starter_items += 1;
+        }
+        if low_p.contains("checkpoint")
+            || low_p.contains("round")
+            || low_p.contains("quest")
+            || low_p.contains("gacha")
+            || low_p.contains("tower")
+            || low_p.contains("arena")
+            || low_p.contains("tycoon")
+            || low_p.contains("currency")
+            || low_p.contains("leaderboard")
+        {
+            loop_signals += 1;
+        }
+    }
+
+    let mut game_passes = 0usize;
+    let mut dev_products = 0usize;
+    let mut unapproved_prices = 0usize;
+    let mut pass_prices = 0u64;
+    let mut prod_prices = 0u64;
+    for p in products {
+        let price = p.get("priceRobux").and_then(Value::as_u64).unwrap_or(0);
+        if p.get("priceApproved").and_then(Value::as_bool) != Some(true) {
+            unapproved_prices += 1;
+        }
+        match p.get("kind").and_then(Value::as_str) {
+            Some("game_pass") => {
+                game_passes += 1;
+                pass_prices += price;
+            }
+            Some("developer_product") => {
+                dev_products += 1;
+                prod_prices += price;
+            }
+            _ => {}
+        }
+    }
+    let effective_passes = if game_passes > 0 {
+        game_passes
+    } else if has_monetization_config {
+        spec.drafts.iter().filter(|d| d.1 == "game_pass").count()
+    } else {
+        0
+    };
+    let effective_products = if dev_products > 0 {
+        dev_products
+    } else if has_monetization_config {
+        spec.drafts.iter().filter(|d| d.1 == "developer_product").count()
+    } else {
+        0
+    };
+    let avg_pass_robux = if game_passes > 0 {
+        round2(pass_prices as f64 / game_passes as f64)
+    } else if effective_passes > 0 {
+        let sum: u64 = spec.drafts.iter().filter(|d| d.1 == "game_pass").map(|d| d.4).sum();
+        round2(sum as f64 / effective_passes as f64)
+    } else {
+        0.0
+    };
+    let avg_prod_robux = if dev_products > 0 {
+        round2(prod_prices as f64 / dev_products as f64)
+    } else if effective_products > 0 {
+        let sum: u64 = spec.drafts.iter().filter(|d| d.1 == "developer_product").map(|d| d.4).sum();
+        round2(sum as f64 / effective_products as f64)
+    } else {
+        0.0
+    };
+
+    let estimated_loop_minutes = round2(
+        (2.5 + (loop_signals as f64 * 1.45) + ((instance_count.min(24) as f64) * 0.2)).clamp(2.5, 18.0),
+    );
+
+    let baseline_d1 = 26.0_f64;
+    let baseline_d7 = 6.2_f64;
+    let preset_d1_bonus = match spec.id {
+        "anime_gacha_rpg" => 3.5,
+        "competitive_arena" => 2.5,
+        _ => 1.5,
+    };
+    let preset_d7_bonus = match spec.id {
+        "anime_gacha_rpg" => 2.4,
+        "competitive_arena" => 1.8,
+        _ => 1.0,
+    };
+    let d1_retention_pct = round2(
+        (baseline_d1
+            + if has_daily_retention { 8.5 } else { 0.0 }
+            + if has_hud { 3.5 } else { 0.0 }
+            + (loop_signals.min(4) as f64 * 1.6)
+            + (starter_items.min(3) as f64 * 1.2)
+            + if has_daily_retention { preset_d1_bonus } else { 0.0 })
+        .clamp(18.0, 58.0),
+    );
+    let d7_retention_pct = round2(
+        (baseline_d7
+            + if has_daily_retention { 3.2 } else { 0.0 }
+            + if has_comeback_hook { spec.comeback_multiplier as f64 * 1.1 } else { 0.0 }
+            + (loop_signals.min(5) as f64 * 0.9)
+            + if has_daily_retention { preset_d7_bonus } else { 0.0 })
+        .clamp(3.0, 24.0),
+    );
+    let d1_lift_pct = round2(d1_retention_pct - baseline_d1);
+    let d7_lift_pct = round2(d7_retention_pct - baseline_d7);
+
+    let price_drag = if avg_pass_robux > 499.0 { 0.7 } else { 0.0 };
+    let gamepass_conversion_pct = round2(
+        (1.1
+            + if has_process_receipt { 1.4 } else { 0.0 }
+            + if has_shop { 1.1 } else { 0.0 }
+            + if has_hud { 0.7 } else { 0.0 }
+            + if has_policy_guard { 0.4 } else { 0.0 }
+            + (effective_passes.min(3) as f64 * 0.65)
+            - price_drag)
+            .clamp(0.8, 7.8),
+    );
+
+    let pass_arpdau = (gamepass_conversion_pct / 100.0) * if avg_pass_robux > 0.0 { avg_pass_robux } else { 149.0 };
+    let prod_repeat_rate = if has_process_receipt {
+        (effective_products.min(4) as f64 * 0.014) + if spec.id == "anime_gacha_rpg" { 0.022 } else { 0.012 }
+    } else {
+        0.004
+    };
+    let prod_arpdau = prod_repeat_rate * if avg_prod_robux > 0.0 { avg_prod_robux } else { 79.0 };
+    let retention_scale = 1.0 + (d7_lift_pct / 25.0);
+    let arpdau_robux = round2(((pass_arpdau + prod_arpdau) * retention_scale).clamp(0.4, 85.0));
+    let arpdau_usd_est = round2(arpdau_robux * 0.0035);
+
+    let mut blockers: Vec<Value> = Vec::new();
+    if !has_process_receipt {
+        blockers.push(json!({
+            "id": "missing_process_receipt",
+            "severity": "high",
+            "title": "Missing idempotent MarketplaceService.ProcessReceipt",
+            "impact": "-1.4% GamePass conversion & replay-loss risk",
+            "fix_action": "install_monetization_pack"
+        }));
+    }
+    if !has_daily_retention || !has_comeback_hook {
+        blockers.push(json!({
+            "id": "missing_retention_loop",
+            "severity": "high",
+            "title": "No 7-day streak & 48h comeback retention hook",
+            "impact": "-8.5% D1 retention & -5.4% D7 retention",
+            "fix_action": "install_monetization_pack"
+        }));
+    }
+    if !has_shop || !has_hud {
+        blockers.push(json!({
+            "id": "missing_shop_hud_funnel",
+            "severity": "medium",
+            "title": "No StarterGui shop/HUD prompt bridge detected",
+            "impact": "-1.8% conversion from unprompted players",
+            "fix_action": "add_shop_hud"
+        }));
+    }
+    if effective_passes == 0 || unapproved_prices > 0 {
+        blockers.push(json!({
+            "id": "unapproved_or_empty_tiers",
+            "severity": "medium",
+            "title": if effective_passes == 0 {
+                "No GamePass or DevProduct tiers configured"
+            } else {
+                "Draft Robux tiers awaiting owner price approval"
+            },
+            "impact": "Live Robux checkout gated until owner review",
+            "fix_action": "approve_or_seed_tiers"
+        }));
+    }
+    if estimated_loop_minutes < 4.0 {
+        blockers.push(json!({
+            "id": "short_core_loop",
+            "severity": "low",
+            "title": format!("Short estimated core loop ({estimated_loop_minutes:.1}m < 4.0m)"),
+            "impact": "Add checkpoints, quests, or progression milestones",
+            "fix_action": "add_progression_loop"
+        }));
+    }
+
+    let funnel_stages = vec![
+        json!({
+            "stage": "Joined Place",
+            "rate_pct": 100.0,
+            "note": format!("{instance_count} workspace instance(s)")
+        }),
+        json!({
+            "stage": "Completed Core Loop",
+            "rate_pct": round2((58.0 + (loop_signals.min(4) as f64 * 6.5) + if has_hud { 5.0 } else { 0.0 }).clamp(45.0, 92.0)),
+            "note": format!("Est. {estimated_loop_minutes:.1} min loop · {starter_items} starter item(s)")
+        }),
+        json!({
+            "stage": "Shop / GamePass Converted",
+            "rate_pct": gamepass_conversion_pct,
+            "note": format!("{effective_passes} pass(es), {effective_products} product(s)")
+        }),
+        json!({
+            "stage": "D7 Comeback Retained",
+            "rate_pct": d7_retention_pct,
+            "note": if has_comeback_hook {
+                format!("{}x 48h comeback bonus active", spec.comeback_multiplier)
+            } else {
+                "48h comeback hook not installed".to_string()
+            }
+        }),
+    ];
+
+    json!({
+        "schema": "openro.economy_funnel.v1",
+        "ok": true,
+        "tier_preset": spec.id,
+        "preset_label": spec.label,
+        "currency": spec.default_currency,
+        "place_signals": {
+            "script_count": scripts.len(),
+            "instance_count": instance_count,
+            "estimated_loop_minutes": estimated_loop_minutes,
+            "starter_items_count": starter_items,
+            "loop_systems_count": loop_signals,
+            "game_passes_count": effective_passes,
+            "dev_products_count": effective_products,
+            "avg_pass_robux": avg_pass_robux,
+            "avg_product_robux": avg_prod_robux,
+            "unapproved_prices": unapproved_prices,
+            "has_process_receipt": has_process_receipt,
+            "has_daily_retention": has_daily_retention,
+            "has_comeback_hook": has_comeback_hook,
+            "has_hud": has_hud,
+            "has_shop": has_shop,
+        },
+        "projections": {
+            "arpdau_robux": arpdau_robux,
+            "arpdau_usd_est": arpdau_usd_est,
+            "d1_retention_pct": d1_retention_pct,
+            "d7_retention_pct": d7_retention_pct,
+            "d1_lift_pct": d1_lift_pct,
+            "d7_lift_pct": d7_lift_pct,
+            "gamepass_conversion_pct": gamepass_conversion_pct,
+        },
+        "funnel_stages": funnel_stages,
+        "blockers": blockers,
+    })
+}
+
+fn project_monetization_simulate(root: &Path, body: &Value) -> R<Value> {
+    let manifest = read_manifest(root);
+    let products: Vec<Value> = manifest
+        .get("products")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let rojo_file = manifest
+        .get("rojoProject")
+        .and_then(Value::as_str)
+        .unwrap_or("default.project.json");
+    let mut scripts_owned: Vec<(String, String)> = Vec::new();
+    let mut instance_count = 0usize;
+    if let Ok(tree) = crate::projects::load_tree(root, rojo_file) {
+        for f in tree.flatten() {
+            if let Some(src) = f.source {
+                scripts_owned.push((f.path.replace('/', "."), src));
+            } else if !f.service {
+                instance_count += 1;
+            }
+        }
+    }
+    let script_refs: Vec<(&str, &str)> = scripts_owned
+        .iter()
+        .map(|(p, s)| (p.as_str(), s.as_str()))
+        .collect();
+    let preset = body.get("tier_preset").and_then(Value::as_str);
+    Ok(simulate_economy_funnel(preset, &script_refs, instance_count, &products))
+}
+
 /// Build the production-grade Monetization & Retention Luau Pack:
 /// - `MonetizationService`: GamePass ownership cache + `MarketplaceService.ProcessReceipt`
 ///   with DataStore `UpdateAsync` `PurchaseId` idempotency + `BindToClose` + `PolicyService`
@@ -1908,7 +2247,7 @@ pub fn monetization_pack_luau_scripts_with_preset(
 
     let config_luau = format!(
         "--!strict\n\
--- Generated by OpenRO v1.10.0 Monetization & Retention Pack\n\
+-- Generated by OpenRO v1.11.0 Monetization & Retention Pack\n\
 local MonetizationConfig = {{\n\
 \tTierPreset = {preset_lit},\n\
 \tCurrency = {curr},\n\
@@ -2355,7 +2694,7 @@ fn project_monetization_codegen(ctx: &Ctx, root: &Path, body: &Value) -> R<Value
 
     let economy_handler_src = format!(
         "--!strict\n\
--- Auto-generated by OpenRO v1.10.0 Monetization & Economy Codegen.\n\\
+-- Auto-generated by OpenRO v1.11.0 Monetization & Economy Codegen.\n\\
 -- Server-authoritative purchase prompting wired to ProductIds + MonetizationConfig.\n\
 local MarketplaceService = game:GetService(\"MarketplaceService\")\n\
 local Players = game:GetService(\"Players\")\n\
@@ -2451,7 +2790,7 @@ end\n",
 
     let shop_bridge_src = "\
 --!strict\n\
--- Auto-generated by OpenRO v1.10.0 Monetization & Economy Codegen.\n\\
+-- Auto-generated by OpenRO v1.11.0 Monetization & Economy Codegen.\n\\
 local ReplicatedStorage = game:GetService(\"ReplicatedStorage\")\n\
 local StarterGui = game:GetService(\"StarterGui\")\n\
 \n\
@@ -3469,7 +3808,7 @@ pub fn route(ctx: &Ctx, method: &str, path: &str, query: &str, body: &Value) -> 
         ("GET", ["art", "image"]) => art_root(ctx, query_param(query, "project").as_deref())
             .and_then(|r| crate::assets::art_image(&r, &query_param(query, "path").unwrap_or_default()))
             .map(|(m, b)| Reply::Bytes(m, b)),
-        (_, ["projects", id, tail @ ..]) if matches!(tail, ["assets"] | ["assets", _] | ["publish"] | ["products"] | ["products", "sync"] | ["products", "codegen"] | ["monetization", "pack"] | ["monetization", "codegen"] | ["publish-gate"] | ["readiness"] | ["autopilot"] | ["universe"]) => {
+        (_, ["projects", id, tail @ ..]) if matches!(tail, ["assets"] | ["assets", _] | ["publish"] | ["products"] | ["products", "sync"] | ["products", "codegen"] | ["monetization", "pack"] | ["monetization", "codegen"] | ["monetization", "simulate"] | ["publish-gate"] | ["readiness"] | ["autopilot"] | ["universe"]) => {
             let Some(root) = (ctx.resolve)(id) else {
                 return Some(fail(Oc { status: 404, msg: "Unknown project.".into() }));
             };
@@ -3485,6 +3824,7 @@ pub fn route(ctx: &Ctx, method: &str, path: &str, query: &str, body: &Value) -> 
                 ("POST", ["products", "codegen"]) => products_codegen(&root, body).map(ok_json),
                 ("POST", ["monetization", "pack"]) => project_monetization_pack(&root, body).map(ok_json),
                 ("POST", ["monetization", "codegen"]) => project_monetization_codegen(ctx, &root, body).map(ok_json),
+                ("POST", ["monetization", "simulate"]) => project_monetization_simulate(&root, body).map(ok_json),
                 ("POST", ["publish-gate"]) => project_publish_gate(ctx, &root, body).map(ok_json),
                 ("GET", ["readiness"]) => project_readiness(ctx, &root).map(ok_json),
                 ("POST", ["autopilot"]) => project_autopilot(ctx, &root, body).map(ok_json),

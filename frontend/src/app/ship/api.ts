@@ -86,6 +86,53 @@ export type FixAllAssertionsResult = {
   export_urls: { rbxlx: string; ship_pack: string };
   rerun: PlaytestReport & { run_id: string; passed: boolean; assertion_diff?: AssertionDiff };
 };
+export type EconomyFunnelStage = {
+  stage: string;
+  rate_pct: number;
+  note: string;
+};
+export type EconomyBlocker = {
+  id: string;
+  severity: "high" | "medium" | "low" | string;
+  title: string;
+  impact: string;
+  fix_action: string;
+};
+export type EconomyFunnelReport = {
+  schema: string;
+  tier_preset: string;
+  preset_label: string;
+  currency: string;
+  place_signals: {
+    script_count: number;
+    instance_count: number;
+    estimated_loop_minutes: number;
+    starter_items_count: number;
+    loop_systems_count: number;
+    game_passes_count: number;
+    dev_products_count: number;
+    avg_pass_robux: number;
+    avg_prod_robux?: number;
+    avg_product_robux?: number;
+    unapproved_prices: number;
+    has_process_receipt: boolean;
+    has_daily_retention: boolean;
+    has_comeback_hook: boolean;
+    has_hud: boolean;
+    has_shop: boolean;
+  };
+  projections: {
+    arpdau_robux: number;
+    arpdau_usd_est: number;
+    d1_retention_pct: number;
+    d7_retention_pct: number;
+    d1_lift_pct: number;
+    d7_lift_pct: number;
+    gamepass_conversion_pct: number;
+  };
+  funnel_stages: EconomyFunnelStage[];
+  blockers: EconomyBlocker[];
+};
 export type PlaytestReport = {
   run_id: string; passed: boolean; build_id?: string; mode?: string; duration_ms?: number;
   checks?: { name: string; passed: boolean; value?: unknown; error?: string | null; datamodel?: string }[];

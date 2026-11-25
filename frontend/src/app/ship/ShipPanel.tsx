@@ -6,6 +6,7 @@ import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmente
 import { call, projUrl, type StudyStatus } from "./api";
 import { PublishPanel } from "./PublishPanel";
 import { ReadinessAutopilot } from "./ReadinessAutopilot";
+import { EconomySimulatorCard } from "./EconomySimulatorCard";
 import { MonetizationPackCard } from "../MonetizationPackCard";
 import type { Place } from "../data";
 import type { Ship } from "./useShip";
@@ -88,6 +89,7 @@ export const ShipPanel = memo(function ShipPanel({
           onRunPlaytest={onRunPlaytest}
           onOpenCodeDiff={onOpenCodeDiff}
         />
+        <EconomySimulatorCard projectId={activeId} studioOk={studioOk} />
         {ship.available && (
           <div className="card-stock flex flex-col items-start gap-2.5 p-4">
             <h3 className="font-heading text-ui font-medium text-ink">Link a Roblox project to publish</h3>
@@ -180,6 +182,17 @@ export const ShipPanel = memo(function ShipPanel({
               onInstalled={onInstalledMonetization ?? (() => {})}
               onRunPlaytest={onRunPlaytest}
               onOpenCodeDiff={onOpenCodeDiff}
+            />
+            <EconomySimulatorCard
+              projectId={ship.active.id}
+              studioOk={studioOk}
+              onTriggerFixAction={(act) => {
+                if (act === "install_monetization_pack") {
+                  document.querySelector<HTMLButtonElement>("[data-install-monetization]")?.click();
+                } else if (act === "add_shop_hud") {
+                  onOpenCodeDiff?.("src/client/ShopPromptBridge.client.luau");
+                }
+              }}
             />
             <PublishPanel ship={ship} onOpenSettings={onOpenSettings} />
           </div>
