@@ -49,7 +49,7 @@ function CreateDialog({ ship }: { ship: Ship }) {
             <MorphingDialogDescription className="mt-1 text-sm text-ink-2">Makes a folder with the Rojo layout and a project file. You can add the game and place numbers later.</MorphingDialogDescription>
           </div>
           <Field label="Name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Untitled Anime Card Game" /></Field>
-          <Field label="Inside folder (optional)" hint="Leave empty to use your OpenRO workspace."><Input value={parent} onChange={(e) => setParent(e.target.value)} className="font-mono" placeholder="/home/you/Work/projects" /></Field>
+          <Field label="Inside folder (optional)" hint="Leave empty to use your OpenRO workspace."><Input value={parent} onChange={(e) => setParent(e.target.value)} className="font-mono" placeholder="~/Work/projects" /></Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Game number"><Input inputMode="numeric" value={uni} onChange={(e) => setUni(e.target.value)} className="font-mono" placeholder="optional" /></Field>
             <Field label="Place number"><Input inputMode="numeric" value={place} onChange={(e) => setPlace(e.target.value)} className="font-mono" placeholder="optional" /></Field>
@@ -79,7 +79,7 @@ function OpenDialog({ ship }: { ship: Ship }) {
             <MorphingDialogTitle className="font-heading text-title font-semibold">Open a project folder</MorphingDialogTitle>
             <MorphingDialogDescription className="mt-1 text-sm text-ink-2">The folder needs a default.project.json or an openro.project.json file.</MorphingDialogDescription>
           </div>
-          <Field label="Folder path"><Input value={path} onChange={(e) => setPath(e.target.value)} className="font-mono" placeholder="/home/you/Work/projects/my-game" /></Field>
+          <Field label="Folder path"><Input value={path} onChange={(e) => setPath(e.target.value)} className="font-mono" placeholder="~/Work/projects/my-game" /></Field>
           <div className="flex flex-wrap justify-end gap-2">
             <MorphingDialogClose aria-label="Cancel" className={closeCls}>Cancel</MorphingDialogClose>
             <Button variant="default" size="lg" disabled={!path.trim() || ship.busy === "open"} onClick={() => void submit()} className="max-md:min-h-11">{ship.busy === "open" ? "Opening…" : "Open project"}</Button>

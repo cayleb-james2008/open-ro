@@ -608,7 +608,7 @@ export function SettingsDialog({
                       <Input
                         value={mcpCommand}
                         onChange={(e) => setMcpCommand(e.target.value)}
-                        placeholder={cfg?.vinegar_mcp_path || "/home/cayleb/.local/bin/roblox-studio-mcp"}
+                        placeholder={cfg?.vinegar_mcp_path || "~/.local/bin/roblox-studio-mcp"}
                         className="font-mono text-xs"
                       />
                     </label>

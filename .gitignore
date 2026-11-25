@@ -1,3 +1,5 @@
 /target
 /demo-dist
 /web-dist
+__pycache__/
+*.pyc
