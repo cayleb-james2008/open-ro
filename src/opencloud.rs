@@ -347,8 +347,16 @@ pub fn safe_rel(root: &Path, rel: &str) -> R<PathBuf> {
         return bad(format!("'{rel}' is not a file path inside the project."));
     }
     let joined = root.join(p);
-    if std::fs::symlink_metadata(&joined).is_ok_and(|m| m.file_type().is_symlink()) {
-        return bad(format!("'{rel}' is a symlink outside the project folder."));
+    let mut walk = root.to_path_buf();
+    for c in p.components() {
+        if let Component::Normal(seg) = c {
+            walk.push(seg);
+            if let Ok(meta) = std::fs::symlink_metadata(&walk) {
+                if meta.file_type().is_symlink() {
+                    return bad(format!("'{rel}' is a symlink that leaves the project folder."));
+                }
+            }
+        }
     }
     // Walk up to the deepest existing ancestor and reject any symlink escape.
     let canon_root = std::fs::canonicalize(root)
@@ -2111,7 +2119,8 @@ fn project_readiness(ctx: &Ctx, root: &Path) -> R<Value> {
     let universe = universe_id(&manifest).ok();
     let place = id_of(&manifest, "placeId").filter(|s| s.bytes().all(|b| b.is_ascii_digit()));
     let has_ids = universe.is_some() && place.is_some();
-    let has_build = latest_build(root, None).is_ok();
+    let build_res = latest_build(root, None);
+    let has_build = build_res.is_ok();
     let products = manifest
         .get("products")
         .and_then(Value::as_array)
@@ -2121,17 +2130,60 @@ fn project_readiness(ctx: &Ctx, root: &Path) -> R<Value> {
         .iter()
         .filter(|p| p.get("priceApproved").and_then(Value::as_bool) != Some(true))
         .count();
+    let synced_products = products
+        .iter()
+        .filter(|p| {
+            id_of(p, "id")
+                .or_else(|| id_of(p, "robloxId"))
+                .is_some_and(|s| s.parse::<u64>().is_ok_and(|n| n > 0))
+        })
+        .count();
 
-    let mut scripts_map = std::collections::BTreeMap::new();
+    let mut empty_scripts = Vec::new();
+    let mut trailing_ws_scripts = 0usize;
+    let mut fallback_scripts = std::collections::BTreeMap::new();
     for f in walk(root) {
         if f.rel.starts_with("src/") && (f.rel.ends_with(".luau") || f.rel.ends_with(".lua")) {
             if let Ok(text) = std::fs::read_to_string(&f.abs) {
-                scripts_map.insert(f.rel, text);
+                if text.trim().is_empty() {
+                    empty_scripts.push(f.rel.clone());
+                } else if text.lines().any(|l| l.ends_with(' ') || l.ends_with('\t'))
+                    || !text.ends_with('\n')
+                {
+                    trailing_ws_scripts += 1;
+                }
+                let place_key = if let Some(rest) = f.rel.strip_prefix("src/server/") {
+                    format!("ServerScriptService.{}", rest.trim_end_matches(".server.luau").trim_end_matches(".server.lua").trim_end_matches(".luau").trim_end_matches(".lua").replace('/', "."))
+                } else if let Some(rest) = f.rel.strip_prefix("src/client/") {
+                    format!("StarterPlayer.StarterPlayerScripts.{}", rest.trim_end_matches(".client.luau").trim_end_matches(".client.lua").trim_end_matches(".luau").trim_end_matches(".lua").replace('/', "."))
+                } else if let Some(rest) = f.rel.strip_prefix("src/shared/") {
+                    format!("ReplicatedStorage.Shared.{}", rest.trim_end_matches(".luau").trim_end_matches(".lua").replace('/', "."))
+                } else {
+                    format!("ReplicatedStorage.{}", f.rel.trim_start_matches("src/").replace('/', "."))
+                };
+                fallback_scripts.insert(place_key, text);
             }
         }
     }
-    let empty_inst = std::collections::BTreeMap::new();
-    let report = crate::luau_check::analyze_place(&scripts_map, &empty_inst);
+    let rojo_file = manifest
+        .get("rojoProject")
+        .and_then(Value::as_str)
+        .unwrap_or("default.project.json");
+    let mut scripts_map = std::collections::BTreeMap::new();
+    let mut instances_map = std::collections::BTreeMap::new();
+    if let Ok(tree) = crate::projects::load_tree(root, rojo_file) {
+        for f in tree.flatten() {
+            let dot = f.path.replace('/', ".");
+            if let Some(src) = f.source {
+                scripts_map.insert(dot, src);
+            } else if !f.service {
+                instances_map.insert(dot, json!({ "class_name": f.class, "properties": f.props }));
+            }
+        }
+    } else {
+        scripts_map = fallback_scripts;
+    }
+    let report = crate::luau_check::analyze_place(&scripts_map, &instances_map);
     let has_process_receipt = scripts_map
         .values()
         .any(|s| s.contains("ProcessReceipt") && s.contains("PurchaseId"));
@@ -2139,22 +2191,276 @@ fn project_readiness(ctx: &Ctx, root: &Path) -> R<Value> {
         .values()
         .any(|s| s.contains("ClaimDailyReward") || s.contains("DailyStreak"));
 
-    let checks = json!([
-        { "id": "luau_audit", "label": "Static Luau audit (0 errors)", "ok": report.is_ok(), "detail": format!("{} error(s), {} warning(s)", report.error_count(), report.warning_count()) },
-        { "id": "monetization_guard", "label": "Idempotent ProcessReceipt & GamePass guard", "ok": has_process_receipt, "detail": if has_process_receipt { "PurchaseId DataStore ledger verified" } else { "Install Monetization Pack to wire ProcessReceipt" } },
-        { "id": "retention_loop", "label": "Daily Reward & Retention streak hook", "ok": has_daily_retention, "detail": if has_daily_retention { "24h streak DataStore hook active" } else { "Optional: add Daily Reward Retention script" } },
-        { "id": "build_ready", "label": "Latest .rbxlx build artifact", "ok": has_build, "detail": if has_build { "Build artifact present" } else { "Run Build before publishing" } },
-        { "id": "opencloud_auth", "label": "Open Cloud key & Universe/Place IDs", "ok": has_key && has_ids, "detail": if has_key && has_ids { "Credentials and IDs linked" } else { "Configure in Publish or Settings" } },
-        { "id": "prices_approved", "label": "Monetization prices approved", "ok": unapproved == 0, "detail": if unapproved == 0 { format!("{} product(s) approved", products.len()) } else { format!("{unapproved} pending price approval") } },
-    ]);
+    let lock_file = lock_path(root, &manifest).ok();
+    let lock_json = lock_file.as_ref().map(|p| read_lock(p)).unwrap_or_else(|| json!({ "assets": {} }));
+    let locked_count = lock_json
+        .get("assets")
+        .and_then(Value::as_object)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let has_asset_ids = safe_rel(root, "src/shared/AssetIds.luau")
+        .map(|p| p.is_file())
+        .unwrap_or(false);
+    let has_product_ids = safe_rel(root, "src/shared/ProductIds.luau")
+        .map(|p| p.is_file())
+        .unwrap_or(false);
+    let asset_lock_ok = locked_count == 0 || has_asset_ids;
+
+    let mut fixable_actions: Vec<&'static str> = Vec::new();
+    if !empty_scripts.is_empty() || trailing_ws_scripts > 0 {
+        fixable_actions.push("format_and_fix_luau");
+    }
+    if !has_process_receipt || !has_daily_retention {
+        fixable_actions.push("install_monetization_pack");
+    }
+    if locked_count > 0 && !has_asset_ids {
+        fixable_actions.push("codegen_asset_ids");
+    }
+    if synced_products > 0 && !has_product_ids {
+        fixable_actions.push("codegen_product_ids");
+    }
+    if !has_build {
+        fixable_actions.push("build_rbxlx");
+    }
+
+    let checks = vec![
+        json!({
+            "id": "luau_audit",
+            "label": "Static Luau audit (0 errors)",
+            "ok": report.is_ok(),
+            "auto_fixable": !empty_scripts.is_empty() || trailing_ws_scripts > 0,
+            "detail": format!(
+                "{} error(s), {} warning(s){}",
+                report.error_count(),
+                report.warning_count(),
+                if empty_scripts.is_empty() { String::new() } else { format!(", {} empty script(s)", empty_scripts.len()) }
+            )
+        }),
+        json!({
+            "id": "rojo_build",
+            "label": "Rojo / .rbxlx build artifact",
+            "ok": has_build,
+            "auto_fixable": !has_build,
+            "detail": if has_build { "Latest .rbxlx build ready".to_string() } else { "Run Autopilot or Build before publishing".to_string() }
+        }),
+        json!({
+            "id": "asset_lock",
+            "label": "Asset lock & AssetIds.luau codegen",
+            "ok": asset_lock_ok,
+            "auto_fixable": locked_count > 0 && !has_asset_ids,
+            "detail": if locked_count == 0 {
+                "No locked assets yet (optional)".to_string()
+            } else if has_asset_ids {
+                format!("{locked_count} locked asset(s) in AssetIds.luau")
+            } else {
+                format!("{locked_count} locked asset(s) missing AssetIds.luau")
+            }
+        }),
+        json!({
+            "id": "monetization_guard",
+            "label": "Idempotent ProcessReceipt & GamePass guard",
+            "ok": has_process_receipt,
+            "auto_fixable": !has_process_receipt,
+            "detail": if has_process_receipt { "PurchaseId DataStore ledger verified" } else { "Install Monetization Pack to wire ProcessReceipt" }
+        }),
+        json!({
+            "id": "retention_loop",
+            "label": "Daily Reward & Retention streak hook",
+            "ok": has_daily_retention,
+            "auto_fixable": !has_daily_retention,
+            "detail": if has_daily_retention { "24h streak DataStore hook active" } else { "Auto-installs 7-day streak & PolicyService hooks" }
+        }),
+        json!({
+            "id": "prices_approved",
+            "label": "Owner-approved Robux pricing",
+            "ok": unapproved == 0,
+            "auto_fixable": false,
+            "detail": if unapproved == 0 { format!("{} product(s) approved", products.len()) } else { format!("{unapproved} pending owner price approval") }
+        }),
+        json!({
+            "id": "opencloud_auth",
+            "label": "Open Cloud key & Universe/Place IDs",
+            "ok": has_key && has_ids,
+            "auto_fixable": false,
+            "detail": if has_key && has_ids { "Credentials and IDs linked" } else { "Configure in Settings or Auto-setup from browser" }
+        }),
+    ];
+
+    let passed_count = checks.iter().filter(|c| c["ok"].as_bool() == Some(true)).count();
+    let total_count = checks.len();
+    let score_pct = ((passed_count * 100) + (total_count / 2)) / total_count;
+    let diag_preview: Vec<Value> = report.diagnostics.iter().take(12).map(|d| d.to_json()).collect();
+
     Ok(json!({
         "ok": true,
         "ready_to_publish": report.is_ok() && has_build && has_key && has_ids && unapproved == 0,
+        "score_pct": score_pct,
+        "passed_count": passed_count,
+        "total_count": total_count,
+        "auto_fixable_count": fixable_actions.len(),
+        "fixable_actions": fixable_actions,
         "luau_errors": report.error_count(),
         "luau_warnings": report.warning_count(),
         "has_process_receipt": has_process_receipt,
         "has_daily_retention": has_daily_retention,
+        "locked_assets": locked_count,
+        "has_asset_ids": has_asset_ids,
+        "has_product_ids": has_product_ids,
+        "unapproved_prices": unapproved,
+        "diagnostics": diag_preview,
         "checks": checks,
+    }))
+}
+
+fn project_autopilot(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
+    let install_monetization = body
+        .get("install_monetization")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let do_format = body.get("format").and_then(Value::as_bool).unwrap_or(true);
+    let do_build = body.get("build").and_then(Value::as_bool).unwrap_or(true);
+    let fix_empty = body.get("fix_empty").and_then(Value::as_bool).unwrap_or(true);
+
+    let mut actions_taken: Vec<Value> = Vec::new();
+    let mut fixed_files: Vec<String> = Vec::new();
+
+    // 1. Safe auto-fix for empty placeholder Luau files & trailing whitespace/newlines.
+    if fix_empty || do_format {
+        for f in walk(root) {
+            if f.rel.starts_with("src/") && (f.rel.ends_with(".luau") || f.rel.ends_with(".lua")) {
+                let Ok(abs) = safe_rel(root, &f.rel) else { continue };
+                let Ok(text) = std::fs::read_to_string(&abs) else { continue };
+                if fix_empty && text.trim().is_empty() {
+                    let is_script = f.rel.ends_with(".server.luau")
+                        || f.rel.ends_with(".server.lua")
+                        || f.rel.ends_with(".client.luau")
+                        || f.rel.ends_with(".client.lua");
+                    let stub = if is_script {
+                        "-- Auto-initialized by OpenRO Ship Autopilot\n"
+                    } else {
+                        "-- Auto-initialized by OpenRO Ship Autopilot\nreturn {}\n"
+                    };
+                    if std::fs::write(&abs, stub.as_bytes()).is_ok() {
+                        fixed_files.push(f.rel.clone());
+                    }
+                } else if do_format {
+                    let mut cleaned: String = text
+                        .lines()
+                        .map(|l| l.trim_end_matches([' ', '\t']))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !cleaned.ends_with('\n') {
+                        cleaned.push('\n');
+                    }
+                    if cleaned != text && std::fs::write(&abs, cleaned.as_bytes()).is_ok() {
+                        fixed_files.push(f.rel.clone());
+                    }
+                }
+            }
+        }
+        if !fixed_files.is_empty() {
+            actions_taken.push(json!({
+                "action": "fix_luau_hygiene",
+                "count": fixed_files.len(),
+                "files": fixed_files,
+            }));
+        }
+    }
+
+    // 2. Run stylua formatting if available.
+    if do_format {
+        if let Ok(fmt) = crate::projects::format_project(root, None) {
+            if fmt.get("formatted").and_then(Value::as_bool) == Some(true) {
+                actions_taken.push(json!({
+                    "action": "stylua_format",
+                    "targets": fmt.get("targets").cloned().unwrap_or(json!([])),
+                }));
+            }
+        }
+    }
+
+    // 3. Install Monetization & Retention Pack if ProcessReceipt or DailyRewardRetention is missing.
+    if install_monetization {
+        let before_readiness = project_readiness(ctx, root)?;
+        let has_pr = before_readiness["has_process_receipt"].as_bool() == Some(true);
+        let has_ret = before_readiness["has_daily_retention"].as_bool() == Some(true);
+        if !has_pr || !has_ret {
+            let pack = project_monetization_pack(root, body)?;
+            actions_taken.push(json!({
+                "action": "install_monetization_pack",
+                "written": pack.get("written").cloned().unwrap_or(json!([])),
+            }));
+        }
+    }
+
+    // 4. Generate AssetIds.luau & ProductIds.luau if locked assets / synced products exist.
+    let manifest = read_manifest(root);
+    if let Ok(lp) = lock_path(root, &manifest) {
+        let lock = read_lock(&lp);
+        let locked_n = lock.get("assets").and_then(Value::as_object).map(|m| m.len()).unwrap_or(0);
+        if locked_n > 0 {
+            if let Ok(cg) = assets_codegen(root, &json!({})) {
+                actions_taken.push(json!({
+                    "action": "codegen_asset_ids",
+                    "file": cg.get("out").cloned().unwrap_or(json!("src/shared/AssetIds.luau")),
+                }));
+            }
+        }
+    }
+    let has_synced_products = manifest
+        .get("products")
+        .and_then(Value::as_array)
+        .is_some_and(|arr| {
+            arr.iter().any(|p| {
+                id_of(p, "id")
+                    .or_else(|| id_of(p, "robloxId"))
+                    .is_some_and(|s| s.parse::<u64>().is_ok_and(|n| n > 0))
+            })
+        });
+    if has_synced_products {
+        if let Ok(cg) = products_codegen(root, &json!({})) {
+            actions_taken.push(json!({
+                "action": "codegen_product_ids",
+                "file": cg.get("out").cloned().unwrap_or(json!("src/shared/ProductIds.luau")),
+            }));
+        }
+    }
+
+    // 5. Build latest .rbxlx artifact.
+    let mut build_info = Value::Null;
+    if do_build {
+        match crate::projects::build(root, "auto", None) {
+            Ok(b) => {
+                build_info = b;
+                actions_taken.push(json!({ "action": "build_rbxlx", "ok": true }));
+            }
+            Err(e) => {
+                actions_taken.push(json!({ "action": "build_rbxlx", "ok": false, "error": e }));
+            }
+        }
+    }
+
+    let readiness = project_readiness(ctx, root)?;
+    let mut remaining_manual: Vec<String> = Vec::new();
+    if readiness["unapproved_prices"].as_u64().unwrap_or(0) > 0 {
+        remaining_manual.push("Approve Game Pass / Developer Product prices in Publish & Monetize.".to_string());
+    }
+    if readiness["checks"]
+        .as_array()
+        .is_some_and(|arr| arr.iter().any(|c| c["id"] == "opencloud_auth" && c["ok"] != true))
+    {
+        remaining_manual.push("Link Open Cloud API key and Universe/Place IDs in Settings or Auto-setup from browser.".to_string());
+    }
+    if readiness["luau_errors"].as_u64().unwrap_or(0) > 0 {
+        remaining_manual.push("Resolve remaining Luau static errors in the Code workbench.".to_string());
+    }
+
+    Ok(json!({
+        "ok": true,
+        "actions_taken": actions_taken,
+        "remaining_manual": remaining_manual,
+        "build": build_info,
+        "readiness": readiness,
     }))
 }
 
@@ -2331,7 +2637,7 @@ pub fn route(ctx: &Ctx, method: &str, path: &str, query: &str, body: &Value) -> 
         ("GET", ["art", "image"]) => art_root(ctx, query_param(query, "project").as_deref())
             .and_then(|r| crate::assets::art_image(&r, &query_param(query, "path").unwrap_or_default()))
             .map(|(m, b)| Reply::Bytes(m, b)),
-        (_, ["projects", id, tail @ ..]) if matches!(tail, ["assets"] | ["assets", _] | ["publish"] | ["products"] | ["products", "sync"] | ["products", "codegen"] | ["monetization", "pack"] | ["readiness"] | ["universe"]) => {
+        (_, ["projects", id, tail @ ..]) if matches!(tail, ["assets"] | ["assets", _] | ["publish"] | ["products"] | ["products", "sync"] | ["products", "codegen"] | ["monetization", "pack"] | ["readiness"] | ["autopilot"] | ["universe"]) => {
             let Some(root) = (ctx.resolve)(id) else {
                 return Some(fail(Oc { status: 404, msg: "Unknown project.".into() }));
             };
@@ -2347,6 +2653,7 @@ pub fn route(ctx: &Ctx, method: &str, path: &str, query: &str, body: &Value) -> 
                 ("POST", ["products", "codegen"]) => products_codegen(&root, body).map(ok_json),
                 ("POST", ["monetization", "pack"]) => project_monetization_pack(&root, body).map(ok_json),
                 ("GET", ["readiness"]) => project_readiness(ctx, &root).map(ok_json),
+                ("POST", ["autopilot"]) => project_autopilot(ctx, &root, body).map(ok_json),
                 ("GET", ["universe"]) => universe_get(ctx, &root).map(ok_json),
                 ("POST", ["universe"]) => universe_set(ctx, &root, body).map(ok_json),
                 _ => err(405, "That method is not available here."),

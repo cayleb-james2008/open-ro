@@ -114,6 +114,44 @@ export type CreatorHubConfigureResult = {
   error?: string;
 };
 
+export type ReadinessCheck = {
+  id: string;
+  label: string;
+  ok: boolean;
+  auto_fixable?: boolean;
+  detail: string;
+};
+export type ReadinessDiagnostic = {
+  path: string;
+  line: number;
+  severity: "error" | "warning";
+  code: string;
+  message: string;
+};
+export type ProjectReadiness = {
+  ready_to_publish: boolean;
+  score_pct: number;
+  passed_count: number;
+  total_count: number;
+  auto_fixable_count: number;
+  fixable_actions: string[];
+  luau_errors: number;
+  luau_warnings: number;
+  has_process_receipt: boolean;
+  has_daily_retention: boolean;
+  locked_assets?: number;
+  has_asset_ids?: boolean;
+  has_product_ids?: boolean;
+  unapproved_prices: number;
+  diagnostics?: ReadinessDiagnostic[];
+  checks: ReadinessCheck[];
+};
+export type AutopilotResult = {
+  actions_taken: { action: string; count?: number; files?: string[]; file?: string; ok?: boolean; error?: string }[];
+  remaining_manual: string[];
+  readiness?: ProjectReadiness;
+};
+
 export type Res<T> = { ok: boolean; httpStatus: number; error?: string } & Partial<T>;
 
 /** GET when `body` is undefined, else POST JSON. A network or parse failure comes back as ok:false with plain words. */

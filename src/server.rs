@@ -648,6 +648,7 @@ pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> 
     );
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
+        let _ = stream.set_nodelay(true);
         let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
         let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
         if shared.active_handlers.load(Ordering::SeqCst) >= MAX_HANDLERS {
@@ -682,6 +683,8 @@ struct Request {
     origin: String,
     sec_fetch_site: String,
     content_type: String,
+    accept_encoding: String,
+    if_none_match: String,
     content_length: usize,
     last_event_id: u64,
     plugin_token: String,
@@ -720,6 +723,8 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
         origin: String::new(),
         sec_fetch_site: String::new(),
         content_type: String::new(),
+        accept_encoding: String::new(),
+        if_none_match: String::new(),
         content_length: 0,
         last_event_id: 0,
         plugin_token: String::new(),
@@ -758,6 +763,8 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
                 "origin" => req.origin = v.to_string(),
                 "sec-fetch-site" => req.sec_fetch_site = v.to_ascii_lowercase(),
                 "content-type" => req.content_type = v.to_ascii_lowercase(),
+                "accept-encoding" => req.accept_encoding = v.to_ascii_lowercase(),
+                "if-none-match" => req.if_none_match = v.to_string(),
                 "last-event-id" => req.last_event_id = v.parse().unwrap_or(0),
                 "x-openro-plugin-token" => req.plugin_token = v.to_string(),
                 _ => {}
@@ -805,13 +812,19 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
         || clean_path.starts_with("/api/opencloud/")
         || clean_path == "/api/creator-hub"
         || clean_path.starts_with("/api/creator-hub/")
+        || clean_path == "/api/studio/mcp"
+        || clean_path.starts_with("/api/studio/mcp/")
+        || clean_path == "/api/projects"
+        || clean_path.starts_with("/api/projects/")
+        || clean_path == "/api/art"
+        || clean_path.starts_with("/api/art/")
+        || clean_path == "/api/tools/image/process"
         || clean_path == "/api/monetization/pack"
         || clean_path == "/api/assets/upload"
         || clean_path == "/api/assets/generate"
         || (method == "DELETE" && clean_path.starts_with("/api/assets/"))
         || (matches!(method, "POST" | "PUT" | "PATCH" | "DELETE")
-            && (clean_path.starts_with("/api/studio/mcp/")
-                || clean_path.starts_with("/api/studio/embed/")
+            && (clean_path.starts_with("/api/studio/embed/")
                 || clean_path.starts_with("/api/studio/input/")
                 || clean_path.starts_with("/api/studio/tools/")
                 || clean_path == "/api/studio/playtest"
@@ -891,7 +904,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &str) {
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let _ = stream.write_all(response.as_bytes());
@@ -917,7 +930,7 @@ fn respond_bytes_with_headers(
     body: &[u8],
 ) {
     let header = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: {cache_control}\r\nX-Content-Type-Options: nosniff\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: {cache_control}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(header.as_bytes());
@@ -931,7 +944,7 @@ fn respond_download(stream: &mut TcpStream, content_type: &str, filename: &str, 
 
 fn respond_download_bytes(stream: &mut TcpStream, content_type: &str, filename: &str, body: &[u8]) {
     let header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(header.as_bytes());
@@ -1318,11 +1331,12 @@ fn handle(
     };
     if let Some((status, message)) = refusal(&req, allowed) {
         respond_json(&mut stream, status, &json!({ "ok": false, "error": message }));
+        // Flush and close write half promptly so raw-TCP clients keeping their write
+        // half open receive the 413/403 + EOF immediately without waiting on IO_TIMEOUT.
+        let _ = stream.shutdown(std::net::Shutdown::Write);
         let body_cap = max_body_for_path(&req.path);
         if req.content_length > body_cap {
-            // The body was never read: take it (bounded by its declared
-            // length) so closing does not reset the 413 before it arrives.
-            drain_unread(&mut stream, req.content_length.min(4 * body_cap));
+            drain_unread_promptly(&mut stream, req.content_length.min(4 * body_cap));
         }
         return Ok(());
     }
@@ -1857,14 +1871,15 @@ fn handle(
         }
         ("GET", "/") => {
             let info = status_info(shared);
-            let html = render_page_full(
+            serve_index_page(
+                &mut stream,
+                &req,
                 &shared.game_name,
                 info.studio_connected,
                 info.model_configured,
                 &shared.store_recovered,
                 info.workspace_mode,
             );
-            respond(&mut stream, "200 OK", "text/html; charset=utf-8", &html);
         }
         ("GET", "/api/version") => respond_json(
             &mut stream,
@@ -2150,7 +2165,7 @@ fn handle(
                     "can_undo": can_undo,
                     "can_redo": can_redo,
                     "studio_mode": shared.studio_stream.studio_mode(),
-                    "skills_count": crate::skills::registry().len(),
+                    "skills_count": crate::skills::count(),
                     "store_recovered": shared.store_recovered,
                 }),
             );
@@ -3822,8 +3837,10 @@ fn handle_luau_check(stream: &mut TcpStream, shared: &Shared, is_post: bool, raw
     respond_json(stream, "200 OK", &out);
 }
 
-/// Read and discard up to `budget` bytes the client is still sending.
-fn drain_unread(stream: &mut TcpStream, mut budget: usize) {
+/// Read and discard immediately buffered bytes on an oversized request without
+/// stalling if the client keeps its write half open.
+fn drain_unread_promptly(stream: &mut TcpStream, mut budget: usize) {
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(20)));
     let mut chunk = [0u8; 8192];
     while budget > 0 {
         match stream.read(&mut chunk) {
@@ -4435,6 +4452,9 @@ fn try_route_opencloud_assets(
                 || path.ends_with("/products")
                 || path.ends_with("/products/sync")
                 || path.ends_with("/products/codegen")
+                || path.ends_with("/monetization/pack")
+                || path.ends_with("/readiness")
+                || path.ends_with("/autopilot")
                 || path.ends_with("/universe")
                 || path.ends_with("/creator-hub/setup")
                 || path.ends_with("/creator-hub/configure")));
@@ -7136,7 +7156,7 @@ fn handle_mesh_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &st
             respond_bytes(stream, "200 OK", mime, "public, max-age=3600", &bytes);
         }
         Err(e) => {
-            let status = if e.contains("escapes") {
+            let status = if e.contains("escapes") || e.contains("symlink") {
                 "403 Forbidden"
             } else if e.contains("not found") {
                 "404 Not Found"
@@ -7154,7 +7174,7 @@ fn handle_audio_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &s
             respond_bytes(stream, "200 OK", "audio/wav", "public, max-age=3600", &bytes);
         }
         Err(e) => {
-            let status = if e.contains("escapes") {
+            let status = if e.contains("escapes") || e.contains("symlink") {
                 "403 Forbidden"
             } else if e.contains("not found") {
                 "404 Not Found"
@@ -7781,6 +7801,165 @@ pub fn render_page_full(
         .replace("__STUDIO_CONNECTED__", &studio_connected.to_string())
         .replace("__WORKSPACE_MODE__", workspace_mode)
         .replace("__GAME_NAME__", &esc_html(game_name))
+}
+
+#[derive(Clone)]
+struct CachedIndex {
+    plain: Vec<u8>,
+    gzip: Vec<u8>,
+    etag: String,
+}
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct IndexCacheKey {
+    game_name: String,
+    studio_connected: bool,
+    model_configured: bool,
+    recovered: Vec<String>,
+    workspace_mode: &'static str,
+}
+
+fn cached_index(
+    game_name: &str,
+    studio_connected: bool,
+    model_configured: bool,
+    recovered: &[String],
+    workspace_mode: &'static str,
+) -> Arc<CachedIndex> {
+    use flate2::{write::GzEncoder, Compression};
+    use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+
+    static CACHE: OnceLock<Mutex<HashMap<IndexCacheKey, Arc<CachedIndex>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = IndexCacheKey {
+        game_name: game_name.to_string(),
+        studio_connected,
+        model_configured,
+        recovered: recovered.to_vec(),
+        workspace_mode,
+    };
+    if let Some(hit) = cache.lock().unwrap().get(&key).cloned() {
+        return hit;
+    }
+
+    let plain = render_page_full(
+        game_name,
+        studio_connected,
+        model_configured,
+        recovered,
+        workspace_mode,
+    )
+    .into_bytes();
+
+    let mut hasher = Sha256::new();
+    hasher.update(&plain);
+    let digest = hasher.finalize();
+    let etag = format!(
+        "\"{:016x}\"",
+        u64::from_be_bytes(digest[..8].try_into().unwrap_or([0; 8]))
+    );
+
+    let mut enc = GzEncoder::new(Vec::with_capacity(plain.len() / 3), Compression::default());
+    let gzip = if enc.write_all(&plain).is_ok() {
+        enc.finish().unwrap_or_else(|_| plain.clone())
+    } else {
+        Vec::new()
+    };
+
+    let entry = Arc::new(CachedIndex { plain, gzip, etag });
+    let mut map = cache.lock().unwrap();
+    if map.len() >= 32 {
+        map.clear();
+    }
+    map.insert(key, Arc::clone(&entry));
+    entry
+}
+
+fn accepts_gzip(header: &str) -> bool {
+    header.split(',').any(|part| {
+        let mut pieces = part.trim().split(';');
+        let enc = pieces.next().unwrap_or("").trim();
+        if !enc.eq_ignore_ascii_case("gzip") && !enc.eq_ignore_ascii_case("x-gzip") {
+            return false;
+        }
+        for param in pieces {
+            if let Some((k, v)) = param.trim().split_once('=') {
+                if k.trim().eq_ignore_ascii_case("q") {
+                    if let Ok(q) = v.trim().parse::<f32>() {
+                        return q > 0.0;
+                    }
+                }
+            }
+        }
+        true
+    })
+}
+
+fn etag_matches(if_none_match: &str, etag: &str) -> bool {
+    let trimmed = if_none_match.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed == "*" {
+        return true;
+    }
+    trimmed.split(',').any(|cand| {
+        let c = cand.trim();
+        c == etag || c.strip_prefix("W/") == Some(etag)
+    })
+}
+
+fn serve_index_page(
+    stream: &mut TcpStream,
+    req: &Request,
+    game_name: &str,
+    studio_connected: bool,
+    model_configured: bool,
+    recovered: &[String],
+    workspace_mode: &'static str,
+) {
+    let cached = cached_index(
+        game_name,
+        studio_connected,
+        model_configured,
+        recovered,
+        workspace_mode,
+    );
+    if etag_matches(&req.if_none_match, &cached.etag) {
+        let resp = format!(
+            "HTTP/1.1 304 Not Modified\r\nETag: {}\r\nCache-Control: no-cache\r\nVary: Accept-Encoding\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            cached.etag
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        let _ = stream.flush();
+        return;
+    }
+    if !cached.gzip.is_empty() && accepts_gzip(&req.accept_encoding) {
+        let extra = format!(
+            "ETag: {}\r\nVary: Accept-Encoding\r\nContent-Encoding: gzip\r\n",
+            cached.etag
+        );
+        respond_bytes_with_headers(
+            stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            "no-cache",
+            &extra,
+            &cached.gzip,
+        );
+    } else {
+        let extra = format!("ETag: {}\r\nVary: Accept-Encoding\r\n", cached.etag);
+        respond_bytes_with_headers(
+            stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            "no-cache",
+            &extra,
+            &cached.plain,
+        );
+    }
 }
 
 /* hallmark-rune override log — OpenRO elevation (18 Nov 2026)

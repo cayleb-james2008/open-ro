@@ -60,6 +60,7 @@ export function CommandPalette({
   onOpenToolLibrary,
   onOpenEmbeddedStudio,
   onOpenCodeDiff,
+  onOpenShip,
   onOpenStudioPlugin,
   onToggleBottomDrawer,
   onOpenStarters,
@@ -86,6 +87,7 @@ export function CommandPalette({
   onOpenToolLibrary?: () => void;
   onOpenEmbeddedStudio?: () => void;
   onOpenCodeDiff?: () => void;
+  onOpenShip?: () => void;
   onOpenStudioPlugin?: () => void;
   onToggleBottomDrawer?: () => void;
   onOpenStarters?: () => void;
@@ -178,7 +180,7 @@ export function CommandPalette({
       out.push({
         kind: "action",
         id: "act-embed-studio",
-        title: "Open Embedded Roblox Studio & 13 MCP Tools",
+        title: "Open Embedded Roblox Studio & 13 MCP Tools (Alt+1)",
         subtitle: "Stream live MJPEG Roblox Studio viewport, pass mouse/keyboard input, Play/Server/Stop, and run all 13 MCP tools",
         badge: "Embedded",
         badgeCls: "bg-tag-sky-bg text-tag-sky-fg",
@@ -189,11 +191,22 @@ export function CommandPalette({
       out.push({
         kind: "action",
         id: "act-code-diff",
-        title: "Open Code & Diff Workbench",
+        title: "Open Code & Diff Workbench (Alt+2)",
         subtitle: "Inspect unified script diffs, toggle per-file apply checkboxes, and edit Luau scripts with live diagnostics",
         badge: "Diff",
         badgeCls: "bg-tag-research-bg text-tag-research-fg",
         onRun: onOpenCodeDiff,
+      });
+    }
+    if (onOpenShip) {
+      out.push({
+        kind: "action",
+        id: "act-ship-autopilot",
+        title: "Open Ship & Monetization Autopilot (Alt+4)",
+        subtitle: "Run 1-click Luau audit, Monetization Pack, Rojo build, and Open Cloud publish checks",
+        badge: "Ship",
+        badgeCls: "bg-tag-ops-bg text-tag-ops-fg",
+        onRun: onOpenShip,
       });
     }
     if (onOpenStudioPlugin) {
@@ -330,7 +343,7 @@ export function CommandPalette({
     const q = query.trim().toLowerCase();
     if (!q) return out;
     return out.filter((it) => `${it.title} ${it.subtitle} ${it.badge}`.toLowerCase().includes(q));
-  }, [canRedo, canUndo, onAddBlockPart, onDownloadShipPack, onExportRbxlx, onImportRbxlxClick, onNewChat, onOpenEmbeddedStudio, onOpenSettings, onOpenSnapshots, onOpenToolLibrary, onRunPlaytest, onTriggerRedo, onTriggerUndo, place, query]);
+  }, [canRedo, canUndo, onAddBlockPart, onDownloadShipPack, onExportRbxlx, onImportRbxlxClick, onNewChat, onOpenCodeDiff, onOpenEmbeddedStudio, onOpenSettings, onOpenShip, onOpenSnapshots, onOpenToolLibrary, onRunPlaytest, onTriggerRedo, onTriggerUndo, place, query]);
 
   const visible = items.slice(0, 40);
   const clampedIdx = visible.length ? Math.min(activeIdx, visible.length - 1) : 0;

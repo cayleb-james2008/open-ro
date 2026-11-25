@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence, LayoutGroup, motion, useReducedMotion as useMotionReduced } from "motion/react";
+import { AnimatePresence, LayoutGroup, m, useReducedMotion as useMotionReduced } from "motion/react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { Loader2 } from "lucide-react";
@@ -302,7 +302,7 @@ export function SegmentedControlItem({
       {...props}
     >
       {checked ? (
-        <motion.span
+        <m.span
           layoutId={`seg-${groupId}`}
           transition={reduced ? instant : glide}
           aria-hidden
@@ -328,14 +328,14 @@ export function TextShimmer({
     return <span className={cn("text-ink", className)}>{children}</span>;
   }
   return (
-    <motion.span
+    <m.span
       initial={{ opacity: 0.72 }}
       animate={{ opacity: [0.72, 1, 0.72] }}
       transition={{ duration: 1.8, repeat: Infinity, ease: "linear" }}
       className={cn("text-ink", className)}
     >
       {children}
-    </motion.span>
+    </m.span>
   );
 }
 
@@ -346,7 +346,7 @@ export function BorderTrail({ active = true, className }: { active?: boolean; cl
     return <span aria-hidden className={cn("pointer-events-none absolute inset-0 rounded-[inherit] border border-blue/50", className)} />;
   }
   return (
-    <motion.span
+    <m.span
       aria-hidden
       initial={{ opacity: 0.35 }}
       animate={{ opacity: [0.35, 0.85, 0.35] }}
@@ -474,7 +474,7 @@ export function DialogContainer({ children }: { children: React.ReactNode }) {
   return createPortal(
     <AnimatePresence>
       {ctx?.open ? (
-        <motion.div
+        <m.div
           key="dialog-overlay"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -489,7 +489,7 @@ export function DialogContainer({ children }: { children: React.ReactNode }) {
           }}
         >
           {children}
-        </motion.div>
+        </m.div>
       ) : null}
     </AnimatePresence>,
     document.body,
@@ -547,7 +547,7 @@ export function DialogContent({
   }, [ctx]);
 
   return (
-    <motion.div
+    <m.div
       ref={ref}
       role="dialog"
       aria-modal="true"
@@ -564,7 +564,7 @@ export function DialogContent({
       {...(props as Record<string, unknown>)}
     >
       {children}
-    </motion.div>
+    </m.div>
   );
 }
 

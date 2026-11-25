@@ -36,11 +36,40 @@ import {
   type StudioToolResult,
 } from "./data";
 
+function LiveFrameSnapshot({
+  initialSeq,
+  subscribeFrameSeq,
+  onError,
+}: {
+  initialSeq: number;
+  subscribeFrameSeq?: (cb: (seq: number) => void) => () => void;
+  onError: () => void;
+}) {
+  const [seq, setSeq] = useState(initialSeq);
+  useEffect(() => {
+    setSeq(initialSeq);
+  }, [initialSeq]);
+  useEffect(() => {
+    if (!subscribeFrameSeq) return;
+    return subscribeFrameSeq((nextSeq) => setSeq(nextSeq));
+  }, [subscribeFrameSeq]);
+  return (
+    <img
+      src={`/api/studio/frame?seq=${seq}`}
+      alt={`Live Roblox Studio viewport frame ${seq}`}
+      draggable={false}
+      onError={onError}
+      className="h-full w-full select-none object-contain"
+    />
+  );
+}
+
 export function EmbeddedStudioPanel({
   studioMode,
   embedStatus,
   hasLiveFrame,
   frameSeq,
+  subscribeFrameSeq,
   actions,
   onLaunchEmbed,
   onAttachEmbed,
@@ -59,6 +88,7 @@ export function EmbeddedStudioPanel({
   embedStatus: StudioEmbedStatus;
   hasLiveFrame: boolean;
   frameSeq: number;
+  subscribeFrameSeq?: (cb: (seq: number) => void) => () => void;
   actions: StudioActionEvent[];
   onLaunchEmbed?: (command?: string) => Promise<void> | void;
   onAttachEmbed?: () => Promise<void> | void;
@@ -93,7 +123,9 @@ export function EmbeddedStudioPanel({
 
   useEffect(() => {
     setFrameFailed(false);
-  }, [frameSeq]);
+    if (!subscribeFrameSeq) return;
+    return subscribeFrameSeq(() => setFrameFailed(false));
+  }, [frameSeq, subscribeFrameSeq]);
 
   useEffect(() => {
     if (embedStatus.running) {
@@ -523,12 +555,10 @@ export function EmbeddedStudioPanel({
                   className="h-full w-full select-none object-contain"
                 />
               ) : showSnapshot ? (
-                <img
-                  src={`/api/studio/frame?seq=${frameSeq}`}
-                  alt={`Live Roblox Studio viewport frame ${frameSeq}`}
-                  draggable={false}
+                <LiveFrameSnapshot
+                  initialSeq={frameSeq}
+                  subscribeFrameSeq={subscribeFrameSeq}
                   onError={() => setFrameFailed(true)}
-                  className="h-full w-full select-none object-contain"
                 />
               ) : (
                 <div className="flex flex-col items-center justify-center gap-2 px-6 py-12 text-center text-sm text-ink-2">

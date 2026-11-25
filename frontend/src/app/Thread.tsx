@@ -1,3 +1,4 @@
+import { memo } from "react";
 import {
   AlertTriangle,
   Box,
@@ -611,7 +612,7 @@ function VerdictBanner({
   );
 }
 
-export function ThreadFeed({
+export const ThreadFeed = memo(function ThreadFeed({
   lines,
   notices,
   pending,
@@ -846,4 +847,4 @@ export function ThreadFeed({
   }
 
   return <div className="flex flex-col gap-3">{out}</div>;
-}
+});

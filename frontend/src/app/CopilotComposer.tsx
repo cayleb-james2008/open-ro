@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { toast } from "sonner";
 import { AtSign, Check, ChevronDown, Paperclip, Send, SlidersHorizontal, Square, Undo2, X } from "lucide-react";
@@ -23,7 +23,7 @@ const REASONING_LABELS: { id: ReasoningLevel; label: string }[] = [
   { id: "high", label: "High" },
 ];
 
-export function CopilotComposer({
+export const CopilotComposer = memo(function CopilotComposer({
   text,
   onTextChange,
   inputRef,
@@ -352,4 +352,4 @@ export function CopilotComposer({
       </MorphingDialog>
     </div>
   );
-}
+});

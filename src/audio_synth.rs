@@ -404,9 +404,14 @@ pub fn generate_audio_asset_for_project(
 pub fn read_audio_asset(data_dir: &Path, raw_filename: &str) -> Result<Vec<u8>, String> {
     let filename = sanitize_audio_filename(raw_filename)?;
     let dir = audio_assets_dir(data_dir);
+    let candidate = dir.join(&filename);
+    if let Ok(meta) = std::fs::symlink_metadata(&candidate) {
+        if meta.file_type().is_symlink() {
+            return Err(format!("audio asset path '{filename}' is a symlink"));
+        }
+    }
     let canon_dir = std::fs::canonicalize(&dir)
         .map_err(|_| format!("audio asset '{filename}' not found"))?;
-    let candidate = dir.join(&filename);
     let canon_file = std::fs::canonicalize(&candidate)
         .map_err(|_| format!("audio asset '{filename}' not found"))?;
     if !canon_file.starts_with(&canon_dir) {

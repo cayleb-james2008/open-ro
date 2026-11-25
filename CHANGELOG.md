@@ -4,6 +4,21 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.2.0 - 2026-11-25
+
+- **Runtime Speed, Gzip/ETag Static Serving & Release Profile Diet (`Cargo.toml`, `src/server.rs`, `src/skills.rs`):**
+  - Added `[profile.release]` (`opt-level = 3`, `lto = "thin"`, `codegen-units = 1`, `strip = "symbols"`), `TCP_NODELAY` on accepted sockets, and cached `skills::count()` for hot `/api/status` calls.
+  - Added cached rendered HTML + pre-compressed `gzip` (`Accept-Encoding: gzip`), strong `ETag` + `304 Not Modified`, `Vary: Accept-Encoding`, and hardened `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy: no-referrer` headers on `GET /` and API responses.
+- **Ship & Monetization Readiness Autopilot (`src/opencloud.rs`, `src/server.rs`, `frontend/src/app/ship/ReadinessAutopilot.tsx`, `ShipPanel.tsx`):**
+  - Expanded `GET /api/projects/:id/readiness` into a 7-gate unified check (Luau static audit, `.rbxlx` build, `assets.lock.json` + `AssetIds.luau`, `ProcessReceipt` & `GamePassService`, Daily Reward retention, owner-approved pricing, and Open Cloud auth/IDs) and added 1-click `POST /api/projects/:id/autopilot` to auto-fix empty Luau placeholders/formatting (`stylua`), generate `AssetIds.luau` / `ProductIds.luau`, wire the Monetization & Retention Pack, and build `.rbxlx` (strictly preserving human `priceApproved` gating).
+  - Wired `/api/projects/:id/{readiness,autopilot,monetization/pack}` cleanly in `try_route_opencloud_assets`.
+- **Frontend Re-Render Isolation, Bundle Diet & IDE Shortcuts (`frontend/src/App.tsx`, `EmbeddedStudioPanel.tsx`, `ui.tsx`, `CommandPalette.tsx`):**
+  - Isolated 12 FPS Studio `frameSeq` updates via `LiveFrameSnapshot` subscription + throttled thread capture preview and memoized core IDE panes (`ThreadFeed`, `CodeDiffWorkbench`, `ShipPanel`, `CopilotComposer`, `LeftExplorerTree`) so live Studio/SSE streaming causes zero full-IDE re-renders.
+  - Switched `motion/react` to `LazyMotion` (`domMax` + `m`) and added `Alt+1..5` workbench tab shortcuts, `Ctrl/Cmd+B` left dock toggle, and `Ctrl/Cmd+J` bottom drawer toggle.
+- **Security Hardening (`src/server.rs`, `src/projects.rs`, `src/opencloud.rs`, `src/mesh.rs`, `src/audio_synth.rs`, `src/assets.rs`):**
+  - Updated 413 oversized `Content-Length` handling to `shutdown(Shutdown::Write)` and drain only immediately available bytes without stalling on open client write halves.
+  - Enforced loopback-403 `Host` validation across `/api/studio/mcp/*`, `/api/creator-hub/*`, `/api/opencloud/*`, `/api/projects/*`, and `/api/art/*`, and added full path-component `symlink_metadata` checks in `safe_join`, `safe_rel`, `read_mesh_asset`, `read_audio_asset`, and `AssetManager::read_bytes`.
+
 ## 1.1.0 - 2026-11-25
 
 - **Desktop-Workbench 3-Pane Studio Copilot IDE Overhaul (`frontend/src/App.tsx`, `theme.css`, `components/ui.tsx`, `CopilotComposer.tsx`, `Thread.tsx`, `Blueprints.tsx`):**
