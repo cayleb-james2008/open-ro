@@ -276,7 +276,7 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
               </div>
             )}
           </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          <div className="flex w-full min-w-0 flex-wrap items-center gap-1.5">
             <Button
               variant="outline"
               size="xs"
@@ -303,9 +303,9 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
         </div>
       )}
 
-      {/* File Tabs Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline bg-board/60 px-3 py-1.5">
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+      {/* File Tabs Bar + Action Controls */}
+      <div className="flex flex-col gap-1.5 border-b border-hairline bg-board/60 px-3 py-1.5">
+        <div className="flex w-full min-w-0 items-center gap-1 overflow-x-auto pb-0.5">
           {allPaths.map((p) => {
             const diff = activeDiffs.find((d) => d.path === p);
             const active = p === currentPath;
@@ -360,7 +360,7 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
           </Button>
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+        <div className="flex w-full min-w-0 flex-wrap items-center gap-1.5">
           {currentPath && (
             <>
               <SegmentedControl aria-label="Code workbench view mode" size="sm">

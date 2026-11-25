@@ -1,4 +1,4 @@
-# OpenRO (`v1.8.0`)
+# OpenRO (`v1.9.0`)
 
 [![Release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/cayleb-james2008/open-ro/release.yml?branch=main&label=build)](https://github.com/cayleb-james2008/open-ro/actions)
@@ -55,15 +55,16 @@ flowchart LR
   SRV --> OC["Open Cloud &amp; Creator Hub<br/>0600 Secrets + Price Approval Gate"]
 ```
 
-## Verified Benchmarks (`v1.8.0` vs `v1.2.0`)
+## Verified Benchmarks (`v1.9.0` vs `v1.2.0`)
 
-| Metric | `v1.2.0` Baseline | `v1.8.0` Verified | Delta |
+| Metric | `v1.2.0` Baseline | `v1.9.0` Verified | Delta |
 | --- | --- | --- | --- |
-| Release Binary Size | `19.00 MB` | **`14.75 MB`** (`15,467,416 B`) | `-22.4%` |
-| Initial `/` Payload | `~1,368 KB` raw / `~459 KB` gz | **`235.0 KB`** raw / **`56.1 KB`** gz | **`-87.8%` wire** |
-| Peak RSS (`VmHWM`) | `115.20 MB` | **`9.50 MB`** (`9,732 KB`, 16w pinned) | **`-91.8%`** |
-| Concurrent HTTP | `875 req/s` (`141.7 ms` p95) | **`31,583.9 req/s`** (`0.92 ms` p95, 16w pinned) | **`36.1x`** |
-| Security & UI Gates | `43/43` fuzz | **`0` sloplint fails, `304+` Rust tests** | Pass |
+| Release Binary Size | `19.00 MB` | **`14.79 MB`** (`15,512,472 B`) | `-22.2%` |
+| Initial `/` Payload | `~1,368 KB` raw / `~459 KB` gz | **`235.0 KB`** raw / **`56.2 KB`** gz | **`-87.8%` wire** |
+| Cold Boot (`#154` pinned) | `1,470 ms` | **`21.36–33.66 ms`** (`/`: `25.64 ms`) | **`-97.7%`** |
+| Peak RSS (`VmHWM`) | `115.20 MB` | **`8.98 MB`** (`9,196 KB`, 16w pinned) | **`-92.2%`** |
+| Concurrent HTTP | `875 req/s` (`141.7 ms` p95) | **`30,907.0 req/s`** (`0.94 ms` p95, 16w pinned) | **`35.3x`** |
+| Security & UI Gates | `43/43` fuzz | **`0` sloplint fails, `307` Rust tests** | Pass |
 
 ## Quick Start
 

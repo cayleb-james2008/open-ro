@@ -62,6 +62,21 @@ export type AssertionDiff = {
   rooms: AssertionRoomSummary[];
   items: AssertionItem[];
 };
+export type AssertionFixPlan = {
+  assertion_id: string;
+  room: string;
+  title: string;
+  target_file: string;
+  auto_fixable: boolean;
+  summary: string;
+  diff_preview: string;
+  steps: string[];
+};
+export type AssertionFixApplyResult = {
+  plan: AssertionFixPlan;
+  applied_files: string[];
+  rerun: PlaytestReport & { run_id: string; passed: boolean; assertion_diff?: AssertionDiff };
+};
 export type PlaytestReport = {
   run_id: string; passed: boolean; build_id?: string; mode?: string; duration_ms?: number;
   checks?: { name: string; passed: boolean; value?: unknown; error?: string | null; datamodel?: string }[];

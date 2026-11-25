@@ -165,11 +165,9 @@ fn main() {
         model_from_config(&saved_cfg, Some(&data_dir))
     };
 
-    if model.is_antigravity() {
+    let warmup_agy_models = model.is_antigravity();
+    if warmup_agy_models {
         eprintln!("openro: model {} via Antigravity CLI", model.model_id());
-        std::thread::spawn(|| {
-            let _ = openro_rs::model::agy_models(false);
-        });
     } else if model.is_loopback() {
         eprintln!("openro: connected local model {} @ {}", model.model_id(), model.base_url());
     } else if !model.is_configured() && !needs_gateway_probe {
@@ -222,17 +220,20 @@ fn main() {
     // silently orphan every revert.
     agent.set_changes_file(data_dir.join("changes.json"));
     let shared = Shared::with_data_dir(Some(agent), game_name, data_dir.clone());
-    // Only the real binary checks GitHub in the background; tests never do.
-    shared.updater.start_background();
-
-    // Defer passive Studio MCP spawn, Vinegar plugin install, local gateway probe, and gzip HTML
-    // prewarm off the critical HTTP startup path.
+    // Defer passive Studio MCP spawn, Vinegar plugin install, local gateway probe, and agy CLI warmup
+    // off the critical HTTP cold-boot path so Cold Boot stays fast even under CPU pinning.
     {
         let bg_shared = std::sync::Arc::clone(&shared);
         let bg_data_dir = data_dir.clone();
         let bg_env_model = env_model.clone();
         std::thread::spawn(move || {
             openro_rs::server::prewarm_index_cache(&bg_shared);
+            bg_shared.updater.start_background();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+
+            if warmup_agy_models {
+                let _ = openro_rs::model::agy_models(false);
+            }
 
             if needs_gateway_probe {
                 if let Some(gw) = openro_rs::model::probe_local_gateways().into_iter().next() {

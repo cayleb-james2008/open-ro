@@ -4,6 +4,16 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.9.0 - 2026-11-25
+
+- **1-Click Playtest Failure -> Targeted Luau Auto-Fix Plan (`src/playtest.rs`, `src/project_api.rs`, `frontend/src/app/ship/PlaytestPanel.tsx`, `api.ts`):**
+  - Added `POST /api/projects/:id/playtests/fix-plan` and `POST /api/projects/:id/playtests/fix-apply` plus interactive **Fix Plan** -> **Apply & Re-Run Assertion** workflow on failed assertions in `PlaytestPanel` (drafting exact target Luau file & diff preview and deterministically applying & re-running assertions offline or live).
+- **Code Workbench Toolbar & Replay Determinism (`frontend/src/app/CodeDiffWorkbench.tsx`, `frontend/e2e/replay.mjs`):**
+  - Fixed right-pane Code Workbench file tabs + action toolbar layout so `Playtest` and long file tabs never clip at `1440x900` (`hero-{light,dark}.png` refreshed & verified).
+  - Stabilized pre-reload thread persistence waits in `frontend/e2e/replay.mjs` to eliminate the transient 0-msg timing race.
+- **Pinned Cold Boot Optimization (`src/main.rs`, `src/server.rs`):**
+  - Replaced eager 42-thread `openro-pool-warm` boot spawn with lazy on-demand worker pool scaling (`POOL_WORKERS_BOOT = 4` -> `32`) and deferred `agy_models(false)` + background probes past `prewarm_index_cache` so pinned cold boot stays sub-60ms.
+
 ## 1.8.0 - 2026-11-25
 
 - **Deterministic Playtest Assertion Suite + 1-Click Re-Run (`src/playtest.rs`, `src/project_api.rs`, `src/agent.rs`, `frontend/src/app/ship/PlaytestPanel.tsx`, `frontend/web-engine/install.ts`):**

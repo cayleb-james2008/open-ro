@@ -105,7 +105,7 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.8.0"));
+    assert_eq!(ver_json["version"], json!("1.9.0"));
 
     // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
     if let Ok(entries) = std::fs::read_dir("assets/chunks") {
@@ -505,6 +505,80 @@ fn v180_wave7_deterministic_playtest_assertions_and_bundle_diet() {
     let (st_sp, sp) = send_json(port, "POST", "/api/studio/playtest", Some(&json!({})));
     assert_eq!(st_sp, 200, "{sp}");
     assert!(sp["assertions"].as_array().is_some_and(|a| !a.is_empty()), "{sp}");
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn v190_wave8_targeted_assertion_fix_plan_and_apply() {
+    let base = std::env::temp_dir().join(format!(
+        "openro-v190-wave8-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let data = base.join("data");
+    let ws = base.join("ws");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let port = start_server_with_dir(Some(data));
+    let (st_ws, _) = send_json(port, "POST", "/api/projects/workspace", Some(&json!({ "path": ws })));
+    assert_eq!(st_ws, 200);
+    let (st_cr, cr) = send_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(&json!({ "name": "AutoFix Assertion Game" })),
+    );
+    assert_eq!(st_cr, 201, "{cr}");
+    let pid = cr["project"]["id"].as_str().unwrap().to_string();
+
+    // Baseline assertion run: monetization_guard fails before fix
+    let (st_r1, r1) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/playtests/rerun"),
+        Some(&json!({ "offline": true })),
+    );
+    assert_eq!(st_r1, 200, "{r1}");
+    let econ1 = r1["assertions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == "monetization_guard")
+        .unwrap();
+    assert_eq!(econ1["passed"], json!(false), "{r1}");
+
+    // Draft targeted fix plan for monetization_guard
+    let (st_fp, fp) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/playtests/fix-plan"),
+        Some(&json!({ "assertion_id": "monetization_guard" })),
+    );
+    assert_eq!(st_fp, 200, "{fp}");
+    assert_eq!(fp["plan"]["assertion_id"], json!("monetization_guard"), "{fp}");
+    assert_eq!(fp["plan"]["auto_fixable"], json!(true), "{fp}");
+
+    // Apply targeted fix and re-run assertions -> monetization_guard becomes fixed & passed
+    let (st_fa, fa) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/playtests/fix-apply"),
+        Some(&json!({ "assertion_id": "monetization_guard", "offline": true })),
+    );
+    assert_eq!(st_fa, 200, "{fa}");
+    assert!(fa["applied_files"].as_array().is_some_and(|a| a.len() == 3), "{fa}");
+    let econ2 = fa["rerun"]["assertion_diff"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == "monetization_guard")
+        .unwrap();
+    assert_eq!(econ2["passed"], json!(true), "{fa}");
+    assert_eq!(econ2["delta"], json!("fixed"), "{fa}");
 
     let _ = std::fs::remove_dir_all(&base);
 }

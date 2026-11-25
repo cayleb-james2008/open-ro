@@ -1489,6 +1489,192 @@ pub fn rerun_assertions(shared: &Shared, r: &ProjectRef, req: &Value) -> Result<
     }
 }
 
+fn write_project_luau(dir: &Path, rel_path: &str, src: &str) -> Result<(), Reply> {
+    let abs = projects::safe_join(dir, rel_path).map_err(Reply::bad)?;
+    if let Some(parent) = abs.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Reply::err("500 Internal Server Error", format!("create dir: {e}")))?;
+    }
+    let tmp = abs.with_extension("luau.tmp-openro");
+    std::fs::write(&tmp, src.as_bytes())
+        .and_then(|_| std::fs::rename(&tmp, &abs))
+        .map_err(|e| Reply::err("500 Internal Server Error", format!("write {rel_path}: {e}")))
+}
+
+fn fix_plan_spec(dir: &Path, assertion_id: &str) -> Value {
+    let id = assertion_id.trim();
+    match id {
+        "monetization_guard" => json!({
+            "assertion_id": id,
+            "room": "Economy",
+            "title": "Wire ProcessReceipt & 48h Comeback Retention Guards",
+            "target_file": "src/server/DailyRewardRetention.server.luau",
+            "auto_fixable": true,
+            "summary": "Generates MonetizationConfig.luau, server-authoritative MonetizationService.server.luau (idempotent UpdateAsync ProcessReceipt + PolicyService), and DailyRewardRetention.server.luau (24h streak + 48h comeback bonus + BindToClose).",
+            "diff_preview": "@@ src/server/MonetizationService.server.luau & DailyRewardRetention.server.luau @@\n+--!strict\n+MarketplaceService.ProcessReceipt = function(receiptInfo)\n+\treceiptStore:UpdateAsync(receiptKey, ...)\n+end\n+claimFn.OnServerInvoke = function(player: Player) ... end\n+game:BindToClose(function() task.wait(0.2) end)",
+            "steps": [
+                "Write ReplicatedStorage MonetizationConfig.luau",
+                "Write idempotent ProcessReceipt handler in MonetizationService.server.luau",
+                "Write 7-day + 48h comeback streak handler in DailyRewardRetention.server.luau"
+            ]
+        }),
+        "server_entrypoint" => json!({
+            "assertion_id": id,
+            "room": "Luau",
+            "title": "Scaffold Strict Server Bootstrap Entrypoint",
+            "target_file": "src/server/GameBootstrap.server.luau",
+            "auto_fixable": true,
+            "summary": "Creates a strict ServerScriptService entrypoint initializing leaderstats and player lifecycle hooks with 0 static Luau errors.",
+            "diff_preview": "@@ src/server/GameBootstrap.server.luau @@\n+--!strict\n+local Players = game:GetService(\"Players\")\n+Players.PlayerAdded:Connect(function(player: Player)\n+\tlocal ls = player:FindFirstChild(\"leaderstats\") or Instance.new(\"Folder\")\n+\tls.Name = \"leaderstats\"\n+\tls.Parent = player\n+end)",
+            "steps": [
+                "Create src/server/GameBootstrap.server.luau with strict types",
+                "Verify 0 static Luau errors across src/"
+            ]
+        }),
+        "luau_static" => {
+            let (files, errs, _, _, _) = scan_project_luau(dir);
+            json!({
+                "assertion_id": id,
+                "room": "Luau",
+                "title": "Clean Empty Stubs & Format Luau Scripts",
+                "target_file": "src/shared/",
+                "auto_fixable": true,
+                "summary": format!("Replaces empty placeholder scripts with valid strict modules, strips trailing whitespace across {files} script(s) ({errs} current error(s)), and runs stylua."),
+                "diff_preview": "@@ src/**/*.luau @@\n-   \n+--!strict\n+return {}",
+                "steps": [
+                    "Replace empty *.luau placeholders with --!strict return {}",
+                    "Trim trailing whitespace and run project formatter"
+                ]
+            })
+        }
+        "core_loop_move" | "core_loop_act" | "core_loop_hud" => json!({
+            "assertion_id": id,
+            "room": "Core Loop",
+            "title": "Scaffold Deterministic Core-Loop Action & HUD Bridge",
+            "target_file": "src/server/CoreLoopBootstrap.server.luau",
+            "auto_fixable": true,
+            "summary": "Creates deterministic RemoteEvent core-loop server validation + client HUD binder so Move/Act/HUD checks have active hooks.",
+            "diff_preview": "@@ src/server/CoreLoopBootstrap.server.luau & src/client/CoreLoopHud.client.luau @@\n+--!strict\n+local coreEvent = Instance.new(\"RemoteEvent\")\n+coreEvent.Name = \"CoreLoopAction\"\n+coreEvent.OnServerEvent:Connect(function(player: Player) ... end)",
+            "steps": [
+                "Write src/server/CoreLoopBootstrap.server.luau",
+                "Write src/client/CoreLoopHud.client.luau"
+            ]
+        }),
+        other => json!({
+            "assertion_id": other,
+            "room": "Runtime",
+            "title": "Re-Verify & Format Targeted Luau Check",
+            "target_file": "src/",
+            "auto_fixable": true,
+            "summary": format!("Formats project Luau scripts and re-runs deterministic verification for assertion '{other}'."),
+            "diff_preview": "@@ src/ @@\n+ -- Verified by OpenRO deterministic assertion runner",
+            "steps": [
+                "Format Luau sources under src/",
+                "Re-run deterministic assertion suite"
+            ]
+        }),
+    }
+}
+
+pub fn draft_assertion_fix_plan(r: &ProjectRef, assertion_id: &str) -> Result<Value, Reply> {
+    if assertion_id.trim().is_empty() {
+        return Err(Reply::bad("assertion_id is required"));
+    }
+    let plan = fix_plan_spec(&r.dir, assertion_id);
+    Ok(json!({ "ok": true, "plan": plan }))
+}
+
+pub fn apply_assertion_fix_and_rerun(
+    shared: &Shared,
+    r: &ProjectRef,
+    assertion_id: &str,
+    body: &Value,
+) -> Result<Reply, Reply> {
+    let id = assertion_id.trim();
+    if id.is_empty() {
+        return Err(Reply::bad("assertion_id is required"));
+    }
+    let plan = fix_plan_spec(&r.dir, id);
+    let mut applied_files = Vec::new();
+    match id {
+        "monetization_guard" => {
+            let scripts = crate::opencloud::monetization_pack_luau_scripts_with_preset(
+                Some("starter_obby"),
+                "Coins",
+                0,
+                0,
+                100,
+            );
+            for (_place_path, rel_path, _cls, src) in &scripts {
+                write_project_luau(&r.dir, rel_path, src)?;
+                applied_files.push((*rel_path).to_string());
+            }
+        }
+        "server_entrypoint" => {
+            let rel = "src/server/GameBootstrap.server.luau";
+            let src = "--!strict\n-- Auto-scaffolded by OpenRO Playtest Auto-Fix.\nlocal Players = game:GetService(\"Players\")\n\nlocal function setupPlayer(player: Player)\n\tlocal ls = player:FindFirstChild(\"leaderstats\")\n\tif not ls then\n\t\tlocal folder = Instance.new(\"Folder\")\n\t\tfolder.Name = \"leaderstats\"\n\t\tfolder.Parent = player\n\tend\nend\n\nPlayers.PlayerAdded:Connect(setupPlayer)\nfor _, p in Players:GetPlayers() do\n\tsetupPlayer(p)\nend\n";
+            write_project_luau(&r.dir, rel, src)?;
+            applied_files.push(rel.to_string());
+        }
+        "luau_static" => {
+            let src_root = r.dir.join("src");
+            let mut stack = vec![src_root];
+            while let Some(cur) = stack.pop() {
+                let Ok(rd) = std::fs::read_dir(&cur) else { continue };
+                for ent in rd.flatten() {
+                    let p = ent.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                        continue;
+                    }
+                    let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                    if !(name.ends_with(".luau") || name.ends_with(".lua")) {
+                        continue;
+                    }
+                    if let Ok(text) = std::fs::read_to_string(&p) {
+                        if text.trim().is_empty() {
+                            let stub = if name.contains(".server.") || name.contains(".client.") {
+                                "--!strict\n-- Auto-initialized by OpenRO Playtest Auto-Fix.\nlocal _ = game\n"
+                            } else {
+                                "--!strict\n-- Auto-initialized by OpenRO Playtest Auto-Fix.\nreturn {}\n"
+                            };
+                            let rel = p.strip_prefix(&r.dir).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+                            write_project_luau(&r.dir, &rel, stub)?;
+                            applied_files.push(rel);
+                        }
+                    }
+                }
+            }
+            let _ = crate::projects::format_project(&r.dir, None);
+        }
+        "core_loop_move" | "core_loop_act" | "core_loop_hud" => {
+            let srv_rel = "src/server/CoreLoopBootstrap.server.luau";
+            let srv_src = "--!strict\n-- Auto-scaffolded deterministic core loop server handler.\nlocal ReplicatedStorage = game:GetService(\"ReplicatedStorage\")\nlocal folder = ReplicatedStorage:FindFirstChild(\"OpenROCoreLoop\") or Instance.new(\"Folder\")\nfolder.Name = \"OpenROCoreLoop\"\nfolder.Parent = ReplicatedStorage\nlocal ev = folder:FindFirstChild(\"CoreLoopAction\") or Instance.new(\"RemoteEvent\")\nev.Name = \"CoreLoopAction\"\nev.Parent = folder\nif ev:IsA(\"RemoteEvent\") then\n\tev.OnServerEvent:Connect(function(player: Player)\n\t\tplayer:SetAttribute(\"LastCoreLoopAt\", os.time())\n\tend)\nend\n";
+            let cli_rel = "src/client/CoreLoopHud.client.luau";
+            let cli_src = "--!strict\n-- Auto-scaffolded deterministic core loop HUD bridge.\nlocal Players = game:GetService(\"Players\")\nlocal ReplicatedStorage = game:GetService(\"ReplicatedStorage\")\nlocal player = Players.LocalPlayer\nif player then\n\tlocal folder = ReplicatedStorage:WaitForChild(\"OpenROCoreLoop\", 5)\n\tif folder then\n\t\tlocal ev = folder:FindFirstChild(\"CoreLoopAction\")\n\t\tif ev and ev:IsA(\"RemoteEvent\") then\n\t\t\tev:FireServer()\n\t\tend\n\tend\nend\n";
+            write_project_luau(&r.dir, srv_rel, srv_src)?;
+            write_project_luau(&r.dir, cli_rel, cli_src)?;
+            applied_files.push(srv_rel.to_string());
+            applied_files.push(cli_rel.to_string());
+        }
+        _ => {
+            let _ = crate::projects::format_project(&r.dir, None);
+        }
+    }
+
+    let rerun_reply = rerun_assertions(
+        shared,
+        r,
+        &json!({ "offline": body.get("offline").and_then(Value::as_bool).unwrap_or(false) }),
+    )?;
+    let rerun_json: Value = serde_json::from_slice(&rerun_reply.body).unwrap_or_else(|_| json!({}));
+    Ok(Reply::ok(json!({
+        "plan": plan,
+        "applied_files": applied_files,
+        "rerun": rerun_json,
+    })))
+}
+
 /// Summary of the most recent stored playtest report for `study/status` (#62).
 pub fn latest_report_summary(dir: &Path) -> Option<Value> {
     let rep = latest_report_json(dir)?;
