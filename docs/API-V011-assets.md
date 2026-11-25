@@ -135,7 +135,7 @@ Ranking behavior:
 ## 4. Reference-Image Art Generation & Pixel-Review Approval
 
 **Default provider:** `"chatgpt"` (`ChatGPT (shared browser)` wrapping
-`/home/cayleb/.agents/skills/chatgpt-image-gen/chatgpt-camoufox-imagegen`, serialized via
+`~/.agents/skills/chatgpt-image-gen/chatgpt-camoufox-imagegen`, serialized via
 in-process lock + `--lease openro`, one-line prompt collapse, fresh unused `-o` staging path).
 Optional API providers: `"gemini"` (Nano Banana via `GEMINI_KEY` / `OPENRO_GEMINI_IMAGE_BASE`)
 and `"openai"` (via `OPENAI_IMAGE_KEY` / `OPENRO_OPENAI_IMAGE_BASE`).

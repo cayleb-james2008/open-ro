@@ -2623,12 +2623,12 @@ export function App() {
             <StudioChip connected={studioOk} workspaceMode={workspaceMode} />
           </Button>
           <a
-            href={RELEASES_URL + (version || "0.12.0")}
+            href={RELEASES_URL + (version || "1.0.0")}
             target="_blank"
             rel="noreferrer"
             className="inline-flex min-h-7 items-center gap-1 rounded-sm text-xs text-ink-2 outline-none hover:text-ink hover:underline active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-50 max-md:min-h-11"
           >
-            <span>OpenRO v<span className="font-mono">{version || "0.12.0"}</span></span>
+            <span>OpenRO v<span className="font-mono">{version || "1.0.0"}</span></span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
         </div>
