@@ -3163,19 +3163,12 @@ fn run_agent_wake_cycle(
                         .iter()
                         .all(|t| matches!(t.status, TaskStatus::Done | TaskStatus::Cancelled))
                 {
-                    let ts = now_ms();
-                    st.status = RunStatus::Completed;
-                    st.updated_at_ms = ts;
-                    let _ = st.append_board(agent_name, BoardKind::Done, &format!("[done] {summary}"), None);
-                    let (max_c, active_c, _, q) = handle.scheduler.snapshot();
-                    st.save_run_file(max_c, &q);
-                    let sum = st.summary_json(max_c, active_c, &q);
-                    st.emit_event("run", json!({ "ts_ms": ts, "status": "completed", "run": sum }));
+                    let _ = finalize_completed_run(&mut st, handle, agent_name, &summary);
                 } else {
                     st.roster[idx].parked_at_seq = Some(st.board.latest_seq());
                     st.append_trace(agent_name, turn_num, "done", &summary, json!({ "summary": summary }));
+                    st.save_agent_file(agent_name);
                 }
-                st.save_agent_file(agent_name);
             }
             handle.notify_all();
             return Ok(());
@@ -4365,15 +4358,32 @@ fn tool_finish_run(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Resul
         .and_then(|v| v.as_str())
         .unwrap_or("All tasks verified and completed.")
         .to_string();
+    Ok(finalize_completed_run(&mut st, handle, caller, &summary))
+}
+
+fn finalize_completed_run(
+    st: &mut RunState,
+    handle: &Arc<RunHandle>,
+    actor: &str,
+    summary: &str,
+) -> Value {
     let ts = now_ms();
+    // Transition all roster agents to Stopped before exposing RunStatus::Completed so
+    // any reader observing "completed" sees consistent final roster states immediately.
+    let names: Vec<String> = st.roster.iter().map(|a| a.name.clone()).collect();
+    for name in &names {
+        st.set_agent_state(name, AgentWorkState::Stopped);
+        st.save_agent_file(name);
+    }
     st.status = RunStatus::Completed;
     st.updated_at_ms = ts;
-    let _ = st.append_board(caller, BoardKind::Done, &format!("[done] {summary}"), None);
+    let _ = st.append_board(actor, BoardKind::Done, &format!("[done] {summary}"), None);
     let (max_c, active_c, _, q) = handle.scheduler.snapshot();
     st.save_run_file(max_c, &q);
     let sum = st.summary_json(max_c, active_c, &q);
     st.emit_event("run", json!({ "ts_ms": ts, "status": "completed", "run": sum.clone() }));
-    Ok(sum)
+    handle.notify_all();
+    sum
 }
 
 fn resolve_caller_task_id(
