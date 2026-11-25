@@ -1,4 +1,4 @@
-// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.12.0 standalone web builds.
+// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.13.0 standalone web builds.
 // Features:
 //  - RoPilot-Grade 3-Pane Studio IDE (Agent | Plan | Ask, Reviewable Unified Diffs, @Context Chips, Companion Plugin)
 //  - Embedded Studio Workbench & 13 Official Studio MCP Tools running live against the in-browser Place DataModel
@@ -47,7 +47,15 @@ type ChangeEntry =
   | { kind: "script"; path: string; prev: string | null; post: string | null }
   | { kind: "instance"; path: string; prev: PlaceInstance | null; post: PlaceInstance | null };
 
-type StoredSnapshot = PlaceSnapshot & { place: PlaceState };
+type StoredSnapshot = PlaceSnapshot & {
+  place: PlaceState;
+  assertion_summary?: {
+    passed: boolean;
+    total: number;
+    passed_count: number;
+    failed_count: number;
+  };
+};
 type StoredProposal = PendingProposal & {
   after_place: PlaceState;
   skills_used: string[];
@@ -434,17 +442,80 @@ function clonePlace(p: PlaceState): PlaceState {
 
 function recordSnapshot(chat: ChatSession, label: string, prevPlace: PlaceState | null) {
   const diff: PlaceDiff = computePlaceDiff(prevPlace, chat.place);
+  const verdict = validatePlace(chat.place);
+  const errCount = verdict.diagnostics.filter((d) => d.severity === "error").length;
   const snap: StoredSnapshot = {
     id: `snap-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     label,
     created_at: Math.floor(Date.now() / 1000),
     parts_count: Object.keys(chat.place.instances).length,
     scripts_count: Object.keys(chat.place.scripts).length,
+    verified: verdict.passed,
+    assertion_summary: {
+      passed: verdict.passed,
+      total: Math.max(1, verdict.diagnostics.length),
+      passed_count: verdict.passed ? 1 : 0,
+      failed_count: errCount,
+    },
     diff,
     place: clonePlace(chat.place),
   };
   chat.snapshots = [snap, ...(chat.snapshots || [])].slice(0, 30);
   return snap;
+}
+
+function serializeWebSnapshots(chat: ChatSession) {
+  const snaps = chat.snapshots || [];
+  let latestVerifiedId: string | null = null;
+  const items = snaps.map((snap, idx) => {
+    const prev = idx + 1 < snaps.length ? snaps[idx + 1] : null;
+    const prevScripts = prev?.place?.scripts || {};
+    const currScripts = snap.place?.scripts || {};
+    const changed_scripts: Array<{ path: string; op: string; before_lines: number; after_lines: number }> = [];
+    for (const [path, src] of Object.entries(currScripts)) {
+      const afterLines = src.split("\n").length;
+      if (!(path in prevScripts)) {
+        changed_scripts.push({ path, op: "added", before_lines: 0, after_lines: afterLines });
+      } else if (prevScripts[path] !== src) {
+        changed_scripts.push({
+          path,
+          op: "modified",
+          before_lines: prevScripts[path].split("\n").length,
+          after_lines: afterLines,
+        });
+      }
+    }
+    for (const [path, src] of Object.entries(prevScripts)) {
+      if (!(path in currScripts)) {
+        changed_scripts.push({ path, op: "removed", before_lines: src.split("\n").length, after_lines: 0 });
+      }
+    }
+    const verified = typeof snap.verified === "boolean" ? snap.verified : true;
+    if (!latestVerifiedId && verified) latestVerifiedId = snap.id;
+    const currPassed = snap.assertion_summary?.passed_count ?? (verified ? 1 : 0);
+    const prevPassed = prev?.assertion_summary?.passed_count ?? currPassed;
+    return {
+      id: snap.id,
+      snapshot_id: snap.id,
+      label: snap.label,
+      created_at: snap.created_at,
+      created_at_ms: snap.created_at * 1000,
+      parts_count: snap.parts_count,
+      scripts_count: snap.scripts_count,
+      verified,
+      assertion_summary: snap.assertion_summary,
+      diff: snap.diff,
+      changed_scripts,
+      assertion_delta: {
+        passed_delta: prev ? currPassed - prevPassed : 0,
+        prev_passed_count: prevPassed,
+        curr_passed_count: currPassed,
+        newly_passed: [],
+        newly_failed: [],
+      },
+    };
+  });
+  return { latest_verified_id: latestVerifiedId, snapshots: items };
 }
 
 function defaultState(): EngineState {
@@ -1135,7 +1206,7 @@ export function installWebEngine() {
     if (!chat.playMode) chat.playMode = "edit";
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "1.12.0" });
+      return jsonResponse({ name: "openro-rs", version: "1.13.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -1146,7 +1217,7 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "1.12.0",
+        version: "1.13.0",
         sse_build_stream: true,
         studio_stream: true,
         assets_api: true,
@@ -2431,14 +2502,8 @@ export function installWebEngine() {
     if (method === "GET" && u.pathname === "/api/snapshots") {
       return jsonResponse({
         ok: true,
-        snapshots: chat.snapshots.map(({ id, label, created_at, parts_count, scripts_count, diff }) => ({
-          id,
-          label,
-          created_at,
-          parts_count,
-          scripts_count,
-          diff,
-        })),
+        schema: "openro.project_snapshots.v1",
+        ...serializeWebSnapshots(chat),
       });
     }
     if (method === "POST" && u.pathname === "/api/snapshots") {
@@ -2448,7 +2513,25 @@ export function installWebEngine() {
           : `Checkpoint ${chat.snapshots.length + 1}`;
       const snap = recordSnapshot(chat, label, chat.snapshots[0]?.place || null);
       persist();
-      return jsonResponse({ ok: true, snapshot: { id: snap.id, label: snap.label, created_at: snap.created_at, parts_count: snap.parts_count, scripts_count: snap.scripts_count, diff: snap.diff } }, 201);
+      const serialized = serializeWebSnapshots(chat);
+      return jsonResponse(
+        {
+          ok: true,
+          snapshot: serialized.snapshots[0] ?? {
+            id: snap.id,
+            snapshot_id: snap.id,
+            label: snap.label,
+            created_at: snap.created_at,
+            created_at_ms: snap.created_at * 1000,
+            parts_count: snap.parts_count,
+            scripts_count: snap.scripts_count,
+            verified: snap.verified,
+            diff: snap.diff,
+          },
+          ...serialized,
+        },
+        201,
+      );
     }
     const snapRestoreMatch = u.pathname.match(/^\/api\/snapshots\/([^/]+)\/restore$/);
     if (method === "POST" && snapRestoreMatch) {
@@ -2456,6 +2539,10 @@ export function installWebEngine() {
       const found = chat.snapshots.find((s) => s.id === id);
       if (!found) return jsonResponse({ ok: false, error: "snapshot not found" }, 404);
       const before = clonePlace(chat.place);
+      const changed = JSON.stringify(before) !== JSON.stringify(found.place);
+      if (body.auto_checkpoint !== false && changed) {
+        recordSnapshot(chat, "Pre-rollback safety checkpoint", before);
+      }
       chat.place = clonePlace(found.place);
       recordSnapshot(chat, `Restored ${found.label}`, before);
       recordStudioAction(state, chat, {
@@ -2466,7 +2553,14 @@ export function installWebEngine() {
       });
       chat.lines.push(`OpenRO: Restored snapshot "${found.label}" (${found.parts_count} parts, ${found.scripts_count} scripts).`);
       persist();
-      return jsonResponse({ ok: true, restored: found.id });
+      return jsonResponse({
+        ok: true,
+        restored: found.id,
+        restored_id: found.id,
+        label: found.label,
+        verified: found.verified ?? true,
+        ...serializeWebSnapshots(chat),
+      });
     }
     const snapExportMatch = u.pathname.match(/^\/api\/snapshots\/([^/]+)\/rbxlx$/);
     if (method === "GET" && snapExportMatch) {

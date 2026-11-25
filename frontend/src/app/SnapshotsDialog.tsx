@@ -97,6 +97,22 @@ export function SnapshotsDialog({
                 <Plus className="size-3.5" strokeWidth={1.5} aria-hidden />
                 Save snapshot
               </Button>
+              {snapshots.length > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  data-dialog-restore-verified
+                  onClick={() => {
+                    const target = snapshots.find((s) => s.verified !== false) ?? snapshots[0];
+                    if (target) onRestoreSnapshot(target);
+                  }}
+                  className="shrink-0 max-md:min-h-11"
+                >
+                  <RotateCcw className="size-3.5" strokeWidth={1.5} aria-hidden />
+                  Restore Verified
+                </Button>
+              )}
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-5 py-4">

@@ -10,6 +10,7 @@ import { open as dialogSpring } from "@/motion";
 import { call, enc, projUrl, stamp, type AssertionDiff, type AssertionFixApplyResult, type AssertionFixPlan, type AssertionItem, type CoreLoopClaim, type FixAllAssertionsResult, type PlaytestReport, type PlaytestRun, type StudyStatus, type UnknownItem } from "./api";
 import { DependencyGraphCard } from "./DependencyGraphCard";
 import { EconomySimulatorCard } from "./EconomySimulatorCard";
+import { SnapshotRollbackCard } from "./SnapshotRollbackCard";
 import type { Ship } from "./useShip";
 
 type View = "summary" | "html" | "json";
@@ -603,6 +604,13 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
         </div>
       )}
       <DependencyGraphCard projectId={id} studioOk={studioOk} />
+      <SnapshotRollbackCard
+        projectId={id}
+        studioOk={studioOk}
+        onRestored={async (runId) => {
+          await Promise.all([load(runId), loadStudy()]);
+        }}
+      />
       <EconomySimulatorCard projectId={id} studioOk={studioOk} />
     </div>
   );
