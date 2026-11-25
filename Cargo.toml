@@ -1,6 +1,6 @@
 [package]
 name = "openro-rs"
-version = "1.10.0"
+version = "1.11.0"
 edition = "2021"
 
 [dependencies]
@@ -23,11 +23,50 @@ panic = "abort"
 [profile.release.package."*"]
 opt-level = "z"
 
+[profile.release.package.serde]
+opt-level = 3
+
+[profile.release.package.serde_core]
+opt-level = 3
+
 [profile.release.package.serde_json]
+opt-level = 3
+
+[profile.release.package.itoa]
+opt-level = 3
+
+[profile.release.package.ryu]
+opt-level = 3
+
+[profile.release.package.zmij]
+opt-level = 3
+
+[profile.release.package.memchr]
+opt-level = 3
+
+[profile.release.package.ahash]
 opt-level = 3
 
 [profile.release.package.flate2]
 opt-level = 3
 
+[profile.release.package.crc32fast]
+opt-level = 3
+
+[profile.release.package.miniz_oxide]
+opt-level = 3
+
+[profile.release.package.zlib-rs]
+opt-level = 3
+
 [profile.release.package.sha2]
+opt-level = 3
+
+[profile.release.package.digest]
+opt-level = 3
+
+[profile.release.package.block-buffer]
+opt-level = 3
+
+[profile.release.package.cpufeatures]
 opt-level = 3

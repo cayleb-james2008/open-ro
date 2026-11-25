@@ -4,6 +4,13 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.11.0 - 2026-11-25
+
+- **Studio Economy & Funnel Dry-Run Simulator (`src/opencloud.rs`, `src/server.rs`, `frontend/src/app/ship/EconomySimulatorCard.tsx`, `frontend/web-engine/install.ts`):**
+  - Added deterministic `simulate_economy_funnel` engine exposed via `POST /api/projects/:id/monetization/simulate` and `POST /api/studio/economy/simulate` (with 100% offline `web-engine` parity), projecting ARPDAU (R$ & DevEx USD), D1/D7 retention + lift, GamePass conversion %, 4-stage player funnel, actionable revenue blockers, and 1-click JSON export across `/play` and `#/ship`.
+- **HTTP Throughput Recovery & Vectored Keep-Alive (`Cargo.toml`, `src/server.rs`):**
+  - Restored `opt-level = 3` on hot JSON/HTTP/compression/hash crates (`serde`, `serde_core`, `serde_json`, `itoa`, `ryu`, `zmij`, `memchr`, `ahash`, `flate2`, `crc32fast`, `miniz_oxide`, `zlib-rs`, `sha2`, `digest`, `block-buffer`, `cpufeatures`) while keeping cold dependencies at `opt-level = "z"` (`<11.5 MB` binary), added `IoSlice` vectored response writes + `serde_json::to_vec`, and added opt-in HTTP/1.1 Keep-Alive (with immediate `Connection: close` on 4xx/5xx/SSE/MJPEG/fuzz).
+
 ## 1.10.0 - 2026-11-25
 
 - **1-Click Launch Autopilot (`src/playtest.rs`, `src/opencloud.rs`, `src/project_api.rs`, `src/server.rs`, `frontend/src/app/ship/PlaytestPanel.tsx`, `frontend/web-engine/install.ts`):**

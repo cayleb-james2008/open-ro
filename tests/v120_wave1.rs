@@ -105,7 +105,7 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.10.0"));
+    assert_eq!(ver_json["version"], json!("1.11.0"));
 
     // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
     if let Ok(entries) = std::fs::read_dir("assets/chunks") {
@@ -642,6 +642,104 @@ fn v1100_wave9_launch_autopilot_fix_all_and_export_ready() {
     assert_eq!(studio["ok"], json!(true), "{studio}");
     assert_eq!(studio["export_ready"], json!(true), "{studio}");
     assert_eq!(studio["playtest"]["passed"], json!(true), "{studio}");
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
+    let base = std::env::temp_dir().join(format!(
+        "openro-v1110-wave10-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let data = base.join("data");
+    let ws = base.join("ws");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let port = start_server_with_dir(Some(data));
+    let (st_ws, _) = send_json(port, "POST", "/api/projects/workspace", Some(&json!({ "path": ws })));
+    assert_eq!(st_ws, 200);
+    let (st_cr, cr) = send_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(&json!({ "name": "Wave10EconomySim" })),
+    );
+    assert_eq!(st_cr, 201, "{cr}");
+    let pid = cr["project"]["id"].as_str().unwrap().to_string();
+
+    // Baseline simulation before monetization pack shows high-severity blockers
+    let (st_s1, s1) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/monetization/simulate"),
+        Some(&json!({})),
+    );
+    assert_eq!(st_s1, 200, "{s1}");
+    assert_eq!(s1["schema"], json!("openro.economy_funnel.v1"));
+    assert!(s1["blockers"].as_array().is_some_and(|b| b.iter().any(|x| x["id"] == "missing_process_receipt")));
+    let base_arpdau = s1["projections"]["arpdau_robux"].as_f64().unwrap();
+
+    // Wire anime_gacha_rpg codegen -> ARPDAU, D1/D7 lift, and conversion jump cleanly
+    let (st_cg, _) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/monetization/codegen"),
+        Some(&json!({ "tier_preset": "anime_gacha_rpg", "seed_defaults": true })),
+    );
+    assert_eq!(st_cg, 200);
+    let (st_s2, s2) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/monetization/simulate"),
+        Some(&json!({})),
+    );
+    assert_eq!(st_s2, 200, "{s2}");
+    assert_eq!(s2["tier_preset"], json!("anime_gacha_rpg"));
+    assert!(s2["projections"]["arpdau_robux"].as_f64().unwrap() > base_arpdau, "{s2}");
+    assert!(s2["projections"]["d1_lift_pct"].as_f64().unwrap() >= 8.5, "{s2}");
+    assert!(s2["projections"]["d7_lift_pct"].as_f64().unwrap() >= 5.0, "{s2}");
+
+    // Local studio economy simulate + loopback 403 guard
+    let (st_loc, loc) = send_json(port, "POST", "/api/studio/economy/simulate", Some(&json!({ "tier_preset": "competitive_arena" })));
+    assert_eq!(st_loc, 200, "{loc}");
+    assert_eq!(loc["tier_preset"], json!("competitive_arena"));
+    let bad_req = format!(
+        "POST /api/studio/economy/simulate HTTP/1.1\r\nHost: attacker.example:{port}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+    );
+    let (st_403, _, _) = send_raw_bytes(port, bad_req.as_bytes());
+    assert_eq!(st_403, 403);
+
+    // HTTP/1.1 Keep-Alive reuse: two sequential requests over one socket
+    let mut ka = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    ka.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    let r1 = format!("GET /api/version HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: keep-alive\r\n\r\n");
+    ka.write_all(r1.as_bytes()).unwrap();
+    ka.flush().unwrap();
+    let mut first_buf = Vec::new();
+    let mut tmp = [0u8; 2048];
+    loop {
+        let n = ka.read(&mut tmp).unwrap();
+        assert!(n > 0, "unexpected EOF on first keep-alive response");
+        first_buf.extend_from_slice(&tmp[..n]);
+        let s = String::from_utf8_lossy(&first_buf);
+        if s.contains("1.11.0") {
+            assert!(s.contains("Connection: keep-alive"), "{s}");
+            break;
+        }
+    }
+    let r2 = format!("GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    ka.write_all(r2.as_bytes()).unwrap();
+    ka.flush().unwrap();
+    let mut second_buf = Vec::new();
+    let _ = ka.read_to_end(&mut second_buf);
+    let s2_txt = String::from_utf8_lossy(&second_buf);
+    assert!(s2_txt.contains("HTTP/1.1 200 OK"), "{s2_txt}");
+    assert!(s2_txt.contains("1.11.0"), "{s2_txt}");
 
     let _ = std::fs::remove_dir_all(&base);
 }

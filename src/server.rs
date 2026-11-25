@@ -778,10 +778,16 @@ struct Request {
     duplicate_host: bool,
     bad_content_length: bool,
     chunked_transfer: bool,
+    keep_alive: bool,
+    has_pipelined: bool,
+}
+
+thread_local! {
+    static TL_KEEP_ALIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn read_request(stream: &mut TcpStream) -> Option<Request> {
-    let mut buf: Vec<u8> = Vec::new();
+    let mut buf: Vec<u8> = Vec::with_capacity(2048);
     let mut chunk = [0u8; 4096];
     let header_end;
     loop {
@@ -801,6 +807,7 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
     let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
     let mut lines = head.lines();
     let first = lines.next()?;
+    let is_http11 = first.ends_with("HTTP/1.1");
     let mut parts = first.split_whitespace();
     let mut req = Request {
         method: parts.next()?.to_string(),
@@ -818,14 +825,19 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
         duplicate_host: false,
         bad_content_length: false,
         chunked_transfer: false,
+        keep_alive: false,
+        has_pipelined: false,
     };
     let mut seen_host = false;
     let mut seen_cl: Option<usize> = None;
+    let mut want_keep_alive = false;
+    let mut force_close = false;
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
+            let k = k.trim();
             let v = v.trim();
-            match k.trim().to_ascii_lowercase().as_str() {
-                "content-length" => match v.parse::<usize>() {
+            if k.eq_ignore_ascii_case("content-length") {
+                match v.parse::<usize>() {
                     Ok(n) => {
                         if seen_cl.is_some_and(|prev| prev != n) {
                             req.bad_content_length = true;
@@ -834,36 +846,50 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
                         req.content_length = n;
                     }
                     Err(_) => req.bad_content_length = true,
-                },
-                "transfer-encoding" => {
-                    if v.to_ascii_lowercase().contains("chunked") {
-                        req.chunked_transfer = true;
-                    }
                 }
-                "host" => {
-                    if seen_host {
-                        req.duplicate_host = true;
-                    }
-                    seen_host = true;
-                    req.host = v.to_string();
+            } else if k.eq_ignore_ascii_case("transfer-encoding") {
+                if v.to_ascii_lowercase().contains("chunked") {
+                    req.chunked_transfer = true;
                 }
-                "origin" => req.origin = v.to_string(),
-                "sec-fetch-site" => req.sec_fetch_site = v.to_ascii_lowercase(),
-                "content-type" => req.content_type = v.to_ascii_lowercase(),
-                "accept-encoding" => req.accept_encoding = v.to_ascii_lowercase(),
-                "if-none-match" => req.if_none_match = v.to_string(),
-                "last-event-id" => req.last_event_id = v.parse().unwrap_or(0),
-                "x-openro-plugin-token" => req.plugin_token = v.to_string(),
-                _ => {}
+            } else if k.eq_ignore_ascii_case("connection") {
+                let low = v.to_ascii_lowercase();
+                if low.contains("close") {
+                    force_close = true;
+                } else if low.contains("keep-alive") {
+                    want_keep_alive = true;
+                }
+            } else if k.eq_ignore_ascii_case("host") {
+                if seen_host {
+                    req.duplicate_host = true;
+                }
+                seen_host = true;
+                req.host = v.to_string();
+            } else if k.eq_ignore_ascii_case("origin") {
+                req.origin = v.to_string();
+            } else if k.eq_ignore_ascii_case("sec-fetch-site") {
+                req.sec_fetch_site = v.to_ascii_lowercase();
+            } else if k.eq_ignore_ascii_case("content-type") {
+                req.content_type = v.to_ascii_lowercase();
+            } else if k.eq_ignore_ascii_case("accept-encoding") {
+                req.accept_encoding = v.to_ascii_lowercase();
+            } else if k.eq_ignore_ascii_case("if-none-match") {
+                req.if_none_match = v.to_string();
+            } else if k.eq_ignore_ascii_case("last-event-id") {
+                req.last_event_id = v.parse().unwrap_or(0);
+            } else if k.eq_ignore_ascii_case("x-openro-plugin-token") {
+                req.plugin_token = v.to_string();
             }
         }
     }
+    req.keep_alive = is_http11 && want_keep_alive && !force_close;
     if req.duplicate_host || req.bad_content_length || req.chunked_transfer {
+        req.keep_alive = false;
         return Some(req);
     }
     let body_cap = max_body_for_path(&req.path);
     // An oversized body is not read at all: handle answers 413.
     if req.content_length > body_cap {
+        req.keep_alive = false;
         return Some(req);
     }
     let mut body = buf[header_end..].to_vec();
@@ -873,6 +899,10 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
             break;
         }
         body.extend_from_slice(&chunk[..n]);
+    }
+    if body.len() > req.content_length {
+        req.has_pipelined = true;
+        req.keep_alive = false;
     }
     body.truncate(req.content_length);
     req.body = body;
@@ -915,6 +945,8 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
                 || clean_path.starts_with("/api/studio/input/")
                 || clean_path.starts_with("/api/studio/tools/")
                 || clean_path == "/api/studio/playtest"
+                || clean_path == "/api/studio/playtest/fix-all"
+                || clean_path == "/api/studio/economy/simulate"
                 || clean_path == "/api/studio/capture"
                 || clean_path == "/api/studio/launch-and-continue"))
 }
@@ -989,13 +1021,62 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|w| w == needle)
 }
 
+fn conn_header_line(status: &str) -> &'static str {
+    if TL_KEEP_ALIVE.get() && (status.starts_with("200") || status.starts_with("304")) {
+        "Connection: keep-alive\r\nKeep-Alive: timeout=2, max=1000\r\n\r\n"
+    } else {
+        TL_KEEP_ALIVE.set(false);
+        "Connection: close\r\n\r\n"
+    }
+}
+
+fn write_all_vectored(stream: &mut TcpStream, header: &[u8], body: &[u8]) {
+    if body.is_empty() {
+        let _ = stream.write_all(header);
+        return;
+    }
+    let mut slices = [std::io::IoSlice::new(header), std::io::IoSlice::new(body)];
+    let mut idx = 0usize;
+    let mut off = 0usize;
+    while idx < slices.len() {
+        let slice_slice = &mut slices[idx..];
+        match stream.write_vectored(slice_slice) {
+            Ok(0) => break,
+            Ok(mut n) => {
+                while idx < slices.len() {
+                    let rem = slices[idx].len() - off;
+                    if n < rem {
+                        off += n;
+                        let new_slice = if idx == 0 {
+                            std::io::IoSlice::new(&header[off..])
+                        } else {
+                            std::io::IoSlice::new(&body[off..])
+                        };
+                        slices[idx] = new_slice;
+                        break;
+                    }
+                    n -= rem;
+                    idx += 1;
+                    off = 0;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                let _ = stream.write_all(header);
+                let _ = stream.write_all(body);
+                break;
+            }
+        }
+    }
+}
+
 fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &str) {
-    let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+    let conn = conn_header_line(status);
+    let header = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\n{conn}",
         body.len()
     );
-    let _ = stream.write_all(response.as_bytes());
-    let _ = stream.flush();
+    write_all_vectored(stream, header.as_bytes(), body.as_bytes());
 }
 
 fn respond_bytes(
@@ -1016,13 +1097,12 @@ fn respond_bytes_with_headers(
     extra_headers: &str,
     body: &[u8],
 ) {
+    let conn = conn_header_line(status);
     let header = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: {cache_control}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: {cache_control}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n{extra_headers}Content-Length: {}\r\n{conn}",
         body.len()
     );
-    let _ = stream.write_all(header.as_bytes());
-    let _ = stream.write_all(body);
-    let _ = stream.flush();
+    write_all_vectored(stream, header.as_bytes(), body);
 }
 
 fn respond_download(stream: &mut TcpStream, content_type: &str, filename: &str, body: &str) {
@@ -1030,13 +1110,12 @@ fn respond_download(stream: &mut TcpStream, content_type: &str, filename: &str, 
 }
 
 fn respond_download_bytes(stream: &mut TcpStream, content_type: &str, filename: &str, body: &[u8]) {
+    TL_KEEP_ALIVE.set(false);
     let header = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
-    let _ = stream.write_all(header.as_bytes());
-    let _ = stream.write_all(body);
-    let _ = stream.flush();
+    write_all_vectored(stream, header.as_bytes(), body);
 }
 
 fn slugify_filename(name: &str) -> String {
@@ -1060,7 +1139,16 @@ fn slugify_filename(name: &str) -> String {
 }
 
 fn respond_json(stream: &mut TcpStream, status: &str, value: &Value) {
-    respond(stream, status, "application/json", &value.to_string());
+    if let Ok(bytes) = serde_json::to_vec(value) {
+        let conn = conn_header_line(status);
+        let header = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\n{conn}",
+            bytes.len()
+        );
+        write_all_vectored(stream, header.as_bytes(), &bytes);
+    } else {
+        respond(stream, status, "application/json", &value.to_string());
+    }
 }
 
 /// Resolve `(project_root, project_id)` from explicit request fields or `shared.projects`.
@@ -1412,122 +1500,143 @@ fn handle(
     allowed: &[String],
     slot: HandlerSlot,
 ) -> std::io::Result<()> {
-    let req = match read_request(&mut stream) {
-        Some(r) => r,
-        None => return Ok(()),
-    };
-    if let Some((status, message)) = refusal(&req, allowed) {
-        respond_json(&mut stream, status, &json!({ "ok": false, "error": message }));
-        // Flush and close write half promptly so raw-TCP clients keeping their write
-        // half open receive the 413/403 + EOF immediately without waiting on IO_TIMEOUT.
-        let _ = stream.shutdown(std::net::Shutdown::Write);
-        let body_cap = max_body_for_path(&req.path);
-        if req.content_length > body_cap {
-            drain_unread_promptly(&mut stream, req.content_length.min(4 * body_cap));
+    let mut slot_opt = Some(slot);
+    for req_idx in 0..1000usize {
+        if req_idx > 0 {
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
         }
-        return Ok(());
-    }
-    let (path_raw, query) = req.path.split_once('?').unwrap_or((req.path.as_str(), ""));
-    let path = path_raw.to_string();
+        let req = match read_request(&mut stream) {
+            Some(r) => r,
+            None => return Ok(()),
+        };
+        if req_idx > 0 {
+            let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+        }
+        if let Some((status, message)) = refusal(&req, allowed) {
+            TL_KEEP_ALIVE.set(false);
+            respond_json(&mut stream, status, &json!({ "ok": false, "error": message }));
+            // Flush and close write half promptly so raw-TCP clients keeping their write
+            // half open receive the 413/403 + EOF immediately without waiting on IO_TIMEOUT.
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            let body_cap = max_body_for_path(&req.path);
+            if req.content_length > body_cap {
+                drain_unread_promptly(&mut stream, req.content_length.min(4 * body_cap));
+            }
+            return Ok(());
+        }
+        let (path_raw, query) = req.path.split_once('?').unwrap_or((req.path.as_str(), ""));
+        let path = path_raw.to_string();
 
-    // True SSE stream: drop the short-lived HandlerSlot so long-lived SSE
-    // subscribers never starve normal concurrent HTTP traffic (SSE tracks
-    // its own MAX_SSE_CLIENTS cap inside BuildEventHub).
-    if req.method == "GET" && path == "/api/build/stream" {
-        drop(slot);
-        if shared.events.active_subscribers() >= crate::sse::MAX_SSE_CLIENTS {
-            respond_json(
-                &mut stream,
-                "503 Service Unavailable",
-                &json!({ "ok": false, "error": "Too many live build streams are open right now. Close an extra tab and retry." }),
+        // True SSE stream: drop the short-lived HandlerSlot so long-lived SSE
+        // subscribers never starve normal concurrent HTTP traffic (SSE tracks
+        // its own MAX_SSE_CLIENTS cap inside BuildEventHub).
+        if req.method == "GET" && path == "/api/build/stream" {
+            TL_KEEP_ALIVE.set(false);
+            drop(slot_opt.take());
+            if shared.events.active_subscribers() >= crate::sse::MAX_SSE_CLIENTS {
+                respond_json(
+                    &mut stream,
+                    "503 Service Unavailable",
+                    &json!({ "ok": false, "error": "Too many live build streams are open right now. Close an extra tab and retry." }),
+                );
+                return Ok(());
+            }
+            let active_chat = shared.active_chat.lock().unwrap().clone();
+            let busy = shared.busy.load(Ordering::SeqCst) > 0;
+            let last_id = if req.last_event_id > 0 {
+                req.last_event_id
+            } else {
+                query_param(query, "since")
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0)
+            };
+            if let Err(msg) = shared.events.serve_stream(stream, &active_chat, busy, last_id) {
+                eprintln!("openro: SSE stream refused: {msg}");
+            }
+            return Ok(());
+        }
+
+        // Live realtime Studio 3D action & MCP viewport frame SSE stream:
+        // drop short-lived HandlerSlot first so SSE never starves concurrent HTTP requests.
+        if req.method == "GET" && path == "/api/studio/stream" {
+            TL_KEEP_ALIVE.set(false);
+            drop(slot_opt.take());
+            if shared.studio_stream.active_subscribers() >= crate::studio_stream::MAX_STUDIO_SSE_CLIENTS {
+                respond_json(
+                    &mut stream,
+                    "503 Service Unavailable",
+                    &json!({ "ok": false, "error": "Too many live Studio viewport streams are open right now. Close an extra tab and retry." }),
+                );
+                return Ok(());
+            }
+            let last_id = if req.last_event_id > 0 {
+                req.last_event_id
+            } else {
+                query_param(query, "since")
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0)
+            };
+            if let Err(msg) = shared.studio_stream.serve_stream(stream, last_id) {
+                eprintln!("openro: Studio SSE stream refused: {msg}");
+            }
+            return Ok(());
+        }
+
+        // Live Embedded Roblox Studio multipart MJPEG/MPNG viewport stream (`GET /api/studio/stream.mjpg`):
+        // drops HandlerSlot first so active <img> streams never starve concurrent HTTP requests.
+        if req.method == "GET" && path == "/api/studio/stream.mjpg" {
+            TL_KEEP_ALIVE.set(false);
+            drop(slot_opt.take());
+            if shared.studio_stream.active_subscribers() >= crate::studio_stream::MAX_STUDIO_SSE_CLIENTS {
+                respond_json(
+                    &mut stream,
+                    "503 Service Unavailable",
+                    &json!({ "ok": false, "error": "Too many live Studio viewport streams are open right now. Close an extra tab and retry." }),
+                );
+                return Ok(());
+            }
+            let max_frames = if query_param(query, "once").is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true")) {
+                Some(1)
+            } else {
+                query_param(query, "max_frames").and_then(|s| s.parse::<usize>().ok()).filter(|&n| n > 0)
+            };
+            if let Err(msg) = shared.studio_stream.serve_mjpeg(stream, max_frames) {
+                eprintln!("openro: Studio MJPEG stream refused: {msg}");
+            }
+            return Ok(());
+        }
+
+        // Long-poll Companion Studio Plugin endpoint: drop short-lived HandlerSlot so
+        // an idle Studio plugin poll never consumes normal HTTP concurrency slots.
+        if req.method == "GET" && path == "/api/studio/plugin/poll" {
+            TL_KEEP_ALIVE.set(false);
+            drop(slot_opt.take());
+            handle_studio_plugin_poll(&mut stream, shared, &req, query);
+            return Ok(());
+        }
+
+        if req.method == "GET" && crate::teamwork::is_sse_path(&path) {
+            TL_KEEP_ALIVE.set(false);
+            drop(slot_opt.take());
+            crate::teamwork::try_serve_sse(
+                stream,
+                shared,
+                &path,
+                query,
+                req.last_event_id,
+                host_allowed(&req.host, allowed),
             );
             return Ok(());
         }
-        let active_chat = shared.active_chat.lock().unwrap().clone();
-        let busy = shared.busy.load(Ordering::SeqCst) > 0;
-        let last_id = if req.last_event_id > 0 {
-            req.last_event_id
-        } else {
-            query_param(query, "since")
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(0)
-        };
-        if let Err(msg) = shared.events.serve_stream(stream, &active_chat, busy, last_id) {
-            eprintln!("openro: SSE stream refused: {msg}");
-        }
-        return Ok(());
-    }
 
-    // Live realtime Studio 3D action & MCP viewport frame SSE stream:
-    // drop short-lived HandlerSlot first so SSE never starves concurrent HTTP requests.
-    if req.method == "GET" && path == "/api/studio/stream" {
-        drop(slot);
-        if shared.studio_stream.active_subscribers() >= crate::studio_stream::MAX_STUDIO_SSE_CLIENTS {
-            respond_json(
-                &mut stream,
-                "503 Service Unavailable",
-                &json!({ "ok": false, "error": "Too many live Studio viewport streams are open right now. Close an extra tab and retry." }),
-            );
-            return Ok(());
-        }
-        let last_id = if req.last_event_id > 0 {
-            req.last_event_id
-        } else {
-            query_param(query, "since")
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(0)
-        };
-        if let Err(msg) = shared.studio_stream.serve_stream(stream, last_id) {
-            eprintln!("openro: Studio SSE stream refused: {msg}");
-        }
-        return Ok(());
-    }
-
-    // Live Embedded Roblox Studio multipart MJPEG/MPNG viewport stream (`GET /api/studio/stream.mjpg`):
-    // drops HandlerSlot first so active <img> streams never starve concurrent HTTP requests.
-    if req.method == "GET" && path == "/api/studio/stream.mjpg" {
-        drop(slot);
-        if shared.studio_stream.active_subscribers() >= crate::studio_stream::MAX_STUDIO_SSE_CLIENTS {
-            respond_json(
-                &mut stream,
-                "503 Service Unavailable",
-                &json!({ "ok": false, "error": "Too many live Studio viewport streams are open right now. Close an extra tab and retry." }),
-            );
-            return Ok(());
-        }
-        let max_frames = if query_param(query, "once").is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true")) {
-            Some(1)
-        } else {
-            query_param(query, "max_frames").and_then(|s| s.parse::<usize>().ok()).filter(|&n| n > 0)
-        };
-        if let Err(msg) = shared.studio_stream.serve_mjpeg(stream, max_frames) {
-            eprintln!("openro: Studio MJPEG stream refused: {msg}");
-        }
-        return Ok(());
-    }
-
-    // Long-poll Companion Studio Plugin endpoint: drop short-lived HandlerSlot so
-    // an idle Studio plugin poll never consumes normal HTTP concurrency slots.
-    if req.method == "GET" && path == "/api/studio/plugin/poll" {
-        drop(slot);
-        handle_studio_plugin_poll(&mut stream, shared, &req, query);
-        return Ok(());
-    }
-
-    if req.method == "GET" && crate::teamwork::is_sse_path(&path) {
-        drop(slot);
-        crate::teamwork::try_serve_sse(
-            stream,
-            shared,
-            &path,
-            query,
-            req.last_event_id,
-            host_allowed(&req.host, allowed),
+        TL_KEEP_ALIVE.set(
+            req.keep_alive
+                && !req.has_pipelined
+                && path != "/api/update/restart"
+                && shared.active_handlers.load(Ordering::Relaxed) < POOL_WORKERS,
         );
-        return Ok(());
-    }
 
-    let _slot = slot;
+        'req_done: {
 
     if let Some(rep) = crate::teamwork::route(
         shared,
@@ -1537,7 +1646,7 @@ fn handle(
         host_allowed(&req.host, allowed),
     ) {
         respond_bytes(&mut stream, rep.status, rep.content_type, "no-store", &rep.body);
-        return Ok(());
+        break 'req_done;
     }
 
     // Parameterized staged diff proposal routes:
@@ -1546,13 +1655,13 @@ fn handle(
         if let Some(prop_id) = rest.strip_suffix("/apply") {
             if req.method == "POST" && !prop_id.is_empty() {
                 handle_proposal_apply(&mut stream, shared, &req, prop_id);
-                return Ok(());
+                break 'req_done;
             }
         }
         if let Some(prop_id) = rest.strip_suffix("/reject") {
             if req.method == "POST" && !prop_id.is_empty() {
                 handle_proposal_reject(&mut stream, shared, prop_id);
-                return Ok(());
+                break 'req_done;
             }
         }
     }
@@ -1562,7 +1671,7 @@ fn handle(
         if let Some(snap_id) = rest.strip_suffix("/restore") {
             if req.method == "POST" {
                 handle_snapshot_restore(&mut stream, shared, snap_id);
-                return Ok(());
+                break 'req_done;
             }
         }
         if let Some(snap_id) = rest.strip_suffix("/rbxlx") {
@@ -1587,7 +1696,7 @@ fn handle(
                         &json!({ "ok": false, "error": format!("snapshot not found: {snap_id}") }),
                     ),
                 }
-                return Ok(());
+                break 'req_done;
             }
         }
     }
@@ -1597,7 +1706,7 @@ fn handle(
     if req.method == "GET" {
         if let Some(chunk_name) = path.strip_prefix("/chunks/") {
             if serve_chunk_asset(&mut stream, &req, chunk_name) {
-                return Ok(());
+                break 'req_done;
             }
         }
     }
@@ -1606,27 +1715,27 @@ fn handle(
         if !raw_file.is_empty() {
             if req.method == "GET" && raw_file == "manifest" {
                 handle_assets_manifest(&mut stream, shared);
-                return Ok(());
+                break 'req_done;
             }
             if let Some(mesh_file) = raw_file.strip_prefix("meshes/") {
                 if req.method == "GET" && !mesh_file.is_empty() {
                     handle_mesh_asset_file(&mut stream, shared, mesh_file);
-                    return Ok(());
+                    break 'req_done;
                 }
             }
             if let Some(audio_file) = raw_file.strip_prefix("audio/") {
                 if req.method == "GET" && !audio_file.is_empty() {
                     handle_audio_asset_file(&mut stream, shared, audio_file);
-                    return Ok(());
+                    break 'req_done;
                 }
             }
             if req.method == "GET" {
                 handle_asset_file(&mut stream, shared, raw_file);
-                return Ok(());
+                break 'req_done;
             }
             if req.method == "DELETE" {
                 handle_asset_delete(&mut stream, shared, raw_file);
-                return Ok(());
+                break 'req_done;
             }
         }
     }
@@ -1635,7 +1744,7 @@ fn handle(
     if let Some(tool_name) = path.strip_prefix("/api/studio/tools/") {
         if !tool_name.is_empty() && req.method == "POST" {
             handle_studio_tool(&mut stream, shared, &req, tool_name);
-            return Ok(());
+            break 'req_done;
         }
     }
 
@@ -1648,17 +1757,17 @@ fn handle(
         host_allowed(&req.host, &[]),
     ) {
         respond_bytes(&mut stream, reply.status, reply.content_type, "no-store", &reply.body);
-        return Ok(());
+        break 'req_done;
     }
 
     // Open Cloud, shared secrets, reference search, art generation & image processing routes.
     if try_route_opencloud_assets(&mut stream, shared, &req, &path, query) {
-        return Ok(());
+        break 'req_done;
     }
 
     // Universal Anything-to-API / Anything-to-CLI tool adapter registry routes (#52).
     if try_route_tool_adapters(&mut stream, shared, &req, &path, query) {
-        return Ok(());
+        break 'req_done;
     }
 
     match (req.method.as_str(), path.as_str()) {
@@ -2017,6 +2126,9 @@ fn handle(
         ("POST", "/api/monetization/pack") => {
             handle_monetization_pack(&mut stream, shared, &req.body);
         }
+        ("POST", "/api/studio/economy/simulate") => {
+            handle_studio_economy_simulate(&mut stream, shared, &req.body);
+        }
         ("GET", "/api/luau/check") | ("POST", "/api/luau/check") => {
             handle_luau_check(&mut stream, shared, req.method == "POST", &req.body);
         }
@@ -2072,20 +2184,20 @@ fn handle(
         ("GET", "/api/runs") => {
             if !host_allowed(&req.host, &[]) {
                 respond_json(&mut stream, "403 Forbidden", &json!({ "ok": false, "error": "runs are only accessible from this machine (loopback)" }));
-                return Ok(());
+                break 'req_done;
             }
             respond_json(&mut stream, "200 OK", &shared.runs.list_json());
         }
         ("POST", "/api/runs") => {
             if !host_allowed(&req.host, &[]) {
                 respond_json(&mut stream, "403 Forbidden", &json!({ "ok": false, "error": "runs are only accessible from this machine (loopback)" }));
-                return Ok(());
+                break 'req_done;
             }
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
             let message = body.get("message").or_else(|| body.get("ask")).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
             if message.is_empty() {
                 respond_json(&mut stream, "400 Bad Request", &json!({ "ok": false, "error": "empty message" }));
-                return Ok(());
+                break 'req_done;
             }
             let chat_id = body
                 .get("chat_id")
@@ -2115,7 +2227,7 @@ fn handle(
         ("GET", p) if p.starts_with("/api/runs/") && !p["/api/runs/".len()..].contains('/') => {
             if !host_allowed(&req.host, &[]) {
                 respond_json(&mut stream, "403 Forbidden", &json!({ "ok": false, "error": "runs are only accessible from this machine (loopback)" }));
-                return Ok(());
+                break 'req_done;
             }
             let id = &p["/api/runs/".len()..];
             match shared.runs.get(id) {
@@ -2126,7 +2238,7 @@ fn handle(
         ("POST", p) if p.starts_with("/api/runs/") && p.ends_with("/resume") => {
             if !host_allowed(&req.host, &[]) {
                 respond_json(&mut stream, "403 Forbidden", &json!({ "ok": false, "error": "runs are only accessible from this machine (loopback)" }));
-                return Ok(());
+                break 'req_done;
             }
             let id = &p["/api/runs/".len()..p.len() - "/resume".len()];
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
@@ -2145,7 +2257,7 @@ fn handle(
         ("POST", p) if p.starts_with("/api/runs/") && p.ends_with("/cancel") => {
             if !host_allowed(&req.host, &[]) {
                 respond_json(&mut stream, "403 Forbidden", &json!({ "ok": false, "error": "runs are only accessible from this machine (loopback)" }));
-                return Ok(());
+                break 'req_done;
             }
             let id = &p["/api/runs/".len()..p.len() - "/cancel".len()];
             match shared.runs.cancel(id) {
@@ -2160,7 +2272,7 @@ fn handle(
                     "403 Forbidden",
                     &json!({ "ok": false, "error": "settings are only accessible from this machine (loopback)" }),
                 );
-                return Ok(());
+                break 'req_done;
             }
             crate::model::agy_models(query_param(query, "refresh").is_some_and(|v| v == "1"));
             let snap = config_snapshot(shared);
@@ -2185,7 +2297,7 @@ fn handle(
                     "403 Forbidden",
                     &json!({ "ok": false, "error": "settings are only accessible from this machine (loopback)" }),
                 );
-                return Ok(());
+                break 'req_done;
             }
             respond_json(&mut stream, "200 OK", &config_snapshot(shared));
         }
@@ -2196,7 +2308,7 @@ fn handle(
                     "403 Forbidden",
                     &json!({ "ok": false, "error": "changing settings is only allowed from this machine (loopback)" }),
                 );
-                return Ok(());
+                break 'req_done;
             }
             if shared.busy.load(Ordering::SeqCst) > 0 {
                 respond_json(
@@ -2204,7 +2316,7 @@ fn handle(
                     "409 Conflict",
                     &json!({ "ok": false, "error": "an ask is still running; change settings after it finishes" }),
                 );
-                return Ok(());
+                break 'req_done;
             }
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
             match apply_config(shared, &body) {
@@ -2227,7 +2339,7 @@ fn handle(
                     "403 Forbidden",
                     &json!({ "ok": false, "error": "updating is only allowed from this machine, not through another address" }),
                 );
-                return Ok(());
+                break 'req_done;
             }
             if path == "/api/update/apply" {
                 match shared.updater.apply() {
@@ -2376,7 +2488,7 @@ fn handle(
                                         "no-store",
                                         &bytes,
                                     );
-                                    return Ok(());
+                                    break 'req_done;
                                 }
                             }
                         }
@@ -2447,7 +2559,7 @@ fn handle(
                     "400 Bad Request",
                     &json!({ "ok": false, "error": "empty message" }),
                 );
-                return Ok(());
+                break 'req_done;
             }
             let mode = body
                 .get("mode")
@@ -2524,7 +2636,7 @@ fn handle(
                     "202 Accepted",
                     &json!({ "ok": true, "async": true, "run_id": run.run_id, "run": run.detail_json() }),
                 );
-                return Ok(());
+                break 'req_done;
             }
             let mut guard = shared.agent.lock().unwrap();
             if let Some(agent) = guard.as_mut() {
@@ -2769,7 +2881,7 @@ fn handle(
                         "custom_project": true,
                     }),
                 );
-                return Ok(());
+                break 'req_done;
             }
             let intro = if shared.thread_lines().is_empty() {
                 "OpenRO: While you think — here are games I can build for you right now, in one go:"
@@ -2807,7 +2919,7 @@ fn handle(
                         "404 Not Found",
                         &json!({ "ok": false, "error": format!("unknown idea: {id}") }),
                     );
-                    return Ok(());
+                    break 'req_done;
                 }
             };
             let chat_id = shared.active_chat.lock().unwrap().clone();
@@ -2840,7 +2952,7 @@ fn handle(
                     "400 Bad Request",
                     &json!({ "ok": false, "error": error }),
                 );
-                return Ok(());
+                break 'req_done;
             }
             let mut guard = shared.agent.lock().unwrap();
             match guard.as_mut() {
@@ -3017,6 +3129,13 @@ fn handle(
             &json!({ "ok": false, "error": "not found" }),
         ),
     }
+        } // end 'req_done
+        if !TL_KEEP_ALIVE.get() {
+            break;
+        }
+    }
+    TL_KEEP_ALIVE.set(false);
+    let _ = slot_opt;
     Ok(())
 }
 
@@ -4668,6 +4787,7 @@ fn try_route_opencloud_assets(
                 || path.ends_with("/products/codegen")
                 || path.ends_with("/monetization/pack")
                 || path.ends_with("/monetization/codegen")
+                || path.ends_with("/monetization/simulate")
                 || path.ends_with("/publish-gate")
                 || path.ends_with("/readiness")
                 || path.ends_with("/autopilot")
@@ -7381,6 +7501,48 @@ fn handle_monetization_pack(stream: &mut TcpStream, shared: &Shared, raw_body: &
     );
 }
 
+fn handle_studio_economy_simulate(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8]) {
+    let body: Value = if raw_body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice(raw_body) {
+            Ok(v) => v,
+            Err(_) => {
+                respond_json(
+                    stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": "invalid JSON body" }),
+                );
+                return;
+            }
+        }
+    };
+    let preset = body.get("tier_preset").and_then(|v| v.as_str());
+    let tree = shared
+        .agent
+        .lock()
+        .unwrap()
+        .as_mut()
+        .and_then(|a| a.place_tree().ok())
+        .unwrap_or_else(|| json!({ "instances": {}, "scripts": {} }));
+    let mut owned: Vec<(String, String)> = Vec::new();
+    if let Some(scripts_obj) = tree.get("scripts").and_then(Value::as_object) {
+        for (k, v) in scripts_obj {
+            if let Some(s) = v.as_str() {
+                owned.push((k.clone(), s.to_string()));
+            }
+        }
+    }
+    let inst_count = tree
+        .get("instances")
+        .and_then(Value::as_object)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let refs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let report = crate::opencloud::simulate_economy_funnel(preset, &refs, inst_count, &[]);
+    respond_json(stream, "200 OK", &report);
+}
+
 fn handle_mesh_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &str) {
     match crate::mesh::read_mesh_asset(&shared.assets_root, raw_file) {
         Ok((bytes, mime)) => {
@@ -8205,12 +8367,12 @@ fn serve_index_page(
         workspace_mode,
     );
     if etag_matches(&req.if_none_match, &cached.etag) {
+        let conn = conn_header_line("304 Not Modified");
         let resp = format!(
-            "HTTP/1.1 304 Not Modified\r\nETag: {}\r\nCache-Control: no-cache\r\nVary: Accept-Encoding\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 304 Not Modified\r\nETag: {}\r\nCache-Control: no-cache\r\nVary: Accept-Encoding\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: 0\r\n{conn}",
             cached.etag
         );
         let _ = stream.write_all(resp.as_bytes());
-        let _ = stream.flush();
         return;
     }
     if !cached.gzip.is_empty() && accepts_gzip(&req.accept_encoding) {
@@ -8277,11 +8439,11 @@ fn serve_chunk_asset(stream: &mut TcpStream, req: &Request, name: &str) -> bool 
     });
 
     if etag_matches(&req.if_none_match, &etag) {
+        let conn = conn_header_line("304 Not Modified");
         let resp = format!(
-            "HTTP/1.1 304 Not Modified\r\nETag: {etag}\r\nCache-Control: public, max-age=31536000, immutable\r\nVary: Accept-Encoding\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            "HTTP/1.1 304 Not Modified\r\nETag: {etag}\r\nCache-Control: public, max-age=31536000, immutable\r\nVary: Accept-Encoding\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: 0\r\n{conn}"
         );
         let _ = stream.write_all(resp.as_bytes());
-        let _ = stream.flush();
         return true;
     }
 

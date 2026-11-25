@@ -1,4 +1,4 @@
-// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.10.0 standalone web builds.
+// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.11.0 standalone web builds.
 // Features:
 //  - RoPilot-Grade 3-Pane Studio IDE (Agent | Plan | Ask, Reviewable Unified Diffs, @Context Chips, Companion Plugin)
 //  - Embedded Studio Workbench & 13 Official Studio MCP Tools running live against the in-browser Place DataModel
@@ -828,6 +828,94 @@ export function installWebEngine() {
     return { tierPreset, spec, curve, packScripts, diff, diags };
   };
 
+  const simulateEconomyFunnel = (place: EngineState["chats"][string]["place"], reqBody: Record<string, unknown>) => {
+    const scripts = place.scripts || {};
+    const entries = Object.entries(scripts);
+    const instanceCount = Object.keys(place.instances || {}).length;
+    const rawPreset = typeof reqBody.tier_preset === "string" && reqBody.tier_preset.trim()
+      ? reqBody.tier_preset.trim()
+      : entries.some(([, s]) => s.includes("anime_gacha_rpg"))
+        ? "anime_gacha_rpg"
+        : entries.some(([, s]) => s.includes("competitive_arena"))
+          ? "competitive_arena"
+          : "starter_obby";
+    const meta: Record<string, { label: string; currency: string; comeback: number; d1b: number; d7b: number; avgPass: number; avgProd: number; passes: number; prods: number }> = {
+      starter_obby: { label: "Starter Obby / Simulator", currency: "Coins", comeback: 2, d1b: 1.5, d7b: 1.0, avgPass: 114, avgProd: 61.33, passes: 2, prods: 3 },
+      anime_gacha_rpg: { label: "Anime Gacha / RPG", currency: "Gems", comeback: 3, d1b: 3.5, d7b: 2.4, avgPass: 224, avgProd: 232.33, passes: 2, prods: 3 },
+      competitive_arena: { label: "Competitive Arena", currency: "Credits", comeback: 2, d1b: 2.5, d7b: 1.8, avgPass: 189, avgProd: 92.33, passes: 2, prods: 3 },
+    };
+    const spec = meta[rawPreset] ?? meta.starter_obby;
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const hasProcessReceipt = entries.some(([, s]) => s.includes("ProcessReceipt") && s.includes("PurchaseId"));
+    const hasDailyRetention = entries.some(([, s]) => s.includes("ClaimDailyReward") || s.includes("DailyStreak"));
+    const hasComebackHook = entries.some(([, s]) => s.includes("COMEBACK_MULTIPLIER") || s.includes("ComebackThresholdHours"));
+    const hasConfig = entries.some(([p]) => p.toLowerCase().includes("monetizationconfig"));
+    const hasPolicy = entries.some(([, s]) => s.includes("PolicyService"));
+    const hasHud = entries.some(([p]) => /startergui|hud|gamegui/i.test(p));
+    const hasShop = entries.some(([p, s]) => /shop|economy/i.test(p) || s.includes("PromptGamePassPurchase") || s.includes("PromptProductPurchase"));
+    const starterItems = entries.filter(([p]) => /starterpack|inventory|sword|tool|starter/i.test(p)).length;
+    const loopSignals = entries.filter(([p]) => /checkpoint|round|quest|gacha|tower|arena|tycoon|currency|leaderboard/i.test(p)).length;
+    const effectivePasses = hasConfig ? spec.passes : 0;
+    const effectiveProducts = hasConfig ? spec.prods : 0;
+    const estimatedLoop = round2(Math.min(18, Math.max(2.5, 2.5 + loopSignals * 1.45 + Math.min(24, instanceCount) * 0.2)));
+    const baseD1 = 26.0;
+    const baseD7 = 6.2;
+    const d1 = round2(Math.min(58, Math.max(18, baseD1 + (hasDailyRetention ? 8.5 : 0) + (hasHud ? 3.5 : 0) + Math.min(4, loopSignals) * 1.6 + Math.min(3, starterItems) * 1.2 + (hasDailyRetention ? spec.d1b : 0))));
+    const d7 = round2(Math.min(24, Math.max(3, baseD7 + (hasDailyRetention ? 3.2 : 0) + (hasComebackHook ? spec.comeback * 1.1 : 0) + Math.min(5, loopSignals) * 0.9 + (hasDailyRetention ? spec.d7b : 0))));
+    const conv = round2(Math.min(7.8, Math.max(0.8, 1.1 + (hasProcessReceipt ? 1.4 : 0) + (hasShop ? 1.1 : 0) + (hasHud ? 0.7 : 0) + (hasPolicy ? 0.4 : 0) + Math.min(3, effectivePasses) * 0.65)));
+    const passArpdau = (conv / 100) * (effectivePasses > 0 ? spec.avgPass : 149);
+    const prodRepeat = hasProcessReceipt ? Math.min(4, effectiveProducts) * 0.014 + (rawPreset === "anime_gacha_rpg" ? 0.022 : 0.012) : 0.004;
+    const prodArpdau = prodRepeat * (effectiveProducts > 0 ? spec.avgProd : 79);
+    const d7Lift = round2(d7 - baseD7);
+    const arpdau = round2(Math.min(85, Math.max(0.4, (passArpdau + prodArpdau) * (1 + d7Lift / 25))));
+    const blockers = [];
+    if (!hasProcessReceipt) blockers.push({ id: "missing_process_receipt", severity: "high", title: "Missing idempotent MarketplaceService.ProcessReceipt", impact: "-1.4% GamePass conversion & replay-loss risk", fix_action: "install_monetization_pack" });
+    if (!hasDailyRetention || !hasComebackHook) blockers.push({ id: "missing_retention_loop", severity: "high", title: "No 7-day streak & 48h comeback retention hook", impact: "-8.5% D1 retention & -5.4% D7 retention", fix_action: "install_monetization_pack" });
+    if (!hasShop || !hasHud) blockers.push({ id: "missing_shop_hud_funnel", severity: "medium", title: "No StarterGui shop/HUD prompt bridge detected", impact: "-1.8% conversion from unprompted players", fix_action: "add_shop_hud" });
+    if (effectivePasses === 0) blockers.push({ id: "unapproved_or_empty_tiers", severity: "medium", title: "No GamePass or DevProduct tiers configured", impact: "Live Robux checkout gated until owner review", fix_action: "approve_or_seed_tiers" });
+    if (estimatedLoop < 4.0) blockers.push({ id: "short_core_loop", severity: "low", title: `Short estimated core loop (${estimatedLoop.toFixed(1)}m < 4.0m)`, impact: "Add checkpoints, quests, or progression milestones", fix_action: "add_progression_loop" });
+    return {
+      schema: "openro.economy_funnel.v1",
+      ok: true,
+      tier_preset: rawPreset,
+      preset_label: spec.label,
+      currency: spec.currency,
+      place_signals: {
+        script_count: entries.length,
+        instance_count: instanceCount,
+        estimated_loop_minutes: estimatedLoop,
+        starter_items_count: starterItems,
+        loop_systems_count: loopSignals,
+        game_passes_count: effectivePasses,
+        dev_products_count: effectiveProducts,
+        avg_pass_robux: effectivePasses > 0 ? spec.avgPass : 0,
+        avg_product_robux: effectiveProducts > 0 ? spec.avgProd : 0,
+        unapproved_prices: effectivePasses,
+        has_process_receipt: hasProcessReceipt,
+        has_daily_retention: hasDailyRetention,
+        has_comeback_hook: hasComebackHook,
+        has_hud: hasHud,
+        has_shop: hasShop,
+      },
+      projections: {
+        arpdau_robux: arpdau,
+        arpdau_usd_est: round2(arpdau * 0.0035),
+        d1_retention_pct: d1,
+        d7_retention_pct: d7,
+        d1_lift_pct: round2(d1 - baseD1),
+        d7_lift_pct: d7Lift,
+        gamepass_conversion_pct: conv,
+      },
+      funnel_stages: [
+        { stage: "Joined Place", rate_pct: 100.0, note: `${instanceCount} workspace instance(s)` },
+        { stage: "Completed Core Loop", rate_pct: round2(Math.min(92, Math.max(45, 58 + Math.min(4, loopSignals) * 6.5 + (hasHud ? 5 : 0)))), note: `Est. ${estimatedLoop.toFixed(1)} min loop · ${starterItems} starter item(s)` },
+        { stage: "Shop / GamePass Converted", rate_pct: conv, note: `${effectivePasses} pass(es), ${effectiveProducts} product(s)` },
+        { stage: "D7 Comeback Retained", rate_pct: d7, note: hasComebackHook ? `${spec.comeback}x 48h comeback bonus active` : "48h comeback hook not installed" },
+      ],
+      blockers,
+    };
+  };
+
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const rawUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     let u: URL;
@@ -870,7 +958,7 @@ export function installWebEngine() {
     if (!chat.playMode) chat.playMode = "edit";
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "1.10.0" });
+      return jsonResponse({ name: "openro-rs", version: "1.11.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -881,7 +969,7 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "1.10.0",
+        version: "1.11.0",
         sse_build_stream: true,
         studio_stream: true,
         assets_api: true,
@@ -1145,6 +1233,9 @@ export function installWebEngine() {
           },
         },
       });
+    }
+    if (method === "POST" && u.pathname === "/api/studio/economy/simulate") {
+      return jsonResponse(simulateEconomyFunnel(chat.place, body));
     }
     if (method === "POST" && u.pathname === "/api/studio/mcp/connect") {
       return jsonResponse(
