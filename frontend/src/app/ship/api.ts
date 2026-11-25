@@ -77,6 +77,15 @@ export type AssertionFixApplyResult = {
   applied_files: string[];
   rerun: PlaytestReport & { run_id: string; passed: boolean; assertion_diff?: AssertionDiff };
 };
+export type FixAllAssertionsResult = {
+  applied_files: string[];
+  fixed_ids: string[];
+  build: Build & { ok?: boolean; error?: string };
+  ship_pack_integrity: ShipPackIntegrity;
+  export_ready: boolean;
+  export_urls: { rbxlx: string; ship_pack: string };
+  rerun: PlaytestReport & { run_id: string; passed: boolean; assertion_diff?: AssertionDiff };
+};
 export type PlaytestReport = {
   run_id: string; passed: boolean; build_id?: string; mode?: string; duration_ms?: number;
   checks?: { name: string; passed: boolean; value?: unknown; error?: string | null; datamodel?: string }[];

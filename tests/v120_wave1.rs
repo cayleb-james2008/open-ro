@@ -105,7 +105,7 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.9.0"));
+    assert_eq!(ver_json["version"], json!("1.10.0"));
 
     // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
     if let Ok(entries) = std::fs::read_dir("assets/chunks") {
@@ -579,6 +579,69 @@ fn v190_wave8_targeted_assertion_fix_plan_and_apply() {
         .unwrap();
     assert_eq!(econ2["passed"], json!(true), "{fa}");
     assert_eq!(econ2["delta"], json!("fixed"), "{fa}");
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn v1100_wave9_launch_autopilot_fix_all_and_export_ready() {
+    let base = std::env::temp_dir().join(format!(
+        "openro-v1100-wave9-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let data = base.join("data");
+    let ws = base.join("ws");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let port = start_server_with_dir(Some(data));
+    let (st_ws, _) = send_json(port, "POST", "/api/projects/workspace", Some(&json!({ "path": ws })));
+    assert_eq!(st_ws, 200);
+    let (st_cr, cr) = send_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(&json!({ "name": "Wave9Autopilot" })),
+    );
+    assert_eq!(st_cr, 201, "{cr}");
+    let pid = cr["project"]["id"].as_str().unwrap().to_string();
+
+    // Baseline rerun fails monetization_guard before fix-all
+    let (st_r1, r1) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/playtests/rerun"),
+        Some(&json!({ "offline": true })),
+    );
+    assert_eq!(st_r1, 200, "{r1}");
+    assert_eq!(r1["passed"], json!(false), "{r1}");
+
+    // 1-click Launch Autopilot batch-fixes failing assertions, builds .rbxl, and checks Ship Pack ZIP CRC
+    let (st_all, all) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/playtests/fix-all"),
+        Some(&json!({ "offline": true })),
+    );
+    assert_eq!(st_all, 200, "{all}");
+    assert_eq!(all["export_ready"], json!(true), "{all}");
+    assert!(all["fixed_ids"].as_array().is_some_and(|a| a.iter().any(|x| x == "monetization_guard")), "{all}");
+    assert_eq!(all["ship_pack_integrity"]["ok"], json!(true), "{all}");
+    assert_eq!(all["ship_pack_integrity"]["crc_verified"], json!(true), "{all}");
+    assert_eq!(all["ship_pack_integrity"]["zip_slip_clean"], json!(true), "{all}");
+    assert_eq!(all["rerun"]["passed"], json!(true), "{all}");
+    assert_eq!(all["export_urls"]["rbxlx"], json!("/api/export/rbxlx"));
+    assert_eq!(all["export_urls"]["ship_pack"], json!("/api/export/bundle"));
+
+    // Active studio place fix-all endpoint also fixes monetization scripts & returns export_ready
+    let (st_studio, studio) = send_json(port, "POST", "/api/studio/playtest/fix-all", Some(&json!({})));
+    assert_eq!(st_studio, 200, "{studio}");
+    assert_eq!(studio["ok"], json!(true), "{studio}");
+    assert_eq!(studio["export_ready"], json!(true), "{studio}");
+    assert_eq!(studio["playtest"]["passed"], json!(true), "{studio}");
 
     let _ = std::fs::remove_dir_all(&base);
 }

@@ -1,6 +1,6 @@
 [package]
 name = "openro-rs"
-version = "1.9.0"
+version = "1.10.0"
 edition = "2021"
 
 [dependencies]
@@ -18,3 +18,16 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
+panic = "abort"
+
+[profile.release.package."*"]
+opt-level = "z"
+
+[profile.release.package.serde_json]
+opt-level = 3
+
+[profile.release.package.flate2]
+opt-level = 3
+
+[profile.release.package.sha2]
+opt-level = 3
