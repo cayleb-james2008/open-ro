@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -46,7 +46,7 @@ function shortName(path: string): string {
   return path.split(".").pop() || path;
 }
 
-export function CodeDiffWorkbench({
+export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
   place,
   selectedScriptPath,
   onSelectScriptPath,
@@ -571,4 +571,4 @@ export function CodeDiffWorkbench({
       </div>
     </div>
   );
-}
+});

@@ -56,7 +56,13 @@ pub struct SkillDef {
     entry: &'static str,
 }
 
-/// The skill registry: all 22 verified, composable Roblox game-building skills.
+/// Fast cached count of registered skills without allocating the full catalog vector.
+pub fn count() -> usize {
+    static COUNT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *COUNT.get_or_init(|| registry().len())
+}
+
+/// The skill registry: all 28 verified, composable Roblox game-building skills.
 pub fn registry() -> Vec<SkillDef> {
     vec![
         SkillDef {

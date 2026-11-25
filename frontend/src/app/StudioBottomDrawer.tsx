@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { memo, useEffect, useState } from "react";
+import { AnimatePresence, m, useReducedMotion } from "motion/react";
 import {
   Activity,
   AtSign,
@@ -278,7 +278,7 @@ export function StudioBottomDrawer({
       {/* 236px Expanded Drawer Body */}
       <AnimatePresence initial={false}>
       {open && (
-        <motion.div
+        <m.div
           key="studio-bottom-drawer-body"
           initial={reduced ? { opacity: 1 } : { opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
@@ -561,7 +561,7 @@ export function StudioBottomDrawer({
               )}
             </div>
           )}
-        </motion.div>
+        </m.div>
       )}
       </AnimatePresence>
     </section>

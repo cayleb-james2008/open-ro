@@ -10,7 +10,7 @@ import {
   type MouseEvent,
 } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import { AnimatePresence, LayoutGroup, MotionConfig, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, LayoutGroup, LazyMotion, MotionConfig, domMax, m, useReducedMotion } from "motion/react";
 import { Toaster, toast } from "sonner";
 import { Drawer } from "vaul";
 import {
@@ -327,7 +327,26 @@ export function App() {
   );
   const [studioActions, setStudioActions] = useState<StudioActionEvent[]>([]);
   const [hasLiveFrame, setHasLiveFrame] = useState(false);
-  const [frameSeq, setFrameSeq] = useState(0);
+  const [threadFrameSeq, setThreadFrameSeq] = useState(0);
+  const frameSeqRef = useRef(0);
+  const lastThreadFrameAtRef = useRef(0);
+  const frameListenersRef = useRef<Set<(seq: number) => void>>(new Set());
+  const subscribeFrameSeq = useCallback((cb: (seq: number) => void) => {
+    frameListenersRef.current.add(cb);
+    return () => {
+      frameListenersRef.current.delete(cb);
+    };
+  }, []);
+  const publishLiveFrame = useCallback((seq: number) => {
+    frameSeqRef.current = seq;
+    setHasLiveFrame((prev) => (prev ? prev : true));
+    frameListenersRef.current.forEach((cb) => cb(seq));
+    const now = performance.now();
+    if (lastThreadFrameAtRef.current === 0 || now - lastThreadFrameAtRef.current >= 2500) {
+      lastThreadFrameAtRef.current = now;
+      setThreadFrameSeq(seq);
+    }
+  }, []);
   const [projectAssets, setProjectAssets] = useState<ProjectAssetRecord[]>([]);
   const [lastTriedIdea, setLastTriedIdea] = useState<Idea | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -542,14 +561,13 @@ export function App() {
           setWorkspaceMode("studio_mcp");
         }
         if (norm.has_live_frame && typeof norm.frame_seq === "number" && norm.frame_seq > 0) {
-          setHasLiveFrame(true);
-          setFrameSeq(norm.frame_seq);
+          publishLiveFrame(norm.frame_seq);
         }
       } catch {
         /* keep current embed status */
       }
     },
-    [v090Ready],
+    [publishLiveFrame, v090Ready],
   );
 
   const refreshPluginStatus = useCallback(
@@ -617,13 +635,13 @@ export function App() {
         const norm = normalizeStudioActionsResponse(raw);
         setStudioMode(norm.studio_mode);
         setHasLiveFrame(norm.has_live_frame);
-        setFrameSeq(norm.frame_seq);
+        if (norm.frame_seq > 0) publishLiveFrame(norm.frame_seq);
         setStudioActions(norm.actions.slice(-500));
       } catch {
         /* keep current stream buffer */
       }
     },
-    [v070Ready],
+    [publishLiveFrame, v070Ready],
   );
 
   const refreshAll = useCallback(async () => {
@@ -843,7 +861,7 @@ export function App() {
     const unsub = subscribeStudioStream({
       enabled: v070Ready,
       onAction: (ev) => {
-        setStudioMode(ev.studio_mode);
+        setStudioMode((prev) => (prev === ev.studio_mode ? prev : ev.studio_mode));
         setStudioActions((prev) => {
           if (prev.some((x) => x.seq === ev.seq)) return prev;
           return [...prev, ev].slice(-500);
@@ -857,20 +875,19 @@ export function App() {
         }
       },
       onFrame: (info) => {
-        setHasLiveFrame(true);
-        setFrameSeq(info.seq);
+        publishLiveFrame(info.seq);
       },
       onStatus: (st) => {
-        if (st.studio_mode) setStudioMode(st.studio_mode);
+        if (st.studio_mode) setStudioMode((prev) => (prev === st.studio_mode ? prev : st.studio_mode!));
         if (typeof st.has_live_frame === "boolean") setHasLiveFrame(st.has_live_frame);
-        if (typeof st.frame_seq === "number") setFrameSeq(st.frame_seq);
+        if (typeof st.frame_seq === "number" && st.frame_seq > 0) publishLiveFrame(st.frame_seq);
       },
     });
     return () => {
       unsub();
       if (placeTimer !== null) window.clearTimeout(placeTimer);
     };
-  }, [refreshPlace, v070Ready]);
+  }, [publishLiveFrame, refreshPlace, v070Ready]);
 
   // Auto-scroll right Copilot thread on new messages
   const prevChatRef = useRef<string | null>(null);
@@ -902,6 +919,23 @@ export function App() {
         setPaletteOpen((v) => !v);
         return;
       }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b" && !narrow) {
+        e.preventDefault();
+        setLeftDockCollapsed((v) => !v);
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j") {
+        e.preventDefault();
+        setBottomDrawerOpen((v) => !v);
+        return;
+      }
+      if (e.altKey && !e.metaKey && !e.ctrlKey) {
+        if (e.key === "1") { e.preventDefault(); setCenterTab(isBrowserEngine ? "studio-3d" : "embedded-studio"); return; }
+        if (e.key === "2") { e.preventDefault(); setCenterTab("code-diff"); return; }
+        if (e.key === "3" && !isBrowserEngine) { e.preventDefault(); setCenterTab("assets"); return; }
+        if (e.key === "4") { e.preventDefault(); setCenterTab("ship"); return; }
+        if (e.key === "5" && !isBrowserEngine) { e.preventDefault(); setCenterTab("teamwork"); return; }
+      }
       const el = e.target as HTMLElement | null;
       const inEditable = Boolean(el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable));
       if (!inEditable && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "d") {
@@ -931,7 +965,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [leftDockTab, narrow]);
+  }, [isBrowserEngine, leftDockTab, narrow]);
 
   const cantBuildWhy = !studioOk
     ? "Building needs the Local Place Engine, Studio Plugin, or Roblox Studio MCP connected."
@@ -1628,9 +1662,8 @@ export function App() {
         toast.error(res.error || "Live Studio MCP is not attached — switch to Studio 3D or connect Studio MCP.");
         return;
       }
-      setHasLiveFrame(true);
-      if (typeof res.frame_seq === "number") setFrameSeq(res.frame_seq);
-      else setFrameSeq((n) => n + 1);
+      if (typeof res.frame_seq === "number") publishLiveFrame(res.frame_seq);
+      else publishLiveFrame(frameSeqRef.current + 1);
       toast.success("Captured fresh frame from Roblox Studio");
     } catch {
       toast.error("Could not capture frame from Studio.");
@@ -2049,7 +2082,7 @@ export function App() {
         setWorkspaceMode(res.workspace_mode || "studio_mcp");
         setStudioMode(res.studio_mode || "live_mcp");
         if (typeof res.has_live_frame === "boolean") setHasLiveFrame(res.has_live_frame);
-        if (typeof res.frame_seq === "number") setFrameSeq(res.frame_seq);
+        if (typeof res.frame_seq === "number" && res.frame_seq > 0) publishLiveFrame(res.frame_seq);
         toast.success("Connected live Roblox Studio MCP bridge");
         void refreshStudioActions(true);
         void refreshPlace();
@@ -2110,8 +2143,7 @@ export function App() {
           toast("Sign in inside Studio to connect");
         }
         if (typeof res.frame_seq === "number" && res.frame_seq > 0) {
-          setHasLiveFrame(true);
-          setFrameSeq(res.frame_seq);
+          publishLiveFrame(res.frame_seq);
         }
         setCenterTab("embedded-studio");
         void refreshStudioActions(true);
@@ -2176,8 +2208,7 @@ export function App() {
           setWorkspaceMode("studio_mcp");
         }
         if (typeof res.frame_seq === "number" && res.frame_seq > 0) {
-          setHasLiveFrame(true);
-          setFrameSeq(res.frame_seq);
+          publishLiveFrame(res.frame_seq);
         }
         setCenterTab("embedded-studio");
         toast.success("Launched & embedded Roblox Studio");
@@ -2235,8 +2266,7 @@ export function App() {
     try {
       const res = await post<{ ok?: boolean; frame_seq?: number }>("/api/studio/input/mouse", payload);
       if (res.ok && typeof res.frame_seq === "number" && res.frame_seq > 0) {
-        setHasLiveFrame(true);
-        setFrameSeq(res.frame_seq);
+        publishLiveFrame(res.frame_seq);
       }
     } catch {
       /* non-fatal */
@@ -2248,8 +2278,7 @@ export function App() {
     try {
       const res = await post<{ ok?: boolean; frame_seq?: number }>("/api/studio/input/keyboard", payload);
       if (res.ok && typeof res.frame_seq === "number" && res.frame_seq > 0) {
-        setHasLiveFrame(true);
-        setFrameSeq(res.frame_seq);
+        publishLiveFrame(res.frame_seq);
       }
     } catch {
       /* non-fatal */
@@ -2277,8 +2306,7 @@ export function App() {
         setEmbedStatus((prev) => ({ ...prev, play_mode: nextPm }));
       }
       if (typeof res.frame_seq === "number" && res.frame_seq > 0) {
-        setHasLiveFrame(true);
-        setFrameSeq(res.frame_seq);
+        publishLiveFrame(res.frame_seq);
       }
       if (ok && (tool === "multi_edit" || tool === "execute_luau")) {
         void refreshPlace();
@@ -2507,7 +2535,7 @@ export function App() {
                     return (
                       <li key={c.id} className="relative">
                         {isCurrent && (
-                          <motion.span
+                          <m.span
                             layoutId="chat-rail-active"
                             transition={reduceMotion ? instant : glide}
                             aria-hidden
@@ -2583,12 +2611,12 @@ export function App() {
             <StudioChip connected={studioOk} workspaceMode={workspaceMode} />
           </Button>
           <a
-            href={RELEASES_URL + (version || "1.1.0")}
+            href={RELEASES_URL + (version || "1.2.0")}
             target="_blank"
             rel="noreferrer"
             className="inline-flex min-h-7 items-center gap-1 rounded-sm text-xs text-ink-2 outline-none hover:text-ink hover:underline active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus max-md:min-h-11"
           >
-            <span>v<span className="font-mono">{version || "1.1.0"}</span></span>
+            <span>v<span className="font-mono">{version || "1.2.0"}</span></span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
         </div>
@@ -2682,7 +2710,8 @@ export function App() {
             studioMode={studioMode}
             embedStatus={embedStatus}
             hasLiveFrame={hasLiveFrame}
-            frameSeq={frameSeq}
+            frameSeq={frameSeqRef.current}
+            subscribeFrameSeq={subscribeFrameSeq}
             actions={studioActions}
             onLaunchEmbed={handleLaunchEmbed}
             onAttachEmbed={handleAttachEmbed}
@@ -2978,7 +3007,7 @@ export function App() {
               buildPhase={buildPhase}
               latestFileDiffs={latestFileDiffs}
               proposals={proposals}
-              capturedFrameUrl={hasLiveFrame && frameSeq > 0 ? `/api/studio/frame?seq=${frameSeq}` : null}
+              capturedFrameUrl={hasLiveFrame && threadFrameSeq > 0 ? `/api/studio/frame?seq=${threadFrameSeq}` : null}
               projectId={ship.activeId}
               onPrefillPrompt={(p) => {
                 setText(p);
@@ -3052,6 +3081,7 @@ export function App() {
   );
 
   return (
+    <LazyMotion features={domMax}>
     <MotionConfig reducedMotion="user">
     <div
       className="relative flex h-dvh min-h-0 w-full flex-col overflow-hidden bg-canvas text-ink"
@@ -3331,7 +3361,7 @@ export function App() {
         {/* Pane 1: Collapsible Left Project / Explorer / Chats Rail */}
         <AnimatePresence initial={false}>
           {!narrow && !leftDockCollapsed && (
-            <motion.div
+            <m.div
               key="left-dock-pane"
               initial={reduceMotion ? { opacity: 1 } : { opacity: 0, x: -6 }}
               animate={{ opacity: 1, x: 0 }}
@@ -3340,7 +3370,7 @@ export function App() {
               className="w-[260px] flex-none border-r border-hairline"
             >
               {leftDockBody}
-            </motion.div>
+            </m.div>
           )}
         </AnimatePresence>
 
@@ -3351,7 +3381,7 @@ export function App() {
         {!narrow ? (
           <AnimatePresence initial={false}>
             {!rightDockCollapsed && (
-              <motion.div
+              <m.div
                 key="right-workbench-pane"
                 initial={reduceMotion ? { opacity: 1 } : { opacity: 0, x: 6 }}
                 animate={{ opacity: 1, x: 0 }}
@@ -3360,7 +3390,7 @@ export function App() {
                 className="flex w-[450px] flex-none border-l border-hairline xl:w-[500px]"
               >
                 {rightWorkbench}
-              </motion.div>
+              </m.div>
             )}
           </AnimatePresence>
         ) : (
@@ -3434,6 +3464,11 @@ export function App() {
           }}
           onOpenEmbeddedStudio={() => {
             setCenterTab("embedded-studio");
+            setMobilePane("studio");
+          }}
+          onOpenShip={() => {
+            setCenterTab("ship");
+            setRightDockCollapsed(false);
             setMobilePane("studio");
           }}
           onOpenCodeDiff={() => {
@@ -3554,5 +3589,6 @@ export function App() {
         />
     </div>
     </MotionConfig>
+    </LazyMotion>
   );
 }

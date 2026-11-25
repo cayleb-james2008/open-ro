@@ -638,9 +638,14 @@ impl AssetManager {
     /// Read raw image bytes with strict filename validation and canonical directory jail check.
     pub fn read_bytes(&self, raw_filename: &str) -> Result<(Vec<u8>, &'static str), String> {
         let filename = sanitize_filename(raw_filename)?;
+        let candidate = self.assets_dir.join(&filename);
+        if let Ok(meta) = std::fs::symlink_metadata(&candidate) {
+            if meta.file_type().is_symlink() {
+                return Err(format!("refusing to read symlink asset '{filename}'"));
+            }
+        }
         let root = std::fs::canonicalize(&self.assets_dir)
             .map_err(|_| "asset directory unavailable".to_string())?;
-        let candidate = self.assets_dir.join(&filename);
         let canonical =
             std::fs::canonicalize(&candidate).map_err(|_| format!("asset not found: {filename}"))?;
         if !canonical.starts_with(&root) {

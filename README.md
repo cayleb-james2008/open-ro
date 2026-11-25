@@ -1,4 +1,4 @@
-# OpenRO (`v1.0.0`)
+# OpenRO (`v1.2.0`)
 
 [![latest release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases)
 

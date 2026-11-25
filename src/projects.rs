@@ -61,6 +61,18 @@ pub fn safe_join(root: &Path, rel: &str) -> Result<PathBuf, String> {
         return Err(format!("path '{rel}' must stay inside the project folder"));
     }
     let joined = root.join(p);
+    // Reject any symlink on any existing path component (including dangling or in-tree symlinks).
+    let mut walk = root.to_path_buf();
+    for c in p.components() {
+        if let Component::Normal(seg) = c {
+            walk.push(seg);
+            if let Ok(meta) = std::fs::symlink_metadata(&walk) {
+                if meta.file_type().is_symlink() {
+                    return Err(format!("path '{rel}' contains a symlink and must stay inside the project folder"));
+                }
+            }
+        }
+    }
     let root_canon = root.canonicalize().map_err(|e| format!("project folder: {e}"))?;
     // Canonicalise the deepest existing ancestor to catch symlinks that leave the folder.
     let mut probe = joined.clone();

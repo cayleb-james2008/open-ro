@@ -474,6 +474,15 @@ pub fn read_mesh_asset(
     };
 
     let mime = mime_for_mesh_ext(&leaf_name)?;
+    let mut walk = base_dir.clone();
+    for seg in rel_path.components() {
+        walk.push(seg);
+        if let Ok(meta) = std::fs::symlink_metadata(&walk) {
+            if meta.file_type().is_symlink() {
+                return Err(format!("mesh asset path '{trimmed}' is a symlink"));
+            }
+        }
+    }
     let canon_dir = std::fs::canonicalize(&base_dir)
         .map_err(|_| format!("mesh asset '{trimmed}' not found"))?;
     let candidate = base_dir.join(&rel_path);

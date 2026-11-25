@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import {
   Archive,
   AtSign,
@@ -81,7 +81,7 @@ export function buildGameSummary(gameName: string, builtTitles: string[], place:
   return `My Roblox game has ${titlePart}, ${total} ${total === 1 ? "piece" : "pieces"} in all (${parts.length} Workspace ${parts.length === 1 ? "part" : "parts"}, ${scripts.length} Luau ${scripts.length === 1 ? "script" : "scripts"}), built and playtested with OpenRO.`;
 }
 
-export function LeftExplorerTree({
+export const LeftExplorerTree = memo(function LeftExplorerTree({
   place,
   error,
   selectedPath,
@@ -470,7 +470,7 @@ export function LeftExplorerTree({
       </div>
     </section>
   );
-}
+});
 
 export function StudioChip({
   connected,

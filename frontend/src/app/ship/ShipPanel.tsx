@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Check, FolderOpen, FlaskConical, Images, Palette, Rocket, ShieldCheck } from "lucide-react";
+import { memo, useEffect, useState } from "react";
+import { Check, FolderOpen, FlaskConical, Images, Palette, RefreshCw, Rocket, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
@@ -8,6 +8,7 @@ import { PublishPanel } from "./PublishPanel";
 import { AssetsPanel } from "./AssetsPanel";
 import { ArtStudioPanel } from "./ArtStudioPanel";
 import { PlaytestPanel } from "./PlaytestPanel";
+import { ReadinessAutopilot } from "./ReadinessAutopilot";
 import { MonetizationPackCard } from "../MonetizationPackCard";
 import type { Place } from "../data";
 import type { Ship } from "./useShip";
@@ -20,8 +21,8 @@ const SECTIONS: { id: Section; label: string; Icon: typeof Rocket }[] = [
   { id: "playtests", label: "Playtests", Icon: FlaskConical },
 ];
 
-/** The Ship & Monetize surface: publish readiness, monetization pack, assets, and playtests. */
-export function ShipPanel({
+/** The Ship & Monetize surface: readiness autopilot, publish readiness, monetization pack, assets, and playtests. */
+export const ShipPanel = memo(function ShipPanel({
   ship,
   studioOk,
   place,
@@ -69,6 +70,15 @@ export function ShipPanel({
   if (!ship.available || !ship.active) {
     return (
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pb-4" data-ship-empty>
+        {ship.error && (
+          <div role="alert" className="card-stock flex items-center justify-between gap-2 border-pill-pro-bg/60 bg-pill-pro-bg/40 p-3 text-sm text-pill-pro-fg">
+            <span>{ship.error}</span>
+            <Button variant="outline" size="xs" onClick={() => void ship.refresh()}>
+              <RefreshCw className="size-3.5" strokeWidth={1.5} aria-hidden />
+              Retry
+            </Button>
+          </div>
+        )}
         <MonetizationPackCard
           place={place ?? null}
           studioOk={studioOk}
@@ -81,7 +91,7 @@ export function ShipPanel({
           <div className="card-stock flex flex-col items-start gap-2.5 p-4">
             <h3 className="font-heading text-ui font-medium text-ink">Link a Roblox project to publish</h3>
             <p className="text-sm text-ink-2">
-              Open or create a project to sync GamePasses, configure Creator Hub metadata, and publish builds live.
+              Open or create a project to run Ship &amp; Monetization Autopilot, sync GamePasses, configure Creator Hub metadata, and publish builds live.
             </p>
             <Button variant="outline" size="sm" onClick={onOpenProjects} className="max-md:min-h-11">
               <FolderOpen className="size-4" strokeWidth={1.5} aria-hidden />
@@ -151,6 +161,16 @@ export function ShipPanel({
       <div className="min-h-0 flex-1 overflow-y-auto pb-4">
         {section === "publish" && (
           <div className="flex flex-col gap-4">
+            <ReadinessAutopilot
+              projectId={ship.active.id}
+              projectName={ship.active.name}
+              onCompleted={async () => {
+                await ship.refresh();
+                await onInstalledMonetization?.();
+              }}
+              onOpenCodeFile={onOpenCodeDiff}
+              onOpenSettings={onOpenSettings}
+            />
             <MonetizationPackCard
               place={place ?? null}
               studioOk={studioOk}
@@ -168,4 +188,4 @@ export function ShipPanel({
       </div>
     </div>
   );
-}
+});
