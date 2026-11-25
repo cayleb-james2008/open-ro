@@ -122,13 +122,13 @@ pass `use_http_fallback: false` to disable). All outputs stay in the project's g
 
 | Method + Path | Body / Query | Reply |
 |---|---|---|
-| `POST /api/art/references/search` | `{ project?, character, show, card_id?, qualifiers?, max_candidates?: 6, auto_pick?: true }` | `{ ok, slug, character, show, query, chosen_index, reference_path, meta_path, url, sha256, bytes, candidates: [{ index, path, url, image_url, source_url, title, width, height, bytes, sha256, score, reasons, rejected_reason }] }` |
+| `POST /api/art/references/search` | `{ project?, kind?: "character"\|"weapon"\|"prop", character?, subject?, show?, card_id?, slug?, qualifiers?, max_candidates?: 6, auto_pick?: true }` | `{ ok, slug, kind, subject, character, show, query, chosen_index, reference_path, meta_path, url, sha256, bytes, candidates: [{ index, path, url, image_url, source_url, title, width, height, bytes, sha256, score, reasons, rejected_reason }] }` |
 | `GET /api/art/references` | `?project=<id>` | `{ ok, count, references: [...] }` |
 | `POST /api/art/references/select` | `{ project?, slug (or card_id), candidate_index }` | swaps active reference image; `{ ok, slug, chosen_index, reference_path, url, sha256, bytes, width, height }` |
 
-Ranking automatically filters/penalizes static standing poses, official character/model sheets,
-turnarounds, transparent cutouts, merchandise/cosplay, and tiny images, and rewards dynamic
-anime action/battle scenes. Tests override via `OPENRO_REFERENCE_SEARCH_BIN`.
+Ranking behavior:
+- **`kind: "character"` (default):** filters/penalizes static standing poses, official character/model sheets, turnarounds, transparent cutouts, merchandise/cosplay, and tiny images, and rewards dynamic anime action/battle scenes.
+- **`kind: "weapon"` / `"prop"` (#76):** accepts `subject` (or `weapon`/`prop`/`character`) with optional `show`, builds isolated-prop queries (`"<subject> weapon anime wiki prop reference"`), and flips ranking to prefer **isolated weapon/prop artwork, wiki weapon renders, and prop/cosplay reference sheets** over cluttered battle/action scenes while still rejecting watermarks, logos, low-res thumbnails, and honoring all SSRF/CAPTCHA rules (Bing Images primary with clean CAPTCHA-free Google Images fallback). Tests override via `OPENRO_REFERENCE_SEARCH_BIN`.
 
 ---
 
@@ -143,10 +143,12 @@ and `"openai"` (via `OPENAI_IMAGE_KEY` / `OPENRO_OPENAI_IMAGE_BASE`).
 
 | Method + Path | Body / Query | Reply |
 |---|---|---|
-| `POST /api/art/generate` | `{ project?, provider?: "chatgpt"\|"gemini"\|"openai", kind?: "card"\|"icon"\|"frame"\|"store"\|"world", card_id?, prompt, reference_images?: [...], out_path?, character_art?: bool, size?, aspect_ratio?, model?, timeout_s? }` | see states below |
+| `POST /api/art/generate` | `{ project?, provider?: "chatgpt"\|"gemini"\|"openai", kind?: "card"\|"icon"\|"frame"\|"store"\|"world"\|"weapon_sheet"\|"weapon", card_id?, subject?, show?, auto_reference?: bool, prompt, reference_images?: [...], out_path?, character_art?: bool, size?, aspect_ratio?, model?, timeout_s? }` | see states below |
 | `POST /api/art/approve` | `{ project?, candidate_path, target_path?, expected_sha256?, reviewer, verdict?: "pass"\|"redo", notes? }` | promotes reviewed candidate to final `target_path` (or records `redo`) and logs to `art/ART-LOG.jsonl`; `{ ok, status, path, url, meta_path, sha256, width, height, bytes, reviewer }` |
 | `GET /api/art` | `?project=<id>` | `{ ok, count, items: [...], pending_review: [...], log: [...] }` |
 | `GET /api/art/image` | `?project=<id>&path=art/...` | raw image bytes (jailed to `<project>/art/`) |
+
+**Weapon/prop sheet auto-sourcing (#76):** When `kind` is `"weapon_sheet"` or `"weapon"` and no reference image is passed, passing `auto_reference: true` or a `subject` automatically runs `reference_search::search` (`kind: "prop"`) into gitignored `art/references/`, attaches the top isolated prop reference to generation, and records `"prop_reference_auto_sourced": true` in `.meta.json` and the response.
 
 ### `POST /api/art/generate` Response States
 
