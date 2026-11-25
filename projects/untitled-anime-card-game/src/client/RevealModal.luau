@@ -429,13 +429,34 @@ function RevealModal.create(
 		end)
 	end
 
+	local function pickFeaturedResult(results: { RollCardResult }): RollCardResult?
+		local featuredRes: RollCardResult? = nil
+		local bestOrder = -1
+		local bestOdds = -1
+		for _, res in results do
+			local rStyle = Theme.getRarity(res.rarity)
+			local resOdds = tonumber(res.odds) or 0
+			if rStyle.order > bestOrder or (rStyle.order == bestOrder and resOdds > bestOdds) then
+				bestOrder = rStyle.order
+				bestOdds = resOdds
+				featuredRes = res
+			end
+		end
+		return featuredRes
+	end
+
 	local function renderResults(results: { RollCardResult }, highestRarity: Theme.RarityStyle, reducedMotion: boolean)
 		clearCards()
 
+		local featuredRes = pickFeaturedResult(results)
 		local dramatic = DRAMATIC_BANNERS[highestRarity.order]
 		bannerTitle.Text = dramatic or (string.upper(highestRarity.name) .. " PULL!")
 		bannerTitle.TextColor3 = highestRarity.glow
-		oddsBanner.Text = highestRarity.oddsLabel
+		oddsBanner.Text = if featuredRes
+				and typeof(featuredRes.odds) == "number"
+				and featuredRes.odds > 0
+			then Components.formatOdds(featuredRes.odds)
+			else highestRarity.oddsLabel
 		oddsBanner.TextColor3 = highestRarity.color
 
 		if #results == 1 then
@@ -569,6 +590,7 @@ function RevealModal.create(
 					highestRarity = rStyle
 				end
 			end
+			local featuredRes = pickFeaturedResult(results)
 
 			local settings = getSettings()
 			local skipBuildup = shouldSkipBuildup(highestOrder, settings.skipBelowRarity)
@@ -603,7 +625,11 @@ function RevealModal.create(
 			if not skipBuildup then
 				bannerTitle.Text = if highestOrder >= 5 then "FATE CONVERGING..." else "SUMMONING..."
 				bannerTitle.TextColor3 = Color3.fromRGB(244, 247, 255)
-				oddsBanner.Text = highestRarity.oddsLabel
+				oddsBanner.Text = if featuredRes
+						and typeof(featuredRes.odds) == "number"
+						and featuredRes.odds > 0
+					then Components.formatOdds(featuredRes.odds)
+					else highestRarity.oddsLabel
 				oddsBanner.TextColor3 = highestRarity.color
 
 				local waitSeconds = if highestOrder >= 5 then 1.05 elseif highestOrder >= 3 then 0.60 else 0.30

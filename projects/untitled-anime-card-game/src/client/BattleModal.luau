@@ -620,7 +620,7 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		side: string
 	): UnitWidget
 		local palette = Theme.getPalette()
-		local slotHeight = if total <= 2 then 118 else math.clamp(math.floor(330 / math.max(total, 1)), 68, 104)
+		local slotHeight = if total <= 2 then 124 else math.clamp(math.floor(336 / math.max(total, 1)), 82, 108)
 		local yStep = 1 / math.max(total, 1)
 		local yCenter = (index - 0.5) * yStep
 
@@ -652,6 +652,26 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		}
 		local cardFrame = Components.makeCardView(container, cardData, UDim2.new(1, 0, 1, -24), UDim2.fromOffset(0, 0))
 		cardFrame.ZIndex = 40
+
+		local portraitBox = cardFrame:FindFirstChild("PortraitBox")
+		if portraitBox and portraitBox:IsA("GuiObject") then
+			portraitBox.Size = UDim2.new(1, -10, 0.44, 0)
+		end
+		local cardName = cardFrame:FindFirstChild("CardName")
+		if cardName and cardName:IsA("GuiObject") then
+			cardName.Position = UDim2.new(0, 6, 0.46, 2)
+			cardName.Size = UDim2.new(1, -12, 0, 16)
+		end
+		local metaLbl = cardFrame:FindFirstChild("Meta")
+		if metaLbl and metaLbl:IsA("GuiObject") then
+			metaLbl.Position = UDim2.new(0, 6, 0.46, 20)
+			metaLbl.Size = UDim2.new(1, -12, 0, 14)
+		end
+		local statsLbl = cardFrame:FindFirstChild("Stats")
+		if statsLbl and statsLbl:IsA("GuiObject") then
+			statsLbl.Position = UDim2.new(0, 6, 1, -16)
+			statsLbl.Size = UDim2.new(1, -12, 0, 14)
+		end
 
 		local hpBack = Instance.new("Frame")
 		hpBack.Name = "HpBar"
