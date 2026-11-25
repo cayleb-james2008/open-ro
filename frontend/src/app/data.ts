@@ -126,6 +126,7 @@ export type PlaceSnapshot = {
   created_at: number;
   parts_count: number;
   scripts_count: number;
+  verified?: boolean;
   diff?: PlaceDiff;
   place?: Place;
 };

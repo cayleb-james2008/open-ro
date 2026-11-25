@@ -713,7 +713,6 @@ pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> 
         let Ok(mut stream) = stream else { continue };
         let _ = stream.set_nodelay(true);
         let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
-        let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
         if shared.active_handlers.load(Ordering::SeqCst) >= MAX_HANDLERS {
             // Answered off the accept loop: a silent client must not
             // stall the connections queued behind it.
@@ -784,9 +783,6 @@ struct Request {
 
 thread_local! {
     static TL_KEEP_ALIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static TL_READ_BUF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::with_capacity(4096));
-    static TL_HDR_BUF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::with_capacity(512));
-    static TL_JSON_BUF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::with_capacity(4096));
 }
 
 #[inline]
@@ -806,25 +802,22 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
     if let Some(pos) = find_subslice(&chunk[..total], b"\r\n\r\n") {
         return parse_buffered_request(stream, &chunk[..total], pos + 4);
     }
-    TL_READ_BUF.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        buf.clear();
-        buf.extend_from_slice(&chunk[..total]);
-        loop {
-            let n = stream.read(&mut chunk).ok()?;
-            if n == 0 {
-                return None;
-            }
-            buf.extend_from_slice(&chunk[..n]);
-            total = buf.len();
-            if let Some(pos) = find_subslice(&buf[..total], b"\r\n\r\n") {
-                return parse_buffered_request(stream, &buf[..total], pos + 4);
-            }
-            if total > 64 * 1024 {
-                return None;
-            }
+    let mut buf: Vec<u8> = Vec::with_capacity(8192);
+    buf.extend_from_slice(&chunk[..total]);
+    loop {
+        let n = stream.read(&mut chunk).ok()?;
+        if n == 0 {
+            return None;
         }
-    })
+        buf.extend_from_slice(&chunk[..n]);
+        total = buf.len();
+        if let Some(pos) = find_subslice(&buf[..total], b"\r\n\r\n") {
+            return parse_buffered_request(stream, &buf[..total], pos + 4);
+        }
+        if total > 64 * 1024 {
+            return None;
+        }
+    }
 }
 
 fn parse_buffered_request(
@@ -1114,18 +1107,36 @@ fn write_all_vectored(stream: &mut TcpStream, header: &[u8], body: &[u8]) {
     }
 }
 
+#[inline]
+fn push_usize(hdr: &mut String, mut n: usize) {
+    let mut digits = [0u8; 20];
+    let mut i = 20;
+    if n == 0 {
+        hdr.push('0');
+        return;
+    }
+    while n > 0 {
+        i -= 1;
+        digits[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    if let Ok(s) = std::str::from_utf8(&digits[i..]) {
+        hdr.push_str(s);
+    }
+}
+
 fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &str) {
     let conn = conn_header_line(status);
-    TL_HDR_BUF.with(|cell| {
-        let mut hdr = cell.borrow_mut();
-        hdr.clear();
-        let _ = write!(
-            &mut *hdr,
-            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\n{conn}",
-            body.len()
-        );
-        write_all_vectored(stream, &hdr, body.as_bytes());
-    });
+    let mut hdr = String::with_capacity(224);
+    hdr.push_str("HTTP/1.1 ");
+    hdr.push_str(status);
+    hdr.push_str("\r\nContent-Type: ");
+    hdr.push_str(content_type);
+    hdr.push_str("\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: ");
+    push_usize(&mut hdr, body.len());
+    hdr.push_str("\r\n");
+    hdr.push_str(conn);
+    write_all_vectored(stream, hdr.as_bytes(), body.as_bytes());
 }
 
 fn respond_bytes(
@@ -1147,16 +1158,20 @@ fn respond_bytes_with_headers(
     body: &[u8],
 ) {
     let conn = conn_header_line(status);
-    TL_HDR_BUF.with(|cell| {
-        let mut hdr = cell.borrow_mut();
-        hdr.clear();
-        let _ = write!(
-            &mut *hdr,
-            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: {cache_control}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n{extra_headers}Content-Length: {}\r\n{conn}",
-            body.len()
-        );
-        write_all_vectored(stream, &hdr, body);
-    });
+    let mut hdr = String::with_capacity(256 + extra_headers.len());
+    hdr.push_str("HTTP/1.1 ");
+    hdr.push_str(status);
+    hdr.push_str("\r\nContent-Type: ");
+    hdr.push_str(content_type);
+    hdr.push_str("\r\nCache-Control: ");
+    hdr.push_str(cache_control);
+    hdr.push_str("\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n");
+    hdr.push_str(extra_headers);
+    hdr.push_str("Content-Length: ");
+    push_usize(&mut hdr, body.len());
+    hdr.push_str("\r\n");
+    hdr.push_str(conn);
+    write_all_vectored(stream, hdr.as_bytes(), body);
 }
 
 fn respond_download(stream: &mut TcpStream, content_type: &str, filename: &str, body: &str) {
@@ -1165,16 +1180,15 @@ fn respond_download(stream: &mut TcpStream, content_type: &str, filename: &str, 
 
 fn respond_download_bytes(stream: &mut TcpStream, content_type: &str, filename: &str, body: &[u8]) {
     TL_KEEP_ALIVE.set(false);
-    TL_HDR_BUF.with(|cell| {
-        let mut hdr = cell.borrow_mut();
-        hdr.clear();
-        let _ = write!(
-            &mut *hdr,
-            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        );
-        write_all_vectored(stream, &hdr, body);
-    });
+    let mut hdr = String::with_capacity(256 + filename.len());
+    hdr.push_str("HTTP/1.1 200 OK\r\nContent-Type: ");
+    hdr.push_str(content_type);
+    hdr.push_str("\r\nContent-Disposition: attachment; filename=\"");
+    hdr.push_str(filename);
+    hdr.push_str("\"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: ");
+    push_usize(&mut hdr, body.len());
+    hdr.push_str("\r\nConnection: close\r\n\r\n");
+    write_all_vectored(stream, hdr.as_bytes(), body);
 }
 
 fn slugify_filename(name: &str) -> String {
@@ -1198,25 +1212,19 @@ fn slugify_filename(name: &str) -> String {
 }
 
 fn respond_json(stream: &mut TcpStream, status: &str, value: &Value) {
-    TL_JSON_BUF.with(|jcell| {
-        let mut jbuf = jcell.borrow_mut();
-        jbuf.clear();
-        if serde_json::to_writer(&mut *jbuf, value).is_ok() {
-            let conn = conn_header_line(status);
-            TL_HDR_BUF.with(|hcell| {
-                let mut hdr = hcell.borrow_mut();
-                hdr.clear();
-                let _ = write!(
-                    &mut *hdr,
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\n{conn}",
-                    jbuf.len()
-                );
-                write_all_vectored(stream, &hdr, &jbuf);
-            });
-        } else {
-            respond(stream, status, "application/json", &value.to_string());
-        }
-    });
+    if let Ok(bytes) = serde_json::to_vec(value) {
+        let conn = conn_header_line(status);
+        let mut hdr = String::with_capacity(224);
+        hdr.push_str("HTTP/1.1 ");
+        hdr.push_str(status);
+        hdr.push_str("\r\nContent-Type: application/json\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: ");
+        push_usize(&mut hdr, bytes.len());
+        hdr.push_str("\r\n");
+        hdr.push_str(conn);
+        write_all_vectored(stream, hdr.as_bytes(), &bytes);
+    } else {
+        respond(stream, status, "application/json", &value.to_string());
+    }
 }
 
 /// Resolve `(project_root, project_id)` from explicit request fields or `shared.projects`.
@@ -1592,8 +1600,7 @@ fn handle(
             }
             return Ok(());
         }
-        let (path_raw, query) = req.path.split_once('?').unwrap_or((req.path.as_str(), ""));
-        let path = path_raw.to_string();
+        let (path, query) = req.path.split_once('?').unwrap_or((req.path.as_str(), ""));
 
         // True SSE stream: drop the short-lived HandlerSlot so long-lived SSE
         // subscribers never starve normal concurrent HTTP traffic (SSE tracks
@@ -1683,13 +1690,13 @@ fn handle(
             return Ok(());
         }
 
-        if req.method == "GET" && crate::teamwork::is_sse_path(&path) {
+        if req.method == "GET" && crate::teamwork::is_sse_path(path) {
             TL_KEEP_ALIVE.set(false);
             drop(slot_opt.take());
             crate::teamwork::try_serve_sse(
                 stream,
                 shared,
-                &path,
+                path,
                 query,
                 req.last_event_id,
                 host_allowed(&req.host, allowed),
@@ -1829,16 +1836,16 @@ fn handle(
     }
 
     // Open Cloud, shared secrets, reference search, art generation & image processing routes.
-    if try_route_opencloud_assets(&mut stream, shared, &req, &path, query) {
+    if try_route_opencloud_assets(&mut stream, shared, &req, path, query) {
         break 'req_done;
     }
 
     // Universal Anything-to-API / Anything-to-CLI tool adapter registry routes (#52).
-    if try_route_tool_adapters(&mut stream, shared, &req, &path, query) {
+    if try_route_tool_adapters(&mut stream, shared, &req, path, query) {
         break 'req_done;
     }
 
-    match (req.method.as_str(), path.as_str()) {
+    match (req.method.as_str(), path) {
         ("GET", "/api/art-knowledge") => {
             respond_json(&mut stream, "200 OK", &crate::art_knowledge::summary_json());
         }

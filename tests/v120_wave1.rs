@@ -105,7 +105,7 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.12.0"));
+    assert_eq!(ver_json["version"], json!("1.13.0"));
 
     // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
     if let Ok(entries) = std::fs::read_dir("assets/chunks") {
@@ -727,7 +727,7 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
         assert!(n > 0, "unexpected EOF on first keep-alive response");
         first_buf.extend_from_slice(&tmp[..n]);
         let s = String::from_utf8_lossy(&first_buf);
-        if s.contains("1.12.0") {
+        if s.contains("1.13.0") {
             assert!(s.contains("Connection: keep-alive"), "{s}");
             break;
         }
@@ -739,7 +739,7 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
     let _ = ka.read_to_end(&mut second_buf);
     let s2_txt = String::from_utf8_lossy(&second_buf);
     assert!(s2_txt.contains("HTTP/1.1 200 OK"), "{s2_txt}");
-    assert!(s2_txt.contains("1.12.0"), "{s2_txt}");
+    assert!(s2_txt.contains("1.13.0"), "{s2_txt}");
 
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -817,6 +817,122 @@ fn v1120_wave11_luau_dependency_graph_and_pruner() {
     assert_eq!(loc["schema"], json!("openro.dependency_graph.v1"));
     let bad_req = format!(
         "POST /api/studio/dependencies/prune HTTP/1.1\r\nHost: attacker.example:{port}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+    );
+    let (st_403, _, _) = send_raw_bytes(port, bad_req.as_bytes());
+    assert_eq!(st_403, 403);
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn v1130_wave12_snapshot_diff_and_safe_rollback() {
+    let base = std::env::temp_dir().join(format!(
+        "openro-v1130-wave12-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let data = base.join("data");
+    let ws = base.join("ws");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let port = start_server_with_dir(Some(data));
+    let (st_ws, _) = send_json(port, "POST", "/api/projects/workspace", Some(&json!({ "path": ws })));
+    assert_eq!(st_ws, 200);
+    let (st_cr, cr) = send_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(&json!({ "name": "Wave12Snapshots" })),
+    );
+    assert_eq!(st_cr, 201, "{cr}");
+    let pid = cr["project"]["id"].as_str().unwrap().to_string();
+    let proj_dir = std::path::PathBuf::from(cr["project"]["path"].as_str().unwrap());
+
+    // Ensure clean verified baseline via fix-all
+    let (st_fix, _) = send_json(port, "POST", &format!("/api/projects/{pid}/playtests/fix-all"), Some(&json!({})));
+    assert_eq!(st_fix, 200);
+    let good_src = "--!strict\nlocal Players = game:GetService(\"Players\")\nPlayers.PlayerAdded:Connect(function(p)\n  print(p.Name)\nend)\n";
+    std::fs::create_dir_all(proj_dir.join("src/server")).unwrap();
+    std::fs::write(proj_dir.join("src/server/GameLoop.server.luau"), good_src).unwrap();
+
+    let (st_s1, s1) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/snapshots"),
+        Some(&json!({ "label": "Verified Baseline" })),
+    );
+    assert_eq!(st_s1, 200, "{s1}");
+    let s1_id = s1["snapshot"]["snapshot_id"].as_str().unwrap().to_string();
+    assert_eq!(s1["snapshot"]["verified"], json!(true), "{s1}");
+    assert_eq!(s1["latest_verified_id"], json!(s1_id), "{s1}");
+
+    // Introduce broken Luau + extra file, then take second snapshot
+    std::fs::write(
+        proj_dir.join("src/server/GameLoop.server.luau"),
+        "function brokenLoop(\n  local bad = 1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        proj_dir.join("src/server/TempBroken.server.luau"),
+        "local x = 1\n",
+    )
+    .unwrap();
+    let (st_s2, s2) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/snapshots"),
+        Some(&json!({ "label": "Broken Experiment" })),
+    );
+    assert_eq!(st_s2, 200, "{s2}");
+    let s2_id = s2["snapshot"]["snapshot_id"].as_str().unwrap().to_string();
+    assert_eq!(s2["snapshot"]["verified"], json!(false), "{s2}");
+    assert_eq!(s2["latest_verified_id"], json!(s1_id), "{s2}");
+
+    // GET snapshots returns sequential diff + assertion delta
+    let (st_list, list) = send_json(port, "GET", &format!("/api/projects/{pid}/snapshots"), None);
+    assert_eq!(st_list, 200, "{list}");
+    assert_eq!(list["schema"], json!("openro.project_snapshots.v1"));
+    assert_eq!(list["latest_verified_id"], json!(s1_id));
+    let snaps = list["snapshots"].as_array().unwrap();
+    let broken_item = snaps.iter().find(|x| x["snapshot_id"] == json!(s2_id)).unwrap();
+    let changes = broken_item["changed_scripts"].as_array().unwrap();
+    assert!(changes.iter().any(|c| c["path"] == json!("src/server/GameLoop.server.luau") && c["op"] == json!("modified")), "{changes:?}");
+    assert!(changes.iter().any(|c| c["path"] == json!("src/server/TempBroken.server.luau") && c["op"] == json!("added")), "{changes:?}");
+    assert!(broken_item["assertion_delta"]["passed_delta"].as_i64().unwrap() < 0, "{broken_item}");
+
+    // 1-Click Safe Rollback to verified snapshot restores clean script & deletes newer file
+    let (st_rst, rst) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/snapshots/{s1_id}/restore"),
+        Some(&json!({ "auto_checkpoint": true })),
+    );
+    assert_eq!(st_rst, 200, "{rst}");
+    assert_eq!(rst["restored_id"], json!(s1_id), "{rst}");
+    assert_eq!(rst["rerun"]["passed"], json!(true), "{rst}");
+    assert!(!proj_dir.join("src/server/TempBroken.server.luau").exists());
+    assert_eq!(std::fs::read_to_string(proj_dir.join("src/server/GameLoop.server.luau")).unwrap(), good_src);
+
+    // Traversal + 404 + loopback-403 protections
+    let (st_bad, _) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/snapshots/..%2Fevil/restore"),
+        Some(&json!({})),
+    );
+    assert_eq!(st_bad, 400);
+    let (st_miss, _) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/snapshots/psnap-nonexistent/restore"),
+        Some(&json!({})),
+    );
+    assert_eq!(st_miss, 404);
+    let bad_req = format!(
+        "POST /api/projects/{pid}/snapshots/{s1_id}/restore HTTP/1.1\r\nHost: attacker.example:{port}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
     );
     let (st_403, _, _) = send_raw_bytes(port, bad_req.as_bytes());
     assert_eq!(st_403, 403);

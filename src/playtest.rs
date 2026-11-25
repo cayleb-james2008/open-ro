@@ -2595,6 +2595,321 @@ pub fn prune_or_fix_studio_place(agent: &mut crate::agent::Agent, chat_id: &str)
     }))
 }
 
+const MAX_PROJECT_SNAPSHOTS: usize = 20;
+
+fn project_snapshots_dir(dir: &Path) -> PathBuf {
+    dir.join(".openro").join("snapshots")
+}
+
+fn collect_project_luau_map(dir: &Path) -> std::collections::BTreeMap<String, String> {
+    let mut map = std::collections::BTreeMap::new();
+    let src_root = dir.join("src");
+    let mut stack = vec![src_root];
+    while let Some(cur) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&cur) else { continue };
+        for ent in rd.flatten() {
+            let p = ent.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if !(name.ends_with(".luau") || name.ends_with(".lua")) {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(&p) {
+                let rel = p.strip_prefix(dir).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+                map.insert(rel, text);
+            }
+        }
+    }
+    map
+}
+
+fn eval_project_assertion_summary(dir: &Path) -> Value {
+    let core_loop = latest_report_json(dir)
+        .as_ref()
+        .and_then(|rep| rep.get("core_loop"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let items: Vec<Value> = build_deterministic_assertions(dir, &[], &[], &core_loop, 0)
+        .into_iter()
+        .map(|a| {
+            json!({
+                "id": a["id"],
+                "passed": a["passed"].as_bool().unwrap_or(false),
+            })
+        })
+        .collect();
+    let passed_count = items
+        .iter()
+        .filter(|a| a["passed"].as_bool() == Some(true))
+        .count();
+    let total_count = items.len();
+    let passed = total_count > 0 && passed_count == total_count;
+    json!({
+        "passed": passed,
+        "passed_count": passed_count,
+        "total_count": total_count,
+        "total": total_count,
+        "failed_count": total_count.saturating_sub(passed_count),
+        "assertions": items,
+    })
+}
+
+fn load_sorted_project_snapshots(dir: &Path) -> Vec<Value> {
+    let root = project_snapshots_dir(dir);
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut snaps: Vec<Value> = rd
+        .flatten()
+        .filter_map(|ent| {
+            let p = ent.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("json") {
+                return None;
+            }
+            let raw = std::fs::read_to_string(&p).ok()?;
+            serde_json::from_str::<Value>(&raw).ok()
+        })
+        .collect();
+    snaps.sort_by_key(|v| v["created_at_ms"].as_u64().unwrap_or(0));
+    snaps
+}
+
+fn compute_snapshot_seq_diff(prev: Option<&Value>, curr: &Value) -> Value {
+    let empty_map = serde_json::Map::new();
+    let prev_scripts = prev
+        .and_then(|p| p.get("scripts"))
+        .and_then(Value::as_object)
+        .unwrap_or(&empty_map);
+    let curr_scripts = curr
+        .get("scripts")
+        .and_then(Value::as_object)
+        .unwrap_or(&empty_map);
+
+    let mut changed_scripts = Vec::new();
+    for (path, val) in curr_scripts {
+        let after_txt = val.as_str().unwrap_or("");
+        let after_lines = after_txt.lines().count();
+        match prev_scripts.get(path).and_then(Value::as_str) {
+            None => changed_scripts.push(json!({
+                "path": path,
+                "op": "added",
+                "before_lines": 0,
+                "after_lines": after_lines,
+            })),
+            Some(before_txt) if before_txt != after_txt => changed_scripts.push(json!({
+                "path": path,
+                "op": "modified",
+                "before_lines": before_txt.lines().count(),
+                "after_lines": after_lines,
+            })),
+            _ => {}
+        }
+    }
+    for (path, val) in prev_scripts {
+        if !curr_scripts.contains_key(path) {
+            changed_scripts.push(json!({
+                "path": path,
+                "op": "removed",
+                "before_lines": val.as_str().unwrap_or("").lines().count(),
+                "after_lines": 0,
+            }));
+        }
+    }
+
+    let curr_sum = &curr["assertion_summary"];
+    let curr_passed = curr_sum["passed_count"].as_i64().unwrap_or(0);
+    let prev_passed = prev
+        .and_then(|p| p["assertion_summary"]["passed_count"].as_i64())
+        .unwrap_or(curr_passed);
+    let mut prev_map: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    if let Some(arr) = prev.and_then(|p| p["assertion_summary"]["assertions"].as_array()) {
+        for a in arr {
+            if let Some(id) = a["id"].as_str() {
+                prev_map.insert(id.to_string(), a["passed"].as_bool().unwrap_or(false));
+            }
+        }
+    }
+    let mut newly_passed = Vec::new();
+    let mut newly_failed = Vec::new();
+    if let Some(arr) = curr_sum["assertions"].as_array() {
+        for a in arr {
+            let Some(id) = a["id"].as_str() else { continue };
+            let now_ok = a["passed"].as_bool().unwrap_or(false);
+            if let Some(&was_ok) = prev_map.get(id) {
+                if !was_ok && now_ok {
+                    newly_passed.push(id.to_string());
+                } else if was_ok && !now_ok {
+                    newly_failed.push(id.to_string());
+                }
+            }
+        }
+    }
+    json!({
+        "changed_scripts": changed_scripts,
+        "assertion_delta": {
+            "passed_delta": if prev.is_some() { curr_passed - prev_passed } else { 0 },
+            "prev_passed_count": prev_passed,
+            "curr_passed_count": curr_passed,
+            "newly_passed": newly_passed,
+            "newly_failed": newly_failed,
+        }
+    })
+}
+
+pub fn list_project_snapshots(r: &ProjectRef) -> Result<Value, Reply> {
+    let snaps = load_sorted_project_snapshots(&r.dir);
+    let mut enriched = Vec::with_capacity(snaps.len());
+    let mut latest_verified_id: Option<String> = None;
+    for (idx, snap) in snaps.iter().enumerate() {
+        let prev = if idx > 0 { Some(&snaps[idx - 1]) } else { None };
+        let diff = compute_snapshot_seq_diff(prev, snap);
+        let verified = snap["verified"].as_bool().unwrap_or(false);
+        let sid = snap["snapshot_id"].as_str().unwrap_or("").to_string();
+        if verified && !sid.is_empty() {
+            latest_verified_id = Some(sid.clone());
+        }
+        enriched.push(json!({
+            "snapshot_id": sid,
+            "label": snap["label"],
+            "created_at_ms": snap["created_at_ms"],
+            "scripts_count": snap["scripts"].as_object().map(|m| m.len()).unwrap_or(0),
+            "verified": verified,
+            "assertion_summary": snap["assertion_summary"],
+            "changed_scripts": diff["changed_scripts"],
+            "assertion_delta": diff["assertion_delta"],
+        }));
+    }
+    enriched.reverse();
+    Ok(json!({
+        "schema": "openro.project_snapshots.v1",
+        "latest_verified_id": latest_verified_id,
+        "snapshots": enriched,
+    }))
+}
+
+pub fn create_project_snapshot(r: &ProjectRef, body: &Value) -> Result<Reply, Reply> {
+    let root = project_snapshots_dir(&r.dir);
+    std::fs::create_dir_all(&root)
+        .map_err(|e| Reply::err("500 Internal Server Error", format!("snapshots dir: {e}")))?;
+    let label = body
+        .get("label")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Playtest Checkpoint")
+        .to_string();
+    let scripts = collect_project_luau_map(&r.dir);
+    let summary = eval_project_assertion_summary(&r.dir);
+    let verified = summary["passed"].as_bool().unwrap_or(false);
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    static SNAP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let seq = SNAP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let sid = format!("psnap-{ms}-{seq}");
+    let rec = json!({
+        "snapshot_id": sid,
+        "label": label,
+        "created_at_ms": ms,
+        "verified": verified,
+        "assertion_summary": summary,
+        "scripts": scripts,
+    });
+    let target = root.join(format!("{sid}.json"));
+    let tmp = root.join(format!("{sid}.json.tmp-openro"));
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&rec).unwrap_or_default())
+        .and_then(|_| std::fs::rename(&tmp, &target))
+        .map_err(|e| Reply::err("500 Internal Server Error", format!("write snapshot: {e}")))?;
+
+    let existing = load_sorted_project_snapshots(&r.dir);
+    if existing.len() > MAX_PROJECT_SNAPSHOTS {
+        for drop_snap in &existing[..existing.len() - MAX_PROJECT_SNAPSHOTS] {
+            if let Some(old_id) = drop_snap["snapshot_id"].as_str() {
+                if plain_name(old_id) {
+                    let _ = std::fs::remove_file(root.join(format!("{old_id}.json")));
+                }
+            }
+        }
+    }
+    let list = list_project_snapshots(r)?;
+    Ok(Reply::ok(json!({
+        "snapshot": rec,
+        "snapshots": list["snapshots"],
+        "latest_verified_id": list["latest_verified_id"],
+    })))
+}
+
+pub fn restore_project_snapshot(
+    shared: &Shared,
+    r: &ProjectRef,
+    sid: &str,
+    body: &Value,
+) -> Result<Reply, Reply> {
+    if !plain_name(sid) {
+        return Err(Reply::bad("invalid snapshot id"));
+    }
+    let target = project_snapshots_dir(&r.dir).join(format!("{sid}.json"));
+    if !target.is_file() {
+        return Err(Reply::err("404 Not Found", format!("snapshot not found: {sid}")));
+    }
+    let raw = std::fs::read_to_string(&target)
+        .map_err(|e| Reply::err("500 Internal Server Error", format!("read snapshot: {e}")))?;
+    let snap: Value = serde_json::from_str(&raw)
+        .map_err(|e| Reply::err("500 Internal Server Error", format!("corrupt snapshot: {e}")))?;
+    let Some(snap_scripts) = snap.get("scripts").and_then(Value::as_object) else {
+        return Err(Reply::err("500 Internal Server Error", "snapshot missing scripts map"));
+    };
+
+    let current_scripts = collect_project_luau_map(&r.dir);
+    let auto_checkpoint = body
+        .get("auto_checkpoint")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let differs = current_scripts.len() != snap_scripts.len()
+        || current_scripts
+            .iter()
+            .any(|(k, v)| snap_scripts.get(k).and_then(Value::as_str) != Some(v.as_str()));
+    if auto_checkpoint && differs {
+        let _ = create_project_snapshot(r, &json!({ "label": "Pre-rollback safety checkpoint" }));
+    }
+
+    let mut restored_files = Vec::new();
+    for (rel, val) in snap_scripts {
+        let Some(src) = val.as_str() else { continue };
+        write_project_luau(&r.dir, rel, src)?;
+        restored_files.push(rel.clone());
+    }
+    let mut removed_files = Vec::new();
+    for rel in current_scripts.keys() {
+        if !snap_scripts.contains_key(rel) {
+            if let Ok(abs) = crate::projects::safe_join(&r.dir, rel) {
+                if abs.is_file() && std::fs::remove_file(&abs).is_ok() {
+                    removed_files.push(rel.clone());
+                }
+            }
+        }
+    }
+
+    let rerun_reply = rerun_assertions(shared, r, &json!({ "offline": true }))?;
+    let rerun_json: Value = serde_json::from_slice(&rerun_reply.body).unwrap_or_else(|_| json!({}));
+    let list = list_project_snapshots(r)?;
+
+    Ok(Reply::ok(json!({
+        "restored_id": sid,
+        "label": snap["label"],
+        "verified": snap["verified"].as_bool().unwrap_or(false),
+        "restored_files": restored_files,
+        "removed_files": removed_files,
+        "rerun": rerun_json,
+        "snapshots": list["snapshots"],
+        "latest_verified_id": list["latest_verified_id"],
+    })))
+}
+
 /// Summary of the most recent stored playtest report for `study/status` (#62).
 pub fn latest_report_summary(dir: &Path) -> Option<Value> {
     let rep = latest_report_json(dir)?;

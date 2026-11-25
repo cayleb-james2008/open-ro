@@ -161,6 +161,50 @@ export type DependencyPruneResult = {
   before: DependencyGraphReport;
   after: DependencyGraphReport;
 };
+export type ProjectSnapshotScriptChange = {
+  path: string;
+  op: "added" | "modified" | "removed" | string;
+  before_lines: number;
+  after_lines: number;
+};
+export type ProjectSnapshotAssertionDelta = {
+  passed_delta: number;
+  prev_passed_count: number;
+  curr_passed_count: number;
+  newly_passed: string[];
+  newly_failed: string[];
+};
+export type ProjectSnapshotItem = {
+  snapshot_id: string;
+  label: string;
+  created_at_ms: number;
+  scripts_count: number;
+  verified: boolean;
+  assertion_summary?: {
+    passed?: boolean;
+    total?: number;
+    passed_count?: number;
+    failed_count?: number;
+    assertions?: { id: string; label?: string; passed: boolean; message?: string }[];
+  };
+  changed_scripts: ProjectSnapshotScriptChange[];
+  assertion_delta: ProjectSnapshotAssertionDelta;
+};
+export type ProjectSnapshotsResponse = {
+  schema?: string;
+  latest_verified_id?: string | null;
+  snapshots: ProjectSnapshotItem[];
+};
+export type ProjectSnapshotRestoreResult = {
+  restored_id: string;
+  label?: string;
+  verified?: boolean;
+  restored_files?: string[];
+  removed_files?: string[];
+  rerun?: PlaytestReport;
+  snapshots?: ProjectSnapshotItem[];
+  latest_verified_id?: string | null;
+};
 export type PlaytestReport = {
   run_id: string; passed: boolean; build_id?: string; mode?: string; duration_ms?: number;
   checks?: { name: string; passed: boolean; value?: unknown; error?: string | null; datamodel?: string }[];

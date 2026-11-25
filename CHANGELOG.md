@@ -4,6 +4,13 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.13.0 - 2026-11-25
+
+- **Playable Snapshot Diff & 1-Click Safe Rollback (`src/playtest.rs`, `src/project_api.rs`, `frontend/src/app/{SnapshotsDialog.tsx,ship/SnapshotRollbackCard.tsx,ship/PlaytestPanel.tsx,ship/api.ts}`, `frontend/web-engine/install.ts`):**
+  - Added project snapshot timeline endpoints (`GET /api/projects/:id/snapshots`, `POST /api/projects/:id/snapshots`, `POST /api/projects/:id/snapshots/:sid/restore`) computing sequential Luau `changed_scripts` + `assertion_delta` diffs, tracking `latest_verified_id`, enforcing traversal + loopback-403 guards, creating a `Pre-rollback safety checkpoint` automatically, restoring verified Luau state, cleaning up newer added files, and re-running assertions offline with full `web-engine` parity.
+- **Cold Throughput & Memory Hygiene (`Cargo.toml`, `src/server.rs`):**
+  - Removed per-request `set_write_timeout` syscall overhead, dropped thread-local heap buffer retention (`TL_READ_BUF`/`TL_HDR_BUF`/`TL_JSON_BUF`) in favor of stack header formatting and `&str` request path slicing, and trimmed `once_cell`/`smallvec` release overrides while keeping `opt-level = 3` on hot JSON/compression/hash crates.
+
 ## 1.12.0 - 2026-11-25
 
 - **Luau Module Dependency Graph & Broken-Require Pruner (`src/playtest.rs`, `src/project_api.rs`, `src/server.rs`, `frontend/src/app/ship/{DependencyGraphCard.tsx,PlaytestPanel.tsx,api.ts}`, `frontend/web-engine/install.ts`):**
