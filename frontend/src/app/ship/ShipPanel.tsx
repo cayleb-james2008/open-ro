@@ -45,14 +45,14 @@ export function ShipPanel({ ship, studioOk, onOpenProjects, onOpenSettings }: { 
     return (
       <div className="card-stock m-1 flex flex-col items-start gap-3 p-6" data-ship-empty>
         <h2 className="font-heading text-title font-semibold">Open a project to ship it</h2>
-        <p className="max-w-[56ch] text-ui text-ink-2">Publishing, asset uploads and playtest reports belong to a project. Pick one from the Projects list, or make a new one.</p>
+        <p className="max-w-[56ch] text-ui text-ink-2">Pick or create a project to publish, manage assets, and run playtests.</p>
         <Button variant="default" size="lg" onClick={onOpenProjects} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><FolderOpen className="size-4" strokeWidth={1.5} aria-hidden />Show projects</Button>
       </div>
     );
   }
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden" data-ship>
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex min-h-9 flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <h2 className="min-w-0 truncate font-heading text-title font-semibold">{ship.active.name}</h2>
           {study && (

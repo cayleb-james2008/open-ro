@@ -121,7 +121,7 @@ import { SettingsDialog } from "./app/SettingsDialog";
 import { useShip } from "./app/ship/useShip";
 import { ProjectsRail } from "./app/ship/ProjectsRail";
 import { ShipPanel } from "./app/ship/ShipPanel";
-import { call as apiCall } from "./app/ship/api";
+import { call as apiCall, projUrl, type CreatorHubSetupResult } from "./app/ship/api";
 import { StartupWizard, ONBOARDING_KEY } from "./app/StartupWizard";
 import { SwarmSidebarFeed } from "./app/SwarmSidebarFeed";
 import { TeamworkPanel } from "./app/teamwork/TeamworkPanel";
@@ -2899,6 +2899,23 @@ export function App() {
     </main>
   );
 
+  const handleQuickCreatorHubSetup = async (): Promise<CreatorHubSetupResult | void> => {
+    const endpoint = ship.activeId
+      ? projUrl(ship.activeId, "/creator-hub/setup")
+      : "/api/creator-hub/setup";
+    const r = await apiCall<CreatorHubSetupResult>(endpoint, {});
+    if (r.ok && r.status === "ready") {
+      toast.success("Creator Hub & Open Cloud linked");
+      void ship.refresh();
+      void ship.refreshCloud();
+    } else if (r.status === "action_required") {
+      toast.info(r.message || "Finish the prompt in the open Creator Hub browser tab, then retry.");
+    } else {
+      toast.error(r.error || r.message || "Could not reach open Creator Hub browser.");
+    }
+    return r;
+  };
+
   // Right Docked Prompt-First Agent Sidebar
   const rightCopilot = (
     <aside
@@ -2947,8 +2964,18 @@ export function App() {
           <SwarmSidebarFeed
             runId={activeSwarmId}
             initial={activeSwarmSnap}
+            projectId={ship.activeId}
             onOpenFullSwarm={() => {
               setCenterTab("teamwork");
+              setMobilePane("studio");
+            }}
+            onPrefillPrompt={(p) => {
+              setText(p);
+              inputRef.current?.focus();
+            }}
+            onQuickCreatorHubSetup={handleQuickCreatorHubSetup}
+            onOpenShip={() => {
+              setCenterTab("ship");
               setMobilePane("studio");
             }}
           />
@@ -3000,6 +3027,16 @@ export function App() {
               latestFileDiffs={latestFileDiffs}
               proposals={proposals}
               capturedFrameUrl={hasLiveFrame && frameSeq > 0 ? `/api/studio/frame?seq=${frameSeq}` : null}
+              projectId={ship.activeId}
+              onPrefillPrompt={(p) => {
+                setText(p);
+                inputRef.current?.focus();
+              }}
+              onQuickCreatorHubSetup={handleQuickCreatorHubSetup}
+              onOpenShip={() => {
+                setCenterTab("ship");
+                setMobilePane("studio");
+              }}
               onBuild={(idea) => void buildIdea(idea)}
               onOpenScriptDiff={(p) => handleOpenScriptInCodeDiff(p)}
               onInspectProposal={(pid, scriptPath) => {

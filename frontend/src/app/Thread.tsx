@@ -13,6 +13,8 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { AdaptiveAgentCards } from "./AdaptiveAgentCards";
+import type { CreatorHubSetupResult } from "./ship/api";
 import { Spinner } from "@/components/ui/spinner";
 import { Expandable, ExpandableContent, ExpandableTrigger } from "@/components/ui/expandable";
 import { SlidingNumber } from "@/components/ui/sliding-number";
@@ -125,6 +127,10 @@ export function AgentMessage({
   bad,
   whole,
   fresh,
+  projectId,
+  onPrefillPrompt,
+  onQuickCreatorHubSetup,
+  onOpenShip,
   onRetry,
   retryDisabled,
 }: {
@@ -132,10 +138,24 @@ export function AgentMessage({
   bad?: boolean;
   whole?: boolean;
   fresh?: boolean;
+  projectId?: string | null;
+  onPrefillPrompt?: (prompt: string) => void;
+  onQuickCreatorHubSetup?: () => Promise<CreatorHubSetupResult | void>;
+  onOpenShip?: () => void;
   onRetry?: () => void;
   retryDisabled?: boolean;
 }) {
   const { plain: say, raw } = agentText(text, !!bad, !!whole);
+  const needsSummary = !whole && (say.length > 160 || say.includes("\n"));
+  const shortSay = needsSummary
+    ? (() => {
+        const firstLine = say.split("\n")[0].trim();
+        const sentEnd = firstLine.search(/[.!?](?:\s|$)/);
+        const cut = sentEnd > 24 && sentEnd < 150 ? firstLine.slice(0, sentEnd + 1) : firstLine.slice(0, 148).trimEnd() + "...";
+        return cut;
+      })()
+    : say;
+  const detailsBody = raw || (needsSummary ? say : "");
   return (
     <motion.div
       initial={fresh ? { opacity: 0, y: 4 } : false}
@@ -149,7 +169,7 @@ export function AgentMessage({
       }`}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <p className="min-w-0 flex-1 [overflow-wrap:anywhere]">{say}</p>
+        <p className="min-w-0 flex-1 [overflow-wrap:anywhere]">{shortSay}</p>
         {bad && onRetry && (
           <Button
             variant="outline"
@@ -164,7 +184,17 @@ export function AgentMessage({
         )}
       </div>
 
-      {raw && (
+      <AdaptiveAgentCards
+        text={text}
+        projectId={projectId}
+        onPrefillPrompt={onPrefillPrompt}
+        onQuickCreatorHubSetup={onQuickCreatorHubSetup}
+        onOpenShip={onOpenShip}
+        onRetry={onRetry}
+        retryDisabled={retryDisabled}
+      />
+
+      {detailsBody && (
         <Expandable expandDirection="vertical" expandBehavior="push">
           {({ isExpanded }) => (
             <div className="border-t border-hairline/70 pt-2">
@@ -174,14 +204,14 @@ export function AgentMessage({
               >
                 <span>Details</span>
                 <ChevronDown
-                  className={`size-3.5 transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`}
+                  className={`size-3.5 duration-(--dur-swap) ease-(--ease-house) motion-safe:transition-transform ${isExpanded ? "rotate-180" : ""}`}
                   strokeWidth={1.5}
                   aria-hidden
                 />
               </ExpandableTrigger>
               <ExpandableContent preset="fade">
                 <pre className="mt-1.5 whitespace-pre-wrap break-all rounded-sm bg-board p-2.5 font-mono text-xs text-ink-2">
-                  {raw}
+                  {detailsBody}
                 </pre>
               </ExpandableContent>
             </div>
@@ -610,6 +640,10 @@ export function ThreadFeed({
   latestFileDiffs = [],
   proposals = [],
   capturedFrameUrl,
+  projectId,
+  onPrefillPrompt,
+  onQuickCreatorHubSetup,
+  onOpenShip,
   onBuild,
   onOpenScriptDiff,
   onInspectProposal,
@@ -630,6 +664,10 @@ export function ThreadFeed({
   latestFileDiffs?: ScriptFileDiff[];
   proposals?: PendingProposal[];
   capturedFrameUrl?: string | null;
+  projectId?: string | null;
+  onPrefillPrompt?: (prompt: string) => void;
+  onQuickCreatorHubSetup?: () => Promise<CreatorHubSetupResult | void>;
+  onOpenShip?: () => void;
   onBuild: (idea: Idea) => void;
   onOpenScriptDiff?: (path: string) => void;
   onInspectProposal?: (proposalId: string, scriptPath?: string) => void;
@@ -728,6 +766,10 @@ export function ThreadFeed({
           text={it.text}
           bad={isBad}
           fresh={fresh}
+          projectId={projectId}
+          onPrefillPrompt={onPrefillPrompt}
+          onQuickCreatorHubSetup={onQuickCreatorHubSetup}
+          onOpenShip={onOpenShip}
           onRetry={isBad && lastTriedIdea ? () => onBuild(lastTriedIdea) : undefined}
           retryDisabled={!canBuild || busy}
         />,
@@ -752,6 +794,10 @@ export function ThreadFeed({
           bad={n.bad}
           whole
           fresh
+          projectId={projectId}
+          onPrefillPrompt={onPrefillPrompt}
+          onQuickCreatorHubSetup={onQuickCreatorHubSetup}
+          onOpenShip={onOpenShip}
           onRetry={n.bad && lastTriedIdea ? () => onBuild(lastTriedIdea) : undefined}
           retryDisabled={!canBuild || busy}
         />
