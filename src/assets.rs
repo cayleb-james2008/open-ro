@@ -1108,6 +1108,33 @@ pub fn prepare_character_prompt(raw: &str) -> Result<String, String> {
     }
 }
 
+/// Append a concise Roblox-safe zero-blood/zero-gore directive to art prompts unless already stated (#72).
+pub fn ensure_roblox_safe_prompt(prompt: &str) -> String {
+    let one = collapse_one_line(prompt);
+    let lower = one.to_ascii_lowercase();
+    if lower.contains("zero blood") || lower.contains("no blood") || lower.contains("roblox-safe") {
+        one
+    } else {
+        format!(
+            "{one}, Roblox-safe anime style: strictly zero blood, zero gore, zero open wounds, zero crimson splatters on skin, clothes, or weapons; use stylized glowing energy or chakra effects instead"
+        )
+    }
+}
+
+/// Normalize a weapon/prop sheet prompt for clean orthographic design sheets (#73).
+pub fn ensure_weapon_sheet_prompt(prompt: &str) -> String {
+    let one = collapse_one_line(prompt);
+    let lower = one.to_ascii_lowercase();
+    let with_sheet = if lower.contains("orthographic") || lower.contains("reference sheet") {
+        one
+    } else {
+        format!(
+            "{one}, clean orthographic prop reference sheet on solid neutral studio backdrop showing full side profile and blade/guard/grip detail views, standalone weapon only, zero characters or hands, zero text or watermarks"
+        )
+    };
+    ensure_roblox_safe_prompt(&with_sheet)
+}
+
 /// Extract `(width, height)` from PNG/JPEG/WebP header bytes without external dependencies.
 pub fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     // PNG: 8-byte signature + 4-byte len + "IHDR" + 4-byte w + 4-byte h
@@ -1218,11 +1245,20 @@ fn default_out_path(body: &Value) -> String {
         "frame" => format!("art/frames/{slug}.png"),
         "store" | "thumbnail" => format!("art/store/{slug}.png"),
         "world" | "backdrop" => format!("art/worlds/{slug}.png"),
+        "weapon" | "weapon_sheet" | "prop_sheet" => format!("art/weapons/{slug}.png"),
         _ => format!("art/cards/{slug}.png"),
     }
 }
 
 type ResolvedRefImage = (String, PathBuf, Vec<u8>, &'static str);
+
+pub fn resolve_reference_images_for_test(root: &Path, body: &Value) -> ArtRes<Vec<String>> {
+    resolve_reference_images(root, body).map(|v| v.into_iter().map(|r| r.0).collect())
+}
+
+pub fn default_out_path_for_test(body: &Value) -> String {
+    default_out_path(body)
+}
 
 fn resolve_reference_images(root: &Path, body: &Value) -> ArtRes<Vec<ResolvedRefImage>> {
     let mut raw_paths: Vec<String> = Vec::new();
@@ -1232,7 +1268,7 @@ fn resolve_reference_images(root: &Path, body: &Value) -> ArtRes<Vec<ResolvedRef
             raw_paths.push(t.to_string());
         }
     };
-    for arr_key in ["reference_images", "ref_images", "references"] {
+    for arr_key in ["reference_images", "ref_images", "references", "weapon_sheets"] {
         if let Some(arr) = body.get(arr_key).and_then(Value::as_array) {
             for v in arr {
                 if let Some(s) = v.as_str() {
@@ -1241,7 +1277,7 @@ fn resolve_reference_images(root: &Path, body: &Value) -> ArtRes<Vec<ResolvedRef
             }
         }
     }
-    for single_key in ["reference_image", "ref_image"] {
+    for single_key in ["reference_image", "ref_image", "weapon_sheet"] {
         if let Some(single) = body.get(single_key).and_then(Value::as_str) {
             push_unique(single);
         }
@@ -1439,17 +1475,30 @@ pub fn art_generate(store: &SecretStore, root: &Path, body: &Value) -> ArtRes<Va
     let ref_rels: Vec<String> = refs.iter().map(|r| r.0.clone()).collect();
     let project_param = body.get("project").and_then(Value::as_str).unwrap_or("");
     let kind = body.get("kind").and_then(Value::as_str).unwrap_or("card");
+    let is_weapon_sheet = matches!(
+        kind.to_ascii_lowercase().as_str(),
+        "weapon" | "weapon_sheet" | "prop_sheet"
+    );
     let character_art = body
         .get("character_art")
         .and_then(Value::as_bool)
-        .unwrap_or_else(|| kind.eq_ignore_ascii_case("card") || !refs.is_empty());
+        .unwrap_or_else(|| !is_weapon_sheet && (kind.eq_ignore_ascii_case("card") || !refs.is_empty()));
+
+    let finalized_non_character = |raw: &str| -> String {
+        if is_weapon_sheet {
+            ensure_weapon_sheet_prompt(raw)
+        } else {
+            ensure_roblox_safe_prompt(&collapse_one_line(raw))
+        }
+    };
 
     match raw_provider.as_str() {
         "chatgpt" | "chatgpt-shared-browser" | "chatgpt_shared_browser" | "auto" => {
             let prompt = if character_art {
-                prepare_character_prompt(raw_prompt).map_err(|e| Oc { status: 400, msg: e })?
+                let p = prepare_character_prompt(raw_prompt).map_err(|e| Oc { status: 400, msg: e })?;
+                ensure_roblox_safe_prompt(&p)
             } else {
-                collapse_one_line(raw_prompt)
+                finalized_non_character(raw_prompt)
             };
             let timeout_s = body
                 .get("timeout_s")
@@ -1707,10 +1756,12 @@ pub fn art_generate(store: &SecretStore, root: &Path, body: &Value) -> ArtRes<Va
             }
         }
         "gemini" | "gemini-api" | "nano-banana" | "google-nano-banana" => {
-            art_generate_gemini(store, root, project_param, kind, raw_prompt, &out_rel, &out_abs, &refs, body)
+            let safe_prompt = finalized_non_character(raw_prompt);
+            art_generate_gemini(store, root, project_param, kind, &safe_prompt, &out_rel, &out_abs, &refs, body)
         }
         "openai" | "openai-image" => {
-            art_generate_openai(store, root, project_param, kind, raw_prompt, &out_rel, &out_abs, &refs, body)
+            let safe_prompt = finalized_non_character(raw_prompt);
+            art_generate_openai(store, root, project_param, kind, &safe_prompt, &out_rel, &out_abs, &refs, body)
         }
         other => art_bad(format!(
             "Unsupported image provider '{other}': expected 'chatgpt' (default), 'gemini', or 'openai'."

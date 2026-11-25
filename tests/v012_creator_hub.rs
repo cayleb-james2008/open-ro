@@ -793,3 +793,122 @@ with open(fbx_out, "wb") as f:
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn opencloud_moderation_circuit_breaker_and_weapon_sheet_gap_72_73() {
+    let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let root = scratch_dir("gap72_73");
+    let data_dir = root.join("data");
+    let secrets_dir = root.join("secrets");
+    let project_dir = data_dir.join("projects").join("uacg-mod");
+    std::fs::create_dir_all(project_dir.join("art/cards/c1")).unwrap();
+    std::fs::create_dir_all(project_dir.join("art/cards/c2")).unwrap();
+    std::fs::create_dir_all(project_dir.join("art/cards/c3")).unwrap();
+    std::fs::create_dir_all(project_dir.join("art/references")).unwrap();
+    std::fs::create_dir_all(project_dir.join("art/weapons")).unwrap();
+
+    let png1 = sample_png_bytes();
+    let mut png2 = sample_png_bytes();
+    let mut png3 = sample_png_bytes();
+    png2.extend_from_slice(b"c2");
+    png3.extend_from_slice(b"c3");
+    std::fs::write(project_dir.join("art/cards/c1/art.png"), &png1).unwrap();
+    std::fs::write(project_dir.join("art/cards/c2/art.png"), &png2).unwrap();
+    std::fs::write(project_dir.join("art/cards/c3/art.png"), &png3).unwrap();
+    std::fs::write(project_dir.join("art/references/toji.png"), &png1).unwrap();
+    std::fs::write(project_dir.join("art/weapons/toji_weapon.png"), &png2).unwrap();
+
+    std::fs::write(
+        project_dir.join("openro.project.json"),
+        json!({
+            "name": "UACG Mod",
+            "universeId": 10771116814u64,
+            "placeId": 112916648108736u64,
+            "assets": { "authorised": ["art/cards/*/art.png"], "lockFile": "assets.lock.json" }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // 1. Prompt & weapon_sheet helpers (#72, #73)
+    let p_safe = openro_rs::assets::ensure_roblox_safe_prompt("Itachi Uchiha in Akatsuki cloak");
+    assert!(p_safe.to_ascii_lowercase().contains("zero blood"), "got: {p_safe}");
+    assert_eq!(openro_rs::assets::ensure_roblox_safe_prompt(&p_safe), p_safe);
+
+    let p_ws = openro_rs::assets::ensure_weapon_sheet_prompt("Inverted Spear of Heaven");
+    assert!(p_ws.contains("orthographic prop reference sheet"), "got: {p_ws}");
+    assert!(p_ws.to_ascii_lowercase().contains("zero blood"), "got: {p_ws}");
+
+    assert_eq!(
+        openro_rs::assets::default_out_path_for_test(&json!({
+            "kind": "weapon_sheet",
+            "card_id": "w4_sorcerer_killer_weapon"
+        })),
+        "art/weapons/w4_sorcerer_killer_weapon.png"
+    );
+    let resolved = openro_rs::assets::resolve_reference_images_for_test(
+        &project_dir,
+        &json!({
+            "reference_image": "art/references/toji.png",
+            "weapon_sheet": "art/weapons/toji_weapon.png"
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        resolved,
+        vec![
+            "art/references/toji.png".to_string(),
+            "art/weapons/toji_weapon.png".to_string()
+        ]
+    );
+
+    // 2. Moderation 403 circuit-breaker (#72): mock returns 403 User is moderated on first upload; batch must halt at 1 request!
+    let mod_calls = Arc::new(Mutex::new(0usize));
+    let mod_calls_srv = Arc::clone(&mod_calls);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mock_addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let calls = Arc::clone(&mod_calls_srv);
+            std::thread::spawn(move || {
+                let mut s = stream;
+                let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                *calls.lock().unwrap() += 1;
+                let body = r#"{"code":"PERMISSION_DENIED","message":"User is moderated"}"#;
+                let resp = format!(
+                    "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = s.write_all(resp.as_bytes());
+                let _ = s.flush();
+            });
+        }
+    });
+
+    let _g = EnvGuard::set(&[
+        ("OPENRO_DATA_DIR", data_dir.to_str().unwrap()),
+        ("OPENRO_SECRETS_DIR", secrets_dir.to_str().unwrap()),
+        ("OPENRO_OPENCLOUD_BASE", &format!("http://127.0.0.1:{}", mock_addr.port())),
+        ("OPENRO_OPENCLOUD_POLL_MS", "1"),
+    ]);
+    let store = openro_rs::secrets::SecretStore::at(secrets_dir);
+    store.set(openro_rs::secrets::OPENCLOUD_KEY, "test-opencloud-key-0123456789").unwrap();
+    store.set("opencloud_creator", "user:1170918805").unwrap();
+
+    let port = start_server(&data_dir);
+    let (st, res) = http_json(
+        port,
+        "POST",
+        "/api/projects/uacg-mod/assets/upload",
+        &json!({ "paths": ["art/cards/c1/art.png", "art/cards/c2/art.png", "art/cards/c3/art.png"] }),
+    );
+    assert_eq!(st, 200, "unexpected status: {res}");
+    assert_eq!(res["summary"]["failed"], 1, "must halt after first moderated 403: {res}");
+    assert_eq!(res["summary"]["halted_reason"], "account_moderated", "got: {res}");
+    assert_eq!(*mod_calls.lock().unwrap(), 1, "must not send c2/c3 after User is moderated");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
