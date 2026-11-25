@@ -540,3 +540,163 @@ pub fn build_rojo_ship_pack_with_manager(
     }
     build_rojo_ship_pack(place, &assets)
 }
+
+fn is_safe_zip_entry_name(clean: &str) -> bool {
+    !clean.is_empty()
+        && !clean.starts_with('/')
+        && !clean.contains('\\')
+        && !clean.contains(':')
+        && !clean.bytes().any(|b| b < 0x20 || b == 0x7f)
+        && !clean
+            .split('/')
+            .any(|s| s.is_empty() || s == "." || s == "..")
+}
+
+/// Verify PKZIP archive integrity: checks every Local File Header (`0x04034B50`),
+/// Central Directory (`0x02014B50`), End-of-Central-Directory (`0x06054B50`),
+/// zip-slip safe relative paths, and IEEE CRC-32 checksums (for Stored method 0).
+pub fn verify_zip_integrity(zip_bytes: &[u8]) -> Value {
+    let fail = |reason: String, zip_slip_clean: bool, crc_verified: bool, count: usize| {
+        json!({
+            "ok": false,
+            "entry_count": count,
+            "total_bytes": zip_bytes.len(),
+            "crc_verified": crc_verified,
+            "zip_slip_clean": zip_slip_clean,
+            "error": reason,
+        })
+    };
+
+    if zip_bytes.len() < 22 {
+        return fail("archive truncated (< 22 bytes EOCD minimum)".into(), true, false, 0);
+    }
+    let eocd_off = match (0..=zip_bytes.len() - 22)
+        .rev()
+        .find(|&i| zip_bytes[i..i + 4] == 0x0605_4B50u32.to_le_bytes())
+    {
+        Some(pos) => pos,
+        None => return fail("missing ZIP End-of-Central-Directory signature".into(), true, false, 0),
+    };
+    let u16_at = |o: usize| u16::from_le_bytes([zip_bytes[o], zip_bytes[o + 1]]);
+    let u32_at = |o: usize| {
+        u32::from_le_bytes([
+            zip_bytes[o],
+            zip_bytes[o + 1],
+            zip_bytes[o + 2],
+            zip_bytes[o + 3],
+        ])
+    };
+    let cd_entries = u16_at(eocd_off + 10) as usize;
+    let cd_size = u32_at(eocd_off + 12) as usize;
+    let cd_offset = u32_at(eocd_off + 16) as usize;
+    if cd_offset.saturating_add(cd_size) > eocd_off {
+        return fail("central directory exceeds archive bounds".into(), true, false, 0);
+    }
+
+    let mut pos = 0usize;
+    let mut entries = Vec::new();
+    let mut local_crcs: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+    while pos < cd_offset {
+        if pos + 30 > cd_offset || u32_at(pos) != 0x0403_4B50 {
+            return fail(
+                format!("corrupt local file header at byte {pos}"),
+                true,
+                false,
+                entries.len(),
+            );
+        }
+        let method = u16_at(pos + 8);
+        let expected_crc = u32_at(pos + 14);
+        let comp_sz = u32_at(pos + 18) as usize;
+        let uncomp_sz = u32_at(pos + 22) as usize;
+        let name_len = u16_at(pos + 26) as usize;
+        let extra_len = u16_at(pos + 28) as usize;
+        let name_start = pos + 30;
+        let data_start = name_start + name_len + extra_len;
+        let data_end = data_start.saturating_add(comp_sz);
+        if data_end > cd_offset {
+            return fail("local file payload extends past central directory".into(), true, false, entries.len());
+        }
+        let name = String::from_utf8_lossy(&zip_bytes[name_start..name_start + name_len]).into_owned();
+        if !is_safe_zip_entry_name(&name) {
+            return fail(format!("unsafe zip-slip path detected: '{name}'"), false, false, entries.len());
+        }
+        if method == 0
+            && (comp_sz != uncomp_sz || crc32(&zip_bytes[data_start..data_end]) != expected_crc)
+        {
+            return fail(format!("CRC-32 mismatch on '{name}'"), true, false, entries.len());
+        }
+        local_crcs.insert(name.clone(), (expected_crc, uncomp_sz as u32));
+        entries.push(name);
+        pos = data_end;
+    }
+
+    let mut cd_pos = cd_offset;
+    let mut cd_count = 0usize;
+    while cd_pos < cd_offset + cd_size {
+        if cd_pos + 46 > cd_offset + cd_size || u32_at(cd_pos) != 0x0201_4B50 {
+            return fail("corrupt central directory header".into(), true, false, entries.len());
+        }
+        let cd_crc = u32_at(cd_pos + 16);
+        let cd_uncomp = u32_at(cd_pos + 24);
+        let name_len = u16_at(cd_pos + 28) as usize;
+        let extra_len = u16_at(cd_pos + 30) as usize;
+        let comment_len = u16_at(cd_pos + 32) as usize;
+        let header_end = cd_pos + 46 + name_len + extra_len + comment_len;
+        if header_end > cd_offset + cd_size {
+            return fail("central directory entry truncated".into(), true, false, entries.len());
+        }
+        let name = String::from_utf8_lossy(&zip_bytes[cd_pos + 46..cd_pos + 46 + name_len]).into_owned();
+        if !is_safe_zip_entry_name(&name) {
+            return fail(format!("unsafe zip-slip path in central directory: '{name}'"), false, false, entries.len());
+        }
+        if local_crcs.get(&name) != Some(&(cd_crc, cd_uncomp)) {
+            return fail(format!("central directory CRC/size mismatch for '{name}'"), true, false, entries.len());
+        }
+        cd_count += 1;
+        cd_pos = header_end;
+    }
+
+    if cd_count != cd_entries || cd_count != entries.len() {
+        return fail(
+            format!("ZIP entry count mismatch (local {}, cd {}, eocd {})", entries.len(), cd_count, cd_entries),
+            true,
+            false,
+            entries.len(),
+        );
+    }
+
+    json!({
+        "ok": true,
+        "entry_count": entries.len(),
+        "total_bytes": zip_bytes.len(),
+        "crc_verified": true,
+        "zip_slip_clean": true,
+        "entries": entries,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zip_integrity_verifies_valid_ship_pack_and_rejects_tamper() {
+        let mut place = LocalPlace::in_memory("Integrity Obby".into());
+        place.set_game_name("Integrity Obby".into());
+        let bundle = build_rojo_ship_pack(&place, &[]).unwrap();
+        let report = verify_zip_integrity(&bundle.zip_bytes);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert_eq!(report["crc_verified"], json!(true));
+        assert_eq!(report["zip_slip_clean"], json!(true));
+
+        let mut bad = bundle.zip_bytes.clone();
+        // Flip one byte in the first stored payload (right after header)
+        if bad.len() > 60 {
+            bad[55] ^= 0xFF;
+        }
+        let bad_rep = verify_zip_integrity(&bad);
+        assert_eq!(bad_rep["ok"], json!(false), "{bad_rep}");
+        assert_eq!(bad_rep["crc_verified"], json!(false));
+    }
+}

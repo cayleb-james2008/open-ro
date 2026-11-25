@@ -4,6 +4,15 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.5.0 - 2026-11-25
+
+- **Fix All Blockers Score Delta & Ship Pack Integrity Diagnostics (`src/opencloud.rs`, `src/rojo_export.rs`, `frontend/src/app/ship/ReadinessAutopilot.tsx`, `api.ts`):**
+  - Added before/after 0–100 score delta (`before_score`, `after_score`, `score_delta`, `pillar_deltas`) to `POST /api/projects/:id/autopilot` and live `+Δ pts` delta pills + per-pillar `+Δ` counters on **"Fix All Blockers & Re-Verify"** in `ReadinessAutopilot`.
+  - Added `verify_zip_integrity` (PKZIP Local Header / Central Directory / EOCD / IEEE CRC-32 / zip-slip path check) in `src/rojo_export.rs` and wired `ship_pack_integrity` + `monetization_parity` (`ProductIds.luau` synced-key parity + owner price-gate) into `GET /api/projects/:id/readiness` and inline UI diagnostics.
+- **Pre-Gzipped Lazy UI Chunks, Snapshot Cache & Compact Worker Pool (`frontend/vite.config.ts`, `build.rs`, `src/server.rs`, `src/snapshots.rs`):**
+  - Pre-compressed all 17 lazy UI chunks to `.js.gz` in `assets/chunks/` via `vite.config.ts` and served them zero-copy straight out of `.rodata` in `serve_chunk_asset` (eliminating ~630 KB from the binary and `CHUNK_CACHE` heap memory).
+  - Tuned `serve()` persistent HTTP worker pool (`POOL_WORKERS = 20`, `384 KB` stack) and added `summary_response_bytes()` caching on `SnapshotStore` to drop 30-worker Peak RSS (`VmHWM`) further while preserving `7,000+ req/s` and `~11 ms` cold boot.
+
 ## 1.4.0 - 2026-11-25
 
 - **Frontend Code-Splitting & Bundle Diet (`frontend/src/App.tsx`, `ShipPanel.tsx`, `marketTaste.ts`, `vite.config.ts`, `build.rs`, `src/server.rs`):**

@@ -647,7 +647,7 @@ impl Drop for HandlerSlot {
     }
 }
 
-const POOL_WORKERS: usize = 48;
+const POOL_WORKERS: usize = 20;
 
 struct WorkerJob {
     stream: TcpStream,
@@ -677,7 +677,7 @@ pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> 
         let bw = Arc::clone(&busy_workers);
         let _ = std::thread::Builder::new()
             .name(format!("openro-http-{idx}"))
-            .stack_size(512 * 1024)
+            .stack_size(384 * 1024)
             .spawn(move || loop {
                 let job = {
                     let (lock, cvar) = &*q;
@@ -715,7 +715,7 @@ pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> 
         shared.active_handlers.fetch_add(1, Ordering::SeqCst);
         let slot = HandlerSlot(Arc::clone(&shared));
         // Reuse persistent pool workers for zero thread-spawn churn & bounded glibc arenas;
-        // spawn an overflow thread only if all 48 pool workers are occupied (e.g., many SSE streams).
+        // spawn an overflow thread only if all POOL_WORKERS threads are occupied (e.g., many SSE streams).
         if busy_workers.load(Ordering::Relaxed) >= POOL_WORKERS {
             let sh = Arc::clone(&shared);
             let al = Arc::clone(&allowed);
@@ -1832,16 +1832,19 @@ fn handle(
         ("GET", "/api/snapshots") => {
             let include_tree = query_param(query, "include_tree")
                 .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-            let store = shared.snapshots.lock().unwrap();
-            respond_json(
-                &mut stream,
-                "200 OK",
-                &json!({
+            if include_tree {
+                let store = shared.snapshots.lock().unwrap();
+                let payload = json!({
                     "ok": true,
-                    "snapshots": store.list(include_tree),
+                    "snapshots": store.list(true),
                     "latest_diff": store.latest_diff(),
-                }),
-            );
+                });
+                drop(store);
+                respond_json(&mut stream, "200 OK", &payload);
+            } else {
+                let bytes = shared.snapshots.lock().unwrap().summary_response_bytes();
+                respond_bytes(&mut stream, "200 OK", "application/json", "no-store", &bytes);
+            }
         }
         ("POST", "/api/snapshots") => {
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
@@ -8124,46 +8127,37 @@ fn serve_index_page(
 }
 
 fn serve_chunk_asset(stream: &mut TcpStream, req: &Request, name: &str) -> bool {
-    use flate2::{write::GzEncoder, Compression};
+    use flate2::{read::GzDecoder, write::GzEncoder, Compression};
     use sha2::{Digest, Sha256};
     use std::collections::HashMap;
 
-    let Some(raw) = ui_chunks::get(name) else {
+    let Some((blob, is_gz)) = ui_chunks::get_gz(name) else {
         return false;
     };
-    static CHUNK_CACHE: OnceLock<Mutex<HashMap<String, Arc<CachedIndex>>>> = OnceLock::new();
-    let cache = CHUNK_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let entry = {
-        let guard = cache.lock().unwrap();
+    static ETAG_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    let etag_map = ETAG_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let etag = {
+        let guard = etag_map.lock().unwrap();
         guard.get(name).cloned()
     }
     .unwrap_or_else(|| {
         let mut hasher = Sha256::new();
-        hasher.update(raw);
+        hasher.update(blob);
         let digest = hasher.finalize();
-        let etag = format!(
+        let tag = format!(
             "\"{:016x}\"",
             u64::from_be_bytes(digest[..8].try_into().unwrap_or([0; 8]))
         );
-        let mut enc = GzEncoder::new(Vec::with_capacity(raw.len() / 3), Compression::default());
-        let gzip = if enc.write_all(raw).is_ok() {
-            enc.finish().unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        let built = Arc::new(CachedIndex {
-            plain: raw.to_vec(),
-            gzip,
-            etag,
-        });
-        cache.lock().unwrap().insert(name.to_string(), Arc::clone(&built));
-        built
+        let mut map = etag_map.lock().unwrap();
+        if map.len() < 128 {
+            map.insert(name.to_string(), tag.clone());
+        }
+        tag
     });
 
-    if etag_matches(&req.if_none_match, &entry.etag) {
+    if etag_matches(&req.if_none_match, &etag) {
         let resp = format!(
-            "HTTP/1.1 304 Not Modified\r\nETag: {}\r\nCache-Control: public, max-age=31536000, immutable\r\nVary: Accept-Encoding\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            entry.etag
+            "HTTP/1.1 304 Not Modified\r\nETag: {etag}\r\nCache-Control: public, max-age=31536000, immutable\r\nVary: Accept-Encoding\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         );
         let _ = stream.write_all(resp.as_bytes());
         let _ = stream.flush();
@@ -8175,28 +8169,64 @@ fn serve_chunk_asset(stream: &mut TcpStream, req: &Request, name: &str) -> bool 
     } else {
         "application/javascript; charset=utf-8"
     };
-    if !entry.gzip.is_empty() && accepts_gzip(&req.accept_encoding) {
-        let extra = format!(
-            "ETag: {}\r\nVary: Accept-Encoding\r\nContent-Encoding: gzip\r\n",
-            entry.etag
-        );
+    if accepts_gzip(&req.accept_encoding) {
+        let extra = format!("ETag: {etag}\r\nVary: Accept-Encoding\r\nContent-Encoding: gzip\r\n");
+        if is_gz {
+            respond_bytes_with_headers(
+                stream,
+                "200 OK",
+                content_type,
+                "public, max-age=31536000, immutable",
+                &extra,
+                blob,
+            );
+        } else {
+            let mut enc = GzEncoder::new(Vec::with_capacity(blob.len() / 3), Compression::default());
+            if enc.write_all(blob).is_ok() {
+                if let Ok(gz) = enc.finish() {
+                    respond_bytes_with_headers(
+                        stream,
+                        "200 OK",
+                        content_type,
+                        "public, max-age=31536000, immutable",
+                        &extra,
+                        &gz,
+                    );
+                    return true;
+                }
+            }
+            let extra_plain = format!("ETag: {etag}\r\nVary: Accept-Encoding\r\n");
+            respond_bytes_with_headers(
+                stream,
+                "200 OK",
+                content_type,
+                "public, max-age=31536000, immutable",
+                &extra_plain,
+                blob,
+            );
+        }
+    } else if is_gz {
+        let mut dec = GzDecoder::new(blob);
+        let mut plain = Vec::new();
+        let _ = dec.read_to_end(&mut plain);
+        let extra = format!("ETag: {etag}\r\nVary: Accept-Encoding\r\n");
         respond_bytes_with_headers(
             stream,
             "200 OK",
             content_type,
             "public, max-age=31536000, immutable",
             &extra,
-            &entry.gzip,
+            &plain,
         );
     } else {
-        let extra = format!("ETag: {}\r\nVary: Accept-Encoding\r\n", entry.etag);
+        let extra = format!("ETag: {etag}\r\nVary: Accept-Encoding\r\n");
         respond_bytes_with_headers(
             stream,
             "200 OK",
             content_type,
             "public, max-age=31536000, immutable",
             &extra,
-            &entry.plain,
+            blob,
         );
     }
     true

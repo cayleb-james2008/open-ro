@@ -2,12 +2,13 @@
 // outputting ONE self-contained HTML file (JS, CSS and Geist woff2 fonts inlined) at ../assets/index.html.
 import fs from "node:fs";
 import path from "node:path";
+import zlib from "node:zlib";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 const root = import.meta.dirname;
-const STAMP = "/* Hallmark Desktop-Workbench: OpenRO v1.4.0 Studio Copilot (Geist + Geist Mono, Light & Dark) */";
+const STAMP = "/* Hallmark Desktop-Workbench: OpenRO v1.5.0 Studio Copilot (Geist + Geist Mono, Light & Dark) */";
 const FORCE_SINGLE_FILE = process.env.OPENRO_SINGLE_FILE === "1";
 
 function localAlias(): Plugin {
@@ -54,22 +55,25 @@ function singleFile(): Plugin {
       fs.rmSync(chunksDst, { recursive: true, force: true });
       fs.mkdirSync(chunksDst, { recursive: true });
       let chunkCount = 0;
+      let gzBytes = 0;
       if (fs.existsSync(chunksSrc)) {
         for (const f of fs.readdirSync(chunksSrc)) {
           if (f.endsWith(".js") || f.endsWith(".css")) {
             const full = path.join(chunksSrc, f);
-            const txt = fs.readFileSync(full, "utf8");
-            if (txt.includes("entry.js")) {
+            const raw = fs.readFileSync(full);
+            if (raw.toString("utf8").includes("entry.js")) {
               throw new Error(`Lazy chunk ${f} must not import inlined entry.js`);
             }
-            fs.copyFileSync(full, path.join(chunksDst, f));
+            const gz = zlib.gzipSync(raw, { level: 9 });
+            fs.writeFileSync(path.join(chunksDst, `${f}.gz`), gz);
+            gzBytes += gz.length;
             chunkCount++;
           }
         }
       }
       const out = path.resolve(root, "../assets/index.html");
       fs.writeFileSync(out, html);
-      console.log(`single file: ${out} (${(html.length / 1024).toFixed(0)} kB, ${chunkCount} lazy chunk(s))`);
+      console.log(`single file: ${out} (${(html.length / 1024).toFixed(0)} kB, ${chunkCount} lazy gzipped chunk(s): ${(gzBytes / 1024).toFixed(0)} kB)`);
     },
   };
 }

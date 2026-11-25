@@ -134,6 +134,21 @@ export type ReadinessDiagnostic = {
   code: string;
   message: string;
 };
+export type ShipPackIntegrity = {
+  ok: boolean;
+  entry_count: number;
+  total_bytes: number;
+  crc_verified: boolean;
+  zip_slip_clean: boolean;
+  error?: string;
+};
+export type MonetizationParity = {
+  ok: boolean;
+  synced_products: number;
+  missing_keys: string[];
+  unapproved_prices: number;
+  has_product_ids: boolean;
+};
 export type ProjectReadiness = {
   ready_to_publish: boolean;
   score_pct: number;
@@ -159,10 +174,16 @@ export type ProjectReadiness = {
   has_asset_ids?: boolean;
   has_product_ids?: boolean;
   unapproved_prices: number;
+  monetization_parity?: MonetizationParity;
+  ship_pack_integrity?: ShipPackIntegrity;
   diagnostics?: ReadinessDiagnostic[];
   checks: ReadinessCheck[];
 };
 export type AutopilotResult = {
+  before_score?: number;
+  after_score?: number;
+  score_delta?: number;
+  pillar_deltas?: Record<string, { label: string; before: number; after: number; delta: number; max: number }>;
   actions_taken: { action: string; count?: number; files?: string[]; file?: string; ok?: boolean; error?: string }[];
   remaining_manual: string[];
   readiness?: ProjectReadiness;

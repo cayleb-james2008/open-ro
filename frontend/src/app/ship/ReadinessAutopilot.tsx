@@ -142,6 +142,20 @@ export function ReadinessAutopilot({
                 <span className="font-mono tabular-nums">{passedCount}/{totalCount}</span>
                 <span>{readiness?.ready_to_publish ? "Ship ready" : `${score}/100`}</span>
               </Pill>
+              {lastResult && typeof lastResult.before_score === "number" && typeof lastResult.after_score === "number" && (
+                <Pill
+                  data-score-delta
+                  className={
+                    (lastResult.score_delta ?? 0) > 0
+                      ? "bg-pill-active-bg text-pill-active-fg"
+                      : "bg-board text-ink-2"
+                  }
+                >
+                  <span className="font-mono tabular-nums">
+                    {lastResult.before_score} → {lastResult.after_score} ({(lastResult.score_delta ?? 0) >= 0 ? `+${lastResult.score_delta ?? 0}` : lastResult.score_delta} pts)
+                  </span>
+                </Pill>
+              )}
             </div>
             <p className="mt-0.5 text-sm text-ink-2">
               {blockers.length === 0
@@ -162,7 +176,7 @@ export function ReadinessAutopilot({
             data-run-autopilot
           >
             <Sparkles className="size-3.5" strokeWidth={1.5} aria-hidden />
-            {fixableCount > 0 ? "Auto-Fix All & Build" : "Re-Verify & Build"}
+            {fixableCount > 0 ? "Fix All Blockers & Re-Verify" : "Re-Verify & Build"}
           </Button>
           <Button
             variant="outline"
@@ -188,15 +202,45 @@ export function ReadinessAutopilot({
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-5" data-readiness-pillars>
           {pillars.map(([k, p]) => {
             const full = p.earned >= p.max;
+            const d = lastResult?.pillar_deltas?.[k]?.delta ?? 0;
             return (
-              <div key={k} className="flex items-center justify-between gap-2 rounded-lg border border-hairline bg-board/50 px-2.5 py-1.5 text-xs">
+              <div key={k} className="flex items-center justify-between gap-1.5 rounded-lg border border-hairline bg-board/50 px-2.5 py-1.5 text-xs">
                 <span className="truncate text-ink-2">{p.label}</span>
                 <span className={`font-mono font-medium tabular-nums ${full ? "text-pill-active-fg" : "text-ink"}`}>
                   {p.earned}/{p.max}
+                  {d > 0 && <span className="ml-1 text-pill-active-fg">+{d}</span>}
                 </span>
               </div>
             );
           })}
+        </div>
+      )}
+
+      {readiness && (readiness.ship_pack_integrity || readiness.monetization_parity) && (
+        <div
+          data-ship-pack-diagnostics
+          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline bg-board/40 px-3 py-2 text-xs"
+        >
+          {readiness.ship_pack_integrity && (
+            <div className="flex items-center gap-1.5">
+              <span className={`font-medium ${readiness.ship_pack_integrity.ok ? "text-pill-active-fg" : "text-pill-pro-fg"}`}>
+                Ship Pack ZIP: {readiness.ship_pack_integrity.ok ? "CRC-32 & zip-slip verified" : readiness.ship_pack_integrity.error || "Check failed"}
+              </span>
+              <span className="font-mono tabular-nums text-ink-3">
+                ({readiness.ship_pack_integrity.entry_count} files)
+              </span>
+            </div>
+          )}
+          {readiness.monetization_parity && (
+            <div className="flex items-center gap-1.5">
+              <span className={`font-medium ${readiness.monetization_parity.ok ? "text-pill-active-fg" : "text-ink-2"}`}>
+                ProductIds parity: {readiness.monetization_parity.missing_keys.length === 0 ? "Synced" : `${readiness.monetization_parity.missing_keys.length} missing`}
+              </span>
+              <span className="font-mono tabular-nums text-ink-3">
+                ({readiness.monetization_parity.unapproved_prices === 0 ? "Price-gate OK" : `${readiness.monetization_parity.unapproved_prices} awaiting owner approval`})
+              </span>
+            </div>
+          )}
         </div>
       )}
 
