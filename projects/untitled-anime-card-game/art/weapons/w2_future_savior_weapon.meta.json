@@ -1,0 +1,27 @@
+{
+  "bytes": 1658920,
+  "created_at": "2026-11-25T01:00:26Z",
+  "height": 1024,
+  "kind": "weapon_sheet",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/weapons/w2_future_savior_weapon.png",
+  "prompt": "Vibrant 2D cel-shaded anime fantasy RPG collectible item reference sheet in Roblox-safe anime game style on a clean soft light-gray studio backdrop, faithfully matching the attached anime reference: the iconic broad straight fantasy anime broadsword (Brave Sword) with a gleaming wide silver double-edged blade, ornate gold crossguard and hexagonal pommel, teal-blue ribbed grip, paired with its sleek navy-blue scabbard trimmed in gold bands and brown leather strap Show clean orthographic side profile, angled three-quarter showcase view, and hilt/emblem detail inset. Crisp vibrant anime cel-shading linework, spotless bright polished finish with subtle anime energy glints, standalone fantasy game item only, no characters, no hands, no text labels, no watermarks.",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/weapon_trunks_brave_sword.jpg"
+  ],
+  "sha256": "598e7d73fe8f44ae365fcaeb9733413032b8c7677cdb8d64483d756e25949bdb",
+  "status": "generated",
+  "version": 1,
+  "width": 1536
+}

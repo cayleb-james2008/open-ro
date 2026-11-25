@@ -435,6 +435,10 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		worldBar.ZIndex = 38
 		worldBar.Parent = stageView
 
+		local worldPad = Instance.new("UIPadding")
+		worldPad.PaddingRight = UDim.new(0, 10)
+		worldPad.Parent = worldBar
+
 		local worldLayout = Instance.new("UIListLayout")
 		worldLayout.FillDirection = Enum.FillDirection.Horizontal
 		worldLayout.Padding = UDim.new(0, 6)
@@ -616,7 +620,7 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		side: string
 	): UnitWidget
 		local palette = Theme.getPalette()
-		local slotHeight = if total <= 2 then 118 else math.clamp(math.floor(330 / math.max(total, 1)), 68, 104)
+		local slotHeight = if total <= 2 then 124 else math.clamp(math.floor(336 / math.max(total, 1)), 82, 108)
 		local yStep = 1 / math.max(total, 1)
 		local yCenter = (index - 0.5) * yStep
 
@@ -649,6 +653,26 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		local cardFrame = Components.makeCardView(container, cardData, UDim2.new(1, 0, 1, -24), UDim2.fromOffset(0, 0))
 		cardFrame.ZIndex = 40
 
+		local portraitBox = cardFrame:FindFirstChild("PortraitBox")
+		if portraitBox and portraitBox:IsA("GuiObject") then
+			portraitBox.Size = UDim2.new(1, -10, 0.44, 0)
+		end
+		local cardName = cardFrame:FindFirstChild("CardName")
+		if cardName and cardName:IsA("GuiObject") then
+			cardName.Position = UDim2.new(0, 6, 0.46, 2)
+			cardName.Size = UDim2.new(1, -12, 0, 16)
+		end
+		local metaLbl = cardFrame:FindFirstChild("Meta")
+		if metaLbl and metaLbl:IsA("GuiObject") then
+			metaLbl.Position = UDim2.new(0, 6, 0.46, 20)
+			metaLbl.Size = UDim2.new(1, -12, 0, 14)
+		end
+		local statsLbl = cardFrame:FindFirstChild("Stats")
+		if statsLbl and statsLbl:IsA("GuiObject") then
+			statsLbl.Position = UDim2.new(0, 6, 1, -16)
+			statsLbl.Size = UDim2.new(1, -12, 0, 14)
+		end
+
 		local hpBack = Instance.new("Frame")
 		hpBack.Name = "HpBar"
 		hpBack.Size = UDim2.new(1, 0, 0, 12)
@@ -661,6 +685,16 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 
 		local startHp = unit.hp or unitMaxHp
 		local hpRatio = math.clamp(startHp / unitMaxHp, 0, 1)
+		local hpTrail = Instance.new("Frame")
+		hpTrail.Name = "Trail"
+		hpTrail.Size = UDim2.fromScale(hpRatio, 1)
+		hpTrail.BackgroundColor3 = Color3.fromRGB(255, 240, 180)
+		hpTrail.BackgroundTransparency = 0.25
+		hpTrail.BorderSizePixel = 0
+		hpTrail.ZIndex = 40
+		hpTrail.Parent = hpBack
+		Components.addCorner(hpTrail, 4)
+
 		local hpFill = Instance.new("Frame")
 		hpFill.Name = "Fill"
 		hpFill.Size = UDim2.fromScale(hpRatio, 1)
@@ -732,6 +766,7 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 			container = container,
 			cardFrame = cardFrame,
 			hpFill = hpFill,
+			hpTrail = hpTrail,
 			hpText = hpText,
 			energyFill = energyFill,
 			koOverlay = koOverlay,
@@ -742,6 +777,57 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 			basePos = container.Position,
 			side = side,
 		}
+	end
+
+	local function spawnSlashAndFlash(target: UnitWidget, isAllyActor: boolean, isCrit: boolean)
+		local absArena = arenaView.AbsolutePosition
+		local absTarget = target.container.AbsolutePosition
+		local absSize = target.container.AbsoluteSize
+		local cx = (absTarget.X - absArena.X) + absSize.X * 0.5
+		local cy = (absTarget.Y - absArena.Y) + absSize.Y * 0.45
+
+		local slash = Instance.new("Frame")
+		slash.Name = "SlashStreak"
+		slash.Size = UDim2.fromOffset(if isCrit then 110 else 80, if isCrit then 8 else 5)
+		slash.Position = UDim2.fromOffset(cx, cy)
+		slash.AnchorPoint = Vector2.new(0.5, 0.5)
+		slash.Rotation = if isAllyActor then -32 else 32
+		slash.BackgroundColor3 = if isCrit then Color3.fromRGB(255, 224, 92) else Color3.fromRGB(255, 255, 255)
+		slash.BorderSizePixel = 0
+		slash.ZIndex = 48
+		slash.Parent = popupLayer
+		Components.addCorner(slash, 4)
+
+		local dur = 0.18 / speedMult
+		TweenService:Create(slash, TweenInfo.new(dur, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = UDim2.fromOffset(if isCrit then 150 else 110, 2),
+			BackgroundTransparency = 1,
+		}):Play()
+		task.delay(dur + 0.03, function()
+			if slash.Parent then
+				slash:Destroy()
+			end
+		end)
+
+		if not callbacks.getReducedFlash() then
+			local hitFlash = Instance.new("Frame")
+			hitFlash.Name = "HitFlash"
+			hitFlash.Size = UDim2.fromScale(1, 1)
+			hitFlash.BackgroundColor3 = if isCrit then Color3.fromRGB(255, 232, 140) else Color3.fromRGB(255, 255, 255)
+			hitFlash.BackgroundTransparency = 0.42
+			hitFlash.BorderSizePixel = 0
+			hitFlash.ZIndex = 46
+			hitFlash.Parent = target.cardFrame
+			Components.addCorner(hitFlash, 10)
+			TweenService:Create(hitFlash, TweenInfo.new(dur, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+				BackgroundTransparency = 1,
+			}):Play()
+			task.delay(dur + 0.03, function()
+				if hitFlash.Parent then
+					hitFlash:Destroy()
+				end
+			end)
+		end
 	end
 
 	local function spawnFloatingText(target: UnitWidget, text: string, color: Color3, big: boolean)
@@ -794,8 +880,24 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 				TweenService:Create(w.hpFill, TweenInfo.new(barDur, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 					Size = UDim2.fromScale(ratio, 1),
 				}):Play()
+				local trail = (w :: any).hpTrail :: Frame?
+				if trail then
+					task.delay(0.08 / speedMult, function()
+						if trail.Parent then
+							TweenService:Create(
+								trail,
+								TweenInfo.new(barDur * 1.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+								{ Size = UDim2.fromScale(ratio, 1) }
+							):Play()
+						end
+					end)
+				end
 			else
 				w.hpFill.Size = UDim2.fromScale(ratio, 1)
+				local trail = (w :: any).hpTrail :: Frame?
+				if trail then
+					trail.Size = UDim2.fromScale(ratio, 1)
+				end
 			end
 			w.hpText.Text = Components.formatNumber(w.hp) .. " / " .. Components.formatNumber(w.maxHp)
 			if w.hp <= 0 or defeated then
@@ -887,7 +989,20 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 		skipBtn.Visible = true
 		applyTheme()
 
-		titleLbl.Text = result.stageName or result.stageId or "Battle"
+		local displayStageName: string? = if result.stageName
+				and result.stageName ~= ""
+				and result.stageName ~= result.stageId
+			then result.stageName
+			else nil
+		if not displayStageName and result.stageId then
+			for _, st in currentStages do
+				if st.id == result.stageId and st.name ~= "" then
+					displayStageName = st.name
+					break
+				end
+			end
+		end
+		titleLbl.Text = displayStageName or "World Battle"
 		subLbl.Text = "Auto-Battle Replay"
 
 		clearChildren(allyLane, false)
@@ -944,17 +1059,25 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 				local turnNum = ev.turn or ev.round or 1
 				turnBanner.Text = "Turn " .. tostring(turnNum)
 				local skillText = ev.skillName or ev.action or "Attack"
-				local actorLabel = ev.actorName
-					or ((if isAllyActor then "Ally #" else "Enemy #") .. tostring(ev.actorIndex or 1))
+				local actorUnit = if isAllyActor
+					then alliesList[ev.actorIndex or 1]
+					else enemiesList[ev.actorIndex or 1]
+				local unitName = if actorUnit then (actorUnit.name or actorUnit.displayName) else nil
+				local actorLabel = if ev.actorName and ev.actorName ~= ""
+					then ev.actorName
+					elseif unitName and unitName ~= "" then unitName
+					else ((if isAllyActor then "Ally #" else "Enemy #") .. tostring(ev.actorIndex or 1))
 				actionBanner.Text = string.format("%s uses %s", actorLabel, skillText)
 
+				local playSfx = (callbacks :: any).playSfx :: ((cue: string) -> ())?
 				local lungeDir = if isAllyActor then 1 else -1
-				local lungeDur = 0.14 / speedMult
+				local lungeDur = 0.11 / speedMult
 				local hitstopDur = 0.06 / speedMult
+				local recoilDur = 0.13 / speedMult
 
 				if actor and not callbacks.getReducedMotion() then
 					local lungePos = UDim2.new(
-						actor.basePos.X.Scale + lungeDir * 0.22,
+						actor.basePos.X.Scale + lungeDir * 0.24,
 						actor.basePos.X.Offset,
 						actor.basePos.Y.Scale,
 						actor.basePos.Y.Offset
@@ -980,25 +1103,52 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 					if ev.isDodge then
 						spawnFloatingText(target, "DODGE", palette.accentBlue, false)
 					elseif (ev.damage or 0) > 0 then
-						local prefix = if isCrit then "CRIT -" else "-"
-						local col = if isCrit then palette.accentGold else palette.accentRed
+						local prefix = if isCrit then "CRIT! -" else "-"
+						local col = if isCrit then palette.accentGold else Color3.fromRGB(255, 196, 86)
 						spawnFloatingText(target, prefix .. Components.formatNumber(ev.damage or 0), col, isCrit)
+						spawnSlashAndFlash(target, isAllyActor, isCrit)
+						if playSfx then
+							playSfx(if isCrit then "battle_crit" else "ui_click")
+						end
 						if not callbacks.getReducedMotion() then
-							local hitOffset = UDim2.fromOffset(if isAllyActor then 6 else -6, 0)
+							local hitOffset = UDim2.fromOffset(if isAllyActor then 7 else -7, 0)
 							target.cardFrame.Position = hitOffset
 							TweenService:Create(
 								target.cardFrame,
 								TweenInfo.new(0.12 / speedMult, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
 								{ Position = UDim2.fromOffset(0, 0) }
 							):Play()
+							if isCrit then
+								arenaView.Position = UDim2.fromOffset(12, 56)
+								TweenService
+									:Create(
+										arenaView,
+										TweenInfo.new(0.12 / speedMult, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+										{ Position = UDim2.fromOffset(12, 60) }
+									)
+									:Play()
+							end
 						end
 					elseif (ev.heal or 0) > 0 then
 						spawnFloatingText(
 							target,
-							"+" .. Components.formatNumber(ev.heal or 0),
+							"+" .. Components.formatNumber(ev.heal or 0) .. " HP",
 							palette.accentGreen,
 							false
 						)
+					end
+					local evAny = ev :: any
+					if (evAny.shield or 0) > 0 then
+						spawnFloatingText(
+							target,
+							"SHIELD +" .. Components.formatNumber(evAny.shield),
+							Color3.fromRGB(72, 224, 240),
+							false
+						)
+					elseif evAny.statusApplied and evAny.statusApplied ~= "" then
+						local stUpper = string.upper(tostring(evAny.statusApplied))
+						local stCol = if stUpper == "BURN" then palette.accentRed else palette.accentPurple
+						spawnFloatingText(target, stUpper, stCol, false)
 					end
 				end
 
@@ -1009,11 +1159,11 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 				if actor and not callbacks.getReducedMotion() then
 					local t2 = TweenService:Create(
 						actor.container,
-						TweenInfo.new(lungeDur, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut),
+						TweenInfo.new(recoilDur, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut),
 						{ Position = actor.basePos }
 					)
 					t2:Play()
-					task.wait(lungeDur)
+					task.wait(recoilDur)
 				elseif not skipRequested then
 					task.wait(0.08 / speedMult)
 				end
@@ -1029,7 +1179,7 @@ function BattleModal.create(parent: Instance, callbacks: BattleCallbacks): Battl
 	end
 
 	speedBtn.MouseButton1Click:Connect(function()
-		speedMult = if speedMult == 1 then 2 else 1
+		speedMult = if speedMult == 1 then 2 elseif speedMult == 2 then 4 else 1
 		speedBtn.Text = tostring(speedMult) .. "x"
 		applyTheme()
 	end)

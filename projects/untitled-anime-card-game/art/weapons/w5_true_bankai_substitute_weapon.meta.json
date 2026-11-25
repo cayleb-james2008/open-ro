@@ -1,0 +1,27 @@
+{
+  "bytes": 1929682,
+  "created_at": "2026-11-25T01:31:08Z",
+  "height": 1024,
+  "kind": "weapon_sheet",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/weapons/w5_true_bankai_substitute_weapon.png",
+  "prompt": "Vibrant 2D cel-shaded anime fantasy RPG collectible item reference sheet in Roblox-safe anime game style on a clean soft light-gray studio backdrop, faithfully matching the attached anime reference: the iconic twin jet-black anime swords (True Shikai Zangetsu) displayed together: one massive wide matte-black asymmetrical cleaver sword featuring a clean hollow rectangular cutout slot near its base and gleaming silver bevel edge, paired with a shorter matching sleek matte-black companion curved blade with brushed silver edge and subtle golden-black energy shimmer Show clean orthographic side profile, angled three-quarter showcase view, and hilt/guard detail inset. Crisp vibrant anime cel-shading linework, spotless bright polished finish with subtle anime energy glints, standalone fantasy game item only, no characters, no hands, no text labels, no watermarks.",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/weapon_ichigo_true_zangetsu.jpg"
+  ],
+  "sha256": "30892035af50ab2974f166a343bd51373d401720f2695eb04b25417b4435680c",
+  "status": "generated",
+  "version": 1,
+  "width": 1536
+}

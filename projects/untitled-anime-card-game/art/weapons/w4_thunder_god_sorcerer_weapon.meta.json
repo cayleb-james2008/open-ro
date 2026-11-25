@@ -1,0 +1,27 @@
+{
+  "bytes": 1843024,
+  "created_at": "2026-11-25T02:04:05Z",
+  "height": 1024,
+  "kind": "weapon_sheet",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "mode": "Instant",
+    "power_max": null,
+    "power_min": null,
+    "power_value": null,
+    "selected_model": null,
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/weapons/w4_thunder_god_sorcerer_weapon.png",
+  "prompt": "Vibrant 2D cel-shaded anime fantasy RPG collectible item reference sheet in Roblox-safe anime game style on a clean soft light-gray studio backdrop, faithfully matching the attached canonical anime weapon prop reference: Kashimo's sleek martial-arts metallic lightning bo-staff (Nyoi Staff) forged from brushed silver-gunmetal steel with banded grip segments and electric cyan-violet anime lightning arcing cleanly along the shaft matching the attached reference Show clean orthographic side profile, angled three-quarter showcase view, and hilt/guard detail inset. Crisp vibrant anime cel-shading linework, spotless bright polished finish with subtle anime energy glints, standalone fantasy game item only, no characters, no hands, no text labels, no watermarks.",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/weapon_kashimo_nyoi_staff.jpg"
+  ],
+  "sha256": "0ebde80ae540592ad214f7272716907387735c6773c5a72401792d5ff53469af",
+  "status": "generated",
+  "version": 1,
+  "width": 1536
+}

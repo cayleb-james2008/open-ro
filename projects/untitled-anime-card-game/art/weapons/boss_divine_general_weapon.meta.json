@@ -1,0 +1,27 @@
+{
+  "bytes": 2157345,
+  "created_at": "2026-11-25T01:16:48Z",
+  "height": 1024,
+  "kind": "weapon_sheet",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/weapons/boss_divine_general_weapon.png",
+  "prompt": "Vibrant 2D cel-shaded anime fantasy RPG collectible item reference sheet in Roblox-safe anime game style on a clean soft light-gray studio backdrop, faithfully matching the attached anime reference: a celestial forearm-mounted curved ivory-bone and radiant golden-white spirit-energy gauntlet relic (Sword of Extermination) strapped with dark iron cuff bands and glowing divine gold positive-energy trim along the curved edge Show clean orthographic side profile, angled three-quarter showcase view, and hilt/guard detail inset. Crisp vibrant anime cel-shading linework, spotless bright polished finish with subtle anime energy glints, standalone fantasy game item only, no characters, no hands, no text labels, no watermarks.",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/weapon_mahoraga_sword.jpg"
+  ],
+  "sha256": "1676f12f54f79002a33a9e3bc0448f9ab40d5c3b0ab12b18cd18dfc51e7fcfae",
+  "status": "generated",
+  "version": 1,
+  "width": 1536
+}

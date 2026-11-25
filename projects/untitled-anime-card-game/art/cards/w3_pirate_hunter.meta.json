@@ -1,17 +1,17 @@
 {
   "angle_review": {
-    "candidate_path": "art/cards/w3_pirate_hunter.pending-angle.1577f407f660.png",
-    "candidate_sha256": "1577f407f660e5174d20ecb603412f2116235fd735ae46e6de735ae5ac623fef",
+    "candidate_path": "art/cards/w3_pirate_hunter.pending-angle.5a041152e1b5.png",
+    "candidate_sha256": "5a041152e1b54881bfc1f23245e0d8b1f9c67c6488cb1a423ec4443a38b11984",
     "height": 1536,
     "status": "PENDING_VISION",
     "width": 1024
   },
-  "approved_at": "2026-11-24T02:25:03Z",
+  "approved_at": "2026-11-25T02:53:51Z",
   "approved_by": "designer",
-  "bytes": 3015442,
-  "candidate_path": "art/cards/w3_pirate_hunter.pending-angle.1577f407f660.png",
-  "candidate_sha256": "1577f407f660e5174d20ecb603412f2116235fd735ae46e6de735ae5ac623fef",
-  "created_at": "2026-11-24T02:21:15Z",
+  "bytes": 2440491,
+  "candidate_path": "art/cards/w3_pirate_hunter.pending-angle.5a041152e1b5.png",
+  "candidate_sha256": "5a041152e1b54881bfc1f23245e0d8b1f9c67c6488cb1a423ec4443a38b11984",
+  "created_at": "2026-11-25T02:40:29Z",
   "height": 1536,
   "kind": "card",
   "model": {
@@ -26,15 +26,16 @@
     "url": "https://chatgpt.com/images/"
   },
   "path": "art/cards/w3_pirate_hunter.png",
-  "promoted_from": "art/cards/w3_pirate_hunter.pending-angle.1577f407f660.png",
-  "prompt": "Transform this reference character into an intense vertical anime trading card game illustration in fierce three-quarter three-sword combat stance with blades wreathed in roaring emerald-green flame aura and crimson-black lightning arcs, crisp cel-shaded anime key art lighting, dramatic moonlit storm sky, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "promoted_from": "art/cards/w3_pirate_hunter.pending-angle.5a041152e1b5.png",
+  "prompt": "Epic eye-level three-quarter portrait of the green-haired three-sword pirate swordsman from the first reference image wearing his dark emerald-green samurai haori coat with crimson waist sash and spotless clean skin. He strikes his iconic Three-Sword Style stance wielding ALL THREE EXACT katanas from the second weapon reference sheet: the pure white-hilted Wado Ichimonji gripped cleanly by its handle, the lilac-purple gold-clover Enma roaring with bright emerald-green aura in one hand, and the dark crimson Sandai Kitetsu blazing with purple-green haki lightning in the other hand. Dramatic moonlit Wano cliff backdrop, ultra-crisp vibrant shonen anime key-visual cel shading, vertical 2:3 trading card illustration in Roblox-safe family-friendly anime style, completely spotless clean skin and coat, zero text, zero borders.",
   "provider": "chatgpt",
   "reference_images": [
-    "art/references/roronoa_zoro.jpg"
+    "art/references/roronoa_zoro.jpg",
+    "art/weapons/w3_pirate_hunter_weapon.png"
   ],
   "requested_path": "art/cards/w3_pirate_hunter.png",
-  "review_notes": "Verified w3_pirate_hunter visually against ref art/references/roronoa_zoro.jpg: exact character likeness, dynamic anime card composition, zero text/watermarks.",
-  "sha256": "1577f407f660e5174d20ecb603412f2116235fd735ae46e6de735ae5ac623fef",
+  "review_notes": "Canon Three-Sword Style wielding Wado Ichimonji, Enma, and Sandai Kitetsu, spotless skin, zero blood",
+  "sha256": "5a041152e1b54881bfc1f23245e0d8b1f9c67c6488cb1a423ec4443a38b11984",
   "status": "approved",
   "version": 1,
   "width": 1024

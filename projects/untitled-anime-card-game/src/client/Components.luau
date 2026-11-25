@@ -1,6 +1,7 @@
 --!strict
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local AssetIds = require(Shared:WaitForChild("AssetIds"))
@@ -130,6 +131,50 @@ function Components.makeButton(
 	sizeConstraint.MinSize = Vector2.new(Theme.MIN_TOUCH_PX, Theme.MIN_TOUCH_PX)
 	sizeConstraint.Parent = btn
 
+	local uiScale = Instance.new("UIScale")
+	uiScale.Name = "HoverScale"
+	uiScale.Scale = 1
+	uiScale.Parent = btn
+
+	local hoverColor = bgColor:Lerp(Color3.fromRGB(255, 255, 255), 0.12)
+	local pressColor = bgColor:Lerp(Color3.fromRGB(0, 0, 0), 0.14)
+
+	btn.MouseEnter:Connect(function()
+		TweenService:Create(btn, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			BackgroundColor3 = hoverColor,
+		}):Play()
+		TweenService:Create(uiScale, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Scale = 1.03,
+		}):Play()
+	end)
+
+	btn.MouseLeave:Connect(function()
+		TweenService:Create(btn, TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			BackgroundColor3 = bgColor,
+		}):Play()
+		TweenService:Create(uiScale, TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Scale = 1,
+		}):Play()
+	end)
+
+	btn.MouseButton1Down:Connect(function()
+		TweenService:Create(btn, TweenInfo.new(0.06, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			BackgroundColor3 = pressColor,
+		}):Play()
+		TweenService:Create(uiScale, TweenInfo.new(0.06, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Scale = 0.96,
+		}):Play()
+	end)
+
+	btn.MouseButton1Up:Connect(function()
+		TweenService:Create(btn, TweenInfo.new(0.1, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+			BackgroundColor3 = hoverColor,
+		}):Play()
+		TweenService:Create(uiScale, TweenInfo.new(0.1, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+			Scale = 1,
+		}):Play()
+	end)
+
 	return btn
 end
 
@@ -247,6 +292,7 @@ function Components.makeCardView(parent: Instance, cardData: { [string]: any }, 
 	portraitBox.Position = UDim2.fromOffset(5, 5)
 	portraitBox.BackgroundColor3 = rarity.bgTint
 	portraitBox.BorderSizePixel = 0
+	portraitBox.ClipsDescendants = true
 	portraitBox.Parent = frame
 	Components.addCorner(portraitBox, 7)
 
@@ -270,40 +316,89 @@ function Components.makeCardView(parent: Instance, cardData: { [string]: any }, 
 	if portraitAsset == "" and cardId ~= "" then
 		portraitAsset = AssetIds.get("art/cards/" .. cardId .. "/art.png")
 	end
-	if portraitAsset ~= "" then
-		local img = Instance.new("ImageLabel")
-		img.Name = "Portrait"
-		img.Size = UDim2.fromScale(1, 1)
-		img.BackgroundTransparency = 1
-		img.Image = portraitAsset
-		img.ScaleType = Enum.ScaleType.Crop
-		img.Parent = portraitBox
-		Components.addCorner(img, 7)
+	local portraitImage = Instance.new("ImageLabel")
+	portraitImage.Name = "PortraitImage"
+	portraitImage.AnchorPoint = Vector2.new(0.5, 0)
+	portraitImage.Position = UDim2.fromScale(0.5, 0)
+	portraitImage.Size = UDim2.fromScale(1, 1)
+	portraitImage.BackgroundTransparency = 1
+	portraitImage.ScaleType = Enum.ScaleType.Crop
+	portraitImage.ZIndex = 2
+	portraitImage.Parent = portraitBox
+	Components.addCorner(portraitImage, 7)
+	local portraitAspect = Instance.new("UIAspectRatioConstraint")
+	portraitAspect.AspectRatio = 512 / 712
+	portraitAspect.DominantAxis = Enum.DominantAxis.Width
+	portraitAspect.AspectType = Enum.AspectType.ScaleWithParentSize
+	portraitAspect.Parent = portraitImage
+
+	local hasLivePortrait = string.match(portraitAsset, "^rbxassetid://[1-9]%d*$") ~= nil
+	if hasLivePortrait then
+		portraitImage.Image = portraitAsset
+		portraitImage.Visible = true
 	else
+		portraitImage.Visible = false
 		local roleText = tostring(cardData.role or "Striker")
+
+		local isCompact = size.Y.Offset > 0 and size.Y.Offset <= 140
+		local crestSize = if isCompact then 30 else 58
+
+		local crest = Instance.new("Frame")
+		crest.Name = "RoleCrest"
+		crest.Size = UDim2.fromOffset(crestSize, crestSize)
+		crest.Position = if isCompact then UDim2.new(1, -24, 0.5, 0) else UDim2.fromScale(0.5, 0.44)
+		crest.AnchorPoint = Vector2.new(0.5, 0.5)
+		crest.BackgroundColor3 = rarity.bgTint:Lerp(rarity.color, 0.28)
+		crest.BorderSizePixel = 0
+		crest.ZIndex = 2
+		crest.Parent = portraitBox
+		Components.addCorner(crest, math.floor(crestSize / 2))
+		Components.addStroke(crest, rarity.glow, 2, 0.1)
+
 		local emblem = Components.makeLabel(
-			portraitBox,
+			crest,
 			"Emblem",
 			rarity.shortTag,
-			UDim2.fromScale(1, 0.65),
-			UDim2.fromScale(0, 0.08),
+			UDim2.fromScale(1, 1),
+			UDim2.fromOffset(0, 0),
 			Theme.FONT_DISPLAY,
-			28,
+			if isCompact then 13 else 24,
 			rarity.glow,
 			Enum.TextXAlignment.Center
 		)
-		emblem.TextStrokeTransparency = 0.4
-		Components.makeLabel(
+		emblem.ZIndex = 3
+		emblem.TextStrokeTransparency = 0.35
+
+		local cornerTL = Instance.new("Frame")
+		cornerTL.Name = "MetallicAccentTL"
+		cornerTL.Size = UDim2.fromOffset(14, 3)
+		cornerTL.Position = UDim2.fromOffset(6, 6)
+		cornerTL.BackgroundColor3 = rarity.glow
+		cornerTL.BorderSizePixel = 0
+		cornerTL.ZIndex = 2
+		cornerTL.Parent = portraitBox
+
+		local cornerBR = Instance.new("Frame")
+		cornerBR.Name = "MetallicAccentBR"
+		cornerBR.Size = UDim2.fromOffset(14, 3)
+		cornerBR.Position = UDim2.new(1, -20, 1, -9)
+		cornerBR.BackgroundColor3 = rarity.glow
+		cornerBR.BorderSizePixel = 0
+		cornerBR.ZIndex = 2
+		cornerBR.Parent = portraitBox
+
+		local roleLbl = Components.makeLabel(
 			portraitBox,
 			"RoleTag",
 			string.upper(roleText),
 			UDim2.new(1, -8, 0, 18),
-			UDim2.new(0, 4, 1, -20),
+			UDim2.new(0, 4, 1, -22),
 			Theme.FONT_DISPLAY,
 			10,
 			Color3.fromRGB(245, 248, 255),
 			Enum.TextXAlignment.Center
 		)
+		roleLbl.ZIndex = 3
 	end
 
 	local badge = Components.makeRarityBadge(frame, rarityName, UDim2.fromOffset(6, 8))
