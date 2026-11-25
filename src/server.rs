@@ -784,28 +784,59 @@ struct Request {
 
 thread_local! {
     static TL_KEEP_ALIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TL_READ_BUF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::with_capacity(4096));
+    static TL_HDR_BUF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::with_capacity(512));
+    static TL_JSON_BUF: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::with_capacity(4096));
+}
+
+#[inline]
+fn contains_ascii_icase(haystack: &str, needle: &[u8]) -> bool {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle))
 }
 
 fn read_request(stream: &mut TcpStream) -> Option<Request> {
-    let mut buf: Vec<u8> = Vec::with_capacity(2048);
     let mut chunk = [0u8; 4096];
-    let header_end;
-    loop {
-        let n = stream.read(&mut chunk).ok()?;
-        if n == 0 {
-            return None;
-        }
-        buf.extend_from_slice(&chunk[..n]);
-        if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
-            header_end = pos + 4;
-            break;
-        }
-        if buf.len() > 64 * 1024 {
-            return None;
-        }
+    let mut total = stream.read(&mut chunk).ok()?;
+    if total == 0 {
+        return None;
     }
-    let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
-    let mut lines = head.lines();
+    if let Some(pos) = find_subslice(&chunk[..total], b"\r\n\r\n") {
+        return parse_buffered_request(stream, &chunk[..total], pos + 4);
+    }
+    TL_READ_BUF.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        buf.clear();
+        buf.extend_from_slice(&chunk[..total]);
+        loop {
+            let n = stream.read(&mut chunk).ok()?;
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            total = buf.len();
+            if let Some(pos) = find_subslice(&buf[..total], b"\r\n\r\n") {
+                return parse_buffered_request(stream, &buf[..total], pos + 4);
+            }
+            if total > 64 * 1024 {
+                return None;
+            }
+        }
+    })
+}
+
+fn parse_buffered_request(
+    stream: &mut TcpStream,
+    buf: &[u8],
+    header_end: usize,
+) -> Option<Request> {
+    let head_cow = match std::str::from_utf8(&buf[..header_end]) {
+        Ok(s) => std::borrow::Cow::Borrowed(s),
+        Err(_) => String::from_utf8_lossy(&buf[..header_end]),
+    };
+    let mut lines = head_cow.lines();
     let first = lines.next()?;
     let is_http11 = first.ends_with("HTTP/1.1");
     let mut parts = first.split_whitespace();
@@ -848,14 +879,13 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
                     Err(_) => req.bad_content_length = true,
                 }
             } else if k.eq_ignore_ascii_case("transfer-encoding") {
-                if v.to_ascii_lowercase().contains("chunked") {
+                if contains_ascii_icase(v, b"chunked") {
                     req.chunked_transfer = true;
                 }
             } else if k.eq_ignore_ascii_case("connection") {
-                let low = v.to_ascii_lowercase();
-                if low.contains("close") {
+                if contains_ascii_icase(v, b"close") {
                     force_close = true;
-                } else if low.contains("keep-alive") {
+                } else if contains_ascii_icase(v, b"keep-alive") {
                     want_keep_alive = true;
                 }
             } else if k.eq_ignore_ascii_case("host") {
@@ -892,13 +922,25 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
         req.keep_alive = false;
         return Some(req);
     }
-    let mut body = buf[header_end..].to_vec();
-    while body.len() < req.content_length {
-        let n = stream.read(&mut chunk).ok()?;
-        if n == 0 {
-            break;
+    let leftover = &buf[header_end..];
+    if req.content_length == 0 {
+        if !leftover.is_empty() {
+            req.has_pipelined = true;
+            req.keep_alive = false;
         }
-        body.extend_from_slice(&chunk[..n]);
+        return Some(req);
+    }
+    let mut body = Vec::with_capacity(req.content_length.min(1024 * 1024));
+    body.extend_from_slice(leftover);
+    if body.len() < req.content_length {
+        let mut body_chunk = [0u8; 4096];
+        while body.len() < req.content_length {
+            let n = stream.read(&mut body_chunk).ok()?;
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&body_chunk[..n]);
+        }
     }
     if body.len() > req.content_length {
         req.has_pipelined = true;
@@ -947,6 +989,8 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
                 || clean_path == "/api/studio/playtest"
                 || clean_path == "/api/studio/playtest/fix-all"
                 || clean_path == "/api/studio/economy/simulate"
+                || clean_path == "/api/studio/dependencies"
+                || clean_path == "/api/studio/dependencies/prune"
                 || clean_path == "/api/studio/capture"
                 || clean_path == "/api/studio/launch-and-continue"))
 }
@@ -1072,11 +1116,16 @@ fn write_all_vectored(stream: &mut TcpStream, header: &[u8], body: &[u8]) {
 
 fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &str) {
     let conn = conn_header_line(status);
-    let header = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\n{conn}",
-        body.len()
-    );
-    write_all_vectored(stream, header.as_bytes(), body.as_bytes());
+    TL_HDR_BUF.with(|cell| {
+        let mut hdr = cell.borrow_mut();
+        hdr.clear();
+        let _ = write!(
+            &mut *hdr,
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\n{conn}",
+            body.len()
+        );
+        write_all_vectored(stream, &hdr, body.as_bytes());
+    });
 }
 
 fn respond_bytes(
@@ -1098,11 +1147,16 @@ fn respond_bytes_with_headers(
     body: &[u8],
 ) {
     let conn = conn_header_line(status);
-    let header = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: {cache_control}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n{extra_headers}Content-Length: {}\r\n{conn}",
-        body.len()
-    );
-    write_all_vectored(stream, header.as_bytes(), body);
+    TL_HDR_BUF.with(|cell| {
+        let mut hdr = cell.borrow_mut();
+        hdr.clear();
+        let _ = write!(
+            &mut *hdr,
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: {cache_control}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\n{extra_headers}Content-Length: {}\r\n{conn}",
+            body.len()
+        );
+        write_all_vectored(stream, &hdr, body);
+    });
 }
 
 fn respond_download(stream: &mut TcpStream, content_type: &str, filename: &str, body: &str) {
@@ -1111,11 +1165,16 @@ fn respond_download(stream: &mut TcpStream, content_type: &str, filename: &str, 
 
 fn respond_download_bytes(stream: &mut TcpStream, content_type: &str, filename: &str, body: &[u8]) {
     TL_KEEP_ALIVE.set(false);
-    let header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    write_all_vectored(stream, header.as_bytes(), body);
+    TL_HDR_BUF.with(|cell| {
+        let mut hdr = cell.borrow_mut();
+        hdr.clear();
+        let _ = write!(
+            &mut *hdr,
+            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Disposition: attachment; filename=\"{filename}\"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        write_all_vectored(stream, &hdr, body);
+    });
 }
 
 fn slugify_filename(name: &str) -> String {
@@ -1139,16 +1198,25 @@ fn slugify_filename(name: &str) -> String {
 }
 
 fn respond_json(stream: &mut TcpStream, status: &str, value: &Value) {
-    if let Ok(bytes) = serde_json::to_vec(value) {
-        let conn = conn_header_line(status);
-        let header = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\n{conn}",
-            bytes.len()
-        );
-        write_all_vectored(stream, header.as_bytes(), &bytes);
-    } else {
-        respond(stream, status, "application/json", &value.to_string());
-    }
+    TL_JSON_BUF.with(|jcell| {
+        let mut jbuf = jcell.borrow_mut();
+        jbuf.clear();
+        if serde_json::to_writer(&mut *jbuf, value).is_ok() {
+            let conn = conn_header_line(status);
+            TL_HDR_BUF.with(|hcell| {
+                let mut hdr = hcell.borrow_mut();
+                hdr.clear();
+                let _ = write!(
+                    &mut *hdr,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: {}\r\n{conn}",
+                    jbuf.len()
+                );
+                write_all_vectored(stream, &hdr, &jbuf);
+            });
+        } else {
+            respond(stream, status, "application/json", &value.to_string());
+        }
+    });
 }
 
 /// Resolve `(project_root, project_id)` from explicit request fields or `shared.projects`.
@@ -2129,6 +2197,36 @@ fn handle(
         ("POST", "/api/studio/economy/simulate") => {
             handle_studio_economy_simulate(&mut stream, shared, &req.body);
         }
+        ("GET", "/api/studio/dependencies") => {
+            let tree = shared
+                .agent
+                .lock()
+                .unwrap()
+                .as_mut()
+                .and_then(|a| a.place_tree().ok())
+                .unwrap_or_else(|| json!({ "scripts": {} }));
+            let mut scripts_map = std::collections::BTreeMap::new();
+            if let Some(obj) = tree.get("scripts").and_then(Value::as_object) {
+                for (k, v) in obj {
+                    if let Some(s) = v.as_str() {
+                        scripts_map.insert(k.clone(), s.to_string());
+                    }
+                }
+            }
+            let report = crate::playtest::studio_dependencies_report(&scripts_map);
+            respond_json(&mut stream, "200 OK", &report);
+        }
+        ("POST", "/api/studio/dependencies/prune") => {
+            let chat_id = shared.active_chat.lock().unwrap().clone();
+            let mut guard = shared.agent.lock().unwrap();
+            match guard.as_mut() {
+                Some(agent) => match crate::playtest::prune_or_fix_studio_place(agent, &chat_id) {
+                    Ok(res) => respond_json(&mut stream, "200 OK", &res),
+                    Err(e) => respond_json(&mut stream, "502 Bad Gateway", &json!({ "ok": false, "error": e })),
+                },
+                None => respond_json(&mut stream, "503 Service Unavailable", &json!({ "ok": false, "error": "Studio not connected" })),
+            }
+        }
         ("GET", "/api/luau/check") | ("POST", "/api/luau/check") => {
             handle_luau_check(&mut stream, shared, req.method == "POST", &req.body);
         }
@@ -2144,11 +2242,15 @@ fn handle(
                 info.workspace_mode,
             );
         }
-        ("GET", "/api/version") => respond_json(
-            &mut stream,
-            "200 OK",
-            &json!({ "name": "openro-rs", "version": env!("CARGO_PKG_VERSION") }),
-        ),
+        ("GET", "/api/version") => {
+            static VERSION_BYTES: OnceLock<Vec<u8>> = OnceLock::new();
+            let bytes = VERSION_BYTES.get_or_init(|| {
+                json!({ "name": "openro-rs", "version": env!("CARGO_PKG_VERSION") })
+                    .to_string()
+                    .into_bytes()
+            });
+            respond_bytes(&mut stream, "200 OK", "application/json", "no-store", bytes);
+        }
         ("GET", "/api/export/rbxlx") => {
             let stored = all_stored_assets(shared);
             let mut guard = shared.agent.lock().unwrap();

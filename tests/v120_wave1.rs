@@ -105,7 +105,7 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.11.0"));
+    assert_eq!(ver_json["version"], json!("1.12.0"));
 
     // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
     if let Ok(entries) = std::fs::read_dir("assets/chunks") {
@@ -727,7 +727,7 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
         assert!(n > 0, "unexpected EOF on first keep-alive response");
         first_buf.extend_from_slice(&tmp[..n]);
         let s = String::from_utf8_lossy(&first_buf);
-        if s.contains("1.11.0") {
+        if s.contains("1.12.0") {
             assert!(s.contains("Connection: keep-alive"), "{s}");
             break;
         }
@@ -739,7 +739,87 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
     let _ = ka.read_to_end(&mut second_buf);
     let s2_txt = String::from_utf8_lossy(&second_buf);
     assert!(s2_txt.contains("HTTP/1.1 200 OK"), "{s2_txt}");
-    assert!(s2_txt.contains("1.11.0"), "{s2_txt}");
+    assert!(s2_txt.contains("1.12.0"), "{s2_txt}");
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn v1120_wave11_luau_dependency_graph_and_pruner() {
+    let base = std::env::temp_dir().join(format!(
+        "openro-v1120-wave11-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let data = base.join("data");
+    let ws = base.join("ws");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let port = start_server_with_dir(Some(data));
+    let (st_ws, _) = send_json(port, "POST", "/api/projects/workspace", Some(&json!({ "path": ws })));
+    assert_eq!(st_ws, 200);
+    let (st_cr, cr) = send_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(&json!({ "name": "Wave11DepGraph" })),
+    );
+    assert_eq!(st_cr, 201, "{cr}");
+    let pid = cr["project"]["id"].as_str().unwrap().to_string();
+    let proj_dir = std::path::PathBuf::from(cr["project"]["path"].as_str().unwrap());
+
+    // Seed: 1 valid ModuleScript (required with typo), 1 unused ModuleScript, 1 broken dead require, 1 orphan RemoteEvent
+    std::fs::create_dir_all(proj_dir.join("src/shared")).unwrap();
+    std::fs::create_dir_all(proj_dir.join("src/server")).unwrap();
+    std::fs::write(
+        proj_dir.join("src/shared/RewardMath.luau"),
+        "--!strict\nreturn { Double = function(x: number): number return x * 2 end }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        proj_dir.join("src/shared/UnusedDeadModule.luau"),
+        "--!strict\nreturn { dead = true }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        proj_dir.join("src/server/DepTest.server.luau"),
+        "--!strict\nlocal ReplicatedStorage = game:GetService(\"ReplicatedStorage\")\nlocal Shared = ReplicatedStorage:WaitForChild(\"Shared\")\nlocal _dead = require(Shared:WaitForChild(\"NoSuchModule\"))\nlocal mathMod = require(ReplicatedStorage:WaitForChild(\"rewardmath\"))\nlocal orphanEv = Instance.new(\"RemoteEvent\")\norphanEv.Name = \"DeadOrphanRemote\"\norphanEv.Parent = ReplicatedStorage\nprint(mathMod.Double(4))\n",
+    )
+    .unwrap();
+
+    // GET dependencies flags broken require, unused module, and orphan remote
+    let (st_g1, g1) = send_json(port, "GET", &format!("/api/projects/{pid}/dependencies"), None);
+    assert_eq!(st_g1, 200, "{g1}");
+    assert_eq!(g1["schema"], json!("openro.dependency_graph.v1"));
+    assert_eq!(g1["summary"]["healthy"], json!(false), "{g1}");
+    assert!(g1["summary"]["broken_count"].as_u64().unwrap() >= 2, "{g1}");
+    assert_eq!(g1["summary"]["unused_count"], json!(1), "{g1}");
+    assert_eq!(g1["summary"]["orphan_count"], json!(1), "{g1}");
+
+    // 1-Click Prune / Fix Links resolves typo link, prunes dead require, deletes unused module, removes orphan remote
+    let (st_pr, pr) = send_json(port, "POST", &format!("/api/projects/{pid}/dependencies/prune"), Some(&json!({})));
+    assert_eq!(st_pr, 200, "{pr}");
+    assert_eq!(pr["pruned_modules"], json!(1), "{pr}");
+    assert!(pr["fixed_requires"].as_u64().unwrap() >= 2, "{pr}");
+    assert_eq!(pr["pruned_remotes"], json!(1), "{pr}");
+    assert_eq!(pr["after"]["summary"]["healthy"], json!(true), "{pr}");
+    assert_eq!(pr["after"]["summary"]["broken_count"], json!(0), "{pr}");
+    assert_eq!(pr["after"]["summary"]["unused_count"], json!(0), "{pr}");
+    assert_eq!(pr["after"]["summary"]["orphan_count"], json!(0), "{pr}");
+    assert!(!proj_dir.join("src/shared/UnusedDeadModule.luau").exists());
+
+    // Local studio dependency routes work & enforce loopback 403
+    let (st_loc, loc) = send_json(port, "GET", "/api/studio/dependencies", None);
+    assert_eq!(st_loc, 200, "{loc}");
+    assert_eq!(loc["schema"], json!("openro.dependency_graph.v1"));
+    let bad_req = format!(
+        "POST /api/studio/dependencies/prune HTTP/1.1\r\nHost: attacker.example:{port}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+    );
+    let (st_403, _, _) = send_raw_bytes(port, bad_req.as_bytes());
+    assert_eq!(st_403, 403);
 
     let _ = std::fs::remove_dir_all(&base);
 }

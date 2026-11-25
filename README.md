@@ -1,11 +1,11 @@
-# OpenRO (`v1.11.0`)
+# OpenRO (`v1.12.0`)
 
 [![Release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/cayleb-james2008/open-ro/release.yml?branch=main&label=build)](https://github.com/cayleb-james2008/open-ro/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Stack](https://img.shields.io/badge/stack-Rust%20%2B%20React%2019%20%2B%20TypeScript-0f172a.svg)](#architecture)
 
-**Single-binary cross-platform Roblox Studio AI IDE** (`openro-rs`) for building, verifying, monetizing, and publishing complete Roblox games end-to-end — from Rojo project scaffolding and multi-agent Teamwork to 1-click Launch Autopilot (`Fix All Failing Checks` -> `.rbxlx` / `.zip`), Economy & Funnel Dry-Run Simulation (`ARPDAU`, `D1`/`D7` lift, conversion), deterministic playtest assertion suites, genre retention presets, Creator Hub browser setup, and Roblox Open Cloud publishing.
+**Single-binary cross-platform Roblox Studio AI IDE** (`openro-rs`) for building, verifying, monetizing, and publishing complete Roblox games end-to-end — from Rojo project scaffolding and multi-agent Teamwork to 1-click Launch Autopilot (`Fix All Failing Checks` -> `.rbxlx` / `.zip`), Luau Module Dependency Graph & Broken-Require Pruning, Economy & Funnel Dry-Run Simulation (`ARPDAU`, `D1`/`D7` lift, conversion), deterministic playtest assertion suites, genre retention presets, Creator Hub browser setup, and Roblox Open Cloud publishing.
 
 <p align="center">
   <picture>
@@ -16,7 +16,8 @@
 
 ## Why OpenRO
 
-- **Zero-lag 3-pane Studio Copilot:** Explorer, Agent/Plan/Ask thread with reviewable Luau diffs, and tabbed Studio Workbench (`Viewport`, `Code`, `Assets`, `Ship`, `Swarm`) served from a single `10.98 MB` binary (`56.3 KB` gzip initial shell).
+- **Zero-lag 3-pane Studio Copilot:** Explorer, Agent/Plan/Ask thread with reviewable Luau diffs, and tabbed Studio Workbench (`Viewport`, `Code`, `Assets`, `Ship`, `Swarm`) served from a single `11.09 MB` binary (`56.3 KB` gzip initial shell).
+- **Luau Module Dependency Graph & Broken-Require Pruner (`/play`):** Audits `require()` edges, unused `ModuleScript`s, and `ReplicatedStorage` remotes across your place, fixing broken links and pruning dead modules/orphan remotes in 1 click.
 - **Studio Economy & Funnel Dry-Run Simulator (`/play` / `#/ship`):** Projects deterministic ARPDAU (R$ & DevEx USD), D1/D7 retention lift, GamePass conversion %, 4-stage funnel drop-off, actionable revenue blockers, and 1-click JSON export from your place structure and monetization presets.
 - **1-Click Launch Autopilot & Monetization Readiness:** **Fix All Failing Checks** repairs failing Luau/Runtime/Monetization assertions in batch, rebuilds `.rbxl`, verifies Ship Pack ZIP CRC-32 / ZIP-slip integrity, and unlocks 1-click `.rbxlx` and `.zip` exports alongside genre tier presets (`Starter Obby / Sim`, `Anime Gacha / RPG`, `Competitive Arena`), idempotent `ProcessReceipt`, 7-day escalating streak + 48h comeback bonus hooks, and draft Robux tiers (`priceApproved: false` owner gate).
 - **Deterministic Playtest Assertion Lab (`/play` / `#/lab`):** Structured per-room JSON assertions (`Luau`, `Runtime`, `Core Loop`, `Economy`, `Visuals`), 1-click **Re-Run All Assertions** with fixed/regressed diffs, targeted Luau auto-fix plans, and JSON report export.
@@ -56,16 +57,16 @@ flowchart LR
   SRV --> OC["Open Cloud &amp; Creator Hub<br/>0600 Secrets + Price Approval Gate"]
 ```
 
-## Verified Benchmarks (`v1.11.0` vs `v1.2.0`)
+## Verified Benchmarks (`v1.12.0` vs `v1.2.0`)
 
-| Metric | `v1.2.0` Baseline | `v1.11.0` Verified (`#154` pinned) | Delta |
+| Metric | `v1.2.0` Baseline | `v1.12.0` Verified (`#154` pinned) | Delta |
 | --- | --- | --- | --- |
-| Release Binary Size | `19.00 MB` | **`10.98 MB`** (`11,514,704 B`) | **`-42.2%`** |
-| Initial `/` Payload | `~1,368 KB` raw / `~459 KB` gz | **`235.8 KB`** raw / **`56.3 KB`** gz | **`-87.7%` wire** |
-| Cold Boot (`#154` pinned) | `1,470 ms` | **`34.08–39.12 ms`** (`35.57 ms` median) | **`-97.6%`** |
-| Peak RSS (`VmHWM`) | `115.20 MB` | **`9.47 MB`** (`9,696 KB`, 16w pinned) | **`-91.8%`** |
-| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`34,222.1 req/s`** keep-alive (`0.83 ms` p95) / **`30,719.9 req/s`** close (`0.96 ms` p95, `0` errs) | **`39.1x` (`-99.4%` p95)** |
-| Security & UI Gates | `43/43` fuzz | **`0` sloplint fails, `309` Rust tests, `10/10` SSE** | Pass |
+| Release Binary Size | `19.00 MB` | **`11.09 MB`** (`11,633,488 B`) | **`-41.6%`** |
+| Initial `/` Payload | `~1,368 KB` raw / `~459 KB` gz | **`236.0 KB`** raw / **`56.3 KB`** gz | **`-87.7%` wire** |
+| Cold Boot (`#154` pinned) | `1,470 ms` | **`33.72–48.52 ms`** (`33.85 ms` median) | **`-97.7%`** |
+| Peak RSS (`VmHWM`) | `115.20 MB` | **`9.55 MB`** (`9,784 KB`, 16w pinned) | **`-91.7%`** |
+| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`31,555.8 req/s`** keep-alive (`0.89 ms` p95) / **`28,426.0 req/s`** close (`1.00 ms` p95, `0` errs) | **`36.1x` (`-99.4%` p95)** |
+| Security & UI Gates | `43/43` fuzz | **`0` sloplint fails, `310` Rust tests, `10/10` SSE** | Pass |
 
 ## Quick Start
 

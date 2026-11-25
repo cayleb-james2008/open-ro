@@ -1,4 +1,4 @@
-// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.11.0 standalone web builds.
+// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.12.0 standalone web builds.
 // Features:
 //  - RoPilot-Grade 3-Pane Studio IDE (Agent | Plan | Ask, Reviewable Unified Diffs, @Context Chips, Companion Plugin)
 //  - Embedded Studio Workbench & 13 Official Studio MCP Tools running live against the in-browser Place DataModel
@@ -916,6 +916,183 @@ export function installWebEngine() {
     };
   };
 
+  const analyzeLuauDependencies = (place: EngineState["chats"][string]["place"]) => {
+    const scripts = place.scripts || {};
+    const entries = Object.entries(scripts);
+    const isMod = (p: string) =>
+      !p.startsWith("ServerScriptService.") &&
+      !p.startsWith("StarterPlayer.") &&
+      !p.startsWith("StarterGui.") &&
+      !p.startsWith("StarterPack.") &&
+      !p.startsWith("Workspace.");
+    const isCfg = (p: string) => {
+      const leaf = p.split(".").pop() || "";
+      return isMod(p) && (leaf === "Config" || leaf === "MonetizationConfig" || leaf === "ProductIds" || leaf === "AssetIds");
+    };
+    const nodes = entries.map(([id]) => ({ id, kind: isMod(id) ? "ModuleScript" : "Script" }));
+    const edges: { from: string; to: string; resolved: boolean; line: number }[] = [];
+    const broken: { from: string; line: number; raw_expr: string; resolved_target: string; suggested_target: string | null; var_name: string | null }[] = [];
+    const incoming = new Map<string, number>();
+    const remotes = new Map<string, { kind: string; creators: { script: string; line: number }[]; consumers: { script: string; line: number }[]; hasUsage: boolean }>();
+
+    const resolveExpr = (caller: string, raw: string, aliases: Record<string, string>) => {
+      let s = raw.trim().replace(/:(?:WaitForChild|FindFirstChild)\(\s*["']([^"']+)["'](?:\s*,[^)]+)?\)/g, ".$1");
+      const first = s.split(".")[0]?.trim() || "";
+      if (aliases[first]) s = `${aliases[first]}${s.slice(first.length).trim()}`;
+      s = s.replace(/^game:GetService\(\s*["']ReplicatedStorage["']\s*\)/, "ReplicatedStorage");
+      s = s.replace(/^game:GetService\(\s*["']ServerStorage["']\s*\)/, "ServerStorage");
+      if (s.startsWith("script.Parent.")) {
+        const parts = caller.split(".");
+        parts.pop();
+        s = [...parts, s.slice("script.Parent.".length)].join(".");
+      }
+      return s.replace(/^\.+|\.+$/g, "");
+    };
+
+    for (const [dotPath, src] of entries) {
+      const lines = src.split("\n");
+      const aliases: Record<string, string> = {};
+      const remoteVars = new Map<string, { name: string; line: number; kind: string }>();
+      for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].replace(/--.*$/, "").trim();
+        if (!trimmed) continue;
+        const mAlias = trimmed.match(/^local\s+([A-Za-z_]\w*)(?::[^=]+)?\s*=\s*(.+)$/);
+        if (mAlias && !mAlias[2].includes("require(")) {
+          const [, vr, rhs] = mAlias;
+          if (rhs.includes("ReplicatedStorage") || rhs.includes("ServerStorage") || rhs.includes("script.Parent")) {
+            aliases[vr] = resolveExpr(dotPath, rhs, aliases);
+          }
+          for (const rk of ["RemoteEvent", "RemoteFunction"]) {
+            if (rhs.includes(`Instance.new("${rk}")`) || rhs.includes(`Instance.new('${rk}')`)) {
+              const fn = rhs.match(/FindFirstChild\(\s*["']([^"']+)["']\s*\)/)?.[1];
+              remoteVars.set(vr, { name: fn || vr, line: i + 1, kind: rk });
+            }
+          }
+        }
+        const mName = trimmed.match(/^([A-Za-z_]\w*)\.Name\s*=\s*["']([^"']+)["']/);
+        if (mName && remoteVars.has(mName[1])) {
+          remoteVars.get(mName[1])!.name = mName[2];
+        }
+        const reqRe = /require\(([^)]+)\)/g;
+        let rm: RegExpExecArray | null;
+        while ((rm = reqRe.exec(trimmed)) !== null) {
+          const rawExpr = rm[1].trim();
+          const resolved = resolveExpr(dotPath, rawExpr, aliases);
+          const exact = scripts[resolved] !== undefined ? resolved : null;
+          const leaf = (resolved.split(".").pop() || "").toLowerCase();
+          const suggested = exact
+            ? null
+            : entries.find(([k]) => isMod(k) && (k.toLowerCase() === resolved.toLowerCase() || (k.split(".").pop() || "").toLowerCase() === leaf))?.[0] || null;
+          if (exact) {
+            incoming.set(exact, (incoming.get(exact) || 0) + 1);
+          } else {
+            const vn = trimmed.match(/^local\s+([A-Za-z_]\w*)/)?.[1] || null;
+            broken.push({ from: dotPath, line: i + 1, raw_expr: rawExpr, resolved_target: resolved, suggested_target: suggested, var_name: vn });
+          }
+          edges.push({ from: dotPath, to: exact || resolved, resolved: Boolean(exact), line: i + 1 });
+        }
+      }
+      for (const [vr, info] of remoteVars.entries()) {
+        const entry = remotes.get(info.name) || { kind: info.kind, creators: [], consumers: [], hasUsage: false };
+        entry.creators.push({ script: dotPath, line: info.line });
+        if ([".OnServerEvent", ".OnServerInvoke", ":FireClient", ":FireAllClients", ".OnClientEvent", ":FireServer", ":InvokeServer"].some((tok) => src.includes(`${vr}${tok}`))) {
+          entry.hasUsage = true;
+        }
+        remotes.set(info.name, entry);
+      }
+      for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].replace(/--.*$/, "").trim();
+        if (!trimmed || trimmed.includes("require(")) continue;
+        const wfcRe = /:(?:WaitForChild|FindFirstChild)\(\s*["']([^"']+)["'](?:\s*,[^)]+)?\)/g;
+        let wm: RegExpExecArray | null;
+        while ((wm = wfcRe.exec(trimmed)) !== null) {
+          if (/RemoteEvent|RemoteFunction|FireServer|FireClient|FireAllClients|InvokeServer|OnServerEvent|OnClientEvent|OnServerInvoke/.test(trimmed)) {
+            const nm = wm[1];
+            const entry = remotes.get(nm) || { kind: /Invoke|RemoteFunction/.test(trimmed) ? "RemoteFunction" : "RemoteEvent", creators: [], consumers: [], hasUsage: false };
+            entry.hasUsage = true;
+            entry.consumers.push({ script: dotPath, line: i + 1 });
+            remotes.set(nm, entry);
+          }
+        }
+      }
+    }
+    const suggestedTargets = new Set(broken.map((b) => b.suggested_target).filter(Boolean));
+    const unused = entries.filter(([p]) => isMod(p) && !isCfg(p) && !incoming.has(p) && !suggestedTargets.has(p)).map(([path]) => ({ path, reason: "ModuleScript has 0 incoming require() references" }));
+    const remoteList: { name: string; kind: string; created: boolean; wired: boolean }[] = [];
+    const orphanRemotes: { name: string; kind: string; script: string; line: number; reason: string }[] = [];
+    for (const [name, info] of remotes.entries()) {
+      const created = info.creators.length > 0;
+      remoteList.push({ name, kind: info.kind, created, wired: info.hasUsage });
+      if (created && !info.hasUsage) {
+        orphanRemotes.push({ name, kind: "unused_remote", script: info.creators[0].script, line: info.creators[0].line, reason: "Remote created with no event listener or caller" });
+      } else if (!created && info.hasUsage) {
+        orphanRemotes.push({ name, kind: "uncreated_remote", script: info.consumers[0].script, line: info.consumers[0].line, reason: "Remote fired/connected without any server Instance.new creator" });
+      }
+    }
+    return {
+      schema: "openro.dependency_graph.v1",
+      ok: true,
+      summary: {
+        scripts: entries.length,
+        modules: nodes.filter((n) => n.kind === "ModuleScript").length,
+        edges: edges.length,
+        remotes: remoteList.length,
+        broken_count: broken.length,
+        unused_count: unused.length,
+        orphan_count: orphanRemotes.length,
+        healthy: broken.length === 0 && unused.length === 0 && orphanRemotes.length === 0,
+      },
+      nodes,
+      edges,
+      broken_requires: broken,
+      unused_modules: unused,
+      remotes: remoteList,
+      orphan_remotes: orphanRemotes,
+    };
+  };
+
+  const pruneOrFixDependencies = (chat: EngineState["chats"][string]) => {
+    const before = analyzeLuauDependencies(chat.place);
+    let prunedModules = 0;
+    let fixedRequires = 0;
+    let prunedRemotes = 0;
+    const appliedScripts: string[] = [];
+    for (const u of before.unused_modules) {
+      if (chat.place.scripts[u.path] !== undefined) {
+        delete chat.place.scripts[u.path];
+        prunedModules++;
+        appliedScripts.push(u.path);
+      }
+    }
+    for (const b of before.broken_requires) {
+      const src = chat.place.scripts[b.from];
+      if (!src) continue;
+      const lines = src.split("\n");
+      if (b.line >= 1 && b.line <= lines.length) {
+        if (b.suggested_target) {
+          const parts = b.suggested_target.split(".");
+          const expr = `game:GetService("${parts[0]}")${parts.slice(1).map((p) => `:WaitForChild("${p}")`).join("")}`;
+          lines[b.line - 1] = lines[b.line - 1].replace(`require(${b.raw_expr})`, `require(${expr})`);
+        } else {
+          lines[b.line - 1] = "";
+        }
+        chat.place.scripts[b.from] = `${lines.filter((l) => l.trim()).join("\n")}\n`;
+        fixedRequires++;
+        if (!appliedScripts.includes(b.from)) appliedScripts.push(b.from);
+      }
+    }
+    for (const o of before.orphan_remotes) {
+      if (o.kind === "unused_remote" && chat.place.scripts[o.script]) {
+        const filtered = chat.place.scripts[o.script].split("\n").filter((l) => !l.includes(`"${o.name}"`) && !l.includes(`'${o.name}'`)).join("\n");
+        chat.place.scripts[o.script] = filtered;
+        prunedRemotes++;
+        if (!appliedScripts.includes(o.script)) appliedScripts.push(o.script);
+      }
+    }
+    const after = analyzeLuauDependencies(chat.place);
+    return { ok: true, pruned_modules: prunedModules, fixed_requires: fixedRequires, pruned_remotes: prunedRemotes, applied_scripts: appliedScripts, before, after };
+  };
+
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const rawUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     let u: URL;
@@ -958,7 +1135,7 @@ export function installWebEngine() {
     if (!chat.playMode) chat.playMode = "edit";
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "1.11.0" });
+      return jsonResponse({ name: "openro-rs", version: "1.12.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -969,7 +1146,7 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "1.11.0",
+        version: "1.12.0",
         sse_build_stream: true,
         studio_stream: true,
         assets_api: true,
@@ -1236,6 +1413,14 @@ export function installWebEngine() {
     }
     if (method === "POST" && u.pathname === "/api/studio/economy/simulate") {
       return jsonResponse(simulateEconomyFunnel(chat.place, body));
+    }
+    if (method === "GET" && u.pathname === "/api/studio/dependencies") {
+      return jsonResponse(analyzeLuauDependencies(chat.place));
+    }
+    if (method === "POST" && u.pathname === "/api/studio/dependencies/prune") {
+      const res = pruneOrFixDependencies(chat);
+      persist();
+      return jsonResponse(res);
     }
     if (method === "POST" && u.pathname === "/api/studio/mcp/connect") {
       return jsonResponse(
