@@ -1,10 +1,17 @@
 {
   "assets": {
-    "authorised": [],
+    "authorised": [
+      "art/cards/*/art.png",
+      "assets/meshes/roll_altar.obj",
+      "assets/meshes/card_standee.obj",
+      "assets/meshes/shop_kiosk.obj",
+      "assets/meshes/world1_portal_arch.obj",
+      "assets/audio/*.wav"
+    ],
     "lockFile": "assets.lock.json"
   },
   "name": "Untitled Anime Card Game",
-  "placeId": null,
+  "placeId": 112916648108736,
   "products": [
     {
       "description": "Expands card inventory cap by +150 slots.",
@@ -206,6 +213,6 @@
     }
   ],
   "rojoProject": "default.project.json",
-  "universeId": null,
+  "universeId": 10771116814,
   "version": 1
 }
