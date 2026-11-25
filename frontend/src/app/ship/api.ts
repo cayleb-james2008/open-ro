@@ -133,6 +133,34 @@ export type EconomyFunnelReport = {
   funnel_stages: EconomyFunnelStage[];
   blockers: EconomyBlocker[];
 };
+export type DependencyGraphReport = {
+  schema: string;
+  summary: {
+    scripts: number;
+    modules: number;
+    edges: number;
+    remotes: number;
+    broken_count: number;
+    unused_count: number;
+    orphan_count: number;
+    healthy: boolean;
+  };
+  nodes: { id: string; rel_file?: string | null; kind: string }[];
+  edges: { from: string; to: string; resolved: boolean; line: number }[];
+  broken_requires: { from: string; rel_file?: string | null; line: number; raw_expr: string; resolved_target: string; suggested_target?: string | null }[];
+  unused_modules: { path: string; rel_file?: string | null; reason: string }[];
+  remotes: { name: string; kind: string; created: boolean; wired: boolean }[];
+  orphan_remotes: { name: string; kind: string; script: string; line: number; reason: string }[];
+};
+export type DependencyPruneResult = {
+  pruned_modules: number;
+  fixed_requires: number;
+  pruned_remotes: number;
+  applied_files?: string[];
+  applied_scripts?: string[];
+  before: DependencyGraphReport;
+  after: DependencyGraphReport;
+};
 export type PlaytestReport = {
   run_id: string; passed: boolean; build_id?: string; mode?: string; duration_ms?: number;
   checks?: { name: string; passed: boolean; value?: unknown; error?: string | null; datamodel?: string }[];

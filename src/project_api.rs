@@ -260,7 +260,8 @@ pub fn route(shared: &Arc<Shared>, method: &str, full_path: &str, body: &[u8], l
             | ("GET", [_])
             | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "format" | "run-lune" | "open-in-studio"])
             | ("POST", [_, "sync", "diff"] | [_, "playtests", "rerun"] | [_, "playtests", "fix-plan"] | [_, "playtests", "fix-apply"] | [_, "playtests", "fix-all"])
-            | ("GET", [_, "builds" | "playtests" | "files" | "file" | "preview"])
+            | ("GET", [_, "builds" | "playtests" | "dependencies" | "files" | "file" | "preview"])
+            | ("POST", [_, "dependencies", "prune"])
             | ("POST", [_, "file"] | [_, "file", "delete"] | [_, "file", "edit"])
             | ("GET", [_, "git", "status" | "log"])
             | ("POST", [_, "git", "commit" | "revert"])
@@ -721,6 +722,14 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
         ("GET", [id, "playtests"]) => {
             let r = project_of(shared, id)?;
             Ok(Reply::ok(json!({ "runs": crate::playtest::list_runs(&r.dir) })))
+        }
+        ("GET", [id, "dependencies"]) => {
+            let r = project_of(shared, id)?;
+            crate::playtest::project_dependencies_report(&r).map(Reply::ok)
+        }
+        ("POST", [id, "dependencies", "prune"]) => {
+            let r = project_of(shared, id)?;
+            crate::playtest::prune_or_fix_dependencies(&r)
         }
         ("GET", [id, "playtests", run]) => {
             let r = project_of(shared, id)?;

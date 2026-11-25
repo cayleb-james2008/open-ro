@@ -8,6 +8,7 @@ import { Expandable, ExpandableTrigger } from "@/components/ui/expandable";
 import { MorphingDialog, MorphingDialogClose, MorphingDialogContainer, MorphingDialogContent, MorphingDialogTitle, MorphingDialogTrigger } from "@/components/ui/morphing-dialog";
 import { open as dialogSpring } from "@/motion";
 import { call, enc, projUrl, stamp, type AssertionDiff, type AssertionFixApplyResult, type AssertionFixPlan, type AssertionItem, type CoreLoopClaim, type FixAllAssertionsResult, type PlaytestReport, type PlaytestRun, type StudyStatus, type UnknownItem } from "./api";
+import { DependencyGraphCard } from "./DependencyGraphCard";
 import { EconomySimulatorCard } from "./EconomySimulatorCard";
 import type { Ship } from "./useShip";
 
@@ -601,6 +602,7 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
           )}
         </div>
       )}
+      <DependencyGraphCard projectId={id} studioOk={studioOk} />
       <EconomySimulatorCard projectId={id} studioOk={studioOk} />
     </div>
   );

@@ -1748,6 +1748,853 @@ pub fn fix_all_and_prepare_export(shared: &Shared, r: &ProjectRef, body: &Value)
     })))
 }
 
+#[derive(Clone, Debug)]
+struct DepScript {
+    dot_path: String,
+    source: String,
+    rel_file: Option<String>,
+    is_module: bool,
+    is_config_module: bool,
+}
+
+fn strip_luau_comments_preserve_lines(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_block = false;
+    for raw_line in src.lines() {
+        let mut line = raw_line;
+        if in_block {
+            if let Some(end) = line.find("]]") {
+                in_block = false;
+                line = &line[end + 2..];
+            } else {
+                out.push(String::new());
+                continue;
+            }
+        }
+        let mut cleaned = String::new();
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        let mut quote: Option<u8> = None;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if let Some(q) = quote {
+                cleaned.push(b as char);
+                if b == b'\\' && i + 1 < bytes.len() {
+                    i += 1;
+                    cleaned.push(bytes[i] as char);
+                } else if b == q {
+                    quote = None;
+                }
+                i += 1;
+                continue;
+            }
+            if b == b'"' || b == b'\'' {
+                quote = Some(b);
+                cleaned.push(b as char);
+                i += 1;
+                continue;
+            }
+            if b == b'-' && i + 1 < bytes.len() && bytes[i + 1] == b'-' {
+                if line[i..].starts_with("--[[") {
+                    if let Some(end) = line[i + 4..].find("]]") {
+                        i = i + 4 + end + 2;
+                        continue;
+                    }
+                    in_block = true;
+                }
+                break;
+            }
+            cleaned.push(b as char);
+            i += 1;
+        }
+        out.push(cleaned);
+    }
+    out
+}
+
+fn is_module_script(dot_path: &str, rel_file: Option<&str>) -> bool {
+    if let Some(rel) = rel_file {
+        let low = rel.to_ascii_lowercase();
+        if low.contains(".server.") || low.contains(".client.") {
+            return false;
+        }
+    }
+    !dot_path.starts_with("ServerScriptService.")
+        && !dot_path.starts_with("StarterPlayer.")
+        && !dot_path.starts_with("StarterGui.")
+        && !dot_path.starts_with("StarterPack.")
+        && !dot_path.starts_with("Workspace.")
+}
+
+fn resolve_require_expr(
+    caller_dot: &str,
+    expr: &str,
+    aliases: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut s = expr.trim().to_string();
+    // Collapse :WaitForChild("Foo") / :FindFirstChild("Foo") / :WaitForChild("Foo", 5) into .Foo
+    for meth in [":WaitForChild(", ":FindFirstChild("] {
+        while let Some(pos) = s.find(meth) {
+            let after = &s[pos + meth.len()..];
+            let Some(close) = after.find(')') else { break };
+            let inner = after[..close].split(',').next().unwrap_or("").trim();
+            let child = inner.trim_matches(|c| c == '"' || c == '\'').trim();
+            let replacement = if child.is_empty() {
+                String::new()
+            } else {
+                format!(".{child}")
+            };
+            s = format!("{}{}{}", &s[..pos], replacement, &after[close + 1..]);
+        }
+    }
+    // Expand simple local aliases (e.g. Shared -> ReplicatedStorage.Shared)
+    let first_seg = s.split('.').next().unwrap_or("").trim();
+    if let Some(mapped) = aliases.get(first_seg) {
+        let rest = s[first_seg.len()..].trim();
+        s = format!("{mapped}{rest}");
+    }
+    if let Some(rest) = s.strip_prefix("game:GetService(\"ReplicatedStorage\")") {
+        s = format!("ReplicatedStorage{rest}");
+    } else if let Some(rest) = s.strip_prefix("game:GetService('ReplicatedStorage')") {
+        s = format!("ReplicatedStorage{rest}");
+    } else if let Some(rest) = s.strip_prefix("game:GetService(\"ServerStorage\")") {
+        s = format!("ServerStorage{rest}");
+    } else if let Some(rest) = s.strip_prefix("game:GetService('ServerStorage')") {
+        s = format!("ServerStorage{rest}");
+    } else if s.starts_with("script.Parent") {
+        let mut base: Vec<&str> = caller_dot.split('.').collect();
+        if !base.is_empty() {
+            base.pop();
+        }
+        let mut cursor = s.as_str();
+        while let Some(rest) = cursor.strip_prefix("script.Parent") {
+            if let Some(tail) = rest.strip_prefix('.') {
+                if tail.starts_with("Parent") {
+                    if !base.is_empty() {
+                        base.pop();
+                    }
+                    cursor = tail.strip_prefix("Parent").unwrap_or(tail);
+                    if let Some(after_dot) = cursor.strip_prefix('.') {
+                        return if base.is_empty() {
+                            after_dot.to_string()
+                        } else {
+                            format!("{}.{}", base.join("."), after_dot)
+                        };
+                    }
+                    continue;
+                }
+                return if base.is_empty() {
+                    tail.to_string()
+                } else {
+                    format!("{}.{}", base.join("."), tail)
+                };
+            }
+            return base.join(".");
+        }
+    }
+    s.trim_matches('.').to_string()
+}
+
+fn match_script_target(target: &str, scripts: &[DepScript]) -> (Option<String>, Option<String>) {
+    if target.is_empty() {
+        return (None, None);
+    }
+    if let Some(hit) = scripts.iter().find(|s| s.dot_path == target) {
+        return (Some(hit.dot_path.clone()), None);
+    }
+    // Check case-insensitive or leaf name suggestion for broken require() targets
+    let leaf = target.rsplit('.').next().unwrap_or(target).to_ascii_lowercase();
+    if let Some(hit) = scripts.iter().find(|s| s.dot_path.eq_ignore_ascii_case(target)) {
+        return (None, Some(hit.dot_path.clone()));
+    }
+    let candidate = scripts.iter().find(|s| {
+        s.is_module
+            && s.dot_path
+                .rsplit('.')
+                .next()
+                .is_some_and(|l| l.eq_ignore_ascii_case(&leaf) || l.to_ascii_lowercase().starts_with(&leaf))
+    });
+    (None, candidate.map(|c| c.dot_path.clone()))
+}
+
+fn collect_project_dep_scripts(dir: &Path) -> Vec<DepScript> {
+    let manifest = crate::projects::manifest(dir).unwrap_or_else(|_| json!({}));
+    let rojo = manifest["rojoProject"]
+        .as_str()
+        .unwrap_or(crate::projects::DEFAULT_ROJO_FILE);
+    let mut disk_by_source: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let src_root = dir.join("src");
+    let mut stack = vec![src_root];
+    while let Some(cur) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&cur) else { continue };
+        for ent in rd.flatten() {
+            let p = ent.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if !(name.ends_with(".luau") || name.ends_with(".lua")) {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(&p) {
+                let rel = p.strip_prefix(dir).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+                disk_by_source.insert(text, rel);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Ok(tree) = crate::projects::load_tree(dir, rojo) {
+        for f in tree.flatten() {
+            if let Some(src) = f.source {
+                let dot = f.path.replace('/', ".");
+                let rel = disk_by_source.get(&src).cloned().or_else(|| {
+                    let leaf = dot.rsplit('.').next().unwrap_or("Script");
+                    if dot.starts_with("ServerScriptService.") {
+                        Some(format!("src/server/{leaf}.server.luau"))
+                    } else if dot.starts_with("StarterPlayer.") {
+                        Some(format!("src/client/{leaf}.client.luau"))
+                    } else if dot.starts_with("ReplicatedStorage.") {
+                        Some(format!("src/shared/{leaf}.luau"))
+                    } else {
+                        None
+                    }
+                });
+                let is_mod = is_module_script(&dot, rel.as_deref());
+                let leaf = dot.rsplit('.').next().unwrap_or("");
+                let is_cfg = is_mod && matches!(leaf, "Config" | "MonetizationConfig" | "ProductIds" | "AssetIds");
+                out.push(DepScript {
+                    dot_path: dot,
+                    source: src,
+                    rel_file: rel,
+                    is_module: is_mod,
+                    is_config_module: is_cfg,
+                });
+            }
+        }
+    }
+    out
+}
+
+fn analyze_dep_scripts(scripts: &[DepScript]) -> Value {
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    let mut broken_requires = Vec::new();
+    let mut incoming_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    #[derive(Default)]
+    struct RemoteInfo {
+        kind: String,
+        creators: Vec<(String, usize)>,
+        consumer_refs: Vec<(String, usize)>,
+        has_usage: bool,
+    }
+    let mut remotes: std::collections::BTreeMap<String, RemoteInfo> = std::collections::BTreeMap::new();
+
+    for sc in scripts {
+        nodes.push(json!({
+            "id": sc.dot_path,
+            "rel_file": sc.rel_file,
+            "kind": if sc.is_module { "ModuleScript" } else { "Script" },
+        }));
+        let clean_lines = strip_luau_comments_preserve_lines(&sc.source);
+        let mut aliases: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut remote_vars: std::collections::HashMap<String, (String, usize, String)> =
+            std::collections::HashMap::new();
+
+        for (idx, line) in clean_lines.iter().enumerate() {
+            let line_no = idx + 1;
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some(rest) = trimmed.strip_prefix("local ") {
+                if let Some((lhs, rhs)) = rest.split_once('=') {
+                    let var = lhs.split(':').next().unwrap_or("").trim();
+                    let rhs_t = rhs.trim();
+                    if !var.is_empty()
+                        && !rhs_t.contains("require(")
+                        && (rhs_t.contains("ReplicatedStorage")
+                            || rhs_t.contains("ServerStorage")
+                            || rhs_t.contains("script.Parent"))
+                    {
+                        let resolved = resolve_require_expr(&sc.dot_path, rhs_t, &aliases);
+                        aliases.insert(var.to_string(), resolved);
+                    }
+                    // Detect `local ev = Instance.new("RemoteEvent")` or `... or Instance.new("RemoteEvent")`
+                    for rkind in ["RemoteEvent", "RemoteFunction"] {
+                        let pat_dq = format!("Instance.new(\"{rkind}\")");
+                        let pat_sq = format!("Instance.new('{rkind}')");
+                        if rhs_t.contains(&pat_dq) || rhs_t.contains(&pat_sq) {
+                            let explicit_name = rhs_t
+                                .find("FindFirstChild(")
+                                .and_then(|p| {
+                                    let sub = &rhs_t[p + "FindFirstChild(".len()..];
+                                    sub.find(')').map(|e| sub[..e].trim().trim_matches(|c| c == '"' || c == '\'').to_string())
+                                })
+                                .filter(|n| !n.is_empty());
+                            remote_vars.insert(
+                                var.to_string(),
+                                (explicit_name.unwrap_or_else(|| var.to_string()), line_no, rkind.to_string()),
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Update remote variable `.Name = "Foo"`
+            if let Some((lhs, rhs)) = trimmed.split_once('=') {
+                if let Some(var) = lhs.trim().strip_suffix(".Name") {
+                    if let Some(entry) = remote_vars.get_mut(var.trim()) {
+                        let nm = rhs.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+                        if !nm.is_empty() {
+                            entry.0 = nm;
+                        }
+                    }
+                }
+            }
+
+            // Detect `require(...)` calls
+            let mut search_from = 0usize;
+            while let Some(pos) = trimmed[search_from..].find("require(") {
+                let start = search_from + pos + "require(".len();
+                let mut depth = 1i32;
+                let mut end = None;
+                for (off, ch) in trimmed[start..].char_indices() {
+                    if ch == '(' {
+                        depth += 1;
+                    } else if ch == ')' {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = Some(start + off);
+                            break;
+                        }
+                    }
+                }
+                let Some(end_idx) = end else { break };
+                let raw_expr = trimmed[start..end_idx].trim().to_string();
+                let resolved = resolve_require_expr(&sc.dot_path, &raw_expr, &aliases);
+                let (matched, suggested) = match_script_target(&resolved, scripts);
+                let var_name = trimmed
+                    .strip_prefix("local ")
+                    .and_then(|r| r.split('=').next())
+                    .map(|lhs| lhs.split(':').next().unwrap_or("").trim().to_string())
+                    .filter(|v| !v.is_empty());
+                if let Some(ref target) = matched {
+                    *incoming_counts.entry(target.clone()).or_insert(0) += 1;
+                } else {
+                    broken_requires.push(json!({
+                        "from": sc.dot_path,
+                        "rel_file": sc.rel_file,
+                        "line": line_no,
+                        "raw_expr": raw_expr,
+                        "resolved_target": resolved,
+                        "suggested_target": suggested,
+                        "var_name": var_name,
+                    }));
+                }
+                edges.push(json!({
+                    "from": sc.dot_path,
+                    "to": matched.as_deref().unwrap_or(&resolved),
+                    "resolved": matched.is_some(),
+                    "line": line_no,
+                }));
+                search_from = end_idx + 1;
+            }
+        }
+
+        // Flush created remotes and check whether this script or any other wires handlers/fires
+        let full_src = clean_lines.join("\n");
+        for (var, (rname, rline, rkind)) in &remote_vars {
+            let entry = remotes.entry(rname.clone()).or_default();
+            if entry.kind.is_empty() {
+                entry.kind = rkind.clone();
+            }
+            entry.creators.push((sc.dot_path.clone(), *rline));
+            let has_local_wiring = [
+                format!("{var}.OnServerEvent"),
+                format!("{var}.OnServerInvoke"),
+                format!("{var}:FireClient"),
+                format!("{var}:FireAllClients"),
+                format!("{var}.OnClientEvent"),
+                format!("{var}:FireServer"),
+                format!("{var}:InvokeServer"),
+            ]
+            .iter()
+            .any(|tok| full_src.contains(tok));
+            if has_local_wiring {
+                entry.has_usage = true;
+            }
+        }
+
+        // Detect cross-script RemoteEvent/RemoteFunction references on the same line (never require() lines)
+        for meth in [":WaitForChild(", ":FindFirstChild("] {
+            for (idx, line) in clean_lines.iter().enumerate() {
+                if line.contains("require(") {
+                    continue;
+                }
+                let mut pos = 0usize;
+                while let Some(found) = line[pos..].find(meth) {
+                    let after = &line[pos + found + meth.len()..];
+                    if let Some(close) = after.find(')') {
+                        let arg = after[..close].split(',').next().unwrap_or("").trim();
+                        let name = arg.trim_matches(|c| c == '"' || c == '\'');
+                        let ctx_slice = line;
+                        let is_remote_use = ctx_slice.contains("RemoteEvent")
+                            || ctx_slice.contains("RemoteFunction")
+                            || ctx_slice.contains("FireServer")
+                            || ctx_slice.contains("FireClient")
+                            || ctx_slice.contains("FireAllClients")
+                            || ctx_slice.contains("InvokeServer")
+                            || ctx_slice.contains("OnServerEvent")
+                            || ctx_slice.contains("OnClientEvent")
+                            || ctx_slice.contains("OnServerInvoke");
+                        if !name.is_empty() && is_remote_use {
+                            let entry = remotes.entry(name.to_string()).or_default();
+                            if entry.kind.is_empty() {
+                                entry.kind = if ctx_slice.contains("Invoke") || ctx_slice.contains("RemoteFunction") {
+                                    "RemoteFunction".to_string()
+                                } else {
+                                    "RemoteEvent".to_string()
+                                };
+                            }
+                            entry.has_usage = true;
+                            entry.consumer_refs.push((sc.dot_path.clone(), idx + 1));
+                        }
+                        pos += found + meth.len() + close;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut unused_modules = Vec::new();
+    let suggested_targets: std::collections::HashSet<String> = broken_requires
+        .iter()
+        .filter_map(|b| b["suggested_target"].as_str().map(String::from))
+        .collect();
+    for sc in scripts {
+        if sc.is_module
+            && !sc.is_config_module
+            && !incoming_counts.contains_key(&sc.dot_path)
+            && !suggested_targets.contains(&sc.dot_path)
+        {
+            unused_modules.push(json!({
+                "path": sc.dot_path,
+                "rel_file": sc.rel_file,
+                "reason": "ModuleScript has 0 incoming require() references",
+            }));
+        }
+    }
+
+    let mut remote_list = Vec::new();
+    let mut orphan_remotes = Vec::new();
+    for (name, info) in &remotes {
+        let created = !info.creators.is_empty();
+        let used = info.has_usage;
+        remote_list.push(json!({
+            "name": name,
+            "kind": if info.kind.is_empty() { "RemoteEvent" } else { &info.kind },
+            "created": created,
+            "wired": used,
+            "creators": info.creators.iter().map(|(s, _)| s).collect::<Vec<_>>(),
+            "consumers": info.consumer_refs.iter().map(|(s, _)| s).collect::<Vec<_>>(),
+        }));
+        if created && !used {
+            let (sc, line) = &info.creators[0];
+            orphan_remotes.push(json!({
+                "name": name,
+                "kind": "unused_remote",
+                "script": sc,
+                "line": line,
+                "reason": "Remote created in ReplicatedStorage with no event listener or caller",
+            }));
+        } else if !created && used {
+            let (sc, line) = &info.consumer_refs[0];
+            orphan_remotes.push(json!({
+                "name": name,
+                "kind": "uncreated_remote",
+                "script": sc,
+                "line": line,
+                "reason": "Remote referenced/fired without any server Instance.new creator",
+            }));
+        }
+    }
+
+    let broken_count = broken_requires.len();
+    let unused_count = unused_modules.len();
+    let orphan_count = orphan_remotes.len();
+    json!({
+        "schema": "openro.dependency_graph.v1",
+        "ok": true,
+        "summary": {
+            "scripts": scripts.len(),
+            "modules": scripts.iter().filter(|s| s.is_module).count(),
+            "edges": edges.len(),
+            "remotes": remote_list.len(),
+            "broken_count": broken_count,
+            "unused_count": unused_count,
+            "orphan_count": orphan_count,
+            "healthy": broken_count == 0 && unused_count == 0 && orphan_count == 0,
+        },
+        "nodes": nodes,
+        "edges": edges,
+        "broken_requires": broken_requires,
+        "unused_modules": unused_modules,
+        "remotes": remote_list,
+        "orphan_remotes": orphan_remotes,
+    })
+}
+
+fn rewrite_or_prune_broken_requires(
+    src: &str,
+    broken_for_script: &[Value],
+) -> (String, usize, Vec<String>) {
+    let mut lines: Vec<String> = src.lines().map(String::from).collect();
+    let mut fixed = 0usize;
+    let mut scaffold_modules = Vec::new();
+    for item in broken_for_script {
+        let line_no = item["line"].as_u64().unwrap_or(0) as usize;
+        let raw_expr = item["raw_expr"].as_str().unwrap_or("");
+        if line_no == 0 || line_no > lines.len() || raw_expr.is_empty() {
+            continue;
+        }
+        if let Some(suggested) = item["suggested_target"].as_str() {
+            let luau_target = suggested.replace('.', ":WaitForChild(\"");
+            // Build ReplicatedStorage:WaitForChild("A"):WaitForChild("B")
+            let parts: Vec<&str> = suggested.split('.').collect();
+            let valid_expr = if parts.len() >= 2 {
+                let mut expr = format!("game:GetService(\"{}\")", parts[0]);
+                for p in &parts[1..] {
+                    expr.push_str(&format!(":WaitForChild(\"{p}\")"));
+                }
+                expr
+            } else {
+                luau_target
+            };
+            lines[line_no - 1] = lines[line_no - 1].replace(
+                &format!("require({raw_expr})"),
+                &format!("require({valid_expr})"),
+            );
+            fixed += 1;
+        } else {
+            let var_name = item["var_name"].as_str().unwrap_or("");
+            let used_later = !var_name.is_empty()
+                && lines
+                    .iter()
+                    .enumerate()
+                    .any(|(i, l)| i + 1 != line_no && l.contains(var_name));
+            if used_later {
+                let target = item["resolved_target"].as_str().unwrap_or("");
+                let leaf = target.rsplit('.').next().unwrap_or("StubModule");
+                if !leaf.is_empty() && leaf.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    scaffold_modules.push(leaf.to_string());
+                    let valid_expr = format!("game:GetService(\"ReplicatedStorage\"):WaitForChild(\"Shared\"):WaitForChild(\"{leaf}\")");
+                    lines[line_no - 1] = lines[line_no - 1].replace(
+                        &format!("require({raw_expr})"),
+                        &format!("require({valid_expr})"),
+                    );
+                    fixed += 1;
+                }
+            } else {
+                lines[line_no - 1].clear();
+                fixed += 1;
+            }
+        }
+    }
+    let out = lines
+        .into_iter()
+        .filter(|l| !l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    (out, fixed, scaffold_modules)
+}
+
+fn prune_unused_remote_lines(src: &str, unused_names: &[String]) -> (String, usize) {
+    if unused_names.is_empty() {
+        return (src.to_string(), 0);
+    }
+    let lines: Vec<String> = src.lines().map(String::from).collect();
+    let mut drop_idx: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut pruned = 0usize;
+    for name in unused_names {
+        let pat_dq = format!("\"{name}\"");
+        let pat_sq = format!("'{name}'");
+        // Find var assigned with Instance.new("Remote...") whose .Name matches `name`
+        let mut target_vars: Vec<String> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let t = line.trim();
+            if let Some(rest) = t.strip_prefix("local ") {
+                if let Some((lhs, rhs)) = rest.split_once('=') {
+                    if rhs.contains("Instance.new(\"Remote") || rhs.contains("Instance.new('Remote") {
+                        let var = lhs.split(':').next().unwrap_or("").trim().to_string();
+                        let matches_here = rhs.contains(&pat_dq) || rhs.contains(&pat_sq);
+                        let matches_next = (i + 1..lines.len().min(i + 5)).any(|j| {
+                            lines[j].contains(&format!("{var}.Name"))
+                                && (lines[j].contains(&pat_dq) || lines[j].contains(&pat_sq))
+                        });
+                        if matches_here || matches_next || var == *name {
+                            target_vars.push(var);
+                        }
+                    }
+                }
+            }
+        }
+        if !target_vars.is_empty() {
+            pruned += 1;
+            for (i, line) in lines.iter().enumerate() {
+                if target_vars.iter().any(|v| {
+                    line.contains(&format!("local {v}"))
+                        || line.contains(&format!("{v}.Name"))
+                        || line.contains(&format!("{v}.Parent"))
+                }) {
+                    drop_idx.insert(i);
+                }
+            }
+        }
+    }
+    let kept: Vec<String> = lines
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, l)| if drop_idx.contains(&i) { None } else { Some(l) })
+        .collect();
+    (kept.join("\n") + "\n", pruned)
+}
+
+pub fn project_dependencies_report(r: &ProjectRef) -> Result<Value, Reply> {
+    let scripts = collect_project_dep_scripts(&r.dir);
+    Ok(analyze_dep_scripts(&scripts))
+}
+
+pub fn prune_or_fix_dependencies(r: &ProjectRef) -> Result<Reply, Reply> {
+    let scripts = collect_project_dep_scripts(&r.dir);
+    let before = analyze_dep_scripts(&scripts);
+
+    let mut applied_files = Vec::new();
+    let mut fixed_requires = 0usize;
+    let mut pruned_modules = 0usize;
+    let mut pruned_remotes = 0usize;
+    let mut scaffold_modules: Vec<String> = Vec::new();
+
+    // 1. Prune unused ModuleScripts on disk
+    if let Some(unused) = before["unused_modules"].as_array() {
+        for item in unused {
+            if let Some(rel) = item["rel_file"].as_str() {
+                if let Ok(abs) = crate::projects::safe_join(&r.dir, rel) {
+                    if abs.is_file() && std::fs::remove_file(&abs).is_ok() {
+                        pruned_modules += 1;
+                        applied_files.push(rel.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Group broken requires & unused remotes per script
+    let mut broken_by_script: std::collections::HashMap<String, Vec<Value>> =
+        std::collections::HashMap::new();
+    if let Some(broken) = before["broken_requires"].as_array() {
+        for item in broken {
+            if let Some(from) = item["from"].as_str() {
+                broken_by_script.entry(from.to_string()).or_default().push(item.clone());
+            }
+        }
+    }
+    let mut unused_remotes_by_script: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut uncreated_remotes: Vec<(String, String)> = Vec::new();
+    if let Some(orphans) = before["orphan_remotes"].as_array() {
+        for item in orphans {
+            let kind = item["kind"].as_str().unwrap_or("");
+            let name = item["name"].as_str().unwrap_or("").to_string();
+            let script = item["script"].as_str().unwrap_or("").to_string();
+            if kind == "unused_remote" && !script.is_empty() && !name.is_empty() {
+                unused_remotes_by_script.entry(script).or_default().push(name);
+            } else if kind == "uncreated_remote" && !name.is_empty() {
+                uncreated_remotes.push((name, "RemoteEvent".to_string()));
+            }
+        }
+    }
+
+    for sc in &scripts {
+        let Some(rel) = sc.rel_file.as_deref() else { continue };
+        let b_list = broken_by_script.get(&sc.dot_path).map(Vec::as_slice).unwrap_or(&[]);
+        let r_list = unused_remotes_by_script
+            .get(&sc.dot_path)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        if b_list.is_empty() && r_list.is_empty() {
+            continue;
+        }
+        let mut updated = sc.source.clone();
+        if !b_list.is_empty() {
+            let (next, fcount, mut stubs) = rewrite_or_prune_broken_requires(&updated, b_list);
+            updated = next;
+            fixed_requires += fcount;
+            scaffold_modules.append(&mut stubs);
+        }
+        if !r_list.is_empty() {
+            let (next, pcount) = prune_unused_remote_lines(&updated, r_list);
+            updated = next;
+            pruned_remotes += pcount;
+        }
+        if updated != sc.source {
+            write_project_luau(&r.dir, rel, &updated)?;
+            applied_files.push(rel.to_string());
+        }
+    }
+
+    for stub in scaffold_modules {
+        let rel = format!("src/shared/{stub}.luau");
+        if crate::projects::safe_join(&r.dir, &rel).is_ok_and(|p| !p.exists()) {
+            write_project_luau(&r.dir, &rel, "--!strict\n-- Auto-scaffolded missing ModuleScript target.\nreturn {}\n")?;
+            applied_files.push(rel);
+        }
+    }
+
+    if !uncreated_remotes.is_empty() {
+        let mut lines = vec![
+            "--!strict".to_string(),
+            "-- Auto-scaffolded ReplicatedStorage remotes wired by OpenRO Pruner.".to_string(),
+            "local ReplicatedStorage = game:GetService(\"ReplicatedStorage\")".to_string(),
+        ];
+        for (i, (name, _kind)) in uncreated_remotes.iter().enumerate() {
+            let var = format!("remote_{i}");
+            let safe_name = name.replace('"', "");
+            lines.push(format!("local {var} = ReplicatedStorage:FindFirstChild(\"{safe_name}\") or Instance.new(\"RemoteEvent\")"));
+            lines.push(format!("{var}.Name = \"{safe_name}\""));
+            lines.push(format!("{var}.Parent = ReplicatedStorage"));
+            lines.push(format!("if {var}:IsA(\"RemoteEvent\") then\n\t{var}.OnServerEvent:Connect(function(player: Player) player:SetAttribute(\"LastRemote\", \"{safe_name}\") end)\nend"));
+            pruned_remotes += 1;
+        }
+        let rel = "src/server/RemoteBootstrap.server.luau";
+        write_project_luau(&r.dir, rel, &(lines.join("\n") + "\n"))?;
+        applied_files.push(rel.to_string());
+    }
+
+    let after_scripts = collect_project_dep_scripts(&r.dir);
+    let after = analyze_dep_scripts(&after_scripts);
+    Ok(Reply::ok(json!({
+        "pruned_modules": pruned_modules,
+        "fixed_requires": fixed_requires,
+        "pruned_remotes": pruned_remotes,
+        "applied_files": applied_files,
+        "before": before,
+        "after": after,
+    })))
+}
+
+pub fn studio_dependencies_report(scripts_map: &std::collections::BTreeMap<String, String>) -> Value {
+    let list: Vec<DepScript> = scripts_map
+        .iter()
+        .map(|(dot, src)| {
+            let is_mod = is_module_script(dot, None);
+            let leaf = dot.rsplit('.').next().unwrap_or("");
+            let is_cfg = is_mod && matches!(leaf, "Config" | "MonetizationConfig" | "ProductIds" | "AssetIds");
+            DepScript {
+                dot_path: dot.clone(),
+                source: src.clone(),
+                rel_file: None,
+                is_module: is_mod,
+                is_config_module: is_cfg,
+            }
+        })
+        .collect();
+    analyze_dep_scripts(&list)
+}
+
+pub fn prune_or_fix_studio_place(agent: &mut crate::agent::Agent, chat_id: &str) -> Result<Value, String> {
+    let tree = agent.place_tree()?;
+    let mut scripts_map = std::collections::BTreeMap::new();
+    if let Some(obj) = tree.get("scripts").and_then(Value::as_object) {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                scripts_map.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    let before = studio_dependencies_report(&scripts_map);
+    let mut pruned_modules = 0usize;
+    let mut fixed_requires = 0usize;
+    let mut pruned_remotes = 0usize;
+    let mut applied_scripts = Vec::new();
+
+    if let Some(unused) = before["unused_modules"].as_array() {
+        for item in unused {
+            if let Some(path) = item["path"].as_str() {
+                if agent.delete_at_path(chat_id, path).is_ok() {
+                    pruned_modules += 1;
+                    applied_scripts.push(path.to_string());
+                }
+            }
+        }
+    }
+    let mut broken_by_script: std::collections::HashMap<String, Vec<Value>> =
+        std::collections::HashMap::new();
+    if let Some(broken) = before["broken_requires"].as_array() {
+        for item in broken {
+            if let Some(from) = item["from"].as_str() {
+                broken_by_script.entry(from.to_string()).or_default().push(item.clone());
+            }
+        }
+    }
+    let mut unused_remotes_by_script: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    if let Some(orphans) = before["orphan_remotes"].as_array() {
+        for item in orphans {
+            if item["kind"] == "unused_remote" {
+                if let (Some(sc), Some(nm)) = (item["script"].as_str(), item["name"].as_str()) {
+                    unused_remotes_by_script.entry(sc.to_string()).or_default().push(nm.to_string());
+                }
+            }
+        }
+    }
+    for (path, src) in &scripts_map {
+        let b_list = broken_by_script.get(path).map(Vec::as_slice).unwrap_or(&[]);
+        let r_list = unused_remotes_by_script.get(path).map(Vec::as_slice).unwrap_or(&[]);
+        if b_list.is_empty() && r_list.is_empty() {
+            continue;
+        }
+        let mut updated = src.clone();
+        if !b_list.is_empty() {
+            let (next, fcount, _) = rewrite_or_prune_broken_requires(&updated, b_list);
+            updated = next;
+            fixed_requires += fcount;
+        }
+        if !r_list.is_empty() {
+            let (next, pcount) = prune_unused_remote_lines(&updated, r_list);
+            updated = next;
+            pruned_remotes += pcount;
+        }
+        if updated != *src && agent.update_script_source(chat_id, path, &updated).is_ok() {
+            applied_scripts.push(path.clone());
+        }
+    }
+
+    let after_tree = agent.place_tree()?;
+    let mut after_map = std::collections::BTreeMap::new();
+    if let Some(obj) = after_tree.get("scripts").and_then(Value::as_object) {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                after_map.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    let after = studio_dependencies_report(&after_map);
+    Ok(json!({
+        "ok": true,
+        "pruned_modules": pruned_modules,
+        "fixed_requires": fixed_requires,
+        "pruned_remotes": pruned_remotes,
+        "applied_scripts": applied_scripts,
+        "before": before,
+        "after": after,
+    }))
+}
+
 /// Summary of the most recent stored playtest report for `study/status` (#62).
 pub fn latest_report_summary(dir: &Path) -> Option<Value> {
     let rep = latest_report_json(dir)?;

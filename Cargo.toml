@@ -1,6 +1,6 @@
 [package]
 name = "openro-rs"
-version = "1.11.0"
+version = "1.12.0"
 edition = "2021"
 
 [dependencies]
@@ -69,4 +69,10 @@ opt-level = 3
 opt-level = 3
 
 [profile.release.package.cpufeatures]
+opt-level = 3
+
+[profile.release.package.once_cell]
+opt-level = 3
+
+[profile.release.package.smallvec]
 opt-level = 3

@@ -4,6 +4,13 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.12.0 - 2026-11-25
+
+- **Luau Module Dependency Graph & Broken-Require Pruner (`src/playtest.rs`, `src/project_api.rs`, `src/server.rs`, `frontend/src/app/ship/{DependencyGraphCard.tsx,PlaytestPanel.tsx,api.ts}`, `frontend/web-engine/install.ts`):**
+  - Added static `require(...)` edge + `ReplicatedStorage` `RemoteEvent`/`RemoteFunction` analyzer and 1-click **Prune / Fix Links** engine (`GET /api/projects/:id/dependencies`, `POST /api/projects/:id/dependencies/prune`, `GET /api/studio/dependencies`, `POST /api/studio/dependencies/prune`) with full offline `web-engine` parity, flagging & fixing broken `require()` targets, unused `ModuleScript`s, and orphan remotes.
+- **Zero-Allocation Hot HTTP Path (`Cargo.toml`, `src/server.rs`):**
+  - Added thread-local zero-copy `read_request` / `TL_HDR_BUF` / `TL_JSON_BUF` response buffers, cached `/api/version` bytes, and `opt-level = 3` on `once_cell` + `smallvec` alongside hot JSON/compression crates while preserving `<11.5 MB` release binary size.
+
 ## 1.11.0 - 2026-11-25
 
 - **Studio Economy & Funnel Dry-Run Simulator (`src/opencloud.rs`, `src/server.rs`, `frontend/src/app/ship/EconomySimulatorCard.tsx`, `frontend/web-engine/install.ts`):**
