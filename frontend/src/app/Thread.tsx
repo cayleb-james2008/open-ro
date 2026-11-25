@@ -13,6 +13,8 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { AdaptiveAgentCards } from "./AdaptiveAgentCards";
+import type { CreatorHubSetupResult } from "./ship/api";
 import { Spinner } from "@/components/ui/spinner";
 import { Expandable, ExpandableContent, ExpandableTrigger } from "@/components/ui/expandable";
 import { SlidingNumber } from "@/components/ui/sliding-number";
@@ -125,6 +127,10 @@ export function AgentMessage({
   bad,
   whole,
   fresh,
+  projectId,
+  onPrefillPrompt,
+  onQuickCreatorHubSetup,
+  onOpenShip,
   onRetry,
   retryDisabled,
 }: {
@@ -132,6 +138,10 @@ export function AgentMessage({
   bad?: boolean;
   whole?: boolean;
   fresh?: boolean;
+  projectId?: string | null;
+  onPrefillPrompt?: (prompt: string) => void;
+  onQuickCreatorHubSetup?: () => Promise<CreatorHubSetupResult | void>;
+  onOpenShip?: () => void;
   onRetry?: () => void;
   retryDisabled?: boolean;
 }) {
@@ -163,6 +173,16 @@ export function AgentMessage({
           </Button>
         )}
       </div>
+
+      <AdaptiveAgentCards
+        text={text}
+        projectId={projectId}
+        onPrefillPrompt={onPrefillPrompt}
+        onQuickCreatorHubSetup={onQuickCreatorHubSetup}
+        onOpenShip={onOpenShip}
+        onRetry={onRetry}
+        retryDisabled={retryDisabled}
+      />
 
       {raw && (
         <Expandable expandDirection="vertical" expandBehavior="push">
@@ -610,6 +630,10 @@ export function ThreadFeed({
   latestFileDiffs = [],
   proposals = [],
   capturedFrameUrl,
+  projectId,
+  onPrefillPrompt,
+  onQuickCreatorHubSetup,
+  onOpenShip,
   onBuild,
   onOpenScriptDiff,
   onInspectProposal,
@@ -630,6 +654,10 @@ export function ThreadFeed({
   latestFileDiffs?: ScriptFileDiff[];
   proposals?: PendingProposal[];
   capturedFrameUrl?: string | null;
+  projectId?: string | null;
+  onPrefillPrompt?: (prompt: string) => void;
+  onQuickCreatorHubSetup?: () => Promise<CreatorHubSetupResult | void>;
+  onOpenShip?: () => void;
   onBuild: (idea: Idea) => void;
   onOpenScriptDiff?: (path: string) => void;
   onInspectProposal?: (proposalId: string, scriptPath?: string) => void;
@@ -728,6 +756,10 @@ export function ThreadFeed({
           text={it.text}
           bad={isBad}
           fresh={fresh}
+          projectId={projectId}
+          onPrefillPrompt={onPrefillPrompt}
+          onQuickCreatorHubSetup={onQuickCreatorHubSetup}
+          onOpenShip={onOpenShip}
           onRetry={isBad && lastTriedIdea ? () => onBuild(lastTriedIdea) : undefined}
           retryDisabled={!canBuild || busy}
         />,
@@ -752,6 +784,10 @@ export function ThreadFeed({
           bad={n.bad}
           whole
           fresh
+          projectId={projectId}
+          onPrefillPrompt={onPrefillPrompt}
+          onQuickCreatorHubSetup={onQuickCreatorHubSetup}
+          onOpenShip={onOpenShip}
           onRetry={n.bad && lastTriedIdea ? () => onBuild(lastTriedIdea) : undefined}
           retryDisabled={!canBuild || busy}
         />
