@@ -7,7 +7,8 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 const root = import.meta.dirname;
-const STAMP = "/* Hallmark Desktop-Workbench: OpenRO v1.3.0 Studio Copilot (Geist + Geist Mono, Light & Dark) */";
+const STAMP = "/* Hallmark Desktop-Workbench: OpenRO v1.4.0 Studio Copilot (Geist + Geist Mono, Light & Dark) */";
+const FORCE_SINGLE_FILE = process.env.OPENRO_SINGLE_FILE === "1";
 
 function localAlias(): Plugin {
   const exts = ["", ".tsx", ".ts", ".css", "/index.tsx", "/index.ts"];
@@ -43,9 +44,32 @@ function singleFile(): Plugin {
       });
       html = html.replace(/--tw-ring-offset-color:\s*#fff\b/g, "--tw-ring-offset-color:var(--surface)");
       html = html.replace(/\.transition\{[^}]*\}/g, "");
+      if (FORCE_SINGLE_FILE) {
+        const singleOut = path.join(dist, "single.html");
+        fs.writeFileSync(singleOut, html);
+        return;
+      }
+      const chunksSrc = path.join(dist, "chunks");
+      const chunksDst = path.resolve(root, "../assets/chunks");
+      fs.rmSync(chunksDst, { recursive: true, force: true });
+      fs.mkdirSync(chunksDst, { recursive: true });
+      let chunkCount = 0;
+      if (fs.existsSync(chunksSrc)) {
+        for (const f of fs.readdirSync(chunksSrc)) {
+          if (f.endsWith(".js") || f.endsWith(".css")) {
+            const full = path.join(chunksSrc, f);
+            const txt = fs.readFileSync(full, "utf8");
+            if (txt.includes("entry.js")) {
+              throw new Error(`Lazy chunk ${f} must not import inlined entry.js`);
+            }
+            fs.copyFileSync(full, path.join(chunksDst, f));
+            chunkCount++;
+          }
+        }
+      }
       const out = path.resolve(root, "../assets/index.html");
       fs.writeFileSync(out, html);
-      console.log(`single file: ${out} (${(html.length / 1024).toFixed(0)} kB)`);
+      console.log(`single file: ${out} (${(html.length / 1024).toFixed(0)} kB, ${chunkCount} lazy chunk(s))`);
     },
   };
 }
@@ -53,6 +77,28 @@ function singleFile(): Plugin {
 export default defineConfig({
   plugins: [localAlias(), react(), tailwindcss(), singleFile()],
   base: "./",
-  build: { assetsInlineLimit: 100_000_000, cssCodeSplit: false, chunkSizeWarningLimit: 4000, modulePreload: false },
+  build: {
+    assetsInlineLimit: 100_000_000,
+    cssCodeSplit: false,
+    chunkSizeWarningLimit: 4000,
+    modulePreload: false,
+    rolldownOptions: {
+      output: FORCE_SINGLE_FILE
+        ? { codeSplitting: false }
+        : {
+            entryFileNames: "entry.js",
+            chunkFileNames: "chunks/[name]-[hash].js",
+            assetFileNames: "assets/[name]-[hash].[ext]",
+            codeSplitting: {
+              groups: [
+                {
+                  name: "shared",
+                  test: /preload-helper|node_modules|src\/(components|motion\.ts|app\/(data|luauAudit|marketTaste|systems|rbxlxCodec|AdaptiveAgentCards|ship\/api|ship\/ProjectsRail|teamwork\/api)\.(ts|tsx))/,
+                },
+              ],
+            },
+          },
+    },
+  },
   server: { fs: { allow: [path.resolve(root, "..")] }, proxy: process.env.API_PORT ? { "/api": { target: `http://127.0.0.1:${process.env.API_PORT}`, changeOrigin: true, headers: { Origin: `http://127.0.0.1:${process.env.API_PORT}` } } } : undefined },
 });

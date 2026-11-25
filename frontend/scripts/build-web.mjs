@@ -10,11 +10,14 @@ import { build } from "vite";
 
 const feRoot = path.resolve(import.meta.dirname, "..");
 const repoRoot = path.resolve(feRoot, "..");
-const srcHtml = path.join(repoRoot, "assets", "index.html");
 
-if (!fs.existsSync(srcHtml)) {
-  throw new Error(`Missing ${srcHtml} — run npm run build first.`);
-}
+process.env.OPENRO_SINGLE_FILE = "1";
+await build({
+  configFile: path.join(feRoot, "vite.config.ts"),
+  root: feRoot,
+  logLevel: "silent",
+});
+const baseHtml = fs.readFileSync(path.join(feRoot, "dist", "single.html"), "utf8");
 
 const outTmp = path.join(feRoot, ".web-engine-dist");
 fs.rmSync(outTmp, { recursive: true, force: true });
@@ -41,8 +44,7 @@ const engineCode = fs
   .replace(/<\/script/gi, "<\\/script");
 fs.rmSync(outTmp, { recursive: true, force: true });
 
-const html = fs
-  .readFileSync(srcHtml, "utf8")
+const html = baseHtml
   .replace(/__KEY_BANNER__/g, "")
   .replace(/__CHIP_CLASS__/g, "on")
   .replace(/__CHIP__/g, "Browser Place ready")

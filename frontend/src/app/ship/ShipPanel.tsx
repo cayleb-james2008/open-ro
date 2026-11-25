@@ -1,17 +1,18 @@
-import { memo, useEffect, useState } from "react";
+import { Suspense, lazy, memo, useEffect, useState } from "react";
 import { Check, FolderOpen, FlaskConical, Images, Palette, RefreshCw, Rocket, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { call, projUrl, type StudyStatus } from "./api";
 import { PublishPanel } from "./PublishPanel";
-import { AssetsPanel } from "./AssetsPanel";
-import { ArtStudioPanel } from "./ArtStudioPanel";
-import { PlaytestPanel } from "./PlaytestPanel";
 import { ReadinessAutopilot } from "./ReadinessAutopilot";
 import { MonetizationPackCard } from "../MonetizationPackCard";
 import type { Place } from "../data";
 import type { Ship } from "./useShip";
+
+const AssetsPanel = lazy(() => import("./AssetsPanel").then((m) => ({ default: m.AssetsPanel })));
+const ArtStudioPanel = lazy(() => import("./ArtStudioPanel").then((m) => ({ default: m.ArtStudioPanel })));
+const PlaytestPanel = lazy(() => import("./PlaytestPanel").then((m) => ({ default: m.PlaytestPanel })));
 
 type Section = "publish" | "assets" | "art" | "playtests";
 const SECTIONS: { id: Section; label: string; Icon: typeof Rocket }[] = [
@@ -170,6 +171,7 @@ export const ShipPanel = memo(function ShipPanel({
               }}
               onOpenCodeFile={onOpenCodeDiff}
               onOpenSettings={onOpenSettings}
+              onOpenSection={setSection}
             />
             <MonetizationPackCard
               place={place ?? null}
@@ -182,9 +184,11 @@ export const ShipPanel = memo(function ShipPanel({
             <PublishPanel ship={ship} onOpenSettings={onOpenSettings} />
           </div>
         )}
-        {section === "assets" && <AssetsPanel ship={ship} onOpenSettings={onOpenSettings} />}
-        {section === "art" && <ArtStudioPanel ship={ship} />}
-        {section === "playtests" && <PlaytestPanel ship={ship} studioOk={studioOk} />}
+        <Suspense fallback={<div className="p-3 text-sm text-ink-2">Loading section…</div>}>
+          {section === "assets" && <AssetsPanel ship={ship} onOpenSettings={onOpenSettings} />}
+          {section === "art" && <ArtStudioPanel ship={ship} />}
+          {section === "playtests" && <PlaytestPanel ship={ship} studioOk={studioOk} />}
+        </Suspense>
       </div>
     </div>
   );

@@ -143,6 +143,20 @@ impl PlaceBackend {
             PlaceBackend::Local(p) => p.rbxlx_path(),
         }
     }
+
+    pub fn local_revision(&self) -> Option<u64> {
+        match self {
+            PlaceBackend::Local(p) => Some(p.revision()),
+            PlaceBackend::Mcp(_) | PlaceBackend::Plugin(_) => None,
+        }
+    }
+
+    pub fn analyze_local_luau(&self) -> Option<AnalysisReport> {
+        match self {
+            PlaceBackend::Local(p) => Some(p.analyze_luau()),
+            PlaceBackend::Mcp(_) | PlaceBackend::Plugin(_) => None,
+        }
+    }
 }
 
 /// Summary returned after importing `.rbxlx` XML into an existing `LocalPlace`.
@@ -322,6 +336,7 @@ pub struct LocalPlace {
     pub recovered: Vec<String>,
     undo_stack: VecDeque<PlaceStateSnapshot>,
     redo_stack: VecDeque<PlaceStateSnapshot>,
+    revision: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl LocalPlace {
@@ -336,6 +351,7 @@ impl LocalPlace {
             recovered: Vec::new(),
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
+            revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
     }
 
@@ -353,9 +369,18 @@ impl LocalPlace {
             recovered,
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
+            revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         };
         place.persist();
         place
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn analyze_luau(&self) -> AnalysisReport {
+        luau_check::analyze_place(&self.scripts, &self.instances)
     }
 
     /// Parse a Roblox Studio `.rbxlx` XML document back into an in-memory `Place` (`LocalPlace`).
@@ -489,6 +514,7 @@ impl LocalPlace {
             recovered: Vec::new(),
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
+            revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
     }
 
@@ -1036,16 +1062,18 @@ impl LocalPlace {
     }
 
     fn persist(&self) {
+        self.revision.fetch_add(1, std::sync::atomic::Ordering::Release);
         let Some(dir) = &self.data_dir else { return };
         let _ = std::fs::create_dir_all(dir);
+        let tree = self.tree_json();
         let json_body =
-            serde_json::to_string_pretty(&self.tree_json()).unwrap_or_else(|_| "{}".to_string());
+            serde_json::to_string_pretty(&tree).unwrap_or_else(|_| "{}".to_string());
         let json_path = dir.join("place.json");
         let json_tmp = dir.join("place.json.tmp");
         if std::fs::write(&json_tmp, json_body).is_ok() {
             let _ = std::fs::rename(&json_tmp, &json_path);
         }
-        let xml = serialize_rbxlx(&self.game_name, &self.tree_json());
+        let xml = serialize_rbxlx(&self.game_name, &tree);
         let xml_path = dir.join("game.rbxlx");
         let xml_tmp = dir.join("game.rbxlx.tmp");
         if std::fs::write(&xml_tmp, xml).is_ok() {
@@ -2908,6 +2936,7 @@ pub fn parse_rbxlx_xml(xml: &str) -> Result<Place, String> {
         recovered: Vec::new(),
         undo_stack: VecDeque::new(),
         redo_stack: VecDeque::new(),
+        revision: Arc::new(std::sync::atomic::AtomicU64::new(1)),
     })
 }
 

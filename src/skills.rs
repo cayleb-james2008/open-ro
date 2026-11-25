@@ -41,6 +41,7 @@ const TOWER_PROGRESSION_RN: &str = include_str!("tower_progression.rn");
 const POTIONS_WEATHER_RN: &str = include_str!("potions_weather.rn");
 const CARD_GALLERY_WORLD_RN: &str = include_str!("card_gallery_world.rn");
 
+#[derive(Clone, Copy)]
 pub struct SkillDef {
     pub name: &'static str,
     pub title: &'static str,
@@ -56,15 +57,17 @@ pub struct SkillDef {
     entry: &'static str,
 }
 
-/// Fast cached count of registered skills without allocating the full catalog vector.
+/// Fast count of registered skills without allocating.
 pub fn count() -> usize {
-    static COUNT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *COUNT.get_or_init(|| registry().len())
+    REGISTRY.len()
 }
 
 /// The skill registry: all 28 verified, composable Roblox game-building skills.
-pub fn registry() -> Vec<SkillDef> {
-    vec![
+pub fn registry() -> &'static [SkillDef] {
+    REGISTRY
+}
+
+const REGISTRY: &[SkillDef] = &[
         SkillDef {
             name: "round_manager",
             title: "Round Manager",
@@ -373,18 +376,17 @@ pub fn registry() -> Vec<SkillDef> {
             source: CARD_GALLERY_WORLD_RN,
             entry: "generate_card_gallery_world",
         },
-    ]
-}
+];
 
 /// Find a registered game system definition by name.
 pub fn find(name: &str) -> Option<SkillDef> {
-    registry().into_iter().find(|d| d.name == name)
+    REGISTRY.iter().copied().find(|d| d.name == name)
 }
 
 /// JSON catalog of all 28 registered game systems for HTTP endpoints and UI Blueprint Library browsing.
 pub fn catalog_json() -> Value {
-    let items: Vec<Value> = registry()
-        .into_iter()
+    let items: Vec<Value> = REGISTRY
+        .iter()
         .map(|d| {
             let parsed_defaults: Value =
                 serde_json::from_str(d.default_args).unwrap_or_else(|_| json!({}));
@@ -484,10 +486,7 @@ fn valid_identifier(s: &str) -> bool {
 /// Run the named skill's Rune script with the model's JSON args and
 /// return the generated Luau source.
 pub fn generate(skill: &str, args: &Value) -> Result<String, String> {
-    let def = registry()
-        .into_iter()
-        .find(|d| d.name == skill)
-        .ok_or_else(|| format!("unknown skill: {skill}"))?;
+    let def = find(skill).ok_or_else(|| format!("unknown skill: {skill}"))?;
     match def.name {
         "round_manager" => {
             let create_round = arg_bool(args, "create_round", false)?;
