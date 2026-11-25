@@ -1471,14 +1471,108 @@ pub fn art_generate(store: &SecretStore, root: &Path, body: &Value) -> ArtRes<Va
         std::fs::create_dir_all(parent).or_else(|e| art_err(500, format!("create art dir: {e}")))?;
     }
 
-    let refs = resolve_reference_images(root, body)?;
-    let ref_rels: Vec<String> = refs.iter().map(|r| r.0.clone()).collect();
+    let mut refs = resolve_reference_images(root, body)?;
     let project_param = body.get("project").and_then(Value::as_str).unwrap_or("");
     let kind = body.get("kind").and_then(Value::as_str).unwrap_or("card");
     let is_weapon_sheet = matches!(
         kind.to_ascii_lowercase().as_str(),
         "weapon" | "weapon_sheet" | "prop_sheet"
     );
+
+    // For weapon/prop sheets, automatically source a canonical isolated prop reference
+    // into gitignored `art/references/` when `auto_reference: true` or when no reference
+    // was provided and `subject` (or `weapon`/`prop`) is supplied (#76).
+    let mut prop_reference_auto_sourced = false;
+    let subject_opt = body
+        .get("subject")
+        .or_else(|| body.get("weapon"))
+        .or_else(|| body.get("prop"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let explicit_auto_ref = body.get("auto_reference").and_then(Value::as_bool);
+    let should_auto_source_prop = is_weapon_sheet
+        && refs.is_empty()
+        && (explicit_auto_ref == Some(true)
+            || (explicit_auto_ref != Some(false) && subject_opt.is_some()));
+    if should_auto_source_prop {
+        let search_subject = subject_opt
+            .or_else(|| {
+                body.get("card_id")
+                    .or_else(|| body.get("slug"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or_else(|| {
+                raw_prompt
+                    .split([',', '.', ';', '\n'])
+                    .next()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(raw_prompt)
+            });
+        let mut search_req = json!({
+            "kind": "prop",
+            "subject": search_subject,
+            "auto_pick": true,
+        });
+        if let Some(show) = body
+            .get("show")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            search_req["show"] = json!(show);
+        }
+        if let Some(q) = body
+            .get("qualifiers")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            search_req["qualifiers"] = json!(q);
+        }
+        if let Some(raw_slug) = body
+            .get("reference_slug")
+            .or_else(|| body.get("slug"))
+            .or_else(|| body.get("card_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let clean = sanitize_art_slug(raw_slug);
+            let prefixed = if clean.starts_with("weapon_") {
+                clean
+            } else {
+                format!("weapon_{clean}")
+            };
+            search_req["slug"] = json!(prefixed);
+        }
+        if !project_param.is_empty() {
+            search_req["project"] = json!(project_param);
+        }
+        let search_res = crate::reference_search::search(root, &search_req)?;
+        let Some(ref_rel) = search_res
+            .get("reference_path")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return art_err(
+                502,
+                "Auto prop reference search completed without returning a reference_path.",
+            );
+        };
+        let ref_abs = safe_rel(root, ref_rel)?;
+        let bytes = std::fs::read(&ref_abs)
+            .or_else(|e| art_err(500, format!("read auto-sourced prop reference '{ref_rel}': {e}")))?;
+        let (mime, _) = detect_image_mime(&bytes).map_err(|e| Oc { status: 502, msg: e })?;
+        refs.push((ref_rel.to_string(), ref_abs, bytes, mime));
+        prop_reference_auto_sourced = true;
+    }
+
+    let ref_rels: Vec<String> = refs.iter().map(|r| r.0.clone()).collect();
     let character_art = body
         .get("character_art")
         .and_then(Value::as_bool)
@@ -1561,7 +1655,7 @@ pub fn art_generate(store: &SecretStore, root: &Path, body: &Value) -> ArtRes<Va
                     ));
                     let sha = sha256_hex(&bytes);
                     let meta_rel = meta_path_for(&out_rel);
-                    let meta = json!({
+                    let mut meta = json!({
                         "version": 1,
                         "status": "generated",
                         "provider": "chatgpt",
@@ -1576,6 +1670,9 @@ pub fn art_generate(store: &SecretStore, root: &Path, body: &Value) -> ArtRes<Va
                         "height": h,
                         "created_at": now_iso(),
                     });
+                    if prop_reference_auto_sourced {
+                        meta["prop_reference_auto_sourced"] = json!(true);
+                    }
                     write_meta_atomic(&safe_rel(root, &meta_rel)?, &meta)?;
                     let _ = append_art_log(root, &json!({
                         "at": now_iso(),
@@ -1588,8 +1685,9 @@ pub fn art_generate(store: &SecretStore, root: &Path, body: &Value) -> ArtRes<Va
                         "height": h,
                         "bytes": bytes.len(),
                         "reference_images": ref_rels,
+                        "prop_reference_auto_sourced": prop_reference_auto_sourced,
                     }));
-                    Ok(json!({
+                    let mut reply = json!({
                         "ok": true,
                         "status": "generated",
                         "pending_review": false,
@@ -1605,7 +1703,11 @@ pub fn art_generate(store: &SecretStore, root: &Path, body: &Value) -> ArtRes<Va
                         "bytes": bytes.len(),
                         "reference_images": ref_rels,
                         "metadata": meta,
-                    }))
+                    });
+                    if prop_reference_auto_sourced {
+                        reply["prop_reference_auto_sourced"] = json!(true);
+                    }
+                    Ok(reply)
                 }
                 9 => {
                     // Exit 9 = ANGLE_REVIEW_REQUIRED: real verified PNG staged pending independent pixel review.
@@ -1757,11 +1859,33 @@ pub fn art_generate(store: &SecretStore, root: &Path, body: &Value) -> ArtRes<Va
         }
         "gemini" | "gemini-api" | "nano-banana" | "google-nano-banana" => {
             let safe_prompt = finalized_non_character(raw_prompt);
-            art_generate_gemini(store, root, project_param, kind, &safe_prompt, &out_rel, &out_abs, &refs, body)
+            art_generate_gemini(
+                store,
+                root,
+                project_param,
+                kind,
+                &safe_prompt,
+                &out_rel,
+                &out_abs,
+                &refs,
+                body,
+                prop_reference_auto_sourced,
+            )
         }
         "openai" | "openai-image" => {
             let safe_prompt = finalized_non_character(raw_prompt);
-            art_generate_openai(store, root, project_param, kind, &safe_prompt, &out_rel, &out_abs, &refs, body)
+            art_generate_openai(
+                store,
+                root,
+                project_param,
+                kind,
+                &safe_prompt,
+                &out_rel,
+                &out_abs,
+                &refs,
+                body,
+                prop_reference_auto_sourced,
+            )
         }
         other => art_bad(format!(
             "Unsupported image provider '{other}': expected 'chatgpt' (default), 'gemini', or 'openai'."
@@ -1780,6 +1904,7 @@ fn art_generate_gemini(
     out_abs: &Path,
     refs: &[ResolvedRefImage],
     body: &Value,
+    prop_reference_auto_sourced: bool,
 ) -> ArtRes<Value> {
     let api_key = store
         .get(GEMINI_KEY)
@@ -1918,7 +2043,7 @@ fn art_generate_gemini(
     let (w, h) = image_dimensions(&bytes).unwrap_or((0, 0));
     let sha = sha256_hex(&bytes);
     let meta_rel = meta_path_for(out_rel);
-    let meta = json!({
+    let mut meta = json!({
         "version": 1,
         "status": "generated",
         "provider": "gemini",
@@ -1933,6 +2058,9 @@ fn art_generate_gemini(
         "height": h,
         "created_at": now_iso(),
     });
+    if prop_reference_auto_sourced {
+        meta["prop_reference_auto_sourced"] = json!(true);
+    }
     write_meta_atomic(&safe_rel(root, &meta_rel)?, &meta)?;
     let _ = append_art_log(root, &json!({
         "at": now_iso(),
@@ -1946,9 +2074,10 @@ fn art_generate_gemini(
         "height": h,
         "bytes": bytes.len(),
         "reference_images": ref_rels,
+        "prop_reference_auto_sourced": prop_reference_auto_sourced,
     }));
 
-    Ok(json!({
+    let mut reply = json!({
         "ok": true,
         "status": "generated",
         "pending_review": false,
@@ -1964,7 +2093,11 @@ fn art_generate_gemini(
         "bytes": bytes.len(),
         "reference_images": ref_rels,
         "metadata": meta,
-    }))
+    });
+    if prop_reference_auto_sourced {
+        reply["prop_reference_auto_sourced"] = json!(true);
+    }
+    Ok(reply)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1978,6 +2111,7 @@ fn art_generate_openai(
     out_abs: &Path,
     refs: &[ResolvedRefImage],
     body: &Value,
+    prop_reference_auto_sourced: bool,
 ) -> ArtRes<Value> {
     let api_key = store
         .get(OPENAI_IMAGE_KEY)
@@ -2091,7 +2225,7 @@ fn art_generate_openai(
     let (w, h) = image_dimensions(&bytes).unwrap_or((0, 0));
     let sha = sha256_hex(&bytes);
     let meta_rel = meta_path_for(out_rel);
-    let meta = json!({
+    let mut meta = json!({
         "version": 1,
         "status": "generated",
         "provider": "openai",
@@ -2106,6 +2240,9 @@ fn art_generate_openai(
         "height": h,
         "created_at": now_iso(),
     });
+    if prop_reference_auto_sourced {
+        meta["prop_reference_auto_sourced"] = json!(true);
+    }
     write_meta_atomic(&safe_rel(root, &meta_rel)?, &meta)?;
     let _ = append_art_log(root, &json!({
         "at": now_iso(),
@@ -2119,9 +2256,10 @@ fn art_generate_openai(
         "height": h,
         "bytes": bytes.len(),
         "reference_images": ref_rels,
+        "prop_reference_auto_sourced": prop_reference_auto_sourced,
     }));
 
-    Ok(json!({
+    let mut reply = json!({
         "ok": true,
         "status": "generated",
         "pending_review": false,
@@ -2137,7 +2275,11 @@ fn art_generate_openai(
         "bytes": bytes.len(),
         "reference_images": ref_rels,
         "metadata": meta,
-    }))
+    });
+    if prop_reference_auto_sourced {
+        reply["prop_reference_auto_sourced"] = json!(true);
+    }
+    Ok(reply)
 }
 
 /// `POST /api/art/approve` — promote a reviewed `.pending-angle.*.png` candidate to its final path
