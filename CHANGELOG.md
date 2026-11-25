@@ -4,6 +4,18 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.4.0 - 2026-11-25
+
+- **Frontend Code-Splitting & Bundle Diet (`frontend/src/App.tsx`, `ShipPanel.tsx`, `marketTaste.ts`, `vite.config.ts`, `build.rs`, `src/server.rs`):**
+  - Converted 12 secondary heavy dialogs/panels (`StudioViewport3D`, `EmbeddedStudioPanel`, `TeamworkPanel`, `ShipPanel`, `CodeDiffWorkbench`, `CommandPalette`, `StudioPluginDialog`, `ToolLibraryDialog`, `SnapshotsDialog`, `SettingsDialog`, `StartupWizard`, `SystemLibrary`) plus sub-tabs (`AssetsPanel`, `ArtStudioPanel`, `PlaytestPanel`) and export codecs (`rbxlxCodec`, `zipBuilder`) to `React.lazy` / dynamic imports served from compile-time embedded `/chunks/*.js` with gzip + strong ETag + `304` + `immutable` caching.
+  - Tree-shook duplicated `BASELINE_MARKET_NICHES` prose out of the app shell (fetched cleanly from `/api/market-taste`), shrinking initial `assets/index.html` by ~33.5% (`1,368 KB` -> `909 KB` raw, `459 KB` -> `339 KB` gzip) while preserving zero-external-request standalone `web-dist/index.html`.
+- **Peak RSS & Concurrent Throughput Optimization (`src/server.rs`, `src/place.rs`, `src/agent.rs`, `src/skills.rs`):**
+  - Replaced per-request `std::thread::spawn` in `serve()` with a bounded 48-worker persistent thread pool (`512 KB` stack, overflow spawn only on saturation), cutting glibc thread-arena bloat and thread teardown overhead.
+  - Converted `skills::registry()` to static `&'static [SkillDef]` with cached `OnceLock<Vec<u8>>` JSON bytes for `GET /api/skills`, eliminated double `tree_json()` cloning in `LocalPlace::persist()`, and added `local_revision`-keyed response caching for `GET /api/place-tree` and `GET /api/luau/check`.
+- **Unified 0–100 Game Quality & Revenue Readiness Score (`src/opencloud.rs`, `frontend/src/app/ship/ReadinessAutopilot.tsx`, `api.ts`):**
+  - Upgraded `GET /api/projects/:id/readiness` to compute a weighted 0–100 score across 5 pillars (`Luau` 20, `Playtest MOVE/ACT/HUD` 20, `Monetization` 30, `Assets` 10, `Build & Cloud` 20), returning structured `pillars`, `blockers`, `playtest_summary`, and per-blocker `fix_action`.
+  - Added single-item `action` targeting to `POST /api/projects/:id/autopilot` and per-blocker 1-click **"Auto-Fix"** / **"Playtest"** / **"Settings"** controls directly in the Ship Autopilot card.
+
 ## 1.3.0 - 2026-11-25
 
 - **Sub-50 ms Cold Boot & Single-Pass HTML Rendering (`src/main.rs`, `src/server.rs`):**

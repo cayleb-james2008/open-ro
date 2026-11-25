@@ -20,11 +20,16 @@ use crate::sse::BuildEventHub;
 use crate::studio_plugin::StudioPluginBridge;
 use crate::studio_stream::{StudioActionInput, StudioActionKind, StudioStreamHub};
 use serde_json::{json, Value};
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+
+mod ui_chunks {
+    include!(concat!(env!("OUT_DIR"), "/ui_chunks.rs"));
+}
 
 #[derive(Clone)]
 pub struct Chat {
@@ -34,6 +39,7 @@ pub struct Chat {
 }
 
 static CHAT_COUNTER: AtomicU64 = AtomicU64::new(0);
+type CachedPlaceBytes = Mutex<Option<(Option<u64>, Arc<Vec<u8>>)>>;
 
 fn new_chat_id() -> String {
     let n = CHAT_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -94,6 +100,10 @@ pub struct Shared {
     status_cache: Mutex<StatusInfo>,
     /// Cached latest place tree so `GET /api/place-tree` never blocks during long `/api/chat` runs (#31).
     cached_place_tree: Mutex<Option<Value>>,
+    /// Cached serialized bytes of place tree keyed by `local_place_revision` for zero-clone concurrent reads.
+    cached_place_tree_bytes: CachedPlaceBytes,
+    /// Cached serialized bytes of `GET /api/luau/check` keyed by `local_place_revision`.
+    cached_luau_report: Mutex<Option<(u64, Arc<Vec<u8>>)>>,
     /// Game art assets metadata & in-memory blob fallback (`data_dir/game-assets/`).
     pub game_assets: Mutex<GameAssetsIndex>,
     /// Directly embedded Roblox Studio host lifecycle manager (`src/studio_embed.rs`).
@@ -187,6 +197,8 @@ impl Shared {
             studio_stream,
             status_cache: Mutex::new(initial_status),
             cached_place_tree: Mutex::new(None),
+            cached_place_tree_bytes: Mutex::new(None),
+            cached_luau_report: Mutex::new(None),
             game_assets: Mutex::new(GameAssetsIndex::default()),
             studio_embed: Mutex::new(crate::studio_embed::StudioEmbedManager::new()),
             library: Mutex::new(library),
@@ -267,6 +279,8 @@ impl Shared {
             studio_stream,
             status_cache: Mutex::new(initial_status),
             cached_place_tree: Mutex::new(None),
+            cached_place_tree_bytes: Mutex::new(None),
+            cached_luau_report: Mutex::new(None),
             game_assets: Mutex::new(GameAssetsIndex::default()),
             studio_embed: Mutex::new(crate::studio_embed::StudioEmbedManager::new()),
             library: Mutex::new(library),
@@ -633,6 +647,13 @@ impl Drop for HandlerSlot {
     }
 }
 
+const POOL_WORKERS: usize = 48;
+
+struct WorkerJob {
+    stream: TcpStream,
+    slot: HandlerSlot,
+}
+
 pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> {
     if let Ok(addr) = listener.local_addr() {
         shared.bound_port.store(addr.port(), Ordering::Relaxed);
@@ -646,6 +667,33 @@ pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> 
             .filter(|h| !h.is_empty())
             .collect(),
     );
+    let queue: Arc<(Mutex<VecDeque<WorkerJob>>, Condvar)> =
+        Arc::new((Mutex::new(VecDeque::new()), Condvar::new()));
+    let busy_workers = Arc::new(AtomicUsize::new(0));
+    for idx in 0..POOL_WORKERS {
+        let q = Arc::clone(&queue);
+        let sh = Arc::clone(&shared);
+        let al = Arc::clone(&allowed);
+        let bw = Arc::clone(&busy_workers);
+        let _ = std::thread::Builder::new()
+            .name(format!("openro-http-{idx}"))
+            .stack_size(512 * 1024)
+            .spawn(move || loop {
+                let job = {
+                    let (lock, cvar) = &*q;
+                    let mut guard = lock.lock().unwrap();
+                    while guard.is_empty() {
+                        guard = cvar.wait(guard).unwrap();
+                    }
+                    guard.pop_front()
+                };
+                if let Some(job) = job {
+                    bw.fetch_add(1, Ordering::Relaxed);
+                    let _ = handle(job.stream, &sh, &al, job.slot);
+                    bw.fetch_sub(1, Ordering::Relaxed);
+                }
+            });
+    }
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
         let _ = stream.set_nodelay(true);
@@ -666,11 +714,19 @@ pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> 
         }
         shared.active_handlers.fetch_add(1, Ordering::SeqCst);
         let slot = HandlerSlot(Arc::clone(&shared));
-        let shared = Arc::clone(&shared);
-        let allowed = Arc::clone(&allowed);
-        std::thread::spawn(move || {
-            let _ = handle(stream, &shared, &allowed, slot);
-        });
+        // Reuse persistent pool workers for zero thread-spawn churn & bounded glibc arenas;
+        // spawn an overflow thread only if all 48 pool workers are occupied (e.g., many SSE streams).
+        if busy_workers.load(Ordering::Relaxed) >= POOL_WORKERS {
+            let sh = Arc::clone(&shared);
+            let al = Arc::clone(&allowed);
+            std::thread::spawn(move || {
+                let _ = handle(stream, &sh, &al, slot);
+            });
+        } else {
+            let (lock, cvar) = &*queue;
+            lock.lock().unwrap().push_back(WorkerJob { stream, slot });
+            cvar.notify_one();
+        }
     }
     Ok(())
 }
@@ -1507,6 +1563,14 @@ fn handle(
 
     // Parameterized game art, Blender mesh, and audio asset routes:
     // GET /api/assets/manifest, GET /api/assets/meshes/:file, GET /api/assets/audio/:file, GET|DELETE /api/assets/:file
+    if req.method == "GET" {
+        if let Some(chunk_name) = path.strip_prefix("/chunks/") {
+            if serve_chunk_asset(&mut stream, &req, chunk_name) {
+                return Ok(());
+            }
+        }
+    }
+
     if let Some(raw_file) = path.strip_prefix("/api/assets/") {
         if !raw_file.is_empty() {
             if req.method == "GET" && raw_file == "manifest" {
@@ -1848,17 +1912,19 @@ fn handle(
             handle_export_bundle(&mut stream, shared);
         }
         ("GET", "/api/skills") => {
-            let catalog = crate::skills::catalog_json();
-            let count = catalog.as_array().map(|a| a.len()).unwrap_or(0);
-            respond_json(
-                &mut stream,
-                "200 OK",
-                &json!({
+            static SKILLS_BYTES: OnceLock<Vec<u8>> = OnceLock::new();
+            let bytes = SKILLS_BYTES.get_or_init(|| {
+                let catalog = crate::skills::catalog_json();
+                let count = catalog.as_array().map(|a| a.len()).unwrap_or(0);
+                json!({
                     "ok": true,
                     "count": count,
                     "skills": catalog,
-                }),
-            );
+                })
+                .to_string()
+                .into_bytes()
+            });
+            respond_bytes(&mut stream, "200 OK", "application/json", "no-store", bytes);
         }
         ("POST", "/api/skills/build") => {
             handle_skill_build(&mut stream, shared, &req.body);
@@ -2209,17 +2275,48 @@ fn handle(
         ("GET", "/api/place-tree") => {
             match shared.agent.try_lock() {
                 Ok(mut guard) => match guard.as_mut() {
-                    Some(agent) => match agent.place_tree() {
-                        Ok(tree) => {
-                            *shared.cached_place_tree.lock().unwrap() = Some(tree.clone());
-                            respond_json(&mut stream, "200 OK", &tree);
+                    Some(agent) => {
+                        let rev = agent.local_place_revision();
+                        if let Some(r) = rev {
+                            if let Some((Some(cached_rev), bytes)) =
+                                shared.cached_place_tree_bytes.lock().unwrap().as_ref()
+                            {
+                                if *cached_rev == r {
+                                    let bytes = Arc::clone(bytes);
+                                    drop(guard);
+                                    respond_bytes(
+                                        &mut stream,
+                                        "200 OK",
+                                        "application/json",
+                                        "no-store",
+                                        &bytes,
+                                    );
+                                    return Ok(());
+                                }
+                            }
                         }
-                        Err(e) => respond_json(
-                            &mut stream,
-                            "502 Bad Gateway",
-                            &json!({ "ok": false, "error": e }),
-                        ),
-                    },
+                        match agent.place_tree() {
+                            Ok(tree) => {
+                                let bytes = Arc::new(tree.to_string().into_bytes());
+                                *shared.cached_place_tree_bytes.lock().unwrap() =
+                                    Some((rev, Arc::clone(&bytes)));
+                                *shared.cached_place_tree.lock().unwrap() = Some(tree);
+                                drop(guard);
+                                respond_bytes(
+                                    &mut stream,
+                                    "200 OK",
+                                    "application/json",
+                                    "no-store",
+                                    &bytes,
+                                );
+                            }
+                            Err(e) => respond_json(
+                                &mut stream,
+                                "502 Bad Gateway",
+                                &json!({ "ok": false, "error": e }),
+                            ),
+                        }
+                    }
                     None => respond_json(
                         &mut stream,
                         "503 Service Unavailable",
@@ -3799,17 +3896,45 @@ fn handle_luau_check(stream: &mut TcpStream, shared: &Shared, is_post: bool, raw
     } else {
         let mut guard = shared.agent.lock().unwrap();
         match guard.as_mut() {
-            Some(agent) => match agent.place_tree() {
-                Ok(t) => t,
-                Err(e) => {
-                    respond_json(
-                        stream,
-                        "502 Bad Gateway",
-                        &json!({ "ok": false, "error": e }),
-                    );
-                    return;
+            Some(agent) => {
+                if let Some(rev) = agent.local_place_revision() {
+                    if let Some((cached_rev, bytes)) = shared.cached_luau_report.lock().unwrap().as_ref() {
+                        if *cached_rev == rev {
+                            let bytes = Arc::clone(bytes);
+                            drop(guard);
+                            respond_bytes(stream, "200 OK", "application/json", "no-store", &bytes);
+                            return;
+                        }
+                    }
+                    if let Some(report) = agent.analyze_local_luau() {
+                        let scripts_checked = agent
+                            .place_tree()
+                            .ok()
+                            .and_then(|t| t.get("scripts").and_then(|s| s.as_object()).map(|m| m.len()))
+                            .unwrap_or(0);
+                        let mut out = report.to_json();
+                        out["passed"] = json!(report.is_ok());
+                        out["ok"] = json!(true);
+                        out["scripts_checked"] = json!(scripts_checked);
+                        let bytes = Arc::new(out.to_string().into_bytes());
+                        *shared.cached_luau_report.lock().unwrap() = Some((rev, Arc::clone(&bytes)));
+                        drop(guard);
+                        respond_bytes(stream, "200 OK", "application/json", "no-store", &bytes);
+                        return;
+                    }
                 }
-            },
+                match agent.place_tree() {
+                    Ok(t) => t,
+                    Err(e) => {
+                        respond_json(
+                            stream,
+                            "502 Bad Gateway",
+                            &json!({ "ok": false, "error": e }),
+                        );
+                        return;
+                    }
+                }
+            }
             None => json!({ "instances": {}, "scripts": {} }),
         }
     };
@@ -7996,6 +8121,85 @@ fn serve_index_page(
             &cached.plain,
         );
     }
+}
+
+fn serve_chunk_asset(stream: &mut TcpStream, req: &Request, name: &str) -> bool {
+    use flate2::{write::GzEncoder, Compression};
+    use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
+
+    let Some(raw) = ui_chunks::get(name) else {
+        return false;
+    };
+    static CHUNK_CACHE: OnceLock<Mutex<HashMap<String, Arc<CachedIndex>>>> = OnceLock::new();
+    let cache = CHUNK_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let entry = {
+        let guard = cache.lock().unwrap();
+        guard.get(name).cloned()
+    }
+    .unwrap_or_else(|| {
+        let mut hasher = Sha256::new();
+        hasher.update(raw);
+        let digest = hasher.finalize();
+        let etag = format!(
+            "\"{:016x}\"",
+            u64::from_be_bytes(digest[..8].try_into().unwrap_or([0; 8]))
+        );
+        let mut enc = GzEncoder::new(Vec::with_capacity(raw.len() / 3), Compression::default());
+        let gzip = if enc.write_all(raw).is_ok() {
+            enc.finish().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let built = Arc::new(CachedIndex {
+            plain: raw.to_vec(),
+            gzip,
+            etag,
+        });
+        cache.lock().unwrap().insert(name.to_string(), Arc::clone(&built));
+        built
+    });
+
+    if etag_matches(&req.if_none_match, &entry.etag) {
+        let resp = format!(
+            "HTTP/1.1 304 Not Modified\r\nETag: {}\r\nCache-Control: public, max-age=31536000, immutable\r\nVary: Accept-Encoding\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            entry.etag
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        let _ = stream.flush();
+        return true;
+    }
+
+    let content_type = if name.ends_with(".css") {
+        "text/css; charset=utf-8"
+    } else {
+        "application/javascript; charset=utf-8"
+    };
+    if !entry.gzip.is_empty() && accepts_gzip(&req.accept_encoding) {
+        let extra = format!(
+            "ETag: {}\r\nVary: Accept-Encoding\r\nContent-Encoding: gzip\r\n",
+            entry.etag
+        );
+        respond_bytes_with_headers(
+            stream,
+            "200 OK",
+            content_type,
+            "public, max-age=31536000, immutable",
+            &extra,
+            &entry.gzip,
+        );
+    } else {
+        let extra = format!("ETag: {}\r\nVary: Accept-Encoding\r\n", entry.etag);
+        respond_bytes_with_headers(
+            stream,
+            "200 OK",
+            content_type,
+            "public, max-age=31536000, immutable",
+            &extra,
+            &entry.plain,
+        );
+    }
+    true
 }
 
 /* hallmark-rune override log — OpenRO elevation (18 Nov 2026)

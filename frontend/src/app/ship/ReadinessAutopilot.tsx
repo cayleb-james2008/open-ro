@@ -17,16 +17,19 @@ export function ReadinessAutopilot({
   onCompleted,
   onOpenCodeFile,
   onOpenSettings,
+  onOpenSection,
 }: {
   projectId: string;
   projectName: string;
   onCompleted?: () => Promise<void> | void;
   onOpenCodeFile?: (scriptPath: string) => void;
   onOpenSettings?: () => void;
+  onOpenSection?: (section: "publish" | "assets" | "art" | "playtests") => void;
 }) {
   const [readiness, setReadiness] = useState<ProjectReadiness | null>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
+  const [fixingAction, setFixingAction] = useState<string | null>(null);
   const [codegenBusy, setCodegenBusy] = useState(false);
   const [lastResult, setLastResult] = useState<AutopilotResult | null>(null);
   const [codegenInfo, setCodegenInfo] = useState<string>("");
@@ -74,16 +77,23 @@ export function ReadinessAutopilot({
     await onCompleted?.();
   };
 
-  const runAutopilot = async () => {
-    setRunning(true);
+  const runAutopilot = async (singleAction?: string) => {
+    if (singleAction) setFixingAction(singleAction);
+    else setRunning(true);
     setError("");
-    const r = await call<AutopilotResult>(projUrl(projectId, "/autopilot"), {
-      install_monetization: true,
-      format: true,
-      build: true,
-      fix_empty: true,
-    });
-    setRunning(false);
+    const r = await call<AutopilotResult>(
+      projUrl(projectId, "/autopilot"),
+      singleAction
+        ? { action: singleAction }
+        : {
+            install_monetization: true,
+            format: true,
+            build: true,
+            fix_empty: true,
+          },
+    );
+    if (singleAction) setFixingAction(null);
+    else setRunning(false);
     if (!r.ok) {
       setError(r.error || "Ship Autopilot could not finish.");
       toast.error(r.error || "Ship Autopilot failed");
@@ -96,41 +106,49 @@ export function ReadinessAutopilot({
       await loadReadiness();
     }
     const fixedCount = r.actions_taken?.length ?? 0;
-    toast.success(fixedCount > 0 ? `Autopilot completed ${fixedCount} step(s)` : `${projectName} readiness verified`);
+    toast.success(
+      singleAction
+        ? `Fixed ${singleAction.replace(/_/g, " ")}`
+        : fixedCount > 0
+          ? `Autopilot completed ${fixedCount} step(s)`
+          : `${projectName} readiness verified`,
+    );
     await onCompleted?.();
   };
 
   const score = readiness?.score_pct ?? 0;
   const passedCount = readiness?.passed_count ?? 0;
-  const totalCount = readiness?.total_count ?? 7;
+  const totalCount = readiness?.total_count ?? 8;
   const fixableCount = readiness?.auto_fixable_count ?? 0;
   const diags = readiness?.diagnostics ?? [];
+  const pillars = readiness?.pillars ? Object.entries(readiness.pillars) : [];
+  const blockers = readiness?.blockers ?? readiness?.checks?.filter((c) => !c.ok) ?? [];
 
   return (
     <section
       data-ship-autopilot
-      aria-label="Ship and Monetization Readiness Autopilot"
+      aria-label="Game Quality and Revenue Readiness"
       className="card-stock flex flex-col gap-3 p-4"
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
-          <ProgressCircle value={score} radius={16} strokeWidth={3.5} className="size-10 flex-none">
-            <span className="font-mono text-xs font-medium tabular-nums text-ink">{score}%</span>
+          <ProgressCircle value={score} radius={18} strokeWidth={3.5} className="size-11 flex-none" data-readiness-score>
+            <span className="font-mono text-xs font-medium tabular-nums text-ink">{score}</span>
           </ProgressCircle>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="font-heading text-ui font-medium text-ink">Ship &amp; Monetization Autopilot</h3>
+              <h3 className="font-heading text-ui font-medium text-ink">Quality &amp; Revenue Readiness</h3>
               <Pill className={readiness?.ready_to_publish ? "bg-pill-active-bg text-pill-active-fg" : "bg-board text-ink-2"}>
                 <span className="font-mono tabular-nums">{passedCount}/{totalCount}</span>
-                <span>{readiness?.ready_to_publish ? "Ship ready" : "Checks"}</span>
+                <span>{readiness?.ready_to_publish ? "Ship ready" : `${score}/100`}</span>
               </Pill>
             </div>
             <p className="mt-0.5 text-sm text-ink-2">
-              {fixableCount > 0
-                ? `${fixableCount} auto-fixable step(s): Luau hygiene, formatting, monetization/retention wiring, codegen, and .rbxlx build.`
-                : readiness?.ready_to_publish
-                  ? "All Luau, build, monetization, and Open Cloud gates are green."
-                  : "All automatable checks passed. Complete the remaining owner-approved steps below."}
+              {blockers.length === 0
+                ? "All Luau, playtest, monetization, asset, and Open Cloud gates are green."
+                : fixableCount > 0
+                  ? `${blockers.length} blocker(s) surfaced below — ${fixableCount} auto-fixable in 1 click.`
+                  : `${blockers.length} manual gate(s) remaining before live publish.`}
             </p>
           </div>
         </div>
@@ -139,18 +157,18 @@ export function ReadinessAutopilot({
             variant="default"
             size="sm"
             loading={running}
-            disabled={codegenBusy}
+            disabled={codegenBusy || Boolean(fixingAction)}
             onClick={() => void runAutopilot()}
             data-run-autopilot
           >
             <Sparkles className="size-3.5" strokeWidth={1.5} aria-hidden />
-            {fixableCount > 0 ? "Auto-Fix & Prepare to Ship" : "Re-Verify & Build"}
+            {fixableCount > 0 ? "Auto-Fix All & Build" : "Re-Verify & Build"}
           </Button>
           <Button
             variant="outline"
             size="sm"
             loading={codegenBusy}
-            disabled={running}
+            disabled={running || Boolean(fixingAction)}
             onClick={() => void runEconomyCodegen()}
             data-run-economy-codegen
           >
@@ -166,6 +184,22 @@ export function ReadinessAutopilot({
         </div>
       </div>
 
+      {pillars.length > 0 && (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5" data-readiness-pillars>
+          {pillars.map(([k, p]) => {
+            const full = p.earned >= p.max;
+            return (
+              <div key={k} className="flex items-center justify-between gap-2 rounded-lg border border-hairline bg-board/50 px-2.5 py-1.5 text-xs">
+                <span className="truncate text-ink-2">{p.label}</span>
+                <span className={`font-mono font-medium tabular-nums ${full ? "text-pill-active-fg" : "text-ink"}`}>
+                  {p.earned}/{p.max}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {error && (
         <div role="alert" className="flex items-center justify-between gap-2 rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">
           <span>{error}</span>
@@ -174,42 +208,78 @@ export function ReadinessAutopilot({
       )}
 
       {loading && !readiness ? (
-        <p className="text-sm text-ink-2">Checking Luau scripts, assets, monetization, and build status…</p>
+        <p className="text-sm text-ink-2">Scoring Luau proof, playtests, monetization, assets, and build status…</p>
       ) : readiness && (
         <ul className="grid gap-1.5 sm:grid-cols-2" aria-label="Unified ship readiness checklist">
           {readiness.checks.map((c) => (
             <li
               key={c.id}
-              className="flex items-start gap-2 rounded-lg border border-hairline bg-board/50 px-2.5 py-2 text-xs"
+              data-readiness-check={c.id}
+              className="flex items-center justify-between gap-2 rounded-lg border border-hairline bg-board/50 px-2.5 py-2 text-xs"
             >
-              <span
-                className={`mt-0.5 grid size-4 shrink-0 place-items-center rounded-full ${
-                  c.ok
-                    ? "bg-pill-active-bg text-pill-active-fg"
-                    : c.auto_fixable
-                      ? "bg-pill-warn-bg text-pill-warn-fg"
-                      : "bg-track text-ink-3"
-                }`}
-              >
-                {c.ok ? (
-                  <Check className="size-3" strokeWidth={2} aria-hidden />
-                ) : c.auto_fixable ? (
-                  <Wrench className="size-2.5" strokeWidth={1.75} aria-hidden />
-                ) : (
-                  <AlertTriangle className="size-2.5" strokeWidth={1.75} aria-hidden />
-                )}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-1">
-                  <span className="font-medium text-ink">{c.label}</span>
-                  {!c.ok && c.auto_fixable && (
-                    <span className="shrink-0 rounded-chip bg-pill-warn-bg px-1.5 py-0 text-xs text-pill-warn-fg">
-                      Auto-fix
-                    </span>
+              <div className="flex min-w-0 flex-1 items-start gap-2">
+                <span
+                  className={`mt-0.5 grid size-4 shrink-0 place-items-center rounded-full ${
+                    c.ok
+                      ? "bg-pill-active-bg text-pill-active-fg"
+                      : c.auto_fixable
+                        ? "bg-pill-warn-bg text-pill-warn-fg"
+                        : "bg-track text-ink-3"
+                  }`}
+                >
+                  {c.ok ? (
+                    <Check className="size-3" strokeWidth={2} aria-hidden />
+                  ) : c.auto_fixable ? (
+                    <Wrench className="size-2.5" strokeWidth={1.75} aria-hidden />
+                  ) : (
+                    <AlertTriangle className="size-2.5" strokeWidth={1.75} aria-hidden />
                   )}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate font-medium text-ink">{c.label}</span>
+                    {typeof c.weight === "number" && (
+                      <span className="shrink-0 font-mono tabular-nums text-ink-3">
+                        {c.earned ?? 0}/{c.weight}
+                      </span>
+                    )}
+                  </div>
+                  <div className="truncate text-ink-2">{c.detail}</div>
                 </div>
-                <div className="text-ink-2">{c.detail}</div>
               </div>
+              {!c.ok && c.auto_fixable && c.fix_action && (
+                <Button
+                  variant="outline"
+                  size="xs"
+                  loading={fixingAction === c.fix_action}
+                  disabled={running || codegenBusy}
+                  onClick={() => void runAutopilot(c.fix_action ?? undefined)}
+                  data-fix-action={c.fix_action}
+                  className="shrink-0"
+                >
+                  Auto-Fix
+                </Button>
+              )}
+              {!c.ok && !c.auto_fixable && c.cta_section && onOpenSection && (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => onOpenSection(c.cta_section!)}
+                  className="shrink-0"
+                >
+                  {c.cta_section === "playtests" ? "Playtest" : "Review"}
+                </Button>
+              )}
+              {!c.ok && !c.auto_fixable && c.cta_action === "open_settings" && onOpenSettings && (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={onOpenSettings}
+                  className="shrink-0"
+                >
+                  Settings
+                </Button>
+              )}
             </li>
           ))}
         </ul>
@@ -225,13 +295,14 @@ export function ReadinessAutopilot({
                   {d.path}:{d.line} · {d.message}
                 </span>
                 {onOpenCodeFile && (
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="xs"
                     onClick={() => onOpenCodeFile(d.path)}
-                    className="shrink-0 cursor-pointer font-medium text-blue hover:underline"
+                    className="shrink-0"
                   >
                     Inspect
-                  </button>
+                  </Button>
                 )}
               </li>
             ))}

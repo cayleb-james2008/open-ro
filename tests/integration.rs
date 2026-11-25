@@ -1595,7 +1595,7 @@ fn new_skills_generate_parameterised_luau() {
     let registry = openro_rs::skills::registry();
     assert_eq!(registry.len(), 28, "twenty-eight game systems registered: {:?}", registry.iter().map(|s| s.name).collect::<Vec<_>>());
     let prompt = openro_rs::agent::system_prompt();
-    for def in &registry {
+    for def in registry {
         assert!(prompt.contains(def.name), "system prompt lists skill {}", def.name);
     }
     // currency: persistence-shaped — DataStore load/save + BindToClose.

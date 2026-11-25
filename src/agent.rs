@@ -5167,6 +5167,14 @@ impl Agent {
         self.studio_mut()?.get_place_tree()
     }
 
+    pub fn local_place_revision(&self) -> Option<u64> {
+        self.studio.as_ref().and_then(|s| s.local_revision())
+    }
+
+    pub fn analyze_local_luau(&self) -> Option<crate::luau_check::AnalysisReport> {
+        self.studio.as_ref().and_then(|s| s.analyze_local_luau())
+    }
+
     fn studio_mut(&mut self) -> Result<&mut PlaceBackend, String> {
         self.studio
             .as_mut()

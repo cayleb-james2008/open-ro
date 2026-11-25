@@ -1,4 +1,6 @@
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useMemo,
@@ -114,22 +116,12 @@ import {
   type StudioToolResult,
   type WorkspaceMode,
 } from "./app/data";
-import { BlueprintWorkbench } from "./app/Blueprints";
-import { CodeDiffWorkbench } from "./app/CodeDiffWorkbench";
-import { CommandPalette } from "./app/CommandPalette";
 import { CopilotComposer } from "./app/CopilotComposer";
-import { EmbeddedStudioPanel } from "./app/EmbeddedStudioPanel";
 import { analyzePlaceLuau, computePlaceDiff, type LuauDiagnostic } from "./app/luauAudit";
-import { parseRbxlxXml, serializeRbxlx } from "./app/rbxlxCodec";
-import { buildRojoShipPackZip } from "./app/zipBuilder";
-import { SettingsDialog } from "./app/SettingsDialog";
 import { useShip } from "./app/ship/useShip";
 import { ProjectsRail } from "./app/ship/ProjectsRail";
-import { ShipPanel } from "./app/ship/ShipPanel";
 import { call as apiCall, projUrl, type CreatorHubSetupResult } from "./app/ship/api";
-import { StartupWizard } from "./app/StartupWizard";
 import { SwarmSidebarFeed } from "./app/SwarmSidebarFeed";
-import { TeamworkPanel } from "./app/teamwork/TeamworkPanel";
 import {
   createRun as createSwarmRun,
   getRun as getSwarmRun,
@@ -139,21 +131,52 @@ import {
 } from "./app/teamwork/api";
 import { AgentRunsPanel } from "./app/AgentRunsPanel";
 import { LeftExplorerTree, StudioChip } from "./app/Shelf";
-import { SnapshotsDialog } from "./app/SnapshotsDialog";
 import { StudioBottomDrawer, type BottomDrawerTab } from "./app/StudioBottomDrawer";
 
 type ViewportTab = "embedded-studio" | "studio-3d" | "code-diff" | "assets" | "ship" | "teamwork";
-import { StudioPluginDialog } from "./app/StudioPluginDialog";
-import { StudioViewport3D } from "./app/StudioViewport3D";
-import { SystemLibrary } from "./app/SystemLibrary";
-import type { GameSystemDef } from "./app/systems";
 import { ThreadFeed } from "./app/Thread";
-import { ToolLibraryDialog } from "./app/ToolLibraryDialog";
+import { BlueprintWorkbench } from "./app/Blueprints";
+import { SettingsDialog } from "./app/SettingsDialog";
+
+const CodeDiffWorkbench = lazy(() =>
+  import("./app/CodeDiffWorkbench").then((m) => ({ default: m.CodeDiffWorkbench })),
+);
+const CommandPalette = lazy(() =>
+  import("./app/CommandPalette").then((m) => ({ default: m.CommandPalette })),
+);
+const EmbeddedStudioPanel = lazy(() =>
+  import("./app/EmbeddedStudioPanel").then((m) => ({ default: m.EmbeddedStudioPanel })),
+);
+const ShipPanel = lazy(() =>
+  import("./app/ship/ShipPanel").then((m) => ({ default: m.ShipPanel })),
+);
+const StartupWizard = lazy(() =>
+  import("./app/StartupWizard").then((m) => ({ default: m.StartupWizard })),
+);
+const TeamworkPanel = lazy(() =>
+  import("./app/teamwork/TeamworkPanel").then((m) => ({ default: m.TeamworkPanel })),
+);
+const SnapshotsDialog = lazy(() =>
+  import("./app/SnapshotsDialog").then((m) => ({ default: m.SnapshotsDialog })),
+);
+const StudioPluginDialog = lazy(() =>
+  import("./app/StudioPluginDialog").then((m) => ({ default: m.StudioPluginDialog })),
+);
+const StudioViewport3D = lazy(() =>
+  import("./app/StudioViewport3D").then((m) => ({ default: m.StudioViewport3D })),
+);
+const SystemLibrary = lazy(() =>
+  import("./app/SystemLibrary").then((m) => ({ default: m.SystemLibrary })),
+);
+const ToolLibraryDialog = lazy(() =>
+  import("./app/ToolLibraryDialog").then((m) => ({ default: m.ToolLibraryDialog })),
+);
 import {
   defaultMarketTasteSnapshot,
   normalizeMarketTasteSnapshot,
   type MarketTasteSnapshot,
 } from "./app/marketTaste";
+import type { GameSystemDef } from "./app/systems";
 import { UpdateStrip, useUpdate } from "./app/Update";
 import type { AntigravityIssue } from "./app/data";
 
@@ -280,6 +303,40 @@ export function App() {
     }
   });
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [openedDialogs, setOpenedDialogs] = useState<{
+    starters?: boolean;
+    palette?: boolean;
+    snapshots?: boolean;
+    toolLibrary?: boolean;
+    plugin?: boolean;
+    settings?: boolean;
+    wizard?: boolean;
+  }>(() => ({ settings: settingsOpen }));
+
+  useEffect(() => {
+    setOpenedDialogs((prev) => {
+      if (
+        (startersOpen && !prev.starters) ||
+        (paletteOpen && !prev.palette) ||
+        (snapshotsOpen && !prev.snapshots) ||
+        (toolLibraryOpen && !prev.toolLibrary) ||
+        (pluginDialogOpen && !prev.plugin) ||
+        (settingsOpen && !prev.settings) ||
+        (wizardOpen && !prev.wizard)
+      ) {
+        return {
+          starters: prev.starters || startersOpen,
+          palette: prev.palette || paletteOpen,
+          snapshots: prev.snapshots || snapshotsOpen,
+          toolLibrary: prev.toolLibrary || toolLibraryOpen,
+          plugin: prev.plugin || pluginDialogOpen,
+          settings: prev.settings || settingsOpen,
+          wizard: prev.wizard || wizardOpen,
+        };
+      }
+      return prev;
+    });
+  }, [startersOpen, paletteOpen, snapshotsOpen, toolLibraryOpen, pluginDialogOpen, settingsOpen, wizardOpen]);
 
   // Studio Copilot Modes, Proposals & Diffs
   const [composerMode, setComposerMode] = useState<ComposerMode>("agent");
@@ -1487,6 +1544,7 @@ export function App() {
   };
 
   const handleImportRbxlx = async (filename: string, xml: string) => {
+    const { parseRbxlxXml } = await import("./app/rbxlxCodec");
     const parsed = parseRbxlxXml(xml);
     if (!parsed.ok) {
       toast.error(parsed.error);
@@ -1610,7 +1668,10 @@ export function App() {
         const r = await fetch(`/api/snapshots/${encodeURIComponent(snap.id)}/rbxlx`, { cache: "no-store" });
         if (r.ok) xml = await r.text();
       }
-      if (!xml && snap.place) xml = serializeRbxlx(snap.label, snap.place);
+      if (!xml && snap.place) {
+        const { serializeRbxlx } = await import("./app/rbxlxCodec");
+        xml = serializeRbxlx(snap.label, snap.place);
+      }
       if (!xml.includes("<roblox")) throw new Error("no xml");
       const slug = snap.label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "snapshot";
       const blob = new Blob([xml], { type: "application/xml;charset=utf-8" });
@@ -2040,6 +2101,7 @@ export function App() {
         }
       }
       if (!zipBytes) {
+        const { buildRojoShipPackZip } = await import("./app/zipBuilder");
         zipBytes = buildRojoShipPackZip({
           gameName: label,
           place: cur,
@@ -2611,12 +2673,12 @@ export function App() {
             <StudioChip connected={studioOk} workspaceMode={workspaceMode} />
           </Button>
           <a
-            href={RELEASES_URL + (version || "1.3.0")}
+            href={RELEASES_URL + (version || "1.4.0")}
             target="_blank"
             rel="noreferrer"
             className="inline-flex min-h-7 items-center gap-1 rounded-sm text-xs text-ink-2 outline-none hover:text-ink hover:underline active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus max-md:min-h-11"
           >
-            <span>v<span className="font-mono">{version || "1.3.0"}</span></span>
+            <span>v<span className="font-mono">{version || "1.4.0"}</span></span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
         </div>
@@ -2705,82 +2767,84 @@ export function App() {
 
       {/* Active Workbench Surface */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-2.5">
-        {centerTab === "embedded-studio" ? (
-          <EmbeddedStudioPanel
-            studioMode={studioMode}
-            embedStatus={embedStatus}
-            hasLiveFrame={hasLiveFrame}
-            frameSeq={frameSeqRef.current}
-            subscribeFrameSeq={subscribeFrameSeq}
-            actions={studioActions}
-            onLaunchEmbed={handleLaunchEmbed}
-            onAttachEmbed={handleAttachEmbed}
-            onTransferEmbed={handleTransferEmbed}
-            onStopEmbed={handleStopEmbed}
-            onRefreshEmbedStatus={() => void refreshEmbedStatus(true)}
-            onCaptureFrame={handleCaptureStudioFrame}
-            onConnectMcp={handleConnectMcp}
-            onDisconnectMcp={handleDisconnectMcp}
-            onSendMouseInput={handleSendMouseInput}
-            onSendKeyboardInput={handleSendKeyboardInput}
-            onInvokeStudioTool={handleInvokeStudioTool}
-            onOpen3DPreview={() => setCenterTab("studio-3d")}
-          />
-        ) : centerTab === "studio-3d" ? (
-          <StudioViewport3D
-            place={safePlace}
-            theme={theme}
-            assets={projectAssets}
-            selectedPath={selectedPath}
-            studioMode={studioMode}
-            actions={studioActions}
-            building={Boolean(building)}
-            canRedo={canRedo}
-            hideConsole
-            onSelectPart={handleSelectPartAndInspect}
-            onSaveInstance={handleSaveInstance}
-            onCreatePart={handleCreatePart}
-            onDuplicatePart={handleDuplicatePart}
-            onDeletePart={handleDeletePart}
-            onTriggerRedo={handleRedo}
-            onRunPlaytest={handleRunStudioPlaytest}
-          />
-        ) : centerTab === "teamwork" ? (
-          <TeamworkPanel projectId={ship.activeId} />
-        ) : centerTab === "assets" || centerTab === "ship" ? (
-          <ShipPanel
-            ship={ship}
-            studioOk={studioOk}
-            place={place}
-            initialSection={centerTab === "assets" ? "assets" : "publish"}
-            onOpenProjects={() => {
-              setLeftDockCollapsed(false);
-              setLeftDockTab("projects");
-              if (narrow) setMenuOpen(true);
-            }}
-            onOpenSettings={() => setSettingsOpen(true)}
-            onInstalledMonetization={() => { void refreshPlace(); }}
-            onRunPlaytest={() => handleRunStudioPlaytest()}
-            onOpenCodeDiff={(p) => handleOpenScriptInCodeDiff(p)}
-          />
-        ) : (
-          <CodeDiffWorkbench
-            place={safePlace}
-            selectedScriptPath={selectedScriptPath}
-            onSelectScriptPath={setSelectedScriptPath}
-            proposals={proposals}
-            activeProposalId={activeProposalId}
-            onSelectProposalId={setActiveProposalId}
-            latestFileDiffs={latestFileDiffs}
-            serverDiagnostics={serverDiagnostics}
-            busy={busy}
-            onSaveScript={handleSaveScript}
-            onRunPlaytest={handleRunStudioPlaytest}
-            onApplyProposal={handleApplyProposal}
-            onRejectProposal={handleRejectProposal}
-            onAttachContext={handleAddContextPath}
-          />
-        )}
+        <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-ink-2">Loading panel…</div>}>
+          {centerTab === "embedded-studio" ? (
+            <EmbeddedStudioPanel
+              studioMode={studioMode}
+              embedStatus={embedStatus}
+              hasLiveFrame={hasLiveFrame}
+              frameSeq={frameSeqRef.current}
+              subscribeFrameSeq={subscribeFrameSeq}
+              actions={studioActions}
+              onLaunchEmbed={handleLaunchEmbed}
+              onAttachEmbed={handleAttachEmbed}
+              onTransferEmbed={handleTransferEmbed}
+              onStopEmbed={handleStopEmbed}
+              onRefreshEmbedStatus={() => void refreshEmbedStatus(true)}
+              onCaptureFrame={handleCaptureStudioFrame}
+              onConnectMcp={handleConnectMcp}
+              onDisconnectMcp={handleDisconnectMcp}
+              onSendMouseInput={handleSendMouseInput}
+              onSendKeyboardInput={handleSendKeyboardInput}
+              onInvokeStudioTool={handleInvokeStudioTool}
+              onOpen3DPreview={() => setCenterTab("studio-3d")}
+            />
+          ) : centerTab === "studio-3d" ? (
+            <StudioViewport3D
+              place={safePlace}
+              theme={theme}
+              assets={projectAssets}
+              selectedPath={selectedPath}
+              studioMode={studioMode}
+              actions={studioActions}
+              building={Boolean(building)}
+              canRedo={canRedo}
+              hideConsole
+              onSelectPart={handleSelectPartAndInspect}
+              onSaveInstance={handleSaveInstance}
+              onCreatePart={handleCreatePart}
+              onDuplicatePart={handleDuplicatePart}
+              onDeletePart={handleDeletePart}
+              onTriggerRedo={handleRedo}
+              onRunPlaytest={handleRunStudioPlaytest}
+            />
+          ) : centerTab === "teamwork" ? (
+            <TeamworkPanel projectId={ship.activeId} />
+          ) : centerTab === "assets" || centerTab === "ship" ? (
+            <ShipPanel
+              ship={ship}
+              studioOk={studioOk}
+              place={place}
+              initialSection={centerTab === "assets" ? "assets" : "publish"}
+              onOpenProjects={() => {
+                setLeftDockCollapsed(false);
+                setLeftDockTab("projects");
+                if (narrow) setMenuOpen(true);
+              }}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onInstalledMonetization={() => { void refreshPlace(); }}
+              onRunPlaytest={() => handleRunStudioPlaytest()}
+              onOpenCodeDiff={(p) => handleOpenScriptInCodeDiff(p)}
+            />
+          ) : (
+            <CodeDiffWorkbench
+              place={safePlace}
+              selectedScriptPath={selectedScriptPath}
+              onSelectScriptPath={setSelectedScriptPath}
+              proposals={proposals}
+              activeProposalId={activeProposalId}
+              onSelectProposalId={setActiveProposalId}
+              latestFileDiffs={latestFileDiffs}
+              serverDiagnostics={serverDiagnostics}
+              busy={busy}
+              onSaveScript={handleSaveScript}
+              onRunPlaytest={handleRunStudioPlaytest}
+              onApplyProposal={handleApplyProposal}
+              onRejectProposal={handleRejectProposal}
+              onAttachContext={handleAddContextPath}
+            />
+          )}
+        </Suspense>
       </div>
 
       {/* Collapsible Bottom Console / MCP Tools / Properties Drawer */}
@@ -3419,167 +3483,195 @@ export function App() {
                 </MorphingDialogClose>
               </div>
               <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-5">
-                <BlueprintWorkbench
-                  ideas={workbenchIdeas}
-                  builtTitles={builtTitles}
-                  canBuild={canBuild}
-                  cantBuildWhy={cantBuildWhy}
-                  busy={busy}
-                  buildingTitle={building?.build}
-                  onBuild={(idea) => void buildIdea(idea)}
-                />
-                <SystemLibrary
-                  place={place}
-                  canBuild={canBuild}
-                  busy={busy}
-                  buildingTitle={building?.build}
-                  onAddSystem={(sys) => void addSystem(sys)}
-                />
+                {(startersOpen || openedDialogs.starters) && (
+                  <Suspense fallback={<div className="p-2 text-sm text-ink-2">Loading starters…</div>}>
+                    <BlueprintWorkbench
+                      ideas={workbenchIdeas}
+                      builtTitles={builtTitles}
+                      canBuild={canBuild}
+                      cantBuildWhy={cantBuildWhy}
+                      busy={busy}
+                      buildingTitle={building?.build}
+                      onBuild={(idea) => void buildIdea(idea)}
+                    />
+                    <SystemLibrary
+                      place={place}
+                      canBuild={canBuild}
+                      busy={busy}
+                      buildingTitle={building?.build}
+                      onAddSystem={(sys) => void addSystem(sys)}
+                    />
+                  </Suspense>
+                )}
               </div>
             </MorphingDialogContent>
           </MorphingDialogContainer>
         </MorphingDialog>
 
-        <CommandPalette
-          open={paletteOpen}
-          onOpenChange={setPaletteOpen}
-          place={place}
-          canBuild={canBuild}
-          busy={busy}
-          canUndo={canUndo}
-          canRedo={canRedo}
-          onAddSystem={(sys) => void addSystem(sys)}
-          onSelectPath={handleSelectPartAndInspect}
-          onNewChat={() => void newChat()}
-          onExportRbxlx={() => void handleExportRbxlx()}
-          onDownloadShipPack={() => void handleDownloadShipPack()}
-          onAddBlockPart={() => void handleCreatePart("block")}
-          onImportRbxlxClick={() => fileInputRef.current?.click()}
-          onOpenSnapshots={() => setSnapshotsOpen(true)}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onOpenToolLibrary={() => {
-            setToolLibraryOpen(true);
-            void refreshLibrary();
-            void refreshMarketTaste();
-          }}
-          onOpenEmbeddedStudio={() => {
-            setCenterTab("embedded-studio");
-            setMobilePane("studio");
-          }}
-          onOpenShip={() => {
-            setCenterTab("ship");
-            setRightDockCollapsed(false);
-            setMobilePane("studio");
-          }}
-          onOpenCodeDiff={() => {
-            setCenterTab("code-diff");
-            setMobilePane("studio");
-          }}
-          onOpenStudioPlugin={() => {
-            setPluginDialogOpen(true);
-            void refreshPluginStatus(true);
-          }}
-          onToggleBottomDrawer={() => setBottomDrawerOpen((v) => !v)}
-          onOpenStarters={() => setStartersOpen(true)}
-          onRunPlaytest={() => void handleRunStudioPlaytest()}
-          onTriggerUndo={() => void undoNow()}
-          onTriggerRedo={() => void handleRedo()}
-        />
+        {(paletteOpen || openedDialogs.palette) && (
+          <Suspense fallback={null}>
+            <CommandPalette
+              open={paletteOpen}
+              onOpenChange={setPaletteOpen}
+              place={place}
+              canBuild={canBuild}
+              busy={busy}
+              canUndo={canUndo}
+              canRedo={canRedo}
+              onAddSystem={(sys) => void addSystem(sys)}
+              onSelectPath={handleSelectPartAndInspect}
+              onNewChat={() => void newChat()}
+              onExportRbxlx={() => void handleExportRbxlx()}
+              onDownloadShipPack={() => void handleDownloadShipPack()}
+              onAddBlockPart={() => void handleCreatePart("block")}
+              onImportRbxlxClick={() => fileInputRef.current?.click()}
+              onOpenSnapshots={() => setSnapshotsOpen(true)}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenToolLibrary={() => {
+                setToolLibraryOpen(true);
+                void refreshLibrary();
+                void refreshMarketTaste();
+              }}
+              onOpenEmbeddedStudio={() => {
+                setCenterTab("embedded-studio");
+                setMobilePane("studio");
+              }}
+              onOpenShip={() => {
+                setCenterTab("ship");
+                setRightDockCollapsed(false);
+                setMobilePane("studio");
+              }}
+              onOpenCodeDiff={() => {
+                setCenterTab("code-diff");
+                setMobilePane("studio");
+              }}
+              onOpenStudioPlugin={() => {
+                setPluginDialogOpen(true);
+                void refreshPluginStatus(true);
+              }}
+              onToggleBottomDrawer={() => setBottomDrawerOpen((v) => !v)}
+              onOpenStarters={() => setStartersOpen(true)}
+              onRunPlaytest={() => void handleRunStudioPlaytest()}
+              onTriggerUndo={() => void undoNow()}
+              onTriggerRedo={() => void handleRedo()}
+            />
+          </Suspense>
+        )}
 
-        <StudioPluginDialog
-          open={pluginDialogOpen}
-          onOpenChange={setPluginDialogOpen}
-          status={pluginStatus}
-          v0100Ready={v0100Ready}
-          onRefreshStatus={() => refreshPluginStatus(true)}
-          onAttachSelection={(paths) => {
-            for (const p of paths) handleAddContextPath(p);
-            toast.success(`Attached ${paths.length} selected Studio item(s) to Copilot`);
-            setPluginDialogOpen(false);
-          }}
-        />
+        {(pluginDialogOpen || openedDialogs.plugin) && (
+          <Suspense fallback={null}>
+            <StudioPluginDialog
+              open={pluginDialogOpen}
+              onOpenChange={setPluginDialogOpen}
+              status={pluginStatus}
+              v0100Ready={v0100Ready}
+              onRefreshStatus={() => refreshPluginStatus(true)}
+              onAttachSelection={(paths) => {
+                for (const p of paths) handleAddContextPath(p);
+                toast.success(`Attached ${paths.length} selected Studio item(s) to Copilot`);
+                setPluginDialogOpen(false);
+              }}
+            />
+          </Suspense>
+        )}
 
-        <ToolLibraryDialog
-          open={toolLibraryOpen}
-          onOpenChange={setToolLibraryOpen}
-          snapshot={librarySnap}
-          marketTaste={marketTaste}
-          marketBusy={marketBusy}
-          v090Ready={v090Ready}
-          onRefresh={() => refreshLibrary(true)}
-          onSelectMarketNiche={handleSelectMarketNiche}
-          onRefreshMarketTaste={handleRefreshMarketTaste}
-          onPitchMarketPrompt={handlePitchMarketPrompt}
-        />
+        {(toolLibraryOpen || openedDialogs.toolLibrary) && (
+          <Suspense fallback={null}>
+            <ToolLibraryDialog
+              open={toolLibraryOpen}
+              onOpenChange={setToolLibraryOpen}
+              snapshot={librarySnap}
+              marketTaste={marketTaste}
+              marketBusy={marketBusy}
+              v090Ready={v090Ready}
+              onRefresh={() => refreshLibrary(true)}
+              onSelectMarketNiche={handleSelectMarketNiche}
+              onRefreshMarketTaste={handleRefreshMarketTaste}
+              onPitchMarketPrompt={handlePitchMarketPrompt}
+            />
+          </Suspense>
+        )}
 
-        <SnapshotsDialog
-          open={snapshotsOpen}
-          onOpenChange={setSnapshotsOpen}
-          snapshots={snapshots}
-          busy={busy}
-          onCreateSnapshot={(lbl) => void handleCreateSnapshot(lbl)}
-          onRestoreSnapshot={(snap) => void handleRestoreSnapshot(snap)}
-          onExportSnapshot={(snap) => void handleExportSnapshot(snap)}
-        />
+        {(snapshotsOpen || openedDialogs.snapshots) && (
+          <Suspense fallback={null}>
+            <SnapshotsDialog
+              open={snapshotsOpen}
+              onOpenChange={setSnapshotsOpen}
+              snapshots={snapshots}
+              busy={busy}
+              onCreateSnapshot={(lbl) => void handleCreateSnapshot(lbl)}
+              onRestoreSnapshot={(snap) => void handleRestoreSnapshot(snap)}
+              onExportSnapshot={(snap) => void handleExportSnapshot(snap)}
+            />
+          </Suspense>
+        )}
 
-        <SettingsDialog
-          theme={theme}
-          onThemeChange={setTheme}
-          open={settingsOpen}
-          onOpenChange={setSettingsOpen}
-          workspaceMode={workspaceMode}
-          compactLabel={activeModelLabel}
-          showTrigger={false}
-          onOpenCloudChanged={() => void ship.refreshCloud()}
-          onOpenSnapshots={() => setSnapshotsOpen(true)}
-          onOpenPluginSetup={() => {
-            setPluginDialogOpen(true);
-            void refreshPluginStatus(true);
-          }}
-          onOpenWizard={() => setWizardOpen(true)}
-          canCheckUpdate={update.canCheck}
-          onCheckUpdate={() => void update.check()}
-          onApplied={({ studioConnected, modelConfigured, workspaceMode: nextMode, modelId: nextModelId, antigravityIssue: nextIssue }) => {
-            setStudioOk(studioConnected);
-            setModelOk(modelConfigured);
-            setWorkspaceMode(nextMode);
-            if (nextModelId) {
-              setActiveModelLabel(nextModelId.trim().split("/").pop() || nextModelId.trim());
-            }
-            if (nextIssue !== undefined) {
-              setAntigravityIssue(nextIssue);
-            }
-            if (studioConnected) {
-              const noStudio = document.getElementById("no-studio-banner");
-              if (noStudio) noStudio.hidden = true;
-              void refreshPlace();
-            }
-            if (modelConfigured) {
-              const noKey = document.getElementById("no-key-banner");
-              if (noKey) noKey.hidden = true;
-            }
-          }}
-        />
-        <StartupWizard
-          open={wizardOpen}
-          onOpenChange={setWizardOpen}
-          studioOk={studioOk}
-          activeProjectId={ship.activeId}
-          activeProjectName={ship.active?.name}
-          onApplied={({ studioConnected, modelConfigured, workspaceMode: nextMode, modelId: nextModelId }) => {
-            setStudioOk(studioConnected);
-            setModelOk(modelConfigured);
-            setWorkspaceMode(nextMode);
-            if (nextModelId) {
-              setActiveModelLabel(nextModelId.trim().split("/").pop() || nextModelId.trim());
-            }
-            if (studioConnected) {
-              void refreshPlace();
-              void refreshEmbedStatus(true);
-            }
-          }}
-          onDoneFocusComposer={() => inputRef.current?.focus()}
-        />
+        {(settingsOpen || openedDialogs.settings) && (
+          <Suspense fallback={null}>
+            <SettingsDialog
+              theme={theme}
+              onThemeChange={setTheme}
+              open={settingsOpen}
+              onOpenChange={setSettingsOpen}
+              workspaceMode={workspaceMode}
+              compactLabel={activeModelLabel}
+              showTrigger={false}
+              onOpenCloudChanged={() => void ship.refreshCloud()}
+              onOpenSnapshots={() => setSnapshotsOpen(true)}
+              onOpenPluginSetup={() => {
+                setPluginDialogOpen(true);
+                void refreshPluginStatus(true);
+              }}
+              onOpenWizard={() => setWizardOpen(true)}
+              canCheckUpdate={update.canCheck}
+              onCheckUpdate={() => void update.check()}
+              onApplied={({ studioConnected, modelConfigured, workspaceMode: nextMode, modelId: nextModelId, antigravityIssue: nextIssue }) => {
+                setStudioOk(studioConnected);
+                setModelOk(modelConfigured);
+                setWorkspaceMode(nextMode);
+                if (nextModelId) {
+                  setActiveModelLabel(nextModelId.trim().split("/").pop() || nextModelId.trim());
+                }
+                if (nextIssue !== undefined) {
+                  setAntigravityIssue(nextIssue);
+                }
+                if (studioConnected) {
+                  const noStudio = document.getElementById("no-studio-banner");
+                  if (noStudio) noStudio.hidden = true;
+                  void refreshPlace();
+                }
+                if (modelConfigured) {
+                  const noKey = document.getElementById("no-key-banner");
+                  if (noKey) noKey.hidden = true;
+                }
+              }}
+            />
+          </Suspense>
+        )}
+        {(wizardOpen || openedDialogs.wizard) && (
+          <Suspense fallback={null}>
+            <StartupWizard
+              open={wizardOpen}
+              onOpenChange={setWizardOpen}
+              studioOk={studioOk}
+              activeProjectId={ship.activeId}
+              activeProjectName={ship.active?.name}
+              onApplied={({ studioConnected, modelConfigured, workspaceMode: nextMode, modelId: nextModelId }) => {
+                setStudioOk(studioConnected);
+                setModelOk(modelConfigured);
+                setWorkspaceMode(nextMode);
+                if (nextModelId) {
+                  setActiveModelLabel(nextModelId.trim().split("/").pop() || nextModelId.trim());
+                }
+                if (studioConnected) {
+                  void refreshPlace();
+                  void refreshEmbedStatus(true);
+                }
+              }}
+              onDoneFocusComposer={() => inputRef.current?.focus()}
+            />
+          </Suspense>
+        )}
         <Toaster
           position="bottom-right"
           theme={theme}

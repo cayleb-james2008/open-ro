@@ -674,6 +674,25 @@ export function formatCompactNumber(n: number): string {
   return String(Math.round(n));
 }
 
+const EMPTY_NICHE: MarketTasteNiche = {
+  id: "top-trending",
+  name: "Top-Trending Roblox Craft",
+  tagline: "High-retention Roblox experiences grounded in live Explore sorts.",
+  craft_bar: "Immediate 3-second action hook, crisp diegetic feedback, 60 FPS input loop.",
+  games: [],
+  gameplay_loop: [],
+  ui_ux_style: [],
+  animations_and_juice: [],
+  model_and_world_3d_style: [],
+  audio_cadence: [],
+  monetization_loops: [],
+  retention_hooks: [],
+  anti_slop_rules: [],
+  automatic_twists: [],
+  quality_boosts: [],
+  pitch_prompt: "Build an original high-retention Roblox experience with crisp juice and clear core loop.",
+};
+
 export function defaultMarketTasteSnapshot(): MarketTasteSnapshot {
   return {
     active_niche: "top-trending",
@@ -681,8 +700,8 @@ export function defaultMarketTasteSnapshot(): MarketTasteSnapshot {
     updated_at: "2026-11-22",
     live_supported: false,
     live_games_count: 0,
-    note: "Grounded in Nov 2026 Roblox Explore charts across all 8 genres + 8-dimension Craft & Anti-Slop Dossier. Click Refresh Live Roblox Charts on OpenRO desktop to pull live Explore API sorts.",
-    niches: BASELINE_MARKET_NICHES,
+    note: "Grounded in live Roblox Explore charts + 8-dimension Craft & Anti-Slop Dossier.",
+    niches: [],
   };
 }
 
@@ -817,21 +836,18 @@ export function normalizeMarketTasteSnapshot(raw: unknown): MarketTasteSnapshot 
       : [];
 
   const byId = new Map<string, MarketTasteNiche>();
-  for (const base of BASELINE_MARKET_NICHES) {
-    byId.set(base.id, { ...base });
-  }
 
   for (const item of rawNiches) {
     if (!item || typeof item !== "object") continue;
     const rec = item as Record<string, unknown>;
     const id = String(rec.id ?? rec.slug ?? "").trim();
     if (!id) continue;
-    const base = byId.get(id) ?? BASELINE_MARKET_NICHES[0];
+    const base = byId.get(id) ?? { ...EMPTY_NICHE, id, name: String(rec.name ?? rec.label ?? id) };
     byId.set(id, mergeNiche(rec, base));
   }
 
   if (detailedNiche && detailedId) {
-    const base = byId.get(detailedId) ?? BASELINE_MARKET_NICHES[0];
+    const base = byId.get(detailedId) ?? { ...EMPTY_NICHE, id: detailedId };
     byId.set(detailedId, mergeNiche(detailedNiche, base));
   }
 
@@ -856,7 +872,7 @@ export function normalizeMarketTasteSnapshot(raw: unknown): MarketTasteSnapshot 
 }
 
 export function normalizeResearchResult(raw: unknown, fallbackNicheId = "top-trending"): MarketTasteResearchResult {
-  const baseNiche = BASELINE_MARKET_NICHES.find((n) => n.id === fallbackNicheId) ?? BASELINE_MARKET_NICHES[0];
+  const baseNiche = { ...EMPTY_NICHE, id: fallbackNicheId };
   if (!raw || typeof raw !== "object") {
     return {
       ok: false,
@@ -899,7 +915,7 @@ export function normalizeResearchResult(raw: unknown, fallbackNicheId = "top-tre
         : o;
 
   const rawNicheId = String(o.niche_id ?? dossier.niche_id ?? dossier.niche ?? fallbackNicheId).trim();
-  const niche = BASELINE_MARKET_NICHES.find((n) => n.id === rawNicheId) ?? baseNiche;
+  const niche = { ...EMPTY_NICHE, id: rawNicheId || fallbackNicheId, name: String(o.niche_name ?? dossier.niche_name ?? rawNicheId) };
 
   const rawThumbs = Array.isArray(o.thumbnails)
     ? o.thumbnails

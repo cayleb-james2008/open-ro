@@ -116,9 +116,15 @@ export type CreatorHubConfigureResult = {
 
 export type ReadinessCheck = {
   id: string;
+  pillar?: string;
+  weight?: number;
+  earned?: number;
   label: string;
   ok: boolean;
   auto_fixable?: boolean;
+  fix_action?: string | null;
+  cta_section?: "playtests" | "publish";
+  cta_action?: "open_settings";
   detail: string;
 };
 export type ReadinessDiagnostic = {
@@ -135,6 +141,16 @@ export type ProjectReadiness = {
   total_count: number;
   auto_fixable_count: number;
   fixable_actions: string[];
+  blockers?: ReadinessCheck[];
+  pillars?: Record<string, { label: string; earned: number; max: number }>;
+  playtest_summary?: {
+    tested: boolean;
+    passed: boolean;
+    blank_screenshots: number;
+    move: string;
+    act: string;
+    hud: string;
+  };
   luau_errors: number;
   luau_warnings: number;
   has_process_receipt: boolean;

@@ -105,7 +105,39 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.3.0"));
+    assert_eq!(ver_json["version"], json!("1.4.0"));
+
+    // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
+    if let Ok(entries) = std::fs::read_dir("assets/chunks") {
+        if let Some(chunk_name) = entries
+            .flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .find(|n| n.ends_with(".js"))
+        {
+            let req_chunk = format!(
+                "GET /chunks/{chunk_name} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n"
+            );
+            let (stc, headc, bodyc) = send_raw_bytes(port, req_chunk.as_bytes());
+            assert_eq!(stc, 200, "chunk {chunk_name}: {headc}");
+            let lowc = headc.to_ascii_lowercase();
+            assert!(lowc.contains("content-encoding: gzip"), "{headc}");
+            assert!(lowc.contains("x-content-type-options: nosniff"), "{headc}");
+            assert!(lowc.contains("immutable"), "{headc}");
+            assert!(bodyc.starts_with(&[0x1f, 0x8b]));
+            let etagc = headc
+                .lines()
+                .find(|l| l.to_ascii_lowercase().starts_with("etag:"))
+                .and_then(|l| l.split_once(':'))
+                .map(|(_, v)| v.trim().to_string())
+                .unwrap();
+            let req_c304 = format!(
+                "GET /chunks/{chunk_name} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nIf-None-Match: {etagc}\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n"
+            );
+            let (stc304, _, bodyc304) = send_raw_bytes(port, req_c304.as_bytes());
+            assert_eq!(stc304, 304);
+            assert!(bodyc304.is_empty());
+        }
+    }
 }
 
 #[test]
@@ -238,13 +270,28 @@ fn ship_readiness_autopilot_fixes_luau_installs_monetization_builds_and_preserve
     );
     assert_eq!(st_mf, 200);
 
-    // Before autopilot: readiness has fixable actions and luau_errors >= 1
+    // Before autopilot: readiness has weighted score, pillars, blockers, and fixable actions
     let (st_r0, r0) = send_json(port, "GET", &format!("/api/projects/{pid}/readiness"), None);
     assert_eq!(st_r0, 200, "{r0}");
     assert!(r0["auto_fixable_count"].as_u64().unwrap() >= 3, "{r0}");
+    assert!(r0["score_pct"].as_u64().unwrap() < 100, "{r0}");
+    assert!(r0["pillars"]["luau"]["max"].as_u64() == Some(20), "{r0}");
+    assert!(r0["pillars"]["playtest"]["max"].as_u64() == Some(20), "{r0}");
+    assert!(r0["blockers"].as_array().is_some_and(|b| !b.is_empty()), "{r0}");
     assert!(!r0.to_string().contains(secret_val));
 
-    // Run 1-click Ship & Monetization Autopilot
+    // Targeted single-item Auto-Fix: format_and_fix_luau clears Luau empty stub without installing monetization yet
+    let (st_fx, fx) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/autopilot"),
+        Some(&json!({ "action": "format_and_fix_luau" })),
+    );
+    assert_eq!(st_fx, 200, "{fx}");
+    assert_eq!(fx["readiness"]["luau_errors"], json!(0), "{fx}");
+    assert_eq!(fx["readiness"]["has_process_receipt"], json!(false), "{fx}");
+
+    // Run 1-click Ship & Monetization Autopilot (fixes remaining automatable checks)
     let (st_ap, ap) = send_json(
         port,
         "POST",
@@ -256,6 +303,7 @@ fn ship_readiness_autopilot_fixes_luau_installs_monetization_builds_and_preserve
     assert_eq!(ap["readiness"]["luau_errors"], json!(0), "{ap}");
     assert_eq!(ap["readiness"]["has_process_receipt"], json!(true), "{ap}");
     assert_eq!(ap["readiness"]["has_daily_retention"], json!(true), "{ap}");
+    assert!(ap["readiness"]["score_pct"].as_u64().unwrap() > r0["score_pct"].as_u64().unwrap(), "{ap}");
     // Human price approval must NEVER be bypassed by autopilot
     assert_eq!(ap["readiness"]["unapproved_prices"], json!(1), "{ap}");
     assert_eq!(ap["readiness"]["ready_to_publish"], json!(false), "{ap}");
