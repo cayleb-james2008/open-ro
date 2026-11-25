@@ -1,8 +1,10 @@
 import React, { createContext, useContext, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { AnimatePresence, LayoutGroup, motion, useReducedMotion as useMotionReduced } from "motion/react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { Loader2 } from "lucide-react";
+import { glide, instant, open as openAnim } from "@/motion";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -12,7 +14,7 @@ export type ButtonVariant = "default" | "outline" | "secondary" | "ghost" | "des
 export type ButtonSize = "xs" | "sm" | "default" | "lg" | "icon" | "icon-sm" | "icon-xs";
 
 const VARIANT_CLS: Record<ButtonVariant, string> = {
-  default: "border-primary bg-primary text-primary-foreground hover:bg-blue-hover",
+  default: "border-primary bg-primary text-primary-foreground shadow-[var(--elev-primary)] hover:opacity-92",
   outline: "border-hairline bg-surface text-ink hover:bg-board",
   secondary: "border-hairline bg-board text-ink hover:bg-track",
   ghost: "border-transparent bg-transparent text-ink-2 hover:bg-board hover:text-ink",
@@ -57,7 +59,7 @@ export function Button({
       disabled={isDisabled}
       aria-disabled={loading || undefined}
       className={cn(
-        "relative inline-flex shrink-0 cursor-pointer items-center justify-center whitespace-nowrap border font-medium transition-[color,background-color,border-color,transform] duration-(--dur-press) ease-(--ease-house) active:scale-[0.99] focus-visible:outline-2 focus-visible:outline-focus focus-visible:outline-offset-2 disabled:pointer-events-none disabled:cursor-not-allowed disabled:border-hairline disabled:bg-track disabled:text-ink-3 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "relative inline-flex shrink-0 cursor-pointer items-center justify-center whitespace-nowrap border font-medium transition-[color,background-color,border-color,opacity,transform] duration-(--dur-press) ease-(--ease-house) active:scale-[0.97] motion-reduce:transition-none motion-reduce:active:scale-100 focus-visible:outline-2 focus-visible:outline-focus focus-visible:outline-offset-2 disabled:pointer-events-none disabled:cursor-not-allowed disabled:border-hairline disabled:bg-track disabled:text-ink-3 disabled:shadow-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
         VARIANT_CLS[variant],
         SIZE_CLS[size],
         className,
@@ -247,7 +249,10 @@ export function PillIndicator({
   );
 }
 
-const SegCtx = createContext<"sm" | "default" | "lg">("default");
+const SegCtx = createContext<{ size: "sm" | "default" | "lg"; groupId: string }>({
+  size: "default",
+  groupId: "seg",
+});
 
 export function SegmentedControl({
   size = "default",
@@ -255,15 +260,18 @@ export function SegmentedControl({
   children,
   ...props
 }: React.HTMLAttributes<HTMLDivElement> & { size?: "sm" | "default" | "lg" }) {
+  const groupId = useId();
   return (
-    <SegCtx.Provider value={size}>
-      <div
-        role="group"
-        className={cn("inline-flex items-center gap-0.5 rounded-lg bg-track p-0.5", className)}
-        {...props}
-      >
-        {children}
-      </div>
+    <SegCtx.Provider value={{ size, groupId }}>
+      <LayoutGroup id={`lg-${groupId}`}>
+        <div
+          role="group"
+          className={cn("inline-flex items-center gap-0.5 rounded-lg bg-track p-0.5", className)}
+          {...props}
+        >
+          {children}
+        </div>
+      </LayoutGroup>
     </SegCtx.Provider>
   );
 }
@@ -278,22 +286,73 @@ export function SegmentedControlItem({
   size?: "sm" | "default" | "lg";
   "data-checked"?: string;
 }) {
-  const ctxSize = useContext(SegCtx);
+  const { size: ctxSize, groupId } = useContext(SegCtx);
   const s = size ?? ctxSize;
   const checked = props["data-checked"] !== undefined || props["aria-pressed"] === true;
+  const reduced = useMotionReduced();
   return (
     <button
       type={type}
       className={cn(
-        "inline-flex shrink-0 cursor-pointer select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-transparent font-medium transition-[color,background-color] duration-(--dur-press) ease-(--ease-house) focus-visible:outline-2 focus-visible:outline-focus focus-visible:outline-offset-1 disabled:pointer-events-none disabled:cursor-not-allowed disabled:text-ink-3 max-md:min-h-11",
+        "relative inline-flex shrink-0 cursor-pointer select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-transparent font-medium transition-[color] duration-(--dur-reveal) ease-(--ease-house) motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-focus focus-visible:outline-offset-1 disabled:pointer-events-none disabled:cursor-not-allowed disabled:text-ink-3 max-md:min-h-11",
         s === "sm" ? "h-7 px-2 text-xs" : s === "lg" ? "h-9 px-3 text-sm" : "h-8 px-2.5 text-sm",
-        checked ? "bg-raised text-ink" : "bg-transparent text-ink-2 hover:text-ink",
+        checked ? "text-ink" : "bg-transparent text-ink-2 hover:text-ink",
         className,
       )}
       {...props}
     >
-      {children}
+      {checked ? (
+        <motion.span
+          layoutId={`seg-${groupId}`}
+          transition={reduced ? instant : glide}
+          aria-hidden
+          className="absolute inset-0 rounded-md bg-raised shadow-[var(--elev-raised)]"
+        />
+      ) : null}
+      <span className="relative z-10 inline-flex items-center gap-1.5">{children}</span>
     </button>
+  );
+}
+
+export function TextShimmer({
+  children,
+  active = true,
+  className,
+}: {
+  children: React.ReactNode;
+  active?: boolean;
+  className?: string;
+}) {
+  const reduced = useMotionReduced();
+  if (!active || reduced) {
+    return <span className={cn("text-ink", className)}>{children}</span>;
+  }
+  return (
+    <motion.span
+      initial={{ opacity: 0.72 }}
+      animate={{ opacity: [0.72, 1, 0.72] }}
+      transition={{ duration: 1.8, repeat: Infinity, ease: "linear" }}
+      className={cn("text-ink", className)}
+    >
+      {children}
+    </motion.span>
+  );
+}
+
+export function BorderTrail({ active = true, className }: { active?: boolean; className?: string }) {
+  const reduced = useMotionReduced();
+  if (!active) return null;
+  if (reduced) {
+    return <span aria-hidden className={cn("pointer-events-none absolute inset-0 rounded-[inherit] border border-blue/50", className)} />;
+  }
+  return (
+    <motion.span
+      aria-hidden
+      initial={{ opacity: 0.35 }}
+      animate={{ opacity: [0.35, 0.85, 0.35] }}
+      transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+      className={cn("pointer-events-none absolute inset-0 rounded-[inherit] border border-blue/55", className)}
+    />
   );
 }
 
@@ -411,19 +470,28 @@ export function DialogTrigger({
 
 export function DialogContainer({ children }: { children: React.ReactNode }) {
   const ctx = useContext(DialogCtx);
-  if (!ctx?.open) return null;
+  const reduced = useMotionReduced();
   return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-3"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) {
-          ctx.setOpen(false);
-          ctx.triggerRef.current?.focus();
-        }
-      }}
-    >
-      {children}
-    </div>,
+    <AnimatePresence>
+      {ctx?.open ? (
+        <motion.div
+          key="dialog-overlay"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={reduced ? instant : openAnim}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-3"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) {
+              ctx.setOpen(false);
+              ctx.triggerRef.current?.focus();
+            }
+          }}
+        >
+          {children}
+        </motion.div>
+      ) : null}
+    </AnimatePresence>,
     document.body,
   );
 }
@@ -435,6 +503,7 @@ export function DialogContent({
 }: React.HTMLAttributes<HTMLDivElement>) {
   const ctx = useContext(DialogCtx);
   const ref = useRef<HTMLDivElement>(null);
+  const reduced = useMotionReduced();
 
   useEffect(() => {
     if (!ctx?.open) return;
@@ -478,20 +547,24 @@ export function DialogContent({
   }, [ctx]);
 
   return (
-    <div
+    <motion.div
       ref={ref}
       role="dialog"
       aria-modal="true"
       aria-labelledby={ctx?.titleId}
       aria-describedby={ctx?.descId}
+      initial={reduced ? { opacity: 1 } : { opacity: 0, y: 6, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={reduced ? { opacity: 0 } : { opacity: 0, y: 4, scale: 0.98 }}
+      transition={reduced ? instant : openAnim}
       className={cn(
         "relative w-full rounded-dialog border border-hairline bg-surface text-ink shadow-lift outline-none",
         className,
       )}
-      {...props}
+      {...(props as Record<string, unknown>)}
     >
       {children}
-    </div>
+    </motion.div>
   );
 }
 

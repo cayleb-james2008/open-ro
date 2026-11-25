@@ -344,7 +344,7 @@ export function CopilotComposer({
               </div>
               <div className="flex flex-wrap justify-end gap-2">
                 <MorphingDialogClose aria-label="Keep it" className="static inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-hairline bg-surface px-4 text-sm font-medium text-ink hover:bg-board md:min-h-9">Keep it</MorphingDialogClose>
-                <MorphingDialogClose data-undo-yes aria-label="Yes, undo it" onClick={onConfirmUndo} className="static inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-blue bg-blue px-4 text-sm font-medium text-blue-fg hover:bg-blue-hover md:min-h-9">Yes, undo it</MorphingDialogClose>
+                <MorphingDialogClose data-undo-yes aria-label="Yes, undo it" onClick={onConfirmUndo} className="static inline-flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-primary bg-primary px-4 text-sm font-medium text-primary-foreground shadow-[var(--elev-primary)] hover:opacity-92 active:scale-[0.97] md:min-h-9">Yes, undo it</MorphingDialogClose>
               </div>
             </div>
           </MorphingDialogContent>

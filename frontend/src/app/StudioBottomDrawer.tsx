@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   Activity,
   AtSign,
@@ -19,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { Textarea } from "@/components/ui/textarea";
 import { Pill } from "@/components/kibo-ui/pill";
+import { instant, open as openAnim } from "@/motion";
 import {
   STUDIO_TOOL_SPECS,
   type InstanceEditPayload,
@@ -74,6 +76,7 @@ export function StudioBottomDrawer({
   const [toolResult, setToolResult] = useState<StudioToolResult | null>(null);
   const [consoleLines, setConsoleLines] = useState<string[]>([]);
   const [consoleBusy, setConsoleBusy] = useState(false);
+  const reduced = useReducedMotion();
 
   const selectedInstance = selectedPath ? place.instances?.[selectedPath] ?? null : null;
   const [posX, setPosX] = useState("0");
@@ -273,8 +276,16 @@ export function StudioBottomDrawer({
       )}
 
       {/* 236px Expanded Drawer Body */}
+      <AnimatePresence initial={false}>
       {open && (
-        <div className="h-[236px] overflow-y-auto border-t border-hairline bg-surface p-3">
+        <motion.div
+          key="studio-bottom-drawer-body"
+          initial={reduced ? { opacity: 1 } : { opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={reduced ? { opacity: 0 } : { opacity: 0, y: 4 }}
+          transition={reduced ? instant : openAnim}
+          className="h-[236px] overflow-y-auto border-t border-hairline bg-surface p-3"
+        >
           {activeTab === "console" && (
             <div data-studio-console-sync className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -550,8 +561,9 @@ export function StudioBottomDrawer({
               )}
             </div>
           )}
-        </div>
+        </motion.div>
       )}
+      </AnimatePresence>
     </section>
   );
 }

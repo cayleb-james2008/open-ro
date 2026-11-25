@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /**
- * Verifies motion tokens in frontend/src/tokens.css + index.css match frontend/src/motion.ts
- * and prefers-reduced-motion support is present without heavy runtime wrappers.
+ * Verifies Emil Kowalski v2.0 Motion Contract between frontend/src/tokens.css + index.css and frontend/src/motion.ts.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -20,9 +19,16 @@ if (!fs.existsSync(tokensPath)) {
   issues.push("Missing frontend/src/tokens.css");
 } else {
   const tokens = fs.readFileSync(tokensPath, "utf8");
-  for (const req of ["--dur-press", "--dur-reveal", "--dur-swap", "--dur-enter", "--dur-sheet", "--ease-house"]) {
+  for (const req of [
+    "--dur-press: 150ms",
+    "--dur-reveal: 180ms",
+    "--dur-swap: 200ms",
+    "--dur-enter: 220ms",
+    "--dur-sheet: 220ms",
+    "--ease-house: cubic-bezier(0.23, 1, 0.32, 1)",
+  ]) {
     if (!tokens.includes(req)) {
-      issues.push(`tokens.css missing required motion token: ${req}`);
+      issues.push(`tokens.css missing required v2.0 motion rule: ${req}`);
     }
   }
 }
@@ -35,14 +41,10 @@ if (!fs.existsSync(motionPath)) {
   issues.push("Missing frontend/src/motion.ts");
 } else {
   const motion = fs.readFileSync(motionPath, "utf8");
-  if (motion.includes("motion/react") || motion.includes("framer-motion")) {
-    issues.push("motion.ts must not import motion/react or framer-motion");
-  }
-  if (!motion.includes("prefers-reduced-motion")) {
-    issues.push("motion.ts must respect prefers-reduced-motion");
-  }
-  if (!motion.includes("useReducedMotion")) {
-    issues.push("motion.ts must export useReducedMotion");
+  for (const req of ["stiffness: 450", "damping: 35", "mass: 0.7", "press: 0.15", "reveal: 0.18", "swap: 0.2", "enter: 0.22", "sheet: 0.22", "prefers-reduced-motion", "useReducedMotion"]) {
+    if (!motion.includes(req)) {
+      issues.push(`motion.ts missing required v2.0 preset value: ${req}`);
+    }
   }
 }
 
@@ -52,4 +54,4 @@ if (issues.length > 0) {
   process.exit(1);
 }
 
-console.log("motion-source OK: tokens.css, index.css, and motion.ts verified (reduced-motion compliant).");
+console.log("motion-source OK: v2.0 Emil Kowalski contract (tokens.css, index.css, motion.ts) verified.");

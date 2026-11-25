@@ -11,6 +11,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { BorderTrail, TextShimmer } from "@/components/ui";
 import { Button } from "@/components/ui/button";
 import { AdaptiveAgentCards } from "./AdaptiveAgentCards";
 import type { CreatorHubSetupResult } from "./ship/api";
@@ -53,12 +54,13 @@ export function WorkingBanner({ label, phase }: { label: string; phase?: BuildSt
     <div
       role="status"
       aria-live="polite"
-      className="flex flex-col gap-2.5 rounded-card border border-blue/40 bg-surface px-4 py-3 text-sm text-ink"
+      className="relative flex flex-col gap-2.5 rounded-card border border-hairline bg-surface px-4 py-3 text-sm text-ink"
     >
+      <BorderTrail active={!reduce} />
       <div className="flex items-center gap-3">
         <Spinner className="size-4 text-blue" />
         <div className="min-w-0 flex-1">
-          <span className="block font-medium [overflow-wrap:anywhere]">{label}</span>
+          <TextShimmer active={!reduce} className="block font-medium [overflow-wrap:anywhere]">{label}</TextShimmer>
           {phase?.detail && (
             <span className="block text-xs text-ink-2 [overflow-wrap:anywhere]">{phase.detail}</span>
           )}

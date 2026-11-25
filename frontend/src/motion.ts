@@ -1,9 +1,17 @@
 import { useEffect, useState } from "react";
 
-export const ease = [0.23, 1, 0.32, 1] as [number, number, number, number];
-export const dur = { press: 0.12, reveal: 0.15, swap: 0.2, enter: 0.25, sheet: 0.35 };
+export const ease = [0.23, 1, 0.32, 1] as const;
+
+export const dur = {
+  press: 0.15,
+  reveal: 0.18,
+  swap: 0.2,
+  enter: 0.22,
+  sheet: 0.22,
+} as const;
+
 export const press = { duration: dur.press, ease };
-export const glide = { duration: dur.swap, ease };
+export const glide = { type: "spring" as const, stiffness: 450, damping: 35, mass: 0.7 };
 export const open = { duration: dur.enter, ease };
 export const layout = { duration: dur.swap, ease };
 export const reveal = { duration: dur.reveal, ease };
