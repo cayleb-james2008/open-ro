@@ -247,6 +247,7 @@ pub struct SnapshotStore {
     snapshots: Vec<PlaceSnapshot>,
     path: Option<PathBuf>,
     pub recovered: Vec<String>,
+    cached_summary_bytes: Option<std::sync::Arc<Vec<u8>>>,
 }
 
 impl Default for SnapshotStore {
@@ -261,6 +262,7 @@ impl SnapshotStore {
             snapshots: Vec::new(),
             path: None,
             recovered: Vec::new(),
+            cached_summary_bytes: None,
         }
     }
 
@@ -272,6 +274,7 @@ impl SnapshotStore {
             snapshots,
             path: Some(path),
             recovered,
+            cached_summary_bytes: None,
         }
     }
 
@@ -317,8 +320,26 @@ impl SnapshotStore {
             let drop_n = self.snapshots.len() - MAX_SNAPSHOTS;
             self.snapshots.drain(0..drop_n);
         }
+        self.cached_summary_bytes = None;
         self.persist();
         snap
+    }
+
+    pub fn summary_response_bytes(&mut self) -> std::sync::Arc<Vec<u8>> {
+        if let Some(cached) = &self.cached_summary_bytes {
+            return std::sync::Arc::clone(cached);
+        }
+        let bytes = std::sync::Arc::new(
+            json!({
+                "ok": true,
+                "snapshots": self.list(false),
+                "latest_diff": self.latest_diff(),
+            })
+            .to_string()
+            .into_bytes(),
+        );
+        self.cached_summary_bytes = Some(std::sync::Arc::clone(&bytes));
+        bytes
     }
 
     pub fn list(&self, include_tree: bool) -> Vec<Value> {

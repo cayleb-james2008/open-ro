@@ -105,13 +105,14 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.4.0"));
+    assert_eq!(ver_json["version"], json!("1.5.0"));
 
     // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
     if let Ok(entries) = std::fs::read_dir("assets/chunks") {
         if let Some(chunk_name) = entries
             .flatten()
             .filter_map(|e| e.file_name().into_string().ok())
+            .filter_map(|n| n.strip_suffix(".gz").map(String::from).or(Some(n)))
             .find(|n| n.ends_with(".js"))
         {
             let req_chunk = format!(
@@ -278,6 +279,10 @@ fn ship_readiness_autopilot_fixes_luau_installs_monetization_builds_and_preserve
     assert!(r0["pillars"]["luau"]["max"].as_u64() == Some(20), "{r0}");
     assert!(r0["pillars"]["playtest"]["max"].as_u64() == Some(20), "{r0}");
     assert!(r0["blockers"].as_array().is_some_and(|b| !b.is_empty()), "{r0}");
+    assert_eq!(r0["ship_pack_integrity"]["ok"], json!(true), "{r0}");
+    assert_eq!(r0["ship_pack_integrity"]["crc_verified"], json!(true), "{r0}");
+    assert_eq!(r0["ship_pack_integrity"]["zip_slip_clean"], json!(true), "{r0}");
+    assert_eq!(r0["monetization_parity"]["unapproved_prices"], json!(1), "{r0}");
     assert!(!r0.to_string().contains(secret_val));
 
     // Targeted single-item Auto-Fix: format_and_fix_luau clears Luau empty stub without installing monetization yet
@@ -291,7 +296,7 @@ fn ship_readiness_autopilot_fixes_luau_installs_monetization_builds_and_preserve
     assert_eq!(fx["readiness"]["luau_errors"], json!(0), "{fx}");
     assert_eq!(fx["readiness"]["has_process_receipt"], json!(false), "{fx}");
 
-    // Run 1-click Ship & Monetization Autopilot (fixes remaining automatable checks)
+    // Run 1-click Ship & Monetization Autopilot (fixes remaining automatable checks and reports +Δ pts)
     let (st_ap, ap) = send_json(
         port,
         "POST",
@@ -303,6 +308,9 @@ fn ship_readiness_autopilot_fixes_luau_installs_monetization_builds_and_preserve
     assert_eq!(ap["readiness"]["luau_errors"], json!(0), "{ap}");
     assert_eq!(ap["readiness"]["has_process_receipt"], json!(true), "{ap}");
     assert_eq!(ap["readiness"]["has_daily_retention"], json!(true), "{ap}");
+    assert!(ap["score_delta"].as_i64().unwrap() > 0, "{ap}");
+    assert_eq!(ap["after_score"], ap["readiness"]["score_pct"], "{ap}");
+    assert!(ap["pillar_deltas"]["monetization"]["delta"].as_i64().unwrap() > 0, "{ap}");
     assert!(ap["readiness"]["score_pct"].as_u64().unwrap() > r0["score_pct"].as_u64().unwrap(), "{ap}");
     // Human price approval must NEVER be bypassed by autopilot
     assert_eq!(ap["readiness"]["unapproved_prices"], json!(1), "{ap}");
