@@ -986,6 +986,8 @@ fn assets_upload(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
     let mut lock = read_lock(&lock_file);
     let client = if dry_run || picked.is_empty() { None } else { Some(Client::new(ctx)?) };
     let mut lock_dirty = false;
+    let mut halted_reason: Option<&'static str> = None;
+    let mut halted_note: Option<String> = None;
     for (rel, abs, bytes) in picked {
         let Some(kind) = kind_for(&rel, &types) else {
             results.push(json!({ "path": rel, "state": "skipped", "error": "not an uploadable file type" }));
@@ -1076,10 +1078,20 @@ fn assets_upload(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
             }
             Err(e) => results.push(json!({ "path": rel, "state": "failed", "assetType": kind, "sha256": sha, "error": e.msg })),
         }
-        // a stopped key or missing owner would fail every file the same way: say so once
+        // a stopped key, missing owner, or moderated account would fail every file the same way: halt immediately
         if let Some(last) = results.last() {
-            if last["state"] == "failed" && matches!(last["error"].as_str(), Some(m) if m.contains("(401)") || m.contains("Set who owns")) {
-                break;
+            if last["state"] == "failed" {
+                if let Some(m) = last["error"].as_str() {
+                    if m.to_ascii_lowercase().contains("user is moderated") {
+                        halted_reason = Some("account_moderated");
+                        halted_note = Some("Upload batch halted: Roblox returned 'User is moderated'. Review and reactivate the moderation warning in the browser, replace any flagged asset cleanly (zero blood/gore), and retry.".to_string());
+                        break;
+                    }
+                    if m.contains("(401)") || m.contains("Set who owns") {
+                        halted_reason = Some(if m.contains("(401)") { "unauthorized_key" } else { "missing_creator" });
+                        break;
+                    }
+                }
             }
         }
     }
@@ -1101,7 +1113,12 @@ fn assets_upload(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
     if let Some(cg) = codegen_res {
         summary["asset_ids_luau"] = cg;
     }
-    if everything {
+    if let Some(reason) = halted_reason {
+        summary["halted_reason"] = json!(reason);
+    }
+    if let Some(note) = halted_note {
+        summary["note"] = json!(note);
+    } else if everything {
         summary["overrun"] = json!(overrun);
         summary["note"] = json!(format!("'everything' went beyond the authorised set by {} file(s).", overrun.len()));
     } else if explicit.is_empty() && authorised.is_empty() {
