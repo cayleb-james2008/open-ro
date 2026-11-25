@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { BadgeCheck, Check, CircleAlert, ExternalLink, Globe, KeyRound, Rocket, Save, Settings2, Ticket, Package } from "lucide-react";
+import { ArrowRight, BadgeCheck, Check, CircleAlert, ExternalLink, Globe, KeyRound, Package, Rocket, Save, Settings2, Ticket } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Pill } from "@/components/kibo-ui/pill";
@@ -14,46 +14,32 @@ import { Field } from "./ProjectsRail";
 import type { Ship } from "./useShip";
 
 type SyncRow = { key: string; kind?: string; action: string; id?: number | string; error?: string };
-const ACTIONS: Record<string, string> = { created: "Created", updated: "Updated", adopted: "Linked to the one already on Roblox", unchanged: "Already up to date", skipped: "Skipped" };
+const ACTIONS: Record<string, string> = { created: "Created", updated: "Updated", adopted: "Linked to existing", unchanged: "Up to date", skipped: "Skipped" };
 
-function Check1({ ok, label, fix, onFix }: { ok: boolean; label: string; fix?: string; onFix?: () => void }) {
+function PipelineStep({
+  title,
+  ok,
+  badge,
+  children,
+}: {
+  title: string;
+  ok: boolean;
+  badge: string;
+  children?: React.ReactNode;
+}) {
   return (
-    <li className="flex min-h-11 items-center gap-2 text-sm">
-      <span className={`grid size-6 flex-none place-items-center rounded-full ${ok ? "bg-pill-active-bg text-pill-active-fg" : "bg-pill-warn-bg text-pill-warn-fg"}`}>
-        {ok ? <Check className="size-3.5" strokeWidth={2} aria-hidden /> : <CircleAlert className="size-3.5" strokeWidth={2} aria-hidden />}
-      </span>
-      <span className="min-w-0 flex-1 text-ink">{label}</span>
-      {!ok && fix && onFix && <Button variant="ghost" size="sm" onClick={onFix} className="flex-none max-md:min-h-11">{fix}</Button>}
-    </li>
-  );
-}
-
-function ProductRow({ p, canApprove, onApprove }: { p: Product; canApprove: boolean; onApprove: () => void }) {
-  const approved = p.priceApproved === true;
-  const Icon = p.kind === "game_pass" ? Ticket : Package;
-  return (
-    <li className="card-stock flex flex-wrap items-center gap-3 px-3 py-2.5" data-product={p.key}>
-      <span className="grid size-9 flex-none place-items-center rounded-card bg-tag-research-bg text-tag-research-fg"><Icon className="size-4" strokeWidth={1.5} aria-hidden /></span>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate text-ui font-medium">{p.name}</span>
-          <Pill className="bg-tag-neutral-bg px-2 py-0.5 text-sm text-tag-neutral-fg">{p.kind === "game_pass" ? "game pass" : "product"}</Pill>
-          {p.forSale === false && <Pill className="bg-pill-inactive-bg px-2 py-0.5 text-sm text-pill-inactive-fg">not for sale</Pill>}
-        </div>
-        <p className="mt-0.5 truncate text-sm text-ink-2">{p.description || p.key}</p>
-      </div>
-      <div className="flex flex-none items-center gap-2">
-        {approved ? (
-          <span className="inline-flex items-center gap-1.5 font-mono text-ui font-medium tabular-nums" data-price="approved"><BadgeCheck className="size-4 text-dot-green" strokeWidth={1.5} aria-hidden />{p.priceRobux} Robux</span>
-        ) : (
-          <span className="flex flex-col items-end gap-0.5" data-price="pending">
-            <Pill className="bg-pill-warn-bg px-2.5 py-0.5 text-sm text-pill-warn-fg">pending approval</Pill>
-            <span className="text-sm text-ink-2">proposed <span className="font-mono tabular-nums">{p.priceRobux}</span></span>
+    <div className="flex min-w-0 flex-1 flex-col justify-between gap-2 rounded-sm border border-hairline bg-board/40 p-2.5">
+      <div className="flex items-center justify-between gap-1.5">
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-ink">
+          <span className={`grid size-5 shrink-0 place-items-center rounded-full ${ok ? "bg-pill-active-bg text-pill-active-fg" : "bg-pill-warn-bg text-pill-warn-fg"}`}>
+            {ok ? <Check className="size-3" strokeWidth={2} aria-hidden /> : <CircleAlert className="size-3" strokeWidth={2} aria-hidden />}
           </span>
-        )}
-        {!approved && canApprove && <Button variant="outline" size="sm" onClick={onApprove} className="max-md:min-h-11">Approve price</Button>}
+          {title}
+        </span>
+        <Pill className={`px-1.5 py-0 text-xs ${ok ? "bg-pill-active-bg text-pill-active-fg" : "bg-surface text-ink-2"}`}>{badge}</Pill>
       </div>
-    </li>
+      {children && <div className="flex flex-wrap items-center gap-1">{children}</div>}
+    </div>
   );
 }
 
@@ -215,7 +201,7 @@ function SetProjectIdsDialog({ active, ship }: { active: { universeId?: number |
   };
   return (
     <MorphingDialog transition={dialogSpring} open={open} onOpenChange={setOpen}>
-      <MorphingDialogTrigger thing="set-project-ids" className="inline-flex min-h-11 cursor-pointer items-center rounded-lg px-2 text-sm font-medium text-ink outline-none hover:bg-track focus-visible:ring-2 focus-visible:ring-focus md:min-h-8">
+      <MorphingDialogTrigger thing="set-project-ids" className="inline-flex min-h-8 cursor-pointer items-center rounded-lg border border-hairline bg-surface px-2.5 text-xs font-medium text-ink outline-none hover:bg-board active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus max-md:min-h-11">
         Set IDs
       </MorphingDialogTrigger>
       <MorphingDialogContainer>
@@ -300,51 +286,88 @@ export function PublishPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSetti
 
   return (
     <div className="flex flex-col gap-4" data-panel="publish">
-      <section aria-label="Ready to publish" className="card-stock flex flex-col gap-1 p-4">
-        <div className="flex items-center gap-3">
-          <ProgressCircle value={Math.round((ready / 3) * 100)} radius={15} strokeWidth={3.5} className="size-9 flex-none">
-            <span className="font-mono text-sm font-medium tabular-nums text-ink">{ready}/3</span>
-          </ProgressCircle>
-          <div className="min-w-0">
-            <h3 className="font-heading text-ui font-semibold">Publish {active.name}</h3>
-            <p className="text-sm text-ink-2">{ready === 3 ? "Everything is in place." : "A few things are missing before this can go to Roblox."}</p>
+      <section aria-label="Ready to publish" className="card-stock flex flex-col gap-3 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <ProgressCircle value={Math.round((ready / 3) * 100)} radius={15} strokeWidth={3.5} className="size-9 flex-none">
+              <span className="font-mono text-sm font-medium tabular-nums text-ink">{ready}/3</span>
+            </ProgressCircle>
+            <div className="min-w-0">
+              <h3 className="font-heading text-ui font-semibold">Publish {active.name}</h3>
+              <p className="text-sm text-ink-2">{ready === 3 ? "All release checks passed." : "Complete the highlighted release stages below."}</p>
+            </div>
           </div>
+          <SegmentedControl aria-label="Publish kind" size="sm">
+            <SegmentedControlItem data-checked={!live ? "" : undefined} aria-pressed={!live} onClick={() => setLive(false)} className="max-md:!h-11 max-md:px-3">Save version</SegmentedControlItem>
+            <SegmentedControlItem data-checked={live ? "" : undefined} aria-pressed={live} onClick={() => setLive(true)} className="max-md:!h-11 max-md:px-3">Publish live</SegmentedControlItem>
+          </SegmentedControl>
         </div>
-        <ul className="mt-1 flex flex-col">
-          <li className="flex min-h-11 flex-wrap items-center gap-2 text-sm">
-            <span className={`grid size-6 flex-none place-items-center rounded-full ${hasKey ? "bg-pill-active-bg text-pill-active-fg" : "bg-pill-warn-bg text-pill-warn-fg"}`}>
-              {hasKey ? <Check className="size-3.5" strokeWidth={2} aria-hidden /> : <CircleAlert className="size-3.5" strokeWidth={2} aria-hidden />}
-            </span>
-            <span className="min-w-0 flex-1 text-ink">Open Cloud key saved</span>
+
+        {/* Visual 4-Stage Release Pipeline Diagram */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch" data-release-pipeline>
+          <PipelineStep title="Key" ok={hasKey} badge={hasKey ? "Saved" : "Needed"}>
             {!hasKey && (
-              <div className="flex flex-wrap items-center gap-1">
-                <Button variant="outline" size="sm" disabled={hubBusy} onClick={() => void runBrowserSetup()} data-publish-auto-setup className="max-md:min-h-11">
-                  <Globe className="size-3.5" strokeWidth={1.5} aria-hidden />
-                  {hubBusy ? "Setting up…" : "Auto-setup from browser"}
+              <>
+                <Button variant="outline" size="xs" disabled={hubBusy} onClick={() => void runBrowserSetup()} data-publish-auto-setup className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">
+                  <Globe className="size-3" strokeWidth={1.5} aria-hidden />
+                  {hubBusy ? "Connecting…" : "Auto-setup from browser"}
                 </Button>
-                <Button variant="ghost" size="sm" onClick={onOpenSettings} className="flex-none max-md:min-h-11">Add it in Settings</Button>
-              </div>
+                <Button variant="ghost" size="xs" onClick={onOpenSettings} className="active:opacity-80 max-md:min-h-11">Settings</Button>
+              </>
             )}
-          </li>
-          <li className="flex min-h-11 flex-wrap items-center gap-2 text-sm">
-            <span className={`grid size-6 flex-none place-items-center rounded-full ${hasIds ? "bg-pill-active-bg text-pill-active-fg" : "bg-pill-warn-bg text-pill-warn-fg"}`}>
-              {hasIds ? <Check className="size-3.5" strokeWidth={2} aria-hidden /> : <CircleAlert className="size-3.5" strokeWidth={2} aria-hidden />}
-            </span>
-            <span className="min-w-0 flex-1 text-ink">Game number and place number set</span>
-            {!hasIds && (
-              <div className="flex flex-wrap items-center gap-1">
-                <Button variant="outline" size="sm" disabled={hubBusy} onClick={() => void runBrowserSetup()} className="max-md:min-h-11">
-                  <Globe className="size-3.5" strokeWidth={1.5} aria-hidden />
-                  {hubBusy ? "Setting up…" : "Auto-setup from browser"}
+          </PipelineStep>
+          <ArrowRight className="hidden size-4 shrink-0 self-center text-ink-3 sm:block" strokeWidth={1.5} aria-hidden />
+          <PipelineStep title="Experience" ok={hasIds} badge={hasIds ? String(active.universeId) : "Missing"}>
+            {!hasIds ? (
+              <>
+                <Button variant="outline" size="xs" disabled={hubBusy} onClick={() => void runBrowserSetup()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">
+                  <Globe className="size-3" strokeWidth={1.5} aria-hidden />
+                  {hubBusy ? "Connecting…" : "Auto-setup"}
                 </Button>
                 <SetProjectIdsDialog active={active} ship={ship} />
-              </div>
+              </>
+            ) : (
+              <SetProjectIdsDialog active={active} ship={ship} />
             )}
-          </li>
-          <Check1 ok={hasBuild} label="A build exists" />
-        </ul>
+          </PipelineStep>
+          <ArrowRight className="hidden size-4 shrink-0 self-center text-ink-3 sm:block" strokeWidth={1.5} aria-hidden />
+          <PipelineStep title="Build" ok={hasBuild} badge={hasBuild ? "Built" : "None"}>
+            {hasBuild && (
+              <span className="font-mono text-xs text-ink-2">
+                {(build ?? active.last_build)?.build_id || "ready"}
+              </span>
+            )}
+          </PipelineStep>
+          <ArrowRight className="hidden size-4 shrink-0 self-center text-ink-3 sm:block" strokeWidth={1.5} aria-hidden />
+          <PipelineStep title="Live" ok={Boolean(published)} badge={published ? `v${published.versionNumber}` : live ? "Live" : "Save"}>
+            {live ? (
+              <MorphingDialog transition={dialogSpring} open={dialogOpen} onOpenChange={setDialogOpen}>
+                <MorphingDialogTrigger blocked={!canPublish} className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg border border-primary bg-primary px-3 text-xs font-medium text-primary-foreground outline-none hover:bg-primary/90 active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus disabled:border-hairline disabled:bg-track disabled:text-ink-3 max-md:min-h-11" thing="publish">
+                  <Rocket className="size-3.5" strokeWidth={1.5} aria-hidden />Publish
+                </MorphingDialogTrigger>
+                <MorphingDialogContainer>
+                  <MorphingDialogContent className="relative mx-3 flex w-full max-w-[440px] flex-col gap-4 rounded-dialog border border-hairline bg-surface p-5 text-ink shadow-lift">
+                    <div>
+                      <MorphingDialogTitle className="font-heading text-title font-semibold">Publish live?</MorphingDialogTitle>
+                      <MorphingDialogDescription className="mt-1 text-sm text-ink-2">Players receive this build immediately once published.</MorphingDialogDescription>
+                    </div>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <MorphingDialogClose aria-label="Not yet" className="static inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-hairline bg-surface px-4 text-sm font-medium text-ink outline-none hover:bg-board focus-visible:ring-2 focus-visible:ring-focus">Not yet</MorphingDialogClose>
+                      <Button variant="default" size="lg" disabled={publishing} onClick={() => void publish()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">{publishing ? "Publishing…" : "Yes, publish live"}</Button>
+                    </div>
+                  </MorphingDialogContent>
+                </MorphingDialogContainer>
+              </MorphingDialog>
+            ) : (
+              <Button variant="default" size="xs" disabled={!canPublish} onClick={() => void publish()} data-publish className="min-h-8 gap-1.5 px-3 text-xs active:opacity-80 disabled:opacity-50 max-md:min-h-11">
+                <Rocket className="size-3.5" strokeWidth={1.5} aria-hidden />{publishing ? "Saving…" : "Save to Roblox"}
+              </Button>
+            )}
+          </PipelineStep>
+        </div>
+
         {hubSetupNotice && (
-          <div role="status" className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-sm border border-hairline bg-pill-warn-bg px-3 py-2 text-sm text-pill-warn-fg">
+          <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-hairline bg-pill-warn-bg px-3 py-2 text-sm text-pill-warn-fg">
             <span>{hubSetupNotice.text}</span>
             {hubSetupNotice.url && (
               <a href={hubSetupNotice.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-medium underline">
@@ -353,52 +376,84 @@ export function PublishPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSetti
             )}
           </div>
         )}
-        <div className="mt-2 flex flex-wrap items-center gap-3">
-          <SegmentedControl aria-label="Publish kind" size="sm">
-            <SegmentedControlItem data-checked={!live ? "" : undefined} aria-pressed={!live} onClick={() => setLive(false)} className="max-md:!h-11 max-md:px-3">Save version</SegmentedControlItem>
-            <SegmentedControlItem data-checked={live ? "" : undefined} aria-pressed={live} onClick={() => setLive(true)} className="max-md:!h-11 max-md:px-3">Publish live</SegmentedControlItem>
-          </SegmentedControl>
-          {live ? (
-            <MorphingDialog transition={dialogSpring} open={dialogOpen} onOpenChange={setDialogOpen}>
-              <MorphingDialogTrigger blocked={!canPublish} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-primary bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-focus disabled:border-hairline disabled:bg-track disabled:text-ink-3" thing="publish">
-                <Rocket className="size-4" strokeWidth={1.5} aria-hidden />Publish
-              </MorphingDialogTrigger>
-              <MorphingDialogContainer>
-                <MorphingDialogContent className="relative mx-3 flex w-full max-w-[440px] flex-col gap-4 rounded-dialog border border-hairline bg-surface p-5 text-ink shadow-lift">
-                  <div>
-                    <MorphingDialogTitle className="font-heading text-title font-semibold">Publish live?</MorphingDialogTitle>
-                    <MorphingDialogDescription className="mt-1 text-sm text-ink-2">Players get this version right away. Only continue if you or the owner said to go live.</MorphingDialogDescription>
-                  </div>
-                  <div className="flex flex-wrap justify-end gap-2">
-                    <MorphingDialogClose aria-label="Not yet" className="static inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-hairline bg-surface px-4 text-sm font-medium text-ink outline-none hover:bg-board focus-visible:ring-2 focus-visible:ring-focus">Not yet</MorphingDialogClose>
-                    <Button variant="default" size="lg" disabled={publishing} onClick={() => void publish()} className="max-md:min-h-11">{publishing ? "Publishing…" : "Yes, publish live"}</Button>
-                  </div>
-                </MorphingDialogContent>
-              </MorphingDialogContainer>
-            </MorphingDialog>
-          ) : (
-            <Button variant="default" size="lg" disabled={!canPublish} onClick={() => void publish()} data-publish className="max-md:min-h-11"><Rocket className="size-4" strokeWidth={1.5} aria-hidden />{publishing ? "Saving…" : "Save to Roblox"}</Button>
-          )}
-        </div>
-        {!hasKey && <p className="mt-1 inline-flex items-center gap-1.5 text-sm text-ink-2"><KeyRound className="size-3.5" strokeWidth={1.5} aria-hidden />The button turns on once the key is saved.</p>}
-        {error && <p role="alert" className="mt-2 rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
-        {published && <p className="mt-2 rounded-sm bg-pill-active-bg px-3 py-2 text-sm text-pill-active-fg" data-published>Version <span className="font-mono">{published.versionNumber}</span> is on Roblox ({published.versionType === "Published" ? "live" : "saved, not live"}){published.bytes ? ` · ${prettyBytes(published.bytes)}` : ""}.</p>}
+        {!hasKey && <p className="inline-flex items-center gap-1.5 text-sm text-ink-2"><KeyRound className="size-3.5" strokeWidth={1.5} aria-hidden />Save an Open Cloud key to enable publishing.</p>}
+        {error && <p role="alert" className="rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
+        {published && <p className="rounded-sm bg-pill-active-bg px-3 py-2 text-sm text-pill-active-fg" data-published>Version <span className="font-mono">{published.versionNumber}</span> on Roblox ({published.versionType === "Published" ? "live" : "saved"}){published.bytes ? ` (${prettyBytes(published.bytes)})` : ""}.</p>}
       </section>
 
       <section aria-label="Game passes and products" className="flex flex-col gap-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="font-heading text-ui font-semibold">Game passes and products <span className="font-mono text-sm font-normal text-ink-2">{products.length}</span></h3>
+          <h3 className="font-heading text-ui font-semibold">Monetization <span className="font-mono text-sm font-normal text-ink-2">{products.length}</span></h3>
           <div className="flex flex-wrap gap-2">
-            {pending > 0 && <Button variant="outline" size="sm" onClick={() => approve(products.filter((p) => p.priceApproved !== true).map((p) => p.key))} className="max-md:min-h-11">Approve all {pending} prices</Button>}
-            <Button variant="default" size="sm" disabled={!hasKey || !active.universeId || syncing || products.length === 0 || pending === products.length} onClick={() => void syncProducts()} className="max-md:min-h-11">{syncing ? "Sending…" : "Send to Roblox"}</Button>
+            {pending > 0 && <Button variant="outline" size="sm" onClick={() => approve(products.filter((p) => p.priceApproved !== true).map((p) => p.key))} className="active:opacity-80 max-md:min-h-11">Approve all {pending} prices</Button>}
+            <Button variant="default" size="sm" disabled={!hasKey || !active.universeId || syncing || products.length === 0 || pending === products.length} onClick={() => void syncProducts()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">{syncing ? "Sending…" : "Send to Roblox"}</Button>
           </div>
         </div>
         {products.length === 0 ? (
-          <p className="card-stock p-4 text-sm text-ink-2">No products in this project yet. They are listed in <code className="font-mono">openro.project.json</code>.</p>
+          <p className="card-stock p-4 text-sm text-ink-2">No passes or products listed in <code className="font-mono">openro.project.json</code> yet.</p>
         ) : (
-          <ul className="flex flex-col gap-2">{products.map((p) => <ProductRow key={p.key} p={p} canApprove onApprove={() => approve([p.key])} />)}</ul>
+          <div className="card-stock overflow-x-auto" data-monetization-table>
+            <table className="w-full border-collapse text-left text-sm">
+              <thead>
+                <tr className="border-b border-hairline bg-board/50 text-xs font-medium text-ink-2">
+                  <th className="px-3 py-2">Item</th>
+                  <th className="px-3 py-2">Kind</th>
+                  <th className="px-3 py-2">Price (R$)</th>
+                  <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">Roblox ID</th>
+                  <th className="px-3 py-2 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {products.map((p) => {
+                  const approved = p.priceApproved === true;
+                  const Icon = p.kind === "game_pass" ? Ticket : Package;
+                  return (
+                    <tr key={p.key} className="border-b border-hairline/70 last:border-b-0" data-product={p.key}>
+                      <td className="px-3 py-2 align-middle">
+                        <div className="flex items-center gap-2">
+                          <Icon className="size-4 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
+                          <span className="font-medium text-ink">{p.name}</span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 align-middle">
+                        <Pill className="bg-tag-neutral-bg px-2 py-0.5 text-xs text-tag-neutral-fg">
+                          {p.kind === "game_pass" ? "game pass" : "product"}
+                        </Pill>
+                      </td>
+                      <td className="px-3 py-2 align-middle font-mono tabular-nums text-ink">{p.priceRobux}</td>
+                      <td className="px-3 py-2 align-middle">
+                        <div className="flex flex-wrap items-center gap-1">
+                          {approved ? (
+                            <Pill className="gap-1 bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg" data-price="approved">
+                              <BadgeCheck className="size-3.5" strokeWidth={1.5} aria-hidden />approved
+                            </Pill>
+                          ) : (
+                            <Pill className="bg-pill-warn-bg px-2 py-0.5 text-xs text-pill-warn-fg" data-price="pending">pending approval</Pill>
+                          )}
+                          {p.forSale === false && <Pill className="bg-pill-inactive-bg px-2 py-0.5 text-xs text-pill-inactive-fg">off sale</Pill>}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 align-middle font-mono text-xs text-ink-2">
+                        {p.id ? String(p.id) : "-"}
+                      </td>
+                      <td className="px-3 py-2 text-right align-middle">
+                        {!approved ? (
+                          <Button variant="outline" size="xs" onClick={() => approve([p.key])} className="active:opacity-80 max-md:min-h-11">
+                            Approve price
+                          </Button>
+                        ) : (
+                          <span className="text-xs text-ink-3">Ready</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
-        {pending > 0 && <p className="text-sm text-ink-2">Prices stay pending until you approve them. OpenRO does not send an unapproved price.</p>}
+        {pending > 0 && <p className="text-sm text-ink-2">Approve pending prices before syncing to Roblox.</p>}
         {rows && (
           <ul className="card-stock flex flex-col gap-1 p-3 text-sm" aria-label="Last send" data-sync-rows>
             {rows.map((r) => (
