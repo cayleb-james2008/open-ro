@@ -4,6 +4,16 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.3.0 - 2026-11-25
+
+- **Sub-50 ms Cold Boot & Single-Pass HTML Rendering (`src/main.rs`, `src/server.rs`):**
+  - Bound the HTTP listener immediately after config load and moved passive Studio MCP probing/spawning (`detect_vinegar_studio_mcp`), local gateway probing, Vinegar Companion Plugin auto-install, and gzip HTML cache pre-warming to a non-blocking background thread after `TcpListener::bind`, eliminating the 700–1,470 ms startup stall.
+  - Replaced 7 sequential 1.35 MB `String::replace` passes in `render_page_full` with a single-pass template renderer to cut transient startup and per-render allocations.
+- **1-Click Monetization & Economy Codegen (`src/opencloud.rs`, `src/server.rs`, `frontend/src/app/ship/ReadinessAutopilot.tsx`):**
+  - Added `POST /api/projects/:id/monetization/codegen` and the **"Generate Shop & Economy"** action inside the Ship Autopilot card: optionally seeds starter Game Pass / Developer Product drafts (`priceApproved: false`), generates `MonetizationConfig.luau`, `MonetizationService.server.luau`, `DailyRewardRetention.server.luau`, `ProductIds.luau`, server-authoritative `EconomyShopHandler.server.luau`, and client `ShopPromptBridge.client.luau`, formats via `stylua`, and validates `0` static Luau errors.
+- **Zero-Reflex UX Polish (`frontend/src/components/ui.tsx`):**
+  - Raised compact `SegmentedControlItem` `size="sm"` height from `28px` (`h-7`) to `32px` (`h-8`), resolving both `sloplint` `39b` control-height reflex warnings (`0 FAIL / 0 REFLEX / 0 WARN`).
+
 ## 1.2.0 - 2026-11-25
 
 - **Runtime Speed, Gzip/ETag Static Serving & Release Profile Diet (`Cargo.toml`, `src/server.rs`, `src/skills.rs`):**

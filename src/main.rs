@@ -116,8 +116,44 @@ fn main() {
 
     let game_name = env_nonempty("OPENRO_GAME_NAME").unwrap_or_else(|| "Untitled Game".to_string());
 
-    // 1. Model resolution: env -> saved config -> Antigravity CLI -> local gateway -> default
-    let model = model_from_config(&saved_cfg, Some(&data_dir));
+    // Bind TCP listener early so HTTP health/UI responds in <50 ms while passive
+    // Studio/gateway/plugin detection finishes asynchronously.
+    let port: u16 = cli_port
+        .or_else(|| std::env::var("OPENRO_PORT").ok().and_then(|p| p.parse().ok()))
+        .unwrap_or(8077);
+    let listener = TcpListener::bind(("127.0.0.1", port))
+        .unwrap_or_else(|e| panic!("bind 127.0.0.1:{port}: {e}"));
+    let url = format!("http://127.0.0.1:{port}");
+
+    // 1. Fast non-blocking model resolution (defer gateway network probes if needed).
+    let env_base = env_nonempty("OPENRO_MODEL_BASE_URL");
+    let env_key = env_nonempty("OPENRO_MODEL_API_KEY");
+    let env_model = env_nonempty("OPENRO_MODEL_ID");
+    let no_auto_model = env_flag("OPENRO_NO_AUTO_MODEL");
+    let needs_gateway_probe = env_base.is_none()
+        && env_key.is_none()
+        && saved_cfg.provider.as_deref() != Some("antigravity")
+        && saved_cfg.provider.as_deref() != Some("openai")
+        && saved_cfg.base_url.is_none()
+        && saved_cfg.api_key.is_none()
+        && !no_auto_model
+        && (env_flag("OPENRO_NO_AGY") || !openro_rs::model::agy_available());
+
+    let model = if needs_gateway_probe {
+        // Resolve quickly without stalling startup on TCP timeouts; probe_local_gateways
+        // runs in the background right after listener bind.
+        openro_rs::model::ModelClient::new(
+            openro_rs::model::DEFAULT_BASE_URL.to_string(),
+            env_model
+                .clone()
+                .unwrap_or_else(|| openro_rs::model::DEFAULT_MODEL_ID.to_string()),
+            None,
+        )
+        .with_agy_dir(data_dir.join("agy-sandbox"))
+    } else {
+        model_from_config(&saved_cfg, Some(&data_dir))
+    };
+
     if model.is_antigravity() {
         eprintln!("openro: model {} via Antigravity CLI", model.model_id());
         std::thread::spawn(|| {
@@ -125,20 +161,21 @@ fn main() {
         });
     } else if model.is_loopback() {
         eprintln!("openro: connected local model {} @ {}", model.model_id(), model.base_url());
-    }
-
-    if !model.is_configured() {
+    } else if !model.is_configured() && !needs_gateway_probe {
         eprintln!(
             "openro: no model configured (set OPENRO_MODEL_API_KEY or pick a local gateway in Settings) — chat will refuse honestly"
         );
     }
 
     // 2. Studio / Place Backend resolution:
-    //    explicit OPENRO_MCP_COMMAND -> saved config mode/mcp_command -> passive Vinegar detect -> real persistent LocalPlace
+    //    explicit OPENRO_MCP_COMMAND stays synchronous (tests/CI); passive Vinegar/saved MCP
+    //    detection + spawn runs asynchronously after listener bind so Cold Boot stays <50 ms.
     let no_local_place = env_flag("OPENRO_NO_LOCAL_PLACE");
     let explicit_mcp = env_nonempty("OPENRO_MCP_COMMAND");
-    let saved_mode = saved_cfg.workspace_mode.as_deref().unwrap_or("auto");
+    let saved_mode = saved_cfg.workspace_mode.as_deref().unwrap_or("auto").to_string();
+    let saved_mcp_cmd = saved_cfg.mcp_command.clone();
 
+    let mut defer_mcp_probe = false;
     let backend: Option<PlaceBackend> = if let Some(cmd) = explicit_mcp {
         match McpClient::spawn(&cmd) {
             Ok(client) => {
@@ -154,48 +191,12 @@ fn main() {
         let place = LocalPlace::open(data_dir.clone(), game_name.clone());
         eprintln!("openro: Local Place Engine ready ({})", data_dir.join("game.rbxlx").display());
         Some(PlaceBackend::Local(place))
-    } else if let Some(cmd) = saved_cfg
-        .mcp_command
-        .clone()
-        .or_else(McpClient::detect_vinegar_studio_mcp)
-    {
-        match McpClient::spawn(&cmd) {
-            Ok(mut client) => {
-                if client.has_live_studio() {
-                    eprintln!("openro: Studio connected via {cmd}");
-                    Some(PlaceBackend::Mcp(client))
-                } else {
-                    eprintln!(
-                        "openro: Studio MCP ({cmd}) started but no open Roblox Studio place was found; falling back to Local Place Engine"
-                    );
-                    if no_local_place {
-                        None
-                    } else {
-                        Some(PlaceBackend::Local(LocalPlace::open(
-                            data_dir.clone(),
-                            game_name.clone(),
-                        )))
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("openro: Studio MCP ({cmd}) unavailable ({e}); falling back to Local Place Engine");
-                if no_local_place {
-                    None
-                } else {
-                    Some(PlaceBackend::Local(LocalPlace::open(
-                        data_dir.clone(),
-                        game_name.clone(),
-                    )))
-                }
-            }
-        }
     } else if no_local_place {
-        eprintln!("openro: Studio not connected (OPENRO_NO_LOCAL_PLACE=1)");
+        defer_mcp_probe = true;
         None
     } else {
+        defer_mcp_probe = true;
         let place = LocalPlace::open(data_dir.clone(), game_name.clone());
-        eprintln!("openro: Local Place Engine ready ({})", data_dir.join("game.rbxlx").display());
         Some(PlaceBackend::Local(place))
     };
 
@@ -204,31 +205,71 @@ fn main() {
         other => Agent::with_backend(model, other),
     };
 
-    let port: u16 = cli_port
-        .or_else(|| std::env::var("OPENRO_PORT").ok().and_then(|p| p.parse().ok()))
-        .unwrap_or(8077);
-    let listener = TcpListener::bind(("127.0.0.1", port))
-        .unwrap_or_else(|e| panic!("bind 127.0.0.1:{port}: {e}"));
-    let url = format!("http://127.0.0.1:{port}");
     eprintln!("openro: serving {url}");
 
     // Change sets persist next to the chats, so a restart does not
     // silently orphan every revert.
     agent.set_changes_file(data_dir.join("changes.json"));
     let shared = Shared::with_data_dir(Some(agent), game_name, data_dir.clone());
-    if let Some(installed) = openro_rs::studio_plugin::maybe_auto_install_vinegar_plugin(
-        &shared.studio_plugin,
-        &data_dir,
-        port,
-    ) {
-        eprintln!(
-            "openro: auto-installed {} into {}",
-            openro_rs::studio_plugin::COMPANION_PLUGIN_FILENAME,
-            installed.display()
-        );
-    }
     // Only the real binary checks GitHub in the background; tests never do.
     shared.updater.start_background();
+
+    // Defer passive Studio MCP spawn, Vinegar plugin install, local gateway probe, and gzip HTML
+    // prewarm off the critical HTTP startup path.
+    {
+        let bg_shared = std::sync::Arc::clone(&shared);
+        let bg_data_dir = data_dir.clone();
+        let bg_env_model = env_model.clone();
+        std::thread::spawn(move || {
+            openro_rs::server::prewarm_index_cache(&bg_shared);
+
+            if needs_gateway_probe {
+                if let Some(gw) = openro_rs::model::probe_local_gateways().into_iter().next() {
+                    if let Ok(mut guard) = bg_shared.agent.lock() {
+                        if let Some(a) = guard.as_mut() {
+                            a.model = openro_rs::model::ModelClient::new(
+                                gw.base_url.clone(),
+                                bg_env_model.unwrap_or_else(|| gw.model_id.clone()),
+                                None,
+                            );
+                        }
+                    }
+                    openro_rs::server::refresh_status_cache(&bg_shared);
+                    eprintln!("openro: connected local model {} @ {}", gw.model_id, gw.base_url);
+                }
+            }
+
+            if defer_mcp_probe {
+                if let Some(cmd) = saved_mcp_cmd.or_else(McpClient::detect_vinegar_studio_mcp) {
+                    if let Ok(mut client) = McpClient::spawn(&cmd) {
+                        if client.has_live_studio() {
+                            if let Ok(mut guard) = bg_shared.agent.lock() {
+                                if let Some(a) = guard.as_mut() {
+                                    a.studio = Some(PlaceBackend::Mcp(client));
+                                    a.attach_studio_stream(std::sync::Arc::clone(&bg_shared.studio_stream));
+                                }
+                            }
+                            openro_rs::server::refresh_status_cache(&bg_shared);
+                            openro_rs::server::prewarm_index_cache(&bg_shared);
+                            eprintln!("openro: Studio connected via {cmd}");
+                        }
+                    }
+                }
+            }
+
+            if let Some(installed) = openro_rs::studio_plugin::maybe_auto_install_vinegar_plugin(
+                &bg_shared.studio_plugin,
+                &bg_data_dir,
+                port,
+            ) {
+                eprintln!(
+                    "openro: auto-installed {} into {}",
+                    openro_rs::studio_plugin::COMPANION_PLUGIN_FILENAME,
+                    installed.display()
+                );
+            }
+        });
+    }
 
     // Launch chromeless standalone desktop app window on Linux/Windows/macOS
     // unless --no-open / --headless / OPENRO_NO_OPEN=1 / CI / headless display.

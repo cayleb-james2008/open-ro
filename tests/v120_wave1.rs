@@ -105,7 +105,7 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.2.0"));
+    assert_eq!(ver_json["version"], json!("1.3.0"));
 }
 
 #[test]
@@ -259,6 +259,19 @@ fn ship_readiness_autopilot_fixes_luau_installs_monetization_builds_and_preserve
     // Human price approval must NEVER be bypassed by autopilot
     assert_eq!(ap["readiness"]["unapproved_prices"], json!(1), "{ap}");
     assert_eq!(ap["readiness"]["ready_to_publish"], json!(false), "{ap}");
+
+    // Run 1-click Monetization & Economy Codegen (writes EconomyShopHandler + ShopPromptBridge with 0 Luau errors)
+    let (st_ec, ec) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/monetization/codegen"),
+        Some(&json!({ "currency": "Gems", "seed_defaults": true })),
+    );
+    assert_eq!(st_ec, 200, "{ec}");
+    assert_eq!(ec["luau_errors"], json!(0), "{ec}");
+    let written = ec["written"].as_array().unwrap();
+    assert!(written.iter().any(|v| v == "src/server/EconomyShopHandler.server.luau"), "{ec}");
+    assert!(written.iter().any(|v| v == "src/client/ShopPromptBridge.client.luau"), "{ec}");
 
     let _ = std::fs::remove_dir_all(&base);
 }
