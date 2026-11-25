@@ -1,0 +1,27 @@
+{
+  "bytes": 1707338,
+  "created_at": "2026-11-25T01:01:55Z",
+  "height": 1024,
+  "kind": "weapon_sheet",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/weapons/excl_temporal_attendant_weapon.png",
+  "prompt": "Vibrant 2D cel-shaded anime fantasy RPG collectible item reference sheet in Roblox-safe anime game style on a clean soft light-gray studio backdrop, faithfully matching the attached anime reference: a tall elegant golden-cyan celestial attendant scepter staff topped with a translucent glowing aqua-blue crystal orb levitating effortlessly inside an open gold-and-navy halo ring mount, slender tapered gold shaft with decorative cosmic rings Show clean orthographic side profile, angled three-quarter showcase view, and hilt/emblem detail inset. Crisp vibrant anime cel-shading linework, spotless bright polished finish with subtle anime energy glints, standalone fantasy game item only, no characters, no hands, no text labels, no watermarks.",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/weapon_whis_staff.webp"
+  ],
+  "sha256": "1e0b11bff241345d74e298f532a8f887c57bab3d799e6f2f8da658195f7d6b5a",
+  "status": "generated",
+  "version": 1,
+  "width": 1536
+}

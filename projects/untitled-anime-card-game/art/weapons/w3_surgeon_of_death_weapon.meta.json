@@ -1,0 +1,27 @@
+{
+  "bytes": 1846513,
+  "created_at": "2026-11-25T01:04:37Z",
+  "height": 1024,
+  "kind": "weapon_sheet",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/weapons/w3_surgeon_of_death_weapon.png",
+  "prompt": "Vibrant 2D cel-shaded anime fantasy RPG collectible item reference sheet in Roblox-safe anime game style on a clean soft light-gray studio backdrop, faithfully matching the attached anime reference: a tall curved anime nodachi greatsword (Kikoku) with a long slender silver blade, distinctive fluffy white fur-wrapped round tsuba guard, dark violet-purple diamond-wrapped elongated hilt, and black scabbard decorated with crisp white cross emblems and red cord tie Show clean orthographic side profile, angled three-quarter showcase view, and hilt/emblem detail inset. Crisp vibrant anime cel-shading linework, spotless bright polished finish with subtle anime energy glints, standalone fantasy game item only, no characters, no hands, no text labels, no watermarks.",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/weapon_law_kikoku.jpg"
+  ],
+  "sha256": "bcdf536397e575089cc18203ed0bf62a0fc56e9edf2cd80242b9f2654ae04464",
+  "status": "generated",
+  "version": 1,
+  "width": 1536
+}
