@@ -1,18 +1,18 @@
 {
   "angle_review": {
-    "candidate_path": "art/cards/w5_head_captain_inferno.pending-angle.b4a651d4d305.png",
-    "candidate_sha256": "b4a651d4d305801112fb5459955c8dd4701e780ba48d4d72befd23fcb7fb8afd",
-    "height": 1672,
+    "candidate_path": "art/cards/w5_head_captain_inferno.pending-angle.2829a5d27120.png",
+    "candidate_sha256": "2829a5d271205ad5f1e890525cae649da43c15ed9de063bf6f9ea67c7730cdd0",
+    "height": 1536,
     "status": "PENDING_VISION",
-    "width": 941
+    "width": 1024
   },
-  "approved_at": "2026-11-24T02:36:28Z",
+  "approved_at": "2026-11-25T02:53:53Z",
   "approved_by": "designer",
-  "bytes": 2792896,
-  "candidate_path": "art/cards/w5_head_captain_inferno.pending-angle.b4a651d4d305.png",
-  "candidate_sha256": "b4a651d4d305801112fb5459955c8dd4701e780ba48d4d72befd23fcb7fb8afd",
-  "created_at": "2026-11-24T02:34:05Z",
-  "height": 1672,
+  "bytes": 2449076,
+  "candidate_path": "art/cards/w5_head_captain_inferno.pending-angle.2829a5d27120.png",
+  "candidate_sha256": "2829a5d271205ad5f1e890525cae649da43c15ed9de063bf6f9ea67c7730cdd0",
+  "created_at": "2026-11-25T02:41:29Z",
+  "height": 1536,
   "kind": "card",
   "model": {
     "composer_pill": "Instant",
@@ -26,16 +26,17 @@
     "url": "https://chatgpt.com/images/"
   },
   "path": "art/cards/w5_head_captain_inferno.png",
-  "promoted_from": "art/cards/w5_head_captain_inferno.pending-angle.b4a651d4d305.png",
-  "prompt": "Transform this reference character into an apocalyptic vertical anime trading card game illustration in awe-inspiring three-quarter stance wreathed in a blinding solar cloak of incandescent golden-orange sunfire flames holding a scorched ember katana amid swirling firestorms, crisp cel-shaded anime key art lighting, clean borderless portrait with zero text, zero letters, zero watermark, and no card frame., eye-level camera, neutral three-quarter view",
+  "promoted_from": "art/cards/w5_head_captain_inferno.pending-angle.2829a5d27120.png",
+  "prompt": "Majestic eye-level three-quarter portrait of the venerable bearded elder Soul Society head captain from the first reference image with long flowing white beard, stern commanding gaze, white captain haori billowing over his shoulders. He holds forward with both hands the EXACT long katana with royal-purple diamond-wrapped hilt and rounded gold oval tsuba guard from the second weapon reference sheet, its gleaming blade erupting in swirling ribbons of radiant golden-orange solar flames across a dramatic fiery sunset sky. Ultra-crisp vibrant TYBW shonen anime key-visual cel shading, vertical 2:3 trading card illustration in Roblox-safe family-friendly anime style, spotless clean robes and skin, zero text, zero borders.",
   "provider": "chatgpt",
   "reference_images": [
-    "art/references/yamamoto_genryusai.jpg"
+    "art/references/yamamoto_genryusai.jpg",
+    "art/weapons/w5_head_captain_inferno_weapon.png"
   ],
   "requested_path": "art/cards/w5_head_captain_inferno.png",
-  "review_notes": "Verified w5_head_captain_inferno visually against owner curated ref art/references/yamamoto_genryusai.jpg: exact character likeness, dynamic anime card composition, zero text/watermarks.",
-  "sha256": "b4a651d4d305801112fb5459955c8dd4701e780ba48d4d72befd23fcb7fb8afd",
+  "review_notes": "Canon Ryujin Jakka purple-wrapped hilt + gold oval tsuba + solar flames, zero blood",
+  "sha256": "2829a5d271205ad5f1e890525cae649da43c15ed9de063bf6f9ea67c7730cdd0",
   "status": "approved",
   "version": 1,
-  "width": 941
+  "width": 1024
 }

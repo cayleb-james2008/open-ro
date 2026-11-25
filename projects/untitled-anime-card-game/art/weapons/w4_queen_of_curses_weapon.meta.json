@@ -1,0 +1,27 @@
+{
+  "bytes": 1913590,
+  "created_at": "2026-11-25T02:02:37Z",
+  "height": 1024,
+  "kind": "weapon_sheet",
+  "model": {
+    "composer_pill": "Instant",
+    "images_surface": true,
+    "power_max": "2",
+    "power_min": "0",
+    "power_value": "0",
+    "selected_model": "GPT-6.2",
+    "switched_to_instant": "Instant",
+    "ui_text": "Instant",
+    "url": "https://chatgpt.com/images/"
+  },
+  "path": "art/weapons/w4_queen_of_curses_weapon.png",
+  "prompt": "Vibrant 2D cel-shaded anime fantasy RPG collectible item reference sheet in Roblox-safe anime game style on a clean soft light-gray studio backdrop, faithfully matching the attached canonical anime weapon prop reference: Yuta's clean minimalist spirit katana with a sleek slightly curved silver blade, round matte-black iron tsuba guard, crisp white diamond-wrapped handle, and simple dark-navy scabbard with subtle cyan spirit sheen matching the attached reference Show clean orthographic side profile, angled three-quarter showcase view, and hilt/guard detail inset. Crisp vibrant anime cel-shading linework, spotless bright polished finish with subtle anime energy glints, standalone fantasy game item only, no characters, no hands, no text labels, no watermarks.",
+  "provider": "chatgpt",
+  "reference_images": [
+    "art/references/weapon_yuta_katana.jpg"
+  ],
+  "sha256": "21318e761a48870892544b5d457a279d96428b22a8d28449388fac357e51d6ab",
+  "status": "generated",
+  "version": 1,
+  "width": 1536
+}
