@@ -685,6 +685,9 @@ struct Request {
     content_length: usize,
     last_event_id: u64,
     plugin_token: String,
+    duplicate_host: bool,
+    bad_content_length: bool,
+    chunked_transfer: bool,
 }
 
 fn read_request(stream: &mut TcpStream) -> Option<Request> {
@@ -720,13 +723,38 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
         content_length: 0,
         last_event_id: 0,
         plugin_token: String::new(),
+        duplicate_host: false,
+        bad_content_length: false,
+        chunked_transfer: false,
     };
+    let mut seen_host = false;
+    let mut seen_cl: Option<usize> = None;
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
             let v = v.trim();
             match k.trim().to_ascii_lowercase().as_str() {
-                "content-length" => req.content_length = v.parse().unwrap_or(0),
-                "host" => req.host = v.to_string(),
+                "content-length" => match v.parse::<usize>() {
+                    Ok(n) => {
+                        if seen_cl.is_some_and(|prev| prev != n) {
+                            req.bad_content_length = true;
+                        }
+                        seen_cl = Some(n);
+                        req.content_length = n;
+                    }
+                    Err(_) => req.bad_content_length = true,
+                },
+                "transfer-encoding" => {
+                    if v.to_ascii_lowercase().contains("chunked") {
+                        req.chunked_transfer = true;
+                    }
+                }
+                "host" => {
+                    if seen_host {
+                        req.duplicate_host = true;
+                    }
+                    seen_host = true;
+                    req.host = v.to_string();
+                }
                 "origin" => req.origin = v.to_string(),
                 "sec-fetch-site" => req.sec_fetch_site = v.to_ascii_lowercase(),
                 "content-type" => req.content_type = v.to_ascii_lowercase(),
@@ -735,6 +763,9 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
                 _ => {}
             }
         }
+    }
+    if req.duplicate_host || req.bad_content_length || req.chunked_transfer {
+        return Some(req);
     }
     let body_cap = max_body_for_path(&req.path);
     // An oversized body is not read at all: handle answers 413.
@@ -769,6 +800,25 @@ fn host_allowed(host: &str, allowed: &[String]) -> bool {
         || allowed.iter().any(|a| host_name(a) == name)
 }
 
+fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
+    clean_path == "/api/opencloud"
+        || clean_path.starts_with("/api/opencloud/")
+        || clean_path == "/api/creator-hub"
+        || clean_path.starts_with("/api/creator-hub/")
+        || clean_path == "/api/monetization/pack"
+        || clean_path == "/api/assets/upload"
+        || clean_path == "/api/assets/generate"
+        || (method == "DELETE" && clean_path.starts_with("/api/assets/"))
+        || (matches!(method, "POST" | "PUT" | "PATCH" | "DELETE")
+            && (clean_path.starts_with("/api/studio/mcp/")
+                || clean_path.starts_with("/api/studio/embed/")
+                || clean_path.starts_with("/api/studio/input/")
+                || clean_path.starts_with("/api/studio/tools/")
+                || clean_path == "/api/studio/playtest"
+                || clean_path == "/api/studio/capture"
+                || clean_path == "/api/studio/launch-and-continue"))
+}
+
 /// Why a request is refused before it reaches a handler, as (status,
 /// plain-words message); None when it may proceed. A foreign Host is
 /// refused outright (a rebinding page cannot read the API); a
@@ -776,8 +826,21 @@ fn host_allowed(host: &str, allowed: &[String]) -> bool {
 /// Origin is not this server's own authority, or when its body is not
 /// JSON (a plain form post from another page cannot send one).
 fn refusal(req: &Request, allowed: &[String]) -> Option<(&'static str, &'static str)> {
+    if req.duplicate_host {
+        return Some(("400 Bad Request", "Duplicate Host header is refused."));
+    }
+    if req.bad_content_length {
+        return Some(("400 Bad Request", "Invalid Content-Length header."));
+    }
+    if req.chunked_transfer {
+        return Some(("501 Not Implemented", "Chunked transfer encoding is not supported."));
+    }
     if !host_allowed(&req.host, allowed) {
         return Some(("403 Forbidden", "This OpenRO server only answers requests addressed to this machine. Open it at http://127.0.0.1 instead."));
+    }
+    let clean_path = req.path.split('?').next().unwrap_or(&req.path);
+    if requires_loopback_host(&req.method, clean_path) && !host_allowed(&req.host, &[]) {
+        return Some(("403 Forbidden", "This action is only available from this machine (loopback)."));
     }
     let clean_path = req.path.split('?').next().unwrap_or(&req.path);
     let body_cap = max_body_for_path(clean_path);
@@ -1785,6 +1848,9 @@ fn handle(
         }
         ("POST", "/api/skills/build") => {
             handle_skill_build(&mut stream, shared, &req.body);
+        }
+        ("POST", "/api/monetization/pack") => {
+            handle_monetization_pack(&mut stream, shared, &req.body);
         }
         ("GET", "/api/luau/check") | ("POST", "/api/luau/check") => {
             handle_luau_check(&mut stream, shared, req.method == "POST", &req.body);
@@ -6975,6 +7041,95 @@ fn handle_tools_audio_generate(stream: &mut TcpStream, shared: &Shared, req: &Re
     }
 }
 
+fn handle_monetization_pack(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8]) {
+    let _busy = BusyGuard::new(&shared.busy);
+    let body: Value = if raw_body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice(raw_body) {
+            Ok(v) => v,
+            Err(_) => {
+                respond_json(
+                    stream,
+                    "400 Bad Request",
+                    &json!({ "ok": false, "error": "invalid JSON body" }),
+                );
+                return;
+            }
+        }
+    };
+    let currency = body.get("currency").and_then(|v| v.as_str()).unwrap_or("Coins");
+    let vip_pass_id = body.get("vip_pass_id").and_then(|v| v.as_u64()).unwrap_or(0);
+    let starter_pack_id = body.get("starter_pack_id").and_then(|v| v.as_u64()).unwrap_or(0);
+    let daily_reward = body.get("daily_base_reward").and_then(|v| v.as_i64()).unwrap_or(100);
+    let scripts = crate::opencloud::monetization_pack_luau_scripts(
+        currency,
+        vip_pass_id,
+        starter_pack_id,
+        daily_reward,
+    );
+
+    let chat_id = shared.active_chat.lock().unwrap().clone();
+    let mut guard = shared.agent.lock().unwrap();
+    let Some(agent) = guard.as_mut() else {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({ "ok": false, "error": "Studio not connected" }),
+        );
+        return;
+    };
+    let before = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+    let mut written_paths = Vec::new();
+    let mut last_report = crate::luau_check::AnalysisReport::default();
+    for (place_path, _rel, _cls, src) in &scripts {
+        match agent.update_script_source(&chat_id, place_path, src) {
+            Ok(updated) => {
+                last_report = updated.place_report;
+                written_paths.push(updated.path);
+            }
+            Err(e) => {
+                respond_json(stream, "502 Bad Gateway", &json!({ "ok": false, "error": e }));
+                return;
+            }
+        }
+    }
+    let after = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+    let diff = compute_diff(&before, &after);
+    let can_undo = agent.can_undo_chat(&chat_id);
+    let can_redo = agent.can_redo_chat(&chat_id);
+    let snap = shared.snapshots.lock().unwrap().record(
+        "Monetization & Retention Pack".to_string(),
+        "monetization",
+        Some(chat_id.clone()),
+        after,
+        Some(diff.clone()),
+    );
+    shared.events.publish(
+        "monetization",
+        chat_id,
+        "done",
+        "Monetization & Retention Pack Installed",
+        diff.summary(),
+        Some("monetization_pack".to_string()),
+        written_paths.first().cloned(),
+        100,
+    );
+    respond_json(
+        stream,
+        "200 OK",
+        &json!({
+            "ok": true,
+            "scripts": written_paths,
+            "diff": diff.to_json(),
+            "snapshot_id": snap.id,
+            "can_undo": can_undo,
+            "can_redo": can_redo,
+            "audit": last_report.to_json(),
+        }),
+    );
+}
+
 fn handle_mesh_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &str) {
     match crate::mesh::read_mesh_asset(&shared.assets_root, raw_file) {
         Ok((bytes, mime)) => {
@@ -7072,7 +7227,11 @@ impl MediaCollector {
         let mut entries: Vec<_> = rd
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| p.is_file())
+            .filter(|p| {
+                std::fs::symlink_metadata(p)
+                    .map(|m| !m.file_type().is_symlink() && m.file_type().is_file())
+                    .unwrap_or(false)
+            })
             .collect();
         entries.sort();
         for path in entries {

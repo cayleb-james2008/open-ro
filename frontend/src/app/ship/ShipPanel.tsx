@@ -8,6 +8,8 @@ import { PublishPanel } from "./PublishPanel";
 import { AssetsPanel } from "./AssetsPanel";
 import { ArtStudioPanel } from "./ArtStudioPanel";
 import { PlaytestPanel } from "./PlaytestPanel";
+import { MonetizationPackCard } from "../MonetizationPackCard";
+import type { Place } from "../data";
 import type { Ship } from "./useShip";
 
 type Section = "publish" | "assets" | "art" | "playtests";
@@ -18,11 +20,35 @@ const SECTIONS: { id: Section; label: string; Icon: typeof Rocket }[] = [
   { id: "playtests", label: "Playtests", Icon: FlaskConical },
 ];
 
-/** The center "Ship" surface: publish and products, the asset pipeline, and playtest reports for the open project. */
-export function ShipPanel({ ship, studioOk, onOpenProjects, onOpenSettings }: { ship: Ship; studioOk: boolean; onOpenProjects: () => void; onOpenSettings: () => void }) {
-  const [section, setSection] = useState<Section>("publish");
+/** The Ship & Monetize surface: publish readiness, monetization pack, assets, and playtests. */
+export function ShipPanel({
+  ship,
+  studioOk,
+  place,
+  onOpenProjects,
+  onOpenSettings,
+  onInstalledMonetization,
+  onRunPlaytest,
+  onOpenCodeDiff,
+  initialSection = "publish",
+}: {
+  ship: Ship;
+  studioOk: boolean;
+  place?: Place | null | "error";
+  onOpenProjects: () => void;
+  onOpenSettings: () => void;
+  onInstalledMonetization?: () => Promise<void> | void;
+  onRunPlaytest?: () => Promise<void> | void;
+  onOpenCodeDiff?: (scriptPath: string) => void;
+  initialSection?: Section;
+}) {
+  const [section, setSection] = useState<Section>(initialSection);
   const [study, setStudy] = useState<StudyStatus | null>(null);
-  const activeId = ship.active?.id;
+  const activeId = ship.active?.id ?? null;
+
+  useEffect(() => {
+    setSection(initialSection);
+  }, [initialSection]);
 
   useEffect(() => {
     let live = true;
@@ -35,30 +61,50 @@ export function ShipPanel({ ship, studioOk, onOpenProjects, onOpenSettings }: { 
       if (r.ok && Array.isArray(r.stages)) setStudy(r as StudyStatus);
       else setStudy(null);
     });
-    return () => { live = false; };
+    return () => {
+      live = false;
+    };
   }, [activeId, ship.available, section]);
 
-  if (!ship.available) {
-    return <div className="card-stock m-1 p-6 text-sm text-ink-2">This OpenRO build does not have the publish tools yet.</div>;
-  }
-  if (!ship.active) {
+  if (!ship.available || !ship.active) {
     return (
-      <div className="card-stock m-1 flex flex-col items-start gap-3 p-6" data-ship-empty>
-        <h2 className="font-heading text-title font-semibold">Open a project to ship it</h2>
-        <p className="max-w-[56ch] text-ui text-ink-2">Pick or create a project to publish, manage assets, and run playtests.</p>
-        <Button variant="default" size="lg" onClick={onOpenProjects} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><FolderOpen className="size-4" strokeWidth={1.5} aria-hidden />Show projects</Button>
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pb-4" data-ship-empty>
+        <MonetizationPackCard
+          place={place ?? null}
+          studioOk={studioOk}
+          activeProjectId={activeId}
+          onInstalled={onInstalledMonetization ?? (() => {})}
+          onRunPlaytest={onRunPlaytest}
+          onOpenCodeDiff={onOpenCodeDiff}
+        />
+        {ship.available && (
+          <div className="card-stock flex flex-col items-start gap-2.5 p-4">
+            <h3 className="font-heading text-ui font-medium text-ink">Link a Roblox project to publish</h3>
+            <p className="text-sm text-ink-2">
+              Open or create a project to sync GamePasses, configure Creator Hub metadata, and publish builds live.
+            </p>
+            <Button variant="outline" size="sm" onClick={onOpenProjects} className="max-md:min-h-11">
+              <FolderOpen className="size-4" strokeWidth={1.5} aria-hidden />
+              Open Projects
+            </Button>
+          </div>
+        )}
       </div>
     );
   }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden" data-ship>
       <div className="flex min-h-9 flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <h2 className="min-w-0 truncate font-heading text-title font-semibold">{ship.active.name}</h2>
+          <h2 className="min-w-0 truncate font-heading text-ui font-medium">{ship.active.name}</h2>
           {study && (
             <div className="flex flex-wrap items-center gap-1.5" data-study-status-bar>
-              <div className="inline-flex items-center gap-1 rounded-pill border border-hairline bg-board/60 px-2 py-0.5 text-xs" aria-label="Project readiness stages">
-                {study.stages.map((st, idx) => {
+              <div
+                className="inline-flex items-center gap-1.5 rounded-full border border-hairline bg-board/60 px-2.5 py-0.5 text-xs"
+                aria-label="Project readiness stages"
+              >
+                {study.stages.map((st) => {
                   const active = study.stage === st.id;
                   return (
                     <span
@@ -67,14 +113,20 @@ export function ShipPanel({ ship, studioOk, onOpenProjects, onOpenSettings }: { 
                         st.done ? "font-medium text-pill-active-fg" : active ? "font-medium text-ink" : "text-ink-3"
                       }`}
                     >
-                      {idx > 0 && <span className="text-ink-3" aria-hidden>&rarr;</span>}
                       {st.done && <Check className="size-3" strokeWidth={2} aria-hidden />}
                       <span>{st.label}</span>
                     </span>
                   );
                 })}
               </div>
-              <Pill className={study.clean_room ? "bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg" : "bg-pill-warn-bg px-2 py-0.5 text-xs text-pill-warn-fg"} data-clean-room-badge>
+              <Pill
+                className={
+                  study.clean_room
+                    ? "bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg"
+                    : "bg-pill-warn-bg px-2 py-0.5 text-xs text-pill-warn-fg"
+                }
+                data-clean-room-badge
+              >
                 <ShieldCheck className="size-3" strokeWidth={1.5} aria-hidden />
                 <span>{study.clean_room ? "Clean Room" : "Deep Mode"}</span>
               </Pill>
@@ -83,14 +135,33 @@ export function ShipPanel({ ship, studioOk, onOpenProjects, onOpenSettings }: { 
         </div>
         <SegmentedControl aria-label="Ship section" size="sm" className="max-w-full flex-wrap">
           {SECTIONS.map(({ id, label, Icon }) => (
-            <SegmentedControlItem key={id} data-checked={section === id ? "" : undefined} aria-pressed={section === id} onClick={() => setSection(id)} className="gap-1 max-md:!h-11 max-md:px-2">
-              <Icon className="size-3.5" strokeWidth={1.5} aria-hidden /><span>{label}</span>
+            <SegmentedControlItem
+              key={id}
+              data-checked={section === id ? "" : undefined}
+              aria-pressed={section === id}
+              onClick={() => setSection(id)}
+              className="gap-1 max-md:!h-11 max-md:px-2"
+            >
+              <Icon className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>{label}</span>
             </SegmentedControlItem>
           ))}
         </SegmentedControl>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto pb-4">
-        {section === "publish" && <PublishPanel ship={ship} onOpenSettings={onOpenSettings} />}
+        {section === "publish" && (
+          <div className="flex flex-col gap-4">
+            <MonetizationPackCard
+              place={place ?? null}
+              studioOk={studioOk}
+              activeProjectId={activeId}
+              onInstalled={onInstalledMonetization ?? (() => {})}
+              onRunPlaytest={onRunPlaytest}
+              onOpenCodeDiff={onOpenCodeDiff}
+            />
+            <PublishPanel ship={ship} onOpenSettings={onOpenSettings} />
+          </div>
+        )}
         {section === "assets" && <AssetsPanel ship={ship} onOpenSettings={onOpenSettings} />}
         {section === "art" && <ArtStudioPanel ship={ship} />}
         {section === "playtests" && <PlaytestPanel ship={ship} studioOk={studioOk} />}

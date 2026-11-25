@@ -133,9 +133,9 @@ export function AssetsPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSettin
           </div>
         )}
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="default" size="lg" disabled={!hasKey || uploading || tally.waiting === 0} onClick={() => void upload({ authorised: true })} data-upload className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><CloudUpload className="size-4" strokeWidth={1.5} aria-hidden />{uploading ? "Uploading…" : `Upload ${tally.waiting} allowed`}</Button>
-          <Button variant="outline" size="lg" disabled={!hasKey || uploading} onClick={() => void upload({ authorised: true, dry_run: true })} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">Preview only</Button>
-          <Button variant="outline" size="lg" disabled={uploading} onClick={() => void codegen()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">Write AssetIds.luau</Button>
+          <Button variant="default" size="lg" disabled={!hasKey || uploading || tally.waiting === 0} onClick={() => void upload({ authorised: true })} data-upload className="active:opacity-80 max-md:min-h-11"><CloudUpload className="size-4" strokeWidth={1.5} aria-hidden />{uploading ? "Uploading…" : `Upload ${tally.waiting} allowed`}</Button>
+          <Button variant="outline" size="lg" disabled={!hasKey || uploading} onClick={() => void upload({ authorised: true, dry_run: true })} className="active:opacity-80 max-md:min-h-11">Preview only</Button>
+          <Button variant="outline" size="lg" disabled={uploading} onClick={() => void codegen()} className="active:opacity-80 max-md:min-h-11">Write AssetIds.luau</Button>
           <MorphingDialog transition={dialogSpring}>
             <MorphingDialogTrigger blocked={!hasKey || uploading} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hairline bg-surface px-3 text-sm font-medium text-pill-pro-fg outline-none hover:bg-pill-pro-bg active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus disabled:border-hairline disabled:bg-track disabled:text-ink-3" thing="upload-everything">Upload everything…</MorphingDialogTrigger>
             <MorphingDialogContainer>

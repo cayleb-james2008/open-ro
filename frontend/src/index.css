@@ -1,12 +1,10 @@
-/* Hallmark · app screen · genre modern-minimal · scope app · theme Studio Workbench (native light, dark second) · Geist + Geist Mono, nested hairline surfaces, no gradients */
+/* Layout concept: OpenRO v1.1.0 Desktop-Workbench Studio Copilot IDE — Slim 44px Header | Collapsible 260px Rail | Focused Agent/Plan/Ask Thread | Tabbed Studio Workbench; crisp neutral slate & cobalt tokens, full Light & Dark themes. */
 @import "tailwindcss" source(none);
 @source "../src";
 @import "./tokens.css";
 @import "./theme.css";
 @import "./fonts.css";
-@source "../../rune/used/**/*.tsx";
 
-/* Keep bare `transition` fromcopied library prop names outline/shadow-free so focus rings never fade (Hallmark 15). */
 @utility transition {
   transition-property: color, background-color, border-color, opacity, transform;
   transition-timing-function: var(--ease-house);
@@ -21,16 +19,13 @@ body {
   background-color: var(--canvas);
   color: var(--ink);
   font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 20px;
   margin: 0;
 }
 h1, h2, h3 { text-wrap: balance; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-[data-slot="input-group"] input:focus-visible,
-[data-slot="input-group"] textarea:focus-visible {
-  outline: none;
-}
 
-/* Skip link: hidden off-canvas until focused by keyboard. */
 .skip {
   position: absolute;
   left: 8px;
@@ -50,7 +45,6 @@ h1, h2, h3 { text-wrap: balance; }
 }
 .skip:focus { transform: none; }
 
-/* Server-injected notices (no model key, Studio not connected, recovered store backup). */
 .server-banners:empty, .server-banners [hidden] { display: none; }
 .server-banners .banner {
   display: flex;
@@ -84,7 +78,13 @@ h1, h2, h3 { text-wrap: balance; }
 .server-banners .banner .btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .server-banners code { font-family: var(--font-mono); font-size: 13px; }
 
-/* Vaul and page reduced-motion guarantee: collapse animations and transitions cleanly. */
+.card-stock {
+  border-radius: var(--radius-card);
+  border: 1px solid var(--hairline);
+  background: var(--surface);
+  color: var(--ink);
+}
+
 @media (prefers-reduced-motion: reduce) {
   [data-vaul-drawer], [data-vaul-overlay], *, *::before, *::after {
     animation-duration: 0.01ms !important;

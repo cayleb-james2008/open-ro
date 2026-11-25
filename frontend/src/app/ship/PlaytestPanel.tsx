@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { ArrowRight, Check, ChevronDown, CircleCheck, CircleX, ExternalLink, Play, ShieldCheck } from "lucide-react";
+import { Check, ChevronDown, CircleCheck, CircleX, ExternalLink, Play, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
@@ -216,7 +216,7 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
           <h3 className="font-heading text-ui font-semibold">Playtest in Studio</h3>
           <p className="text-sm text-ink-2">{studioOk ? "Runs Studio checks and captures gameplay screenshots." : "Connect Roblox Studio to playtest."}</p>
         </div>
-        <Button variant={syncFirst ? "secondary" : "outline"} size="lg" aria-pressed={syncFirst} onClick={() => setSyncFirst((v) => !v)} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">Send to Studio first</Button>
+        <Button variant={syncFirst ? "secondary" : "outline"} size="lg" aria-pressed={syncFirst} onClick={() => setSyncFirst((v) => !v)} className="active:opacity-80 max-md:min-h-11">Send to Studio first</Button>
         {!studioOk && (
           <Button
             variant="outline"
@@ -228,12 +228,12 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
               if (!l.ok || !l.studio_connected) { setRunning(false); setError(l.error || "Could not launch Studio."); return; }
               await run();
             }}
-            className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"
+            className="active:opacity-80 max-md:min-h-11"
           >
             <Play className="size-4" strokeWidth={1.5} aria-hidden />Launch Studio &amp; playtest
           </Button>
         )}
-        <Button variant="default" size="lg" disabled={!studioOk || running} onClick={() => void run()} data-run-playtest className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><Play className="size-4" strokeWidth={1.5} aria-hidden />{running ? "Playing…" : "Run playtest"}</Button>
+        <Button variant="default" size="lg" disabled={!studioOk || running} onClick={() => void run()} data-run-playtest className="active:opacity-80 max-md:min-h-11"><Play className="size-4" strokeWidth={1.5} aria-hidden />{running ? "Playing…" : "Run playtest"}</Button>
         {error && <p role="alert" className="w-full rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
       </section>
 
@@ -244,7 +244,6 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
               const active = study.stage === st.id;
               return (
                 <span key={st.id} className="inline-flex items-center gap-1.5">
-                  {idx > 0 && <ArrowRight className="size-3.5 text-ink-3" strokeWidth={1.5} aria-hidden />}
                   <Pill
                     className={`gap-1 px-2 py-0.5 text-xs ${
                       st.done

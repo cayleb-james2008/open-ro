@@ -243,7 +243,7 @@ export function StartupWizard({
 
               <div className="flex justify-end gap-2 pt-1">
                 <Button variant="ghost" onClick={finish} className="max-md:min-h-11">Skip</Button>
-                <Button variant="default" disabled={busy === "model"} onClick={() => void saveModelAndNext()} className="active:scale-[0.99] disabled:opacity-50 max-md:min-h-11">
+                <Button variant="default" disabled={busy === "model"} onClick={() => void saveModelAndNext()} className="active:scale-[0.99] max-md:min-h-11">
                   {busy === "model" ? "Saving…" : "Next"}
                 </Button>
               </div>

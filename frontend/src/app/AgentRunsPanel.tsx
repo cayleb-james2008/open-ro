@@ -178,7 +178,7 @@ export function AgentRunsPanel({
                 <ChevronDown className={`ml-auto size-3.5 text-ink-2 motion-safe:transition-transform duration-(--dur-swap) ease-(--ease-house) ${isExpanded ? "rotate-180" : ""}`} strokeWidth={1.5} aria-hidden />
               </ExpandableTrigger>
               {composerText.trim() && (
-                <Button variant="outline" size="xs" disabled={busy === "queue"} onClick={() => void queueRun()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">
+                <Button variant="outline" size="xs" disabled={busy === "queue"} onClick={() => void queueRun()} className="active:opacity-80 max-md:min-h-11">
                   <Play className="size-3" strokeWidth={1.5} aria-hidden />Queue plan
                 </Button>
               )}

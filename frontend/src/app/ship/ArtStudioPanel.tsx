@@ -323,7 +323,7 @@ export function ArtStudioPanel({ ship }: { ship: Ship }) {
             <Field label="Show or universe"><Input value={show} onChange={(e) => setShow(e.target.value)} placeholder="Jujutsu Kaisen" /></Field>
             <Field label="Qualifiers (optional)"><Input value={qualifiers} onChange={(e) => setQualifiers(e.target.value)} placeholder="hollow purple battle" /></Field>
           </div>
-          <Button variant="default" size="lg" disabled={!character.trim() || !show.trim() || searching} onClick={() => void runSearch()} className="self-start active:opacity-80 disabled:opacity-50 max-md:min-h-11">
+          <Button variant="default" size="lg" disabled={!character.trim() || !show.trim() || searching} onClick={() => void runSearch()} className="self-start active:opacity-80 max-md:min-h-11">
             <Search className="size-4" strokeWidth={1.5} aria-hidden />{searching ? "Searching…" : "Search references"}
           </Button>
 
@@ -481,7 +481,7 @@ export function ArtStudioPanel({ ship }: { ship: Ship }) {
                         size="xs"
                         disabled={packingPath === artPath}
                         onClick={() => void packAsset(artPath)}
-                        className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"
+                        className="active:opacity-80 max-md:min-h-11"
                       >
                         <Upload className="size-3" strokeWidth={1.5} aria-hidden />{packed ? "Packed" : "Pack"}
                       </Button>
@@ -535,7 +535,7 @@ export function ArtStudioPanel({ ship }: { ship: Ship }) {
               </Field>
             </div>
 
-            <Button variant="default" size="lg" disabled={!prompt.trim() || generating} onClick={() => void generate()} className="self-start active:opacity-80 disabled:opacity-50 max-md:min-h-11">
+            <Button variant="default" size="lg" disabled={!prompt.trim() || generating} onClick={() => void generate()} className="self-start active:opacity-80 max-md:min-h-11">
               <ImagePlus className="size-4" strokeWidth={1.5} aria-hidden />{generating ? "Generating…" : "Generate"}
             </Button>
 

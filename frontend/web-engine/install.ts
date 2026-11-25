@@ -2122,6 +2122,34 @@ export function installWebEngine() {
         thread: res.thread,
       });
     }
+    if (method === "POST" && u.pathname === "/api/monetization/pack") {
+      const currency = typeof body.currency === "string" && body.currency.trim() ? body.currency.trim() : "Coins";
+      const baseReward = Math.max(10, Number(body.daily_base_reward) || 100);
+      const beforePlace = clonePlace(chat.place);
+      const packScripts: Record<string, string> = {
+        "ReplicatedStorage.MonetizationConfig": `--!strict\nlocal MonetizationConfig = {\n\tCurrency = "${currency}",\n\tDailyRewards = { [1] = ${baseReward}, [2] = ${baseReward * 2}, [3] = ${baseReward * 3}, [4] = ${baseReward * 4}, [5] = ${baseReward * 5}, [6] = ${baseReward * 7}, [7] = ${baseReward * 12} },\n}\nreturn MonetizationConfig\n`,
+        "ServerScriptService.MonetizationService": `--!strict\nlocal DataStoreService = game:GetService("DataStoreService")\nlocal MarketplaceService = game:GetService("MarketplaceService")\nlocal Players = game:GetService("Players")\nlocal receiptStore = DataStoreService:GetDataStore("OpenRO_Receipts_v1")\nMarketplaceService.ProcessReceipt = function(receiptInfo)\n\tlocal player = Players:GetPlayerByUserId(receiptInfo.PlayerId)\n\tif not player then return Enum.ProductPurchaseDecision.NotProcessedYet end\n\tlocal receiptKey = tostring(receiptInfo.PlayerId) .. "_" .. tostring(receiptInfo.PurchaseId)\n\tlocal ok = pcall(function()\n\t\treceiptStore:UpdateAsync(receiptKey, function() return true end)\n\tend)\n\tif not ok then return Enum.ProductPurchaseDecision.NotProcessedYet end\n\treturn Enum.ProductPurchaseDecision.PurchaseGranted\nend\ngame:BindToClose(function() task.wait(0.2) end)\n`,
+        "ServerScriptService.DailyRewardRetention": `--!strict\nlocal DataStoreService = game:GetService("DataStoreService")\nlocal ReplicatedStorage = game:GetService("ReplicatedStorage")\nlocal streakStore = DataStoreService:GetDataStore("OpenRO_DailyStreak_v1")\nlocal folder = ReplicatedStorage:FindFirstChild("MonetizationRemotes") or Instance.new("Folder")\nfolder.Name = "MonetizationRemotes"\nfolder.Parent = ReplicatedStorage\nlocal claimFn = Instance.new("RemoteFunction")\nclaimFn.Name = "ClaimDailyReward"\nclaimFn.Parent = folder\nclaimFn.OnServerInvoke = function(player: Player)\n\tlocal ok, res = pcall(function()\n\t\treturn streakStore:UpdateAsync("streak_" .. tostring(player.UserId), function(prev)\n\t\t\tlocal rec = if typeof(prev) == "table" then prev else { streak = 0, lastClaim = 0 }\n\t\t\treturn { streak = ((tonumber(rec.streak) or 0) % 7) + 1, lastClaim = os.time() }\n\t\tend)\n\tend)\n\treturn { claimed = ok, reward = ${baseReward}, streak = if ok and type(res) == "table" then res.streak else 1 }\nend\ngame:BindToClose(function() task.wait(0.2) end)\n`,
+      };
+      const changes: ChangeEntry[] = [];
+      for (const [sp, src] of Object.entries(packScripts)) {
+        const prev = chat.place.scripts[sp] ?? null;
+        chat.place.scripts[sp] = src;
+        changes.push({ kind: "script", path: sp, prev, post: src });
+      }
+      chat.undoStack.push({ changes, skills: ["monetization_pack"] });
+      chat.redoStack = [];
+      const diff = computePlaceDiff(beforePlace, chat.place);
+      const diags = analyzePlaceLuau(chat.place);
+      persist();
+      return jsonResponse({
+        ok: true,
+        scripts: Object.keys(packScripts),
+        diff,
+        can_undo: true,
+        audit: { ok: diags.filter((d) => d.severity === "error").length === 0, diagnostics: diags },
+      });
+    }
     if (method === "POST" && u.pathname === "/api/ideas/build") {
       const id = typeof body.id === "string" ? body.id : "";
       const skillParam = typeof body.skill === "string" ? body.skill : id.startsWith("skill:") ? id.slice(6) : "";

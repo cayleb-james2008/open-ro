@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { ArrowRight, BadgeCheck, Check, CircleAlert, ExternalLink, Globe, KeyRound, Package, Rocket, Save, Settings2, Ticket } from "lucide-react";
+import { BadgeCheck, Check, CircleAlert, ExternalLink, Globe, KeyRound, Package, Rocket, Save, Settings2, Ticket } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Pill } from "@/components/kibo-ui/pill";
@@ -125,8 +125,8 @@ function UniverseForm({ id }: { id: string }) {
           </div>
           <Field label="Thumbnail paths (comma-separated, optional)"><Input value={thumbPaths} onChange={(e) => setThumbPaths(e.target.value)} placeholder="art/thumb1.png, art/thumb2.png" className="font-mono text-xs" /></Field>
           <div className="flex flex-wrap gap-2">
-            <Button variant="default" size="lg" disabled={state === "saving" || state === "browser" || !name.trim()} onClick={() => void save()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><Save className="size-4" strokeWidth={1.5} aria-hidden />{state === "saving" ? "Saving…" : "Save game page"}</Button>
-            <Button variant="outline" size="lg" disabled={state === "saving" || state === "browser"} onClick={() => void configureBrowser()} data-configure-browser className="active:opacity-80 disabled:opacity-50 max-md:min-h-11"><Globe className="size-4" strokeWidth={1.5} aria-hidden />{state === "browser" ? "Configuring…" : "Configure via open browser"}</Button>
+            <Button variant="default" size="lg" disabled={state === "saving" || state === "browser" || !name.trim()} onClick={() => void save()} className="active:opacity-80 max-md:min-h-11"><Save className="size-4" strokeWidth={1.5} aria-hidden />{state === "saving" ? "Saving…" : "Save game page"}</Button>
+            <Button variant="outline" size="lg" disabled={state === "saving" || state === "browser"} onClick={() => void configureBrowser()} data-configure-browser className="active:opacity-80 max-md:min-h-11"><Globe className="size-4" strokeWidth={1.5} aria-hidden />{state === "browser" ? "Configuring…" : "Configure via open browser"}</Button>
           </div>
           {hubResult && (
             <div className="flex flex-col gap-2 rounded-sm border border-hairline bg-board/60 p-3 text-sm" data-creator-hub-configure-result>
@@ -308,7 +308,7 @@ export function PublishPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSetti
           <PipelineStep title="Key" ok={hasKey} badge={hasKey ? "Saved" : "Needed"}>
             {!hasKey && (
               <>
-                <Button variant="outline" size="xs" disabled={hubBusy} onClick={() => void runBrowserSetup()} data-publish-auto-setup className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">
+                <Button variant="outline" size="xs" disabled={hubBusy} onClick={() => void runBrowserSetup()} data-publish-auto-setup className="active:opacity-80 max-md:min-h-11">
                   <Globe className="size-3" strokeWidth={1.5} aria-hidden />
                   {hubBusy ? "Connecting…" : "Auto-setup from browser"}
                 </Button>
@@ -316,11 +316,10 @@ export function PublishPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSetti
               </>
             )}
           </PipelineStep>
-          <ArrowRight className="hidden size-4 shrink-0 self-center text-ink-3 sm:block" strokeWidth={1.5} aria-hidden />
           <PipelineStep title="Experience" ok={hasIds} badge={hasIds ? String(active.universeId) : "Missing"}>
             {!hasIds ? (
               <>
-                <Button variant="outline" size="xs" disabled={hubBusy} onClick={() => void runBrowserSetup()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">
+                <Button variant="outline" size="xs" disabled={hubBusy} onClick={() => void runBrowserSetup()} className="active:opacity-80 max-md:min-h-11">
                   <Globe className="size-3" strokeWidth={1.5} aria-hidden />
                   {hubBusy ? "Connecting…" : "Auto-setup"}
                 </Button>
@@ -330,7 +329,6 @@ export function PublishPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSetti
               <SetProjectIdsDialog active={active} ship={ship} />
             )}
           </PipelineStep>
-          <ArrowRight className="hidden size-4 shrink-0 self-center text-ink-3 sm:block" strokeWidth={1.5} aria-hidden />
           <PipelineStep title="Build" ok={hasBuild} badge={hasBuild ? "Built" : "None"}>
             {hasBuild && (
               <span className="font-mono text-xs text-ink-2">
@@ -338,7 +336,6 @@ export function PublishPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSetti
               </span>
             )}
           </PipelineStep>
-          <ArrowRight className="hidden size-4 shrink-0 self-center text-ink-3 sm:block" strokeWidth={1.5} aria-hidden />
           <PipelineStep title="Live" ok={Boolean(published)} badge={published ? `v${published.versionNumber}` : live ? "Live" : "Save"}>
             {live ? (
               <MorphingDialog transition={dialogSpring} open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -353,13 +350,13 @@ export function PublishPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSetti
                     </div>
                     <div className="flex flex-wrap justify-end gap-2">
                       <MorphingDialogClose aria-label="Not yet" className="static inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-hairline bg-surface px-4 text-sm font-medium text-ink outline-none hover:bg-board focus-visible:ring-2 focus-visible:ring-focus">Not yet</MorphingDialogClose>
-                      <Button variant="default" size="lg" disabled={publishing} onClick={() => void publish()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">{publishing ? "Publishing…" : "Yes, publish live"}</Button>
+                      <Button variant="default" size="lg" disabled={publishing} onClick={() => void publish()} className="active:opacity-80 max-md:min-h-11">{publishing ? "Publishing…" : "Yes, publish live"}</Button>
                     </div>
                   </MorphingDialogContent>
                 </MorphingDialogContainer>
               </MorphingDialog>
             ) : (
-              <Button variant="default" size="xs" disabled={!canPublish} onClick={() => void publish()} data-publish className="min-h-8 gap-1.5 px-3 text-xs active:opacity-80 disabled:opacity-50 max-md:min-h-11">
+              <Button variant="default" size="xs" disabled={!canPublish} onClick={() => void publish()} data-publish className="min-h-8 gap-1.5 px-3 text-xs active:opacity-80 max-md:min-h-11">
                 <Rocket className="size-3.5" strokeWidth={1.5} aria-hidden />{publishing ? "Saving…" : "Save to Roblox"}
               </Button>
             )}
@@ -386,7 +383,7 @@ export function PublishPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSetti
           <h3 className="font-heading text-ui font-semibold">Monetization <span className="font-mono text-sm font-normal text-ink-2">{products.length}</span></h3>
           <div className="flex flex-wrap gap-2">
             {pending > 0 && <Button variant="outline" size="sm" onClick={() => approve(products.filter((p) => p.priceApproved !== true).map((p) => p.key))} className="active:opacity-80 max-md:min-h-11">Approve all {pending} prices</Button>}
-            <Button variant="default" size="sm" disabled={!hasKey || !active.universeId || syncing || products.length === 0 || pending === products.length} onClick={() => void syncProducts()} className="active:opacity-80 disabled:opacity-50 max-md:min-h-11">{syncing ? "Sending…" : "Send to Roblox"}</Button>
+            <Button variant="default" size="sm" disabled={!hasKey || !active.universeId || syncing || products.length === 0 || pending === products.length} onClick={() => void syncProducts()} className="active:opacity-80 max-md:min-h-11">{syncing ? "Sending…" : "Send to Roblox"}</Button>
           </div>
         </div>
         {products.length === 0 ? (

@@ -150,7 +150,7 @@ export function ProjectsRail({ ship, studioOk }: { ship: Ship; studioOk: boolean
                 <div className="min-w-0">
                   <h3 className="truncate font-heading text-ui font-semibold">{active.name}</h3>
                   <p className="text-sm text-ink-2">
-                    {detail?.tree ? `${detail.tree.instances} parts · ${detail.tree.scripts} scripts` : "Reading the project…"}
+                    {detail?.tree ? `${detail.tree.instances} parts, ${detail.tree.scripts} scripts` : "Reading the project…"}
                   </p>
                 </div>
                 <Button variant="ghost" size="icon" aria-label="Reload the project" onClick={() => void ship.refresh()} className="max-md:size-11"><RefreshCw className="size-4" strokeWidth={1.5} aria-hidden /></Button>

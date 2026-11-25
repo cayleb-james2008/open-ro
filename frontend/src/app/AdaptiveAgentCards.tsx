@@ -389,7 +389,7 @@ export function AdaptiveAgentCards({
                           size="xs"
                           disabled={approving}
                           onClick={() => void handleApproveArt(item)}
-                          className="min-h-8 gap-1 px-2 text-xs active:opacity-80 disabled:opacity-50 max-md:min-h-11"
+                          className="min-h-8 gap-1 px-2 text-xs active:opacity-80 max-md:min-h-11"
                         >
                           {approving ? (
                             <Loader2 className="size-3 motion-safe:animate-spin" strokeWidth={1.5} aria-hidden />

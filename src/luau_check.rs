@@ -1320,9 +1320,42 @@ pub fn analyze_script(path: &str, source: &str) -> AnalysisReport {
     check_infinite_loops(path, &tokens, &mut diagnostics);
     check_datastore_safety(path, &tokens, &mut diagnostics);
     check_remote_validation(path, &tokens, &mut diagnostics);
+    check_process_receipt_idempotency(path, source, &mut diagnostics);
     check_cylinder_axis_and_vfx_loops(path, source, &mut diagnostics);
 
     AnalysisReport { diagnostics }
+}
+
+/// Verify that `MarketplaceService.ProcessReceipt` callbacks track `PurchaseId`
+/// idempotently (via DataStore `UpdateAsync` / ledger check) and return
+/// `Enum.ProductPurchaseDecision.PurchaseGranted` / `NotProcessedYet`.
+fn check_process_receipt_idempotency(
+    path: &str,
+    source: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !source.contains("ProcessReceipt") {
+        return;
+    }
+    let has_receipt_id = source.contains("PurchaseId") || source.contains("receiptInfo");
+    let has_decision = source.contains("ProductPurchaseDecision");
+    let has_store_guard = source.contains("UpdateAsync") || source.contains("GetAsync");
+    if !(has_receipt_id && has_decision && has_store_guard) {
+        let line = source
+            .lines()
+            .position(|l| l.contains("ProcessReceipt"))
+            .map(|i| i + 1)
+            .unwrap_or(1);
+        diagnostics.push(Diagnostic {
+            path: path.to_string(),
+            line,
+            severity: Severity::Error,
+            code: "UNSAFE_PROCESS_RECEIPT",
+            message: format!(
+                "{path}:{line}: ProcessReceipt handler must guard receiptInfo.PurchaseId idempotently with DataStore UpdateAsync/GetAsync and return Enum.ProductPurchaseDecision"
+            ),
+        });
+    }
 }
 
 /// Static 3D/VFX craft guardrails (#12):
