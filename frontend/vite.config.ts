@@ -8,7 +8,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 const root = import.meta.dirname;
-const STAMP = "/* Hallmark Desktop-Workbench: OpenRO v1.6.0 Studio Copilot (Geist + Geist Mono, Light & Dark) */";
+const STAMP = "/* Hallmark Desktop-Workbench: OpenRO v1.7.0 Studio Copilot (Geist + Geist Mono, Light & Dark) */";
 const FORCE_SINGLE_FILE = process.env.OPENRO_SINGLE_FILE === "1";
 
 function localAlias(): Plugin {
@@ -73,7 +73,9 @@ function singleFile(): Plugin {
       }
       const out = path.resolve(root, "../assets/index.html");
       fs.writeFileSync(out, html);
-      console.log(`single file: ${out} (${(html.length / 1024).toFixed(0)} kB, ${chunkCount} lazy gzipped chunk(s): ${(gzBytes / 1024).toFixed(0)} kB)`);
+      const htmlGz = zlib.gzipSync(Buffer.from(html, "utf8"), { level: 9 });
+      fs.writeFileSync(`${out}.gz`, htmlGz);
+      console.log(`single file: ${out} (${(html.length / 1024).toFixed(0)} kB, gz ${(htmlGz.length / 1024).toFixed(0)} kB, ${chunkCount} lazy gzipped chunk(s): ${(gzBytes / 1024).toFixed(0)} kB)`);
     },
   };
 }

@@ -189,6 +189,9 @@ export type AutopilotResult = {
   readiness?: ProjectReadiness;
 };
 export type MonetizationCodegenResult = {
+  tier_preset?: string;
+  comeback_multiplier?: number;
+  retention_curve?: number[];
   written: string[];
   seeded_products: boolean;
   product_count: number;

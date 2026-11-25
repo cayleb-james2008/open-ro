@@ -5,6 +5,7 @@ use std::path::Path;
 fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let chunks_dir = Path::new(&manifest_dir).join("assets").join("chunks");
+    println!("cargo:rerun-if-changed=assets/index.html.gz");
     println!("cargo:rerun-if-changed=assets/chunks");
 
     let mut entries: Vec<(String, String)> = Vec::new();

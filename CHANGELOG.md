@@ -4,6 +4,14 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.7.0 - 2026-11-25
+
+- **Monetization Tier Presets & Comeback Retention Curve Designer (`src/opencloud.rs`, `src/server.rs`, `frontend/src/app/MonetizationPackCard.tsx`, `frontend/web-engine/install.ts`):**
+  - Added 3 balanced genre tier presets (`Starter Obby / Sim`, `Anime Gacha / RPG`, `Competitive Arena`) across both `/api/monetization/pack` and `/api/projects/:id/monetization/{pack,codegen}`, auto-seeding draft Robux tiers (`priceApproved: false`) and scaling the 7-day daily streak + 48h comeback multiplier (`ComebackThresholdHours = 48`, `ComebackBonusActive` attribute, `UpdateAsync` + `BindToClose`) with 0 Luau static errors and 100% `web-engine` parity.
+  - Added live 7-day retention curve + comeback multiplier preview pills and 1-click preset application inside `MonetizationPackCard`.
+- **Binary Diet & Sub-15ms Cold Boot (`Cargo.toml`, `frontend/vite.config.ts`, `build.rs`, `src/server.rs`):**
+  - Enabled `lto = "fat"` in `[profile.release]`, embedded pre-gzipped `assets/index.html.gz` (`include_bytes!`) instead of raw HTML in `.rodata`, tuned `POOL_WORKERS_BOOT = 2`, and added single-flight locking on `cached_index` gzip generation.
+
 ## 1.6.0 - 2026-11-25
 
 - **Pre-Publish Revenue & Playtest Gate (`src/opencloud.rs`, `src/server.rs`, `frontend/src/app/ship/ReadinessAutopilot.tsx`, `api.ts`):**

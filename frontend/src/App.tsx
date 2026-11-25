@@ -2673,12 +2673,12 @@ export function App() {
             <StudioChip connected={studioOk} workspaceMode={workspaceMode} />
           </Button>
           <a
-            href={RELEASES_URL + (version || "1.6.0")}
+            href={RELEASES_URL + (version || "1.7.0")}
             target="_blank"
             rel="noreferrer"
             className="inline-flex min-h-7 items-center gap-1 rounded-sm text-xs text-ink-2 outline-none hover:text-ink hover:underline active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus max-md:min-h-11"
           >
-            <span>v<span className="font-mono">{version || "1.6.0"}</span></span>
+            <span>v<span className="font-mono">{version || "1.7.0"}</span></span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
         </div>
@@ -2893,6 +2893,7 @@ export function App() {
         ? `/api/projects/${encodeURIComponent(ship.activeId)}/monetization/pack`
         : "/api/monetization/pack";
       const res = await post<{ ok?: boolean; error?: string }>(endpoint, {
+        tier_preset: "starter_obby",
         currency: "Coins",
         daily_base_reward: 100,
       });

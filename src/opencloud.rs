@@ -1787,33 +1787,135 @@ pub fn products_codegen(root: &Path, body: &Value) -> R<Value> {
     }))
 }
 
+/// Balanced genre preset for 1-click Monetization & Retention scaffolding.
+#[derive(Clone, Copy, Debug)]
+pub struct MonetizationTierSpec {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub default_currency: &'static str,
+    pub default_daily_reward: i64,
+    pub comeback_multiplier: i64,
+    pub curve_multipliers: [i64; 7],
+    pub drafts: &'static [(&'static str, &'static str, &'static str, &'static str, u64)],
+}
+
+const STARTER_OBBY_DRAFTS: &[(&str, &str, &str, &str, u64)] = &[
+    ("vip_pass", "game_pass", "VIP & 2x Currency", "2x rewards, chat tag, and VIP badge", 149),
+    ("speed_coil", "game_pass", "Coil / Speed Boost", "Permanent movement speed coil", 79),
+    ("starter_pack", "developer_product", "Starter Pack", "Starter bundle + currency boost", 99),
+    ("currency_pouch", "developer_product", "500 Currency Pouch", "Instant 500 currency top-up", 49),
+    ("skip_stage", "developer_product", "Skip Stage / Revive", "Instant checkpoint advance or revive", 25),
+];
+
+const ANIME_GACHA_DRAFTS: &[(&str, &str, &str, &str, u64)] = &[
+    ("vip_banner_luck", "game_pass", "VIP Banner Luck", "+25% rare drop luck and VIP aura", 299),
+    ("auto_open_storage", "game_pass", "Auto-Open & Storage+", "Faster multi-roll & +100 inventory slots", 149),
+    ("hero_starter_bundle", "developer_product", "Hero Starter Bundle", "Starter unit + summon currency pack", 199),
+    ("summon_pack_10x", "developer_product", "10x Summon Pack", "Full 10-pull banner summon bundle", 399),
+    ("gem_crate", "developer_product", "500 Currency Crate", "Instant 500 summon currency pack", 99),
+];
+
+const COMPETITIVE_ARENA_DRAFTS: &[(&str, &str, &str, &str, u64)] = &[
+    ("pro_battle_pass", "game_pass", "Pro Battle Pass", "Season pass track + 2x match XP", 249),
+    ("loadout_slot_plus", "game_pass", "Loadout Slot+", "Extra custom weapon loadout slots", 129),
+    ("season_starter_kit", "developer_product", "Season Starter Kit", "Starter skin + currency boost", 149),
+    ("xp_booster_1h", "developer_product", "XP Booster (1h)", "Double match XP for 60 minutes", 49),
+    ("crate_key", "developer_product", "Arena Crate Key", "Unlock cosmetic reward crate", 79),
+];
+
+pub fn resolve_tier_preset(preset_id: Option<&str>) -> MonetizationTierSpec {
+    match preset_id.map(str::trim).unwrap_or("starter_obby") {
+        "anime_gacha_rpg" => MonetizationTierSpec {
+            id: "anime_gacha_rpg",
+            label: "Anime Gacha / RPG",
+            default_currency: "Gems",
+            default_daily_reward: 150,
+            comeback_multiplier: 3,
+            curve_multipliers: [1, 2, 3, 5, 7, 10, 15],
+            drafts: ANIME_GACHA_DRAFTS,
+        },
+        "competitive_arena" => MonetizationTierSpec {
+            id: "competitive_arena",
+            label: "Competitive Arena",
+            default_currency: "Credits",
+            default_daily_reward: 120,
+            comeback_multiplier: 2,
+            curve_multipliers: [1, 2, 3, 4, 6, 8, 12],
+            drafts: COMPETITIVE_ARENA_DRAFTS,
+        },
+        _ => MonetizationTierSpec {
+            id: "starter_obby",
+            label: "Starter Obby / Simulator",
+            default_currency: "Coins",
+            default_daily_reward: 100,
+            comeback_multiplier: 2,
+            curve_multipliers: [1, 2, 3, 4, 5, 7, 12],
+            drafts: STARTER_OBBY_DRAFTS,
+        },
+    }
+}
+
+pub fn retention_curve_values(spec: &MonetizationTierSpec, daily_base_reward: i64) -> [i64; 7] {
+    let base = daily_base_reward.clamp(10, 1_000_000);
+    [
+        base * spec.curve_multipliers[0],
+        base * spec.curve_multipliers[1],
+        base * spec.curve_multipliers[2],
+        base * spec.curve_multipliers[3],
+        base * spec.curve_multipliers[4],
+        base * spec.curve_multipliers[5],
+        base * spec.curve_multipliers[6],
+    ]
+}
+
 /// Build the production-grade Monetization & Retention Luau Pack:
 /// - `MonetizationService`: GamePass ownership cache + `MarketplaceService.ProcessReceipt`
 ///   with DataStore `UpdateAsync` `PurchaseId` idempotency + `BindToClose` + `PolicyService`
-/// - `DailyRewardRetention`: 24h daily login streak + escalating currency/luck bonus + `BindToClose`
-/// - `MonetizationConfig`: Shared product, pass, and daily reward tiers.
+/// - `DailyRewardRetention`: 24h daily login streak + 48h comeback multiplier + `BindToClose`
+/// - `MonetizationConfig`: Shared product, pass, tier preset, and 7-day retention curve.
 pub fn monetization_pack_luau_scripts(
     currency: &str,
     vip_pass_id: u64,
     starter_pack_id: u64,
     daily_base_reward: i64,
 ) -> Vec<(&'static str, &'static str, &'static str, String)> {
+    monetization_pack_luau_scripts_with_preset(
+        None,
+        currency,
+        vip_pass_id,
+        starter_pack_id,
+        daily_base_reward,
+    )
+}
+
+pub fn monetization_pack_luau_scripts_with_preset(
+    tier_preset: Option<&str>,
+    currency: &str,
+    vip_pass_id: u64,
+    starter_pack_id: u64,
+    daily_base_reward: i64,
+) -> Vec<(&'static str, &'static str, &'static str, String)> {
+    let spec = resolve_tier_preset(tier_preset);
     let clean_currency = if currency.trim().is_empty()
         || !currency.trim().chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     {
-        "Coins"
+        spec.default_currency
     } else {
         currency.trim()
     };
     let reward = daily_base_reward.clamp(10, 1_000_000);
+    let curve = retention_curve_values(&spec, reward);
 
     let config_luau = format!(
         "--!strict\n\
--- Generated by OpenRO v1.1.0 Monetization & Retention Pack\n\
+-- Generated by OpenRO v1.7.0 Monetization & Retention Pack\n\
 local MonetizationConfig = {{\n\
+\tTierPreset = {preset_lit},\n\
 \tCurrency = {curr},\n\
 \tVipGamePassId = {vip_pass_id},\n\
 \tStarterPackProductId = {starter_pack_id},\n\
+\tComebackThresholdHours = 48,\n\
+\tComebackMultiplier = {comeback_mult},\n\
 \tDailyRewards = {{\n\
 \t\t[1] = {r1},\n\
 \t\t[2] = {r2},\n\
@@ -1825,14 +1927,16 @@ local MonetizationConfig = {{\n\
 \t}},\n\
 }}\n\n\
 return MonetizationConfig\n",
+        preset_lit = luau_str(spec.id),
         curr = luau_str(clean_currency),
-        r1 = reward,
-        r2 = reward * 2,
-        r3 = reward * 3,
-        r4 = reward * 4,
-        r5 = reward * 5,
-        r6 = reward * 7,
-        r7 = reward * 12,
+        comeback_mult = spec.comeback_multiplier,
+        r1 = curve[0],
+        r2 = curve[1],
+        r3 = curve[2],
+        r4 = curve[3],
+        r5 = curve[4],
+        r6 = curve[5],
+        r7 = curve[6],
     );
 
     let service_luau = format!(
@@ -1968,13 +2072,15 @@ end)\n",
 
     let retention_luau = format!(
         "--!strict\n\
--- Daily login streak + 24h retention reward hook with DataStore persistence.\n\
+-- Daily login streak + 48h comeback bonus + escalating retention curve with DataStore persistence.\n\
 local DataStoreService = game:GetService(\"DataStoreService\")\n\
 local Players = game:GetService(\"Players\")\n\
 local ReplicatedStorage = game:GetService(\"ReplicatedStorage\")\n\n\
 local CURRENCY = {curr}\n\
-local BASE_REWARD = {reward}\n\
 local DAY_SECONDS = 86400\n\
+local COMEBACK_SECONDS = 172800\n\
+local COMEBACK_MULTIPLIER = {comeback_mult}\n\
+local DAY_CURVE: {{ number }} = {{ {r1}, {r2}, {r3}, {r4}, {r5}, {r6}, {r7} }}\n\
 local streakStore = DataStoreService:GetDataStore(\"OpenRO_DailyStreak_v1\")\n\n\
 local folder = ReplicatedStorage:FindFirstChild(\"MonetizationRemotes\") or Instance.new(\"Folder\")\n\
 folder.Name = \"MonetizationRemotes\"\n\
@@ -1994,26 +2100,32 @@ claimFn.OnServerInvoke = function(player: Player)\n\
 \tlocal now = os.time()\n\
 \tlocal granted = 0\n\
 \tlocal streakOut = 1\n\
+\tlocal comebackBonus = false\n\
 \tlocal ok, _ = pcall(function()\n\
 \t\tstreakStore:UpdateAsync(key, function(prev)\n\
 \t\t\tlocal rec = if typeof(prev) == \"table\" then prev else {{ streak = 0, lastClaim = 0 }}\n\
-\t\t\tlocal elapsed = now - (tonumber(rec.lastClaim) or 0)\n\
-\t\t\tif elapsed < DAY_SECONDS then\n\
+\t\t\tlocal prevLast = tonumber(rec.lastClaim) or 0\n\
+\t\t\tlocal elapsed = now - prevLast\n\
+\t\t\tif prevLast > 0 and elapsed < DAY_SECONDS then\n\
 \t\t\t\tstreakOut = tonumber(rec.streak) or 1\n\
 \t\t\t\treturn rec\n\
 \t\t\tend\n\
-\t\t\tlocal nextStreak = if elapsed <= DAY_SECONDS * 2 then ((tonumber(rec.streak) or 0) % 7) + 1 else 1\n\
+\t\t\tlocal isComeback = prevLast > 0 and elapsed >= COMEBACK_SECONDS\n\
+\t\t\tlocal nextStreak = if prevLast > 0 and not isComeback then ((tonumber(rec.streak) or 0) % 7) + 1 else 1\n\
 \t\t\tstreakOut = nextStreak\n\
-\t\t\tgranted = BASE_REWARD * nextStreak\n\
-\t\t\treturn {{ streak = nextStreak, lastClaim = now }}\n\
+\t\t\tcomebackBonus = isComeback\n\
+\t\t\tlocal baseAmt = DAY_CURVE[nextStreak] or DAY_CURVE[1]\n\
+\t\t\tgranted = if isComeback then baseAmt * COMEBACK_MULTIPLIER else baseAmt\n\
+\t\t\treturn {{ streak = nextStreak, lastClaim = now, comeback = isComeback }}\n\
 \t\tend)\n\
 \tend)\n\
 \tif ok and granted > 0 then\n\
 \t\taward(player, granted)\n\
 \t\tplayer:SetAttribute(\"DailyStreak\", streakOut)\n\
-\t\treturn {{ claimed = true, reward = granted, streak = streakOut }}\n\
+\t\tplayer:SetAttribute(\"ComebackBonusActive\", comebackBonus)\n\
+\t\treturn {{ claimed = true, reward = granted, streak = streakOut, comebackBonus = comebackBonus }}\n\
 \tend\n\
-\treturn {{ claimed = false, reward = 0, streak = streakOut }}\n\
+\treturn {{ claimed = false, reward = 0, streak = streakOut, comebackBonus = false }}\n\
 end\n\n\
 Players.PlayerAdded:Connect(function(player: Player)\n\
 \tlocal key = \"streak_\" .. tostring(player.UserId)\n\
@@ -2022,12 +2134,21 @@ Players.PlayerAdded:Connect(function(player: Player)\n\
 \tend)\n\
 \tif ok and typeof(rec) == \"table\" then\n\
 \t\tplayer:SetAttribute(\"DailyStreak\", tonumber(rec.streak) or 0)\n\
+\t\tplayer:SetAttribute(\"ComebackBonusActive\", rec.comeback == true)\n\
 \tend\n\
 end)\n\n\
 game:BindToClose(function()\n\
 \ttask.wait(0.2)\n\
 end)\n",
         curr = luau_str(clean_currency),
+        comeback_mult = spec.comeback_multiplier,
+        r1 = curve[0],
+        r2 = curve[1],
+        r3 = curve[2],
+        r4 = curve[3],
+        r5 = curve[4],
+        r6 = curve[5],
+        r7 = curve[6],
     );
 
     vec![
@@ -2052,16 +2173,68 @@ end)\n",
     ]
 }
 
+fn seed_tier_draft_products(
+    root: &Path,
+    spec: &MonetizationTierSpec,
+    currency: &str,
+    replace_only_if_empty: bool,
+) -> usize {
+    let mut added = 0usize;
+    let _ = update_manifest(root, |m| {
+        let arr = m.get("products").and_then(Value::as_array).cloned().unwrap_or_default();
+        if replace_only_if_empty && !arr.is_empty() {
+            return;
+        }
+        let mut out = arr;
+        let existing_keys: std::collections::HashSet<String> = out
+            .iter()
+            .filter_map(|p| p.get("key").and_then(Value::as_str).map(String::from))
+            .collect();
+        for (key, kind, name, desc, price) in spec.drafts {
+            if existing_keys.contains(*key) {
+                continue;
+            }
+            let clean_name = name.replace("Currency", currency);
+            let clean_desc = desc.replace("currency", &currency.to_ascii_lowercase());
+            out.push(json!({
+                "key": key,
+                "kind": kind,
+                "name": clean_name,
+                "description": clean_desc,
+                "priceRobux": price,
+                "forSale": true,
+                "priceApproved": false
+            }));
+            added += 1;
+        }
+        m["products"] = Value::Array(out);
+    });
+    added
+}
+
 fn project_monetization_pack(root: &Path, body: &Value) -> R<Value> {
-    let manifest = read_manifest(root);
+    let tier_preset = body.get("tier_preset").and_then(Value::as_str);
+    let spec = resolve_tier_preset(tier_preset);
     let currency = body
         .get("currency")
         .and_then(Value::as_str)
-        .unwrap_or("Coins");
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(spec.default_currency);
     let daily_reward = body
         .get("daily_base_reward")
         .and_then(Value::as_i64)
-        .unwrap_or(100);
+        .unwrap_or(spec.default_daily_reward);
+
+    let seeded_from_preset = if tier_preset.is_some()
+        && body.get("seed_tier_products").and_then(Value::as_bool) != Some(false)
+    {
+        seed_tier_draft_products(root, &spec, currency, false)
+    } else {
+        0
+    };
+
+    let manifest = read_manifest(root);
     let mut vip_pass_id = body.get("vip_pass_id").and_then(Value::as_u64).unwrap_or(0);
     let mut starter_pack_id = body
         .get("starter_pack_id")
@@ -2086,10 +2259,17 @@ fn project_monetization_pack(root: &Path, body: &Value) -> R<Value> {
             _ => {}
         }
     }
-    let scripts = monetization_pack_luau_scripts(currency, vip_pass_id, starter_pack_id, daily_reward);
+    let scripts = monetization_pack_luau_scripts_with_preset(
+        tier_preset,
+        currency,
+        vip_pass_id,
+        starter_pack_id,
+        daily_reward,
+    );
+    let curve = retention_curve_values(&spec, daily_reward);
     let mut written = Vec::new();
     let mut diagnostics = Vec::new();
-    for (_place_path, rel_path, _cls, src) in &scripts {
+    for (place_path, rel_path, _cls, src) in &scripts {
         let abs = safe_rel(root, rel_path)?;
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent).or_else(|e| err(500, format!("create dir: {e}")))?;
@@ -2098,7 +2278,7 @@ fn project_monetization_pack(root: &Path, body: &Value) -> R<Value> {
         std::fs::write(&tmp, src.as_bytes())
             .and_then(|_| std::fs::rename(&tmp, &abs))
             .or_else(|e| err(500, format!("write {rel_path}: {e}")))?;
-        let rep = crate::luau_check::analyze_script(rel_path, src);
+        let rep = crate::luau_check::analyze_script(place_path, src);
         for d in rep.diagnostics {
             diagnostics.push(d.to_json());
         }
@@ -2107,6 +2287,10 @@ fn project_monetization_pack(root: &Path, body: &Value) -> R<Value> {
     let product_ids = products_codegen(root, &json!({})).ok();
     Ok(json!({
         "ok": true,
+        "tier_preset": spec.id,
+        "comeback_multiplier": spec.comeback_multiplier,
+        "retention_curve": curve,
+        "seeded_products_count": seeded_from_preset,
         "written": written,
         "product_ids_luau": product_ids,
         "diagnostics": diagnostics,
@@ -2119,6 +2303,8 @@ fn project_monetization_pack(root: &Path, body: &Value) -> R<Value> {
 /// - Generates server-authoritative `EconomyShopHandler.server.luau` + client `ShopPromptBridge.client.luau`
 /// - Formats with `stylua` (when installed) and verifies `0` Luau static errors across the Rojo project.
 fn project_monetization_codegen(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
+    let tier_preset = body.get("tier_preset").and_then(Value::as_str);
+    let spec = resolve_tier_preset(tier_preset);
     let seed_defaults = body
         .get("seed_defaults")
         .and_then(Value::as_bool)
@@ -2128,39 +2314,14 @@ fn project_monetization_codegen(ctx: &Ctx, root: &Path, body: &Value) -> R<Value
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-        .unwrap_or("Coins");
+        .unwrap_or(spec.default_currency);
 
-    let mut seeded_products = false;
-    let current_manifest = read_manifest(root);
-    let has_products = current_manifest
-        .get("products")
-        .and_then(Value::as_array)
-        .is_some_and(|a| !a.is_empty());
-    if !has_products && seed_defaults {
-        let _ = update_manifest(root, |m| {
-            m["products"] = json!([
-                {
-                    "key": "vip_pass",
-                    "kind": "game_pass",
-                    "name": "VIP Pass",
-                    "description": "2x rewards and VIP badge",
-                    "priceRobux": 199,
-                    "forSale": true,
-                    "priceApproved": false
-                },
-                {
-                    "key": "starter_coins",
-                    "kind": "developer_product",
-                    "name": format!("500 {currency}"),
-                    "description": format!("Instant 500 {currency} pack"),
-                    "priceRobux": 49,
-                    "forSale": true,
-                    "priceApproved": false
-                }
-            ]);
-        });
-        seeded_products = true;
-    }
+    let seeded_count = if seed_defaults {
+        seed_tier_draft_products(root, &spec, currency, tier_preset.is_none())
+    } else {
+        0
+    };
+    let seeded_products = seeded_count > 0;
 
     let pack_res = project_monetization_pack(root, body)?;
     let mut written: Vec<String> = pack_res
@@ -2194,7 +2355,7 @@ fn project_monetization_codegen(ctx: &Ctx, root: &Path, body: &Value) -> R<Value
 
     let economy_handler_src = format!(
         "--!strict\n\
--- Auto-generated by OpenRO v1.6.0 Monetization & Economy Codegen.\n\
+-- Auto-generated by OpenRO v1.7.0 Monetization & Economy Codegen.\n\
 -- Server-authoritative purchase prompting wired to ProductIds + MonetizationConfig.\n\
 local MarketplaceService = game:GetService(\"MarketplaceService\")\n\
 local Players = game:GetService(\"Players\")\n\
@@ -2290,7 +2451,7 @@ end\n",
 
     let shop_bridge_src = "\
 --!strict\n\
--- Auto-generated by OpenRO v1.6.0 Monetization & Economy Codegen.\n\
+-- Auto-generated by OpenRO v1.7.0 Monetization & Economy Codegen.\n\
 local ReplicatedStorage = game:GetService(\"ReplicatedStorage\")\n\
 local StarterGui = game:GetService(\"StarterGui\")\n\
 \n\
@@ -2341,6 +2502,9 @@ end\n";
     let readiness = project_readiness(ctx, root)?;
     Ok(json!({
         "ok": true,
+        "tier_preset": spec.id,
+        "comeback_multiplier": spec.comeback_multiplier,
+        "retention_curve": pack_res["retention_curve"],
         "written": written,
         "seeded_products": seeded_products,
         "product_count": products.len(),

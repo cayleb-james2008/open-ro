@@ -1,6 +1,6 @@
 [package]
 name = "openro-rs"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2021"
 
 [dependencies]
@@ -15,6 +15,6 @@ debug = 0
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = "symbols"
