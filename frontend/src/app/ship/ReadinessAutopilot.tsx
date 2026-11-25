@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { AlertTriangle, Check, Rocket, Sparkles, Wrench } from "lucide-react";
+import { AlertTriangle, Check, Coins, Rocket, Sparkles, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
 import { ProgressCircle } from "@/components/ProgressCircle/ProgressCircle";
-import { call, projUrl, type AutopilotResult, type ProjectReadiness } from "./api";
+import { call, projUrl, type AutopilotResult, type MonetizationCodegenResult, type ProjectReadiness } from "./api";
 
 /**
  * 1-click Ship & Monetization Readiness Autopilot:
@@ -27,7 +27,9 @@ export function ReadinessAutopilot({
   const [readiness, setReadiness] = useState<ProjectReadiness | null>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
+  const [codegenBusy, setCodegenBusy] = useState(false);
   const [lastResult, setLastResult] = useState<AutopilotResult | null>(null);
+  const [codegenInfo, setCodegenInfo] = useState<string>("");
   const [error, setError] = useState("");
 
   const loadReadiness = useCallback(async () => {
@@ -44,8 +46,33 @@ export function ReadinessAutopilot({
 
   useEffect(() => {
     setLastResult(null);
+    setCodegenInfo("");
     void loadReadiness();
   }, [loadReadiness]);
+
+  const runEconomyCodegen = async () => {
+    setCodegenBusy(true);
+    setError("");
+    const r = await call<MonetizationCodegenResult>(projUrl(projectId, "/monetization/codegen"), {
+      seed_defaults: true,
+    });
+    setCodegenBusy(false);
+    if (!r.ok) {
+      setError(r.error || "Economy codegen could not finish.");
+      toast.error(r.error || "Economy codegen failed");
+      return;
+    }
+    if (r.readiness && Array.isArray(r.readiness.checks)) {
+      setReadiness(r.readiness);
+    } else {
+      await loadReadiness();
+    }
+    const count = r.written?.length ?? 0;
+    const summary = `Generated ${count} Luau monetization/economy script(s) (${r.luau_errors ?? 0} errors)${r.seeded_products ? " and seeded starter Pass/Product drafts" : ""}`;
+    setCodegenInfo(summary);
+    toast.success(`Economy & Shop Luau generated (${r.luau_errors ?? 0} errors)`);
+    await onCompleted?.();
+  };
 
   const runAutopilot = async () => {
     setRunning(true);
@@ -112,11 +139,23 @@ export function ReadinessAutopilot({
             variant="default"
             size="sm"
             loading={running}
+            disabled={codegenBusy}
             onClick={() => void runAutopilot()}
             data-run-autopilot
           >
             <Sparkles className="size-3.5" strokeWidth={1.5} aria-hidden />
             {fixableCount > 0 ? "Auto-Fix & Prepare to Ship" : "Re-Verify & Build"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            loading={codegenBusy}
+            disabled={running}
+            onClick={() => void runEconomyCodegen()}
+            data-run-economy-codegen
+          >
+            <Coins className="size-3.5" strokeWidth={1.5} aria-hidden />
+            Generate Shop &amp; Economy
           </Button>
           {onOpenSettings && readiness?.checks?.some((c) => c.id === "opencloud_auth" && !c.ok) && (
             <Button variant="outline" size="sm" onClick={onOpenSettings}>
@@ -197,6 +236,12 @@ export function ReadinessAutopilot({
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {codegenInfo && (
+        <div className="rounded-sm border border-hairline bg-board/40 px-3 py-2 text-xs text-pill-active-fg" data-economy-codegen-summary>
+          {codegenInfo}
         </div>
       )}
 

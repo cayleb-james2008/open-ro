@@ -24,7 +24,7 @@ const VARIANT_CLS: Record<ButtonVariant, string> = {
 };
 
 const SIZE_CLS: Record<ButtonSize, string> = {
-  xs: "h-7 gap-1 rounded-md px-2 text-xs",
+  xs: "h-8 gap-1 rounded-md px-2 text-xs",
   sm: "h-8 gap-1.5 rounded-lg px-2.5 text-sm",
   default: "h-9 gap-2 rounded-lg px-3 text-sm",
   lg: "h-10 gap-2 rounded-lg px-4 text-sm",
@@ -295,7 +295,7 @@ export function SegmentedControlItem({
       type={type}
       className={cn(
         "relative inline-flex shrink-0 cursor-pointer select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-transparent font-medium transition-[color] duration-(--dur-reveal) ease-(--ease-house) motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-focus focus-visible:outline-offset-1 disabled:pointer-events-none disabled:cursor-not-allowed disabled:text-ink-3 max-md:min-h-11",
-        s === "sm" ? "h-7 px-2 text-xs" : s === "lg" ? "h-9 px-3 text-sm" : "h-8 px-2.5 text-sm",
+        s === "sm" ? "h-8 px-2 text-xs" : s === "lg" ? "h-9 px-3 text-sm" : "h-8 px-2.5 text-sm",
         checked ? "text-ink" : "bg-transparent text-ink-2 hover:text-ink",
         className,
       )}

@@ -3881,6 +3881,10 @@ fn extract_status_from_agent(agent: Option<&mut Agent>) -> StatusInfo {
     }
 }
 
+pub fn refresh_status_cache(shared: &Shared) {
+    let _ = status_info(shared);
+}
+
 fn status_info(shared: &Shared) -> StatusInfo {
     match shared.agent.try_lock() {
         Ok(mut guard) => {
@@ -4453,6 +4457,7 @@ fn try_route_opencloud_assets(
                 || path.ends_with("/products/sync")
                 || path.ends_with("/products/codegen")
                 || path.ends_with("/monetization/pack")
+                || path.ends_with("/monetization/codegen")
                 || path.ends_with("/readiness")
                 || path.ends_with("/autopilot")
                 || path.ends_with("/universe")
@@ -7792,15 +7797,46 @@ pub fn render_page_full(
             names.join(", ")
         ));
     }
-    let can_build = model_configured && studio_connected;
-    INDEX_HTML
-        .replace("__KEY_BANNER__", &banners)
-        .replace("__CHIP_CLASS__", chip_class)
-        .replace("__CHIP__", chip)
-        .replace("__CAN_BUILD__", &can_build.to_string())
-        .replace("__STUDIO_CONNECTED__", &studio_connected.to_string())
-        .replace("__WORKSPACE_MODE__", workspace_mode)
-        .replace("__GAME_NAME__", &esc_html(game_name))
+    let can_build = (model_configured && studio_connected).to_string();
+    let studio_str = studio_connected.to_string();
+    let game_escaped = esc_html(game_name);
+    let mut out = String::with_capacity(INDEX_HTML.len() + banners.len() + 64);
+    let mut rest = INDEX_HTML;
+    while let Some(pos) = rest.find("__") {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos..];
+        let matched = [
+            ("__KEY_BANNER__", banners.as_str()),
+            ("__CHIP_CLASS__", chip_class),
+            ("__CHIP__", chip),
+            ("__CAN_BUILD__", can_build.as_str()),
+            ("__STUDIO_CONNECTED__", studio_str.as_str()),
+            ("__WORKSPACE_MODE__", workspace_mode),
+            ("__GAME_NAME__", game_escaped.as_str()),
+        ]
+        .into_iter()
+        .find(|(tok, _)| after.starts_with(tok));
+        if let Some((tok, val)) = matched {
+            out.push_str(val);
+            rest = &after[tok.len()..];
+        } else {
+            out.push_str("__");
+            rest = &after[2..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+pub fn prewarm_index_cache(shared: &Shared) {
+    let info = status_info(shared);
+    let _ = cached_index(
+        &shared.game_name,
+        info.studio_connected,
+        info.model_configured,
+        &shared.store_recovered,
+        info.workspace_mode,
+    );
 }
 
 #[derive(Clone)]

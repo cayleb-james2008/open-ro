@@ -151,6 +151,15 @@ export type AutopilotResult = {
   remaining_manual: string[];
   readiness?: ProjectReadiness;
 };
+export type MonetizationCodegenResult = {
+  written: string[];
+  seeded_products: boolean;
+  product_count: number;
+  luau_errors: number;
+  luau_warnings: number;
+  diagnostics?: ReadinessDiagnostic[];
+  readiness?: ProjectReadiness;
+};
 
 export type Res<T> = { ok: boolean; httpStatus: number; error?: string } & Partial<T>;
 
