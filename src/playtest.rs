@@ -1584,17 +1584,8 @@ pub fn draft_assertion_fix_plan(r: &ProjectRef, assertion_id: &str) -> Result<Va
     Ok(json!({ "ok": true, "plan": plan }))
 }
 
-pub fn apply_assertion_fix_and_rerun(
-    shared: &Shared,
-    r: &ProjectRef,
-    assertion_id: &str,
-    body: &Value,
-) -> Result<Reply, Reply> {
+fn apply_single_assertion_fix(dir: &Path, assertion_id: &str) -> Result<Vec<String>, Reply> {
     let id = assertion_id.trim();
-    if id.is_empty() {
-        return Err(Reply::bad("assertion_id is required"));
-    }
-    let plan = fix_plan_spec(&r.dir, id);
     let mut applied_files = Vec::new();
     match id {
         "monetization_guard" => {
@@ -1606,18 +1597,18 @@ pub fn apply_assertion_fix_and_rerun(
                 100,
             );
             for (_place_path, rel_path, _cls, src) in &scripts {
-                write_project_luau(&r.dir, rel_path, src)?;
+                write_project_luau(dir, rel_path, src)?;
                 applied_files.push((*rel_path).to_string());
             }
         }
         "server_entrypoint" => {
             let rel = "src/server/GameBootstrap.server.luau";
             let src = "--!strict\n-- Auto-scaffolded by OpenRO Playtest Auto-Fix.\nlocal Players = game:GetService(\"Players\")\n\nlocal function setupPlayer(player: Player)\n\tlocal ls = player:FindFirstChild(\"leaderstats\")\n\tif not ls then\n\t\tlocal folder = Instance.new(\"Folder\")\n\t\tfolder.Name = \"leaderstats\"\n\t\tfolder.Parent = player\n\tend\nend\n\nPlayers.PlayerAdded:Connect(setupPlayer)\nfor _, p in Players:GetPlayers() do\n\tsetupPlayer(p)\nend\n";
-            write_project_luau(&r.dir, rel, src)?;
+            write_project_luau(dir, rel, src)?;
             applied_files.push(rel.to_string());
         }
         "luau_static" => {
-            let src_root = r.dir.join("src");
+            let src_root = dir.join("src");
             let mut stack = vec![src_root];
             while let Some(cur) = stack.pop() {
                 let Ok(rd) = std::fs::read_dir(&cur) else { continue };
@@ -1638,29 +1629,44 @@ pub fn apply_assertion_fix_and_rerun(
                             } else {
                                 "--!strict\n-- Auto-initialized by OpenRO Playtest Auto-Fix.\nreturn {}\n"
                             };
-                            let rel = p.strip_prefix(&r.dir).unwrap_or(&p).to_string_lossy().replace('\\', "/");
-                            write_project_luau(&r.dir, &rel, stub)?;
+                            let rel = p.strip_prefix(dir).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+                            write_project_luau(dir, &rel, stub)?;
                             applied_files.push(rel);
                         }
                     }
                 }
             }
-            let _ = crate::projects::format_project(&r.dir, None);
+            let _ = crate::projects::format_project(dir, None);
         }
         "core_loop_move" | "core_loop_act" | "core_loop_hud" => {
             let srv_rel = "src/server/CoreLoopBootstrap.server.luau";
             let srv_src = "--!strict\n-- Auto-scaffolded deterministic core loop server handler.\nlocal ReplicatedStorage = game:GetService(\"ReplicatedStorage\")\nlocal folder = ReplicatedStorage:FindFirstChild(\"OpenROCoreLoop\") or Instance.new(\"Folder\")\nfolder.Name = \"OpenROCoreLoop\"\nfolder.Parent = ReplicatedStorage\nlocal ev = folder:FindFirstChild(\"CoreLoopAction\") or Instance.new(\"RemoteEvent\")\nev.Name = \"CoreLoopAction\"\nev.Parent = folder\nif ev:IsA(\"RemoteEvent\") then\n\tev.OnServerEvent:Connect(function(player: Player)\n\t\tplayer:SetAttribute(\"LastCoreLoopAt\", os.time())\n\tend)\nend\n";
             let cli_rel = "src/client/CoreLoopHud.client.luau";
             let cli_src = "--!strict\n-- Auto-scaffolded deterministic core loop HUD bridge.\nlocal Players = game:GetService(\"Players\")\nlocal ReplicatedStorage = game:GetService(\"ReplicatedStorage\")\nlocal player = Players.LocalPlayer\nif player then\n\tlocal folder = ReplicatedStorage:WaitForChild(\"OpenROCoreLoop\", 5)\n\tif folder then\n\t\tlocal ev = folder:FindFirstChild(\"CoreLoopAction\")\n\t\tif ev and ev:IsA(\"RemoteEvent\") then\n\t\t\tev:FireServer()\n\t\tend\n\tend\nend\n";
-            write_project_luau(&r.dir, srv_rel, srv_src)?;
-            write_project_luau(&r.dir, cli_rel, cli_src)?;
+            write_project_luau(dir, srv_rel, srv_src)?;
+            write_project_luau(dir, cli_rel, cli_src)?;
             applied_files.push(srv_rel.to_string());
             applied_files.push(cli_rel.to_string());
         }
         _ => {
-            let _ = crate::projects::format_project(&r.dir, None);
+            let _ = crate::projects::format_project(dir, None);
         }
     }
+    Ok(applied_files)
+}
+
+pub fn apply_assertion_fix_and_rerun(
+    shared: &Shared,
+    r: &ProjectRef,
+    assertion_id: &str,
+    body: &Value,
+) -> Result<Reply, Reply> {
+    let id = assertion_id.trim();
+    if id.is_empty() {
+        return Err(Reply::bad("assertion_id is required"));
+    }
+    let plan = fix_plan_spec(&r.dir, id);
+    let applied_files = apply_single_assertion_fix(&r.dir, id)?;
 
     let rerun_reply = rerun_assertions(
         shared,
@@ -1671,6 +1677,73 @@ pub fn apply_assertion_fix_and_rerun(
     Ok(Reply::ok(json!({
         "plan": plan,
         "applied_files": applied_files,
+        "rerun": rerun_json,
+    })))
+}
+
+/// Launch Autopilot: fix all failing assertions, build `.rbxlx`, verify Ship Pack ZIP CRC-32,
+/// and re-run the deterministic assertion suite in 1 click.
+pub fn fix_all_and_prepare_export(shared: &Shared, r: &ProjectRef, body: &Value) -> Result<Reply, Reply> {
+    let prev_rep = latest_report_json(&r.dir);
+    let core_loop = prev_rep
+        .as_ref()
+        .and_then(|rep| rep.get("core_loop"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let initial = build_deterministic_assertions(&r.dir, &[], &[], &core_loop, 0);
+    let mut failing_ids: Vec<String> = initial
+        .iter()
+        .filter(|a| a["passed"].as_bool() != Some(true))
+        .filter_map(|a| a["id"].as_str().map(String::from))
+        .collect();
+    if failing_ids.is_empty() {
+        failing_ids.push("luau_static".to_string());
+    }
+
+    let mut applied_files: Vec<String> = Vec::new();
+    let mut fixed_ids: Vec<String> = Vec::new();
+    for id in &failing_ids {
+        let written = apply_single_assertion_fix(&r.dir, id)?;
+        for f in written {
+            if !applied_files.contains(&f) {
+                applied_files.push(f);
+            }
+        }
+        fixed_ids.push(id.clone());
+    }
+    let _ = crate::projects::format_project(&r.dir, None);
+
+    let build_res = crate::projects::build(&r.dir, "auto", None);
+    let (build_ok, build_json) = match build_res {
+        Ok(b) => (true, b),
+        Err(e) => (false, json!({ "ok": false, "error": e })),
+    };
+
+    let manifest = projects::manifest(&r.dir).unwrap_or_else(|_| json!({}));
+    let rojo_file = manifest["rojoProject"]
+        .as_str()
+        .unwrap_or(projects::DEFAULT_ROJO_FILE);
+    let ship_pack_integrity = crate::opencloud::project_ship_pack_integrity(&r.dir, rojo_file);
+    let zip_ok = ship_pack_integrity["ok"].as_bool().unwrap_or(false);
+
+    let rerun_reply = rerun_assertions(
+        shared,
+        r,
+        &json!({ "offline": body.get("offline").and_then(Value::as_bool).unwrap_or(true) }),
+    )?;
+    let rerun_json: Value = serde_json::from_slice(&rerun_reply.body).unwrap_or_else(|_| json!({}));
+    let assertions_ok = rerun_json["passed"].as_bool().unwrap_or(false);
+
+    Ok(Reply::ok(json!({
+        "applied_files": applied_files,
+        "fixed_ids": fixed_ids,
+        "build": build_json,
+        "ship_pack_integrity": ship_pack_integrity,
+        "export_ready": assertions_ok && build_ok && zip_ok,
+        "export_urls": {
+            "rbxlx": "/api/export/rbxlx",
+            "ship_pack": "/api/export/bundle"
+        },
         "rerun": rerun_json,
     })))
 }

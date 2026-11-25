@@ -1,11 +1,11 @@
-# OpenRO (`v1.9.0`)
+# OpenRO (`v1.10.0`)
 
 [![Release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/cayleb-james2008/open-ro/release.yml?branch=main&label=build)](https://github.com/cayleb-james2008/open-ro/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Stack](https://img.shields.io/badge/stack-Rust%20%2B%20React%2019%20%2B%20TypeScript-0f172a.svg)](#architecture)
 
-**Single-binary cross-platform Roblox Studio AI IDE** (`openro-rs`) for building, verifying, monetizing, and publishing complete Roblox games end-to-end — from Rojo project scaffolding and multi-agent Teamwork to deterministic playtest assertion suites, genre retention presets, Creator Hub browser setup, and Roblox Open Cloud publishing.
+**Single-binary cross-platform Roblox Studio AI IDE** (`openro-rs`) for building, verifying, monetizing, and publishing complete Roblox games end-to-end — from Rojo project scaffolding and multi-agent Teamwork to 1-click Launch Autopilot (`Fix All Failing Checks` -> `.rbxlx` / `.zip`), deterministic playtest assertion suites, genre retention presets, Creator Hub browser setup, and Roblox Open Cloud publishing.
 
 <p align="center">
   <picture>
@@ -16,9 +16,9 @@
 
 ## Why OpenRO
 
-- **Zero-lag 3-pane Studio Copilot:** Explorer, Agent/Plan/Ask thread with reviewable Luau diffs, and tabbed Studio Workbench (`Viewport`, `Code`, `Assets`, `Ship`, `Swarm`) served from a single `14.75 MB` binary (`56 KB` gzip initial shell).
-- **1-Click Ship & Monetization Readiness:** Genre tier presets (`Starter Obby / Sim`, `Anime Gacha / RPG`, `Competitive Arena`) wire `MonetizationConfig.luau`, idempotent `ProcessReceipt`, 7-day escalating streak + 48h comeback bonus hooks, draft Robux tiers (`priceApproved: false` owner gate), and CRC-32 verified Rojo Ship Packs.
-- **Deterministic Playtest Assertion Lab (`/play` / `#/lab`):** Structured per-room JSON assertions (`Luau`, `Runtime`, `Core Loop`, `Economy`, `Visuals`), 1-click **Re-Run All Assertions** with fixed/regressed diffs, and JSON report export.
+- **Zero-lag 3-pane Studio Copilot:** Explorer, Agent/Plan/Ask thread with reviewable Luau diffs, and tabbed Studio Workbench (`Viewport`, `Code`, `Assets`, `Ship`, `Swarm`) served from a single `10.90 MB` binary (`56.2 KB` gzip initial shell).
+- **1-Click Launch Autopilot & Monetization Readiness:** **Fix All Failing Checks** repairs failing Luau/Runtime/Monetization assertions in batch, rebuilds `.rbxl`, verifies Ship Pack ZIP CRC-32 / ZIP-slip integrity, and unlocks 1-click `.rbxlx` and `.zip` exports alongside genre tier presets (`Starter Obby / Sim`, `Anime Gacha / RPG`, `Competitive Arena`), idempotent `ProcessReceipt`, 7-day escalating streak + 48h comeback bonus hooks, and draft Robux tiers (`priceApproved: false` owner gate).
+- **Deterministic Playtest Assertion Lab (`/play` / `#/lab`):** Structured per-room JSON assertions (`Luau`, `Runtime`, `Core Loop`, `Economy`, `Visuals`), 1-click **Re-Run All Assertions** with fixed/regressed diffs, targeted Luau auto-fix plans, and JSON report export.
 - **Full Browser Demo Parity (`web-dist/index.html`):** Offline-capable standalone Studio web engine with zero external network calls.
 
 ## Feature Gallery
@@ -55,16 +55,16 @@ flowchart LR
   SRV --> OC["Open Cloud &amp; Creator Hub<br/>0600 Secrets + Price Approval Gate"]
 ```
 
-## Verified Benchmarks (`v1.9.0` vs `v1.2.0`)
+## Verified Benchmarks (`v1.10.0` vs `v1.2.0`)
 
-| Metric | `v1.2.0` Baseline | `v1.9.0` Verified | Delta |
+| Metric | `v1.2.0` Baseline | `v1.10.0` Verified (`#154` pinned) | Delta |
 | --- | --- | --- | --- |
-| Release Binary Size | `19.00 MB` | **`14.79 MB`** (`15,512,472 B`) | `-22.2%` |
-| Initial `/` Payload | `~1,368 KB` raw / `~459 KB` gz | **`235.0 KB`** raw / **`56.2 KB`** gz | **`-87.8%` wire** |
-| Cold Boot (`#154` pinned) | `1,470 ms` | **`21.36–33.66 ms`** (`/`: `25.64 ms`) | **`-97.7%`** |
-| Peak RSS (`VmHWM`) | `115.20 MB` | **`8.98 MB`** (`9,196 KB`, 16w pinned) | **`-92.2%`** |
-| Concurrent HTTP | `875 req/s` (`141.7 ms` p95) | **`30,907.0 req/s`** (`0.94 ms` p95, 16w pinned) | **`35.3x`** |
-| Security & UI Gates | `43/43` fuzz | **`0` sloplint fails, `307` Rust tests** | Pass |
+| Release Binary Size | `19.00 MB` | **`10.90 MB`** (`11,428,688 B`) | **`-42.6%`** |
+| Initial `/` Payload | `~1,368 KB` raw / `~459 KB` gz | **`235.5 KB`** raw / **`56.2 KB`** gz | **`-87.8%` wire** |
+| Cold Boot (`#154` pinned) | `1,470 ms` | **`28.88–32.93 ms`** (`30.25 ms` median) | **`-97.9%`** |
+| Peak RSS (`VmHWM`) | `115.20 MB` | **`9.52 MB`** (`9,752 KB`, 16w pinned) | **`-91.7%`** |
+| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`12,799.7 req/s`** (`1.86 ms` p95, `0` errs) | **`14.6x` (`-98.7%` p95)** |
+| Security & UI Gates | `43/43` fuzz | **`0` sloplint fails, `308` Rust tests, `10/10` SSE** | Pass |
 
 ## Quick Start
 

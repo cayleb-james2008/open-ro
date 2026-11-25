@@ -259,7 +259,7 @@ pub fn route(shared: &Arc<Shared>, method: &str, full_path: &str, body: &[u8], l
             | ("POST", ["workspace"] | ["workspace", "remove"] | ["create"] | ["open"])
             | ("GET", [_])
             | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "format" | "run-lune" | "open-in-studio"])
-            | ("POST", [_, "sync", "diff"] | [_, "playtests", "rerun"] | [_, "playtests", "fix-plan"] | [_, "playtests", "fix-apply"])
+            | ("POST", [_, "sync", "diff"] | [_, "playtests", "rerun"] | [_, "playtests", "fix-plan"] | [_, "playtests", "fix-apply"] | [_, "playtests", "fix-all"])
             | ("GET", [_, "builds" | "playtests" | "files" | "file" | "preview"])
             | ("POST", [_, "file"] | [_, "file", "delete"] | [_, "file", "edit"])
             | ("GET", [_, "git", "status" | "log"])
@@ -633,6 +633,12 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
             let aid = b["assertion_id"].as_str().unwrap_or("");
             let _busy = Busy::new(&shared.busy);
             crate::playtest::apply_assertion_fix_and_rerun(shared, &r, aid, &b)
+        }
+        ("POST", [id, "playtests", "fix-all"]) => {
+            let r = project_of(shared, id)?;
+            let b = if body.is_empty() { json!({}) } else { parse_body(body)? };
+            let _busy = Busy::new(&shared.busy);
+            crate::playtest::fix_all_and_prepare_export(shared, &r, &b)
         }
         ("GET", [id, "investigation", "evidence"]) => {
             let r = project_of(shared, id)?;

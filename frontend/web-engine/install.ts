@@ -1,4 +1,4 @@
-// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.9.0 standalone web builds.
+// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.10.0 standalone web builds.
 // Features:
 //  - RoPilot-Grade 3-Pane Studio IDE (Agent | Plan | Ask, Reviewable Unified Diffs, @Context Chips, Companion Plugin)
 //  - Embedded Studio Workbench & 13 Official Studio MCP Tools running live against the in-browser Place DataModel
@@ -761,6 +761,73 @@ export function installWebEngine() {
     void idbSave(state);
   };
 
+  const buildStudioAssertions = (place: EngineState["chats"][string]["place"]) => {
+    const verdict = validatePlace(place);
+    const scripts = place.scripts || {};
+    const scriptCount = Object.keys(scripts).length;
+    const instCount = Object.keys(place.instances || {}).length;
+    const hasService = Boolean(scripts["ServerScriptService.MonetizationService"]);
+    const hasRetention = Boolean(scripts["ServerScriptService.DailyRewardRetention"]);
+    const assertions = [
+      {
+        id: "runtime_console",
+        room: "Runtime",
+        label: "Browser Place Luau validation",
+        passed: verdict.passed,
+        status: verdict.passed ? "passed" : "failed",
+        detail: verdict.console,
+      },
+      {
+        id: "place_scripts",
+        room: "Luau",
+        label: "Place script tree populated",
+        passed: scriptCount > 0,
+        status: scriptCount > 0 ? "passed" : "failed",
+        detail: `${scriptCount} script(s), ${instCount} instance(s)`,
+      },
+      {
+        id: "economy_guard",
+        room: "Economy",
+        label: "Monetization & retention guards",
+        passed: hasService && hasRetention,
+        status: hasService && hasRetention ? "passed" : "failed",
+        detail: `Service=${hasService ? "ok" : "missing"} · Retention=${hasRetention ? "ok" : "missing"}`,
+      },
+    ];
+    return { verdict, assertions };
+  };
+
+  const installMonetizationPack = (chat: EngineState["chats"][string], reqBody: Record<string, unknown>) => {
+    const presetTable: Record<string, { currency: string; base: number; comeback: number; mults: number[] }> = {
+      starter_obby: { currency: "Coins", base: 100, comeback: 2, mults: [1, 2, 3, 4, 5, 7, 12] },
+      anime_gacha_rpg: { currency: "Gems", base: 150, comeback: 3, mults: [1, 2, 3, 5, 7, 10, 15] },
+      competitive_arena: { currency: "Credits", base: 120, comeback: 2, mults: [1, 2, 3, 4, 6, 8, 12] },
+    };
+    const rawPreset = typeof reqBody.tier_preset === "string" ? reqBody.tier_preset.trim() : "starter_obby";
+    const spec = presetTable[rawPreset] ?? presetTable.starter_obby;
+    const tierPreset = presetTable[rawPreset] ? rawPreset : "starter_obby";
+    const currency = typeof reqBody.currency === "string" && reqBody.currency.trim() ? reqBody.currency.trim() : spec.currency;
+    const baseReward = Math.max(10, Number(reqBody.daily_base_reward) || spec.base);
+    const curve = spec.mults.map((m) => m * baseReward);
+    const beforePlace = clonePlace(chat.place);
+    const packScripts: Record<string, string> = {
+      "ReplicatedStorage.MonetizationConfig": `--!strict\nlocal MonetizationConfig = {\n\tTierPreset = "${tierPreset}",\n\tCurrency = "${currency}",\n\tComebackThresholdHours = 48,\n\tComebackMultiplier = ${spec.comeback},\n\tDailyRewards = { [1] = ${curve[0]}, [2] = ${curve[1]}, [3] = ${curve[2]}, [4] = ${curve[3]}, [5] = ${curve[4]}, [6] = ${curve[5]}, [7] = ${curve[6]} },\n}\nreturn MonetizationConfig\n`,
+      "ServerScriptService.MonetizationService": `--!strict\nlocal DataStoreService = game:GetService("DataStoreService")\nlocal MarketplaceService = game:GetService("MarketplaceService")\nlocal Players = game:GetService("Players")\nlocal receiptStore = DataStoreService:GetDataStore("OpenRO_Receipts_v1")\nMarketplaceService.ProcessReceipt = function(receiptInfo)\n\tlocal player = Players:GetPlayerByUserId(receiptInfo.PlayerId)\n\tif not player then return Enum.ProductPurchaseDecision.NotProcessedYet end\n\tlocal receiptKey = tostring(receiptInfo.PlayerId) .. "_" .. tostring(receiptInfo.PurchaseId)\n\tlocal ok = pcall(function()\n\t\treceiptStore:UpdateAsync(receiptKey, function() return true end)\n\tend)\n\tif not ok then return Enum.ProductPurchaseDecision.NotProcessedYet end\n\treturn Enum.ProductPurchaseDecision.PurchaseGranted\nend\ngame:BindToClose(function() task.wait(0.2) end)\n`,
+      "ServerScriptService.DailyRewardRetention": `--!strict\nlocal DataStoreService = game:GetService("DataStoreService")\nlocal ReplicatedStorage = game:GetService("ReplicatedStorage")\nlocal DAY_SECONDS = 86400\nlocal COMEBACK_SECONDS = 172800\nlocal COMEBACK_MULTIPLIER = ${spec.comeback}\nlocal DAY_CURVE: { number } = { ${curve.join(", ")} }\nlocal streakStore = DataStoreService:GetDataStore("OpenRO_DailyStreak_v1")\nlocal folder = ReplicatedStorage:FindFirstChild("MonetizationRemotes") or Instance.new("Folder")\nfolder.Name = "MonetizationRemotes"\nfolder.Parent = ReplicatedStorage\nlocal claimFn = Instance.new("RemoteFunction")\nclaimFn.Name = "ClaimDailyReward"\nclaimFn.Parent = folder\nclaimFn.OnServerInvoke = function(player: Player)\n\tlocal now = os.time()\n\tlocal granted = 0\n\tlocal comebackBonus = false\n\tlocal ok, res = pcall(function()\n\t\treturn streakStore:UpdateAsync("streak_" .. tostring(player.UserId), function(prev)\n\t\t\tlocal rec = if typeof(prev) == "table" then prev else { streak = 0, lastClaim = 0 }\n\t\t\tlocal prevLast = tonumber(rec.lastClaim) or 0\n\t\t\tlocal elapsed = now - prevLast\n\t\t\tif prevLast > 0 and elapsed < DAY_SECONDS then return rec end\n\t\t\tlocal isComeback = prevLast > 0 and elapsed >= COMEBACK_SECONDS\n\t\t\tlocal nextStreak = if prevLast > 0 and not isComeback then ((tonumber(rec.streak) or 0) % 7) + 1 else 1\n\t\t\tcomebackBonus = isComeback\n\t\t\tlocal baseAmt = DAY_CURVE[nextStreak] or DAY_CURVE[1]\n\t\t\tgranted = if isComeback then baseAmt * COMEBACK_MULTIPLIER else baseAmt\n\t\t\treturn { streak = nextStreak, lastClaim = now, comeback = isComeback }\n\t\tend)\n\tend)\n\treturn { claimed = ok and granted > 0, reward = granted, streak = if ok and type(res) == "table" then res.streak else 1, comebackBonus = comebackBonus }\nend\ngame:BindToClose(function() task.wait(0.2) end)\n`,
+    };
+    const changes: ChangeEntry[] = [];
+    for (const [sp, src] of Object.entries(packScripts)) {
+      const prev = chat.place.scripts[sp] ?? null;
+      chat.place.scripts[sp] = src;
+      changes.push({ kind: "script", path: sp, prev, post: src });
+    }
+    chat.undoStack.push({ changes, skills: ["monetization_pack"] });
+    chat.redoStack = [];
+    const diff = computePlaceDiff(beforePlace, chat.place);
+    const diags = analyzePlaceLuau(chat.place);
+    return { tierPreset, spec, curve, packScripts, diff, diags };
+  };
+
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const rawUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     let u: URL;
@@ -803,7 +870,7 @@ export function installWebEngine() {
     if (!chat.playMode) chat.playMode = "edit";
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "1.9.0" });
+      return jsonResponse({ name: "openro-rs", version: "1.10.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -814,7 +881,7 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "1.9.0",
+        version: "1.10.0",
         sse_build_stream: true,
         studio_stream: true,
         assets_api: true,
@@ -1009,38 +1076,7 @@ export function installWebEngine() {
         class_name: "Playtest",
         summary: "Started Browser Studio 3D Playtest",
       });
-      const verdict = validatePlace(chat.place);
-      const scripts = chat.place.scripts || {};
-      const scriptCount = Object.keys(scripts).length;
-      const instCount = Object.keys(chat.place.instances || {}).length;
-      const hasService = Boolean(scripts["ServerScriptService.MonetizationService"]);
-      const hasRetention = Boolean(scripts["ServerScriptService.DailyRewardRetention"]);
-      const assertions = [
-        {
-          id: "runtime_console",
-          room: "Runtime",
-          label: "Browser Place Luau validation",
-          passed: verdict.passed,
-          status: verdict.passed ? "passed" : "failed",
-          detail: verdict.console,
-        },
-        {
-          id: "place_scripts",
-          room: "Luau",
-          label: "Place script tree populated",
-          passed: scriptCount > 0,
-          status: scriptCount > 0 ? "passed" : "failed",
-          detail: `${scriptCount} script(s), ${instCount} instance(s)`,
-        },
-        {
-          id: "economy_guard",
-          room: "Economy",
-          label: "Monetization & retention guards",
-          passed: hasService && hasRetention,
-          status: hasService && hasRetention ? "passed" : "failed",
-          detail: `Service=${hasService ? "ok" : "missing"} · Retention=${hasRetention ? "ok" : "missing"}`,
-        },
-      ];
+      const { verdict, assertions } = buildStudioAssertions(chat.place);
       recordStudioAction(state, chat, {
         kind: "playtest_log",
         path: "Workspace",
@@ -1070,6 +1106,43 @@ export function installWebEngine() {
           fixed: 0,
           regressed: 0,
           items: assertions.map((a) => ({ ...a, delta: a.passed ? "new_pass" : "new_fail" })),
+        },
+      });
+    }
+    if (method === "POST" && u.pathname === "/api/studio/playtest/fix-all") {
+      const scripts = chat.place.scripts || {};
+      const missingMonetization = !scripts["ServerScriptService.MonetizationService"] || !scripts["ServerScriptService.DailyRewardRetention"];
+      const installed = missingMonetization ? installMonetizationPack(chat, body) : null;
+      const { verdict, assertions } = buildStudioAssertions(chat.place);
+      const exportReady = verdict.passed && assertions.every((a) => a.passed);
+      recordStudioAction(state, chat, {
+        kind: verdict.passed ? "playtest_passed" : "playtest_failed",
+        path: "Workspace",
+        class_name: "Playtest",
+        summary: exportReady ? "Fix All Checks passed — ready to export" : `Fix All Checks finished (${verdict.errors.length} error(s))`,
+        console_line: verdict.console,
+      });
+      persist();
+      return jsonResponse({
+        ok: true,
+        applied_scripts: installed ? Object.keys(installed.packScripts) : [],
+        export_ready: exportReady,
+        export_urls: { rbxlx: "/api/export/rbxlx", ship_pack: "/api/export/bundle" },
+        playtest: {
+          ok: true,
+          passed: verdict.passed,
+          console: verdict.console,
+          errors: verdict.errors.length,
+          diagnostics: verdict.diagnostics,
+          assertions,
+          assertion_diff: {
+            has_previous: Boolean(installed),
+            passed: assertions.filter((a) => a.passed).length,
+            total: assertions.length,
+            fixed: installed ? assertions.filter((a) => a.passed).length : 0,
+            regressed: 0,
+            items: assertions.map((a) => ({ ...a, delta: a.passed && installed ? "fixed" : a.passed ? "unchanged_pass" : "unchanged_fail" })),
+          },
         },
       });
     }
@@ -2163,33 +2236,7 @@ export function installWebEngine() {
       });
     }
     if (method === "POST" && u.pathname === "/api/monetization/pack") {
-      const presetTable: Record<string, { currency: string; base: number; comeback: number; mults: number[] }> = {
-        starter_obby: { currency: "Coins", base: 100, comeback: 2, mults: [1, 2, 3, 4, 5, 7, 12] },
-        anime_gacha_rpg: { currency: "Gems", base: 150, comeback: 3, mults: [1, 2, 3, 5, 7, 10, 15] },
-        competitive_arena: { currency: "Credits", base: 120, comeback: 2, mults: [1, 2, 3, 4, 6, 8, 12] },
-      };
-      const rawPreset = typeof body.tier_preset === "string" ? body.tier_preset.trim() : "starter_obby";
-      const spec = presetTable[rawPreset] ?? presetTable.starter_obby;
-      const tierPreset = presetTable[rawPreset] ? rawPreset : "starter_obby";
-      const currency = typeof body.currency === "string" && body.currency.trim() ? body.currency.trim() : spec.currency;
-      const baseReward = Math.max(10, Number(body.daily_base_reward) || spec.base);
-      const curve = spec.mults.map((m) => m * baseReward);
-      const beforePlace = clonePlace(chat.place);
-      const packScripts: Record<string, string> = {
-        "ReplicatedStorage.MonetizationConfig": `--!strict\nlocal MonetizationConfig = {\n\tTierPreset = "${tierPreset}",\n\tCurrency = "${currency}",\n\tComebackThresholdHours = 48,\n\tComebackMultiplier = ${spec.comeback},\n\tDailyRewards = { [1] = ${curve[0]}, [2] = ${curve[1]}, [3] = ${curve[2]}, [4] = ${curve[3]}, [5] = ${curve[4]}, [6] = ${curve[5]}, [7] = ${curve[6]} },\n}\nreturn MonetizationConfig\n`,
-        "ServerScriptService.MonetizationService": `--!strict\nlocal DataStoreService = game:GetService("DataStoreService")\nlocal MarketplaceService = game:GetService("MarketplaceService")\nlocal Players = game:GetService("Players")\nlocal receiptStore = DataStoreService:GetDataStore("OpenRO_Receipts_v1")\nMarketplaceService.ProcessReceipt = function(receiptInfo)\n\tlocal player = Players:GetPlayerByUserId(receiptInfo.PlayerId)\n\tif not player then return Enum.ProductPurchaseDecision.NotProcessedYet end\n\tlocal receiptKey = tostring(receiptInfo.PlayerId) .. "_" .. tostring(receiptInfo.PurchaseId)\n\tlocal ok = pcall(function()\n\t\treceiptStore:UpdateAsync(receiptKey, function() return true end)\n\tend)\n\tif not ok then return Enum.ProductPurchaseDecision.NotProcessedYet end\n\treturn Enum.ProductPurchaseDecision.PurchaseGranted\nend\ngame:BindToClose(function() task.wait(0.2) end)\n`,
-        "ServerScriptService.DailyRewardRetention": `--!strict\nlocal DataStoreService = game:GetService("DataStoreService")\nlocal ReplicatedStorage = game:GetService("ReplicatedStorage")\nlocal DAY_SECONDS = 86400\nlocal COMEBACK_SECONDS = 172800\nlocal COMEBACK_MULTIPLIER = ${spec.comeback}\nlocal DAY_CURVE: { number } = { ${curve.join(", ")} }\nlocal streakStore = DataStoreService:GetDataStore("OpenRO_DailyStreak_v1")\nlocal folder = ReplicatedStorage:FindFirstChild("MonetizationRemotes") or Instance.new("Folder")\nfolder.Name = "MonetizationRemotes"\nfolder.Parent = ReplicatedStorage\nlocal claimFn = Instance.new("RemoteFunction")\nclaimFn.Name = "ClaimDailyReward"\nclaimFn.Parent = folder\nclaimFn.OnServerInvoke = function(player: Player)\n\tlocal now = os.time()\n\tlocal granted = 0\n\tlocal comebackBonus = false\n\tlocal ok, res = pcall(function()\n\t\treturn streakStore:UpdateAsync("streak_" .. tostring(player.UserId), function(prev)\n\t\t\tlocal rec = if typeof(prev) == "table" then prev else { streak = 0, lastClaim = 0 }\n\t\t\tlocal prevLast = tonumber(rec.lastClaim) or 0\n\t\t\tlocal elapsed = now - prevLast\n\t\t\tif prevLast > 0 and elapsed < DAY_SECONDS then return rec end\n\t\t\tlocal isComeback = prevLast > 0 and elapsed >= COMEBACK_SECONDS\n\t\t\tlocal nextStreak = if prevLast > 0 and not isComeback then ((tonumber(rec.streak) or 0) % 7) + 1 else 1\n\t\t\tcomebackBonus = isComeback\n\t\t\tlocal baseAmt = DAY_CURVE[nextStreak] or DAY_CURVE[1]\n\t\t\tgranted = if isComeback then baseAmt * COMEBACK_MULTIPLIER else baseAmt\n\t\t\treturn { streak = nextStreak, lastClaim = now, comeback = isComeback }\n\t\tend)\n\tend)\n\treturn { claimed = ok and granted > 0, reward = granted, streak = if ok and type(res) == "table" then res.streak else 1, comebackBonus = comebackBonus }\nend\ngame:BindToClose(function() task.wait(0.2) end)\n`,
-      };
-      const changes: ChangeEntry[] = [];
-      for (const [sp, src] of Object.entries(packScripts)) {
-        const prev = chat.place.scripts[sp] ?? null;
-        chat.place.scripts[sp] = src;
-        changes.push({ kind: "script", path: sp, prev, post: src });
-      }
-      chat.undoStack.push({ changes, skills: ["monetization_pack"] });
-      chat.redoStack = [];
-      const diff = computePlaceDiff(beforePlace, chat.place);
-      const diags = analyzePlaceLuau(chat.place);
+      const { tierPreset, spec, curve, packScripts, diff, diags } = installMonetizationPack(chat, body);
       persist();
       return jsonResponse({
         ok: true,

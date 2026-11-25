@@ -1766,6 +1766,57 @@ fn handle(
                 ),
             }
         }
+        ("POST", "/api/studio/playtest/fix-all") => {
+            let _busy = BusyGuard::new(&shared.busy);
+            let chat_id = shared.active_chat.lock().unwrap().clone();
+            let mut guard = shared.agent.lock().unwrap();
+            match guard.as_mut() {
+                Some(agent) => {
+                    let scripts = crate::opencloud::monetization_pack_luau_scripts_with_preset(
+                        Some("starter_obby"),
+                        "Coins",
+                        0,
+                        0,
+                        100,
+                    );
+                    let mut applied = Vec::new();
+                    for (place_path, _rel, _cls, src) in &scripts {
+                        if let Ok(upd) = agent.update_script_source(&chat_id, place_path, src) {
+                            applied.push(upd.path);
+                        }
+                    }
+                    match agent.run_studio_playtest() {
+                        Ok(pt) => {
+                            let passed = pt["passed"].as_bool().unwrap_or(false);
+                            respond_json(
+                                &mut stream,
+                                "200 OK",
+                                &json!({
+                                    "ok": true,
+                                    "applied_scripts": applied,
+                                    "export_ready": passed,
+                                    "export_urls": {
+                                        "rbxlx": "/api/export/rbxlx",
+                                        "ship_pack": "/api/export/bundle"
+                                    },
+                                    "playtest": pt
+                                }),
+                            );
+                        }
+                        Err(e) => respond_json(
+                            &mut stream,
+                            "502 Bad Gateway",
+                            &json!({ "ok": false, "export_ready": false, "error": e }),
+                        ),
+                    }
+                }
+                None => respond_json(
+                    &mut stream,
+                    "503 Service Unavailable",
+                    &json!({ "ok": false, "export_ready": false, "error": "Studio not connected" }),
+                ),
+            }
+        }
         ("POST", "/api/studio/mcp/connect") => {
             handle_studio_mcp_connect(&mut stream, shared, &req);
         }

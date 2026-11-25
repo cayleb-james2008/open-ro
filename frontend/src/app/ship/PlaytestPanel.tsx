@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Check, ChevronDown, CircleCheck, CircleX, Download, ExternalLink, Play, RotateCw, ShieldCheck } from "lucide-react";
+import { Check, ChevronDown, CircleCheck, CircleX, Download, ExternalLink, Play, RotateCw, ShieldCheck, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { Expandable, ExpandableTrigger } from "@/components/ui/expandable";
 import { MorphingDialog, MorphingDialogClose, MorphingDialogContainer, MorphingDialogContent, MorphingDialogTitle, MorphingDialogTrigger } from "@/components/ui/morphing-dialog";
 import { open as dialogSpring } from "@/motion";
-import { call, enc, projUrl, stamp, type AssertionDiff, type AssertionFixApplyResult, type AssertionFixPlan, type AssertionItem, type CoreLoopClaim, type PlaytestReport, type PlaytestRun, type StudyStatus, type UnknownItem } from "./api";
+import { call, enc, projUrl, stamp, type AssertionDiff, type AssertionFixApplyResult, type AssertionFixPlan, type AssertionItem, type CoreLoopClaim, type FixAllAssertionsResult, type PlaytestReport, type PlaytestRun, type StudyStatus, type UnknownItem } from "./api";
 import type { Ship } from "./useShip";
 
 type View = "summary" | "html" | "json";
@@ -310,6 +310,8 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
   const [selected, setSelected] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [rerunBusy, setRerunBusy] = useState(false);
+  const [fixAllBusy, setFixAllBusy] = useState(false);
+  const [fixAllResult, setFixAllResult] = useState<FixAllAssertionsResult | null>(null);
   const [latestAssertionDiff, setLatestAssertionDiff] = useState<AssertionDiff | null>(null);
   const [syncFirst, setSyncFirst] = useState(false);
   const [error, setError] = useState("");
@@ -339,7 +341,7 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
     setRuns(list); onCount?.(list.length);
     setSelected((cur) => pick ?? (cur && list.some((x) => x.run_id === cur) ? cur : list[0]?.run_id ?? null));
   }, [id, onCount]);
-  useEffect(() => { setRuns(null); setSelected(null); void load(); void loadStudy(); }, [load, loadStudy]);
+  useEffect(() => { setRuns(null); setSelected(null); setFixAllResult(null); setLatestAssertionDiff(null); void load(); void loadStudy(); }, [load, loadStudy]);
 
   const run = async () => {
     if (!id) return;
@@ -365,6 +367,22 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
     if (r.passed) toast.success("All deterministic assertions passed");
     else toast.error("Assertion suite found failures — see per-room diff");
     await Promise.all([load(r.run_id), loadStudy()]);
+  };
+
+  const fixAllAssertions = async () => {
+    if (!id) return;
+    setFixAllBusy(true); setError("");
+    const r = await call<FixAllAssertionsResult>(
+      projUrl(id, "/playtests/fix-all"),
+      { offline: true, sync_first: syncFirst },
+    );
+    setFixAllBusy(false);
+    if (!r.ok) { setError(r.error || "Batch fix & export check failed."); return; }
+    setFixAllResult(r as FixAllAssertionsResult);
+    if (r.rerun?.assertion_diff) setLatestAssertionDiff(r.rerun.assertion_diff);
+    if (r.export_ready) toast.success("All failing checks fixed — place & Ship Pack ready to export");
+    else toast.error("Fixes applied, but some readiness checks still need attention");
+    await Promise.all([load(r.rerun?.run_id), loadStudy()]);
   };
 
   if (!ship.active) return null;
@@ -397,11 +415,15 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
             <Play className="size-4" strokeWidth={1.5} aria-hidden />Launch Studio &amp; playtest
           </Button>
         )}
-        <Button variant="outline" size="lg" loading={rerunBusy} disabled={running || rerunBusy} onClick={() => void rerunAssertions()} data-rerun-assertions className="active:opacity-80 max-md:min-h-11">
+        <Button variant="outline" size="lg" loading={rerunBusy} disabled={running || rerunBusy || fixAllBusy} onClick={() => void rerunAssertions()} data-rerun-assertions className="active:opacity-80 max-md:min-h-11">
           <RotateCw className="size-4" strokeWidth={1.5} aria-hidden />
           {rerunBusy ? "Re-running…" : "Re-Run All Assertions"}
         </Button>
-        <Button variant="default" size="lg" disabled={!studioOk || running || rerunBusy} onClick={() => void run()} data-run-playtest className="active:opacity-80 max-md:min-h-11"><Play className="size-4" strokeWidth={1.5} aria-hidden />{running ? "Playing…" : "Run playtest"}</Button>
+        <Button variant="outline" size="lg" loading={fixAllBusy} disabled={running || rerunBusy || fixAllBusy} onClick={() => void fixAllAssertions()} data-fix-all-assertions className="active:opacity-80 max-md:min-h-11">
+          <Wrench className="size-4" strokeWidth={1.5} aria-hidden />
+          {fixAllBusy ? "Fixing & Verifying…" : "Fix All Failing Checks"}
+        </Button>
+        <Button variant="default" size="lg" disabled={!studioOk || running || rerunBusy || fixAllBusy} onClick={() => void run()} data-run-playtest className="active:opacity-80 max-md:min-h-11"><Play className="size-4" strokeWidth={1.5} aria-hidden />{running ? "Playing…" : "Run playtest"}</Button>
         {latestAssertionDiff && (
           <span className="font-mono text-xs tabular-nums text-ink-2" data-rerun-summary>
             {latestAssertionDiff.passed}/{latestAssertionDiff.total} assertions
@@ -411,6 +433,48 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
         )}
         {error && <p role="alert" className="w-full rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
       </section>
+
+      {fixAllResult && (
+        <section
+          aria-label="Export readiness summary"
+          data-export-ready-strip
+          className={`card-stock flex flex-wrap items-center justify-between gap-3 px-4 py-3 ${fixAllResult.export_ready ? "border-l-2 border-l-pill-active-fg" : ""}`}
+        >
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <Pill className={fixAllResult.export_ready ? "bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg" : "bg-pill-warn-bg px-2 py-0.5 text-xs text-pill-warn-fg"}>
+                {fixAllResult.export_ready ? "Export Ready (.rbxlx / .zip)" : "Needs Manual Review"}
+              </Pill>
+              <span className="font-mono text-xs tabular-nums text-ink-2">
+                {fixAllResult.fixed_ids.length} fixed · {fixAllResult.ship_pack_integrity.entry_count} ZIP entries · {fixAllResult.ship_pack_integrity.crc_verified ? "CRC-32 verified" : "ZIP warning"}
+              </span>
+            </div>
+            <p className="text-xs text-ink-2">
+              {fixAllResult.applied_files.length > 0
+                ? `Updated ${fixAllResult.applied_files.join(", ")}`
+                : "No file writes needed — build & Ship Pack integrity verified."}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <a
+              href={fixAllResult.export_urls?.rbxlx || "/api/export/rbxlx"}
+              download="openro-place.rbxlx"
+              data-export-ready-rbxlx
+              className="inline-flex min-h-9 items-center gap-1.5 rounded-pill border border-hairline bg-surface px-3 py-1.5 text-xs font-medium text-ink outline-none hover:bg-track active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus max-md:min-h-11"
+            >
+              <Download className="size-3.5" strokeWidth={1.5} aria-hidden />Export .rbxlx
+            </a>
+            <a
+              href={fixAllResult.export_urls?.ship_pack || "/api/export/bundle"}
+              download="openro-ship-pack.zip"
+              data-export-ready-zip
+              className="inline-flex min-h-9 items-center gap-1.5 rounded-pill bg-ink px-3 py-1.5 text-xs font-medium text-surface outline-none hover:opacity-90 active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus max-md:min-h-11"
+            >
+              <Download className="size-3.5" strokeWidth={1.5} aria-hidden />Download Ship Pack .zip
+            </a>
+          </div>
+        </section>
+      )}
 
       {study && (
         <div className="card-stock flex flex-wrap items-center justify-between gap-2 px-4 py-2.5" data-playtest-stepper>

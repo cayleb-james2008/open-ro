@@ -8,7 +8,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 const root = import.meta.dirname;
-const STAMP = "/* Hallmark Desktop-Workbench: OpenRO v1.9.0 Studio Copilot (Geist + Geist Mono, Light & Dark) */";
+const STAMP = "/* Hallmark Desktop-Workbench: OpenRO v1.10.0 Studio Copilot (Geist + Geist Mono, Light & Dark) */";
 const FORCE_SINGLE_FILE = process.env.OPENRO_SINGLE_FILE === "1";
 
 function localAlias(): Plugin {

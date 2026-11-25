@@ -4,6 +4,13 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.10.0 - 2026-11-25
+
+- **1-Click Launch Autopilot (`src/playtest.rs`, `src/opencloud.rs`, `src/project_api.rs`, `src/server.rs`, `frontend/src/app/ship/PlaytestPanel.tsx`, `frontend/web-engine/install.ts`):**
+  - Added `POST /api/projects/:id/playtests/fix-all` and `POST /api/studio/playtest/fix-all` plus the **"Fix All Failing Checks"** action and **Export Ready (.rbxlx / .zip)** strip in `PlaytestPanel` to batch-fix Luau/Monetization/Runtime assertions, rebuild `.rbxl`, verify Ship Pack ZIP CRC-32 / ZIP-slip integrity, and surface 1-click `.rbxlx` and Ship Pack `.zip` exports with full `web-engine` parity.
+- **Sub-12.5 MB Release Binary Diet (`Cargo.toml`):**
+  - Added `panic = "abort"` and `[profile.release.package."*"] opt-level = "z"` (preserving `opt-level = 3` on `serde_json`, `flate2`, `sha2`, and `openro-rs`) to cut release binary size while keeping sub-26ms cold boot and >7,000 req/s throughput.
+
 ## 1.9.0 - 2026-11-25
 
 - **1-Click Playtest Failure -> Targeted Luau Auto-Fix Plan (`src/playtest.rs`, `src/project_api.rs`, `frontend/src/app/ship/PlaytestPanel.tsx`, `api.ts`):**
