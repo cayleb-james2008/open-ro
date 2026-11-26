@@ -364,12 +364,14 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
       setSandboxLatest(null);
       return;
     }
-    const [rd, sbx] = await Promise.all([
-      call<ProjectReadiness>(projUrl(id, "/readiness")),
-      getSandboxLatest(id),
-    ]);
+    const rd = await call<ProjectReadiness & { sandbox_summary?: unknown }>(projUrl(id, "/readiness"));
     setReadiness(rd.ok && Array.isArray(rd.checks) ? (rd as ProjectReadiness) : null);
-    setSandboxLatest(sbx.ok && (sbx.engine || sbx.core_loop) ? (sbx as SandboxRunResponse) : null);
+    if (rd.ok && rd.sandbox_summary) {
+      const sbx = await getSandboxLatest(id);
+      setSandboxLatest(sbx.ok && (sbx.engine || sbx.core_loop) ? (sbx as SandboxRunResponse) : null);
+    } else {
+      setSandboxLatest(null);
+    }
   }, [id]);
 
   const loadStudy = useCallback(async () => {

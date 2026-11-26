@@ -331,17 +331,21 @@ export function SandboxRunnerCard({
   );
 
   const loadPersisted = useCallback(async () => {
-    const [runsRes, latestRes] = await Promise.all([
-      getSandboxRuns(projectId),
-      getSandboxLatest(projectId),
-    ]);
+    if (!projectId) {
+      setRuns([]);
+      return;
+    }
+    const runsRes = await getSandboxRuns(projectId);
     if (runsRes.ok && Array.isArray(runsRes.runs)) {
       setRuns(runsRes.runs);
+      if (runsRes.runs.length > 0) {
+        const latestRes = await getSandboxLatest(projectId);
+        if (latestRes.ok && (latestRes.engine || latestRes.core_loop || Array.isArray(latestRes.steps))) {
+          setResult(normalizeSandboxResponse(latestRes));
+        }
+      }
     } else if (runsRes.httpStatus === 404) {
       setRuns([]);
-    }
-    if (latestRes.ok && (latestRes.engine || latestRes.core_loop || Array.isArray(latestRes.steps))) {
-      setResult(normalizeSandboxResponse(latestRes));
     }
   }, [projectId]);
 

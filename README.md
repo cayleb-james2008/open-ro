@@ -1,4 +1,4 @@
-# <img src="docs/logo.svg" alt="OpenRO Studio logo" width="28" height="28" align="absmiddle" /> OpenRO (`v1.24.0`)
+# <img src="docs/logo.svg" alt="OpenRO Studio logo" width="28" height="28" align="absmiddle" /> OpenRO (`v1.25.0`)
 
 [![Release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/cayleb-james2008/open-ro/release.yml?branch=main&label=build)](https://github.com/cayleb-james2008/open-ro/actions)
@@ -19,7 +19,7 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
 - The WebGL2 3D viewport (`frontend/src/app/viewport/`, `StudioViewport3D.tsx`, `src/scene.rs`, and offline `web-engine/install.ts` parity) renders workspace parts, `.obj` meshes, `.png`/`.jpg` textures, sky and fog lighting, water planes, and up to 8 dynamic `PointLight`, `SpotLight`, and `SurfaceLight` sources with an automatic Canvas2D fallback. You can generate `flat`, `hills`, `island`, or `canyon` terrain in `scene/terrain.json` (which also emits `src/server/OpenROTerrain.server.luau`), paint material boxes, insert and toggle scene lights, reparent instances, and manipulate objects with 3D Move, Scale, and Rotate gizmos while `GET /api/projects/:id/mesh-asset?file=` serves project meshes and textures inside `assets/meshes/` and `art/` with symlink and path-traversal checks.
 - The LiveOps control plane and telemetry workbench (`src/liveops.rs`, `LiveOpsPanel.tsx`, `/api/projects/:id/liveops/*`, and offline `web-engine/install.ts` parity) lets you inspect and edit Open Cloud v2 standard and ordered DataStores with `expected_revision` conflict checks, pre-mutation backups in `.openro/liveops/ds-backups/`, and explicit `confirm: true` gates. You can broadcast `MessagingService` payloads up to 1024 bytes, manage Remote Config (`liveops/remote-config.json` capped at 64 KiB) with deterministic `--!strict` `src/shared/LiveConfig.luau` generation, and inspect sandbox or live player funnel drop-offs, Robux ARPDAU, and currency sinks from `.openro/liveops/telemetry.jsonl`.
 - The visual ScreenGui and HUD designer (`src/gui_designer.rs`, `GuiDesignerWorkbench.tsx`, `/api/projects/:id/gui*`, `/api/studio/gui*`, and the `gui_save` and `gui_compile` tools) lets you drag and resize a 12-class Roblox UI hierarchy (`Frame`, `TextLabel`, `TextButton`, `ImageLabel`, `ImageButton`, `ScrollingFrame`, `UICorner`, `UIStroke`, `UIListLayout`, `UIGridLayout`, `UIAspectRatioConstraint`, `UIPadding`) over Desktop (`1920x1080`), Tablet (`1024x768`), and Mobile Landscape (`844x390`) viewports. Live overlays check the 58px TopBar inset, Mobile thumbstick and jump zones, offscreen bounds, and 44x44px tap targets, while `Compile to Luau` emits deterministic `--!strict` `ScreenModule.create(parent, callbacks)` scripts and Rojo `.model.json` files validated by `luau_check` and `stylua`.
-- The headless local Luau runtime sandbox (`POST /api/projects/:id/sandbox/run`, `POST /api/studio/sandbox/run`, and the `sandbox_playtest` agent and teamwork tool) materializes your Rojo project or in-memory Local Place into an isolated scratch run and executes real Server and Client Luau scripts via Lune `0.11.1` (`lune_roblox_shim`) against an embedded Roblox `DataModel`, `DataStoreService`, `MarketplaceService.ProcessReceipt`, `RemoteEvent`, `RemoteFunction`, and `PlayerGui` shim. You can run Boot + Join, Purchase Receipt Idempotency, Save/Rejoin Persistence, or custom multi-step journeys and inspect console traces (with click-to-jump line links), DataStores, leaderstats, receipts, and PlayerGui trees without launching Roblox Studio, mirrored offline in the browser simulator (`browser_sim`).
+- The headless local Luau runtime sandbox (`POST /api/projects/:id/sandbox/run`, `GET /api/projects/:id/sandbox/{runs,latest}`, `POST /api/studio/sandbox/run`, and the `sandbox_playtest` tool) materializes your Rojo project or in-memory Local Place into an isolated scratch run and executes Server and Client Luau scripts via Lune `0.11.1` (`lune_roblox_shim`) against an embedded Roblox `DataModel`, `DataStoreService`, `MarketplaceService.ProcessReceipt`, `RemoteEvent`, `RemoteFunction`, 3D OBB/AABB spatial queries (`Raycast`, `GetPartsInPart`, `GetPartBoundsInBox`, `GetPartBoundsInRadius`), time-stepped tweens, `Touched`, `ProximityPrompt`, `ClickDetector`, `UserInputService`, `http_mocks`, and `PlayerGui` shims. Persisted `.openro/sandbox/*.json` proofs satisfy Readiness, Publish Gate, Study Status, and Teamwork `game_code` verification with a `Headless Sandbox` tier badge when Roblox Studio is not open (`Live Studio` still takes precedence when present), mirrored offline in `browser_sim`.
 
 - The three-pane workspace puts the Place explorer on the left, the Agent/Plan/Ask thread in the middle, and tabbed panels (`Viewport`, `Code`, `UI`, `Assets`, `Ship`, `Swarm`) on the right. Opening a Rojo project populates Explorer (`Services` and `Files`), `Code` (saving directly to `.luau` files on disk and jumping straight to reported line numbers), Lighting controls, and the 3D Viewport from `scene/workspace.model.json` via `/api/projects/:id/{workspace,scene/mutate,mesh-asset}` while `projects::builtin_rbxlx` natively serializes `CFrame`, `Enum`, `Content`, `Color3uint8`, and `Lighting` properties.
 - The economy balance and progression simulator parses Luau earn, price, rebirth, and GamePass constants to project a deterministic 60-minute player progression curve, flagging paywall dead-ends, runaway inflation, or under-2-minute exhaustion with a 1-click balance suggestion preview and safe tuning apply.
@@ -62,11 +62,11 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
       </picture>
     </td>
     <td width="50%" align="center">
-      <strong>Headless Luau runtime sandbox (`lune_roblox_shim`)</strong>
+      <strong>Headless sandbox verifier and readiness tiers (`v1.25.0`)</strong>
       <br /><br />
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/sandbox-runner-dark.png" />
-        <img src="docs/screenshots/sandbox-runner-light.png" alt="OpenRO Headless Luau Runtime Sandbox executing multi-step journeys via Lune with Console, DataStores, leaderstats, and Receipts inspector" width="100%" />
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/headless-sandbox-dark.png" />
+        <img src="docs/screenshots/headless-sandbox-light.png" alt="OpenRO v1.25.0 Headless Sandbox Verifier and Readiness tier badges" width="100%" />
       </picture>
     </td>
   </tr>
@@ -103,16 +103,16 @@ flowchart LR
   SRV --> MCP["Roblox Studio MCP &amp; Open Cloud<br/>13 Live Tools + Price Approval Gate"]
 ```
 
-## Verified benchmarks (`v1.24.0` vs `v1.2.0`)
+## Verified benchmarks (`v1.25.0` vs `v1.2.0`)
 
-| Metric | `v1.2.0` baseline | `v1.24.0` verified (`#154` pinned) | Delta |
+| Metric | `v1.2.0` baseline | `v1.25.0` verified (`#154` pinned) | Delta |
 | --- | --- | --- | --- |
-| Release binary size | `19.00 MB` | **`9.71 MiB`** (`10,183,552 B`) | **`-48.9%`** |
-| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`231.1 KB`** raw (`236,631 B`) / **`55.4 KB`** gz (`56,778 B`) | **`-87.9%` wire** |
-| Cold boot (`#154` pinned) | `1,470 ms` | **`41.16 ms`** | **`-97.2%`** |
-| Peak RSS (`VmHWM`) | `115.20 MB` | **`13.21 MB`** (`13,524 KB`, `scale-audit` + 10 SSE) | **`-88.5%`** |
-| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`6,414.7 req/s`** Python cold (`2.44 ms` p50, `3.08 ms` p95, `0/16,044` errs) | **`7.33x` (`-97.8%` p95)** |
-| Security and UI gates | `43/43` fuzz | **`43/43` fuzz, `10/10` SSE, `0` sloplint fails/warns, `352/352` Rust tests (`5/5` `v124_viewport_terrain`), `gate 132/132`, `replay 11/11`** | Pass |
+| Release binary size | `19.00 MB` | **`9.78 MiB`** (`10,253,184 B`) | **`-48.5%`** |
+| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`231.1 KB`** raw (`236,640 B`) / **`55.5 KB`** gz (`56,796 B`) | **`-87.9%` wire** |
+| Cold boot (`#154` pinned) | `1,470 ms` | **`33.23 ms`** | **`-97.7%`** |
+| Peak RSS (`VmHWM`) | `115.20 MB` | **`13.01 MB`** (`13,324 KB`, `scale-audit` + 10 SSE) | **`-88.7%`** |
+| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`6,558.8 req/s`** Python cold (`2.37 ms` p50, `2.96 ms` p95, `0/16,403` errs) | **`7.50x` (`-97.9%` p95)** |
+| Security and UI gates | `43/43` fuzz | **`43/43` fuzz, `10/10` SSE, `0` sloplint fails/warns, `356/356` Rust tests (`3/3` `v125_headless_sandbox`), `gate 168/168`, `replay 11/11`** | Pass |
 
 ## Quick start
 

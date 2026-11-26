@@ -240,6 +240,32 @@ try {
     }
   }
 
+  // Ensure the active project has a PlayerGui ScreenGui LocalScript so Headless Sandbox core_loop.hud passes
+  await p.evaluate(async () => {
+    const projs = await fetch("/api/projects").then((r) => r.json());
+    const activeId = projs?.active;
+    if (!activeId) return;
+    await fetch(`/api/projects/${encodeURIComponent(activeId)}/file`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "src/client/Hud.client.luau",
+        content: [
+          'local Players = game:GetService("Players")',
+          'local pg = Players.LocalPlayer:WaitForChild("PlayerGui")',
+          'local sg = Instance.new("ScreenGui")',
+          'sg.Name = "MainHud"',
+          "sg.Parent = pg",
+          'local lbl = Instance.new("TextLabel")',
+          'lbl.Name = "Status"',
+          'lbl.Text = "Ready"',
+          "lbl.Parent = sg",
+          "",
+        ].join("\n"),
+      }),
+    });
+  });
+
   // Headless Luau Runtime Sandbox assertions in Light & Dark themes
   if ((await p.locator("[data-ship]").count()) > 0) {
     await p.locator('[aria-label="Ship section"]').getByRole("button", { name: "Playtests", exact: true }).click();
@@ -617,8 +643,12 @@ try {
     if ((await p.locator("[data-ship]").count()) > 0) {
       await p.locator('[aria-label="Ship section"]').getByRole("button", { name: "Publish & Monetize", exact: true }).click();
       await p.locator("[data-ship-autopilot]").waitFor({ state: "visible", timeout: 8000 });
+      // LiveOps & Terrain mutations invalidated earlier sandbox fingerprint; re-verify in 390x844
+      const mobVerifyBtn = p.locator("[data-verify-headless-sandbox]").first();
+      await mobVerifyBtn.waitFor({ state: "visible", timeout: 5000 });
+      await mobVerifyBtn.click();
       const mobTier = p.locator('[data-verification-tier="headless_sandbox"]').first();
-      await mobTier.waitFor({ state: "visible", timeout: 8000 });
+      await mobTier.waitFor({ state: "visible", timeout: 15000 });
       check("390x844 Mobile Readiness shows Headless Sandbox tier badge", /Headless Sandbox/i.test(await mobTier.innerText()));
       await assertLayoutInvariants(p, "390x844 Light Readiness");
       await setThemeViaSettings(p, "dark");

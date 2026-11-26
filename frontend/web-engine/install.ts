@@ -1,4 +1,4 @@
-// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.24.0 standalone web builds.
+// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.25.0 standalone web builds.
 // Features:
 //  - RoPilot-Grade 3-Pane Studio IDE (Agent | Plan | Ask, Reviewable Unified Diffs, @Context Chips, Companion Plugin)
 //  - Embedded Studio Workbench & 13 Official Studio MCP Tools running live against the in-browser Place DataModel
@@ -1719,7 +1719,7 @@ function computeWebProjectReadiness(proj: WebProject) {
       (latestSbx.error_count ?? 0) === 0 &&
       latestSbx.core_loop?.all_passed !== false,
   );
-  const verificationTier = sbxValid ? "headless_sandbox" : latestSbx ? "headless_sandbox" : undefined;
+  const verificationTier = sbxValid ? "headless_sandbox" : undefined;
   const moveStr = typeof latestSbx?.core_loop?.move === "string" ? latestSbx.core_loop.move : "not tested";
   const actStr = typeof latestSbx?.core_loop?.act === "string" ? latestSbx.core_loop.act : "not tested";
   const hudStr = typeof latestSbx?.core_loop?.hud === "string" ? latestSbx.core_loop.hud : "not tested";
@@ -1820,6 +1820,7 @@ function computeWebProjectReadiness(proj: WebProject) {
       hud: hudStr,
       ...(verificationTier ? { verification_tier: verificationTier } : {}),
     },
+    sandbox_summary: latestSbx ?? null,
     luau_errors: luauErrors,
     luau_warnings: luauWarnings,
     has_process_receipt: hasProcessReceipt,
@@ -2879,7 +2880,7 @@ export function installWebEngine() {
     if (!chat.playMode) chat.playMode = "edit";
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "1.24.0" });
+      return jsonResponse({ name: "openro-rs", version: "1.25.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -2890,7 +2891,7 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "1.24.0",
+        version: "1.25.0",
         sse_build_stream: true,
         studio_stream: true,
         assets_api: true,
