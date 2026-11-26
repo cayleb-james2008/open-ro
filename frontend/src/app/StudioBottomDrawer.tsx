@@ -29,6 +29,7 @@ import {
   type StudioToolName,
   type StudioToolResult,
 } from "./data";
+import type { WorkspaceLighting } from "./ship/api";
 
 export type BottomDrawerTab = "console" | "trace" | "tools" | "properties";
 
@@ -47,10 +48,13 @@ export function StudioBottomDrawer({
   place,
   selectedPath,
   studioActions,
+  lighting,
+  projectMode = false,
   onSelectPath,
   onOpenScript,
   onAttachContext,
   onSaveInstance,
+  onSaveLighting,
   onDuplicatePart,
   onDeletePart,
   onInvokeStudioTool,
@@ -62,10 +66,13 @@ export function StudioBottomDrawer({
   place: Place;
   selectedPath: string | null;
   studioActions: StudioActionEvent[];
+  lighting?: WorkspaceLighting | null;
+  projectMode?: boolean;
   onSelectPath: (path: string) => void;
   onOpenScript: (path: string) => void;
   onAttachContext: (path: string) => void;
   onSaveInstance: (payload: InstanceEditPayload) => Promise<void> | void;
+  onSaveLighting?: (lighting: WorkspaceLighting) => Promise<void> | void;
   onDuplicatePart: (path: string) => Promise<void> | void;
   onDeletePart: (path: string) => Promise<void> | void;
   onInvokeStudioTool: (tool: StudioToolName, args: Record<string, unknown>) => Promise<StudioToolResult>;
@@ -78,7 +85,7 @@ export function StudioBottomDrawer({
   const [consoleBusy, setConsoleBusy] = useState(false);
   const reduced = useReducedMotion();
 
-  const selectedInstance = selectedPath ? place.instances?.[selectedPath] ?? null : null;
+  const selectedInstance = selectedPath && selectedPath !== "Lighting" ? place.instances?.[selectedPath] ?? null : null;
   const [posX, setPosX] = useState("0");
   const [posY, setPosY] = useState("2");
   const [posZ, setPosZ] = useState("0");
@@ -88,7 +95,30 @@ export function StudioBottomDrawer({
   const [color, setColor] = useState("#8B939E");
   const [material, setMaterial] = useState("SmoothPlastic");
   const [anchored, setAnchored] = useState(true);
+  const [meshId, setMeshId] = useState("");
+  const [textureId, setTextureId] = useState("");
   const [propBusy, setPropBusy] = useState(false);
+
+  const [clockTime, setClockTime] = useState("14");
+  const [brightness, setBrightness] = useState("2");
+  const [ambient, setAmbient] = useState("#707A8A");
+  const [fogEnd, setFogEnd] = useState("10000");
+  const [technology, setTechnology] = useState("ShadowMap");
+  const [lightingMode, setLightingMode] = useState(false);
+
+  useEffect(() => {
+    if (selectedPath === "Lighting") setLightingMode(true);
+    else if (selectedInstance) setLightingMode(false);
+  }, [selectedInstance, selectedPath]);
+
+  useEffect(() => {
+    if (!lighting) return;
+    setClockTime(String(typeof lighting.clock_time === "number" ? lighting.clock_time : 14));
+    setBrightness(String(typeof lighting.brightness === "number" ? lighting.brightness : 2));
+    setAmbient(typeof lighting.ambient === "string" && lighting.ambient ? lighting.ambient : "#707A8A");
+    setFogEnd(String(typeof lighting.fog_end === "number" ? lighting.fog_end : 10000));
+    setTechnology(typeof lighting.technology === "string" && lighting.technology ? lighting.technology : "ShadowMap");
+  }, [lighting]);
 
   useEffect(() => {
     if (!selectedInstance) return;
@@ -104,6 +134,8 @@ export function StudioBottomDrawer({
     setColor(typeof props.Color === "string" && props.Color ? props.Color : "#8B939E");
     setMaterial(typeof props.Material === "string" && props.Material ? props.Material : "SmoothPlastic");
     setAnchored(props.Anchored !== false);
+    setMeshId(typeof props.MeshId === "string" ? props.MeshId : "");
+    setTextureId(typeof props.TextureID === "string" ? props.TextureID : "");
   }, [selectedInstance, selectedPath]);
 
   const selectToolSpec = (name: StudioToolName) => {
@@ -167,10 +199,35 @@ export function StudioBottomDrawer({
         Material: material.trim() || "SmoothPlastic",
         Anchored: anchored,
       };
+      if (selectedInstance.class_name === "MeshPart" || meshId.trim()) {
+        nextProps.MeshId = meshId.trim();
+      }
+      if (selectedInstance.class_name === "MeshPart" || textureId.trim()) {
+        nextProps.TextureID = textureId.trim();
+      }
       await onSaveInstance({
         path: selectedPath,
         class_name: selectedInstance.class_name || "Part",
         properties: nextProps,
+      });
+    } finally {
+      setPropBusy(false);
+    }
+  };
+
+  const handleSaveLightingProps = async () => {
+    if (!onSaveLighting || propBusy) return;
+    setPropBusy(true);
+    try {
+      const ct = Number(clockTime);
+      const br = Number(brightness);
+      const fe = Number(fogEnd);
+      await onSaveLighting({
+        clock_time: Number.isFinite(ct) ? Math.max(0, Math.min(24, ct)) : 14,
+        brightness: Number.isFinite(br) ? Math.max(0, Math.min(10, br)) : 2,
+        ambient: /^#[0-9a-f]{6}$/i.test(ambient.trim()) ? ambient.trim() : "#707A8A",
+        fog_end: Number.isFinite(fe) ? Math.max(20, fe) : 10000,
+        technology: technology || "ShadowMap",
       });
     } finally {
       setPropBusy(false);
@@ -449,7 +506,77 @@ export function StudioBottomDrawer({
 
           {activeTab === "properties" && (
             <div data-properties-panel className="flex flex-col gap-2.5">
-              {!selectedPath || !selectedInstance ? (
+              {(lightingMode || (!selectedInstance && (projectMode || Boolean(lighting)) && Boolean(onSaveLighting))) && onSaveLighting ? (
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <code className="font-mono text-xs font-medium text-ink">Lighting</code>
+                      <Badge className="border-transparent bg-board px-1.5 py-0.5 text-xs text-ink-2">
+                        Scene Lighting
+                      </Badge>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {selectedInstance && (
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          onClick={() => setLightingMode(false)}
+                          className="bg-surface max-md:min-h-11"
+                        >
+                          Back to Part
+                        </Button>
+                      )}
+                      <Button
+                        variant="default"
+                        size="xs"
+                        disabled={propBusy}
+                        onClick={() => void handleSaveLightingProps()}
+                        className="max-md:min-h-11"
+                      >
+                        <Save className="size-3" strokeWidth={1.5} aria-hidden />
+                        Save lighting
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-4">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-xs text-ink-2">ClockTime (0-24)</span>
+                      <Input value={clockTime} onChange={(e) => setClockTime(e.target.value)} aria-label="Lighting ClockTime" className="h-8 font-mono text-xs max-md:min-h-11" />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <span className="text-xs text-ink-2">Brightness</span>
+                      <Input value={brightness} onChange={(e) => setBrightness(e.target.value)} aria-label="Lighting Brightness" className="h-8 font-mono text-xs max-md:min-h-11" />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <span className="text-xs text-ink-2">FogEnd</span>
+                      <Input value={fogEnd} onChange={(e) => setFogEnd(e.target.value)} aria-label="Lighting FogEnd" className="h-8 font-mono text-xs max-md:min-h-11" />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <span className="text-xs text-ink-2">Ambient &amp; Tech</span>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="color"
+                          aria-label="Lighting Ambient picker"
+                          value={/^#[0-9a-f]{6}$/i.test(ambient.trim()) ? ambient.trim() : "#707A8A"}
+                          onChange={(e) => setAmbient(e.target.value)}
+                          className="h-8 w-9 shrink-0 cursor-pointer rounded-sm border border-hairline bg-surface p-0.5 max-md:min-h-11"
+                        />
+                        <Input value={ambient} onChange={(e) => setAmbient(e.target.value)} aria-label="Lighting Ambient hex" className="h-8 w-20 font-mono text-xs max-md:min-h-11" />
+                        <select
+                          value={technology}
+                          onChange={(e) => setTechnology(e.target.value)}
+                          aria-label="Lighting Technology"
+                          className="h-8 min-w-0 flex-1 rounded-lg border border-hairline bg-surface px-2 font-mono text-xs text-ink outline-none focus-visible:ring-2 focus-visible:ring-focus max-md:min-h-11"
+                        >
+                          {["ShadowMap", "Future", "Voxel", "Compatibility"].map((t) => (
+                            <option key={t} value={t}>{t}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : !selectedPath || !selectedInstance ? (
                 <p className="rounded-sm border border-hairline bg-board/35 p-3 text-xs text-ink-2">
                   Select a Workspace part in the Left Explorer or click any part in Studio 3D to edit Position, Size, Color, Material, and Anchored state.
                 </p>
@@ -463,6 +590,16 @@ export function StudioBottomDrawer({
                       </Badge>
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5">
+                      {onSaveLighting && (
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          onClick={() => setLightingMode(true)}
+                          className="bg-surface max-md:min-h-11"
+                        >
+                          Scene Lighting
+                        </Button>
+                      )}
                       <Button
                         variant="outline"
                         size="xs"
@@ -557,6 +694,18 @@ export function StudioBottomDrawer({
                       </div>
                     </div>
                   </div>
+                  {(selectedInstance.class_name === "MeshPart" || meshId || textureId) && (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <div className="flex flex-col gap-1">
+                        <span className="text-xs text-ink-2">MeshId / OBJ path</span>
+                        <Input value={meshId} onChange={(e) => setMeshId(e.target.value)} aria-label="MeshId" placeholder="assets/meshes/prop.obj" className="h-8 font-mono text-xs max-md:min-h-11" />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <span className="text-xs text-ink-2">TextureID</span>
+                        <Input value={textureId} onChange={(e) => setTextureId(e.target.value)} aria-label="TextureID" placeholder="assets/meshes/prop.png" className="h-8 font-mono text-xs max-md:min-h-11" />
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </div>

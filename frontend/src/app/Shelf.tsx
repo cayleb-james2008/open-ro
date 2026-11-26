@@ -23,6 +23,7 @@ import { SlidingNumber } from "@/components/ui/sliding-number";
 import { Pill, PillIndicator, PillStatus } from "@/components/kibo-ui/pill";
 import type { Place, PlaceDiff, PlaceInstance, WorkspaceMode } from "./data";
 import { analyzePlaceLuau, type LuauDiagnostic } from "./luauAudit";
+import type { WorkspaceMeshEntry, WorkspaceScriptEntry } from "./ship/api";
 
 type KindInfo = { label: string; service: string; Icon: typeof FileCode; cls: string };
 
@@ -61,7 +62,35 @@ export type ExplorerEntry = {
   diagnostics: LuauDiagnostic[];
 };
 
-function parsePath(path: string, isScript = false): { name: string; service: string; kind: KindInfo } {
+function parsePath(
+  path: string,
+  isScript = false,
+  servicePathHint?: string,
+): { name: string; service: string; kind: KindInfo } {
+  if (path === "Lighting") {
+    return { name: "Lighting", service: "Lighting", kind: KINDS.Lighting };
+  }
+  if (path.includes("/") || /\.luau?$/i.test(path)) {
+    const fileName = path.split("/").pop() || path;
+    const hintedService = servicePathHint ? servicePathHint.split(".")[0] : "";
+    const inferredService = hintedService && KINDS[hintedService]
+      ? hintedService
+      : /^src\/server\//i.test(path)
+        ? "ServerScriptService"
+        : /^src\/client\//i.test(path)
+          ? "StarterPlayer"
+          : /^src\/shared\//i.test(path)
+            ? "ReplicatedStorage"
+            : /^src\/(gui|ui)\//i.test(path)
+              ? "StarterGui"
+              : "ProjectFiles";
+    const baseKind = KINDS[inferredService] ?? FALLBACK_KIND;
+    return {
+      name: fileName,
+      service: inferredService,
+      kind: isScript ? { ...baseKind, Icon: FileCode, label: "script" } : baseKind,
+    };
+  }
   const segs = path.split(".");
   const service = segs[0] || "Workspace";
   const rawLast = segs[segs.length - 1] || path;
@@ -70,6 +99,14 @@ function parsePath(path: string, isScript = false): { name: string; service: str
     return { name: rawLast, service, kind: { ...kind, Icon: FileCode, label: "script" } };
   }
   return { name: rawLast, service, kind };
+}
+
+function projectFolderOf(path: string): string {
+  const norm = path.replace(/\\/g, "/").replace(/^\/+/, "");
+  const parts = norm.split("/");
+  if (parts.length <= 1) return "root";
+  if (parts.length === 2) return `${parts[0]}/`;
+  return `${parts[0]}/${parts[1]}/`;
 }
 
 export function buildGameSummary(gameName: string, builtTitles: string[], place: Place | null | "error"): string {
@@ -91,10 +128,17 @@ export const LeftExplorerTree = memo(function LeftExplorerTree({
   buildDiff,
   serverDiagnostics,
   syncing = false,
+  projectMode = false,
+  projectName,
+  scriptMeta,
+  projectMeshes = [],
+  hasLighting = false,
   onSelectPart,
   onOpenScript,
   onAttachContext,
   onRefreshPlace,
+  onSelectLighting,
+  onSelectMesh,
 }: {
   place: Place | null | "error";
   error: boolean;
@@ -105,12 +149,20 @@ export const LeftExplorerTree = memo(function LeftExplorerTree({
   buildDiff?: PlaceDiff | null;
   serverDiagnostics?: LuauDiagnostic[];
   syncing?: boolean;
+  projectMode?: boolean;
+  projectName?: string | null;
+  scriptMeta?: Record<string, WorkspaceScriptEntry>;
+  projectMeshes?: WorkspaceMeshEntry[];
+  hasLighting?: boolean;
   onSelectPart: (path: string) => void;
   onOpenScript: (path: string) => void;
   onAttachContext: (path: string) => void;
   onRefreshPlace?: () => void;
+  onSelectLighting?: () => void;
+  onSelectMesh?: (mesh: WorkspaceMeshEntry) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [treeView, setTreeView] = useState<"services" | "files">("services");
   const q = query.trim().toLowerCase();
 
   const diagnostics = useMemo(() => {
@@ -161,9 +213,21 @@ export const LeftExplorerTree = memo(function LeftExplorerTree({
         diagnostics: diagByPath.get(p) || [],
       });
     }
+    if (projectMode && hasLighting && !("Lighting" in (place.instances || {}))) {
+      all.push({
+        path: "Lighting",
+        name: "Scene Lighting",
+        service: "Lighting",
+        kind: KINDS.Lighting,
+        metaChip: "Scene",
+        isScript: false,
+        diagnostics: [],
+      });
+    }
     for (const [p, src] of Object.entries(place.scripts || {})) {
-      const { name, service, kind } = parsePath(p, true);
-      const lineCount = src ? src.trim().split("\n").length : 0;
+      const meta = scriptMeta?.[p];
+      const { name, service, kind } = parsePath(p, true, meta?.service_path);
+      const lineCount = meta?.lines ?? (src ? src.trim().split("\n").length : 0);
       all.push({
         path: p,
         name,
@@ -206,7 +270,44 @@ export const LeftExplorerTree = memo(function LeftExplorerTree({
       errCount: diagnostics.filter((d) => d.severity === "error").length,
       warnCount: diagnostics.filter((d) => d.severity === "warning").length,
     };
-  }, [diagByPath, diagnostics, place, q]);
+  }, [diagByPath, diagnostics, hasLighting, place, projectMode, q, scriptMeta]);
+
+  const fileGroups = useMemo(() => {
+    if (!projectMode || !place || place === "error") return [];
+    const buckets = new Map<string, Array<{ path: string; label: string; badge: string; kind: "script" | "scene" | "mesh"; mesh?: WorkspaceMeshEntry }>>();
+    const add = (folder: string, item: { path: string; label: string; badge: string; kind: "script" | "scene" | "mesh"; mesh?: WorkspaceMeshEntry }) => {
+      const list = buckets.get(folder) || [];
+      list.push(item);
+      buckets.set(folder, list);
+    };
+    for (const [relPath, src] of Object.entries(place.scripts || {})) {
+      const label = relPath.split("/").pop() || relPath;
+      if (q && !`${relPath} ${label}`.toLowerCase().includes(q)) continue;
+      const lines = scriptMeta?.[relPath]?.lines ?? (src ? src.trim().split("\n").length : 0);
+      add(projectFolderOf(relPath), { path: relPath, label, badge: `${Math.max(1, lines)}L`, kind: "script" });
+    }
+    const sceneCount = Object.keys(place.instances || {}).length;
+    if (!q || "scene/workspace.model.json lighting".includes(q)) {
+      add("scene/", { path: "scene/workspace.model.json", label: "workspace.model.json", badge: `${sceneCount} parts`, kind: "scene" });
+    }
+    for (const mesh of projectMeshes) {
+      const meshPath = mesh.obj_path || `assets/meshes/${mesh.name}`;
+      if (q && !`${meshPath} ${mesh.name}`.toLowerCase().includes(q)) continue;
+      add("assets/meshes/", {
+        path: meshPath,
+        label: mesh.name,
+        badge: mesh.tris ? `${mesh.tris} tris` : "OBJ",
+        kind: "mesh",
+        mesh,
+      });
+    }
+    return [...buckets.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([folder, items]) => ({
+        folder,
+        items: items.sort((a, b) => a.label.localeCompare(b.label)),
+      }));
+  }, [place, projectMeshes, projectMode, q, scriptMeta]);
 
   const diffTotal = buildDiff ? buildDiff.added.length + buildDiff.modified.length + buildDiff.removed.length : 0;
 
@@ -263,6 +364,35 @@ export const LeftExplorerTree = memo(function LeftExplorerTree({
           )}
         </div>
       </div>
+
+      {/* Active Rojo Project Strip & Services/Files Toggle */}
+      {projectMode && (
+        <div className="flex items-center justify-between gap-1.5 rounded-card border border-hairline bg-board/50 px-2 py-1 text-xs">
+          <span className="min-w-0 truncate font-medium text-ink" title={projectName || "Rojo Project"}>
+            {projectName || "Rojo Project"}
+          </span>
+          <div className="inline-flex shrink-0 items-center gap-0.5 rounded-sm bg-surface p-0.5">
+            <Button
+              variant={treeView === "services" ? "secondary" : "ghost"}
+              size="xs"
+              aria-pressed={treeView === "services"}
+              onClick={() => setTreeView("services")}
+              className="h-6 px-1.5 text-xs max-md:min-h-11"
+            >
+              Services
+            </Button>
+            <Button
+              variant={treeView === "files" ? "secondary" : "ghost"}
+              size="xs"
+              aria-pressed={treeView === "files"}
+              onClick={() => setTreeView("files")}
+              className="h-6 px-1.5 text-xs max-md:min-h-11"
+            >
+              Files
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Filter input */}
       <InputGroup className="bg-board/50">
@@ -391,6 +521,78 @@ export const LeftExplorerTree = memo(function LeftExplorerTree({
             <span className="h-8 rounded-sm bg-board" />
             <span className="h-8 rounded-sm bg-board" />
           </div>
+        ) : projectMode && treeView === "files" ? (
+          fileGroups.length === 0 ? (
+            <p className="rounded-card border border-hairline bg-board/60 p-2.5 text-xs text-ink-2">
+              {q ? `No project files match "${query}".` : "No project files found yet."}
+            </p>
+          ) : (
+            fileGroups.map((grp) => (
+              <div key={grp.folder} className="flex flex-col gap-0.5">
+                <div className="flex items-center justify-between px-1 py-0.5">
+                  <span className="truncate font-mono text-xs font-medium text-ink-2">{grp.folder}</span>
+                  <span className="font-mono text-xs tabular-nums text-ink-3">{grp.items.length}</span>
+                </div>
+                <ul className="flex flex-col gap-0.5">
+                  {grp.items.slice(0, 80).map((item) => {
+                    const isActive =
+                      item.kind === "script"
+                        ? selectedScriptPath === item.path || selectedPath === item.path
+                        : item.kind === "scene" && selectedPath === "Lighting";
+                    const attached = contextPaths.includes(item.path);
+                    const Icon = item.kind === "script" ? FileCode : item.kind === "scene" ? Layers : Box;
+                    return (
+                      <li
+                        key={item.path}
+                        data-explorer-file={item.path}
+                        className={`flex min-w-0 items-center gap-1 rounded-sm pr-0.5 transition-[background-color] duration-(--dur-press) ease-(--ease-house) ${
+                          isActive ? "bg-blue-soft/75" : "hover:bg-board/65"
+                        }`}
+                      >
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          onClick={() => {
+                            if (item.kind === "script") onOpenScript(item.path);
+                            else if (item.kind === "scene") {
+                              if (onSelectLighting) onSelectLighting();
+                              else onSelectPart("Lighting");
+                            } else if (item.mesh) {
+                              onSelectMesh?.(item.mesh);
+                            }
+                          }}
+                          aria-label={`Open ${item.path}`}
+                          className={`h-7 min-w-0 flex-1 justify-start gap-1.5 rounded-sm px-1.5 font-normal max-md:min-h-11 ${
+                            isActive ? "font-medium text-ink" : "text-ink-2 hover:text-ink"
+                          }`}
+                        >
+                          <Icon className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
+                          <span className="min-w-0 flex-1 truncate text-left text-xs">{item.label}</span>
+                          <span className="shrink-0 font-mono text-xs text-ink-3">{item.badge}</span>
+                        </Button>
+                        <Button
+                          variant={attached ? "default" : "ghost"}
+                          size="icon-xs"
+                          aria-pressed={attached}
+                          aria-label={`${attached ? "Remove" : "Attach"} ${item.path} context`}
+                          onClick={() => onAttachContext(item.path)}
+                          className={`size-6 shrink-0 max-md:size-11 ${
+                            attached ? "" : "text-ink-3 hover:text-ink"
+                          }`}
+                        >
+                          {attached ? (
+                            <Check className="size-3" strokeWidth={2} aria-hidden />
+                          ) : (
+                            <AtSign className="size-3" strokeWidth={1.5} aria-hidden />
+                          )}
+                        </Button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))
+          )
         ) : total === 0 ? (
           <div className="flex flex-col gap-2 rounded-card border border-hairline bg-board/60 p-3 text-xs leading-relaxed text-ink-2">
             <span>No parts or scripts in this place yet.</span>
@@ -427,7 +629,11 @@ export const LeftExplorerTree = memo(function LeftExplorerTree({
                       <Button
                         variant="ghost"
                         size="xs"
-                        onClick={() => (entry.isScript ? onOpenScript(entry.path) : onSelectPart(entry.path))}
+                        onClick={() => {
+                          if (entry.isScript) onOpenScript(entry.path);
+                          else if (entry.path === "Lighting" && onSelectLighting) onSelectLighting();
+                          else onSelectPart(entry.path);
+                        }}
                         aria-label={`${entry.isScript ? "Open script" : "Select part"} ${entry.path}`}
                         className={`h-7 min-w-0 flex-1 justify-start gap-1.5 rounded-sm px-1.5 font-normal max-md:min-h-11 ${
                           isActive ? "font-medium text-ink" : "text-ink-2 hover:text-ink"

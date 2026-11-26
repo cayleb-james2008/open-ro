@@ -32,6 +32,7 @@ import {
   type LuauDiagnostic,
   type LuauTokenKind,
 } from "./luauAudit";
+import type { WorkspaceScriptEntry } from "./ship/api";
 
 const TOKEN_CLS: Record<LuauTokenKind, string> = {
   comment: "text-ink-3",
@@ -43,6 +44,7 @@ const TOKEN_CLS: Record<LuauTokenKind, string> = {
 };
 
 function shortName(path: string): string {
+  if (path.includes("/")) return path.split("/").pop() || path;
   return path.split(".").pop() || path;
 }
 
@@ -56,6 +58,8 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
   latestFileDiffs,
   serverDiagnostics,
   busy,
+  projectMode = false,
+  scriptMeta,
   onSaveScript,
   onRunPlaytest,
   onApplyProposal,
@@ -71,6 +75,8 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
   latestFileDiffs: ScriptFileDiff[];
   serverDiagnostics: LuauDiagnostic[];
   busy: boolean;
+  projectMode?: boolean;
+  scriptMeta?: Record<string, WorkspaceScriptEntry>;
   onSaveScript: (path: string, source: string) => Promise<void> | void;
   onRunPlaytest: () => Promise<void> | void;
   onApplyProposal: (proposalId: string, selectedPaths: string[]) => Promise<void> | void;
@@ -98,8 +104,9 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
     const set = new Set<string>();
     for (const d of activeDiffs) set.add(d.path);
     for (const k of Object.keys(place.scripts || {})) set.add(k);
+    if (selectedScriptPath && selectedScriptPath.trim()) set.add(selectedScriptPath);
     return [...set];
-  }, [activeDiffs, place.scripts]);
+  }, [activeDiffs, place.scripts, selectedScriptPath]);
 
   const currentPath = useMemo(() => {
     if (selectedScriptPath && allPaths.includes(selectedScriptPath)) return selectedScriptPath;
@@ -117,8 +124,18 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
   const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
   const [newScriptOpen, setNewScriptOpen] = useState(false);
-  const [newScriptPath, setNewScriptPath] = useState("ServerScriptService.NewScript");
+  const [newScriptPath, setNewScriptPath] = useState(() =>
+    projectMode ? "src/server/NewScript.server.luau" : "ServerScriptService.NewScript",
+  );
   const [checkedPaths, setCheckedPaths] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    setNewScriptPath((prev) => {
+      if (projectMode && prev === "ServerScriptService.NewScript") return "src/server/NewScript.server.luau";
+      if (!projectMode && prev === "src/server/NewScript.server.luau") return "ServerScriptService.NewScript";
+      return prev;
+    });
+  }, [projectMode]);
 
   useEffect(() => {
     if (activeProposal) {
@@ -161,12 +178,13 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
     return merged;
   }, [activeProposal, currentPath, draft, place, serverDiagnostics]);
 
-  const fileDiagnostics = useMemo(
-    () => (currentPath ? allDiagnostics.filter((d) => d.path === currentPath) : []),
-    [allDiagnostics, currentPath],
-  );
+  const fileDiagnostics = useMemo(() => {
+    if (!currentPath) return [];
+    const svcPath = scriptMeta?.[currentPath]?.service_path;
+    return allDiagnostics.filter((d) => d.path === currentPath || (svcPath && d.path === svcPath));
+  }, [allDiagnostics, currentPath, scriptMeta]);
 
-  const dirty = Boolean(currentPath) && draft !== liveSource;
+  const dirty = Boolean(currentPath) && (!(currentPath in (place.scripts || {})) || draft !== liveSource);
   const errCount = fileDiagnostics.filter((d) => d.severity === "error").length;
   const warnCount = fileDiagnostics.filter((d) => d.severity === "warning").length;
 
@@ -190,9 +208,16 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
   };
 
   const handleCreateNewScript = async () => {
-    const clean = newScriptPath.trim();
-    if (!clean || !clean.includes(".")) {
-      toast.error("Use a valid Roblox path like ServerScriptService.Sprint");
+    const clean = newScriptPath.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+    const valid = projectMode
+      ? Boolean(clean && (clean.endsWith(".luau") || clean.endsWith(".lua")) && !clean.includes(".."))
+      : Boolean(clean && clean.includes("."));
+    if (!valid) {
+      toast.error(
+        projectMode
+          ? "Use a project-relative Luau path like src/server/Sprint.server.luau"
+          : "Use a valid Roblox path like ServerScriptService.Sprint",
+      );
       return;
     }
     const starter = `-- ${shortName(clean)}\nlocal Players = game:GetService("Players")\n\nPlayers.PlayerAdded:Connect(function(player)\n\tprint("[OpenRO] Ready for", player.Name)\nend)\n`;
@@ -438,8 +463,8 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
           <Input
             value={newScriptPath}
             onChange={(e) => setNewScriptPath(e.target.value)}
-            aria-label="New Luau script DataModel path"
-            placeholder="ServerScriptService.SprintController"
+            aria-label={projectMode ? "New project Luau file path" : "New Luau script DataModel path"}
+            placeholder={projectMode ? "src/server/SprintController.server.luau" : "ServerScriptService.SprintController"}
             className="h-8 max-w-sm bg-surface font-mono text-xs max-md:min-h-11"
           />
           <Button variant="default" size="xs" disabled={saving} onClick={() => void handleCreateNewScript()} className="max-md:min-h-11">
@@ -456,6 +481,11 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline px-3 py-1.5 text-xs">
           <div className="flex min-w-0 items-center gap-2">
             <code className="truncate font-mono text-ink">{currentPath}</code>
+            {scriptMeta?.[currentPath]?.service_path && (
+              <Badge className="hidden border-transparent bg-board px-1.5 py-0.5 font-mono text-xs text-ink-2 sm:inline-flex">
+                {scriptMeta[currentPath].service_path}
+              </Badge>
+            )}
             {currentDiff && (
               <Badge className="border-transparent bg-board px-1.5 py-0.5 font-mono text-xs text-ink-2">
                 {currentDiff.status}

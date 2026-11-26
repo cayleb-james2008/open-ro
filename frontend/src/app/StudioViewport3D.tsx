@@ -43,6 +43,7 @@ import type {
   StudioMode,
   ProjectAssetRecord,
 } from "./data";
+import type { WorkspaceLighting, WorkspaceMeshEntry } from "./ship/api";
 
 export type StudioTool = "select" | "move" | "scale" | "rotate";
 type ConsoleFilter = "all" | "parts" | "scripts" | "console";
@@ -71,9 +72,78 @@ type Part3D = {
   material: string;
   transparency: number;
   decalUrl?: string;
+  meshUrl?: string;
   cardTitle?: string;
   rawProps: Record<string, unknown>;
 };
+
+type ParsedObjMesh = {
+  verts: Vec3[];
+  edges: Array<[number, number]>;
+};
+
+function parseObjWireframe(text: string): ParsedObjMesh | null {
+  const rawVerts: Vec3[] = [];
+  const edgeSet = new Set<string>();
+  const rawEdges: Array<[number, number]> = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.startsWith("v ")) {
+      const p = line.slice(2).trim().split(/\s+/);
+      if (p.length >= 3) {
+        const x = Number(p[0]);
+        const y = Number(p[1]);
+        const z = Number(p[2]);
+        if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) rawVerts.push([x, y, z]);
+      }
+    } else if (line.startsWith("f ")) {
+      const p = line.slice(2).trim().split(/\s+/);
+      const idxs: number[] = [];
+      for (const tok of p) {
+        const vi = parseInt(tok.split("/")[0], 10);
+        if (Number.isFinite(vi) && vi !== 0) {
+          const resolved = vi > 0 ? vi - 1 : rawVerts.length + vi;
+          if (resolved >= 0 && resolved < rawVerts.length) idxs.push(resolved);
+        }
+      }
+      for (let i = 0; i < idxs.length; i++) {
+        const a = idxs[i];
+        const b = idxs[(i + 1) % idxs.length];
+        if (a === b) continue;
+        const lo = Math.min(a, b);
+        const hi = Math.max(a, b);
+        const key = `${lo}:${hi}`;
+        if (!edgeSet.has(key)) {
+          edgeSet.add(key);
+          rawEdges.push([lo, hi]);
+        }
+      }
+    }
+  }
+  if (rawVerts.length === 0) return null;
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (const [x, y, z] of rawVerts) {
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  const cx = (minX + maxX) * 0.5;
+  const cy = (minY + maxY) * 0.5;
+  const cz = (minZ + maxZ) * 0.5;
+  const sx = Math.max(1e-4, maxX - minX);
+  const sy = Math.max(1e-4, maxY - minY);
+  const sz = Math.max(1e-4, maxZ - minZ);
+  const normVerts: Vec3[] = rawVerts.map(([x, y, z]) => [(x - cx) / sx, (y - cy) / sy, (z - cz) / sz]);
+  const MAX_EDGES = 360;
+  let edges = rawEdges;
+  if (rawEdges.length > MAX_EDGES) {
+    const step = rawEdges.length / MAX_EDGES;
+    edges = [];
+    for (let i = 0; i < MAX_EDGES; i++) edges.push(rawEdges[Math.floor(i * step)]);
+  }
+  return { verts: normVerts, edges };
+}
 
 type CameraState = {
   tx: number;
@@ -148,7 +218,7 @@ function shadeHex(hex: string, factor: number, alpha = 1): string {
   return alpha < 0.99 ? `rgba(${rr},${gg},${bb},${alpha.toFixed(2)})` : `rgb(${rr},${gg},${bb})`;
 }
 
-function extractParts(place: Place, assets: ProjectAssetRecord[]): Part3D[] {
+function extractParts(place: Place, assets: ProjectAssetRecord[], meshes: WorkspaceMeshEntry[] = []): Part3D[] {
   const out: Part3D[] = [];
   const entries = Object.entries(place.instances || {});
   let fallbackIdx = 0;
@@ -181,9 +251,11 @@ function extractParts(place: Place, assets: ProjectAssetRecord[]): Part3D[] {
     const rawTex =
       typeof props.DecalTexture === "string"
         ? props.DecalTexture
-        : typeof props.Texture === "string"
-          ? props.Texture
-          : undefined;
+        : typeof props.TextureID === "string"
+          ? props.TextureID
+          : typeof props.Texture === "string"
+            ? props.Texture
+            : undefined;
     if (rawTex || cardTitle || /billboard|decalboard|showcase/i.test(name)) {
       const matched = assets.find(
         (a) =>
@@ -193,8 +265,41 @@ function extractParts(place: Place, assets: ProjectAssetRecord[]): Part3D[] {
       );
       if (matched) {
         decalUrl = matched.image_url;
-      } else if (rawTex && (rawTex.startsWith("data:image/") || rawTex.startsWith("/api/assets/"))) {
+      } else if (rawTex && (rawTex.startsWith("data:image/") || rawTex.startsWith("/api/assets/") || rawTex.startsWith("/api/projects/"))) {
         decalUrl = rawTex;
+      }
+    }
+
+    // Resolve project .obj mesh URL for MeshPart or parts referencing MeshId / ObjPath
+    let meshUrl: string | undefined;
+    const rawMeshRef =
+      typeof props.MeshId === "string"
+        ? props.MeshId
+        : typeof props.mesh_id === "string"
+          ? props.mesh_id
+          : typeof props.ObjPath === "string"
+            ? props.ObjPath
+            : "";
+    if (rawMeshRef || cls === "MeshPart") {
+      const refLow = rawMeshRef.toLowerCase();
+      const nameLow = name.toLowerCase();
+      const matchedMesh = meshes.find((m) => {
+        const mName = m.name.toLowerCase().replace(/\.obj$/i, "");
+        const mPath = (m.obj_path || "").toLowerCase();
+        if (refLow) {
+          return (
+            m.obj_url.toLowerCase() === refLow ||
+            (mPath && refLow.includes(mPath)) ||
+            refLow.includes(mName)
+          );
+        }
+        return cls === "MeshPart" && (nameLow.includes(mName) || mName.includes(nameLow));
+      });
+      if (matchedMesh) {
+        meshUrl = matchedMesh.obj_url;
+        if (!decalUrl && matchedMesh.texture_url) decalUrl = matchedMesh.texture_url;
+      } else if (rawMeshRef.startsWith("/api/projects/")) {
+        meshUrl = rawMeshRef;
       }
     }
 
@@ -218,6 +323,7 @@ function extractParts(place: Place, assets: ProjectAssetRecord[]): Part3D[] {
       material,
       transparency,
       decalUrl,
+      meshUrl,
       cardTitle,
       rawProps: props,
     });
@@ -370,6 +476,8 @@ export function StudioViewport3D({
   place,
   theme,
   assets,
+  meshes = [],
+  lighting,
   selectedPath,
   studioMode,
   actions,
@@ -387,6 +495,8 @@ export function StudioViewport3D({
   place: Place;
   theme: "light" | "dark";
   assets: ProjectAssetRecord[];
+  meshes?: WorkspaceMeshEntry[];
+  lighting?: WorkspaceLighting | null;
   selectedPath?: string | null;
   studioMode: StudioMode;
   actions: StudioActionEvent[];
@@ -405,6 +515,8 @@ export function StudioViewport3D({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
   const [imgTick, setImgTick] = useState(0);
+  const meshCacheRef = useRef<Map<string, ParsedObjMesh | "loading" | "error">>(new Map());
+  const [meshTick, setMeshTick] = useState(0);
 
   const [tool, setTool] = useState<StudioTool>("select");
   const [followAgent, setFollowAgent] = useState(true);
@@ -464,14 +576,14 @@ export function StudioViewport3D({
   });
 
   const parts = useMemo(() => {
-    const raw = extractParts(place, assets);
+    const raw = extractParts(place, assets, meshes);
     if (!localDraftEdit) return raw;
     return raw.map((p) =>
       p.path === localDraftEdit.path
         ? { ...p, pos: localDraftEdit.pos, size: localDraftEdit.size, rotYDeg: localDraftEdit.rotY }
         : p,
     );
-  }, [assets, localDraftEdit, place]);
+  }, [assets, localDraftEdit, meshes, place]);
 
   const selectedPart = useMemo(
     () => parts.find((p) => p.path === selectedPath) || null,
@@ -526,6 +638,31 @@ export function StudioViewport3D({
     }
     return synthetic;
   }, [actions, parts, place.scripts, studioMode]);
+
+  // Preload project .obj mesh wireframes from /api/projects/:id/mesh-asset
+  useEffect(() => {
+    const urls = new Set<string>();
+    for (const p of parts) {
+      if (p.meshUrl) urls.add(p.meshUrl);
+    }
+    for (const m of meshes) {
+      if (m.obj_url) urls.add(m.obj_url);
+    }
+    for (const url of urls) {
+      if (meshCacheRef.current.has(url)) continue;
+      meshCacheRef.current.set(url, "loading");
+      void fetch(url, { cache: "no-store" })
+        .then((r) => (r.ok ? r.text() : Promise.reject(new Error("mesh fetch"))))
+        .then((txt) => {
+          const parsed = parseObjWireframe(txt);
+          meshCacheRef.current.set(url, parsed ?? "error");
+          setMeshTick((t) => t + 1);
+        })
+        .catch(() => {
+          meshCacheRef.current.set(url, "error");
+        });
+    }
+  }, [meshes, parts]);
 
   // Preload Nano Banana card images for 3D billboard projection
   useEffect(() => {
@@ -707,9 +844,24 @@ export function StudioViewport3D({
     const cam = camRef.current;
     const { project, right, up } = buildCameraBasis(cam);
 
-    // 1. Sky gradient (crisp Roblox Studio daylight / dark studio sky)
+    const clockTime = typeof lighting?.clock_time === "number" && Number.isFinite(lighting.clock_time) ? lighting.clock_time : null;
+    const lightBrightness = typeof lighting?.brightness === "number" && Number.isFinite(lighting.brightness) ? lighting.brightness : 2.0;
+    const brightnessFactor = Math.max(0.65, Math.min(1.25, 0.72 + lightBrightness * 0.14));
+    const ambientHex = typeof lighting?.ambient === "string" && /^#[0-9a-f]{6}$/i.test(lighting.ambient.trim()) ? lighting.ambient.trim() : null;
+    const fogEnd = typeof lighting?.fog_end === "number" && Number.isFinite(lighting.fog_end) ? lighting.fog_end : 10000;
+    const fogColor = typeof lighting?.fog_color === "string" && /^#[0-9a-f]{6}$/i.test(lighting.fog_color.trim()) ? lighting.fog_color.trim() : ambientHex;
+
+    // 1. Sky gradient (responds to Rojo Lighting ClockTime/Ambient when set, else theme studio sky)
     const sky = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
-    if (isDark) {
+    if (clockTime !== null && (clockTime < 5.5 || clockTime >= 19.5)) {
+      sky.addColorStop(0, "#0B1020");
+      sky.addColorStop(0.58, "#162038");
+      sky.addColorStop(1, "#141A29");
+    } else if (clockTime !== null && ((clockTime >= 5.5 && clockTime < 7.5) || (clockTime >= 17 && clockTime < 19.5))) {
+      sky.addColorStop(0, isDark ? "#23223A" : "#C9A8C8");
+      sky.addColorStop(0.55, isDark ? "#3A2C3B" : "#F1C9A5");
+      sky.addColorStop(1, isDark ? "#1C1B24" : "#ECE4D8");
+    } else if (isDark) {
       sky.addColorStop(0, "#121722");
       sky.addColorStop(0.58, "#1A2233");
       sky.addColorStop(1, "#161B24");
@@ -720,6 +872,11 @@ export function StudioViewport3D({
     }
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    if (ambientHex) {
+      const [ar, ag, ab] = hexToRgb(ambientHex);
+      ctx.fillStyle = `rgba(${ar},${ag},${ab},0.10)`;
+      ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    }
 
     // 2. Roblox Studio Baseplate Slab & Stud Grid
     const baseHalf = 72;
@@ -825,6 +982,7 @@ export function StudioViewport3D({
     const anim = agentAnimRef.current;
     const faces: DrawFace[] = [];
     const hitPolys: ProjectedPoly[] = [];
+    const meshWires: Array<{ segs: Array<[Vec2, Vec2]>; stroke: string; depth: number }> = [];
     const sunDir: Vec3 = [0.46, 0.81, 0.36];
 
     // Local cube face indices & outward normals (CW winding in Roblox Y-up)
@@ -895,7 +1053,37 @@ export function StudioViewport3D({
 
       const isSelected = selectedPath === part.path;
       const isNeon = part.material === "Neon";
-      const alpha = 1 - part.transparency;
+      const meshEntry = part.meshUrl ? meshCacheRef.current.get(part.meshUrl) : undefined;
+      const parsedMesh = meshEntry && typeof meshEntry === "object" ? meshEntry : null;
+      const alpha = parsedMesh ? Math.min(1 - part.transparency, 0.28) : 1 - part.transparency;
+
+      if (parsedMesh) {
+        const projVerts = parsedMesh.verts.map(([vx, vy, vz]) => {
+          const lx = vx * part.size[0] * popScale;
+          const ly = vy * part.size[1] * popScale;
+          const lz = vz * part.size[2] * popScale;
+          return project(px + lx * cosY + lz * sinY, py + ly, pz - lx * sinY + lz * cosY);
+        });
+        const segs: Array<[Vec2, Vec2]> = [];
+        let depthSum = 0;
+        let depthN = 0;
+        for (const [ia, ib] of parsedMesh.edges) {
+          const va = projVerts[ia];
+          const vb = projVerts[ib];
+          if (va?.visible && vb?.visible) {
+            segs.push([[va.sx, va.sy], [vb.sx, vb.sy]]);
+            depthSum += (va.depth + vb.depth) * 0.5;
+            depthN++;
+          }
+        }
+        if (segs.length > 0) {
+          meshWires.push({
+            segs,
+            stroke: isSelected ? "#2F80FF" : shadeHex(part.color, Math.min(1.3, 0.9 * brightnessFactor), 0.88),
+            depth: depthN > 0 ? depthSum / depthN : 999,
+          });
+        }
+      }
       const decalImg = part.decalUrl ? imgCacheRef.current.get(part.decalUrl) : undefined;
       const decalReady = Boolean(decalImg && decalImg.complete && decalImg.naturalWidth > 0);
 
@@ -995,7 +1183,7 @@ export function StudioViewport3D({
         const ny = fd.n[1];
         const nz = -fd.n[0] * sinY + fd.n[2] * cosY;
         const ndotl = Math.max(0, nx * sunDir[0] + ny * sunDir[1] + nz * sunDir[2]);
-        const shade = isNeon ? 0.96 + ndotl * 0.22 : 0.58 + ndotl * 0.46;
+        const shade = isNeon ? 0.96 + ndotl * 0.22 : (0.58 + ndotl * 0.46) * brightnessFactor;
 
         const pts: Vec2[] = [
           [p0.sx, p0.sy],
@@ -1113,6 +1301,31 @@ export function StudioViewport3D({
         ctx.lineWidth = f.lineWidth;
         ctx.stroke();
       }
+      if (fogEnd < 600 && fogColor && f.depth > 12) {
+        const fogAmt = Math.min(0.55, Math.max(0, (f.depth - 12) / Math.max(24, fogEnd)));
+        if (fogAmt > 0.02) {
+          const [fr, fg, fb] = hexToRgb(fogColor);
+          ctx.fillStyle = `rgba(${fr},${fg},${fb},${fogAmt.toFixed(2)})`;
+          ctx.fill();
+        }
+      }
+    }
+
+    // Draw loaded Rojo .obj mesh wireframes over their MeshPart bounding boxes
+    if (meshWires.length > 0) {
+      meshWires.sort((a, b) => b.depth - a.depth);
+      ctx.save();
+      ctx.lineWidth = 1.1;
+      for (const mw of meshWires) {
+        ctx.strokeStyle = mw.stroke;
+        ctx.beginPath();
+        for (const [a, b] of mw.segs) {
+          ctx.moveTo(a[0], a[1]);
+          ctx.lineTo(b[0], b[1]);
+        }
+        ctx.stroke();
+      }
+      ctx.restore();
     }
 
     // 4. Crisp 3D Floating Part Name Labels (for Spawn, Pedestal, Tower, Shrine, Billboards, or Selected Part)
@@ -1329,7 +1542,7 @@ export function StudioViewport3D({
       ctx.textAlign = "center";
       ctx.fillText("Roblox Studio 3D Baseplate ready — run a blueprint or ask OpenRO to watch parts build live.", CANVAS_W / 2, CANVAS_H - 28);
     }
-  }, [building, replaying, reduce, selectedPart, selectedPath, theme, tool, visibleParts, imgTick]);
+  }, [building, lighting, meshTick, replaying, reduce, selectedPart, selectedPath, theme, tool, visibleParts, imgTick]);
 
   // 60fps animation loop (stops cleanly under prefers-reduced-motion)
   useEffect(() => {

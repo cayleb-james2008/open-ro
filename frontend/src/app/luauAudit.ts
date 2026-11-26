@@ -231,8 +231,9 @@ export function analyzePlaceLuau(place: Place): LuauDiagnostic[] {
     );
 
   for (const [path, source] of Object.entries(place.scripts || {})) {
+    const isProjectFile = path.includes("/") || /\.luau?$/i.test(path);
     const root = path.split(".")[0] || "";
-    if (!VALID_SERVICES.has(root)) {
+    if (!isProjectFile && !VALID_SERVICES.has(root)) {
       diagnostics.push({
         path,
         line: 1,
