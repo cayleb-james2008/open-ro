@@ -50,6 +50,9 @@ const SCOPES: &[&str] = &[
     "developer-product:write",
     "universe:read",
     "universe:write",
+    "universe-datastores.objects:read",
+    "universe-datastores.objects:write",
+    "universe.messaging-service:publish",
 ];
 
 pub struct Ctx<'a> {
@@ -70,18 +73,18 @@ pub struct Oc {
     pub status: u16,
     pub msg: String,
 }
-type R<T> = Result<T, Oc>;
+pub(crate) type R<T> = Result<T, Oc>;
 
-fn bad<T>(msg: impl Into<String>) -> R<T> {
+pub(crate) fn bad<T>(msg: impl Into<String>) -> R<T> {
     Err(Oc { status: 400, msg: msg.into() })
 }
-fn err<T>(status: u16, msg: impl Into<String>) -> R<T> {
+pub(crate) fn err<T>(status: u16, msg: impl Into<String>) -> R<T> {
     Err(Oc { status, msg: msg.into() })
 }
-fn ok_json(v: Value) -> Reply {
+pub(crate) fn ok_json(v: Value) -> Reply {
     Reply::Json(200, v)
 }
-fn fail(e: Oc) -> Reply {
+pub(crate) fn fail(e: Oc) -> Reply {
     Reply::Json(e.status, json!({ "ok": false, "error": e.msg }))
 }
 
@@ -175,7 +178,7 @@ enum Creator {
     Group(String),
 }
 
-struct Client {
+pub(crate) struct Client {
     base: String,
     key: String,
     creator: Option<Creator>,
@@ -183,7 +186,7 @@ struct Client {
 }
 
 impl Client {
-    fn new(ctx: &Ctx) -> R<Client> {
+    pub(crate) fn new(ctx: &Ctx) -> R<Client> {
         let Some(key) = ctx.store.get(OPENCLOUD_KEY) else {
             return err(503, "Add your Open Cloud key in Settings first.");
         };
@@ -196,7 +199,7 @@ impl Client {
 
     /// One HTTP exchange. Any HTTP status comes back as `(status, body)`; only a
     /// transport failure is an `Err`. A 429 is retried up to 6 times with backoff (#69).
-    fn call(&self, method: &str, path: &str, content_type: Option<&str>, body: Option<&[u8]>) -> R<(u16, Vec<u8>)> {
+    pub(crate) fn call(&self, method: &str, path: &str, content_type: Option<&str>, body: Option<&[u8]>) -> R<(u16, Vec<u8>)> {
         let url = format!("{}{}", self.base, path);
         for attempt in 0..7u32 {
             let mut rq = self.http.request(method, &url).set("x-api-key", &self.key);
@@ -231,12 +234,12 @@ impl Client {
         err(502, "Roblox kept answering 'too many requests'. Wait a minute and try again.")
     }
 
-    fn scrub(&self, s: &str) -> String {
+    pub(crate) fn scrub(&self, s: &str) -> String {
         secrets::scrub(s, &[&self.key])
     }
 
     /// Call and require a 2xx JSON (or empty) answer.
-    fn json(&self, method: &str, path: &str, content_type: Option<&str>, body: Option<&[u8]>) -> R<Value> {
+    pub(crate) fn json(&self, method: &str, path: &str, content_type: Option<&str>, body: Option<&[u8]>) -> R<Value> {
         let (status, bytes) = self.call(method, path, content_type, body)?;
         self.check(status, &bytes)?;
         if bytes.is_empty() {
@@ -245,14 +248,14 @@ impl Client {
         serde_json::from_slice(&bytes).or_else(|_| err(502, "Roblox answered with something that is not JSON."))
     }
 
-    fn check(&self, status: u16, bytes: &[u8]) -> R<()> {
+    pub(crate) fn check(&self, status: u16, bytes: &[u8]) -> R<()> {
         if (200..300).contains(&status) {
             return Ok(());
         }
         err(502, self.upstream_msg(status, bytes))
     }
 
-    fn upstream_msg(&self, status: u16, bytes: &[u8]) -> String {
+    pub(crate) fn upstream_msg(&self, status: u16, bytes: &[u8]) -> String {
         let text = String::from_utf8_lossy(bytes);
         let detail = serde_json::from_str::<Value>(&text)
             .ok()
@@ -313,7 +316,7 @@ pub(crate) fn read_manifest(root: &Path) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
-fn write_json_atomic(path: &Path, v: &Value) -> R<()> {
+pub(crate) fn write_json_atomic(path: &Path, v: &Value) -> R<()> {
     let text = serde_json::to_string_pretty(v).map_err(|e| Oc { status: 500, msg: format!("write {}: {e}", path.display()) })?;
     let tmp = path.with_extension("tmp-openro");
     std::fs::write(&tmp, format!("{text}\n"))
@@ -402,7 +405,7 @@ pub(crate) fn id_of(v: &Value, key: &str) -> Option<String> {
     }
 }
 
-fn universe_id(manifest: &Value) -> R<String> {
+pub(crate) fn universe_id(manifest: &Value) -> R<String> {
     match id_of(manifest, "universeId").filter(|s| s.bytes().all(|b| b.is_ascii_digit())) {
         Some(u) => Ok(u),
         None => bad("This project has no universeId yet. Set it in the project settings."),
@@ -3812,6 +3815,13 @@ pub fn route(ctx: &Ctx, method: &str, path: &str, query: &str, body: &Value) -> 
         ("GET", ["art", "image"]) => art_root(ctx, query_param(query, "project").as_deref())
             .and_then(|r| crate::assets::art_image(&r, &query_param(query, "path").unwrap_or_default()))
             .map(|(m, b)| Reply::Bytes(m, b)),
+        (_, ["projects", id, "liveops", tail @ ..]) => {
+            let Some(root) = (ctx.resolve)(id) else {
+                return Some(fail(Oc { status: 404, msg: "Unknown project.".into() }));
+            };
+            return crate::liveops::route(ctx, method, &root, tail, query, body)
+                .map(|r| r.unwrap_or_else(fail));
+        }
         (_, ["projects", id, tail @ ..]) if matches!(tail, ["assets"] | ["assets", _] | ["publish"] | ["products"] | ["products", "sync"] | ["products", "codegen"] | ["monetization", "pack"] | ["monetization", "codegen"] | ["monetization", "simulate"] | ["publish-gate"] | ["readiness"] | ["autopilot"] | ["universe"]) => {
             let Some(root) = (ctx.resolve)(id) else {
                 return Some(fail(Oc { status: 404, msg: "Unknown project.".into() }));

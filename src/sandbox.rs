@@ -296,6 +296,7 @@ fn empty_state_snapshot() -> Value {
         "receipts_processed": [],
         "remotes_fired": 0,
         "player_gui_tree": [],
+        "telemetry_events": [],
     })
 }
 
@@ -412,6 +413,7 @@ fn normalize_report_json(report: &mut Value) {
     };
     ensure_array_field(obj, "steps");
     ensure_array_field(obj, "assertions");
+    ensure_array_field(obj, "telemetry_events");
     if let Some(console) = obj.get_mut("console").and_then(Value::as_object_mut) {
         ensure_array_field(console, "lines");
         ensure_array_field(console, "errors");
@@ -420,6 +422,7 @@ fn normalize_report_json(report: &mut Value) {
     if let Some(snap) = obj.get_mut("state_snapshot").and_then(Value::as_object_mut) {
         ensure_array_field(snap, "receipts_processed");
         ensure_array_field(snap, "player_gui_tree");
+        ensure_array_field(snap, "telemetry_events");
         if let Some(Value::Array(trees)) = snap.get_mut("player_gui_tree") {
             for t in trees {
                 normalize_gui_children(t);

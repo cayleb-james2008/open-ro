@@ -2005,12 +2005,119 @@ local ProximityPromptService = createInstance("ProximityPromptService", dataMode
 INST_STATE[ProximityPromptService].PromptTriggered = newSignal("ProximityPromptService.PromptTriggered")
 INST_STATE[ProximityPromptService].signals.PromptTriggered = INST_STATE[ProximityPromptService].PromptTriggered
 
+local telemetryEvents = {}
+local messagingSubscribers = {}
+
+local function recordTelemetryEvent(kind, player, extra)
+	if #telemetryEvents >= 2000 then
+		return
+	end
+	local uid = "0"
+	if type(player) == "table" and INST_STATE[player] and INST_STATE[player].props and INST_STATE[player].props.UserId ~= nil then
+		uid = tostring(INST_STATE[player].props.UserId)
+	elseif player ~= nil then
+		uid = tostring(player)
+	end
+	local ev = {
+		kind = kind,
+		user_id = uid,
+		ts = datetime.now():toIsoDate(),
+	}
+	if type(extra) == "table" then
+		for k, v in pairs(extra) do
+			if v ~= nil then
+				ev[k] = v
+			end
+		end
+	end
+	table.insert(telemetryEvents, ev)
+end
+
+local MessagingService = createInstance("MessagingService", dataModel, "MessagingService")
+INST_STATE[MessagingService].customMethods = {
+	SubscribeAsync = function(_, topic, callback)
+		local t = tostring(topic or "")
+		if not messagingSubscribers[t] then
+			messagingSubscribers[t] = {}
+		end
+		if type(callback) == "function" then
+			table.insert(messagingSubscribers[t], callback)
+		end
+		return tagType({
+			Connected = true,
+			Disconnect = function(c)
+				c.Connected = false
+			end,
+		}, "RBXScriptConnection")
+	end,
+	PublishAsync = function(_, topic, message)
+		local t = tostring(topic or "")
+		local subs = messagingSubscribers[t]
+		if type(subs) == "table" then
+			for _, cb in ipairs(subs) do
+				task.spawn(safeCall, "MessagingService:" .. t, cb, {
+					Data = message,
+					Sent = datetime.now().unixTimestampMillis / 1000,
+				})
+			end
+		end
+	end,
+}
+
 local AnalyticsService = createInstance("AnalyticsService", dataModel, "AnalyticsService")
 INST_STATE[AnalyticsService].customMethods = {
-	LogOnboardingFunnelStepEvent = function() end,
-	LogFunnelStepEvent = function() end,
-	LogEconomyEvent = function() end,
-	LogCustomEvent = function() end,
+	LogOnboardingFunnelStepEvent = function(_, player, step, stepName, customFields)
+		local label = if stepName ~= nil and tostring(stepName) ~= ""
+			then tostring(stepName)
+			else ("step_" .. tostring(step or 1))
+		recordTelemetryEvent("onboarding", player, {
+			step = label,
+			step_number = tonumber(step),
+			custom_fields = customFields,
+		})
+	end,
+	LogFunnelStepEvent = function(_, player, funnelName, funnelSessionId, step, stepName, customFields)
+		local label = if stepName ~= nil and tostring(stepName) ~= ""
+			then tostring(stepName)
+			elseif step ~= nil then ("step_" .. tostring(step))
+			else tostring(funnelName or "funnel")
+		recordTelemetryEvent("funnel", player, {
+			funnel_name = if funnelName ~= nil then tostring(funnelName) else nil,
+			funnel_session_id = if funnelSessionId ~= nil then tostring(funnelSessionId) else nil,
+			step = label,
+			step_number = tonumber(step),
+			custom_fields = customFields,
+		})
+	end,
+	LogEconomyEvent = function(_, player, flowType, currencyType, amount, endingBalance, transactionType, itemSku, customFields)
+		local flowStr = if type(flowType) == "table" and flowType.Name
+			then string.lower(tostring(flowType.Name))
+			elseif flowType ~= nil then string.lower(tostring(flowType))
+			else "sink"
+		local stepLabel = if itemSku ~= nil and tostring(itemSku) ~= ""
+			then tostring(itemSku)
+			elseif transactionType ~= nil and tostring(transactionType) ~= ""
+			then tostring(transactionType)
+			else tostring(currencyType or "economy")
+		recordTelemetryEvent("economy", player, {
+			flow_type = flowStr,
+			currency = if currencyType ~= nil then tostring(currencyType) else nil,
+			amount = tonumber(amount) or 0,
+			ending_balance = tonumber(endingBalance),
+			transaction_type = if transactionType ~= nil then tostring(transactionType) else nil,
+			item_sku = if itemSku ~= nil then tostring(itemSku) else nil,
+			step = stepLabel,
+			custom_fields = customFields,
+		})
+	end,
+	LogCustomEvent = function(_, player, eventName, value, customFields)
+		recordTelemetryEvent("custom", player, {
+			step = if eventName ~= nil then tostring(eventName) else "custom",
+			event_name = if eventName ~= nil then tostring(eventName) else "custom",
+			amount = tonumber(value),
+			custom_fields = customFields,
+		})
+	end,
 }
 
 local GuiService = createInstance("GuiService", dataModel, "GuiService")
@@ -2055,6 +2162,7 @@ registerService(HttpService)
 registerService(Debris)
 registerService(UserInputService)
 registerService(ProximityPromptService)
+registerService(MessagingService)
 registerService(AnalyticsService)
 registerService(GuiService)
 registerService(TextService)
@@ -3056,11 +3164,13 @@ local function executeStep(idx, step)
 		env.receipts_processed = grantedReceipts
 		env.receipt_events = receiptsProcessed
 		env.remotes_fired = remotesFiredCount
+		env.telemetry_events = telemetryEvents
 		env.state_snapshot = {
 			leaderstats = lsSnap,
 			datastores = dsSnap,
 			receipts_processed = receiptsProcessed,
 			remotes_fired = remotesFiredCount,
+			telemetry_events = telemetryEvents,
 		}
 		local okCompile, fnOrErr, loadErr = pcall(luau.load, code, {
 			debugName = "assert_luau:" .. aName,
@@ -3277,12 +3387,14 @@ local report = {
 		errors = consoleErrors,
 		warnings = consoleWarnings,
 	},
+	telemetry_events = telemetryEvents,
 	state_snapshot = {
 		leaderstats = snapshotLeaderstats(),
 		datastores = snapshotDataStores(),
 		receipts_processed = receiptsProcessed,
 		remotes_fired = remotesFiredCount,
 		player_gui_tree = guiTrees,
+		telemetry_events = telemetryEvents,
 	},
 	core_loop = {
 		move = {

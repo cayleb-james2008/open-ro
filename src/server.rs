@@ -5370,10 +5370,16 @@ fn try_route_opencloud_assets(
                 || path.ends_with("/readiness")
                 || path.ends_with("/autopilot")
                 || path.ends_with("/universe")
+                || path.contains("/liveops/")
+                || path.ends_with("/liveops")
                 || path.ends_with("/creator-hub/setup")
                 || path.ends_with("/creator-hub/configure")));
     if !is_candidate {
         return false;
+    }
+    if (path.contains("/liveops/") || path.ends_with("/liveops")) && !host_allowed(&req.host, &[]) {
+        respond_err(stream, "403 Forbidden", "live-ops control plane endpoints are only allowed from this machine (loopback)");
+        return true;
     }
     let mut body: Value = if req.body.is_empty() {
         json!({})

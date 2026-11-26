@@ -241,6 +241,11 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - {{\"tool\": \"assets_authorise\", \"args\": {{\"paths\": [\"art/cards/**\"]}}}} / {{\"tool\": \"assets_upload\", \"args\": {{\"paths\": [...]}}}} / {{\"tool\": \"assets_codegen\", \"args\": {{}}}} authorises, uploads, and generates `src/shared/AssetIds.luau`\n\
 - {{\"tool\": \"products_sync\", \"args\": {{}}}} / {{\"tool\": \"products_codegen\", \"args\": {{}}}} syncs approved Game Passes/Dev Products and generates `src/shared/ProductIds.luau`\n\
 - {{\"tool\": \"universe_get\", \"args\": {{}}}} / {{\"tool\": \"universe_set\", \"args\": {{\"settings\": {{\"displayName\": \"...\", \"description\": \"...\"}}}}}} reads/updates Roblox Experience metadata\n\
+- {{\"tool\": \"liveops_datastore_list\", \"args\": {{\"store\": \"...?\", \"scope\": \"global\", \"prefix\": \"...?\"}}}} / {{\"tool\": \"liveops_datastore_get\", \"args\": {{\"store\": \"...\", \"scope\": \"global\", \"key\": \"...\"}}}} inspects Open Cloud v2 DataStores\n\
+- {{\"tool\": \"liveops_datastore_set\", \"args\": {{\"store\": \"...\", \"scope\": \"global\", \"key\": \"...\", \"value\": {{...}}, \"expected_revision\": \"...\", \"confirm\": true}}}} writes a DataStore entry with optimistic concurrency & backup (REQUIRES owner `confirm: true`)\n\
+- {{\"tool\": \"liveops_messaging_publish\", \"args\": {{\"topic\": \"...\", \"message\": {{...}}, \"confirm\": true}}}} broadcasts via MessagingService (REQUIRES owner `confirm: true`)\n\
+- {{\"tool\": \"liveops_remote_config_push\", \"args\": {{\"config\": {{...}}, \"generate_luau\": true, \"push_to_datastore\": false}}}} updates `liveops/remote-config.json` & `src/shared/LiveConfig.luau` (`push_to_datastore: true` REQUIRES `confirm: true`)\n\
+- {{\"tool\": \"liveops_telemetry_summary\", \"args\": {{}}}} summarizes player onboarding/funnel drop-off, ARPDAU Robux, and top economy sinks\n\
 - {{\"tool\": \"project_publish\", \"args\": {{\"versionType\": \"Saved\"}}}} publishes built `.rbxlx` (`versionType: \"Published\"` requires `confirm: true` ONLY after explicit owner approval)\n\
 - {{\"tool\": \"evidence_record\", \"args\": {{\"summary\": \"...\", \"confidence\": \"observed|derived|inferred\", \"kind\": \"...\", \"source\": \"...\"}}}} appends canonical SHA-256 evidence (`ev_*`) to `.openro/investigation/evidence.jsonl`\n\
 - {{\"tool\": \"evidence_list\", \"args\": {{\"confidence\": \"...?\", \"kind\": \"...?\", \"limit\": 50}}}} lists recorded investigation evidence\n\
@@ -303,6 +308,7 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - opencloud_status {{}} / creator_hub_status {{\"check_login\": true, \"save_creator\": true}} / creator_hub_setup {{...}} / creator_hub_configure {{...}} (loopback browser CDP; stop cleanly on action_required)\n\
 - assets_authorise {{\"paths\": [...]}} / assets_upload {{\"paths\": [...]}} / assets_codegen {{}} (-> assets.lock.json + AssetIds.luau)\n\
 - products_sync {{}} / products_codegen {{}} (-> ProductIds.luau) / universe_get {{}} / universe_set {{...}}\n\
+- liveops_datastore_list {{\"store\":\"...?\",\"scope\":\"global\",\"prefix\":\"...?\"}} / liveops_datastore_get {{\"store\":\"...\",\"key\":\"...\"}} / liveops_datastore_set {{...,\"expected_revision\":\"...\",\"confirm\":true}} / liveops_messaging_publish {{\"topic\":\"...\",\"message\":{{...}},\"confirm\":true}} / liveops_remote_config_push {{\"config\":{{...}},\"generate_luau\":true,\"push_to_datastore\":false}} / liveops_telemetry_summary {{}} (live DataStore writes & MessagingService broadcasts require owner confirm: true)\n\
 - project_publish {{\"versionType\": \"Saved\"}} (live \"Published\" requires confirm: true ONLY after owner approval)\n\n\
 STUDY, EVIDENCE & CONTRACT CHECK TOOLS (Study -> Build -> Check -> Refine):\n\
 - evidence_record {{\"summary\": \"...\", \"confidence\": \"observed|derived|inferred\", \"kind\": \"...\", \"source\": \"...\"}} / evidence_list {{\"confidence\": \"...?\", \"limit\": 50}}\n\
@@ -3068,6 +3074,9 @@ impl Agent {
                                         | "products_codegen"
                                         | "project_publish"
                                         | "universe_set"
+                                        | "liveops_datastore_set"
+                                        | "liveops_messaging_publish"
+                                        | "liveops_remote_config_push"
                                         | "adapter_invoke"
                                         | "evidence_record"
                                         | "unknown_add"
@@ -3539,6 +3548,9 @@ impl Agent {
                                 | "products_codegen"
                                 | "project_publish"
                                 | "universe_set"
+                                | "liveops_datastore_set"
+                                | "liveops_messaging_publish"
+                                | "liveops_remote_config_push"
                                 | "adapter_invoke"
                                 | "evidence_record"
                                 | "unknown_add"
@@ -4845,6 +4857,103 @@ impl Agent {
                 thread.push("Updated Roblox Experience settings.".to_string());
                 Ok(format!("tool_result: universe_set: {text}"))
             }
+            "liveops_datastore_list" => {
+                let _ = self.require_project_root()?;
+                let q = build_query_from_args(args, &["store", "scope", "prefix", "cursor", "limit", "kind"]);
+                let res = self.invoke_opencloud_local(
+                    "GET",
+                    "/api/projects/_active/liveops/datastores",
+                    &q,
+                    args,
+                )?;
+                let text = res.to_string();
+                transcript.push(format!("tool liveops_datastore_list -> {text}"));
+                Ok(format!("tool_result: liveops_datastore_list: {text}"))
+            }
+            "liveops_datastore_get" => {
+                let _ = self.require_project_root()?;
+                let q = build_query_from_args(args, &["store", "scope", "key", "kind"]);
+                let res = self.invoke_opencloud_local(
+                    "GET",
+                    "/api/projects/_active/liveops/datastores/entry",
+                    &q,
+                    args,
+                )?;
+                let text = res.to_string();
+                transcript.push(format!("tool liveops_datastore_get -> {text}"));
+                Ok(format!("tool_result: liveops_datastore_get: {text}"))
+            }
+            "liveops_datastore_set" => {
+                if args.get("confirm").and_then(Value::as_bool) != Some(true) {
+                    return Err(
+                        "Live DataStore writes require owner confirmation (confirm: true). Ask the owner first."
+                            .to_string(),
+                    );
+                }
+                let _ = self.require_project_root()?;
+                let res = self.invoke_opencloud_local(
+                    "POST",
+                    "/api/projects/_active/liveops/datastores/entry",
+                    "",
+                    args,
+                )?;
+                let text = res.to_string();
+                transcript.push(format!("tool liveops_datastore_set -> {text}"));
+                thread.push("Updated live DataStore entry (pre-mutation backup saved).".to_string());
+                Ok(format!("tool_result: liveops_datastore_set: {text}"))
+            }
+            "liveops_messaging_publish" => {
+                if args.get("confirm").and_then(Value::as_bool) != Some(true) {
+                    return Err(
+                        "Live MessagingService broadcasts require owner confirmation (confirm: true). Ask the owner first."
+                            .to_string(),
+                    );
+                }
+                let _ = self.require_project_root()?;
+                let res = self.invoke_opencloud_local(
+                    "POST",
+                    "/api/projects/_active/liveops/messaging/publish",
+                    "",
+                    args,
+                )?;
+                let text = res.to_string();
+                transcript.push(format!("tool liveops_messaging_publish -> {text}"));
+                thread.push("Broadcasted live MessagingService topic message.".to_string());
+                Ok(format!("tool_result: liveops_messaging_publish: {text}"))
+            }
+            "liveops_remote_config_push" => {
+                if args.get("push_to_datastore").and_then(Value::as_bool) == Some(true)
+                    && args.get("confirm").and_then(Value::as_bool) != Some(true)
+                {
+                    return Err(
+                        "Pushing Remote Config to live DataStores requires owner confirmation (confirm: true). Ask the owner first."
+                            .to_string(),
+                    );
+                }
+                let _ = self.require_project_root()?;
+                let res = self.invoke_opencloud_local(
+                    "POST",
+                    "/api/projects/_active/liveops/remote-config",
+                    "",
+                    args,
+                )?;
+                let text = res.to_string();
+                transcript.push(format!("tool liveops_remote_config_push -> {text}"));
+                thread.push("Updated liveops/remote-config.json and src/shared/LiveConfig.luau.".to_string());
+                Ok(format!("tool_result: liveops_remote_config_push: {text}"))
+            }
+            "liveops_telemetry_summary" => {
+                let _ = self.require_project_root()?;
+                let res = self.invoke_opencloud_local(
+                    "GET",
+                    "/api/projects/_active/liveops/telemetry/summary",
+                    "",
+                    args,
+                )?;
+                let text = res.to_string();
+                transcript.push(format!("tool liveops_telemetry_summary -> {text}"));
+                Ok(format!("tool_result: liveops_telemetry_summary: {text}"))
+            }
             "blender_generate" | "mesh_generate" => {
                 let res = if let Some(hook) = &self.hooks.mesh_generate {
                     hook(args)?
@@ -5917,7 +6026,34 @@ fn is_read_only_tool(tool: &str) -> bool {
             | "opencloud_status"
             | "creator_hub_status"
             | "universe_get"
+            | "liveops_datastore_list"
+            | "liveops_datastore_get"
+            | "liveops_telemetry_summary"
     )
+}
+
+/// Build an encoded query string from string/number keys in `args`.
+pub fn build_query_from_args(args: &Value, keys: &[&str]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for &k in keys {
+        let val_str = match args.get(k) {
+            Some(Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
+            Some(Value::Number(n)) => Some(n.to_string()),
+            _ => None,
+        };
+        if let Some(v) = val_str {
+            let mut enc = String::with_capacity(v.len() + 8);
+            for b in v.bytes() {
+                if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                    enc.push(b as char);
+                } else {
+                    enc.push_str(&format!("%{b:02X}"));
+                }
+            }
+            parts.push(format!("{k}={enc}"));
+        }
+    }
+    parts.join("&")
 }
 
 /// Build the query string for `GET /api/creator-hub/status?...` from tool args.

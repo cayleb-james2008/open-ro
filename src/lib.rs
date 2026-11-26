@@ -10,6 +10,7 @@ pub mod gui_designer;
 pub mod ideas;
 pub mod image_ops;
 pub mod library;
+pub mod liveops;
 pub mod luau_check;
 pub mod market_taste;
 pub mod mcp;
