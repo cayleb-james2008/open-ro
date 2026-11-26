@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   Activity,
@@ -140,6 +140,11 @@ export function LiveOpsPanel({
   const [telIngesting, setTelIngesting] = useState(false);
   const [telError, setTelError] = useState("");
 
+  const dsMutationLockRef = useRef(false);
+  const msgPublishLockRef = useRef(false);
+  const rcSaveLockRef = useRef(false);
+  const telIngestLockRef = useRef(false);
+
   const inspectEntry = useCallback(
     async (storeName: string, scopeName: string, keyName: string, kindVal: LiveOpsDataStoreKind) => {
       if (!projectId || !storeName.trim() || !keyName.trim()) return;
@@ -244,6 +249,11 @@ export function LiveOpsPanel({
     setMsgConfirm(false);
     setDsBackupPath(null);
     setMsgReceipt(null);
+    setDsError("");
+    setDsConflict(false);
+    setMsgError("");
+    setRcError("");
+    setTelError("");
     if (openCloudReady) {
       void loadDataStores();
     } else {
@@ -295,84 +305,109 @@ export function LiveOpsPanel({
   };
 
   const handleSaveEntry = async () => {
-    if (!dsConfirm || !dsParsed.ok || !selectedKey.trim() || !dsStore.trim()) return;
+    if (dsMutationLockRef.current || !dsConfirm || !selectedKey.trim() || !dsStore.trim()) return;
+    const parsed = tryParseJson(dsValueText);
+    if (!parsed.ok) {
+      setDsError(parsed.error);
+      return;
+    }
+    dsMutationLockRef.current = true;
     setDsMutating(true);
     setDsError("");
     setDsConflict(false);
-    const r = await setLiveOpsDataStoreEntry(projectId, {
-      store: dsStore.trim(),
-      scope: dsScope.trim() || "global",
-      key: selectedKey.trim(),
-      value: dsParsed.value,
-      expected_revision: selectedRevision,
-      confirm: true,
-      kind: dsKind,
-    });
-    setDsMutating(false);
-    if (!r.ok) {
-      if (r.httpStatus === 409) setDsConflict(true);
-      setDsError(r.error || "Could not update DataStore entry.");
-      return;
+    try {
+      const r = await setLiveOpsDataStoreEntry(projectId, {
+        store: dsStore.trim(),
+        scope: dsScope.trim() || "global",
+        key: selectedKey.trim(),
+        value: parsed.value,
+        expected_revision: selectedRevision,
+        confirm: true,
+        kind: dsKind,
+      });
+      if (!r.ok) {
+        if (r.httpStatus === 409) setDsConflict(true);
+        setDsError(r.error || "Could not update DataStore entry.");
+        return;
+      }
+      setDsConfirm(false);
+      if (r.backup_path) setDsBackupPath(r.backup_path);
+      if (r.entry) {
+        setSelectedRevision(r.entry.revision ?? null);
+        setSelectedUpdatedAt(r.entry.updated_at ?? null);
+        setDsValueText(formatJsonValue(r.entry.value));
+      }
+      toast.success(`Saved ${selectedKey.trim()} to ${dsStore.trim()}`);
+      await loadDataStores();
+    } finally {
+      dsMutationLockRef.current = false;
+      setDsMutating(false);
     }
-    setDsConfirm(false);
-    if (r.backup_path) setDsBackupPath(r.backup_path);
-    if (r.entry) {
-      setSelectedRevision(r.entry.revision ?? null);
-      setSelectedUpdatedAt(r.entry.updated_at ?? null);
-      setDsValueText(formatJsonValue(r.entry.value));
-    }
-    toast.success(`Saved ${selectedKey.trim()} to ${dsStore.trim()}`);
-    await loadDataStores();
   };
 
   const handleDeleteEntry = async () => {
-    if (!dsConfirm || !selectedKey.trim() || !dsStore.trim()) return;
+    if (dsMutationLockRef.current || !dsConfirm || !selectedKey.trim() || !dsStore.trim()) return;
+    dsMutationLockRef.current = true;
     setDsMutating(true);
     setDsError("");
     setDsConflict(false);
-    const r = await deleteLiveOpsDataStoreEntry(projectId, {
-      store: dsStore.trim(),
-      scope: dsScope.trim() || "global",
-      key: selectedKey.trim(),
-      expected_revision: selectedRevision,
-      confirm: true,
-      kind: dsKind,
-    });
-    setDsMutating(false);
-    if (!r.ok) {
-      if (r.httpStatus === 409) setDsConflict(true);
-      setDsError(r.error || "Could not delete DataStore entry.");
-      return;
+    try {
+      const r = await deleteLiveOpsDataStoreEntry(projectId, {
+        store: dsStore.trim(),
+        scope: dsScope.trim() || "global",
+        key: selectedKey.trim(),
+        expected_revision: selectedRevision,
+        confirm: true,
+        kind: dsKind,
+      });
+      if (!r.ok) {
+        if (r.httpStatus === 409) setDsConflict(true);
+        setDsError(r.error || "Could not delete DataStore entry.");
+        return;
+      }
+      setDsConfirm(false);
+      if (r.backup_path) setDsBackupPath(r.backup_path);
+      setSelectedKey("");
+      setSelectedRevision(null);
+      toast.success(`Deleted ${selectedKey.trim()} (backup saved)`);
+      await loadDataStores();
+    } finally {
+      dsMutationLockRef.current = false;
+      setDsMutating(false);
     }
-    setDsConfirm(false);
-    if (r.backup_path) setDsBackupPath(r.backup_path);
-    setSelectedKey("");
-    setSelectedRevision(null);
-    toast.success(`Deleted ${selectedKey.trim()} (backup saved)`);
-    await loadDataStores();
   };
 
   const handlePublishMessage = async () => {
-    if (!msgConfirm || !msgParsed.ok || !msgTopic.trim()) return;
-    setMsgBusy(true);
-    setMsgError("");
-    const r = await publishLiveOpsMessage(projectId, {
-      topic: msgTopic.trim(),
-      message: msgParsed.value,
-      confirm: true,
-    });
-    setMsgBusy(false);
-    if (!r.ok) {
-      setMsgError(r.error || "MessagingService publish failed.");
+    if (msgPublishLockRef.current || !msgConfirm || !msgTopic.trim()) return;
+    const parsed = tryParseJson(msgPayloadText);
+    if (!parsed.ok) {
+      setMsgError(parsed.error);
       return;
     }
-    setMsgConfirm(false);
-    setMsgReceipt({
-      topic: r.topic || msgTopic.trim(),
-      at: r.published_at || new Date().toISOString(),
-      target: r.target || "live_servers",
-    });
-    toast.success(`Broadcast sent to topic ${msgTopic.trim()}`);
+    msgPublishLockRef.current = true;
+    setMsgBusy(true);
+    setMsgError("");
+    try {
+      const r = await publishLiveOpsMessage(projectId, {
+        topic: msgTopic.trim(),
+        message: parsed.value,
+        confirm: true,
+      });
+      if (!r.ok) {
+        setMsgError(r.error || "MessagingService publish failed.");
+        return;
+      }
+      setMsgConfirm(false);
+      setMsgReceipt({
+        topic: r.topic || msgTopic.trim(),
+        at: r.published_at || new Date().toISOString(),
+        target: r.target || "live_servers",
+      });
+      toast.success(`Broadcast sent to topic ${msgTopic.trim()}`);
+    } finally {
+      msgPublishLockRef.current = false;
+      setMsgBusy(false);
+    }
   };
 
   const handleAddRcRow = () => {
@@ -383,53 +418,64 @@ export function LiveOpsPanel({
   };
 
   const handleSaveRemoteConfig = async () => {
-    if (rcInvalidKey || rcDuplicateKey || rcBytes > 65536) return;
+    if (rcSaveLockRef.current || rcInvalidKey || rcDuplicateKey || rcBytes > 65536) return;
+    rcSaveLockRef.current = true;
     setRcSaving(true);
     setRcError("");
-    const r = await saveLiveOpsRemoteConfig(projectId, {
-      config: rcObject,
-      push_to_datastore: rcPushDs,
-      generate_luau: rcGenLuau,
-    });
-    setRcSaving(false);
-    if (!r.ok) {
-      setRcError(r.error || "Could not save Remote Config.");
-      return;
-    }
-    setRcSavedInfo(r as LiveOpsRemoteConfigResponse);
-    toast.success(
-      r.luau_written
-        ? "Saved Remote Config and generated src/shared/LiveConfig.luau"
-        : "Saved Remote Config",
-    );
-    if (rcPushDs) {
-      void loadDataStores();
+    try {
+      const r = await saveLiveOpsRemoteConfig(projectId, {
+        config: rcObject,
+        push_to_datastore: rcPushDs,
+        generate_luau: rcGenLuau,
+      });
+      if (!r.ok) {
+        setRcError(r.error || "Could not save Remote Config.");
+        return;
+      }
+      setRcSavedInfo(r as LiveOpsRemoteConfigResponse);
+      toast.success(
+        r.luau_written
+          ? "Saved Remote Config and generated src/shared/LiveConfig.luau"
+          : "Saved Remote Config",
+      );
+      if (rcPushDs) {
+        void loadDataStores();
+      }
+    } finally {
+      rcSaveLockRef.current = false;
+      setRcSaving(false);
     }
   };
 
   const handleIngestSampleTelemetry = async () => {
+    if (telIngestLockRef.current) return;
+    telIngestLockRef.current = true;
     setTelIngesting(true);
     setTelError("");
-    const uidBase = Math.floor(Date.now() / 1000) % 10000;
-    const nowIso = new Date().toISOString();
-    const sample: LiveOpsTelemetryEvent[] = [
-      { kind: "onboarding", user_id: `u_${uidBase}_1`, step: "spawned", ts: nowIso },
-      { kind: "funnel", user_id: `u_${uidBase}_1`, step: "first_pickup", ts: nowIso },
-      { kind: "funnel", user_id: `u_${uidBase}_1`, step: "shop_opened", ts: nowIso },
-      { kind: "economy", user_id: `u_${uidBase}_1`, currency: "Robux", amount: 149, step: "VIPPass", ts: nowIso },
-      { kind: "onboarding", user_id: `u_${uidBase}_2`, step: "spawned", ts: nowIso },
-      { kind: "funnel", user_id: `u_${uidBase}_2`, step: "first_pickup", ts: nowIso },
-      { kind: "economy", user_id: `u_${uidBase}_2`, currency: "Coins", amount: 500, step: "PetEgg", ts: nowIso },
-      { kind: "onboarding", user_id: `u_${uidBase}_3`, step: "spawned", ts: nowIso },
-    ];
-    const r = await ingestLiveOpsTelemetry(projectId, sample);
-    setTelIngesting(false);
-    if (!r.ok) {
-      setTelError(r.error || "Failed to ingest telemetry events.");
-      return;
+    try {
+      const uidBase = Math.floor(Date.now() / 1000) % 10000;
+      const nowIso = new Date().toISOString();
+      const sample: LiveOpsTelemetryEvent[] = [
+        { kind: "onboarding", user_id: `u_${uidBase}_1`, step: "spawned", ts: nowIso },
+        { kind: "funnel", user_id: `u_${uidBase}_1`, step: "first_pickup", ts: nowIso },
+        { kind: "funnel", user_id: `u_${uidBase}_1`, step: "shop_opened", ts: nowIso },
+        { kind: "economy", user_id: `u_${uidBase}_1`, currency: "Robux", amount: 149, step: "VIPPass", ts: nowIso },
+        { kind: "onboarding", user_id: `u_${uidBase}_2`, step: "spawned", ts: nowIso },
+        { kind: "funnel", user_id: `u_${uidBase}_2`, step: "first_pickup", ts: nowIso },
+        { kind: "economy", user_id: `u_${uidBase}_2`, currency: "Coins", amount: 500, step: "PetEgg", ts: nowIso },
+        { kind: "onboarding", user_id: `u_${uidBase}_3`, step: "spawned", ts: nowIso },
+      ];
+      const r = await ingestLiveOpsTelemetry(projectId, sample);
+      if (!r.ok) {
+        setTelError(r.error || "Failed to ingest telemetry events.");
+        return;
+      }
+      toast.success(`Ingested ${r.ingested ?? sample.length} telemetry event(s)`);
+      await loadTelemetry();
+    } finally {
+      telIngestLockRef.current = false;
+      setTelIngesting(false);
     }
-    toast.success(`Ingested ${r.ingested ?? sample.length} telemetry event(s)`);
-    await loadTelemetry();
   };
 
   return (
@@ -514,18 +560,30 @@ export function LiveOpsPanel({
         )}
 
         {dsError && (
-          <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">
-            <span>{dsError}</span>
-            {dsConflict && selectedKey && (
+          <div role="alert" data-ds-error className="flex flex-wrap items-center justify-between gap-2 rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">
+            <span className="min-w-0 flex-1 break-words">{dsError}</span>
+            <div className="flex shrink-0 items-center gap-1.5">
+              {dsConflict && selectedKey && (
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => void inspectEntry(dsStore, dsScope, selectedKey, dsKind)}
+                  data-ds-reload
+                >
+                  Reload latest revision
+                </Button>
+              )}
               <Button
-                variant="outline"
+                variant="ghost"
                 size="xs"
-                onClick={() => void inspectEntry(dsStore, dsScope, selectedKey, dsKind)}
-                data-ds-reload
+                onClick={() => {
+                  setDsError("");
+                  setDsConflict(false);
+                }}
               >
-                Reload latest revision
+                Dismiss
               </Button>
-            )}
+            </div>
           </div>
         )}
 
@@ -621,14 +679,22 @@ export function LiveOpsPanel({
 
             <Textarea
               value={dsValueText}
-              onChange={(e) => setDsValueText(e.target.value)}
+              onChange={(e) => {
+                setDsValueText(e.target.value);
+                if (dsError) setDsError("");
+                if (dsConflict) setDsConflict(false);
+              }}
               rows={6}
               spellCheck={false}
               aria-label="DataStore entry JSON value"
               className="font-mono text-xs"
               data-ds-value
             />
-            {!dsParsed.ok && <p className="text-xs text-destructive-foreground">{dsParsed.error}</p>}
+            {!dsParsed.ok && (
+              <p role="alert" data-ds-json-error className="text-xs text-pill-pro-fg">
+                {dsParsed.error}
+              </p>
+            )}
 
             <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
               <label className="flex min-h-9 cursor-pointer items-center gap-2 text-sm text-ink max-md:min-h-11">
@@ -686,6 +752,7 @@ export function LiveOpsPanel({
               onClick={() => {
                 setMsgTopic("LiveEvent");
                 setMsgPayloadText('{\n  "event": "double_coins",\n  "duration_mins": 30\n}');
+                if (msgError) setMsgError("");
               }}
             >
               Double Coins preset
@@ -696,6 +763,7 @@ export function LiveOpsPanel({
               onClick={() => {
                 setMsgTopic("ServerAnnouncement");
                 setMsgPayloadText('{\n  "title": "Server Maintenance",\n  "countdown_secs": 120\n}');
+                if (msgError) setMsgError("");
               }}
             >
               Maintenance preset
@@ -707,7 +775,10 @@ export function LiveOpsPanel({
           <Field label="Topic">
             <Input
               value={msgTopic}
-              onChange={(e) => setMsgTopic(e.target.value)}
+              onChange={(e) => {
+                setMsgTopic(e.target.value);
+                if (msgError) setMsgError("");
+              }}
               placeholder="ServerAnnouncement"
               className="font-mono text-xs"
               data-msg-topic
@@ -717,21 +788,31 @@ export function LiveOpsPanel({
             <span className="text-sm font-medium text-ink-2">JSON payload</span>
             <Textarea
               value={msgPayloadText}
-              onChange={(e) => setMsgPayloadText(e.target.value)}
+              onChange={(e) => {
+                setMsgPayloadText(e.target.value);
+                if (msgError) setMsgError("");
+              }}
               rows={3}
               spellCheck={false}
               aria-label="MessagingService JSON payload"
               className="font-mono text-xs"
               data-msg-payload
             />
-            {!msgParsed.ok && <p className="text-xs text-destructive-foreground">{msgParsed.error}</p>}
+            {!msgParsed.ok && (
+              <p role="alert" data-msg-json-error className="text-xs text-pill-pro-fg">
+                {msgParsed.error}
+              </p>
+            )}
           </div>
         </div>
 
         {msgError && (
-          <p role="alert" className="rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">
-            {msgError}
-          </p>
+          <div role="alert" data-msg-error className="flex flex-wrap items-center justify-between gap-2 rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">
+            <span className="min-w-0 flex-1 break-words">{msgError}</span>
+            <Button variant="ghost" size="xs" onClick={() => setMsgError("")}>
+              Dismiss
+            </Button>
+          </div>
         )}
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-hairline pt-3">
@@ -882,7 +963,7 @@ export function LiveOpsPanel({
                           }
                           aria-label={`Value for ${row.key}`}
                           data-rc-value={row.key}
-                          className="h-8 w-full rounded-lg border border-[var(--field-border)] bg-surface px-2 font-mono text-xs text-ink focus-visible:outline-2 focus-visible:outline-focus"
+                          className="h-8 w-full rounded-lg border border-[var(--field-border)] bg-surface px-2 text-xs text-ink focus-visible:outline-2 focus-visible:outline-focus"
                         >
                           <option value="true">true</option>
                           <option value="false">false</option>

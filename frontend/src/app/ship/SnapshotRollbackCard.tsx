@@ -291,7 +291,7 @@ export function SnapshotRollbackCard({
                         </Pill>
                       )}
                     </div>
-                    <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[11px] text-ink-2 tabular-nums">
+                    <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-ink-2 tabular-nums">
                       <span>{stamp(snap.created_at_ms)}</span>
                       <span>·</span>
                       <span>{snap.scripts_count} scripts</span>
@@ -333,7 +333,7 @@ export function SnapshotRollbackCard({
                       </span>
                     ))}
                     {snap.changed_scripts.length > 4 && (
-                      <span className="font-mono text-[11px] text-ink-2">
+                      <span className="text-[11px] text-ink-2 tabular-nums">
                         +{snap.changed_scripts.length - 4} more
                       </span>
                     )}

@@ -569,7 +569,7 @@ export function parseObjGeometry(text: string): ParsedObjGeometry | null {
     }
   }
 
-  if (rawVerts.length === 0 || posList.length === 0) return null;
+  if (rawVerts.length === 0 || posList.length < 9 || posList.length % 9 !== 0) return null;
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   for (const [x, y, z] of rawVerts) {
@@ -577,6 +577,7 @@ export function parseObjGeometry(text: string): ParsedObjGeometry | null {
     if (y < minY) minY = y; if (y > maxY) maxY = y;
     if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
+  if (!Number.isFinite(minX) || !Number.isFinite(maxX)) return null;
   const cx = (minX + maxX) * 0.5;
   const cy = (minY + maxY) * 0.5;
   const cz = (minZ + maxZ) * 0.5;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   CircleCheck,
@@ -260,6 +260,62 @@ function safeStringify(val: unknown): string {
   }
 }
 
+function isValidHttpStatus(status: unknown): boolean {
+  return typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599;
+}
+
+function validateHttpMocks(
+  raw: string,
+): { ok: true; value: SandboxHttpMock[] | Record<string, unknown> | undefined } | { ok: false; error: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { ok: true, value: undefined };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return { ok: false, error: "Invalid JSON in HTTP Mocks. Expected a JSON array or object of mock routes." };
+  }
+  if (!parsed || typeof parsed !== "object") {
+    return { ok: false, error: "HTTP Mocks must be a JSON object or array of mock routes." };
+  }
+  if (Array.isArray(parsed)) {
+    for (let i = 0; i < parsed.length; i++) {
+      const entry = parsed[i];
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        return { ok: false, error: `HTTP Mock #${i + 1} must be an object with a url or url_prefix.` };
+      }
+      const rec = entry as Record<string, unknown>;
+      const pat = rec.url_prefix ?? rec.url ?? rec.Url;
+      if (typeof pat !== "string" || !pat.trim()) {
+        return { ok: false, error: `HTTP Mock #${i + 1} requires a non-empty "url" or "url_prefix" string.` };
+      }
+      if (rec.status !== undefined && !isValidHttpStatus(rec.status)) {
+        return { ok: false, error: `HTTP Mock #${i + 1} has invalid status (expected integer 100-599).` };
+      }
+      if (rec.method !== undefined && (typeof rec.method !== "string" || !rec.method.trim())) {
+        return { ok: false, error: `HTTP Mock #${i + 1} has invalid HTTP method.` };
+      }
+    }
+    return { ok: true, value: parsed as SandboxHttpMock[] };
+  }
+  const obj = parsed as Record<string, unknown>;
+  for (const [urlKey, spec] of Object.entries(obj)) {
+    if (!urlKey.trim()) {
+      return { ok: false, error: "HTTP Mocks object keys must be non-empty URL strings." };
+    }
+    if (spec === null || (typeof spec !== "object" && typeof spec !== "string")) {
+      return { ok: false, error: `HTTP Mock for "${urlKey}" must be a response object or string.` };
+    }
+    if (spec && typeof spec === "object" && !Array.isArray(spec)) {
+      const rec = spec as Record<string, unknown>;
+      if (rec.status !== undefined && !isValidHttpStatus(rec.status)) {
+        return { ok: false, error: `HTTP Mock for "${urlKey}" has invalid status (expected integer 100-599).` };
+      }
+    }
+  }
+  return { ok: true, value: obj };
+}
+
 function GuiTreeNode({ node, depth = 0 }: { node: unknown; depth?: number }) {
   if (typeof node === "string" || typeof node === "number" || typeof node === "boolean") {
     return (
@@ -318,8 +374,10 @@ export function SandboxRunnerCard({
   );
   const [builderOpen, setBuilderOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const runLockRef = useRef(false);
   const [result, setResult] = useState<SandboxRunResponse | null>(null);
   const [runs, setRuns] = useState<SandboxRunSummary[]>([]);
+  const [historyError, setHistoryError] = useState("");
   const [error, setError] = useState("");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("console");
   const [argsDrafts, setArgsDrafts] = useState<Record<number, string>>({});
@@ -333,8 +391,10 @@ export function SandboxRunnerCard({
   const loadPersisted = useCallback(async () => {
     if (!projectId) {
       setRuns([]);
+      setHistoryError("");
       return;
     }
+    setHistoryError("");
     const runsRes = await getSandboxRuns(projectId);
     if (runsRes.ok && Array.isArray(runsRes.runs)) {
       setRuns(runsRes.runs);
@@ -343,21 +403,29 @@ export function SandboxRunnerCard({
         if (latestRes.ok && (latestRes.engine || latestRes.core_loop || Array.isArray(latestRes.steps))) {
           setResult(normalizeSandboxResponse(latestRes));
         }
+      } else {
+        setResult(null);
       }
     } else if (runsRes.httpStatus === 404) {
       setRuns([]);
+      setResult(null);
+    } else {
+      setRuns([]);
+      setHistoryError(runsRes.error || "Could not load sandbox run history.");
     }
   }, [projectId]);
 
   useEffect(() => {
     setResult(null);
     setRuns([]);
+    setHistoryError("");
     void loadPersisted();
   }, [loadPersisted]);
 
   const validateJourney = (journeyToRun: SandboxJourneyStep[]): string | null => {
     if (journeyToRun.length === 0) return "Add at least one journey step or select a preset.";
-    if (httpMocksError) return httpMocksError;
+    const mocksCheck = validateHttpMocks(httpMocksDraft);
+    if (!mocksCheck.ok) return mocksCheck.error;
     const badArgIdx = Object.keys(argsErrors).find((k) => argsErrors[Number(k)]);
     if (badArgIdx !== undefined) {
       return `Step #${Number(badArgIdx) + 1}: ${argsErrors[Number(badArgIdx)]}`;
@@ -390,7 +458,15 @@ export function SandboxRunnerCard({
   };
 
   const executeRun = async (journeyToRun: SandboxJourneyStep[], presetLabel?: string, skipValidation = false) => {
-    if (busy) return;
+    if (runLockRef.current || busy) return;
+    const mocksCheck = validateHttpMocks(httpMocksDraft);
+    if (!mocksCheck.ok) {
+      setHttpMocksError(mocksCheck.error);
+      setError(mocksCheck.error);
+      setBuilderOpen(true);
+      toast.error(mocksCheck.error);
+      return;
+    }
     if (!skipValidation) {
       const validationError = validateJourney(journeyToRun);
       if (validationError) {
@@ -400,6 +476,7 @@ export function SandboxRunnerCard({
         return;
       }
     }
+    runLockRef.current = true;
     setBusy(true);
     setError("");
     try {
@@ -408,7 +485,7 @@ export function SandboxRunnerCard({
           timeout_secs: 15,
           players: DEFAULT_PLAYERS,
           journey: journeyToRun,
-          ...(parsedHttpMocks !== undefined ? { http_mocks: parsedHttpMocks } : {}),
+          ...(mocksCheck.value !== undefined ? { http_mocks: mocksCheck.value } : {}),
         },
         projectId,
       );
@@ -427,6 +504,7 @@ export function SandboxRunnerCard({
       const runsRes = await getSandboxRuns(projectId);
       if (runsRes.ok && Array.isArray(runsRes.runs)) {
         setRuns(runsRes.runs);
+        setHistoryError("");
       }
       await onCompleted?.(payload);
       const label = presetLabel || "Sandbox journey";
@@ -442,11 +520,13 @@ export function SandboxRunnerCard({
       setError(msg);
       toast.error(msg);
     } finally {
+      runLockRef.current = false;
       setBusy(false);
     }
   };
 
   const applyPreset = (id: PresetId) => {
+    if (runLockRef.current || busy) return;
     setActivePreset(id);
     const cloned = PRESETS[id].steps.map((s) => ({ ...s, ...(s.to ? { to: [...s.to] as [number, number, number] } : {}) }));
     setSteps(cloned);
@@ -880,23 +960,14 @@ export function SandboxRunnerCard({
                   onChange={(e) => {
                     const raw = e.target.value;
                     setHttpMocksDraft(raw);
-                    if (!raw.trim()) {
+                    const check = validateHttpMocks(raw);
+                    if (check.ok) {
+                      setParsedHttpMocks(check.value);
                       setHttpMocksError("");
-                      setParsedHttpMocks(undefined);
                       if (error) setError("");
-                      return;
-                    }
-                    try {
-                      const parsed = JSON.parse(raw);
-                      if (parsed && typeof parsed === "object") {
-                        setParsedHttpMocks(parsed as SandboxHttpMock[] | Record<string, unknown>);
-                        setHttpMocksError("");
-                        if (error) setError("");
-                      } else {
-                        setHttpMocksError("HTTP Mocks must be a JSON object or array of mock routes.");
-                      }
-                    } catch {
-                      setHttpMocksError("Invalid JSON in HTTP Mocks. Expected an object or array.");
+                    } else {
+                      setParsedHttpMocks(undefined);
+                      setHttpMocksError(check.error);
                     }
                   }}
                   placeholder='[{"url":"https://api.example.com/config","status":200,"body":{"boost":2}}]'
@@ -1213,6 +1284,19 @@ export function SandboxRunnerCard({
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {historyError && (
+        <div
+          role="alert"
+          data-sandbox-history-error
+          className="flex flex-wrap items-center justify-between gap-2 rounded-sm bg-pill-warn-bg px-3 py-2 text-xs text-pill-warn-fg"
+        >
+          <span>{historyError}</span>
+          <Button variant="outline" size="xs" onClick={() => void loadPersisted()} data-sandbox-history-retry>
+            Retry
+          </Button>
         </div>
       )}
 

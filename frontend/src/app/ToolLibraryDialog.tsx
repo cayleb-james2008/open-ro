@@ -138,8 +138,8 @@ function PackCard({
               <Pill className="bg-surface px-2 py-0.5 text-xs text-ink-2">Available</Pill>
             )}
             {pack.masked_key && (
-              <Pill className="bg-tag-sky-bg px-2 py-0.5 font-mono text-xs text-tag-sky-fg">
-                Key {pack.masked_key}
+              <Pill className="bg-tag-sky-bg px-2 py-0.5 text-xs text-tag-sky-fg">
+                Key <code className="font-mono">{pack.masked_key}</code>
               </Pill>
             )}
           </div>
@@ -211,7 +211,7 @@ function PackCard({
         >
           <span>{testResult.detail}</span>
           {typeof testResult.latency_ms === "number" && (
-            <span className="font-mono tabular-nums">{testResult.latency_ms}ms</span>
+            <span className="tabular-nums">{testResult.latency_ms}ms</span>
           )}
         </div>
       )}
@@ -511,10 +511,10 @@ export function ToolLibraryDialog({
                 <MorphingDialogTitle className="text-ui font-medium text-ink">
                   Tool &amp; Skill Library
                 </MorphingDialogTitle>
-                <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-active-fg">
+                <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs tabular-nums text-pill-active-fg">
                   {installedCount}/{snapshot.packs.length} active
                 </Pill>
-                <Pill className="bg-board px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2">
+                <Pill className="bg-board px-2 py-0.5 text-xs tabular-nums text-ink-2">
                   {snapshot.active_tools.length} agent tools
                 </Pill>
               </div>
@@ -628,7 +628,7 @@ export function ToolLibraryDialog({
                           <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs text-pill-active-fg">
                             {marketTaste.source.includes("live") ? "Live Roblox Charts" : "Nov 2026 Baseline"}
                           </Pill>
-                          <Pill className="bg-surface px-2 py-0.5 font-mono text-xs text-ink-2">
+                          <Pill className="bg-surface px-2 py-0.5 text-xs tabular-nums text-ink-2">
                             Updated {marketTaste.updated_at}
                           </Pill>
                         </div>
@@ -755,19 +755,19 @@ export function ToolLibraryDialog({
                               )}
                             </div>
                             <div className="flex flex-wrap items-center gap-1.5">
-                              <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-active-fg">
+                              <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs tabular-nums text-pill-active-fg">
                                 {formatCcu(researchRes.ccu)} CCU
                               </Pill>
                               {researchRes.visits > 0 && (
-                                <Pill className="bg-board px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2">
+                                <Pill className="bg-board px-2 py-0.5 text-xs tabular-nums text-ink-2">
                                   {formatCompactNumber(researchRes.visits)} visits
                                 </Pill>
                               )}
-                              <Pill className="bg-tag-mint-bg px-2 py-0.5 font-mono text-xs tabular-nums text-tag-mint-fg">
+                              <Pill className="bg-tag-mint-bg px-2 py-0.5 text-xs tabular-nums text-tag-mint-fg">
                                 {researchRes.like_ratio.toFixed(1)}% likes
                               </Pill>
                               {researchRes.universe_id > 0 && (
-                                <Pill className="bg-board px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2">
+                                <Pill className="bg-board px-2 py-0.5 text-xs tabular-nums text-ink-2">
                                   Universe {researchRes.universe_id}
                                 </Pill>
                               )}
@@ -819,7 +819,9 @@ export function ToolLibraryDialog({
 
                         {researchRes.note && <p className="text-xs text-ink-2">{researchRes.note}</p>}
                         {researchRes.dossier_path && (
-                          <p className="font-mono text-xs text-ink-2">Saved dossier: {researchRes.dossier_path}</p>
+                          <p className="text-xs text-ink-2">
+                            Saved dossier: <code className="font-mono">{researchRes.dossier_path}</code>
+                          </p>
                         )}
                       </div>
                     )}
@@ -837,7 +839,7 @@ export function ToolLibraryDialog({
                         </h4>
                         <p className="text-xs text-ink-2">{activeNiche.tagline}</p>
                       </div>
-                      <Badge className="border-transparent bg-tag-sky-bg px-2 py-0.5 font-mono text-xs text-tag-sky-fg">
+                      <Badge className="border-transparent bg-tag-sky-bg px-2 py-0.5 text-xs tabular-nums text-tag-sky-fg">
                         {activeNiche.games.length} chart leaders
                       </Badge>
                     </div>
@@ -860,10 +862,10 @@ export function ToolLibraryDialog({
                             {game.hook && <p className="text-xs text-ink-2">{game.hook}</p>}
                           </div>
                           <div className="flex shrink-0 items-center gap-1.5">
-                            <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-active-fg">
+                            <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs tabular-nums text-pill-active-fg">
                               {formatCcu(game.ccu)} CCU
                             </Pill>
-                            <Pill className="bg-tag-mint-bg px-2 py-0.5 font-mono text-xs tabular-nums text-tag-mint-fg">
+                            <Pill className="bg-tag-mint-bg px-2 py-0.5 text-xs tabular-nums text-tag-mint-fg">
                               {game.like_ratio.toFixed(1)}% likes
                             </Pill>
                           </div>
@@ -1042,7 +1044,7 @@ export function ToolLibraryDialog({
                           <span className="font-mono font-medium text-ink">
                             {blenderRes.filename || blenderRes.preset}
                           </span>
-                          <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs text-pill-active-fg">
+                          <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs tabular-nums text-pill-active-fg">
                             {blenderRes.triangles ?? 0} tris, {Math.max(1, Math.round((blenderRes.bytes ?? 0) / 1024))} KB
                           </Pill>
                         </div>
@@ -1116,7 +1118,7 @@ export function ToolLibraryDialog({
                           <span className="font-mono font-medium text-ink">
                             {audioRes.filename || `${audioRes.preset}.wav`}
                           </span>
-                          <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs text-pill-active-fg">
+                          <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs tabular-nums text-pill-active-fg">
                             {audioRes.duration_ms ?? 450}ms, {Math.max(1, Math.round((audioRes.bytes ?? 0) / 1024))} KB
                           </Pill>
                         </div>

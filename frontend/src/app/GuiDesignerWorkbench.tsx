@@ -1168,7 +1168,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                   )}
 
                   {node.class_name === "ScrollingFrame" && (
-                    <span className="pointer-events-none absolute right-1 top-1 font-mono text-[12px] text-white/50">
+                    <span className="pointer-events-none absolute right-1 top-1 text-[12px] text-white/50">
                       Scroll
                     </span>
                   )}
@@ -1194,7 +1194,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                         />
                       ))}
                       {isButton && node.props.ProductId && (
-                        <span className="pointer-events-none absolute -top-5 left-0 rounded-chip bg-blue px-1.5 py-0 font-mono text-[12px] text-blue-fg">
+                        <span className="pointer-events-none absolute -top-5 left-0 rounded-chip bg-blue px-1.5 py-0 text-[12px] tabular-nums text-blue-fg">
                           R$ {String(node.props.ProductId)}
                         </span>
                       )}
@@ -1211,7 +1211,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                 style={{ height: `${Math.max(16, Math.round(58 * scale))}px` }}
                 className="pointer-events-none absolute inset-x-0 top-0 z-50 flex items-center justify-between border-b border-dashed border-dot-amber bg-pill-warn-bg/20 px-2"
               >
-                <span className="rounded-chip bg-pill-warn-bg px-1.5 py-0.5 font-mono text-[12px] text-pill-warn-fg">
+                <span className="rounded-chip bg-pill-warn-bg px-1.5 py-0.5 text-[12px] tabular-nums text-pill-warn-fg">
                   CoreGui TopBar 58px
                 </span>
                 <span className="rounded-chip bg-surface/90 px-1.5 py-0.5 font-mono text-[12px] text-ink">
@@ -1231,7 +1231,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                   }}
                   className="pointer-events-none absolute bottom-0 left-0 z-50 flex items-center justify-center rounded-tr-xl border-r border-t border-dashed border-blue bg-blue-soft/25"
                 >
-                  <span className="rounded-chip bg-tag-sky-bg px-1.5 py-0.5 font-mono text-[12px] text-tag-sky-fg">
+                  <span className="rounded-chip bg-tag-sky-bg px-1.5 py-0.5 text-[12px] text-tag-sky-fg">
                     Thumbstick
                   </span>
                 </div>
@@ -1243,7 +1243,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                   }}
                   className="pointer-events-none absolute bottom-0 right-0 z-50 flex items-center justify-center rounded-tl-xl border-l border-t border-dashed border-blue bg-blue-soft/25"
                 >
-                  <span className="rounded-chip bg-tag-sky-bg px-1.5 py-0.5 font-mono text-[12px] text-tag-sky-fg">
+                  <span className="rounded-chip bg-tag-sky-bg px-1.5 py-0.5 text-[12px] text-tag-sky-fg">
                     Jump
                   </span>
                 </div>
@@ -1252,8 +1252,8 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
           </div>
 
           {selectedRect && (
-            <div className="flex flex-wrap items-center gap-3 font-mono text-xs tabular-nums text-ink-2">
-              <span>Node: {selectedNode.name}</span>
+            <div className="flex flex-wrap items-center gap-3 text-xs tabular-nums text-ink-2">
+              <span>Node: <code className="font-mono">{selectedNode.name}</code></span>
               <span>X {Math.round(selectedRect.x)}</span>
               <span>Y {Math.round(selectedRect.y)}</span>
               <span>W {Math.round(selectedRect.w)}</span>
@@ -1765,7 +1765,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                       <Package className="size-3.5 shrink-0 text-blue" strokeWidth={1.5} />
                       <span className="truncate font-medium text-ink">{pr.name}</span>
                     </span>
-                    <span className="shrink-0 font-mono text-xs tabular-nums text-ink-2">
+                    <span className="shrink-0 text-xs tabular-nums text-ink-2">
                       {pr.priceRobux} R$
                     </span>
                   </button>
@@ -1820,11 +1820,11 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
               {compiledLuau ? (
                 <>
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs text-pill-active-fg">
+                    <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg">
                       <Sparkles className="size-3" strokeWidth={1.5} aria-hidden />
-                      <span>--!strict</span>
+                      <code className="font-mono">--!strict</code>
                     </Pill>
-                    <span className="font-mono text-xs tabular-nums text-ink-2">
+                    <span className="text-xs tabular-nums text-ink-2">
                       {compileDiagnostics.filter((d) => d.severity === "error").length} errors,{" "}
                       {compileDiagnostics.filter((d) => d.severity === "warning").length} warnings
                     </span>
@@ -1833,8 +1833,8 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                   {compileDiagnostics.length > 0 && (
                     <div className="flex max-h-24 flex-col gap-1 overflow-y-auto rounded-md border border-hairline bg-board/60 p-1.5">
                       {compileDiagnostics.map((d, i) => (
-                        <div key={i} className="font-mono text-xs text-ink-2">
-                          [{d.code}] L{d.line}: {d.message}
+                        <div key={i} className="text-xs text-ink-2">
+                          <code className="font-mono">[{d.code}] L{d.line}:</code> {d.message}
                         </div>
                       ))}
                     </div>

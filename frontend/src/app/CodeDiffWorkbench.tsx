@@ -282,7 +282,7 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
               Pending Proposal
             </Badge>
             <span className="truncate text-xs font-medium text-ink">{activeProposal.summary}</span>
-            <Pill className="bg-surface px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2">
+            <Pill className="bg-surface px-2 py-0.5 text-xs tabular-nums text-ink-2">
               {checkedPaths.size}/{activeProposal.file_diffs.length} files selected
             </Pill>
             {pendingProposals.length > 1 && (
@@ -504,7 +504,7 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
                 Luau Clean
               </Pill>
             ) : (
-              <Pill className="bg-pill-pro-bg px-2 py-0.5 font-mono text-xs text-pill-pro-fg">
+              <Pill className="bg-pill-pro-bg px-2 py-0.5 text-xs tabular-nums text-pill-pro-fg">
                 <AlertTriangle className="size-3" strokeWidth={1.5} aria-hidden />
                 {errCount} err / {warnCount} warn
               </Pill>
@@ -528,12 +528,14 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
             </Button>
           </div>
         ) : viewMode === "diff" && currentDiff ? (
-          <div data-unified-diff-viewer className="flex flex-col font-mono text-xs">
+          <div data-unified-diff-viewer className="flex flex-col text-xs">
             {currentDiff.hunks.length === 0 ? (
-              <div className="p-6 text-center text-ink-2">No line differences in {currentDiff.path}.</div>
+              <div className="p-6 text-center text-ink-2">
+                No line differences in <code className="font-mono">{currentDiff.path}</code>.
+              </div>
             ) : (
               currentDiff.hunks.map((hunk, hi) => (
-                <div key={`${currentDiff.path}-h-${hi}`} className="border-b border-hairline">
+                <div key={`${currentDiff.path}-h-${hi}`} className="border-b border-hairline font-mono">
                   <div className="bg-board/70 px-3 py-1 text-ink-2">
                     @@ -{hunk.old_start} +{hunk.new_start} @@
                   </div>
@@ -590,9 +592,9 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
               {fileDiagnostics.map((d, idx) => (
                 <li
                   key={`${d.path}-${d.line}-${idx}`}
-                  className={d.severity === "error" ? "font-mono text-pill-pro-fg" : "font-mono text-pill-warn-fg"}
+                  className={d.severity === "error" ? "text-pill-pro-fg" : "text-pill-warn-fg"}
                 >
-                  L{d.line} [{d.code}] {d.message}
+                  <code className="font-mono">L{d.line} [{d.code}]</code> {d.message}
                 </li>
               ))}
             </ul>

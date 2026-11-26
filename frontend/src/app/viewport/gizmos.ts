@@ -693,8 +693,14 @@ export function drawCanvas2DFallbackScene(
       const [tl, tr, br, bl] = f.decalCorners;
       const iw = f.decalImg.naturalWidth;
       const ih = f.decalImg.naturalHeight;
-      drawTexturedTriangle(ctx, f.decalImg, tl[0], tl[1], tr[0], tr[1], br[0], br[1], 0, 0, iw, 0, iw, ih);
-      drawTexturedTriangle(ctx, f.decalImg, tl[0], tl[1], br[0], br[1], bl[0], bl[1], 0, 0, iw, ih, 0, ih);
+      if (iw > 0 && ih > 0) {
+        try {
+          drawTexturedTriangle(ctx, f.decalImg, tl[0], tl[1], tr[0], tr[1], br[0], br[1], 0, 0, iw, 0, iw, ih);
+          drawTexturedTriangle(ctx, f.decalImg, tl[0], tl[1], br[0], br[1], bl[0], bl[1], 0, 0, iw, ih, 0, ih);
+        } catch {
+          /* ignore broken decal texture frame */
+        }
+      }
     }
 
     if (f.isTopSpawn && f.spawnCorners) {

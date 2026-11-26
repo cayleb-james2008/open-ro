@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AlertTriangle, Check, Coins, Cpu, Rocket, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -46,6 +46,7 @@ export function ReadinessAutopilot({
   const [codegenBusy, setCodegenBusy] = useState(false);
   const [gateBusy, setGateBusy] = useState(false);
   const [sandboxBusy, setSandboxBusy] = useState(false);
+  const actionLockRef = useRef(false);
   const [gateResult, setGateResult] = useState<PublishGateResult | null>(null);
   const [lastResult, setLastResult] = useState<AutopilotResult | null>(null);
   const [codegenInfo, setCodegenInfo] = useState<string>("");
@@ -70,133 +71,157 @@ export function ReadinessAutopilot({
     void loadReadiness();
   }, [loadReadiness]);
 
-  const runPublishGate = async (silentToast = false) => {
+  const runPublishGate = async (silentToast = false, bypassLock = false) => {
+    if (!bypassLock && actionLockRef.current) return;
+    if (!bypassLock) actionLockRef.current = true;
     setGateBusy(true);
     setError("");
-    const r = await call<PublishGateResult>(projUrl(projectId, "/publish-gate"), {});
-    setGateBusy(false);
-    if (!r.ok) {
-      setError(r.error || "Pre-publish gate check failed.");
-      toast.error(r.error || "Pre-publish gate failed");
-      return;
-    }
-    setGateResult(r as PublishGateResult);
-    if (r.readiness && Array.isArray(r.readiness.checks)) {
-      setReadiness(r.readiness);
-    }
-    if (!silentToast) {
-      if (r.gate_passed) {
-        toast.success("Pre-Publish Revenue & Playtest Gate passed");
-      } else {
-        toast.info(`Gate found ${r.fix_cards?.length ?? 0} auto-fixable item(s)`);
+    try {
+      const r = await call<PublishGateResult>(projUrl(projectId, "/publish-gate"), {});
+      if (!r.ok) {
+        setError(r.error || "Pre-publish gate check failed.");
+        toast.error(r.error || "Pre-publish gate failed");
+        return;
       }
+      setGateResult(r as PublishGateResult);
+      if (r.readiness && Array.isArray(r.readiness.checks)) {
+        setReadiness(r.readiness);
+      }
+      if (!silentToast) {
+        if (r.gate_passed) {
+          toast.success("Pre-Publish Revenue & Playtest Gate passed");
+        } else {
+          toast.info(`Gate found ${r.fix_cards?.length ?? 0} auto-fixable item(s)`);
+        }
+      }
+    } finally {
+      setGateBusy(false);
+      if (!bypassLock) actionLockRef.current = false;
     }
   };
 
   const runEconomyCodegen = async () => {
+    if (actionLockRef.current) return;
+    actionLockRef.current = true;
     setCodegenBusy(true);
     setError("");
-    const r = await call<MonetizationCodegenResult>(projUrl(projectId, "/monetization/codegen"), {
-      seed_defaults: true,
-    });
-    setCodegenBusy(false);
-    if (!r.ok) {
-      setError(r.error || "Economy codegen could not finish.");
-      toast.error(r.error || "Economy codegen failed");
-      return;
+    try {
+      const r = await call<MonetizationCodegenResult>(projUrl(projectId, "/monetization/codegen"), {
+        seed_defaults: true,
+      });
+      if (!r.ok) {
+        setError(r.error || "Economy codegen could not finish.");
+        toast.error(r.error || "Economy codegen failed");
+        return;
+      }
+      if (r.readiness && Array.isArray(r.readiness.checks)) {
+        setReadiness(r.readiness);
+      } else {
+        await loadReadiness();
+      }
+      const count = r.written?.length ?? 0;
+      const summary = `Generated ${count} Luau monetization/economy script(s) (${r.luau_errors ?? 0} errors)${r.seeded_products ? " and seeded starter Pass/Product drafts" : ""}`;
+      setCodegenInfo(summary);
+      toast.success(`Economy & Shop Luau generated (${r.luau_errors ?? 0} errors)`);
+      await onCompleted?.();
+    } finally {
+      setCodegenBusy(false);
+      actionLockRef.current = false;
     }
-    if (r.readiness && Array.isArray(r.readiness.checks)) {
-      setReadiness(r.readiness);
-    } else {
-      await loadReadiness();
-    }
-    const count = r.written?.length ?? 0;
-    const summary = `Generated ${count} Luau monetization/economy script(s) (${r.luau_errors ?? 0} errors)${r.seeded_products ? " and seeded starter Pass/Product drafts" : ""}`;
-    setCodegenInfo(summary);
-    toast.success(`Economy & Shop Luau generated (${r.luau_errors ?? 0} errors)`);
-    await onCompleted?.();
   };
 
   const runAutopilot = async (singleAction?: string) => {
+    if (actionLockRef.current) return;
+    actionLockRef.current = true;
     if (singleAction) setFixingAction(singleAction);
     else setRunning(true);
     setError("");
-    const r = await call<AutopilotResult>(
-      projUrl(projectId, "/autopilot"),
-      singleAction
-        ? { action: singleAction }
-        : {
-            install_monetization: true,
-            format: true,
-            build: true,
-            fix_empty: true,
-          },
-    );
-    if (singleAction) setFixingAction(null);
-    else setRunning(false);
-    if (!r.ok) {
-      setError(r.error || "Ship Autopilot could not finish.");
-      toast.error(r.error || "Ship Autopilot failed");
-      return;
+    try {
+      const r = await call<AutopilotResult>(
+        projUrl(projectId, "/autopilot"),
+        singleAction
+          ? { action: singleAction }
+          : {
+              install_monetization: true,
+              format: true,
+              build: true,
+              fix_empty: true,
+            },
+      );
+      if (!r.ok) {
+        setError(r.error || "Ship Autopilot could not finish.");
+        toast.error(r.error || "Ship Autopilot failed");
+        return;
+      }
+      setLastResult(r as AutopilotResult);
+      if (r.readiness && Array.isArray(r.readiness.checks)) {
+        setReadiness(r.readiness);
+      } else {
+        await loadReadiness();
+      }
+      const fixedCount = r.actions_taken?.length ?? 0;
+      toast.success(
+        singleAction
+          ? `Fixed ${singleAction.replace(/_/g, " ")}`
+          : fixedCount > 0
+            ? `Autopilot completed ${fixedCount} step(s)`
+            : `${projectName} readiness verified`,
+      );
+      if (gateResult) {
+        await runPublishGate(true, true);
+      }
+      await onCompleted?.();
+    } finally {
+      if (singleAction) setFixingAction(null);
+      else setRunning(false);
+      actionLockRef.current = false;
     }
-    setLastResult(r as AutopilotResult);
-    if (r.readiness && Array.isArray(r.readiness.checks)) {
-      setReadiness(r.readiness);
-    } else {
-      await loadReadiness();
-    }
-    const fixedCount = r.actions_taken?.length ?? 0;
-    toast.success(
-      singleAction
-        ? `Fixed ${singleAction.replace(/_/g, " ")}`
-        : fixedCount > 0
-          ? `Autopilot completed ${fixedCount} step(s)`
-          : `${projectName} readiness verified`,
-    );
-    if (gateResult) {
-      await runPublishGate(true);
-    }
-    await onCompleted?.();
   };
 
   const verifyHeadlessSandbox = async () => {
+    if (actionLockRef.current) return;
+    actionLockRef.current = true;
     setSandboxBusy(true);
     setError("");
-    const res = await runSandbox(
-      {
-        timeout_secs: 15,
-        players: [{ user_id: 1001, name: "TestPlayer", owns_passes: [] }],
-        journey: [
-          { op: "move_player", player_id: 1001, to: [0, 3, 12] },
-          { op: "wait", ms: 50 },
-          { op: "key_down", player_id: 1001, key: "E" },
-          { op: "key_up", player_id: 1001, key: "E" },
-          { op: "assert_luau", name: "Core runtime & loop healthy", luau: "return true", expect: { truthy: true } },
-        ],
-      },
-      projectId,
-    );
-    setSandboxBusy(false);
-    const luneMissing = res.engine === "lune_missing" || res.diagnostics?.lune_found === false;
-    if (!res.ok && !luneMissing) {
-      const msg = res.error || "Headless Sandbox verification could not run.";
-      setError(msg);
-      toast.error(msg);
-      return;
-    }
-    if (luneMissing) {
-      toast.error(res.diagnostic || "Lune runtime not detected on PATH.");
-      return;
-    }
-    await loadReadiness();
-    if (gateResult) {
-      await runPublishGate(true);
-    }
-    await onCompleted?.();
-    if (res.passed) {
-      toast.success("Headless Sandbox verification passed");
-    } else {
-      toast.error("Headless Sandbox finished with failures");
+    try {
+      const res = await runSandbox(
+        {
+          timeout_secs: 15,
+          players: [{ user_id: 1001, name: "TestPlayer", owns_passes: [] }],
+          journey: [
+            { op: "move_player", player_id: 1001, to: [0, 3, 12] },
+            { op: "wait", ms: 50 },
+            { op: "key_down", player_id: 1001, key: "E" },
+            { op: "key_up", player_id: 1001, key: "E" },
+            { op: "assert_luau", name: "Core runtime & loop healthy", luau: "return true", expect: { truthy: true } },
+          ],
+        },
+        projectId,
+      );
+      const luneMissing = res.engine === "lune_missing" || res.diagnostics?.lune_found === false;
+      if (!res.ok && !luneMissing) {
+        const msg = res.error || "Headless Sandbox verification could not run.";
+        setError(msg);
+        toast.error(msg);
+        return;
+      }
+      if (luneMissing) {
+        toast.error(res.diagnostic || "Lune runtime not detected on PATH.");
+        return;
+      }
+      await loadReadiness();
+      if (gateResult) {
+        await runPublishGate(true, true);
+      }
+      await onCompleted?.();
+      if (res.passed) {
+        toast.success("Headless Sandbox verification passed");
+      } else {
+        toast.error("Headless Sandbox finished with failures");
+      }
+    } finally {
+      setSandboxBusy(false);
+      actionLockRef.current = false;
     }
   };
 

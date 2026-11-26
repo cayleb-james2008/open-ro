@@ -412,7 +412,7 @@ export function CommandPalette({
                 <MorphingDialogTitle className="text-ui font-medium text-ink">
                   Studio Command Palette
                 </MorphingDialogTitle>
-                <Pill className="bg-board px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2">
+                <Pill className="bg-board px-2 py-0.5 text-xs tabular-nums text-ink-2">
                   28 systems
                 </Pill>
               </div>
@@ -515,7 +515,7 @@ export function CommandPalette({
                 <Kbd className="px-1.5 font-mono">Enter</Kbd>
                 <span>run</span>
               </span>
-              <span className="font-mono tabular-nums">{items.length} matches</span>
+              <span className="tabular-nums">{items.length} matches</span>
             </div>
           </div>
         </MorphingDialogContent>

@@ -97,21 +97,21 @@ export function DependencyGraphCard({
       </div>
 
       {s && (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 font-mono text-xs tabular-nums">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 text-xs tabular-nums">
           <div className="rounded-sm border border-hairline bg-board/50 px-3 py-1.5">
-            <div className="font-sans text-[11px] text-ink-2">Scripts</div>
+            <div className="text-[11px] text-ink-2">Scripts</div>
             <div className="font-semibold text-ink">{s.scripts}</div>
           </div>
           <div className="rounded-sm border border-hairline bg-board/50 px-3 py-1.5">
-            <div className="font-sans text-[11px] text-ink-2">Modules</div>
+            <div className="text-[11px] text-ink-2">Modules</div>
             <div className="font-semibold text-ink">{s.modules}</div>
           </div>
           <div className="rounded-sm border border-hairline bg-board/50 px-3 py-1.5">
-            <div className="font-sans text-[11px] text-ink-2">Require Edges</div>
+            <div className="text-[11px] text-ink-2">Require Edges</div>
             <div className="font-semibold text-ink">{s.edges}</div>
           </div>
           <div className="rounded-sm border border-hairline bg-board/50 px-3 py-1.5">
-            <div className="font-sans text-[11px] text-ink-2">Remotes</div>
+            <div className="text-[11px] text-ink-2">Remotes</div>
             <div className="font-semibold text-ink">{s.remotes}</div>
           </div>
         </div>

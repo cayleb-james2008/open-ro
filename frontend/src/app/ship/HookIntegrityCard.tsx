@@ -115,8 +115,8 @@ export function HookIntegrityCard({
             )}
           </div>
           <p className="mt-0.5 text-xs text-ink-2">
-            Checks whether recent edits dropped Robux GamePass or DevProduct IDs, <span className="font-mono">ProcessReceipt</span>,{" "}
-            <span className="font-mono">Workspace.SpawnLocation</span>, or <span className="font-mono">--!strict</span> headers from{" "}
+            Checks whether recent edits dropped Robux GamePass or DevProduct IDs, <code className="font-mono">ProcessReceipt</code>,{" "}
+            <code className="font-mono">Workspace.SpawnLocation</code>, or <code className="font-mono">--!strict</code> headers from{" "}
             {report?.baseline_label ? (
               <span className="font-medium text-ink">"{report.baseline_label}"</span>
             ) : (

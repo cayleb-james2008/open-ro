@@ -362,8 +362,10 @@ function createInterleavedMesh(
   indices?: Uint16Array | Uint32Array,
   colors?: Float32Array,
   mats?: Float32Array,
-): MeshGpuBuffer {
-  const vCount = positions.length / 3;
+): MeshGpuBuffer | null {
+  const vCount = Math.floor(positions.length / 3);
+  if (vCount <= 0 || normals.length < vCount * 3 || uvs.length < vCount * 2) return null;
+  if (indices && indices.length === 0) return null;
   const strideFloats = 14;
   const packed = new Float32Array(vCount * strideFloats);
   for (let i = 0; i < vCount; i++) {
@@ -376,7 +378,7 @@ function createInterleavedMesh(
     packed[o + 5] = normals[i * 3 + 2];
     packed[o + 6] = uvs[i * 2];
     packed[o + 7] = uvs[i * 2 + 1];
-    if (colors) {
+    if (colors && colors.length >= vCount * 3) {
       packed[o + 8] = colors[i * 3];
       packed[o + 9] = colors[i * 3 + 1];
       packed[o + 10] = colors[i * 3 + 2];
@@ -385,7 +387,7 @@ function createInterleavedMesh(
       packed[o + 9] = 1;
       packed[o + 10] = 1;
     }
-    if (mats) {
+    if (mats && mats.length >= vCount * 3) {
       packed[o + 11] = mats[i * 3];
       packed[o + 12] = mats[i * 3 + 1];
       packed[o + 13] = mats[i * 3 + 2];
@@ -396,9 +398,14 @@ function createInterleavedMesh(
     }
   }
 
-  const vao = gl.createVertexArray()!;
+  const vao = gl.createVertexArray();
+  const vbo = gl.createBuffer();
+  if (!vao || !vbo) {
+    if (vao) gl.deleteVertexArray(vao);
+    if (vbo) gl.deleteBuffer(vbo);
+    return null;
+  }
   gl.bindVertexArray(vao);
-  const vbo = gl.createBuffer()!;
   gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
   gl.bufferData(gl.ARRAY_BUFFER, packed, gl.STATIC_DRAW);
 
@@ -416,11 +423,18 @@ function createInterleavedMesh(
 
   let ebo: WebGLBuffer | null = null;
   if (indices) {
-    ebo = gl.createBuffer()!;
+    ebo = gl.createBuffer();
+    if (!ebo) {
+      gl.bindVertexArray(null);
+      gl.deleteVertexArray(vao);
+      gl.deleteBuffer(vbo);
+      return null;
+    }
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
   }
   gl.bindVertexArray(null);
+  gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
   return {
     vao,
@@ -431,7 +445,7 @@ function createInterleavedMesh(
   };
 }
 
-function buildCubeMesh(gl: WebGL2RenderingContext): MeshGpuBuffer {
+function buildCubeMesh(gl: WebGL2RenderingContext): MeshGpuBuffer | null {
   const faces: Array<{ n: Vec3; v: Vec3[] }> = [
     { n: [0, 1, 0], v: [[-0.5, 0.5, -0.5], [-0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, -0.5]] },
     { n: [0, -1, 0], v: [[-0.5, -0.5, 0.5], [-0.5, -0.5, -0.5], [0.5, -0.5, -0.5], [0.5, -0.5, 0.5]] },
@@ -458,7 +472,7 @@ function buildCubeMesh(gl: WebGL2RenderingContext): MeshGpuBuffer {
   return createInterleavedMesh(gl, new Float32Array(pos), new Float32Array(norm), new Float32Array(uv), new Uint16Array(idx));
 }
 
-function buildSphereMesh(gl: WebGL2RenderingContext): MeshGpuBuffer {
+function buildSphereMesh(gl: WebGL2RenderingContext): MeshGpuBuffer | null {
   const lat = 14;
   const lon = 20;
   const pos: number[] = [];
@@ -489,7 +503,7 @@ function buildSphereMesh(gl: WebGL2RenderingContext): MeshGpuBuffer {
   return createInterleavedMesh(gl, new Float32Array(pos), new Float32Array(norm), new Float32Array(uv), new Uint16Array(idx));
 }
 
-function buildCylinderMesh(gl: WebGL2RenderingContext): MeshGpuBuffer {
+function buildCylinderMesh(gl: WebGL2RenderingContext): MeshGpuBuffer | null {
   const segs = 20;
   const pos: number[] = [];
   const norm: number[] = [];
@@ -537,7 +551,7 @@ function buildCylinderMesh(gl: WebGL2RenderingContext): MeshGpuBuffer {
   return createInterleavedMesh(gl, new Float32Array(pos), new Float32Array(norm), new Float32Array(uv), new Uint16Array(idx));
 }
 
-function buildWaterPlaneMesh(gl: WebGL2RenderingContext): MeshGpuBuffer {
+function buildWaterPlaneMesh(gl: WebGL2RenderingContext): MeshGpuBuffer | null {
   const pos = new Float32Array([-0.5, 0, -0.5, -0.5, 0, 0.5, 0.5, 0, 0.5, 0.5, 0, -0.5]);
   const norm = new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0]);
   const uv = new Float32Array([0, 0, 0, 1, 1, 1, 1, 0]);
@@ -549,16 +563,17 @@ export class WebGL2ViewportRenderer {
   private gl: WebGL2RenderingContext;
   private canvas: HTMLCanvasElement;
   private contextLost = false;
-  private skyProg!: WebGLProgram;
-  private litProg!: WebGLProgram;
-  private lineProg!: WebGLProgram;
-  private skyVao!: WebGLVertexArrayObject;
-  private cubeMesh!: MeshGpuBuffer;
-  private sphereMesh!: MeshGpuBuffer;
-  private cylMesh!: MeshGpuBuffer;
-  private waterMesh!: MeshGpuBuffer;
-  private gridVao!: WebGLVertexArrayObject;
-  private gridVbo!: WebGLBuffer;
+  private disposed = false;
+  private skyProg: WebGLProgram | null = null;
+  private litProg: WebGLProgram | null = null;
+  private lineProg: WebGLProgram | null = null;
+  private skyVao: WebGLVertexArrayObject | null = null;
+  private cubeMesh: MeshGpuBuffer | null = null;
+  private sphereMesh: MeshGpuBuffer | null = null;
+  private cylMesh: MeshGpuBuffer | null = null;
+  private waterMesh: MeshGpuBuffer | null = null;
+  private gridVao: WebGLVertexArrayObject | null = null;
+  private gridVbo: WebGLBuffer | null = null;
   private gridVertexCount = 0;
   private gridTheme: "light" | "dark" | null = null;
 
@@ -566,7 +581,7 @@ export class WebGL2ViewportRenderer {
   private terrainRef: TerrainMeshData | null = null;
   private objBuffers = new Map<ParsedObjGeometry, MeshGpuBuffer>();
   private textures = new Map<HTMLImageElement, WebGLTexture>();
-  private whiteTex!: WebGLTexture;
+  private whiteTex: WebGLTexture | null = null;
 
   private onLost?: () => void;
   private onRestored?: () => void;
@@ -584,24 +599,36 @@ export class WebGL2ViewportRenderer {
     this.onRestored = cbs?.onContextRestored;
 
     this.handleLostBound = (e: Event) => {
+      if (this.disposed) return;
       e.preventDefault();
       this.contextLost = true;
       this.onLost?.();
     };
     this.handleRestoredBound = () => {
+      if (this.disposed) return;
       this.contextLost = false;
       this.objBuffers.clear();
       this.textures.clear();
       this.terrainGpu = null;
       this.terrainRef = null;
       this.gridTheme = null;
-      this.initResources();
+      try {
+        this.initResources();
+      } catch {
+        this.contextLost = true;
+        return;
+      }
       this.onRestored?.();
     };
 
     canvas.addEventListener("webglcontextlost", this.handleLostBound);
     canvas.addEventListener("webglcontextrestored", this.handleRestoredBound);
-    this.initResources();
+    try {
+      this.initResources();
+    } catch (err) {
+      this.dispose();
+      throw err;
+    }
   }
 
   static tryCreate(
@@ -622,7 +649,7 @@ export class WebGL2ViewportRenderer {
   }
 
   isContextLost(): boolean {
-    return this.contextLost || this.gl.isContextLost();
+    return this.disposed || this.contextLost || this.gl.isContextLost();
   }
 
   private initResources() {
@@ -630,21 +657,34 @@ export class WebGL2ViewportRenderer {
     this.skyProg = linkProgram(gl, SKY_VS, SKY_FS);
     this.litProg = linkProgram(gl, LIT_VS, LIT_FS);
     this.lineProg = linkProgram(gl, LINE_VS, LINE_FS);
-    this.skyVao = gl.createVertexArray()!;
+    this.skyVao = gl.createVertexArray();
     this.cubeMesh = buildCubeMesh(gl);
     this.sphereMesh = buildSphereMesh(gl);
     this.cylMesh = buildCylinderMesh(gl);
     this.waterMesh = buildWaterPlaneMesh(gl);
-    this.gridVao = gl.createVertexArray()!;
-    this.gridVbo = gl.createBuffer()!;
+    this.gridVao = gl.createVertexArray();
+    this.gridVbo = gl.createBuffer();
 
-    this.whiteTex = gl.createTexture()!;
+    this.whiteTex = gl.createTexture();
+    if (
+      !this.skyVao ||
+      !this.cubeMesh ||
+      !this.sphereMesh ||
+      !this.cylMesh ||
+      !this.waterMesh ||
+      !this.gridVao ||
+      !this.gridVbo ||
+      !this.whiteTex
+    ) {
+      throw new Error("WebGL2 resource allocation failed");
+    }
     gl.bindTexture(gl.TEXTURE_2D, this.whiteTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+    gl.bindTexture(gl.TEXTURE_2D, null);
   }
 
   private ensureGridLines(theme: "light" | "dark") {
-    if (this.gridTheme === theme) return;
+    if (this.gridTheme === theme || !this.gridVao || !this.gridVbo) return;
     this.gridTheme = theme;
     const gl = this.gl;
     const isDark = theme === "dark";
@@ -684,7 +724,7 @@ export class WebGL2ViewportRenderer {
   }
 
   private getOrUploadTexture(img: HTMLImageElement): WebGLTexture | null {
-    if (!img.complete || img.naturalWidth <= 0) return null;
+    if (!img.complete || img.naturalWidth <= 0 || img.naturalHeight <= 0) return null;
     const existing = this.textures.get(img);
     if (existing) return existing;
     const gl = this.gl;
@@ -706,10 +746,12 @@ export class WebGL2ViewportRenderer {
     }
   }
 
-  private getOrUploadObj(geom: ParsedObjGeometry): MeshGpuBuffer {
+  private getOrUploadObj(geom: ParsedObjGeometry): MeshGpuBuffer | null {
+    if (!geom || geom.positions.length < 9) return null;
     const cached = this.objBuffers.get(geom);
     if (cached) return cached;
     const gpu = createInterleavedMesh(this.gl, geom.positions, geom.normals, geom.uvs);
+    if (!gpu) return null;
     this.objBuffers.set(geom, gpu);
     return gpu;
   }
@@ -738,7 +780,7 @@ export class WebGL2ViewportRenderer {
   }
 
   render(p: RenderParams) {
-    if (this.isContextLost()) return;
+    if (this.isContextLost() || !this.skyProg || !this.litProg || !this.lineProg) return;
     const gl = this.gl;
     gl.viewport(0, 0, p.width, p.height);
     gl.enable(gl.DEPTH_TEST);
@@ -878,7 +920,8 @@ export class WebGL2ViewportRenderer {
     gl.activeTexture(gl.TEXTURE0);
     gl.uniform1i(locTex, 0);
 
-    const drawBuffer = (buf: MeshGpuBuffer, indexType: number) => {
+    const drawBuffer = (buf: MeshGpuBuffer | null, indexType: number) => {
+      if (!buf) return;
       gl.bindVertexArray(buf.vao);
       if (buf.indexed) {
         gl.drawElements(gl.TRIANGLES, buf.count, indexType, 0);
@@ -978,9 +1021,9 @@ export class WebGL2ViewportRenderer {
       }
 
       const meshEntry = part.meshUrl ? p.meshCache.get(part.meshUrl) : undefined;
-      if (meshEntry && typeof meshEntry === "object") {
-        const gpu = this.getOrUploadObj(meshEntry);
-        drawBuffer(gpu, gl.UNSIGNED_SHORT);
+      const objGpu = meshEntry && typeof meshEntry === "object" ? this.getOrUploadObj(meshEntry) : null;
+      if (objGpu) {
+        drawBuffer(objGpu, gl.UNSIGNED_SHORT);
       } else if (part.shape === "Ball") {
         drawBuffer(this.sphereMesh, gl.UNSIGNED_SHORT);
       } else if (part.shape === "Cylinder") {
@@ -1047,29 +1090,49 @@ export class WebGL2ViewportRenderer {
   }
 
   dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
     this.canvas.removeEventListener("webglcontextlost", this.handleLostBound);
     this.canvas.removeEventListener("webglcontextrestored", this.handleRestoredBound);
+    this.onLost = undefined;
+    this.onRestored = undefined;
+    this.terrainRef = null;
     const gl = this.gl;
-    if (this.contextLost || gl.isContextLost()) return;
-    const delMesh = (m: MeshGpuBuffer | null) => {
-      if (!m) return;
-      gl.deleteVertexArray(m.vao);
-      gl.deleteBuffer(m.vbo);
-      if (m.ebo) gl.deleteBuffer(m.ebo);
-    };
-    delMesh(this.cubeMesh);
-    delMesh(this.sphereMesh);
-    delMesh(this.cylMesh);
-    delMesh(this.waterMesh);
-    delMesh(this.terrainGpu);
-    for (const m of this.objBuffers.values()) delMesh(m);
-    for (const t of this.textures.values()) gl.deleteTexture(t);
-    gl.deleteTexture(this.whiteTex);
-    gl.deleteVertexArray(this.skyVao);
-    gl.deleteVertexArray(this.gridVao);
-    gl.deleteBuffer(this.gridVbo);
-    gl.deleteProgram(this.skyProg);
-    gl.deleteProgram(this.litProg);
-    gl.deleteProgram(this.lineProg);
+    if (!this.contextLost && !gl.isContextLost()) {
+      const delMesh = (m: MeshGpuBuffer | null) => {
+        if (!m) return;
+        gl.deleteVertexArray(m.vao);
+        gl.deleteBuffer(m.vbo);
+        if (m.ebo) gl.deleteBuffer(m.ebo);
+      };
+      delMesh(this.cubeMesh);
+      delMesh(this.sphereMesh);
+      delMesh(this.cylMesh);
+      delMesh(this.waterMesh);
+      delMesh(this.terrainGpu);
+      for (const m of this.objBuffers.values()) delMesh(m);
+      for (const t of this.textures.values()) gl.deleteTexture(t);
+      if (this.whiteTex) gl.deleteTexture(this.whiteTex);
+      if (this.skyVao) gl.deleteVertexArray(this.skyVao);
+      if (this.gridVao) gl.deleteVertexArray(this.gridVao);
+      if (this.gridVbo) gl.deleteBuffer(this.gridVbo);
+      if (this.skyProg) gl.deleteProgram(this.skyProg);
+      if (this.litProg) gl.deleteProgram(this.litProg);
+      if (this.lineProg) gl.deleteProgram(this.lineProg);
+    }
+    this.objBuffers.clear();
+    this.textures.clear();
+    this.terrainGpu = null;
+    this.cubeMesh = null;
+    this.sphereMesh = null;
+    this.cylMesh = null;
+    this.waterMesh = null;
+    this.whiteTex = null;
+    this.skyVao = null;
+    this.gridVao = null;
+    this.gridVbo = null;
+    this.skyProg = null;
+    this.litProg = null;
+    this.lineProg = null;
   }
 }

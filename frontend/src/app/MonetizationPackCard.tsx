@@ -211,7 +211,7 @@ export function MonetizationPackCard({
             {activePreset.summary} · Drafts require owner approval
           </span>
         </div>
-        <div className="grid grid-cols-7 gap-1 font-mono tabular-nums">
+        <div className="grid grid-cols-7 gap-1 tabular-nums">
           {curveValues.map((val, idx) => (
             <div
               key={idx}

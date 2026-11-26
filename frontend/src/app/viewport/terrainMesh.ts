@@ -202,13 +202,24 @@ function appendBoxMesh(
   }
 }
 
+function hasValidBounds(minB: Vec3 | undefined, maxB: Vec3 | undefined): boolean {
+  if (!Array.isArray(minB) || !Array.isArray(maxB) || minB.length < 3 || maxB.length < 3) return false;
+  for (let i = 0; i < 3; i++) {
+    if (!Number.isFinite(minB[i]) || !Number.isFinite(maxB[i]) || minB[i] >= maxB[i]) return false;
+  }
+  return true;
+}
+
 export function buildTerrainMeshData(terrain: WorkspaceTerrain | null | undefined): TerrainMeshData | null {
   if (!terrain || !terrain.enabled || !Array.isArray(terrain.regions) || terrain.regions.length === 0) {
     return null;
   }
 
-  const generatorRegions = terrain.regions.filter((r) => Boolean(r.generator));
-  const paintRegions = terrain.regions.filter((r) => !r.generator);
+  const validRegions = terrain.regions.filter((r) => r && hasValidBounds(r.bounds_min, r.bounds_max));
+  if (validRegions.length === 0) return null;
+
+  const generatorRegions = validRegions.filter((r) => Boolean(r.generator));
+  const paintRegions = validRegions.filter((r) => !r.generator);
 
   const posOut: number[] = [];
   const normOut: number[] = [];

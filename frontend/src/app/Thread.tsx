@@ -442,7 +442,7 @@ export function ProposalDiffCard({
             {proposal.file_diffs.length} {proposal.file_diffs.length === 1 ? "script" : "scripts"}
           </Pill>
           {instancesAdded > 0 && (
-            <Pill className="bg-tag-mint-bg px-2 py-0.5 font-mono text-xs tabular-nums text-tag-mint-fg">
+            <Pill className="bg-tag-mint-bg px-2 py-0.5 text-xs tabular-nums text-tag-mint-fg">
               +{instancesAdded} parts
             </Pill>
           )}
@@ -816,7 +816,7 @@ export const ThreadFeed = memo(function ThreadFeed({
       >
         <figcaption className="mb-1.5 flex items-center justify-between text-xs text-ink-2">
           <span>Latest Roblox Studio capture</span>
-          <span className="font-mono text-xs text-ink-3">Live viewport</span>
+          <span className="text-xs text-ink-3">Live viewport</span>
         </figcaption>
         <img
           src={capturedFrameUrl}

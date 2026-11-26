@@ -119,10 +119,10 @@ export function EconomySimulatorCard({
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <div className="rounded-sm border border-hairline bg-board/50 px-3 py-2">
               <div className="text-[11px] text-ink-2">Projected ARPDAU</div>
-              <div className="font-mono text-sm font-semibold tabular-nums text-ink" data-sim-arpdau>
+              <div className="text-sm font-semibold tabular-nums text-ink" data-sim-arpdau>
                 {report.projections.arpdau_robux.toFixed(2)} R$
               </div>
-              <div className="font-mono text-[11px] tabular-nums text-ink-3">
+              <div className="text-[11px] tabular-nums text-ink-3">
                 ~${report.projections.arpdau_usd_est.toFixed(3)} DevEx
               </div>
             </div>
@@ -131,7 +131,7 @@ export function EconomySimulatorCard({
               <div className="font-mono text-sm font-semibold tabular-nums text-ink" data-sim-d1>
                 {report.projections.d1_retention_pct.toFixed(1)}%
               </div>
-              <div className="font-mono text-[11px] tabular-nums text-pill-active-fg">
+              <div className="text-[11px] tabular-nums text-pill-active-fg">
                 +{report.projections.d1_lift_pct.toFixed(1)}% lift
               </div>
             </div>
@@ -140,7 +140,7 @@ export function EconomySimulatorCard({
               <div className="font-mono text-sm font-semibold tabular-nums text-ink" data-sim-d7>
                 {report.projections.d7_retention_pct.toFixed(1)}%
               </div>
-              <div className="font-mono text-[11px] tabular-nums text-pill-active-fg">
+              <div className="text-[11px] tabular-nums text-pill-active-fg">
                 +{report.projections.d7_lift_pct.toFixed(1)}% lift
               </div>
             </div>
@@ -149,7 +149,7 @@ export function EconomySimulatorCard({
               <div className="font-mono text-sm font-semibold tabular-nums text-ink" data-sim-conv>
                 {report.projections.gamepass_conversion_pct.toFixed(2)}%
               </div>
-              <div className="font-mono text-[11px] tabular-nums text-ink-3">
+              <div className="text-[11px] tabular-nums text-ink-3">
                 {report.place_signals.estimated_loop_minutes.toFixed(1)}m loop · {report.place_signals.starter_items_count} starter
               </div>
             </div>

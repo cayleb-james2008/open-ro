@@ -164,8 +164,8 @@ export function SyncConflictsCard({
                         {c.status} · +{c.added_lines}/-{c.removed_lines}L
                       </Pill>
                     </div>
-                    <div className="mt-0.5 font-mono text-[11px] text-ink-2">
-                      Place target: {c.place_path}
+                    <div className="mt-0.5 text-[11px] text-ink-2">
+                      Place target: <code className="font-mono">{c.place_path}</code>
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
