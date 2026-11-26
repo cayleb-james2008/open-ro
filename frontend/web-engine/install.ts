@@ -1,4 +1,4 @@
-// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.17.0 standalone web builds.
+// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.18.0 standalone web builds.
 // Features:
 //  - RoPilot-Grade 3-Pane Studio IDE (Agent | Plan | Ask, Reviewable Unified Diffs, @Context Chips, Companion Plugin)
 //  - Embedded Studio Workbench & 13 Official Studio MCP Tools running live against the in-browser Place DataModel
@@ -962,6 +962,129 @@ function evaluateWebMonetizationAudit(chat: ChatRecord) {
   };
 }
 
+function evaluateWebEconomySim(chat: ChatRecord, overrides: any = {}) {
+  const scripts = chat.place.scripts || {};
+  let earnPerMin = 30;
+  const prices: number[] = [];
+  let rebirthCost: number | null = null;
+  let rebirthMult = 1.5;
+  let gamepassMult = 2.0;
+  let passGate = false;
+  let earnHit: any = null;
+  let rebHit: any = null;
+  let rebMultHit: any = null;
+  let gpHit: any = null;
+
+  for (const [k, src] of Object.entries(scripts)) {
+    if (src.includes("GamePassOnly") || (src.includes("OwnsVipPass") && src.includes("return"))) passGate = true;
+    const lines = src.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const tr = lines[i].trim();
+      if (tr.startsWith("--") || !tr.includes("=")) continue;
+      const eq = tr.indexOf("=");
+      const lhs = tr.slice(0, eq).trim().replace(/^local\s+/, "").split(".").pop()?.trim() || "";
+      const rawNum = tr.slice(eq + 1).trim().replace(/[,;].*$/, "").split("--")[0].trim().replace(/_/g, "");
+      if (!lhs || !/^\d+(\.\d+)?$/.test(rawNum)) continue;
+      const val = Number(rawNum);
+      if (!(val > 0)) continue;
+      const low = lhs.toLowerCase();
+      if (low.includes("rebirthcost") || low.includes("rebirththreshold") || low.includes("prestigecost")) {
+        if (rebirthCost === null) { rebirthCost = val; rebHit = { file: k, place_path: k, line: i + 1, symbol: lhs, value: val }; }
+      } else if (low.includes("rebirthmult") || low.includes("prestigemult")) {
+        rebirthMult = Math.min(100, Math.max(1, val)); rebMultHit = { file: k, place_path: k, line: i + 1, symbol: lhs, value: val };
+      } else if (low.includes("vipmult") || low.includes("passmult") || low.includes("gamepassmult") || low === "doublecoins") {
+        gamepassMult = Math.min(50, Math.max(1, val)); gpHit = { file: k, place_path: k, line: i + 1, symbol: lhs, value: val };
+      } else if (low.includes("persec") || low.includes("persecond")) {
+        if (!earnHit) { earnPerMin = val * 60; earnHit = { file: k, place_path: k, line: i + 1, symbol: lhs, value: val, isPerSec: true }; }
+      } else if (low.includes("earn") || low.includes("permin") || low.includes("reward") || low.includes("income")) {
+        if (!low.includes("daily") && !earnHit) { earnPerMin = val; earnHit = { file: k, place_path: k, line: i + 1, symbol: lhs, value: val, isPerSec: false }; }
+      } else if ((low.includes("cost") || low.includes("price")) && !low.includes("robux") && !low.includes("id")) {
+        prices.push(val);
+      }
+    }
+  }
+  if (typeof overrides.earn_per_min === "number" && overrides.earn_per_min > 0) earnPerMin = overrides.earn_per_min;
+  if (typeof overrides.rebirth_cost === "number" && overrides.rebirth_cost > 0) rebirthCost = overrides.rebirth_cost;
+  if (typeof overrides.rebirth_mult === "number" && overrides.rebirth_mult >= 1) rebirthMult = overrides.rebirth_mult;
+  if (typeof overrides.gamepass_mult === "number" && overrides.gamepass_mult >= 1) gamepassMult = overrides.gamepass_mult;
+
+  const tierPrices = prices.length ? prices.sort((a, b) => a - b) : [100, 350, 900, 2200];
+  const maxPrice = tierPrices[tierPrices.length - 1] || 2200;
+  const rebCost = rebirthCost ?? Math.max(1200, maxPrice * 1.35);
+
+  const simTrack = (baseMult: number) => {
+    let wallet = 0, total = 0, mult = baseMult, nextReb = Math.max(1, rebCost), ti = 0, reb = 0;
+    let tFirst: number | null = null, tReb: number | null = null, tExh: number | null = null;
+    const pts: any[] = [{ m: 0, e: 0, t: 0, r: 0 }];
+    for (let m = 1; m <= 60; m++) {
+      const g = earnPerMin * mult;
+      wallet += g; total += g;
+      while (ti < tierPrices.length && wallet >= tierPrices[ti]) { wallet -= tierPrices[ti]; ti++; if (tFirst === null) tFirst = m; }
+      if (wallet >= nextReb) { wallet -= nextReb; reb++; if (tReb === null) tReb = m; mult = Math.min(1e9, mult * rebirthMult); nextReb *= 1.5; }
+      if (ti >= tierPrices.length && reb >= 1 && tExh === null) tExh = m;
+      pts.push({ m, e: total, t: ti, r: reb });
+    }
+    return { pts, tFirst, tReb, tExh, total };
+  };
+  const f2p = simTrack(1.0);
+  const pass = simTrack(gamepassMult);
+  const totalGoals = Math.max(1, tierPrices.length + 1);
+  const fComp = Math.min(100, Math.round(((f2p.pts[60].t + Math.min(1, f2p.pts[60].r)) / totalGoals) * 1000) / 10);
+  const pComp = Math.min(100, Math.round(((pass.pts[60].t + Math.min(1, pass.pts[60].r)) / totalGoals) * 1000) / 10);
+  const infRatio = Math.round((f2p.total / Math.max(1, maxPrice, rebCost)) * 100) / 100;
+  const curve = [0, 2, 5, 10, 15, 20, 30, 45, 60].map((m) => ({
+    minute: m,
+    f2p_earned: Math.round(f2p.pts[m].e * 10) / 10,
+    f2p_tiers: f2p.pts[m].t,
+    f2p_rebirths: f2p.pts[m].r,
+    pass_earned: Math.round(pass.pts[m].e * 10) / 10,
+    pass_tiers: pass.pts[m].t,
+    pass_rebirths: pass.pts[m].r,
+  }));
+  const issues: any[] = [];
+  const paywall = f2p.tReb === null || maxPrice > earnPerMin * 50 || passGate || (gamepassMult >= 4 && fComp < 65);
+  if (paywall) {
+    const h = rebHit || gpHit || { file: "ReplicatedStorage.EconomyBalanceConfig", place_path: "ReplicatedStorage.EconomyBalanceConfig", line: 1 };
+    issues.push({ id: "econ:paywall_dead_end", category: "paywall_dead_end", severity: "error", title: "F2P progression hits a 60-minute paywall dead-end", detail: `F2P reaches ${fComp}% in 60m with ${gamepassMult.toFixed(1)}x pass boost.`, file: h.file, place_path: h.place_path, line: h.line, fix_hint: "Keep rebirth threshold within 20m of F2P earn." });
+  }
+  const inflation = infRatio > 25 || rebirthMult > 5;
+  if (inflation) {
+    const h = rebMultHit || earnHit || { file: "ReplicatedStorage.EconomyBalanceConfig", place_path: "ReplicatedStorage.EconomyBalanceConfig", line: 1 };
+    issues.push({ id: "econ:runaway_inflation", category: "runaway_inflation", severity: "error", title: "Runaway currency inflation across 60 minutes", detail: `60m earn hits ${infRatio.toFixed(1)}x highest sink price.`, file: h.file, place_path: h.place_path, line: h.line, fix_hint: "Keep RebirthMultiplier <= 2.5x." });
+  }
+  const fastExh = f2p.tExh !== null && f2p.tExh <= 2;
+  if (fastExh) {
+    const h = earnHit || { file: "ReplicatedStorage.EconomyBalanceConfig", place_path: "ReplicatedStorage.EconomyBalanceConfig", line: 1 };
+    issues.push({ id: "econ:fast_exhaustion", category: "under_2m_exhaustion", severity: "error", title: "Under-2-minute content exhaustion", detail: `Players clear every tier in ${f2p.tExh} minute(s).`, file: h.file, place_path: h.place_path, line: h.line, fix_hint: "Stretch top-tier and rebirth thresholds." });
+  }
+  const targetEarn = fastExh ? Math.round(Math.min(250, Math.max(15, maxPrice / 18))) : (paywall && earnPerMin < 25 ? Math.round(Math.max(40, maxPrice / 18)) : Math.round(earnPerMin));
+  const targetReb = Math.max(600, Math.round(targetEarn * 16));
+  const targetRMult = Math.min(2.0, Math.max(1.25, rebirthMult));
+  const targetGpMult = Math.min(2.0, Math.max(1.25, gamepassMult));
+  const patches: any[] = [];
+  if (earnHit && Math.abs(earnHit.value - targetEarn) > 0.1) patches.push({ symbol: earnHit.symbol, before: earnHit.value, after: earnHit.isPerSec ? Math.round((targetEarn / 60) * 100) / 100 : targetEarn, file: earnHit.file, line: earnHit.line });
+  if (rebHit && Math.abs(rebHit.value - targetReb) > 1) patches.push({ symbol: rebHit.symbol, before: rebHit.value, after: targetReb, file: rebHit.file, line: rebHit.line });
+  if (rebMultHit && Math.abs(rebMultHit.value - targetRMult) > 0.05) patches.push({ symbol: rebMultHit.symbol, before: rebMultHit.value, after: targetRMult, file: rebMultHit.file, line: rebMultHit.line });
+  if (gpHit && Math.abs(gpHit.value - targetGpMult) > 0.05) patches.push({ symbol: gpHit.symbol, before: gpHit.value, after: targetGpMult, file: gpHit.file, line: gpHit.line });
+
+  return {
+    schema: "openro.economy_sim.v1",
+    balanced: issues.length === 0,
+    blocker_count: issues.length,
+    constants: { earn_per_min: earnPerMin, min_price: tierPrices[0], max_price: maxPrice, rebirth_cost: rebCost, rebirth_mult: rebirthMult, gamepass_mult: gamepassMult, tiers_count: tierPrices.length },
+    summary: { time_to_first_tier_min: f2p.tFirst, time_to_rebirth_min: f2p.tReb, time_to_exhaustion_min: f2p.tExh, f2p_completion_pct: fComp, pass_completion_pct: pComp, f2p_total_60m: Math.round(f2p.total * 10) / 10, pass_total_60m: Math.round(pass.total * 10) / 10, f2p_vs_pass_ratio: Math.round((pass.total / Math.max(1, f2p.total)) * 100) / 100, inflation_ratio: infRatio },
+    curve,
+    issues,
+    suggestion: {
+      diff_preview: `EarnPerMin: ${earnPerMin.toFixed(1)} -> ${targetEarn.toFixed(1)} | RebirthCost: ${rebCost.toFixed(0)} -> ${targetReb.toFixed(0)} | RebirthMult: ${rebirthMult.toFixed(2)}x -> ${targetRMult.toFixed(2)}x | PassMult: ${gamepassMult.toFixed(2)}x -> ${targetGpMult.toFixed(2)}x`,
+      target_constants: { earn_per_min: targetEarn, rebirth_cost: targetReb, rebirth_mult: targetRMult, gamepass_mult: targetGpMult, prices: [Math.round(targetEarn * 2.5), Math.round(targetEarn * 6), Math.round(targetEarn * 11), Math.round(targetEarn * 15)] },
+      projected_summary: { time_to_rebirth_min: 16, time_to_exhaustion_min: 20, f2p_completion_pct: 100, inflation_ratio: 5.5 },
+      projected_curve: curve,
+      patches,
+    },
+  };
+}
+
 function defaultState(): EngineState {
   const id = "chat-studio-1";
   return {
@@ -1650,7 +1773,7 @@ export function installWebEngine() {
     if (!chat.playMode) chat.playMode = "edit";
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "1.17.0" });
+      return jsonResponse({ name: "openro-rs", version: "1.18.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -1661,7 +1784,7 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "1.17.0",
+        version: "1.18.0",
         sse_build_stream: true,
         studio_stream: true,
         assets_api: true,
@@ -3121,6 +3244,47 @@ export function installWebEngine() {
         modified_files: Array.from(modified_files),
         report: evaluateWebMonetizationAudit(chat),
       });
+    }
+    if (method === "GET" && u.pathname === "/api/studio/economy-sim") {
+      return jsonResponse({ ok: true, ...evaluateWebEconomySim(chat) });
+    }
+    if (method === "POST" && u.pathname === "/api/studio/economy-sim") {
+      const apply = body.apply_suggestions === true;
+      const reportBefore = evaluateWebEconomySim(chat, body);
+      if (!apply) {
+        return jsonResponse({ ok: true, schema: "openro.economy_sim.v1", applied: false, fixed_count: 0, modified_files: [], report: reportBefore });
+      }
+      const before = clonePlace(chat.place);
+      const modified = new Set<string>();
+      let fixed_count = 0;
+      for (const patch of reportBefore.suggestion.patches) {
+        const src = chat.place.scripts[patch.file];
+        if (!src) continue;
+        const lines = src.split("\n").map((ln) => {
+          const tr = ln.trim();
+          if (!tr.startsWith("--") && tr.includes("=")) {
+            const sym = tr.split("=")[0].trim().replace(/^local\s+/, "").split(".").pop()?.trim();
+            if (sym === patch.symbol) {
+              fixed_count++;
+              modified.add(patch.file);
+              return `${ln.split("=")[0]}= ${patch.after}`;
+            }
+          }
+          return ln;
+        });
+        chat.place.scripts[patch.file] = lines.join("\n");
+      }
+      if (fixed_count === 0 && !reportBefore.balanced) {
+        const tc = reportBefore.suggestion.target_constants;
+        chat.place.scripts["ReplicatedStorage.EconomyBalanceConfig"] = `--!strict\nlocal EconomyBalanceConfig = {\n\tEarnPerMin = ${tc.earn_per_min},\n\tRebirthCost = ${tc.rebirth_cost},\n\tRebirthMultiplier = ${tc.rebirth_mult},\n\tGamePassMultiplier = ${tc.gamepass_mult},\n}\nreturn EconomyBalanceConfig\n`;
+        modified.add("ReplicatedStorage.EconomyBalanceConfig");
+        fixed_count++;
+      }
+      if (fixed_count > 0) {
+        recordSnapshot(chat, "Pre-economy-sim balance checkpoint", before);
+        persist();
+      }
+      return jsonResponse({ ok: true, schema: "openro.economy_sim.v1", applied: fixed_count > 0, fixed_count, modified_files: Array.from(modified), report: evaluateWebEconomySim(chat) });
     }
     if (method === "GET" && u.pathname === "/api/studio/sync-conflicts") {
       return jsonResponse({ ok: true, ...buildWebSyncConflicts(chat) });

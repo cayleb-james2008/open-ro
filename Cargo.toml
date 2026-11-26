@@ -1,6 +1,6 @@
 [package]
 name = "openro-rs"
-version = "1.17.0"
+version = "1.18.0"
 edition = "2021"
 
 [dependencies]
@@ -32,17 +32,5 @@ opt-level = "s"
 [profile.release.package.serde_json]
 opt-level = "s"
 
-[profile.release.package.itoa]
-opt-level = 3
-
-[profile.release.package.ryu]
-opt-level = 3
-
-[profile.release.package.zmij]
-opt-level = 3
-
 [profile.release.package.memchr]
-opt-level = 3
-
-[profile.release.package.ahash]
 opt-level = 3

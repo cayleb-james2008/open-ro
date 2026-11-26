@@ -336,6 +336,85 @@ export type MonetizationAuditRepairResult = {
   modified_files: string[];
   report?: MonetizationAuditReport;
 };
+export type EconomySimCheckpoint = {
+  minute: number;
+  f2p_earned: number;
+  f2p_tiers: number;
+  f2p_rebirths: number;
+  pass_earned: number;
+  pass_tiers: number;
+  pass_rebirths: number;
+};
+export type EconomySimIssue = {
+  id: string;
+  category: string;
+  severity: string;
+  title: string;
+  detail: string;
+  file: string;
+  place_path?: string;
+  line: number;
+  fix_hint: string;
+};
+export type EconomySimPatch = {
+  symbol: string;
+  before: number;
+  after: number;
+  file: string;
+  line: number;
+};
+export type EconomySimReport = {
+  schema?: string;
+  balanced: boolean;
+  blocker_count: number;
+  constants: {
+    earn_per_min: number;
+    min_price: number;
+    max_price: number;
+    rebirth_cost: number;
+    rebirth_mult: number;
+    gamepass_mult: number;
+    tiers_count: number;
+  };
+  summary: {
+    time_to_first_tier_min: number | null;
+    time_to_rebirth_min: number | null;
+    time_to_exhaustion_min: number | null;
+    f2p_completion_pct: number;
+    pass_completion_pct: number;
+    f2p_total_60m: number;
+    pass_total_60m: number;
+    f2p_vs_pass_ratio: number;
+    inflation_ratio: number;
+  };
+  curve: EconomySimCheckpoint[];
+  issues: EconomySimIssue[];
+  suggestion: {
+    diff_preview: string;
+    target_constants: {
+      earn_per_min: number;
+      rebirth_cost: number;
+      rebirth_mult: number;
+      gamepass_mult: number;
+      prices: number[];
+    };
+    projected_summary: {
+      time_to_rebirth_min: number | null;
+      time_to_exhaustion_min: number | null;
+      f2p_completion_pct: number;
+      inflation_ratio: number;
+    };
+    projected_curve: EconomySimCheckpoint[];
+    patches: EconomySimPatch[];
+  };
+};
+export type EconomySimPostResult = {
+  schema?: string;
+  applied: boolean;
+  fixed_count: number;
+  modified_files: string[];
+  report?: EconomySimReport;
+};
 export type PlaytestReport = {
   run_id: string; passed: boolean; build_id?: string; mode?: string; duration_ms?: number;
   checks?: { name: string; passed: boolean; value?: unknown; error?: string | null; datamodel?: string }[];

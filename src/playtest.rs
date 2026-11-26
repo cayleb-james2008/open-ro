@@ -4817,6 +4817,679 @@ pub fn studio_repair_monetization_audit_tree(
     (next_tree, modified_files, fixed_count)
 }
 
+#[derive(Clone, Debug)]
+struct EconConstHit {
+    file: String,
+    place_path: String,
+    line: usize,
+    symbol: String,
+    value: f64,
+    is_per_sec: bool,
+}
+
+#[derive(Clone, Debug)]
+struct EconParams {
+    earn_per_min: f64,
+    prices: Vec<f64>,
+    rebirth_cost: f64,
+    rebirth_mult: f64,
+    gamepass_mult: f64,
+    pass_only_gate: bool,
+    earn_hit: Option<EconConstHit>,
+    price_hits: Vec<EconConstHit>,
+    rebirth_hit: Option<EconConstHit>,
+    rebirth_mult_hit: Option<EconConstHit>,
+    gamepass_hit: Option<EconConstHit>,
+}
+
+fn parse_luau_numeric_literal(raw: &str) -> Option<f64> {
+    let clean = raw
+        .trim()
+        .trim_end_matches([',', ';'])
+        .split("--")
+        .next()
+        .unwrap_or("")
+        .trim()
+        .replace('_', "");
+    if clean.is_empty() || !clean.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    clean.parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0)
+}
+
+fn extract_economy_params(scripts: &std::collections::BTreeMap<String, String>) -> EconParams {
+    let mut earn_hits: Vec<EconConstHit> = Vec::new();
+    let mut price_hits: Vec<EconConstHit> = Vec::new();
+    let mut rebirth_cost_hits: Vec<EconConstHit> = Vec::new();
+    let mut rebirth_mult_hits: Vec<EconConstHit> = Vec::new();
+    let mut gp_hits: Vec<EconConstHit> = Vec::new();
+    let mut pass_only_gate = false;
+
+    for (k, src) in scripts {
+        let (file, place_path) = script_location(k);
+        if src.contains("GamePassOnly") || (src.contains("OwnsVipPass") && src.contains("return")) {
+            pass_only_gate = true;
+        }
+        for (idx, line) in src.lines().enumerate() {
+            let tr = line.trim();
+            if tr.starts_with("--") || !tr.contains('=') {
+                continue;
+            }
+            let Some((lhs, rhs)) = tr.split_once('=') else { continue };
+            let sym = lhs
+                .trim()
+                .trim_start_matches("local ")
+                .trim()
+                .rsplit('.')
+                .next()
+                .unwrap_or("")
+                .trim();
+            if sym.is_empty() || !sym.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                continue;
+            }
+            let Some(val) = parse_luau_numeric_literal(rhs) else { continue };
+            let low = sym.to_ascii_lowercase();
+            let make_hit = |is_per_sec: bool| EconConstHit {
+                file: file.clone(),
+                place_path: place_path.clone(),
+                line: idx + 1,
+                symbol: sym.to_string(),
+                value: val,
+                is_per_sec,
+            };
+
+            if low.contains("rebirthcost") || low.contains("rebirththreshold") || low.contains("prestigecost") {
+                rebirth_cost_hits.push(make_hit(false));
+            } else if low.contains("rebirthmult") || low.contains("prestigemult") {
+                rebirth_mult_hits.push(make_hit(false));
+            } else if low.contains("vipmult") || low.contains("passmult") || low.contains("gamepassmult") || low == "doublecoins" {
+                gp_hits.push(make_hit(false));
+            } else if low.contains("persec") || low.contains("persecond") {
+                earn_hits.push(make_hit(true));
+            } else if low.contains("earn") || low.contains("permin") || low.contains("reward") || low.contains("income") || low.contains("coinspertick") {
+                if !low.contains("daily") || earn_hits.is_empty() {
+                    earn_hits.push(make_hit(false));
+                }
+            } else if (low.contains("cost") || low.contains("price"))
+                && !low.contains("robux")
+                && !low.contains("id")
+            {
+                price_hits.push(make_hit(false));
+            }
+        }
+    }
+
+    let earn_hit = earn_hits.into_iter().next();
+    let earn_per_min = earn_hit
+        .as_ref()
+        .map(|h| if h.is_per_sec { h.value * 60.0 } else { h.value })
+        .unwrap_or(30.0)
+        .max(0.5);
+
+    price_hits.sort_by(|a, b| a.value.partial_cmp(&b.value).unwrap_or(std::cmp::Ordering::Equal));
+    let mut prices: Vec<f64> = if price_hits.is_empty() {
+        vec![100.0, 350.0, 900.0, 2200.0]
+    } else {
+        price_hits.iter().map(|h| h.value).collect()
+    };
+    prices.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let max_price = *prices.last().unwrap_or(&2200.0);
+
+    let rebirth_hit = rebirth_cost_hits.into_iter().next();
+    let rebirth_cost = rebirth_hit
+        .as_ref()
+        .map(|h| h.value)
+        .unwrap_or_else(|| (max_price * 1.35).max(1200.0));
+
+    let rebirth_mult_hit = rebirth_mult_hits.into_iter().next();
+    let rebirth_mult = rebirth_mult_hit
+        .as_ref()
+        .map(|h| h.value)
+        .unwrap_or(1.5)
+        .clamp(1.0, 100.0);
+
+    let gamepass_hit = gp_hits.into_iter().next();
+    let gamepass_mult = gamepass_hit
+        .as_ref()
+        .map(|h| h.value)
+        .unwrap_or(2.0)
+        .clamp(1.0, 50.0);
+
+    EconParams {
+        earn_per_min,
+        prices,
+        rebirth_cost,
+        rebirth_mult,
+        gamepass_mult,
+        pass_only_gate,
+        earn_hit,
+        price_hits,
+        rebirth_hit,
+        rebirth_mult_hit,
+        gamepass_hit,
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CurveSummary {
+    checkpoints: Vec<Value>,
+    time_to_first_tier_min: Option<u32>,
+    time_to_rebirth_min: Option<u32>,
+    time_to_exhaustion_min: Option<u32>,
+    f2p_completion_pct: f64,
+    pass_completion_pct: f64,
+    f2p_total_60m: f64,
+    pass_total_60m: f64,
+    inflation_ratio: f64,
+}
+
+struct TrackRun {
+    snapshots: Vec<(u32, f64, usize, u32)>,
+    t_first: Option<u32>,
+    t_rebirth: Option<u32>,
+    t_exhaust: Option<u32>,
+    total_earned: f64,
+}
+
+fn simulate_track(
+    earn_per_min: f64,
+    prices: &[f64],
+    rebirth_cost: f64,
+    rebirth_mult: f64,
+    base_mult: f64,
+) -> TrackRun {
+    let mut wallet = 0.0_f64;
+    let mut total_earned = 0.0_f64;
+    let mut mult = base_mult;
+    let mut next_rebirth = rebirth_cost.max(1.0);
+    let mut tier_idx = 0usize;
+    let mut rebirths = 0u32;
+    let mut t_first: Option<u32> = None;
+    let mut t_rebirth: Option<u32> = None;
+    let mut t_exhaust: Option<u32> = None;
+    let mut snapshots = Vec::with_capacity(61);
+    snapshots.push((0, 0.0, 0, 0));
+
+    for min in 1..=60u32 {
+        let gain = earn_per_min * mult;
+        wallet += gain;
+        total_earned += gain;
+        while tier_idx < prices.len() && wallet >= prices[tier_idx] {
+            wallet -= prices[tier_idx];
+            tier_idx += 1;
+            if t_first.is_none() {
+                t_first = Some(min);
+            }
+        }
+        if wallet >= next_rebirth {
+            wallet -= next_rebirth;
+            rebirths += 1;
+            if t_rebirth.is_none() {
+                t_rebirth = Some(min);
+            }
+            mult = (mult * rebirth_mult).min(1e9);
+            next_rebirth *= 1.5;
+        }
+        if tier_idx >= prices.len() && rebirths >= 1 && t_exhaust.is_none() {
+            t_exhaust = Some(min);
+        }
+        snapshots.push((min, total_earned, tier_idx, rebirths));
+    }
+    TrackRun { snapshots, t_first, t_rebirth, t_exhaust, total_earned }
+}
+
+fn run_60m_curve(
+    earn_per_min: f64,
+    prices: &[f64],
+    rebirth_cost: f64,
+    rebirth_mult: f64,
+    gamepass_mult: f64,
+) -> CurveSummary {
+    let f2p = simulate_track(earn_per_min, prices, rebirth_cost, rebirth_mult, 1.0);
+    let pass = simulate_track(earn_per_min, prices, rebirth_cost, rebirth_mult, gamepass_mult);
+    let (f2p_snaps, t_first, t_rebirth, t_exhaust, f2p_total) =
+        (f2p.snapshots, f2p.t_first, f2p.t_rebirth, f2p.t_exhaust, f2p.total_earned);
+    let (pass_snaps, pass_total) = (pass.snapshots, pass.total_earned);
+
+    let total_goals = (prices.len() + 1).max(1) as f64;
+    let f2p_last = f2p_snaps.last().copied().unwrap_or((60, 0.0, 0, 0));
+    let pass_last = pass_snaps.last().copied().unwrap_or((60, 0.0, 0, 0));
+    let f2p_completion_pct =
+        (((f2p_last.2 as f64 + f2p_last.3.min(1) as f64) / total_goals) * 100.0).min(100.0);
+    let pass_completion_pct =
+        (((pass_last.2 as f64 + pass_last.3.min(1) as f64) / total_goals) * 100.0).min(100.0);
+
+    let max_sink = prices.iter().copied().fold(0.0_f64, f64::max).max(rebirth_cost).max(1.0);
+    let inflation_ratio = f2p_total / max_sink;
+
+    let marks = [0usize, 2, 5, 10, 15, 20, 30, 45, 60];
+    let checkpoints = marks
+        .iter()
+        .map(|&m| {
+            let f = f2p_snaps[m];
+            let p = pass_snaps[m];
+            json!({
+                "minute": m,
+                "f2p_earned": (f.1 * 10.0).round() / 10.0,
+                "f2p_tiers": f.2,
+                "f2p_rebirths": f.3,
+                "pass_earned": (p.1 * 10.0).round() / 10.0,
+                "pass_tiers": p.2,
+                "pass_rebirths": p.3,
+            })
+        })
+        .collect();
+
+    CurveSummary {
+        checkpoints,
+        time_to_first_tier_min: t_first,
+        time_to_rebirth_min: t_rebirth,
+        time_to_exhaustion_min: t_exhaust,
+        f2p_completion_pct: (f2p_completion_pct * 10.0).round() / 10.0,
+        pass_completion_pct: (pass_completion_pct * 10.0).round() / 10.0,
+        f2p_total_60m: (f2p_total * 10.0).round() / 10.0,
+        pass_total_60m: (pass_total * 10.0).round() / 10.0,
+        inflation_ratio: (inflation_ratio * 100.0).round() / 100.0,
+    }
+}
+
+pub fn evaluate_economy_sim(
+    scripts: &std::collections::BTreeMap<String, String>,
+    overrides: &Value,
+) -> Value {
+    let mut p = extract_economy_params(scripts);
+    if let Some(v) = overrides.get("earn_per_min").and_then(Value::as_f64).filter(|x| *x > 0.0) {
+        p.earn_per_min = v;
+    }
+    if let Some(v) = overrides.get("rebirth_cost").and_then(Value::as_f64).filter(|x| *x > 0.0) {
+        p.rebirth_cost = v;
+    }
+    if let Some(v) = overrides.get("rebirth_mult").and_then(Value::as_f64).filter(|x| *x >= 1.0) {
+        p.rebirth_mult = v;
+    }
+    if let Some(v) = overrides.get("gamepass_mult").and_then(Value::as_f64).filter(|x| *x >= 1.0) {
+        p.gamepass_mult = v;
+    }
+
+    let before = run_60m_curve(p.earn_per_min, &p.prices, p.rebirth_cost, p.rebirth_mult, p.gamepass_mult);
+    let max_price = *p.prices.last().unwrap_or(&2200.0);
+    let f2p_vs_pass = if before.f2p_total_60m > 0.0 {
+        ((before.pass_total_60m / before.f2p_total_60m) * 100.0).round() / 100.0
+    } else {
+        p.gamepass_mult
+    };
+
+    let mut issues: Vec<Value> = Vec::new();
+    let default_loc = scripts
+        .keys()
+        .find(|k| {
+            let l = k.to_ascii_lowercase();
+            l.contains("economy") || l.contains("monetization") || l.contains("config")
+        })
+        .cloned()
+        .unwrap_or_else(|| {
+            if scripts.keys().any(|k| k.contains('/')) {
+                "src/shared/EconomyBalanceConfig.luau".to_string()
+            } else {
+                "ReplicatedStorage.EconomyBalanceConfig".to_string()
+            }
+        });
+    let (def_file, def_place) = script_location(&default_loc);
+
+    let paywall_dead_end = before.time_to_rebirth_min.is_none()
+        || max_price > p.earn_per_min * 50.0
+        || p.pass_only_gate
+        || (p.gamepass_mult >= 4.0 && before.f2p_completion_pct < 65.0);
+    if paywall_dead_end {
+        let hit = p.rebirth_hit.as_ref().or_else(|| p.price_hits.last()).or(p.gamepass_hit.as_ref());
+        let (file, place_path, line) = hit
+            .map(|h| (h.file.clone(), h.place_path.clone(), h.line))
+            .unwrap_or_else(|| (def_file.clone(), def_place.clone(), 1));
+        issues.push(json!({
+            "id": "econ:paywall_dead_end",
+            "category": "paywall_dead_end",
+            "severity": "error",
+            "title": "F2P progression hits a 60-minute paywall dead-end",
+            "detail": format!("At {:.1} earn/min, F2P players reach {:.1}% completion in 60m while paid multiplier is {:.1}x.", p.earn_per_min, before.f2p_completion_pct, p.gamepass_mult),
+            "file": file,
+            "place_path": place_path,
+            "line": line,
+            "fix_hint": "Keep rebirth thresholds within 20 minutes of F2P earn and cap GamePass boost around 2.0x.",
+        }));
+    }
+
+    let runaway_inflation = before.inflation_ratio > 25.0 || p.rebirth_mult > 5.0;
+    if runaway_inflation {
+        let hit = p.rebirth_mult_hit.as_ref().or(p.earn_hit.as_ref());
+        let (file, place_path, line) = hit
+            .map(|h| (h.file.clone(), h.place_path.clone(), h.line))
+            .unwrap_or_else(|| (def_file.clone(), def_place.clone(), 1));
+        issues.push(json!({
+            "id": "econ:runaway_inflation",
+            "category": "runaway_inflation",
+            "severity": "error",
+            "title": "Runaway currency inflation across 60 minutes",
+            "detail": format!("60-minute earnings reach {:.1}x the highest sink price (rebirth multiplier {:.1}x).", before.inflation_ratio, p.rebirth_mult),
+            "file": file,
+            "place_path": place_path,
+            "line": line,
+            "fix_hint": "Keep RebirthMultiplier <= 2.5x and scale top tier costs with 60m earn.",
+        }));
+    }
+
+    let fast_exhaustion = before.time_to_exhaustion_min.is_some_and(|t| t <= 2);
+    if fast_exhaustion {
+        let hit = p.price_hits.last().or(p.earn_hit.as_ref());
+        let (file, place_path, line) = hit
+            .map(|h| (h.file.clone(), h.place_path.clone(), h.line))
+            .unwrap_or_else(|| (def_file.clone(), def_place.clone(), 1));
+        issues.push(json!({
+            "id": "econ:fast_exhaustion",
+            "category": "under_2m_exhaustion",
+            "severity": "error",
+            "title": "Under-2-minute content exhaustion",
+            "detail": format!("Players unlock every tier and rebirth in {} minute(s), exhausting early progression.", before.time_to_exhaustion_min.unwrap_or(1)),
+            "file": file,
+            "place_path": place_path,
+            "line": line,
+            "fix_hint": "Stretch top-tier and first rebirth costs to target a 12 to 25 minute first loop.",
+        }));
+    }
+
+    // Build deterministic balanced target constants & projected after-curve preview
+    let target_earn = if fast_exhaustion {
+        (max_price / 18.0).clamp(15.0, 250.0).round()
+    } else if paywall_dead_end && p.earn_per_min < 25.0 {
+        (max_price / 18.0).max(40.0).round()
+    } else {
+        p.earn_per_min.round()
+    };
+    let target_rebirth_cost = (target_earn * 16.0).round().max(600.0);
+    let target_rebirth_mult = p.rebirth_mult.clamp(1.25, 2.0);
+    let target_gp_mult = p.gamepass_mult.clamp(1.25, 2.0);
+    let target_prices = if fast_exhaustion || runaway_inflation || paywall_dead_end {
+        vec![
+            (target_earn * 2.5).round(),
+            (target_earn * 6.0).round(),
+            (target_earn * 11.0).round(),
+            (target_earn * 15.0).round(),
+        ]
+    } else {
+        p.prices.clone()
+    };
+    let after = run_60m_curve(
+        target_earn,
+        &target_prices,
+        target_rebirth_cost,
+        target_rebirth_mult,
+        target_gp_mult,
+    );
+
+    let mut suggestions: Vec<Value> = Vec::new();
+    if let Some(h) = &p.earn_hit {
+        let target_raw = if h.is_per_sec { (target_earn / 60.0 * 100.0).round() / 100.0 } else { target_earn };
+        if (h.value - target_raw).abs() > 0.1 {
+            suggestions.push(json!({
+                "symbol": h.symbol,
+                "before": h.value,
+                "after": target_raw,
+                "file": h.file,
+                "line": h.line,
+            }));
+        }
+    }
+    if let Some(h) = &p.rebirth_hit {
+        if (h.value - target_rebirth_cost).abs() > 1.0 {
+            suggestions.push(json!({
+                "symbol": h.symbol,
+                "before": h.value,
+                "after": target_rebirth_cost,
+                "file": h.file,
+                "line": h.line,
+            }));
+        }
+    }
+    if let Some(h) = &p.rebirth_mult_hit {
+        if (h.value - target_rebirth_mult).abs() > 0.05 {
+            suggestions.push(json!({
+                "symbol": h.symbol,
+                "before": h.value,
+                "after": target_rebirth_mult,
+                "file": h.file,
+                "line": h.line,
+            }));
+        }
+    }
+    if let Some(h) = &p.gamepass_hit {
+        if (h.value - target_gp_mult).abs() > 0.05 {
+            suggestions.push(json!({
+                "symbol": h.symbol,
+                "before": h.value,
+                "after": target_gp_mult,
+                "file": h.file,
+                "line": h.line,
+            }));
+        }
+    }
+    if suggestions.is_empty() && !issues.is_empty() {
+        suggestions.push(json!({
+            "symbol": "RebirthCost",
+            "before": p.rebirth_cost,
+            "after": target_rebirth_cost,
+            "file": def_file,
+            "line": 1,
+        }));
+    }
+
+    let diff_preview = format!(
+        "EarnPerMin: {:.1} -> {:.1} | RebirthCost: {:.0} -> {:.0} | RebirthMult: {:.2}x -> {:.2}x | PassMult: {:.2}x -> {:.2}x",
+        p.earn_per_min, target_earn, p.rebirth_cost, target_rebirth_cost, p.rebirth_mult, target_rebirth_mult, p.gamepass_mult, target_gp_mult
+    );
+
+    json!({
+        "schema": "openro.economy_sim.v1",
+        "balanced": issues.is_empty(),
+        "blocker_count": issues.len(),
+        "constants": {
+            "earn_per_min": p.earn_per_min,
+            "min_price": p.prices.first().copied().unwrap_or(100.0),
+            "max_price": max_price,
+            "rebirth_cost": p.rebirth_cost,
+            "rebirth_mult": p.rebirth_mult,
+            "gamepass_mult": p.gamepass_mult,
+            "tiers_count": p.prices.len(),
+        },
+        "summary": {
+            "time_to_first_tier_min": before.time_to_first_tier_min,
+            "time_to_rebirth_min": before.time_to_rebirth_min,
+            "time_to_exhaustion_min": before.time_to_exhaustion_min,
+            "f2p_completion_pct": before.f2p_completion_pct,
+            "pass_completion_pct": before.pass_completion_pct,
+            "f2p_total_60m": before.f2p_total_60m,
+            "pass_total_60m": before.pass_total_60m,
+            "f2p_vs_pass_ratio": f2p_vs_pass,
+            "inflation_ratio": before.inflation_ratio,
+        },
+        "curve": before.checkpoints,
+        "issues": issues,
+        "suggestion": {
+            "diff_preview": diff_preview,
+            "target_constants": {
+                "earn_per_min": target_earn,
+                "rebirth_cost": target_rebirth_cost,
+                "rebirth_mult": target_rebirth_mult,
+                "gamepass_mult": target_gp_mult,
+                "prices": target_prices,
+            },
+            "projected_summary": {
+                "time_to_rebirth_min": after.time_to_rebirth_min,
+                "time_to_exhaustion_min": after.time_to_exhaustion_min,
+                "f2p_completion_pct": after.f2p_completion_pct,
+                "inflation_ratio": after.inflation_ratio,
+            },
+            "projected_curve": after.checkpoints,
+            "patches": suggestions,
+        },
+    })
+}
+
+fn apply_economy_suggestions_to_map(
+    scripts: &mut std::collections::BTreeMap<String, String>,
+    sim_report: &Value,
+    is_rojo: bool,
+) -> (Vec<String>, usize) {
+    let mut modified = std::collections::BTreeSet::new();
+    let mut fixed = 0usize;
+    let patches = sim_report["suggestion"]["patches"].as_array().cloned().unwrap_or_default();
+
+    for patch in &patches {
+        let Some(file) = patch["file"].as_str() else { continue };
+        let Some(sym) = patch["symbol"].as_str() else { continue };
+        let Some(after_val) = patch["after"].as_f64() else { continue };
+        let val_str = if (after_val - after_val.round()).abs() < 1e-6 {
+            format!("{}", after_val.round() as i64)
+        } else {
+            format!("{after_val:.2}")
+        };
+        if let Some(src) = scripts.get(file).cloned() {
+            let mut changed = false;
+            let lines: Vec<String> = src
+                .lines()
+                .map(|ln| {
+                    let tr = ln.trim();
+                    if !tr.starts_with("--") && tr.contains('=') {
+                        if let Some((lhs, _)) = tr.split_once('=') {
+                            let lhs_sym = lhs.trim().trim_start_matches("local ").trim().rsplit('.').next().unwrap_or("").trim();
+                            if lhs_sym == sym {
+                                changed = true;
+                                let prefix = ln.split('=').next().unwrap_or(lhs);
+                                return format!("{prefix}= {val_str}");
+                            }
+                        }
+                    }
+                    ln.to_string()
+                })
+                .collect();
+            if changed {
+                let mut next = lines.join("\n");
+                if src.ends_with('\n') {
+                    next.push('\n');
+                }
+                scripts.insert(file.to_string(), next);
+                modified.insert(file.to_string());
+                fixed += 1;
+            }
+        }
+    }
+
+    if fixed == 0 && sim_report["balanced"] == false {
+        let tc = &sim_report["suggestion"]["target_constants"];
+        let key = if is_rojo {
+            "src/shared/EconomyBalanceConfig.luau".to_string()
+        } else {
+            "ReplicatedStorage.EconomyBalanceConfig".to_string()
+        };
+        let earn = tc["earn_per_min"].as_f64().unwrap_or(40.0).round() as i64;
+        let reb = tc["rebirth_cost"].as_f64().unwrap_or(640.0).round() as i64;
+        let rmult = tc["rebirth_mult"].as_f64().unwrap_or(1.5);
+        let gmult = tc["gamepass_mult"].as_f64().unwrap_or(2.0);
+        let body = format!(
+            "--!strict\n-- Balanced economy progression config tuned for a 15 to 25 minute loop.\nlocal EconomyBalanceConfig = {{\n\tEarnPerMin = {earn},\n\tTier1Cost = {},\n\tTier2Cost = {},\n\tRebirthCost = {reb},\n\tRebirthMultiplier = {rmult:.2},\n\tGamePassMultiplier = {gmult:.2},\n}}\nreturn EconomyBalanceConfig\n",
+            earn * 3,
+            earn * 8
+        );
+        scripts.insert(key.clone(), body);
+        modified.insert(key);
+        fixed += 1;
+    }
+
+    (modified.into_iter().collect(), fixed)
+}
+
+pub fn project_economy_sim(r: &ProjectRef, overrides: &Value) -> Result<Value, Reply> {
+    let scripts = collect_project_luau_map(&r.dir);
+    Ok(evaluate_economy_sim(&scripts, overrides))
+}
+
+pub fn run_project_economy_sim_post(
+    _shared: &Shared,
+    r: &ProjectRef,
+    body: &Value,
+) -> Result<Reply, Reply> {
+    let apply = body.get("apply_suggestions").and_then(Value::as_bool) == Some(true);
+    let mut scripts = collect_project_luau_map(&r.dir);
+    let before_report = evaluate_economy_sim(&scripts, body);
+    if !apply {
+        return Ok(Reply::ok(json!({
+            "schema": "openro.economy_sim.v1",
+            "applied": false,
+            "fixed_count": 0,
+            "modified_files": [],
+            "report": before_report,
+        })));
+    }
+    let _ = create_project_snapshot_opts(
+        r,
+        &json!({ "label": "Pre-economy-sim balance checkpoint" }),
+        false,
+    );
+    let (modified_files, fixed_count) =
+        apply_economy_suggestions_to_map(&mut scripts, &before_report, true);
+    for rel in &modified_files {
+        if let Some(src) = scripts.get(rel) {
+            write_project_luau(&r.dir, rel, src)?;
+        }
+    }
+    let after_report = project_economy_sim(r, &json!({}))?;
+    Ok(Reply::ok(json!({
+        "schema": "openro.economy_sim.v1",
+        "applied": fixed_count > 0,
+        "fixed_count": fixed_count,
+        "modified_files": modified_files,
+        "report": after_report,
+    })))
+}
+
+pub fn studio_economy_sim_from_tree(tree: &Value, overrides: &Value) -> Value {
+    let mut scripts = std::collections::BTreeMap::new();
+    if let Some(obj) = tree.get("scripts").and_then(Value::as_object) {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                scripts.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    evaluate_economy_sim(&scripts, overrides)
+}
+
+pub fn studio_apply_economy_sim_tree(tree: &Value, overrides: &Value) -> (Value, Vec<String>, usize) {
+    let mut scripts = std::collections::BTreeMap::new();
+    if let Some(obj) = tree.get("scripts").and_then(Value::as_object) {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                scripts.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    let report = evaluate_economy_sim(&scripts, overrides);
+    let (modified_files, fixed_count) =
+        apply_economy_suggestions_to_map(&mut scripts, &report, false);
+    let mut next_tree = tree.clone();
+    if fixed_count > 0 {
+        if next_tree.get("scripts").and_then(Value::as_object).is_none() {
+            next_tree["scripts"] = json!({});
+        }
+        if let Some(obj) = next_tree.get_mut("scripts").and_then(Value::as_object_mut) {
+            for k in &modified_files {
+                if let Some(src) = scripts.get(k) {
+                    obj.insert(k.clone(), Value::String(src.clone()));
+                }
+            }
+        }
+    }
+    (next_tree, modified_files, fixed_count)
+}
+
 /// Summary of the most recent stored playtest report for `study/status` (#62).
 pub fn latest_report_summary(dir: &Path) -> Option<Value> {
     let rep = latest_report_json(dir)?;

@@ -714,11 +714,7 @@ pub fn serve(listener: TcpListener, shared: Arc<Shared>) -> std::io::Result<()> 
             // Answered off the accept loop: a silent client must not
             // stall the connections queued behind it.
             std::thread::spawn(move || {
-                respond_json(
-                    &mut stream,
-                    "503 Service Unavailable",
-                    &json!({ "ok": false, "error": "OpenRO is busy with other requests. Try again in a moment." }),
-                );
+                respond_err(&mut stream, "503 Service Unavailable", "OpenRO is busy with other requests. Try again in a moment.");
                 let _ = stream.read(&mut [0u8; 8192]);
             });
             continue;
@@ -971,6 +967,7 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
         || clean_path == "/api/tools/image/process"
         || clean_path == "/api/monetization/pack"
         || clean_path == "/api/studio/monetization-audit"
+        || clean_path == "/api/studio/economy-sim"
         || clean_path == "/api/assets/upload"
         || clean_path == "/api/assets/generate"
         || (method == "DELETE" && clean_path.starts_with("/api/assets/"))
@@ -1232,6 +1229,10 @@ fn respond_json(stream: &mut TcpStream, status: &str, value: &Value) {
     } else {
         respond(stream, status, "application/json", &value.to_string());
     }
+}
+
+fn respond_err(stream: &mut TcpStream, status: &str, error: &str) {
+    respond_json(stream, status, &json!({ "ok": false, "error": error }));
 }
 
 /// Resolve `(project_root, project_id)` from explicit request fields or `shared.projects`.
@@ -1597,7 +1598,7 @@ fn handle(
         }
         if let Some((status, message)) = refusal(&req, allowed) {
             TL_KEEP_ALIVE.set(false);
-            respond_json(&mut stream, status, &json!({ "ok": false, "error": message }));
+            respond_err(&mut stream, status, message);
             // Flush and close write half promptly so raw-TCP clients keeping their write
             // half open receive the 413/403 + EOF immediately without waiting on IO_TIMEOUT.
             let _ = stream.shutdown(std::net::Shutdown::Write);
@@ -1616,11 +1617,7 @@ fn handle(
             TL_KEEP_ALIVE.set(false);
             drop(slot_opt.take());
             if shared.events.active_subscribers() >= crate::sse::MAX_SSE_CLIENTS {
-                respond_json(
-                    &mut stream,
-                    "503 Service Unavailable",
-                    &json!({ "ok": false, "error": "Too many live build streams are open right now. Close an extra tab and retry." }),
-                );
+                respond_err(&mut stream, "503 Service Unavailable", "Too many live build streams are open right now. Close an extra tab and retry.");
                 return Ok(());
             }
             let active_chat = shared.active_chat.lock().unwrap().clone();
@@ -1644,11 +1641,7 @@ fn handle(
             TL_KEEP_ALIVE.set(false);
             drop(slot_opt.take());
             if shared.studio_stream.active_subscribers() >= crate::studio_stream::MAX_STUDIO_SSE_CLIENTS {
-                respond_json(
-                    &mut stream,
-                    "503 Service Unavailable",
-                    &json!({ "ok": false, "error": "Too many live Studio viewport streams are open right now. Close an extra tab and retry." }),
-                );
+                respond_err(&mut stream, "503 Service Unavailable", "Too many live Studio viewport streams are open right now. Close an extra tab and retry.");
                 return Ok(());
             }
             let last_id = if req.last_event_id > 0 {
@@ -1670,11 +1663,7 @@ fn handle(
             TL_KEEP_ALIVE.set(false);
             drop(slot_opt.take());
             if shared.studio_stream.active_subscribers() >= crate::studio_stream::MAX_STUDIO_SSE_CLIENTS {
-                respond_json(
-                    &mut stream,
-                    "503 Service Unavailable",
-                    &json!({ "ok": false, "error": "Too many live Studio viewport streams are open right now. Close an extra tab and retry." }),
-                );
+                respond_err(&mut stream, "503 Service Unavailable", "Too many live Studio viewport streams are open right now. Close an extra tab and retry.");
                 return Ok(());
             }
             let max_frames = if query_param(query, "once").is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true")) {
@@ -2157,11 +2146,7 @@ fn handle(
                         &json!({ "ok": true, "snapshot": snap.summary_json() }),
                     );
                 }
-                Err(e) => respond_json(
-                    &mut stream,
-                    "503 Service Unavailable",
-                    &json!({ "ok": false, "error": e }),
-                ),
+                Err(e) => respond_err(&mut stream, "503 Service Unavailable", &e),
             }
         }
         ("GET", "/api/place/diff") => {
@@ -2237,7 +2222,7 @@ fn handle(
                 .filter(|s| !s.is_empty());
             let mut guard = shared.agent.lock().unwrap();
             let Some(agent) = guard.as_mut() else {
-                respond_json(&mut stream, "503 Service Unavailable", &json!({ "ok": false, "error": "Studio not connected" }));
+                respond_err(&mut stream, "503 Service Unavailable", "Studio not connected");
                 break 'req_done;
             };
             let current_tree = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
@@ -2293,7 +2278,7 @@ fn handle(
                 .filter(|s| !s.is_empty());
             let mut guard = shared.agent.lock().unwrap();
             let Some(agent) = guard.as_mut() else {
-                respond_json(&mut stream, "503 Service Unavailable", &json!({ "ok": false, "error": "Studio not connected" }));
+                respond_err(&mut stream, "503 Service Unavailable", "Studio not connected");
                 break 'req_done;
             };
             let current_tree = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
@@ -2319,6 +2304,73 @@ fn handle(
                 &json!({
                     "ok": true,
                     "schema": "openro.monetization_audit.v1",
+                    "fixed_count": fixed_count,
+                    "modified_files": modified_files,
+                    "report": report,
+                }),
+            );
+        }
+        ("GET", "/api/studio/economy-sim") => {
+            let current_tree = shared
+                .agent
+                .lock()
+                .unwrap()
+                .as_mut()
+                .and_then(|a| a.place_tree().ok())
+                .unwrap_or_else(|| json!({ "instances": {}, "scripts": {} }));
+            let mut report = crate::playtest::studio_economy_sim_from_tree(&current_tree, &json!({}));
+            report["ok"] = json!(true);
+            respond_json(&mut stream, "200 OK", &report);
+        }
+        ("POST", "/api/studio/economy-sim") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let apply = body.get("apply_suggestions").and_then(Value::as_bool) == Some(true);
+            let mut guard = shared.agent.lock().unwrap();
+            let Some(agent) = guard.as_mut() else {
+                respond_err(&mut stream, "503 Service Unavailable", "Studio not connected");
+                break 'req_done;
+            };
+            let current_tree = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+            if !apply {
+                drop(guard);
+                let report = crate::playtest::studio_economy_sim_from_tree(&current_tree, &body);
+                respond_json(
+                    &mut stream,
+                    "200 OK",
+                    &json!({
+                        "ok": true,
+                        "schema": "openro.economy_sim.v1",
+                        "applied": false,
+                        "fixed_count": 0,
+                        "modified_files": [],
+                        "report": report,
+                    }),
+                );
+                break 'req_done;
+            }
+            let chat_id = shared.active_chat.lock().unwrap().clone();
+            let (next_tree, modified_files, fixed_count) =
+                crate::playtest::studio_apply_economy_sim_tree(&current_tree, &body);
+            if fixed_count > 0 {
+                let _ = shared.snapshots.lock().unwrap().record(
+                    "Pre-economy-sim balance checkpoint".to_string(),
+                    "economy-sim",
+                    Some(chat_id),
+                    current_tree,
+                    None,
+                );
+                let _ = agent.apply_place_tree(&next_tree);
+            }
+            let final_tree = agent.place_tree().unwrap_or(next_tree);
+            drop(guard);
+            let report = crate::playtest::studio_economy_sim_from_tree(&final_tree, &json!({}));
+            respond_json(
+                &mut stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "schema": "openro.economy_sim.v1",
+                    "applied": fixed_count > 0,
                     "fixed_count": fixed_count,
                     "modified_files": modified_files,
                     "report": report,
@@ -2374,13 +2426,13 @@ fn handle(
                 || path_key.contains('\\')
                 || path_key.contains('\0')
             {
-                respond_json(&mut stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid sync conflict resolve payload" }));
+                respond_err(&mut stream, "400 Bad Request", "invalid sync conflict resolve payload");
                 break 'req_done;
             }
             let latest_snap = shared.snapshots.lock().unwrap().latest().cloned();
             let mut guard = shared.agent.lock().unwrap();
             let Some(agent) = guard.as_mut() else {
-                respond_json(&mut stream, "503 Service Unavailable", &json!({ "ok": false, "error": "Studio not connected" }));
+                respond_err(&mut stream, "503 Service Unavailable", "Studio not connected");
                 break 'req_done;
             };
             let current_tree = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
@@ -2503,9 +2555,9 @@ fn handle(
             match guard.as_mut() {
                 Some(agent) => match crate::playtest::prune_or_fix_studio_place(agent, &chat_id) {
                     Ok(res) => respond_json(&mut stream, "200 OK", &res),
-                    Err(e) => respond_json(&mut stream, "502 Bad Gateway", &json!({ "ok": false, "error": e })),
+                    Err(e) => respond_err(&mut stream, "502 Bad Gateway", &e),
                 },
-                None => respond_json(&mut stream, "503 Service Unavailable", &json!({ "ok": false, "error": "Studio not connected" })),
+                None => respond_err(&mut stream, "503 Service Unavailable", "Studio not connected"),
             }
         }
         ("GET", "/api/luau/check") | ("POST", "/api/luau/check") => {
@@ -2550,36 +2602,28 @@ fn handle(
                                 &xml,
                             );
                         }
-                        Err(e) => respond_json(
-                            &mut stream,
-                            "502 Bad Gateway",
-                            &json!({ "ok": false, "error": e }),
-                        ),
+                        Err(e) => respond_err(&mut stream, "502 Bad Gateway", &e),
                     }
                 }
-                None => respond_json(
-                    &mut stream,
-                    "503 Service Unavailable",
-                    &json!({ "ok": false, "error": "Studio not connected" }),
-                ),
+                None => respond_err(&mut stream, "503 Service Unavailable", "Studio not connected"),
             }
         }
         ("GET", "/api/runs") => {
             if !host_allowed(&req.host, &[]) {
-                respond_json(&mut stream, "403 Forbidden", &json!({ "ok": false, "error": "runs are only accessible from this machine (loopback)" }));
+                respond_err(&mut stream, "403 Forbidden", "runs are only accessible from this machine (loopback)");
                 break 'req_done;
             }
             respond_json(&mut stream, "200 OK", &shared.runs.list_json());
         }
         ("POST", "/api/runs") => {
             if !host_allowed(&req.host, &[]) {
-                respond_json(&mut stream, "403 Forbidden", &json!({ "ok": false, "error": "runs are only accessible from this machine (loopback)" }));
+                respond_err(&mut stream, "403 Forbidden", "runs are only accessible from this machine (loopback)");
                 break 'req_done;
             }
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
             let message = body.get("message").or_else(|| body.get("ask")).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
             if message.is_empty() {
-                respond_json(&mut stream, "400 Bad Request", &json!({ "ok": false, "error": "empty message" }));
+                respond_err(&mut stream, "400 Bad Request", "empty message");
                 break 'req_done;
             }
             let chat_id = body
@@ -2609,7 +2653,7 @@ fn handle(
         }
         ("GET", p) if p.starts_with("/api/runs/") && !p["/api/runs/".len()..].contains('/') => {
             if !host_allowed(&req.host, &[]) {
-                respond_json(&mut stream, "403 Forbidden", &json!({ "ok": false, "error": "runs are only accessible from this machine (loopback)" }));
+                respond_err(&mut stream, "403 Forbidden", "runs are only accessible from this machine (loopback)");
                 break 'req_done;
             }
             let id = &p["/api/runs/".len()..];
@@ -2620,7 +2664,7 @@ fn handle(
         }
         ("POST", p) if p.starts_with("/api/runs/") && p.ends_with("/resume") => {
             if !host_allowed(&req.host, &[]) {
-                respond_json(&mut stream, "403 Forbidden", &json!({ "ok": false, "error": "runs are only accessible from this machine (loopback)" }));
+                respond_err(&mut stream, "403 Forbidden", "runs are only accessible from this machine (loopback)");
                 break 'req_done;
             }
             let id = &p["/api/runs/".len()..p.len() - "/resume".len()];
@@ -2633,28 +2677,24 @@ fn handle(
                 }
                 Err(e) => {
                     let st = if e.contains("unknown run") { "404 Not Found" } else { "409 Conflict" };
-                    respond_json(&mut stream, st, &json!({ "ok": false, "error": e }));
+                    respond_err(&mut stream, st, &e);
                 }
             }
         }
         ("POST", p) if p.starts_with("/api/runs/") && p.ends_with("/cancel") => {
             if !host_allowed(&req.host, &[]) {
-                respond_json(&mut stream, "403 Forbidden", &json!({ "ok": false, "error": "runs are only accessible from this machine (loopback)" }));
+                respond_err(&mut stream, "403 Forbidden", "runs are only accessible from this machine (loopback)");
                 break 'req_done;
             }
             let id = &p["/api/runs/".len()..p.len() - "/cancel".len()];
             match shared.runs.cancel(id) {
                 Ok(run) => respond_json(&mut stream, "200 OK", &json!({ "ok": true, "run_id": run.run_id, "run": run.detail_json() })),
-                Err(e) => respond_json(&mut stream, "404 Not Found", &json!({ "ok": false, "error": e })),
+                Err(e) => respond_err(&mut stream, "404 Not Found", &e),
             }
         }
         ("GET", "/api/models") => {
             if !host_allowed(&req.host, &[]) {
-                respond_json(
-                    &mut stream,
-                    "403 Forbidden",
-                    &json!({ "ok": false, "error": "settings are only accessible from this machine (loopback)" }),
-                );
+                respond_err(&mut stream, "403 Forbidden", "settings are only accessible from this machine (loopback)");
                 break 'req_done;
             }
             crate::model::agy_models(query_param(query, "refresh").is_some_and(|v| v == "1"));
@@ -2675,40 +2715,24 @@ fn handle(
         }
         ("GET", "/api/config") => {
             if !host_allowed(&req.host, &[]) {
-                respond_json(
-                    &mut stream,
-                    "403 Forbidden",
-                    &json!({ "ok": false, "error": "settings are only accessible from this machine (loopback)" }),
-                );
+                respond_err(&mut stream, "403 Forbidden", "settings are only accessible from this machine (loopback)");
                 break 'req_done;
             }
             respond_json(&mut stream, "200 OK", &config_snapshot(shared));
         }
         ("POST", "/api/config") => {
             if !host_allowed(&req.host, &[]) {
-                respond_json(
-                    &mut stream,
-                    "403 Forbidden",
-                    &json!({ "ok": false, "error": "changing settings is only allowed from this machine (loopback)" }),
-                );
+                respond_err(&mut stream, "403 Forbidden", "changing settings is only allowed from this machine (loopback)");
                 break 'req_done;
             }
             if shared.busy.load(Ordering::SeqCst) > 0 {
-                respond_json(
-                    &mut stream,
-                    "409 Conflict",
-                    &json!({ "ok": false, "error": "an ask is still running; change settings after it finishes" }),
-                );
+                respond_err(&mut stream, "409 Conflict", "an ask is still running; change settings after it finishes");
                 break 'req_done;
             }
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
             match apply_config(shared, &body) {
                 Ok(snap) => respond_json(&mut stream, "200 OK", &snap),
-                Err(e) => respond_json(
-                    &mut stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": e }),
-                ),
+                Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
             }
         }
         ("GET", "/api/update") => respond_json(&mut stream, "200 OK", &shared.updater.snapshot()),
@@ -2717,11 +2741,7 @@ fn handle(
             // Replacing the program is for whoever sits at this machine: a
             // loopback Host only, whatever OPENRO_ALLOWED_HOSTS names.
             if !host_allowed(&req.host, &[]) {
-                respond_json(
-                    &mut stream,
-                    "403 Forbidden",
-                    &json!({ "ok": false, "error": "updating is only allowed from this machine, not through another address" }),
-                );
+                respond_err(&mut stream, "403 Forbidden", "updating is only allowed from this machine, not through another address");
                 break 'req_done;
             }
             if path == "/api/update/apply" {
@@ -2731,20 +2751,12 @@ fn handle(
                         snap["applied"] = json!(v);
                         respond_json(&mut stream, "200 OK", &snap);
                     }
-                    Err(e) => respond_json(&mut stream, "409 Conflict", &json!({ "ok": false, "error": e })),
+                    Err(e) => respond_err(&mut stream, "409 Conflict", &e),
                 }
             } else if !shared.updater.snapshot()["staged"].is_string() {
-                respond_json(
-                    &mut stream,
-                    "409 Conflict",
-                    &json!({ "ok": false, "error": "no update is waiting for a restart" }),
-                );
+                respond_err(&mut stream, "409 Conflict", "no update is waiting for a restart");
             } else if shared.busy.load(Ordering::SeqCst) > 0 {
-                respond_json(
-                    &mut stream,
-                    "409 Conflict",
-                    &json!({ "ok": false, "error": "an ask is still running; restart when it has finished" }),
-                );
+                respond_err(&mut stream, "409 Conflict", "an ask is still running; restart when it has finished");
             } else {
                 respond_json(&mut stream, "200 OK", &json!({ "restarting": true }));
                 let up = Arc::clone(&shared.updater);
@@ -2845,11 +2857,7 @@ fn handle(
             if shared.select_chat(id) {
                 respond_json(&mut stream, "200 OK", &json!({ "ok": true }));
             } else {
-                respond_json(
-                    &mut stream,
-                    "404 Not Found",
-                    &json!({ "ok": false, "error": "chat not found" }),
-                );
+                respond_err(&mut stream, "404 Not Found", "chat not found");
             }
         }
         ("GET", "/api/place-tree") => {
@@ -2889,18 +2897,10 @@ fn handle(
                                     &bytes,
                                 );
                             }
-                            Err(e) => respond_json(
-                                &mut stream,
-                                "502 Bad Gateway",
-                                &json!({ "ok": false, "error": e }),
-                            ),
+                            Err(e) => respond_err(&mut stream, "502 Bad Gateway", &e),
                         }
                     }
-                    None => respond_json(
-                        &mut stream,
-                        "503 Service Unavailable",
-                        &json!({ "ok": false, "error": "Studio not connected" }),
-                    ),
+                    None => respond_err(&mut stream, "503 Service Unavailable", "Studio not connected"),
                 },
                 Err(_) => {
                     // Agent mutex is held by an active build/chat turn (#31): return cached
@@ -2947,11 +2947,7 @@ fn handle(
                 .unwrap_or("")
                 .to_string();
             if message.trim().is_empty() {
-                respond_json(
-                    &mut stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": "empty message" }),
-                );
+                respond_err(&mut stream, "400 Bad Request", "empty message");
                 break 'req_done;
             }
             let mode = body
@@ -3039,11 +3035,7 @@ fn handle(
                 None => {
                     let error = "no model key configured: set OPENRO_MODEL_API_KEY to enable chat";
                     shared.append_lines_to(&chat_id, &[format!("OpenRO: {error}")]);
-                    respond_json(
-                        &mut stream,
-                        "503 Service Unavailable",
-                        &json!({ "ok": false, "error": error }),
-                    );
+                    respond_err(&mut stream, "503 Service Unavailable", error);
                 }
                 Some(agent) if mode == AskMode::Ask => {
                     match agent.run_ask_with_options(&chat_id, &message, opts) {
@@ -3152,11 +3144,7 @@ fn handle(
                             // answer, the model's success claim is not shown,
                             // and no pitch follows.
                             shared.append_lines_to(&chat_id, &outcome.thread);
-                            respond_json(
-                                &mut stream,
-                                "502 Bad Gateway",
-                                &json!({ "ok": false, "error": outcome.summary }),
-                            );
+                            respond_err(&mut stream, "502 Bad Gateway", &outcome.summary);
                         }
                         Ok(outcome) => {
                             shared.append_lines_to(&chat_id, &outcome.thread);
@@ -3234,11 +3222,7 @@ fn handle(
                             } else {
                                 "502 Bad Gateway"
                             };
-                            respond_json(
-                                &mut stream,
-                                status,
-                                &json!({ "ok": false, "error": f.message }),
-                            );
+                            respond_err(&mut stream, status, &f.message);
                         }
                     }
                 }
@@ -3340,11 +3324,7 @@ fn handle(
             if !missing.is_empty() {
                 let error = crate::agent::prerequisite_sentence(idea.title, missing[0]);
                 shared.append_lines_to(&chat_id, &[format!("OpenRO: {error}")]);
-                respond_json(
-                    &mut stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": error }),
-                );
+                respond_err(&mut stream, "400 Bad Request", &error);
                 break 'req_done;
             }
             let mut guard = shared.agent.lock().unwrap();
@@ -3353,11 +3333,7 @@ fn handle(
                     let error =
                         "Studio not connected: set OPENRO_MCP_COMMAND to a Studio MCP server";
                     shared.append_lines_to(&chat_id, &[format!("OpenRO: {error}")]);
-                    respond_json(
-                        &mut stream,
-                        "503 Service Unavailable",
-                        &json!({ "ok": false, "error": error }),
-                    );
+                    respond_err(&mut stream, "503 Service Unavailable", error);
                 }
                 Some(agent) => {
                     let before_tree = agent.place_tree().ok();
@@ -3417,11 +3393,7 @@ fn handle(
                         } else {
                             "502 Bad Gateway"
                         };
-                        respond_json(
-                            &mut stream,
-                            status,
-                            &json!({ "ok": false, "error": f.message }),
-                        );
+                        respond_err(&mut stream, status, &f.message);
                     }
                 }
                 }
@@ -3488,11 +3460,7 @@ fn handle(
                             "OpenRO: Nothing to revert — no change set is waiting in this chat."
                                 .to_string(),
                         ]);
-                        respond_json(
-                            &mut stream,
-                            "200 OK",
-                            &json!({ "ok": false, "error": e }),
-                        );
+                        respond_err(&mut stream, "200 OK", &e);
                     }
                     Err(e) => {
                         // A failed revert is part of the chat's record
@@ -3501,26 +3469,14 @@ fn handle(
                         shared.append_lines_to(&chat_id, &[format!(
                             "OpenRO: Revert did not finish: {e}"
                         )]);
-                        respond_json(
-                            &mut stream,
-                            "502 Bad Gateway",
-                            &json!({ "ok": false, "error": e }),
-                        );
+                        respond_err(&mut stream, "502 Bad Gateway", &e);
                     }
                 }
                 }
-                None => respond_json(
-                    &mut stream,
-                    "503 Service Unavailable",
-                    &json!({ "ok": false, "error": "Studio not connected" }),
-                ),
+                None => respond_err(&mut stream, "503 Service Unavailable", "Studio not connected"),
             }
         }
-        _ => respond_json(
-            &mut stream,
-            "404 Not Found",
-            &json!({ "ok": false, "error": "not found" }),
-        ),
+        _ => respond_err(&mut stream, "404 Not Found", "not found"),
     }
         } // end 'req_done
         if !TL_KEEP_ALIVE.get() {
@@ -3559,11 +3515,7 @@ fn handle_snapshot_restore(stream: &mut TcpStream, shared: &Shared, snap_id: &st
     };
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
-        respond_json(
-            stream,
-            "503 Service Unavailable",
-            &json!({ "ok": false, "error": "Studio not connected" }),
-        );
+        respond_err(stream, "503 Service Unavailable", "Studio not connected");
         return;
     };
     match agent.apply_place_tree(&target.tree) {
@@ -3609,18 +3561,14 @@ fn handle_snapshot_restore(stream: &mut TcpStream, shared: &Shared, snap_id: &st
                 }),
             );
         }
-        Err(e) => respond_json(
-            stream,
-            "502 Bad Gateway",
-            &json!({ "ok": false, "error": e }),
-        ),
+        Err(e) => respond_err(stream, "502 Bad Gateway", &e),
     }
 }
 
 fn handle_snapshot_restore_hooks(stream: &mut TcpStream, shared: &Shared, snap_id: &str) {
     let _busy = BusyGuard::new(&shared.busy);
     if !snap_id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) || snap_id.contains("..") {
-        respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid snapshot id" }));
+        respond_err(stream, "400 Bad Request", "invalid snapshot id");
         return;
     }
     let snap = {
@@ -3637,11 +3585,7 @@ fn handle_snapshot_restore_hooks(stream: &mut TcpStream, shared: &Shared, snap_i
     };
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
-        respond_json(
-            stream,
-            "503 Service Unavailable",
-            &json!({ "ok": false, "error": "Studio not connected" }),
-        );
+        respond_err(stream, "503 Service Unavailable", "Studio not connected");
         return;
     };
     let current_tree = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
@@ -3679,11 +3623,7 @@ fn handle_snapshot_restore_hooks(stream: &mut TcpStream, shared: &Shared, snap_i
                 }),
             );
         }
-        Err(e) => respond_json(
-            stream,
-            "502 Bad Gateway",
-            &json!({ "ok": false, "error": e }),
-        ),
+        Err(e) => respond_err(stream, "502 Bad Gateway", &e),
     }
 }
 
@@ -3695,11 +3635,7 @@ fn handle_import_rbxlx(stream: &mut TcpStream, shared: &Shared, req: &Request) {
         match std::str::from_utf8(&req.body) {
             Ok(s) => (s.to_string(), "Imported .rbxlx".to_string()),
             Err(_) => {
-                respond_json(
-                    stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": "invalid UTF-8 in .rbxlx XML payload" }),
-                );
+                respond_err(stream, "400 Bad Request", "invalid UTF-8 in .rbxlx XML payload");
                 return;
             }
         }
@@ -3716,11 +3652,7 @@ fn handle_import_rbxlx(stream: &mut TcpStream, shared: &Shared, req: &Request) {
             }
         };
         let Some(xml) = body.get("xml").and_then(|v| v.as_str()) else {
-            respond_json(
-                stream,
-                "400 Bad Request",
-                &json!({ "ok": false, "error": "missing string field 'xml' in import payload" }),
-            );
+            respond_err(stream, "400 Bad Request", "missing string field 'xml' in import payload");
             return;
         };
         let lbl = body
@@ -3736,22 +3668,14 @@ fn handle_import_rbxlx(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     let parsed_tree = match parse_rbxlx_xml(&xml_str) {
         Ok(t) => t,
         Err(e) => {
-            respond_json(
-                stream,
-                "400 Bad Request",
-                &json!({ "ok": false, "error": e }),
-            );
+            respond_err(stream, "400 Bad Request", &e);
             return;
         }
     };
 
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
-        respond_json(
-            stream,
-            "503 Service Unavailable",
-            &json!({ "ok": false, "error": "Studio not connected" }),
-        );
+        respond_err(stream, "503 Service Unavailable", "Studio not connected");
         return;
     };
     match agent.apply_place_tree(&parsed_tree) {
@@ -3803,11 +3727,7 @@ fn handle_import_rbxlx(stream: &mut TcpStream, shared: &Shared, req: &Request) {
                 }),
             );
         }
-        Err(e) => respond_json(
-            stream,
-            "502 Bad Gateway",
-            &json!({ "ok": false, "error": e }),
-        ),
+        Err(e) => respond_err(stream, "502 Bad Gateway", &e),
     }
 }
 
@@ -3816,20 +3736,12 @@ fn handle_place_instance(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8
     let body: Value = match serde_json::from_slice(raw_body) {
         Ok(v) => v,
         Err(_) => {
-            respond_json(
-                stream,
-                "400 Bad Request",
-                &json!({ "ok": false, "error": "invalid JSON body" }),
-            );
+            respond_err(stream, "400 Bad Request", "invalid JSON body");
             return;
         }
     };
     let Some(path) = body.get("path").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) else {
-        respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": "missing string 'path' (e.g. Workspace.JumpPad)" }),
-        );
+        respond_err(stream, "400 Bad Request", "missing string 'path' (e.g. Workspace.JumpPad)");
         return;
     };
     let delete = body.get("delete").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -3838,11 +3750,7 @@ fn handle_place_instance(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8
 
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
-        respond_json(
-            stream,
-            "503 Service Unavailable",
-            &json!({ "ok": false, "error": "Studio not connected" }),
-        );
+        respond_err(stream, "503 Service Unavailable", "Studio not connected");
         return;
     };
     let before = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
@@ -3896,11 +3804,7 @@ fn handle_place_instance(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8
                 }),
             );
         }
-        Err(e) => respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": e }),
-        ),
+        Err(e) => respond_err(stream, "400 Bad Request", &e),
     }
 }
 
@@ -3924,11 +3828,7 @@ fn handle_place_create(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8])
     let body: Value = match serde_json::from_slice(raw_body) {
         Ok(v) => v,
         Err(_) => {
-            respond_json(
-                stream,
-                "400 Bad Request",
-                &json!({ "ok": false, "error": "invalid JSON body" }),
-            );
+            respond_err(stream, "400 Bad Request", "invalid JSON body");
             return;
         }
     };
@@ -3956,11 +3856,7 @@ fn handle_place_create(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8])
     let chat_id = shared.active_chat.lock().unwrap().clone();
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
-        respond_json(
-            stream,
-            "503 Service Unavailable",
-            &json!({ "ok": false, "error": "Studio not connected" }),
-        );
+        respond_err(stream, "503 Service Unavailable", "Studio not connected");
         return;
     };
     let before = agent
@@ -4001,11 +3897,7 @@ fn handle_place_create(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8])
             }
             respond_json(stream, "200 OK", &out);
         }
-        Err(e) => respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": e }),
-        ),
+        Err(e) => respond_err(stream, "400 Bad Request", &e),
     }
 }
 
@@ -4014,11 +3906,7 @@ fn handle_place_duplicate(stream: &mut TcpStream, shared: &Shared, raw_body: &[u
     let body: Value = match serde_json::from_slice(raw_body) {
         Ok(v) => v,
         Err(_) => {
-            respond_json(
-                stream,
-                "400 Bad Request",
-                &json!({ "ok": false, "error": "invalid JSON body" }),
-            );
+            respond_err(stream, "400 Bad Request", "invalid JSON body");
             return;
         }
     };
@@ -4028,22 +3916,14 @@ fn handle_place_duplicate(stream: &mut TcpStream, shared: &Shared, raw_body: &[u
         .map(str::trim)
         .filter(|s| !s.is_empty())
     else {
-        respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": "missing string 'path' to duplicate" }),
-        );
+        respond_err(stream, "400 Bad Request", "missing string 'path' to duplicate");
         return;
     };
 
     let chat_id = shared.active_chat.lock().unwrap().clone();
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
-        respond_json(
-            stream,
-            "503 Service Unavailable",
-            &json!({ "ok": false, "error": "Studio not connected" }),
-        );
+        respond_err(stream, "503 Service Unavailable", "Studio not connected");
         return;
     };
     let before = agent
@@ -4084,11 +3964,7 @@ fn handle_place_duplicate(stream: &mut TcpStream, shared: &Shared, raw_body: &[u
             }
             respond_json(stream, "200 OK", &out);
         }
-        Err(e) => respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": e }),
-        ),
+        Err(e) => respond_err(stream, "400 Bad Request", &e),
     }
 }
 
@@ -4097,11 +3973,7 @@ fn handle_place_delete(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8])
     let body: Value = match serde_json::from_slice(raw_body) {
         Ok(v) => v,
         Err(_) => {
-            respond_json(
-                stream,
-                "400 Bad Request",
-                &json!({ "ok": false, "error": "invalid JSON body" }),
-            );
+            respond_err(stream, "400 Bad Request", "invalid JSON body");
             return;
         }
     };
@@ -4111,22 +3983,14 @@ fn handle_place_delete(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8])
         .map(str::trim)
         .filter(|s| !s.is_empty())
     else {
-        respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": "missing string 'path' to delete" }),
-        );
+        respond_err(stream, "400 Bad Request", "missing string 'path' to delete");
         return;
     };
 
     let chat_id = shared.active_chat.lock().unwrap().clone();
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
-        respond_json(
-            stream,
-            "503 Service Unavailable",
-            &json!({ "ok": false, "error": "Studio not connected" }),
-        );
+        respond_err(stream, "503 Service Unavailable", "Studio not connected");
         return;
     };
     let before = agent
@@ -4167,11 +4031,7 @@ fn handle_place_delete(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8])
             }
             respond_json(stream, "200 OK", &out);
         }
-        Err(e) => respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": e }),
-        ),
+        Err(e) => respond_err(stream, "400 Bad Request", &e),
     }
 }
 
@@ -4180,11 +4040,7 @@ fn handle_place_script(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8])
     let body: Value = match serde_json::from_slice(raw_body) {
         Ok(v) => v,
         Err(_) => {
-            respond_json(
-                stream,
-                "400 Bad Request",
-                &json!({ "ok": false, "error": "invalid JSON body" }),
-            );
+            respond_err(stream, "400 Bad Request", "invalid JSON body");
             return;
         }
     };
@@ -4194,30 +4050,18 @@ fn handle_place_script(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8])
         .map(str::trim)
         .filter(|s| !s.is_empty())
     else {
-        respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": "missing string 'path' (e.g. ServerScriptService.Leaderboard)" }),
-        );
+        respond_err(stream, "400 Bad Request", "missing string 'path' (e.g. ServerScriptService.Leaderboard)");
         return;
     };
     let Some(source) = body.get("source").and_then(|v| v.as_str()) else {
-        respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": "missing string 'source' for Luau script" }),
-        );
+        respond_err(stream, "400 Bad Request", "missing string 'source' for Luau script");
         return;
     };
 
     let chat_id = shared.active_chat.lock().unwrap().clone();
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
-        respond_json(
-            stream,
-            "503 Service Unavailable",
-            &json!({ "ok": false, "error": "Studio not connected" }),
-        );
+        respond_err(stream, "503 Service Unavailable", "Studio not connected");
         return;
     };
     let before = agent
@@ -4270,11 +4114,7 @@ fn handle_place_script(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8])
             }
             respond_json(stream, "200 OK", &out);
         }
-        Err(e) => respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": e }),
-        ),
+        Err(e) => respond_err(stream, "400 Bad Request", &e),
     }
 }
 
@@ -4283,11 +4123,7 @@ fn handle_redo(stream: &mut TcpStream, shared: &Shared) {
     let chat_id = shared.active_chat.lock().unwrap().clone();
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
-        respond_json(
-            stream,
-            "503 Service Unavailable",
-            &json!({ "ok": false, "error": "Studio not connected" }),
-        );
+        respond_err(stream, "503 Service Unavailable", "Studio not connected");
         return;
     };
     let before_tree = agent.place_tree().ok();
@@ -4367,11 +4203,7 @@ fn handle_redo(stream: &mut TcpStream, shared: &Shared) {
                 "can_redo": false,
             }),
         ),
-        Err(e) => respond_json(
-            stream,
-            "502 Bad Gateway",
-            &json!({ "ok": false, "error": e }),
-        ),
+        Err(e) => respond_err(stream, "502 Bad Gateway", &e),
     }
 }
 
@@ -4381,11 +4213,7 @@ fn handle_export_bundle(stream: &mut TcpStream, shared: &Shared) {
     let (extra_files, extra_manifest) = collect_generated_media_for_bundle(shared);
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
-        respond_json(
-            stream,
-            "503 Service Unavailable",
-            &json!({ "ok": false, "error": "Studio not connected" }),
-        );
+        respond_err(stream, "503 Service Unavailable", "Studio not connected");
         return;
     };
     if !stored_meta.is_empty() {
@@ -4423,11 +4251,7 @@ fn handle_export_bundle(stream: &mut TcpStream, shared: &Shared) {
             let fname = bundle.filename_slug();
             respond_download_bytes(stream, "application/zip", &fname, &bundle.zip_bytes);
         }
-        Err(e) => respond_json(
-            stream,
-            "502 Bad Gateway",
-            &json!({ "ok": false, "error": e }),
-        ),
+        Err(e) => respond_err(stream, "502 Bad Gateway", &e),
     }
 }
 
@@ -4436,11 +4260,7 @@ fn handle_skill_build(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8]) 
     let body: Value = match serde_json::from_slice(raw_body) {
         Ok(v) => v,
         Err(_) => {
-            respond_json(
-                stream,
-                "400 Bad Request",
-                &json!({ "ok": false, "error": "invalid JSON body" }),
-            );
+            respond_err(stream, "400 Bad Request", "invalid JSON body");
             return;
         }
     };
@@ -4482,11 +4302,7 @@ fn handle_skill_build(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8]) 
     let Some(agent) = guard.as_mut() else {
         let error = "Studio not connected: set OPENRO_MCP_COMMAND to a Studio MCP server";
         shared.append_lines_to(&chat_id, &[format!("OpenRO: {error}")]);
-        respond_json(
-            stream,
-            "503 Service Unavailable",
-            &json!({ "ok": false, "error": error }),
-        );
+        respond_err(stream, "503 Service Unavailable", error);
         return;
     };
     let before_tree = agent.place_tree().ok();
@@ -4529,11 +4345,7 @@ fn handle_skill_build(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8]) 
             shared.append_lines_to(&chat_id, &f.thread);
             shared.append_lines_to(&chat_id, &[format!("OpenRO: {}", f.message)]);
             shared.note_built(&chat_id, &f.skills_used);
-            respond_json(
-                stream,
-                "502 Bad Gateway",
-                &json!({ "ok": false, "error": f.message }),
-            );
+            respond_err(stream, "502 Bad Gateway", &f.message);
         }
     }
 }
@@ -4543,11 +4355,7 @@ fn handle_luau_check(stream: &mut TcpStream, shared: &Shared, is_post: bool, raw
         let body: Value = match serde_json::from_slice(raw_body) {
             Ok(v) => v,
             Err(_) => {
-                respond_json(
-                    stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": "invalid JSON body" }),
-                );
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
                 return;
             }
         };
@@ -4593,11 +4401,7 @@ fn handle_luau_check(stream: &mut TcpStream, shared: &Shared, is_post: bool, raw
                 match agent.place_tree() {
                     Ok(t) => t,
                     Err(e) => {
-                        respond_json(
-                            stream,
-                            "502 Bad Gateway",
-                            &json!({ "ok": false, "error": e }),
-                        );
+                        respond_err(stream, "502 Bad Gateway", &e);
                         return;
                     }
                 }
@@ -5266,7 +5070,7 @@ fn try_route_opencloud_assets(
         match serde_json::from_slice::<Value>(&req.body) {
             Ok(v) if v.is_object() => v,
             _ => {
-                respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
                 return true;
             }
         }
@@ -5312,11 +5116,7 @@ fn try_route_tool_adapters(
         return false;
     }
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "tool adapters are only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "tool adapters are only allowed from this machine (loopback)");
         return true;
     }
     let body: Value = if req.body.is_empty() {
@@ -5325,7 +5125,7 @@ fn try_route_tool_adapters(
         match serde_json::from_slice::<Value>(&req.body) {
             Ok(v) if v.is_object() => v,
             _ => {
-                respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
                 return true;
             }
         }
@@ -5355,19 +5155,11 @@ fn try_route_tool_adapters(
 
 fn handle_studio_mcp_connect(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "connecting a live Studio MCP bridge is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "connecting a live Studio MCP bridge is only allowed from this machine (loopback)");
         return;
     }
     if shared.busy.load(Ordering::SeqCst) > 0 {
-        respond_json(
-            stream,
-            "409 Conflict",
-            &json!({ "ok": false, "error": "a build or playtest is currently running; try connecting once it finishes" }),
-        );
+        respond_err(stream, "409 Conflict", "a build or playtest is currently running; try connecting once it finishes");
         return;
     }
     let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
@@ -5511,19 +5303,11 @@ fn handle_studio_mcp_connect(stream: &mut TcpStream, shared: &Shared, req: &Requ
 
 fn handle_studio_mcp_disconnect(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "disconnecting a live Studio MCP bridge is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "disconnecting a live Studio MCP bridge is only allowed from this machine (loopback)");
         return;
     }
     if shared.busy.load(Ordering::SeqCst) > 0 {
-        respond_json(
-            stream,
-            "409 Conflict",
-            &json!({ "ok": false, "error": "a build or playtest is currently running; disconnect once it finishes" }),
-        );
+        respond_err(stream, "409 Conflict", "a build or playtest is currently running; disconnect once it finishes");
         return;
     }
 
@@ -5570,21 +5354,13 @@ fn handle_studio_mcp_disconnect(stream: &mut TcpStream, shared: &Shared, req: &R
 
 fn handle_studio_input_mouse(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "forwarding Studio mouse input is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "forwarding Studio mouse input is only allowed from this machine (loopback)");
         return;
     }
     let body: Value = match serde_json::from_slice::<Value>(&req.body) {
         Ok(v) if v.is_object() => v,
         _ => {
-            respond_json(
-                stream,
-                "400 Bad Request",
-                &json!({ "ok": false, "error": "invalid JSON body for mouse input" }),
-            );
+            respond_err(stream, "400 Bad Request", "invalid JSON body for mouse input");
             return;
         }
     };
@@ -5616,11 +5392,7 @@ fn handle_studio_input_mouse(stream: &mut TcpStream, shared: &Shared, req: &Requ
     let x = body.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let y = body.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
     if !x.is_finite() || !y.is_finite() {
-        respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": "mouse coordinates x and y must be finite numbers" }),
-        );
+        respond_err(stream, "400 Bad Request", "mouse coordinates x and y must be finite numbers");
         return;
     }
 
@@ -5680,11 +5452,7 @@ fn handle_studio_input_mouse(stream: &mut TcpStream, shared: &Shared, req: &Requ
     let chat_id = shared.active_chat.lock().unwrap().clone();
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
-        respond_json(
-            stream,
-            "503 Service Unavailable",
-            &json!({ "ok": false, "error": "Studio not connected" }),
-        );
+        respond_err(stream, "503 Service Unavailable", "Studio not connected");
         return;
     };
     match agent.invoke_studio_tool(&chat_id, "user_mouse_input", body) {
@@ -5753,21 +5521,13 @@ fn handle_studio_input_mouse(stream: &mut TcpStream, shared: &Shared, req: &Requ
 
 fn handle_studio_input_keyboard(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "forwarding Studio keyboard input is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "forwarding Studio keyboard input is only allowed from this machine (loopback)");
         return;
     }
     let body: Value = match serde_json::from_slice::<Value>(&req.body) {
         Ok(v) if v.is_object() => v,
         _ => {
-            respond_json(
-                stream,
-                "400 Bad Request",
-                &json!({ "ok": false, "error": "invalid JSON body for keyboard input" }),
-            );
+            respond_err(stream, "400 Bad Request", "invalid JSON body for keyboard input");
             return;
         }
     };
@@ -5780,11 +5540,7 @@ fn handle_studio_input_keyboard(stream: &mut TcpStream, shared: &Shared, req: &R
         .and_then(|v| v.as_str())
         .is_some_and(|s| !s.is_empty());
     if !has_key && !has_text {
-        respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": "keyboard input requires non-empty 'key' or 'text'" }),
-        );
+        respond_err(stream, "400 Bad Request", "keyboard input requires non-empty 'key' or 'text'");
         return;
     }
     let action = body
@@ -5856,11 +5612,7 @@ fn handle_studio_input_keyboard(stream: &mut TcpStream, shared: &Shared, req: &R
     let chat_id = shared.active_chat.lock().unwrap().clone();
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
-        respond_json(
-            stream,
-            "503 Service Unavailable",
-            &json!({ "ok": false, "error": "Studio not connected" }),
-        );
+        respond_err(stream, "503 Service Unavailable", "Studio not connected");
         return;
     };
     match agent.invoke_studio_tool(&chat_id, "user_keyboard_input", body) {
@@ -5930,11 +5682,7 @@ fn handle_studio_input_keyboard(stream: &mut TcpStream, shared: &Shared, req: &R
 
 fn handle_studio_tool(stream: &mut TcpStream, shared: &Shared, req: &Request, tool: &str) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "calling Studio MCP tools directly is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "calling Studio MCP tools directly is only allowed from this machine (loopback)");
         return;
     }
     if !crate::agent::is_official_studio_tool(tool) {
@@ -5955,11 +5703,7 @@ fn handle_studio_tool(stream: &mut TcpStream, shared: &Shared, req: &Request, to
         match serde_json::from_slice::<Value>(&req.body) {
             Ok(v) if v.is_object() => v,
             _ => {
-                respond_json(
-                    stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": "invalid JSON object body for Studio tool arguments" }),
-                );
+                respond_err(stream, "400 Bad Request", "invalid JSON object body for Studio tool arguments");
                 return;
             }
         }
@@ -5968,11 +5712,7 @@ fn handle_studio_tool(stream: &mut TcpStream, shared: &Shared, req: &Request, to
     let chat_id = shared.active_chat.lock().unwrap().clone();
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
-        respond_json(
-            stream,
-            "503 Service Unavailable",
-            &json!({ "ok": false, "error": "Studio not connected" }),
-        );
+        respond_err(stream, "503 Service Unavailable", "Studio not connected");
         return;
     };
     match agent.invoke_studio_tool(&chat_id, tool, body) {
@@ -6354,19 +6094,11 @@ fn handle_studio_embed_launch(
     attach_only: bool,
 ) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "launching Embedded Roblox Studio is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "launching Embedded Roblox Studio is only allowed from this machine (loopback)");
         return;
     }
     if shared.busy.load(Ordering::SeqCst) > 0 {
-        respond_json(
-            stream,
-            "409 Conflict",
-            &json!({ "ok": false, "error": "a build or playtest is currently running; launch Studio once it finishes" }),
-        );
+        respond_err(stream, "409 Conflict", "a build or playtest is currently running; launch Studio once it finishes");
         return;
     }
     let body: Value = if req.body.is_empty() {
@@ -6375,11 +6107,7 @@ fn handle_studio_embed_launch(
         match serde_json::from_slice::<Value>(&req.body) {
             Ok(v) if v.is_object() => v,
             _ => {
-                respond_json(
-                    stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": "invalid JSON body for Studio embed launch" }),
-                );
+                respond_err(stream, "400 Bad Request", "invalid JSON body for Studio embed launch");
                 return;
             }
         }
@@ -6387,7 +6115,7 @@ fn handle_studio_embed_launch(
     let mut cfg = match crate::studio_embed::EmbedConfig::from_json(&body) {
         Ok(c) => c,
         Err(e) => {
-            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
+            respond_err(stream, "400 Bad Request", &e);
             return;
         }
     };
@@ -6643,19 +6371,11 @@ pub(crate) fn perform_studio_embed_transfer(
 
 fn handle_studio_embed_transfer(stream: &mut TcpStream, shared: &Arc<Shared>, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "transferring Embedded Roblox Studio is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "transferring Embedded Roblox Studio is only allowed from this machine (loopback)");
         return;
     }
     if shared.busy.load(Ordering::SeqCst) > 0 {
-        respond_json(
-            stream,
-            "409 Conflict",
-            &json!({ "ok": false, "error": "a build or playtest is currently running; transfer Studio once it finishes" }),
-        );
+        respond_err(stream, "409 Conflict", "a build or playtest is currently running; transfer Studio once it finishes");
         return;
     }
     let body: Value = if req.body.is_empty() {
@@ -6664,11 +6384,7 @@ fn handle_studio_embed_transfer(stream: &mut TcpStream, shared: &Arc<Shared>, re
         match serde_json::from_slice::<Value>(&req.body) {
             Ok(v) if v.is_object() => v,
             _ => {
-                respond_json(
-                    stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": "invalid JSON body for Studio embed transfer" }),
-                );
+                respond_err(stream, "400 Bad Request", "invalid JSON body for Studio embed transfer");
                 return;
             }
         }
@@ -6677,7 +6393,7 @@ fn handle_studio_embed_transfer(stream: &mut TcpStream, shared: &Arc<Shared>, re
         Some(d) => match crate::studio_embed::validate_x11_display(d) {
             Ok(valid) => valid,
             Err(e) => {
-                respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
+                respond_err(stream, "400 Bad Request", &e);
                 return;
             }
         },
@@ -6718,22 +6434,14 @@ fn handle_studio_embed_transfer(stream: &mut TcpStream, shared: &Arc<Shared>, re
         .filter(|s| !s.is_empty())
     {
         if raw_pf.contains('\0') || raw_pf.contains('\n') || raw_pf.contains('\r') {
-            respond_json(
-                stream,
-                "400 Bad Request",
-                &json!({ "ok": false, "error": "place_file must not contain control characters" }),
-            );
+            respond_err(stream, "400 Bad Request", "place_file must not contain control characters");
             return;
         }
         let p = PathBuf::from(raw_pf);
         if p.components()
             .any(|c| matches!(c, std::path::Component::ParentDir))
         {
-            respond_json(
-                stream,
-                "400 Bad Request",
-                &json!({ "ok": false, "error": "place_file must not contain '..' traversal segments" }),
-            );
+            respond_err(stream, "400 Bad Request", "place_file must not contain '..' traversal segments");
             return;
         }
         place_file = Some(p);
@@ -6807,19 +6515,11 @@ fn handle_studio_embed_transfer(stream: &mut TcpStream, shared: &Arc<Shared>, re
 
 fn handle_studio_embed_stop(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "stopping Embedded Roblox Studio is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "stopping Embedded Roblox Studio is only allowed from this machine (loopback)");
         return;
     }
     if shared.busy.load(Ordering::SeqCst) > 0 {
-        respond_json(
-            stream,
-            "409 Conflict",
-            &json!({ "ok": false, "error": "a build or playtest is currently running; stop Studio once it finishes" }),
-        );
+        respond_err(stream, "409 Conflict", "a build or playtest is currently running; stop Studio once it finishes");
         return;
     }
 
@@ -6872,7 +6572,7 @@ fn respond_library_error(stream: &mut TcpStream, err: crate::library::LibraryErr
         404 => "404 Not Found",
         _ => "500 Internal Server Error",
     };
-    respond_json(stream, status, &json!({ "ok": false, "error": err.message }));
+    respond_err(stream, status, &err.message);
 }
 
 fn sync_agent_library_prompt(shared: &Shared) {
@@ -6889,17 +6589,13 @@ fn sync_agent_library_prompt(shared: &Shared) {
 
 fn handle_library_install(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "installing library packs is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "installing library packs is only allowed from this machine (loopback)");
         return;
     }
     let body: Value = match serde_json::from_slice::<Value>(&req.body) {
         Ok(v) => v,
         Err(_) => {
-            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+            respond_err(stream, "400 Bad Request", "invalid JSON body");
             return;
         }
     };
@@ -6916,17 +6612,13 @@ fn handle_library_install(stream: &mut TcpStream, shared: &Shared, req: &Request
 
 fn handle_library_uninstall(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "uninstalling library packs is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "uninstalling library packs is only allowed from this machine (loopback)");
         return;
     }
     let body: Value = match serde_json::from_slice::<Value>(&req.body) {
         Ok(v) => v,
         Err(_) => {
-            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+            respond_err(stream, "400 Bad Request", "invalid JSON body");
             return;
         }
     };
@@ -6943,17 +6635,13 @@ fn handle_library_uninstall(stream: &mut TcpStream, shared: &Shared, req: &Reque
 
 fn handle_library_configure(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "configuring library packs is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "configuring library packs is only allowed from this machine (loopback)");
         return;
     }
     let body: Value = match serde_json::from_slice::<Value>(&req.body) {
         Ok(v) => v,
         Err(_) => {
-            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+            respond_err(stream, "400 Bad Request", "invalid JSON body");
             return;
         }
     };
@@ -6970,17 +6658,13 @@ fn handle_library_configure(stream: &mut TcpStream, shared: &Shared, req: &Reque
 
 fn handle_library_test(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "testing library packs is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "testing library packs is only allowed from this machine (loopback)");
         return;
     }
     let body: Value = match serde_json::from_slice::<Value>(&req.body) {
         Ok(v) => v,
         Err(_) => {
-            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+            respond_err(stream, "400 Bad Request", "invalid JSON body");
             return;
         }
     };
@@ -6999,11 +6683,7 @@ fn handle_market_taste_get(stream: &mut TcpStream, shared: &Shared, query: &str)
         Some(raw) if !raw.trim().is_empty() => match crate::market_taste::normalize_niche_id(raw) {
             Ok(id) => Some(id),
             Err(msg) => {
-                respond_json(
-                    stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": msg }),
-                );
+                respond_err(stream, "400 Bad Request", &msg);
                 return;
             }
         },
@@ -7015,11 +6695,7 @@ fn handle_market_taste_get(stream: &mut TcpStream, shared: &Shared, query: &str)
 
 fn handle_market_taste_niche(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "changing active market niche is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "changing active market niche is only allowed from this machine (loopback)");
         return;
     }
     let body: Value = match serde_json::from_slice::<Value>(&req.body) {
@@ -7044,21 +6720,13 @@ fn handle_market_taste_niche(stream: &mut TcpStream, shared: &Shared, req: &Requ
             sync_agent_library_prompt(shared);
             respond_json(stream, "200 OK", &snap);
         }
-        Err(msg) => respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": msg }),
-        ),
+        Err(msg) => respond_err(stream, "400 Bad Request", &msg),
     }
 }
 
 fn handle_market_taste_refresh(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "refreshing live Roblox charts is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "refreshing live Roblox charts is only allowed from this machine (loopback)");
         return;
     }
     let res = shared
@@ -7088,11 +6756,7 @@ fn handle_market_taste_refresh(stream: &mut TcpStream, shared: &Shared, req: &Re
 
 fn handle_market_taste_research(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "researching Roblox games is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "researching Roblox games is only allowed from this machine (loopback)");
         return;
     }
     let body: Value = match serde_json::from_slice::<Value>(&req.body) {
@@ -7120,11 +6784,7 @@ fn handle_market_taste_research(stream: &mut TcpStream, shared: &Shared, req: &R
         })
         .unwrap_or_default();
     if target.trim().is_empty() {
-        respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": "missing Roblox game URL, Place ID, or Universe ID" }),
-        );
+        respond_err(stream, "400 Bad Request", "missing Roblox game URL, Place ID, or Universe ID");
         return;
     }
     let niche_hint = body
@@ -7172,7 +6832,7 @@ fn handle_market_taste_research(stream: &mut TcpStream, shared: &Shared, req: &R
             } else {
                 "502 Bad Gateway"
             };
-            respond_json(stream, status, &json!({ "ok": false, "error": msg }));
+            respond_err(stream, status, &msg);
         }
     }
 }
@@ -7202,11 +6862,7 @@ fn handle_proposal_apply(stream: &mut TcpStream, shared: &Shared, req: &Request,
         match serde_json::from_slice::<Value>(&req.body) {
             Ok(v) if v.is_object() => v,
             _ => {
-                respond_json(
-                    stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": "invalid JSON body" }),
-                );
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
                 return;
             }
         }
@@ -7218,35 +6874,23 @@ fn handle_proposal_apply(stream: &mut TcpStream, shared: &Shared, req: &Request,
             let mut out = Vec::with_capacity(arr.len());
             for item in arr {
                 let Some(s) = item.as_str().map(str::trim) else {
-                    respond_json(
-                        stream,
-                        "400 Bad Request",
-                        &json!({ "ok": false, "error": "selected_paths entries must be strings" }),
-                    );
+                    respond_err(stream, "400 Bad Request", "selected_paths entries must be strings");
                     return;
                 };
                 if let Err(e) = crate::agent::check_path(s) {
-                    respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
+                    respond_err(stream, "400 Bad Request", &e);
                     return;
                 }
                 out.push(s.to_string());
             }
             if out.is_empty() {
-                respond_json(
-                    stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": "selected_paths must contain at least one path" }),
-                );
+                respond_err(stream, "400 Bad Request", "selected_paths must contain at least one path");
                 return;
             }
             Some(out)
         }
         Some(_) => {
-            respond_json(
-                stream,
-                "400 Bad Request",
-                &json!({ "ok": false, "error": "selected_paths must be an array of paths" }),
-            );
+            respond_err(stream, "400 Bad Request", "selected_paths must be an array of paths");
             return;
         }
     };
@@ -7277,11 +6921,7 @@ fn handle_proposal_apply(stream: &mut TcpStream, shared: &Shared, req: &Request,
     let (applied_paths, applied_diff, applied_file_diffs, snapshot_id, playtest) = {
         let mut guard = shared.agent.lock().unwrap();
         let Some(agent) = guard.as_mut() else {
-            respond_json(
-                stream,
-                "503 Service Unavailable",
-                &json!({ "ok": false, "error": "Studio not connected" }),
-            );
+            respond_err(stream, "503 Service Unavailable", "Studio not connected");
             return;
         };
         let live_before = match agent.place_tree() {
@@ -7435,11 +7075,7 @@ fn request_port(req: &Request, shared: &Shared) -> u16 {
 
 fn handle_studio_plugin_status(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "Companion Studio Plugin status is loopback-only" }),
-        );
+        respond_err(stream, "403 Forbidden", "Companion Studio Plugin status is loopback-only");
         return;
     }
     let mut st = shared.studio_plugin.status_json();
@@ -7457,11 +7093,7 @@ fn handle_studio_plugin_status(stream: &mut TcpStream, shared: &Shared, req: &Re
 /// attach an existing running Studio MCP session, or delegates to `handle_studio_embed_launch`.
 fn handle_studio_launch_and_continue(stream: &mut TcpStream, shared: &Arc<Shared>, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "launching Studio is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "launching Studio is only allowed from this machine (loopback)");
         return;
     }
     {
@@ -7523,11 +7155,7 @@ fn handle_studio_launch_and_continue(stream: &mut TcpStream, shared: &Arc<Shared
 
 fn handle_studio_plugin_download(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "downloading OpenRoCompanion.lua is loopback-only" }),
-        );
+        respond_err(stream, "403 Forbidden", "downloading OpenRoCompanion.lua is loopback-only");
         return;
     }
     let port = request_port(req, shared);
@@ -7543,11 +7171,7 @@ fn handle_studio_plugin_download(stream: &mut TcpStream, shared: &Shared, req: &
 
 fn handle_studio_plugin_install(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "installing OpenRoCompanion.lua is loopback-only" }),
-        );
+        respond_err(stream, "403 Forbidden", "installing OpenRoCompanion.lua is loopback-only");
         return;
     }
     let body: Value = if req.body.is_empty() {
@@ -7556,11 +7180,7 @@ fn handle_studio_plugin_install(stream: &mut TcpStream, shared: &Shared, req: &R
         match serde_json::from_slice::<Value>(&req.body) {
             Ok(v) if v.is_object() => v,
             _ => {
-                respond_json(
-                    stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": "invalid JSON body" }),
-                );
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
                 return;
             }
         }
@@ -7591,26 +7211,18 @@ fn handle_studio_plugin_install(stream: &mut TcpStream, shared: &Shared, req: &R
             } else {
                 "400 Bad Request"
             };
-            respond_json(stream, status, &json!({ "ok": false, "error": msg }));
+            respond_err(stream, status, &msg);
         }
     }
 }
 
 fn require_plugin_auth(stream: &mut TcpStream, shared: &Shared, req: &Request) -> bool {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "Companion Studio Plugin endpoints are loopback-only" }),
-        );
+        respond_err(stream, "403 Forbidden", "Companion Studio Plugin endpoints are loopback-only");
         return false;
     }
     if !shared.studio_plugin.verify_token(&req.plugin_token) {
-        respond_json(
-            stream,
-            "401 Unauthorized",
-            &json!({ "ok": false, "error": "missing or invalid X-OpenRo-Plugin-Token" }),
-        );
+        respond_err(stream, "401 Unauthorized", "missing or invalid X-OpenRo-Plugin-Token");
         return false;
     }
     true
@@ -7626,11 +7238,7 @@ fn handle_studio_plugin_handshake(stream: &mut TcpStream, shared: &Shared, req: 
         match serde_json::from_slice::<Value>(&req.body) {
             Ok(v) if v.is_object() => v,
             _ => {
-                respond_json(
-                    stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": "invalid JSON body" }),
-                );
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
                 return;
             }
         }
@@ -7701,11 +7309,7 @@ fn handle_studio_plugin_result(stream: &mut TcpStream, shared: &Shared, req: &Re
     let body: Value = match serde_json::from_slice::<Value>(&req.body) {
         Ok(v) if v.is_object() => v,
         _ => {
-            respond_json(
-                stream,
-                "400 Bad Request",
-                &json!({ "ok": false, "error": "invalid JSON body" }),
-            );
+            respond_err(stream, "400 Bad Request", "invalid JSON body");
             return;
         }
     };
@@ -7715,11 +7319,7 @@ fn handle_studio_plugin_result(stream: &mut TcpStream, shared: &Shared, req: &Re
         .map(str::trim)
         .filter(|s| !s.is_empty())
     else {
-        respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": "missing command id" }),
-        );
+        respond_err(stream, "400 Bad Request", "missing command id");
         return;
     };
     let ok = body.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -7753,11 +7353,7 @@ fn handle_tools_blender_status(stream: &mut TcpStream) {
 
 fn handle_tools_blender_generate(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "generating Blender 3D meshes is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "generating Blender 3D meshes is only allowed from this machine (loopback)");
         return;
     }
     let body: Value = if req.body.is_empty() {
@@ -7766,7 +7362,7 @@ fn handle_tools_blender_generate(stream: &mut TcpStream, shared: &Shared, req: &
         match serde_json::from_slice::<Value>(&req.body) {
             Ok(v) if v.is_object() => v,
             _ => {
-                respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
                 return;
             }
         }
@@ -7807,17 +7403,13 @@ fn handle_tools_blender_generate(stream: &mut TcpStream, shared: &Shared, req: &
     };
     match result {
         Ok(v) => respond_json(stream, "200 OK", &v),
-        Err(e) => respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e })),
+        Err(e) => respond_err(stream, "400 Bad Request", &e),
     }
 }
 
 fn handle_tools_audio_generate(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
-        respond_json(
-            stream,
-            "403 Forbidden",
-            &json!({ "ok": false, "error": "generating audio assets is only allowed from this machine (loopback)" }),
-        );
+        respond_err(stream, "403 Forbidden", "generating audio assets is only allowed from this machine (loopback)");
         return;
     }
     let body: Value = if req.body.is_empty() {
@@ -7826,7 +7418,7 @@ fn handle_tools_audio_generate(stream: &mut TcpStream, shared: &Shared, req: &Re
         match serde_json::from_slice::<Value>(&req.body) {
             Ok(v) if v.is_object() => v,
             _ => {
-                respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid JSON body" }));
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
                 return;
             }
         }
@@ -7856,7 +7448,7 @@ fn handle_tools_audio_generate(stream: &mut TcpStream, shared: &Shared, req: &Re
     };
     match result {
         Ok(v) => respond_json(stream, "200 OK", &v),
-        Err(e) => respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e })),
+        Err(e) => respond_err(stream, "400 Bad Request", &e),
     }
 }
 
@@ -7868,11 +7460,7 @@ fn handle_monetization_pack(stream: &mut TcpStream, shared: &Shared, raw_body: &
         match serde_json::from_slice(raw_body) {
             Ok(v) => v,
             Err(_) => {
-                respond_json(
-                    stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": "invalid JSON body" }),
-                );
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
                 return;
             }
         }
@@ -7903,11 +7491,7 @@ fn handle_monetization_pack(stream: &mut TcpStream, shared: &Shared, raw_body: &
     let chat_id = shared.active_chat.lock().unwrap().clone();
     let mut guard = shared.agent.lock().unwrap();
     let Some(agent) = guard.as_mut() else {
-        respond_json(
-            stream,
-            "503 Service Unavailable",
-            &json!({ "ok": false, "error": "Studio not connected" }),
-        );
+        respond_err(stream, "503 Service Unavailable", "Studio not connected");
         return;
     };
     let before = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
@@ -7920,7 +7504,7 @@ fn handle_monetization_pack(stream: &mut TcpStream, shared: &Shared, raw_body: &
                 written_paths.push(updated.path);
             }
             Err(e) => {
-                respond_json(stream, "502 Bad Gateway", &json!({ "ok": false, "error": e }));
+                respond_err(stream, "502 Bad Gateway", &e);
                 return;
             }
         }
@@ -7971,11 +7555,7 @@ fn handle_studio_economy_simulate(stream: &mut TcpStream, shared: &Shared, raw_b
         match serde_json::from_slice(raw_body) {
             Ok(v) => v,
             Err(_) => {
-                respond_json(
-                    stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": "invalid JSON body" }),
-                );
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
                 return;
             }
         }
@@ -8019,7 +7599,7 @@ fn handle_mesh_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &st
             } else {
                 "400 Bad Request"
             };
-            respond_json(stream, status, &json!({ "ok": false, "error": e }));
+            respond_err(stream, status, &e);
         }
     }
 }
@@ -8037,7 +7617,7 @@ fn handle_audio_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &s
             } else {
                 "400 Bad Request"
             };
-            respond_json(stream, status, &json!({ "ok": false, "error": e }));
+            respond_err(stream, status, &e);
         }
     }
 }
@@ -8202,7 +7782,7 @@ fn handle_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &str) {
     let safe_name = match crate::assets::sanitize_filename(raw_file) {
         Ok(s) => s,
         Err(e) => {
-            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
+            respond_err(stream, "400 Bad Request", &e);
             return;
         }
     };
@@ -8219,7 +7799,7 @@ fn handle_asset_file(stream: &mut TcpStream, shared: &Shared, raw_file: &str) {
                 } else {
                     "404 Not Found"
                 };
-                respond_json(stream, status, &json!({ "ok": false, "error": e }));
+                respond_err(stream, status, &e);
                 return;
             }
         }
@@ -8246,7 +7826,7 @@ fn handle_asset_delete(stream: &mut TcpStream, shared: &Shared, raw_file: &str) 
     let safe_name = match crate::assets::sanitize_filename(raw_file) {
         Ok(s) => s,
         Err(e) => {
-            respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
+            respond_err(stream, "400 Bad Request", &e);
             return;
         }
     };
@@ -8259,7 +7839,7 @@ fn handle_asset_delete(stream: &mut TcpStream, shared: &Shared, raw_file: &str) 
                 } else {
                     "500 Internal Server Error"
                 };
-                respond_json(stream, status, &json!({ "ok": false, "error": e }));
+                respond_err(stream, status, &e);
                 return;
             }
         }
@@ -8379,11 +7959,7 @@ fn handle_assets_upload(stream: &mut TcpStream, shared: &Shared, req: &Request, 
         let body: Value = match serde_json::from_slice::<Value>(&req.body) {
             Ok(v) => v,
             Err(_) => {
-                respond_json(
-                    stream,
-                    "400 Bad Request",
-                    &json!({ "ok": false, "error": "invalid JSON body for asset upload" }),
-                );
+                respond_err(stream, "400 Bad Request", "invalid JSON body for asset upload");
                 return;
             }
         };
@@ -8402,7 +7978,7 @@ fn handle_assets_upload(stream: &mut TcpStream, shared: &Shared, req: &Request, 
         let decoded = match crate::assets::decode_base64(b64) {
             Ok(d) => d,
             Err(e) => {
-                respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": e }));
+                respond_err(stream, "400 Bad Request", &e);
                 return;
             }
         };
@@ -8420,11 +7996,7 @@ fn handle_assets_upload(stream: &mut TcpStream, shared: &Shared, req: &Request, 
                 "asset": meta.to_json(),
             }),
         ),
-        Err(e) => respond_json(
-            stream,
-            "400 Bad Request",
-            &json!({ "ok": false, "error": e }),
-        ),
+        Err(e) => respond_err(stream, "400 Bad Request", &e),
     }
 }
 
@@ -8432,11 +8004,7 @@ fn handle_assets_generate(stream: &mut TcpStream, shared: &Shared, raw_body: &[u
     let body: Value = match serde_json::from_slice(raw_body) {
         Ok(v) => v,
         Err(_) => {
-            respond_json(
-                stream,
-                "400 Bad Request",
-                &json!({ "ok": false, "error": "invalid JSON body" }),
-            );
+            respond_err(stream, "400 Bad Request", "invalid JSON body");
             return;
         }
     };
@@ -8584,11 +8152,7 @@ fn handle_assets_generate(stream: &mut TcpStream, shared: &Shared, raw_body: &[u
                 }),
             );
         }
-        Err(e) => respond_json(
-            stream,
-            "502 Bad Gateway",
-            &json!({ "ok": false, "error": e, "homage_prompt": prompt }),
-        ),
+        Err(e) => respond_json(stream, "502 Bad Gateway", &json!({ "ok": false, "error": e, "homage_prompt": prompt })),
     }
 }
 

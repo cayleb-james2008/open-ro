@@ -105,7 +105,7 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.17.0"));
+    assert_eq!(ver_json["version"], json!("1.18.0"));
 
     // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
     if let Ok(entries) = std::fs::read_dir("assets/chunks") {
@@ -727,7 +727,7 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
         assert!(n > 0, "unexpected EOF on first keep-alive response");
         first_buf.extend_from_slice(&tmp[..n]);
         let s = String::from_utf8_lossy(&first_buf);
-        if s.contains("1.17.0") {
+        if s.contains("1.18.0") {
             assert!(s.contains("Connection: keep-alive"), "{s}");
             break;
         }
@@ -739,7 +739,7 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
     let _ = ka.read_to_end(&mut second_buf);
     let s2_txt = String::from_utf8_lossy(&second_buf);
     assert!(s2_txt.contains("HTTP/1.1 200 OK"), "{s2_txt}");
-    assert!(s2_txt.contains("1.17.0"), "{s2_txt}");
+    assert!(s2_txt.contains("1.18.0"), "{s2_txt}");
 
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -1342,6 +1342,115 @@ fn v1170_wave16_monetization_retention_safety_audit_and_repair() {
 
     let bad_req = format!(
         "POST /api/studio/monetization-audit HTTP/1.1\r\nHost: attacker.example:{port}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+    );
+    let (st_403, _, _) = send_raw_bytes(port, bad_req.as_bytes());
+    assert_eq!(st_403, 403);
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn v1180_wave17_economy_balance_progression_sim() {
+    let base = std::env::temp_dir().join(format!(
+        "openro-v1180-wave17-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let data = base.join("data");
+    let ws = base.join("ws");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let port = start_server_with_dir(Some(data));
+    let (st_ws, _) = send_json(port, "POST", "/api/projects/workspace", Some(&json!({ "path": ws })));
+    assert_eq!(st_ws, 200);
+    let (st_cr, cr) = send_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(&json!({ "name": "Wave17EconomySim" })),
+    );
+    assert_eq!(st_cr, 201, "{cr}");
+    let pid = cr["project"]["id"].as_str().unwrap().to_string();
+    let proj_dir = std::path::PathBuf::from(cr["project"]["path"].as_str().unwrap());
+
+    std::fs::create_dir_all(proj_dir.join("src/shared")).unwrap();
+    std::fs::write(
+        proj_dir.join("src/shared/EconConfig.luau"),
+        "--!strict\nlocal EconConfig = {\n\tEarnPerMin = 10,\n\tTier1Cost = 200,\n\tTier2Cost = 8000,\n\tRebirthCost = 50000,\n\tRebirthMultiplier = 12,\n\tGamePassMultiplier = 8,\n}\nreturn EconConfig\n",
+    )
+    .unwrap();
+
+    // GET detects paywall dead-end and runaway rebirth multiplier inflation
+    let (st_es, es) = send_json(port, "GET", &format!("/api/projects/{pid}/economy-sim"), None);
+    assert_eq!(st_es, 200, "{es}");
+    assert_eq!(es["schema"], json!("openro.economy_sim.v1"));
+    assert_eq!(es["balanced"], json!(false), "{es}");
+    assert!(es["curve"].as_array().unwrap().len() == 9);
+    let cats: Vec<&str> = es["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["category"].as_str())
+        .collect();
+    assert!(cats.contains(&"paywall_dead_end"), "{es}");
+    assert!(cats.contains(&"runaway_inflation"), "{es}");
+
+    // Also verify under-2-minute exhaustion detector via POST override preview
+    let (st_ex, ex) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/economy-sim"),
+        Some(&json!({ "earn_per_min": 50000, "rebirth_cost": 1000, "apply_suggestions": false })),
+    );
+    assert_eq!(st_ex, 200, "{ex}");
+    assert_eq!(ex["applied"], json!(false));
+    let ex_cats: Vec<&str> = ex["report"]["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["category"].as_str())
+        .collect();
+    assert!(ex_cats.contains(&"under_2m_exhaustion"), "{ex}");
+
+    // 1-click Apply Balanced Tuning resolves paywall & inflation cleanly
+    let (st_ap, ap) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/economy-sim"),
+        Some(&json!({ "apply_suggestions": true })),
+    );
+    assert_eq!(st_ap, 200, "{ap}");
+    assert_eq!(ap["applied"], json!(true), "{ap}");
+    assert!(ap["fixed_count"].as_u64().unwrap() >= 3, "{ap}");
+
+    // Studio Local Place parity + loopback-403 check
+    let (st_sc, _) = send_json(
+        port,
+        "POST",
+        "/api/place/script",
+        Some(&json!({
+            "path": "ReplicatedStorage.EconConfig",
+            "source": "--!strict\nlocal EconConfig = {\n\tEarnPerMin = 5,\n\tRebirthCost = 20000,\n\tRebirthMultiplier = 10,\n\tGamePassMultiplier = 6,\n}\nreturn EconConfig\n"
+        })),
+    );
+    assert_eq!(st_sc, 200);
+    let (st_sg, sg) = send_json(port, "GET", "/api/studio/economy-sim", None);
+    assert_eq!(st_sg, 200, "{sg}");
+    assert_eq!(sg["balanced"], json!(false), "{sg}");
+    let (st_sa, sa) = send_json(
+        port,
+        "POST",
+        "/api/studio/economy-sim",
+        Some(&json!({ "apply_suggestions": true })),
+    );
+    assert_eq!(st_sa, 200, "{sa}");
+    assert_eq!(sa["applied"], json!(true), "{sa}");
+
+    let bad_req = format!(
+        "POST /api/studio/economy-sim HTTP/1.1\r\nHost: attacker.example:{port}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
     );
     let (st_403, _, _) = send_raw_bytes(port, bad_req.as_bytes());
     assert_eq!(st_403, 403);

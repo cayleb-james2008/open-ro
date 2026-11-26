@@ -4,6 +4,11 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.18.0 - 2026-11-25
+
+- Added Deterministic Economy Balance and Progression Simulator (`GET/POST /api/projects/:id/economy-sim`, `GET/POST /api/studio/economy-sim`, `EconomyBalanceSimCard.tsx`, and `web-engine` parity) parsing Luau earn, price, rebirth, and GamePass constants to project a 60-minute progression curve flagging paywall dead-ends, runaway inflation, and under-2-minute exhaustion with 1-click suggestion preview and snapshot-guarded constant tuning.
+- Extracted shared `respond_err` in `src/server.rs` across 169 HTTP error sites and kept `serde`/`serde_json` on `opt-level = "s"` with `memchr` on `opt-level = 3`, cutting the release binary to `9.06 MB` (`9,499,480 B`) while reaching `8,784.2 req/s` cold (`1.76 ms` p50, `18.28 ms` boot, `13.50 MB` Peak RSS).
+
 ## 1.17.0 - 2026-11-25
 
 - Added Monetization and Retention Safety Audit plus 1-click safe repair (`GET/POST /api/projects/:id/monetization-audit`, `GET/POST /api/studio/monetization-audit`, `MonetizationAuditCard.tsx`, and `web-engine` parity) detecting missing `MarketplaceService.ProcessReceipt` `PurchaseId` idempotency and `PurchaseGranted` returns, `DataStore` scripts without `game:BindToClose` shutdown flushes, unguarded `PromptGamePassPurchase`, `PromptProductPurchase`, or `UserOwnsGamePassAsync` calls lacking `pcall`, and missing first-60s onboarding or daily streak hooks, with safe snippet previews, issue jump, and pre-repair snapshot checkpoints.

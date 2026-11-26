@@ -9,6 +9,7 @@ import { MorphingDialog, MorphingDialogClose, MorphingDialogContainer, MorphingD
 import { open as dialogSpring } from "@/motion";
 import { call, enc, projUrl, stamp, type AssertionDiff, type AssertionFixApplyResult, type AssertionFixPlan, type AssertionItem, type CoreLoopClaim, type FixAllAssertionsResult, type PlaytestReport, type PlaytestRun, type StudyStatus, type UnknownItem } from "./api";
 import { DependencyGraphCard } from "./DependencyGraphCard";
+import { EconomyBalanceSimCard } from "./EconomyBalanceSimCard";
 import { EconomySimulatorCard } from "./EconomySimulatorCard";
 import { HookIntegrityCard } from "./HookIntegrityCard";
 import { MonetizationAuditCard } from "./MonetizationAuditCard";
@@ -646,6 +647,14 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
         }}
       />
       <EconomySimulatorCard projectId={id} studioOk={studioOk} />
+      <EconomyBalanceSimCard
+        projectId={id}
+        studioOk={studioOk}
+        onJumpToIssue={onJumpToIssue}
+        onApplied={async () => {
+          await Promise.all([load(), loadStudy()]);
+        }}
+      />
     </div>
   );
 }

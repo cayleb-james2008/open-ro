@@ -6,6 +6,7 @@ import { Pill } from "@/components/kibo-ui/pill";
 import { ProgressCircle } from "@/components/ProgressCircle/ProgressCircle";
 import { call, projUrl, type AutopilotResult, type MonetizationCodegenResult, type ProjectReadiness, type PublishGateResult } from "./api";
 import { HookIntegrityCard } from "./HookIntegrityCard";
+import { EconomyBalanceSimCard } from "./EconomyBalanceSimCard";
 import { MonetizationAuditCard } from "./MonetizationAuditCard";
 import { PublishGuardCard } from "./PublishGuardCard";
 import { SyncConflictsCard } from "./SyncConflictsCard";
@@ -432,6 +433,16 @@ export function ReadinessAutopilot({
         hideWhenClean
         onJumpToIssue={onOpenCodeFile}
         onRepaired={async () => {
+          await loadReadiness();
+          await onCompleted?.();
+        }}
+      />
+
+      <EconomyBalanceSimCard
+        projectId={projectId}
+        hideWhenClean
+        onJumpToIssue={onOpenCodeFile}
+        onApplied={async () => {
           await loadReadiness();
           await onCompleted?.();
         }}
