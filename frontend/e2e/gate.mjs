@@ -136,6 +136,59 @@ try {
   await p.locator("[data-code-diff-workbench]").waitFor({ state: "visible", timeout: 8000 });
   check("Code workbench renders", true);
 
+  // Visual ScreenGui / UI Designer workbench tab
+  await p.getByRole("button", { name: "UI", exact: true }).first().click();
+  await p.locator("[data-gui-designer]").waitFor({ state: "visible", timeout: 10000 });
+  await p.locator("[data-gui-canvas]").waitFor({ state: "visible", timeout: 5000 });
+  check("UI Designer workbench renders", true);
+  await assertLayoutInvariants(p, "1440x900 Light UI Designer");
+
+  // Switch presets (Obby -> Gacha -> RPG)
+  await p.locator('[data-gui-preset="obby"]').click();
+  await p.locator('[data-gui-canvas-node="obby-stage-pill"]').waitFor({ state: "visible", timeout: 4000 });
+  await p.locator('[data-gui-preset="gacha"]').click();
+  await p.locator('[data-gui-canvas-node="gacha-banner-card"]').waitFor({ state: "visible", timeout: 4000 });
+  check("UI Designer preset switcher loads Obby and Gacha HUDs", true);
+
+  // Device viewport switcher & Safe-area overlay toggles
+  await p.locator('[data-gui-device="mobile"]').click();
+  await p.locator('[data-gui-device="tablet"]').click();
+  await p.locator('[data-gui-device="desktop"]').click();
+  await p.locator('[data-gui-overlay="topbar"]').click();
+  await p.locator('[data-gui-overlay="topbar"]').click();
+  await p.locator('[data-gui-overlay="thumbstick"]').click();
+  await p.locator('[data-gui-overlay="thumbstick"]').click();
+  await p.locator("[data-gui-topbar-overlay]").waitFor({ state: "visible", timeout: 4000 });
+  await p.locator("[data-gui-thumbstick-overlay]").waitFor({ state: "visible", timeout: 4000 });
+  await p.locator("[data-gui-warnings]").waitFor({ state: "visible", timeout: 4000 });
+  check("UI Designer device switcher & safe-area overlays work", true);
+
+  // Edit a node property, trigger safe-area check, save screen, and compile strict Luau
+  await p.locator('[data-gui-canvas-node="gacha-gems"]').click();
+  const yOffsetInput = p.locator('[data-gui-prop="Position.y_offset"]');
+  await yOffsetInput.fill("12");
+  await p.locator('[data-gui-warning-item="topbar_overlap"]').first().waitFor({ state: "visible", timeout: 4000 });
+  await yOffsetInput.fill("66");
+  await p.locator("[data-gui-save]").click();
+  await p.waitForFunction(
+    () => {
+      const btn = document.querySelector("[data-gui-save]");
+      return btn && !btn.hasAttribute("disabled") && !btn.textContent?.includes("Save*");
+    },
+    null,
+    { timeout: 8000 },
+  );
+  check("UI Designer edits node, detects TopBar overlap, and saves ScreenDoc", true);
+
+  await p.locator("[data-gui-compile]").click();
+  await p.locator("[data-gui-luau-output]").waitFor({ state: "visible", timeout: 8000 });
+  const luauText = await p.locator("[data-gui-luau-output]").innerText();
+  check(
+    "UI Designer compiles --!strict Luau module",
+    luauText.includes("--!strict") && luauText.includes("Module.create"),
+    `${luauText.length} chars`,
+  );
+
   // Ship tab & Monetization Pack
   await p.getByRole("button", { name: "Ship", exact: true }).first().click();
   await p.locator("[data-ship], [data-ship-empty]").first().waitFor({ state: "visible", timeout: 10000 });

@@ -60,6 +60,7 @@ export function CommandPalette({
   onOpenToolLibrary,
   onOpenEmbeddedStudio,
   onOpenCodeDiff,
+  onOpenGuiDesigner,
   onOpenShip,
   onOpenStudioPlugin,
   onToggleBottomDrawer,
@@ -87,6 +88,7 @@ export function CommandPalette({
   onOpenToolLibrary?: () => void;
   onOpenEmbeddedStudio?: () => void;
   onOpenCodeDiff?: () => void;
+  onOpenGuiDesigner?: () => void;
   onOpenShip?: () => void;
   onOpenStudioPlugin?: () => void;
   onToggleBottomDrawer?: () => void;
@@ -196,6 +198,17 @@ export function CommandPalette({
         badge: "Diff",
         badgeCls: "bg-tag-research-bg text-tag-research-fg",
         onRun: onOpenCodeDiff,
+      });
+    }
+    if (onOpenGuiDesigner) {
+      out.push({
+        kind: "action",
+        id: "act-gui-designer",
+        title: "Open Visual UI & ScreenGui Designer (Alt+6)",
+        subtitle: "Design Roblox HUDs with multi-device safe-area overlays, 9-slice, and strict Luau compilation",
+        badge: "UI",
+        badgeCls: "bg-tag-design-bg text-tag-design-fg",
+        onRun: onOpenGuiDesigner,
       });
     }
     if (onOpenShip) {

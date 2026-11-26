@@ -28,6 +28,7 @@ import {
   Hammer,
   Images,
   Layers,
+  LayoutTemplate,
   Menu,
   MessageSquare,
   Monitor,
@@ -144,13 +145,16 @@ import { AgentRunsPanel } from "./app/AgentRunsPanel";
 import { LeftExplorerTree, StudioChip } from "./app/Shelf";
 import { StudioBottomDrawer, type BottomDrawerTab } from "./app/StudioBottomDrawer";
 
-type ViewportTab = "embedded-studio" | "studio-3d" | "code-diff" | "assets" | "ship" | "teamwork";
+type ViewportTab = "embedded-studio" | "studio-3d" | "code-diff" | "gui-designer" | "assets" | "ship" | "teamwork";
 import { ThreadFeed } from "./app/Thread";
 import { BlueprintWorkbench } from "./app/Blueprints";
 import { SettingsDialog } from "./app/SettingsDialog";
 
 const CodeDiffWorkbench = lazy(() =>
   import("./app/CodeDiffWorkbench").then((m) => ({ default: m.CodeDiffWorkbench })),
+);
+const GuiDesignerWorkbench = lazy(() =>
+  import("./app/GuiDesignerWorkbench").then((m) => ({ default: m.GuiDesignerWorkbench })),
 );
 const CommandPalette = lazy(() =>
   import("./app/CommandPalette").then((m) => ({ default: m.CommandPalette })),
@@ -1143,6 +1147,7 @@ export function App() {
         if (e.key === "3" && !isBrowserEngine) { e.preventDefault(); setCenterTab("assets"); return; }
         if (e.key === "4") { e.preventDefault(); setCenterTab("ship"); return; }
         if (e.key === "5" && !isBrowserEngine) { e.preventDefault(); setCenterTab("teamwork"); return; }
+        if (e.key === "6") { e.preventDefault(); setCenterTab("gui-designer"); return; }
       }
       const el = e.target as HTMLElement | null;
       const inEditable = Boolean(el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable));
@@ -3104,6 +3109,15 @@ export function App() {
               </span>
             )}
           </SegmentedControlItem>
+          <SegmentedControlItem
+            data-checked={centerTab === "gui-designer" ? "" : undefined}
+            aria-pressed={centerTab === "gui-designer"}
+            onClick={() => setCenterTab("gui-designer")}
+            className="gap-1 max-md:!h-11 max-md:px-2"
+          >
+            <LayoutTemplate className="size-3.5" strokeWidth={1.5} aria-hidden />
+            <span>UI</span>
+          </SegmentedControlItem>
           {!isBrowserEngine && (
             <SegmentedControlItem
               data-checked={centerTab === "assets" ? "" : undefined}
@@ -3197,6 +3211,14 @@ export function App() {
             />
           ) : centerTab === "teamwork" ? (
             <TeamworkPanel projectId={ship.activeId} />
+          ) : centerTab === "gui-designer" ? (
+            <GuiDesignerWorkbench
+              projectId={ship.activeId}
+              place={safePlace}
+              assets={projectAssets}
+              products={ship.detail?.products}
+              onSavedScreenOrLuau={() => { void refreshPlace(); }}
+            />
           ) : centerTab === "assets" || centerTab === "ship" ? (
             <ShipPanel
               ship={ship}
@@ -3936,6 +3958,11 @@ export function App() {
               }}
               onOpenCodeDiff={() => {
                 setCenterTab("code-diff");
+                setMobilePane("studio");
+              }}
+              onOpenGuiDesigner={() => {
+                setCenterTab("gui-designer");
+                setRightDockCollapsed(false);
                 setMobilePane("studio");
               }}
               onOpenStudioPlugin={() => {
