@@ -230,56 +230,99 @@ export function SandboxRunnerCard({
   const [error, setError] = useState("");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("console");
   const [argsDrafts, setArgsDrafts] = useState<Record<number, string>>({});
+  const [argsErrors, setArgsErrors] = useState<Record<number, string>>({});
 
-  const executeRun = async (journeyToRun: SandboxJourneyStep[], presetLabel?: string) => {
+  const validateJourney = (journeyToRun: SandboxJourneyStep[]): string | null => {
+    if (journeyToRun.length === 0) return "Add at least one journey step or select a preset.";
+    const badArgIdx = Object.keys(argsErrors).find((k) => argsErrors[Number(k)]);
+    if (badArgIdx !== undefined) {
+      return `Step #${Number(badArgIdx) + 1}: ${argsErrors[Number(badArgIdx)]}`;
+    }
+    for (let i = 0; i < journeyToRun.length; i++) {
+      const st = journeyToRun[i];
+      if ((st.op === "fire_server" || st.op === "invoke_server") && !(st.remote || "").trim()) {
+        return `Step #${i + 1} (${st.op}): remote path is required.`;
+      }
+      if (st.op === "click_gui" && !(st.gui_path || "").trim()) {
+        return `Step #${i + 1} (click_gui): GUI path is required.`;
+      }
+      if (st.op === "assert_luau" && !(st.luau || "").trim()) {
+        return `Step #${i + 1} (assert_luau): Luau expression is required.`;
+      }
+    }
+    return null;
+  };
+
+  const executeRun = async (journeyToRun: SandboxJourneyStep[], presetLabel?: string, skipValidation = false) => {
+    if (busy) return;
+    if (!skipValidation) {
+      const validationError = validateJourney(journeyToRun);
+      if (validationError) {
+        setError(validationError);
+        setBuilderOpen(true);
+        toast.error(validationError);
+        return;
+      }
+    }
     setBusy(true);
     setError("");
-    const res = await runSandbox(
-      {
-        timeout_secs: 15,
-        players: DEFAULT_PLAYERS,
-        journey: journeyToRun,
-      },
-      projectId,
-    );
-    setBusy(false);
-    if (!res.ok && !res.engine) {
-      const msg = res.error || "Could not run the headless sandbox.";
+    try {
+      const res = await runSandbox(
+        {
+          timeout_secs: 15,
+          players: DEFAULT_PLAYERS,
+          journey: journeyToRun,
+        },
+        projectId,
+      );
+      if (!res.ok && !res.engine) {
+        const msg = res.error || "Could not run the headless sandbox.";
+        setError(msg);
+        toast.error(msg);
+        return;
+      }
+      const luneMissing = res.engine === "lune_missing" || res.diagnostics?.lune_found === false;
+      const payload: SandboxRunResponse = {
+        ok: Boolean(res.ok),
+        engine: luneMissing ? "lune_missing" : (res.engine ?? "browser_sim"),
+        passed: Boolean(res.passed),
+        duration_ms: typeof res.duration_ms === "number" && Number.isFinite(res.duration_ms) ? res.duration_ms : 0,
+        steps: Array.isArray(res.steps) ? res.steps : [],
+        assertions: Array.isArray(res.assertions) ? res.assertions : [],
+        console: {
+          lines: Array.isArray(res.console?.lines) ? res.console.lines : [],
+          errors: Array.isArray(res.console?.errors) ? res.console.errors : [],
+          warnings: Array.isArray(res.console?.warnings) ? res.console.warnings : [],
+        },
+        state_snapshot: {
+          leaderstats: res.state_snapshot?.leaderstats ?? {},
+          datastores: res.state_snapshot?.datastores ?? {},
+          receipts_processed: Array.isArray(res.state_snapshot?.receipts_processed) ? res.state_snapshot.receipts_processed : [],
+          remotes_fired: typeof res.state_snapshot?.remotes_fired === "number" ? res.state_snapshot.remotes_fired : 0,
+          player_gui_tree: Array.isArray(res.state_snapshot?.player_gui_tree) ? res.state_snapshot.player_gui_tree : [],
+        },
+        core_loop: res.core_loop ?? { move: "not tested", act: "not tested", hud: "not tested" },
+        diagnostic: res.diagnostic ?? (luneMissing ? res.error : undefined),
+        diagnostics: res.diagnostics,
+      };
+      setResult(payload);
+      if (payload.console.errors.length > 0 || payload.steps.some((s) => !s.passed)) {
+        setInspectorTab("console");
+      }
+      const label = presetLabel || "Sandbox journey";
+      if (luneMissing) {
+        toast.error(payload.diagnostic || "Lune runtime not detected on PATH.");
+      } else if (payload.passed) {
+        toast.success(`${label} passed in ${formatDuration(payload.duration_ms)}`);
+      } else {
+        toast.error(`${label} finished with failures.`);
+      }
+    } catch {
+      const msg = "Sandbox request failed unexpectedly. Check your journey steps and retry.";
       setError(msg);
       toast.error(msg);
-      return;
-    }
-    const luneMissing = res.engine === "lune_missing" || res.diagnostics?.lune_found === false;
-    const payload: SandboxRunResponse = {
-      ok: Boolean(res.ok),
-      engine: luneMissing ? "lune_missing" : (res.engine ?? "browser_sim"),
-      passed: Boolean(res.passed),
-      duration_ms: typeof res.duration_ms === "number" ? res.duration_ms : 0,
-      steps: Array.isArray(res.steps) ? res.steps : [],
-      assertions: Array.isArray(res.assertions) ? res.assertions : [],
-      console: res.console ?? { lines: [], errors: [], warnings: [] },
-      state_snapshot: res.state_snapshot ?? {
-        leaderstats: {},
-        datastores: {},
-        receipts_processed: [],
-        remotes_fired: 0,
-        player_gui_tree: [],
-      },
-      core_loop: res.core_loop ?? { move: "not tested", act: "not tested", hud: "not tested" },
-      diagnostic: res.diagnostic ?? (luneMissing ? res.error : undefined),
-      diagnostics: res.diagnostics,
-    };
-    setResult(payload);
-    if (payload.console.errors.length > 0 || payload.steps.some((s) => !s.passed)) {
-      setInspectorTab("console");
-    }
-    const label = presetLabel || "Sandbox journey";
-    if (luneMissing) {
-      toast.error(payload.diagnostic || "Lune runtime not detected on PATH.");
-    } else if (payload.passed) {
-      toast.success(`${label} passed in ${formatDuration(payload.duration_ms)}`);
-    } else {
-      toast.error(`${label} finished with failures.`);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -288,7 +331,9 @@ export function SandboxRunnerCard({
     const cloned = PRESETS[id].steps.map((s) => ({ ...s }));
     setSteps(cloned);
     setArgsDrafts({});
-    void executeRun(cloned, PRESETS[id].label);
+    setArgsErrors({});
+    setError("");
+    void executeRun(cloned, PRESETS[id].label, true);
   };
 
   const updateStep = (idx: number, patch: Partial<SandboxJourneyStep>) => {
@@ -302,11 +347,26 @@ export function SandboxRunnerCard({
       delete next[idx];
       return next;
     });
+    setArgsErrors((prev) => {
+      const next = { ...prev };
+      delete next[idx];
+      return next;
+    });
   };
 
   const removeStep = (idx: number) => {
     setSteps((prev) => prev.filter((_, i) => i !== idx));
-    setArgsDrafts({});
+    const reindex = <T,>(rec: Record<number, T>): Record<number, T> => {
+      const next: Record<number, T> = {};
+      for (const [k, v] of Object.entries(rec)) {
+        const ki = Number(k);
+        if (ki < idx) next[ki] = v;
+        else if (ki > idx) next[ki - 1] = v;
+      }
+      return next;
+    };
+    setArgsDrafts((prev) => reindex(prev));
+    setArgsErrors((prev) => reindex(prev));
   };
 
   const addStep = (op: SandboxJourneyOp) => {
@@ -489,20 +549,47 @@ export function SandboxRunnerCard({
                             />
                             <Input
                               aria-label={`Step ${idx + 1} args JSON`}
+                              aria-invalid={Boolean(argsErrors[idx])}
+                              data-sandbox-step-args={idx}
                               value={argsDrafts[idx] ?? JSON.stringify(step.args ?? [])}
                               onChange={(e) => {
                                 const raw = e.target.value;
                                 setArgsDrafts((prev) => ({ ...prev, [idx]: raw }));
                                 try {
                                   const parsed = JSON.parse(raw);
-                                  if (Array.isArray(parsed)) updateStep(idx, { args: parsed });
+                                  if (Array.isArray(parsed)) {
+                                    updateStep(idx, { args: parsed });
+                                    setArgsErrors((prev) => {
+                                      const next = { ...prev };
+                                      delete next[idx];
+                                      return next;
+                                    });
+                                    if (error) setError("");
+                                  } else {
+                                    setArgsErrors((prev) => ({
+                                      ...prev,
+                                      [idx]: 'Args must be a JSON array, such as ["arg1"].',
+                                    }));
+                                  }
                                 } catch {
-                                  /* keep draft until valid JSON */
+                                  setArgsErrors((prev) => ({
+                                    ...prev,
+                                    [idx]: 'Invalid JSON in step args. Expected a JSON array like ["arg1"].',
+                                  }));
                                 }
                               }}
                               placeholder='["arg1"]'
                               className="h-8 font-mono text-xs"
                             />
+                            {argsErrors[idx] && (
+                              <p
+                                role="alert"
+                                data-sandbox-step-error={idx}
+                                className="text-xs text-pill-pro-fg sm:col-span-2"
+                              >
+                                {argsErrors[idx]}
+                              </p>
+                            )}
                           </>
                         )}
 
@@ -605,9 +692,33 @@ export function SandboxRunnerCard({
       </Expandable>
 
       {error && (
-        <p role="alert" className="rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">
-          {error}
-        </p>
+        <div
+          role="alert"
+          data-sandbox-error
+          className="flex flex-wrap items-center justify-between gap-2 rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg"
+        >
+          <span className="min-w-0 flex-1 break-words">{error}</span>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={busy}
+              onClick={() => void executeRun(steps)}
+              className="bg-surface max-md:min-h-11"
+            >
+              Retry
+            </Button>
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={busy}
+              onClick={() => applyPreset("boot_join")}
+              className="max-md:min-h-11"
+            >
+              Reset preset
+            </Button>
+          </div>
+        </div>
       )}
 
       {result && (

@@ -396,7 +396,7 @@ export function ToolLibraryDialog({
     try {
       const res = await post<{ ok?: boolean; error?: string }>("/api/library/install", { id });
       if (res.ok) {
-        toast.success(`Installed ${id} — new agent tools unlocked`);
+        toast.success(`Installed ${id}: new agent tools unlocked`);
         await onRefresh();
       } else {
         toast.error(res.error || `Could not install ${id}.`);
@@ -833,7 +833,7 @@ export function ToolLibraryDialog({
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex flex-col gap-0.5">
                         <h4 className="text-sm font-medium text-ink">
-                          1. Market Leaders — {activeNiche.name}
+                          1. Market Leaders: {activeNiche.name}
                         </h4>
                         <p className="text-xs text-ink-2">{activeNiche.tagline}</p>
                       </div>

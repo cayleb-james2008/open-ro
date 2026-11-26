@@ -1241,7 +1241,7 @@ export const DEFAULT_LIBRARY_PACKS: LibraryPack[] = [
     id: "image-gen-studio",
     name: "Image Generation Studio",
     category: "Media Gen",
-    description: "Generate gamepass icons, UI badges, decals, and stylized character portraits using Google Nano Banana (Gemini Image) or OpenAI Image API — includes the Stylized Fan-Art & Title-Epithet Creative Knowledge point when installed.",
+    description: "Generate gamepass icons, UI badges, decals, and stylized character portraits using Google Nano Banana (Gemini Image) or OpenAI Image API. Includes the Stylized Fan-Art & Title-Epithet Creative Knowledge point when installed.",
     default_installed: false,
     installed: false,
     configured: false,

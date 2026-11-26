@@ -34,6 +34,7 @@ async function assertLayoutInvariants(page, label) {
     const overflowX = html.scrollWidth > window.innerWidth + 1;
     const bodyText = document.body?.innerText ?? "";
     const hasRuneJargon = /\bRune\b/i.test(bodyText);
+    const hasRhlJargon = /\bRHL\b/i.test(bodyText);
 
     const header = document.querySelector("[data-top-chrome]");
     const headerHeight = header ? header.getBoundingClientRect().height : 0;
@@ -64,6 +65,7 @@ async function assertLayoutInvariants(page, label) {
       scrollWidth: html.scrollWidth,
       innerWidth: window.innerWidth,
       hasRuneJargon,
+      hasRhlJargon,
       headerHeight,
       headerHasThemeSwitch,
       railHasThemeSwitch,
@@ -72,7 +74,7 @@ async function assertLayoutInvariants(page, label) {
   });
 
   check(`${label}: zero horizontal overflow`, !m.overflowX, `${m.scrollWidth}<= ${m.innerWidth}`);
-  check(`${label}: #155 zero "Rune" jargon`, !m.hasRuneJargon);
+  check(`${label}: #155 zero "Rune" and zero "RHL" jargon`, !m.hasRuneJargon && !m.hasRhlJargon);
   check(`${label}: top chrome <=48px`, m.headerHeight > 0 && m.headerHeight <= 49, `${Math.round(m.headerHeight)}px`);
   check(`${label}: #67 Settings-only theme switch`, !m.headerHasThemeSwitch && !m.railHasThemeSwitch);
   check(`${label}: zero text clipping`, m.clipped.length === 0, m.clipped.join("; "));
@@ -142,6 +144,20 @@ try {
   await p.locator("[data-gui-canvas]").waitFor({ state: "visible", timeout: 5000 });
   check("UI Designer workbench renders", true);
   await assertLayoutInvariants(p, "1440x900 Light UI Designer");
+
+  // Invalid ScreenGui slug shows inline validation error UI
+  await p.locator("[data-gui-new]").click();
+  await p.locator("[data-gui-slug-input]").fill("../bad slug!");
+  await p.locator("[data-gui-create-slug]").click();
+  await p.locator("[data-gui-slug-error]").waitFor({ state: "visible", timeout: 4000 });
+  const slugErrTxt = await p.locator("[data-gui-slug-error]").innerText();
+  check("UI Designer invalid slug displays error UI", /invalid screen slug/i.test(slugErrTxt), slugErrTxt);
+  await p.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  // GuiDesigner Dark theme switch & 0px overflow
+  await setThemeViaSettings(p, "dark");
+  await assertLayoutInvariants(p, "1440x900 Dark UI Designer");
+  await setThemeViaSettings(p, "light");
 
   // Switch presets (Obby -> Gacha -> RPG)
   await p.locator('[data-gui-preset="obby"]').click();
@@ -264,13 +280,33 @@ try {
     await p.locator('[data-sandbox-inspector-body="playergui"]').waitFor({ state: "visible", timeout: 4000 });
     check("Sandbox Console & State Inspector tabs (Dark)", true);
     await setThemeViaSettings(p, "light");
+
+    // Invalid Sandbox journey JSON shows step + card error UI and recovers on preset reset
+    await p.locator("[data-sandbox-builder-toggle]").click();
+    const argsInput = p.locator("[data-sandbox-step-args]").first();
+    await argsInput.waitFor({ state: "visible", timeout: 4000 });
+    await argsInput.fill("[bad-json");
+    await p.locator("[data-sandbox-step-error]").first().waitFor({ state: "visible", timeout: 4000 });
+    await p.locator("[data-sandbox-run]").click();
+    await p.locator("[data-sandbox-error]").waitFor({ state: "visible", timeout: 4000 });
+    check("Sandbox invalid journey JSON displays recovery error UI", true);
+    await runPresetAndVerify("boot_join", "Sandbox recovery after invalid JSON");
   }
 
-  // Check Assets, Swarm, and Viewport tabs on workbench
+  // Check Assets, Swarm, and Viewport (StudioViewport3D) tabs on workbench in Light & Dark
   await p.getByRole("button", { name: "Assets", exact: true }).first().click();
   await p.getByRole("button", { name: "Swarm", exact: true }).first().click();
   await p.getByRole("button", { name: "Viewport", exact: true }).first().click();
-  check("Workbench Assets, Swarm, Viewport tabs switch cleanly", true);
+  const previewBtn = p.locator('button[aria-label="Open 3D Preview"]').first();
+  if ((await previewBtn.count()) > 0 && (await previewBtn.isVisible())) {
+    await previewBtn.click();
+  }
+  await p.locator("[data-studio-viewport-3d]").waitFor({ state: "visible", timeout: 8000 });
+  await assertLayoutInvariants(p, "1440x900 Light StudioViewport3D");
+  await setThemeViaSettings(p, "dark");
+  await assertLayoutInvariants(p, "1440x900 Dark StudioViewport3D");
+  await setThemeViaSettings(p, "light");
+  check("Workbench Assets, Swarm, StudioViewport3D Light/Dark switch cleanly", true);
 
   // Check collapsible left rail & right workbench
   await p.locator('button[aria-label="Collapse left dock"]').click();
@@ -347,6 +383,23 @@ try {
   await drawerNav.waitFor({ state: "hidden", timeout: 5000 });
   check("Mobile left drawer opens & closes on Escape", true);
   await p.screenshot({ path: `${OUT}/mobile-explorer-390-light.png` });
+
+  // Mobile 390x844 Workbench: GuiDesigner + StudioViewport3D theme switch & 0px overflow
+  await p.locator('[aria-label="Switch Copilot or Workbench view"]').getByRole("button", { name: "Workbench", exact: true }).click();
+  await p.getByRole("button", { name: "UI", exact: true }).first().click();
+  await p.locator("[data-gui-designer]").waitFor({ state: "visible", timeout: 8000 });
+  await assertLayoutInvariants(p, "390x844 Light UI Designer");
+  await p.getByRole("button", { name: "Viewport", exact: true }).first().click();
+  const mobPreviewBtn = p.locator('button[aria-label="Open 3D Preview"]').first();
+  if ((await mobPreviewBtn.count()) > 0 && (await mobPreviewBtn.isVisible())) {
+    await mobPreviewBtn.click();
+  }
+  await p.locator("[data-studio-viewport-3d]").waitFor({ state: "visible", timeout: 8000 });
+  await assertLayoutInvariants(p, "390x844 Light StudioViewport3D");
+  await setThemeViaSettings(p, "dark");
+  await assertLayoutInvariants(p, "390x844 Dark StudioViewport3D");
+  await setThemeViaSettings(p, "light");
+  await p.locator('[aria-label="Switch Copilot or Workbench view"]').getByRole("button", { name: "Copilot", exact: true }).click();
 
   await p.emulateMedia({ reducedMotion: "reduce" });
   await p.locator("#composer-input").fill("Add a spinning coin pickup");

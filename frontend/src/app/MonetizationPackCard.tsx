@@ -27,7 +27,7 @@ const TIER_PRESETS: TierPreset[] = [
     baseReward: 100,
     comebackMultiplier: 2,
     curveMultipliers: [1, 2, 3, 4, 5, 7, 12],
-    summary: "2 Passes (79–149 R$) + 3 DevProducts (25–99 R$)",
+    summary: "2 Passes (79-149 R$) + 3 DevProducts (25-99 R$)",
   },
   {
     id: "anime_gacha_rpg",
@@ -36,7 +36,7 @@ const TIER_PRESETS: TierPreset[] = [
     baseReward: 150,
     comebackMultiplier: 3,
     curveMultipliers: [1, 2, 3, 5, 7, 10, 15],
-    summary: "2 Passes (149–299 R$) + 3 Summon Packs (99–399 R$)",
+    summary: "2 Passes (149-299 R$) + 3 Summon Packs (99-399 R$)",
   },
   {
     id: "competitive_arena",
@@ -45,7 +45,7 @@ const TIER_PRESETS: TierPreset[] = [
     baseReward: 120,
     comebackMultiplier: 2,
     curveMultipliers: [1, 2, 3, 4, 6, 8, 12],
-    summary: "Battle Pass + Loadout+ (129–249 R$) + 3 Boosters",
+    summary: "Battle Pass + Loadout+ (129-249 R$) + 3 Boosters",
   },
 ];
 

@@ -527,7 +527,7 @@ export function EmbeddedStudioPanel({
             ref={viewportBoxRef}
             tabIndex={0}
             data-embedded-viewport-surface
-            aria-label="Embedded Roblox Studio interactive viewport — click, drag, or scroll to send mouse input; enable Keyboard Focus to forward keystrokes"
+            aria-label="Embedded Roblox Studio interactive viewport: click, drag, or scroll to send mouse input; enable Keyboard Focus to forward keystrokes"
             onPointerDown={handleViewportPointerDown}
             onPointerMove={handleViewportPointerMove}
             onPointerUp={handleViewportPointerUp}

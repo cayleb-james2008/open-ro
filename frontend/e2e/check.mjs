@@ -22,7 +22,7 @@ try {
 } catch (e) { crashed = e } finally { await stop() }
 if (crashed) { console.error('\ncheck:ui stopped:', crashed); process.exit(1) }
 
-const MIN_EXPECT = { gate: 55, replay: 8 }
+const MIN_EXPECT = { gate: 110, replay: 11 }
 let bad = 0
 console.log('\n== check:ui')
 for (const [name, minWant] of Object.entries(MIN_EXPECT)) {

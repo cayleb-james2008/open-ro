@@ -345,7 +345,7 @@ export function CommandPalette({
         kind: "system",
         id: `sys:${sys.id}`,
         title: sys.title,
-        subtitle: `${sys.id} — ${sys.summary}`,
+        subtitle: `${sys.id}: ${sys.summary}`,
         badge: sys.category,
         badgeCls: CATEGORY_TAG_CLS[sys.category],
         inPlace: isSystemInPlace(sys, place),

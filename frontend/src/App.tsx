@@ -148,7 +148,11 @@ import { StudioBottomDrawer, type BottomDrawerTab } from "./app/StudioBottomDraw
 type ViewportTab = "embedded-studio" | "studio-3d" | "code-diff" | "gui-designer" | "assets" | "ship" | "teamwork";
 import { ThreadFeed } from "./app/Thread";
 import { BlueprintWorkbench } from "./app/Blueprints";
-import { SettingsDialog } from "./app/SettingsDialog";
+import { PanelErrorBoundary } from "./components/PanelErrorBoundary";
+
+const SettingsDialog = lazy(() =>
+  import("./app/SettingsDialog").then((m) => ({ default: m.SettingsDialog })),
+);
 
 const CodeDiffWorkbench = lazy(() =>
   import("./app/CodeDiffWorkbench").then((m) => ({ default: m.CodeDiffWorkbench })),
@@ -264,15 +268,21 @@ function clonePlace(p: Place | null | "error"): Place | null {
 
 function workspaceBundleToPlace(ws: WorkspaceBundle): Place {
   const scripts: Record<string, string> = {};
-  for (const [relPath, entry] of Object.entries(ws.scripts || {})) {
-    scripts[relPath] = typeof entry?.source === "string" ? entry.source : "";
+  if (ws.scripts && typeof ws.scripts === "object") {
+    for (const [relPath, entry] of Object.entries(ws.scripts)) {
+      if (!entry || typeof entry !== "object") continue;
+      scripts[relPath] = typeof entry.source === "string" ? entry.source : "";
+    }
   }
   const instances: Place["instances"] = {};
-  for (const [dmPath, inst] of Object.entries(ws.instances || {})) {
-    instances[dmPath] = {
-      class_name: inst?.class_name || "Part",
-      properties: inst?.properties || {},
-    };
+  if (ws.instances && typeof ws.instances === "object") {
+    for (const [dmPath, inst] of Object.entries(ws.instances)) {
+      if (!inst || typeof inst !== "object") continue;
+      instances[dmPath] = {
+        class_name: typeof inst.class_name === "string" && inst.class_name ? inst.class_name : "Part",
+        properties: inst.properties && typeof inst.properties === "object" && !Array.isArray(inst.properties) ? inst.properties : {},
+      };
+    }
   }
   return { scripts, instances };
 }
@@ -1471,7 +1481,7 @@ export function App() {
         {},
       );
       if (res.ok) {
-        toast.info("Proposal rejected — Studio place untouched");
+        toast.info("Proposal rejected: Studio place untouched");
         setProposals((prev) =>
           prev.map((p) => (p.id === proposalId ? { ...p, status: "rejected" } : p)),
         );
@@ -1983,11 +1993,11 @@ export function App() {
       if (res.ok === false) {
         toast.error(res.error || "Studio playtest failed.");
       } else if (res.passed === false) {
-        toast.error("Playtest flagged issues — inspect Output Console.");
+        toast.error("Playtest flagged issues: inspect Output Console.");
         setBottomDrawerTab("console");
         setBottomDrawerOpen(true);
       } else {
-        toast.success("Studio Playtest passed — 0 Luau errors");
+        toast.success("Studio Playtest passed (0 Luau errors)");
       }
       await refreshStudioActions(true);
       await refreshDiagnostics(true);
@@ -2004,7 +2014,7 @@ export function App() {
     try {
       const res = await post<{ ok?: boolean; frame_seq?: number; error?: string }>("/api/studio/capture", {});
       if (res.ok === false) {
-        toast.error(res.error || "Live Studio MCP is not attached — switch to Studio 3D or connect Studio MCP.");
+        toast.error(res.error || "Live Studio MCP is not attached. Switch to Studio 3D or connect Studio MCP.");
         return;
       }
       if (typeof res.frame_seq === "number") publishLiveFrame(res.frame_seq);
@@ -2375,9 +2385,9 @@ export function App() {
             : typeof res.warnings === "number"
               ? res.warnings
               : localDiags.filter((d) => d.severity === "warning").length;
-        if (errs > 0) toast.error(`Saved ${path.split(".").pop() || path} — ${errs} Luau error${errs === 1 ? "" : "s"}`);
-        else if (warns > 0) toast.success(`Saved ${path.split(".").pop() || path} — 0 errors, ${warns} warning${warns === 1 ? "" : "s"}`);
-        else toast.success(`Saved & checked ${path.split(".").pop() || path} — 0 Luau errors`);
+        if (errs > 0) toast.error(`Saved ${path.split(".").pop() || path}: ${errs} Luau error${errs === 1 ? "" : "s"}`);
+        else if (warns > 0) toast.success(`Saved ${path.split(".").pop() || path}: 0 errors, ${warns} warning${warns === 1 ? "" : "s"}`);
+        else toast.success(`Saved & checked ${path.split(".").pop() || path} (0 Luau errors)`);
         const afterPlace = await refreshPlace();
         void refreshChats();
         void refreshDiagnostics(true);
@@ -3166,6 +3176,21 @@ export function App() {
 
       {/* Active Workbench Surface */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-2.5">
+        <PanelErrorBoundary
+          key={centerTab}
+          panelName={
+            centerTab === "gui-designer"
+              ? "ScreenGui Designer"
+              : centerTab === "studio-3d"
+                ? "Studio 3D Viewport"
+                : centerTab === "code-diff"
+                  ? "Code Workbench"
+                  : centerTab === "ship" || centerTab === "assets"
+                    ? "Ship & Monetize"
+                    : "Workbench"
+          }
+          onReset={() => void refreshPlace()}
+        >
         <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-ink-2">Loading panel…</div>}>
           {centerTab === "embedded-studio" ? (
             <EmbeddedStudioPanel
@@ -3256,9 +3281,11 @@ export function App() {
             />
           )}
         </Suspense>
+        </PanelErrorBoundary>
       </div>
 
       {/* Collapsible Bottom Console / MCP Tools / Properties Drawer */}
+      <PanelErrorBoundary panelName="Studio Drawer">
       <StudioBottomDrawer
         open={bottomDrawerOpen}
         onToggle={() => setBottomDrawerOpen((v) => !v)}
@@ -3281,6 +3308,7 @@ export function App() {
         onDeletePart={handleDeletePart}
         onInvokeStudioTool={handleInvokeStudioTool}
       />
+      </PanelErrorBoundary>
     </section>
   );
 

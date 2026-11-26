@@ -315,7 +315,7 @@ export function StudioBottomDrawer({
               className="gap-1 text-xs max-md:!h-11"
             >
               <Sliders className="size-3" strokeWidth={1.5} aria-hidden />
-              Properties{selectedPath ? ` — ${selectedPath.split(".").pop()}` : ""}
+              Properties{selectedPath ? `: ${selectedPath.split(".").pop()}` : ""}
             </SegmentedControlItem>
           </SegmentedControl>
 

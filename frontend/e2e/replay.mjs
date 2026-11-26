@@ -58,6 +58,28 @@ try {
   });
   check("Dark theme persists across reload", true);
 
+  // Switch to UI Designer and Studio 3D Viewport in Dark theme and verify 0px overflow
+  await page.getByRole("button", { name: "UI", exact: true }).first().click();
+  await page.locator("[data-gui-designer]").waitFor({ state: "visible", timeout: 8000 });
+  await page.locator('button[aria-label="Settings"]').click();
+  await dlg.waitFor({ state: "visible", timeout: 5000 });
+  await dlg.getByRole("button", { name: "Dark", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => document.documentElement.getAttribute("data-theme") === "dark", null, {
+    timeout: 8000,
+  });
+  const guiOverflowDark = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+  check("GuiDesigner Dark theme has 0px overflow", !guiOverflowDark);
+
+  await page.getByRole("button", { name: "Viewport", exact: true }).first().click();
+  const previewBtn = page.locator('button[aria-label="Open 3D Preview"]').first();
+  if ((await previewBtn.count()) > 0 && (await previewBtn.isVisible())) {
+    await previewBtn.click();
+  }
+  await page.locator("[data-studio-viewport-3d]").waitFor({ state: "visible", timeout: 8000 });
+  const v3dOverflowDark = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+  check("StudioViewport3D Dark theme has 0px overflow", !v3dOverflowDark);
+
   // Switch back to Light cleanly
   await page.locator('button[aria-label="Settings"]').click();
   await dlg.waitFor({ state: "visible", timeout: 5000 });

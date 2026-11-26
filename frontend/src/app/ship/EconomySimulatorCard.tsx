@@ -209,7 +209,7 @@ export function EconomySimulatorCard({
           ) : (
             <div className="flex items-center gap-2 rounded-sm border border-hairline bg-pill-active-bg/30 px-3 py-2 text-xs text-pill-active-fg">
               <Check className="size-3.5" strokeWidth={2} aria-hidden />
-              <span>Zero monetization blockers — retention curve, ProcessReceipt, HUD, and approved tiers aligned.</span>
+              <span>Zero monetization blockers: retention curve, ProcessReceipt, HUD, and approved tiers aligned.</span>
             </div>
           )}
         </div>
