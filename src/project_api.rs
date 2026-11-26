@@ -260,8 +260,8 @@ pub fn route(shared: &Arc<Shared>, method: &str, full_path: &str, body: &[u8], l
             | ("GET", [_])
             | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "format" | "run-lune" | "open-in-studio"])
             | ("POST", [_, "sync", "diff"] | [_, "playtests", "rerun"] | [_, "playtests", "fix-plan"] | [_, "playtests", "fix-apply"] | [_, "playtests", "fix-all"])
-            | ("GET", [_, "builds" | "playtests" | "dependencies" | "snapshots" | "files" | "file" | "preview"] | [_, "snapshots", "hook-integrity"])
-            | ("POST", [_, "dependencies", "prune"] | [_, "snapshots"] | [_, "snapshots", _, "restore"] | [_, "snapshots", _, "restore-hooks"])
+            | ("GET", [_, "builds" | "playtests" | "dependencies" | "snapshots" | "sync-conflicts" | "files" | "file" | "preview"] | [_, "snapshots", "hook-integrity"])
+            | ("POST", [_, "dependencies", "prune"] | [_, "snapshots"] | [_, "snapshots", _, "restore"] | [_, "snapshots", _, "restore-hooks"] | [_, "sync-conflicts", "resolve"])
             | ("POST", [_, "file"] | [_, "file", "delete"] | [_, "file", "edit"])
             | ("GET", [_, "git", "status" | "log"])
             | ("POST", [_, "git", "commit" | "revert"])
@@ -730,6 +730,15 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
         ("POST", [id, "dependencies", "prune"]) => {
             let r = project_of(shared, id)?;
             crate::playtest::prune_or_fix_dependencies(&r)
+        }
+        ("GET", [id, "sync-conflicts"]) => {
+            let r = project_of(shared, id)?;
+            crate::playtest::project_sync_conflicts(shared, &r).map(Reply::ok)
+        }
+        ("POST", [id, "sync-conflicts", "resolve"]) => {
+            let r = project_of(shared, id)?;
+            let b = parse_body(body)?;
+            crate::playtest::resolve_project_sync_conflict(shared, &r, &b)
         }
         ("GET", [id, "snapshots", "hook-integrity"]) => {
             let r = project_of(shared, id)?;

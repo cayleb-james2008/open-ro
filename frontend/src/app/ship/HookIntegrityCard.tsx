@@ -115,14 +115,14 @@ export function HookIntegrityCard({
             )}
           </div>
           <p className="mt-0.5 text-xs text-ink-2">
-            Detects dropped Robux GamePass/Product IDs, <span className="font-mono">ProcessReceipt</span>,{" "}
-            <span className="font-mono">Workspace.SpawnLocation</span>, and <span className="font-mono">--!strict</span> headers against{" "}
+            Checks whether recent edits dropped Robux GamePass or DevProduct IDs, <span className="font-mono">ProcessReceipt</span>,{" "}
+            <span className="font-mono">Workspace.SpawnLocation</span>, or <span className="font-mono">--!strict</span> headers from{" "}
             {report?.baseline_label ? (
-              <span className="font-medium text-ink">“{report.baseline_label}”</span>
+              <span className="font-medium text-ink">"{report.baseline_label}"</span>
             ) : (
               "your latest verified snapshot"
             )}
-            , and restores missing hooks without discarding new feature scripts.
+            , and restores missing hooks without touching new feature scripts.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

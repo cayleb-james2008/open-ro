@@ -193,7 +193,7 @@ export function SnapshotRollbackCard({
             </Pill>
           </div>
           <p className="mt-0.5 text-xs text-ink-2">
-            Compare Luau script diffs &amp; assertion deltas across checkpoints, or restore your last verified playable snapshot in one click.
+            Compare Luau script diffs and assertion deltas across checkpoints, or restore your last verified playable snapshot in one click.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

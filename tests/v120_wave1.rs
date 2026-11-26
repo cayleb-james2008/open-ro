@@ -105,7 +105,7 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.14.0"));
+    assert_eq!(ver_json["version"], json!("1.15.0"));
 
     // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
     if let Ok(entries) = std::fs::read_dir("assets/chunks") {
@@ -727,7 +727,7 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
         assert!(n > 0, "unexpected EOF on first keep-alive response");
         first_buf.extend_from_slice(&tmp[..n]);
         let s = String::from_utf8_lossy(&first_buf);
-        if s.contains("1.14.0") {
+        if s.contains("1.15.0") {
             assert!(s.contains("Connection: keep-alive"), "{s}");
             break;
         }
@@ -739,7 +739,7 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
     let _ = ka.read_to_end(&mut second_buf);
     let s2_txt = String::from_utf8_lossy(&second_buf);
     assert!(s2_txt.contains("HTTP/1.1 200 OK"), "{s2_txt}");
-    assert!(s2_txt.contains("1.14.0"), "{s2_txt}");
+    assert!(s2_txt.contains("1.15.0"), "{s2_txt}");
 
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -1059,6 +1059,120 @@ fn v1140_wave13_hook_integrity_and_surgical_restore() {
     assert_eq!(st_miss, 404);
     let bad_req = format!(
         "GET /api/studio/snapshots/hook-integrity HTTP/1.1\r\nHost: attacker.example:{port}\r\nConnection: close\r\n\r\n"
+    );
+    let (st_403, _, _) = send_raw_bytes(port, bad_req.as_bytes());
+    assert_eq!(st_403, 403);
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn v1150_wave14_rojo_sync_conflict_resolver_and_cwe22() {
+    let base = std::env::temp_dir().join(format!(
+        "openro-v1150-wave14-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let data = base.join("data");
+    let ws = base.join("ws");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let port = start_server_with_dir(Some(data));
+    let (st_ws, _) = send_json(port, "POST", "/api/projects/workspace", Some(&json!({ "path": ws })));
+    assert_eq!(st_ws, 200);
+    let (st_cr, cr) = send_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(&json!({ "name": "Wave14SyncConflicts" })),
+    );
+    assert_eq!(st_cr, 201, "{cr}");
+    let pid = cr["project"]["id"].as_str().unwrap().to_string();
+    let proj_dir = std::path::PathBuf::from(cr["project"]["path"].as_str().unwrap());
+
+    std::fs::create_dir_all(proj_dir.join("src/server")).unwrap();
+    let base_a = "--!strict\nprint(\"base A\")\n";
+    let base_b = "--!strict\nprint(\"base B\")\n";
+    std::fs::write(proj_dir.join("src/server/Alpha.server.luau"), base_a).unwrap();
+    std::fs::write(proj_dir.join("src/server/Beta.server.luau"), base_b).unwrap();
+
+    // Establish sync baseline snapshot
+    let (st_s1, _) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/snapshots"),
+        Some(&json!({ "label": "Sync Baseline" })),
+    );
+    assert_eq!(st_s1, 200);
+
+    // Edit both files on disk to create drift conflicts
+    let edited_a = "--!strict\nprint(\"local A edited\")\n";
+    let edited_b = "--!strict\nprint(\"local B edited\")\n";
+    std::fs::write(proj_dir.join("src/server/Alpha.server.luau"), edited_a).unwrap();
+    std::fs::write(proj_dir.join("src/server/Beta.server.luau"), edited_b).unwrap();
+
+    let (st_sc, sc) = send_json(port, "GET", &format!("/api/projects/{pid}/sync-conflicts"), None);
+    assert_eq!(st_sc, 200, "{sc}");
+    assert_eq!(sc["schema"], json!("openro.sync_conflicts.v1"));
+    assert_eq!(sc["in_sync"], json!(false), "{sc}");
+    assert_eq!(sc["conflict_count"], json!(2), "{sc}");
+    let first = &sc["conflicts"].as_array().unwrap()[0];
+    assert!(!first["hunks"].as_array().unwrap().is_empty(), "{first}");
+
+    // 1. Backup Snapshot keeps both untouched and produces backup_snapshot_id
+    let (st_bk, bk) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/sync-conflicts/resolve"),
+        Some(&json!({ "path": "src/server/Alpha.server.luau", "action": "backup_snapshot" })),
+    );
+    assert_eq!(st_bk, 200, "{bk}");
+    assert!(bk["backup_snapshot_id"].as_str().is_some(), "{bk}");
+    assert_eq!(bk["conflict_count"], json!(2), "{bk}");
+
+    // 2. Accept Local marks Alpha local edit as synced baseline
+    let (st_al, al) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/sync-conflicts/resolve"),
+        Some(&json!({ "path": "src/server/Alpha.server.luau", "action": "accept_local" })),
+    );
+    assert_eq!(st_al, 200, "{al}");
+    assert_eq!(al["conflict_count"], json!(1), "{al}");
+    assert_eq!(std::fs::read_to_string(proj_dir.join("src/server/Alpha.server.luau")).unwrap(), edited_a);
+
+    // 3. Keep Place restores Beta to Place baseline (with backup snapshot) -> 0 conflicts
+    let (st_kp, kp) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/sync-conflicts/resolve"),
+        Some(&json!({ "path": "src/server/Beta.server.luau", "action": "keep_place" })),
+    );
+    assert_eq!(st_kp, 200, "{kp}");
+    assert_eq!(kp["in_sync"], json!(true), "{kp}");
+    assert_eq!(kp["conflict_count"], json!(0), "{kp}");
+    assert_eq!(std::fs::read_to_string(proj_dir.join("src/server/Beta.server.luau")).unwrap(), base_b);
+
+    // CWE-22 traversal + invalid action + loopback-403 protections
+    let (st_trav, _) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/sync-conflicts/resolve"),
+        Some(&json!({ "path": "../outside.luau", "action": "accept_local" })),
+    );
+    assert_eq!(st_trav, 400);
+    let (st_act, _) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/sync-conflicts/resolve"),
+        Some(&json!({ "path": "src/server/Alpha.server.luau", "action": "nuke" })),
+    );
+    assert_eq!(st_act, 400);
+    let bad_req = format!(
+        "GET /api/studio/sync-conflicts HTTP/1.1\r\nHost: attacker.example:{port}\r\nConnection: close\r\n\r\n"
     );
     let (st_403, _, _) = send_raw_bytes(port, bad_req.as_bytes());
     assert_eq!(st_403, 403);

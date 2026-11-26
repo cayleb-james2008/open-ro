@@ -1,36 +1,34 @@
-# OpenRO (`v1.14.0`)
+# OpenRO (`v1.15.0`)
 
 [![Release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/cayleb-james2008/open-ro/release.yml?branch=main&label=build)](https://github.com/cayleb-james2008/open-ro/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Stack](https://img.shields.io/badge/stack-Rust%20%2B%20React%2019%20%2B%20TypeScript-0f172a.svg)](#architecture)
 
-**Single-binary cross-platform Roblox Studio AI IDE** (`openro-rs`) for building, verifying, monetizing, and publishing complete Roblox games end-to-end — from Rojo project scaffolding and multi-agent Teamwork to 1-click Launch Autopilot (`Fix All Failing Checks` -> `.rbxlx` / `.zip`), Preflight Hook-Integrity & Surgical Restore, Playable Snapshot Diff & 1-Click Safe Rollback, Luau Module Dependency Graph & Broken-Require Pruning, Economy & Funnel Dry-Run Simulation (`ARPDAU`, `D1`/`D7` lift, conversion), deterministic playtest assertion suites, genre retention presets, Creator Hub browser setup, and Roblox Open Cloud publishing.
+OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 interface. It builds, checks, monetizes, and publishes Roblox games from Rojo project folders or an embedded Local Place engine, with an offline browser demo (`web-dist/index.html`) that runs the same workflows locally with no external network requests.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/hero-dark.png" />
-    <img src="docs/screenshots/hero-light.png" alt="OpenRO 3-Pane Studio Copilot IDE showing Explorer, Agent thread, and Luau Code Workbench" width="100%" />
+    <img src="docs/screenshots/hero-light.png" alt="OpenRO three-pane Studio IDE showing Explorer, Agent thread, and Luau code editor" width="100%" />
   </picture>
 </p>
 
-## Why OpenRO
+## What it does
 
-- **Zero-lag 3-pane Studio Copilot:** Explorer, Agent/Plan/Ask thread with reviewable Luau diffs, and tabbed Studio Workbench (`Viewport`, `Code`, `Assets`, `Ship`, `Swarm`) served from a single `9.93 MB` binary (`56.2 KB` gzip initial shell).
-- **Preflight Hook-Integrity & Regression Diff Guard (`/play` / `Ship & Monetize`):** Detects dropped Robux GamePass/DevProduct IDs, `ProcessReceipt`, `PromptGamePassPurchase`/`PromptProductPurchase`, `Workspace.SpawnLocation`, `--!strict` pragmas, and `Players.PlayerAdded`/`BindToClose` hooks relative to the latest verified snapshot, surfacing 1-click **Restore Missing Revenue / Core Hooks** surgical merge without discarding new feature scripts (full `web-engine` parity).
-- **Playable Snapshot Diff & 1-Click Safe Rollback (`/play` / `Snapshots`):** Tracks sequential Luau `changed_scripts` and assertion pass/fail deltas across checkpoints, restoring your latest verified playable snapshot in 1 click after creating an automatic `Pre-rollback safety checkpoint` and re-running offline playtest assertions (with full `web-engine` parity).
-- **Luau Module Dependency Graph & Broken-Require Pruner (`/play`):** Audits `require()` edges, unused `ModuleScript`s, and `ReplicatedStorage` remotes across your place, fixing broken links and pruning dead modules/orphan remotes in 1 click.
-- **Studio Economy & Funnel Dry-Run Simulator (`/play` / `#/ship`):** Projects deterministic ARPDAU (R$ & DevEx USD), D1/D7 retention lift, GamePass conversion %, 4-stage funnel drop-off, actionable revenue blockers, and 1-click JSON export from your place structure and monetization presets.
-- **1-Click Launch Autopilot & Monetization Readiness:** **Fix All Failing Checks** repairs failing Luau/Runtime/Monetization assertions in batch, rebuilds `.rbxl`, verifies Ship Pack ZIP CRC-32 / ZIP-slip integrity, and unlocks 1-click `.rbxlx` and `.zip` exports alongside genre tier presets (`Starter Obby / Sim`, `Anime Gacha / RPG`, `Competitive Arena`), idempotent `ProcessReceipt`, 7-day escalating streak + 48h comeback bonus hooks, and draft Robux tiers (`priceApproved: false` owner gate).
-- **Deterministic Playtest Assertion Lab (`/play` / `#/lab`):** Structured per-room JSON assertions (`Luau`, `Runtime`, `Core Loop`, `Economy`, `Visuals`), 1-click **Re-Run All Assertions** with fixed/regressed diffs, targeted Luau auto-fix plans, and JSON report export.
-- **Full Browser Demo Parity (`web-dist/index.html`):** Offline-capable standalone Studio web engine with zero external network calls.
+- The three-pane workspace puts the Place explorer on the left, the Agent/Plan/Ask thread in the middle, and tabbed panels (`Viewport`, `Code`, `Assets`, `Ship`, `Swarm`) on the right.
+- Before publishing, the Rojo live-sync conflict resolver compares local `.luau` files on disk against your synced Place baseline, shows line diffs, and lets you accept local changes, restore the Place version, or save a backup snapshot in one click.
+- The preflight hook-integrity check catches dropped Robux GamePass or DevProduct IDs, `ProcessReceipt` handlers, `Workspace.SpawnLocation`, and `--!strict` headers against your last verified snapshot, restoring missing hooks without overwriting new feature scripts.
+- Playable snapshots track script diffs and assertion deltas between checkpoints so you can roll back to a verified build after taking an automatic safety checkpoint.
+- The dependency audit and monetization tools inspect `require()` edges, remove unused ModuleScripts or orphan remotes, run deterministic economy funnel projections (`ARPDAU`, `D1`/`D7` retention, GamePass conversion), and keep Robux pricing gated until an owner approves it (`priceApproved: false`).
+- Deterministic playtest suites verify Luau syntax, runtime logs, core loop checks, and economy wiring, with one-click fixes that rebuild `.rbxl` and verify Ship Pack `.zip` archives.
 
-## Feature Gallery
+## Feature gallery
 
 <table>
   <tr>
     <td width="50%" align="center">
-      <strong>Ship &amp; Revenue Readiness Autopilot + Pre-Publish Gate</strong>
+      <strong>Ship readiness autopilot and pre-publish gate</strong>
       <br /><br />
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/ship-readiness-dark.png" />
@@ -38,7 +36,7 @@
       </picture>
     </td>
     <td width="50%" align="center">
-      <strong>Monetization Tier &amp; 48h Comeback Retention Designer</strong>
+      <strong>Monetization tier and 48h comeback retention designer</strong>
       <br /><br />
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/monetization-dark.png" />
@@ -59,18 +57,18 @@ flowchart LR
   SRV --> OC["Open Cloud &amp; Creator Hub<br/>0600 Secrets + Price Approval Gate"]
 ```
 
-## Verified Benchmarks (`v1.14.0` vs `v1.2.0`)
+## Verified benchmarks (`v1.15.0` vs `v1.2.0`)
 
-| Metric | `v1.2.0` Baseline | `v1.14.0` Verified (`#154` pinned) | Delta |
+| Metric | `v1.2.0` baseline | `v1.15.0` verified (`#154` pinned) | Delta |
 | --- | --- | --- | --- |
-| Release Binary Size | `19.00 MB` | **`9.93 MB`** (`10,412,888 B`) | **`-47.7%`** |
-| Initial `/` Payload | `~1,368 KB` raw / `~459 KB` gz | **`236.0 KB`** raw (`241,667 B`) / **`56.2 KB`** gz (`57,591 B`) | **`-87.8%` wire** |
-| Cold Boot (`#154` pinned) | `1,470 ms` | **`29.57 ms`** | **`-98.0%`** |
-| Peak RSS (`VmHWM`) | `115.20 MB` | **`9.15 MB`** (`9,368 KB`, 16w) / **`16.69 MB`** (`17,088 KB` scale-audit + 10 SSE) | **`-92.1%`** |
-| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`35,317.9 req/s`** keep-alive (`0.86 ms` p95) / **`28,580.4 req/s`** close (`1.11 ms` p95) / **`4,324.6 req/s`** Python cold (`5.32 ms` p95, `0` errs) | **`40.4x` (`-99.4%` p95)** |
-| Security & UI Gates | `43/43` fuzz | **`30/30` fuzz, `10/10` SSE, `0` sloplint fails/warns, `312` Rust tests, `gate 56/56`, `replay 9/9`** | Pass |
+| Release binary size | `19.00 MB` | **`9.96 MB`** (`10,445,656 B`) | **`-47.6%`** |
+| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`236.3 KB`** raw (`241,925 B`) / **`56.3 KB`** gz (`57,629 B`) | **`-87.7%` wire** |
+| Cold boot (`#154` pinned) | `1,470 ms` | **`36.60 ms`** | **`-97.5%`** |
+| Peak RSS (`VmHWM`) | `115.20 MB` | **`9.19 MB`** (`9,408 KB`, 16w) / **`14.28 MB`** (`14,620 KB` scale-audit + 10 SSE) | **`-92.0%`** |
+| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`41,439.3 req/s`** keep-alive (`0.69 ms` p95) / **`40,220.3 req/s`** close (`0.76 ms` p95) / **`3,870.9 req/s`** Python cold (`4.84 ms` p95, `0` errs) | **`47.4x` (`-99.5%` p95)** |
+| Security and UI gates | `43/43` fuzz | **`33/33` fuzz, `10/10` SSE, `0` sloplint fails/warns, `313` Rust tests, `gate 56/56`, `replay 9/9`** | Pass |
 
-## Quick Start
+## Quick start
 
 ```sh
 # 1. Build the embedded single-file frontend and Rust release binary
@@ -81,12 +79,11 @@ touch src/lib.rs src/server.rs && cargo build --release --locked
 ./target/release/openro-rs --no-open --port 8077
 
 # 3. Verify Rust tests, Windows cross-check, and UI gates
-cargo test -- --test-threads=2
+cargo test -- --test-threads=1
 cargo xwin check --target x86_64-pc-windows-msvc
 npm --prefix frontend run check:ui -- --lints --skip-build
 ```
 
-## Documentation & Cross-Platform Notes
+## Platform notes
 
-- **Platforms:** Linux (`x86_64`, `aarch64`, `Xvfb`/Vinegar Studio embed), Windows (`x86_64-pc-windows-msvc`), macOS (`aarch64-apple-darwin`).
-- **API References:** [Projects, Sync & Playtest](docs/API-V011.md) · [Multi-Agent Teamwork](docs/API-V011-teamwork.md) · [Creator Hub & Open Cloud](docs/API-V011-creator-hub.md) · [Assets & Mesh](docs/API-V011-assets.md) · [Study Ledger](docs/API-V011-study.md) · [Tool Adapters](docs/API-V011-adapters.md).
+OpenRO builds for Linux (`x86_64`, `aarch64`, `Xvfb`/Vinegar Studio embed), Windows (`x86_64-pc-windows-msvc`), and macOS (`aarch64-apple-darwin`). API references live in [Projects, Sync & Playtest](docs/API-V011.md), [Multi-Agent Teamwork](docs/API-V011-teamwork.md), [Creator Hub & Open Cloud](docs/API-V011-creator-hub.md), [Assets & Mesh](docs/API-V011-assets.md), [Study Ledger](docs/API-V011-study.md), and [Tool Adapters](docs/API-V011-adapters.md).

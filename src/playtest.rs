@@ -2791,6 +2791,14 @@ pub fn list_project_snapshots(r: &ProjectRef) -> Result<Value, Reply> {
 }
 
 pub fn create_project_snapshot(r: &ProjectRef, body: &Value) -> Result<Reply, Reply> {
+    create_project_snapshot_opts(r, body, true)
+}
+
+fn create_project_snapshot_opts(
+    r: &ProjectRef,
+    body: &Value,
+    update_sync_baseline: bool,
+) -> Result<Reply, Reply> {
     let root = project_snapshots_dir(&r.dir);
     std::fs::create_dir_all(&root)
         .map_err(|e| Reply::err("500 Internal Server Error", format!("snapshots dir: {e}")))?;
@@ -2828,6 +2836,10 @@ pub fn create_project_snapshot(r: &ProjectRef, body: &Value) -> Result<Reply, Re
     std::fs::write(&tmp, serde_json::to_vec_pretty(&rec).unwrap_or_default())
         .and_then(|_| std::fs::rename(&tmp, &target))
         .map_err(|e| Reply::err("500 Internal Server Error", format!("write snapshot: {e}")))?;
+
+    if update_sync_baseline {
+        let _ = write_sync_baseline(&r.dir, &scripts, Some(&sid));
+    }
 
     let existing = load_sorted_project_snapshots(&r.dir);
     if existing.len() > MAX_PROJECT_SNAPSHOTS {
@@ -2878,7 +2890,7 @@ pub fn restore_project_snapshot(
             .iter()
             .any(|(k, v)| snap_scripts.get(k).and_then(Value::as_str) != Some(v.as_str()));
     if auto_checkpoint && differs {
-        let _ = create_project_snapshot(r, &json!({ "label": "Pre-rollback safety checkpoint" }));
+        let _ = create_project_snapshot_opts(r, &json!({ "label": "Pre-rollback safety checkpoint" }), false);
     }
 
     let mut restored_files = Vec::new();
@@ -3343,9 +3355,10 @@ pub fn restore_project_hooks(
         current_has_spawn,
     );
     if auto_checkpoint && !before_missing.is_empty() {
-        let _ = create_project_snapshot(
+        let _ = create_project_snapshot_opts(
             r,
             &json!({ "label": "Pre-hook-restore safety checkpoint" }),
+            false,
         );
     }
 
@@ -3471,6 +3484,250 @@ pub fn studio_restore_hooks_tree(baseline_tree: &Value, current_tree: &Value) ->
         }
     }
     (next_tree, restored_files, modified_files, hooks_restored)
+}
+
+fn sync_baseline_path(dir: &Path) -> PathBuf {
+    dir.join(".openro").join("sync-baseline.json")
+}
+
+fn write_sync_baseline(
+    dir: &Path,
+    scripts: &std::collections::BTreeMap<String, String>,
+    baseline_id: Option<&str>,
+) -> std::io::Result<()> {
+    let p = sync_baseline_path(dir);
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = dir.join(".openro").join("sync-baseline.json.tmp-openro");
+    let doc = json!({
+        "baseline_id": baseline_id,
+        "scripts": scripts,
+    });
+    std::fs::write(&tmp, serde_json::to_vec(&doc).unwrap_or_default())?;
+    std::fs::rename(&tmp, &p)
+}
+
+fn load_sync_baseline(
+    dir: &Path,
+) -> Option<(Option<String>, std::collections::BTreeMap<String, String>)> {
+    if let Ok(raw) = std::fs::read_to_string(sync_baseline_path(dir)) {
+        if let Ok(v) = serde_json::from_str::<Value>(&raw) {
+            let bid = v.get("baseline_id").and_then(Value::as_str).map(String::from);
+            let map = json_obj_to_scripts_map(v.get("scripts").and_then(Value::as_object));
+            return Some((bid, map));
+        }
+    }
+    let snaps = load_sorted_project_snapshots(dir);
+    let snap = snaps.last()?;
+    let bid = snap["snapshot_id"].as_str().map(String::from);
+    let map = json_obj_to_scripts_map(snap.get("scripts").and_then(Value::as_object));
+    Some((bid, map))
+}
+
+fn rel_script_to_place_path(rel: &str) -> String {
+    let trimmed = rel.strip_prefix("src/").unwrap_or(rel);
+    let stem = trimmed
+        .strip_suffix(".server.luau")
+        .or_else(|| trimmed.strip_suffix(".client.luau"))
+        .or_else(|| trimmed.strip_suffix(".luau"))
+        .or_else(|| trimmed.strip_suffix(".lua"))
+        .unwrap_or(trimmed);
+    let parts: Vec<&str> = stem.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return rel.to_string();
+    }
+    match parts[0] {
+        "server" => format!("ServerScriptService.{}", parts[1..].join(".")),
+        "client" => format!("StarterPlayer.StarterPlayerScripts.{}", parts[1..].join(".")),
+        "shared" => format!("ReplicatedStorage.Shared.{}", parts[1..].join(".")),
+        _ => parts.join("."),
+    }
+}
+
+fn validate_conflict_rel_path(dir: &Path, raw: &str) -> Result<String, Reply> {
+    let norm = raw.trim().trim_start_matches("./");
+    if norm.is_empty()
+        || norm.starts_with('/')
+        || norm.starts_with('\\')
+        || norm.contains('\\')
+        || norm.contains('\0')
+        || norm.split('/').any(|s| s == ".." || s.is_empty())
+        || norm.starts_with(".openro")
+        || !(norm.ends_with(".luau") || norm.ends_with(".lua"))
+    {
+        return Err(Reply::bad(format!("invalid script path: {raw}")));
+    }
+    let abs = crate::projects::safe_join(dir, norm).map_err(Reply::bad)?;
+    if let Ok(root_canon) = std::fs::canonicalize(dir) {
+        if let Ok(abs_canon) = std::fs::canonicalize(&abs) {
+            if !abs_canon.starts_with(&root_canon) {
+                return Err(Reply::bad("script path escapes project root"));
+            }
+        }
+    }
+    Ok(norm.to_string())
+}
+
+pub fn build_sync_conflicts_report(
+    place_scripts: &std::collections::BTreeMap<String, String>,
+    local_scripts: &std::collections::BTreeMap<String, String>,
+    has_baseline: bool,
+    baseline_id: Option<&str>,
+) -> Value {
+    if !has_baseline {
+        return json!({
+            "schema": "openro.sync_conflicts.v1",
+            "has_baseline": false,
+            "baseline_id": Value::Null,
+            "in_sync": true,
+            "conflict_count": 0,
+            "conflicts": [],
+        });
+    }
+    let place_tree = json!({ "scripts": place_scripts });
+    let local_tree = json!({ "scripts": local_scripts });
+    let diffs = crate::snapshots::compute_file_diffs(&place_tree, &local_tree);
+    let conflicts: Vec<Value> = diffs
+        .into_iter()
+        .map(|d| {
+            let place_src = place_scripts.get(&d.path).cloned().unwrap_or_default();
+            let local_src = local_scripts.get(&d.path).cloned().unwrap_or_default();
+            let hunks: Vec<Value> = d
+                .hunks
+                .into_iter()
+                .map(|h| {
+                    let lines: Vec<Value> = h
+                        .lines
+                        .into_iter()
+                        .map(|l| {
+                            let op = match l.kind.as_str() {
+                                "add" => "add",
+                                "del" | "remove" => "del",
+                                _ => "context",
+                            };
+                            json!({
+                                "op": op,
+                                "text": l.text,
+                                "old_line": l.old_line,
+                                "new_line": l.new_line,
+                            })
+                        })
+                        .collect();
+                    let header = format!(
+                        "@@ -{},{} +{},{} @@",
+                        h.old_start, h.old_count, h.new_start, h.new_count
+                    );
+                    json!({ "header": header, "lines": lines })
+                })
+                .collect();
+            json!({
+                "path": d.path,
+                "place_path": rel_script_to_place_path(&d.path),
+                "status": d.status,
+                "added_lines": d.additions,
+                "removed_lines": d.deletions,
+                "local_source": local_src,
+                "place_source": place_src,
+                "hunks": hunks,
+            })
+        })
+        .collect();
+    json!({
+        "schema": "openro.sync_conflicts.v1",
+        "has_baseline": true,
+        "baseline_id": baseline_id,
+        "in_sync": conflicts.is_empty(),
+        "conflict_count": conflicts.len(),
+        "conflicts": conflicts,
+    })
+}
+
+pub fn project_sync_conflicts(_shared: &Shared, r: &ProjectRef) -> Result<Value, Reply> {
+    let local_scripts = collect_project_luau_map(&r.dir);
+    let Some((baseline_id, place_scripts)) = load_sync_baseline(&r.dir) else {
+        return Ok(build_sync_conflicts_report(&local_scripts, &local_scripts, false, None));
+    };
+    Ok(build_sync_conflicts_report(
+        &place_scripts,
+        &local_scripts,
+        true,
+        baseline_id.as_deref(),
+    ))
+}
+
+pub fn resolve_project_sync_conflict(
+    shared: &Shared,
+    r: &ProjectRef,
+    body: &Value,
+) -> Result<Reply, Reply> {
+    let action = body
+        .get("action")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("");
+    if !matches!(action, "accept_local" | "keep_place" | "backup_snapshot") {
+        return Err(Reply::bad("action must be accept_local, keep_place, or backup_snapshot"));
+    }
+    let raw_path = body.get("path").and_then(Value::as_str).unwrap_or("");
+    let rel = validate_conflict_rel_path(&r.dir, raw_path)?;
+
+    let (baseline_id, mut place_scripts) = load_sync_baseline(&r.dir)
+        .unwrap_or_else(|| (None, collect_project_luau_map(&r.dir)));
+    let local_scripts = collect_project_luau_map(&r.dir);
+
+    let backup_label = match action {
+        "accept_local" => format!("Backup before Accept Local ({rel})"),
+        "keep_place" => format!("Backup before Keep Place ({rel})"),
+        _ => format!("Conflict backup snapshot ({rel})"),
+    };
+    let backup_reply = create_project_snapshot_opts(
+        r,
+        &json!({ "label": backup_label }),
+        false,
+    )?;
+    let backup_json: Value = serde_json::from_slice(&backup_reply.body).unwrap_or_else(|_| json!({}));
+    let backup_id = backup_json["snapshot"]["snapshot_id"]
+        .as_str()
+        .map(String::from);
+
+    match action {
+        "accept_local" => {
+            if let Some(local_src) = local_scripts.get(&rel) {
+                place_scripts.insert(rel.clone(), local_src.clone());
+            } else {
+                place_scripts.remove(&rel);
+            }
+            write_sync_baseline(&r.dir, &place_scripts, baseline_id.as_deref())
+                .map_err(|e| Reply::err("500 Internal Server Error", format!("write baseline: {e}")))?;
+        }
+        "keep_place" => {
+            if let Some(place_src) = place_scripts.get(&rel) {
+                write_project_luau(&r.dir, &rel, place_src)?;
+            } else {
+                let abs = crate::projects::safe_join(&r.dir, &rel).map_err(Reply::bad)?;
+                if abs.is_file() {
+                    std::fs::remove_file(&abs)
+                        .map_err(|e| Reply::err("500 Internal Server Error", format!("remove script: {e}")))?;
+                }
+            }
+        }
+        "backup_snapshot" => {
+            // Backup snapshot created above; leaves both local disk and Place baseline untouched.
+        }
+        _ => {}
+    }
+
+    let report = project_sync_conflicts(shared, r)?;
+    Ok(Reply::ok(json!({
+        "action": action,
+        "path": rel,
+        "backup_snapshot_id": backup_id,
+        "in_sync": report["in_sync"],
+        "conflict_count": report["conflict_count"],
+        "conflicts": report["conflicts"],
+        "report": report,
+    })))
 }
 
 /// Summary of the most recent stored playtest report for `study/status` (#62).
