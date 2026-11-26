@@ -600,27 +600,29 @@ export type PublishGateResult = {
 
 export type Res<T> = { ok: boolean; httpStatus: number; error?: string } & Partial<T>;
 
-/** GET when `body` is undefined, else POST JSON. A network, timeout, or parse failure comes back as ok:false with plain words. */
+/** GET when `body` is undefined, else POST JSON (or explicit `method`). A network, timeout, or parse failure comes back as ok:false with plain words. */
 export async function call<T = Record<string, unknown>>(
   url: string,
   body?: unknown,
-  options?: { timeoutMs?: number },
+  options?: { timeoutMs?: number; method?: "GET" | "POST" | "PUT" | "DELETE" },
 ): Promise<Res<T>> {
   const timeoutMs = options?.timeoutMs ?? 25000;
+  const method = options?.method ?? (body === undefined ? "GET" : "POST");
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
   const timer = controller && timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
-    const r = await fetch(
-      url,
-      body === undefined
-        ? { cache: "no-store", signal: controller?.signal }
-        : {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-            signal: controller?.signal,
-          },
-    );
+    const init: RequestInit =
+      method === "GET"
+        ? { method: "GET", cache: "no-store", signal: controller?.signal }
+        : body === undefined
+          ? { method, cache: "no-store", signal: controller?.signal }
+          : {
+              method,
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+              signal: controller?.signal,
+            };
+    const r = await fetch(url, init);
     const text = await r.text();
     let data: Record<string, unknown> = {};
     let parseFailed = false;
@@ -1098,3 +1100,231 @@ export const stamp = (at: string | number | undefined) => {
   const d = new Date(typeof at === "number" && at < 1e12 ? at * 1000 : at);
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 };
+
+export type LiveOpsDataStoreKind = "standard" | "ordered";
+
+export type LiveOpsDataStoreEntry = {
+  store: string;
+  scope: string;
+  key: string;
+  kind?: LiveOpsDataStoreKind | string;
+  revision?: string | null;
+  value?: unknown;
+  updated_at?: string | null;
+  size_bytes?: number;
+};
+
+export type LiveOpsDataStoreBackup = {
+  path: string;
+  created_at?: string;
+  revision?: string | null;
+};
+
+export type LiveOpsDataStoreListResponse = {
+  stores?: string[];
+  entries: LiveOpsDataStoreEntry[];
+  next_cursor?: string | null;
+  source?: string;
+};
+
+export type LiveOpsDataStoreEntryResponse = {
+  entry?: LiveOpsDataStoreEntry;
+  backups?: LiveOpsDataStoreBackup[];
+  backup_path?: string | null;
+  backup_created?: boolean;
+  deleted?: boolean;
+  revision?: string | null;
+  source?: string;
+};
+
+export type LiveOpsMessagingPublishResponse = {
+  topic: string;
+  published: boolean;
+  published_at?: string;
+  target?: string;
+};
+
+export type LiveOpsRemoteConfigResponse = {
+  config: Record<string, unknown>;
+  path?: string;
+  luau_path?: string;
+  luau_exists?: boolean;
+  luau_written?: boolean;
+  datastore_pushed?: boolean;
+  bytes?: number;
+  updated_at?: string | null;
+};
+
+export type LiveOpsTelemetryEvent = {
+  kind: "onboarding" | "funnel" | "economy" | "custom" | string;
+  user_id: string | number;
+  step?: string;
+  currency?: string;
+  amount?: number;
+  ts?: number | string;
+};
+
+export type LiveOpsFunnelStep = {
+  step: string;
+  users: number;
+  pct: number;
+  drop_off_pct?: number;
+};
+
+export type LiveOpsCurrencySink = {
+  label?: string;
+  currency?: string;
+  item?: string;
+  amount: number;
+  events: number;
+  share_pct?: number;
+};
+
+export type LiveOpsTelemetryAlert = {
+  severity: "high" | "medium" | "low" | "warn" | "info" | string;
+  title: string;
+  detail: string;
+};
+
+export type LiveOpsTelemetrySummary = {
+  dau_sample: number;
+  total_events?: number;
+  funnel_steps: LiveOpsFunnelStep[];
+  arpdau_robux: number;
+  top_sinks: LiveOpsCurrencySink[];
+  alerts: LiveOpsTelemetryAlert[];
+  updated_at?: string | null;
+};
+
+function buildLiveOpsQuery(params: Record<string, string | number | undefined>): string {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && String(v).trim() !== "") {
+      sp.set(k, String(v));
+    }
+  }
+  const qs = sp.toString();
+  return qs ? `?${qs}` : "";
+}
+
+export async function listLiveOpsDataStores(
+  projectId: string,
+  params: { store?: string; scope?: string; prefix?: string; kind?: LiveOpsDataStoreKind; limit?: number } = {},
+): Promise<Res<LiveOpsDataStoreListResponse>> {
+  const qs = buildLiveOpsQuery({
+    store: params.store,
+    scope: params.scope,
+    prefix: params.prefix,
+    kind: params.kind,
+    limit: params.limit,
+  });
+  return call<LiveOpsDataStoreListResponse>(projUrl(projectId, `/liveops/datastores${qs}`));
+}
+
+export async function getLiveOpsDataStoreEntry(
+  projectId: string,
+  params: { store: string; scope?: string; key: string; kind?: LiveOpsDataStoreKind },
+): Promise<Res<LiveOpsDataStoreEntryResponse>> {
+  const qs = buildLiveOpsQuery({
+    store: params.store,
+    scope: params.scope || "global",
+    key: params.key,
+    kind: params.kind,
+  });
+  return call<LiveOpsDataStoreEntryResponse>(projUrl(projectId, `/liveops/datastores/entry${qs}`));
+}
+
+export async function setLiveOpsDataStoreEntry(
+  projectId: string,
+  payload: {
+    store: string;
+    scope?: string;
+    key: string;
+    value: unknown;
+    expected_revision?: string | null;
+    confirm: boolean;
+    kind?: LiveOpsDataStoreKind;
+  },
+): Promise<Res<LiveOpsDataStoreEntryResponse>> {
+  return call<LiveOpsDataStoreEntryResponse>(projUrl(projectId, "/liveops/datastores/entry"), {
+    store: payload.store,
+    scope: payload.scope || "global",
+    key: payload.key,
+    value: payload.value,
+    ...(payload.expected_revision ? { expected_revision: payload.expected_revision } : {}),
+    ...(payload.kind ? { kind: payload.kind } : {}),
+    confirm: payload.confirm,
+  });
+}
+
+export async function deleteLiveOpsDataStoreEntry(
+  projectId: string,
+  payload: {
+    store: string;
+    scope?: string;
+    key: string;
+    expected_revision?: string | null;
+    confirm: boolean;
+    kind?: LiveOpsDataStoreKind;
+  },
+): Promise<Res<LiveOpsDataStoreEntryResponse>> {
+  const qs = buildLiveOpsQuery({
+    store: payload.store,
+    scope: payload.scope || "global",
+    key: payload.key,
+    kind: payload.kind,
+  });
+  return call<LiveOpsDataStoreEntryResponse>(
+    projUrl(projectId, `/liveops/datastores/entry${qs}`),
+    {
+      store: payload.store,
+      scope: payload.scope || "global",
+      key: payload.key,
+      ...(payload.expected_revision ? { expected_revision: payload.expected_revision } : {}),
+      ...(payload.kind ? { kind: payload.kind } : {}),
+      confirm: payload.confirm,
+    },
+    { method: "DELETE" },
+  );
+}
+
+export async function publishLiveOpsMessage(
+  projectId: string,
+  payload: { topic: string; message: unknown; confirm: boolean },
+): Promise<Res<LiveOpsMessagingPublishResponse>> {
+  return call<LiveOpsMessagingPublishResponse>(projUrl(projectId, "/liveops/messaging/publish"), payload);
+}
+
+export async function getLiveOpsRemoteConfig(projectId: string): Promise<Res<LiveOpsRemoteConfigResponse>> {
+  return call<LiveOpsRemoteConfigResponse>(projUrl(projectId, "/liveops/remote-config"));
+}
+
+export async function saveLiveOpsRemoteConfig(
+  projectId: string,
+  payload: {
+    config: Record<string, unknown>;
+    push_to_datastore?: boolean;
+    generate_luau?: boolean;
+    datastore_name?: string;
+    datastore_key?: string;
+  },
+): Promise<Res<LiveOpsRemoteConfigResponse>> {
+  return call<LiveOpsRemoteConfigResponse>(projUrl(projectId, "/liveops/remote-config"), {
+    config: payload.config,
+    push_to_datastore: payload.push_to_datastore,
+    generate_luau: payload.generate_luau,
+    ...(payload.datastore_name ? { datastore: payload.datastore_name, datastore_name: payload.datastore_name } : {}),
+    ...(payload.datastore_key ? { key: payload.datastore_key, datastore_key: payload.datastore_key } : {}),
+  });
+}
+
+export async function ingestLiveOpsTelemetry(
+  projectId: string,
+  events: LiveOpsTelemetryEvent[],
+): Promise<Res<{ ingested: number; total_events?: number }>> {
+  return call<{ ingested: number; total_events?: number }>(projUrl(projectId, "/liveops/telemetry/ingest"), { events });
+}
+
+export async function getLiveOpsTelemetrySummary(projectId: string): Promise<Res<LiveOpsTelemetrySummary>> {
+  return call<LiveOpsTelemetrySummary>(projUrl(projectId, "/liveops/telemetry/summary"));
+}

@@ -291,6 +291,108 @@ try {
     await p.locator("[data-sandbox-error]").waitFor({ state: "visible", timeout: 4000 });
     check("Sandbox invalid journey JSON displays recovery error UI", true);
     await runPresetAndVerify("boot_join", "Sandbox recovery after invalid JSON");
+
+    // Live-Ops Control Plane & Player Telemetry (DataStores, MessagingService, Remote Config, Telemetry)
+    await p.locator('[aria-label="Ship section"]').getByRole("button", { name: "LiveOps", exact: true }).click();
+    await p.locator("[data-liveops-panel]").waitFor({ state: "visible", timeout: 8000 });
+    await p.locator("[data-liveops-datastores]").waitFor({ state: "visible", timeout: 4000 });
+    await p.locator("[data-liveops-messaging]").waitFor({ state: "visible", timeout: 4000 });
+    await p.locator("[data-liveops-remote-config]").waitFor({ state: "visible", timeout: 4000 });
+    await p.locator("[data-liveops-telemetry]").waitFor({ state: "visible", timeout: 4000 });
+    check("LiveOpsPanel renders all 4 sub-sections", true);
+    await assertLayoutInvariants(p, "1440x900 Light LiveOps");
+
+    // Remote Config edit + LiveConfig.luau generation
+    await p.locator("[data-rc-add]").click();
+    await p.locator("[data-rc-key-input]").last().fill("GateDropBoost");
+    await p.locator('[data-rc-value="GateDropBoost"]').fill("2.5");
+    const pushDsCheckbox = p.locator("[data-rc-push-ds]");
+    if (await pushDsCheckbox.isChecked()) await pushDsCheckbox.uncheck();
+    const genLuauCheckbox = p.locator("[data-rc-gen-luau]");
+    if (!(await genLuauCheckbox.isChecked())) await genLuauCheckbox.check();
+    await p.locator("[data-rc-save]").click();
+    await p.locator("[data-rc-status]").waitFor({ state: "visible", timeout: 8000 });
+    const rcStatusText = await p.locator("[data-rc-status]").innerText();
+    check(
+      "LiveOps Remote Config saves and generates LiveConfig.luau",
+      rcStatusText.includes("remote-config.json") && rcStatusText.includes("LiveConfig.luau"),
+      rcStatusText,
+    );
+
+    // Confirmation-gated MessagingService broadcast
+    await p.locator("[data-msg-topic]").fill("GateLiveEvent");
+    const msgPublishBtn = p.locator("[data-msg-publish]");
+    const gatedBeforeConfirm = await msgPublishBtn.isDisabled();
+    const ocState = await p.evaluate(async () => {
+      try {
+        const r = await fetch("/api/opencloud");
+        return await r.json();
+      } catch {
+        return { has_key: false };
+      }
+    });
+    const isWebEngine = await p.evaluate(() => Boolean(window.__OPENRO_WEB_ENGINE__));
+    const routePattern = "**/api/projects/*/liveops/messaging/publish";
+    if (!isWebEngine && !ocState?.has_key) {
+      await p.route(routePattern, async (route) => {
+        const reqBody = route.request().postDataJSON() || {};
+        if (reqBody.confirm !== true) {
+          await route.fulfill({
+            status: 400,
+            contentType: "application/json",
+            body: JSON.stringify({ ok: false, error: "confirm required" }),
+          });
+          return;
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            topic: reqBody.topic || "GateLiveEvent",
+            published: true,
+            published_at: new Date().toISOString(),
+            target: "gate_sim",
+          }),
+        });
+      });
+    }
+    await p.locator("[data-msg-confirm]").check();
+    const enabledAfterConfirm = await msgPublishBtn.isEnabled();
+    await msgPublishBtn.click();
+    await p.locator("[data-msg-receipt]").waitFor({ state: "visible", timeout: 8000 });
+    const receiptText = await p.locator("[data-msg-receipt]").innerText();
+    if (!isWebEngine && !ocState?.has_key) {
+      await p.unroute(routePattern);
+    }
+    check(
+      "LiveOps MessagingService confirmation gate and broadcast",
+      gatedBeforeConfirm && enabledAfterConfirm && receiptText.includes("GateLiveEvent"),
+      receiptText,
+    );
+
+    // Live Player Telemetry & Funnel Cohort ingest + display
+    await p.locator("[data-telemetry-ingest-sample]").click();
+    await p.waitForFunction(
+      () => {
+        const dau = Number(document.querySelector("[data-telemetry-dau]")?.textContent?.trim() || "0");
+        const ev = Number(document.querySelector("[data-telemetry-events]")?.textContent?.trim() || "0");
+        return dau > 0 && ev > 0;
+      },
+      null,
+      { timeout: 8000 },
+    );
+    const dauTxt = await p.locator("[data-telemetry-dau]").innerText();
+    const funnelCount = await p.locator("[data-telemetry-funnel] li").count();
+    check(
+      "LiveOps Telemetry ingests sample batch and renders funnel cohort",
+      Number(dauTxt) > 0 && funnelCount > 0,
+      `DAU=${dauTxt}, steps=${funnelCount}`,
+    );
+
+    await setThemeViaSettings(p, "dark");
+    await assertLayoutInvariants(p, "1440x900 Dark LiveOps");
+    await setThemeViaSettings(p, "light");
   }
 
   // Check Assets, Swarm, and Viewport (StudioViewport3D) tabs on workbench in Light & Dark
