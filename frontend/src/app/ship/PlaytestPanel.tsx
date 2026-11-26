@@ -14,6 +14,7 @@ import { EconomySimulatorCard } from "./EconomySimulatorCard";
 import { HookIntegrityCard } from "./HookIntegrityCard";
 import { MonetizationAuditCard } from "./MonetizationAuditCard";
 import { PublishGuardCard } from "./PublishGuardCard";
+import { SandboxRunnerCard } from "./SandboxRunnerCard";
 import { SnapshotRollbackCard } from "./SnapshotRollbackCard";
 import { SyncConflictsCard } from "./SyncConflictsCard";
 import type { Ship } from "./useShip";
@@ -401,6 +402,7 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
 
   return (
     <div className="flex flex-col gap-4" data-panel="playtests">
+      <SandboxRunnerCard projectId={id} onJumpToIssue={onJumpToIssue} />
       <section aria-label="Run a playtest" className="card-stock flex flex-wrap items-center gap-3 p-4">
         <div className="min-w-0 flex-1">
           <h3 className="font-heading text-ui font-semibold">Playtest in Studio</h3>

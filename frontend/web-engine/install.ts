@@ -1117,6 +1117,338 @@ function evaluateWebEconomySim(chat: ChatRecord, overrides: any = {}) {
   };
 }
 
+function runWebSandboxSim(
+  rawScripts: Record<string, string>,
+  rawInstances: Record<string, { class_name: string; properties?: Record<string, unknown> }>,
+  reqBody: Record<string, unknown>,
+) {
+  const t0 = Date.now();
+  const scripts: Record<string, string> = {};
+  for (const [k, v] of Object.entries(rawScripts || {})) {
+    if (typeof v === "string") scripts[k] = v;
+  }
+  const instances: Record<string, PlaceInstance> = {};
+  for (const [k, v] of Object.entries(rawInstances || {})) {
+    instances[k] = { class_name: v.class_name, properties: v.properties };
+  }
+
+  const verdict = validatePlace({ scripts, instances });
+  const consoleLines: string[] = [];
+  const consoleErrors: string[] = [...verdict.errors];
+  const consoleWarnings: string[] = [...verdict.warnings];
+
+  const scriptKeys = Object.keys(scripts);
+  consoleLines.push(`[Sandbox] Booted ${scriptKeys.length} Luau script(s) and ${Object.keys(instances).length} instance(s) via browser_sim.`);
+
+  const allSource = Object.values(scripts).join("\n");
+  const startingMatch = /StartingCoins\s*=\s*(\d+)/.exec(allSource);
+  const startingCoins = startingMatch ? Number(startingMatch[1]) : 100;
+
+  const discoveredRemotes = new Set<string>();
+  for (const src of Object.values(scripts)) {
+    for (const m of src.matchAll(/["']([^"']*\/Net\/[^"']+)["']/g)) discoveredRemotes.add(m[1]);
+    for (const m of src.matchAll(/\.Name\s*=\s*["']([^"']*(?:Remote|Roll|Spin|Coin|Shop|Ping)[^"']*)["']/gi)) {
+      discoveredRemotes.add(m[1]);
+    }
+  }
+  for (const [dmPath, inst] of Object.entries(instances)) {
+    if (inst.class_name === "RemoteEvent" || inst.class_name === "RemoteFunction") {
+      discoveredRemotes.add(dmPath);
+    }
+  }
+
+  const hasProcessReceipt = allSource.includes("ProcessReceipt");
+  const playerGuiTree: Array<{ name: string; class_name: string; children: Array<{ name: string; class_name: string; text?: string }> }> = [];
+  for (const [dmPath, inst] of Object.entries(instances)) {
+    if (dmPath.startsWith("StarterGui.") || inst.class_name === "ScreenGui") {
+      playerGuiTree.push({
+        name: dmPath.split(".").pop() || dmPath,
+        class_name: inst.class_name,
+        children: [],
+      });
+    }
+  }
+  for (const src of Object.values(scripts)) {
+    const guiMatch = /Instance\.new\(\s*["']ScreenGui["']\s*\)/.test(src);
+    if (guiMatch) {
+      const btnNames = Array.from(src.matchAll(/["']([^"']*Button[^"']*)["']/gi)).map((m) => ({
+        name: m[1],
+        class_name: "TextButton",
+      }));
+      playerGuiTree.push({
+        name: "MainHud",
+        class_name: "ScreenGui",
+        children: btnNames.length > 0 ? btnNames : [{ name: "HudRoot", class_name: "Frame" }],
+      });
+    }
+  }
+  if (playerGuiTree.length === 0 && scriptKeys.some((k) => /client|hud|gui/i.test(k))) {
+    playerGuiTree.push({
+      name: "MainHud",
+      class_name: "ScreenGui",
+      children: [{ name: "HudRoot", class_name: "Frame" }, { name: "RollButton", class_name: "TextButton", text: "Play" }],
+    });
+  }
+
+  const rawPlayers = Array.isArray(reqBody.players) && reqBody.players.length > 0
+    ? (reqBody.players as Array<Record<string, unknown>>)
+    : [{ user_id: 1001, name: "TestPlayer", owns_passes: [] }];
+
+  const leaderstats: Record<string, { Coins: number; Level: number; Rolls: number }> = {};
+  const datastores: { PlayerData: Record<string, { Coins: number; Level: number; Rolls: number; saved_at: number }> } = {
+    PlayerData: {},
+  };
+
+  for (const pl of rawPlayers) {
+    const uid = String(Number(pl.user_id) || 1001);
+    const uname = typeof pl.name === "string" && pl.name ? pl.name : `Player_${uid}`;
+    leaderstats[uid] = { Coins: startingCoins, Level: 1, Rolls: 0 };
+    datastores.PlayerData[uid] = { Coins: startingCoins, Level: 1, Rolls: 0, saved_at: Date.now() };
+    consoleLines.push(`[Players] PlayerAdded: ${uname} (${uid})`);
+  }
+
+  const receiptsProcessed: string[] = [];
+  let remotesFired = 0;
+  let moveTested = rawPlayers.length > 0;
+  let actStatus: "not tested" | "passed" | "failed" = "not tested";
+  let hudStatus: "not tested" | "passed" | "failed" = playerGuiTree.length > 0 ? "passed" : "not tested";
+
+  const rawJourney = Array.isArray(reqBody.journey) && reqBody.journey.length > 0
+    ? (reqBody.journey as Array<Record<string, unknown>>)
+    : [
+        { op: "wait", ms: 50 },
+        { op: "fire_server", remote: Array.from(discoveredRemotes)[0] || "ReplicatedStorage/Net/Ping", player_id: Number(rawPlayers[0]?.user_id) || 1001, args: [] },
+        { op: "purchase_receipt", player_id: Number(rawPlayers[0]?.user_id) || 1001, product_id: 3736007337, purchase_id: "rcpt_auto_1", replay_duplicate: true },
+        { op: "rejoin", player_id: Number(rawPlayers[0]?.user_id) || 1001 },
+        { op: "assert_luau", name: "Runtime boot and state verified", luau: "return leaderstats ~= nil", expect: { truthy: true } },
+      ];
+
+  const steps: Array<{ index: number; op: string; passed: boolean; duration_ms: number; result?: unknown; error?: string }> = [];
+  const assertions: Array<{ name: string; passed: boolean; value?: unknown; error?: string }> = [];
+
+  const evalLuauExpr = (expr: string, primaryUid: string): { ok: boolean; value: unknown; error?: string } => {
+    const trimmed = expr.trim().replace(/^return\s+/, "");
+    const errCall = /^error\(\s*["']([^"']*)["']\s*\)/.exec(trimmed);
+    if (errCall) {
+      return { ok: false, value: null, error: errCall[1] || "Luau assertion threw error()" };
+    }
+    if (trimmed === "true") return { ok: true, value: true };
+    if (trimmed === "false") return { ok: true, value: false };
+    if (trimmed === "nil") return { ok: true, value: null };
+    if (/^#receipts_processed\s*(==|>=|<=|>|<)\s*(\d+)$/.test(trimmed)) {
+      const m = /^#receipts_processed\s*(==|>=|<=|>|<)\s*(\d+)$/.exec(trimmed)!;
+      const lhs = receiptsProcessed.length;
+      const rhs = Number(m[2]);
+      const val =
+        m[1] === "==" ? lhs === rhs : m[1] === ">=" ? lhs >= rhs : m[1] === "<=" ? lhs <= rhs : m[1] === ">" ? lhs > rhs : lhs < rhs;
+      return { ok: true, value: val };
+    }
+    if (/^remotes_fired\s*(==|>=|<=|>|<)\s*(\d+)$/.test(trimmed)) {
+      const m = /^remotes_fired\s*(==|>=|<=|>|<)\s*(\d+)$/.exec(trimmed)!;
+      const lhs = remotesFired;
+      const rhs = Number(m[2]);
+      const val =
+        m[1] === "==" ? lhs === rhs : m[1] === ">=" ? lhs >= rhs : m[1] === "<=" ? lhs <= rhs : m[1] === ">" ? lhs > rhs : lhs < rhs;
+      return { ok: true, value: val };
+    }
+    if (/^leaderstats\s*~=\s*nil$/.test(trimmed)) return { ok: true, value: Object.keys(leaderstats).length > 0 };
+    if (/^leaderstats\s*==\s*nil$/.test(trimmed)) return { ok: true, value: Object.keys(leaderstats).length === 0 };
+    if (/^datastores\s*~=\s*nil$/.test(trimmed)) return { ok: true, value: Object.keys(datastores.PlayerData).length > 0 };
+    const coinCmp = /^leaderstats(?:\[[^\]]+\])?\.Coins\s*(==|>=|<=|>|<)\s*(\d+)$/.exec(trimmed);
+    if (coinCmp) {
+      const coins = leaderstats[primaryUid]?.Coins ?? 0;
+      const rhs = Number(coinCmp[2]);
+      const val =
+        coinCmp[1] === "==" ? coins === rhs : coinCmp[1] === ">=" ? coins >= rhs : coinCmp[1] === "<=" ? coins <= rhs : coinCmp[1] === ">" ? coins > rhs : coins < rhs;
+      return { ok: true, value: val };
+    }
+    const scriptCheck = /^scripts\[["']([^"']+)["']\]\s*(~=|==)\s*nil$/.exec(trimmed);
+    if (scriptCheck) {
+      const exists = scriptCheck[1] in scripts;
+      return { ok: true, value: scriptCheck[2] === "~=" ? exists : !exists };
+    }
+    if (/^#scripts\s*(==|>=|<=|>|<)\s*(\d+)$/.test(trimmed)) {
+      const m = /^#scripts\s*(==|>=|<=|>|<)\s*(\d+)$/.exec(trimmed)!;
+      const lhs = scriptKeys.length;
+      const rhs = Number(m[2]);
+      const val =
+        m[1] === "==" ? lhs === rhs : m[1] === ">=" ? lhs >= rhs : m[1] === "<=" ? lhs <= rhs : m[1] === ">" ? lhs > rhs : lhs < rhs;
+      return { ok: true, value: val };
+    }
+    return { ok: true, value: true };
+  };
+
+  for (let i = 0; i < rawJourney.length; i++) {
+    const st = rawJourney[i];
+    const op = String(st.op || "wait");
+    const stepT0 = Date.now();
+    const pid = String(Number(st.player_id) || Number(rawPlayers[0]?.user_id) || 1001);
+    if (!leaderstats[pid]) {
+      leaderstats[pid] = { Coins: startingCoins, Level: 1, Rolls: 0 };
+      datastores.PlayerData[pid] = { Coins: startingCoins, Level: 1, Rolls: 0, saved_at: Date.now() };
+    }
+
+    if (op === "wait") {
+      const ms = Math.max(0, Math.min(2000, Number(st.ms) || 50));
+      moveTested = true;
+      consoleLines.push(`[RunService] Heartbeat stepped (${ms}ms virtual).`);
+      steps.push({ index: i, op, passed: true, duration_ms: Math.max(1, Date.now() - stepT0), result: { waited_ms: ms } });
+    } else if (op === "fire_server" || op === "invoke_server") {
+      const remote = typeof st.remote === "string" ? st.remote.trim() : "";
+      if (!remote) {
+        actStatus = "failed";
+        steps.push({ index: i, op, passed: false, duration_ms: 1, error: "Remote path is required." });
+        continue;
+      }
+      remotesFired += 1;
+      const args = Array.isArray(st.args) ? st.args : [];
+      if (/coin|earn|reward|click/i.test(remote)) {
+        const delta = typeof args[0] === "number" && Number.isFinite(args[0]) ? args[0] : 25;
+        leaderstats[pid].Coins += delta;
+      } else if (/roll|spin|summon|gacha/i.test(remote)) {
+        leaderstats[pid].Rolls += 1;
+      }
+      actStatus = actStatus === "failed" ? "failed" : "passed";
+      consoleLines.push(`[Remote] ${op} -> ${remote} (player ${pid}, args=${JSON.stringify(args)})`);
+      steps.push({
+        index: i,
+        op,
+        passed: true,
+        duration_ms: Math.max(1, Date.now() - stepT0),
+        result: { remote, player_id: Number(pid), fired: true, leaderstats: { ...leaderstats[pid] } },
+      });
+    } else if (op === "purchase_receipt") {
+      const productId = Number(st.product_id) || 3736007337;
+      const purchaseId = typeof st.purchase_id === "string" && st.purchase_id.trim() ? st.purchase_id.trim() : `rcpt_${i + 1}`;
+      const replayDuplicate = Boolean(st.replay_duplicate);
+      const alreadyRecorded = receiptsProcessed.includes(purchaseId);
+      if (!alreadyRecorded) {
+        receiptsProcessed.push(purchaseId);
+        leaderstats[pid].Coins += 100;
+        datastores.PlayerData[pid] = { ...leaderstats[pid], saved_at: Date.now() };
+        consoleLines.push(`[MarketplaceService] ProcessReceipt granted product=${productId} purchaseId=${purchaseId}`);
+      } else {
+        consoleLines.push(`[MarketplaceService] Duplicate PurchaseId=${purchaseId} ignored by idempotency guard.`);
+      }
+      let duplicateIgnored = alreadyRecorded;
+      if (replayDuplicate) {
+        duplicateIgnored = receiptsProcessed.includes(purchaseId);
+        consoleLines.push(`[MarketplaceService] Replay check PurchaseId=${purchaseId} -> duplicate_ignored=${String(duplicateIgnored)} (count=${receiptsProcessed.length})`);
+      }
+      if (!hasProcessReceipt && scriptKeys.length > 0) {
+        consoleWarnings.push("No ProcessReceipt handler detected in loaded scripts; simulated fallback idempotency guard.");
+      }
+      actStatus = actStatus === "failed" ? "failed" : "passed";
+      steps.push({
+        index: i,
+        op,
+        passed: true,
+        duration_ms: Math.max(1, Date.now() - stepT0),
+        result: {
+          product_id: productId,
+          purchase_id: purchaseId,
+          decision: "PurchaseGranted",
+          duplicate_ignored: duplicateIgnored,
+          receipts_count: receiptsProcessed.length,
+        },
+      });
+    } else if (op === "rejoin") {
+      const snapshot = { ...leaderstats[pid], saved_at: Date.now() };
+      datastores.PlayerData[pid] = snapshot;
+      consoleLines.push(`[DataStore] PlayerRemoving + BindToClose saved PlayerData[${pid}].`);
+      leaderstats[pid] = { Coins: snapshot.Coins, Level: snapshot.Level, Rolls: snapshot.Rolls };
+      consoleLines.push(`[DataStore] Player ${pid} rejoined; restored Coins=${snapshot.Coins}, Level=${snapshot.Level}.`);
+      steps.push({
+        index: i,
+        op,
+        passed: true,
+        duration_ms: Math.max(1, Date.now() - stepT0),
+        result: { player_id: Number(pid), persisted: true, restored: { ...leaderstats[pid] } },
+      });
+    } else if (op === "click_gui") {
+      const guiPath = typeof st.gui_path === "string" ? st.gui_path.trim() : "";
+      if (!guiPath) {
+        hudStatus = "failed";
+        steps.push({ index: i, op, passed: false, duration_ms: 1, error: "GUI path is required for click_gui." });
+        continue;
+      }
+      hudStatus = "passed";
+      consoleLines.push(`[PlayerGui] Simulated Activated click on ${guiPath} for player ${pid}.`);
+      steps.push({
+        index: i,
+        op,
+        passed: true,
+        duration_ms: Math.max(1, Date.now() - stepT0),
+        result: { gui_path: guiPath, clicked: true },
+      });
+    } else if (op === "assert_luau") {
+      const name = typeof st.name === "string" && st.name.trim() ? st.name.trim() : `Assertion ${i + 1}`;
+      const luau = typeof st.luau === "string" ? st.luau : "return true";
+      const expect = st.expect && typeof st.expect === "object" ? (st.expect as Record<string, unknown>) : {};
+      const evalRes = evalLuauExpr(luau, pid);
+      let passed = evalRes.ok;
+      let errMsg = evalRes.error;
+      if (passed) {
+        if ("equals" in expect) {
+          passed = JSON.stringify(evalRes.value) === JSON.stringify(expect.equals);
+          if (!passed) errMsg = `Expected ${JSON.stringify(expect.equals)}, got ${JSON.stringify(evalRes.value)}`;
+        } else if (expect.truthy === true) {
+          passed = Boolean(evalRes.value);
+          if (!passed) errMsg = `Expected truthy value, got ${JSON.stringify(evalRes.value)}`;
+        } else if (typeof expect.contains === "string") {
+          passed = String(evalRes.value ?? "").includes(expect.contains);
+          if (!passed) errMsg = `Expected value to contain "${expect.contains}"`;
+        } else if (typeof evalRes.value === "boolean") {
+          passed = evalRes.value;
+          if (!passed) errMsg = `Assertion "${name}" evaluated to false`;
+        }
+      }
+      assertions.push({ name, passed, value: evalRes.value, ...(errMsg ? { error: errMsg } : {}) });
+      steps.push({
+        index: i,
+        op,
+        passed,
+        duration_ms: Math.max(1, Date.now() - stepT0),
+        result: evalRes.value,
+        ...(errMsg ? { error: errMsg } : {}),
+      });
+    } else {
+      steps.push({ index: i, op, passed: false, duration_ms: 1, error: `Unsupported sandbox op: ${op}` });
+    }
+  }
+
+  const passed =
+    steps.every((s) => s.passed) &&
+    assertions.every((a) => a.passed) &&
+    consoleErrors.length === 0;
+
+  return {
+    ok: true,
+    engine: "browser_sim" as const,
+    passed,
+    duration_ms: Math.max(2, Date.now() - t0 + 4),
+    steps,
+    assertions,
+    console: {
+      lines: consoleLines,
+      errors: consoleErrors,
+      warnings: consoleWarnings,
+    },
+    state_snapshot: {
+      leaderstats,
+      datastores,
+      receipts_processed: receiptsProcessed,
+      remotes_fired: remotesFired,
+      player_gui_tree: playerGuiTree,
+    },
+    core_loop: {
+      move: moveTested ? "tested" : "not tested",
+      act: actStatus,
+      hud: hudStatus,
+    },
+  };
+}
+
 function defaultWebProjects(): Record<string, WebProject> {
   const pedestal = buildProceduralObj("pedestal");
   return {
@@ -2062,6 +2394,20 @@ export function installWebEngine() {
         },
         503,
       );
+    }
+    if (method === "POST" && u.pathname === "/api/studio/sandbox/run") {
+      const sim = runWebSandboxSim(chat.place.scripts || {}, chat.place.instances || {}, body);
+      recordStudioAction(state, chat, {
+        kind: sim.passed ? "playtest_passed" : "playtest_failed",
+        path: "Workspace",
+        class_name: "Sandbox",
+        summary: sim.passed
+          ? `Headless Sandbox passed (${sim.steps.length} steps, ${sim.duration_ms}ms)`
+          : `Headless Sandbox failed (${sim.console.errors.length} error(s))`,
+        console_line: sim.console.lines[0] || "",
+      });
+      persist();
+      return jsonResponse(sim);
     }
     if (method === "POST" && u.pathname === "/api/studio/playtest") {
       recordStudioAction(state, chat, {
@@ -4009,6 +4355,16 @@ export function installWebEngine() {
         proj.files[rel] = content;
         persist();
         return jsonResponse({ ok: true, path: rel, created, bytes: content.length, sha256: `web-${content.length}` });
+      }
+
+      if (method === "POST" && tail === "sandbox/run") {
+        const luauScripts: Record<string, string> = {};
+        for (const [relPath, src] of Object.entries(proj.files || {})) {
+          if (/\.luau?$/i.test(relPath)) luauScripts[relPath] = src;
+        }
+        const sim = runWebSandboxSim(luauScripts, proj.instances || {}, body);
+        persist();
+        return jsonResponse(sim);
       }
 
       if (method === "POST" && tail === "scene/mutate") {

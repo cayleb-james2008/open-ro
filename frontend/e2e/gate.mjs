@@ -153,6 +153,66 @@ try {
     check("Ship panel renders", true);
   }
 
+  // Ensure an active project is open so Playtests -> SandboxRunnerCard is mounted
+  if ((await p.locator("[data-ship-empty]").count()) > 0) {
+    const openProjBtn = p.getByRole("button", { name: "Open Projects", exact: true });
+    if ((await openProjBtn.count()) > 0) {
+      await openProjBtn.click();
+      const newProjTrigger = p.locator('[thing="new-project"]').first();
+      await newProjTrigger.waitFor({ state: "visible", timeout: 8000 });
+      await newProjTrigger.click();
+      const nameInput = p.locator('input[placeholder="Untitled Anime Card Game"]').first();
+      await nameInput.waitFor({ state: "visible", timeout: 5000 });
+      await nameInput.fill("Sandbox Gate Place");
+      await p.getByRole("button", { name: "Create project", exact: true }).click();
+      await p.locator("[data-ship]").waitFor({ state: "visible", timeout: 10000 });
+      const explorerBtn = p.locator('nav[aria-label="Explorer, Chats, and Projects"]').getByRole("button", { name: /^Explorer/ }).first();
+      if ((await explorerBtn.count()) > 0) await explorerBtn.click();
+    }
+  }
+
+  // Headless Luau Runtime Sandbox assertions in Light & Dark themes
+  if ((await p.locator("[data-ship]").count()) > 0) {
+    await p.locator('[aria-label="Ship section"]').getByRole("button", { name: "Playtests", exact: true }).click();
+    await p.locator("[data-sandbox-runner]").waitFor({ state: "visible", timeout: 8000 });
+
+    const runPresetAndVerify = async (presetId, label) => {
+      await p.locator(`[data-sandbox-preset="${presetId}"]`).click();
+      await p.locator("[data-sandbox-result]").waitFor({ state: "visible", timeout: 15000 });
+      await p.waitForFunction(
+        () => {
+          const btn = document.querySelector("[data-sandbox-run]");
+          return btn && !btn.hasAttribute("disabled");
+        },
+        null,
+        { timeout: 15000 },
+      );
+      const engine = await p.locator("[data-sandbox-engine]").getAttribute("data-sandbox-engine");
+      const dur = await p.locator("[data-sandbox-duration]").innerText();
+      check(`Sandbox preset (${presetId}): ${label}`, Boolean(engine) && dur.length > 0, `${engine} in ${dur}`);
+    };
+
+    await runPresetAndVerify("boot_join", "Boot + Join Light");
+    await runPresetAndVerify("receipt_idempotency", "Receipt Idempotency Light");
+    await runPresetAndVerify("save_rejoin", "DataStore Rejoin Persistence Light");
+
+    for (const tab of ["console", "datastores", "leaderstats", "receipts", "playergui"]) {
+      await p.locator(`[data-sandbox-tab="${tab}"]`).click();
+      await p.locator(`[data-sandbox-inspector-body="${tab}"]`).waitFor({ state: "visible", timeout: 4000 });
+    }
+    check("Sandbox Console & State Inspector tabs (Light)", true);
+
+    await setThemeViaSettings(p, "dark");
+    await assertLayoutInvariants(p, "1440x900 Dark Sandbox");
+    await runPresetAndVerify("boot_join", "Boot + Join Dark");
+    await p.locator('[data-sandbox-tab="datastores"]').click();
+    await p.locator('[data-sandbox-inspector-body="datastores"]').waitFor({ state: "visible", timeout: 4000 });
+    await p.locator('[data-sandbox-tab="playergui"]').click();
+    await p.locator('[data-sandbox-inspector-body="playergui"]').waitFor({ state: "visible", timeout: 4000 });
+    check("Sandbox Console & State Inspector tabs (Dark)", true);
+    await setThemeViaSettings(p, "light");
+  }
+
   // Check Assets, Swarm, and Viewport tabs on workbench
   await p.getByRole("button", { name: "Assets", exact: true }).first().click();
   await p.getByRole("button", { name: "Swarm", exact: true }).first().click();
