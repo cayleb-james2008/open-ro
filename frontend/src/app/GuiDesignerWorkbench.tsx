@@ -242,7 +242,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
     scale: number;
   } | null>(null);
 
-  const deviceSpec = GUI_DEVICES[device];
+  const deviceSpec = GUI_DEVICES[device] ?? GUI_DEVICES.desktop;
 
   useEffect(() => {
     const el = stageWrapRef.current;
@@ -420,7 +420,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
       const slug = sanitizeGuiSlug(doc.slug);
       const nextDoc = { ...doc, slug };
       const res = await compileGuiScreen(slug, nextDoc, projectId, { save_luau: true });
-      if (res.ok && typeof res.luau_source === "string") {
+      if (res.ok && typeof res.luau_source === "string" && res.luau_source.length > 0) {
         setCompiledLuau(res.luau_source);
         setCompiledModelJson(res.model_json || "");
         setCompileDiagnostics(Array.isArray(res.diagnostics) ? res.diagnostics : []);
@@ -909,8 +909,9 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
             style={{
               width: `${canvasCssWidth}px`,
               height: `${canvasCssHeight}px`,
+              backgroundColor: "rgb(15, 19, 26)",
             }}
-            className="relative select-none overflow-hidden rounded-lg border border-hairline bg-[#0F131A] shadow-[var(--elev-card)]"
+            className="relative select-none overflow-hidden rounded-lg border border-hairline shadow-[var(--elev-card)]"
           >
             {/* Subtle Roblox Viewport Grid */}
             <div
@@ -1004,7 +1005,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                   {/* 9-slice SliceCenter guide */}
                   {isSelected && hasSlice && (
                     <div
-                      className="pointer-events-none absolute inset-1.5 border border-dashed border-[#A78BFA]/80"
+                      className="pointer-events-none absolute inset-1.5 border border-dashed border-tag-research-fg/80"
                       title={`SliceCenter: ${node.props.SliceCenter?.join(", ")}`}
                     />
                   )}
@@ -1018,11 +1019,11 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                           data-gui-handle={h}
                           onPointerDown={(e) => startDrag(e, h, item)}
                           style={{ cursor: HANDLE_CURSORS[h] }}
-                          className={`absolute z-50 size-2.5 rounded-xs border border-[#14161B] bg-white ${HANDLE_POSITIONS[h]}`}
+                          className={`absolute z-50 size-2.5 rounded-xs border border-ink bg-surface ${HANDLE_POSITIONS[h]}`}
                         />
                       ))}
                       {isButton && node.props.ProductId && (
-                        <span className="pointer-events-none absolute -top-5 left-0 rounded-chip bg-[#1562FC] px-1.5 py-0 font-mono text-[12px] text-white">
+                        <span className="pointer-events-none absolute -top-5 left-0 rounded-chip bg-blue px-1.5 py-0 font-mono text-[12px] text-blue-fg">
                           R$ {String(node.props.ProductId)}
                         </span>
                       )}
@@ -1037,12 +1038,12 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
               <div
                 data-gui-topbar-overlay
                 style={{ height: `${Math.max(16, Math.round(58 * scale))}px` }}
-                className="pointer-events-none absolute inset-x-0 top-0 z-50 flex items-center justify-between border-b border-dashed border-[#F5A524] bg-[#F5A524]/15 px-2"
+                className="pointer-events-none absolute inset-x-0 top-0 z-50 flex items-center justify-between border-b border-dashed border-dot-amber bg-pill-warn-bg/20 px-2"
               >
-                <span className="rounded-chip bg-[#14161B]/80 px-1.5 py-0.5 font-mono text-[12px] text-[#FCD34D]">
+                <span className="rounded-chip bg-pill-warn-bg px-1.5 py-0.5 font-mono text-[12px] text-pill-warn-fg">
                   CoreGui TopBar 58px
                 </span>
-                <span className="rounded-chip bg-[#14161B]/80 px-1.5 py-0.5 font-mono text-[12px] text-white/80">
+                <span className="rounded-chip bg-surface/90 px-1.5 py-0.5 font-mono text-[12px] text-ink">
                   {doc.ignore_gui_inset ? "IgnoreGuiInset=true" : "Inset Active"}
                 </span>
               </div>
@@ -1057,9 +1058,9 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                     width: `${Math.round(200 * scale)}px`,
                     height: `${Math.round(170 * scale)}px`,
                   }}
-                  className="pointer-events-none absolute bottom-0 left-0 z-50 flex items-center justify-center rounded-tr-xl border-r border-t border-dashed border-[#38BDF8] bg-[#38BDF8]/12"
+                  className="pointer-events-none absolute bottom-0 left-0 z-50 flex items-center justify-center rounded-tr-xl border-r border-t border-dashed border-blue bg-blue-soft/25"
                 >
-                  <span className="rounded-chip bg-[#14161B]/80 px-1.5 py-0.5 font-mono text-[12px] text-[#7DD3FC]">
+                  <span className="rounded-chip bg-tag-sky-bg px-1.5 py-0.5 font-mono text-[12px] text-tag-sky-fg">
                     Thumbstick
                   </span>
                 </div>
@@ -1069,9 +1070,9 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                     width: `${Math.round(180 * scale)}px`,
                     height: `${Math.round(170 * scale)}px`,
                   }}
-                  className="pointer-events-none absolute bottom-0 right-0 z-50 flex items-center justify-center rounded-tl-xl border-l border-t border-dashed border-[#38BDF8] bg-[#38BDF8]/12"
+                  className="pointer-events-none absolute bottom-0 right-0 z-50 flex items-center justify-center rounded-tl-xl border-l border-t border-dashed border-blue bg-blue-soft/25"
                 >
-                  <span className="rounded-chip bg-[#14161B]/80 px-1.5 py-0.5 font-mono text-[12px] text-[#7DD3FC]">
+                  <span className="rounded-chip bg-tag-sky-bg px-1.5 py-0.5 font-mono text-[12px] text-tag-sky-fg">
                     Jump
                   </span>
                 </div>

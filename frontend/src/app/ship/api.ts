@@ -849,7 +849,11 @@ export type {
   ScreenDocTheme,
   UDim2Value,
 } from "../guiDesignerEngine";
-import type { SafeAreaWarning, ScreenDoc } from "../guiDesignerEngine";
+import {
+  normalizeSafeAreaWarnings,
+  type SafeAreaWarning,
+  type ScreenDoc,
+} from "../guiDesignerEngine";
 
 export type GuiScreenSummary = {
   slug: string;
@@ -860,7 +864,7 @@ export type GuiScreenSummary = {
 
 export type GuiListResponse = {
   screens: GuiScreenSummary[];
-  presets?: string[];
+  presets?: Array<string | { id: string; name: string; description?: string }>;
 };
 
 export type GuiLoadResponse = {
@@ -901,12 +905,22 @@ export async function listGuiScreens(projectId?: string | null): Promise<Res<Gui
 
 export async function loadGuiScreen(slug: string, projectId?: string | null): Promise<Res<GuiLoadResponse>> {
   const url = projectId ? projUrl(projectId, `/gui/${enc(slug)}`) : `/api/studio/gui?slug=${enc(slug)}`;
-  return call<GuiLoadResponse>(url);
+  const res = await call<GuiLoadResponse>(url);
+  if (!res.ok) return res;
+  return {
+    ...res,
+    safe_area_warnings: normalizeSafeAreaWarnings(res.safe_area_warnings),
+  };
 }
 
 export async function saveGuiScreen(slug: string, doc: ScreenDoc, projectId?: string | null): Promise<Res<GuiSaveResponse>> {
   const url = projectId ? projUrl(projectId, `/gui/${enc(slug)}`) : "/api/studio/gui";
-  return call<GuiSaveResponse>(url, { slug, doc });
+  const res = await call<GuiSaveResponse>(url, { slug, doc });
+  if (!res.ok) return res;
+  return {
+    ...res,
+    safe_area_warnings: normalizeSafeAreaWarnings(res.safe_area_warnings),
+  };
 }
 
 export async function compileGuiScreen(
@@ -916,7 +930,71 @@ export async function compileGuiScreen(
   options?: { save_luau?: boolean },
 ): Promise<Res<GuiCompileResponse>> {
   const url = projectId ? projUrl(projectId, `/gui/${enc(slug)}/compile`) : "/api/studio/gui/compile";
-  return call<GuiCompileResponse>(url, { slug, doc, ...(options ?? {}) });
+  const res = await call<Record<string, unknown>>(url, {
+    slug,
+    doc,
+    write: options?.save_luau ?? true,
+    ...(options ?? {}),
+  });
+  if (!res.ok) return res as unknown as Res<GuiCompileResponse>;
+
+  const luauSource =
+    typeof res.luau_source === "string"
+      ? res.luau_source
+      : typeof res.luau === "string"
+        ? res.luau
+        : "";
+  const modelJson =
+    typeof res.model_json === "string"
+      ? res.model_json
+      : res.model_json && typeof res.model_json === "object"
+        ? JSON.stringify(res.model_json, null, 2)
+        : undefined;
+  const luauCheck = (res.luau_check && typeof res.luau_check === "object"
+    ? res.luau_check
+    : null) as Record<string, unknown> | null;
+  const rawDiagnostics = Array.isArray(res.diagnostics)
+    ? res.diagnostics
+    : Array.isArray(luauCheck?.diagnostics)
+      ? luauCheck.diagnostics
+      : [];
+  const diagnostics: GuiCompileDiagnostic[] = rawDiagnostics
+    .filter((d): d is Record<string, unknown> => Boolean(d && typeof d === "object"))
+    .map((d) => ({
+      severity: String(d.severity ?? "info"),
+      line: typeof d.line === "number" ? d.line : Number(d.line ?? 0) || 0,
+      message: String(d.message ?? ""),
+      code: String(d.code ?? "luau_check"),
+    }));
+  const savedPath =
+    typeof res.saved_path === "string"
+      ? res.saved_path
+      : typeof res.luau_path === "string"
+        ? res.luau_path
+        : undefined;
+
+  return {
+    ok: true,
+    httpStatus: res.httpStatus,
+    slug: typeof res.slug === "string" ? res.slug : slug,
+    luau_source: luauSource,
+    model_json: modelJson,
+    diagnostics,
+    safe_area_warnings: normalizeSafeAreaWarnings(res.safe_area_warnings),
+    luau_errors:
+      typeof res.luau_errors === "number"
+        ? res.luau_errors
+        : typeof luauCheck?.error_count === "number"
+          ? luauCheck.error_count
+          : diagnostics.filter((d) => d.severity === "error").length,
+    luau_warnings:
+      typeof res.luau_warnings === "number"
+        ? res.luau_warnings
+        : typeof luauCheck?.warning_count === "number"
+          ? luauCheck.warning_count
+          : diagnostics.filter((d) => d.severity === "warning").length,
+    saved_path: savedPath,
+  };
 }
 
 export const prettyBytes = (n: number) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);

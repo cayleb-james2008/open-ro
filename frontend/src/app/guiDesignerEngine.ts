@@ -223,6 +223,20 @@ export function normalizeUDim2(val: unknown, fallback: UDim2Value): UDim2Value {
   return { ...fallback };
 }
 
+function normalizeUDimPair(val: unknown): [number, number] | undefined {
+  if (Array.isArray(val) && val.length >= 2) {
+    return [asNumber(val[0], 0), asNumber(val[1], 0)];
+  }
+  if (typeof val === "number" && Number.isFinite(val)) {
+    return [0, val];
+  }
+  if (val && typeof val === "object") {
+    const o = val as Record<string, unknown>;
+    return [asNumber(o.scale ?? o.Scale ?? o.s, 0), asNumber(o.offset ?? o.Offset ?? o.o, 0)];
+  }
+  return undefined;
+}
+
 function normalizeGuiNode(raw: unknown, idxPath: string): GuiNode {
   const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const rawClass = String(obj.class_name ?? obj.ClassName ?? "Frame") as GuiClassName;
@@ -236,6 +250,20 @@ function normalizeGuiNode(raw: unknown, idxPath: string): GuiNode {
   if (rawProps.CanvasSize !== undefined) props.CanvasSize = normalizeUDim2(rawProps.CanvasSize, udim2(0, 0, 1.5, 0));
   if (rawProps.CellSize !== undefined) props.CellSize = normalizeUDim2(rawProps.CellSize, udim2(0, 88, 0, 88));
   if (rawProps.CellPadding !== undefined) props.CellPadding = normalizeUDim2(rawProps.CellPadding, udim2(0, 8, 0, 8));
+  if (rawProps.CornerRadius !== undefined) {
+    const pair = normalizeUDimPair(rawProps.CornerRadius);
+    if (pair) props.CornerRadius = pair;
+  }
+  if (rawProps.Padding !== undefined) {
+    const pair = normalizeUDimPair(rawProps.Padding);
+    if (pair) props.Padding = pair;
+  }
+  if (props.CallbackName === undefined && typeof rawProps.Callback === "string") {
+    props.CallbackName = rawProps.Callback;
+  }
+  if (props.ProductId === undefined && rawProps.ProductKey !== undefined) {
+    props.ProductId = String(rawProps.ProductKey);
+  }
 
   const rawChildren = Array.isArray(obj.children) ? obj.children : [];
   return {
@@ -1353,6 +1381,46 @@ export function deleteGuiNode(root: GuiNode, id: string): GuiNode {
       .filter((ch) => ch.id !== id)
       .map((ch) => deleteGuiNode(ch, id)),
   };
+}
+
+export function normalizeSafeAreaWarnings(raw: unknown): SafeAreaWarning[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    .map((w) => {
+      const rawDev = String(w.device ?? "desktop");
+      const device: GuiDeviceId =
+        rawDev === "mobile_landscape" || rawDev === "mobile"
+          ? "mobile"
+          : rawDev === "tablet"
+            ? "tablet"
+            : "desktop";
+      const rawKind = String(w.kind ?? w.code ?? "offscreen_bounds");
+      const kind: SafeAreaWarningKind =
+        rawKind === "offscreen"
+          ? "offscreen_bounds"
+          : rawKind === "topbar_overlap" ||
+              rawKind === "thumbstick_overlap" ||
+              rawKind === "offscreen_bounds" ||
+              rawKind === "tiny_tap_target"
+            ? rawKind
+            : "offscreen_bounds";
+      const box = (w.rect ?? w.bounds ?? {}) as Record<string, unknown>;
+      return {
+        device,
+        node_id: String(w.node_id ?? ""),
+        node_name: String(w.node_name ?? ""),
+        kind,
+        severity: w.severity === "error" ? "error" : "warning",
+        message: String(w.message ?? ""),
+        rect: {
+          x: asNumber(box.x, 0),
+          y: asNumber(box.y, 0),
+          w: asNumber(box.w, 0),
+          h: asNumber(box.h, 0),
+        },
+      };
+    });
 }
 
 export function cloneGuiNodeWithNewIds(node: GuiNode, suffix: string): GuiNode {

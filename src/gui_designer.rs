@@ -78,15 +78,18 @@ const TEXT_PROPS: [&str; 12] = [
     "RichText",
 ];
 
-const BUTTON_PROPS: [&str; 8] = [
+const BUTTON_PROPS: [&str; 11] = [
     "AutoButtonColor",
     "Modal",
     "Callback",
     "callback",
+    "CallbackName",
     "OnClick",
     "on_click",
     "ProductKey",
     "product_key",
+    "ProductId",
+    "product_id",
 ];
 
 const IMAGE_PROPS: [&str; 13] = [
@@ -616,10 +619,11 @@ fn is_prop_allowed(class_name: &str, prop: &str) -> bool {
 
 fn canonical_prop_name(raw: &str) -> &str {
     match raw {
-        "callback" | "on_click" | "OnClick" => "Callback",
+        "callback" | "on_click" | "OnClick" | "CallbackName" | "callback_name" => "Callback",
         "asset_key" => "AssetKey",
         "asset_path" => "AssetPath",
         "product_key" => "ProductKey",
+        "product_id" => "ProductId",
         other => other,
     }
 }
@@ -724,18 +728,22 @@ fn parse_udim2(v: &Value) -> Result<UDim2Val, String> {
         let xs = obj
             .get("xs")
             .or_else(|| obj.get("xScale"))
+            .or_else(|| obj.get("x_scale"))
             .and_then(Value::as_f64);
         let xo = obj
             .get("xo")
             .or_else(|| obj.get("xOffset"))
+            .or_else(|| obj.get("x_offset"))
             .and_then(Value::as_f64);
         let ys = obj
             .get("ys")
             .or_else(|| obj.get("yScale"))
+            .or_else(|| obj.get("y_scale"))
             .and_then(Value::as_f64);
         let yo = obj
             .get("yo")
             .or_else(|| obj.get("yOffset"))
+            .or_else(|| obj.get("y_offset"))
             .and_then(Value::as_f64);
         if xs.is_some() || xo.is_some() || ys.is_some() || yo.is_some() {
             let (xs, xo, ys, yo) = (
@@ -949,7 +957,22 @@ fn validate_prop_value(class_name: &str, prop: &str, val: &Value) -> Result<(), 
             let s = val
                 .as_str()
                 .ok_or_else(|| format!("property '{prop}' must be a string"))?;
-            validate_safe_ident(s, prop)?;
+            if !s.trim().is_empty() {
+                validate_safe_ident(s, prop)?;
+            }
+        }
+        "ProductId" => {
+            if val.is_null() {
+                // cleared optional ProductId
+            } else if let Some(n) = val.as_u64() {
+                let _ = n;
+            } else if let Some(s) = val.as_str() {
+                if s.chars().any(|c| c.is_control()) {
+                    return Err(format!("property '{prop}' contains forbidden control characters"));
+                }
+            } else {
+                return Err(format!("property '{prop}' must be a positive integer, string, or null"));
+            }
         }
         "Font"
         | "TextXAlignment"
@@ -1812,7 +1835,14 @@ fn node_uses_assets(node: &GuiNode) -> bool {
 }
 
 fn node_uses_products(node: &GuiNode) -> bool {
-    if node.props.contains_key("ProductKey") || node.props.contains_key("product_key") {
+    if node.props.contains_key("ProductKey")
+        || node.props.contains_key("product_key")
+        || node
+            .props
+            .get("ProductId")
+            .or_else(|| node.props.get("product_id"))
+            .is_some_and(|v| !v.is_null())
+    {
         return true;
     }
     node.children.iter().any(node_uses_products)
@@ -1842,6 +1872,7 @@ fn emit_luau_node(
     let mut asset_ref: Option<String> = None;
     let mut fallback_image: Option<String> = None;
     let mut product_key: Option<String> = None;
+    let mut product_id_num: Option<u64> = None;
     let mut callback_name: Option<String> = None;
 
     for (k, v) in &node.props {
@@ -1866,9 +1897,28 @@ fn emit_luau_node(
                     }
                 }
             }
+            "ProductId" => {
+                if let Some(n) = v.as_u64() {
+                    if n > 0 {
+                        product_id_num = Some(n);
+                    }
+                } else if let Some(s) = v.as_str() {
+                    let trimmed = s.trim();
+                    if let Ok(n) = trimmed.parse::<u64>() {
+                        if n > 0 {
+                            product_id_num = Some(n);
+                        }
+                    } else if !trimmed.is_empty() && product_key.is_none() {
+                        product_key = Some(trimmed.to_string());
+                    }
+                }
+            }
             "Callback" => {
                 if let Some(s) = v.as_str() {
-                    callback_name = Some(s.trim().to_string());
+                    let trimmed = s.trim();
+                    if !trimmed.is_empty() {
+                        callback_name = Some(trimmed.to_string());
+                    }
                 }
             }
             _ => {
@@ -1890,38 +1940,45 @@ fn emit_luau_node(
     }
 
     if matches!(node.class_name.as_str(), "TextButton" | "ImageButton")
-        && (callback_name.is_some() || product_key.is_some())
+        && (callback_name.is_some() || product_key.is_some() || product_id_num.is_some())
     {
         buf.push_str(&format!("\t{var}.Activated:Connect(function()\n"));
         if let Some(pk) = &product_key {
+            let fallback_id_expr = product_id_num
+                .map(|n| format!(" or {n}"))
+                .unwrap_or_default();
             buf.push_str(&format!(
-                "\t\tlocal productId = resolveProductId(productIds, {})\n",
+                "\t\tlocal productId = resolveProductId(productIds, {}){fallback_id_expr}\n",
                 luau_str(pk)
             ));
+            let cb_key = callback_name.as_deref().unwrap_or(pk);
+            buf.push_str(&format!(
+                "\t\tif callbacks and type(callbacks[{}]) == \"function\" then\n",
+                luau_str(cb_key)
+            ));
+            buf.push_str(&format!("\t\t\tcallbacks[{}](productId)\n", luau_str(cb_key)));
+            buf.push_str("\t\telseif productId then\n");
+            buf.push_str(&format!(
+                "\t\t\tpromptProductOrPass(productIds, {}, productId)\n",
+                luau_str(pk)
+            ));
+            buf.push_str("\t\tend\n");
+        } else if let Some(pid) = product_id_num {
             if let Some(cb) = &callback_name {
                 buf.push_str(&format!(
                     "\t\tif callbacks and type(callbacks[{}]) == \"function\" then\n",
                     luau_str(cb)
                 ));
-                buf.push_str(&format!("\t\t\tcallbacks[{}](productId)\n", luau_str(cb)));
-                buf.push_str("\t\telseif productId then\n");
+                buf.push_str(&format!("\t\t\tcallbacks[{}]({pid})\n", luau_str(cb)));
+                buf.push_str("\t\telse\n");
                 buf.push_str(&format!(
-                    "\t\t\tpromptProductOrPass(productIds, {}, productId)\n",
-                    luau_str(pk)
+                    "\t\t\tpromptProductOrPass(productIds, \"\", {pid})\n"
                 ));
                 buf.push_str("\t\tend\n");
             } else {
                 buf.push_str(&format!(
-                    "\t\tif callbacks and type(callbacks[{}]) == \"function\" then\n",
-                    luau_str(pk)
+                    "\t\tpromptProductOrPass(productIds, \"\", {pid})\n"
                 ));
-                buf.push_str(&format!("\t\t\tcallbacks[{}](productId)\n", luau_str(pk)));
-                buf.push_str("\t\telseif productId then\n");
-                buf.push_str(&format!(
-                    "\t\t\tpromptProductOrPass(productIds, {}, productId)\n",
-                    luau_str(pk)
-                ));
-                buf.push_str("\t\tend\n");
             }
         } else if let Some(cb) = &callback_name {
             buf.push_str(&format!(
@@ -2112,7 +2169,7 @@ pub fn compile_screen_to_luau(slug: &str, doc: &ScreenDoc) -> Result<String, Str
 fn rojo_prop_value(prop: &str, val: &Value) -> Result<Option<Value>, String> {
     let canon = canonical_prop_name(prop);
     match canon {
-        "Name" | "AssetKey" | "AssetPath" | "ProductKey" | "Callback" => Ok(None),
+        "Name" | "AssetKey" | "AssetPath" | "ProductKey" | "ProductId" | "Callback" => Ok(None),
         "Position" | "Size" | "TileSize" | "CanvasSize" | "CellSize" | "CellPadding" => {
             let u = parse_udim2(val)?;
             Ok(Some(json!({
@@ -2428,7 +2485,11 @@ pub fn compile_project_screen(dir: &Path, slug: &str, body: &Value) -> Result<Va
     };
 
     let mut result = compile_screen_doc(&clean, &doc, Some(dir))?;
-    let should_write = body.get("write").and_then(Value::as_bool).unwrap_or(true);
+    let should_write = body
+        .get("write")
+        .or_else(|| body.get("save_luau"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     let emit_model = body
         .get("emit_model_json")
         .or_else(|| body.get("write_model_json"))
