@@ -4,6 +4,12 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.19.0 - 2026-11-26
+
+- Added a Unified Project-Native IDE & Declarative 3D Scene Graph (`src/scene.rs`, `src/projects.rs`, `src/project_api.rs`, `frontend/src/App.tsx`, `Shelf.tsx`, `CodeDiffWorkbench.tsx`, `StudioViewport3D.tsx`, `StudioBottomDrawer.tsx`, `web-engine/install.ts`), replacing the split between embedded `LocalPlace` and Rojo project folders on disk.
+- Opening any Rojo project now populates Explorer (`Services` and `Files`), Code/Diff (fixing "Jump to Issue" and saving directly to real `.luau` files on disk), Lighting controls, and the 3D Viewport via `GET /api/projects/:id/workspace`, `POST /api/projects/:id/scene/mutate` (`scene/workspace.model.json` CRUD + persistent undo/redo + `default.project.json` auto-wiring), and CWE-22/CWE-59 jailed `GET /api/projects/:id/mesh-asset` for `.obj`/texture previewing.
+- Upgraded `projects::builtin_rbxlx` to serialize `CFrame`, `Enum` tokens, `Content` URLs (`MeshId`, `TextureID`, `SoundId`), `Color3uint8`, and `Lighting`/`Atmosphere` properties cleanly, and wired `project_scene_get` and `project_scene_mutate` into `src/agent.rs` and `src/teamwork.rs`.
+
 ## 1.18.0 - 2026-11-25
 
 - Added Deterministic Economy Balance and Progression Simulator (`GET/POST /api/projects/:id/economy-sim`, `GET/POST /api/studio/economy-sim`, `EconomyBalanceSimCard.tsx`, and `web-engine` parity) parsing Luau earn, price, rebirth, and GamePass constants to project a 60-minute progression curve flagging paywall dead-ends, runaway inflation, and under-2-minute exhaustion with 1-click suggestion preview and snapshot-guarded constant tuning.
