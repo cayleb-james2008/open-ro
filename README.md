@@ -1,4 +1,4 @@
-# <img src="docs/logo.svg" alt="OpenRO Studio logo" width="28" height="28" align="absmiddle" /> OpenRO (`v1.25.0`)
+# <img src="docs/logo.svg" alt="OpenRO Studio logo" width="28" height="28" align="absmiddle" /> OpenRO (`v1.26.0`)
 
 [![Release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/cayleb-james2008/open-ro/release.yml?branch=main&label=build)](https://github.com/cayleb-james2008/open-ro/actions)
@@ -54,11 +54,11 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
   </tr>
   <tr>
     <td width="50%" align="center">
-      <strong>Visual ScreenGui designer and safe-area simulator (`v1.22.0`)</strong>
+      <strong>Hardened 3-pane Studio and WebGL2 viewport (`v1.26.0`)</strong>
       <br /><br />
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/hardening-dark.png" />
-        <img src="docs/screenshots/hardening-light.png" alt="OpenRO v1.22.0 hardened Visual ScreenGui Designer and error-bounded workbench" width="100%" />
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/hardening-c3-dark.png" />
+        <img src="docs/screenshots/hardening-c3-light.png" alt="OpenRO v1.26.0 hardened 3-pane Studio, Explorer, WebGL2 terrain and dynamic PointLight viewport" width="100%" />
       </picture>
     </td>
     <td width="50%" align="center">
@@ -103,16 +103,16 @@ flowchart LR
   SRV --> MCP["Roblox Studio MCP &amp; Open Cloud<br/>13 Live Tools + Price Approval Gate"]
 ```
 
-## Verified benchmarks (`v1.25.0` vs `v1.2.0`)
+## Verified benchmarks (`v1.26.0` vs `v1.2.0`)
 
-| Metric | `v1.2.0` baseline | `v1.25.0` verified (`#154` pinned) | Delta |
+| Metric | `v1.2.0` baseline | `v1.26.0` verified (pinned) | Delta |
 | --- | --- | --- | --- |
-| Release binary size | `19.00 MB` | **`9.78 MiB`** (`10,253,184 B`) | **`-48.5%`** |
-| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`231.1 KB`** raw (`236,640 B`) / **`55.5 KB`** gz (`56,796 B`) | **`-87.9%` wire** |
-| Cold boot (`#154` pinned) | `1,470 ms` | **`33.23 ms`** | **`-97.7%`** |
-| Peak RSS (`VmHWM`) | `115.20 MB` | **`13.01 MB`** (`13,324 KB`, `scale-audit` + 10 SSE) | **`-88.7%`** |
-| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`6,558.8 req/s`** Python cold (`2.37 ms` p50, `2.96 ms` p95, `0/16,403` errs) | **`7.50x` (`-97.9%` p95)** |
-| Security and UI gates | `43/43` fuzz | **`43/43` fuzz, `10/10` SSE, `0` sloplint fails/warns, `356/356` Rust tests (`3/3` `v125_headless_sandbox`), `gate 168/168`, `replay 11/11`** | Pass |
+| Release binary size | `19.00 MB` | **`9.80 MiB`** (`10,277,760 B`) | **`-48.4%`** |
+| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`231.3 KB`** raw (`236,801 B`) / **`55.5 KB`** gz (`56,808 B` wire) | **`-87.9%` wire** |
+| Cold boot (pinned) | `1,470 ms` | **`194.64 ms`** | **`-86.8%`** |
+| Peak RSS (`VmHWM`) | `115.20 MB` | **`12.87 MB`** (`13,180 KB`, `scale-audit` + 10 SSE) | **`-88.8%`** |
+| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`6,345.4 req/s`** Python cold (`2.53 ms` p50, `3.06 ms` p95, `0/15,870` errs) | **`7.25x` (`-97.8%` p95)** |
+| Security and UI gates | `43/43` fuzz | **`43/43` fuzz, `10/10` SSE, `0` sloplint fails/reflex/warns (`65` files), `360/360` Rust tests (`4/4` `v126_cycle3_hardening`), `gate 170/170`, `replay 11/11`** | Pass |
 
 ## Quick start
 
