@@ -195,7 +195,7 @@ export function ReadinessAutopilot({
               {blockers.length === 0
                 ? "All Luau, playtest, monetization, asset, and Open Cloud gates are green."
                 : fixableCount > 0
-                  ? `${blockers.length} blocker(s) surfaced below — ${fixableCount} auto-fixable in 1 click.`
+                  ? `${blockers.length} blocker(s) surfaced below: ${fixableCount} auto-fixable in 1 click.`
                   : `${blockers.length} manual gate(s) remaining before live publish.`}
             </p>
           </div>

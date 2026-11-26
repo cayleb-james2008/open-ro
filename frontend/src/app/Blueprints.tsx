@@ -125,7 +125,7 @@ export function BlueprintWorkbench({
           <p className="mt-1 text-sm text-ink-2">
             {hasBuilt
               ? "Pick a compatible system for your place, or describe any custom mechanic below."
-              : "Pick a complete starter blueprint to generate Luau, place instances, and run a playtest — or describe your own game below."}
+              : "Pick a complete starter blueprint to generate Luau, place instances, and run a playtest, or describe your own game below."}
           </p>
         </div>
       </div>

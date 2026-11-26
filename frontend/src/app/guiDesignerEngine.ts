@@ -189,6 +189,19 @@ function asNumber(val: unknown, fallback: number): number {
   return typeof val === "number" && Number.isFinite(val) ? val : fallback;
 }
 
+function clampFinite(val: unknown, min: number, max: number, fallback: number): number {
+  if (typeof val !== "number" || !Number.isFinite(val)) return fallback;
+  return Math.max(min, Math.min(max, val));
+}
+
+function safeHexColor(val: unknown, fallback: string): string {
+  if (typeof val !== "string") return fallback;
+  const trimmed = val.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed;
+  if (/^[0-9a-fA-F]{6}$/.test(trimmed)) return `#${trimmed}`;
+  return fallback;
+}
+
 export function normalizeUDim2(val: unknown, fallback: UDim2Value): UDim2Value {
   if (!val) return { ...fallback };
   if (Array.isArray(val) && val.length >= 4) {
@@ -237,26 +250,97 @@ function normalizeUDimPair(val: unknown): [number, number] | undefined {
   return undefined;
 }
 
-function normalizeGuiNode(raw: unknown, idxPath: string): GuiNode {
-  const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+const MAX_GUI_NODE_DEPTH = 24;
+
+function normalizeGuiNode(raw: unknown, idxPath: string, depth = 0): GuiNode {
+  const obj = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
   const rawClass = String(obj.class_name ?? obj.ClassName ?? "Frame") as GuiClassName;
   const className: GuiClassName = (GUI_CLASS_ALLOWLIST as readonly string[]).includes(rawClass)
     ? rawClass
     : "Frame";
-  const rawProps = (obj.props ?? obj.properties ?? {}) as Record<string, unknown>;
+  const rawProps = (
+    obj.props && typeof obj.props === "object" && !Array.isArray(obj.props)
+      ? obj.props
+      : obj.properties && typeof obj.properties === "object" && !Array.isArray(obj.properties)
+        ? obj.properties
+        : {}
+  ) as Record<string, unknown>;
   const props: GuiNodeProps = { ...rawProps } as GuiNodeProps;
   if (rawProps.Position !== undefined) props.Position = normalizeUDim2(rawProps.Position, udim2(0, 0, 0, 0));
   if (rawProps.Size !== undefined) props.Size = normalizeUDim2(rawProps.Size, udim2(0, 120, 0, 48));
   if (rawProps.CanvasSize !== undefined) props.CanvasSize = normalizeUDim2(rawProps.CanvasSize, udim2(0, 0, 1.5, 0));
   if (rawProps.CellSize !== undefined) props.CellSize = normalizeUDim2(rawProps.CellSize, udim2(0, 88, 0, 88));
   if (rawProps.CellPadding !== undefined) props.CellPadding = normalizeUDim2(rawProps.CellPadding, udim2(0, 8, 0, 8));
+  if (rawProps.AnchorPoint !== undefined) {
+    if (Array.isArray(rawProps.AnchorPoint) && rawProps.AnchorPoint.length >= 2) {
+      props.AnchorPoint = [
+        clampFinite(rawProps.AnchorPoint[0], 0, 1, 0),
+        clampFinite(rawProps.AnchorPoint[1], 0, 1, 0),
+      ];
+    } else {
+      delete props.AnchorPoint;
+    }
+  }
+  if (rawProps.BackgroundColor3 !== undefined) {
+    props.BackgroundColor3 = safeHexColor(rawProps.BackgroundColor3, "#141820");
+  }
+  if (rawProps.BackgroundTransparency !== undefined) {
+    props.BackgroundTransparency = clampFinite(rawProps.BackgroundTransparency, 0, 1, 0);
+  }
+  if (rawProps.TextColor3 !== undefined) {
+    props.TextColor3 = safeHexColor(rawProps.TextColor3, "#F3F4F6");
+  }
+  if (rawProps.TextSize !== undefined) {
+    props.TextSize = clampFinite(rawProps.TextSize, 8, 96, 14);
+  }
+  if (rawProps.Text !== undefined) {
+    props.Text = typeof rawProps.Text === "string" ? rawProps.Text : String(rawProps.Text ?? "");
+  }
+  if (rawProps.Font !== undefined) {
+    props.Font = typeof rawProps.Font === "string" ? rawProps.Font : "GothamMedium";
+  }
+  if (rawProps.Image !== undefined) {
+    props.Image = typeof rawProps.Image === "string" ? rawProps.Image : "";
+  }
+  if (rawProps.AssetPath !== undefined) {
+    props.AssetPath = typeof rawProps.AssetPath === "string" ? rawProps.AssetPath : "";
+  }
+  if (rawProps.ImageTransparency !== undefined) {
+    props.ImageTransparency = clampFinite(rawProps.ImageTransparency, 0, 1, 0);
+  }
+  if (rawProps.SliceCenter !== undefined) {
+    if (Array.isArray(rawProps.SliceCenter) && rawProps.SliceCenter.length >= 4) {
+      props.SliceCenter = [
+        asNumber(rawProps.SliceCenter[0], 24),
+        asNumber(rawProps.SliceCenter[1], 24),
+        asNumber(rawProps.SliceCenter[2], 232),
+        asNumber(rawProps.SliceCenter[3], 232),
+      ];
+    } else {
+      delete props.SliceCenter;
+    }
+  }
+  if (rawProps.Color !== undefined) {
+    props.Color = safeHexColor(rawProps.Color, "#334155");
+  }
+  if (rawProps.Thickness !== undefined) {
+    props.Thickness = clampFinite(rawProps.Thickness, 0, 32, 1.5);
+  }
+  if (rawProps.Transparency !== undefined) {
+    props.Transparency = clampFinite(rawProps.Transparency, 0, 1, 0.2);
+  }
+  if (rawProps.ZIndex !== undefined) {
+    props.ZIndex = clampFinite(rawProps.ZIndex, -100, 1000, 1);
+  }
   if (rawProps.CornerRadius !== undefined) {
     const pair = normalizeUDimPair(rawProps.CornerRadius);
-    if (pair) props.CornerRadius = pair;
+    if (pair) props.CornerRadius = [clampFinite(pair[0], 0, 1, 0), clampFinite(pair[1], 0, 240, 10)];
+    else delete props.CornerRadius;
   }
   if (rawProps.Padding !== undefined) {
     const pair = normalizeUDimPair(rawProps.Padding);
     if (pair) props.Padding = pair;
+    else delete props.Padding;
   }
   if (props.CallbackName === undefined && typeof rawProps.Callback === "string") {
     props.CallbackName = rawProps.Callback;
@@ -265,21 +349,30 @@ function normalizeGuiNode(raw: unknown, idxPath: string): GuiNode {
     props.ProductId = String(rawProps.ProductKey);
   }
 
-  const rawChildren = Array.isArray(obj.children) ? obj.children : [];
+  const rawChildren = depth < MAX_GUI_NODE_DEPTH && Array.isArray(obj.children) ? obj.children : [];
   return {
     id: typeof obj.id === "string" && obj.id.trim() ? obj.id.trim() : `node-${idxPath}`,
     name: typeof obj.name === "string" && obj.name.trim() ? obj.name.trim() : className,
     class_name: className,
     props,
-    children: rawChildren.map((c, i) => normalizeGuiNode(c, `${idxPath}-${i}`)),
+    children: rawChildren.map((c, i) => normalizeGuiNode(c, `${idxPath}-${i}`, depth + 1)),
   };
 }
 
 export function normalizeScreenDoc(raw: unknown, fallbackSlug = "main-hud"): ScreenDoc {
-  const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  const docObj = (obj.doc && typeof obj.doc === "object" ? obj.doc : obj) as Record<string, unknown>;
-  const slugRaw = typeof docObj.slug === "string" && isValidGuiSlug(docObj.slug) ? docObj.slug : fallbackSlug;
+  let parsed = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = null;
+    }
+  }
+  const obj = (parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}) as Record<string, unknown>;
+  const docObj = (obj.doc && typeof obj.doc === "object" && !Array.isArray(obj.doc) ? obj.doc : obj) as Record<string, unknown>;
+  const slugRaw = typeof docObj.slug === "string" && isValidGuiSlug(docObj.slug) ? docObj.slug : sanitizeGuiSlug(fallbackSlug);
   const themeRaw = (docObj.theme && typeof docObj.theme === "object" ? docObj.theme : {}) as Record<string, unknown>;
+  const hasRoot = Boolean(docObj.root && typeof docObj.root === "object" && !Array.isArray(docObj.root));
   return {
     version: 1,
     slug: slugRaw,
@@ -287,11 +380,11 @@ export function normalizeScreenDoc(raw: unknown, fallbackSlug = "main-hud"): Scr
     ignore_gui_inset: docObj.ignore_gui_inset !== false,
     reset_on_spawn: docObj.reset_on_spawn === true,
     theme: {
-      accent: typeof themeRaw.accent === "string" ? themeRaw.accent : "#1562FC",
-      surface: typeof themeRaw.surface === "string" ? themeRaw.surface : "#141820",
-      text: typeof themeRaw.text === "string" ? themeRaw.text : "#F3F4F6",
+      accent: safeHexColor(themeRaw.accent, "#1562FC"),
+      surface: safeHexColor(themeRaw.surface, "#141820"),
+      text: safeHexColor(themeRaw.text, "#F3F4F6"),
     },
-    root: docObj.root
+    root: hasRoot
       ? normalizeGuiNode(docObj.root, "root")
       : buildGuiPreset("rpg").root,
   };
@@ -1381,46 +1474,6 @@ export function deleteGuiNode(root: GuiNode, id: string): GuiNode {
       .filter((ch) => ch.id !== id)
       .map((ch) => deleteGuiNode(ch, id)),
   };
-}
-
-export function normalizeSafeAreaWarnings(raw: unknown): SafeAreaWarning[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
-    .map((w) => {
-      const rawDev = String(w.device ?? "desktop");
-      const device: GuiDeviceId =
-        rawDev === "mobile_landscape" || rawDev === "mobile"
-          ? "mobile"
-          : rawDev === "tablet"
-            ? "tablet"
-            : "desktop";
-      const rawKind = String(w.kind ?? w.code ?? "offscreen_bounds");
-      const kind: SafeAreaWarningKind =
-        rawKind === "offscreen"
-          ? "offscreen_bounds"
-          : rawKind === "topbar_overlap" ||
-              rawKind === "thumbstick_overlap" ||
-              rawKind === "offscreen_bounds" ||
-              rawKind === "tiny_tap_target"
-            ? rawKind
-            : "offscreen_bounds";
-      const box = (w.rect ?? w.bounds ?? {}) as Record<string, unknown>;
-      return {
-        device,
-        node_id: String(w.node_id ?? ""),
-        node_name: String(w.node_name ?? ""),
-        kind,
-        severity: w.severity === "error" ? "error" : "warning",
-        message: String(w.message ?? ""),
-        rect: {
-          x: asNumber(box.x, 0),
-          y: asNumber(box.y, 0),
-          w: asNumber(box.w, 0),
-          h: asNumber(box.h, 0),
-        },
-      };
-    });
 }
 
 export function cloneGuiNodeWithNewIds(node: GuiNode, suffix: string): GuiNode {

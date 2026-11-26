@@ -62,6 +62,7 @@ import {
   deleteGuiNode,
   findGuiNode,
   insertGuiChild,
+  isValidGuiSlug,
   normalizeScreenDoc,
   sanitizeGuiSlug,
   udim2,
@@ -176,22 +177,36 @@ const DEFAULT_ADD_CLASS_PROPS: Record<GuiClassName, GuiNodeProps> = {
   UIPadding: { PaddingTop: [0, 8], PaddingBottom: [0, 8], PaddingLeft: [0, 8], PaddingRight: [0, 8] },
 };
 
-function resolveAssetPreviewUrl(projectId: string | null | undefined, path: string): string | null {
+function resolveAssetPreviewUrl(
+  projectId: string | null | undefined,
+  path: string,
+  projectArtFiles: AssetFile[],
+  assets?: ProjectAssetRecord[],
+): string | null {
   if (!path) return null;
   if (/^(https?:|data:|blob:)/i.test(path)) return path;
-  if (projectId && path.startsWith("art/")) {
+  const assetMatch = assets?.find((a) => a.file === path || a.image_url === path);
+  if (assetMatch?.image_url) return assetMatch.image_url;
+  if (projectId && path.startsWith("art/") && projectArtFiles.some((f) => f.path === path)) {
     return `/api/art/image?project=${encodeURIComponent(projectId)}&path=${encodeURIComponent(path)}`;
   }
   return null;
 }
 
-function colorWithAlpha(hex: string | undefined, transparency: number | undefined): string {
-  const clean = (hex || "#141820").replace("#", "");
-  const r = parseInt(clean.slice(0, 2), 16) || 20;
-  const g = parseInt(clean.slice(2, 4), 16) || 24;
-  const b = parseInt(clean.slice(4, 6), 16) || 32;
-  const alpha = Math.max(0, Math.min(1, 1 - (transparency ?? 0)));
+function colorWithAlpha(hex: unknown, transparency: number | undefined): string {
+  const raw = typeof hex === "string" ? hex.trim().replace("#", "") : "141820";
+  const validHex = /^[0-9a-fA-F]{6}$/.test(raw) ? raw : "141820";
+  const r = parseInt(validHex.slice(0, 2), 16);
+  const g = parseInt(validHex.slice(2, 4), 16);
+  const b = parseInt(validHex.slice(4, 6), 16);
+  const t = typeof transparency === "number" && Number.isFinite(transparency) ? transparency : 0;
+  const alpha = Math.max(0, Math.min(1, 1 - t));
   return `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`;
+}
+
+function clampGuiNum(val: number, min: number, max: number): number {
+  if (!Number.isFinite(val)) return min;
+  return Math.max(min, Math.min(max, val));
 }
 
 export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
@@ -224,8 +239,11 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
   const [compileDiagnostics, setCompileDiagnostics] = useState<GuiCompileDiagnostic[]>([]);
   const [compileOutputMode, setCompileOutputMode] = useState<"luau" | "model">("luau");
   const [projectArtFiles, setProjectArtFiles] = useState<AssetFile[]>([]);
+  const [brokenImgUrls, setBrokenImgUrls] = useState<Set<string>>(() => new Set());
   const [assetQuery, setAssetQuery] = useState("");
   const [newSlugDraft, setNewSlugDraft] = useState("");
+  const [slugError, setSlugError] = useState("");
+  const [guiError, setGuiError] = useState("");
   const [showNewSlugRow, setShowNewSlugRow] = useState(false);
 
   const stageWrapRef = useRef<HTMLDivElement>(null);
@@ -262,29 +280,38 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
   }, []);
 
   const refreshScreensAndArt = useCallback(async () => {
-    const res = await listGuiScreens(projectId);
-    if (res.ok && Array.isArray(res.screens)) {
-      setScreens(res.screens);
-      if (res.screens.length > 0) {
-        const firstSlug = res.screens[0].slug;
-        const loaded = await loadGuiScreen(firstSlug, projectId);
-        if (loaded.ok && loaded.doc) {
-          const norm = normalizeScreenDoc(loaded.doc, firstSlug);
-          setDoc(norm);
-          setServerWarnings(Array.isArray(loaded.safe_area_warnings) ? loaded.safe_area_warnings : null);
-          const firstChild = norm.root.children.find((c) => GUI_VISUAL_CLASSES.has(c.class_name));
-          setSelectedNodeId(firstChild?.id ?? norm.root.id);
-          setDirty(false);
+    try {
+      setGuiError("");
+      const res = await listGuiScreens(projectId);
+      if (res.ok && Array.isArray(res.screens)) {
+        setScreens(res.screens);
+        if (res.screens.length > 0) {
+          const firstSlug = res.screens[0].slug;
+          const loaded = await loadGuiScreen(firstSlug, projectId);
+          if (loaded.ok && loaded.doc) {
+            const norm = normalizeScreenDoc(loaded.doc, firstSlug);
+            setDoc(norm);
+            setServerWarnings(Array.isArray(loaded.safe_area_warnings) ? loaded.safe_area_warnings : null);
+            const firstChild = norm.root.children.find((c) => GUI_VISUAL_CLASSES.has(c.class_name));
+            setSelectedNodeId(firstChild?.id ?? norm.root.id);
+            setDirty(false);
+          } else if (!loaded.ok) {
+            setGuiError(loaded.error || `Could not load ${firstSlug}. Using starter layout.`);
+          }
         }
+      } else if (!res.ok) {
+        setGuiError(res.error || "Could not load saved screens. Using starter layout.");
       }
-    }
-    if (projectId) {
-      const aRes = await call<{ files: AssetFile[] }>(projUrl(projectId, "/assets"));
-      if (aRes.ok && Array.isArray(aRes.files)) {
-        setProjectArtFiles(aRes.files);
+      if (projectId) {
+        const aRes = await call<{ files: AssetFile[] }>(projUrl(projectId, "/assets"));
+        if (aRes.ok && Array.isArray(aRes.files)) {
+          setProjectArtFiles(aRes.files);
+        }
+      } else {
+        setProjectArtFiles([]);
       }
-    } else {
-      setProjectArtFiles([]);
+    } catch {
+      setGuiError("Failed to refresh UI screens. Using local starter layout.");
     }
   }, [projectId]);
 
@@ -355,10 +382,12 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
     setSelectedNodeId(firstVis?.id ?? next.root.id);
     setDirty(true);
     setServerWarnings(null);
+    setGuiError("");
     toast.success(`Loaded ${preset.toUpperCase()} starter HUD`);
   };
 
   const handleSelectSavedScreen = async (slug: string) => {
+    setGuiError("");
     const res = await loadGuiScreen(slug, projectId);
     if (res.ok && res.doc) {
       const norm = normalizeScreenDoc(res.doc, slug);
@@ -368,30 +397,47 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
       setServerWarnings(Array.isArray(res.safe_area_warnings) ? res.safe_area_warnings : null);
       setDirty(false);
     } else {
-      toast.error(res.error || `Could not open ${slug}`);
+      const msg = res.error || `Could not open ${slug}`;
+      setGuiError(msg);
+      toast.error(msg);
     }
   };
 
   const handleCreateSlugScreen = () => {
-    const slug = sanitizeGuiSlug(newSlugDraft || "custom-hud");
+    const raw = newSlugDraft.trim();
+    if (!raw || !isValidGuiSlug(raw)) {
+      setSlugError("Invalid screen slug: use 1 to 64 letters, numbers, hyphens, or underscores (start with letter or number).");
+      return;
+    }
+    setSlugError("");
+    setGuiError("");
     const next = buildGuiPreset("rpg");
-    next.slug = slug;
-    next.name = slug
-      .split(/[-_]+/)
-      .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
-      .join("");
+    next.slug = raw;
+    next.name =
+      raw
+        .split(/[-_]+/)
+        .filter(Boolean)
+        .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+        .join("") || "CustomHud";
     setDoc(next);
     setSelectedNodeId(next.root.children[0]?.id ?? next.root.id);
     setDirty(true);
     setShowNewSlugRow(false);
     setNewSlugDraft("");
-    toast.success(`Created screen draft ${slug}`);
+    toast.success(`Created screen draft ${raw}`);
   };
 
   const handleSave = async () => {
+    if (!isValidGuiSlug(doc.slug)) {
+      const msg = "Invalid screen slug: fix the screen slug before saving.";
+      setGuiError(msg);
+      toast.error(msg);
+      return;
+    }
     setSaving(true);
+    setGuiError("");
     try {
-      const slug = sanitizeGuiSlug(doc.slug);
+      const slug = doc.slug.trim();
       const nextDoc = { ...doc, slug };
       const res = await saveGuiScreen(slug, nextDoc, projectId);
       if (res.ok) {
@@ -407,7 +453,9 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
         toast.success(`Saved ${slug}.screen.json`);
         await onSavedScreenOrLuau?.();
       } else {
-        toast.error(res.error || "Could not save screen");
+        const msg = res.error || "Could not save screen";
+        setGuiError(msg);
+        toast.error(msg);
       }
     } finally {
       setSaving(false);
@@ -520,10 +568,16 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
   const onPointerMove = (e: ReactPointerEvent) => {
     const d = dragRef.current;
     if (!d) return;
-    const dx = Math.round((e.clientX - d.startClientX) / Math.max(0.1, d.scale));
-    const dy = Math.round((e.clientY - d.startClientY) / Math.max(0.1, d.scale));
+    const rawDx = Math.round((e.clientX - d.startClientX) / Math.max(0.1, d.scale));
+    const rawDy = Math.round((e.clientY - d.startClientY) / Math.max(0.1, d.scale));
 
     if (d.kind === "move") {
+      const minXDelta = Math.min(0, -d.origRect.x);
+      const maxXDelta = Math.max(0, deviceSpec.width - d.origRect.w - d.origRect.x);
+      const minYDelta = Math.min(0, -d.origRect.y);
+      const maxYDelta = Math.max(0, deviceSpec.height - d.origRect.h - d.origRect.y);
+      const dx = Math.max(minXDelta, Math.min(maxXDelta, rawDx));
+      const dy = Math.max(minYDelta, Math.min(maxYDelta, rawDy));
       setDoc((prev) => ({
         ...prev,
         root: updateGuiNode(prev.root, d.nodeId, (n) => ({
@@ -547,19 +601,26 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
     let nextXOffset = d.origPos.x_offset;
     let nextYOffset = d.origPos.y_offset;
 
+    const maxWidthGrow = Math.max(0, deviceSpec.width - (d.origRect.x + d.origRect.w));
+    const maxHeightGrow = Math.max(0, deviceSpec.height - (d.origRect.y + d.origRect.h));
+
     if (d.kind.includes("e")) {
-      nextWOffset = Math.max(16 - d.origRect.w + d.origSize.x_offset, d.origSize.x_offset + dx);
+      const clampedDx = Math.max(16 - d.origRect.w, Math.min(maxWidthGrow, rawDx));
+      nextWOffset = d.origSize.x_offset + clampedDx;
     }
     if (d.kind.includes("s")) {
-      nextHOffset = Math.max(16 - d.origRect.h + d.origSize.y_offset, d.origSize.y_offset + dy);
+      const clampedDy = Math.max(16 - d.origRect.h, Math.min(maxHeightGrow, rawDy));
+      nextHOffset = d.origSize.y_offset + clampedDy;
     }
     if (d.kind.includes("w")) {
-      const clampedDx = Math.min(dx, d.origRect.w - 16);
+      const minLeftShift = Math.min(0, -d.origRect.x);
+      const clampedDx = Math.max(minLeftShift, Math.min(rawDx, d.origRect.w - 16));
       nextWOffset = d.origSize.x_offset - clampedDx;
       nextXOffset = d.origPos.x_offset + clampedDx;
     }
     if (d.kind.includes("n")) {
-      const clampedDy = Math.min(dy, d.origRect.h - 16);
+      const minTopShift = Math.min(0, -d.origRect.y);
+      const clampedDy = Math.max(minTopShift, Math.min(rawDy, d.origRect.h - 16));
       nextHOffset = d.origSize.y_offset - clampedDy;
       nextYOffset = d.origPos.y_offset + clampedDy;
     }
@@ -584,6 +645,24 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
       })),
     }));
     setDirty(true);
+  };
+
+  const nudgeSelectedBy = (dx: number, dy: number) => {
+    if (selectedNode.id === doc.root.id || !selectedRect) return;
+    const minDx = Math.min(0, -selectedRect.x);
+    const maxDx = Math.max(0, deviceSpec.width - selectedRect.w - selectedRect.x);
+    const minDy = Math.min(0, -selectedRect.y);
+    const maxDy = Math.max(0, deviceSpec.height - selectedRect.h - selectedRect.y);
+    const clampedDx = Math.max(minDx, Math.min(maxDx, dx));
+    const clampedDy = Math.max(minDy, Math.min(maxDy, dy));
+    const curPos = selectedNode.props.Position ?? udim2(0, 0, 0, 0);
+    updateSelectedNodeProps({
+      Position: {
+        ...curPos,
+        x_offset: Math.round(curPos.x_offset + clampedDx),
+        y_offset: Math.round(curPos.y_offset + clampedDy),
+      },
+    });
   };
 
   const endDrag = () => {
@@ -723,10 +802,10 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
       {/* Top Designer Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-hairline bg-board/60 px-2.5 py-2">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          <Pill className="bg-surface px-2 py-0.5 text-xs text-ink">
-            <Layers className="size-3.5 text-blue" strokeWidth={1.5} aria-hidden />
-            <span className="font-medium">{doc.name}</span>
-            <span className="font-mono text-ink-3">{doc.slug}.screen.json</span>
+          <Pill className="max-w-full min-w-0 bg-surface px-2 py-0.5 text-xs text-ink">
+            <Layers className="size-3.5 shrink-0 text-blue" strokeWidth={1.5} aria-hidden />
+            <span className="truncate font-medium">{doc.name}</span>
+            <span className="truncate font-mono text-ink-3">{doc.slug}.screen.json</span>
           </Pill>
 
           {screens.length > 0 && (
@@ -736,7 +815,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
               onChange={(e) => {
                 if (e.target.value) void handleSelectSavedScreen(e.target.value);
               }}
-              className="h-8 rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
+              className="h-8 max-w-full rounded-lg border border-hairline bg-surface px-2 text-xs text-ink"
             >
               <option value="" disabled>
                 Screens ({screens.length})
@@ -767,7 +846,11 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
           <Button
             variant="ghost"
             size="xs"
-            onClick={() => setShowNewSlugRow((v) => !v)}
+            data-gui-new
+            onClick={() => {
+              setSlugError("");
+              setShowNewSlugRow((v) => !v);
+            }}
             aria-label="New ScreenGui"
           >
             <Plus className="size-3.5" strokeWidth={1.5} aria-hidden />
@@ -775,8 +858,8 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
           </Button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
-          <SegmentedControl aria-label="Device viewport" size="sm">
+        <div className="flex max-w-full flex-wrap items-center gap-1.5">
+          <SegmentedControl aria-label="Device viewport" size="sm" className="max-w-full flex-wrap">
             {(["desktop", "tablet", "mobile"] as GuiDeviceId[]).map((d) => {
               const Icon = d === "desktop" ? Laptop : d === "tablet" ? Tablet : Smartphone;
               return (
@@ -821,19 +904,73 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
       </div>
 
       {showNewSlugRow && (
-        <div className="flex flex-wrap items-center gap-2 rounded-card border border-hairline bg-surface px-2.5 py-2">
-          <Input
-            value={newSlugDraft}
-            onChange={(e) => setNewSlugDraft(e.target.value)}
-            placeholder="shop-modal"
-            className="h-8 max-w-[200px] font-mono text-xs"
-          />
-          <Button variant="outline" size="xs" onClick={handleCreateSlugScreen}>
-            Create screen
-          </Button>
-          <Button variant="ghost" size="xs" onClick={() => setShowNewSlugRow(false)}>
-            Cancel
-          </Button>
+        <div className="flex flex-col gap-1.5 rounded-card border border-hairline bg-surface px-2.5 py-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              aria-label="New screen slug"
+              data-gui-slug-input
+              aria-invalid={Boolean(slugError)}
+              value={newSlugDraft}
+              onChange={(e) => {
+                setNewSlugDraft(e.target.value);
+                if (slugError) setSlugError("");
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleCreateSlugScreen();
+              }}
+              placeholder="shop-modal"
+              className="h-8 max-w-[200px] font-mono text-xs"
+            />
+            <Button variant="outline" size="xs" data-gui-create-slug onClick={handleCreateSlugScreen}>
+              Create screen
+            </Button>
+            {slugError && newSlugDraft.trim() && (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => {
+                  const clean = sanitizeGuiSlug(newSlugDraft);
+                  setNewSlugDraft(clean);
+                  setSlugError("");
+                }}
+              >
+                Use {sanitizeGuiSlug(newSlugDraft)}
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => {
+                setShowNewSlugRow(false);
+                setSlugError("");
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+          {slugError && (
+            <p role="alert" data-gui-slug-error className="text-xs text-pill-pro-fg">
+              {slugError}
+            </p>
+          )}
+        </div>
+      )}
+
+      {guiError && (
+        <div
+          role="alert"
+          data-gui-error
+          className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-pill-pro-bg/60 bg-pill-pro-bg/40 px-2.5 py-2 text-xs text-pill-pro-fg"
+        >
+          <span>{guiError}</span>
+          <div className="flex items-center gap-1.5">
+            <Button variant="outline" size="xs" onClick={() => void refreshScreensAndArt()} className="bg-surface">
+              Retry
+            </Button>
+            <Button variant="ghost" size="xs" onClick={() => handleLoadPreset("rpg")}>
+              Reset preset
+            </Button>
+          </div>
         </div>
       )}
 
@@ -938,15 +1075,42 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
               const bg = colorWithAlpha(node.props.BackgroundColor3, node.props.BackgroundTransparency ?? (isRoot ? 1 : 0));
               const isButton = node.class_name === "TextButton" || node.class_name === "ImageButton";
               const isImage = node.class_name === "ImageLabel" || node.class_name === "ImageButton";
-              const imgUrl = isImage ? resolveAssetPreviewUrl(projectId, node.props.Image || node.props.AssetPath || "") : null;
+              const rawImgUrl = isImage
+                ? resolveAssetPreviewUrl(projectId, node.props.Image || node.props.AssetPath || "", projectArtFiles, assets)
+                : null;
+              const imgUrl = rawImgUrl && !brokenImgUrls.has(rawImgUrl) ? rawImgUrl : null;
               const hasSlice = isImage && node.props.ScaleType === "Slice" && node.props.SliceCenter;
               const nodeWarn = deviceWarnings.some((w) => w.node_id === node.id);
 
               return (
                 <div
                   key={node.id}
+                  role="button"
+                  tabIndex={isRoot ? -1 : 0}
+                  aria-label={`${node.name} (${node.class_name})`}
+                  aria-pressed={isSelected}
                   data-gui-canvas-node={node.id}
                   onPointerDown={(e) => startDrag(e, "move", item)}
+                  onKeyDown={(e) => {
+                    if (isRoot) return;
+                    const step = e.shiftKey ? 10 : 2;
+                    if (e.key === "ArrowLeft") {
+                      e.preventDefault();
+                      nudgeSelectedBy(-step, 0);
+                    } else if (e.key === "ArrowRight") {
+                      e.preventDefault();
+                      nudgeSelectedBy(step, 0);
+                    } else if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      nudgeSelectedBy(0, -step);
+                    } else if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      nudgeSelectedBy(0, step);
+                    } else if (e.key === "Delete" || e.key === "Backspace") {
+                      e.preventDefault();
+                      handleDeleteNode();
+                    }
+                  }}
                   style={{
                     left: `${item.x * scale}px`,
                     top: `${item.y * scale}px`,
@@ -972,6 +1136,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                       src={imgUrl}
                       alt={node.name}
                       draggable={false}
+                      onError={() => setBrokenImgUrls((prev) => new Set(prev).add(imgUrl))}
                       className="pointer-events-none h-full w-full object-cover"
                       style={{ borderRadius: `${radiusPx}px` }}
                     />
@@ -1265,7 +1430,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                         value={anchorVal[0]}
                         onChange={(e) => {
                           const n = Number(e.target.value);
-                          if (Number.isFinite(n)) updateSelectedNodeProps({ AnchorPoint: [n, anchorVal[1]] });
+                          if (Number.isFinite(n)) updateSelectedNodeProps({ AnchorPoint: [clampGuiNum(n, 0, 1), anchorVal[1]] });
                         }}
                         className="h-7 font-mono text-xs tabular-nums"
                       />
@@ -1281,7 +1446,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                         value={anchorVal[1]}
                         onChange={(e) => {
                           const n = Number(e.target.value);
-                          if (Number.isFinite(n)) updateSelectedNodeProps({ AnchorPoint: [anchorVal[0], n] });
+                          if (Number.isFinite(n)) updateSelectedNodeProps({ AnchorPoint: [anchorVal[0], clampGuiNum(n, 0, 1)] });
                         }}
                         className="h-7 font-mono text-xs tabular-nums"
                       />
@@ -1309,7 +1474,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                         value={selectedNode.props.BackgroundTransparency ?? 0}
                         onChange={(e) => {
                           const n = Number(e.target.value);
-                          if (Number.isFinite(n)) updateSelectedNodeProps({ BackgroundTransparency: n });
+                          if (Number.isFinite(n)) updateSelectedNodeProps({ BackgroundTransparency: clampGuiNum(n, 0, 1) });
                         }}
                         className="h-7 font-mono text-xs tabular-nums"
                       />
@@ -1340,7 +1505,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                         value={selectedNode.props.TextSize ?? 14}
                         onChange={(e) => {
                           const n = Number(e.target.value);
-                          if (Number.isFinite(n)) updateSelectedNodeProps({ TextSize: n });
+                          if (Number.isFinite(n)) updateSelectedNodeProps({ TextSize: clampGuiNum(n, 8, 96) });
                         }}
                         className="h-7 font-mono text-xs tabular-nums"
                       />

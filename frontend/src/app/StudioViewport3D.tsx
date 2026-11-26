@@ -83,6 +83,7 @@ type ParsedObjMesh = {
 };
 
 function parseObjWireframe(text: string): ParsedObjMesh | null {
+  if (!text || text.length > 500_000) return null;
   const rawVerts: Vec3[] = [];
   const edgeSet = new Set<string>();
   const rawEdges: Array<[number, number]> = [];
@@ -220,20 +221,33 @@ function shadeHex(hex: string, factor: number, alpha = 1): string {
 
 function extractParts(place: Place, assets: ProjectAssetRecord[], meshes: WorkspaceMeshEntry[] = []): Part3D[] {
   const out: Part3D[] = [];
-  const entries = Object.entries(place.instances || {});
+  if (!place || !place.instances || typeof place.instances !== "object") return out;
+  const entries = Object.entries(place.instances);
   let fallbackIdx = 0;
 
+  const clampNum = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
+
   for (const [path, inst] of entries) {
-    if (!path.startsWith("Workspace.")) continue;
-    const cls = inst.class_name || "Part";
+    if (!path.startsWith("Workspace.") || !inst || typeof inst !== "object") continue;
+    const cls = typeof inst.class_name === "string" && inst.class_name ? inst.class_name : "Part";
     if (cls === "Decal" || cls === "SurfaceGui" || cls === "Script" || cls === "Folder") continue;
     const name = path.split(".").slice(1).join(".") || path;
-    const props = inst.properties || {};
-    const size = parseVec3(props.Size, cls === "SpawnLocation" ? [8, 1, 8] : [8, 2, 8]);
+    const props = (inst.properties && typeof inst.properties === "object" ? inst.properties : {}) as Record<string, unknown>;
+    const rawSize = parseVec3(props.Size, cls === "SpawnLocation" ? [8, 1, 8] : [8, 2, 8]);
+    const size: Vec3 = [
+      clampNum(rawSize[0], 0.5, 512),
+      clampNum(rawSize[1], 0.5, 512),
+      clampNum(rawSize[2], 0.5, 512),
+    ];
     const hasPos = Array.isArray(props.Position) && props.Position.length >= 3;
-    const pos: Vec3 = hasPos
+    const rawPos: Vec3 = hasPos
       ? parseVec3(props.Position, [0, size[1] / 2, 0])
       : [(fallbackIdx % 4 - 1.5) * 14, Math.max(1, size[1] / 2), Math.floor(fallbackIdx / 4) * 14];
+    const pos: Vec3 = [
+      clampNum(rawPos[0], -1024, 1024),
+      clampNum(rawPos[1], -256, 1024),
+      clampNum(rawPos[2], -1024, 1024),
+    ];
     if (!hasPos) fallbackIdx++;
 
     const rotArr = parseVec3(props.Rotation, [0, 0, 0]);
@@ -674,6 +688,9 @@ export function StudioViewport3D({
       if (imgCacheRef.current.has(url)) continue;
       const img = new Image();
       img.onload = () => setImgTick((t) => t + 1);
+      img.onerror = () => {
+        imgCacheRef.current.delete(url);
+      };
       img.src = url;
       imgCacheRef.current.set(url, img);
     }
@@ -1540,7 +1557,7 @@ export function StudioViewport3D({
       ctx.font = '500 12px "Geist", system-ui, sans-serif';
       ctx.fillStyle = isDark ? "rgba(232,236,244,0.75)" : "rgba(30,34,42,0.72)";
       ctx.textAlign = "center";
-      ctx.fillText("Roblox Studio 3D Baseplate ready — run a blueprint or ask OpenRO to watch parts build live.", CANVAS_W / 2, CANVAS_H - 28);
+      ctx.fillText("Roblox Studio 3D Baseplate ready: run a blueprint or ask OpenRO to watch parts build live.", CANVAS_W / 2, CANVAS_H - 28);
     }
   }, [building, lighting, meshTick, replaying, reduce, selectedPart, selectedPath, theme, tool, visibleParts, imgTick]);
 
@@ -1728,9 +1745,11 @@ export function StudioViewport3D({
       let nextRotY = d.origPart.rotY;
 
       if (tool === "move") {
-        nextPos[axisIdx] = Math.round((d.origPart.pos[axisIdx] + projDelta * 0.14) * 2) / 2;
+        const rawVal = Math.round((d.origPart.pos[axisIdx] + projDelta * 0.14) * 2) / 2;
+        const minP = axisIdx === 1 ? 0.5 : -256;
+        nextPos[axisIdx] = Math.max(minP, Math.min(256, rawVal));
       } else if (tool === "scale") {
-        nextSize[axisIdx] = Math.max(1, Math.round((d.origPart.size[axisIdx] + projDelta * 0.12) * 2) / 2);
+        nextSize[axisIdx] = Math.max(1, Math.min(256, Math.round((d.origPart.size[axisIdx] + projDelta * 0.12) * 2) / 2));
       } else if (tool === "rotate") {
         nextRotY = (d.origPart.rotY + Math.round(dx * 0.8)) % 360;
       }
@@ -1825,6 +1844,11 @@ export function StudioViewport3D({
     }
   };
 
+  const onPointerCancel = () => {
+    dragRef.current = null;
+    setLocalDraftEdit(null);
+  };
+
   const onCanvasKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (["w", "a", "s", "d", "q", "e", "W", "A", "S", "D", "Q", "E"].includes(e.key)) {
       e.preventDefault();
@@ -1836,6 +1860,25 @@ export function StudioViewport3D({
     } else if (e.key === "r" || e.key === "R") {
       e.preventDefault();
       resetCamera();
+    } else if (e.key === "1") {
+      setTool("select");
+    } else if (e.key === "2") {
+      setTool("move");
+    } else if (e.key === "3") {
+      setTool("scale");
+    } else if (e.key === "4") {
+      setTool("rotate");
+    } else if (e.key === "Escape") {
+      dragRef.current = null;
+      setLocalDraftEdit(null);
+      setAddPartOpen(false);
+    } else if (selectedPart && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
+      e.preventDefault();
+      const step = e.shiftKey ? 4 : 1;
+      if (e.key === "ArrowLeft") nudgeSelected("x", -step);
+      else if (e.key === "ArrowRight") nudgeSelected("x", step);
+      else if (e.key === "ArrowUp") nudgeSelected("z", -step);
+      else if (e.key === "ArrowDown") nudgeSelected("z", step);
     }
   };
 
@@ -1867,9 +1910,9 @@ export function StudioViewport3D({
     const nextPos: Vec3 = [...selectedPart.pos];
     const nextSize: Vec3 = [...selectedPart.size];
     let nextRotY = selectedPart.rotYDeg;
-    if (tool === "scale") nextSize[idx] = Math.max(1, nextSize[idx] + delta);
+    if (tool === "scale") nextSize[idx] = Math.max(1, Math.min(256, nextSize[idx] + delta));
     else if (tool === "rotate") nextRotY = (nextRotY + delta * 15) % 360;
-    else nextPos[idx] = nextPos[idx] + delta;
+    else nextPos[idx] = Math.max(idx === 1 ? 0.5 : -256, Math.min(256, nextPos[idx] + delta));
     void commitTransform(selectedPart, nextPos, nextSize, nextRotY);
   };
 
@@ -2129,7 +2172,7 @@ export function StudioViewport3D({
       <div className="flex min-h-0 flex-1 flex-col gap-2">
         <div
           tabIndex={0}
-          aria-label="Interactive 3D Roblox Studio Viewport — drag to orbit, Shift+drag to pan, wheel to zoom, click any 3D part to select"
+          aria-label="Interactive 3D Roblox Studio Viewport: drag to orbit, Shift+drag to pan, wheel to zoom, click any 3D part to select"
           onKeyDown={onCanvasKeyDown}
           onKeyUp={(e) => keysRef.current.delete(e.key)}
           onBlur={() => keysRef.current.clear()}
@@ -2142,6 +2185,7 @@ export function StudioViewport3D({
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
+            onPointerCancel={onPointerCancel}
             onContextMenu={(e) => e.preventDefault()}
             onWheel={onWheel}
             className="block h-full w-full touch-none cursor-grab active:cursor-grabbing"

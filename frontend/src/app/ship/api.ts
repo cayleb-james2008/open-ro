@@ -600,17 +600,69 @@ export type PublishGateResult = {
 
 export type Res<T> = { ok: boolean; httpStatus: number; error?: string } & Partial<T>;
 
-/** GET when `body` is undefined, else POST JSON. A network or parse failure comes back as ok:false with plain words. */
-export async function call<T = Record<string, unknown>>(url: string, body?: unknown): Promise<Res<T>> {
+/** GET when `body` is undefined, else POST JSON. A network, timeout, or parse failure comes back as ok:false with plain words. */
+export async function call<T = Record<string, unknown>>(
+  url: string,
+  body?: unknown,
+  options?: { timeoutMs?: number },
+): Promise<Res<T>> {
+  const timeoutMs = options?.timeoutMs ?? 25000;
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = controller && timeoutMs > 0 ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
-    const r = await fetch(url, body === undefined ? { cache: "no-store" } : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch(
+      url,
+      body === undefined
+        ? { cache: "no-store", signal: controller?.signal }
+        : {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal: controller?.signal,
+          },
+    );
     const text = await r.text();
     let data: Record<string, unknown> = {};
-    try { data = JSON.parse(text) as Record<string, unknown>; } catch { /* not JSON */ }
-    const error = typeof data.error === "string" ? data.error : r.ok ? undefined : r.status === 404 ? "This OpenRO build does not have that feature yet." : `The server answered ${r.status}.`;
+    let parseFailed = false;
+    if (text.trim().length > 0) {
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          data = parsed as Record<string, unknown>;
+        } else {
+          parseFailed = true;
+        }
+      } catch {
+        parseFailed = true;
+      }
+    }
+    if (parseFailed && r.ok) {
+      return {
+        ok: false,
+        httpStatus: r.status,
+        error: "Received invalid JSON response from the OpenRO server.",
+      } as Res<T>;
+    }
+    const error =
+      typeof data.error === "string"
+        ? data.error
+        : r.ok
+          ? undefined
+          : r.status === 404
+            ? "This OpenRO build does not have that feature yet."
+            : `The server answered ${r.status}.`;
     return { ...(data as Partial<T>), ok: r.ok && data.ok !== false, httpStatus: r.status, error };
-  } catch {
-    return { ok: false, httpStatus: 0, error: "Could not reach the OpenRO server." } as Res<T>;
+  } catch (err) {
+    const aborted = err instanceof Error && err.name === "AbortError";
+    return {
+      ok: false,
+      httpStatus: aborted ? 408 : 0,
+      error: aborted
+        ? "Request timed out while waiting for the OpenRO server."
+        : "Could not reach the OpenRO server.",
+    } as Res<T>;
+  } finally {
+    if (timer !== null) window.clearTimeout(timer);
   }
 }
 
@@ -834,7 +886,8 @@ export type SandboxRunResponse = {
 
 export async function runSandbox(req: SandboxRunRequest = {}, projectId?: string | null): Promise<Res<SandboxRunResponse>> {
   const url = projectId ? projUrl(projectId, "/sandbox/run") : "/api/studio/sandbox/run";
-  return call<SandboxRunResponse>(url, req);
+  const timeoutMs = Math.max(8000, ((req.timeout_secs ?? 15) + 5) * 1000);
+  return call<SandboxRunResponse>(url, req, { timeoutMs });
 }
 
 export type {
@@ -849,11 +902,53 @@ export type {
   ScreenDocTheme,
   UDim2Value,
 } from "../guiDesignerEngine";
-import {
-  normalizeSafeAreaWarnings,
-  type SafeAreaWarning,
-  type ScreenDoc,
+import type {
+  GuiDeviceId,
+  SafeAreaWarning,
+  SafeAreaWarningKind,
+  ScreenDoc,
 } from "../guiDesignerEngine";
+
+function normalizeSafeAreaWarnings(raw: unknown): SafeAreaWarning[] {
+  if (!Array.isArray(raw)) return [];
+  const asNum = (v: unknown, fb: number) => (typeof v === "number" && Number.isFinite(v) ? v : fb);
+  return raw
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    .map((w) => {
+      const rawDev = String(w.device ?? "desktop");
+      const device: GuiDeviceId =
+        rawDev === "mobile_landscape" || rawDev === "mobile"
+          ? "mobile"
+          : rawDev === "tablet"
+            ? "tablet"
+            : "desktop";
+      const rawKind = String(w.kind ?? w.code ?? "offscreen_bounds");
+      const kind: SafeAreaWarningKind =
+        rawKind === "offscreen"
+          ? "offscreen_bounds"
+          : rawKind === "topbar_overlap" ||
+              rawKind === "thumbstick_overlap" ||
+              rawKind === "offscreen_bounds" ||
+              rawKind === "tiny_tap_target"
+            ? rawKind
+            : "offscreen_bounds";
+      const box = (w.rect ?? w.bounds ?? {}) as Record<string, unknown>;
+      return {
+        device,
+        node_id: String(w.node_id ?? ""),
+        node_name: String(w.node_name ?? ""),
+        kind,
+        severity: w.severity === "error" ? "error" : "warning",
+        message: String(w.message ?? ""),
+        rect: {
+          x: asNum(box.x, 0),
+          y: asNum(box.y, 0),
+          w: asNum(box.w, 0),
+          h: asNum(box.h, 0),
+        },
+      };
+    });
+}
 
 export type GuiScreenSummary = {
   slug: string;

@@ -53,7 +53,7 @@ export function StudioPluginDialog({
         toast.success(msg);
         await onRefreshStatus();
       } else {
-        const msg = res.error || res.message || "Could not locate Roblox Studio Plugins directory automatically — download OpenRoCompanion.lua below.";
+        const msg = res.error || res.message || "Could not locate Roblox Studio Plugins directory automatically. Download OpenRoCompanion.lua below.";
         setInstallMsg(msg);
         toast.info(msg);
       }

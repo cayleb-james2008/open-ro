@@ -345,7 +345,7 @@ export function SettingsDialog({
                         />
                       </label>
                       <label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-                        <span>API Key (stored in sessionStorage only — cleared when tab closes)</span>
+                        <span>API Key (stored in sessionStorage only, cleared when tab closes)</span>
                         <Input
                           type="password"
                           value={apiKey}
@@ -541,7 +541,7 @@ export function SettingsDialog({
                               }}
                               placeholder={
                                 cfg?.has_api_key && !clearKey
-                                  ? `Saved (${cfg.api_key_masked || "configured"}) — leave blank to keep`
+                                  ? `Saved (${cfg.api_key_masked || "configured"}) (leave blank to keep)`
                                   : "Leave blank for loopback local gateways"
                               }
                               className="font-mono text-xs"
@@ -618,7 +618,7 @@ export function SettingsDialog({
                         <Laptop className="size-3.5 text-icon" strokeWidth={1.5} aria-hidden />
                         {cfg?.vinegar_detected
                           ? "Vinegar Roblox Studio detected"
-                          : "Roblox Studio not open — Local Place persists game.rbxlx"}
+                          : "Roblox Studio not open; Local Place persists game.rbxlx"}
                       </span>
                       {cfg?.rbxlx_path && (
                         <code className="max-w-full truncate font-mono text-xs text-ink-3">{cfg.rbxlx_path}</code>
@@ -694,7 +694,7 @@ export function SettingsDialog({
 
                   <div className="flex flex-col gap-2">
                     <label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-                      <span>Google Gemini API Key (Nano Banana){cfg.web_engine ? " — sessionStorage only" : ""}</span>
+                      <span>Google Gemini API Key (Nano Banana){cfg.web_engine ? " (sessionStorage only)" : ""}</span>
                       <Input
                         type="password"
                         value={geminiApiKey}
@@ -704,7 +704,7 @@ export function SettingsDialog({
                         }}
                         placeholder={
                           (cfg.has_gemini_api_key || cfg.has_gemini_key) && !clearGeminiKey
-                            ? `Saved (${cfg.gemini_api_key_masked || cfg.gemini_key_masked || "configured"}) — leave blank to keep`
+                            ? `Saved (${cfg.gemini_api_key_masked || cfg.gemini_key_masked || "configured"}) (leave blank to keep)`
                             : "AIza… (or set GEMINI_API_KEY)"
                         }
                         className="font-mono text-xs"
@@ -724,7 +724,7 @@ export function SettingsDialog({
                     )}
 
                     <label className="flex flex-col gap-1 text-xs font-medium text-ink-2">
-                      <span>OpenAI Image API Key (optional){cfg.web_engine ? " — sessionStorage only" : ""}</span>
+                      <span>OpenAI Image API Key (optional){cfg.web_engine ? " (sessionStorage only)" : ""}</span>
                       <Input
                         type="password"
                         value={openaiImageKey}
@@ -734,7 +734,7 @@ export function SettingsDialog({
                         }}
                         placeholder={
                           cfg.has_openai_image_api_key && !clearOpenaiImageKey
-                            ? `Saved (${cfg.openai_image_api_key_masked || "configured"}) — leave blank to keep`
+                            ? `Saved (${cfg.openai_image_api_key_masked || "configured"}) (leave blank to keep)`
                             : "sk-… (or set OPENAI_API_KEY)"
                         }
                         className="font-mono text-xs"

@@ -374,7 +374,7 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
     if (!r.ok) { setError(r.error || "Assertion suite re-run failed."); return; }
     if (r.assertion_diff) setLatestAssertionDiff(r.assertion_diff);
     if (r.passed) toast.success("All deterministic assertions passed");
-    else toast.error("Assertion suite found failures — see per-room diff");
+    else toast.error("Assertion suite found failures; see per-room diff");
     await Promise.all([load(r.run_id), loadStudy()]);
   };
 
@@ -389,7 +389,7 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
     if (!r.ok) { setError(r.error || "Batch fix & export check failed."); return; }
     setFixAllResult(r as FixAllAssertionsResult);
     if (r.rerun?.assertion_diff) setLatestAssertionDiff(r.rerun.assertion_diff);
-    if (r.export_ready) toast.success("All failing checks fixed — place & Ship Pack ready to export");
+    if (r.export_ready) toast.success("All failing checks fixed; place & Ship Pack ready to export");
     else toast.error("Fixes applied, but some readiness checks still need attention");
     await Promise.all([load(r.rerun?.run_id), loadStudy()]);
   };
@@ -462,7 +462,7 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
             <p className="text-xs text-ink-2">
               {fixAllResult.applied_files.length > 0
                 ? `Updated ${fixAllResult.applied_files.join(", ")}`
-                : "No file writes needed — build & Ship Pack integrity verified."}
+                : "No file writes needed; build & Ship Pack integrity verified."}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">

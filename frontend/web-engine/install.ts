@@ -1238,6 +1238,9 @@ function runWebSandboxSim(
 
   const evalLuauExpr = (expr: string, primaryUid: string): { ok: boolean; value: unknown; error?: string } => {
     const trimmed = expr.trim().replace(/^return\s+/, "");
+    if (!trimmed) {
+      return { ok: false, value: null, error: "Luau assertion expression is required." };
+    }
     const errCall = /^error\(\s*["']([^"']*)["']\s*\)/.exec(trimmed);
     if (errCall) {
       return { ok: false, value: null, error: errCall[1] || "Luau assertion threw error()" };
@@ -1290,6 +1293,10 @@ function runWebSandboxSim(
 
   for (let i = 0; i < rawJourney.length; i++) {
     const st = rawJourney[i];
+    if (!st || typeof st !== "object" || Array.isArray(st)) {
+      steps.push({ index: i, op: "invalid", passed: false, duration_ms: 1, error: "Invalid journey step object." });
+      continue;
+    }
     const op = String(st.op || "wait");
     const stepT0 = Date.now();
     const pid = String(Number(st.player_id) || Number(rawPlayers[0]?.user_id) || 1001);
@@ -1813,12 +1820,32 @@ export function installWebEngine() {
         .then((saved) => {
           if (saved && saved.chats && typeof saved.active === "string" && saved.chats[saved.active]) {
             for (const c of Object.values(saved.chats)) {
+              if (!Array.isArray(c.lines)) c.lines = [];
+              if (!Array.isArray(c.builtSkills)) c.builtSkills = [];
+              if (!Array.isArray(c.undoStack)) c.undoStack = [];
+              if (!Array.isArray(c.redoStack)) c.redoStack = [];
               if (!Array.isArray(c.snapshots)) c.snapshots = [];
               if (!Array.isArray(c.studioActions)) c.studioActions = [];
+              if (!c.place || typeof c.place !== "object") c.place = { scripts: {}, instances: {} };
+              if (!c.place.scripts || typeof c.place.scripts !== "object") c.place.scripts = {};
+              if (!c.place.instances || typeof c.place.instances !== "object") c.place.instances = {};
+            }
+            const nextProjects: Record<string, WebProject> =
+              saved.projects && typeof saved.projects === "object" ? saved.projects : defaultWebProjects();
+            for (const p of Object.values(nextProjects)) {
+              if (!p || typeof p !== "object") continue;
+              if (!p.files || typeof p.files !== "object") p.files = {};
+              if (!p.instances || typeof p.instances !== "object") p.instances = {};
+              if (!p.lighting || typeof p.lighting !== "object") p.lighting = {};
+              if (!p.meshes || typeof p.meshes !== "object") p.meshes = {};
+              if (typeof p.scene_revision !== "number" || !Number.isFinite(p.scene_revision)) p.scene_revision = 1;
+              if (!Array.isArray(p.sceneUndo)) p.sceneUndo = [];
+              if (!Array.isArray(p.sceneRedo)) p.sceneRedo = [];
             }
             state = {
               ...defaultState(),
               ...saved,
+              projects: nextProjects,
               actionSeq: typeof saved.actionSeq === "number" && Number.isFinite(saved.actionSeq) ? saved.actionSeq : 1,
             };
           }
@@ -2190,11 +2217,15 @@ export function installWebEngine() {
 
     const method = (init?.method || "GET").toUpperCase();
     let body: Record<string, unknown> = {};
-    if (typeof init?.body === "string" && init.body) {
+    if (typeof init?.body === "string" && init.body.trim().length > 0) {
       try {
-        body = JSON.parse(init.body) as Record<string, unknown>;
+        const parsed = JSON.parse(init.body);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return jsonResponse({ ok: false, error: "Invalid JSON request body: expected a JSON object." }, 400);
+        }
+        body = parsed as Record<string, unknown>;
       } catch {
-        /* ignore */
+        return jsonResponse({ ok: false, error: "Invalid JSON request body." }, 400);
       }
     }
     const chat = state.chats[state.active] || Object.values(state.chats)[0];
@@ -2406,6 +2437,17 @@ export function installWebEngine() {
       );
     }
     if (method === "POST" && u.pathname === "/api/studio/sandbox/run") {
+      if (body.journey !== undefined && (!Array.isArray(body.journey) || body.journey.length === 0)) {
+        return jsonResponse(
+          {
+            ok: false,
+            error: !Array.isArray(body.journey)
+              ? "Invalid sandbox journey: expected an array of steps."
+              : "Sandbox journey requires at least one step.",
+          },
+          400,
+        );
+      }
       const sim = runWebSandboxSim(chat.place.scripts || {}, chat.place.instances || {}, body);
       recordStudioAction(state, chat, {
         kind: sim.passed ? "playtest_passed" : "playtest_failed",
@@ -4482,6 +4524,17 @@ export function installWebEngine() {
       }
 
       if (method === "POST" && tail === "sandbox/run") {
+        if (body.journey !== undefined && (!Array.isArray(body.journey) || body.journey.length === 0)) {
+          return jsonResponse(
+            {
+              ok: false,
+              error: !Array.isArray(body.journey)
+                ? "Invalid sandbox journey: expected an array of steps."
+                : "Sandbox journey requires at least one step.",
+            },
+            400,
+          );
+        }
         const luauScripts: Record<string, string> = {};
         for (const [relPath, src] of Object.entries(proj.files || {})) {
           if (/\.luau?$/i.test(relPath)) luauScripts[relPath] = src;
@@ -4545,7 +4598,11 @@ export function installWebEngine() {
         if (body.doc) {
           doc = normalizeScreenDoc(body.doc, slug);
         } else if (proj.files[screenPath]) {
-          doc = normalizeScreenDoc(JSON.parse(proj.files[screenPath]), slug);
+          try {
+            doc = normalizeScreenDoc(JSON.parse(proj.files[screenPath]), slug);
+          } catch {
+            doc = buildGuiPreset("rpg");
+          }
         } else {
           doc = buildGuiPreset("rpg");
         }
