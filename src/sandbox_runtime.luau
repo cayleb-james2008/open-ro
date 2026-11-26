@@ -562,6 +562,26 @@ end
 function CFrame:ToObjectSpace(cf)
 	return self:Inverse() * cf
 end
+function CFrame:PointToWorldSpace(v)
+	return self * v
+end
+function CFrame:PointToObjectSpace(v)
+	return self:Inverse() * v
+end
+function CFrame:VectorToWorldSpace(v)
+	return Vector3.new(
+		self._r00 * v.X + self._r01 * v.Y + self._r02 * v.Z,
+		self._r10 * v.X + self._r11 * v.Y + self._r12 * v.Z,
+		self._r20 * v.X + self._r21 * v.Y + self._r22 * v.Z
+	)
+end
+function CFrame:VectorToObjectSpace(v)
+	return Vector3.new(
+		self._r00 * v.X + self._r10 * v.Y + self._r20 * v.Z,
+		self._r01 * v.X + self._r11 * v.Y + self._r21 * v.Z,
+		self._r02 * v.X + self._r12 * v.Y + self._r22 * v.Z
+	)
+end
 function CFrame:ToEulerAnglesXYZ()
 	return 0, 0, 0
 end
@@ -769,16 +789,6 @@ local Ray = {
 		return tagType({ Origin = origin or Vector3.zero, Direction = direction or Vector3.zero }, "Ray")
 	end,
 }
-local RaycastParams = {
-	new = function()
-		return tagType({ FilterDescendantsInstances = {}, FilterType = nil, IgnoreWater = false }, "RaycastParams")
-	end,
-}
-local OverlapParams = {
-	new = function()
-		return tagType({ FilterDescendantsInstances = {}, FilterType = nil, MaxParts = 0 }, "OverlapParams")
-	end,
-}
 local Random = {}
 Random.__index = Random
 function Random.new(seed)
@@ -885,7 +895,62 @@ registerEnum("PartType", { Ball = 0, Block = 1, Cylinder = 2, Wedge = 3, CornerW
 registerEnum("MembershipType", { None = 0, BuildersClub = 1, TurboBuildersClub = 2, OutrageousBuildersClub = 3, Premium = 4 })
 registerEnum("AnalyticsEconomyFlowType", { Sink = 1, Source = 2 })
 registerEnum("UserInputType", { MouseButton1 = 0, MouseButton2 = 1, MouseButton3 = 2, Keyboard = 8, Touch = 7, Gamepad1 = 12 })
-registerEnum("KeyCode", { Unknown = 0, Space = 32, E = 101, F = 102, Q = 113, R = 114, W = 119, A = 97, S = 115, D = 100, Escape = 27, Return = 13 })
+registerEnum("UserInputState", { Begin = 0, Change = 1, End = 2, Cancel = 3, None = 4 })
+registerEnum("RaycastFilterType", { Exclude = 0, Include = 1, Blacklist = 0, Whitelist = 1 })
+registerEnum("PlaybackState", { Begin = 0, Delayed = 1, Playing = 2, Paused = 3, Completed = 4, Cancelled = 5 })
+registerEnum("KeyCode", {
+	Unknown = 0,
+	Backspace = 8,
+	Tab = 9,
+	Return = 13,
+	Escape = 27,
+	Space = 32,
+	Zero = 48,
+	One = 49,
+	Two = 50,
+	Three = 51,
+	Four = 52,
+	Five = 53,
+	Six = 54,
+	Seven = 55,
+	Eight = 56,
+	Nine = 57,
+	A = 97,
+	B = 98,
+	C = 99,
+	D = 100,
+	E = 101,
+	F = 102,
+	G = 103,
+	H = 104,
+	I = 105,
+	J = 106,
+	K = 107,
+	L = 108,
+	M = 109,
+	N = 110,
+	O = 111,
+	P = 112,
+	Q = 113,
+	R = 114,
+	S = 115,
+	T = 116,
+	U = 117,
+	V = 118,
+	W = 119,
+	X = 120,
+	Y = 121,
+	Z = 122,
+	Up = 273,
+	Down = 274,
+	Right = 275,
+	Left = 276,
+	LeftShift = 304,
+	RightShift = 303,
+	LeftControl = 306,
+	RightControl = 305,
+	LeftAlt = 308,
+})
 registerEnum("Font", { Legacy = 0, Arial = 1, ArialBold = 2, SourceSans = 3, SourceSansBold = 4, Gotham = 17, GothamBold = 19, GothamBlack = 20, FredokaOne = 34 })
 
 setmetatable(Enum, {
@@ -893,6 +958,17 @@ setmetatable(Enum, {
 		return registerEnum(enumName, {})
 	end,
 })
+
+local RaycastParams = {
+	new = function()
+		return tagType({ FilterDescendantsInstances = {}, FilterType = Enum.RaycastFilterType.Exclude, IgnoreWater = false }, "RaycastParams")
+	end,
+}
+local OverlapParams = {
+	new = function()
+		return tagType({ FilterDescendantsInstances = {}, FilterType = Enum.RaycastFilterType.Exclude, MaxParts = 0 }, "OverlapParams")
+	end,
+}
 
 -- ---------------------------------------------------------------------------
 -- Instance System + Services
@@ -968,12 +1044,18 @@ local CLASS_DEFAULTS = {
 	Color3Value = { Value = Color3.new(1, 1, 1) },
 	Vector3Value = { Value = Vector3.zero },
 	CFrameValue = { Value = CFrame.identity },
-	Part = { Anchored = false, CanCollide = true, Transparency = 0, Size = Vector3.new(4, 1, 2), Position = Vector3.zero, CFrame = CFrame.identity },
-	SpawnLocation = { Anchored = true, CanCollide = true, Transparency = 0, Size = Vector3.new(6, 1, 6), Position = Vector3.zero, CFrame = CFrame.identity },
-	MeshPart = { Anchored = false, CanCollide = true, Transparency = 0, Size = Vector3.new(4, 4, 4), Position = Vector3.zero, CFrame = CFrame.identity },
+	Part = { Anchored = false, CanCollide = true, CanQuery = true, CanTouch = true, Transparency = 0, Shape = Enum.PartType.Block, Material = Enum.Material.Plastic, Size = Vector3.new(4, 1, 2), Position = Vector3.zero, CFrame = CFrame.identity },
+	SpawnLocation = { Anchored = true, CanCollide = true, CanQuery = true, CanTouch = true, Transparency = 0, Material = Enum.Material.Plastic, Size = Vector3.new(6, 1, 6), Position = Vector3.zero, CFrame = CFrame.identity },
+	MeshPart = { Anchored = false, CanCollide = true, CanQuery = true, CanTouch = true, Transparency = 0, Material = Enum.Material.Plastic, Size = Vector3.new(4, 4, 4), Position = Vector3.zero, CFrame = CFrame.identity },
+	WedgePart = { Anchored = false, CanCollide = true, CanQuery = true, CanTouch = true, Transparency = 0, Material = Enum.Material.Plastic, Size = Vector3.new(4, 1, 2), Position = Vector3.zero, CFrame = CFrame.identity },
+	TrussPart = { Anchored = false, CanCollide = true, CanQuery = true, CanTouch = true, Transparency = 0, Material = Enum.Material.Plastic, Size = Vector3.new(2, 4, 2), Position = Vector3.zero, CFrame = CFrame.identity },
+	CornerWedgePart = { Anchored = false, CanCollide = true, CanQuery = true, CanTouch = true, Transparency = 0, Material = Enum.Material.Plastic, Size = Vector3.new(4, 1, 2), Position = Vector3.zero, CFrame = CFrame.identity },
+	Seat = { Anchored = false, CanCollide = true, CanQuery = true, CanTouch = true, Transparency = 0, Material = Enum.Material.Plastic, Size = Vector3.new(2, 1, 2), Position = Vector3.zero, CFrame = CFrame.identity },
+	VehicleSeat = { Anchored = false, CanCollide = true, CanQuery = true, CanTouch = true, Transparency = 0, Material = Enum.Material.Plastic, Size = Vector3.new(2, 1, 2), Position = Vector3.zero, CFrame = CFrame.identity },
 	Humanoid = { Health = 100, MaxHealth = 100, WalkSpeed = 16, JumpPower = 50, JumpHeight = 7.2 },
 	Camera = { ViewportSize = Vector2.new(1280, 720), FieldOfView = 70, CFrame = CFrame.identity },
 	ProximityPrompt = { Enabled = true, ActionText = "Interact", ObjectText = "", HoldDuration = 0, MaxActivationDistance = 10 },
+	ClickDetector = { MaxActivationDistance = 32, CursorIcon = "" },
 	Sound = { Volume = 0.5, Playing = false, Looped = false, TimePosition = 0 },
 }
 
@@ -1254,6 +1336,21 @@ function InstanceMethods:Destroy()
 	end
 end
 
+local humanoidMoveToCount = 0
+local syncSpatialPart = function(_) end
+local syncSpatialSubtree = function(_) end
+local queryPartsInPartImpl = function(_, _)
+	return {}
+end
+
+local function isBasePartClass(cls)
+	if cls == "BasePart" then
+		return true
+	end
+	local anc = CLASS_ANCESTORS[cls]
+	return anc ~= nil and anc.BasePart == true
+end
+
 -- Class-specific methods
 local CLASS_METHODS = {
 	RemoteEvent = {
@@ -1324,25 +1421,81 @@ local CLASS_METHODS = {
 	},
 	Humanoid = {
 		MoveTo = function(self, pos)
-			INST_STATE[self]._moveTarget = pos
+			humanoidMoveToCount += 1
+			local st = INST_STATE[self]
+			st._moveTarget = pos
+			local parent = st.parent
+			if parent and isInstance(parent) and robloxTypeof(pos) == "Vector3" then
+				local hrp = parent:FindFirstChild("HumanoidRootPart") or INST_STATE[parent].props.PrimaryPart
+				if hrp and isInstance(hrp) then
+					hrp.Position = pos
+				end
+			end
+			if st.MoveToFinished then
+				task.defer(function()
+					st.MoveToFinished:Fire(true)
+				end)
+			end
 		end,
 		TakeDamage = function(self, amount)
 			local st = INST_STATE[self]
 			st.props.Health = math.max(0, (st.props.Health or 100) - (amount or 0))
+			if st.props.Health <= 0 and st.Died then
+				st.Died:Fire()
+			end
 		end,
 	},
 	Model = {
 		GetPivot = function(self)
-			return INST_STATE[self].props.WorldPivot or CFrame.identity
+			local st = INST_STATE[self]
+			if st.props.WorldPivot then
+				return st.props.WorldPivot
+			end
+			if st.props.PrimaryPart and isInstance(st.props.PrimaryPart) then
+				return st.props.PrimaryPart.CFrame
+			end
+			return CFrame.identity
 		end,
 		PivotTo = function(self, cf)
-			INST_STATE[self].props.WorldPivot = cf
+			local st = INST_STATE[self]
+			local oldPivot = self:GetPivot()
+			st.props.WorldPivot = cf
+			if robloxTypeof(cf) == "CFrame" then
+				local delta = cf * oldPivot:Inverse()
+				for _, desc in ipairs(self:GetDescendants()) do
+					if desc:IsA("BasePart") then
+						desc.CFrame = delta * desc.CFrame
+					end
+				end
+			end
 		end,
 		SetPrimaryPartCFrame = function(self, cf)
-			INST_STATE[self].props.WorldPivot = cf
+			self:PivotTo(cf)
 		end,
-		GetBoundingBox = function()
-			return CFrame.identity, Vector3.new(4, 4, 4)
+		GetBoundingBox = function(self)
+			local minX, minY, minZ = math.huge, math.huge, math.huge
+			local maxX, maxY, maxZ = -math.huge, -math.huge, -math.huge
+			local count = 0
+			for _, desc in ipairs(self:GetDescendants()) do
+				if desc:IsA("BasePart") then
+					count += 1
+					local p = desc.Position
+					local s = desc.Size
+					local hx, hy, hz = math.abs(s.X) * 0.5, math.abs(s.Y) * 0.5, math.abs(s.Z) * 0.5
+					minX = math.min(minX, p.X - hx)
+					minY = math.min(minY, p.Y - hy)
+					minZ = math.min(minZ, p.Z - hz)
+					maxX = math.max(maxX, p.X + hx)
+					maxY = math.max(maxY, p.Y + hy)
+					maxZ = math.max(maxZ, p.Z + hz)
+				end
+			end
+			if count == 0 then
+				return self:GetPivot(), Vector3.new(4, 4, 4)
+			end
+			local center = Vector3.new((minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5)
+			local size = Vector3.new(maxX - minX, maxY - minY, maxZ - minZ)
+			return CFrame.new(center), size
 		end,
 	},
 	BasePart = {
@@ -1350,7 +1503,16 @@ local CLASS_METHODS = {
 			return INST_STATE[self].props.CFrame or CFrame.identity
 		end,
 		PivotTo = function(self, cf)
-			INST_STATE[self].props.CFrame = cf
+			self.CFrame = cf
+		end,
+		GetTouchingParts = function(self)
+			return queryPartsInPartImpl(self, nil)
+		end,
+		ApplyImpulse = function(self, impulse)
+			if robloxTypeof(impulse) == "Vector3" and isInstance(self) then
+				local cur = INST_STATE[self].props.AssemblyLinearVelocity or Vector3.zero
+				INST_STATE[self].props.AssemblyLinearVelocity = cur + impulse
+			end
 		end,
 	},
 }
@@ -1418,6 +1580,7 @@ local function setParentInternal(inst, newParent)
 	if st.AncestryChanged then
 		st.AncestryChanged:Fire(inst, newParent)
 	end
+	syncSpatialSubtree(inst)
 end
 
 local InstanceMeta = {
@@ -1473,10 +1636,19 @@ local InstanceMeta = {
 			return
 		end
 		st.props[key] = val
-		if key == "Position" and inst:IsA("BasePart") and robloxTypeof(val) == "Vector3" then
-			st.props.CFrame = CFrame.new(val)
-		elseif key == "CFrame" and inst:IsA("BasePart") and robloxTypeof(val) == "CFrame" then
+		if key == "Position" and isBasePartClass(st.className) and robloxTypeof(val) == "Vector3" then
+			local cur = st.props.CFrame
+			if robloxTypeof(cur) == "CFrame" then
+				st.props.CFrame = makeCFrame(val.X, val.Y, val.Z, cur._r00, cur._r01, cur._r02, cur._r10, cur._r11, cur._r12, cur._r20, cur._r21, cur._r22)
+			else
+				st.props.CFrame = CFrame.new(val)
+			end
+			syncSpatialPart(inst)
+		elseif key == "CFrame" and isBasePartClass(st.className) and robloxTypeof(val) == "CFrame" then
 			st.props.Position = val.Position
+			syncSpatialPart(inst)
+		elseif key == "Size" and isBasePartClass(st.className) then
+			syncSpatialPart(inst)
 		end
 		if st.propSignals[key] then
 			st.propSignals[key]:Fire()
@@ -1557,14 +1729,29 @@ createInstance = function(className, parent, initialName)
 		st.signals.Activated = st.Activated
 	elseif className == "ProximityPrompt" then
 		st.Triggered = newSignal("ProximityPrompt.Triggered")
+		st.TriggerEnded = newSignal("ProximityPrompt.TriggerEnded")
+		st.PromptShown = newSignal("ProximityPrompt.PromptShown")
+		st.PromptHidden = newSignal("ProximityPrompt.PromptHidden")
 		st.signals.Triggered = st.Triggered
+		st.signals.Trigger = st.Triggered
+		st.signals.TriggerEnded = st.TriggerEnded
+		st.signals.PromptShown = st.PromptShown
+		st.signals.PromptHidden = st.PromptHidden
 	elseif className == "ClickDetector" then
 		st.MouseClick = newSignal("ClickDetector.MouseClick")
+		st.RightMouseClick = newSignal("ClickDetector.RightMouseClick")
+		st.MouseHoverEnter = newSignal("ClickDetector.MouseHoverEnter")
+		st.MouseHoverLeave = newSignal("ClickDetector.MouseHoverLeave")
 		st.signals.MouseClick = st.MouseClick
+		st.signals.RightMouseClick = st.RightMouseClick
+		st.signals.MouseHoverEnter = st.MouseHoverEnter
+		st.signals.MouseHoverLeave = st.MouseHoverLeave
 	elseif className == "Humanoid" then
 		st.Died = newSignal("Humanoid.Died")
+		st.MoveToFinished = newSignal("Humanoid.MoveToFinished")
 		st.signals.Died = st.Died
-	elseif className == "BasePart" or className == "Part" or className == "SpawnLocation" or className == "MeshPart" then
+		st.signals.MoveToFinished = st.MoveToFinished
+	elseif isBasePartClass(className) then
 		st.Touched = newSignal(className .. ".Touched")
 		st.TouchEnded = newSignal(className .. ".TouchEnded")
 		st.signals.Touched = st.Touched
@@ -1737,18 +1924,324 @@ local Workspace = createInstance("Workspace", dataModel, "Workspace")
 INST_STATE[Workspace].props.Gravity = 196.2
 local CurrentCamera = createInstance("Camera", Workspace, "CurrentCamera")
 INST_STATE[Workspace].props.CurrentCamera = CurrentCamera
-INST_STATE[Workspace].customMethods = {
-	GetPartsInPart = function()
-		return {}
-	end,
-	GetPartBoundsInBox = function()
-		return {}
-	end,
-	GetPartBoundsInRadius = function()
-		return {}
-	end,
-	Raycast = function()
+
+-- AABB / OBB Spatial Index for Workspace Raycast & Overlap queries
+local SPATIAL_PARTS = {} -- [BasePart] = { part, cf, hx, hy, hz, minX, maxX, minY, maxY, minZ, maxZ }
+
+local function makeBoxEntry(cf, sizeVec, partInst)
+	local sz = if robloxTypeof(sizeVec) == "Vector3" then sizeVec else Vector3.new(4, 1, 2)
+	local c = if robloxTypeof(cf) == "CFrame" then cf else CFrame.identity
+	local hx = math.abs(sz.X) * 0.5
+	local hy = math.abs(sz.Y) * 0.5
+	local hz = math.abs(sz.Z) * 0.5
+	local ex = math.abs(c._r00) * hx + math.abs(c._r01) * hy + math.abs(c._r02) * hz
+	local ey = math.abs(c._r10) * hx + math.abs(c._r11) * hy + math.abs(c._r12) * hz
+	local ez = math.abs(c._r20) * hx + math.abs(c._r21) * hy + math.abs(c._r22) * hz
+	return {
+		part = partInst,
+		cf = c,
+		hx = hx,
+		hy = hy,
+		hz = hz,
+		minX = c._x - ex,
+		maxX = c._x + ex,
+		minY = c._y - ey,
+		maxY = c._y + ey,
+		minZ = c._z - ez,
+		maxZ = c._z + ez,
+	}
+end
+
+syncSpatialPart = function(inst)
+	local st = INST_STATE[inst]
+	if not st or not isBasePartClass(st.className) then
+		return
+	end
+	if st.destroyed or not inst:IsDescendantOf(Workspace) then
+		SPATIAL_PARTS[inst] = nil
+		return
+	end
+	local cf = st.props.CFrame
+	if robloxTypeof(cf) ~= "CFrame" then
+		local pos = st.props.Position
+		cf = if robloxTypeof(pos) == "Vector3" then CFrame.new(pos) else CFrame.identity
+		st.props.CFrame = cf
+	end
+	if robloxTypeof(st.props.Position) ~= "Vector3" then
+		st.props.Position = cf.Position
+	end
+	local sz = st.props.Size or Vector3.new(4, 1, 2)
+	SPATIAL_PARTS[inst] = makeBoxEntry(cf, sz, inst)
+end
+
+syncSpatialSubtree = function(root)
+	local st = INST_STATE[root]
+	if not st then
+		return
+	end
+	if isBasePartClass(st.className) then
+		syncSpatialPart(root)
+	end
+	for _, ch in ipairs(st.children) do
+		syncSpatialSubtree(ch)
+	end
+end
+
+local function isIncludeFilterType(ft)
+	if ft == nil then
+		return false
+	end
+	if type(ft) == "table" and ft.Name ~= nil then
+		return ft.Name == "Include" or ft.Name == "Whitelist"
+	end
+	return ft == Enum.RaycastFilterType.Include or ft == Enum.RaycastFilterType.Whitelist
+end
+
+local function passesSpatialFilter(part, params)
+	local st = INST_STATE[part]
+	if not st or st.destroyed or st.props.CanQuery == false then
+		return false
+	end
+	if type(params) ~= "table" then
+		return true
+	end
+	local list = params.FilterDescendantsInstances
+	local include = isIncludeFilterType(params.FilterType)
+	if type(list) ~= "table" or #list == 0 then
+		return not include
+	end
+	local matched = false
+	for _, item in ipairs(list) do
+		if isInstance(item) and (part == item or part:IsDescendantOf(item)) then
+			matched = true
+			break
+		end
+	end
+	if include then
+		return matched
+	end
+	return not matched
+end
+
+local function obbIntersects(a, b)
+	if a.maxX < b.minX or a.minX > b.maxX or a.maxY < b.minY or a.minY > b.maxY or a.maxZ < b.minZ or a.minZ > b.maxZ then
+		return false
+	end
+	local ca, cb = a.cf, b.cf
+	local ea1, ea2, ea3 = a.hx, a.hy, a.hz
+	local eb1, eb2, eb3 = b.hx, b.hy, b.hz
+
+	-- Rotation matrix expressing B in A's coordinate frame: R[i][j] = Ai . Bj
+	local r11 = ca._r00 * cb._r00 + ca._r10 * cb._r10 + ca._r20 * cb._r20
+	local r12 = ca._r00 * cb._r01 + ca._r10 * cb._r11 + ca._r20 * cb._r21
+	local r13 = ca._r00 * cb._r02 + ca._r10 * cb._r12 + ca._r20 * cb._r22
+	local r21 = ca._r01 * cb._r00 + ca._r11 * cb._r10 + ca._r21 * cb._r20
+	local r22 = ca._r01 * cb._r01 + ca._r11 * cb._r11 + ca._r21 * cb._r21
+	local r23 = ca._r01 * cb._r02 + ca._r11 * cb._r12 + ca._r21 * cb._r22
+	local r31 = ca._r02 * cb._r00 + ca._r12 * cb._r10 + ca._r22 * cb._r20
+	local r32 = ca._r02 * cb._r01 + ca._r12 * cb._r11 + ca._r22 * cb._r21
+	local r33 = ca._r02 * cb._r02 + ca._r12 * cb._r12 + ca._r22 * cb._r22
+
+	local eps = 1e-6
+	local ar11, ar12, ar13 = math.abs(r11) + eps, math.abs(r12) + eps, math.abs(r13) + eps
+	local ar21, ar22, ar23 = math.abs(r21) + eps, math.abs(r22) + eps, math.abs(r23) + eps
+	local ar31, ar32, ar33 = math.abs(r31) + eps, math.abs(r32) + eps, math.abs(r33) + eps
+
+	local dx, dy, dz = cb._x - ca._x, cb._y - ca._y, cb._z - ca._z
+	local t1 = dx * ca._r00 + dy * ca._r10 + dz * ca._r20
+	local t2 = dx * ca._r01 + dy * ca._r11 + dz * ca._r21
+	local t3 = dx * ca._r02 + dy * ca._r12 + dz * ca._r22
+
+	-- A axes
+	if math.abs(t1) > ea1 + eb1 * ar11 + eb2 * ar12 + eb3 * ar13 then return false end
+	if math.abs(t2) > ea2 + eb1 * ar21 + eb2 * ar22 + eb3 * ar23 then return false end
+	if math.abs(t3) > ea3 + eb1 * ar31 + eb2 * ar32 + eb3 * ar33 then return false end
+
+	-- B axes
+	if math.abs(t1 * r11 + t2 * r21 + t3 * r31) > ea1 * ar11 + ea2 * ar21 + ea3 * ar31 + eb1 then return false end
+	if math.abs(t1 * r12 + t2 * r22 + t3 * r32) > ea1 * ar12 + ea2 * ar22 + ea3 * ar32 + eb2 then return false end
+	if math.abs(t1 * r13 + t2 * r23 + t3 * r33) > ea1 * ar13 + ea2 * ar23 + ea3 * ar33 + eb3 then return false end
+
+	-- 9 cross axes Ai x Bj
+	if math.abs(t3 * r21 - t2 * r31) > ea2 * ar31 + ea3 * ar21 + eb2 * ar13 + eb3 * ar12 then return false end
+	if math.abs(t3 * r22 - t2 * r32) > ea2 * ar32 + ea3 * ar22 + eb1 * ar13 + eb3 * ar11 then return false end
+	if math.abs(t3 * r23 - t2 * r33) > ea2 * ar33 + ea3 * ar23 + eb1 * ar12 + eb2 * ar11 then return false end
+	if math.abs(t1 * r31 - t3 * r11) > ea1 * ar31 + ea3 * ar11 + eb2 * ar23 + eb3 * ar22 then return false end
+	if math.abs(t1 * r32 - t3 * r12) > ea1 * ar32 + ea3 * ar12 + eb1 * ar23 + eb3 * ar21 then return false end
+	if math.abs(t1 * r33 - t3 * r13) > ea1 * ar33 + ea3 * ar13 + eb1 * ar22 + eb2 * ar21 then return false end
+	if math.abs(t2 * r11 - t1 * r21) > ea1 * ar21 + ea2 * ar11 + eb2 * ar33 + eb3 * ar32 then return false end
+	if math.abs(t2 * r12 - t1 * r22) > ea1 * ar22 + ea2 * ar12 + eb1 * ar33 + eb3 * ar31 then return false end
+	if math.abs(t2 * r13 - t1 * r23) > ea1 * ar23 + ea2 * ar13 + eb1 * ar32 + eb2 * ar31 then return false end
+
+	return true
+end
+
+local function obbIntersectsSphere(entry, center, radius)
+	if center.X + radius < entry.minX or center.X - radius > entry.maxX
+		or center.Y + radius < entry.minY or center.Y - radius > entry.maxY
+		or center.Z + radius < entry.minZ or center.Z - radius > entry.maxZ then
+		return false
+	end
+	local localP = entry.cf:PointToObjectSpace(center)
+	local cx = math.clamp(localP.X, -entry.hx, entry.hx)
+	local cy = math.clamp(localP.Y, -entry.hy, entry.hy)
+	local cz = math.clamp(localP.Z, -entry.hz, entry.hz)
+	local dx, dy, dz = localP.X - cx, localP.Y - cy, localP.Z - cz
+	return (dx * dx + dy * dy + dz * dz) <= (radius * radius + 1e-6)
+end
+
+local function raycastOBB(entry, origin, dir)
+	local lo = entry.cf:PointToObjectSpace(origin)
+	local ld = entry.cf:VectorToObjectSpace(dir)
+	local tMin, tMax = 0, 1
+	local hitAxis, hitSign = 0, 0
+
+	local function slab(o, d, half, axis)
+		if math.abs(d) < 1e-9 then
+			if o < -half or o > half then
+				return false
+			end
+			return true
+		end
+		local inv = 1 / d
+		local t1 = (-half - o) * inv
+		local t2 = (half - o) * inv
+		local s = -1
+		if t1 > t2 then
+			t1, t2 = t2, t1
+			s = 1
+		end
+		if t1 > tMin then
+			tMin = t1
+			hitAxis = axis
+			hitSign = s
+		end
+		if t2 < tMax then
+			tMax = t2
+		end
+		return tMin <= tMax
+	end
+
+	if not slab(lo.X, ld.X, entry.hx, 1) then return nil end
+	if not slab(lo.Y, ld.Y, entry.hy, 2) then return nil end
+	if not slab(lo.Z, ld.Z, entry.hz, 3) then return nil end
+	if hitAxis == 0 or tMin < 0 or tMin > 1 then
 		return nil
+	end
+	local ln = if hitAxis == 1
+		then Vector3.new(hitSign, 0, 0)
+		elseif hitAxis == 2 then Vector3.new(0, hitSign, 0)
+		else Vector3.new(0, 0, hitSign)
+	local wn = entry.cf:VectorToWorldSpace(ln).Unit
+	return tMin, wn
+end
+
+local function queryPartBoundsInBoxImpl(cframe, size, params)
+	local box = makeBoxEntry(cframe, size, nil)
+	local maxParts = if type(params) == "table" and tonumber(params.MaxParts) and tonumber(params.MaxParts) > 0
+		then math.floor(tonumber(params.MaxParts))
+		else 0
+	local results = {}
+	for part, entry in pairs(SPATIAL_PARTS) do
+		if passesSpatialFilter(part, params) and obbIntersects(box, entry) then
+			table.insert(results, part)
+			if maxParts > 0 and #results >= maxParts then
+				break
+			end
+		end
+	end
+	return results
+end
+
+queryPartsInPartImpl = function(part, params)
+	if not isInstance(part) or not isBasePartClass(INST_STATE[part].className) then
+		return {}
+	end
+	syncSpatialPart(part)
+	local st = INST_STATE[part]
+	local cf = st.props.CFrame or CFrame.new(st.props.Position or Vector3.zero)
+	local box = makeBoxEntry(cf, st.props.Size or Vector3.new(4, 1, 2), part)
+	local maxParts = if type(params) == "table" and tonumber(params.MaxParts) and tonumber(params.MaxParts) > 0
+		then math.floor(tonumber(params.MaxParts))
+		else 0
+	local results = {}
+	for cand, entry in pairs(SPATIAL_PARTS) do
+		if cand ~= part and passesSpatialFilter(cand, params) and obbIntersects(box, entry) then
+			table.insert(results, cand)
+			if maxParts > 0 and #results >= maxParts then
+				break
+			end
+		end
+	end
+	return results
+end
+
+INST_STATE[Workspace].customMethods = {
+	GetPartsInPart = function(_, part, params)
+		return queryPartsInPartImpl(part, params)
+	end,
+	GetPartBoundsInBox = function(_, cframe, size, params)
+		return queryPartBoundsInBoxImpl(cframe, size, params)
+	end,
+	GetPartBoundsInRadius = function(_, pos, radius, params)
+		if robloxTypeof(pos) ~= "Vector3" or type(radius) ~= "number" or radius < 0 then
+			return {}
+		end
+		local maxParts = if type(params) == "table" and tonumber(params.MaxParts) and tonumber(params.MaxParts) > 0
+			then math.floor(tonumber(params.MaxParts))
+			else 0
+		local results = {}
+		for part, entry in pairs(SPATIAL_PARTS) do
+			if passesSpatialFilter(part, params) and obbIntersectsSphere(entry, pos, radius) then
+				table.insert(results, part)
+				if maxParts > 0 and #results >= maxParts then
+					break
+				end
+			end
+		end
+		return results
+	end,
+	Raycast = function(_, origin, dir, params)
+		if robloxTypeof(origin) ~= "Vector3" or robloxTypeof(dir) ~= "Vector3" then
+			return nil
+		end
+		local dirMag = dir.Magnitude
+		if dirMag <= 1e-8 then
+			return nil
+		end
+		local bestT = 2
+		local bestPart = nil
+		local bestNormal = nil
+		local oMinX = math.min(origin.X, origin.X + dir.X)
+		local oMaxX = math.max(origin.X, origin.X + dir.X)
+		local oMinY = math.min(origin.Y, origin.Y + dir.Y)
+		local oMaxY = math.max(origin.Y, origin.Y + dir.Y)
+		local oMinZ = math.min(origin.Z, origin.Z + dir.Z)
+		local oMaxZ = math.max(origin.Z, origin.Z + dir.Z)
+		for part, entry in pairs(SPATIAL_PARTS) do
+			if not (oMaxX < entry.minX or oMinX > entry.maxX
+				or oMaxY < entry.minY or oMinY > entry.maxY
+				or oMaxZ < entry.minZ or oMinZ > entry.maxZ)
+				and passesSpatialFilter(part, params) then
+				local t, normal = raycastOBB(entry, origin, dir)
+				if t ~= nil and t < bestT then
+					bestT = t
+					bestPart = part
+					bestNormal = normal
+				end
+			end
+		end
+		if not bestPart then
+			return nil
+		end
+		local hitPos = origin + dir * bestT
+		return tagType({
+			Instance = bestPart,
+			Position = hitPos,
+			Normal = bestNormal,
+			Material = INST_STATE[bestPart].props.Material or Enum.Material.Plastic,
+			Distance = bestT * dirMag,
+		}, "RaycastResult")
 	end,
 }
 
@@ -1915,35 +2408,289 @@ INST_STATE[CollectionService].customMethods = {
 	end,
 }
 
+local activeTweens = {}
+
+local function applyEasing(alpha, style, dir)
+	local sName = if type(style) == "table" and style.Name then style.Name else "Quad"
+	local dName = if type(dir) == "table" and dir.Name then dir.Name else "Out"
+	local function easeIn(t)
+		if sName == "Linear" then return t
+		elseif sName == "Sine" then return 1 - math.cos((t * math.pi) * 0.5)
+		elseif sName == "Cubic" then return t * t * t
+		elseif sName == "Quart" then return t * t * t * t
+		elseif sName == "Quint" then return t * t * t * t * t
+		elseif sName == "Exponential" then return if t == 0 then 0 else math.pow(2, 10 * (t - 1))
+		elseif sName == "Circular" then return 1 - math.sqrt(math.max(0, 1 - t * t))
+		elseif sName == "Back" then
+			local c1 = 1.70158
+			return (c1 + 1) * t * t * t - c1 * t * t
+		else return t * t
+		end
+	end
+	if sName == "Linear" then
+		return alpha
+	elseif dName == "In" then
+		return easeIn(alpha)
+	elseif dName == "Out" then
+		return 1 - easeIn(1 - alpha)
+	else
+		if alpha < 0.5 then
+			return easeIn(alpha * 2) * 0.5
+		else
+			return 1 - easeIn((1 - alpha) * 2) * 0.5
+		end
+	end
+end
+
+local function lerpValue(startVal, goalVal, alpha)
+	if type(startVal) == "number" and type(goalVal) == "number" then
+		return startVal + (goalVal - startVal) * alpha
+	end
+	local tStart = robloxTypeof(startVal)
+	local tGoal = robloxTypeof(goalVal)
+	if tStart == tGoal and (tStart == "Vector3" or tStart == "Vector2" or tStart == "CFrame" or tStart == "UDim2" or tStart == "Color3") then
+		return startVal:Lerp(goalVal, alpha)
+	end
+	if alpha >= 1 then
+		return goalVal
+	end
+	return startVal
+end
+
+local function stepTweens(dt)
+	if #activeTweens == 0 then
+		return
+	end
+	local remaining = {}
+	local finished = {}
+	for _, tw in ipairs(activeTweens) do
+		if tw._playing then
+			if tw._delayRemaining > 0 then
+				tw._delayRemaining -= dt
+				if tw._delayRemaining < 0 then
+					tw._elapsed += -tw._delayRemaining
+					tw._delayRemaining = 0
+				end
+			else
+				tw._elapsed += dt
+			end
+			if tw._delayRemaining <= 0 then
+				local dur = tw._duration
+				local rawAlpha = if dur <= 0 then 1 else math.clamp(tw._elapsed / dur, 0, 1)
+				local alpha = applyEasing(rawAlpha, tw._easingStyle, tw._easingDirection)
+				local effectiveAlpha = if tw._reversingPhase then (1 - alpha) else alpha
+				if isInstance(tw._target) and not INST_STATE[tw._target].destroyed then
+					for k, goalVal in pairs(tw._goalProps) do
+						local startVal = tw._startProps[k]
+						local nextVal = lerpValue(startVal, goalVal, effectiveAlpha)
+						pcall(function()
+							tw._target[k] = nextVal
+						end)
+					end
+				end
+				if rawAlpha >= 1 then
+					if tw._reverses and not tw._reversingPhase then
+						tw._reversingPhase = true
+						tw._elapsed = 0
+						table.insert(remaining, tw)
+					elseif tw._repeatCount < 0 or tw._repeatsDone < tw._repeatCount then
+						tw._repeatsDone += 1
+						tw._reversingPhase = false
+						tw._elapsed = 0
+						table.insert(remaining, tw)
+					else
+						tw._playing = false
+						tw.PlaybackState = Enum.PlaybackState.Completed
+						table.insert(finished, tw)
+					end
+				else
+					table.insert(remaining, tw)
+				end
+			else
+				table.insert(remaining, tw)
+			end
+		end
+	end
+	activeTweens = remaining
+	for _, tw in ipairs(finished) do
+		tw.Completed:Fire(Enum.PlaybackState.Completed)
+	end
+end
+
 local TweenService = createInstance("TweenService", dataModel, "TweenService")
 INST_STATE[TweenService].customMethods = {
 	Create = function(_, target, tweenInfo, props)
 		local completed = newSignal("Tween.Completed")
+		local info = if type(tweenInfo) == "table" then tweenInfo else {}
+		local dur = math.max(0, tonumber(info.Time) or 1)
+		local delayTime = math.max(0, tonumber(info.DelayTime) or 0)
 		local tween = {
 			Completed = completed,
-			PlaybackState = nil,
-			Play = function()
-				if type(props) == "table" and isInstance(target) then
-					for k, v in pairs(props) do
+			PlaybackState = Enum.PlaybackState.Begin,
+			_target = target,
+			_goalProps = if type(props) == "table" then props else {},
+			_startProps = {},
+			_duration = dur,
+			_delayTime = delayTime,
+			_delayRemaining = delayTime,
+			_easingStyle = info.EasingStyle,
+			_easingDirection = info.EasingDirection,
+			_repeatCount = tonumber(info.RepeatCount) or 0,
+			_repeatsDone = 0,
+			_reverses = info.Reverses == true,
+			_reversingPhase = false,
+			_elapsed = 0,
+			_playing = false,
+		}
+		function tween:Play()
+			if self._playing then
+				return
+			end
+			self._startProps = {}
+			if isInstance(self._target) then
+				for k, v in pairs(self._goalProps) do
+					local okRead, cur = pcall(function()
+						return self._target[k]
+					end)
+					self._startProps[k] = if okRead and cur ~= nil then cur else v
+				end
+			end
+			self._elapsed = 0
+			self._delayRemaining = self._delayTime
+			self._repeatsDone = 0
+			self._reversingPhase = false
+			if self._duration <= 0 and self._delayTime <= 0 and not self._reverses and self._repeatCount == 0 then
+				if isInstance(self._target) then
+					for k, v in pairs(self._goalProps) do
 						pcall(function()
-							target[k] = v
+							self._target[k] = v
 						end)
 					end
 				end
+				self.PlaybackState = Enum.PlaybackState.Completed
 				task.defer(function()
-					completed:Fire()
+					self.Completed:Fire(Enum.PlaybackState.Completed)
 				end)
-			end,
-			Cancel = function() end,
-			Pause = function() end,
-			Destroy = function() end,
-		}
-		return tween
+				return
+			end
+			self._playing = true
+			self.PlaybackState = if self._delayTime > 0 then Enum.PlaybackState.Delayed else Enum.PlaybackState.Playing
+			table.insert(activeTweens, self)
+		end
+		function tween:Pause()
+			if self._playing then
+				self._playing = false
+				self.PlaybackState = Enum.PlaybackState.Paused
+			end
+		end
+		function tween:Cancel()
+			local wasPlaying = self._playing
+			self._playing = false
+			self._elapsed = 0
+			self.PlaybackState = Enum.PlaybackState.Cancelled
+			if wasPlaying then
+				task.defer(function()
+					self.Completed:Fire(Enum.PlaybackState.Cancelled)
+				end)
+			end
+		end
+		function tween:Destroy()
+			self._playing = false
+		end
+		return tagType(tween, "Tween")
 	end,
 }
 
+local httpMockRules = {}
+local httpMockLog = {}
+
+local function normalizeHttpMockSpec(urlPattern, spec, isPrefixDefault)
+	local method = nil
+	local status = 200
+	local statusMsg = "OK"
+	local headers = { ["content-type"] = "application/json" }
+	local bodyStr = ""
+	if type(spec) == "string" then
+		bodyStr = spec
+	elseif type(spec) == "table" then
+		if spec.method ~= nil then
+			method = string.upper(tostring(spec.method))
+		elseif spec.Method ~= nil then
+			method = string.upper(tostring(spec.Method))
+		end
+		status = tonumber(spec.status or spec.status_code or spec.StatusCode) or 200
+		statusMsg = tostring(spec.status_message or spec.StatusMessage or (if status >= 200 and status < 300 then "OK" else "Error"))
+		if type(spec.headers) == "table" then
+			headers = spec.headers
+		elseif type(spec.Headers) == "table" then
+			headers = spec.Headers
+		end
+		local rawBody = if spec.body ~= nil then spec.body else spec.Body
+		if rawBody == nil then
+			if spec.status == nil and spec.status_code == nil and spec.StatusCode == nil and spec.headers == nil and spec.Headers == nil and spec.method == nil then
+				bodyStr = serde.encode("json", spec)
+			else
+				bodyStr = ""
+			end
+		elseif type(rawBody) == "string" then
+			bodyStr = rawBody
+		else
+			bodyStr = serde.encode("json", rawBody)
+		end
+	elseif spec ~= nil then
+		bodyStr = tostring(spec)
+	end
+	local pat = tostring(urlPattern or "")
+	local prefix = isPrefixDefault == true
+	if string.sub(pat, -1) == "*" then
+		pat = string.sub(pat, 1, -2)
+		prefix = true
+	end
+	return {
+		pattern = pat,
+		prefix = prefix,
+		method = method,
+		status = status,
+		statusMessage = statusMsg,
+		headers = headers,
+		body = bodyStr,
+	}
+end
+
+if type(inputData.http_mocks) == "table" then
+	if #inputData.http_mocks > 0 then
+		for _, entry in ipairs(inputData.http_mocks) do
+			if type(entry) == "table" then
+				local pat = entry.url_prefix or entry.url or entry.Url or ""
+				local isPref = (entry.url_prefix ~= nil) or (entry.match == "prefix")
+				table.insert(httpMockRules, normalizeHttpMockSpec(pat, entry, isPref))
+			end
+		end
+	else
+		for urlKey, spec in pairs(inputData.http_mocks) do
+			table.insert(httpMockRules, normalizeHttpMockSpec(urlKey, spec, false))
+		end
+	end
+end
+
+local function matchHttpMock(url, method)
+	local m = string.upper(tostring(method or "GET"))
+	for _, rule in ipairs(httpMockRules) do
+		if not rule.prefix and rule.pattern == url and (not rule.method or rule.method == m) then
+			return rule
+		end
+	end
+	for _, rule in ipairs(httpMockRules) do
+		if rule.prefix and string.sub(url, 1, #rule.pattern) == rule.pattern and (not rule.method or rule.method == m) then
+			return rule
+		end
+	end
+	return nil
+end
+
 local guidSeq = 0
 local HttpService = createInstance("HttpService", dataModel, "HttpService")
+INST_STATE[HttpService].props.HttpEnabled = true
 INST_STATE[HttpService].customMethods = {
 	JSONEncode = function(_, val)
 		return serde.encode("json", val)
@@ -1963,6 +2710,40 @@ INST_STATE[HttpService].customMethods = {
 		return tostring(str):gsub("([^%w%-_%.~])", function(c)
 			return string.format("%%%02X", string.byte(c))
 		end)
+	end,
+	RequestAsync = function(_, reqOpts)
+		if type(reqOpts) ~= "table" then
+			error("HttpService:RequestAsync requires a request options table")
+		end
+		local url = tostring(reqOpts.Url or reqOpts.url or "")
+		local method = string.upper(tostring(reqOpts.Method or reqOpts.method or "GET"))
+		local rule = matchHttpMock(url, method)
+		if not rule then
+			table.insert(httpMockLog, { url = url, method = method, matched = false, blocked = true })
+			error(string.format("HttpService sandbox blocked unmocked outbound request (%s %s)", method, url))
+		end
+		table.insert(httpMockLog, { url = url, method = method, matched = true, status = rule.status })
+		return {
+			Success = rule.status >= 200 and rule.status < 300,
+			StatusCode = rule.status,
+			StatusMessage = rule.statusMessage,
+			Headers = deepCopyValue(rule.headers),
+			Body = rule.body,
+		}
+	end,
+	GetAsync = function(self, url, _nocache, headers)
+		local res = self:RequestAsync({ Url = url, Method = "GET", Headers = headers })
+		if not res.Success then
+			error(string.format("HttpError %d: %s", res.StatusCode, tostring(res.StatusMessage)))
+		end
+		return res.Body
+	end,
+	PostAsync = function(self, url, data, _contentType, _compress, headers)
+		local res = self:RequestAsync({ Url = url, Method = "POST", Headers = headers, Body = data })
+		if not res.Success then
+			error(string.format("HttpError %d: %s", res.StatusCode, tostring(res.StatusMessage)))
+		end
+		return res.Body
 	end,
 }
 
@@ -1984,6 +2765,7 @@ INST_STATE[Debris].customMethods = {
 	end,
 }
 
+local pressedKeys = {}
 local UserInputService = createInstance("UserInputService", dataModel, "UserInputService")
 INST_STATE[UserInputService].InputBegan = newSignal("UserInputService.InputBegan")
 INST_STATE[UserInputService].InputEnded = newSignal("UserInputService.InputEnded")
@@ -1993,8 +2775,22 @@ INST_STATE[UserInputService].props.TouchEnabled = false
 INST_STATE[UserInputService].props.KeyboardEnabled = true
 INST_STATE[UserInputService].props.MouseEnabled = true
 INST_STATE[UserInputService].customMethods = {
-	IsKeyDown = function()
-		return false
+	IsKeyDown = function(_, keyCode)
+		local name = if type(keyCode) == "table" and keyCode.Name then keyCode.Name else tostring(keyCode or "")
+		return pressedKeys[name] == true
+	end,
+	GetKeysPressed = function()
+		local out = {}
+		for k, down in pairs(pressedKeys) do
+			if down then
+				table.insert(out, tagType({
+					UserInputType = Enum.UserInputType.Keyboard,
+					KeyCode = Enum.KeyCode[k],
+					UserInputState = Enum.UserInputState.Begin,
+				}, "InputObject"))
+			end
+		end
+		return out
 	end,
 	GetFocusedTextBox = function()
 		return nil
@@ -2215,6 +3011,23 @@ local function jsonToRobloxValue(val, propKey)
 	end
 	if val.CFrame and type(val.CFrame) == "table" then
 		local pos = val.CFrame.position or { 0, 0, 0 }
+		local ori = val.CFrame.orientation
+		if type(ori) == "table" and type(ori[1]) == "table" and type(ori[2]) == "table" and type(ori[3]) == "table" then
+			return makeCFrame(
+				pos[1] or 0,
+				pos[2] or 0,
+				pos[3] or 0,
+				ori[1][1] or 1,
+				ori[1][2] or 0,
+				ori[1][3] or 0,
+				ori[2][1] or 0,
+				ori[2][2] or 1,
+				ori[2][3] or 0,
+				ori[3][1] or 0,
+				ori[3][2] or 0,
+				ori[3][3] or 1
+			)
+		end
 		return CFrame.new(pos[1] or 0, pos[2] or 0, pos[3] or 0)
 	end
 	if val.UDim2 and type(val.UDim2) == "table" then
@@ -2253,7 +3066,15 @@ local function buildTreeNode(nodeData, parentInst)
 		for k, v in pairs(nodeData.props) do
 			st.props[k] = jsonToRobloxValue(v, k)
 		end
+		if isBasePartClass(st.className) then
+			if nodeData.props.CFrame ~= nil and nodeData.props.Position == nil and robloxTypeof(st.props.CFrame) == "CFrame" then
+				st.props.Position = st.props.CFrame.Position
+			elseif nodeData.props.Position ~= nil and nodeData.props.CFrame == nil and robloxTypeof(st.props.Position) == "Vector3" then
+				st.props.CFrame = CFrame.new(st.props.Position)
+			end
+		end
 	end
+	syncSpatialPart(inst)
 	if type(nodeData.children) == "table" then
 		for _, chData in ipairs(nodeData.children) do
 			buildTreeNode(chData, inst)
@@ -2590,6 +3411,7 @@ local function tickFrames(frames, dt)
 	local count = frames or 3
 	local stepDt = dt or (1 / 60)
 	for _ = 1, count do
+		stepTweens(stepDt)
 		INST_STATE[RunService].Stepped:Fire(os.clock(), stepDt)
 		INST_STATE[RunService].Heartbeat:Fire(stepDt)
 		INST_STATE[RunService].RenderStepped:Fire(stepDt)
@@ -2871,6 +3693,101 @@ local grantedByPurchaseId = {}
 local receiptSeq = 0
 local stepResults = {}
 local assertionResults = {}
+local movePlayerCount = 0
+local moveAllPassed = true
+local touchingByPart = setmetatable({}, { __mode = "k" })
+
+local function parseTargetVec3(raw)
+	if robloxTypeof(raw) == "Vector3" then
+		return raw
+	end
+	if type(raw) == "table" then
+		if type(raw[1]) == "number" or type(raw[2]) == "number" or type(raw[3]) == "number" then
+			return Vector3.new(tonumber(raw[1]) or 0, tonumber(raw[2]) or 0, tonumber(raw[3]) or 0)
+		end
+		if raw.x ~= nil or raw.y ~= nil or raw.z ~= nil or raw.X ~= nil or raw.Y ~= nil or raw.Z ~= nil then
+			return Vector3.new(
+				tonumber(raw.x or raw.X) or 0,
+				tonumber(raw.y or raw.Y) or 0,
+				tonumber(raw.z or raw.Z) or 0
+			)
+		end
+	end
+	return nil
+end
+
+local function stepPlayerMove(player, targetPos)
+	local char = player and INST_STATE[player].props.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not char or not hrp then
+		return false, nil, "Player character or HumanoidRootPart not found"
+	end
+	local startPos = hrp.Position or Vector3.zero
+	if hum then
+		INST_STATE[hum]._moveTarget = targetPos
+		humanoidMoveToCount += 1
+	end
+	local filterParams = OverlapParams.new()
+	filterParams.FilterType = Enum.RaycastFilterType.Exclude
+	filterParams.FilterDescendantsInstances = { char }
+
+	local prevSet = touchingByPart[hrp] or {}
+	local touchedList = {}
+	local touchEndedList = {}
+	local subSteps = 5
+	for i = 1, subSteps do
+		local alpha = i / subSteps
+		hrp.Position = startPos:Lerp(targetPos, alpha)
+		local overlaps = Workspace:GetPartsInPart(hrp, filterParams)
+		local nowSet = {}
+		for _, other in ipairs(overlaps) do
+			nowSet[other] = true
+			if not prevSet[other] then
+				local otherSt = INST_STATE[other]
+				local hrpSt = INST_STATE[hrp]
+				if otherSt and hrpSt and otherSt.props.CanTouch ~= false and hrpSt.props.CanTouch ~= false then
+					table.insert(touchedList, otherSt.props.Name)
+					if otherSt.Touched then
+						otherSt.Touched:Fire(hrp)
+					end
+					if hrpSt.Touched then
+						hrpSt.Touched:Fire(other)
+					end
+				end
+			end
+		end
+		for prevOther in pairs(prevSet) do
+			if not nowSet[prevOther] then
+				local prevSt = INST_STATE[prevOther]
+				local hrpSt = INST_STATE[hrp]
+				if prevSt then
+					table.insert(touchEndedList, prevSt.props.Name)
+					if prevSt.TouchEnded then
+						prevSt.TouchEnded:Fire(hrp)
+					end
+				end
+				if hrpSt and hrpSt.TouchEnded then
+					hrpSt.TouchEnded:Fire(prevOther)
+				end
+			end
+		end
+		prevSet = nowSet
+		touchingByPart[hrp] = prevSet
+		tickFrames(1)
+	end
+	if hum and INST_STATE[hum].MoveToFinished then
+		INST_STATE[hum].MoveToFinished:Fire(true)
+	end
+	tickFrames(2)
+	return true, {
+		player_id = player.UserId,
+		from = { startPos.X, startPos.Y, startPos.Z },
+		to = { targetPos.X, targetPos.Y, targetPos.Z },
+		touched = touchedList,
+		touch_ended = touchEndedList,
+	}, nil
+end
 
 local function makeReceiptInfo(pid, playerId, productId)
 	return {
@@ -3134,6 +4051,94 @@ local function executeStep(idx, step)
 			tickFrames(3)
 			resVal = { gui_path = target:GetFullName(), class_name = st.className }
 		end
+	elseif op == "move_player" then
+		movePlayerCount += 1
+		local pid = tonumber(step.player_id) or 1001
+		local player = activePlayersById[pid] or Players:GetPlayers()[1]
+		local targetPos = parseTargetVec3(step.to or step.position or step.target)
+		if not player then
+			ok = false
+			errMsg = "Player not found for move_player: " .. tostring(pid)
+		elseif not targetPos then
+			ok = false
+			errMsg = "move_player requires 'to' as [x, y, z]"
+		else
+			local mvOk, mvRes, mvErr = stepPlayerMove(player, targetPos)
+			ok = mvOk
+			resVal = mvRes
+			errMsg = mvErr
+		end
+		if not ok then
+			moveAllPassed = false
+		end
+	elseif op == "trigger_prompt" then
+		local pid = tonumber(step.player_id) or 1001
+		local player = activePlayersById[pid] or Players:GetPlayers()[1]
+		local pPath = tostring(step.path or step.prompt_path or "")
+		local prompt = resolveInstancePath(pPath) or Workspace:FindFirstChild(pPath, true)
+		if not prompt or not prompt:IsA("ProximityPrompt") then
+			ok = false
+			errMsg = "ProximityPrompt not found: " .. pPath
+		elseif not player then
+			ok = false
+			errMsg = "Player not found for trigger_prompt: " .. tostring(pid)
+		elseif INST_STATE[prompt].props.Enabled == false then
+			ok = false
+			errMsg = "ProximityPrompt is disabled: " .. prompt:GetFullName()
+		else
+			local pst = INST_STATE[prompt]
+			if pst.Triggered then
+				pst.Triggered:Fire(player)
+			end
+			INST_STATE[ProximityPromptService].PromptTriggered:Fire(prompt, player)
+			if pst.TriggerEnded then
+				pst.TriggerEnded:Fire(player)
+			end
+			tickFrames(3)
+			resVal = { path = prompt:GetFullName(), player_id = player.UserId }
+		end
+	elseif op == "click_detector" then
+		local pid = tonumber(step.player_id) or 1001
+		local player = activePlayersById[pid] or Players:GetPlayers()[1]
+		local dPath = tostring(step.path or step.detector_path or "")
+		local detector = resolveInstancePath(dPath) or Workspace:FindFirstChild(dPath, true)
+		if not detector or not detector:IsA("ClickDetector") then
+			ok = false
+			errMsg = "ClickDetector not found: " .. dPath
+		elseif not player then
+			ok = false
+			errMsg = "Player not found for click_detector: " .. tostring(pid)
+		else
+			local dst = INST_STATE[detector]
+			if dst.MouseClick then
+				dst.MouseClick:Fire(player)
+			end
+			tickFrames(3)
+			resVal = { path = detector:GetFullName(), player_id = player.UserId }
+		end
+	elseif op == "key_down" or op == "key_up" then
+		local keyRaw = tostring(step.key or step.key_code or "")
+		if keyRaw == "" then
+			ok = false
+			errMsg = op .. " requires 'key'"
+		else
+			local kc = Enum.KeyCode[keyRaw]
+			local kName = kc.Name
+			local isDown = (op == "key_down")
+			pressedKeys[kName] = if isDown then true else nil
+			local inputObj = tagType({
+				UserInputType = Enum.UserInputType.Keyboard,
+				KeyCode = kc,
+				UserInputState = if isDown then Enum.UserInputState.Begin else Enum.UserInputState.End,
+			}, "InputObject")
+			if isDown then
+				INST_STATE[UserInputService].InputBegan:Fire(inputObj, false)
+			else
+				INST_STATE[UserInputService].InputEnded:Fire(inputObj, false)
+			end
+			tickFrames(2)
+			resVal = { key = kName, down = isDown }
+		end
 	elseif op == "rejoin" then
 		local pid = tonumber(step.player_id) or 1001
 		local existing = activePlayersById[pid]
@@ -3231,6 +4236,10 @@ end
 -- Main Execution Flow
 -- ---------------------------------------------------------------------------
 local runStart = os.clock()
+local MAX_TIMEOUT_SECS = 30
+local MAX_PLAYERS = 32
+local MAX_JOURNEY_STEPS = 200
+local _effectiveTimeout = math.clamp(tonumber(inputData.timeout_secs) or 15, 1, MAX_TIMEOUT_SECS)
 
 -- 1. Boot Server Scripts (ServerScriptService + Workspace enabled Scripts)
 local serverScripts = collectScripts(ServerScriptService, "Script")
@@ -3242,20 +4251,40 @@ for _, s in ipairs(serverScripts) do
 end
 tickFrames(5)
 
--- 2. Spawn Initial Players & Client Scripts
+-- 2. Spawn Initial Players & Client Scripts (bounded by MAX_PLAYERS = 32)
 local playerSpecs = inputData.players
 if type(playerSpecs) ~= "table" or #playerSpecs == 0 then
 	playerSpecs = { { user_id = 1001, name = "TestPlayer" } }
 end
-for _, spec in ipairs(playerSpecs) do
-	spawnPlayer(spec)
+if #playerSpecs > MAX_PLAYERS then
+	pushError("players", string.format("players exceeds MAX_PLAYERS (%d)", MAX_PLAYERS))
+end
+for i = 1, math.min(#playerSpecs, MAX_PLAYERS) do
+	spawnPlayer(playerSpecs[i])
 end
 
--- 3. Execute explicit journey OR default auto-journey
+-- 3. Execute explicit journey OR default auto-journey (bounded by MAX_JOURNEY_STEPS = 200)
 local isAutoJourney = (inputData.auto_journey == true) or (type(inputData.journey) ~= "table")
 
 if isAutoJourney then
 	local primaryPid = tonumber(playerSpecs[1].user_id) or 1001
+	local primaryPlayer = activePlayersById[primaryPid] or Players:GetPlayers()[1]
+	if primaryPlayer then
+		local tMove = os.clock()
+		movePlayerCount += 1
+		local mvOk, mvRes, mvErr = stepPlayerMove(primaryPlayer, Vector3.new(4, 0, 0))
+		if not mvOk then
+			moveAllPassed = false
+		end
+		table.insert(stepResults, {
+			index = #stepResults,
+			op = "move_player",
+			passed = mvOk,
+			duration_ms = math.max(0, math.round((os.clock() - tMove) * 1000)),
+			result = mvRes,
+			error = mvErr,
+		})
+	end
 
 	-- Step A: ProcessReceipt idempotency check if ProcessReceipt is registered
 	if type(INST_STATE[MarketplaceService].props.ProcessReceipt) == "function" then
@@ -3340,8 +4369,11 @@ if isAutoJourney then
 		error = persistErr,
 	})
 else
-	for idx, step in ipairs(inputData.journey) do
-		executeStep(idx - 1, step)
+	if #inputData.journey > MAX_JOURNEY_STEPS then
+		pushError("journey", string.format("journey exceeds MAX_JOURNEY_STEPS (%d)", MAX_JOURNEY_STEPS))
+	end
+	for idx = 1, math.min(#inputData.journey, MAX_JOURNEY_STEPS) do
+		executeStep(idx - 1, inputData.journey[idx])
 	end
 end
 
@@ -3372,14 +4404,19 @@ end
 
 local passed = (#consoleErrors == 0) and allStepsPassed and allAssertionsPassed
 
+local moveTested = (movePlayerCount > 0) or (humanoidMoveToCount > 0)
+local movePassed = moveTested and moveAllPassed and (#consoleErrors == 0)
 local actTested = (remotesFiredCount > 0) or (#receiptsProcessed > 0) or (#stepResults > 0)
+local actPassed = actTested and allStepsPassed and (#consoleErrors == 0)
 local hudTested = hasGui or (#collectScripts(StarterGui, "LocalScript") > 0) or (#StarterGui:GetChildren() > 0)
+local hudPassed = hudTested and (#consoleErrors == 0)
 
 local report = {
 	ok = true,
 	engine = "lune_roblox_shim",
 	passed = passed,
 	duration_ms = math.max(1, math.round((os.clock() - runStart) * 1000)),
+	error_count = #consoleErrors,
 	steps = stepResults,
 	assertions = assertionResults,
 	console = {
@@ -3395,27 +4432,31 @@ local report = {
 		remotes_fired = remotesFiredCount,
 		player_gui_tree = guiTrees,
 		telemetry_events = telemetryEvents,
+		http_requests = httpMockLog,
 	},
 	core_loop = {
 		move = {
-			status = "not tested (headless sandbox)",
-			tested = false,
-			passed = false,
+			status = if not moveTested
+				then "not tested (headless sandbox)"
+				elseif movePassed then "passed" else "failed",
+			tested = moveTested,
+			passed = movePassed,
 		},
 		act = {
 			status = if not actTested
 				then "not tested"
-				elseif passed then "passed" else "failed",
+				elseif actPassed then "passed" else "failed",
 			tested = actTested,
-			passed = actTested and allStepsPassed and (#consoleErrors == 0),
+			passed = actPassed,
 		},
 		hud = {
 			status = if not hudTested
 				then "not tested"
-				elseif #consoleErrors == 0 then "rendered" else "errors during render",
+				elseif hudPassed then "rendered" else "errors during render",
 			tested = hudTested,
-			passed = hudTested and (#consoleErrors == 0),
+			passed = hudPassed,
 		},
+		all_passed = movePassed and actPassed and hudPassed,
 	},
 }
 

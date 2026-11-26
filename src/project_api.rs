@@ -264,7 +264,7 @@ pub fn route(shared: &Arc<Shared>, method: &str, full_path: &str, body: &[u8], l
             | ("GET", [_])
             | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "format" | "run-lune" | "open-in-studio"])
             | ("POST", [_, "sync", "diff"] | [_, "scene", "mutate"] | [_, "sandbox", "run"] | [_, "playtests", "rerun"] | [_, "playtests", "fix-plan"] | [_, "playtests", "fix-apply"] | [_, "playtests", "fix-all"])
-            | ("GET", [_, "workspace" | "mesh-asset" | "builds" | "playtests" | "dependencies" | "snapshots" | "sync-conflicts" | "publish-guard" | "monetization-audit" | "economy-sim" | "files" | "file" | "preview" | "gui"] | [_, "snapshots", "hook-integrity"] | [_, "gui", _])
+            | ("GET", [_, "workspace" | "mesh-asset" | "builds" | "playtests" | "dependencies" | "snapshots" | "sync-conflicts" | "publish-guard" | "monetization-audit" | "economy-sim" | "files" | "file" | "preview" | "gui"] | [_, "snapshots", "hook-integrity"] | [_, "gui", _] | [_, "sandbox", "runs" | "latest"])
             | ("POST", [_, "dependencies", "prune"] | [_, "monetization-audit"] | [_, "economy-sim"] | [_, "snapshots"] | [_, "snapshots", _, "restore"] | [_, "snapshots", _, "restore-hooks"] | [_, "sync-conflicts", "resolve"] | [_, "publish-guard", "autofix"] | [_, "gui", _] | [_, "gui", _, "compile"])
             | ("POST", [_, "file"] | [_, "file", "delete"] | [_, "file", "edit"])
             | ("GET", [_, "git", "status" | "log"])
@@ -399,6 +399,18 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
                 return Ok(Reply::json("503 Service Unavailable", res));
             }
             Ok(Reply::json("200 OK", res))
+        }
+        ("GET", [id, "sandbox", "runs"]) => {
+            let r = project_of(shared, id)?;
+            let runs = crate::sandbox::list_sandbox_runs(&r.dir).map_err(Reply::bad)?;
+            Ok(Reply::ok(json!({ "runs": runs })))
+        }
+        ("GET", [id, "sandbox", "latest"]) => {
+            let r = project_of(shared, id)?;
+            match crate::sandbox::read_latest_sandbox_report(&r.dir).map_err(Reply::bad)? {
+                Some(rep) => Ok(Reply::json("200 OK", rep)),
+                None => Err(Reply::err("404 Not Found", "no sandbox run recorded yet")),
+            }
         }
         ("POST", [id, "build"]) => {
             let r = project_of(shared, id)?;
