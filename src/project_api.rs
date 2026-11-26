@@ -259,8 +259,8 @@ pub fn route(shared: &Arc<Shared>, method: &str, full_path: &str, body: &[u8], l
             | ("POST", ["workspace"] | ["workspace", "remove"] | ["create"] | ["open"])
             | ("GET", [_])
             | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "format" | "run-lune" | "open-in-studio"])
-            | ("POST", [_, "sync", "diff"] | [_, "playtests", "rerun"] | [_, "playtests", "fix-plan"] | [_, "playtests", "fix-apply"] | [_, "playtests", "fix-all"])
-            | ("GET", [_, "builds" | "playtests" | "dependencies" | "snapshots" | "sync-conflicts" | "publish-guard" | "monetization-audit" | "economy-sim" | "files" | "file" | "preview"] | [_, "snapshots", "hook-integrity"])
+            | ("POST", [_, "sync", "diff"] | [_, "scene", "mutate"] | [_, "playtests", "rerun"] | [_, "playtests", "fix-plan"] | [_, "playtests", "fix-apply"] | [_, "playtests", "fix-all"])
+            | ("GET", [_, "workspace" | "mesh-asset" | "builds" | "playtests" | "dependencies" | "snapshots" | "sync-conflicts" | "publish-guard" | "monetization-audit" | "economy-sim" | "files" | "file" | "preview"] | [_, "snapshots", "hook-integrity"])
             | ("POST", [_, "dependencies", "prune"] | [_, "monetization-audit"] | [_, "economy-sim"] | [_, "snapshots"] | [_, "snapshots", _, "restore"] | [_, "snapshots", _, "restore-hooks"] | [_, "sync-conflicts", "resolve"] | [_, "publish-guard", "autofix"])
             | ("POST", [_, "file"] | [_, "file", "delete"] | [_, "file", "edit"])
             | ("GET", [_, "git", "status" | "log"])
@@ -518,6 +518,25 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
                 );
             }
             Ok(Reply::ok(payload))
+        }
+        ("GET", [id, "workspace"]) => {
+            let r = project_of(shared, id)?;
+            shared.projects.lock().unwrap().set_active(&r.id);
+            projects::load_workspace_bundle(&r.dir, &r.id)
+                .map(Reply::ok)
+                .map_err(Reply::bad)
+        }
+        ("POST", [id, "scene", "mutate"]) => {
+            let r = project_of(shared, id)?;
+            let b = parse_body(body)?;
+            let _busy = Busy::new(&shared.busy);
+            crate::scene::mutate_scene(&r.dir, &r.id, &b)
+                .map(Reply::ok)
+                .map_err(Reply::bad)
+        }
+        ("GET", [id, "mesh-asset"]) => {
+            let r = project_of(shared, id)?;
+            serve_mesh_asset(&r.dir, &query_param(query, "path").unwrap_or_default())
         }
         ("GET", [id, "builds"]) => {
             let r = project_of(shared, id)?;
@@ -945,6 +964,41 @@ fn preview_image(dir: &Path, rel: &str) -> Result<Reply, Reply> {
         return Err(Reply::bad("image is over 10 MB"));
     }
     let body = std::fs::read(&full).map_err(|e| Reply::bad(e.to_string()))?;
+    Ok(Reply { status: "200 OK", content_type, body })
+}
+
+/// Serve a CWE-22/CWE-59 jailed project mesh or texture asset (`<= 10 MB`) for `GET /api/projects/:id/mesh-asset?path=...`.
+fn serve_mesh_asset(dir: &Path, rel: &str) -> Result<Reply, Reply> {
+    let full = file_path(dir, rel, false)?;
+    let ext = full
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let content_type = match ext.as_str() {
+        "obj" | "mtl" => "text/plain; charset=utf-8",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => return Err(Reply::bad("mesh-asset supports .obj, .mtl, .png, .jpg, or .webp files only")),
+    };
+    let sym_meta = std::fs::symlink_metadata(&full)
+        .map_err(|_| Reply::err("404 Not Found", "mesh asset does not exist"))?;
+    if sym_meta.file_type().is_symlink() {
+        return Err(Reply::bad("mesh asset symlink refused"));
+    }
+    if !sym_meta.is_file() {
+        return Err(Reply::bad("that path is not a file"));
+    }
+    let canon_dir = dir.canonicalize().map_err(|e| Reply::bad(e.to_string()))?;
+    let canon_full = full.canonicalize().map_err(|e| Reply::bad(e.to_string()))?;
+    if !canon_full.starts_with(&canon_dir) {
+        return Err(Reply::bad("path must stay inside the project folder"));
+    }
+    if sym_meta.len() as usize > PREVIEW_CAP {
+        return Err(Reply::bad("mesh asset is over 10 MB"));
+    }
+    let body = std::fs::read(&canon_full).map_err(|e| Reply::bad(e.to_string()))?;
     Ok(Reply { status: "200 OK", content_type, body })
 }
 

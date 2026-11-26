@@ -21,6 +21,7 @@ pub mod project_api;
 pub mod projects;
 pub mod reference_search;
 pub mod rojo_export;
+pub mod scene;
 pub mod secrets;
 pub mod server;
 pub mod skills;

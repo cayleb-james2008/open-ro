@@ -218,6 +218,8 @@ STUDIO & WHOLE-GAME TOOLS:\n\
 - {{\"tool\": \"project_check\", \"args\": {{}}}} runs selene, stylua --check, and static Luau checks across the project\n\
 - {{\"tool\": \"project_run_lune\", \"args\": {{\"script\": \"tools/sim.luau\"}}}} runs a project-relative Lune test/sim script with timeout\n\
 - {{\"tool\": \"project_build\", \"args\": {{\"engine\": \"auto\"}}}} builds the project to .rbxlx\n\
+- {{\"tool\": \"project_scene_get\", \"args\": {{}}}} returns the unified Rojo workspace bundle (scripts, Workspace instances, meshes, lighting, diagnostics)\n\
+- {{\"tool\": \"project_scene_mutate\", \"args\": {{\"ops\": [{{\"op\": \"upsert\", \"path\": \"Workspace.SpawnPad\", \"class_name\": \"SpawnLocation\", \"properties\": {{\"Position\": [0, 1, 0], \"Size\": [8, 1, 8], \"Anchored\": true}}}}]}}}} mutates scene/workspace.model.json & Lighting (auto-wiring default.project.json)\n\
 - {{\"tool\": \"project_sync\", \"args\": {{\"prune\": false}}}} one-way syncs the project to Studio\n\
 - {{\"tool\": \"project_playtest\", \"args\": {{\"sync_first\": true, \"suite\": \"playtest/suite.json\"}}}} runs the Playtest Runner (checks, screenshots, console errors)\n\n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
@@ -279,6 +281,8 @@ PROJECT FILE & BUILD TOOLS:\n\
 - project_check {{}} (runs selene, stylua --check, static Luau checks)\n\
 - project_run_lune {{\"script\": \"tools/sim.luau\"}} (timeout-bounded Lune execution)\n\
 - project_build {{\"engine\": \"auto\"}} (.rbxlx build)\n\
+- project_scene_get {{}} (unified workspace: scripts, instances, meshes, lighting, diagnostics)\n\
+- project_scene_mutate {{\"ops\": [{{\"op\": \"upsert|delete|duplicate|set_lighting|undo\", \"path\": \"Workspace.Name\", ...}}]}} (declarative scene/workspace.model.json + Lighting)\n\
 - project_sync {{\"prune\": false}} (one-way push sync to Studio)\n\
 - project_playtest {{\"sync_first\": true, \"suite\": \"playtest/suite.json\"}} (Playtest Runner checks, screenshots, console errors)\n\n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
@@ -3025,11 +3029,12 @@ impl Agent {
                                         | "project_edit_file"
                                         | "project_delete_file"
                                         | "project_update_manifest"
+                                        | "project_scene_mutate"
                                 ) {
                                     changes_made += 1;
                                     let path_arg = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
                                     let needs_playtest = !matches!(other, "project_update_manifest")
-                                        && (matches!(other, "delete_script" | "create_instance" | "delete_instance")
+                                        && (matches!(other, "delete_script" | "create_instance" | "delete_instance" | "project_scene_mutate")
                                             || path_arg.ends_with(".luau")
                                             || path_arg.ends_with(".lua")
                                             || path_arg == "default.project.json");
@@ -3493,11 +3498,12 @@ impl Agent {
                                 | "project_edit_file"
                                 | "project_delete_file"
                                 | "project_update_manifest"
+                                | "project_scene_mutate"
                         ) {
                             changes_made += 1;
                             let path_arg = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
                             let needs_playtest = !matches!(tool, "project_update_manifest")
-                                && (matches!(tool, "delete_script" | "create_instance" | "delete_instance")
+                                && (matches!(tool, "delete_script" | "create_instance" | "delete_instance" | "project_scene_mutate")
                                     || path_arg.ends_with(".luau")
                                     || path_arg.ends_with(".lua")
                                     || path_arg == "default.project.json");
@@ -4493,6 +4499,24 @@ impl Agent {
                 transcript.push(format!("tool project_build -> {text}"));
                 thread.push("Built project .rbxlx.".to_string());
                 Ok(format!("tool_result: project_build: {text}"))
+            }
+            "project_scene_get" => {
+                let root = self.require_project_root()?;
+                let pid = self.project_id.as_deref().unwrap_or("project");
+                let res = crate::projects::load_workspace_bundle(&root, pid)?;
+                let text = res.to_string();
+                let inst_count = res["instances"].as_object().map(|m| m.len()).unwrap_or(0);
+                transcript.push(format!("tool project_scene_get -> {inst_count} instances"));
+                Ok(format!("tool_result: project_scene_get: {text}"))
+            }
+            "project_scene_mutate" => {
+                let root = self.require_project_root()?;
+                let pid = self.project_id.as_deref().unwrap_or("project");
+                let res = crate::scene::mutate_scene(&root, pid, args)?;
+                let text = res.to_string();
+                transcript.push(format!("tool project_scene_mutate -> rev={}", res["scene_revision"]));
+                thread.push(format!("Updated 3D scene (revision {}).", res["scene_revision"]));
+                Ok(format!("tool_result: project_scene_mutate: {text}"))
             }
             "project_sync" => {
                 let res = if let Some(hook) = &self.hooks.project_sync {
@@ -5786,6 +5810,7 @@ fn is_read_only_tool(tool: &str) -> bool {
             | "project_grep"
             | "project_check"
             | "project_run_lune"
+            | "project_scene_get"
             | "research_roblox_game"
             | "web_fetch"
             | "web_search"

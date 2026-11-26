@@ -523,6 +523,7 @@ pub struct Node {
     pub class: String,
     pub props: BTreeMap<String, Value>,
     pub source: Option<String>,
+    pub source_file: Option<String>,
     pub children: Vec<Node>,
     pub ignore_unknown: bool,
 }
@@ -552,16 +553,23 @@ pub fn is_script_class(c: &str) -> bool {
 
 impl Tree {
     pub fn flatten(&self) -> Vec<Flat> {
-        fn go(n: &Node, prefix: &str, service: bool, out: &mut Vec<Flat>) {
+        self.flatten_with_source().into_iter().map(|(f, _)| f).collect()
+    }
+
+    pub fn flatten_with_source(&self) -> Vec<(Flat, Option<String>)> {
+        fn go(n: &Node, prefix: &str, service: bool, out: &mut Vec<(Flat, Option<String>)>) {
             let path = if prefix.is_empty() { n.name.clone() } else { format!("{prefix}/{}", n.name) };
-            out.push(Flat {
-                path: path.clone(),
-                class: n.class.clone(),
-                props: n.props.clone(),
-                source: n.source.clone(),
-                service,
-                ignore_unknown: n.ignore_unknown,
-            });
+            out.push((
+                Flat {
+                    path: path.clone(),
+                    class: n.class.clone(),
+                    props: n.props.clone(),
+                    source: n.source.clone(),
+                    service,
+                    ignore_unknown: n.ignore_unknown,
+                },
+                n.source_file.clone(),
+            ));
             for c in &n.children {
                 go(c, &path, false, out);
             }
@@ -615,20 +623,34 @@ fn apply_meta(node: &mut Node, meta_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn model_json_node(v: &Value, name_hint: Option<&str>) -> Result<Node, String> {
-    let class = v.get("ClassName").and_then(|c| c.as_str()).ok_or("model.json needs ClassName")?;
-    let name = v.get("Name").and_then(|n| n.as_str()).or(name_hint).ok_or("model.json child needs Name")?;
+fn model_json_node(v: &Value, name_hint: Option<&str>, source_file: Option<&str>) -> Result<Node, String> {
+    let class = v
+        .get("ClassName")
+        .or_else(|| v.get("className"))
+        .and_then(|c| c.as_str())
+        .ok_or("model.json needs ClassName or className")?;
+    let name = v
+        .get("Name")
+        .or_else(|| v.get("name"))
+        .and_then(|n| n.as_str())
+        .or(name_hint)
+        .ok_or("model.json child needs Name or name")?;
     let mut node = Node {
         name: name.to_string(),
         class: class.to_string(),
-        props: props_from(v.get("Properties")),
+        props: props_from(v.get("Properties").or_else(|| v.get("properties"))),
         source: None,
+        source_file: source_file.map(String::from),
         children: Vec::new(),
         ignore_unknown: false,
     };
-    if let Some(kids) = v.get("Children").and_then(|c| c.as_array()) {
+    if let Some(kids) = v
+        .get("Children")
+        .or_else(|| v.get("children"))
+        .and_then(|c| c.as_array())
+    {
         for k in kids {
-            node.children.push(model_json_node(k, None)?);
+            node.children.push(model_json_node(k, None, source_file)?);
         }
     }
     Ok(node)
@@ -640,7 +662,15 @@ fn load_path(path: &Path, skipped: &mut Vec<String>, root: &Path) -> Result<Opti
         return Ok(None);
     }
     if path.is_dir() {
-        let mut node = Node { name: fname.clone(), class: "Folder".into(), props: BTreeMap::new(), source: None, children: Vec::new(), ignore_unknown: false };
+        let mut node = Node {
+            name: fname.clone(),
+            class: "Folder".into(),
+            props: BTreeMap::new(),
+            source: None,
+            source_file: Some(rel_display(root, path)),
+            children: Vec::new(),
+            ignore_unknown: false,
+        };
         let mut entries: Vec<PathBuf> = std::fs::read_dir(path)
             .map_err(|e| format!("read {}: {e}", rel_display(root, path)))?
             .filter_map(|e| e.ok())
@@ -654,6 +684,7 @@ fn load_path(path: &Path, skipped: &mut Vec<String>, root: &Path) -> Result<Opti
                 if stem == "init" {
                     node.class = class.to_string();
                     node.source = Some(std::fs::read_to_string(e).map_err(|e2| format!("read {n}: {e2}"))?);
+                    node.source_file = Some(rel_display(root, e));
                     init_names.push(n);
                 }
             }
@@ -679,6 +710,7 @@ fn load_path(path: &Path, skipped: &mut Vec<String>, root: &Path) -> Result<Opti
             class: class.to_string(),
             props: BTreeMap::new(),
             source: Some(std::fs::read_to_string(path).map_err(|e| format!("read {fname}: {e}"))?),
+            source_file: Some(rel_display(root, path)),
             children: Vec::new(),
             ignore_unknown: false,
         };
@@ -689,13 +721,22 @@ fn load_path(path: &Path, skipped: &mut Vec<String>, root: &Path) -> Result<Opti
     if let Some(stem) = fname.strip_suffix(".model.json") {
         let text = std::fs::read_to_string(path).map_err(|e| format!("read {fname}: {e}"))?;
         let v: Value = serde_json::from_str(&text).map_err(|e| format!("{fname}: {e}"))?;
-        return model_json_node(&v, Some(stem)).map(Some);
+        let sf = rel_display(root, path);
+        return model_json_node(&v, Some(stem), Some(&sf)).map(Some);
     }
     if let Some(stem) = fname.strip_suffix(".txt") {
         let text = std::fs::read_to_string(path).map_err(|e| format!("read {fname}: {e}"))?;
         let mut props = BTreeMap::new();
         props.insert("Value".to_string(), json!(text));
-        return Ok(Some(Node { name: stem.to_string(), class: "StringValue".into(), props, source: None, children: Vec::new(), ignore_unknown: false }));
+        return Ok(Some(Node {
+            name: stem.to_string(),
+            class: "StringValue".into(),
+            props,
+            source: None,
+            source_file: Some(rel_display(root, path)),
+            children: Vec::new(),
+            ignore_unknown: false,
+        }));
     }
     if fname.ends_with(".meta.json") {
         return Ok(None);
@@ -704,7 +745,14 @@ fn load_path(path: &Path, skipped: &mut Vec<String>, root: &Path) -> Result<Opti
     Ok(None)
 }
 
-fn load_project_node(name: &str, v: &Value, root: &Path, skipped: &mut Vec<String>, service_level: bool) -> Result<Node, String> {
+fn load_project_node(
+    name: &str,
+    v: &Value,
+    root: &Path,
+    rojo_file: &str,
+    skipped: &mut Vec<String>,
+    service_level: bool,
+) -> Result<Node, String> {
     let obj = v.as_object().ok_or(format!("'{name}' in the project file must be an object"))?;
     let class_name = obj.get("$className").and_then(|c| c.as_str());
     let mut node = if let Some(p) = obj.get("$path").and_then(|p| p.as_str()) {
@@ -717,7 +765,15 @@ fn load_project_node(name: &str, v: &Value, root: &Path, skipped: &mut Vec<Strin
         n
     } else {
         let class = class_name.map(String::from).or_else(|| service_level.then(|| name.to_string())).ok_or(format!("'{name}' needs $className or $path"))?;
-        Node { name: name.to_string(), class, props: BTreeMap::new(), source: None, children: Vec::new(), ignore_unknown: true }
+        Node {
+            name: name.to_string(),
+            class,
+            props: BTreeMap::new(),
+            source: None,
+            source_file: Some(rojo_file.to_string()),
+            children: Vec::new(),
+            ignore_unknown: true,
+        }
     };
     if let Some(c) = class_name {
         node.class = c.to_string();
@@ -735,7 +791,7 @@ fn load_project_node(name: &str, v: &Value, root: &Path, skipped: &mut Vec<Strin
         if node.children.iter().any(|c| &c.name == k) {
             return Err(format!("'{k}' appears twice under '{name}'"));
         }
-        node.children.push(load_project_node(k, child, root, skipped, false)?);
+        node.children.push(load_project_node(k, child, root, rojo_file, skipped, false)?);
     }
     Ok(node)
 }
@@ -751,7 +807,7 @@ pub fn load_tree(dir: &Path, rojo_file: &str) -> Result<Tree, String> {
         if k.starts_with('$') {
             continue;
         }
-        services.push(load_project_node(k, child, dir, &mut skipped, true)?);
+        services.push(load_project_node(k, child, dir, rojo_file, &mut skipped, true)?);
     }
     let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("Project").to_string();
     Ok(Tree { name, services, skipped })
@@ -783,31 +839,530 @@ pub fn find_rojo() -> Option<PathBuf> {
 }
 
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
-fn xml_prop(name: &str, v: &Value, warnings: &mut Vec<String>, owner: &str) -> Option<String> {
+fn fmt_num(v: f64) -> String {
+    if v.abs() < 1e-12 {
+        "0".to_string()
+    } else if (v - v.round()).abs() < 1e-9 && v.abs() < 1e12 {
+        format!("{}", v.round() as i64)
+    } else {
+        format!("{v}")
+    }
+}
+
+fn is_base_part_class(class_name: &str) -> bool {
+    matches!(
+        class_name,
+        "Part"
+            | "SpawnLocation"
+            | "WedgePart"
+            | "TrussPart"
+            | "CornerWedgePart"
+            | "Seat"
+            | "VehicleSeat"
+            | "MeshPart"
+    )
+}
+
+fn is_content_property(key: &str) -> bool {
+    matches!(
+        key,
+        "MeshId"
+            | "TextureID"
+            | "TextureId"
+            | "SoundId"
+            | "Texture"
+            | "ColorMap"
+            | "MetalnessMap"
+            | "NormalMap"
+            | "RoughnessMap"
+            | "Image"
+            | "AnimationId"
+            | "SkyboxBk"
+            | "SkyboxDn"
+            | "SkyboxFt"
+            | "SkyboxLf"
+            | "SkyboxRt"
+            | "SkyboxUp"
+            | "MoonTextureId"
+            | "SunTextureId"
+            | "ShirtTemplate"
+            | "PantsTemplate"
+            | "Graphic"
+            | "OverlayTextureId"
+    )
+}
+
+fn is_color3_property(class_name: &str, key: &str) -> bool {
+    if matches!(
+        key,
+        "Ambient"
+            | "OutdoorAmbient"
+            | "FogColor"
+            | "ColorShift_Top"
+            | "ColorShift_Bottom"
+            | "Decay"
+            | "TextColor3"
+            | "BackgroundColor3"
+            | "BorderColor3"
+            | "ImageColor3"
+            | "PlaceholderColor3"
+            | "TextStrokeColor3"
+    ) {
+        return true;
+    }
+    key == "Color" && !is_base_part_class(class_name)
+}
+
+fn enum_token_lookup(enum_type: &str, item: &str) -> Option<u32> {
+    let clean = item.trim();
+    match enum_type {
+        "Material" => match clean.to_ascii_lowercase().as_str() {
+            "plastic" => Some(256),
+            "smoothplastic" => Some(272),
+            "neon" => Some(288),
+            "wood" => Some(512),
+            "woodplanks" => Some(528),
+            "cardboard" => Some(560),
+            "carpet" => Some(576),
+            "ceramictiles" => Some(592),
+            "clayrooftiles" => Some(608),
+            "roofshingles" => Some(624),
+            "leather" => Some(640),
+            "plaster" => Some(656),
+            "rubber" => Some(672),
+            "marble" => Some(784),
+            "basalt" => Some(788),
+            "slate" => Some(800),
+            "crackedlava" => Some(804),
+            "concrete" => Some(816),
+            "limestone" => Some(820),
+            "granite" => Some(832),
+            "pavement" => Some(836),
+            "brick" => Some(848),
+            "pebble" => Some(864),
+            "cobblestone" => Some(880),
+            "rock" => Some(896),
+            "sandstone" => Some(912),
+            "metal" => Some(1040),
+            "corrodedmetal" => Some(1056),
+            "diamondplate" => Some(1072),
+            "foil" => Some(1088),
+            "grass" => Some(1280),
+            "leafygrass" => Some(1284),
+            "sand" => Some(1296),
+            "fabric" => Some(1312),
+            "snow" => Some(1328),
+            "mud" => Some(1344),
+            "ground" => Some(1360),
+            "asphalt" => Some(1376),
+            "salt" => Some(1392),
+            "ice" => Some(1536),
+            "glacier" => Some(1552),
+            "glass" => Some(1568),
+            "forcefield" => Some(1584),
+            "air" => Some(1792),
+            "water" => Some(2048),
+            _ => None,
+        },
+        "PartType" | "Shape" => match clean.to_ascii_lowercase().as_str() {
+            "ball" | "sphere" => Some(0),
+            "block" | "box" => Some(1),
+            "cylinder" => Some(2),
+            "wedge" => Some(3),
+            "cornerwedge" => Some(4),
+            _ => None,
+        },
+        "NormalId" | "Face" => match clean.to_ascii_lowercase().as_str() {
+            "right" => Some(0),
+            "top" => Some(1),
+            "back" => Some(2),
+            "left" => Some(3),
+            "bottom" => Some(4),
+            "front" => Some(5),
+            _ => None,
+        },
+        "Technology" => match clean.to_ascii_lowercase().as_str() {
+            "legacy" => Some(0),
+            "voxel" => Some(1),
+            "compatibility" => Some(2),
+            "shadowmap" => Some(3),
+            "future" => Some(4),
+            "unified" => Some(5),
+            _ => None,
+        },
+        "SurfaceType" => match clean.to_ascii_lowercase().as_str() {
+            "smooth" => Some(0),
+            "glue" => Some(1),
+            "weld" => Some(2),
+            "studs" => Some(3),
+            "inlet" => Some(4),
+            "universal" => Some(5),
+            "hinge" => Some(6),
+            "motor" => Some(7),
+            "steppingmotor" => Some(8),
+            "smoothnooutlines" => Some(10),
+            _ => None,
+        },
+        "CollisionFidelity" => match clean.to_ascii_lowercase().as_str() {
+            "default" => Some(0),
+            "hull" => Some(1),
+            "box" => Some(2),
+            "preciseconvexdecomposition" => Some(3),
+            _ => None,
+        },
+        "RenderFidelity" => match clean.to_ascii_lowercase().as_str() {
+            "automatic" => Some(0),
+            "performance" => Some(1),
+            "precise" => Some(2),
+            _ => None,
+        },
+        "SortOrder" => match clean.to_ascii_lowercase().as_str() {
+            "name" => Some(0),
+            "custom" => Some(1),
+            "layoutorder" => Some(2),
+            _ => None,
+        },
+        "FillDirection" => match clean.to_ascii_lowercase().as_str() {
+            "horizontal" => Some(0),
+            "vertical" => Some(1),
+            _ => None,
+        },
+        "HorizontalAlignment" => match clean.to_ascii_lowercase().as_str() {
+            "center" => Some(0),
+            "left" => Some(1),
+            "right" => Some(2),
+            _ => None,
+        },
+        "VerticalAlignment" => match clean.to_ascii_lowercase().as_str() {
+            "center" => Some(0),
+            "top" => Some(1),
+            "bottom" => Some(2),
+            _ => None,
+        },
+        "ScaleType" => match clean.to_ascii_lowercase().as_str() {
+            "stretch" => Some(0),
+            "slice" => Some(1),
+            "tile" => Some(2),
+            "fit" => Some(3),
+            "crop" => Some(4),
+            _ => None,
+        },
+        "RollOffMode" => match clean.to_ascii_lowercase().as_str() {
+            "inverse" => Some(0),
+            "linear" => Some(1),
+            "linearsquare" => Some(2),
+            "inversetapered" => Some(3),
+            _ => None,
+        },
+        "Font" => match clean.to_ascii_lowercase().as_str() {
+            "legacy" => Some(0),
+            "arial" => Some(1),
+            "arialbold" => Some(2),
+            "sourcesans" => Some(3),
+            "sourcesansbold" => Some(4),
+            "sourcesanssemibold" => Some(5),
+            "sourcesanslight" => Some(6),
+            "sourcesansitalic" => Some(7),
+            "bodoni" => Some(8),
+            "garamond" => Some(9),
+            "cartoon" => Some(10),
+            "code" => Some(11),
+            "highway" => Some(12),
+            "scifi" => Some(13),
+            "arcade" => Some(14),
+            "fantasy" => Some(15),
+            "antique" => Some(16),
+            "gotham" => Some(17),
+            "gothammedium" => Some(18),
+            "gothambold" => Some(19),
+            "gothamblack" => Some(20),
+            "roboto" => Some(30),
+            "robotomono" => Some(33),
+            "fredokaone" => Some(36),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn resolve_enum_token(prop_name: &str, val: &Value) -> Option<u32> {
+    if let Some(n) = val.as_u64() {
+        return Some(n as u32);
+    }
+    let s = val.as_str()?.trim();
+    if let Some(rest) = s.strip_prefix("Enum.") {
+        if let Some((enum_ty, item)) = rest.split_once('.') {
+            if let Some(tok) = enum_token_lookup(enum_ty, item) {
+                return Some(tok);
+            }
+        }
+    }
+    let enum_ty = match prop_name {
+        "Material" => "Material",
+        "Shape" | "shape" => "PartType",
+        "Face" => "NormalId",
+        "Technology" => "Technology",
+        "TopSurface" | "BottomSurface" | "FrontSurface" | "BackSurface" | "LeftSurface" | "RightSurface" => "SurfaceType",
+        "CollisionFidelity" => "CollisionFidelity",
+        "RenderFidelity" => "RenderFidelity",
+        "SortOrder" => "SortOrder",
+        "FillDirection" => "FillDirection",
+        "HorizontalAlignment" => "HorizontalAlignment",
+        "VerticalAlignment" => "VerticalAlignment",
+        "ScaleType" => "ScaleType",
+        "RollOffMode" => "RollOffMode",
+        "Font" => "Font",
+        _ => return None,
+    };
+    enum_token_lookup(enum_ty, s)
+}
+
+fn format_cframe_xml(name: &str, cf: [f64; 12]) -> String {
     let n = xml_escape(name);
+    format!(
+        "<CoordinateFrame name=\"{n}\"><X>{}</X><Y>{}</Y><Z>{}</Z><R00>{}</R00><R01>{}</R01><R02>{}</R02><R10>{}</R10><R11>{}</R11><R12>{}</R12><R20>{}</R20><R21>{}</R21><R22>{}</R22></CoordinateFrame>",
+        fmt_num(cf[0]),
+        fmt_num(cf[1]),
+        fmt_num(cf[2]),
+        fmt_num(cf[3]),
+        fmt_num(cf[4]),
+        fmt_num(cf[5]),
+        fmt_num(cf[6]),
+        fmt_num(cf[7]),
+        fmt_num(cf[8]),
+        fmt_num(cf[9]),
+        fmt_num(cf[10]),
+        fmt_num(cf[11]),
+    )
+}
+
+fn format_content_xml(name: &str, s: &str) -> String {
+    let n = xml_escape(name);
+    if s.is_empty() {
+        format!("<Content name=\"{n}\"><null></null></Content>")
+    } else {
+        format!("<Content name=\"{n}\"><url>{}</url></Content>", xml_escape(s))
+    }
+}
+
+fn xml_prop_for_class(
+    class_name: &str,
+    name: &str,
+    v: &Value,
+    warnings: &mut Vec<String>,
+    owner: &str,
+) -> Option<String> {
+    let xml_name = if is_base_part_class(class_name) && name == "Size" {
+        "size"
+    } else if is_base_part_class(class_name) && name == "Shape" {
+        "shape"
+    } else {
+        name
+    };
+    let n = xml_escape(xml_name);
     let num = |x: &Value| x.as_f64().unwrap_or(0.0);
     let arr = |x: &Value| x.as_array().cloned().unwrap_or_default();
+
+    if name == "Color3uint8" || (is_base_part_class(class_name) && name == "Color") {
+        if let Some(packed) = crate::scene::color_to_u32_packed(v) {
+            return Some(format!("<Color3uint8 name=\"Color3uint8\">{packed}</Color3uint8>"));
+        }
+    }
+    if is_color3_property(class_name, name) {
+        if let Some([r, g, b]) = crate::scene::color_to_rgb_floats(v) {
+            return Some(format!(
+                "<Color3 name=\"{n}\"><R>{}</R><G>{}</G><B>{}</B></Color3>",
+                fmt_num(r),
+                fmt_num(g),
+                fmt_num(b)
+            ));
+        }
+    }
+    if name == "CFrame" {
+        if let Some(cf) = crate::scene::parse_cframe_value(v) {
+            return Some(format_cframe_xml(xml_name, cf));
+        }
+    }
+
     match v {
         Value::Bool(b) => Some(format!("<bool name=\"{n}\">{b}</bool>")),
-        Value::Number(x) => Some(format!("<float name=\"{n}\">{}</float>", x.as_f64().unwrap_or(0.0))),
-        Value::String(s) => Some(format!("<string name=\"{n}\">{}</string>", xml_escape(s))),
+        Value::Number(x) => {
+            if let Some(tok) = resolve_enum_token(name, v) {
+                if matches!(
+                    name,
+                    "Material"
+                        | "Shape"
+                        | "shape"
+                        | "Face"
+                        | "Technology"
+                        | "TopSurface"
+                        | "BottomSurface"
+                        | "CollisionFidelity"
+                        | "RenderFidelity"
+                ) {
+                    return Some(format!("<token name=\"{n}\">{tok}</token>"));
+                }
+            }
+            Some(format!("<float name=\"{n}\">{}</float>", fmt_num(x.as_f64().unwrap_or(0.0))))
+        }
+        Value::String(s) => {
+            if is_content_property(name) {
+                Some(format_content_xml(xml_name, s))
+            } else if let Some(tok) = resolve_enum_token(name, v) {
+                Some(format!("<token name=\"{n}\">{tok}</token>"))
+            } else {
+                Some(format!("<string name=\"{n}\">{}</string>", xml_escape(s)))
+            }
+        }
+        Value::Array(a) => match a.len() {
+            3 => Some(format!(
+                "<Vector3 name=\"{n}\"><X>{}</X><Y>{}</Y><Z>{}</Z></Vector3>",
+                fmt_num(num(&a[0])),
+                fmt_num(num(&a[1])),
+                fmt_num(num(&a[2]))
+            )),
+            2 => Some(format!(
+                "<Vector2 name=\"{n}\"><X>{}</X><Y>{}</Y></Vector2>",
+                fmt_num(num(&a[0])),
+                fmt_num(num(&a[1]))
+            )),
+            _ => {
+                warnings.push(format!("{owner}: property {name} needs rojo to build; left out"));
+                None
+            }
+        },
         Value::Object(o) if o.len() == 1 => {
             let (kind, val) = o.iter().next().unwrap();
-            let a = arr(val);
-            match (kind.as_str(), a.len()) {
-                ("Vector3", 3) => Some(format!("<Vector3 name=\"{n}\"><X>{}</X><Y>{}</Y><Z>{}</Z></Vector3>", num(&a[0]), num(&a[1]), num(&a[2]))),
-                ("Vector2", 2) => Some(format!("<Vector2 name=\"{n}\"><X>{}</X><Y>{}</Y></Vector2>", num(&a[0]), num(&a[1]))),
-                ("Color3", 3) => Some(format!("<Color3 name=\"{n}\"><R>{}</R><G>{}</G><B>{}</B></Color3>", num(&a[0]), num(&a[1]), num(&a[2]))),
-                ("UDim2", 2) => {
-                    let (x, y) = (arr(&a[0]), arr(&a[1]));
-                    if x.len() == 2 && y.len() == 2 {
+            match kind.as_str() {
+                "CFrame" => {
+                    if let Some(cf) = crate::scene::parse_cframe_value(v) {
+                        Some(format_cframe_xml(xml_name, cf))
+                    } else {
+                        warnings.push(format!("{owner}: property {name} (CFrame) is malformed; left out"));
+                        None
+                    }
+                }
+                "Enum" => {
+                    if let Some(tok) = resolve_enum_token(name, val) {
+                        Some(format!("<token name=\"{n}\">{tok}</token>"))
+                    } else {
+                        warnings.push(format!("{owner}: property {name} (Enum) could not resolve token; left out"));
+                        None
+                    }
+                }
+                "Content" => {
+                    let s = val.as_str().unwrap_or("");
+                    Some(format_content_xml(xml_name, s))
+                }
+                "Color3uint8" => {
+                    if let Some(packed) = crate::scene::color_to_u32_packed(v) {
+                        Some(format!("<Color3uint8 name=\"{n}\">{packed}</Color3uint8>"))
+                    } else {
+                        warnings.push(format!("{owner}: property {name} (Color3uint8) is malformed; left out"));
+                        None
+                    }
+                }
+                "Color3" => {
+                    if let Some([r, g, b]) = crate::scene::color_to_rgb_floats(v) {
                         Some(format!(
-                            "<UDim2 name=\"{n}\"><XS>{}</XS><XO>{}</XO><YS>{}</YS><YO>{}</YO></UDim2>",
-                            num(&x[0]), num(&x[1]), num(&y[0]), num(&y[1])
+                            "<Color3 name=\"{n}\"><R>{}</R><G>{}</G><B>{}</B></Color3>",
+                            fmt_num(r),
+                            fmt_num(g),
+                            fmt_num(b)
                         ))
+                    } else {
+                        warnings.push(format!("{owner}: property {name} (Color3) is malformed; left out"));
+                        None
+                    }
+                }
+                "Vector3" => {
+                    let a = arr(val);
+                    if a.len() == 3 {
+                        Some(format!(
+                            "<Vector3 name=\"{n}\"><X>{}</X><Y>{}</Y><Z>{}</Z></Vector3>",
+                            fmt_num(num(&a[0])),
+                            fmt_num(num(&a[1])),
+                            fmt_num(num(&a[2]))
+                        ))
+                    } else {
+                        warnings.push(format!("{owner}: property {name} is malformed; left out"));
+                        None
+                    }
+                }
+                "Vector2" => {
+                    let a = arr(val);
+                    if a.len() == 2 {
+                        Some(format!(
+                            "<Vector2 name=\"{n}\"><X>{}</X><Y>{}</Y></Vector2>",
+                            fmt_num(num(&a[0])),
+                            fmt_num(num(&a[1]))
+                        ))
+                    } else {
+                        warnings.push(format!("{owner}: property {name} is malformed; left out"));
+                        None
+                    }
+                }
+                "UDim2" => {
+                    let a = arr(val);
+                    if a.len() == 2 {
+                        let (x, y) = (arr(&a[0]), arr(&a[1]));
+                        if x.len() == 2 && y.len() == 2 {
+                            return Some(format!(
+                                "<UDim2 name=\"{n}\"><XS>{}</XS><XO>{}</XO><YS>{}</YS><YO>{}</YO></UDim2>",
+                                fmt_num(num(&x[0])),
+                                fmt_num(num(&x[1])),
+                                fmt_num(num(&y[0])),
+                                fmt_num(num(&y[1]))
+                            ));
+                        }
+                    }
+                    warnings.push(format!("{owner}: property {name} is malformed; left out"));
+                    None
+                }
+                "UDim" => {
+                    let a = arr(val);
+                    if a.len() == 2 {
+                        Some(format!(
+                            "<UDim name=\"{n}\"><S>{}</S><O>{}</O></UDim>",
+                            fmt_num(num(&a[0])),
+                            fmt_num(num(&a[1]))
+                        ))
+                    } else {
+                        warnings.push(format!("{owner}: property {name} is malformed; left out"));
+                        None
+                    }
+                }
+                "NumberRange" => {
+                    let a = arr(val);
+                    if a.len() == 2 {
+                        Some(format!(
+                            "<NumberRange name=\"{n}\">{} {} </NumberRange>",
+                            fmt_num(num(&a[0])),
+                            fmt_num(num(&a[1]))
+                        ))
+                    } else {
+                        warnings.push(format!("{owner}: property {name} is malformed; left out"));
+                        None
+                    }
+                }
+                "BrickColor" => {
+                    if let Some(code) = val.as_i64() {
+                        Some(format!("<int name=\"{n}\">{code}</int>"))
+                    } else {
+                        warnings.push(format!("{owner}: property {name} (BrickColor) needs numeric ID; left out"));
+                        None
+                    }
+                }
+                "Int32" | "Int64" => {
+                    if let Some(i) = val.as_i64() {
+                        Some(format!("<int name=\"{n}\">{i}</int>"))
                     } else {
                         warnings.push(format!("{owner}: property {name} is malformed; left out"));
                         None
@@ -826,17 +1381,42 @@ fn xml_prop(name: &str, v: &Value, warnings: &mut Vec<String>, owner: &str) -> O
     }
 }
 
-/// Built-in `.rbxlx` writer: scripts, folders and plain properties only.
+/// Built-in `.rbxlx` writer supporting scripts, folders, `CFrame`, `Enum` tokens,
+/// `Content` URLs (`MeshId`/`TextureID`/`SoundId`), `Color3uint8`, and `Lighting` properties.
 pub fn builtin_rbxlx(tree: &Tree, warnings: &mut Vec<String>) -> String {
     fn item(n: &Node, prefix: &str, counter: &mut usize, out: &mut String, warnings: &mut Vec<String>) {
         let path = if prefix.is_empty() { n.name.clone() } else { format!("{prefix}/{}", n.name) };
         *counter += 1;
-        out.push_str(&format!("<Item class=\"{}\" referent=\"RBX{}\"><Properties><string name=\"Name\">{}</string>", xml_escape(&n.class), counter, xml_escape(&n.name)));
+        out.push_str(&format!(
+            "<Item class=\"{}\" referent=\"RBX{}\"><Properties><string name=\"Name\">{}</string>",
+            xml_escape(&n.class),
+            counter,
+            xml_escape(&n.name)
+        ));
         if let Some(src) = &n.source {
-            out.push_str(&format!("<ProtectedString name=\"Source\"><![CDATA[{}]]></ProtectedString>", src.replace("]]>", "]]]]><![CDATA[>")));
+            out.push_str(&format!(
+                "<ProtectedString name=\"Source\"><![CDATA[{}]]></ProtectedString>",
+                src.replace("]]>", "]]]]><![CDATA[>")
+            ));
         }
+        let synth_cframe = is_base_part_class(&n.class)
+            && !n.props.contains_key("CFrame")
+            && (n.props.contains_key("Position") || n.props.contains_key("Rotation"));
+        if synth_cframe {
+            let pos = crate::scene::parse_vec3(n.props.get("Position")).unwrap_or([0.0, 0.0, 0.0]);
+            let rot = crate::scene::parse_vec3(n.props.get("Rotation")).unwrap_or([0.0, 0.0, 0.0]);
+            let cf = crate::scene::cframe_from_pos_rot(pos, rot);
+            out.push_str(&format_cframe_xml("CFrame", cf));
+        }
+        let has_color_u8 = n.props.contains_key("Color3uint8");
         for (k, v) in &n.props {
-            if let Some(x) = xml_prop(k, v, warnings, &path) {
+            if synth_cframe && (k == "Position" || k == "Rotation") {
+                continue;
+            }
+            if is_base_part_class(&n.class) && k == "Color" && has_color_u8 {
+                continue;
+            }
+            if let Some(x) = xml_prop_for_class(&n.class, k, v, warnings, &path) {
                 out.push_str(&x);
             }
         }
@@ -854,6 +1434,133 @@ pub fn builtin_rbxlx(tree: &Tree, warnings: &mut Vec<String>) -> String {
     }
     out.push_str("</roblox>\n");
     out
+}
+
+/// Load the unified Rojo project workspace bundle for `GET /api/projects/:id/workspace`
+/// (`scripts`, `instances`, `meshes`, `lighting`, `diagnostics`, `scene_revision`).
+pub fn load_workspace_bundle(dir: &Path, project_id: &str) -> Result<Value, String> {
+    let m = manifest(dir)?;
+    let rojo_file = m["rojoProject"]
+        .as_str()
+        .unwrap_or(DEFAULT_ROJO_FILE)
+        .to_string();
+    let project_name = m["name"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(project_id)
+        .to_string();
+
+    let (scene_revision, can_undo, can_redo) = crate::scene::undo_status(dir);
+    let meshes = crate::scene::scan_project_meshes(dir, project_id);
+
+    let mut scripts_map: BTreeMap<String, Value> = BTreeMap::new();
+    let mut instances_map: BTreeMap<String, Value> = BTreeMap::new();
+    let mut luau_scripts: BTreeMap<String, String> = BTreeMap::new();
+    let mut luau_instances: BTreeMap<String, Value> = BTreeMap::new();
+    let mut service_to_file: BTreeMap<String, String> = BTreeMap::new();
+
+    match load_tree(dir, &rojo_file) {
+        Ok(tree) => {
+            let lighting = crate::scene::extract_lighting_from_tree(&tree.services);
+            for (f, source_file) in tree.flatten_with_source() {
+                let dm_path = f.path.replace('/', ".");
+                if let Some(src) = f.source {
+                    let rel_path = source_file.unwrap_or_else(|| dm_path.clone());
+                    let sha256 = sha256_hex(src.as_bytes());
+                    let lines = if src.is_empty() { 0 } else { src.lines().count() };
+                    service_to_file.insert(dm_path.clone(), rel_path.clone());
+                    luau_scripts.insert(dm_path.clone(), src.clone());
+                    scripts_map.insert(
+                        rel_path,
+                        json!({
+                            "source": src,
+                            "service_path": dm_path,
+                            "class_name": f.class,
+                            "sha256": sha256,
+                            "lines": lines,
+                        }),
+                    );
+                } else if !f.service {
+                    let norm_props = crate::scene::normalize_instance_properties(&f.class, &f.props);
+                    let props_val = Value::Object(norm_props);
+                    luau_instances.insert(
+                        dm_path.clone(),
+                        json!({
+                            "class_name": f.class,
+                            "properties": props_val,
+                        }),
+                    );
+                    instances_map.insert(
+                        dm_path,
+                        json!({
+                            "class_name": f.class,
+                            "properties": props_val,
+                            "source_file": source_file,
+                        }),
+                    );
+                }
+            }
+            let report = crate::luau_check::analyze_place(&luau_scripts, &luau_instances);
+            let diagnostics: Vec<Value> = report
+                .diagnostics
+                .iter()
+                .map(|d| {
+                    let file = service_to_file.get(&d.path).cloned();
+                    json!({
+                        "severity": d.severity.as_str(),
+                        "file": file,
+                        "service_path": d.path,
+                        "line": d.line,
+                        "col": Value::Null,
+                        "message": d.message,
+                        "code": d.code,
+                    })
+                })
+                .collect();
+
+            Ok(json!({
+                "project_id": project_id,
+                "project_name": project_name,
+                "mode": "rojo",
+                "scene_revision": scene_revision,
+                "can_undo": can_undo,
+                "can_redo": can_redo,
+                "scripts": scripts_map,
+                "instances": instances_map,
+                "meshes": meshes,
+                "lighting": lighting,
+                "diagnostics": diagnostics,
+                "skipped": tree.skipped,
+                "tree_error": Value::Null,
+            }))
+        }
+        Err(err) => {
+            let lighting = crate::scene::extract_lighting_from_tree(&[]);
+            Ok(json!({
+                "project_id": project_id,
+                "project_name": project_name,
+                "mode": "rojo",
+                "scene_revision": scene_revision,
+                "can_undo": can_undo,
+                "can_redo": can_redo,
+                "scripts": {},
+                "instances": {},
+                "meshes": meshes,
+                "lighting": lighting,
+                "diagnostics": [{
+                    "severity": "error",
+                    "file": rojo_file,
+                    "service_path": "DataModel",
+                    "line": 1,
+                    "col": Value::Null,
+                    "message": err,
+                    "code": "rojo_tree_error",
+                }],
+                "skipped": [],
+                "tree_error": err,
+            }))
+        }
+    }
 }
 
 /// Run `rojo build`, capped at two minutes.

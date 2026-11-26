@@ -2639,6 +2639,7 @@ fn is_write_or_submit_tool(tool: &str) -> bool {
             | "project_delete_file"
             | "project_format"
             | "project_update_manifest"
+            | "project_scene_mutate"
             | "submit_task"
             | "mesh_generate"
             | "blender_generate"
@@ -3219,12 +3220,12 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "Follow Study -> Build -> Check -> Refine: check `study_status` so gaps are investigated with `evidence_record`/`unknown_add` before coding and checked with `mechanics_check`/`project_check`.\n",
             "To wait for workers, return {\"done\":true,\"summary\":\"waiting\"} — NEVER poll board_read.\n",
             "Call `finish_run` once all tasks are `done`.\n",
-            "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, study_status, unknowns_list, evidence_list, opencloud_status, creator_hub_status, creator_hub_setup, creator_hub_configure, assets_authorise, assets_upload, assets_codegen, products_sync, products_codegen, project_publish, universe_get, universe_set, finish_run.\n",
+            "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, project_scene_get, study_status, unknowns_list, evidence_list, opencloud_status, creator_hub_status, creator_hub_setup, creator_hub_configure, assets_authorise, assets_upload, assets_codegen, products_sync, products_codegen, project_publish, universe_get, universe_set, finish_run.\n",
             "Cloud/Publish rules: check `opencloud_status` / `creator_hub_status` before publishing; `creator_hub_*` uses loopback CDP and NEVER bypasses login/2FA/CAPTCHA (if `status:\"action_required\"`, stop and report `blocked_reason`/`url` to owner); `project_publish` with `versionType:\"Published\"` REQUIRES explicit owner approval and `{\"versionType\":\"Published\",\"confirm\":true}` (default `versionType` is `\"Saved\"`); never self-approve product prices."
         ),
         "verifier" => concat!(
             "You are the Teamwork verifier.\n",
-            "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `luau_check`, `project_check`, `project_run_lune`, `project_build`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`, `opencloud_status`, `creator_hub_status`, `universe_get`).\n",
+            "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `project_scene_get`, `luau_check`, `project_check`, `project_run_lune`, `project_build`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`, `opencloud_status`, `creator_hub_status`, `universe_get`).\n",
             "For game_code tasks (or `src/` / `ui/` changes), you MUST run `project_playtest` with `{\"task_id\":\"<id>\"}` and confirm 0 console errors BEFORE calling `verify_task` with `passed: true`.\n",
             "For `tools/**/*.luau` tasks (not touching `src/` or `ui/`), run `project_run_lune` (confirm `passed: true`) instead of `project_playtest` BEFORE calling `verify_task(passed=true)`.\n",
             "If checks, contracts (`mechanics_check`), or critical unknowns fail, call `verify_task` with `passed: false` and clear failure notes."
@@ -3240,7 +3241,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
             "Follow Study -> Build -> Check -> Refine: check `study_status`/`unknowns_list`, record verified behavior with `evidence_record`/`unknown_add`/`unknown_update` (capping guesswork), cite `ev_*` IDs in `docs/mechanics.json` (`mechanics_check`), build, check (`project_check`/`project_playtest`, pass `\"force\":true` to bypass `KeptChecks`), and refine.\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`.\n",
             "Formatting: `project_check` with `{\"format\":true}` or `project_format` auto-formats your claimed `.luau` files with `stylua` instead of hand-editing whitespace.\n",
             "Asset arg signatures:\n",
             "- reference_search: {\"character\":\"...\",\"show\":\"...\",\"card_id\":\"...\"}\n",
@@ -3655,6 +3656,8 @@ fn execute_agent_tool(
         "project_check" => tool_project_check(handle, agent_name, args),
         "project_run_lune" => tool_project_run_lune(handle, agent_name, args),
         "project_update_manifest" => tool_project_update_manifest(handle, agent_name, args),
+        "project_scene_get" => tool_project_scene_get(handle),
+        "project_scene_mutate" => tool_project_scene_mutate(handle, agent_name, args),
         "project_build" => tool_project_build(handle, args),
         "project_sync" => tool_project_sync(shared, mgr, handle, agent_name, gen, args),
         "project_playtest" => {
@@ -4913,6 +4916,41 @@ fn tool_project_build(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, St
     let engine = args.get("engine").and_then(|v| v.as_str()).unwrap_or("auto");
     let out_rel = args.get("out").and_then(|v| v.as_str());
     projects::build(&project_dir, engine, out_rel)
+}
+
+fn tool_project_scene_get(handle: &Arc<RunHandle>) -> Result<Value, String> {
+    let project_ref = project_ref_for_run(handle);
+    projects::load_workspace_bundle(&project_ref.dir, &project_ref.id)
+}
+
+fn tool_project_scene_mutate(
+    handle: &Arc<RunHandle>,
+    caller: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let explicit_task = args.get("task_id").and_then(|v| v.as_str());
+    let project_ref = project_ref_for_run(handle);
+    let task_id = {
+        let mut st = handle.state.lock().unwrap();
+        ensure_write_claim(&mut st, caller, crate::scene::SCENE_MODEL_REL, explicit_task)?
+    };
+    let mut res = crate::scene::mutate_scene(&project_ref.dir, &project_ref.id, args)?;
+    let modified: Vec<String> = res
+        .get("modified_files")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    {
+        let mut st = handle.state.lock().unwrap();
+        for f in &modified {
+            record_task_file_mutation(&mut st, &task_id, f);
+        }
+    }
+    if let Some(obj) = res.as_object_mut() {
+        obj.insert("ok".into(), json!(true));
+        obj.insert("task_id".into(), json!(task_id));
+    }
+    Ok(res)
 }
 
 fn parse_format_paths_arg(args: &Value) -> Result<Option<Vec<String>>, String> {
