@@ -1,0 +1,1366 @@
+// Shared ScreenDoc v1 schema, presets, multi-device safe-area analyzer, and deterministic --!strict Luau compiler.
+
+export const GUI_CLASS_ALLOWLIST = [
+  "Frame",
+  "TextLabel",
+  "TextButton",
+  "ImageLabel",
+  "ImageButton",
+  "ScrollingFrame",
+  "UICorner",
+  "UIStroke",
+  "UIListLayout",
+  "UIGridLayout",
+  "UIAspectRatioConstraint",
+  "UIPadding",
+] as const;
+
+export type GuiClassName = (typeof GUI_CLASS_ALLOWLIST)[number];
+
+export const GUI_VISUAL_CLASSES = new Set<GuiClassName>([
+  "Frame",
+  "TextLabel",
+  "TextButton",
+  "ImageLabel",
+  "ImageButton",
+  "ScrollingFrame",
+]);
+
+export const GUI_MODIFIER_CLASSES = new Set<GuiClassName>([
+  "UICorner",
+  "UIStroke",
+  "UIListLayout",
+  "UIGridLayout",
+  "UIAspectRatioConstraint",
+  "UIPadding",
+]);
+
+export type UDim2Value = {
+  x_scale: number;
+  x_offset: number;
+  y_scale: number;
+  y_offset: number;
+};
+
+export type GuiNodeProps = {
+  Position?: UDim2Value;
+  Size?: UDim2Value;
+  AnchorPoint?: [number, number];
+  BackgroundColor3?: string;
+  BackgroundTransparency?: number;
+  BorderSizePixel?: number;
+  Visible?: boolean;
+  ZIndex?: number;
+  ClipsDescendants?: boolean;
+  LayoutOrder?: number;
+  // Text
+  Text?: string;
+  TextColor3?: string;
+  TextSize?: number;
+  TextScaled?: boolean;
+  Font?: string;
+  TextXAlignment?: "Left" | "Center" | "Right";
+  TextYAlignment?: "Top" | "Center" | "Bottom";
+  // Image + 9-slice
+  Image?: string;
+  ImageColor3?: string;
+  ImageTransparency?: number;
+  ScaleType?: "Stretch" | "Slice" | "Fit" | "Crop" | "Tile";
+  SliceCenter?: [number, number, number, number];
+  SliceScale?: number;
+  // ScrollingFrame
+  CanvasSize?: UDim2Value;
+  ScrollBarThickness?: number;
+  // UICorner
+  CornerRadius?: [number, number];
+  // UIStroke
+  Color?: string;
+  Thickness?: number;
+  Transparency?: number;
+  ApplyStrokeMode?: "Contextual" | "Border";
+  // UIListLayout
+  FillDirection?: "Horizontal" | "Vertical";
+  Padding?: [number, number];
+  HorizontalAlignment?: "Left" | "Center" | "Right";
+  VerticalAlignment?: "Top" | "Center" | "Bottom";
+  SortOrder?: "LayoutOrder" | "Name";
+  // UIGridLayout
+  CellSize?: UDim2Value;
+  CellPadding?: UDim2Value;
+  // UIAspectRatioConstraint
+  AspectRatio?: number;
+  // UIPadding
+  PaddingTop?: [number, number];
+  PaddingBottom?: [number, number];
+  PaddingLeft?: [number, number];
+  PaddingRight?: [number, number];
+  // OpenRO asset & product bindings
+  AssetPath?: string;
+  ProductId?: number | string | null;
+  CallbackName?: string;
+};
+
+export type GuiNode = {
+  id: string;
+  name: string;
+  class_name: GuiClassName;
+  props: GuiNodeProps;
+  children: GuiNode[];
+};
+
+export type ScreenDocTheme = {
+  accent: string;
+  surface: string;
+  text: string;
+};
+
+export type ScreenDoc = {
+  version: 1;
+  slug: string;
+  name: string;
+  ignore_gui_inset: boolean;
+  reset_on_spawn: boolean;
+  theme: ScreenDocTheme;
+  root: GuiNode;
+};
+
+export type GuiDeviceId = "desktop" | "tablet" | "mobile";
+
+export type GuiDeviceSpec = {
+  id: GuiDeviceId;
+  label: string;
+  shortLabel: string;
+  width: number;
+  height: number;
+};
+
+export const GUI_DEVICES: Record<GuiDeviceId, GuiDeviceSpec> = {
+  desktop: { id: "desktop", label: "Desktop 16:9", shortLabel: "Desktop", width: 1920, height: 1080 },
+  tablet: { id: "tablet", label: "Tablet 4:3", shortLabel: "Tablet", width: 1024, height: 768 },
+  mobile: { id: "mobile", label: "Mobile Landscape", shortLabel: "Mobile", width: 844, height: 390 },
+};
+
+export type SafeAreaWarningKind =
+  | "topbar_overlap"
+  | "thumbstick_overlap"
+  | "offscreen_bounds"
+  | "tiny_tap_target";
+
+export type SafeAreaWarning = {
+  device: GuiDeviceId;
+  node_id: string;
+  node_name: string;
+  kind: SafeAreaWarningKind;
+  severity: "error" | "warning";
+  message: string;
+  rect: { x: number; y: number; w: number; h: number };
+};
+
+export type GuiPresetId = "rpg" | "obby" | "tycoon" | "gacha";
+
+export type ComputedNodeRect = {
+  node: GuiNode;
+  parentId: string | null;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  depth: number;
+};
+
+export function isValidGuiSlug(slug: string): boolean {
+  return /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(slug);
+}
+
+export function sanitizeGuiSlug(raw: string): string {
+  const cleaned = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "");
+  return cleaned.slice(0, 64) || "main-hud";
+}
+
+export function udim2(xScale: number, xOffset: number, yScale: number, yOffset: number): UDim2Value {
+  return { x_scale: xScale, x_offset: xOffset, y_scale: yScale, y_offset: yOffset };
+}
+
+function asNumber(val: unknown, fallback: number): number {
+  return typeof val === "number" && Number.isFinite(val) ? val : fallback;
+}
+
+export function normalizeUDim2(val: unknown, fallback: UDim2Value): UDim2Value {
+  if (!val) return { ...fallback };
+  if (Array.isArray(val) && val.length >= 4) {
+    return {
+      x_scale: asNumber(val[0], fallback.x_scale),
+      x_offset: asNumber(val[1], fallback.x_offset),
+      y_scale: asNumber(val[2], fallback.y_scale),
+      y_offset: asNumber(val[3], fallback.y_offset),
+    };
+  }
+  if (typeof val === "object") {
+    const obj = val as Record<string, unknown>;
+    if ("x_scale" in obj || "x_offset" in obj || "y_scale" in obj || "y_offset" in obj) {
+      return {
+        x_scale: asNumber(obj.x_scale, fallback.x_scale),
+        x_offset: asNumber(obj.x_offset, fallback.x_offset),
+        y_scale: asNumber(obj.y_scale, fallback.y_scale),
+        y_offset: asNumber(obj.y_offset, fallback.y_offset),
+      };
+    }
+    const xObj = obj.X as Record<string, unknown> | undefined;
+    const yObj = obj.Y as Record<string, unknown> | undefined;
+    if (xObj || yObj) {
+      return {
+        x_scale: asNumber(xObj?.Scale, fallback.x_scale),
+        x_offset: asNumber(xObj?.Offset, fallback.x_offset),
+        y_scale: asNumber(yObj?.Scale, fallback.y_scale),
+        y_offset: asNumber(yObj?.Offset, fallback.y_offset),
+      };
+    }
+  }
+  return { ...fallback };
+}
+
+function normalizeGuiNode(raw: unknown, idxPath: string): GuiNode {
+  const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const rawClass = String(obj.class_name ?? obj.ClassName ?? "Frame") as GuiClassName;
+  const className: GuiClassName = (GUI_CLASS_ALLOWLIST as readonly string[]).includes(rawClass)
+    ? rawClass
+    : "Frame";
+  const rawProps = (obj.props ?? obj.properties ?? {}) as Record<string, unknown>;
+  const props: GuiNodeProps = { ...rawProps } as GuiNodeProps;
+  if (rawProps.Position !== undefined) props.Position = normalizeUDim2(rawProps.Position, udim2(0, 0, 0, 0));
+  if (rawProps.Size !== undefined) props.Size = normalizeUDim2(rawProps.Size, udim2(0, 120, 0, 48));
+  if (rawProps.CanvasSize !== undefined) props.CanvasSize = normalizeUDim2(rawProps.CanvasSize, udim2(0, 0, 1.5, 0));
+  if (rawProps.CellSize !== undefined) props.CellSize = normalizeUDim2(rawProps.CellSize, udim2(0, 88, 0, 88));
+  if (rawProps.CellPadding !== undefined) props.CellPadding = normalizeUDim2(rawProps.CellPadding, udim2(0, 8, 0, 8));
+
+  const rawChildren = Array.isArray(obj.children) ? obj.children : [];
+  return {
+    id: typeof obj.id === "string" && obj.id.trim() ? obj.id.trim() : `node-${idxPath}`,
+    name: typeof obj.name === "string" && obj.name.trim() ? obj.name.trim() : className,
+    class_name: className,
+    props,
+    children: rawChildren.map((c, i) => normalizeGuiNode(c, `${idxPath}-${i}`)),
+  };
+}
+
+export function normalizeScreenDoc(raw: unknown, fallbackSlug = "main-hud"): ScreenDoc {
+  const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const docObj = (obj.doc && typeof obj.doc === "object" ? obj.doc : obj) as Record<string, unknown>;
+  const slugRaw = typeof docObj.slug === "string" && isValidGuiSlug(docObj.slug) ? docObj.slug : fallbackSlug;
+  const themeRaw = (docObj.theme && typeof docObj.theme === "object" ? docObj.theme : {}) as Record<string, unknown>;
+  return {
+    version: 1,
+    slug: slugRaw,
+    name: typeof docObj.name === "string" && docObj.name.trim() ? docObj.name.trim() : "MainHud",
+    ignore_gui_inset: docObj.ignore_gui_inset !== false,
+    reset_on_spawn: docObj.reset_on_spawn === true,
+    theme: {
+      accent: typeof themeRaw.accent === "string" ? themeRaw.accent : "#1562FC",
+      surface: typeof themeRaw.surface === "string" ? themeRaw.surface : "#141820",
+      text: typeof themeRaw.text === "string" ? themeRaw.text : "#F3F4F6",
+    },
+    root: docObj.root
+      ? normalizeGuiNode(docObj.root, "root")
+      : buildGuiPreset("rpg").root,
+  };
+}
+
+function makeModifier(id: string, name: string, class_name: GuiClassName, props: GuiNodeProps): GuiNode {
+  return { id, name, class_name, props, children: [] };
+}
+
+export function buildGuiPreset(preset: GuiPresetId): ScreenDoc {
+  if (preset === "obby") {
+    return {
+      version: 1,
+      slug: "obby-hud",
+      name: "ObbyHud",
+      ignore_gui_inset: true,
+      reset_on_spawn: false,
+      theme: { accent: "#1562FC", surface: "#131720", text: "#F4F6FA" },
+      root: {
+        id: "root",
+        name: "HudRoot",
+        class_name: "Frame",
+        props: {
+          Position: udim2(0, 0, 0, 0),
+          Size: udim2(1, 0, 1, 0),
+          BackgroundTransparency: 1,
+          BorderSizePixel: 0,
+          Visible: true,
+          ZIndex: 1,
+        },
+        children: [
+          {
+            id: "obby-stage-pill",
+            name: "StageBar",
+            class_name: "Frame",
+            props: {
+              Position: udim2(0.5, 0, 0, 66),
+              Size: udim2(0, 260, 0, 48),
+              AnchorPoint: [0.5, 0],
+              BackgroundColor3: "#131720",
+              BackgroundTransparency: 0.12,
+              BorderSizePixel: 0,
+              Visible: true,
+              ZIndex: 2,
+            },
+            children: [
+              makeModifier("obby-stage-corner", "UICorner", "UICorner", { CornerRadius: [0, 12] }),
+              makeModifier("obby-stage-stroke", "UIStroke", "UIStroke", { Color: "#2C3548", Thickness: 1.5, Transparency: 0.2 }),
+              {
+                id: "obby-stage-label",
+                name: "StageText",
+                class_name: "TextLabel",
+                props: {
+                  Position: udim2(0, 12, 0, 4),
+                  Size: udim2(1, -24, 1, -8),
+                  BackgroundTransparency: 1,
+                  Text: "Stage 4 / 20",
+                  TextColor3: "#F4F6FA",
+                  TextSize: 18,
+                  Font: "GothamBold",
+                  Visible: true,
+                  ZIndex: 3,
+                },
+                children: [],
+              },
+            ],
+          },
+          {
+            id: "obby-timer",
+            name: "TimerCard",
+            class_name: "TextLabel",
+            props: {
+              Position: udim2(1, -24, 0, 66),
+              Size: udim2(0, 136, 0, 44),
+              AnchorPoint: [1, 0],
+              BackgroundColor3: "#131720",
+              BackgroundTransparency: 0.15,
+              Text: "01:24.8",
+              TextColor3: "#4DC296",
+              TextSize: 18,
+              Font: "Code",
+              Visible: true,
+              ZIndex: 2,
+            },
+            children: [
+              makeModifier("obby-timer-corner", "UICorner", "UICorner", { CornerRadius: [0, 10] }),
+            ],
+          },
+          {
+            id: "obby-actions",
+            name: "BottomActions",
+            class_name: "Frame",
+            props: {
+              Position: udim2(0.5, 0, 1, -24),
+              Size: udim2(0, 320, 0, 52),
+              AnchorPoint: [0.5, 1],
+              BackgroundTransparency: 1,
+              Visible: true,
+              ZIndex: 2,
+            },
+            children: [
+              makeModifier("obby-actions-list", "UIListLayout", "UIListLayout", {
+                FillDirection: "Horizontal",
+                Padding: [0, 10],
+                HorizontalAlignment: "Center",
+                VerticalAlignment: "Center",
+              }),
+              {
+                id: "obby-skip-btn",
+                name: "SkipStageButton",
+                class_name: "TextButton",
+                props: {
+                  Position: udim2(0, 0, 0, 0),
+                  Size: udim2(0, 164, 0, 48),
+                  BackgroundColor3: "#1562FC",
+                  BackgroundTransparency: 0,
+                  Text: "Skip Stage (25 R$)",
+                  TextColor3: "#FFFFFF",
+                  TextSize: 15,
+                  Font: "GothamBold",
+                  CallbackName: "OnSkipStage",
+                  ProductId: 3736007337,
+                  Visible: true,
+                  ZIndex: 3,
+                },
+                children: [
+                  makeModifier("obby-skip-corner", "UICorner", "UICorner", { CornerRadius: [0, 10] }),
+                ],
+              },
+              {
+                id: "obby-respawn-btn",
+                name: "RespawnButton",
+                class_name: "TextButton",
+                props: {
+                  Position: udim2(0, 174, 0, 0),
+                  Size: udim2(0, 128, 0, 48),
+                  BackgroundColor3: "#232938",
+                  BackgroundTransparency: 0,
+                  Text: "Respawn",
+                  TextColor3: "#F4F6FA",
+                  TextSize: 15,
+                  Font: "GothamMedium",
+                  CallbackName: "OnRespawn",
+                  Visible: true,
+                  ZIndex: 3,
+                },
+                children: [
+                  makeModifier("obby-respawn-corner", "UICorner", "UICorner", { CornerRadius: [0, 10] }),
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    };
+  }
+
+  if (preset === "tycoon") {
+    return {
+      version: 1,
+      slug: "tycoon-hud",
+      name: "TycoonHud",
+      ignore_gui_inset: true,
+      reset_on_spawn: false,
+      theme: { accent: "#24946E", surface: "#12181B", text: "#F2F7F4" },
+      root: {
+        id: "root",
+        name: "HudRoot",
+        class_name: "Frame",
+        props: {
+          Position: udim2(0, 0, 0, 0),
+          Size: udim2(1, 0, 1, 0),
+          BackgroundTransparency: 1,
+          Visible: true,
+          ZIndex: 1,
+        },
+        children: [
+          {
+            id: "tycoon-cash",
+            name: "CashCounter",
+            class_name: "Frame",
+            props: {
+              Position: udim2(0, 24, 0, 66),
+              Size: udim2(0, 220, 0, 56),
+              BackgroundColor3: "#12181B",
+              BackgroundTransparency: 0.1,
+              Visible: true,
+              ZIndex: 2,
+            },
+            children: [
+              makeModifier("tycoon-cash-corner", "UICorner", "UICorner", { CornerRadius: [0, 12] }),
+              makeModifier("tycoon-cash-stroke", "UIStroke", "UIStroke", { Color: "#24946E", Thickness: 1.5, Transparency: 0.2 }),
+              {
+                id: "tycoon-cash-text",
+                name: "CashLabel",
+                class_name: "TextLabel",
+                props: {
+                  Position: udim2(0, 12, 0, 6),
+                  Size: udim2(1, -24, 1, -12),
+                  BackgroundTransparency: 1,
+                  Text: "$14,850 (+240/s)",
+                  TextColor3: "#4DC296",
+                  TextSize: 16,
+                  Font: "GothamBold",
+                  Visible: true,
+                  ZIndex: 3,
+                },
+                children: [],
+              },
+            ],
+          },
+          {
+            id: "tycoon-shop-panel",
+            name: "UpgradeDrawer",
+            class_name: "ScrollingFrame",
+            props: {
+              Position: udim2(1, -24, 0.5, -20),
+              Size: udim2(0, 232, 0, 176),
+              AnchorPoint: [1, 0.5],
+              BackgroundColor3: "#12181B",
+              BackgroundTransparency: 0.12,
+              CanvasSize: udim2(0, 0, 1.4, 0),
+              ScrollBarThickness: 4,
+              ClipsDescendants: true,
+              Visible: true,
+              ZIndex: 2,
+            },
+            children: [
+              makeModifier("tycoon-shop-corner", "UICorner", "UICorner", { CornerRadius: [0, 12] }),
+              makeModifier("tycoon-shop-pad", "UIPadding", "UIPadding", {
+                PaddingTop: [0, 10],
+                PaddingBottom: [0, 10],
+                PaddingLeft: [0, 10],
+                PaddingRight: [0, 10],
+              }),
+              makeModifier("tycoon-shop-list", "UIListLayout", "UIListLayout", {
+                FillDirection: "Vertical",
+                Padding: [0, 8],
+                HorizontalAlignment: "Center",
+              }),
+              {
+                id: "tycoon-boost-btn",
+                name: "DoubleCashButton",
+                class_name: "TextButton",
+                props: {
+                  Position: udim2(0, 0, 0, 0),
+                  Size: udim2(1, 0, 0, 48),
+                  BackgroundColor3: "#24946E",
+                  BackgroundTransparency: 0,
+                  Text: "2x Cash Boost (99 R$)",
+                  TextColor3: "#FFFFFF",
+                  TextSize: 14,
+                  Font: "GothamBold",
+                  CallbackName: "OnBuyDoubleCash",
+                  ProductId: 3736007339,
+                  Visible: true,
+                  ZIndex: 3,
+                },
+                children: [
+                  makeModifier("tycoon-boost-corner", "UICorner", "UICorner", { CornerRadius: [0, 8] }),
+                ],
+              },
+              {
+                id: "tycoon-collect-btn",
+                name: "AutoCollectButton",
+                class_name: "TextButton",
+                props: {
+                  Position: udim2(0, 0, 0, 56),
+                  Size: udim2(1, 0, 0, 48),
+                  BackgroundColor3: "#1E272B",
+                  BackgroundTransparency: 0,
+                  Text: "Auto Collect",
+                  TextColor3: "#F2F7F4",
+                  TextSize: 14,
+                  Font: "GothamMedium",
+                  CallbackName: "OnToggleAutoCollect",
+                  Visible: true,
+                  ZIndex: 3,
+                },
+                children: [
+                  makeModifier("tycoon-collect-corner", "UICorner", "UICorner", { CornerRadius: [0, 8] }),
+                ],
+              },
+            ],
+          },
+          {
+            id: "tycoon-rebirth-btn",
+            name: "RebirthButton",
+            class_name: "TextButton",
+            props: {
+              Position: udim2(0.5, 0, 1, -24),
+              Size: udim2(0, 180, 0, 48),
+              AnchorPoint: [0.5, 1],
+              BackgroundColor3: "#D49B26",
+              BackgroundTransparency: 0,
+              Text: "Rebirth (+15% Boost)",
+              TextColor3: "#14161B",
+              TextSize: 14,
+              Font: "GothamBold",
+              CallbackName: "OnRebirth",
+              Visible: true,
+              ZIndex: 3,
+            },
+            children: [
+              makeModifier("tycoon-rebirth-corner", "UICorner", "UICorner", { CornerRadius: [0, 10] }),
+            ],
+          },
+        ],
+      },
+    };
+  }
+
+  if (preset === "gacha") {
+    return {
+      version: 1,
+      slug: "gacha-hud",
+      name: "GachaBannerHud",
+      ignore_gui_inset: true,
+      reset_on_spawn: false,
+      theme: { accent: "#6E1ED8", surface: "#171422", text: "#F6F3FF" },
+      root: {
+        id: "root",
+        name: "HudRoot",
+        class_name: "Frame",
+        props: {
+          Position: udim2(0, 0, 0, 0),
+          Size: udim2(1, 0, 1, 0),
+          BackgroundTransparency: 1,
+          Visible: true,
+          ZIndex: 1,
+        },
+        children: [
+          {
+            id: "gacha-gems",
+            name: "GemCounter",
+            class_name: "TextLabel",
+            props: {
+              Position: udim2(1, -24, 0, 66),
+              Size: udim2(0, 188, 0, 44),
+              AnchorPoint: [1, 0],
+              BackgroundColor3: "#171422",
+              BackgroundTransparency: 0.1,
+              Text: "Gems: 2,400",
+              TextColor3: "#F6F3FF",
+              TextSize: 15,
+              Font: "GothamBold",
+              Visible: true,
+              ZIndex: 3,
+            },
+            children: [
+              makeModifier("gacha-gems-corner", "UICorner", "UICorner", { CornerRadius: [0, 10] }),
+              makeModifier("gacha-gems-stroke", "UIStroke", "UIStroke", { Color: "#6E1ED8", Thickness: 1.5, Transparency: 0.25 }),
+            ],
+          },
+          {
+            id: "gacha-banner-card",
+            name: "BannerFrame",
+            class_name: "ImageLabel",
+            props: {
+              Position: udim2(0.5, 0, 0.5, -10),
+              Size: udim2(0, 380, 0, 196),
+              AnchorPoint: [0.5, 0.5],
+              BackgroundColor3: "#1D182C",
+              BackgroundTransparency: 0.06,
+              Image: "art/store/banner_frame.png",
+              AssetPath: "art/store/banner_frame.png",
+              ScaleType: "Slice",
+              SliceCenter: [24, 24, 232, 232],
+              SliceScale: 1,
+              Visible: true,
+              ZIndex: 2,
+            },
+            children: [
+              makeModifier("gacha-banner-corner", "UICorner", "UICorner", { CornerRadius: [0, 16] }),
+              makeModifier("gacha-banner-stroke", "UIStroke", "UIStroke", { Color: "#8B5CF6", Thickness: 2, Transparency: 0.2 }),
+              {
+                id: "gacha-banner-title",
+                name: "BannerTitle",
+                class_name: "TextLabel",
+                props: {
+                  Position: udim2(0, 16, 0, 16),
+                  Size: udim2(1, -32, 0, 36),
+                  BackgroundTransparency: 1,
+                  Text: "Mythic Banner | Pity 42/80",
+                  TextColor3: "#F6F3FF",
+                  TextSize: 18,
+                  Font: "GothamBold",
+                  Visible: true,
+                  ZIndex: 3,
+                },
+                children: [],
+              },
+              {
+                id: "gacha-roll1-btn",
+                name: "RollOneButton",
+                class_name: "TextButton",
+                props: {
+                  Position: udim2(0, 20, 1, -20),
+                  Size: udim2(0, 158, 0, 48),
+                  AnchorPoint: [0, 1],
+                  BackgroundColor3: "#2A2340",
+                  BackgroundTransparency: 0,
+                  Text: "Roll x1 (160)",
+                  TextColor3: "#F6F3FF",
+                  TextSize: 15,
+                  Font: "GothamBold",
+                  CallbackName: "OnRollSingle",
+                  Visible: true,
+                  ZIndex: 4,
+                },
+                children: [
+                  makeModifier("gacha-r1-corner", "UICorner", "UICorner", { CornerRadius: [0, 10] }),
+                ],
+              },
+              {
+                id: "gacha-roll10-btn",
+                name: "RollTenButton",
+                class_name: "TextButton",
+                props: {
+                  Position: udim2(1, -20, 1, -20),
+                  Size: udim2(0, 168, 0, 48),
+                  AnchorPoint: [1, 1],
+                  BackgroundColor3: "#6E1ED8",
+                  BackgroundTransparency: 0,
+                  Text: "Roll x10 (1600)",
+                  TextColor3: "#FFFFFF",
+                  TextSize: 15,
+                  Font: "GothamBold",
+                  CallbackName: "OnRollTen",
+                  ProductId: 3736007342,
+                  Visible: true,
+                  ZIndex: 4,
+                },
+                children: [
+                  makeModifier("gacha-r10-corner", "UICorner", "UICorner", { CornerRadius: [0, 10] }),
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    };
+  }
+
+  // Default: "rpg"
+  return {
+    version: 1,
+    slug: "rpg-hud",
+    name: "RpgActionHud",
+    ignore_gui_inset: true,
+    reset_on_spawn: false,
+    theme: { accent: "#1562FC", surface: "#141820", text: "#F3F4F6" },
+    root: {
+      id: "root",
+      name: "HudRoot",
+      class_name: "Frame",
+      props: {
+        Position: udim2(0, 0, 0, 0),
+        Size: udim2(1, 0, 1, 0),
+        BackgroundTransparency: 1,
+        BorderSizePixel: 0,
+        Visible: true,
+        ZIndex: 1,
+      },
+      children: [
+        {
+          id: "rpg-vitals",
+          name: "VitalsBar",
+          class_name: "Frame",
+          props: {
+            Position: udim2(0, 24, 0, 66),
+            Size: udim2(0, 244, 0, 68),
+            BackgroundColor3: "#141820",
+            BackgroundTransparency: 0.1,
+            Visible: true,
+            ZIndex: 2,
+          },
+          children: [
+            makeModifier("rpg-vitals-corner", "UICorner", "UICorner", { CornerRadius: [0, 12] }),
+            makeModifier("rpg-vitals-stroke", "UIStroke", "UIStroke", { Color: "#2B3242", Thickness: 1.5, Transparency: 0.15 }),
+            {
+              id: "rpg-hp-fill",
+              name: "HealthFill",
+              class_name: "Frame",
+              props: {
+                Position: udim2(0, 12, 0, 12),
+                Size: udim2(0, 192, 0, 16),
+                BackgroundColor3: "#31B88A",
+                BackgroundTransparency: 0,
+                Visible: true,
+                ZIndex: 3,
+              },
+              children: [
+                makeModifier("rpg-hp-corner", "UICorner", "UICorner", { CornerRadius: [0, 6] }),
+              ],
+            },
+            {
+              id: "rpg-hp-text",
+              name: "VitalsLabel",
+              class_name: "TextLabel",
+              props: {
+                Position: udim2(0, 12, 0, 34),
+                Size: udim2(1, -24, 0, 24),
+                BackgroundTransparency: 1,
+                Text: "HP 420/420 | LV 12",
+                TextColor3: "#F3F4F6",
+                TextSize: 13,
+                Font: "GothamMedium",
+                Visible: true,
+                ZIndex: 3,
+              },
+              children: [],
+            },
+          ],
+        },
+        {
+          id: "rpg-quest",
+          name: "QuestTracker",
+          class_name: "Frame",
+          props: {
+            Position: udim2(1, -24, 0, 66),
+            Size: udim2(0, 212, 0, 74),
+            AnchorPoint: [1, 0],
+            BackgroundColor3: "#141820",
+            BackgroundTransparency: 0.14,
+            Visible: true,
+            ZIndex: 2,
+          },
+          children: [
+            makeModifier("rpg-quest-corner", "UICorner", "UICorner", { CornerRadius: [0, 10] }),
+            {
+              id: "rpg-quest-text",
+              name: "QuestLabel",
+              class_name: "TextLabel",
+              props: {
+                Position: udim2(0, 12, 0, 10),
+                Size: udim2(1, -24, 1, -20),
+                BackgroundTransparency: 1,
+                Text: "Quest: Defeat 5 Golems (3/5)",
+                TextColor3: "#E5E7EB",
+                TextSize: 13,
+                Font: "GothamMedium",
+                Visible: true,
+                ZIndex: 3,
+              },
+              children: [],
+            },
+          ],
+        },
+        {
+          id: "rpg-hotbar",
+          name: "SkillHotbar",
+          class_name: "Frame",
+          props: {
+            Position: udim2(0.5, 0, 1, -22),
+            Size: udim2(0, 296, 0, 58),
+            AnchorPoint: [0.5, 1],
+            BackgroundColor3: "#141820",
+            BackgroundTransparency: 0.12,
+            Visible: true,
+            ZIndex: 2,
+          },
+          children: [
+            makeModifier("rpg-hotbar-corner", "UICorner", "UICorner", { CornerRadius: [0, 14] }),
+            makeModifier("rpg-hotbar-stroke", "UIStroke", "UIStroke", { Color: "#2E3648", Thickness: 1.5, Transparency: 0.2 }),
+            makeModifier("rpg-hotbar-pad", "UIPadding", "UIPadding", {
+              PaddingTop: [0, 5],
+              PaddingBottom: [0, 5],
+              PaddingLeft: [0, 8],
+              PaddingRight: [0, 8],
+            }),
+            makeModifier("rpg-hotbar-list", "UIListLayout", "UIListLayout", {
+              FillDirection: "Horizontal",
+              Padding: [0, 8],
+              HorizontalAlignment: "Center",
+              VerticalAlignment: "Center",
+            }),
+            {
+              id: "rpg-skill-1",
+              name: "SlashButton",
+              class_name: "TextButton",
+              props: {
+                Position: udim2(0, 0, 0, 0),
+                Size: udim2(0, 84, 0, 48),
+                BackgroundColor3: "#1562FC",
+                BackgroundTransparency: 0,
+                Text: "[1] Slash",
+                TextColor3: "#FFFFFF",
+                TextSize: 13,
+                Font: "GothamBold",
+                CallbackName: "OnSlash",
+                Visible: true,
+                ZIndex: 3,
+              },
+              children: [
+                makeModifier("rpg-s1-corner", "UICorner", "UICorner", { CornerRadius: [0, 8] }),
+              ],
+            },
+            {
+              id: "rpg-skill-2",
+              name: "DashButton",
+              class_name: "TextButton",
+              props: {
+                Position: udim2(0, 92, 0, 0),
+                Size: udim2(0, 84, 0, 48),
+                BackgroundColor3: "#252B3B",
+                BackgroundTransparency: 0,
+                Text: "[2] Dash",
+                TextColor3: "#F3F4F6",
+                TextSize: 13,
+                Font: "GothamMedium",
+                CallbackName: "OnDash",
+                Visible: true,
+                ZIndex: 3,
+              },
+              children: [
+                makeModifier("rpg-s2-corner", "UICorner", "UICorner", { CornerRadius: [0, 8] }),
+              ],
+            },
+            {
+              id: "rpg-potion-btn",
+              name: "PotionButton",
+              class_name: "ImageButton",
+              props: {
+                Position: udim2(0, 184, 0, 0),
+                Size: udim2(0, 84, 0, 48),
+                BackgroundColor3: "#252B3B",
+                BackgroundTransparency: 0,
+                Image: "art/store/potion_icon.png",
+                AssetPath: "art/store/potion_icon.png",
+                ScaleType: "Fit",
+                CallbackName: "OnUsePotion",
+                ProductId: 3736007338,
+                Visible: true,
+                ZIndex: 3,
+              },
+              children: [
+                makeModifier("rpg-pot-corner", "UICorner", "UICorner", { CornerRadius: [0, 8] }),
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+export const GUI_PRESET_META: Array<{ id: GuiPresetId; label: string; summary: string }> = [
+  { id: "rpg", label: "RPG", summary: "Vitals bar, quest tracker, and skill hotbar" },
+  { id: "obby", label: "Obby", summary: "Stage pill, speedrun timer, and skip button" },
+  { id: "tycoon", label: "Tycoon", summary: "Cash counter, upgrade drawer, and rebirth" },
+  { id: "gacha", label: "Gacha", summary: "9-slice banner frame, gem counter, and roll buttons" },
+];
+
+export function computeNodeRects(doc: ScreenDoc, viewportW: number, viewportH: number): ComputedNodeRect[] {
+  const out: ComputedNodeRect[] = [];
+
+  function walk(
+    node: GuiNode,
+    parentId: string | null,
+    parentBox: { x: number; y: number; w: number; h: number },
+    depth: number,
+    overridePos?: { x: number; y: number },
+  ) {
+    if (!GUI_VISUAL_CLASSES.has(node.class_name)) return;
+    if (node.props.Visible === false) return;
+
+    const pos = node.props.Position ?? udim2(0, 0, 0, 0);
+    const size = node.props.Size ?? udim2(0, 120, 0, 48);
+    const anchor = node.props.AnchorPoint ?? [0, 0];
+
+    let w = parentBox.w * size.x_scale + size.x_offset;
+    let h = parentBox.h * size.y_scale + size.y_offset;
+
+    const aspectNode = node.children.find((c) => c.class_name === "UIAspectRatioConstraint");
+    if (aspectNode && typeof aspectNode.props.AspectRatio === "number" && aspectNode.props.AspectRatio > 0) {
+      h = w / aspectNode.props.AspectRatio;
+    }
+
+    const x = overridePos
+      ? overridePos.x
+      : parentBox.x + parentBox.w * pos.x_scale + pos.x_offset - w * anchor[0];
+    const y = overridePos
+      ? overridePos.y
+      : parentBox.y + parentBox.h * pos.y_scale + pos.y_offset - h * anchor[1];
+
+    out.push({ node, parentId, x, y, w, h, depth });
+
+    // Compute inner content box honoring UIPadding
+    const padNode = node.children.find((c) => c.class_name === "UIPadding");
+    const padTop = padNode?.props.PaddingTop ? h * padNode.props.PaddingTop[0] + padNode.props.PaddingTop[1] : 0;
+    const padBottom = padNode?.props.PaddingBottom ? h * padNode.props.PaddingBottom[0] + padNode.props.PaddingBottom[1] : 0;
+    const padLeft = padNode?.props.PaddingLeft ? w * padNode.props.PaddingLeft[0] + padNode.props.PaddingLeft[1] : 0;
+    const padRight = padNode?.props.PaddingRight ? w * padNode.props.PaddingRight[0] + padNode.props.PaddingRight[1] : 0;
+
+    const innerBox = {
+      x: x + padLeft,
+      y: y + padTop,
+      w: Math.max(0, w - padLeft - padRight),
+      h: Math.max(0, h - padTop - padBottom),
+    };
+
+    const listLayout = node.children.find((c) => c.class_name === "UIListLayout");
+    const visualChildren = node.children.filter((c) => GUI_VISUAL_CLASSES.has(c.class_name) && c.props.Visible !== false);
+
+    if (listLayout && visualChildren.length > 0) {
+      const horiz = (listLayout.props.FillDirection ?? "Vertical") === "Horizontal";
+      const padArr = listLayout.props.Padding ?? [0, 4];
+      const gap = (horiz ? innerBox.w : innerBox.h) * padArr[0] + padArr[1];
+      const childSizes = visualChildren.map((ch) => {
+        const s = ch.props.Size ?? udim2(0, 100, 0, 44);
+        return {
+          w: innerBox.w * s.x_scale + s.x_offset,
+          h: innerBox.h * s.y_scale + s.y_offset,
+        };
+      });
+      const totalSpan =
+        childSizes.reduce((acc, s) => acc + (horiz ? s.w : s.h), 0) +
+        gap * Math.max(0, childSizes.length - 1);
+
+      let cursorX = innerBox.x;
+      let cursorY = innerBox.y;
+      const hAlign = listLayout.props.HorizontalAlignment ?? "Left";
+      const vAlign = listLayout.props.VerticalAlignment ?? "Top";
+      if (horiz && hAlign === "Center") cursorX = innerBox.x + (innerBox.w - totalSpan) / 2;
+      else if (horiz && hAlign === "Right") cursorX = innerBox.x + innerBox.w - totalSpan;
+      if (!horiz && vAlign === "Center") cursorY = innerBox.y + (innerBox.h - totalSpan) / 2;
+      else if (!horiz && vAlign === "Bottom") cursorY = innerBox.y + innerBox.h - totalSpan;
+
+      visualChildren.forEach((ch, idx) => {
+        const cs = childSizes[idx];
+        let cx = cursorX;
+        let cy = cursorY;
+        if (horiz) {
+          if (vAlign === "Center") cy = innerBox.y + (innerBox.h - cs.h) / 2;
+          else if (vAlign === "Bottom") cy = innerBox.y + innerBox.h - cs.h;
+          cursorX += cs.w + gap;
+        } else {
+          if (hAlign === "Center") cx = innerBox.x + (innerBox.w - cs.w) / 2;
+          else if (hAlign === "Right") cx = innerBox.x + innerBox.w - cs.w;
+          cursorY += cs.h + gap;
+        }
+        walk(ch, node.id, innerBox, depth + 1, { x: cx, y: cy });
+      });
+    } else {
+      for (const ch of node.children) {
+        walk(ch, node.id, innerBox, depth + 1);
+      }
+    }
+  }
+
+  walk(doc.root, null, { x: 0, y: 0, w: viewportW, h: viewportH }, 0);
+  return out;
+}
+
+function rectsOverlap(
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number },
+): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+export function analyzeSafeArea(doc: ScreenDoc, devices: GuiDeviceId[] = ["desktop", "tablet", "mobile"]): SafeAreaWarning[] {
+  const warnings: SafeAreaWarning[] = [];
+
+  for (const devId of devices) {
+    const spec = GUI_DEVICES[devId];
+    const rects = computeNodeRects(doc, spec.width, spec.height);
+
+    for (const item of rects) {
+      if (item.node.id === doc.root.id) continue;
+      const isFullBackdrop = item.w >= spec.width * 0.88 && item.h >= spec.height * 0.88;
+      const isButton = item.node.class_name === "TextButton" || item.node.class_name === "ImageButton";
+      const r = {
+        x: Math.round(item.x),
+        y: Math.round(item.y),
+        w: Math.round(item.w),
+        h: Math.round(item.h),
+      };
+
+      if (doc.ignore_gui_inset && !isFullBackdrop && r.y < 58) {
+        warnings.push({
+          device: devId,
+          node_id: item.node.id,
+          node_name: item.node.name,
+          kind: "topbar_overlap",
+          severity: "warning",
+          message: `${item.node.name} sits at y=${r.y}px inside the 58px TopBar CoreGui inset on ${spec.shortLabel}.`,
+          rect: r,
+        });
+      }
+
+      if (devId === "mobile" && !isFullBackdrop) {
+        const leftThumbZone = { x: 0, y: spec.height - 170, w: 200, h: 170 };
+        const rightJumpZone = { x: spec.width - 180, y: spec.height - 170, w: 180, h: 170 };
+        if (rectsOverlap(r, leftThumbZone) || rectsOverlap(r, rightJumpZone)) {
+          warnings.push({
+            device: devId,
+            node_id: item.node.id,
+            node_name: item.node.name,
+            kind: "thumbstick_overlap",
+            severity: "warning",
+            message: `${item.node.name} overlaps the Mobile Thumbstick or Jump safe zone (${spec.width}x${spec.height}).`,
+            rect: r,
+          });
+        }
+      }
+
+      if (r.x < -1 || r.y < -1 || r.x + r.w > spec.width + 1 || r.y + r.h > spec.height + 1) {
+        warnings.push({
+          device: devId,
+          node_id: item.node.id,
+          node_name: item.node.name,
+          kind: "offscreen_bounds",
+          severity: "error",
+          message: `${item.node.name} extends outside ${spec.shortLabel} bounds (${spec.width}x${spec.height}).`,
+          rect: r,
+        });
+      }
+
+      if (isButton && (r.w < 44 || r.h < 44)) {
+        warnings.push({
+          device: devId,
+          node_id: item.node.id,
+          node_name: item.node.name,
+          kind: "tiny_tap_target",
+          severity: "warning",
+          message: `${item.node.name} is ${r.w}x${r.h}px (under 44x44px touch target minimum) on ${spec.shortLabel}.`,
+          rect: r,
+        });
+      }
+    }
+  }
+
+  return warnings;
+}
+
+function luaQuote(s: string): string {
+  return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n")}"`;
+}
+
+function luaColor3(hex: string | undefined, fallback = "#FFFFFF"): string {
+  const clean = (hex || fallback).replace(/[^#0-9a-fA-F]/g, "");
+  return `Color3.fromHex(${luaQuote(clean.startsWith("#") ? clean : `#${clean}`)})`;
+}
+
+function luaUDim2(u: UDim2Value): string {
+  return `UDim2.new(${Number(u.x_scale.toFixed(4))}, ${Math.round(u.x_offset)}, ${Number(u.y_scale.toFixed(4))}, ${Math.round(u.y_offset)})`;
+}
+
+function luaIdent(raw: string, used: Set<string>): string {
+  const base = (raw.replace(/[^A-Za-z0-9_]/g, "") || "node").replace(/^[0-9]/, "n_$&");
+  const lower = base.charAt(0).toLowerCase() + base.slice(1);
+  let cand = lower;
+  let i = 2;
+  while (used.has(cand)) {
+    cand = `${lower}${i++}`;
+  }
+  used.add(cand);
+  return cand;
+}
+
+export function compileScreenDocToLuau(doc: ScreenDoc): {
+  luau_source: string;
+  model_json: string;
+  diagnostics: Array<{ severity: "error" | "warning" | "info"; line: number; message: string; code: string }>;
+} {
+  const usedVars = new Set<string>(["screenGui", "callbacks", "parent", "MarketplaceService", "Players", "Module"]);
+  const lines: string[] = [
+    "--!strict",
+    `-- Generated by OpenRO UI Designer (ScreenDoc v1)`,
+    `-- Screen: ${doc.name} (${doc.slug})`,
+    "",
+    "export type GuiCallbacks = {",
+    "\t[string]: (...any) -> (),",
+    "}",
+    "",
+    'local MarketplaceService = game:GetService("MarketplaceService")',
+    'local Players = game:GetService("Players")',
+    "",
+    "local Module = {}",
+    "",
+    "function Module.create(parent: Instance, callbacks: GuiCallbacks?): ScreenGui",
+    "\tlocal cbMap: GuiCallbacks = callbacks or {}",
+    '\tlocal screenGui = Instance.new("ScreenGui")',
+    `\tscreenGui.Name = ${luaQuote(doc.name)}`,
+    `\tscreenGui.IgnoreGuiInset = ${doc.ignore_gui_inset ? "true" : "false"}`,
+    `\tscreenGui.ResetOnSpawn = ${doc.reset_on_spawn ? "true" : "false"}`,
+    "\tscreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling",
+    "",
+  ];
+
+  let hasProducts = false;
+
+  function emitNode(node: GuiNode, parentVar: string) {
+    const varName = luaIdent(node.name, usedVars);
+    const cls = (GUI_CLASS_ALLOWLIST as readonly string[]).includes(node.class_name) ? node.class_name : "Frame";
+    lines.push(`\tlocal ${varName} = Instance.new(${luaQuote(cls)})`);
+    lines.push(`\t${varName}.Name = ${luaQuote(node.name)}`);
+
+    const p = node.props;
+    if (GUI_VISUAL_CLASSES.has(cls as GuiClassName)) {
+      if (p.Position) lines.push(`\t${varName}.Position = ${luaUDim2(p.Position)}`);
+      if (p.Size) lines.push(`\t${varName}.Size = ${luaUDim2(p.Size)}`);
+      if (p.AnchorPoint) lines.push(`\t${varName}.AnchorPoint = Vector2.new(${p.AnchorPoint[0]}, ${p.AnchorPoint[1]})`);
+      if (p.BackgroundColor3) lines.push(`\t${varName}.BackgroundColor3 = ${luaColor3(p.BackgroundColor3)}`);
+      if (p.BackgroundTransparency !== undefined) lines.push(`\t${varName}.BackgroundTransparency = ${p.BackgroundTransparency}`);
+      if (p.BorderSizePixel !== undefined) lines.push(`\t${varName}.BorderSizePixel = ${Math.round(p.BorderSizePixel)}`);
+      else lines.push(`\t${varName}.BorderSizePixel = 0`);
+      if (p.Visible !== undefined) lines.push(`\t${varName}.Visible = ${p.Visible ? "true" : "false"}`);
+      if (p.ZIndex !== undefined) lines.push(`\t${varName}.ZIndex = ${Math.round(p.ZIndex)}`);
+      if (p.ClipsDescendants) lines.push(`\t${varName}.ClipsDescendants = true`);
+      if (p.LayoutOrder !== undefined) lines.push(`\t${varName}.LayoutOrder = ${Math.round(p.LayoutOrder)}`);
+    }
+
+    if (cls === "TextLabel" || cls === "TextButton") {
+      if (p.Text !== undefined) lines.push(`\t${varName}.Text = ${luaQuote(p.Text)}`);
+      if (p.TextColor3) lines.push(`\t${varName}.TextColor3 = ${luaColor3(p.TextColor3)}`);
+      if (p.TextSize !== undefined) lines.push(`\t${varName}.TextSize = ${Math.round(p.TextSize)}`);
+      if (p.TextScaled) lines.push(`\t${varName}.TextScaled = true`);
+      if (p.Font) lines.push(`\t${varName}.Font = Enum.Font.${p.Font.replace(/[^A-Za-z0-9]/g, "") || "GothamMedium"}`);
+      if (p.TextXAlignment) lines.push(`\t${varName}.TextXAlignment = Enum.TextXAlignment.${p.TextXAlignment}`);
+      if (p.TextYAlignment) lines.push(`\t${varName}.TextYAlignment = Enum.TextYAlignment.${p.TextYAlignment}`);
+    }
+
+    if (cls === "ImageLabel" || cls === "ImageButton") {
+      const imgVal = p.Image || p.AssetPath || "";
+      if (imgVal) lines.push(`\t${varName}.Image = ${luaQuote(imgVal)}`);
+      if (p.ImageColor3) lines.push(`\t${varName}.ImageColor3 = ${luaColor3(p.ImageColor3)}`);
+      if (p.ImageTransparency !== undefined) lines.push(`\t${varName}.ImageTransparency = ${p.ImageTransparency}`);
+      if (p.ScaleType) lines.push(`\t${varName}.ScaleType = Enum.ScaleType.${p.ScaleType}`);
+      if (p.ScaleType === "Slice" && p.SliceCenter) {
+        lines.push(`\t${varName}.SliceCenter = Rect.new(${p.SliceCenter.map((n) => Math.round(n)).join(", ")})`);
+        if (p.SliceScale !== undefined) lines.push(`\t${varName}.SliceScale = ${p.SliceScale}`);
+      }
+    }
+
+    if (cls === "ScrollingFrame") {
+      if (p.CanvasSize) lines.push(`\t${varName}.CanvasSize = ${luaUDim2(p.CanvasSize)}`);
+      if (p.ScrollBarThickness !== undefined) lines.push(`\t${varName}.ScrollBarThickness = ${Math.round(p.ScrollBarThickness)}`);
+    }
+
+    if (cls === "UICorner" && p.CornerRadius) {
+      lines.push(`\t${varName}.CornerRadius = UDim.new(${p.CornerRadius[0]}, ${Math.round(p.CornerRadius[1])})`);
+    }
+    if (cls === "UIStroke") {
+      if (p.Color) lines.push(`\t${varName}.Color = ${luaColor3(p.Color)}`);
+      if (p.Thickness !== undefined) lines.push(`\t${varName}.Thickness = ${p.Thickness}`);
+      if (p.Transparency !== undefined) lines.push(`\t${varName}.Transparency = ${p.Transparency}`);
+      if (p.ApplyStrokeMode) lines.push(`\t${varName}.ApplyStrokeMode = Enum.ApplyStrokeMode.${p.ApplyStrokeMode}`);
+    }
+    if (cls === "UIListLayout") {
+      if (p.FillDirection) lines.push(`\t${varName}.FillDirection = Enum.FillDirection.${p.FillDirection}`);
+      if (p.Padding) lines.push(`\t${varName}.Padding = UDim.new(${p.Padding[0]}, ${Math.round(p.Padding[1])})`);
+      if (p.HorizontalAlignment) lines.push(`\t${varName}.HorizontalAlignment = Enum.HorizontalAlignment.${p.HorizontalAlignment}`);
+      if (p.VerticalAlignment) lines.push(`\t${varName}.VerticalAlignment = Enum.VerticalAlignment.${p.VerticalAlignment}`);
+      if (p.SortOrder) lines.push(`\t${varName}.SortOrder = Enum.SortOrder.${p.SortOrder}`);
+    }
+    if (cls === "UIGridLayout") {
+      if (p.CellSize) lines.push(`\t${varName}.CellSize = ${luaUDim2(p.CellSize)}`);
+      if (p.CellPadding) lines.push(`\t${varName}.CellPadding = ${luaUDim2(p.CellPadding)}`);
+    }
+    if (cls === "UIAspectRatioConstraint" && p.AspectRatio !== undefined) {
+      lines.push(`\t${varName}.AspectRatio = ${p.AspectRatio}`);
+    }
+    if (cls === "UIPadding") {
+      if (p.PaddingTop) lines.push(`\t${varName}.PaddingTop = UDim.new(${p.PaddingTop[0]}, ${Math.round(p.PaddingTop[1])})`);
+      if (p.PaddingBottom) lines.push(`\t${varName}.PaddingBottom = UDim.new(${p.PaddingBottom[0]}, ${Math.round(p.PaddingBottom[1])})`);
+      if (p.PaddingLeft) lines.push(`\t${varName}.PaddingLeft = UDim.new(${p.PaddingLeft[0]}, ${Math.round(p.PaddingLeft[1])})`);
+      if (p.PaddingRight) lines.push(`\t${varName}.PaddingRight = UDim.new(${p.PaddingRight[0]}, ${Math.round(p.PaddingRight[1])})`);
+    }
+
+    if ((cls === "TextButton" || cls === "ImageButton") && (p.CallbackName || p.ProductId)) {
+      const prodNum = p.ProductId ? Number(p.ProductId) : 0;
+      if (prodNum > 0) hasProducts = true;
+      lines.push(`\t${varName}.Activated:Connect(function()`);
+      if (p.CallbackName) {
+        lines.push(`\t\tlocal fn = cbMap[${luaQuote(p.CallbackName)}]`);
+        lines.push(`\t\tif fn then fn() end`);
+      }
+      if (prodNum > 0) {
+        lines.push(`\t\tlocal player = Players.LocalPlayer`);
+        lines.push(`\t\tif player then MarketplaceService:PromptProductPurchase(player, ${Math.round(prodNum)}) end`);
+      }
+      lines.push("\tend)");
+    }
+
+    lines.push(`\t${varName}.Parent = ${parentVar}`);
+    lines.push("");
+
+    for (const ch of node.children) {
+      emitNode(ch, varName);
+    }
+  }
+
+  emitNode(doc.root, "screenGui");
+
+  lines.push("\tscreenGui.Parent = parent");
+  lines.push("\treturn screenGui");
+  lines.push("end");
+  lines.push("");
+  lines.push("return Module");
+
+  const luau_source = lines.join("\n");
+  const modelJsonObj = toRojoModelJson(doc);
+  const diagnostics: Array<{ severity: "error" | "warning" | "info"; line: number; message: string; code: string }> = [];
+
+  if (hasProducts) {
+    diagnostics.push({
+      severity: "info",
+      line: 1,
+      message: "ProductId bindings invoke MarketplaceService:PromptProductPurchase on LocalPlayer.",
+      code: "GUI_PRODUCT_BOUND",
+    });
+  }
+
+  return {
+    luau_source,
+    model_json: JSON.stringify(modelJsonObj, null, 2),
+    diagnostics,
+  };
+}
+
+function toRojoModelNode(node: GuiNode): Record<string, unknown> {
+  const properties: Record<string, unknown> = {};
+  const p = node.props;
+  if (p.Position) properties.Position = [p.Position.x_scale, p.Position.x_offset, p.Position.y_scale, p.Position.y_offset];
+  if (p.Size) properties.Size = [p.Size.x_scale, p.Size.x_offset, p.Size.y_scale, p.Size.y_offset];
+  if (p.AnchorPoint) properties.AnchorPoint = p.AnchorPoint;
+  if (p.BackgroundTransparency !== undefined) properties.BackgroundTransparency = p.BackgroundTransparency;
+  if (p.Text !== undefined) properties.Text = p.Text;
+  if (p.Image !== undefined) properties.Image = p.Image;
+  if (p.ScaleType !== undefined) properties.ScaleType = p.ScaleType;
+  if (p.SliceCenter !== undefined) properties.SliceCenter = p.SliceCenter;
+  return {
+    Name: node.name,
+    ClassName: node.class_name,
+    Properties: properties,
+    Children: node.children.map(toRojoModelNode),
+  };
+}
+
+export function toRojoModelJson(doc: ScreenDoc): Record<string, unknown> {
+  return {
+    ClassName: "ScreenGui",
+    Name: doc.name,
+    Properties: {
+      IgnoreGuiInset: doc.ignore_gui_inset,
+      ResetOnSpawn: doc.reset_on_spawn,
+    },
+    Children: [toRojoModelNode(doc.root)],
+  };
+}
+
+export function findGuiNode(root: GuiNode, id: string): GuiNode | null {
+  if (root.id === id) return root;
+  for (const ch of root.children) {
+    const found = findGuiNode(ch, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+export function updateGuiNode(root: GuiNode, id: string, updater: (node: GuiNode) => GuiNode): GuiNode {
+  if (root.id === id) return updater(root);
+  return {
+    ...root,
+    children: root.children.map((ch) => updateGuiNode(ch, id, updater)),
+  };
+}
+
+export function insertGuiChild(root: GuiNode, parentId: string, child: GuiNode): GuiNode {
+  if (root.id === parentId) {
+    return { ...root, children: [...root.children, child] };
+  }
+  return {
+    ...root,
+    children: root.children.map((ch) => insertGuiChild(ch, parentId, child)),
+  };
+}
+
+export function deleteGuiNode(root: GuiNode, id: string): GuiNode {
+  if (root.id === id) return root;
+  return {
+    ...root,
+    children: root.children
+      .filter((ch) => ch.id !== id)
+      .map((ch) => deleteGuiNode(ch, id)),
+  };
+}
+
+export function cloneGuiNodeWithNewIds(node: GuiNode, suffix: string): GuiNode {
+  return {
+    ...node,
+    id: `${node.id}-${suffix}`,
+    name: `${node.name}Copy`,
+    props: JSON.parse(JSON.stringify(node.props)) as GuiNodeProps,
+    children: node.children.map((c, idx) => cloneGuiNodeWithNewIds(c, `${suffix}-${idx}`)),
+  };
+}

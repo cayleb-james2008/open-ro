@@ -13,6 +13,15 @@
 //  - Optional BYOK OpenAI-compatible LLM & Gemini Nano Banana / OpenAI Image API (keys strictly in sessionStorage)
 //  - One-click Connect to Local openro-rs (http://127.0.0.1:8077)
 import { computePlaceDiff } from "../src/app/luauAudit";
+import {
+  analyzeSafeArea,
+  buildGuiPreset,
+  compileScreenDocToLuau,
+  isValidGuiSlug,
+  normalizeScreenDoc,
+  type GuiPresetId,
+  type ScreenDoc,
+} from "../src/app/guiDesignerEngine";
 import { GAME_SYSTEMS } from "../src/app/systems";
 import { buildRojoShipPackZip } from "../src/app/zipBuilder";
 import { BASELINE_MARKET_NICHES } from "../src/app/marketTaste";
@@ -124,6 +133,7 @@ type EngineState = {
   activeMarketNiche?: string;
   activeProjectId?: string | null;
   projects?: Record<string, WebProject>;
+  studioGuis?: Record<string, ScreenDoc>;
 };
 
 function synthesizeWavBase64(preset: string): { b64: string; bytes: number; durationMs: number; sampleRate: number } {
@@ -2409,6 +2419,120 @@ export function installWebEngine() {
       persist();
       return jsonResponse(sim);
     }
+
+    const ensureStudioGuis = (): Record<string, ScreenDoc> => {
+      if (!state.studioGuis || Object.keys(state.studioGuis).length === 0) {
+        const rpg = buildGuiPreset("rpg");
+        state.studioGuis = { [rpg.slug]: rpg };
+      }
+      return state.studioGuis;
+    };
+
+    const runGuiCompile = (doc: ScreenDoc, existingScripts: Record<string, string>) => {
+      const compiled = compileScreenDocToLuau(doc);
+      const pseudoPath = `StarterGui.${doc.name}`;
+      const luauDiags = analyzePlaceLuau({
+        scripts: { ...existingScripts, [pseudoPath]: compiled.luau_source },
+        instances: {},
+      })
+        .filter((d) => d.path === pseudoPath)
+        .map((d) => ({
+          severity: d.severity,
+          line: d.line,
+          message: d.message,
+          code: d.code,
+        }));
+      const diagnostics = [...compiled.diagnostics, ...luauDiags];
+      const safe_area_warnings = analyzeSafeArea(doc);
+      const luau_errors = diagnostics.filter((d) => d.severity === "error").length;
+      const luau_warnings = diagnostics.filter((d) => d.severity === "warning").length;
+      return {
+        ...compiled,
+        diagnostics,
+        safe_area_warnings,
+        luau_errors,
+        luau_warnings,
+      };
+    };
+
+    if (u.pathname === "/api/studio/gui") {
+      const guis = ensureStudioGuis();
+      if (method === "GET") {
+        const slugParam = u.searchParams.get("slug");
+        if (slugParam) {
+          if (!isValidGuiSlug(slugParam)) {
+            return jsonResponse({ ok: false, error: "Invalid screen slug" }, 400);
+          }
+          const presetMatch = (["rpg", "obby", "tycoon", "gacha"] as GuiPresetId[]).find(
+            (p) => p === slugParam || `${p}-hud` === slugParam,
+          );
+          const doc = guis[slugParam] ?? (presetMatch ? buildGuiPreset(presetMatch) : null);
+          if (!doc) return jsonResponse({ ok: false, error: `Screen not found: ${slugParam}` }, 404);
+          return jsonResponse({
+            ok: true,
+            slug: doc.slug,
+            doc,
+            safe_area_warnings: analyzeSafeArea(doc),
+          });
+        }
+        const screens = Object.values(guis).map((d) => ({
+          slug: d.slug,
+          name: d.name,
+          path: `ui/${d.slug}.screen.json`,
+        }));
+        return jsonResponse({
+          ok: true,
+          screens,
+          presets: ["rpg", "obby", "tycoon", "gacha"],
+        });
+      }
+      if (method === "POST") {
+        const rawSlug = typeof body.slug === "string" ? body.slug.trim() : typeof (body.doc as Record<string, unknown> | undefined)?.slug === "string" ? String((body.doc as Record<string, unknown>).slug).trim() : "rpg-hud";
+        if (!isValidGuiSlug(rawSlug)) {
+          return jsonResponse({ ok: false, error: "Invalid screen slug" }, 400);
+        }
+        const doc = normalizeScreenDoc(body.doc ?? body, rawSlug);
+        doc.slug = rawSlug;
+        guis[rawSlug] = doc;
+        persist();
+        return jsonResponse({
+          ok: true,
+          slug: rawSlug,
+          path: `ui/${rawSlug}.screen.json`,
+          doc,
+          safe_area_warnings: analyzeSafeArea(doc),
+        });
+      }
+    }
+
+    if (method === "POST" && u.pathname === "/api/studio/gui/compile") {
+      const guis = ensureStudioGuis();
+      const rawSlug = typeof body.slug === "string" ? body.slug.trim() : typeof (body.doc as Record<string, unknown> | undefined)?.slug === "string" ? String((body.doc as Record<string, unknown>).slug).trim() : "rpg-hud";
+      if (!isValidGuiSlug(rawSlug)) {
+        return jsonResponse({ ok: false, error: "Invalid screen slug" }, 400);
+      }
+      const doc = body.doc ? normalizeScreenDoc(body.doc, rawSlug) : guis[rawSlug] ?? buildGuiPreset("rpg");
+      doc.slug = rawSlug;
+      guis[rawSlug] = doc;
+      const compiled = runGuiCompile(doc, chat.place.scripts || {});
+      const scriptPath = `ReplicatedStorage.UI.${doc.name}`;
+      if (body.save_luau !== false) {
+        chat.place.scripts[scriptPath] = compiled.luau_source;
+      }
+      recordStudioAction(state, chat, {
+        kind: "script_written",
+        path: scriptPath,
+        class_name: "ModuleScript",
+        summary: `Compiled ScreenGui ${doc.name} to strict Luau (${compiled.luau_errors} errors)`,
+      });
+      persist();
+      return jsonResponse({
+        ok: true,
+        slug: rawSlug,
+        saved_path: body.save_luau !== false ? scriptPath : undefined,
+        ...compiled,
+      });
+    }
     if (method === "POST" && u.pathname === "/api/studio/playtest") {
       recordStudioAction(state, chat, {
         kind: "playtest_started",
@@ -4365,6 +4489,125 @@ export function installWebEngine() {
         const sim = runWebSandboxSim(luauScripts, proj.instances || {}, body);
         persist();
         return jsonResponse(sim);
+      }
+
+      if (method === "GET" && tail === "assets") {
+        const fileAssets = Object.keys(proj.files || {})
+          .filter((p) => /^(art|assets)\//i.test(p))
+          .map((p) => ({
+            path: p,
+            kind: /\.(png|jpe?g|webp|gif)$/i.test(p) ? "image" : "asset",
+            bytes: (proj.files[p] || "").length,
+            sha256: `web-${(proj.files[p] || "").length}`,
+            authorised: true,
+            locked: null,
+          }));
+        const customMapped = (state.customAssets || []).map((a) => ({
+          path: a.file || `art/${(a.title || "asset").toLowerCase().replace(/[^a-z0-9]+/g, "_")}.png`,
+          kind: "image",
+          bytes: 1024,
+          sha256: `custom-${a.id}`,
+          authorised: true,
+          locked: null,
+        }));
+        return jsonResponse({ ok: true, files: [...fileAssets, ...customMapped] });
+      }
+
+      if (method === "GET" && tail === "gui") {
+        const screens: Array<{ slug: string; name: string; path: string }> = [];
+        for (const [relPath, raw] of Object.entries(proj.files || {})) {
+          const m = relPath.match(/^ui\/([^/]+)\.screen\.json$/);
+          if (!m) continue;
+          try {
+            const parsed = normalizeScreenDoc(JSON.parse(raw), m[1]);
+            screens.push({ slug: m[1], name: parsed.name, path: relPath });
+          } catch {
+            screens.push({ slug: m[1], name: m[1], path: relPath });
+          }
+        }
+        if (screens.length === 0) {
+          const def = buildGuiPreset("rpg");
+          proj.files[`ui/${def.slug}.screen.json`] = JSON.stringify(def, null, 2);
+          screens.push({ slug: def.slug, name: def.name, path: `ui/${def.slug}.screen.json` });
+          persist();
+        }
+        return jsonResponse({ ok: true, screens, presets: ["rpg", "obby", "tycoon", "gacha"] });
+      }
+
+      const guiCompileMatch = tail.match(/^gui\/([^/]+)\/compile$/);
+      if (method === "POST" && guiCompileMatch) {
+        const slug = decodeURIComponent(guiCompileMatch[1]);
+        if (!isValidGuiSlug(slug)) {
+          return jsonResponse({ ok: false, error: "Invalid screen slug" }, 400);
+        }
+        const screenPath = `ui/${slug}.screen.json`;
+        let doc: ScreenDoc;
+        if (body.doc) {
+          doc = normalizeScreenDoc(body.doc, slug);
+        } else if (proj.files[screenPath]) {
+          doc = normalizeScreenDoc(JSON.parse(proj.files[screenPath]), slug);
+        } else {
+          doc = buildGuiPreset("rpg");
+        }
+        doc.slug = slug;
+        proj.files[screenPath] = JSON.stringify(doc, null, 2);
+
+        const luauScripts: Record<string, string> = {};
+        for (const [relPath, src] of Object.entries(proj.files || {})) {
+          if (/\.luau?$/i.test(relPath)) luauScripts[relPath] = src;
+        }
+        const compiled = runGuiCompile(doc, luauScripts);
+        const luauPath = `src/client/${slug}.luau`;
+        if (body.save_luau !== false) {
+          proj.files[luauPath] = compiled.luau_source;
+        }
+        persist();
+        return jsonResponse({
+          ok: true,
+          slug,
+          saved_path: body.save_luau !== false ? luauPath : undefined,
+          ...compiled,
+        });
+      }
+
+      const guiSlugMatch = tail.match(/^gui\/([^/]+)$/);
+      if (guiSlugMatch) {
+        const slug = decodeURIComponent(guiSlugMatch[1]);
+        if (!isValidGuiSlug(slug)) {
+          return jsonResponse({ ok: false, error: "Invalid screen slug" }, 400);
+        }
+        const screenPath = `ui/${slug}.screen.json`;
+        if (method === "GET") {
+          let doc: ScreenDoc | null = null;
+          if (proj.files[screenPath]) {
+            try {
+              doc = normalizeScreenDoc(JSON.parse(proj.files[screenPath]), slug);
+            } catch {
+              doc = null;
+            }
+          }
+          if (!doc) {
+            const presetMatch = (["rpg", "obby", "tycoon", "gacha"] as GuiPresetId[]).find(
+              (p) => p === slug || `${p}-hud` === slug,
+            );
+            if (presetMatch) doc = buildGuiPreset(presetMatch);
+          }
+          if (!doc) return jsonResponse({ ok: false, error: `Screen not found: ${slug}` }, 404);
+          return jsonResponse({ ok: true, slug, doc, safe_area_warnings: analyzeSafeArea(doc) });
+        }
+        if (method === "POST") {
+          const doc = normalizeScreenDoc(body.doc ?? body, slug);
+          doc.slug = slug;
+          proj.files[screenPath] = JSON.stringify(doc, null, 2);
+          persist();
+          return jsonResponse({
+            ok: true,
+            slug,
+            path: screenPath,
+            doc,
+            safe_area_warnings: analyzeSafeArea(doc),
+          });
+        }
       }
 
       if (method === "POST" && tail === "scene/mutate") {

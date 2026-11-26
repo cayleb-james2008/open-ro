@@ -837,6 +837,88 @@ export async function runSandbox(req: SandboxRunRequest = {}, projectId?: string
   return call<SandboxRunResponse>(url, req);
 }
 
+export type {
+  GuiClassName,
+  GuiDeviceId,
+  GuiNode,
+  GuiNodeProps,
+  GuiPresetId,
+  SafeAreaWarning,
+  SafeAreaWarningKind,
+  ScreenDoc,
+  ScreenDocTheme,
+  UDim2Value,
+} from "../guiDesignerEngine";
+import type { SafeAreaWarning, ScreenDoc } from "../guiDesignerEngine";
+
+export type GuiScreenSummary = {
+  slug: string;
+  name: string;
+  path?: string;
+  updated_at?: string | number;
+};
+
+export type GuiListResponse = {
+  screens: GuiScreenSummary[];
+  presets?: string[];
+};
+
+export type GuiLoadResponse = {
+  slug: string;
+  doc: ScreenDoc;
+  safe_area_warnings: SafeAreaWarning[];
+};
+
+export type GuiSaveResponse = {
+  slug: string;
+  path?: string;
+  doc: ScreenDoc;
+  safe_area_warnings: SafeAreaWarning[];
+};
+
+export type GuiCompileDiagnostic = {
+  severity: "error" | "warning" | "info" | string;
+  line: number;
+  message: string;
+  code: string;
+};
+
+export type GuiCompileResponse = {
+  slug: string;
+  luau_source: string;
+  model_json?: string;
+  diagnostics: GuiCompileDiagnostic[];
+  safe_area_warnings: SafeAreaWarning[];
+  luau_errors?: number;
+  luau_warnings?: number;
+  saved_path?: string;
+};
+
+export async function listGuiScreens(projectId?: string | null): Promise<Res<GuiListResponse>> {
+  const url = projectId ? projUrl(projectId, "/gui") : "/api/studio/gui";
+  return call<GuiListResponse>(url);
+}
+
+export async function loadGuiScreen(slug: string, projectId?: string | null): Promise<Res<GuiLoadResponse>> {
+  const url = projectId ? projUrl(projectId, `/gui/${enc(slug)}`) : `/api/studio/gui?slug=${enc(slug)}`;
+  return call<GuiLoadResponse>(url);
+}
+
+export async function saveGuiScreen(slug: string, doc: ScreenDoc, projectId?: string | null): Promise<Res<GuiSaveResponse>> {
+  const url = projectId ? projUrl(projectId, `/gui/${enc(slug)}`) : "/api/studio/gui";
+  return call<GuiSaveResponse>(url, { slug, doc });
+}
+
+export async function compileGuiScreen(
+  slug: string,
+  doc: ScreenDoc,
+  projectId?: string | null,
+  options?: { save_luau?: boolean },
+): Promise<Res<GuiCompileResponse>> {
+  const url = projectId ? projUrl(projectId, `/gui/${enc(slug)}/compile`) : "/api/studio/gui/compile";
+  return call<GuiCompileResponse>(url, { slug, doc, ...(options ?? {}) });
+}
+
 export const prettyBytes = (n: number) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 export const stamp = (at: string | number | undefined) => {
   if (at === undefined || at === null) return "";
