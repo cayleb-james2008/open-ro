@@ -311,7 +311,14 @@ try {
     const genLuauCheckbox = p.locator("[data-rc-gen-luau]");
     if (!(await genLuauCheckbox.isChecked())) await genLuauCheckbox.check();
     await p.locator("[data-rc-save]").click();
-    await p.locator("[data-rc-status]").waitFor({ state: "visible", timeout: 8000 });
+    await p.waitForFunction(
+      () => {
+        const txt = document.querySelector("[data-rc-status]")?.textContent || "";
+        return txt.includes("remote-config.json") && txt.includes("LiveConfig.luau");
+      },
+      null,
+      { timeout: 8000 },
+    );
     const rcStatusText = await p.locator("[data-rc-status]").innerText();
     check(
       "LiveOps Remote Config saves and generates LiveConfig.luau",
@@ -436,6 +443,10 @@ try {
   await p.getByRole("button", { name: "Code", exact: true }).first().click();
   await p.locator("[data-code-diff-workbench]").waitFor({ state: "visible", timeout: 5000 });
   await p.getByRole("button", { name: "Viewport", exact: true }).first().click();
+  const previewBtnReturn = p.locator('button[aria-label="Open 3D Preview"]').first();
+  if ((await previewBtnReturn.count()) > 0 && (await previewBtnReturn.isVisible())) {
+    await previewBtnReturn.click();
+  }
   await p.locator("[data-studio-viewport-3d]").waitFor({ state: "visible", timeout: 8000 });
   await p.locator("[data-toggle-lights-panel]").click();
   const lightCountAfter = await p.locator("[data-light-item]").count();

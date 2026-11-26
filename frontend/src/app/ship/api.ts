@@ -737,19 +737,27 @@ export type WorkspaceBundle = {
   instances: Record<string, WorkspaceInstanceEntry>;
   meshes: WorkspaceMeshEntry[];
   lighting: WorkspaceLighting;
+  terrain?: unknown;
+  lights?: unknown[];
   diagnostics: WorkspaceDiagnostic[];
   skipped?: string[];
   tree_error?: string | null;
 };
 
 export type SceneMutateOp = {
-  op: "upsert" | "delete" | "duplicate" | "set_lighting" | "undo" | "redo";
+  op: "upsert" | "delete" | "duplicate" | "reparent" | "set_lighting" | "set_terrain" | "undo" | "redo";
   path?: string;
+  new_parent?: string;
   class_name?: string;
   properties?: Record<string, unknown>;
   offset?: [number, number, number];
   new_path?: string;
   name?: string;
+  enabled?: boolean;
+  clear?: boolean;
+  generator?: Record<string, unknown>;
+  regions?: Record<string, unknown>[];
+  paint_box?: Record<string, unknown>;
 };
 
 export type SceneMutateResult = {
@@ -761,6 +769,8 @@ export type SceneMutateResult = {
   redone?: boolean;
   instances?: Record<string, WorkspaceInstanceEntry>;
   lighting?: WorkspaceLighting;
+  lights?: unknown[];
+  terrain?: unknown;
   modified_files?: string[];
 };
 

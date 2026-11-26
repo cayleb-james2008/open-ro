@@ -589,8 +589,36 @@ fn agent_tools_gui_save_and_gui_compile_work_end_to_end() {
     let llm_port = llm_listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         for mut stream in llm_listener.incoming().flatten() {
-            let mut buf = [0u8; 16384];
-            let _ = stream.read(&mut buf);
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let mut header_end = None;
+            let mut content_len = 0usize;
+            while let Ok(n) = stream.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if header_end.is_none() {
+                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let end = pos + 4;
+                        header_end = Some(end);
+                        let hdrs = String::from_utf8_lossy(&buf[..pos]);
+                        for line in hdrs.lines() {
+                            if let Some((k, v)) = line.split_once(':') {
+                                if k.trim().eq_ignore_ascii_case("content-length") {
+                                    content_len = v.trim().parse().unwrap_or(0);
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(end) = header_end {
+                    if buf.len() >= end + content_len {
+                        break;
+                    }
+                }
+            }
             let body = json!({
                 "choices": [{ "message": { "role": "assistant", "content": script } }]
             })
@@ -600,6 +628,7 @@ fn agent_tools_gui_save_and_gui_compile_work_end_to_end() {
                 body.len()
             );
             let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
         }
     });
 

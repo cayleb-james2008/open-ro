@@ -4,6 +4,12 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.24.0 - 2026-11-26
+
+- Added a zero-dependency WebGL2 3D viewport (`frontend/src/app/viewport/`, `StudioViewport3D.tsx`) with a Canvas2D fallback (`data-renderer="webgl2" | "canvas2d-fallback"`), `webglcontextlost`/`webglcontextrestored` recovery, sky and fog gradients, directional sun shading, up to 8 dynamic `PointLight`, `SpotLight`, and `SurfaceLight` sources, PBR roughness/metalness/emissive materials, `.obj` mesh parsing with normals and UVs, `.png`/`.jpg` texture mapping, animated water quads, and 3D ray-picking with Move, Scale, and Rotate gizmos.
+- Added procedural terrain and multi-class scene support in `src/scene.rs`, `src/projects.rs`, `src/project_api.rs`, `src/agent.rs`, `src/teamwork.rs`, and offline `frontend/web-engine/install.ts` parity. `GET /api/projects/:id/workspace` now returns `terrain` (loaded from `scene/terrain.json` with a deterministic `src/server/OpenROTerrain.server.luau` builder hook), extracted `lights`, and `meshes[].texture_url`. `POST /api/projects/:id/scene/mutate` and `project_scene_mutate` now handle `set_terrain` (`flat`, `hills`, `island`, `canyon`, `paint_box`, `clear`, undo/redo, and HTTP 400 checks for bounds over `2048x512x2048` studs or more than `100` regions), `reparent`, and `upsert` for `PointLight`, `SpotLight`, `SurfaceLight`, `ParticleEmitter`, `Sound`, and `SurfaceAppearance`.
+- Hardened `GET /api/projects/:id/mesh-asset?file=<rel>` to confine `.obj`, `.mtl`, `.png`, and `.jpg` reads to `assets/meshes/` and `art/` with CWE-22/CWE-59 ancestor symlink checks and a 10 MiB cap (`tests/v124_viewport_terrain.rs`).
+
 ## 1.23.0 - 2026-11-26
 
 - Added the LiveOps control plane and player telemetry system (`src/liveops.rs`, `src/opencloud.rs`, `src/server.rs`, `src/agent.rs`, `src/teamwork.rs`, `tests/v123_liveops.rs`). The `/api/projects/:id/liveops/*` routes handle Open Cloud v2 standard and ordered DataStore listing, inspection, optimistic-concurrency writes (`confirm: true`, `expected_revision`, and pre-mutation backups under `.openro/liveops/ds-backups/`), deletes, and `MessagingService` broadcasts under a 1024-byte cap, all restricted to loopback hosts.

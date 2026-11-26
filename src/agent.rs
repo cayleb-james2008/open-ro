@@ -291,24 +291,23 @@ PROJECT FILE & BUILD TOOLS:\n\
 - sandbox_playtest {{\"timeout_secs\": 15, \"journey\": [...]}} (<2s headless Roblox Luau runtime sandbox: server/client, remotes, DataStores, ProcessReceipt idempotency, PlayerGui)\n\
 - project_build {{\"engine\": \"auto\"}} (.rbxlx build)\n\
 - project_scene_get {{}} (unified workspace: scripts, instances, meshes, lighting, lights, terrain, diagnostics)\n\
-- project_scene_mutate {{\"ops\": [{{\"op\": \"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\", \"path\": \"Workspace.Name\", \"class_name\": \"Part|Model|SpawnLocation|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\", \"new_parent\": \"Workspace.Parent\", \"enabled\": true, \"generator\": {{\"kind\": \"flat|hills|island|canyon\", \"seed\": 1, \"amplitude\": 24, \"water_level\": 0}}, \"paint_box\": {{\"min\": [0,0,0], \"max\": [16,8,16], \"material\": \"Grass\"}}, ...}}]}} (declarative scene/workspace.model.json, scene/terrain.json, & Lighting)\n\
-- gui_save {{\"slug\": \"main-hud\", \"doc\": {{...}} | \"preset\": \"rpg|obby|tycoon|gacha\"}} (saves ui/<slug>.screen.json + safe-area analysis)\n\
-- gui_compile {{\"slug\": \"main-hud\", \"emit_model_json\": false}} (compiles --!strict Luau create(parent, callbacks) + Rojo .model.json)\n\
-- project_sync {{\"prune\": false}} (one-way push sync to Studio)\n\
-- project_playtest {{\"sync_first\": true, \"suite\": \"playtest/suite.json\"}} (Playtest Runner checks, screenshots, console errors)\n\n\
+- project_scene_mutate {{\"ops\": [{{\"op\": \"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\", \"path\": \"Workspace.Name\", \"class_name\": \"Part|Model|SpawnLocation|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\", ...}}]}} (workspace.model.json, terrain.json & Lighting; set_terrain: generator/paint_box/clear; reparent: new_parent)\n\
+- gui_save {{\"slug\": \"main-hud\", \"doc\": {{...}} | \"preset\": \"rpg|obby|tycoon|gacha\"}} (ui/<slug>.screen.json + safe-area)\n\
+- gui_compile {{\"slug\": \"main-hud\", \"emit_model_json\": false}} (--!strict Luau + Rojo .model.json)\n\
+- project_sync {{\"prune\": false}} / project_playtest {{\"sync_first\": true, \"suite\": \"playtest/suite.json\"}}\n\n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
-- research_roblox_game {{\"target\": \"<URL or place/universe ID>\"}} (real Roblox API facts + thumbs -> refs/<universeId>/)\n\
+- research_roblox_game {{\"target\": \"<URL or ID>\"}} (Roblox API + thumbs -> refs/<universeId>/)\n\
 - web_search {{\"query\": \"...\", \"limit\": 5}} / web_fetch {{\"url\": \"https://...\"}}\n\
-- reference_search {{\"query\": \"...\", \"character\": \"...\", \"show\": \"...\"}} (action references -> art/references/)\n\
-- art_generate {{\"prompt\": \"single-line eye-level neutral three-quarter prompt\", \"out_path\": \"art/cards/x/art.png\", \"references\": [...]}} (ChatGPT shared browser default; never Higgsfield)\n\
+- reference_search {{\"query\": \"...\", \"character\": \"...\", \"show\": \"...\"}} (-> art/references/)\n\
+- art_generate {{\"prompt\": \"single-line eye-level neutral three-quarter prompt\", \"out_path\": \"art/cards/x/art.png\", \"references\": [...]}} (ChatGPT browser default; never Higgsfield)\n\
 - image_process {{\"input\": \"...\", \"output\": \"...\", \"ops\": [...]}} / art_pack_card {{\"card_id\": \"...\"}}\n\
-- mesh_generate {{\"name\": \"Prop\", \"description\": \"...\", \"script\": \"...\"}} (smart-UV AO-baked .obj + PNG + manifest.json <=20k tris -> assets/meshes/)\n\
+- mesh_generate {{\"name\": \"Prop\", \"description\": \"...\", \"script\": \"...\"}} (AO-baked .obj + PNG <=20k tris -> assets/meshes/)\n\
 - audio_generate {{\"name\": \"Sfx\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}} (-> assets/audio/)\n\
-- adapter_list {{\"capability\": \"...?\"}} / adapter_invoke {{\"capability\": \"...\", \"adapter_id\": \"...?\", \"params\": {{...}}}} (custom CLI/HTTP tool adapters)\n\
-- opencloud_status {{}} / creator_hub_status {{\"check_login\": true, \"save_creator\": true}} / creator_hub_setup {{...}} / creator_hub_configure {{...}} (loopback browser CDP; stop cleanly on action_required)\n\
-- assets_authorise {{\"paths\": [...]}} / assets_upload {{\"paths\": [...]}} / assets_codegen {{}} (-> assets.lock.json + AssetIds.luau)\n\
+- adapter_list {{\"capability\": \"...?\"}} / adapter_invoke {{\"capability\": \"...\", \"adapter_id\": \"...?\", \"params\": {{...}}}}\n\
+- opencloud_status {{}} / creator_hub_status {{\"check_login\": true, \"save_creator\": true}} / creator_hub_setup {{...}} / creator_hub_configure {{...}} (loopback CDP; stop on action_required)\n\
+- assets_authorise {{\"paths\": [...]}} / assets_upload {{\"paths\": [...]}} / assets_codegen {{}} (-> AssetIds.luau)\n\
 - products_sync {{}} / products_codegen {{}} (-> ProductIds.luau) / universe_get {{}} / universe_set {{...}}\n\
-- liveops_datastore_list {{\"store\":\"...?\",\"scope\":\"global\"}} / liveops_datastore_get {{\"store\":\"...\",\"key\":\"...\"}} / liveops_datastore_set {{...,\"expected_revision\":\"...\",\"confirm\":true}} / liveops_messaging_publish {{\"topic\":\"...\",\"message\":{{...}},\"confirm\":true}} / liveops_remote_config_push {{\"config\":{{...}},\"generate_luau\":true,\"push_to_datastore\":false}} / liveops_telemetry_summary {{}} (live writes/broadcasts need confirm:true)\n\
+- liveops_datastore_list {{}} / liveops_datastore_get {{\"store\":\"...\",\"key\":\"...\"}} / liveops_datastore_set {{...,\"expected_revision\":\"...\",\"confirm\":true}} / liveops_messaging_publish {{\"topic\":\"...\",\"message\":{{...}},\"confirm\":true}} / liveops_remote_config_push {{\"config\":{{...}},\"generate_luau\":true,\"push_to_datastore\":false}} / liveops_telemetry_summary {{}} (live writes need confirm:true)\n\
 - project_publish {{\"versionType\": \"Saved\"}} (live \"Published\" requires confirm: true ONLY after owner approval)\n\n\
 STUDY & EVIDENCE TOOLS (Study -> Build -> Check -> Refine):\n\
 - evidence_record {{\"summary\":\"...\",\"confidence\":\"observed|derived|inferred\",\"kind\":\"...\",\"source\":\"...\"}} / evidence_list {{\"confidence\":\"...?\",\"limit\":50}}\n\

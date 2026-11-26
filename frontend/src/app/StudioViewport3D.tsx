@@ -6,7 +6,6 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
-  type WheelEvent as ReactWheelEvent,
 } from "react";
 import { useReducedMotion } from "@/motion";
 import {
@@ -272,8 +271,12 @@ export function StudioViewport3D({
     void refreshWorkspaceExtras(inferredProjectId);
   }, [inferredProjectId, placeInstanceKeySig, refreshWorkspaceExtras]);
 
+  useEffect(() => {
+    if (lighting) setWsLighting(lighting);
+  }, [lighting]);
+
   const effectiveTerrain = terrainProp !== undefined ? terrainProp : wsTerrain;
-  const effectiveLighting = lighting ?? wsLighting ?? null;
+  const effectiveLighting = wsLighting ?? lighting ?? null;
   const effectiveMeshes = useMemo(() => {
     const byName = new Map<string, WorkspaceMeshEntry>();
     for (const m of wsMeshes) byName.set(m.obj_path || m.name, m);
@@ -999,15 +1002,21 @@ export function StudioViewport3D({
     }
   };
 
-  const onWheel = (e: ReactWheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    const nextDist = Math.max(14, Math.min(180, targetCamRef.current.dist * (e.deltaY > 0 ? 1.1 : 0.91)));
-    targetCamRef.current = { ...targetCamRef.current, dist: nextDist };
-    if (reduce) {
-      camRef.current = { ...targetCamRef.current };
-      drawScene();
-    }
-  };
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const handleWheel = (e: globalThis.WheelEvent) => {
+      e.preventDefault();
+      const nextDist = Math.max(14, Math.min(180, targetCamRef.current.dist * (e.deltaY > 0 ? 1.1 : 0.91)));
+      targetCamRef.current = { ...targetCamRef.current, dist: nextDist };
+      if (reduce) {
+        camRef.current = { ...targetCamRef.current };
+        drawScene();
+      }
+    };
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, [drawScene, reduce]);
 
   const onPointerCancel = () => {
     dragRef.current = null;
@@ -1588,7 +1597,6 @@ export function StudioViewport3D({
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerCancel}
             onContextMenu={(e) => e.preventDefault()}
-            onWheel={onWheel}
             className="block h-full w-full touch-none cursor-grab active:cursor-grabbing"
           />
           {rendererMode === "webgl2" && (
