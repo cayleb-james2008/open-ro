@@ -8,16 +8,31 @@ use crate::luau_check::{self, AnalysisReport};
 use crate::projects;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const UI_DIR_REL: &str = "ui";
 pub const MAX_GUI_DEPTH: usize = 32;
 pub const MAX_GUI_NODES: usize = 500;
+pub const MAX_SCREEN_JSON_BYTES: usize = 2 * 1024 * 1024;
+const MAX_NODE_PROPS: usize = 64;
+const UDIM_SCALE_MIN: f64 = -10.0;
+const UDIM_SCALE_MAX: f64 = 10.0;
+const UDIM_OFFSET_MIN: f64 = -16384.0;
+const UDIM_OFFSET_MAX: f64 = 16384.0;
+const ANCHOR_MIN: f64 = -10.0;
+const ANCHOR_MAX: f64 = 10.0;
+const RECT_COORD_MIN: f64 = -16384.0;
+const RECT_COORD_MAX: f64 = 16384.0;
 pub const TOPBAR_INSET_PX: f64 = 58.0;
 pub const MOBILE_THUMBSTICK_ZONE_PX: f64 = 170.0;
 pub const MIN_TAP_TARGET_PX: f64 = 44.0;
+
+static TMP_SEQ: AtomicU64 = AtomicU64::new(1);
 
 pub const ALLOWED_CLASSES: [&str; 12] = [
     "Frame",
@@ -232,12 +247,24 @@ impl GuiNode {
     }
 
     pub fn from_json(v: &Value) -> Result<Self, String> {
+        let mut total = 0usize;
+        Self::from_json_bounded(v, 0, &mut total)
+    }
+
+    fn from_json_bounded(v: &Value, depth: usize, total: &mut usize) -> Result<Self, String> {
+        if depth > MAX_GUI_DEPTH {
+            return Err(format!("GUI tree exceeds max depth of {MAX_GUI_DEPTH}"));
+        }
+        *total += 1;
+        if *total > MAX_GUI_NODES {
+            return Err(format!("GUI tree exceeds max node count of {MAX_GUI_NODES}"));
+        }
         let obj = v.as_object().ok_or("GuiNode must be a JSON object")?;
-        let id = obj
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
+        let id = match obj.get("id") {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(s)) => s.clone(),
+            Some(_) => return Err("GuiNode.id must be a string".to_string()),
+        };
         let name = obj
             .get("name")
             .and_then(Value::as_str)
@@ -253,6 +280,9 @@ impl GuiNode {
         let mut props = BTreeMap::new();
         if let Some(p) = obj.get("props").or_else(|| obj.get("properties")) {
             let p_obj = p.as_object().ok_or("GuiNode.props must be a JSON object")?;
+            if p_obj.len() > MAX_NODE_PROPS {
+                return Err(format!("GuiNode exceeds max {MAX_NODE_PROPS} properties"));
+            }
             for (k, val) in p_obj {
                 props.insert(k.clone(), val.clone());
             }
@@ -260,8 +290,12 @@ impl GuiNode {
         let mut children = Vec::new();
         if let Some(ch) = obj.get("children") {
             let arr = ch.as_array().ok_or("GuiNode.children must be a JSON array")?;
+            if *total + arr.len() > MAX_GUI_NODES {
+                return Err(format!("GUI tree exceeds max node count of {MAX_GUI_NODES}"));
+            }
+            children.reserve(arr.len());
             for item in arr {
-                children.push(GuiNode::from_json(item)?);
+                children.push(Self::from_json_bounded(item, depth + 1, total)?);
             }
         }
         Ok(Self {
@@ -298,10 +332,12 @@ impl ScreenDoc {
 
     pub fn from_json(v: &Value) -> Result<Self, String> {
         let obj = v.as_object().ok_or("ScreenDoc must be a JSON object")?;
-        let version = obj
+        let version_u64 = obj
             .get("version")
             .and_then(Value::as_u64)
-            .ok_or("ScreenDoc missing integer 'version'")? as u32;
+            .ok_or("ScreenDoc missing integer 'version'")?;
+        let version = u32::try_from(version_u64)
+            .map_err(|_| format!("unsupported ScreenDoc version {version_u64}; expected version 1"))?;
         let name = obj
             .get("name")
             .and_then(Value::as_str)
@@ -493,22 +529,38 @@ impl LocalGuiStore {
     pub fn open(data_dir: Option<&Path>) -> Self {
         let mut docs = BTreeMap::new();
         if let Some(dir) = data_dir {
-            let ui_dir = dir.join(UI_DIR_REL);
-            if let Ok(entries) = std::fs::read_dir(&ui_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    let Some(fname) = path.file_name().and_then(|n| n.to_str()) else {
-                        continue;
-                    };
-                    let Some(slug) = fname.strip_suffix(".screen.json") else {
-                        continue;
-                    };
-                    if validate_slug(slug).is_err() {
-                        continue;
-                    }
-                    if let Ok(raw) = std::fs::read_to_string(&path) {
-                        if let Ok(doc) = parse_and_validate_screen_str(&raw) {
-                            docs.insert(slug.to_string(), doc);
+            if let Ok(ui_dir) = projects::safe_join(dir, UI_DIR_REL) {
+                let ui_ok = std::fs::symlink_metadata(&ui_dir)
+                    .is_ok_and(|m| !m.file_type().is_symlink() && m.is_dir());
+                if ui_ok {
+                    if let Ok(entries) = std::fs::read_dir(&ui_dir) {
+                        for entry in entries.flatten() {
+                            let Ok(ft) = entry.file_type() else {
+                                continue;
+                            };
+                            if ft.is_symlink() || !ft.is_file() {
+                                continue;
+                            }
+                            let path = entry.path();
+                            let Some(fname) = path.file_name().and_then(|n| n.to_str()) else {
+                                continue;
+                            };
+                            let Some(slug) = fname.strip_suffix(".screen.json") else {
+                                continue;
+                            };
+                            if validate_slug(slug).is_err() {
+                                continue;
+                            }
+                            if entry
+                                .metadata()
+                                .is_ok_and(|m| m.len() <= MAX_SCREEN_JSON_BYTES as u64)
+                            {
+                                if let Ok(raw) = std::fs::read_to_string(&path) {
+                                    if let Ok(doc) = parse_and_validate_screen_str(&raw) {
+                                        docs.insert(slug.to_string(), doc);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -579,14 +631,36 @@ pub fn validate_slug(raw: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-fn write_atomic_json(path: &Path, val: &Value) -> Result<(), String> {
+fn write_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create folder: {e}"))?;
     }
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("screen");
+    let tmp = path.with_file_name(format!(".{file_name}.openro-tmp.{}.{seq}", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .map_err(|e| format!("create temp for {}: {e}", path.display()))?;
+    if let Err(e) = file.write_all(bytes).and_then(|_| file.flush()) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("write {}: {e}", path.display()));
+    }
+    drop(file);
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("rename {}: {e}", path.display()));
+    }
+    Ok(())
+}
+
+fn write_atomic_json(path: &Path, val: &Value) -> Result<(), String> {
     let text = serde_json::to_string_pretty(val).map_err(|e| e.to_string())? + "\n";
-    let tmp = path.with_extension("openro-tmp");
-    std::fs::write(&tmp, text.as_bytes()).map_err(|e| format!("write {}: {e}", path.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("rename {}: {e}", path.display()))
+    write_atomic_bytes(path, text.as_bytes())
 }
 
 fn is_prop_allowed(class_name: &str, prop: &str) -> bool {
@@ -640,61 +714,88 @@ struct UDim2Val {
     y: UDimVal,
 }
 
-fn parse_udim(v: &Value) -> Result<UDimVal, String> {
+fn clamp_udim(u: UDimVal) -> (UDimVal, bool) {
+    let s = u.scale.clamp(UDIM_SCALE_MIN, UDIM_SCALE_MAX);
+    let o = u.offset.clamp(UDIM_OFFSET_MIN, UDIM_OFFSET_MAX);
+    let clamped = (s - u.scale).abs() > f64::EPSILON || (o - u.offset).abs() > f64::EPSILON;
+    (UDimVal { scale: s, offset: o }, clamped)
+}
+
+fn clamp_udim2(u: UDim2Val) -> (UDim2Val, bool) {
+    let (x, cx) = clamp_udim(u.x);
+    let (y, cy) = clamp_udim(u.y);
+    (UDim2Val { x, y }, cx || cy)
+}
+
+fn opt_finite_f64(v: Option<&Value>, field: &str) -> Result<Option<f64>, String> {
+    match v {
+        None => Ok(None),
+        Some(raw) => {
+            let n = raw
+                .as_f64()
+                .ok_or_else(|| format!("{field} must be a finite number"))?;
+            if !n.is_finite() {
+                return Err(format!("{field} must be finite"));
+            }
+            Ok(Some(n))
+        }
+    }
+}
+
+fn parse_udim_raw(v: &Value) -> Result<(UDimVal, bool), String> {
     let target = v.as_object().and_then(|o| o.get("UDim")).unwrap_or(v);
     if let Some(arr) = target.as_array() {
         if arr.len() == 2 {
             let s = arr[0].as_f64().ok_or("UDim scale must be numeric")?;
             let o = arr[1].as_f64().ok_or("UDim offset must be numeric")?;
             if s.is_finite() && o.is_finite() {
-                return Ok(UDimVal { scale: s, offset: o });
+                return Ok(clamp_udim(UDimVal { scale: s, offset: o }));
             }
+            return Err("UDim components must be finite".to_string());
         }
     }
     if let Some(obj) = target.as_object() {
-        let s = obj
-            .get("scale")
-            .or_else(|| obj.get("Scale"))
-            .or_else(|| obj.get("s"))
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
-        let o = obj
-            .get("offset")
-            .or_else(|| obj.get("Offset"))
-            .or_else(|| obj.get("o"))
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
-        if (obj.contains_key("scale")
-            || obj.contains_key("Scale")
-            || obj.contains_key("s")
-            || obj.contains_key("offset")
-            || obj.contains_key("Offset")
-            || obj.contains_key("o"))
-            && s.is_finite()
-            && o.is_finite()
-        {
-            return Ok(UDimVal { scale: s, offset: o });
+        let s_opt = opt_finite_f64(
+            obj.get("scale")
+                .or_else(|| obj.get("Scale"))
+                .or_else(|| obj.get("s")),
+            "UDim.scale",
+        )?;
+        let o_opt = opt_finite_f64(
+            obj.get("offset")
+                .or_else(|| obj.get("Offset"))
+                .or_else(|| obj.get("o")),
+            "UDim.offset",
+        )?;
+        if s_opt.is_some() || o_opt.is_some() {
+            return Ok(clamp_udim(UDimVal {
+                scale: s_opt.unwrap_or(0.0),
+                offset: o_opt.unwrap_or(0.0),
+            }));
         }
     }
     if let Some(n) = target.as_f64() {
         if n.is_finite() {
-            return Ok(UDimVal {
+            return Ok(clamp_udim(UDimVal {
                 scale: 0.0,
                 offset: n,
-            });
+            }));
         }
     }
     Err("expected UDim as [scale, offset] or { scale, offset }".to_string())
 }
 
-fn parse_udim2(v: &Value) -> Result<UDim2Val, String> {
+fn parse_udim(v: &Value) -> Result<UDimVal, String> {
+    parse_udim_raw(v).map(|(u, _)| u)
+}
+
+fn parse_udim2_raw(v: &Value) -> Result<(UDim2Val, bool), String> {
     let target = v.as_object().and_then(|o| o.get("UDim2")).unwrap_or(v);
     if let Some(arr) = target.as_array() {
         if arr.len() == 2 {
-            return Ok(UDim2Val {
-                x: parse_udim(&arr[0])?,
-                y: parse_udim(&arr[1])?,
-            });
+            let (x, cx) = parse_udim_raw(&arr[0])?;
+            let (y, cy) = parse_udim_raw(&arr[1])?;
+            return Ok((UDim2Val { x, y }, cx || cy));
         }
         if arr.len() == 4 {
             let xs = arr[0].as_f64().ok_or("UDim2[0] must be numeric")?;
@@ -702,7 +803,7 @@ fn parse_udim2(v: &Value) -> Result<UDim2Val, String> {
             let ys = arr[2].as_f64().ok_or("UDim2[2] must be numeric")?;
             let yo = arr[3].as_f64().ok_or("UDim2[3] must be numeric")?;
             if xs.is_finite() && xo.is_finite() && ys.is_finite() && yo.is_finite() {
-                return Ok(UDim2Val {
+                return Ok(clamp_udim2(UDim2Val {
                     x: UDimVal {
                         scale: xs,
                         offset: xo,
@@ -711,8 +812,9 @@ fn parse_udim2(v: &Value) -> Result<UDim2Val, String> {
                         scale: ys,
                         offset: yo,
                     },
-                });
+                }));
             }
+            return Err("UDim2 components must be finite".to_string());
         }
     }
     if let Some(obj) = target.as_object() {
@@ -720,50 +822,45 @@ fn parse_udim2(v: &Value) -> Result<UDim2Val, String> {
             obj.get("x").or_else(|| obj.get("X")),
             obj.get("y").or_else(|| obj.get("Y")),
         ) {
-            return Ok(UDim2Val {
-                x: parse_udim(xv)?,
-                y: parse_udim(yv)?,
-            });
+            let (x, cx) = parse_udim_raw(xv)?;
+            let (y, cy) = parse_udim_raw(yv)?;
+            return Ok((UDim2Val { x, y }, cx || cy));
         }
-        let xs = obj
-            .get("xs")
-            .or_else(|| obj.get("xScale"))
-            .or_else(|| obj.get("x_scale"))
-            .and_then(Value::as_f64);
-        let xo = obj
-            .get("xo")
-            .or_else(|| obj.get("xOffset"))
-            .or_else(|| obj.get("x_offset"))
-            .and_then(Value::as_f64);
-        let ys = obj
-            .get("ys")
-            .or_else(|| obj.get("yScale"))
-            .or_else(|| obj.get("y_scale"))
-            .and_then(Value::as_f64);
-        let yo = obj
-            .get("yo")
-            .or_else(|| obj.get("yOffset"))
-            .or_else(|| obj.get("y_offset"))
-            .and_then(Value::as_f64);
+        let xs = opt_finite_f64(
+            obj.get("xs")
+                .or_else(|| obj.get("xScale"))
+                .or_else(|| obj.get("x_scale")),
+            "UDim2.xs",
+        )?;
+        let xo = opt_finite_f64(
+            obj.get("xo")
+                .or_else(|| obj.get("xOffset"))
+                .or_else(|| obj.get("x_offset")),
+            "UDim2.xo",
+        )?;
+        let ys = opt_finite_f64(
+            obj.get("ys")
+                .or_else(|| obj.get("yScale"))
+                .or_else(|| obj.get("y_scale")),
+            "UDim2.ys",
+        )?;
+        let yo = opt_finite_f64(
+            obj.get("yo")
+                .or_else(|| obj.get("yOffset"))
+                .or_else(|| obj.get("y_offset")),
+            "UDim2.yo",
+        )?;
         if xs.is_some() || xo.is_some() || ys.is_some() || yo.is_some() {
-            let (xs, xo, ys, yo) = (
-                xs.unwrap_or(0.0),
-                xo.unwrap_or(0.0),
-                ys.unwrap_or(0.0),
-                yo.unwrap_or(0.0),
-            );
-            if xs.is_finite() && xo.is_finite() && ys.is_finite() && yo.is_finite() {
-                return Ok(UDim2Val {
-                    x: UDimVal {
-                        scale: xs,
-                        offset: xo,
-                    },
-                    y: UDimVal {
-                        scale: ys,
-                        offset: yo,
-                    },
-                });
-            }
+            return Ok(clamp_udim2(UDim2Val {
+                x: UDimVal {
+                    scale: xs.unwrap_or(0.0),
+                    offset: xo.unwrap_or(0.0),
+                },
+                y: UDimVal {
+                    scale: ys.unwrap_or(0.0),
+                    offset: yo.unwrap_or(0.0),
+                },
+            }));
         }
     }
     if let Some(s) = target.as_str() {
@@ -773,7 +870,7 @@ fn parse_udim2(v: &Value) -> Result<UDim2Val, String> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| "invalid UDim2 string".to_string())?;
         if parts.len() == 4 && parts.iter().all(|n| n.is_finite()) {
-            return Ok(UDim2Val {
+            return Ok(clamp_udim2(UDim2Val {
                 x: UDimVal {
                     scale: parts[0],
                     offset: parts[1],
@@ -782,20 +879,30 @@ fn parse_udim2(v: &Value) -> Result<UDim2Val, String> {
                     scale: parts[2],
                     offset: parts[3],
                 },
-            });
+            }));
         }
     }
     Err("expected UDim2 as [[xs, xo], [ys, yo]], [xs, xo, ys, yo], or { x, y }".to_string())
 }
 
-fn parse_vec2(v: &Value) -> Result<[f64; 2], String> {
+fn parse_udim2(v: &Value) -> Result<UDim2Val, String> {
+    parse_udim2_raw(v).map(|(u, _)| u)
+}
+
+fn parse_vec2_raw(v: &Value) -> Result<([f64; 2], bool), String> {
     let target = v.as_object().and_then(|o| o.get("Vector2")).unwrap_or(v);
+    let clamp_pair = |x: f64, y: f64| -> ([f64; 2], bool) {
+        let cx = x.clamp(ANCHOR_MIN, ANCHOR_MAX);
+        let cy = y.clamp(ANCHOR_MIN, ANCHOR_MAX);
+        let changed = (cx - x).abs() > f64::EPSILON || (cy - y).abs() > f64::EPSILON;
+        ([cx, cy], changed)
+    };
     if let Some(arr) = target.as_array() {
         if arr.len() == 2 {
             let x = arr[0].as_f64().ok_or("Vector2 x must be numeric")?;
             let y = arr[1].as_f64().ok_or("Vector2 y must be numeric")?;
             if x.is_finite() && y.is_finite() {
-                return Ok([x, y]);
+                return Ok(clamp_pair(x, y));
             }
         }
     }
@@ -805,14 +912,18 @@ fn parse_vec2(v: &Value) -> Result<[f64; 2], String> {
             obj.get("y").or_else(|| obj.get("Y")).and_then(Value::as_f64),
         ) {
             if x.is_finite() && y.is_finite() {
-                return Ok([x, y]);
+                return Ok(clamp_pair(x, y));
             }
         }
     }
     Err("expected Vector2 as [x, y] or { x, y }".to_string())
 }
 
-fn parse_rect(v: &Value) -> Result<[f64; 4], String> {
+fn parse_vec2(v: &Value) -> Result<[f64; 2], String> {
+    parse_vec2_raw(v).map(|(xy, _)| xy)
+}
+
+fn parse_rect_raw(v: &Value) -> Result<([f64; 4], bool), String> {
     let target = v.as_object().and_then(|o| o.get("Rect")).unwrap_or(v);
     if let Some(arr) = target.as_array() {
         if arr.len() == 4 {
@@ -821,14 +932,26 @@ fn parse_rect(v: &Value) -> Result<[f64; 4], String> {
             let c = arr[2].as_f64().ok_or("Rect[2] must be numeric")?;
             let d = arr[3].as_f64().ok_or("Rect[3] must be numeric")?;
             if a.is_finite() && b.is_finite() && c.is_finite() && d.is_finite() {
-                return Ok([a, b, c, d]);
+                let ca = a.clamp(RECT_COORD_MIN, RECT_COORD_MAX);
+                let cb = b.clamp(RECT_COORD_MIN, RECT_COORD_MAX);
+                let cc = c.clamp(RECT_COORD_MIN, RECT_COORD_MAX);
+                let cd = d.clamp(RECT_COORD_MIN, RECT_COORD_MAX);
+                let changed = (ca - a).abs() > f64::EPSILON
+                    || (cb - b).abs() > f64::EPSILON
+                    || (cc - c).abs() > f64::EPSILON
+                    || (cd - d).abs() > f64::EPSILON;
+                return Ok(([ca, cb, cc, cd], changed));
             }
         }
     }
     Err("expected Rect as [minX, minY, maxX, maxY]".to_string())
 }
 
-fn parse_color_rgb_u8(v: &Value) -> Result<[u8; 3], String> {
+fn parse_rect(v: &Value) -> Result<[f64; 4], String> {
+    parse_rect_raw(v).map(|(r, _)| r)
+}
+
+fn parse_color_rgb_u8_raw(v: &Value) -> Result<([u8; 3], bool), String> {
     if let Some(s) = v.as_str() {
         let hex = s.trim();
         if let Some(h) = hex.strip_prefix('#') {
@@ -836,24 +959,108 @@ fn parse_color_rgb_u8(v: &Value) -> Result<[u8; 3], String> {
                 let r = u8::from_str_radix(&h[0..2], 16).map_err(|_| "invalid hex color")?;
                 let g = u8::from_str_radix(&h[2..4], 16).map_err(|_| "invalid hex color")?;
                 let b = u8::from_str_radix(&h[4..6], 16).map_err(|_| "invalid hex color")?;
-                return Ok([r, g, b]);
+                return Ok(([r, g, b], false));
             }
             if h.len() == 3 {
                 let r = u8::from_str_radix(&h[0..1], 16).map_err(|_| "invalid hex color")? * 17;
                 let g = u8::from_str_radix(&h[1..2], 16).map_err(|_| "invalid hex color")? * 17;
                 let b = u8::from_str_radix(&h[2..3], 16).map_err(|_| "invalid hex color")? * 17;
-                return Ok([r, g, b]);
+                return Ok(([r, g, b], false));
+            }
+        }
+    }
+    if let Some(obj) = v.as_object() {
+        if let Some(inner) = obj.get("Color3") {
+            if let Some(arr) = inner.as_array() {
+                if arr.len() >= 3 {
+                    let r = arr[0].as_f64().ok_or("Color3[0] must be numeric")?;
+                    let g = arr[1].as_f64().ok_or("Color3[1] must be numeric")?;
+                    let b = arr[2].as_f64().ok_or("Color3[2] must be numeric")?;
+                    if !r.is_finite() || !g.is_finite() || !b.is_finite() {
+                        return Err("Color3 components must be finite".to_string());
+                    }
+                    let clamped = !(0.0..=1.0).contains(&r)
+                        || !(0.0..=1.0).contains(&g)
+                        || !(0.0..=1.0).contains(&b);
+                    return Ok((
+                        [
+                            (r.clamp(0.0, 1.0) * 255.0).round() as u8,
+                            (g.clamp(0.0, 1.0) * 255.0).round() as u8,
+                            (b.clamp(0.0, 1.0) * 255.0).round() as u8,
+                        ],
+                        clamped,
+                    ));
+                }
+            }
+            return parse_color_rgb_u8_raw(inner);
+        }
+        if let Some(inner) = obj.get("Color3uint8") {
+            if let Some(arr) = inner.as_array() {
+                if arr.len() >= 3 {
+                    let r = arr[0].as_f64().ok_or("Color3uint8[0] must be numeric")?;
+                    let g = arr[1].as_f64().ok_or("Color3uint8[1] must be numeric")?;
+                    let b = arr[2].as_f64().ok_or("Color3uint8[2] must be numeric")?;
+                    if !r.is_finite() || !g.is_finite() || !b.is_finite() {
+                        return Err("Color3uint8 components must be finite".to_string());
+                    }
+                    let clamped = !(0.0..=255.0).contains(&r)
+                        || !(0.0..=255.0).contains(&g)
+                        || !(0.0..=255.0).contains(&b);
+                    return Ok((
+                        [
+                            r.clamp(0.0, 255.0).round() as u8,
+                            g.clamp(0.0, 255.0).round() as u8,
+                            b.clamp(0.0, 255.0).round() as u8,
+                        ],
+                        clamped,
+                    ));
+                }
+            }
+            return parse_color_rgb_u8_raw(inner);
+        }
+    }
+    if let Some(arr) = v.as_array() {
+        if arr.len() >= 3 {
+            let r = arr[0].as_f64().ok_or("Color[0] must be numeric")?;
+            let g = arr[1].as_f64().ok_or("Color[1] must be numeric")?;
+            let b = arr[2].as_f64().ok_or("Color[2] must be numeric")?;
+            if !r.is_finite() || !g.is_finite() || !b.is_finite() {
+                return Err("Color components must be finite".to_string());
+            }
+            let clamped = if r > 1.0 || g > 1.0 || b > 1.0 {
+                !(0.0..=255.0).contains(&r)
+                    || !(0.0..=255.0).contains(&g)
+                    || !(0.0..=255.0).contains(&b)
+            } else {
+                r < 0.0 || g < 0.0 || b < 0.0
+            };
+            if let Some([rf, gf, bf]) = crate::scene::color_to_rgb_floats(v) {
+                return Ok((
+                    [
+                        (rf.clamp(0.0, 1.0) * 255.0).round() as u8,
+                        (gf.clamp(0.0, 1.0) * 255.0).round() as u8,
+                        (bf.clamp(0.0, 1.0) * 255.0).round() as u8,
+                    ],
+                    clamped,
+                ));
             }
         }
     }
     if let Some([r, g, b]) = crate::scene::color_to_rgb_floats(v) {
-        return Ok([
-            (r.clamp(0.0, 1.0) * 255.0).round() as u8,
-            (g.clamp(0.0, 1.0) * 255.0).round() as u8,
-            (b.clamp(0.0, 1.0) * 255.0).round() as u8,
-        ]);
+        return Ok((
+            [
+                (r.clamp(0.0, 1.0) * 255.0).round() as u8,
+                (g.clamp(0.0, 1.0) * 255.0).round() as u8,
+                (b.clamp(0.0, 1.0) * 255.0).round() as u8,
+            ],
+            false,
+        ));
     }
     Err("expected Color3 as #RRGGBB, #RGB, [r, g, b], or { Color3: [r, g, b] }".to_string())
+}
+
+fn parse_color_rgb_u8(v: &Value) -> Result<[u8; 3], String> {
+    parse_color_rgb_u8_raw(v).map(|(rgb, _)| rgb)
 }
 
 fn validate_safe_ident(raw: &str, field: &str) -> Result<(), String> {
@@ -880,7 +1087,25 @@ fn validate_enum_token(raw: &str, field: &str) -> Result<String, String> {
     Ok(tail.to_string())
 }
 
-fn validate_prop_value(class_name: &str, prop: &str, val: &Value) -> Result<(), String> {
+fn clamp_numeric_prop(canon: &str, n: f64) -> f64 {
+    match canon {
+        "BackgroundTransparency"
+        | "TextTransparency"
+        | "TextStrokeTransparency"
+        | "ImageTransparency"
+        | "Transparency" => n.clamp(0.0, 1.0),
+        "TextSize" => n.clamp(1.0, 256.0),
+        "BorderSizePixel" | "ScrollBarThickness" | "Thickness" => n.clamp(0.0, 64.0),
+        "AspectRatio" | "SliceScale" => n.clamp(0.01, 100.0),
+        "Rotation" => n.clamp(-3600.0, 3600.0),
+        "ZIndex" => n.clamp(-10000.0, 10000.0),
+        "LayoutOrder" => n.clamp(-100000.0, 100000.0),
+        "FillDirectionMaxCells" => n.clamp(0.0, 1000.0),
+        _ => n,
+    }
+}
+
+fn validate_and_clamp_prop_value(class_name: &str, prop: &str, val: &mut Value) -> Result<(), String> {
     if !is_prop_allowed(class_name, prop) {
         return Err(format!(
             "property '{prop}' is not in the allowlist for GUI class '{class_name}'"
@@ -889,21 +1114,36 @@ fn validate_prop_value(class_name: &str, prop: &str, val: &Value) -> Result<(), 
     let canon = canonical_prop_name(prop);
     match canon {
         "Position" | "Size" | "TileSize" | "CanvasSize" | "CellSize" | "CellPadding" => {
-            parse_udim2(val)?;
+            let (u, clamped) = parse_udim2_raw(val)?;
+            if clamped {
+                *val = json!([[u.x.scale, u.x.offset], [u.y.scale, u.y.offset]]);
+            }
         }
         "AnchorPoint" => {
-            parse_vec2(val)?;
+            let ([x, y], clamped) = parse_vec2_raw(val)?;
+            if clamped {
+                *val = json!([x, y]);
+            }
         }
         "CornerRadius" | "Padding" | "PaddingTop" | "PaddingBottom" | "PaddingLeft"
         | "PaddingRight" => {
-            parse_udim(val)?;
+            let (u, clamped) = parse_udim_raw(val)?;
+            if clamped {
+                *val = json!([u.scale, u.offset]);
+            }
         }
         "SliceCenter" => {
-            parse_rect(val)?;
+            let (r, clamped) = parse_rect_raw(val)?;
+            if clamped {
+                *val = json!([r[0], r[1], r[2], r[3]]);
+            }
         }
         "BackgroundColor3" | "BorderColor3" | "TextColor3" | "TextStrokeColor3"
         | "ImageColor3" | "ScrollBarImageColor3" | "Color" => {
-            parse_color_rgb_u8(val)?;
+            let ([r, g, b], clamped) = parse_color_rgb_u8_raw(val)?;
+            if clamped {
+                *val = json!(format!("#{r:02X}{g:02X}{b:02X}"));
+            }
         }
         "Visible" | "ClipsDescendants" | "Active" | "Selectable" | "TextScaled"
         | "TextWrapped" | "RichText" | "AutoButtonColor" | "Modal" | "Wraps" => {
@@ -912,28 +1152,18 @@ fn validate_prop_value(class_name: &str, prop: &str, val: &Value) -> Result<(), 
             }
         }
         "ZIndex" | "LayoutOrder" | "BorderSizePixel" | "TextSize" | "ScrollBarThickness"
-        | "FillDirectionMaxCells" => {
+        | "FillDirectionMaxCells" | "BackgroundTransparency" | "TextTransparency"
+        | "TextStrokeTransparency" | "ImageTransparency" | "Transparency" | "Rotation"
+        | "SliceScale" | "Thickness" | "AspectRatio" => {
             let n = val
                 .as_f64()
                 .ok_or_else(|| format!("property '{prop}' must be numeric"))?;
             if !n.is_finite() {
                 return Err(format!("property '{prop}' must be finite"));
             }
-        }
-        "BackgroundTransparency"
-        | "TextTransparency"
-        | "TextStrokeTransparency"
-        | "ImageTransparency"
-        | "Transparency"
-        | "Rotation"
-        | "SliceScale"
-        | "Thickness"
-        | "AspectRatio" => {
-            let n = val
-                .as_f64()
-                .ok_or_else(|| format!("property '{prop}' must be numeric"))?;
-            if !n.is_finite() {
-                return Err(format!("property '{prop}' must be finite"));
+            let clamped = clamp_numeric_prop(canon, n);
+            if (clamped - n).abs() > f64::EPSILON {
+                *val = json!(clamped);
             }
         }
         "Text" | "Name" => {
@@ -1051,12 +1281,20 @@ fn validate_node_recursive(
             node.class_name, node.name
         ));
     }
-    for (k, v) in &node.props {
-        validate_prop_value(&node.class_name, k, v)?;
+    if node.props.len() > MAX_NODE_PROPS {
+        return Err(format!(
+            "GUI node '{}' exceeds max {MAX_NODE_PROPS} properties",
+            node.name
+        ));
     }
-    let child_prefix = node.id.clone();
-    for child in &mut node.children {
-        validate_node_recursive(child, depth + 1, total, &child_prefix)?;
+    for (k, v) in &mut node.props {
+        validate_and_clamp_prop_value(&node.class_name, k, v)?;
+    }
+    if !node.children.is_empty() {
+        let child_prefix = node.id.clone();
+        for child in &mut node.children {
+            validate_node_recursive(child, depth + 1, total, &child_prefix)?;
+        }
     }
     Ok(())
 }
@@ -1091,6 +1329,11 @@ pub fn validate_screen_doc(mut doc: ScreenDoc) -> Result<ScreenDoc, String> {
 }
 
 pub fn parse_and_validate_screen_str(raw: &str) -> Result<ScreenDoc, String> {
+    if raw.len() > MAX_SCREEN_JSON_BYTES {
+        return Err(format!(
+            "ScreenDoc JSON exceeds {MAX_SCREEN_JSON_BYTES} byte limit"
+        ));
+    }
     let val: Value =
         serde_json::from_str(raw).map_err(|e| format!("invalid ScreenDoc JSON: {e}"))?;
     parse_and_validate_screen_value(&val)
@@ -1140,7 +1383,12 @@ fn prop_udim(node: &GuiNode, key: &str, default: UDimVal) -> UDimVal {
 }
 
 fn resolve_udim(u: UDimVal, parent_dim: f64) -> f64 {
-    u.scale * parent_dim + u.offset
+    let v = u.scale * parent_dim + u.offset;
+    if v.is_finite() {
+        v
+    } else {
+        0.0
+    }
 }
 
 fn rects_overlap(a: RectBox, b: RectBox) -> bool {
@@ -1666,7 +1914,9 @@ fn luau_str(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c if c.is_control() => {
+                let _ = write!(out, "\\u{{{:x}}}", c as u32);
+            }
             c => out.push(c),
         }
     }
@@ -1675,7 +1925,10 @@ fn luau_str(s: &str) -> String {
 }
 
 fn fmt_f64(n: f64) -> String {
-    if (n - n.round()).abs() < 1e-6 {
+    if !n.is_finite() {
+        return "0".to_string();
+    }
+    if (n - n.round()).abs() < 1e-6 && n.abs() <= 9_000_000_000_000_000.0 {
         format!("{}", n.round() as i64)
     } else {
         let s = format!("{n:.4}");
@@ -1863,11 +2116,12 @@ fn emit_luau_node(
     }
     used_vars.insert(var.clone());
 
-    buf.push_str(&format!(
-        "\tlocal {var} = Instance.new({})\n",
+    let _ = writeln!(
+        buf,
+        "\tlocal {var} = Instance.new({})",
         luau_str(&node.class_name)
-    ));
-    buf.push_str(&format!("\t{var}.Name = {}\n", luau_str(&node.name)));
+    );
+    let _ = writeln!(buf, "\t{var}.Name = {}", luau_str(&node.name));
 
     let mut asset_ref: Option<String> = None;
     let mut fallback_image: Option<String> = None;
@@ -1923,75 +2177,83 @@ fn emit_luau_node(
             }
             _ => {
                 let rhs = format_luau_prop_rhs(canon, v)?;
-                buf.push_str(&format!("\t{var}.{canon} = {rhs}\n"));
+                let _ = writeln!(buf, "\t{var}.{canon} = {rhs}");
             }
         }
     }
 
     if let Some(asset_key) = asset_ref {
         let fb = fallback_image.as_deref().unwrap_or("");
-        buf.push_str(&format!(
-            "\t{var}.Image = resolveAssetId(assetIds, {}, {})\n",
+        let _ = writeln!(
+            buf,
+            "\t{var}.Image = resolveAssetId(assetIds, {}, {})",
             luau_str(&asset_key),
             luau_str(fb)
-        ));
+        );
     } else if let Some(fb) = fallback_image {
-        buf.push_str(&format!("\t{var}.Image = {}\n", luau_str(&fb)));
+        let _ = writeln!(buf, "\t{var}.Image = {}", luau_str(&fb));
     }
 
     if matches!(node.class_name.as_str(), "TextButton" | "ImageButton")
         && (callback_name.is_some() || product_key.is_some() || product_id_num.is_some())
     {
-        buf.push_str(&format!("\t{var}.Activated:Connect(function()\n"));
+        let _ = writeln!(buf, "\t{var}.Activated:Connect(function()");
         if let Some(pk) = &product_key {
             let fallback_id_expr = product_id_num
                 .map(|n| format!(" or {n}"))
                 .unwrap_or_default();
-            buf.push_str(&format!(
-                "\t\tlocal productId = resolveProductId(productIds, {}){fallback_id_expr}\n",
+            let _ = writeln!(
+                buf,
+                "\t\tlocal productId = resolveProductId(productIds, {}){fallback_id_expr}",
                 luau_str(pk)
-            ));
+            );
             let cb_key = callback_name.as_deref().unwrap_or(pk);
-            buf.push_str(&format!(
-                "\t\tif callbacks and type(callbacks[{}]) == \"function\" then\n",
+            let _ = writeln!(
+                buf,
+                "\t\tif callbacks and type(callbacks[{}]) == \"function\" then",
                 luau_str(cb_key)
-            ));
-            buf.push_str(&format!("\t\t\tcallbacks[{}](productId)\n", luau_str(cb_key)));
+            );
+            let _ = writeln!(buf, "\t\t\tcallbacks[{}](productId)", luau_str(cb_key));
             buf.push_str("\t\telseif productId then\n");
-            buf.push_str(&format!(
-                "\t\t\tpromptProductOrPass(productIds, {}, productId)\n",
+            let _ = writeln!(
+                buf,
+                "\t\t\tpromptProductOrPass(productIds, {}, productId)",
                 luau_str(pk)
-            ));
+            );
             buf.push_str("\t\tend\n");
         } else if let Some(pid) = product_id_num {
             if let Some(cb) = &callback_name {
-                buf.push_str(&format!(
-                    "\t\tif callbacks and type(callbacks[{}]) == \"function\" then\n",
+                let _ = writeln!(
+                    buf,
+                    "\t\tif callbacks and type(callbacks[{}]) == \"function\" then",
                     luau_str(cb)
-                ));
-                buf.push_str(&format!("\t\t\tcallbacks[{}]({pid})\n", luau_str(cb)));
+                );
+                let _ = writeln!(buf, "\t\t\tcallbacks[{}]({pid})", luau_str(cb));
                 buf.push_str("\t\telse\n");
-                buf.push_str(&format!(
-                    "\t\t\tpromptProductOrPass(productIds, \"\", {pid})\n"
-                ));
+                let _ = writeln!(
+                    buf,
+                    "\t\t\tpromptProductOrPass(productIds, \"\", {pid})"
+                );
                 buf.push_str("\t\tend\n");
             } else {
-                buf.push_str(&format!(
-                    "\t\tpromptProductOrPass(productIds, \"\", {pid})\n"
-                ));
+                let _ = writeln!(
+                    buf,
+                    "\t\tpromptProductOrPass(productIds, \"\", {pid})"
+                );
             }
         } else if let Some(cb) = &callback_name {
-            buf.push_str(&format!(
-                "\t\tif callbacks and type(callbacks[{}]) == \"function\" then\n",
+            let _ = writeln!(
+                buf,
+                "\t\tif callbacks and type(callbacks[{}]) == \"function\" then",
                 luau_str(cb)
-            ));
-            buf.push_str(&format!("\t\t\tcallbacks[{}]()\n", luau_str(cb)));
+            );
+            let _ = writeln!(buf, "\t\t\tcallbacks[{}]()", luau_str(cb));
             buf.push_str("\t\tend\n");
         }
         buf.push_str("\tend)\n");
     }
 
-    buf.push_str(&format!("\t{var}.Parent = {parent_var}\n"));
+    let _ = writeln!(buf, "\t{var}.Parent = {parent_var}");
 
     for child in &node.children {
         emit_luau_node(buf, child, &var, counter, used_vars)?;
@@ -2003,14 +2265,19 @@ fn emit_luau_node(
 pub fn compile_screen_to_luau(slug: &str, doc: &ScreenDoc) -> Result<String, String> {
     let clean_slug = validate_slug(slug)?;
     let validated = validate_screen_doc(doc.clone())?;
+    compile_validated_to_luau(&clean_slug, &validated)
+}
+
+fn compile_validated_to_luau(clean_slug: &str, validated: &ScreenDoc) -> Result<String, String> {
     let uses_assets = node_uses_assets(&validated.root);
     let uses_products = node_uses_products(&validated.root);
 
-    let mut out = String::new();
+    let mut out = String::with_capacity(2048);
     out.push_str("--!strict\n");
-    out.push_str(&format!(
-        "-- Generated by OpenRO GUI Designer from ui/{clean_slug}.screen.json.\n\n"
-    ));
+    let _ = writeln!(
+        out,
+        "-- Generated by OpenRO GUI Designer from ui/{clean_slug}.screen.json.\n"
+    );
     if uses_products {
         out.push_str("local MarketplaceService = game:GetService(\"MarketplaceService\")\n");
     }
@@ -2254,6 +2521,10 @@ fn emit_rojo_model_node(node: &GuiNode) -> Result<Value, String> {
 /// Emit a deterministic Rojo `.model.json` representation of the `ScreenGui`.
 pub fn compile_screen_to_rojo_model(doc: &ScreenDoc) -> Result<Value, String> {
     let validated = validate_screen_doc(doc.clone())?;
+    compile_validated_to_rojo_model(&validated)
+}
+
+fn compile_validated_to_rojo_model(validated: &ScreenDoc) -> Result<Value, String> {
     let root_child = emit_rojo_model_node(&validated.root)?;
     Ok(json!({
         "className": "ScreenGui",
@@ -2320,8 +2591,8 @@ pub fn compile_screen_doc(
     let clean_slug = validate_slug(slug)?;
     let validated = validate_screen_doc(doc.clone())?;
     let analysis = analyze_safe_areas(&validated);
-    let mut luau = compile_screen_to_luau(&clean_slug, &validated)?;
-    let model_json = compile_screen_to_rojo_model(&validated)?;
+    let mut luau = compile_validated_to_luau(&clean_slug, &validated)?;
+    let model_json = compile_validated_to_rojo_model(&validated)?;
 
     let stylua_json = match projects::find_tool("stylua", "OPENRO_STYLUA") {
         Some(bin) => {
@@ -2382,36 +2653,46 @@ pub fn compile_screen_doc(
 // ---------------------------------------------------------------------------
 
 pub fn list_project_screens(dir: &Path) -> Result<Value, String> {
-    let ui_dir = dir.join(UI_DIR_REL);
+    let ui_dir = projects::safe_join(dir, UI_DIR_REL)?;
     let mut screens = Vec::new();
-    if ui_dir.is_dir() {
-        let mut entries: Vec<PathBuf> = std::fs::read_dir(&ui_dir)
-            .map_err(|e| format!("read ui dir: {e}"))?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .collect();
-        entries.sort();
-        for path in entries {
-            let Some(fname) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            let Some(slug) = fname.strip_suffix(".screen.json") else {
-                continue;
-            };
-            if validate_slug(slug).is_err() {
-                continue;
-            }
-            if let Ok(raw) = std::fs::read_to_string(&path) {
-                if let Ok(doc) = parse_and_validate_screen_str(&raw) {
-                    let analysis = analyze_safe_areas(&doc);
-                    screens.push(json!({
-                        "slug": slug,
-                        "path": format!("{UI_DIR_REL}/{fname}"),
-                        "name": doc.name,
-                        "version": doc.version,
-                        "warning_count": analysis.warning_count,
-                        "doc": doc.to_json(),
-                    }));
+    if let Ok(meta) = std::fs::symlink_metadata(&ui_dir) {
+        if meta.file_type().is_symlink() {
+            return Err("ui directory must not be a symlink".to_string());
+        }
+        if meta.is_dir() {
+            let mut entries: Vec<PathBuf> = std::fs::read_dir(&ui_dir)
+                .map_err(|e| format!("read ui dir: {e}"))?
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_ok_and(|ft| !ft.is_symlink() && ft.is_file()))
+                .map(|e| e.path())
+                .collect();
+            entries.sort();
+            for path in entries {
+                let Some(fname) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                let Some(slug) = fname.strip_suffix(".screen.json") else {
+                    continue;
+                };
+                if validate_slug(slug).is_err() {
+                    continue;
+                }
+                if std::fs::symlink_metadata(&path)
+                    .is_ok_and(|m| !m.file_type().is_symlink() && m.is_file() && m.len() <= MAX_SCREEN_JSON_BYTES as u64)
+                {
+                    if let Ok(raw) = std::fs::read_to_string(&path) {
+                        if let Ok(doc) = parse_and_validate_screen_str(&raw) {
+                            let analysis = analyze_safe_areas(&doc);
+                            screens.push(json!({
+                                "slug": slug,
+                                "path": format!("{UI_DIR_REL}/{fname}"),
+                                "name": doc.name,
+                                "version": doc.version,
+                                "warning_count": analysis.warning_count,
+                                "doc": doc.to_json(),
+                            }));
+                        }
+                    }
                 }
             }
         }
@@ -2426,6 +2707,17 @@ pub fn load_project_screen(dir: &Path, slug: &str) -> Result<(String, ScreenDoc)
     let clean = validate_slug(slug)?;
     let rel = format!("{UI_DIR_REL}/{clean}.screen.json");
     let full = projects::safe_join(dir, &rel)?;
+    let meta = std::fs::symlink_metadata(&full)
+        .map_err(|_| format!("screen '{clean}' not found at {rel}"))?;
+    if meta.file_type().is_symlink() {
+        return Err(format!("screen '{clean}' must not be a symlink"));
+    }
+    if !meta.is_file() {
+        return Err(format!("screen '{clean}' not found at {rel}"));
+    }
+    if meta.len() > MAX_SCREEN_JSON_BYTES as u64 {
+        return Err(format!("screen '{clean}' exceeds {MAX_SCREEN_JSON_BYTES} byte limit"));
+    }
     let raw = std::fs::read_to_string(&full)
         .map_err(|_| format!("screen '{clean}' not found at {rel}"))?;
     let doc = parse_and_validate_screen_str(&raw)?;
@@ -2503,8 +2795,22 @@ pub fn compile_project_screen(dir: &Path, slug: &str, body: &Value) -> Result<Va
         .filter(|s| !s.is_empty());
 
     let luau_rel = if let Some(out_p) = custom_out {
+        if out_p.contains('\0')
+            || out_p.contains('\\')
+            || out_p.chars().any(|c| c.is_control())
+        {
+            return Err("out_path contains forbidden characters".to_string());
+        }
         if !out_p.ends_with(".luau") && !out_p.ends_with(".lua") {
             return Err("out_path must end in .luau or .lua".to_string());
+        }
+        let check_full = projects::safe_join(dir, out_p)?;
+        let shown = projects::rel_display(dir, &check_full);
+        let top = shown.split('/').next().unwrap_or("");
+        if matches!(top, ".git" | ".openro" | "build")
+            || shown.split('/').any(|s| s == ".git" || s == ".openro")
+        {
+            return Err("out_path cannot target .git, .openro, or build folders".to_string());
         }
         out_p.to_string()
     } else {
@@ -2517,13 +2823,8 @@ pub fn compile_project_screen(dir: &Path, slug: &str, body: &Value) -> Result<Va
     let mut modified_files = Vec::new();
     if should_write {
         let luau_full = projects::safe_join(dir, &luau_rel)?;
-        if let Some(parent) = luau_full.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("create ui dir: {e}"))?;
-        }
         let luau_src = result["luau"].as_str().unwrap_or("");
-        let tmp = luau_full.with_extension("openro-tmp");
-        std::fs::write(&tmp, luau_src.as_bytes()).map_err(|e| format!("write {luau_rel}: {e}"))?;
-        std::fs::rename(&tmp, &luau_full).map_err(|e| format!("rename {luau_rel}: {e}"))?;
+        write_atomic_bytes(&luau_full, luau_src.as_bytes())?;
         modified_files.push(luau_rel.clone());
 
         if emit_model {

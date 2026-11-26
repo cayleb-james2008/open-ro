@@ -9,8 +9,9 @@
 
 use crate::projects::{self, Node};
 use serde_json::{json, Map, Value};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{BufWriter, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,6 +24,9 @@ const DEFAULT_TIMEOUT_SECS: u64 = 15;
 const MIN_TIMEOUT_SECS: u64 = 1;
 const MAX_TIMEOUT_SECS: u64 = 30;
 const STDIO_CAP_BYTES: u64 = 65_536;
+const MAX_PLAYERS: usize = 32;
+const MAX_JOURNEY_STEPS: usize = 200;
+const MAX_REPORT_BYTES: u64 = 8 * 1024 * 1024;
 
 static RUN_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -327,27 +331,53 @@ fn missing_lune_report(searched: &[String]) -> Value {
     })
 }
 
-fn parse_players(req: &Value) -> Result<Value, String> {
-    match req.get("players") {
-        None | Some(Value::Null) => Ok(json!([
-            { "user_id": 1001, "name": "TestPlayer", "owns_passes": [] }
-        ])),
-        Some(Value::Array(arr)) => {
-            if arr.is_empty() {
-                return Ok(json!([
-                    { "user_id": 1001, "name": "TestPlayer", "owns_passes": [] }
-                ]));
+fn parse_timeout_secs(req: &Value) -> Result<u64, String> {
+    match req.get("timeout_secs") {
+        None | Some(Value::Null) => Ok(DEFAULT_TIMEOUT_SECS),
+        Some(v) => {
+            if let Some(u) = v.as_u64() {
+                Ok(u.clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS))
+            } else if let Some(f) = v.as_f64() {
+                if !f.is_finite() || f < 0.0 {
+                    return Err("timeout_secs must be a positive number".to_string());
+                }
+                Ok((f.ceil() as u64).clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS))
+            } else {
+                Err("timeout_secs must be a positive number".to_string())
             }
-            Ok(Value::Array(arr.clone()))
+        }
+    }
+}
+
+fn parse_players(req: &Value) -> Result<Cow<'_, Value>, String> {
+    match req.get("players") {
+        None | Some(Value::Null) => Ok(Cow::Owned(json!([
+            { "user_id": 1001, "name": "TestPlayer", "owns_passes": [] }
+        ]))),
+        Some(v @ Value::Array(arr)) => {
+            if arr.is_empty() {
+                return Ok(Cow::Owned(json!([
+                    { "user_id": 1001, "name": "TestPlayer", "owns_passes": [] }
+                ])));
+            }
+            if arr.len() > MAX_PLAYERS {
+                return Err(format!("players exceeds max count of {MAX_PLAYERS}"));
+            }
+            Ok(Cow::Borrowed(v))
         }
         Some(_) => Err("players must be an array of player objects".into()),
     }
 }
 
-fn parse_journey(req: &Value) -> Result<(bool, Value), String> {
+fn parse_journey(req: &Value) -> Result<(bool, Cow<'_, Value>), String> {
     match req.get("journey") {
-        None | Some(Value::Null) => Ok((true, Value::Null)),
-        Some(Value::Array(arr)) => Ok((false, Value::Array(arr.clone()))),
+        None | Some(Value::Null) => Ok((true, Cow::Owned(Value::Null))),
+        Some(v @ Value::Array(arr)) => {
+            if arr.len() > MAX_JOURNEY_STEPS {
+                return Err(format!("journey exceeds max {MAX_JOURNEY_STEPS} steps"));
+            }
+            Ok((false, Cow::Borrowed(v)))
+        }
         Some(_) => Err("journey must be an array of step objects".into()),
     }
 }
@@ -405,11 +435,10 @@ fn run_lune_sandbox(
     req: &Value,
     lune_override: Option<Option<&Path>>,
 ) -> Result<Value, String> {
-    let timeout_secs = req
-        .get("timeout_secs")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_TIMEOUT_SECS)
-        .clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS);
+    if !req.is_object() && !req.is_null() {
+        return Err("sandbox request body must be a JSON object".to_string());
+    }
+    let timeout_secs = parse_timeout_secs(req)?;
     let players = parse_players(req)?;
     let (auto_journey, journey) = parse_journey(req)?;
 
@@ -426,10 +455,16 @@ fn run_lune_sandbox(
     };
 
     let seq = RUN_SEQ.fetch_add(1, Ordering::Relaxed);
-    let scratch_dir = std::env::temp_dir()
-        .join("openro-sandbox")
-        .join(format!("run-{}-{seq}", std::process::id()));
-    std::fs::create_dir_all(&scratch_dir)
+    let scratch_root = std::env::temp_dir().join("openro-sandbox");
+    std::fs::create_dir_all(&scratch_root)
+        .map_err(|e| format!("create sandbox scratch root: {e}"))?;
+    if std::fs::symlink_metadata(&scratch_root)
+        .is_ok_and(|m| m.file_type().is_symlink())
+    {
+        return Err("sandbox scratch root must not be a symlink".to_string());
+    }
+    let scratch_dir = scratch_root.join(format!("run-{}-{seq}", std::process::id()));
+    std::fs::create_dir(&scratch_dir)
         .map_err(|e| format!("create sandbox scratch dir: {e}"))?;
     let _guard = ScratchDirGuard(scratch_dir.clone());
 
@@ -443,16 +478,21 @@ fn run_lune_sandbox(
     let input_payload = json!({
         "project_name": project_name,
         "tree": tree_json,
-        "players": players,
+        "players": players.as_ref(),
         "auto_journey": auto_journey,
-        "journey": journey,
+        "journey": journey.as_ref(),
         "product_ids": product_ids,
         "timeout_secs": timeout_secs,
     });
-    let input_bytes = serde_json::to_vec(&input_payload)
-        .map_err(|e| format!("serialize sandbox input: {e}"))?;
-    std::fs::write(&input_path, input_bytes)
-        .map_err(|e| format!("write sandbox input: {e}"))?;
+    {
+        let input_file = std::fs::File::create(&input_path)
+            .map_err(|e| format!("create sandbox input: {e}"))?;
+        let mut writer = BufWriter::new(input_file);
+        serde_json::to_writer(&mut writer, &input_payload)
+            .map_err(|e| format!("write sandbox input: {e}"))?;
+        std::io::Write::flush(&mut writer)
+            .map_err(|e| format!("flush sandbox input: {e}"))?;
+    }
 
     let started = Instant::now();
     let mut child = Command::new(&bin)
@@ -470,14 +510,14 @@ fn run_lune_sandbox(
     let mut out_pipe = child.stdout.take();
     let mut err_pipe = child.stderr.take();
     let out_handle = std::thread::spawn(move || {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(1024);
         if let Some(ref mut r) = out_pipe {
             let _ = r.take(STDIO_CAP_BYTES).read_to_end(&mut buf);
         }
         String::from_utf8_lossy(&buf).into_owned()
     });
     let err_handle = std::thread::spawn(move || {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(1024);
         if let Some(ref mut r) = err_pipe {
             let _ = r.take(STDIO_CAP_BYTES).read_to_end(&mut buf);
         }
@@ -525,20 +565,22 @@ fn run_lune_sandbox(
         }));
     }
 
-    if report_path.is_file() {
-        let raw = std::fs::read_to_string(&report_path)
-            .map_err(|e| format!("read sandbox report: {e}"))?;
-        if let Ok(mut report) = serde_json::from_str::<Value>(&raw) {
-            normalize_report_json(&mut report);
-            if let Some(obj) = report.as_object_mut() {
-                obj.entry("ok").or_insert(json!(true));
-                obj.entry("engine").or_insert(json!("lune_roblox_shim"));
-                obj.insert("duration_ms".to_string(), json!(elapsed_ms));
-                if exit_code != 0 && obj.get("passed").and_then(Value::as_bool) == Some(true) {
-                    obj.insert("passed".to_string(), json!(false));
+    if let Ok(meta) = std::fs::symlink_metadata(&report_path) {
+        if !meta.file_type().is_symlink() && meta.is_file() && meta.len() <= MAX_REPORT_BYTES {
+            let raw = std::fs::read_to_string(&report_path)
+                .map_err(|e| format!("read sandbox report: {e}"))?;
+            if let Ok(mut report) = serde_json::from_str::<Value>(&raw) {
+                normalize_report_json(&mut report);
+                if let Some(obj) = report.as_object_mut() {
+                    obj.entry("ok").or_insert(json!(true));
+                    obj.entry("engine").or_insert(json!("lune_roblox_shim"));
+                    obj.insert("duration_ms".to_string(), json!(elapsed_ms));
+                    if exit_code != 0 && obj.get("passed").and_then(Value::as_bool) == Some(true) {
+                        obj.insert("passed".to_string(), json!(false));
+                    }
                 }
+                return Ok(report);
             }
-            return Ok(report);
         }
     }
 

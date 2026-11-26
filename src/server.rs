@@ -3772,6 +3772,11 @@ fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
 }
 
 fn extract_studio_gui_slug(body: &Value) -> Result<String, String> {
+    if let Some(slug_val) = body.get("slug") {
+        if !slug_val.is_null() && !slug_val.is_string() {
+            return Err("gui slug must be a string".to_string());
+        }
+    }
     let raw = body
         .get("slug")
         .and_then(Value::as_str)
