@@ -1245,6 +1245,68 @@ export type LiveOpsTelemetryAlert = {
   detail: string;
 };
 
+export type TelemetrySourceFilter = "all" | "live_opencloud" | "sandbox";
+export type TelemetryCodegenMode = "opencloud_datastore" | "webhook_relay";
+export type TelemetrySyncSource = "opencloud_datastore" | "creator_analytics";
+
+export type TelemetrySyncState = {
+  last_synced_at?: string | null;
+  last_sync_at?: string | null;
+  source?: TelemetrySyncSource | string | null;
+  store_name?: string | null;
+  shard_cursor?: string | null;
+  cursor?: string | null;
+  shards_scanned?: number;
+  last_imported_count?: number;
+  imported_total?: number;
+  status?: string | null;
+};
+
+export type LiveErrorAggregate = {
+  fingerprint: string;
+  script_path?: string;
+  message: string;
+  count: number;
+  first_seen: string;
+  last_seen: string;
+  source?: string;
+};
+
+export type TelemetryCodegenRequest = {
+  mode: TelemetryCodegenMode;
+  store_name?: string;
+  flush_interval_secs?: number;
+  relay_url?: string;
+};
+
+export type TelemetryCodegenResponse = {
+  ok?: boolean;
+  mode: TelemetryCodegenMode | string;
+  store_name?: string;
+  files: string[];
+  warnings: string[];
+};
+
+export type TelemetrySyncRequest = {
+  days?: number;
+  store_name?: string;
+  source: TelemetrySyncSource;
+};
+
+export type TelemetrySyncResponse = {
+  ok?: boolean;
+  imported_count: number;
+  sync_state: TelemetrySyncState;
+  summary: LiveOpsTelemetrySummary;
+  top_errors: LiveErrorAggregate[];
+};
+
+export type LiveErrorsResponse = {
+  ok?: boolean;
+  errors: LiveErrorAggregate[];
+  sync_state?: TelemetrySyncState;
+};
+
 export type LiveOpsTelemetrySummary = {
   dau_sample: number;
   total_events?: number;
@@ -1253,6 +1315,8 @@ export type LiveOpsTelemetrySummary = {
   top_sinks: LiveOpsCurrencySink[];
   alerts: LiveOpsTelemetryAlert[];
   updated_at?: string | null;
+  source?: TelemetrySourceFilter | string;
+  sync_state?: TelemetrySyncState;
 };
 
 function buildLiveOpsQuery(params: Record<string, string | number | undefined>): string {
@@ -1384,8 +1448,43 @@ export async function ingestLiveOpsTelemetry(
   return call<{ ingested: number; total_events?: number }>(projUrl(projectId, "/liveops/telemetry/ingest"), { events });
 }
 
-export async function getLiveOpsTelemetrySummary(projectId: string): Promise<Res<LiveOpsTelemetrySummary>> {
-  return call<LiveOpsTelemetrySummary>(projUrl(projectId, "/liveops/telemetry/summary"));
+export async function getLiveOpsTelemetrySummary(
+  projectId: string,
+  source?: TelemetrySourceFilter,
+): Promise<Res<LiveOpsTelemetrySummary>> {
+  const qs = buildLiveOpsQuery({ source });
+  return call<LiveOpsTelemetrySummary>(projUrl(projectId, `/liveops/telemetry/summary${qs}`));
+}
+
+export async function generateLiveOpsTelemetryCollector(
+  projectId: string,
+  payload: TelemetryCodegenRequest,
+): Promise<Res<TelemetryCodegenResponse>> {
+  return call<TelemetryCodegenResponse>(projUrl(projectId, "/liveops/telemetry/codegen"), {
+    mode: payload.mode,
+    ...(payload.store_name ? { store_name: payload.store_name } : {}),
+    ...(typeof payload.flush_interval_secs === "number" ? { flush_interval_secs: payload.flush_interval_secs } : {}),
+    ...(payload.relay_url ? { relay_url: payload.relay_url } : {}),
+  });
+}
+
+export async function syncLiveOpsTelemetry(
+  projectId: string,
+  payload: TelemetrySyncRequest,
+): Promise<Res<TelemetrySyncResponse>> {
+  return call<TelemetrySyncResponse>(projUrl(projectId, "/liveops/telemetry/sync"), {
+    source: payload.source,
+    ...(typeof payload.days === "number" ? { days: payload.days } : {}),
+    ...(payload.store_name ? { store_name: payload.store_name } : {}),
+  });
+}
+
+export async function getLiveOpsErrors(
+  projectId: string,
+  source?: TelemetrySourceFilter,
+): Promise<Res<LiveErrorsResponse>> {
+  const qs = buildLiveOpsQuery({ source });
+  return call<LiveErrorsResponse>(projUrl(projectId, `/liveops/errors${qs}`));
 }
 
 export type StudioPullChangeKind = "script" | "instance" | "lighting";

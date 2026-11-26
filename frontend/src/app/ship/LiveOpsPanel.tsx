@@ -5,7 +5,10 @@ import {
   AlertTriangle,
   Archive,
   BarChart3,
+  Bug,
   Check,
+  CloudDownload,
+  Code2,
   Database,
   FileCode2,
   Plus,
@@ -23,7 +26,9 @@ import { Pill } from "@/components/kibo-ui/pill";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import {
   deleteLiveOpsDataStoreEntry,
+  generateLiveOpsTelemetryCollector,
   getLiveOpsDataStoreEntry,
+  getLiveOpsErrors,
   getLiveOpsRemoteConfig,
   getLiveOpsTelemetrySummary,
   ingestLiveOpsTelemetry,
@@ -33,11 +38,18 @@ import {
   saveLiveOpsRemoteConfig,
   setLiveOpsDataStoreEntry,
   stamp,
+  syncLiveOpsTelemetry,
+  type LiveErrorAggregate,
   type LiveOpsDataStoreEntry,
   type LiveOpsDataStoreKind,
   type LiveOpsRemoteConfigResponse,
   type LiveOpsTelemetryEvent,
   type LiveOpsTelemetrySummary,
+  type TelemetryCodegenMode,
+  type TelemetryCodegenResponse,
+  type TelemetrySourceFilter,
+  type TelemetrySyncSource,
+  type TelemetrySyncState,
 } from "./api";
 import { Field } from "./ProjectsRail";
 import type { Ship } from "./useShip";
@@ -134,16 +146,38 @@ export function LiveOpsPanel({
   const [rcGenLuau, setRcGenLuau] = useState(true);
   const [rcSavedInfo, setRcSavedInfo] = useState<LiveOpsRemoteConfigResponse | null>(null);
 
-  // 4) Player Telemetry & Funnel Cohort Summary
+  // 4) Player Telemetry, Collector Codegen, Production Sync & Live Server Errors
   const [telemetry, setTelemetry] = useState<LiveOpsTelemetrySummary | null>(null);
   const [telBusy, setTelBusy] = useState(false);
   const [telIngesting, setTelIngesting] = useState(false);
   const [telError, setTelError] = useState("");
+  const [telSource, setTelSource] = useState<TelemetrySourceFilter>("all");
+
+  const [syncSource, setSyncSource] = useState<TelemetrySyncSource>("opencloud_datastore");
+  const [syncDays, setSyncDays] = useState("7");
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncError, setSyncError] = useState("");
+  const [syncState, setSyncState] = useState<TelemetrySyncState | null>(null);
+  const [lastImportedDelta, setLastImportedDelta] = useState<number | null>(null);
+
+  const [collectorMode, setCollectorMode] = useState<TelemetryCodegenMode>("opencloud_datastore");
+  const [collectorStore, setCollectorStore] = useState("OpenRO_Telemetry");
+  const [collectorFlushSecs, setCollectorFlushSecs] = useState("30");
+  const [collectorRelayUrl, setCollectorRelayUrl] = useState("");
+  const [collectorBusy, setCollectorBusy] = useState(false);
+  const [collectorError, setCollectorError] = useState("");
+  const [collectorResult, setCollectorResult] = useState<TelemetryCodegenResponse | null>(null);
+
+  const [liveErrors, setLiveErrors] = useState<LiveErrorAggregate[]>([]);
+  const [errorsBusy, setErrorsBusy] = useState(false);
+  const [errorsError, setErrorsError] = useState("");
 
   const dsMutationLockRef = useRef(false);
   const msgPublishLockRef = useRef(false);
   const rcSaveLockRef = useRef(false);
   const telIngestLockRef = useRef(false);
+  const telSyncLockRef = useRef(false);
+  const collectorLockRef = useRef(false);
 
   const inspectEntry = useCallback(
     async (storeName: string, scopeName: string, keyName: string, kindVal: LiveOpsDataStoreKind) => {
@@ -222,26 +256,55 @@ export function LiveOpsPanel({
     setRcSavedInfo(r as LiveOpsRemoteConfigResponse);
   }, [projectId]);
 
-  const loadTelemetry = useCallback(async () => {
-    if (!projectId) return;
-    setTelBusy(true);
-    setTelError("");
-    const r = await getLiveOpsTelemetrySummary(projectId);
-    setTelBusy(false);
-    if (!r.ok) {
-      setTelError(r.error || "Could not load player telemetry summary.");
-      return;
-    }
-    setTelemetry({
-      dau_sample: typeof r.dau_sample === "number" ? r.dau_sample : 0,
-      total_events: typeof r.total_events === "number" ? r.total_events : 0,
-      funnel_steps: Array.isArray(r.funnel_steps) ? r.funnel_steps : [],
-      arpdau_robux: typeof r.arpdau_robux === "number" ? r.arpdau_robux : 0,
-      top_sinks: Array.isArray(r.top_sinks) ? r.top_sinks : [],
-      alerts: Array.isArray(r.alerts) ? r.alerts : [],
-      updated_at: r.updated_at ?? null,
-    });
-  }, [projectId]);
+  const loadTelemetry = useCallback(
+    async (sourceOverride?: TelemetrySourceFilter) => {
+      if (!projectId) return;
+      const activeSource = sourceOverride ?? telSource;
+      setTelBusy(true);
+      setTelError("");
+      const r = await getLiveOpsTelemetrySummary(projectId, activeSource);
+      setTelBusy(false);
+      if (!r.ok) {
+        setTelError(r.error || "Could not load player telemetry summary.");
+        return;
+      }
+      setTelemetry({
+        dau_sample: typeof r.dau_sample === "number" ? r.dau_sample : 0,
+        total_events: typeof r.total_events === "number" ? r.total_events : 0,
+        funnel_steps: Array.isArray(r.funnel_steps) ? r.funnel_steps : [],
+        arpdau_robux: typeof r.arpdau_robux === "number" ? r.arpdau_robux : 0,
+        top_sinks: Array.isArray(r.top_sinks) ? r.top_sinks : [],
+        alerts: Array.isArray(r.alerts) ? r.alerts : [],
+        updated_at: r.updated_at ?? null,
+        source: r.source,
+        sync_state: r.sync_state,
+      });
+      if (r.sync_state) {
+        setSyncState(r.sync_state);
+      }
+    },
+    [projectId, telSource],
+  );
+
+  const loadErrors = useCallback(
+    async (sourceOverride?: TelemetrySourceFilter) => {
+      if (!projectId) return;
+      const activeSource = sourceOverride ?? telSource;
+      setErrorsBusy(true);
+      setErrorsError("");
+      const r = await getLiveOpsErrors(projectId, activeSource);
+      setErrorsBusy(false);
+      if (!r.ok) {
+        setErrorsError(r.error || "Could not load live server errors.");
+        return;
+      }
+      setLiveErrors(Array.isArray(r.errors) ? r.errors : []);
+      if (r.sync_state) {
+        setSyncState(r.sync_state);
+      }
+    },
+    [projectId, telSource],
+  );
 
   useEffect(() => {
     if (!projectId) return;
@@ -254,13 +317,20 @@ export function LiveOpsPanel({
     setMsgError("");
     setRcError("");
     setTelError("");
+    setSyncError("");
+    setSyncState(null);
+    setLastImportedDelta(null);
+    setCollectorError("");
+    setCollectorResult(null);
+    setErrorsError("");
     if (openCloudReady) {
       void loadDataStores();
     } else {
       setDsEntries([]);
     }
     void loadRemoteConfig();
-    void loadTelemetry();
+    void loadTelemetry(telSource);
+    void loadErrors(telSource);
   }, [projectId, openCloudReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const dsParsed = useMemo(() => tryParseJson(dsValueText), [dsValueText]);
@@ -471,10 +541,105 @@ export function LiveOpsPanel({
         return;
       }
       toast.success(`Ingested ${r.ingested ?? sample.length} telemetry event(s)`);
-      await loadTelemetry();
+      await loadTelemetry(telSource);
+      await loadErrors(telSource);
     } finally {
       telIngestLockRef.current = false;
       setTelIngesting(false);
+    }
+  };
+
+  const handleTelemetrySourceChange = (next: TelemetrySourceFilter) => {
+    setTelSource(next);
+    void loadTelemetry(next);
+    void loadErrors(next);
+  };
+
+  const handleGenerateCollector = async () => {
+    if (collectorLockRef.current) return;
+    const trimmedRelay = collectorRelayUrl.trim();
+    if (collectorMode === "webhook_relay" && !trimmedRelay.startsWith("https://")) {
+      setCollectorError("Webhook relay mode requires an https:// relay URL.");
+      return;
+    }
+    const parsedFlush = Number(collectorFlushSecs);
+    const flushSecs = Number.isFinite(parsedFlush) ? Math.max(5, Math.min(300, Math.round(parsedFlush))) : 30;
+    collectorLockRef.current = true;
+    setCollectorBusy(true);
+    setCollectorError("");
+    try {
+      const r = await generateLiveOpsTelemetryCollector(projectId, {
+        mode: collectorMode,
+        store_name: collectorStore.trim() || "OpenRO_Telemetry",
+        flush_interval_secs: flushSecs,
+        ...(collectorMode === "webhook_relay" ? { relay_url: trimmedRelay } : {}),
+      });
+      if (!r.ok) {
+        setCollectorError(r.error || "Failed to generate telemetry collector scripts.");
+        return;
+      }
+      const files = Array.isArray(r.files) ? r.files : [];
+      const warnings = Array.isArray(r.warnings) ? r.warnings : [];
+      setCollectorResult({
+        ok: true,
+        mode: r.mode || collectorMode,
+        store_name: r.store_name || collectorStore.trim() || "OpenRO_Telemetry",
+        files,
+        warnings,
+      });
+      toast.success(`Generated ${files.length} strict Luau collector file(s)`);
+    } finally {
+      collectorLockRef.current = false;
+      setCollectorBusy(false);
+    }
+  };
+
+  const handleSyncTelemetry = async () => {
+    if (telSyncLockRef.current) return;
+    const parsedDays = Number(syncDays);
+    const days = Number.isFinite(parsedDays) ? Math.max(1, Math.min(90, Math.round(parsedDays))) : 7;
+    telSyncLockRef.current = true;
+    setSyncBusy(true);
+    setSyncError("");
+    try {
+      const r = await syncLiveOpsTelemetry(projectId, {
+        source: syncSource,
+        days,
+        store_name: collectorStore.trim() || "OpenRO_Telemetry",
+      });
+      if (!r.ok) {
+        setSyncError(r.error || "Could not sync production telemetry.");
+        return;
+      }
+      const imported = typeof r.imported_count === "number" ? r.imported_count : 0;
+      setLastImportedDelta(imported);
+      if (r.sync_state) {
+        setSyncState(r.sync_state);
+      }
+      if (telSource !== "sandbox" && r.summary) {
+        setTelemetry({
+          dau_sample: typeof r.summary.dau_sample === "number" ? r.summary.dau_sample : 0,
+          total_events: typeof r.summary.total_events === "number" ? r.summary.total_events : 0,
+          funnel_steps: Array.isArray(r.summary.funnel_steps) ? r.summary.funnel_steps : [],
+          arpdau_robux: typeof r.summary.arpdau_robux === "number" ? r.summary.arpdau_robux : 0,
+          top_sinks: Array.isArray(r.summary.top_sinks) ? r.summary.top_sinks : [],
+          alerts: Array.isArray(r.summary.alerts) ? r.summary.alerts : [],
+          updated_at: r.summary.updated_at ?? null,
+          source: r.summary.source,
+          sync_state: r.sync_state,
+        });
+      } else {
+        await loadTelemetry(telSource);
+      }
+      if (telSource !== "sandbox" && Array.isArray(r.top_errors)) {
+        setLiveErrors(r.top_errors);
+      } else {
+        await loadErrors(telSource);
+      }
+      toast.success(`Synced ${imported} live telemetry event(s)`);
+    } finally {
+      telSyncLockRef.current = false;
+      setSyncBusy(false);
     }
   };
 
@@ -1066,14 +1231,98 @@ export function LiveOpsPanel({
         )}
       </section>
 
-      {/* 4. Live Player Telemetry & Funnel Cohort Summary */}
+      {/* 4. Live Player Telemetry, Collector Codegen & Production Sync */}
       <section aria-label="Live Player Telemetry and Funnel Cohort Summary" className="card-stock flex flex-col gap-3 p-4" data-liveops-telemetry>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <BarChart3 className="size-4 shrink-0 text-blue" strokeWidth={1.5} aria-hidden />
             <h3 className="font-heading text-ui font-medium text-ink">Player Telemetry &amp; Funnel Cohort</h3>
           </div>
+          <SegmentedControl aria-label="Telemetry Source" size="sm" className="max-w-full flex-wrap" data-telemetry-source-filter>
+            <SegmentedControlItem
+              data-checked={telSource === "all" ? "" : undefined}
+              aria-pressed={telSource === "all"}
+              onClick={() => handleTelemetrySourceChange("all")}
+              data-telemetry-source="all"
+            >
+              All
+            </SegmentedControlItem>
+            <SegmentedControlItem
+              data-checked={telSource === "live_opencloud" ? "" : undefined}
+              aria-pressed={telSource === "live_opencloud"}
+              onClick={() => handleTelemetrySourceChange("live_opencloud")}
+              data-telemetry-source="live_opencloud"
+            >
+              Live Production
+            </SegmentedControlItem>
+            <SegmentedControlItem
+              data-checked={telSource === "sandbox" ? "" : undefined}
+              aria-pressed={telSource === "sandbox"}
+              onClick={() => handleTelemetrySourceChange("sandbox")}
+              data-telemetry-source="sandbox"
+            >
+              Headless Sandbox
+            </SegmentedControlItem>
+          </SegmentedControl>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-hairline bg-board/30 px-3 py-2" data-telemetry-sync-status>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-ink-2">
+            <span>
+              Last sync:{" "}
+              <span className="font-mono tabular-nums text-ink">
+                {syncState?.last_synced_at || syncState?.last_sync_at
+                  ? stamp(syncState.last_synced_at || syncState.last_sync_at || "")
+                  : "Never synced"}
+              </span>
+            </span>
+            <Pill className="bg-track px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2" data-telemetry-sync-cursor>
+              {syncState?.shard_cursor || syncState?.cursor
+                ? `Cursor ${syncState.shard_cursor || syncState.cursor}`
+                : syncState?.status || "Cursor idle"}
+            </Pill>
+            {(lastImportedDelta !== null ||
+              (Boolean(syncState?.last_synced_at || syncState?.last_sync_at) &&
+                typeof syncState?.last_imported_count === "number")) && (
+              <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg" data-telemetry-sync-delta>
+                <span className="font-mono tabular-nums">+{lastImportedDelta ?? syncState?.last_imported_count ?? 0}</span>
+                <span>imported</span>
+              </Pill>
+            )}
+          </div>
+
           <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={syncSource}
+              onChange={(e) => setSyncSource(e.target.value as TelemetrySyncSource)}
+              aria-label="Production telemetry sync source"
+              data-telemetry-sync-source
+              className="h-8 rounded-lg border border-[var(--field-border)] bg-surface px-2 text-xs text-ink focus-visible:outline-2 focus-visible:outline-focus max-md:min-h-11"
+            >
+              <option value="opencloud_datastore">Open Cloud DataStore</option>
+              <option value="creator_analytics">Creator Analytics</option>
+            </select>
+            <Input
+              type="number"
+              min={1}
+              max={90}
+              value={syncDays}
+              onChange={(e) => setSyncDays(e.target.value)}
+              aria-label="Sync lookback days"
+              data-telemetry-sync-days
+              className="h-8 w-16 font-mono text-xs tabular-nums"
+            />
+            <Button
+              variant="default"
+              size="sm"
+              loading={syncBusy}
+              onClick={() => void handleSyncTelemetry()}
+              data-telemetry-sync-btn
+              className="max-md:min-h-11"
+            >
+              <CloudDownload className="size-3.5" strokeWidth={1.5} aria-hidden />
+              {syncBusy ? "Syncing…" : "Sync Live Production Telemetry"}
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -1089,7 +1338,10 @@ export function LiveOpsPanel({
               variant="outline"
               size="sm"
               loading={telBusy}
-              onClick={() => void loadTelemetry()}
+              onClick={() => {
+                void loadTelemetry(telSource);
+                void loadErrors(telSource);
+              }}
               data-telemetry-refresh
               className="max-md:min-h-11"
             >
@@ -1099,11 +1351,172 @@ export function LiveOpsPanel({
           </div>
         </div>
 
+        {syncError && (
+          <p role="alert" data-telemetry-sync-error className="rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">
+            {syncError}
+          </p>
+        )}
+
         {telError && (
           <p role="alert" className="rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">
             {telError}
           </p>
         )}
+
+        <div className="flex flex-col gap-3 rounded-sm border border-hairline bg-board/30 p-3" data-telemetry-collector>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Code2 className="size-4 shrink-0 text-blue" strokeWidth={1.5} aria-hidden />
+              <h4 className="text-sm font-medium text-ink">Install Live Telemetry Collector</h4>
+            </div>
+            <SegmentedControl aria-label="Collector mode" size="sm" className="max-w-full flex-wrap">
+              <SegmentedControlItem
+                data-checked={collectorMode === "opencloud_datastore" ? "" : undefined}
+                aria-pressed={collectorMode === "opencloud_datastore"}
+                onClick={() => {
+                  setCollectorMode("opencloud_datastore");
+                  if (collectorError) setCollectorError("");
+                }}
+                data-collector-mode="opencloud_datastore"
+              >
+                Open Cloud DataStore
+              </SegmentedControlItem>
+              <SegmentedControlItem
+                data-checked={collectorMode === "webhook_relay" ? "" : undefined}
+                aria-pressed={collectorMode === "webhook_relay"}
+                onClick={() => {
+                  setCollectorMode("webhook_relay");
+                  if (collectorError) setCollectorError("");
+                }}
+                data-collector-mode="webhook_relay"
+              >
+                HTTPS Webhook Relay
+              </SegmentedControlItem>
+            </SegmentedControl>
+          </div>
+
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <Field label="DataStore name">
+              <Input
+                value={collectorStore}
+                onChange={(e) => setCollectorStore(e.target.value)}
+                placeholder="OpenRO_Telemetry"
+                className="font-mono text-xs"
+                data-collector-store
+              />
+            </Field>
+            <Field label="Flush interval (secs)">
+              <Input
+                type="number"
+                min={5}
+                max={300}
+                value={collectorFlushSecs}
+                onChange={(e) => setCollectorFlushSecs(e.target.value)}
+                placeholder="30"
+                className="font-mono text-xs tabular-nums"
+                data-collector-interval
+              />
+            </Field>
+            {collectorMode === "webhook_relay" ? (
+              <Field label="HTTPS relay URL">
+                <Input
+                  value={collectorRelayUrl}
+                  onChange={(e) => {
+                    setCollectorRelayUrl(e.target.value);
+                    if (collectorError) setCollectorError("");
+                  }}
+                  placeholder="https://telemetry.example.com/ingest"
+                  className="font-mono text-xs"
+                  data-collector-relay-url
+                />
+              </Field>
+            ) : (
+              <div className="flex items-end">
+                <Button
+                  variant="outline"
+                  size="default"
+                  loading={collectorBusy}
+                  onClick={() => void handleGenerateCollector()}
+                  data-telemetry-codegen-btn
+                  className="w-full max-md:min-h-11"
+                >
+                  <FileCode2 className="size-3.5" strokeWidth={1.5} aria-hidden />
+                  {collectorBusy ? "Generating…" : "Install Live Telemetry Collector"}
+                </Button>
+              </div>
+            )}
+          </div>
+
+          {collectorMode === "webhook_relay" && (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs text-ink-2">
+                Generates strict Luau client and server hooks flushing batches over HttpService:PostAsync.
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                loading={collectorBusy}
+                onClick={() => void handleGenerateCollector()}
+                data-telemetry-codegen-btn
+                className="max-md:min-h-11"
+              >
+                <FileCode2 className="size-3.5" strokeWidth={1.5} aria-hidden />
+                {collectorBusy ? "Generating…" : "Install Live Telemetry Collector"}
+              </Button>
+            </div>
+          )}
+
+          {collectorError && (
+            <p role="alert" data-telemetry-codegen-error className="rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">
+              {collectorError}
+            </p>
+          )}
+
+          {collectorResult && (
+            <div
+              data-telemetry-codegen-result
+              className="flex flex-col gap-2 rounded-sm border border-hairline bg-surface p-2.5 text-xs"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="font-medium text-ink">
+                  Generated strict Luau collector ({collectorResult.mode})
+                </span>
+                {collectorResult.store_name && (
+                  <Pill className="bg-tag-ops-bg px-2 py-0.5 font-mono text-xs text-tag-ops-fg">
+                    {collectorResult.store_name}
+                  </Pill>
+                )}
+              </div>
+              {collectorResult.files.length > 0 && (
+                <ul className="flex flex-col gap-1">
+                  {collectorResult.files.map((file) => (
+                    <li
+                      key={file}
+                      data-telemetry-codegen-file={file}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-sm bg-board/40 px-2 py-1"
+                    >
+                      <span className="min-w-0 truncate font-mono text-ink">{file}</span>
+                      {onOpenCodeFile && (
+                        <Button variant="ghost" size="xs" onClick={() => onOpenCodeFile(file)}>
+                          Open script
+                        </Button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {collectorResult.warnings.length > 0 && (
+                <ul className="flex flex-col gap-1">
+                  {collectorResult.warnings.map((w, idx) => (
+                    <li key={idx} className="rounded-sm bg-pill-warn-bg px-2 py-1 text-pill-warn-fg">
+                      {w}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
 
         <div className="grid grid-cols-1 divide-y divide-hairline rounded-sm border border-hairline bg-board/30 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
           <div className="flex flex-col gap-0.5 px-3 py-2.5">
@@ -1131,7 +1544,7 @@ export function LiveOpsPanel({
             <h4 className="text-xs font-medium text-ink-2">Onboarding &amp; Funnel Drop-off</h4>
             {(telemetry?.funnel_steps.length ?? 0) === 0 ? (
               <p className="rounded-sm border border-hairline bg-board/40 p-3 text-sm text-ink-2">
-                No funnel steps recorded yet. Trigger a sample batch or playtest AnalyticsService hooks.
+                No funnel steps recorded yet. Trigger a sample batch or sync live production telemetry.
               </p>
             ) : (
               <ul className="flex flex-col gap-2">
@@ -1221,6 +1634,95 @@ export function LiveOpsPanel({
             </ul>
           )}
         </div>
+      </section>
+
+      {/* 5. Live Server Errors */}
+      <section aria-label="Live Server Errors" className="card-stock flex flex-col gap-3 p-4" data-liveops-errors>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Bug className="size-4 shrink-0 text-blue" strokeWidth={1.5} aria-hidden />
+            <h3 className="font-heading text-ui font-medium text-ink">Live Server Errors</h3>
+            <Pill className="bg-track px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2" data-errors-count>
+              {liveErrors.length}
+            </Pill>
+            <Pill className="bg-tag-ops-bg px-2 py-0.5 text-xs text-tag-ops-fg">
+              {telSource === "live_opencloud"
+                ? "Live Production"
+                : telSource === "sandbox"
+                  ? "Headless Sandbox"
+                  : "All sources"}
+            </Pill>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            loading={errorsBusy}
+            onClick={() => void loadErrors(telSource)}
+            data-errors-refresh
+            className="max-md:min-h-11"
+          >
+            <RefreshCw className="size-3.5" strokeWidth={1.5} aria-hidden />
+            Refresh
+          </Button>
+        </div>
+
+        {errorsError && (
+          <p role="alert" className="rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">
+            {errorsError}
+          </p>
+        )}
+
+        {liveErrors.length === 0 ? (
+          <p className="rounded-sm border border-hairline bg-board/40 p-3 text-sm text-ink-2" data-errors-empty>
+            No server script errors recorded for this telemetry source.
+          </p>
+        ) : (
+          <ul className="divide-y divide-hairline rounded-sm border border-hairline bg-board/30" data-errors-list>
+            {liveErrors.map((err) => (
+              <li
+                key={err.fingerprint}
+                data-error-item={err.fingerprint}
+                className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="min-w-0 flex-1 space-y-1">
+                  <p className="break-words text-sm font-medium text-ink">{err.message}</p>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-ink-3">
+                    <span className="font-mono">{err.fingerprint}</span>
+                    <span>
+                      Last seen{" "}
+                      <span className="font-mono tabular-nums">{stamp(err.last_seen) || err.last_seen}</span>
+                    </span>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
+                  <Pill
+                    className="bg-pill-pro-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-pro-fg"
+                    data-error-count
+                  >
+                    {err.count} {err.count === 1 ? "event" : "events"}
+                  </Pill>
+                  {err.script_path &&
+                    (onOpenCodeFile ? (
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        onClick={() => onOpenCodeFile(err.script_path!)}
+                        data-error-jump={err.script_path}
+                        className="max-w-full font-mono max-md:min-h-11"
+                      >
+                        <FileCode2 className="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden />
+                        <span className="truncate">{err.script_path}</span>
+                      </Button>
+                    ) : (
+                      <Pill className="bg-track px-2 py-0.5 font-mono text-xs text-ink-2">
+                        {err.script_path}
+                      </Pill>
+                    ))}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
     </div>
   );

@@ -377,7 +377,8 @@ try {
     await p.locator("[data-liveops-messaging]").waitFor({ state: "visible", timeout: 4000 });
     await p.locator("[data-liveops-remote-config]").waitFor({ state: "visible", timeout: 4000 });
     await p.locator("[data-liveops-telemetry]").waitFor({ state: "visible", timeout: 4000 });
-    check("LiveOpsPanel renders all 4 sub-sections", true);
+    await p.locator("[data-liveops-errors]").waitFor({ state: "visible", timeout: 4000 });
+    check("LiveOpsPanel renders all 5 sub-sections", true);
     await assertLayoutInvariants(p, "1440x900 Light LiveOps");
 
     // Remote Config edit + LiveConfig.luau generation
@@ -480,6 +481,124 @@ try {
       "LiveOps Telemetry ingests sample batch and renders funnel cohort",
       Number(dauTxt) > 0 && funnelCount > 0,
       `DAU=${dauTxt}, steps=${funnelCount}`,
+    );
+
+    // Install Live Telemetry Collector codegen
+    await p.locator("[data-collector-store]").fill("GateTelemetry");
+    await p.locator("[data-collector-interval]").fill("15");
+    await p.locator("[data-telemetry-codegen-btn]").click();
+    await p.locator("[data-telemetry-codegen-result]").waitFor({ state: "visible", timeout: 8000 });
+    const codegenFileCount = await p.locator("[data-telemetry-codegen-file]").count();
+    const codegenResultText = await p.locator("[data-telemetry-codegen-result]").innerText();
+    check(
+      "LiveOps Telemetry Collector codegen generates strict Luau files",
+      codegenFileCount > 0 && codegenResultText.includes(".luau"),
+      `${codegenFileCount} file(s)`,
+    );
+
+    // Sync Live Production Telemetry + Live Server Errors
+    const syncRoutePattern = "**/api/projects/*/liveops/telemetry/sync";
+    if (!isWebEngine && !ocState?.has_key) {
+      await p.route(syncRoutePattern, async (route) => {
+        const resp = await route.fetch();
+        if (resp.status() === 200) {
+          await route.fulfill({ response: resp });
+          return;
+        }
+        if (resp.status() !== 400 && resp.status() !== 503) {
+          await route.fulfill({ response: resp });
+          return;
+        }
+        const nowIso = new Date().toISOString();
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            imported_count: 6,
+            sync_state: {
+              last_synced_at: nowIso,
+              source: "opencloud_datastore",
+              store_name: "GateTelemetry",
+              shard_cursor: "shard-04/04",
+              shards_scanned: 4,
+              last_imported_count: 6,
+              imported_total: 6,
+              status: "synced",
+            },
+            summary: {
+              dau_sample: 4,
+              total_events: 14,
+              funnel_steps: [
+                { step: "spawned", users: 4, pct: 100, drop_off_pct: 0 },
+                { step: "first_pickup", users: 3, pct: 75, drop_off_pct: 25 },
+              ],
+              arpdau_robux: 49.75,
+              top_sinks: [{ label: "Robux:SeasonPass", amount: 199, events: 1, share_pct: 100 }],
+              alerts: [],
+              updated_at: nowIso,
+            },
+            top_errors: [
+              {
+                fingerprint: "err_gate_receipt_timeout",
+                script_path: "src/server/MonetizationService.server.luau",
+                message: "MarketplaceService:ProcessReceipt yielded past timeout on retry",
+                count: 4,
+                first_seen: nowIso,
+                last_seen: nowIso,
+                source: "live_opencloud",
+              },
+            ],
+          }),
+        });
+      });
+    }
+    await p.locator("[data-telemetry-sync-btn]").click();
+    await p.locator("[data-telemetry-sync-delta]").waitFor({ state: "visible", timeout: 8000 });
+    const syncDeltaText = await p.locator("[data-telemetry-sync-delta]").innerText();
+    const syncCursorText = await p.locator("[data-telemetry-sync-cursor]").innerText();
+    if (!isWebEngine && !ocState?.has_key) {
+      await p.unroute(syncRoutePattern);
+    }
+    check(
+      "LiveOps Sync Live Production Telemetry updates delta and shard cursor",
+      syncDeltaText.includes("imported") && syncCursorText.length > 0,
+      `${syncDeltaText} | ${syncCursorText}`,
+    );
+
+    const errorItemCount = await p.locator("[data-errors-list] [data-error-item]").count();
+    const errorJumpCount = await p.locator("[data-error-jump]").count();
+    check(
+      "LiveOps Live Server Errors renders aggregates and clickable script jump",
+      errorItemCount > 0 && errorJumpCount > 0,
+      `items=${errorItemCount}, jumps=${errorJumpCount}`,
+    );
+
+    // Telemetry Source filter (All, Live Production, Headless Sandbox)
+    await p.locator('[data-telemetry-source="sandbox"]').click();
+    await p.waitForFunction(
+      () => document.querySelector('[data-telemetry-source="sandbox"]')?.getAttribute("aria-pressed") === "true",
+      null,
+      { timeout: 4000 },
+    );
+    const sandboxPressed = await p.locator('[data-telemetry-source="sandbox"]').getAttribute("aria-pressed");
+    await p.locator('[data-telemetry-source="live_opencloud"]').click();
+    await p.waitForFunction(
+      () => document.querySelector('[data-telemetry-source="live_opencloud"]')?.getAttribute("aria-pressed") === "true",
+      null,
+      { timeout: 4000 },
+    );
+    const livePressed = await p.locator('[data-telemetry-source="live_opencloud"]').getAttribute("aria-pressed");
+    await p.locator('[data-telemetry-source="all"]').click();
+    await p.waitForFunction(
+      () => document.querySelector('[data-telemetry-source="all"]')?.getAttribute("aria-pressed") === "true",
+      null,
+      { timeout: 4000 },
+    );
+    const allPressed = await p.locator('[data-telemetry-source="all"]').getAttribute("aria-pressed");
+    check(
+      "LiveOps Telemetry Source filter switches All, Live Production, and Headless Sandbox",
+      sandboxPressed === "true" && livePressed === "true" && allPressed === "true",
     );
 
     await setThemeViaSettings(p, "dark");
