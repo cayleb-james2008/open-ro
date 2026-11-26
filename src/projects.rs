@@ -745,6 +745,38 @@ fn load_path(path: &Path, skipped: &mut Vec<String>, root: &Path) -> Result<Opti
     Ok(None)
 }
 
+fn merge_overlay_into_node(
+    existing: &mut Node,
+    v: &Value,
+    root: &Path,
+    rojo_file: &str,
+    skipped: &mut Vec<String>,
+) -> Result<(), String> {
+    let Some(obj) = v.as_object() else {
+        return Err(format!("'{}' overlay in {rojo_file} must be an object", existing.name));
+    };
+    if obj.contains_key("$path") || obj.contains_key("$className") {
+        return Err(format!("'{}' appears twice under parent", existing.name));
+    }
+    if let Some(b) = obj.get("$ignoreUnknownInstances").and_then(|b| b.as_bool()) {
+        existing.ignore_unknown = b;
+    }
+    for (k, child) in obj {
+        if k.starts_with('$') {
+            continue;
+        }
+        if let Some(pos) = existing.children.iter().position(|c| &c.name == k) {
+            merge_overlay_into_node(&mut existing.children[pos], child, root, rojo_file, skipped)
+                .map_err(|_| format!("'{k}' appears twice under '{}'", existing.name))?;
+        } else {
+            existing
+                .children
+                .push(load_project_node(k, child, root, rojo_file, skipped, false)?);
+        }
+    }
+    Ok(())
+}
+
 fn load_project_node(
     name: &str,
     v: &Value,
@@ -755,6 +787,10 @@ fn load_project_node(
 ) -> Result<Node, String> {
     let obj = v.as_object().ok_or(format!("'{name}' in the project file must be an object"))?;
     let class_name = obj.get("$className").and_then(|c| c.as_str());
+    let loaded_from_model = obj
+        .get("$path")
+        .and_then(|p| p.as_str())
+        .is_some_and(|p| p.ends_with(".model.json"));
     let mut node = if let Some(p) = obj.get("$path").and_then(|p| p.as_str()) {
         let full = safe_join(root, p).map_err(|e| format!("'{name}' $path: {e}"))?;
         if !full.exists() {
@@ -788,7 +824,16 @@ fn load_project_node(
         if k.starts_with('$') {
             continue;
         }
-        if node.children.iter().any(|c| &c.name == k) {
+        if let Some(pos) = node.children.iter().position(|c| &c.name == k) {
+            if loaded_from_model
+                && child
+                    .as_object()
+                    .is_some_and(|co| !co.contains_key("$path") && !co.contains_key("$className"))
+            {
+                merge_overlay_into_node(&mut node.children[pos], child, root, rojo_file, skipped)
+                    .map_err(|_| format!("'{k}' appears twice under '{name}'"))?;
+                continue;
+            }
             return Err(format!("'{k}' appears twice under '{name}'"));
         }
         node.children.push(load_project_node(k, child, root, rojo_file, skipped, false)?);

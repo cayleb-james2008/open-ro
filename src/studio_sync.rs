@@ -1522,6 +1522,73 @@ fn matches_requested_path(item: &PullComputedItem, filter: &[String]) -> bool {
     })
 }
 
+fn model_json_has_path(dir: &Path, model_rel: &str, segs: &[&str]) -> bool {
+    if segs.is_empty() {
+        return false;
+    }
+    let Ok(full) = projects::safe_join(dir, model_rel) else {
+        return false;
+    };
+    let Ok(raw) = std::fs::read_to_string(&full) else {
+        return false;
+    };
+    let Ok(val) = serde_json::from_str::<Value>(&raw) else {
+        return false;
+    };
+    let mut cur = &val;
+    for seg in segs {
+        let Some(arr) = cur
+            .get("children")
+            .or_else(|| cur.get("Children"))
+            .and_then(Value::as_array)
+        else {
+            return false;
+        };
+        let Some(found) = arr.iter().find(|c| {
+            c.get("name")
+                .or_else(|| c.get("Name"))
+                .and_then(Value::as_str)
+                == Some(*seg)
+        }) else {
+            return false;
+        };
+        cur = found;
+    }
+    true
+}
+
+fn sanitize_inline_workspace_child(
+    tree: &mut Map<String, Value>,
+    child_name: &str,
+) -> bool {
+    let Some(ws_obj) = tree.get_mut("Workspace").and_then(Value::as_object_mut) else {
+        return false;
+    };
+    let Some(child_obj) = ws_obj.get_mut(child_name).and_then(Value::as_object_mut) else {
+        return false;
+    };
+    if child_obj
+        .get("$path")
+        .and_then(Value::as_str)
+        .is_some_and(|p| p.ends_with(".model.json"))
+    {
+        return false;
+    }
+    let has_non_meta_kids = child_obj.keys().any(|k| !k.starts_with('$'));
+    if !has_non_meta_kids {
+        ws_obj.remove(child_name);
+        return true;
+    }
+    let mut changed = false;
+    if child_obj.remove("$className").is_some() {
+        changed = true;
+    }
+    if child_obj.remove("$properties").is_some() {
+        changed = true;
+    }
+    changed
+}
+
 fn ensure_rojo_script_wired(dir: &Path, rojo_file: &str, dot_path: &str, rel_path: &str) -> Result<(), String> {
     let rojo_full = projects::safe_join(dir, rojo_file)?;
     let mut rojo: Value = if rojo_full.is_file() {
@@ -1550,23 +1617,42 @@ fn ensure_rojo_script_wired(dir: &Path, rojo_file: &str, dot_path: &str, rel_pat
         .ok_or_else(|| format!("{rojo_file} tree must be an object"))?;
 
     let mut cur = tree;
+    let mut active_model_rel: Option<String> = None;
+    let mut model_sub_start: usize = 0;
     for (idx, seg) in segs.iter().enumerate() {
         let is_last = idx + 1 == segs.len();
         if is_last {
             cur.insert((*seg).to_string(), json!({ "$path": rel_path }));
             break;
         }
+        let in_model_overlay = active_model_rel
+            .as_deref()
+            .is_some_and(|m| model_json_has_path(dir, m, &segs[model_sub_start..=idx]));
         let next = cur
             .entry((*seg).to_string())
             .or_insert_with(|| {
                 if idx == 0 {
                     json!({ "$className": *seg, "$ignoreUnknownInstances": true })
+                } else if in_model_overlay {
+                    json!({ "$ignoreUnknownInstances": true })
                 } else {
                     json!({ "$className": "Folder", "$ignoreUnknownInstances": true })
                 }
             })
             .as_object_mut()
             .ok_or_else(|| format!("{rojo_file} node '{seg}' must be an object"))?;
+        if in_model_overlay && !next.contains_key("$path") {
+            next.remove("$className");
+            next.remove("$properties");
+        }
+        if let Some(m) = next
+            .get("$path")
+            .and_then(Value::as_str)
+            .filter(|p| p.ends_with(".model.json"))
+        {
+            active_model_rel = Some(m.to_string());
+            model_sub_start = idx + 1;
+        }
         cur = next;
     }
     let text = serde_json::to_string_pretty(&rojo).map_err(|e| e.to_string())? + "\n";
@@ -1777,6 +1863,11 @@ fn apply_instance_to_project(
             if !ws_obj.contains_key("$path") {
                 ws_obj.insert("$path".into(), json!(scene::SCENE_MODEL_REL));
                 ws_obj.remove("$className");
+                rojo_dirty = true;
+            }
+        }
+        if let Some(top_seg) = segs.first() {
+            if sanitize_inline_workspace_child(tree_obj, top_seg) {
                 rojo_dirty = true;
             }
         }

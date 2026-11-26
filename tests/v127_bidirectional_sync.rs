@@ -781,3 +781,71 @@ fn agent_project_sync_pull_tool_executes_against_plugin_bridge() {
     model_thread.join().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn pull_apply_workspace_part_with_nested_script_preserves_parent_and_loads_cleanly() {
+    let dir = temp_dir("openro-v127-ws-overlay");
+    let mut store = openro_rs::projects::ProjectStore::load(Some(&dir));
+    let proj = store
+        .create("WS Overlay", None, None, None)
+        .expect("create project");
+
+    let mut backend = PlaceBackend::Local(openro_rs::place::LocalPlace::in_memory(
+        "Overlay Place".into(),
+    ));
+    backend
+        .call_tool(
+            "create_instance",
+            json!({
+                "class_name": "Part",
+                "name": "LavaBrick",
+                "parent": "Workspace",
+                "properties": { "Anchored": true }
+            }),
+        )
+        .unwrap();
+    backend
+        .call_tool(
+            "write_script",
+            json!({
+                "path": "Workspace.LavaBrick.KillBrick",
+                "source": "print(script.Parent.ClassName)\n"
+            }),
+        )
+        .unwrap();
+    let applied = openro_rs::studio_sync::pull_apply_with_backend(
+        &mut backend,
+        &proj.dir,
+        None,
+        openro_rs::studio_sync::PullStrategy::MergeNonConflicting,
+        false,
+    )
+    .expect("pull_apply succeeds");
+    assert!(applied.applied_count >= 2);
+
+    let tree = projects::load_tree(&proj.dir, projects::DEFAULT_ROJO_FILE)
+        .expect("load_tree succeeds without duplicate LavaBrick error");
+    let flat = tree.flatten();
+    let lava_nodes: Vec<_> = flat.iter().filter(|f| f.path == "Workspace/LavaBrick").collect();
+    assert_eq!(lava_nodes.len(), 1);
+    assert_eq!(lava_nodes[0].class, "Part");
+    let kill_nodes: Vec<_> = flat
+        .iter()
+        .filter(|f| f.path == "Workspace/LavaBrick/KillBrick")
+        .collect();
+    assert_eq!(kill_nodes.len(), 1);
+    assert_eq!(kill_nodes[0].class, "Script");
+
+    let xml = r#"<roblox version="4"><Item class="Model"><Properties><string name="Name">GateTower</string></Properties><Item class="Part"><Properties><string name="Name">TowerBase</string></Properties></Item></Item></roblox>"#;
+    let imp = projects::import_prefab_model(
+        &proj.dir,
+        "GateTower.rbxmx",
+        "rbxmx",
+        &openro_rs::assets::encode_base64(xml.as_bytes()),
+        Some("Workspace"),
+    )
+    .expect("import_prefab_model succeeds after pull_apply");
+    assert_eq!(imp["ok"], json!(true));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

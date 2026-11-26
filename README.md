@@ -1,4 +1,4 @@
-# <img src="docs/logo.svg" alt="OpenRO Studio logo" width="28" height="28" align="absmiddle" /> OpenRO (`v1.26.0`)
+# <img src="docs/logo.svg" alt="OpenRO Studio logo" width="28" height="28" align="absmiddle" /> OpenRO (`v1.27.0`)
 
 [![Release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/cayleb-james2008/open-ro/release.yml?branch=main&label=build)](https://github.com/cayleb-james2008/open-ro/actions)
@@ -16,6 +16,7 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
 
 ## What it does
 
+- Bidirectional Studio Sync and Prefab Model Import (`src/studio_sync.rs`, `src/place.rs`, `src/projects.rs`, `SyncConflictsCard.tsx`, `AssetsPanel.tsx`, and offline `web-engine/install.ts` parity) fetch cursor-paginated 64 KiB Studio snapshots (`scripts`, `script_meta`, `instances`, `lighting`), run 3-way diffs against local files and `.openro/sync-baseline.json`, preview unified hunks, and apply selective `merge_non_conflicting`, `take_studio` (requiring `confirm_overwrite: true` on conflicts), or `keep_local` resolutions atomically, including `.model.json` script overlays that preserve part parenting. Uploading `.rbxmx`, `.rbxm`, or `.rbxlx` files (`<= 16 MiB`, XXE-hardened) decomposes models into `scene/models/<slug>.model.json` and extracted `.luau` scripts, wires `default.project.json`, and surfaces clickable model chips in the 3D viewport.
 - The WebGL2 3D viewport (`frontend/src/app/viewport/`, `StudioViewport3D.tsx`, `src/scene.rs`, and offline `web-engine/install.ts` parity) renders workspace parts, `.obj` meshes, `.png`/`.jpg` textures, sky and fog lighting, water planes, and up to 8 dynamic `PointLight`, `SpotLight`, and `SurfaceLight` sources with an automatic Canvas2D fallback. You can generate `flat`, `hills`, `island`, or `canyon` terrain in `scene/terrain.json` (which also emits `src/server/OpenROTerrain.server.luau`), paint material boxes, insert and toggle scene lights, reparent instances, and manipulate objects with 3D Move, Scale, and Rotate gizmos while `GET /api/projects/:id/mesh-asset?file=` serves project meshes and textures inside `assets/meshes/` and `art/` with symlink and path-traversal checks.
 - The LiveOps control plane and telemetry workbench (`src/liveops.rs`, `LiveOpsPanel.tsx`, `/api/projects/:id/liveops/*`, and offline `web-engine/install.ts` parity) lets you inspect and edit Open Cloud v2 standard and ordered DataStores with `expected_revision` conflict checks, pre-mutation backups in `.openro/liveops/ds-backups/`, and explicit `confirm: true` gates. You can broadcast `MessagingService` payloads up to 1024 bytes, manage Remote Config (`liveops/remote-config.json` capped at 64 KiB) with deterministic `--!strict` `src/shared/LiveConfig.luau` generation, and inspect sandbox or live player funnel drop-offs, Robux ARPDAU, and currency sinks from `.openro/liveops/telemetry.jsonl`.
 - The visual ScreenGui and HUD designer (`src/gui_designer.rs`, `GuiDesignerWorkbench.tsx`, `/api/projects/:id/gui*`, `/api/studio/gui*`, and the `gui_save` and `gui_compile` tools) lets you drag and resize a 12-class Roblox UI hierarchy (`Frame`, `TextLabel`, `TextButton`, `ImageLabel`, `ImageButton`, `ScrollingFrame`, `UICorner`, `UIStroke`, `UIListLayout`, `UIGridLayout`, `UIAspectRatioConstraint`, `UIPadding`) over Desktop (`1920x1080`), Tablet (`1024x768`), and Mobile Landscape (`844x390`) viewports. Live overlays check the 58px TopBar inset, Mobile thumbstick and jump zones, offscreen bounds, and 44x44px tap targets, while `Compile to Luau` emits deterministic `--!strict` `ScreenModule.create(parent, callbacks)` scripts and Rojo `.model.json` files validated by `luau_check` and `stylua`.
@@ -49,6 +50,24 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/monetization-dark.png" />
         <img src="docs/screenshots/monetization-light.png" alt="OpenRO Monetization Tier and Retention Curve Designer" width="100%" />
+      </picture>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <strong>Two-way Studio sync and 3-way conflict preview (`v1.27.0`)</strong>
+      <br /><br />
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/bidirectional-sync-c4e1-dark.png" />
+        <img src="docs/screenshots/bidirectional-sync-c4e1-light.png" alt="OpenRO v1.27.0 Two-Way Studio Sync dialog showing 3-way pull diff, strategy picker, and hunk preview" width="100%" />
+      </picture>
+    </td>
+    <td width="50%" align="center">
+      <strong>Prefab model import and WebGL2 3D inspector (`v1.27.0`)</strong>
+      <br /><br />
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/prefab-import-3d-c4e1-dark.png" />
+        <img src="docs/screenshots/prefab-import-3d-c4e1-light.png" alt="OpenRO v1.27.0 Prefab Model Import rendered in WebGL2 3D viewport with model chip and extracted Luau script" width="100%" />
       </picture>
     </td>
   </tr>
@@ -103,16 +122,16 @@ flowchart LR
   SRV --> MCP["Roblox Studio MCP &amp; Open Cloud<br/>13 Live Tools + Price Approval Gate"]
 ```
 
-## Verified benchmarks (`v1.26.0` vs `v1.2.0`)
+## Verified benchmarks (`v1.27.0` vs `v1.2.0`)
 
-| Metric | `v1.2.0` baseline | `v1.26.0` verified (pinned) | Delta |
+| Metric | `v1.2.0` baseline | `v1.27.0` verified (pinned) | Delta |
 | --- | --- | --- | --- |
-| Release binary size | `19.00 MB` | **`9.80 MiB`** (`10,277,760 B`) | **`-48.4%`** |
-| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`231.3 KB`** raw (`236,801 B`) / **`55.5 KB`** gz (`56,808 B` wire) | **`-87.9%` wire** |
-| Cold boot (pinned) | `1,470 ms` | **`194.64 ms`** | **`-86.8%`** |
-| Peak RSS (`VmHWM`) | `115.20 MB` | **`12.87 MB`** (`13,180 KB`, `scale-audit` + 10 SSE) | **`-88.8%`** |
-| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`6,345.4 req/s`** Python cold (`2.53 ms` p50, `3.06 ms` p95, `0/15,870` errs) | **`7.25x` (`-97.8%` p95)** |
-| Security and UI gates | `43/43` fuzz | **`43/43` fuzz, `10/10` SSE, `0` sloplint fails/reflex/warns (`65` files), `360/360` Rust tests (`4/4` `v126_cycle3_hardening`), `gate 170/170`, `replay 11/11`** | Pass |
+| Release binary size | `19.00 MB` | **`10.04 MiB`** (`10,523,536 B`) | **`-47.2%`** |
+| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`235.7 KB`** raw (`241,388 B`) / **`56.5 KB`** gz (`57,813 B` wire) | **`-87.7%` wire** |
+| Cold boot (pinned) | `1,470 ms` | **`27.11 ms`** | **`-98.2%`** |
+| Peak RSS (`VmHWM`) | `115.20 MB` | **`13.64 MB`** (`13,972 KB`, `scale-audit` + 10 SSE) | **`-88.2%`** |
+| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`7,109.4 req/s`** Python cold (`2.14 ms` p50, `2.83 ms` p95, `0/17,781` errs) | **`8.13x` (`-98.0%` p95)** |
+| Security and UI gates | `43/43` fuzz | **`43/43` fuzz, `10/10` SSE, `0` sloplint fails/reflex/warns (`65` files + render), `364/364` Rust tests (`5/5` `v127_bidirectional_sync`), `gate 180/180`, `replay 11/11`** | Pass |
 
 ## Quick start
 

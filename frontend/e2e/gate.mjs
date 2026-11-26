@@ -489,11 +489,18 @@ try {
     // Bidirectional Studio Sync (Pull from Studio, strategy picker, diff preview, selective apply)
     const isWebEngineSync = await p.evaluate(() => Boolean(window.__OPENRO_WEB_ENGINE__));
     const pullSyncPattern = "**/api/projects/*/sync/pull*";
-    const importModelPattern = "**/api/projects/*/import-model";
+    let livePullStatus = null;
     if (!isWebEngineSync) {
       await p.route(pullSyncPattern, async (route) => {
         const resp = await route.fetch();
-        if (resp.status() !== 404) {
+        livePullStatus = resp.status();
+        // Live Rust backend returns 200 (when Studio MCP/plugin is attached) or 503 (Studio offline).
+        // Fail loudly on 404 (missing route) or 500; only synthesize a Studio snapshot on 503 offline.
+        if (resp.status() === 200) {
+          await route.fulfill({ response: resp });
+          return;
+        }
+        if (resp.status() !== 503) {
           await route.fulfill({ response: resp });
           return;
         }
@@ -552,24 +559,6 @@ try {
           }),
         });
       });
-      await p.route(importModelPattern, async (route) => {
-        const resp = await route.fetch();
-        if (resp.status() !== 404) {
-          await route.fulfill({ response: resp });
-          return;
-        }
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            ok: true,
-            model_path: "scene/models/gatetower.model.json",
-            extracted_scripts: ["src/models/gatetower/TowerPulse.luau"],
-            wired_service: "Workspace",
-            warnings: [],
-          }),
-        });
-      });
     }
 
     await p.locator("[data-studio-sync-toolbar-btn]").click();
@@ -577,11 +566,23 @@ try {
     await syncDlg.waitFor({ state: "visible", timeout: 8000 });
     await syncDlg.locator("[data-pull-sync-diff]").click();
     await syncDlg.locator("[data-pull-results]").waitFor({ state: "visible", timeout: 8000 });
+    if (!isWebEngineSync) {
+      check(
+        "Live Rust /sync/pull-diff route is mounted (200 or 503 Studio-offline)",
+        livePullStatus === 200 || livePullStatus === 503,
+        `status=${livePullStatus}`,
+      );
+    }
     const pullRowsCount = await syncDlg.locator("[data-pull-change-row]").count();
     if (pullRowsCount > 0) {
       const firstRow = syncDlg.locator("[data-pull-change-row]").first();
+      const hunks = firstRow.locator("[data-pull-hunks]");
+      if (await hunks.isVisible()) {
+        await firstRow.locator("[data-pull-preview-diff]").click();
+        await hunks.waitFor({ state: "hidden", timeout: 4000 });
+      }
       await firstRow.locator("[data-pull-preview-diff]").click();
-      await firstRow.locator("[data-pull-hunks]").waitFor({ state: "visible", timeout: 4000 });
+      await hunks.waitFor({ state: "visible", timeout: 4000 });
       await syncDlg.locator('[data-pull-strategy-opt="take_studio"]').click();
       await syncDlg.locator('[data-pull-strategy-opt="merge_non_conflicting"]').click();
       const firstCb = firstRow.locator('[type="checkbox"]');
@@ -592,7 +593,7 @@ try {
     await syncDlg.getByRole("button", { name: "Close", exact: true }).click();
     await syncDlg.waitFor({ state: "hidden", timeout: 5000 });
 
-    // Prefab Model Import (.rbxmx) in AssetsPanel -> scene/models/*.model.json
+    // Prefab Model Import (.rbxmx) in AssetsPanel -> live Rust HTTP 200 -> scene/models/*.model.json + 3D chip
     await p.getByRole("button", { name: "Assets", exact: true }).first().click();
     await p.locator("[data-prefab-import-card]").waitFor({ state: "visible", timeout: 8000 });
     const sampleRbxmx = [
@@ -612,23 +613,45 @@ try {
       "  </Item>",
       "</roblox>",
     ].join("\n");
+    const importRespPromise = p.waitForResponse(
+      (r) => r.url().includes("/import-model") && r.request().method() === "POST",
+      { timeout: 15000 },
+    );
     await p.locator("[data-import-model-input]").setInputFiles({
       name: "GateTower.rbxmx",
       mimeType: "application/xml",
       buffer: Buffer.from(sampleRbxmx, "utf8"),
     });
+    const importResp = await importRespPromise;
+    const importRespBody = importResp.status() === 200 ? "" : await importResp.text().catch(() => "");
+    check(
+      "Prefab Model Import (/import-model) returns HTTP 200 from live backend",
+      importResp.status() === 200,
+      `status=${importResp.status()} ${importRespBody.slice(0, 200)}`,
+    );
     await p.locator("[data-import-model-result]").waitFor({ state: "visible", timeout: 10000 });
     const importResTxt = await p.locator("[data-import-model-result]").innerText();
     check(
-      "Prefab Model Import (.rbxmx) writes scene/models/*.model.json",
-      importResTxt.includes(".model.json"),
-      importResTxt.slice(0, 80),
+      "Prefab Model Import (.rbxmx) writes scene/models/gatetower.model.json & extracts script",
+      importResTxt.includes("scene/models/gatetower.model.json") &&
+        importResTxt.includes("Workspace") &&
+        importResTxt.includes("TowerPulse"),
+      importResTxt.slice(0, 120),
     );
     await assertLayoutInvariants(p, "1440x900 Light Assets Prefab Import");
+    const openVpFromImport = p.locator("[data-import-open-viewport]");
+    if ((await openVpFromImport.count()) > 0 && (await openVpFromImport.isVisible())) {
+      await openVpFromImport.click();
+      const vpPreviewBtn = p.locator('button[aria-label="Open 3D Preview"]').first();
+      if ((await vpPreviewBtn.count()) > 0 && (await vpPreviewBtn.isVisible())) {
+        await vpPreviewBtn.click();
+      }
+      await p.locator('[data-viewport-model-chip="scene/models/gatetower.model.json"]').waitFor({ state: "visible", timeout: 8000 });
+      check("StudioViewport3D displays imported prefab model chip (gatetower)", true);
+    }
 
     if (!isWebEngineSync) {
       await p.unroute(pullSyncPattern);
-      await p.unroute(importModelPattern);
     }
   }
 
