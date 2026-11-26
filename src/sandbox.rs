@@ -300,11 +300,19 @@ fn empty_state_snapshot() -> Value {
     })
 }
 
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 fn default_core_loop(status: &str) -> Value {
     json!({
         "move": { "status": status, "tested": false, "passed": false },
         "act": { "status": status, "tested": false, "passed": false },
         "hud": { "status": status, "tested": false, "passed": false },
+        "all_passed": false,
     })
 }
 
@@ -383,6 +391,14 @@ fn parse_journey(req: &Value) -> Result<(bool, Cow<'_, Value>), String> {
     }
 }
 
+fn parse_http_mocks(req: &Value) -> Result<Cow<'_, Value>, String> {
+    match req.get("http_mocks") {
+        None | Some(Value::Null) => Ok(Cow::Owned(Value::Array(Vec::new()))),
+        Some(v @ Value::Array(_)) | Some(v @ Value::Object(_)) => Ok(Cow::Borrowed(v)),
+        Some(_) => Err("http_mocks must be an array or object".into()),
+    }
+}
+
 fn ensure_array_field(obj: &mut Map<String, Value>, key: &str) {
     match obj.get(key) {
         Some(Value::Array(_)) => {}
@@ -419,6 +435,33 @@ fn normalize_report_json(report: &mut Value) {
         ensure_array_field(console, "errors");
         ensure_array_field(console, "warnings");
     }
+    let error_count = obj
+        .get("console")
+        .and_then(|c| c.get("errors"))
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
+    obj.insert("error_count".to_string(), json!(error_count));
+    if let Some(cl) = obj.get_mut("core_loop").and_then(Value::as_object_mut) {
+        if !cl.get("all_passed").is_some_and(Value::is_boolean) {
+            let mv_ok = cl
+                .get("move")
+                .and_then(|m| m.get("passed"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let act_ok = cl
+                .get("act")
+                .and_then(|m| m.get("passed"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let hud_ok = cl
+                .get("hud")
+                .and_then(|m| m.get("passed"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            cl.insert("all_passed".to_string(), json!(mv_ok && act_ok && hud_ok));
+        }
+    }
     if let Some(snap) = obj.get_mut("state_snapshot").and_then(Value::as_object_mut) {
         ensure_array_field(snap, "receipts_processed");
         ensure_array_field(snap, "player_gui_tree");
@@ -427,6 +470,22 @@ fn normalize_report_json(report: &mut Value) {
             for t in trees {
                 normalize_gui_children(t);
             }
+        }
+    }
+}
+
+fn stamp_report_metadata(
+    report: &mut Value,
+    run_id: &str,
+    at_ms: u64,
+    project_fingerprint: Option<&str>,
+) {
+    normalize_report_json(report);
+    if let Some(obj) = report.as_object_mut() {
+        obj.insert("run_id".to_string(), json!(run_id));
+        obj.insert("at_ms".to_string(), json!(at_ms));
+        if let Some(fp) = project_fingerprint {
+            obj.insert("project_fingerprint".to_string(), json!(fp));
         }
     }
 }
@@ -444,6 +503,7 @@ fn run_lune_sandbox(
     let timeout_secs = parse_timeout_secs(req)?;
     let players = parse_players(req)?;
     let (auto_journey, journey) = parse_journey(req)?;
+    let http_mocks = parse_http_mocks(req)?;
 
     let (lune_bin, searched) = match lune_override {
         Some(Some(p)) => (
@@ -484,6 +544,7 @@ fn run_lune_sandbox(
         "players": players.as_ref(),
         "auto_journey": auto_journey,
         "journey": journey.as_ref(),
+        "http_mocks": http_mocks.as_ref(),
         "product_ids": product_ids,
         "timeout_secs": timeout_secs,
     });
@@ -613,6 +674,196 @@ fn run_lune_sandbox(
     }))
 }
 
+fn is_plain_run_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 96
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn ensure_safe_sandbox_dir(project_dir: &Path) -> Result<PathBuf, String> {
+    let dir = projects::safe_join(project_dir, ".openro/sandbox")?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create .openro/sandbox dir: {e}"))?;
+    let verified = projects::safe_join(project_dir, ".openro/sandbox")?;
+    let meta = std::fs::symlink_metadata(&verified)
+        .map_err(|e| format!("inspect .openro/sandbox dir: {e}"))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(".openro/sandbox must be a real directory (not a symlink)".to_string());
+    }
+    Ok(verified)
+}
+
+fn validate_safe_report_file(project_dir: &Path, rel: &str) -> Result<Option<PathBuf>, String> {
+    let path = projects::safe_join(project_dir, rel)?;
+    match std::fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("inspect sandbox report '{rel}': {e}")),
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return Err(format!("sandbox report '{rel}' must not be a symlink"));
+            }
+            if !meta.is_file() {
+                return Err(format!("sandbox report '{rel}' is not a regular file"));
+            }
+            if meta.len() > MAX_REPORT_BYTES {
+                return Err(format!(
+                    "sandbox report '{rel}' exceeds MAX_REPORT_BYTES ({MAX_REPORT_BYTES} bytes)"
+                ));
+            }
+            Ok(Some(path))
+        }
+    }
+}
+
+fn write_safe_report_file(project_dir: &Path, rel: &str, bytes: &[u8]) -> Result<(), String> {
+    if (bytes.len() as u64) > MAX_REPORT_BYTES {
+        return Err(format!(
+            "sandbox report exceeds MAX_REPORT_BYTES ({MAX_REPORT_BYTES} bytes)"
+        ));
+    }
+    let _ = validate_safe_report_file(project_dir, rel)?;
+    let target = projects::safe_join(project_dir, rel)?;
+    std::fs::write(&target, bytes).map_err(|e| format!("write '{rel}': {e}"))?;
+    Ok(())
+}
+
+fn persist_project_sandbox_report(
+    project_dir: &Path,
+    run_id: &str,
+    report: &Value,
+) -> Result<(), String> {
+    if !is_plain_run_id(run_id) {
+        return Err("invalid sandbox run_id".to_string());
+    }
+    let _dir = ensure_safe_sandbox_dir(project_dir)?;
+    let bytes = serde_json::to_vec_pretty(report)
+        .map_err(|e| format!("serialize sandbox report: {e}"))?;
+    write_safe_report_file(project_dir, &format!(".openro/sandbox/{run_id}.json"), &bytes)?;
+    write_safe_report_file(project_dir, ".openro/sandbox/latest.json", &bytes)?;
+    Ok(())
+}
+
+fn read_json_report_capped(path: &Path) -> Result<Value, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("open sandbox report: {e}"))?;
+    let mut buf = Vec::new();
+    file.take(MAX_REPORT_BYTES + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("read sandbox report: {e}"))?;
+    if (buf.len() as u64) > MAX_REPORT_BYTES {
+        return Err(format!(
+            "sandbox report exceeds MAX_REPORT_BYTES ({MAX_REPORT_BYTES} bytes)"
+        ));
+    }
+    serde_json::from_slice(&buf).map_err(|e| format!("parse sandbox report: {e}"))
+}
+
+/// Read `<project>/.openro/sandbox/latest.json` enforcing CWE-59 symlink containment
+/// and `MAX_REPORT_BYTES`.
+pub fn read_latest_sandbox_report(project_dir: &Path) -> Result<Option<Value>, String> {
+    let dir = projects::safe_join(project_dir, ".openro/sandbox")?;
+    if !dir.exists() {
+        return Ok(None);
+    }
+    let meta = std::fs::symlink_metadata(&dir)
+        .map_err(|e| format!("inspect .openro/sandbox dir: {e}"))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(".openro/sandbox must be a real directory (not a symlink)".to_string());
+    }
+    let Some(path) = validate_safe_report_file(project_dir, ".openro/sandbox/latest.json")? else {
+        return Ok(None);
+    };
+    let mut rep = read_json_report_capped(&path)?;
+    normalize_report_json(&mut rep);
+    Ok(Some(rep))
+}
+
+/// List persisted sandbox run summaries in `<project>/.openro/sandbox/*.json`
+/// (excluding `latest.json`), sorted newest-first, with CWE-59 symlink containment.
+pub fn list_sandbox_runs(project_dir: &Path) -> Result<Vec<Value>, String> {
+    let dir = projects::safe_join(project_dir, ".openro/sandbox")?;
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let meta = std::fs::symlink_metadata(&dir)
+        .map_err(|e| format!("inspect .openro/sandbox dir: {e}"))?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(".openro/sandbox must be a real directory (not a symlink)".to_string());
+    }
+    let rd = std::fs::read_dir(&dir).map_err(|e| format!("read .openro/sandbox: {e}"))?;
+    let mut entries: Vec<(u64, String, Value)> = Vec::new();
+    for entry in rd.flatten() {
+        let fname = entry.file_name().to_string_lossy().into_owned();
+        if fname == "latest.json" || !fname.ends_with(".json") {
+            continue;
+        }
+        let stem = fname.trim_end_matches(".json");
+        if !is_plain_run_id(stem) {
+            continue;
+        }
+        let rel = format!(".openro/sandbox/{fname}");
+        let Some(path) = validate_safe_report_file(project_dir, &rel)? else {
+            continue;
+        };
+        let Ok(mut rep) = read_json_report_capped(&path) else {
+            continue;
+        };
+        normalize_report_json(&mut rep);
+        let at_ms = rep["at_ms"].as_u64().unwrap_or(0);
+        let run_id = rep["run_id"].as_str().unwrap_or(stem).to_string();
+        let err_count = rep["error_count"].as_u64().unwrap_or(0);
+        entries.push((
+            at_ms,
+            run_id.clone(),
+            json!({
+                "run_id": run_id,
+                "at_ms": at_ms,
+                "passed": rep["passed"].as_bool().unwrap_or(false),
+                "duration_ms": rep["duration_ms"].as_u64().unwrap_or(0),
+                "error_count": err_count,
+                "project_fingerprint": rep["project_fingerprint"],
+                "core_loop": rep["core_loop"],
+            }),
+        ));
+    }
+    entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    Ok(entries.into_iter().map(|(_, _, v)| v).collect())
+}
+
+/// Summary of `.openro/sandbox/latest.json` with freshness verified against the
+/// current `project_fingerprint` for Readiness, Publish Gate, and Study Status.
+pub fn latest_verified_summary(project_dir: &Path) -> Option<Value> {
+    let rep = read_latest_sandbox_report(project_dir).ok().flatten()?;
+    let current_fp = crate::study_check::project_fingerprint(project_dir).ok();
+    let report_fp = rep.get("project_fingerprint").and_then(Value::as_str);
+    let fresh = match (&current_fp, report_fp) {
+        (Some(cur), Some(rfp)) if !cur.is_empty() && !rfp.is_empty() => cur == rfp,
+        _ => false,
+    };
+    let passed = rep["passed"].as_bool().unwrap_or(false);
+    let error_count = rep["error_count"]
+        .as_u64()
+        .or_else(|| {
+            rep.pointer("/console/errors")
+                .and_then(Value::as_array)
+                .map(|a| a.len() as u64)
+        })
+        .unwrap_or(0);
+    let core_loop_all_passed = rep["core_loop"]["all_passed"].as_bool().unwrap_or(false);
+    let verified = fresh && passed && error_count == 0 && core_loop_all_passed;
+    Some(json!({
+        "run_id": rep["run_id"],
+        "at_ms": rep["at_ms"],
+        "passed": passed,
+        "error_count": error_count,
+        "fresh": fresh,
+        "verified": verified,
+        "project_fingerprint": rep["project_fingerprint"],
+        "core_loop": rep["core_loop"],
+        "duration_ms": rep["duration_ms"],
+    }))
+}
+
 /// Run the Headless Roblox Luau Runtime Sandbox against a Rojo project on disk.
 pub fn run_project_sandbox(project_dir: &Path, req: &Value) -> Result<Value, String> {
     run_project_sandbox_with_lune(project_dir, req, None)
@@ -636,7 +887,14 @@ pub fn run_project_sandbox_with_lune(
         "name": tree.name,
         "services": services,
     });
-    run_lune_sandbox(&tree.name, tree_json, product_ids, req, lune_override)
+    let mut report = run_lune_sandbox(&tree.name, tree_json, product_ids, req, lune_override)?;
+    let at_ms = now_ms();
+    let seq = RUN_SEQ.fetch_add(1, Ordering::Relaxed);
+    let run_id = format!("sb-{at_ms}-{seq}");
+    let fp = crate::study_check::project_fingerprint(project_dir).unwrap_or_default();
+    stamp_report_metadata(&mut report, &run_id, at_ms, Some(&fp));
+    persist_project_sandbox_report(project_dir, &run_id, &report)?;
+    Ok(report)
 }
 
 /// Run the Headless Roblox Luau Runtime Sandbox against an in-memory `LocalPlace`.
@@ -657,5 +915,10 @@ pub fn run_local_place_sandbox_with_lune(
     lune_override: Option<Option<&Path>>,
 ) -> Result<Value, String> {
     let tree_json = materialize_local_place_tree(game_name, scripts, instances);
-    run_lune_sandbox(game_name, tree_json, Vec::new(), req, lune_override)
+    let mut report = run_lune_sandbox(game_name, tree_json, Vec::new(), req, lune_override)?;
+    let at_ms = now_ms();
+    let seq = RUN_SEQ.fetch_add(1, Ordering::Relaxed);
+    let run_id = format!("sb-{at_ms}-{seq}");
+    stamp_report_metadata(&mut report, &run_id, at_ms, None);
+    Ok(report)
 }

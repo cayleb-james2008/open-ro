@@ -3022,35 +3022,77 @@ fn project_readiness(ctx: &Ctx, root: &Path) -> R<Value> {
     let asset_lock_ok = locked_count == 0 || has_asset_ids;
 
     let latest_pt = crate::playtest::latest_report_summary(root);
-    let pt_tested = latest_pt.is_some();
-    let pt_passed = latest_pt
+    let live_pt_tested = latest_pt.is_some();
+    let live_pt_passed = latest_pt
         .as_ref()
         .and_then(|r| r["passed"].as_bool())
         .unwrap_or(false);
-    let pt_blanks = latest_pt
+    let live_pt_blanks = latest_pt
         .as_ref()
         .and_then(|r| r["blank_screenshots"].as_u64())
         .unwrap_or(0);
-    let move_status = latest_pt
+    let live_core_loop_passed = latest_pt
         .as_ref()
+        .and_then(|r| {
+            r["core_loop"]["all_passed"]
+                .as_bool()
+                .or_else(|| r["core_loop"]["all_core_passed"].as_bool())
+        })
+        .unwrap_or(false);
+    let live_pt_ok = live_pt_passed
+        && live_pt_blanks == 0
+        && (live_core_loop_passed || latest_pt.as_ref().is_some_and(|r| r["core_loop"].is_null()));
+
+    let latest_sb = crate::sandbox::latest_verified_summary(root);
+    let sb_verified = latest_sb
+        .as_ref()
+        .and_then(|s| s["verified"].as_bool())
+        .unwrap_or(false);
+    let sb_fresh = latest_sb
+        .as_ref()
+        .and_then(|s| s["fresh"].as_bool())
+        .unwrap_or(false);
+    let sb_err_count = latest_sb
+        .as_ref()
+        .and_then(|s| s["error_count"].as_u64())
+        .unwrap_or(0);
+
+    let verification_tier: Option<&'static str> = if live_pt_ok {
+        Some("live_studio")
+    } else if sb_verified {
+        Some("headless_sandbox")
+    } else {
+        None
+    };
+
+    let active_report = if live_pt_ok {
+        latest_pt.as_ref()
+    } else if sb_verified || (!live_pt_tested && latest_sb.is_some()) {
+        latest_sb.as_ref()
+    } else {
+        latest_pt.as_ref()
+    };
+
+    let pt_tested = live_pt_tested || latest_sb.is_some();
+    let pt_passed = live_pt_ok || sb_verified;
+    let pt_blanks = if live_pt_ok || (!sb_verified && live_pt_tested) {
+        live_pt_blanks
+    } else {
+        0
+    };
+    let move_status = active_report
         .and_then(|r| r["core_loop"]["move"]["status"].as_str())
         .unwrap_or("not tested")
         .to_string();
-    let act_status = latest_pt
-        .as_ref()
+    let act_status = active_report
         .and_then(|r| r["core_loop"]["act"]["status"].as_str())
         .unwrap_or("not tested")
         .to_string();
-    let hud_status = latest_pt
-        .as_ref()
+    let hud_status = active_report
         .and_then(|r| r["core_loop"]["hud"]["status"].as_str())
         .unwrap_or("not tested")
         .to_string();
-    let core_loop_passed = latest_pt
-        .as_ref()
-        .and_then(|r| r["core_loop"]["all_passed"].as_bool())
-        .unwrap_or(false);
-    let playtest_ok = pt_passed && pt_blanks == 0 && (core_loop_passed || latest_pt.as_ref().is_some_and(|r| r["core_loop"].is_null()));
+    let playtest_ok = live_pt_ok || sb_verified;
 
     let mut fixable_actions: Vec<&'static str> = Vec::new();
     if !empty_scripts.is_empty() || trailing_ws_scripts > 0 {
@@ -3071,7 +3113,7 @@ fn project_readiness(ctx: &Ctx, root: &Path) -> R<Value> {
 
     let luau_ok = report.is_ok();
     let luau_earned: u64 = if luau_ok && empty_scripts.is_empty() { 20 } else if luau_ok { 12 } else { 0 };
-    let playtest_earned: u64 = if playtest_ok { 20 } else if pt_passed { 10 } else { 0 };
+    let playtest_earned: u64 = if playtest_ok { 20 } else if live_pt_passed { 10 } else { 0 };
     let monetization_earned: u64 = if has_process_receipt { 15 } else { 0 };
     let retention_earned: u64 = if has_daily_retention { 10 } else { 0 };
     let asset_earned: u64 = if asset_lock_ok { 10 } else { 0 };
@@ -3106,15 +3148,22 @@ fn project_readiness(ctx: &Ctx, root: &Path) -> R<Value> {
             "earned": playtest_earned,
             "label": "Playtest MOVE / ACT / HUD proof",
             "ok": playtest_ok,
+            "verification_tier": verification_tier,
             "auto_fixable": false,
             "fix_action": Value::Null,
             "cta_section": "playtests",
-            "detail": if playtest_ok {
-                format!("Passed (MOVE: {move_status}, ACT: {act_status}, HUD: {hud_status})")
+            "detail": if live_pt_ok {
+                format!("Passed via Live Studio (MOVE: {move_status}, ACT: {act_status}, HUD: {hud_status})")
+            } else if sb_verified {
+                format!("Passed via Headless Sandbox (MOVE: {move_status}, ACT: {act_status}, HUD: {hud_status})")
+            } else if !live_pt_tested && latest_sb.is_some() && !sb_fresh {
+                "Headless sandbox report is stale after project edits — re-run Sandbox".to_string()
+            } else if !live_pt_tested && latest_sb.is_some() {
+                format!("Headless sandbox incomplete (MOVE: {move_status}, ACT: {act_status}, HUD: {hud_status}, errors: {sb_err_count})")
             } else if pt_tested {
                 format!("Latest run incomplete (MOVE: {move_status}, ACT: {act_status}, HUD: {hud_status}, blanks: {pt_blanks})")
             } else {
-                "No playtest run yet — run Playtests to verify MOVE / ACT / HUD".to_string()
+                "No playtest run yet — run Headless Sandbox or Playtests to verify MOVE / ACT / HUD".to_string()
             }
         }),
         json!({
@@ -3214,6 +3263,7 @@ fn project_readiness(ctx: &Ctx, root: &Path) -> R<Value> {
     Ok(json!({
         "ok": true,
         "ready_to_publish": report.is_ok() && has_build && has_key && has_ids && unapproved == 0,
+        "verification_tier": verification_tier,
         "score_pct": score_pct,
         "passed_count": passed_count,
         "total_count": total_count,
@@ -3230,11 +3280,13 @@ fn project_readiness(ctx: &Ctx, root: &Path) -> R<Value> {
         "playtest_summary": {
             "tested": pt_tested,
             "passed": pt_passed,
+            "verification_tier": verification_tier,
             "blank_screenshots": pt_blanks,
             "move": move_status,
             "act": act_status,
             "hud": hud_status,
         },
+        "sandbox_summary": latest_sb,
         "luau_errors": report.error_count(),
         "luau_warnings": report.warning_count(),
         "has_process_receipt": has_process_receipt,
@@ -3534,6 +3586,7 @@ fn project_publish_gate(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
     let pt_summary = &readiness["playtest_summary"];
     let pt_passed = pt_summary["passed"].as_bool() == Some(true);
     let pt_tested = pt_summary["tested"].as_bool() == Some(true);
+    let verification_tier = readiness["verification_tier"].clone();
 
     let economy_bindings_ok = has_product_ids && has_economy_handler && has_client_bridge && has_process_receipt;
     let build_and_zip_ok = luau_ok && has_build && zip_ok;
@@ -3574,12 +3627,18 @@ fn project_publish_gate(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
             "id": "playtest_gate",
             "label": "Playtest readiness (MOVE / ACT / HUD)",
             "ok": pt_passed,
+            "verification_tier": verification_tier.clone(),
             "detail": if pt_passed {
-                format!("Passed (MOVE {}, ACT {}, HUD {})", pt_summary["move"].as_str().unwrap_or("ok"), pt_summary["act"].as_str().unwrap_or("ok"), pt_summary["hud"].as_str().unwrap_or("ok"))
+                let tier_label = match verification_tier.as_str() {
+                    Some("live_studio") => "Live Studio",
+                    Some("headless_sandbox") => "Headless Sandbox",
+                    _ => "Verified",
+                };
+                format!("Passed via {tier_label} (MOVE {}, ACT {}, HUD {})", pt_summary["move"].as_str().unwrap_or("ok"), pt_summary["act"].as_str().unwrap_or("ok"), pt_summary["hud"].as_str().unwrap_or("ok"))
             } else if pt_tested {
-                "Latest playtest had incomplete assertions — re-run in Playtests".to_string()
+                "Latest run had incomplete assertions or is stale — re-run Sandbox or Playtests".to_string()
             } else {
-                "Static Luau playtest check clean; run live Playtest to capture MOVE/ACT/HUD".to_string()
+                "Static Luau playtest check clean; run Headless Sandbox or live Playtest to capture MOVE/ACT/HUD".to_string()
             }
         }),
     ];
@@ -3630,6 +3689,7 @@ fn project_publish_gate(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
     Ok(json!({
         "ok": true,
         "gate_passed": gate_passed,
+        "verification_tier": verification_tier,
         "economy_bindings_ok": economy_bindings_ok,
         "retention_ok": has_daily_retention,
         "build_and_zip_ok": build_and_zip_ok,

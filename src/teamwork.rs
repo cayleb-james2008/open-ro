@@ -253,6 +253,40 @@ impl LuneCheckRecord {
 }
 
 #[derive(Clone, Debug)]
+pub struct SandboxRecord {
+    pub at_ms: u64,
+    pub run_id: String,
+    pub passed: bool,
+    pub error_count: usize,
+    pub core_loop_all_passed: bool,
+}
+
+impl SandboxRecord {
+    fn to_json(&self) -> Value {
+        json!({
+            "at_ms": self.at_ms,
+            "run_id": self.run_id,
+            "passed": self.passed,
+            "error_count": self.error_count,
+            "core_loop_all_passed": self.core_loop_all_passed,
+        })
+    }
+
+    fn from_json(v: &Value) -> Option<Self> {
+        Some(SandboxRecord {
+            at_ms: v.get("at_ms").and_then(|x| x.as_u64()).unwrap_or(0),
+            run_id: v.get("run_id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            passed: v.get("passed")?.as_bool()?,
+            error_count: v.get("error_count").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+            core_loop_all_passed: v
+                .get("core_loop_all_passed")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false),
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Task {
     pub id: String,
     pub title: String,
@@ -267,6 +301,7 @@ pub struct Task {
     pub result_summary: Option<String>,
     pub verify_report: Option<VerifyReport>,
     pub last_playtest: Option<PlaytestCheckRecord>,
+    pub last_sandbox: Option<SandboxRecord>,
     pub last_lune: Option<LuneCheckRecord>,
     pub commit_sha: Option<String>,
     pub created_at_ms: u64,
@@ -334,6 +369,13 @@ impl Task {
                     .unwrap_or(Value::Null),
             );
             o.insert(
+                "last_sandbox".into(),
+                self.last_sandbox
+                    .as_ref()
+                    .map(SandboxRecord::to_json)
+                    .unwrap_or(Value::Null),
+            );
+            o.insert(
                 "last_lune".into(),
                 self.last_lune
                     .as_ref()
@@ -378,6 +420,7 @@ impl Task {
             result_summary: v.get("result_summary").and_then(|x| x.as_str()).map(String::from),
             verify_report: v.get("verify_report").and_then(VerifyReport::from_json),
             last_playtest: v.get("last_playtest").and_then(PlaytestCheckRecord::from_json),
+            last_sandbox: v.get("last_sandbox").and_then(SandboxRecord::from_json),
             last_lune: v.get("last_lune").and_then(LuneCheckRecord::from_json),
             commit_sha: v.get("commit_sha").and_then(|x| x.as_str()).map(String::from),
             created_at_ms: v.get("created_at_ms").and_then(|x| x.as_u64()).unwrap_or(0),
@@ -3232,7 +3275,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "You are the Teamwork verifier.\n",
             "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `project_scene_get`, `luau_check`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`, `opencloud_status`, `creator_hub_status`, `universe_get`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_telemetry_summary`).\n",
             "Run `sandbox_playtest` first on game_code tasks for `<2s` headless Luau runtime verification (remotes, DataStores, ProcessReceipt idempotency, stack traces) before paying for live Studio `project_playtest`.\n",
-            "For game_code tasks (or `src/` / `ui/` changes), you MUST run `project_playtest` with `{\"task_id\":\"<id>\"}` and confirm 0 console errors BEFORE calling `verify_task` with `passed: true`.\n",
+            "For game_code tasks (or `src/` / `ui/` changes), run `sandbox_playtest` with `{\"task_id\":\"<id>\"}` (or `project_playtest` when live Studio MCP is needed / `require_studio: true`) and confirm 0 errors BEFORE calling `verify_task` with `passed: true`.\n",
             "For `tools/**/*.luau` tasks (not touching `src/` or `ui/`), run `project_run_lune` (confirm `passed: true`) instead of `project_playtest` BEFORE calling `verify_task(passed=true)`.\n",
             "If checks, contracts (`mechanics_check`), or critical unknowns fail, call `verify_task` with `passed: false` and clear failure notes."
         ),
@@ -3663,7 +3706,7 @@ fn execute_agent_tool(
         "project_format" => tool_project_format(handle, agent_name, args),
         "project_check" => tool_project_check(handle, agent_name, args),
         "project_run_lune" => tool_project_run_lune(handle, agent_name, args),
-        "sandbox_playtest" => tool_sandbox_playtest(handle, args),
+        "sandbox_playtest" => tool_sandbox_playtest(handle, agent_name, args),
         "project_update_manifest" => tool_project_update_manifest(handle, agent_name, args),
         "project_scene_get" => tool_project_scene_get(handle),
         "project_scene_mutate" => tool_project_scene_mutate(handle, agent_name, args),
@@ -4008,6 +4051,7 @@ fn tool_create_task(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Resu
         result_summary: None,
         verify_report: None,
         last_playtest: None,
+        last_sandbox: None,
         last_lune: None,
         commit_sha: None,
         created_at_ms: ts,
@@ -4262,29 +4306,82 @@ fn tool_verify_task(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Resu
 
         let is_code = st.tasks[t_idx].is_game_code();
         let is_lune = st.tasks[t_idx].is_lune_tool();
+        let require_studio = args
+            .get("require_studio")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let last_pt = st.tasks[t_idx].last_playtest.clone();
+        let last_sb = st.tasks[t_idx].last_sandbox.clone();
         let last_lune = st.tasks[t_idx].last_lune.clone();
         let last_edit = st.tasks[t_idx].last_edit_ms;
 
+        let pt_ok = matches!(
+            &last_pt,
+            Some(pt) if pt.at_ms >= last_edit && pt.passed && pt.console_errors == 0
+        );
+        let sb_ok = !require_studio
+            && matches!(
+                &last_sb,
+                Some(sb)
+                    if sb.at_ms >= last_edit
+                        && sb.passed
+                        && sb.error_count == 0
+                        && (sb.core_loop_all_passed || !require_studio)
+            );
+
         if passed && is_code {
-            match &last_pt {
-                None => {
-                    return Err(format!(
-                        "Verifier gate refused: game-code task '{task_id}' requires a Playtest Runner pass with 0 console errors before passing. Run project_playtest first."
-                    ));
+            if !pt_ok && !sb_ok {
+                if require_studio {
+                    match &last_pt {
+                        None => {
+                            return Err(format!(
+                                "Verifier gate refused: game-code task '{task_id}' requires a live Studio Playtest Runner pass (require_studio=true). Run project_playtest first."
+                            ));
+                        }
+                        Some(pt) if pt.at_ms < last_edit => {
+                            return Err(format!(
+                                "Verifier gate refused: game-code task '{task_id}' was edited after the last playtest. Run project_playtest again."
+                            ));
+                        }
+                        Some(pt) => {
+                            return Err(format!(
+                                "Verifier gate refused: last playtest did not pass with 0 console errors ({} error(s)). Fail the task with passed:false instead.",
+                                pt.console_errors
+                            ));
+                        }
+                    }
+                } else {
+                    match (&last_pt, &last_sb) {
+                        (None, None) => {
+                            return Err(format!(
+                                "Verifier gate refused: game-code task '{task_id}' requires a passing sandbox_playtest or project_playtest with 0 console errors before passing. Run sandbox_playtest or project_playtest first."
+                            ));
+                        }
+                        (_, Some(sb)) if sb.at_ms < last_edit => {
+                            return Err(format!(
+                                "Verifier gate refused: game-code task '{task_id}' was edited after the last sandbox/playtest run. Run sandbox_playtest or project_playtest again."
+                            ));
+                        }
+                        (Some(pt), None) if pt.at_ms < last_edit => {
+                            return Err(format!(
+                                "Verifier gate refused: game-code task '{task_id}' was edited after the last playtest. Run sandbox_playtest or project_playtest again."
+                            ));
+                        }
+                        (_, Some(sb)) if !sb.passed || sb.error_count > 0 => {
+                            return Err(format!(
+                                "Verifier gate refused: last sandbox playtest did not pass with 0 console errors ({} error(s)). Fail the task with passed:false instead.",
+                                sb.error_count
+                            ));
+                        }
+                        (Some(pt), _) => {
+                            return Err(format!(
+                                "Verifier gate refused: last playtest did not pass with 0 console errors ({} error(s)). Fail the task with passed:false instead.",
+                                pt.console_errors
+                            ));
+                        }
+                        (None, Some(_)) => unreachable!(),
+                    }
                 }
-                Some(pt) if pt.at_ms < last_edit => {
-                    return Err(format!(
-                        "Verifier gate refused: game-code task '{task_id}' was edited after the last playtest. Run project_playtest again."
-                    ));
-                }
-                Some(pt) if !pt.passed || pt.console_errors > 0 => {
-                    return Err(format!(
-                        "Verifier gate refused: last playtest did not pass with 0 console errors ({} error(s)). Fail the task with passed:false instead.",
-                        pt.console_errors
-                    ));
-                }
-                _ => {}
             }
         } else if passed && is_lune {
             match &last_lune {
@@ -4309,11 +4406,26 @@ fn tool_verify_task(handle: &Arc<RunHandle>, caller: &str, args: &Value) -> Resu
         }
 
         let ts = now_ms();
+        let (rep_passed, rep_errors) = if pt_ok || sb_ok {
+            (Some(true), 0)
+        } else {
+            (
+                last_pt
+                    .as_ref()
+                    .map(|p| p.passed)
+                    .or_else(|| if !require_studio { last_sb.as_ref().map(|s| s.passed) } else { None }),
+                last_pt
+                    .as_ref()
+                    .map(|p| p.console_errors)
+                    .or_else(|| if !require_studio { last_sb.as_ref().map(|s| s.error_count) } else { None })
+                    .unwrap_or(0),
+            )
+        };
         let report = VerifyReport {
             passed,
             verifier: caller.to_string(),
-            playtest_passed: last_pt.as_ref().map(|p| p.passed),
-            console_errors: last_pt.as_ref().map(|p| p.console_errors).unwrap_or(0),
+            playtest_passed: rep_passed,
+            console_errors: rep_errors,
             notes: notes.clone(),
             at_ms: ts,
         };
@@ -5750,9 +5862,55 @@ fn tool_project_sync(
     res
 }
 
-fn tool_sandbox_playtest(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
-    let project_dir = handle.state.lock().unwrap().project_dir.clone();
-    crate::sandbox::run_project_sandbox(&project_dir, args)
+fn tool_sandbox_playtest(handle: &Arc<RunHandle>, agent_name: &str, args: &Value) -> Result<Value, String> {
+    let (project_dir, target_task_id) = {
+        let st = handle.state.lock().unwrap();
+        let tid = args
+            .get("task_id")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .or_else(|| {
+                st.tasks
+                    .iter()
+                    .find(|t| t.status == TaskStatus::AwaitingVerification && t.verifier.eq_ignore_ascii_case(agent_name))
+                    .map(|t| t.id.clone())
+            })
+            .or_else(|| {
+                st.agent_index(agent_name)
+                    .and_then(|i| st.roster[i].current_task_id.clone())
+            });
+        (st.project_dir.clone(), tid)
+    };
+    let mut val = crate::sandbox::run_project_sandbox(&project_dir, args)?;
+    let at_ms = now_ms();
+    let run_id = val["run_id"].as_str().unwrap_or("").to_string();
+    let passed = val["passed"].as_bool().unwrap_or(false);
+    let error_count = val["error_count"]
+        .as_u64()
+        .or_else(|| {
+            val.pointer("/console/errors")
+                .and_then(Value::as_array)
+                .map(|a| a.len() as u64)
+        })
+        .unwrap_or(0) as usize;
+    let core_loop_all_passed = val["core_loop"]["all_passed"].as_bool().unwrap_or(false);
+    if let Some(tid) = &target_task_id {
+        let mut st = handle.state.lock().unwrap();
+        if let Some(t_idx) = st.task_index(tid) {
+            st.tasks[t_idx].last_sandbox = Some(SandboxRecord {
+                at_ms,
+                run_id,
+                passed,
+                error_count,
+                core_loop_all_passed,
+            });
+            st.save_tasks_file();
+        }
+        if let Some(obj) = val.as_object_mut() {
+            obj.insert("task_id".to_string(), json!(tid));
+        }
+    }
+    Ok(val)
 }
 
 fn tool_project_playtest(
@@ -6243,6 +6401,7 @@ mod tests {
             result_summary: None,
             verify_report: None,
             last_playtest: None,
+            last_sandbox: None,
             last_lune: None,
             commit_sha: None,
             created_at_ms: 0,
@@ -6433,6 +6592,7 @@ mod tests {
             result_summary: None,
             verify_report: None,
             last_playtest: None,
+            last_sandbox: None,
             last_lune: None,
             commit_sha: None,
             created_at_ms: 0,
@@ -6844,6 +7004,7 @@ if args.action == "configure":
             result_summary: None,
             verify_report: None,
             last_playtest: None,
+            last_sandbox: None,
             last_lune: None,
             commit_sha: None,
             created_at_ms: 1,
@@ -7224,6 +7385,196 @@ if args.action == "configure":
         stop_oc.store(true, Ordering::SeqCst);
         let _ = oc_thread.join();
         shared.teamwork.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verify_task_accepts_fresh_sandbox_and_respects_require_studio_and_stale_edit() {
+        let root = std::env::temp_dir().join(format!("openro-tw-sandbox-gate-{}", now_ms()));
+        let project_dir = root.join("proj");
+        let run_dir = root.join("run");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            project_dir.join("default.project.json"),
+            r#"{"name":"GateProj","tree":{"$className":"DataModel"}}"#,
+        )
+        .unwrap();
+        let board = Board::open(run_dir.join("board.jsonl")).unwrap();
+        let roster = vec![
+            AgentRecord {
+                name: "builder".into(),
+                role: "builder".into(),
+                brief: None,
+                model_id: "test".into(),
+                state: AgentWorkState::Waiting,
+                killed: false,
+                chat_id: "gate-builder".into(),
+                cursor_seq: 0,
+                turns: 0,
+                trace_count: 0,
+                last_post_seq: None,
+                current_task_id: None,
+                last_error: None,
+                updated_at_ms: 1,
+                generation: 1,
+                parked_at_seq: None,
+                messages: Vec::new(),
+            },
+            AgentRecord {
+                name: "verifier".into(),
+                role: "verifier".into(),
+                brief: None,
+                model_id: "test".into(),
+                state: AgentWorkState::Waiting,
+                killed: false,
+                chat_id: "gate-verifier".into(),
+                cursor_seq: 0,
+                turns: 0,
+                trace_count: 0,
+                last_post_seq: None,
+                current_task_id: None,
+                last_error: None,
+                updated_at_ms: 1,
+                generation: 1,
+                parked_at_seq: None,
+                messages: Vec::new(),
+            },
+        ];
+        let task = Task {
+            id: "t1".into(),
+            title: "Server script".into(),
+            description: "Game logic".into(),
+            kind: TaskKind::GameCode,
+            owner: "builder".into(),
+            verifier: "verifier".into(),
+            status: TaskStatus::AwaitingVerification,
+            claimed_files: vec!["src/server/Main.server.luau".into()],
+            written_files: vec!["src/server/Main.server.luau".into()],
+            depends_on: Vec::new(),
+            result_summary: Some("ready".into()),
+            verify_report: None,
+            last_playtest: None,
+            last_sandbox: None,
+            last_lune: None,
+            commit_sha: None,
+            created_at_ms: 100,
+            updated_at_ms: 100,
+            last_edit_ms: 200,
+        };
+        let state = RunState {
+            id: "team-sandbox-gate".into(),
+            goal: "Verify headless sandbox gate".into(),
+            project_id: Some("gate-proj".into()),
+            project_dir: project_dir.clone(),
+            storage_dir: run_dir,
+            status: RunStatus::Running,
+            model_id: "test".into(),
+            provider: "test".into(),
+            created_at_ms: 100,
+            updated_at_ms: 100,
+            board,
+            roster,
+            tasks: vec![task],
+            claims: BTreeMap::new(),
+            next_task_num: 2,
+            events: VecDeque::new(),
+            next_event_seq: 1,
+            stop_requested: false,
+        };
+        let handle = Arc::new(RunHandle {
+            state: Mutex::new(state),
+            wake_cv: Condvar::new(),
+            sse_cv: Condvar::new(),
+            scheduler: Arc::new(QuotaScheduler::new(2)),
+            sse_clients: AtomicUsize::new(0),
+        });
+
+        // 1. Neither playtest nor sandbox -> refused
+        let err_none = tool_verify_task(&handle, "verifier", &json!({ "task_id": "t1", "passed": true }))
+            .unwrap_err();
+        assert!(err_none.contains("Verifier gate refused"), "{err_none}");
+
+        // 2. Stale sandbox (at_ms < last_edit_ms) -> refused
+        {
+            let mut st = handle.state.lock().unwrap();
+            st.tasks[0].last_sandbox = Some(SandboxRecord {
+                at_ms: 150,
+                run_id: "sb-stale".into(),
+                passed: true,
+                error_count: 0,
+                core_loop_all_passed: true,
+            });
+        }
+        let err_stale = tool_verify_task(&handle, "verifier", &json!({ "task_id": "t1", "passed": true }))
+            .unwrap_err();
+        assert!(err_stale.contains("edited after"), "{err_stale}");
+
+        // 3. Fresh sandbox with errors -> refused
+        {
+            let mut st = handle.state.lock().unwrap();
+            st.tasks[0].last_sandbox = Some(SandboxRecord {
+                at_ms: 250,
+                run_id: "sb-err".into(),
+                passed: false,
+                error_count: 1,
+                core_loop_all_passed: false,
+            });
+        }
+        let err_fail = tool_verify_task(&handle, "verifier", &json!({ "task_id": "t1", "passed": true }))
+            .unwrap_err();
+        assert!(err_fail.contains("did not pass"), "{err_fail}");
+
+        // 4. Fresh passing sandbox + require_studio: true -> refused (no last_playtest)
+        {
+            let mut st = handle.state.lock().unwrap();
+            st.tasks[0].last_sandbox = Some(SandboxRecord {
+                at_ms: 260,
+                run_id: "sb-ok".into(),
+                passed: true,
+                error_count: 0,
+                core_loop_all_passed: true,
+            });
+        }
+        let err_studio = tool_verify_task(
+            &handle,
+            "verifier",
+            &json!({ "task_id": "t1", "passed": true, "require_studio": true }),
+        )
+        .unwrap_err();
+        assert!(err_studio.contains("require_studio=true"), "{err_studio}");
+
+        // 5. Fresh passing sandbox without require_studio -> succeeds!
+        let ok_sb = tool_verify_task(
+            &handle,
+            "verifier",
+            &json!({ "task_id": "t1", "passed": true, "notes": "verified headless" }),
+        )
+        .expect("verify_task with fresh sandbox");
+        assert_eq!(ok_sb["status"], "done");
+        assert_eq!(ok_sb["verify_report"]["playtest_passed"], true);
+        assert_eq!(ok_sb["verify_report"]["console_errors"], 0);
+
+        // 6. require_studio: true succeeds when fresh passing last_playtest is present
+        {
+            let mut st = handle.state.lock().unwrap();
+            st.tasks[0].status = TaskStatus::AwaitingVerification;
+            st.tasks[0].last_playtest = Some(PlaytestCheckRecord {
+                passed: true,
+                console_errors: 0,
+                run_id: Some("pt-1".into()),
+                summary: "ok".into(),
+                at_ms: 300,
+            });
+        }
+        let ok_studio = tool_verify_task(
+            &handle,
+            "verifier",
+            &json!({ "task_id": "t1", "passed": true, "require_studio": true, "notes": "studio ok" }),
+        )
+        .expect("verify_task with studio playtest");
+        assert_eq!(ok_studio["status"], "done");
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }

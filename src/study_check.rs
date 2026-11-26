@@ -2311,7 +2311,7 @@ pub fn study_status(project_dir: &Path) -> Result<Value, StudyError> {
             && e["result"]["passed"].as_bool() == Some(true)
     });
 
-    // Read latest playtest report if any exists.
+    // Read latest playtest or headless sandbox report if any exists.
     let latest_playtest = crate::playtest::latest_report_summary(project_dir);
     let last_pt_passed = latest_playtest
         .as_ref()
@@ -2321,6 +2321,19 @@ pub fn study_status(project_dir: &Path) -> Result<Value, StudyError> {
         .as_ref()
         .and_then(|r| r["blank_screenshots"].as_u64())
         .unwrap_or(0);
+    let latest_sandbox = crate::sandbox::latest_verified_summary(project_dir);
+    let live_pt_ok = last_pt_passed && last_pt_blanks == 0;
+    let sandbox_ok = latest_sandbox
+        .as_ref()
+        .and_then(|s| s["verified"].as_bool())
+        .unwrap_or(false);
+    let verification_tier = if live_pt_ok {
+        Some("live_studio")
+    } else if sandbox_ok {
+        Some("headless_sandbox")
+    } else {
+        None
+    };
 
     let ev_total = ev["total"].as_u64().unwrap_or(0);
     let mech_found = mech["found"].as_bool().unwrap_or(false);
@@ -2330,7 +2343,7 @@ pub fn study_status(project_dir: &Path) -> Result<Value, StudyError> {
 
     let study_done = ev_total > 0 || mech_found;
     let build_done = has_build;
-    let check_done = static_check_kept && last_pt_passed && last_pt_blanks == 0;
+    let check_done = static_check_kept && (live_pt_ok || sandbox_ok);
     let ready_done = check_done && open_unknowns == 0 && (!mech_found || mech_passed);
 
     let stage = if ready_done {
@@ -2381,6 +2394,8 @@ pub fn study_status(project_dir: &Path) -> Result<Value, StudyError> {
             "static_check_kept": static_check_kept,
             "playtest_kept": playtest_kept,
             "last_playtest": latest_playtest,
+            "last_sandbox": latest_sandbox,
+            "verification_tier": verification_tier,
         },
     }))
 }
