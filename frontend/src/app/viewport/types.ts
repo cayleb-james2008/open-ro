@@ -75,7 +75,19 @@ export type Part3D = {
   cardTitle?: string;
   hasParticleEmitter?: boolean;
   hasSound?: boolean;
+  sourceFile?: string;
   rawProps: Record<string, unknown>;
+};
+
+export type PrefabModelSummary = {
+  sourceFile: string;
+  name: string;
+  wiredService: string;
+  rootPath: string;
+  partPaths: string[];
+  nodeCount: number;
+  focusPos: Vec3;
+  focusSize: Vec3;
 };
 
 export type ParsedObjGeometry = {
@@ -267,18 +279,25 @@ export function extractParts(
     if (!path.startsWith("Workspace.") || !inst || typeof inst !== "object") continue;
     const cls = typeof inst.class_name === "string" && inst.class_name ? inst.class_name : "Part";
     if (NON_PART_CLASSES.has(cls)) continue;
-    const name = path.split(".").slice(1).join(".") || path;
     const props = (inst.properties && typeof inst.properties === "object" ? inst.properties : {}) as Record<string, unknown>;
+    const hasChildParts = cls === "Model" && entries.some(([cp]) => cp.startsWith(`${path}.`));
+    if (hasChildParts && !Array.isArray(props.Size)) continue;
+    const name = path.split(".").slice(1).join(".") || path;
     const rawSize = parseVec3(props.Size, cls === "SpawnLocation" ? [8, 1, 8] : [8, 2, 8]);
     const size: Vec3 = [
       clampNum(rawSize[0], 0.5, 512),
       clampNum(rawSize[1], 0.5, 512),
       clampNum(rawSize[2], 0.5, 512),
     ];
-    const hasPos = Array.isArray(props.Position) && props.Position.length >= 3;
-    const rawPos: Vec3 = hasPos
+    const cf = Array.isArray(props.CFrame) && props.CFrame.length >= 3 && props.CFrame.every((n) => typeof n === "number" && Number.isFinite(n))
+      ? (props.CFrame as number[])
+      : null;
+    const hasPos = (Array.isArray(props.Position) && props.Position.length >= 3) || cf !== null;
+    const rawPos: Vec3 = Array.isArray(props.Position) && props.Position.length >= 3
       ? parseVec3(props.Position, [0, size[1] / 2, 0])
-      : [(fallbackIdx % 4 - 1.5) * 14, Math.max(1, size[1] / 2), Math.floor(fallbackIdx / 4) * 14];
+      : cf
+        ? [cf[0], cf[1], cf[2]]
+        : [(fallbackIdx % 4 - 1.5) * 14, Math.max(1, size[1] / 2), Math.floor(fallbackIdx / 4) * 14];
     const pos: Vec3 = [
       clampNum(rawPos[0], -1024, 1024),
       clampNum(rawPos[1], -256, 1024),
@@ -286,7 +305,11 @@ export function extractParts(
     ];
     if (!hasPos) fallbackIdx++;
 
-    const rotArr = parseVec3(props.Rotation, [0, 0, 0]);
+    const rotArr = Array.isArray(props.Rotation) && props.Rotation.length >= 3
+      ? parseVec3(props.Rotation, [0, 0, 0])
+      : cf && cf.length >= 12
+        ? [0, (Math.atan2(cf[5], cf[11]) * 180) / Math.PI, 0] as Vec3
+        : ([0, 0, 0] as Vec3);
     const rotYDeg = rotArr[1];
     const transparency =
       typeof props.Transparency === "number" && Number.isFinite(props.Transparency)
@@ -384,11 +407,65 @@ export function extractParts(
       cardTitle,
       hasParticleEmitter: emitterParents.has(path),
       hasSound: soundParents.has(path),
+      ...(typeof inst.source_file === "string" && inst.source_file ? { sourceFile: inst.source_file } : {}),
       rawProps: props,
     });
   }
 
   return out;
+}
+
+export function extractPrefabModels(
+  place: Place,
+  parts: Part3D[],
+  extraSourceFiles?: Record<string, string>,
+): PrefabModelSummary[] {
+  const groups = new Map<string, { paths: string[]; wiredService: string }>();
+  const instances = place?.instances || {};
+  for (const [dmPath, inst] of Object.entries(instances)) {
+    const sf =
+      (typeof inst?.source_file === "string" && inst.source_file) ||
+      extraSourceFiles?.[dmPath] ||
+      "";
+    if (!/^scene\/models\/.+\.model\.json$/i.test(sf)) continue;
+    const cur = groups.get(sf) || { paths: [], wiredService: dmPath.split(".")[0] || "Workspace" };
+    cur.paths.push(dmPath);
+    groups.set(sf, cur);
+  }
+  const partByPath = new Map(parts.map((p) => [p.path, p]));
+  const out: PrefabModelSummary[] = [];
+  for (const [sourceFile, info] of groups.entries()) {
+    const sorted = [...info.paths].sort();
+    const rendered = sorted.map((p) => partByPath.get(p)).filter((p): p is Part3D => Boolean(p));
+    const fileBase = sourceFile.split("/").pop()?.replace(/\.model\.json$/i, "") || sourceFile;
+    let focusPos: Vec3 = [0, 4, 0];
+    let focusSize: Vec3 = [12, 8, 12];
+    if (rendered.length > 0) {
+      let minX = Infinity, minY = Infinity, minZ = Infinity;
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+      for (const rp of rendered) {
+        minX = Math.min(minX, rp.pos[0] - rp.size[0] * 0.5);
+        minY = Math.min(minY, rp.pos[1] - rp.size[1] * 0.5);
+        minZ = Math.min(minZ, rp.pos[2] - rp.size[2] * 0.5);
+        maxX = Math.max(maxX, rp.pos[0] + rp.size[0] * 0.5);
+        maxY = Math.max(maxY, rp.pos[1] + rp.size[1] * 0.5);
+        maxZ = Math.max(maxZ, rp.pos[2] + rp.size[2] * 0.5);
+      }
+      focusPos = [(minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5];
+      focusSize = [Math.max(4, maxX - minX), Math.max(4, maxY - minY), Math.max(4, maxZ - minZ)];
+    }
+    out.push({
+      sourceFile,
+      name: fileBase,
+      wiredService: info.wiredService,
+      rootPath: rendered[0]?.path || sorted[0],
+      partPaths: rendered.map((p) => p.path),
+      nodeCount: sorted.length,
+      focusPos,
+      focusSize,
+    });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function directionFromFace(face: unknown): Vec3 {

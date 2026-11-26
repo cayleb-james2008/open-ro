@@ -8,6 +8,7 @@ import {
   FileCode,
   FileDiff,
   FolderTree,
+  FolderUp,
   Layers,
   Monitor,
   RefreshCw,
@@ -139,6 +140,7 @@ export const LeftExplorerTree = memo(function LeftExplorerTree({
   onRefreshPlace,
   onSelectLighting,
   onSelectMesh,
+  onImportModel,
 }: {
   place: Place | null | "error";
   error: boolean;
@@ -160,6 +162,7 @@ export const LeftExplorerTree = memo(function LeftExplorerTree({
   onRefreshPlace?: () => void;
   onSelectLighting?: () => void;
   onSelectMesh?: (mesh: WorkspaceMeshEntry) => void;
+  onImportModel?: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [treeView, setTreeView] = useState<"services" | "files">("services");
@@ -274,8 +277,8 @@ export const LeftExplorerTree = memo(function LeftExplorerTree({
 
   const fileGroups = useMemo(() => {
     if (!projectMode || !place || place === "error") return [];
-    const buckets = new Map<string, Array<{ path: string; label: string; badge: string; kind: "script" | "scene" | "mesh"; mesh?: WorkspaceMeshEntry }>>();
-    const add = (folder: string, item: { path: string; label: string; badge: string; kind: "script" | "scene" | "mesh"; mesh?: WorkspaceMeshEntry }) => {
+    const buckets = new Map<string, Array<{ path: string; label: string; badge: string; kind: "script" | "scene" | "mesh" | "model"; mesh?: WorkspaceMeshEntry; focusPath?: string }>>();
+    const add = (folder: string, item: { path: string; label: string; badge: string; kind: "script" | "scene" | "mesh" | "model"; mesh?: WorkspaceMeshEntry; focusPath?: string }) => {
       const list = buckets.get(folder) || [];
       list.push(item);
       buckets.set(folder, list);
@@ -289,6 +292,26 @@ export const LeftExplorerTree = memo(function LeftExplorerTree({
     const sceneCount = Object.keys(place.instances || {}).length;
     if (!q || "scene/workspace.model.json lighting".includes(q)) {
       add("scene/", { path: "scene/workspace.model.json", label: "workspace.model.json", badge: `${sceneCount} parts`, kind: "scene" });
+    }
+    const modelBuckets = new Map<string, { count: number; firstPath: string }>();
+    for (const [dmPath, inst] of Object.entries(place.instances || {})) {
+      const sf = inst?.source_file;
+      if (typeof sf === "string" && /^scene\/models\/.+\.model\.json$/i.test(sf)) {
+        const cur = modelBuckets.get(sf) || { count: 0, firstPath: dmPath };
+        cur.count += 1;
+        modelBuckets.set(sf, cur);
+      }
+    }
+    for (const [modelPath, info] of modelBuckets.entries()) {
+      const label = modelPath.split("/").pop() || modelPath;
+      if (q && !`${modelPath} ${label}`.toLowerCase().includes(q)) continue;
+      add("scene/models/", {
+        path: modelPath,
+        label,
+        badge: `${info.count} node${info.count === 1 ? "" : "s"}`,
+        kind: "model",
+        focusPath: info.firstPath,
+      });
     }
     for (const mesh of projectMeshes) {
       const meshPath = mesh.obj_path || `assets/meshes/${mesh.name}`;
@@ -349,6 +372,19 @@ export const LeftExplorerTree = memo(function LeftExplorerTree({
                 <span>{warnCount} warn</span>
               )}
             </Pill>
+          )}
+          {onImportModel && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              disabled={syncing}
+              onClick={onImportModel}
+              data-explorer-import-model
+              aria-label="Import prefab model"
+              className="size-7 text-ink-2 hover:text-ink max-md:size-11"
+            >
+              <FolderUp className="size-3.5" strokeWidth={1.5} aria-hidden />
+            </Button>
           )}
           {onRefreshPlace && (
             <Button
@@ -508,7 +544,20 @@ export const LeftExplorerTree = memo(function LeftExplorerTree({
         {error ? (
           <div className="flex flex-col items-start gap-2 rounded-card border border-hairline bg-board p-2.5 text-xs text-pill-pro-fg">
             <span>Could not read Studio DataModel.</span>
-            {onRefreshPlace && (
+            {onImportModel && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              disabled={syncing}
+              onClick={onImportModel}
+              data-explorer-import-model
+              aria-label="Import prefab model"
+              className="size-7 text-ink-2 hover:text-ink max-md:size-11"
+            >
+              <FolderUp className="size-3.5" strokeWidth={1.5} aria-hidden />
+            </Button>
+          )}
+          {onRefreshPlace && (
               <Button variant="outline" size="xs" onClick={onRefreshPlace} className="bg-surface max-md:min-h-11">
                 <RefreshCw className="size-3" strokeWidth={1.5} aria-hidden />
                 Retry sync
@@ -557,6 +606,8 @@ export const LeftExplorerTree = memo(function LeftExplorerTree({
                             else if (item.kind === "scene") {
                               if (onSelectLighting) onSelectLighting();
                               else onSelectPart("Lighting");
+                            } else if (item.kind === "model" && item.focusPath) {
+                              onSelectPart(item.focusPath);
                             } else if (item.mesh) {
                               onSelectMesh?.(item.mesh);
                             }

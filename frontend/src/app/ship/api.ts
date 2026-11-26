@@ -1387,3 +1387,93 @@ export async function ingestLiveOpsTelemetry(
 export async function getLiveOpsTelemetrySummary(projectId: string): Promise<Res<LiveOpsTelemetrySummary>> {
   return call<LiveOpsTelemetrySummary>(projUrl(projectId, "/liveops/telemetry/summary"));
 }
+
+export type StudioPullChangeKind = "script" | "instance" | "lighting";
+export type StudioPullChangeStatus = "studio_only" | "studio_modified" | "conflict" | "local_only";
+export type StudioPullStrategy = "take_studio" | "keep_local" | "merge_non_conflicting";
+
+export type StudioPullHunk =
+  | SyncConflictHunk
+  | {
+      header?: string;
+      lines?: SyncConflictHunkLine[];
+      op?: string;
+      text?: string;
+      before?: unknown;
+      after?: unknown;
+    }
+  | string;
+
+export type StudioPullChange = {
+  path: string;
+  kind: StudioPullChangeKind | string;
+  status: StudioPullChangeStatus | string;
+  local_hash?: number | null;
+  studio_hash?: number | null;
+  baseline_hash?: number | null;
+  hunks: StudioPullHunk[];
+};
+
+export type StudioPullResponse = {
+  ok: boolean;
+  snapshot_id: string;
+  changes: StudioPullChange[];
+  applied_count: number;
+  conflict_count: number;
+  applied_paths?: string[];
+  skipped_paths?: string[];
+};
+
+export type PrefabModelFormat = "rbxmx" | "rbxm" | "rbxlx";
+
+export type ImportModelRequest = {
+  file_name: string;
+  format: PrefabModelFormat;
+  bytes_base64: string;
+  target_service?: string;
+};
+
+export type ImportModelResponse = {
+  ok: boolean;
+  model_path: string;
+  extracted_scripts: string[];
+  wired_service: string;
+  warnings: string[];
+};
+
+export function bytesToBase64(bytes: Uint8Array): string {
+  const CHUNK = 0x8000;
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+
+export function inferPrefabFormat(fileName: string): PrefabModelFormat | null {
+  const ext = fileName.trim().toLowerCase().split(".").pop();
+  if (ext === "rbxmx" || ext === "rbxm" || ext === "rbxlx") return ext;
+  return null;
+}
+
+export async function pullSyncDiff(projectId: string): Promise<Res<StudioPullResponse>> {
+  return call<StudioPullResponse>(projUrl(projectId, "/sync/pull-diff"), {});
+}
+
+export async function pullSyncApply(
+  projectId: string,
+  payload: {
+    paths?: string[];
+    strategy: StudioPullStrategy;
+    confirm_overwrite?: boolean;
+  },
+): Promise<Res<StudioPullResponse>> {
+  return call<StudioPullResponse>(projUrl(projectId, "/sync/pull"), payload);
+}
+
+export async function importProjectModel(
+  projectId: string,
+  payload: ImportModelRequest,
+): Promise<Res<ImportModelResponse>> {
+  return call<ImportModelResponse>(projUrl(projectId, "/import-model"), payload, { timeoutMs: 45000 });
+}

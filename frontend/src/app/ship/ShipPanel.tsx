@@ -38,6 +38,7 @@ export const ShipPanel = memo(function ShipPanel({
   onInstalledMonetization,
   onRunPlaytest,
   onOpenCodeDiff,
+  onOpenViewport,
   initialSection = "publish",
 }: {
   ship: Ship;
@@ -48,6 +49,7 @@ export const ShipPanel = memo(function ShipPanel({
   onInstalledMonetization?: () => Promise<void> | void;
   onRunPlaytest?: () => Promise<void> | void;
   onOpenCodeDiff?: (scriptPath: string) => void;
+  onOpenViewport?: () => void;
   initialSection?: Section;
 }) {
   const [section, setSection] = useState<Section>(initialSection);
@@ -222,7 +224,14 @@ export const ShipPanel = memo(function ShipPanel({
         )}
         <Suspense fallback={<div className="p-3 text-sm text-ink-2">Loading section…</div>}>
           {section === "liveops" && <LiveOpsPanel ship={ship} onOpenCodeFile={onOpenCodeDiff} />}
-          {section === "assets" && <AssetsPanel ship={ship} onOpenSettings={onOpenSettings} />}
+          {section === "assets" && (
+            <AssetsPanel
+              ship={ship}
+              onOpenSettings={onOpenSettings}
+              onImportedModel={onInstalledMonetization}
+              onOpenViewport={onOpenViewport}
+            />
+          )}
           {section === "art" && <ArtStudioPanel ship={ship} />}
           {section === "playtests" && <PlaytestPanel ship={ship} studioOk={studioOk} onJumpToIssue={onOpenCodeDiff} />}
         </Suspense>
