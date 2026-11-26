@@ -219,8 +219,8 @@ STUDIO & WHOLE-GAME TOOLS:\n\
 - {{\"tool\": \"project_run_lune\", \"args\": {{\"script\": \"tools/sim.luau\"}}}} runs a project-relative Lune test/sim script with timeout\n\
 - {{\"tool\": \"sandbox_playtest\", \"args\": {{\"timeout_secs\": 15}}}} runs the headless local Roblox Luau runtime sandbox (<2s, no Studio needed; executes server/client scripts, remotes, DataStores, ProcessReceipt idempotency, PlayerGui)\n\
 - {{\"tool\": \"project_build\", \"args\": {{\"engine\": \"auto\"}}}} builds the project to .rbxlx\n\
-- {{\"tool\": \"project_scene_get\", \"args\": {{}}}} returns the unified Rojo workspace bundle (scripts, Workspace instances, meshes, lighting, diagnostics)\n\
-- {{\"tool\": \"project_scene_mutate\", \"args\": {{\"ops\": [{{\"op\": \"upsert\", \"path\": \"Workspace.SpawnPad\", \"class_name\": \"SpawnLocation\", \"properties\": {{\"Position\": [0, 1, 0], \"Size\": [8, 1, 8], \"Anchored\": true}}}}]}}}} mutates scene/workspace.model.json & Lighting (auto-wiring default.project.json)\n\
+- {{\"tool\": \"project_scene_get\", \"args\": {{}}}} returns the unified Rojo workspace bundle (scripts, Workspace instances, meshes, lighting, lights, terrain, diagnostics)\n\
+- {{\"tool\": \"project_scene_mutate\", \"args\": {{\"ops\": [{{\"op\": \"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\", \"path\": \"Workspace.SpawnPad\", \"class_name\": \"Part|Model|SpawnLocation|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\", \"properties\": {{\"Position\": [0, 1, 0], \"Size\": [8, 1, 8], \"Anchored\": true}}}}]}}}} mutates scene/workspace.model.json, scene/terrain.json, & Lighting (auto-wiring default.project.json; supports set_terrain {{enabled?, generator?: {{kind:\"flat|hills|island|canyon\",seed,amplitude,water_level}}, regions?, paint_box?: {{id?,min,max,material}}, clear?}} and reparent {{path,new_parent}})\n\
 - {{\"tool\": \"gui_save\", \"args\": {{\"slug\": \"main-hud\", \"preset\": \"rpg\"}}}} saves ScreenDoc v1 to ui/<slug>.screen.json and runs multi-device safe-area checks\n\
 - {{\"tool\": \"gui_compile\", \"args\": {{\"slug\": \"main-hud\", \"emit_model_json\": false}}}} compiles ScreenDoc v1 to --!strict Luau create(parent, callbacks) + Rojo .model.json\n\
 - {{\"tool\": \"project_sync\", \"args\": {{\"prune\": false}}}} one-way syncs the project to Studio\n\
@@ -290,8 +290,8 @@ PROJECT FILE & BUILD TOOLS:\n\
 - project_run_lune {{\"script\": \"tools/sim.luau\"}} (timeout-bounded Lune execution)\n\
 - sandbox_playtest {{\"timeout_secs\": 15, \"journey\": [...]}} (<2s headless Roblox Luau runtime sandbox: server/client, remotes, DataStores, ProcessReceipt idempotency, PlayerGui)\n\
 - project_build {{\"engine\": \"auto\"}} (.rbxlx build)\n\
-- project_scene_get {{}} (unified workspace: scripts, instances, meshes, lighting, diagnostics)\n\
-- project_scene_mutate {{\"ops\": [{{\"op\": \"upsert|delete|duplicate|set_lighting|undo\", \"path\": \"Workspace.Name\", ...}}]}} (declarative scene/workspace.model.json + Lighting)\n\
+- project_scene_get {{}} (unified workspace: scripts, instances, meshes, lighting, lights, terrain, diagnostics)\n\
+- project_scene_mutate {{\"ops\": [{{\"op\": \"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\", \"path\": \"Workspace.Name\", \"class_name\": \"Part|Model|SpawnLocation|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\", \"new_parent\": \"Workspace.Parent\", \"enabled\": true, \"generator\": {{\"kind\": \"flat|hills|island|canyon\", \"seed\": 1, \"amplitude\": 24, \"water_level\": 0}}, \"paint_box\": {{\"min\": [0,0,0], \"max\": [16,8,16], \"material\": \"Grass\"}}, ...}}]}} (declarative scene/workspace.model.json, scene/terrain.json, & Lighting)\n\
 - gui_save {{\"slug\": \"main-hud\", \"doc\": {{...}} | \"preset\": \"rpg|obby|tycoon|gacha\"}} (saves ui/<slug>.screen.json + safe-area analysis)\n\
 - gui_compile {{\"slug\": \"main-hud\", \"emit_model_json\": false}} (compiles --!strict Luau create(parent, callbacks) + Rojo .model.json)\n\
 - project_sync {{\"prune\": false}} (one-way push sync to Studio)\n\

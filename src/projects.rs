@@ -1061,6 +1061,12 @@ fn enum_token_lookup(enum_type: &str, item: &str) -> Option<u32> {
             "inversetapered" => Some(3),
             _ => None,
         },
+        "AlphaMode" => match clean.to_ascii_lowercase().as_str() {
+            "overlay" => Some(0),
+            "transparency" => Some(1),
+            "tintmask" => Some(2),
+            _ => None,
+        },
         "Font" => match clean.to_ascii_lowercase().as_str() {
             "legacy" => Some(0),
             "arial" => Some(1),
@@ -1107,7 +1113,8 @@ fn resolve_enum_token(prop_name: &str, val: &Value) -> Option<u32> {
     let enum_ty = match prop_name {
         "Material" => "Material",
         "Shape" | "shape" => "PartType",
-        "Face" => "NormalId",
+        "Face" | "EmissionDirection" => "NormalId",
+        "AlphaMode" => "AlphaMode",
         "Technology" => "Technology",
         "TopSurface" | "BottomSurface" | "FrontSurface" | "BackSurface" | "LeftSurface" | "RightSurface" => "SurfaceType",
         "CollisionFidelity" => "CollisionFidelity",
@@ -1451,7 +1458,8 @@ pub fn load_workspace_bundle(dir: &Path, project_id: &str) -> Result<Value, Stri
         .to_string();
 
     let (scene_revision, can_undo, can_redo) = crate::scene::undo_status(dir);
-    let meshes = crate::scene::scan_project_meshes(dir, project_id);
+    let mut meshes = crate::scene::scan_project_meshes(dir, project_id);
+    let terrain = crate::scene::load_terrain_for_workspace(dir);
 
     let mut scripts_map: BTreeMap<String, Value> = BTreeMap::new();
     let mut instances_map: BTreeMap<String, Value> = BTreeMap::new();
@@ -1462,6 +1470,13 @@ pub fn load_workspace_bundle(dir: &Path, project_id: &str) -> Result<Value, Stri
     match load_tree(dir, &rojo_file) {
         Ok(tree) => {
             let lighting = crate::scene::extract_lighting_from_tree(&tree.services);
+            let lights = crate::scene::extract_lights_from_tree(&tree.services);
+            crate::scene::enrich_meshes_with_surface_appearance(
+                dir,
+                project_id,
+                &mut meshes,
+                &tree.services,
+            );
             for (f, source_file) in tree.flatten_with_source() {
                 let dm_path = f.path.replace('/', ".");
                 if let Some(src) = f.source {
@@ -1529,6 +1544,8 @@ pub fn load_workspace_bundle(dir: &Path, project_id: &str) -> Result<Value, Stri
                 "instances": instances_map,
                 "meshes": meshes,
                 "lighting": lighting,
+                "lights": lights,
+                "terrain": terrain,
                 "diagnostics": diagnostics,
                 "skipped": tree.skipped,
                 "tree_error": Value::Null,
@@ -1547,6 +1564,8 @@ pub fn load_workspace_bundle(dir: &Path, project_id: &str) -> Result<Value, Stri
                 "instances": {},
                 "meshes": meshes,
                 "lighting": lighting,
+                "lights": [],
+                "terrain": terrain,
                 "diagnostics": [{
                     "severity": "error",
                     "file": rojo_file,

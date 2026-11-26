@@ -603,7 +603,10 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
         }
         ("GET", [id, "mesh-asset"]) => {
             let r = project_of(shared, id)?;
-            serve_mesh_asset(&r.dir, &query_param(query, "path").unwrap_or_default())
+            let rel = query_param(query, "file")
+                .or_else(|| query_param(query, "path"))
+                .unwrap_or_default();
+            serve_mesh_asset(&r.dir, &rel)
         }
         ("GET", [id, "builds"]) => {
             let r = project_of(shared, id)?;
@@ -1037,9 +1040,15 @@ fn preview_image(dir: &Path, rel: &str) -> Result<Reply, Reply> {
     Ok(Reply { status: "200 OK", content_type, body })
 }
 
-/// Serve a CWE-22/CWE-59 jailed project mesh or texture asset (`<= 10 MB`) for `GET /api/projects/:id/mesh-asset?path=...`.
+/// Serve a CWE-22/CWE-59 jailed project mesh or texture asset (`<= 10 MB`) for `GET /api/projects/:id/mesh-asset?file=...` (or `?path=...`).
 fn serve_mesh_asset(dir: &Path, rel: &str) -> Result<Reply, Reply> {
     let full = file_path(dir, rel, false)?;
+    let shown = projects::rel_display(dir, &full);
+    if !shown.starts_with("assets/meshes/") && !shown.starts_with("art/") {
+        return Err(Reply::bad(
+            "mesh-asset only serves files under assets/meshes/ or art/",
+        ));
+    }
     let ext = full
         .extension()
         .and_then(|e| e.to_str())
@@ -1049,9 +1058,15 @@ fn serve_mesh_asset(dir: &Path, rel: &str) -> Result<Reply, Reply> {
         "obj" | "mtl" => "text/plain; charset=utf-8",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        _ => return Err(Reply::bad("mesh-asset supports .obj, .mtl, .png, .jpg, or .webp files only")),
+        _ => {
+            return Err(Reply::bad(
+                "mesh-asset supports .obj, .mtl, .png, or .jpg files only",
+            ))
+        }
     };
+    if crate::scene::has_symlink_component(dir, &full) {
+        return Err(Reply::bad("mesh asset symlink refused"));
+    }
     let sym_meta = std::fs::symlink_metadata(&full)
         .map_err(|_| Reply::err("404 Not Found", "mesh asset does not exist"))?;
     if sym_meta.file_type().is_symlink() {
@@ -1064,6 +1079,17 @@ fn serve_mesh_asset(dir: &Path, rel: &str) -> Result<Reply, Reply> {
     let canon_full = full.canonicalize().map_err(|e| Reply::bad(e.to_string()))?;
     if !canon_full.starts_with(&canon_dir) {
         return Err(Reply::bad("path must stay inside the project folder"));
+    }
+    let allowed_base = if shown.starts_with("assets/meshes/") {
+        dir.join("assets").join("meshes")
+    } else {
+        dir.join("art")
+    };
+    let canon_base = allowed_base
+        .canonicalize()
+        .map_err(|_| Reply::err("404 Not Found", "mesh asset folder does not exist"))?;
+    if !canon_full.starts_with(&canon_base) {
+        return Err(Reply::bad("mesh asset must stay inside assets/meshes/ or art/"));
     }
     if sym_meta.len() as usize > PREVIEW_CAP {
         return Err(Reply::bad("mesh asset is over 10 MB"));

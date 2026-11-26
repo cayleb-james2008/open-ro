@@ -3250,6 +3250,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_summary`.\n",
             "Formatting: `project_check` with `{\"format\":true}` or `project_format` auto-formats your claimed `.luau` files with `stylua` instead of hand-editing whitespace.\n",
             "Asset arg signatures:\n",
+            "- project_scene_mutate: {\"ops\":[{\"op\":\"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\",\"path\":\"Workspace.Name\",\"class_name\":\"Part|Model|SpawnLocation|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\",\"new_parent\":\"Workspace.Parent\",\"enabled\":true,\"generator\":{\"kind\":\"flat|hills|island|canyon\",\"seed\":1,\"amplitude\":24,\"water_level\":0},\"paint_box\":{\"min\":[0,0,0],\"max\":[16,8,16],\"material\":\"Grass\"}}]}\n",
             "- reference_search: {\"character\":\"...\",\"show\":\"...\",\"card_id\":\"...\"}\n",
             "- art_generate: {\"prompt\":\"single-line eye-level three-quarter prompt\",\"out_path\":\"art/cards/x/art.png\",\"references\":[\"art/references/...\"]}\n",
             "- image_process: {\"output\":\"art/ui/x.png\",\"input\":\"...?\",\"ops\":[{\"op\":\"canvas\",\"width\":256,\"height\":256,\"color\":\"#00000000\"},{\"op\":\"draw\",\"shapes\":[...]}]} (or \"script\")\n",
@@ -5014,9 +5015,23 @@ fn tool_project_scene_mutate(
 ) -> Result<Value, String> {
     let explicit_task = args.get("task_id").and_then(|v| v.as_str());
     let project_ref = project_ref_for_run(handle);
+    let terrain_only = args
+        .get("ops")
+        .and_then(|v| v.as_array())
+        .is_some_and(|ops| {
+            !ops.is_empty()
+                && ops
+                    .iter()
+                    .all(|o| o.get("op").and_then(|k| k.as_str()) == Some("set_terrain"))
+        });
+    let claim_target = if terrain_only {
+        crate::scene::TERRAIN_FILE_REL
+    } else {
+        crate::scene::SCENE_MODEL_REL
+    };
     let task_id = {
         let mut st = handle.state.lock().unwrap();
-        ensure_write_claim(&mut st, caller, crate::scene::SCENE_MODEL_REL, explicit_task)?
+        ensure_write_claim(&mut st, caller, claim_target, explicit_task)?
     };
     let mut res = crate::scene::mutate_scene(&project_ref.dir, &project_ref.id, args)?;
     let modified: Vec<String> = res
