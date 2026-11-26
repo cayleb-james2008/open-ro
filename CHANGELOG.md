@@ -4,6 +4,11 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.20.0 - 2026-11-26
+
+- Added the Headless Local Roblox Luau Runtime Sandbox (`src/sandbox.rs`, `src/sandbox_runtime.luau`, `POST /api/projects/:id/sandbox/run`, `POST /api/studio/sandbox/run`, the `sandbox_playtest` tool in `src/agent.rs` and `src/teamwork.rs`, `SandboxRunnerCard.tsx`, and offline `browser_sim` parity in `frontend/web-engine/install.ts`) executing Server and Client Luau scripts locally via Lune `0.11.1` against an embedded Roblox `DataModel`, `DataStoreService`, `MarketplaceService.ProcessReceipt`, `RemoteEvent`/`RemoteFunction`, and `PlayerGui` shim with real Luau stack-trace diagnostics, preset and custom step builders, and Console/DataStores/leaderstats/Receipts/PlayerGui state inspection.
+- Redesigned the OpenRO Studio mark (`docs/logo.svg`, `frontend/src/app/OpenRoLogo.tsx`, `frontend/index.html` favicon) with a Studio-inspired tilted blue split-ribbon emblem across the top chrome, welcome canvas, README, and browser tab icon.
+
 ## 1.19.0 - 2026-11-26
 
 - Added a Unified Project-Native IDE & Declarative 3D Scene Graph (`src/scene.rs`, `src/projects.rs`, `src/project_api.rs`, `frontend/src/App.tsx`, `Shelf.tsx`, `CodeDiffWorkbench.tsx`, `StudioViewport3D.tsx`, `StudioBottomDrawer.tsx`, `web-engine/install.ts`), replacing the split between embedded `LocalPlace` and Rojo project folders on disk.

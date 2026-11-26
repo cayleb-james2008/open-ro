@@ -21,9 +21,11 @@ import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmente
 import { Expandable, ExpandableTrigger } from "@/components/ui/expandable";
 import {
   runSandbox,
+  type CoreLoopClaim,
   type SandboxJourneyOp,
   type SandboxJourneyStep,
   type SandboxPlayerConfig,
+  type SandboxReceiptEntry,
   type SandboxRunResponse,
 } from "./api";
 
@@ -145,6 +147,21 @@ function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(2)}s`;
 }
 
+function formatCoreLoop(v: CoreLoopClaim | string | undefined): string {
+  if (typeof v === "string") return v;
+  if (v && typeof v.status === "string" && v.status.trim()) return v.status;
+  return "not tested";
+}
+
+function formatReceipt(r: SandboxReceiptEntry): string {
+  if (typeof r === "string") return r;
+  const pid = r.purchase_id ?? "receipt";
+  const prod = r.product_id !== undefined ? `#${r.product_id}` : "#?";
+  const dec = r.decision ?? "processed";
+  const dup = r.duplicate ? (r.idempotent ? " (dup idempotent)" : " (dup)") : "";
+  return `${pid} · ${prod} · ${dec}${dup}`;
+}
+
 function safeStringify(val: unknown): string {
   try {
     return JSON.stringify(val, null, 2) ?? "null";
@@ -163,14 +180,22 @@ function GuiTreeNode({ node, depth = 0 }: { node: unknown; depth?: number }) {
   }
   if (!node || typeof node !== "object") return null;
   const obj = node as Record<string, unknown>;
-  const name = typeof obj.name === "string" ? obj.name : typeof obj.Name === "string" ? obj.Name : "Node";
+  const name = typeof obj.name === "string"
+    ? obj.name
+    : typeof obj.Name === "string"
+      ? obj.Name
+      : typeof obj.player_name === "string"
+        ? obj.player_name
+        : "Node";
   const cls = typeof obj.class_name === "string"
     ? obj.class_name
     : typeof obj.className === "string"
       ? obj.className
       : typeof obj.ClassName === "string"
         ? obj.ClassName
-        : "Instance";
+        : obj.player_id !== undefined
+          ? "PlayerGui"
+          : "Instance";
   const children = Array.isArray(obj.children) ? obj.children : [];
   return (
     <div className="flex flex-col gap-1">
@@ -224,9 +249,10 @@ export function SandboxRunnerCard({
       toast.error(msg);
       return;
     }
+    const luneMissing = res.engine === "lune_missing" || res.diagnostics?.lune_found === false;
     const payload: SandboxRunResponse = {
       ok: Boolean(res.ok),
-      engine: res.engine ?? "browser_sim",
+      engine: luneMissing ? "lune_missing" : (res.engine ?? "browser_sim"),
       passed: Boolean(res.passed),
       duration_ms: typeof res.duration_ms === "number" ? res.duration_ms : 0,
       steps: Array.isArray(res.steps) ? res.steps : [],
@@ -240,14 +266,15 @@ export function SandboxRunnerCard({
         player_gui_tree: [],
       },
       core_loop: res.core_loop ?? { move: "not tested", act: "not tested", hud: "not tested" },
-      diagnostic: res.diagnostic,
+      diagnostic: res.diagnostic ?? (luneMissing ? res.error : undefined),
+      diagnostics: res.diagnostics,
     };
     setResult(payload);
     if (payload.console.errors.length > 0 || payload.steps.some((s) => !s.passed)) {
       setInspectorTab("console");
     }
     const label = presetLabel || "Sandbox journey";
-    if (payload.engine === "lune_missing") {
+    if (luneMissing) {
       toast.error(payload.diagnostic || "Lune runtime not detected on PATH.");
     } else if (payload.passed) {
       toast.success(`${label} passed in ${formatDuration(payload.duration_ms)}`);
@@ -299,10 +326,10 @@ export function SandboxRunnerCard({
     return items;
   }, [result]);
 
-  const engineLabel = result?.engine === "lune_roblox_shim"
-    ? "lune_roblox_shim"
-    : result?.engine === "lune_missing"
-      ? "lune_missing"
+  const engineLabel = (result?.engine === "lune_missing" || result?.diagnostics?.lune_found === false)
+    ? "lune_missing"
+    : result?.engine === "lune_roblox_shim"
+      ? "lune_roblox_shim"
       : result?.engine === "browser_sim"
         ? "browser_sim"
         : null;
@@ -612,9 +639,9 @@ export function SandboxRunnerCard({
               )}
             </div>
             <div className="flex flex-wrap items-center gap-1.5 text-xs">
-              <Pill className="bg-surface px-2 py-0.5 text-ink-2">Move: {result.core_loop.move}</Pill>
-              <Pill className="bg-surface px-2 py-0.5 text-ink-2">Act: {result.core_loop.act}</Pill>
-              <Pill className="bg-surface px-2 py-0.5 text-ink-2">HUD: {result.core_loop.hud}</Pill>
+              <Pill className="bg-surface px-2 py-0.5 text-ink-2">Move: {formatCoreLoop(result.core_loop.move)}</Pill>
+              <Pill className="bg-surface px-2 py-0.5 text-ink-2">Act: {formatCoreLoop(result.core_loop.act)}</Pill>
+              <Pill className="bg-surface px-2 py-0.5 text-ink-2">HUD: {formatCoreLoop(result.core_loop.hud)}</Pill>
             </div>
           </div>
 
@@ -822,10 +849,10 @@ export function SandboxRunnerCard({
                     <p className="text-ink-2">No receipts processed during this run.</p>
                   ) : (
                     <ul className="flex flex-wrap gap-1.5">
-                      {result.state_snapshot.receipts_processed.map((rid) => (
-                        <li key={rid}>
+                      {result.state_snapshot.receipts_processed.map((rid, idx) => (
+                        <li key={typeof rid === "string" ? `${rid}-${idx}` : `${rid.purchase_id ?? "rcpt"}-${idx}`}>
                           <Pill className="bg-surface px-2 py-0.5 font-mono text-xs text-ink">
-                            {rid}
+                            {formatReceipt(rid)}
                           </Pill>
                         </li>
                       ))}

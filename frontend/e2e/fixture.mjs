@@ -109,7 +109,7 @@ export async function start({ fresh = false } = {}) {
     launchProc('stub', process.execPath, [path.join(FIX, 'stub-model.mjs'), String(st.stub), path.join(RUN, 'replies.json')], env)
     for (let i = 0; i < 30 && !await listening(st.stub); i++) await sleep(100)
   }
-  launchProc('app', BIN, [], { ...env, OPENRO_PORT: String(st.app), OPENRO_DATA_DIR: path.join(RUN, 'data'), OPENRO_MCP_COMMAND: path.join(path.dirname(BIN), 'mock_studio'), OPENRO_MODEL_BASE_URL: `http://127.0.0.1:${st.stub}`, OPENRO_MODEL_API_KEY: 'stub', OPENRO_GAME_NAME: 'Skyline Obby', OPENRO_UPDATE_MODE: 'off' })
+  launchProc('app', BIN, [], { ...env, ...(fs.existsSync(path.join(os.homedir(), '.local/bin/lune')) ? { OPENRO_LUNE: path.join(os.homedir(), '.local/bin/lune') } : {}), OPENRO_PORT: String(st.app), OPENRO_DATA_DIR: path.join(RUN, 'data'), OPENRO_MCP_COMMAND: path.join(path.dirname(BIN), 'mock_studio'), OPENRO_MODEL_BASE_URL: `http://127.0.0.1:${st.stub}`, OPENRO_MODEL_API_KEY: 'stub', OPENRO_GAME_NAME: 'Skyline Obby', OPENRO_UPDATE_MODE: 'off' })
   for (let i = 0; i < 50; i++) {
     if (await fetch(BASE + 'api/status').then(r => r.ok, () => false)) return BASE
     await sleep(300)

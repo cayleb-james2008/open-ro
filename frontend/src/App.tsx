@@ -16,7 +16,6 @@ import { AnimatePresence, LayoutGroup, LazyMotion, MotionConfig, domMax, m, useR
 import { Toaster, toast } from "sonner";
 import { Drawer } from "vaul";
 import {
-  Blocks,
   Check,
   Coins,
   Command,
@@ -63,6 +62,7 @@ import {
 } from "@/components/ui/morphing-dialog";
 import { Pill } from "@/components/kibo-ui/pill";
 import { glide, instant, open as dialogSpring } from "@/motion";
+import { OpenRoLogo } from "./app/OpenRoLogo";
 import {
   RELEASES_URL,
   SEND_FAILED,
@@ -3058,12 +3058,12 @@ export function App() {
             <StudioChip connected={studioOk} workspaceMode={workspaceMode} />
           </Button>
           <a
-            href={RELEASES_URL + (version || "1.19.0")}
+            href={RELEASES_URL + (version || "1.20.0")}
             target="_blank"
             rel="noreferrer"
             className="inline-flex min-h-7 items-center gap-1 rounded-sm text-xs text-ink-2 outline-none hover:text-ink hover:underline active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus max-md:min-h-11"
           >
-            <span>v<span className="font-mono">{version || "1.19.0"}</span></span>
+            <span>v<span className="font-mono">{version || "1.20.0"}</span></span>
             <ExternalLink className="size-3 text-icon" strokeWidth={1.5} aria-hidden />
           </a>
         </div>
@@ -3387,8 +3387,8 @@ export function App() {
         ) : !hasConversation && proposals.length === 0 && !activeSwarmId ? (
           <div className="mx-auto my-auto flex w-full max-w-[680px] flex-col items-center justify-center gap-5 py-6 text-center" data-copilot-welcome>
             <div className="flex flex-col items-center gap-2">
-              <span className="grid size-10 place-items-center rounded-xl border border-hairline bg-surface text-ink-2">
-                <Blocks className="size-5" strokeWidth={1.5} aria-hidden />
+              <span className="grid size-10 place-items-center rounded-xl border border-hairline bg-surface">
+                <OpenRoLogo className="size-7" />
               </span>
               <h3 className="text-lg font-medium tracking-tight text-ink">What do you want to build in Studio?</h3>
               <p className="max-w-[520px] text-sm text-ink-2">
@@ -3633,8 +3633,8 @@ export function App() {
           )}
 
           <div className="flex min-w-0 items-center gap-2">
-            <span className="grid size-7 flex-none place-items-center rounded-lg border border-hairline bg-board text-ink">
-              <Blocks className="size-4" strokeWidth={1.5} aria-hidden />
+            <span className="grid size-7 flex-none place-items-center rounded-lg border border-hairline bg-board">
+              <OpenRoLogo className="size-5" />
             </span>
             <h1 className="truncate text-sm font-medium text-ink">OpenRO</h1>
             <span className="hidden truncate rounded-chip bg-board px-2 py-0.5 text-xs text-ink-2 sm:inline-block" title={ship.active?.name || shell.gameName}>

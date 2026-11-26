@@ -105,7 +105,7 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.19.0"));
+    assert_eq!(ver_json["version"], json!("1.20.0"));
 
     // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
     if let Ok(entries) = std::fs::read_dir("assets/chunks") {
@@ -727,7 +727,7 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
         assert!(n > 0, "unexpected EOF on first keep-alive response");
         first_buf.extend_from_slice(&tmp[..n]);
         let s = String::from_utf8_lossy(&first_buf);
-        if s.contains("1.19.0") {
+        if s.contains("1.20.0") {
             assert!(s.contains("Connection: keep-alive"), "{s}");
             break;
         }
@@ -739,7 +739,7 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
     let _ = ka.read_to_end(&mut second_buf);
     let s2_txt = String::from_utf8_lossy(&second_buf);
     assert!(s2_txt.contains("HTTP/1.1 200 OK"), "{s2_txt}");
-    assert!(s2_txt.contains("1.19.0"), "{s2_txt}");
+    assert!(s2_txt.contains("1.20.0"), "{s2_txt}");
 
     let _ = std::fs::remove_dir_all(&base);
 }

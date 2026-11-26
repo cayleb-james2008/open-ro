@@ -792,10 +792,21 @@ export type SandboxConsoleOutput = {
   warnings: string[];
 };
 
+export type SandboxReceiptEntry =
+  | string
+  | {
+      purchase_id?: string;
+      product_id?: number;
+      player_id?: number;
+      decision?: string;
+      duplicate?: boolean;
+      idempotent?: boolean;
+    };
+
 export type SandboxStateSnapshot = {
   leaderstats: Record<string, unknown>;
   datastores: Record<string, unknown>;
-  receipts_processed: string[];
+  receipts_processed: SandboxReceiptEntry[];
   remotes_fired: number;
   player_gui_tree: unknown[];
 };
@@ -809,8 +820,16 @@ export type SandboxRunResponse = {
   assertions: SandboxAssertionResult[];
   console: SandboxConsoleOutput;
   state_snapshot: SandboxStateSnapshot;
-  core_loop: { move: string; act: string; hud: string };
+  core_loop: {
+    move: CoreLoopClaim | string;
+    act: CoreLoopClaim | string;
+    hud: CoreLoopClaim | string;
+  };
   diagnostic?: string;
+  diagnostics?: {
+    lune_found?: boolean;
+    searched_paths?: string[];
+  };
 };
 
 export async function runSandbox(req: SandboxRunRequest = {}, projectId?: string | null): Promise<Res<SandboxRunResponse>> {

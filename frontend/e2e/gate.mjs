@@ -158,7 +158,7 @@ try {
     const openProjBtn = p.getByRole("button", { name: "Open Projects", exact: true });
     if ((await openProjBtn.count()) > 0) {
       await openProjBtn.click();
-      const newProjTrigger = p.locator('[thing="new-project"]').first();
+      const newProjTrigger = p.getByRole("button", { name: "New project", exact: true }).first();
       await newProjTrigger.waitFor({ state: "visible", timeout: 8000 });
       await newProjTrigger.click();
       const nameInput = p.locator('input[placeholder="Untitled Anime Card Game"]').first();

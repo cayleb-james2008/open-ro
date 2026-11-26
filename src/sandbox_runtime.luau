@@ -2995,6 +2995,25 @@ local function executeStep(idx, step)
 		local aName = tostring(step.name or ("assert_" .. tostring(idx)))
 		local code = tostring(step.luau or "")
 		local env = buildScriptEnv(nil, false, Players:GetPlayers()[1])
+		local lsSnap = snapshotLeaderstats()
+		local dsSnap = snapshotDataStores()
+		local grantedReceipts = {}
+		for _, r in ipairs(receiptsProcessed) do
+			if not (r.duplicate_replay == true and r.idempotent == true) then
+				table.insert(grantedReceipts, r)
+			end
+		end
+		env.leaderstats = if next(lsSnap) ~= nil then lsSnap else nil
+		env.datastores = if next(dsSnap) ~= nil then dsSnap else nil
+		env.receipts_processed = grantedReceipts
+		env.receipt_events = receiptsProcessed
+		env.remotes_fired = remotesFiredCount
+		env.state_snapshot = {
+			leaderstats = lsSnap,
+			datastores = dsSnap,
+			receipts_processed = receiptsProcessed,
+			remotes_fired = remotesFiredCount,
+		}
 		local okCompile, fnOrErr = pcall(luau.load, code, {
 			debugName = "assert_luau:" .. aName,
 			environment = env,

@@ -1,0 +1,20 @@
+export function OpenRoLogo({ className = "size-5" }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 32 32"
+      fill="none"
+      className={className}
+      aria-hidden="true"
+    >
+      <path
+        d="M 8.18 1.9 L 28.8 7.81 L 19.9 12.75 L 13.12 10.81 L 11.18 17.58 L 2.27 22.52 Z"
+        fill="#00A2FF"
+      />
+      <path
+        d="M 23.82 30.1 L 3.2 24.19 L 12.1 19.25 L 18.88 21.19 L 20.82 14.42 L 29.73 9.48 Z"
+        fill="#0066FF"
+      />
+    </svg>
+  );
+}

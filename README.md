@@ -1,20 +1,22 @@
-# OpenRO (`v1.19.0`)
+# <img src="docs/logo.svg" alt="OpenRO Studio logo" width="28" height="28" align="absmiddle" /> OpenRO (`v1.20.0`)
 
 [![Release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/cayleb-james2008/open-ro/release.yml?branch=main&label=build)](https://github.com/cayleb-james2008/open-ro/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Stack](https://img.shields.io/badge/stack-Rust%20%2B%20React%2019%20%2B%20TypeScript-0f172a.svg)](#architecture)
 
-OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 interface. It builds, checks, monetizes, and publishes Roblox games from Rojo project folders or an embedded Local Place engine, with an offline browser demo (`web-dist/index.html`) that runs the same workflows locally with no external network requests.
+OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 interface. It builds, checks, executes headless Luau journeys, monetizes, and publishes Roblox games from Rojo project folders or an embedded Local Place engine, with an offline browser demo (`web-dist/index.html`) that runs the same workflows locally with no external network requests.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/hero-dark.png" />
-    <img src="docs/screenshots/hero-light.png" alt="OpenRO three-pane Studio IDE showing Explorer, Agent thread, and Luau code editor" width="100%" />
+    <img src="docs/screenshots/hero-light.png" alt="OpenRO three-pane Studio IDE showing geometric Studio icon, Explorer, Agent thread, and Viewport" width="100%" />
   </picture>
 </p>
 
 ## What it does
+
+- The headless local Luau runtime sandbox (`POST /api/projects/:id/sandbox/run`, `POST /api/studio/sandbox/run`, and the `sandbox_playtest` agent and teamwork tool) materializes your Rojo project or in-memory Local Place into an isolated scratch run and executes real Server and Client Luau scripts via Lune `0.11.1` (`lune_roblox_shim`) against an embedded Roblox `DataModel`, `DataStoreService`, `MarketplaceService.ProcessReceipt`, `RemoteEvent`, `RemoteFunction`, and `PlayerGui` shim. You can run Boot + Join, Purchase Receipt Idempotency, Save/Rejoin Persistence, or custom multi-step journeys and inspect console traces (with click-to-jump line links), DataStores, leaderstats, receipts, and PlayerGui trees without launching Roblox Studio, mirrored offline in the browser simulator (`browser_sim`).
 
 - The three-pane workspace puts the Place explorer on the left, the Agent/Plan/Ask thread in the middle, and tabbed panels (`Viewport`, `Code`, `Assets`, `Ship`, `Swarm`) on the right. Opening a Rojo project populates Explorer (`Services` and `Files`), `Code` (saving directly to `.luau` files on disk and jumping straight to reported line numbers), Lighting controls, and the 3D Viewport from `scene/workspace.model.json` via `/api/projects/:id/{workspace,scene/mutate,mesh-asset}` while `projects::builtin_rbxlx` natively serializes `CFrame`, `Enum`, `Content`, `Color3uint8`, and `Lighting` properties.
 - The economy balance and progression simulator parses Luau earn, price, rebirth, and GamePass constants to project a deterministic 60-minute player progression curve, flagging paywall dead-ends, runaway inflation, or under-2-minute exhaustion with a 1-click balance suggestion preview and safe tuning apply.
@@ -48,12 +50,20 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
     </td>
   </tr>
   <tr>
-    <td colspan="2" align="center">
-      <strong>Unified Rojo workspace, declarative 3D scene graph, and lighting preview (<code>v1.19.0</code>)</strong>
+    <td width="50%" align="center">
+      <strong>Headless Luau runtime sandbox (`lune_roblox_shim`, `v1.20.0`)</strong>
+      <br /><br />
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/sandbox-runner-dark.png" />
+        <img src="docs/screenshots/sandbox-runner-light.png" alt="OpenRO v1.20.0 Headless Luau Runtime Sandbox executing multi-step journeys via Lune with Console, DataStores, leaderstats, and Receipts inspector" width="100%" />
+      </picture>
+    </td>
+    <td width="50%" align="center">
+      <strong>Unified Rojo workspace, 3D scene graph, and lighting preview</strong>
       <br /><br />
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/unified-workspace-dark.png" />
-        <img src="docs/screenshots/unified-workspace-light.png" alt="OpenRO v1.19.0 Unified Rojo Explorer and Declarative 3D Scene Preview" width="100%" />
+        <img src="docs/screenshots/unified-workspace-light.png" alt="OpenRO Unified Rojo Explorer and Declarative 3D Scene Preview" width="100%" />
       </picture>
     </td>
   </tr>
@@ -63,23 +73,23 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
 
 ```mermaid
 flowchart LR
-  UI["3-Pane React 19 UI<br/>(60 KB gz shell + pre-gz /chunks/*.js & .woff2)"] -->|HTTP + SSE| SRV["openro-rs Server<br/>(Rust, Loopback Guard, Mallopt)"]
+  UI["3-Pane React 19 UI<br/>(60.2 KB gz shell + pre-gz /chunks/*.js & .woff2)"] -->|HTTP + SSE| SRV["openro-rs Server<br/>(Rust, Loopback Guard, Mallopt)"]
   SRV --> LP["Unified Workspace &amp; Scene Graph<br/>scene/workspace.model.json + .rbxlx + CWE-22 /mesh-asset"]
+  SRV --> SB["Headless Luau Runtime Sandbox<br/>Lune 0.11.1 DataModel/DataStore/Receipt Shim"]
   SRV --> PJ["Rojo Project &amp; Ship Pack<br/>ZIP CRC-32 + Playtest Assertions"]
-  SRV --> MCP["Roblox Studio MCP<br/>13 Live Tools + Playtest Runner"]
-  SRV --> OC["Open Cloud &amp; Creator Hub<br/>0600 Secrets + Price Approval Gate"]
+  SRV --> MCP["Roblox Studio MCP &amp; Open Cloud<br/>13 Live Tools + Price Approval Gate"]
 ```
 
-## Verified benchmarks (`v1.19.0` vs `v1.2.0`)
+## Verified benchmarks (`v1.20.0` vs `v1.2.0`)
 
-| Metric | `v1.2.0` baseline | `v1.19.0` verified (`#154` pinned) | Delta |
+| Metric | `v1.2.0` baseline | `v1.20.0` verified (`#154` pinned) | Delta |
 | --- | --- | --- | --- |
-| Release binary size | `19.00 MB` | **`9.17 MiB`** (`9,614,168 B`) | **`-51.7%`** |
-| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`253.1 KB`** raw (`259,196 B`) / **`60.1 KB`** gz (`61,550 B`) | **`-86.6%` wire** |
-| Cold boot (`#154` pinned) | `1,470 ms` | **`31.62 ms`** | **`-97.8%`** |
-| Peak RSS (`VmHWM`) | `115.20 MB` | **`12.75 MB`** (`13,052 KB`, `scale-audit` + 10 SSE) | **`-88.9%`** |
-| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`4,778.5 req/s`** Python cold (`3.27 ms` p50, `4.46 ms` p95, `0` errs) | **`5.46x` (`-96.9%` p95)** |
-| Security and UI gates | `43/43` fuzz | **`43/43` fuzz, `10/10` SSE, `0` sloplint fails/warns, `322/322` Rust tests (`6/6` `v119_unified_workspace`), `gate 56/56`, `replay 9/9`** | Pass |
+| Release binary size | `19.00 MB` | **`9.31 MiB`** (`9,757,536 B`) | **`-51.0%`** |
+| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`253.5 KB`** raw (`259,609 B`) / **`60.2 KB`** gz (`61,647 B`) | **`-86.5%` wire** |
+| Cold boot (`#154` pinned) | `1,470 ms` | **`21.17 ms`** | **`-98.6%`** |
+| Peak RSS (`VmHWM`) | `115.20 MB` | **`13.31 MB`** (`13,632 KB`, `scale-audit` + 10 SSE) | **`-88.4%`** |
+| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`9,056.4 req/s`** Python cold (`1.76 ms` p50, `1.86 ms` p95, `0/22,649` errs) | **`10.35x` (`-98.7%` p95)** |
+| Security and UI gates | `43/43` fuzz | **`43/43` fuzz, `10/10` SSE, `0` sloplint fails/warns, `329/329` Rust tests (`7/7` `v120_sandbox_runtime`), `gate 67/67`, `replay 9/9`** | Pass |
 
 ## Quick start
 

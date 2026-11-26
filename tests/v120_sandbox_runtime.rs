@@ -908,3 +908,56 @@ fn sandbox_teamwork_tool_and_flagship_project_execute() {
     drop(shared);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn sandbox_ui_preset_assertions_pass_on_compliant_project() {
+    require_lune();
+    let dir = temp_dir("ui-preset-asserts");
+    write_sample_rojo_project(&dir);
+
+    let rcpt_rep = run_project_sandbox(
+        &dir,
+        &json!({
+            "players": [{ "user_id": 1001, "name": "TestPlayer", "owns_passes": [] }],
+            "journey": [
+                {
+                    "op": "purchase_receipt",
+                    "player_id": 1001,
+                    "product_id": 3736007337_u64,
+                    "purchase_id": "rcpt_idempotency_1",
+                    "replay_duplicate": true
+                },
+                {
+                    "op": "assert_luau",
+                    "name": "Single receipt recorded",
+                    "luau": "return #receipts_processed == 1",
+                    "expect": { "equals": true }
+                }
+            ]
+        }),
+    )
+    .expect("receipt_idempotency preset");
+    assert_eq!(rcpt_rep["ok"], json!(true), "rcpt_rep={rcpt_rep}");
+    assert_eq!(rcpt_rep["passed"], json!(true), "rcpt_rep={rcpt_rep}");
+
+    let rejoin_rep = run_project_sandbox(
+        &dir,
+        &json!({
+            "players": [{ "user_id": 1001, "name": "TestPlayer", "owns_passes": [] }],
+            "journey": [
+                { "op": "rejoin", "player_id": 1001 },
+                {
+                    "op": "assert_luau",
+                    "name": "DataStore state restored",
+                    "luau": "return leaderstats ~= nil",
+                    "expect": { "truthy": true }
+                }
+            ]
+        }),
+    )
+    .expect("save_rejoin preset");
+    assert_eq!(rejoin_rep["ok"], json!(true), "rejoin_rep={rejoin_rep}");
+    assert_eq!(rejoin_rep["passed"], json!(true), "rejoin_rep={rejoin_rep}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
