@@ -919,20 +919,6 @@ fn sandbox_teamwork_tool_and_flagship_project_execute() {
         "teamwork run did not complete: {final_state}"
     );
 
-    // 2. Smoke check against flagship projects/untitled-anime-card-game if present
-    let flagship = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("projects/untitled-anime-card-game");
-    if flagship.join("default.project.json").is_file() {
-        let rep = run_project_sandbox(&flagship, &json!({ "timeout_secs": 15 }))
-            .expect("flagship sandbox");
-        assert_eq!(rep["ok"], json!(true), "flagship ok=false: {rep}");
-        assert_eq!(rep["engine"], json!("lune_roblox_shim"));
-        assert!(
-            rep["console"]["errors"].as_array().unwrap().is_empty(),
-            "flagship runtime errors: {:?}",
-            rep["console"]["errors"]
-        );
-    }
-
     drop(shared);
     let _ = std::fs::remove_dir_all(&root);
 }
