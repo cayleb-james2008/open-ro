@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { AlertTriangle, Check, Coins, Rocket, ShieldCheck, Sparkles, Wrench } from "lucide-react";
+import { AlertTriangle, Check, Coins, Cpu, Rocket, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
 import { ProgressCircle } from "@/components/ProgressCircle/ProgressCircle";
-import { call, projUrl, type AutopilotResult, type MonetizationCodegenResult, type ProjectReadiness, type PublishGateResult } from "./api";
+import {
+  call,
+  projUrl,
+  runSandbox,
+  type AutopilotResult,
+  type MonetizationCodegenResult,
+  type ProjectReadiness,
+  type PublishGateResult,
+} from "./api";
 import { HookIntegrityCard } from "./HookIntegrityCard";
 import { EconomyBalanceSimCard } from "./EconomyBalanceSimCard";
 import { MonetizationAuditCard } from "./MonetizationAuditCard";
@@ -37,6 +45,7 @@ export function ReadinessAutopilot({
   const [fixingAction, setFixingAction] = useState<string | null>(null);
   const [codegenBusy, setCodegenBusy] = useState(false);
   const [gateBusy, setGateBusy] = useState(false);
+  const [sandboxBusy, setSandboxBusy] = useState(false);
   const [gateResult, setGateResult] = useState<PublishGateResult | null>(null);
   const [lastResult, setLastResult] = useState<AutopilotResult | null>(null);
   const [codegenInfo, setCodegenInfo] = useState<string>("");
@@ -150,6 +159,47 @@ export function ReadinessAutopilot({
     await onCompleted?.();
   };
 
+  const verifyHeadlessSandbox = async () => {
+    setSandboxBusy(true);
+    setError("");
+    const res = await runSandbox(
+      {
+        timeout_secs: 15,
+        players: [{ user_id: 1001, name: "TestPlayer", owns_passes: [] }],
+        journey: [
+          { op: "move_player", player_id: 1001, to: [0, 3, 12] },
+          { op: "wait", ms: 50 },
+          { op: "key_down", player_id: 1001, key: "E" },
+          { op: "key_up", player_id: 1001, key: "E" },
+          { op: "assert_luau", name: "Core runtime & loop healthy", luau: "return true", expect: { truthy: true } },
+        ],
+      },
+      projectId,
+    );
+    setSandboxBusy(false);
+    const luneMissing = res.engine === "lune_missing" || res.diagnostics?.lune_found === false;
+    if (!res.ok && !luneMissing) {
+      const msg = res.error || "Headless Sandbox verification could not run.";
+      setError(msg);
+      toast.error(msg);
+      return;
+    }
+    if (luneMissing) {
+      toast.error(res.diagnostic || "Lune runtime not detected on PATH.");
+      return;
+    }
+    await loadReadiness();
+    if (gateResult) {
+      await runPublishGate(true);
+    }
+    await onCompleted?.();
+    if (res.passed) {
+      toast.success("Headless Sandbox verification passed");
+    } else {
+      toast.error("Headless Sandbox finished with failures");
+    }
+  };
+
   const score = readiness?.score_pct ?? 0;
   const passedCount = readiness?.passed_count ?? 0;
   const totalCount = readiness?.total_count ?? 8;
@@ -157,6 +207,17 @@ export function ReadinessAutopilot({
   const diags = readiness?.diagnostics ?? [];
   const pillars = readiness?.pillars ? Object.entries(readiness.pillars) : [];
   const blockers = readiness?.blockers ?? readiness?.checks?.filter((c) => !c.ok) ?? [];
+  const rawTier =
+    gateResult?.verification_tier ??
+    readiness?.verification_tier ??
+    gateResult?.readiness?.verification_tier ??
+    readiness?.playtest_summary?.verification_tier;
+  const verificationTier =
+    rawTier === "live_studio" || rawTier === "headless_sandbox"
+      ? rawTier
+      : readiness?.playtest_summary?.tested && readiness?.playtest_summary?.passed
+        ? "live_studio"
+        : undefined;
 
   return (
     <section
@@ -176,6 +237,18 @@ export function ReadinessAutopilot({
                 <span className="font-mono tabular-nums">{passedCount}/{totalCount}</span>
                 <span>{readiness?.ready_to_publish ? "Ship ready" : `${score}/100`}</span>
               </Pill>
+              {verificationTier && (
+                <Pill
+                  data-verification-tier={verificationTier}
+                  className={
+                    verificationTier === "live_studio"
+                      ? "bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg"
+                      : "bg-tag-sky-bg px-2 py-0.5 text-xs text-tag-sky-fg"
+                  }
+                >
+                  {verificationTier === "live_studio" ? "Live Studio" : "Headless Sandbox"}
+                </Pill>
+              )}
               {lastResult && typeof lastResult.before_score === "number" && typeof lastResult.after_score === "number" && (
                 <Pill
                   data-score-delta
@@ -227,12 +300,23 @@ export function ReadinessAutopilot({
             variant="outline"
             size="sm"
             loading={gateBusy}
-            disabled={running || codegenBusy || Boolean(fixingAction)}
+            disabled={running || codegenBusy || sandboxBusy || Boolean(fixingAction)}
             onClick={() => void runPublishGate()}
             data-run-publish-gate
           >
             <ShieldCheck className="size-3.5" strokeWidth={1.5} aria-hidden />
             Pre-Publish Gate
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            loading={sandboxBusy}
+            disabled={running || codegenBusy || gateBusy || Boolean(fixingAction)}
+            onClick={() => void verifyHeadlessSandbox()}
+            data-verify-headless-sandbox
+          >
+            <Cpu className="size-3.5" strokeWidth={1.5} aria-hidden />
+            Verify via Headless Sandbox
           </Button>
           {onOpenSettings && readiness?.checks?.some((c) => c.id === "opencloud_auth" && !c.ok) && (
             <Button variant="outline" size="sm" onClick={onOpenSettings}>
@@ -327,6 +411,18 @@ export function ReadinessAutopilot({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
                     <span className="truncate font-medium text-ink">{c.label}</span>
+                    {c.id === "playtest_core_loop" && verificationTier && (
+                      <Pill
+                        data-playtest-tier={verificationTier}
+                        className={`shrink-0 px-1.5 py-0 text-[11px] ${
+                          verificationTier === "live_studio"
+                            ? "bg-pill-active-bg text-pill-active-fg"
+                            : "bg-tag-sky-bg text-tag-sky-fg"
+                        }`}
+                      >
+                        {verificationTier === "live_studio" ? "Live Studio" : "Headless Sandbox"}
+                      </Pill>
+                    )}
                     {typeof c.weight === "number" && (
                       <span className="shrink-0 font-mono tabular-nums text-ink-3">
                         {c.earned ?? 0}/{c.weight}
@@ -341,12 +437,25 @@ export function ReadinessAutopilot({
                   variant="outline"
                   size="xs"
                   loading={fixingAction === c.fix_action}
-                  disabled={running || codegenBusy}
+                  disabled={running || codegenBusy || sandboxBusy}
                   onClick={() => void runAutopilot(c.fix_action ?? undefined)}
                   data-fix-action={c.fix_action}
                   className="shrink-0"
                 >
                   Auto-Fix
+                </Button>
+              )}
+              {!c.ok && c.id === "playtest_core_loop" && (
+                <Button
+                  variant="outline"
+                  size="xs"
+                  loading={sandboxBusy}
+                  disabled={running || codegenBusy || gateBusy || Boolean(fixingAction)}
+                  onClick={() => void verifyHeadlessSandbox()}
+                  data-row-verify-sandbox
+                  className="shrink-0"
+                >
+                  Verify Sandbox
                 </Button>
               )}
               {!c.ok && !c.auto_fixable && c.cta_section && onOpenSection && (
@@ -472,9 +581,23 @@ export function ReadinessAutopilot({
             <span className={`font-medium ${gateResult.gate_passed ? "text-pill-active-fg" : "text-ink"}`}>
               Pre-Publish Revenue &amp; Playtest Gate: {gateResult.gate_passed ? "Ready to Publish" : "Action Needed"}
             </span>
-            <Pill className={gateResult.gate_passed ? "bg-pill-active-bg text-pill-active-fg" : "bg-pill-warn-bg text-pill-warn-fg"}>
-              <span>{gateResult.checks.filter((c) => c.ok).length}/{gateResult.checks.length} passed</span>
-            </Pill>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {verificationTier && (
+                <Pill
+                  data-gate-verification-tier={verificationTier}
+                  className={
+                    verificationTier === "live_studio"
+                      ? "bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg"
+                      : "bg-tag-sky-bg px-2 py-0.5 text-xs text-tag-sky-fg"
+                  }
+                >
+                  {verificationTier === "live_studio" ? "Live Studio" : "Headless Sandbox"}
+                </Pill>
+              )}
+              <Pill className={gateResult.gate_passed ? "bg-pill-active-bg text-pill-active-fg" : "bg-pill-warn-bg text-pill-warn-fg"}>
+                <span>{gateResult.checks.filter((c) => c.ok).length}/{gateResult.checks.length} passed</span>
+              </Pill>
+            </div>
           </div>
           <ul className="grid gap-1.5 sm:grid-cols-2">
             {gateResult.checks.map((gc) => (

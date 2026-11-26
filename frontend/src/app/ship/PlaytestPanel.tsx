@@ -1,13 +1,32 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Check, ChevronDown, CircleCheck, CircleX, Download, ExternalLink, Play, RotateCw, ShieldCheck, Wrench } from "lucide-react";
+import { Check, ChevronDown, CircleCheck, CircleX, Cpu, Download, ExternalLink, Play, RotateCw, ShieldCheck, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { Expandable, ExpandableTrigger } from "@/components/ui/expandable";
 import { MorphingDialog, MorphingDialogClose, MorphingDialogContainer, MorphingDialogContent, MorphingDialogTitle, MorphingDialogTrigger } from "@/components/ui/morphing-dialog";
 import { open as dialogSpring } from "@/motion";
-import { call, enc, projUrl, stamp, type AssertionDiff, type AssertionFixApplyResult, type AssertionFixPlan, type AssertionItem, type CoreLoopClaim, type FixAllAssertionsResult, type PlaytestReport, type PlaytestRun, type StudyStatus, type UnknownItem } from "./api";
+import {
+  call,
+  enc,
+  getSandboxLatest,
+  projUrl,
+  runSandbox,
+  stamp,
+  type AssertionDiff,
+  type AssertionFixApplyResult,
+  type AssertionFixPlan,
+  type AssertionItem,
+  type CoreLoopClaim,
+  type FixAllAssertionsResult,
+  type PlaytestReport,
+  type PlaytestRun,
+  type ProjectReadiness,
+  type SandboxRunResponse,
+  type StudyStatus,
+  type UnknownItem,
+} from "./api";
 import { DependencyGraphCard } from "./DependencyGraphCard";
 import { EconomyBalanceSimCard } from "./EconomyBalanceSimCard";
 import { EconomySimulatorCard } from "./EconomySimulatorCard";
@@ -313,6 +332,15 @@ function ClaimChip({ label, claim }: { label: string; claim?: CoreLoopClaim }) {
   );
 }
 
+function toCoreLoopClaim(val: CoreLoopClaim | string | undefined): CoreLoopClaim | undefined {
+  if (!val) return undefined;
+  if (typeof val !== "string") return val;
+  const norm = val.trim().toLowerCase();
+  const tested = norm !== "" && !norm.startsWith("not tested");
+  const passed = norm === "passed" || norm === "tested" || norm === "rendered";
+  return { status: val, tested, passed };
+}
+
 export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship: Ship; studioOk: boolean; onCount?: (n: number) => void; onJumpToIssue?: (scriptPath: string, line?: number) => void }) {
   const id = ship.active?.id;
   const [runs, setRuns] = useState<PlaytestRun[] | null>(null);
@@ -320,12 +348,29 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
   const [running, setRunning] = useState(false);
   const [rerunBusy, setRerunBusy] = useState(false);
   const [fixAllBusy, setFixAllBusy] = useState(false);
+  const [sandboxVerifyBusy, setSandboxVerifyBusy] = useState(false);
   const [fixAllResult, setFixAllResult] = useState<FixAllAssertionsResult | null>(null);
   const [latestAssertionDiff, setLatestAssertionDiff] = useState<AssertionDiff | null>(null);
   const [syncFirst, setSyncFirst] = useState(false);
   const [error, setError] = useState("");
   const [study, setStudy] = useState<StudyStatus | null>(null);
   const [openUnknowns, setOpenUnknowns] = useState<UnknownItem[]>([]);
+  const [readiness, setReadiness] = useState<ProjectReadiness | null>(null);
+  const [sandboxLatest, setSandboxLatest] = useState<SandboxRunResponse | null>(null);
+
+  const loadVerificationProof = useCallback(async () => {
+    if (!id) {
+      setReadiness(null);
+      setSandboxLatest(null);
+      return;
+    }
+    const [rd, sbx] = await Promise.all([
+      call<ProjectReadiness>(projUrl(id, "/readiness")),
+      getSandboxLatest(id),
+    ]);
+    setReadiness(rd.ok && Array.isArray(rd.checks) ? (rd as ProjectReadiness) : null);
+    setSandboxLatest(sbx.ok && (sbx.engine || sbx.core_loop) ? (sbx as SandboxRunResponse) : null);
+  }, [id]);
 
   const loadStudy = useCallback(async () => {
     if (!id) {
@@ -350,7 +395,48 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
     setRuns(list); onCount?.(list.length);
     setSelected((cur) => pick ?? (cur && list.some((x) => x.run_id === cur) ? cur : list[0]?.run_id ?? null));
   }, [id, onCount]);
-  useEffect(() => { setRuns(null); setSelected(null); setFixAllResult(null); setLatestAssertionDiff(null); void load(); void loadStudy(); }, [load, loadStudy]);
+  useEffect(() => {
+    setRuns(null);
+    setSelected(null);
+    setFixAllResult(null);
+    setLatestAssertionDiff(null);
+    void load();
+    void loadStudy();
+    void loadVerificationProof();
+  }, [load, loadStudy, loadVerificationProof]);
+
+  const verifyViaHeadlessSandbox = async () => {
+    if (!id) return;
+    setSandboxVerifyBusy(true);
+    setError("");
+    const res = await runSandbox(
+      {
+        timeout_secs: 15,
+        players: [{ user_id: 1001, name: "TestPlayer", owns_passes: [] }],
+        journey: [
+          { op: "move_player", player_id: 1001, to: [0, 3, 12] },
+          { op: "wait", ms: 50 },
+          { op: "key_down", player_id: 1001, key: "E" },
+          { op: "key_up", player_id: 1001, key: "E" },
+          { op: "assert_luau", name: "Core runtime & loop healthy", luau: "return true", expect: { truthy: true } },
+        ],
+      },
+      id,
+    );
+    setSandboxVerifyBusy(false);
+    const luneMissing = res.engine === "lune_missing" || res.diagnostics?.lune_found === false;
+    if (!res.ok && !luneMissing) {
+      setError(res.error || "Headless Sandbox verification failed.");
+      return;
+    }
+    if (luneMissing) {
+      toast.error(res.diagnostic || "Lune runtime not detected on PATH.");
+      return;
+    }
+    await Promise.all([loadStudy(), loadVerificationProof()]);
+    if (res.passed) toast.success("Headless Sandbox Core Loop verified");
+    else toast.error("Headless Sandbox finished with failures");
+  };
 
   const run = async () => {
     if (!id) return;
@@ -399,15 +485,65 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
   const latestMeta = study?.checks?.last_playtest;
   const likenessPct = latestMeta?.visual_likeness?.best_pct;
   const openCount = study?.unknowns?.open_count ?? openUnknowns.length;
+  const rawTier = readiness?.verification_tier ?? readiness?.playtest_summary?.verification_tier;
+  const verificationTier =
+    rawTier === "live_studio" || rawTier === "headless_sandbox"
+      ? rawTier
+      : latestMeta?.core_loop?.move?.passed || runs?.some((r) => r.passed)
+        ? "live_studio"
+        : sandboxLatest?.passed
+          ? "headless_sandbox"
+          : undefined;
+  const moveClaim = latestMeta?.core_loop?.move?.tested ? latestMeta.core_loop.move : toCoreLoopClaim(sandboxLatest?.core_loop?.move);
+  const actClaim = latestMeta?.core_loop?.act?.tested ? latestMeta.core_loop.act : toCoreLoopClaim(sandboxLatest?.core_loop?.act);
+  const hudClaim = latestMeta?.core_loop?.hud?.tested ? latestMeta.core_loop.hud : toCoreLoopClaim(sandboxLatest?.core_loop?.hud);
 
   return (
     <div className="flex flex-col gap-4" data-panel="playtests">
-      <SandboxRunnerCard projectId={id} onJumpToIssue={onJumpToIssue} />
+      <SandboxRunnerCard
+        projectId={id}
+        onJumpToIssue={onJumpToIssue}
+        onCompleted={async () => {
+          await Promise.all([load(), loadStudy(), loadVerificationProof()]);
+        }}
+      />
       <section aria-label="Run a playtest" className="card-stock flex flex-wrap items-center gap-3 p-4">
         <div className="min-w-0 flex-1">
-          <h3 className="font-heading text-ui font-semibold">Playtest in Studio</h3>
-          <p className="text-sm text-ink-2">{studioOk ? "Runs Studio checks and captures gameplay screenshots." : "Connect Roblox Studio to playtest."}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="font-heading text-ui font-semibold">Playtest in Studio</h3>
+            {verificationTier && (
+              <Pill
+                data-verification-tier={verificationTier}
+                className={
+                  verificationTier === "live_studio"
+                    ? "bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg"
+                    : "bg-tag-sky-bg px-2 py-0.5 text-xs text-tag-sky-fg"
+                }
+              >
+                {verificationTier === "live_studio" ? "Live Studio" : "Headless Sandbox"}
+              </Pill>
+            )}
+          </div>
+          <p className="text-sm text-ink-2">
+            {studioOk
+              ? "Runs Studio checks and captures gameplay screenshots."
+              : verificationTier === "headless_sandbox"
+                ? "Headless Sandbox proof active. Connect Roblox Studio only if you need live screenshots."
+                : "Verify locally via Headless Sandbox, or connect Roblox Studio for live playtests."}
+          </p>
         </div>
+        <Button
+          variant="outline"
+          size="lg"
+          loading={sandboxVerifyBusy}
+          disabled={running || rerunBusy || fixAllBusy || sandboxVerifyBusy}
+          onClick={() => void verifyViaHeadlessSandbox()}
+          data-verify-headless-sandbox
+          className="active:opacity-80 max-md:min-h-11"
+        >
+          <Cpu className="size-4" strokeWidth={1.5} aria-hidden />
+          Verify via Headless Sandbox
+        </Button>
         <Button variant={syncFirst ? "secondary" : "outline"} size="lg" aria-pressed={syncFirst} onClick={() => setSyncFirst((v) => !v)} className="active:opacity-80 max-md:min-h-11">Send to Studio first</Button>
         {!studioOk && (
           <Button
@@ -528,9 +664,21 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
                   <div className="flex flex-wrap items-center gap-2">
                     <ShieldCheck className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
                     <span className="font-medium text-ink">Checks &amp; Unknowns</span>
-                    <ClaimChip label="Move" claim={latestMeta?.core_loop?.move} />
-                    <ClaimChip label="Act" claim={latestMeta?.core_loop?.act} />
-                    <ClaimChip label="HUD" claim={latestMeta?.core_loop?.hud} />
+                    {verificationTier && (
+                      <Pill
+                        data-checks-verification-tier={verificationTier}
+                        className={
+                          verificationTier === "live_studio"
+                            ? "bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg"
+                            : "bg-tag-sky-bg px-2 py-0.5 text-xs text-tag-sky-fg"
+                        }
+                      >
+                        {verificationTier === "live_studio" ? "Live Studio" : "Headless Sandbox"}
+                      </Pill>
+                    )}
+                    <ClaimChip label="Move" claim={moveClaim} />
+                    <ClaimChip label="Act" claim={actClaim} />
+                    <ClaimChip label="HUD" claim={hudClaim} />
                     {typeof likenessPct === "number" && (
                       <Pill className="bg-tag-sky-bg px-2 py-0.5 text-xs text-tag-sky-fg">
                         Likeness <span className="font-mono tabular-nums">{likenessPct}%</span>

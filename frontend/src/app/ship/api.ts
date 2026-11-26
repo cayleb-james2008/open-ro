@@ -529,6 +529,7 @@ export type MonetizationParity = {
   unapproved_prices: number;
   has_product_ids: boolean;
 };
+export type VerificationTier = "headless_sandbox" | "live_studio" | string;
 export type ProjectReadiness = {
   ready_to_publish: boolean;
   score_pct: number;
@@ -536,6 +537,7 @@ export type ProjectReadiness = {
   total_count: number;
   auto_fixable_count: number;
   fixable_actions: string[];
+  verification_tier?: VerificationTier;
   blockers?: ReadinessCheck[];
   pillars?: Record<string, { label: string; earned: number; max: number }>;
   playtest_summary?: {
@@ -545,6 +547,7 @@ export type ProjectReadiness = {
     move: string;
     act: string;
     hud: string;
+    verification_tier?: VerificationTier;
   };
   luau_errors: number;
   luau_warnings: number;
@@ -559,6 +562,7 @@ export type ProjectReadiness = {
   diagnostics?: ReadinessDiagnostic[];
   checks: ReadinessCheck[];
 };
+export type ReadinessStatus = ProjectReadiness;
 export type AutopilotResult = {
   before_score?: number;
   after_score?: number;
@@ -593,6 +597,7 @@ export type PublishGateResult = {
   build_and_zip_ok: boolean;
   playtest_passed: boolean;
   parity_ok: boolean;
+  verification_tier?: VerificationTier;
   checks: { id: string; label: string; ok: boolean; detail: string }[];
   fix_cards: PublishGateFixCard[];
   readiness?: ProjectReadiness;
@@ -811,7 +816,12 @@ export type SandboxJourneyOp =
   | "purchase_receipt"
   | "click_gui"
   | "rejoin"
-  | "assert_luau";
+  | "assert_luau"
+  | "move_player"
+  | "trigger_prompt"
+  | "click_detector"
+  | "key_down"
+  | "key_up";
 
 export type SandboxJourneyStep = {
   op: SandboxJourneyOp;
@@ -826,12 +836,24 @@ export type SandboxJourneyStep = {
   name?: string;
   luau?: string;
   expect?: Record<string, unknown>;
+  to?: [number, number, number];
+  path?: string;
+  key?: string;
+};
+
+export type SandboxHttpMock = {
+  url: string;
+  method?: string;
+  status?: number;
+  body?: unknown;
+  headers?: Record<string, string>;
 };
 
 export type SandboxRunRequest = {
   timeout_secs?: number;
   players?: SandboxPlayerConfig[];
   journey?: SandboxJourneyStep[];
+  http_mocks?: SandboxHttpMock[] | Record<string, unknown>;
 };
 
 export type SandboxStepResult = {
@@ -875,8 +897,29 @@ export type SandboxStateSnapshot = {
   player_gui_tree: unknown[];
 };
 
+export type SandboxCoreLoop = {
+  move: CoreLoopClaim | string;
+  act: CoreLoopClaim | string;
+  hud: CoreLoopClaim | string;
+  all_passed?: boolean;
+};
+
+export type SandboxRunSummary = {
+  run_id: string;
+  at_ms: number;
+  passed: boolean;
+  duration_ms: number;
+  error_count: number;
+  core_loop?: SandboxCoreLoop;
+  engine?: string;
+};
+
 export type SandboxRunResponse = {
   ok: boolean;
+  run_id?: string;
+  at_ms?: number;
+  project_fingerprint?: string;
+  error_count?: number;
   engine: "lune_roblox_shim" | "browser_sim" | "lune_missing";
   passed: boolean;
   duration_ms: number;
@@ -884,11 +927,7 @@ export type SandboxRunResponse = {
   assertions: SandboxAssertionResult[];
   console: SandboxConsoleOutput;
   state_snapshot: SandboxStateSnapshot;
-  core_loop: {
-    move: CoreLoopClaim | string;
-    act: CoreLoopClaim | string;
-    hud: CoreLoopClaim | string;
-  };
+  core_loop: SandboxCoreLoop;
   diagnostic?: string;
   diagnostics?: {
     lune_found?: boolean;
@@ -900,6 +939,16 @@ export async function runSandbox(req: SandboxRunRequest = {}, projectId?: string
   const url = projectId ? projUrl(projectId, "/sandbox/run") : "/api/studio/sandbox/run";
   const timeoutMs = Math.max(8000, ((req.timeout_secs ?? 15) + 5) * 1000);
   return call<SandboxRunResponse>(url, req, { timeoutMs });
+}
+
+export async function getSandboxRuns(projectId?: string | null): Promise<Res<{ runs: SandboxRunSummary[] }>> {
+  const url = projectId ? projUrl(projectId, "/sandbox/runs") : "/api/studio/sandbox/runs";
+  return call<{ runs: SandboxRunSummary[] }>(url);
+}
+
+export async function getSandboxLatest(projectId?: string | null): Promise<Res<SandboxRunResponse>> {
+  const url = projectId ? projUrl(projectId, "/sandbox/latest") : "/api/studio/sandbox/latest";
+  return call<SandboxRunResponse>(url);
 }
 
 export type {
