@@ -165,6 +165,7 @@ pub(crate) fn ensure_studio_place_open_for_dir(
     let (has_mcp, mcp_open) = {
         let mut guard = shared.agent.lock().unwrap();
         match guard.as_mut().and_then(|a| a.studio.as_mut()) {
+            Some(PlaceBackend::Plugin(p)) if p.is_connected() => return,
             Some(PlaceBackend::Mcp(m)) => {
                 let open = m.has_live_studio() && crate::studio_embed::probe_client_place_open(m);
                 (true, open)
@@ -262,8 +263,8 @@ pub fn route(shared: &Arc<Shared>, method: &str, full_path: &str, body: &[u8], l
         ("GET", [])
             | ("POST", ["workspace"] | ["workspace", "remove"] | ["create"] | ["open"])
             | ("GET", [_])
-            | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "format" | "run-lune" | "open-in-studio"])
-            | ("POST", [_, "sync", "diff"] | [_, "scene", "mutate"] | [_, "sandbox", "run"] | [_, "playtests", "rerun"] | [_, "playtests", "fix-plan"] | [_, "playtests", "fix-apply"] | [_, "playtests", "fix-all"])
+            | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "format" | "run-lune" | "open-in-studio" | "import-model"])
+            | ("POST", [_, "sync", "diff" | "pull-diff" | "pull"] | [_, "scene", "mutate"] | [_, "sandbox", "run"] | [_, "playtests", "rerun"] | [_, "playtests", "fix-plan"] | [_, "playtests", "fix-apply"] | [_, "playtests", "fix-all"])
             | ("GET", [_, "workspace" | "mesh-asset" | "builds" | "playtests" | "dependencies" | "snapshots" | "sync-conflicts" | "publish-guard" | "monetization-audit" | "economy-sim" | "files" | "file" | "preview" | "gui"] | [_, "snapshots", "hook-integrity"] | [_, "gui", _] | [_, "sandbox", "runs" | "latest"])
             | ("POST", [_, "dependencies", "prune"] | [_, "monetization-audit"] | [_, "economy-sim"] | [_, "snapshots"] | [_, "snapshots", _, "restore"] | [_, "snapshots", _, "restore-hooks"] | [_, "sync-conflicts", "resolve"] | [_, "publish-guard", "autofix"] | [_, "gui", _] | [_, "gui", _, "compile"])
             | ("POST", [_, "file"] | [_, "file", "delete"] | [_, "file", "edit"])
@@ -698,6 +699,37 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
             let _busy = Busy::new(&shared.busy);
             ensure_studio_place_open(shared, &r, &b);
             crate::studio_sync::run(shared, &r, false, true)
+        }
+        ("POST", [id, "sync", "pull-diff"]) => {
+            let r = project_of(shared, id)?;
+            let b = parse_body(body)?;
+            let _busy = Busy::new(&shared.busy);
+            ensure_studio_place_open(shared, &r, &b);
+            crate::studio_sync::pull_diff(shared, &r)
+        }
+        ("POST", [id, "sync", "pull"]) => {
+            let r = project_of(shared, id)?;
+            let b = parse_body(body)?;
+            let _busy = Busy::new(&shared.busy);
+            ensure_studio_place_open(shared, &r, &b);
+            crate::studio_sync::pull_apply(shared, &r, &b)
+        }
+        ("POST", [id, "import-model"]) => {
+            let r = project_of(shared, id)?;
+            let b = parse_body(body)?;
+            let file_name = b.get("file_name").and_then(Value::as_str).unwrap_or("");
+            let format = b.get("format").and_then(Value::as_str).unwrap_or("");
+            let bytes_base64 = b.get("bytes_base64").and_then(Value::as_str).unwrap_or("");
+            let target_service = b.get("target_service").and_then(Value::as_str);
+            let res = projects::import_prefab_model(
+                &r.dir,
+                file_name,
+                format,
+                bytes_base64,
+                target_service,
+            )
+            .map_err(Reply::bad)?;
+            Ok(Reply::json("200 OK", res))
         }
         ("POST", [id, "sync"]) => {
             let r = project_of(shared, id)?;

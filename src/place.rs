@@ -67,6 +67,7 @@ impl PlaceBackend {
             PlaceBackend::Plugin(_) => matches!(
                 name,
                 "get_place_tree"
+                    | "get_place_snapshot"
                     | "write_script"
                     | "write_luau"
                     | "delete_script"
@@ -126,6 +127,187 @@ impl PlaceBackend {
                 }
             }
             PlaceBackend::Local(p) => Ok(p.tree_json()),
+        }
+    }
+
+    /// Fetch a full cursor-paginated Studio snapshot (scripts, script_meta, instances, lighting)
+    /// across `Plugin` (`get_place_snapshot`), `Mcp` (`get_place_snapshot` / `execute_luau` / `get_place_tree`),
+    /// or `Local` backends without exceeding 64 KiB per chunk.
+    pub fn get_place_snapshot(&mut self) -> Result<Value, String> {
+        match self {
+            PlaceBackend::Plugin(p) => {
+                let mut cursor: Option<String> = None;
+                let mut snapshot_id: Option<String> = None;
+                let mut scripts = Map::new();
+                let mut script_parts: BTreeMap<String, BTreeMap<usize, String>> = BTreeMap::new();
+                let mut script_meta = Map::new();
+                let mut instances = Map::new();
+                let mut lighting = Map::new();
+                for _page in 0..512 {
+                    let mut args = Map::new();
+                    if let Some(c) = &cursor {
+                        args.insert("cursor".into(), json!(c));
+                    }
+                    if let Some(sid) = &snapshot_id {
+                        args.insert("snapshot_id".into(), json!(sid));
+                    }
+                    let val = p.execute_command(
+                        "get_place_snapshot",
+                        Value::Object(args),
+                        plugin_timeout(),
+                    )?;
+                    let chunk: Value = if val.is_object() {
+                        val
+                    } else if let Some(s) = val.as_str() {
+                        serde_json::from_str::<Value>(s).map_err(|e| {
+                            format!("plugin get_place_snapshot returned non-JSON: {e}")
+                        })?
+                    } else {
+                        return Err("plugin get_place_snapshot returned unexpected value".into());
+                    };
+                    if snapshot_id.is_none() {
+                        if let Some(sid) = chunk.get("snapshot_id").and_then(|v| v.as_str()) {
+                            snapshot_id = Some(sid.to_string());
+                        }
+                    }
+                    if let Some(obj) = chunk.get("scripts").and_then(|v| v.as_object()) {
+                        for (k, v) in obj {
+                            scripts.insert(k.clone(), v.clone());
+                        }
+                    }
+                    if let Some(parts_obj) = chunk.get("script_parts").and_then(|v| v.as_object()) {
+                        for (path, part) in parts_obj {
+                            if let (Some(idx), Some(data)) = (
+                                part.get("index").and_then(|v| v.as_u64()),
+                                part.get("data").and_then(|v| v.as_str()),
+                            ) {
+                                script_parts
+                                    .entry(path.clone())
+                                    .or_default()
+                                    .insert(idx as usize, data.to_string());
+                            }
+                        }
+                    }
+                    if let Some(meta_obj) = chunk.get("script_meta").and_then(|v| v.as_object()) {
+                        for (k, v) in meta_obj {
+                            script_meta.insert(k.clone(), v.clone());
+                        }
+                    }
+                    if let Some(inst_obj) = chunk.get("instances").and_then(|v| v.as_object()) {
+                        for (k, v) in inst_obj {
+                            instances.insert(k.clone(), v.clone());
+                        }
+                    }
+                    if let Some(light_obj) = chunk.get("lighting").and_then(|v| v.as_object()) {
+                        for (k, v) in light_obj {
+                            lighting.insert(k.clone(), v.clone());
+                        }
+                    }
+                    let done = chunk.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let next = chunk
+                        .get("next_cursor")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(String::from);
+                    if done || next.is_none() {
+                        break;
+                    }
+                    cursor = next;
+                }
+                for (path, parts) in script_parts {
+                    let combined: String = parts.into_values().collect();
+                    scripts.insert(path, Value::String(combined));
+                }
+                Ok(json!({
+                    "snapshot_id": snapshot_id.unwrap_or_else(|| "snap-plugin".to_string()),
+                    "scripts": Value::Object(scripts),
+                    "script_meta": Value::Object(script_meta),
+                    "instances": Value::Object(instances),
+                    "lighting": Value::Object(lighting),
+                }))
+            }
+            PlaceBackend::Mcp(c) => {
+                if c.has_tool("get_place_snapshot") {
+                    let mut cursor: Option<String> = None;
+                    let mut snapshot_id: Option<String> = None;
+                    let mut scripts = Map::new();
+                    let mut script_meta = Map::new();
+                    let mut instances = Map::new();
+                    let mut lighting = Map::new();
+                    for _page in 0..512 {
+                        let mut args = Map::new();
+                        if let Some(cur) = &cursor {
+                            args.insert("cursor".into(), json!(cur));
+                        }
+                        if let Some(sid) = &snapshot_id {
+                            args.insert("snapshot_id".into(), json!(sid));
+                        }
+                        let raw = c.call_tool("get_place_snapshot", Value::Object(args))?;
+                        let chunk: Value = serde_json::from_str(&raw).map_err(|e| {
+                            format!("mcp get_place_snapshot returned non-JSON: {e}")
+                        })?;
+                        if snapshot_id.is_none() {
+                            if let Some(sid) = chunk.get("snapshot_id").and_then(|v| v.as_str()) {
+                                snapshot_id = Some(sid.to_string());
+                            }
+                        }
+                        if let Some(obj) = chunk.get("scripts").and_then(|v| v.as_object()) {
+                            for (k, v) in obj {
+                                scripts.insert(k.clone(), v.clone());
+                            }
+                        }
+                        if let Some(meta_obj) = chunk.get("script_meta").and_then(|v| v.as_object()) {
+                            for (k, v) in meta_obj {
+                                script_meta.insert(k.clone(), v.clone());
+                            }
+                        }
+                        if let Some(inst_obj) = chunk.get("instances").and_then(|v| v.as_object()) {
+                            for (k, v) in inst_obj {
+                                instances.insert(k.clone(), v.clone());
+                            }
+                        }
+                        if let Some(light_obj) = chunk.get("lighting").and_then(|v| v.as_object()) {
+                            for (k, v) in light_obj {
+                                lighting.insert(k.clone(), v.clone());
+                            }
+                        }
+                        let done = chunk.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let next = chunk
+                            .get("next_cursor")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(String::from);
+                        if done || next.is_none() {
+                            break;
+                        }
+                        cursor = next;
+                    }
+                    return Ok(json!({
+                        "snapshot_id": snapshot_id.unwrap_or_else(|| "snap-mcp".to_string()),
+                        "scripts": Value::Object(scripts),
+                        "script_meta": Value::Object(script_meta),
+                        "instances": Value::Object(instances),
+                        "lighting": Value::Object(lighting),
+                    }));
+                }
+                let mut tree = c.get_place_tree()?;
+                if let Some(obj) = tree.as_object_mut() {
+                    obj.entry("snapshot_id").or_insert_with(|| json!("snap-mcp"));
+                    obj.entry("lighting").or_insert_with(|| json!({}));
+                    obj.entry("script_meta").or_insert_with(|| json!({}));
+                }
+                Ok(tree)
+            }
+            PlaceBackend::Local(p) => {
+                let mut tree = p.tree_json();
+                if let Some(obj) = tree.as_object_mut() {
+                    obj.entry("snapshot_id")
+                        .or_insert_with(|| json!(format!("snap-local-{}", p.revision())));
+                    obj.entry("lighting").or_insert_with(|| json!({}));
+                    obj.entry("script_meta").or_insert_with(|| json!({}));
+                }
+                Ok(tree)
+            }
         }
     }
 

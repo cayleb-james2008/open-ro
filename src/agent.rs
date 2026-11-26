@@ -224,6 +224,7 @@ STUDIO & WHOLE-GAME TOOLS:\n\
 - {{\"tool\": \"gui_save\", \"args\": {{\"slug\": \"main-hud\", \"preset\": \"rpg\"}}}} saves ScreenDoc v1 to ui/<slug>.screen.json and runs multi-device safe-area checks\n\
 - {{\"tool\": \"gui_compile\", \"args\": {{\"slug\": \"main-hud\", \"emit_model_json\": false}}}} compiles ScreenDoc v1 to --!strict Luau create(parent, callbacks) + Rojo .model.json\n\
 - {{\"tool\": \"project_sync\", \"args\": {{\"prune\": false}}}} one-way syncs the project to Studio\n\
+- {{\"tool\": \"project_sync_pull\", \"args\": {{\"strategy\": \"merge_non_conflicting\", \"dry_run\": false}}}} pulls 3-way Studio changes into the local project\n\
 - {{\"tool\": \"project_playtest\", \"args\": {{\"sync_first\": true, \"suite\": \"playtest/suite.json\"}}}} runs the Playtest Runner (checks, screenshots, console errors)\n\n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - {{\"tool\": \"research_roblox_game\", \"args\": {{\"target\": \"<place/universe id or URL>\"}}}} fetches real Roblox metadata & thumbnails into refs/<universeId>/\n\
@@ -294,7 +295,7 @@ PROJECT FILE & BUILD TOOLS:\n\
 - project_scene_mutate {{\"ops\": [{{\"op\": \"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\", \"path\": \"Workspace.Name\", \"class_name\": \"Part|Model|SpawnLocation|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\", ...}}]}} (workspace.model.json, terrain.json & Lighting; set_terrain: generator/paint_box/clear; reparent: new_parent)\n\
 - gui_save {{\"slug\": \"main-hud\", \"doc\": {{...}} | \"preset\": \"rpg|obby|tycoon|gacha\"}} (ui/<slug>.screen.json + safe-area)\n\
 - gui_compile {{\"slug\": \"main-hud\", \"emit_model_json\": false}} (--!strict Luau + Rojo .model.json)\n\
-- project_sync {{\"prune\": false}} / project_playtest {{\"sync_first\": true, \"suite\": \"playtest/suite.json\"}}\n\n\
+- project_sync {{\"prune\": false}} / project_sync_pull {{\"strategy\": \"merge_non_conflicting\"}} / project_playtest {{\"sync_first\": true, \"suite\": \"playtest/suite.json\"}}\n\n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - research_roblox_game {{\"target\": \"<URL or ID>\"}} (Roblox API + thumbs -> refs/<universeId>/)\n\
 - web_search {{\"query\": \"...\", \"limit\": 5}} / web_fetch {{\"url\": \"https://...\"}}\n\
@@ -526,6 +527,7 @@ pub struct AgentHooks {
     pub project_list: Option<HookFn>,
     pub project_build: Option<HookFn>,
     pub project_sync: Option<HookFn>,
+    pub project_sync_pull: Option<HookFn>,
     pub project_playtest: Option<HookFn>,
     pub project_check: Option<HookFn>,
     pub project_run_lune: Option<HookFn>,
@@ -4634,6 +4636,18 @@ impl Agent {
                 thread.push("Synced project files to Studio.".to_string());
                 Ok(format!("tool_result: project_sync: {text}"))
             }
+            "project_sync_pull" => {
+                let res = if let Some(hook) = &self.hooks.project_sync_pull {
+                    hook(args)?
+                } else {
+                    let root = self.require_project_root()?;
+                    self.project_sync_pull_local(&root, args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool project_sync_pull -> {text}"));
+                thread.push("Pulled Studio changes into project.".to_string());
+                Ok(format!("tool_result: project_sync_pull: {text}"))
+            }
             "research_roblox_game" => {
                 let target = args
                     .get("target")
@@ -6236,6 +6250,9 @@ impl Agent {
             let a = crate::studio_sync::apply(mcp, &flat, &d, prune)?;
             let after = crate::studio_sync::diff(mcp, &flat)?;
             let remaining = after.changes.len() + if prune { after.extra.len() } else { 0 };
+            if a.errors.is_empty() {
+                let _ = crate::studio_sync::update_baseline_from_project(root, &rojo, None);
+            }
             return Ok(json!({
                 "ok": a.errors.is_empty() && remaining == 0,
                 "applied": { "created": a.created, "updated": a.updated, "deleted": a.deleted },
@@ -6275,6 +6292,46 @@ impl Agent {
             "synced_scripts": synced,
             "errors": errors,
         }))
+    }
+
+    fn project_sync_pull_local(&mut self, root: &std::path::Path, args: &Value) -> Result<Value, String> {
+        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let confirm_overwrite = args
+            .get("confirm_overwrite")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let strategy = crate::studio_sync::PullStrategy::parse(
+            args.get("strategy").and_then(|v| v.as_str()),
+        )?;
+        let paths: Option<Vec<String>> = match args.get("paths") {
+            None | Some(Value::Null) => None,
+            Some(Value::Array(arr)) => {
+                let mut out = Vec::with_capacity(arr.len());
+                for item in arr {
+                    let s = item
+                        .as_str()
+                        .ok_or_else(|| "paths must be an array of strings".to_string())?;
+                    out.push(s.to_string());
+                }
+                Some(out)
+            }
+            Some(_) => return Err("paths must be an array of strings".to_string()),
+        };
+        let backend = self.studio_mut()?;
+        if dry_run {
+            let resp = crate::studio_sync::pull_diff_with_backend(backend, root)
+                .map_err(|e| e.message())?;
+            return Ok(resp.to_json());
+        }
+        let resp = crate::studio_sync::pull_apply_with_backend(
+            backend,
+            root,
+            paths.as_deref(),
+            strategy,
+            confirm_overwrite,
+        )
+        .map_err(|e| e.message())?;
+        Ok(resp.to_json())
     }
 
     fn run_project_playtest(

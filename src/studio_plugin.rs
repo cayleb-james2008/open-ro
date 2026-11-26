@@ -728,9 +728,9 @@ pub fn render_companion_lua(port: u16, token: &str) -> String {
 
 fn include_str_companion_lua() -> &'static str {
     r##"--!strict
--- OpenRoCompanion.lua — OpenRO v0.10.0 Lightweight Companion Roblox Studio Plugin
--- Enables live DataModel sync, ChangeHistoryService undo waypoints, Selection sync,
--- LogService console streaming, and direct script/instance execution over loopback HTTP.
+-- OpenRoCompanion.lua -- OpenRO Companion Roblox Studio Plugin
+-- Enables live DataModel sync, cursor-paginated snapshot capture, ChangeHistoryService
+-- undo waypoints, Selection sync, LogService console streaming, and Luau execution.
 
 local HttpService = game:GetService("HttpService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
@@ -753,14 +753,32 @@ local CONNECT_BTN = TOOLBAR:CreateButton(
 
 local running = true
 local SERVICES = {
-	"Workspace",
-	"ServerScriptService",
 	"ReplicatedStorage",
+	"ServerScriptService",
+	"ServerStorage",
 	"StarterGui",
 	"StarterPlayer",
+	"StarterPack",
+	"ReplicatedFirst",
 	"Lighting",
 	"SoundService",
+	"Teams",
+	"Workspace",
 }
+
+local SNAPSHOT_HARD_LIMIT = 65536
+local SNAPSHOT_DEFAULT_MAX_BYTES = 56000
+local SNAPSHOT_SCRIPT_CHUNK = 40000
+local cachedSnapshots: { [string]: { entries: { any }, lighting: { [string]: any } } } = {}
+local snapshotOrder: { string } = {}
+local snapshotSeq = 0
+
+local function round4(n: number): number
+	if n ~= n or n == math.huge or n == -math.huge then
+		return 0
+	end
+	return math.round(n * 10000) / 10000
+end
 
 local function fullPath(inst: Instance): string
 	local parts = {}
@@ -781,6 +799,419 @@ local function currentSelectionPaths(): { string }
 		end
 	end
 	return out
+end
+
+local function serializeValue(v: any): any
+	local t = typeof(v)
+	if t == "Vector3" then
+		return { round4(v.X), round4(v.Y), round4(v.Z) }
+	elseif t == "Vector2" then
+		return { round4(v.X), round4(v.Y) }
+	elseif t == "Color3" then
+		return { round4(v.R), round4(v.G), round4(v.B) }
+	elseif t == "UDim2" then
+		return {
+			{ round4(v.X.Scale), math.round(v.X.Offset) },
+			{ round4(v.Y.Scale), math.round(v.Y.Offset) },
+		}
+	elseif t == "UDim" then
+		return { round4(v.Scale), math.round(v.Offset) }
+	elseif t == "NumberRange" then
+		return { NumberRange = { round4(v.Min), round4(v.Max) } }
+	elseif t == "CFrame" then
+		local x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22 = v:GetComponents()
+		return {
+			position = { round4(x), round4(y), round4(z) },
+			orientation = {
+				{ round4(r00), round4(r01), round4(r02) },
+				{ round4(r10), round4(r11), round4(r12) },
+				{ round4(r20), round4(r21), round4(r22) },
+			},
+		}
+	elseif t == "EnumItem" then
+		return v.Name
+	elseif t == "BrickColor" then
+		return v.Number
+	elseif t == "ColorSequence" then
+		local kp = v.Keypoints and v.Keypoints[1]
+		if kp then
+			return { round4(kp.Value.R), round4(kp.Value.G), round4(kp.Value.B) }
+		end
+		return { 1, 1, 1 }
+	elseif type(v) == "number" then
+		return round4(v)
+	elseif type(v) == "string" or type(v) == "boolean" then
+		return v
+	end
+	return tostring(v)
+end
+
+local function serializeAttributes(inst: Instance): { [string]: any }?
+	local okA, attrs = pcall(function()
+		return inst:GetAttributes()
+	end)
+	if not okA or type(attrs) ~= "table" then
+		return nil
+	end
+	local out: { [string]: any } = {}
+	local count = 0
+	for k, v in pairs(attrs) do
+		out[tostring(k)] = serializeValue(v)
+		count += 1
+	end
+	if count == 0 then
+		return nil
+	end
+	return out
+end
+
+local function readProp(inst: Instance, props: { [string]: any }, key: string)
+	local ok, val = pcall(function()
+		return (inst :: any)[key]
+	end)
+	if ok and val ~= nil then
+		props[key] = serializeValue(val)
+	end
+end
+
+local function collectLightingProps(): { [string]: any }
+	local out: { [string]: any } = {}
+	local okL, lighting = pcall(function()
+		return game:GetService("Lighting")
+	end)
+	if not okL or not lighting then
+		return out
+	end
+	for _, key in ipairs({
+		"ClockTime",
+		"Brightness",
+		"Ambient",
+		"OutdoorAmbient",
+		"ColorShift_Top",
+		"ColorShift_Bottom",
+		"FogStart",
+		"FogEnd",
+		"FogColor",
+		"GlobalShadows",
+		"ShadowSoftness",
+		"EnvironmentDiffuseScale",
+		"EnvironmentSpecularScale",
+		"ExposureCompensation",
+		"Technology",
+	}) do
+		readProp(lighting, out, key)
+	end
+	local attrs = serializeAttributes(lighting)
+	if attrs then
+		out.Attributes = attrs
+	end
+	return out
+end
+
+local function captureInstanceProps(d: Instance): (boolean, { [string]: any })
+	local props: { [string]: any } = {}
+	local captured = false
+
+	if d:IsA("BasePart") then
+		captured = true
+		local p = d :: BasePart
+		props.CFrame = serializeValue(p.CFrame)
+		props.Size = serializeValue(p.Size)
+		props.Color = serializeValue(p.Color)
+		props.Anchored = p.Anchored
+		props.Material = p.Material.Name
+		props.Transparency = round4(p.Transparency)
+		props.CanCollide = p.CanCollide
+		readProp(p, props, "CastShadow")
+		if d:IsA("Part") then
+			readProp(d, props, "Shape")
+		elseif d:IsA("MeshPart") then
+			readProp(d, props, "MeshId")
+			readProp(d, props, "TextureID")
+		end
+	elseif d:IsA("SurfaceAppearance") then
+		captured = true
+		for _, k in ipairs({ "ColorMap", "MetalnessMap", "NormalMap", "RoughnessMap", "AlphaMode" }) do
+			readProp(d, props, k)
+		end
+	elseif d:IsA("PointLight") or d:IsA("SpotLight") or d:IsA("SurfaceLight") then
+		captured = true
+		for _, k in ipairs({ "Color", "Brightness", "Range", "Shadows", "Enabled" }) do
+			readProp(d, props, k)
+		end
+		if d:IsA("SpotLight") or d:IsA("SurfaceLight") then
+			readProp(d, props, "Angle")
+			readProp(d, props, "Face")
+		end
+	elseif d:IsA("ParticleEmitter") then
+		captured = true
+		for _, k in ipairs({
+			"Rate",
+			"LightEmission",
+			"Enabled",
+			"Texture",
+			"EmissionDirection",
+			"Lifetime",
+			"Speed",
+			"SpreadAngle",
+			"Color",
+		}) do
+			readProp(d, props, k)
+		end
+	elseif d:IsA("ScreenGui") or d:IsA("BillboardGui") or d:IsA("SurfaceGui") then
+		captured = true
+		for _, k in ipairs({
+			"Enabled",
+			"ResetOnSpawn",
+			"DisplayOrder",
+			"ZIndexBehavior",
+			"IgnoreGuiInset",
+			"AlwaysOnTop",
+			"Face",
+			"SizingMode",
+		}) do
+			readProp(d, props, k)
+		end
+	elseif d:IsA("GuiObject") then
+		captured = true
+		for _, k in ipairs({
+			"Position",
+			"Size",
+			"AnchorPoint",
+			"BackgroundColor3",
+			"BackgroundTransparency",
+			"BorderSizePixel",
+			"Visible",
+			"ZIndex",
+			"LayoutOrder",
+			"Rotation",
+		}) do
+			readProp(d, props, k)
+		end
+		if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+			for _, k in ipairs({ "Text", "TextColor3", "TextSize", "TextScaled", "Font" }) do
+				readProp(d, props, k)
+			end
+		end
+		if d:IsA("ImageLabel") or d:IsA("ImageButton") then
+			for _, k in ipairs({ "Image", "ImageColor3", "ImageTransparency", "ScaleType" }) do
+				readProp(d, props, k)
+			end
+		end
+	elseif d:IsA("UICorner") or d:IsA("UIStroke") or d:IsA("UIListLayout") or d:IsA("UIGridLayout") or d:IsA("UIPadding") or d:IsA("UIAspectRatioConstraint") or d:IsA("UIScale") then
+		captured = true
+		for _, k in ipairs({
+			"CornerRadius",
+			"Thickness",
+			"Color",
+			"Transparency",
+			"FillDirection",
+			"SortOrder",
+			"HorizontalAlignment",
+			"VerticalAlignment",
+			"Padding",
+			"CellSize",
+			"CellPadding",
+			"PaddingTop",
+			"PaddingBottom",
+			"PaddingLeft",
+			"PaddingRight",
+			"AspectRatio",
+			"Scale",
+		}) do
+			readProp(d, props, k)
+		end
+	elseif d:IsA("Sound") then
+		captured = true
+		for _, k in ipairs({ "SoundId", "Volume", "Looped", "PlaybackSpeed", "Playing" }) do
+			readProp(d, props, k)
+		end
+	elseif d:IsA("Decal") or d:IsA("Texture") then
+		captured = true
+		for _, k in ipairs({ "Texture", "Face", "Transparency", "Color3" }) do
+			readProp(d, props, k)
+		end
+	elseif d:IsA("Atmosphere") then
+		captured = true
+		for _, k in ipairs({ "Density", "Offset", "Color", "Decay", "Glare", "Haze" }) do
+			readProp(d, props, k)
+		end
+	elseif d:IsA("Sky") then
+		captured = true
+		for _, k in ipairs({
+			"SkyboxBk",
+			"SkyboxDn",
+			"SkyboxFt",
+			"SkyboxLf",
+			"SkyboxRt",
+			"SkyboxUp",
+			"StarCount",
+			"CelestialBodiesShown",
+		}) do
+			readProp(d, props, k)
+		end
+	elseif d:IsA("ValueBase") then
+		captured = true
+		readProp(d, props, "Value")
+	elseif d:IsA("Model") or d:IsA("Folder") or d:IsA("RemoteEvent") or d:IsA("RemoteFunction") or d:IsA("BindableEvent") or d:IsA("Tool") or d:IsA("Attachment") or d:IsA("ProximityPrompt") or d:IsA("ClickDetector") or d:IsA("WeldConstraint") or d:IsA("BloomEffect") or d:IsA("ColorCorrectionEffect") or d:IsA("SunRaysEffect") or d:IsA("DepthOfFieldEffect") then
+		captured = true
+	end
+
+	local attrs = serializeAttributes(d)
+	if attrs then
+		captured = true
+		props.Attributes = attrs
+	end
+
+	return captured, props
+end
+
+local function buildSnapshotEntries(): ({ any }, { [string]: any })
+	local entries: { any } = {}
+	for _, svcName in ipairs(SERVICES) do
+		local okSvc, svc = pcall(function()
+			return game:GetService(svcName)
+		end)
+		if okSvc and svc then
+			for _, d in ipairs(svc:GetDescendants()) do
+				if d:IsA("LuaSourceContainer") then
+					local okSrc, src = pcall(function()
+						return (d :: any).Source
+					end)
+					if okSrc and type(src) == "string" then
+						local p = fullPath(d)
+						local attrs = serializeAttributes(d)
+						if #src <= SNAPSHOT_SCRIPT_CHUNK then
+							table.insert(entries, {
+								kind = "script",
+								path = p,
+								class_name = d.ClassName,
+								source = src,
+								attributes = attrs,
+							})
+						else
+							local total = math.ceil(#src / SNAPSHOT_SCRIPT_CHUNK)
+							for idx = 1, total do
+								local startPos = (idx - 1) * SNAPSHOT_SCRIPT_CHUNK + 1
+								local endPos = math.min(#src, idx * SNAPSHOT_SCRIPT_CHUNK)
+								table.insert(entries, {
+									kind = "script_part",
+									path = p,
+									class_name = d.ClassName,
+									index = idx,
+									total = total,
+									data = string.sub(src, startPos, endPos),
+									attributes = if idx == 1 then attrs else nil,
+								})
+							end
+						end
+					end
+				else
+					local okCap, props = captureInstanceProps(d)
+					if okCap then
+						table.insert(entries, {
+							kind = "instance",
+							path = fullPath(d),
+							class_name = d.ClassName,
+							properties = props,
+						})
+					end
+				end
+			end
+		end
+	end
+	return entries, collectLightingProps()
+end
+
+local function collectPlaceSnapshot(args: { [string]: any }): { [string]: any }
+	local maxBytes = math.clamp(tonumber(args.max_bytes) or SNAPSHOT_DEFAULT_MAX_BYTES, 4096, 60000)
+	local reqSnapId = if type(args.snapshot_id) == "string" and #args.snapshot_id > 0 then args.snapshot_id else nil
+	local cursorNum = math.max(1, (tonumber(args.cursor) or 0) + 1)
+
+	local snapId = reqSnapId
+	local snap = if snapId then cachedSnapshots[snapId] else nil
+	if not snap then
+		local entries, lighting = buildSnapshotEntries()
+		snapshotSeq += 1
+		snapId = reqSnapId or ("snap-" .. tostring(os.time()) .. "-" .. tostring(snapshotSeq))
+		snap = { entries = entries, lighting = lighting }
+		cachedSnapshots[snapId] = snap
+		table.insert(snapshotOrder, snapId)
+		while #snapshotOrder > 2 do
+			local oldest = table.remove(snapshotOrder, 1)
+			if oldest then
+				cachedSnapshots[oldest] = nil
+			end
+		end
+	end
+
+	local scripts: { [string]: string } = {}
+	local scriptParts: { [string]: any } = {}
+	local scriptMeta: { [string]: any } = {}
+	local instances: { [string]: any } = {}
+	local entries = snap.entries
+	local total = #entries
+	local idx = cursorNum
+
+	local lightingPayload = if cursorNum == 1 then snap.lighting else nil
+	local chunk: { [string]: any } = {
+		snapshot_id = snapId,
+		cursor = tostring(cursorNum - 1),
+		next_cursor = nil,
+		done = true,
+		total_items = total,
+		scripts = scripts,
+		script_parts = scriptParts,
+		script_meta = scriptMeta,
+		instances = instances,
+		lighting = lightingPayload,
+	}
+
+	while idx <= total do
+		local entry = entries[idx]
+		local p = entry.path
+		local prevScript = scripts[p]
+		local prevPart = scriptParts[p]
+		local prevMeta = scriptMeta[p]
+		local prevInst = instances[p]
+
+		if entry.kind == "script" then
+			scripts[p] = entry.source
+			scriptMeta[p] = { class_name = entry.class_name, attributes = entry.attributes }
+		elseif entry.kind == "script_part" then
+			scriptParts[p] = { index = entry.index, total = entry.total, data = entry.data }
+			if entry.index == 1 then
+				scriptMeta[p] = { class_name = entry.class_name, attributes = entry.attributes }
+			end
+		else
+			instances[p] = {
+				class_name = entry.class_name,
+				properties = entry.properties,
+			}
+		end
+
+		local encodedLen = #HttpService:JSONEncode(chunk)
+		if encodedLen > maxBytes and idx > cursorNum then
+			scripts[p] = prevScript
+			scriptParts[p] = prevPart
+			scriptMeta[p] = prevMeta
+			instances[p] = prevInst
+			break
+		end
+		idx += 1
+		if encodedLen >= SNAPSHOT_HARD_LIMIT then
+			break
+		end
+	end
+
+	local done = idx > total
+	chunk.done = done
+	chunk.next_cursor = if done then nil else tostring(idx - 1)
+	chunk.chunk_bytes = #HttpService:JSONEncode(chunk)
+	if done and snapId then
+		cachedSnapshots[snapId] = nil
+	end
+	return chunk
 end
 
 local function resolvePath(dotPath: string, createFolders: boolean): Instance?
@@ -827,7 +1258,30 @@ local function applyProperties(inst: Instance, props: { [string]: any }?)
 	end
 	for k, v in pairs(props) do
 		pcall(function()
-			if (k == "Position" or k == "Size") and type(v) == "table" and #v >= 3 then
+			if k == "Attributes" and type(v) == "table" then
+				for ak, av in pairs(v) do
+					inst:SetAttribute(tostring(ak), av)
+				end
+			elseif k == "CFrame" and type(v) == "table" then
+				local cf = v.CFrame or v
+				if type(cf) == "table" and type(cf.position) == "table" and type(cf.orientation) == "table" then
+					local p = cf.position
+					local o = cf.orientation
+					(inst :: any).CFrame = CFrame.new(
+						tonumber(p[1]) or 0, tonumber(p[2]) or 0, tonumber(p[3]) or 0,
+						tonumber(o[1][1]) or 1, tonumber(o[1][2]) or 0, tonumber(o[1][3]) or 0,
+						tonumber(o[2][1]) or 0, tonumber(o[2][2]) or 1, tonumber(o[2][3]) or 0,
+						tonumber(o[3][1]) or 0, tonumber(o[3][2]) or 0, tonumber(o[3][3]) or 1
+					)
+				elseif #cf >= 12 then
+					(inst :: any).CFrame = CFrame.new(
+						tonumber(cf[1]) or 0, tonumber(cf[2]) or 0, tonumber(cf[3]) or 0,
+						tonumber(cf[4]) or 1, tonumber(cf[5]) or 0, tonumber(cf[6]) or 0,
+						tonumber(cf[7]) or 0, tonumber(cf[8]) or 1, tonumber(cf[9]) or 0,
+						tonumber(cf[10]) or 0, tonumber(cf[11]) or 0, tonumber(cf[12]) or 1
+					)
+				end
+			elseif (k == "Position" or k == "Size") and type(v) == "table" and #v >= 3 then
 				(inst :: any)[k] = Vector3.new(tonumber(v[1]) or 0, tonumber(v[2]) or 0, tonumber(v[3]) or 0)
 			elseif k == "Color" and type(v) == "table" and #v >= 3 then
 				(inst :: any).Color = Color3.fromRGB(tonumber(v[1]) or 128, tonumber(v[2]) or 128, tonumber(v[3]) or 128)
@@ -913,6 +1367,8 @@ end
 local function handleCommand(tool: string, args: { [string]: any }): (boolean, any, string?)
 	if tool == "get_place_tree" then
 		return true, collectPlaceTree(), nil
+	elseif tool == "get_place_snapshot" then
+		return true, collectPlaceSnapshot(args), nil
 	elseif tool == "write_script" or tool == "write_luau" then
 		local dotPath = tostring(args.path or "")
 		local source = tostring(args.source or "")
@@ -1124,6 +1580,13 @@ mod tests {
         assert!(lua.contains("HttpService"));
         assert!(lua.contains("Selection"));
         assert!(lua.contains("LogService"));
+        assert!(lua.contains("get_place_snapshot"));
+        assert!(lua.contains("GetComponents"));
+        assert!(lua.contains("SurfaceAppearance"));
+        assert!(lua.contains("ParticleEmitter"));
+        assert!(lua.contains("ScreenGui"));
+        assert!(lua.contains("GetAttributes"));
+        assert!(lua.contains("SNAPSHOT_HARD_LIMIT"));
         let report = crate::luau_check::analyze_source("ServerScriptService.OpenRoCompanion", &lua);
         assert_eq!(
             report.error_count(),

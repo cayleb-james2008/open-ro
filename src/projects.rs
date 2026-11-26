@@ -2491,6 +2491,1466 @@ pub fn run_lune(
     }))
 }
 
+// ---------------------------------------------------------------------------
+// Prefab Model Import (.rbxmx / .rbxm / .rbxlx) -> scene/models/<slug>.model.json
+// ---------------------------------------------------------------------------
+
+const MAX_PREFAB_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PREFAB_XML_DEPTH: usize = 64;
+const MAX_PREFAB_XML_ITEMS: usize = 50_000;
+const ALLOWED_PREFAB_SERVICES: [&str; 9] = [
+    "Workspace",
+    "ReplicatedStorage",
+    "ServerStorage",
+    "ServerScriptService",
+    "StarterGui",
+    "StarterPack",
+    "StarterPlayer",
+    "Lighting",
+    "SoundService",
+];
+
+#[derive(Clone, Debug)]
+struct ImportedNode {
+    class_name: String,
+    name: String,
+    properties: BTreeMap<String, Value>,
+    source: Option<String>,
+    children: Vec<ImportedNode>,
+}
+
+fn prefab_write_atomic(dir: &Path, rel: &str, content: &str) -> Result<(), String> {
+    if rel.contains('\0') || rel.contains('\\') {
+        return Err(format!("invalid path '{rel}'"));
+    }
+    let full = safe_join(dir, rel)?;
+    if let Ok(meta) = std::fs::symlink_metadata(&full) {
+        if meta.file_type().is_symlink() {
+            return Err(format!("refusing to write through symlink '{rel}'"));
+        }
+    }
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create dir for {rel}: {e}"))?;
+    }
+    static PREFAB_TMP_SEQ: AtomicU64 = AtomicU64::new(1);
+    let seq = PREFAB_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let fname = full.file_name().and_then(|s| s.to_str()).unwrap_or("prefab");
+    let tmp = full.with_file_name(format!(".{fname}.openro-tmp.{}.{seq}", std::process::id()));
+    std::fs::write(&tmp, content.as_bytes()).map_err(|e| format!("write {rel}: {e}"))?;
+    if let Err(e) = std::fs::rename(&tmp, &full) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("rename {rel}: {e}"));
+    }
+    Ok(())
+}
+
+fn sanitize_prefab_node_name(raw: &str, fallback: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        fallback.to_string()
+    } else {
+        trimmed.chars().take(128).collect()
+    }
+}
+
+fn prefab_xml_unescape(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'&' {
+            if let Some(semi) = s[i..].find(';') {
+                let ent = &s[i + 1..i + semi];
+                let ch = match ent {
+                    "amp" => Some('&'),
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "quot" => Some('"'),
+                    "apos" => Some('\''),
+                    _ if ent.starts_with("#x") || ent.starts_with("#X") => {
+                        u32::from_str_radix(&ent[2..], 16).ok().and_then(char::from_u32)
+                    }
+                    _ if ent.starts_with('#') => ent[1..].parse::<u32>().ok().and_then(char::from_u32),
+                    _ => None,
+                };
+                if let Some(c) = ch {
+                    out.push(c);
+                    i += semi + 1;
+                    continue;
+                }
+            }
+        }
+        let c = s[i..].chars().next().unwrap_or('\0');
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
+type XmlAttrs = Vec<(String, String)>;
+type XmlOpenTag = (String, XmlAttrs, bool);
+type ParsedPrefabProps = (Option<String>, Option<String>, BTreeMap<String, Value>);
+
+struct DecomposeCtx<'a> {
+    dir: &'a Path,
+    slug_name: &'a str,
+    extracted_scripts: Vec<String>,
+    direct_root_scripts: Vec<(String, String)>,
+    deep_scripts: Vec<(String, String, String)>,
+    used_script_paths: std::collections::HashSet<String>,
+}
+
+struct PrefabXmlParser<'a> {
+    src: &'a str,
+    bytes: &'a [u8],
+    pos: usize,
+    items_seen: usize,
+}
+
+impl<'a> PrefabXmlParser<'a> {
+    fn new(src: &'a str) -> Self {
+        let trimmed = src.strip_prefix('\u{FEFF}').unwrap_or(src);
+        Self {
+            src: trimmed,
+            bytes: trimmed.as_bytes(),
+            pos: 0,
+            items_seen: 0,
+        }
+    }
+
+    fn remaining(&self) -> &'a str {
+        &self.src[self.pos..]
+    }
+
+    fn is_eof(&self) -> bool {
+        self.pos >= self.bytes.len()
+    }
+
+    fn starts_with(&self, pat: &str) -> bool {
+        self.remaining().starts_with(pat)
+    }
+
+    fn skip_ws(&mut self) {
+        while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_whitespace() {
+            self.pos += 1;
+        }
+    }
+
+    fn skip_misc(&mut self) -> Result<(), String> {
+        loop {
+            self.skip_ws();
+            if self.starts_with("<?") {
+                let end = self
+                    .remaining()
+                    .find("?>")
+                    .ok_or_else(|| "unclosed XML processing instruction <?".to_string())?;
+                self.pos += end + 2;
+            } else if self.starts_with("<!--") {
+                let end = self
+                    .remaining()
+                    .find("-->")
+                    .ok_or_else(|| "unclosed XML comment <!--".to_string())?;
+                self.pos += end + 3;
+            } else if self.starts_with("<!") && !self.starts_with("<![CDATA[") {
+                return Err("XML DOCTYPE/ENTITY declarations are forbidden (XXE protection)".to_string());
+            } else {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn read_name(&mut self) -> Result<&'a str, String> {
+        let start = self.pos;
+        while self.pos < self.bytes.len() {
+            let b = self.bytes[self.pos];
+            if b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b':' | b'.') {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        if self.pos == start {
+            return Err(format!("expected XML name at byte {}", self.pos));
+        }
+        Ok(&self.src[start..self.pos])
+    }
+
+    fn read_attr_value(&mut self) -> Result<String, String> {
+        if self.is_eof() {
+            return Err("unexpected EOF reading XML attribute value".to_string());
+        }
+        let q = self.bytes[self.pos];
+        if q != b'"' && q != b'\'' {
+            return Err(format!("expected quote for XML attribute at byte {}", self.pos));
+        }
+        self.pos += 1;
+        let start = self.pos;
+        while self.pos < self.bytes.len() && self.bytes[self.pos] != q {
+            self.pos += 1;
+        }
+        if self.pos >= self.bytes.len() {
+            return Err("unclosed XML attribute value".to_string());
+        }
+        let raw = &self.src[start..self.pos];
+        self.pos += 1;
+        Ok(prefab_xml_unescape(raw))
+    }
+
+    fn read_open_tag(&mut self) -> Result<XmlOpenTag, String> {
+        if self.starts_with("<!") && !self.starts_with("<![CDATA[") {
+            return Err("XML DOCTYPE/ENTITY declarations are forbidden (XXE protection)".to_string());
+        }
+        if !self.starts_with("<") || self.starts_with("</") || self.starts_with("<?") {
+            return Err(format!("expected XML start tag at byte {}", self.pos));
+        }
+        self.pos += 1;
+        let name = self.read_name()?.to_string();
+        let mut attrs = Vec::new();
+        loop {
+            self.skip_ws();
+            if self.is_eof() {
+                return Err(format!("unclosed start tag <{name}>"));
+            }
+            if self.starts_with("/>") {
+                self.pos += 2;
+                return Ok((name, attrs, true));
+            }
+            if self.starts_with(">") {
+                self.pos += 1;
+                return Ok((name, attrs, false));
+            }
+            let attr_name = self.read_name()?.to_string();
+            self.skip_ws();
+            if !self.starts_with("=") {
+                return Err(format!("expected '=' after '{attr_name}' in <{name}>"));
+            }
+            self.pos += 1;
+            self.skip_ws();
+            let val = self.read_attr_value()?;
+            attrs.push((attr_name, val));
+        }
+    }
+
+    fn read_close_tag(&mut self, expected: &str) -> Result<(), String> {
+        if !self.starts_with("</") {
+            return Err(format!("expected </{expected}> at byte {}", self.pos));
+        }
+        self.pos += 2;
+        let actual = self.read_name()?;
+        self.skip_ws();
+        if !self.starts_with(">") {
+            return Err(format!("unclosed </{actual}>"));
+        }
+        self.pos += 1;
+        if actual != expected {
+            return Err(format!("mismatched closing tag </{actual}> (expected </{expected}>)"));
+        }
+        Ok(())
+    }
+
+    fn read_text_body(&mut self, expected: &str) -> Result<String, String> {
+        let mut out = String::new();
+        loop {
+            if self.is_eof() {
+                return Err(format!("unclosed <{expected}>"));
+            }
+            if self.starts_with("</") {
+                self.read_close_tag(expected)?;
+                return Ok(out);
+            }
+            if self.starts_with("<![CDATA[") {
+                self.pos += 9;
+                let end = self
+                    .remaining()
+                    .find("]]>")
+                    .ok_or_else(|| format!("unclosed CDATA in <{expected}>"))?;
+                out.push_str(&self.remaining()[..end]);
+                self.pos += end + 3;
+                continue;
+            }
+            if self.starts_with("<!--") {
+                let end = self
+                    .remaining()
+                    .find("-->")
+                    .ok_or_else(|| "unclosed XML comment".to_string())?;
+                self.pos += end + 3;
+                continue;
+            }
+            if self.starts_with("<!") {
+                return Err("XML DOCTYPE/ENTITY declarations are forbidden (XXE protection)".to_string());
+            }
+            if self.starts_with("<") {
+                return Err(format!("unexpected element inside <{expected}>"));
+            }
+            let next_lt = self.remaining().find('<').unwrap_or(self.remaining().len());
+            out.push_str(&prefab_xml_unescape(&self.remaining()[..next_lt]));
+            self.pos += next_lt;
+        }
+    }
+
+    fn skip_element_body(&mut self, expected: &str, depth: usize) -> Result<(), String> {
+        if depth > MAX_PREFAB_XML_DEPTH {
+            return Err(format!("XML nesting exceeds maximum depth {MAX_PREFAB_XML_DEPTH}"));
+        }
+        loop {
+            self.skip_misc()?;
+            if self.is_eof() {
+                return Err(format!("unclosed <{expected}>"));
+            }
+            if self.starts_with("</") {
+                self.read_close_tag(expected)?;
+                return Ok(());
+            }
+            if self.starts_with("<![CDATA[") {
+                self.pos += 9;
+                let end = self
+                    .remaining()
+                    .find("]]>")
+                    .ok_or_else(|| "unclosed CDATA".to_string())?;
+                self.pos += end + 3;
+                continue;
+            }
+            if self.starts_with("<") {
+                let (tag, _, sc) = self.read_open_tag()?;
+                if !sc {
+                    self.skip_element_body(&tag, depth + 1)?;
+                }
+                continue;
+            }
+            let next_lt = self.remaining().find('<').unwrap_or(self.remaining().len());
+            self.pos += next_lt;
+        }
+    }
+
+    fn read_numeric_fields(&mut self, parent: &str, depth: usize) -> Result<BTreeMap<String, f64>, String> {
+        if depth > MAX_PREFAB_XML_DEPTH {
+            return Err(format!("XML nesting exceeds maximum depth {MAX_PREFAB_XML_DEPTH}"));
+        }
+        let mut fields = BTreeMap::new();
+        loop {
+            self.skip_misc()?;
+            if self.is_eof() {
+                return Err(format!("unclosed <{parent}>"));
+            }
+            if self.starts_with("</") {
+                self.read_close_tag(parent)?;
+                return Ok(fields);
+            }
+            let (tag, _, sc) = self.read_open_tag()?;
+            let text = if sc { String::new() } else { self.read_text_body(&tag)? };
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                let v = trimmed
+                    .parse::<f64>()
+                    .map_err(|_| format!("invalid number '{trimmed}' in <{parent}><{tag}>"))?;
+                if !v.is_finite() {
+                    return Err(format!("non-finite number in <{parent}><{tag}>"));
+                }
+                fields.insert(tag, v);
+            }
+        }
+    }
+
+    fn read_content_url(&mut self, depth: usize) -> Result<String, String> {
+        if depth > MAX_PREFAB_XML_DEPTH {
+            return Err(format!("XML nesting exceeds maximum depth {MAX_PREFAB_XML_DEPTH}"));
+        }
+        let mut url = String::new();
+        loop {
+            self.skip_misc()?;
+            if self.is_eof() {
+                return Err("unclosed <Content>".to_string());
+            }
+            if self.starts_with("</") {
+                self.read_close_tag("Content")?;
+                return Ok(url);
+            }
+            if self.starts_with("<") {
+                let (tag, _, sc) = self.read_open_tag()?;
+                if !sc {
+                    if tag == "url" || tag == "uri" {
+                        url = self.read_text_body(&tag)?;
+                    } else {
+                        self.skip_element_body(&tag, depth + 1)?;
+                    }
+                }
+                continue;
+            }
+            let next_lt = self.remaining().find('<').unwrap_or(self.remaining().len());
+            let t = prefab_xml_unescape(self.remaining()[..next_lt].trim());
+            if !t.is_empty() && url.is_empty() {
+                url = t;
+            }
+            self.pos += next_lt;
+        }
+    }
+
+    fn parse_properties(&mut self, depth: usize) -> Result<ParsedPrefabProps, String> {
+        if depth > MAX_PREFAB_XML_DEPTH {
+            return Err(format!("XML nesting exceeds maximum depth {MAX_PREFAB_XML_DEPTH}"));
+        }
+        let mut item_name: Option<String> = None;
+        let mut source: Option<String> = None;
+        let mut props: BTreeMap<String, Value> = BTreeMap::new();
+        loop {
+            self.skip_misc()?;
+            if self.is_eof() {
+                return Err("unclosed <Properties>".to_string());
+            }
+            if self.starts_with("</") {
+                self.read_close_tag("Properties")?;
+                return Ok((item_name, source, props));
+            }
+            let (tag, attrs, sc) = self.read_open_tag()?;
+            let prop_name = attrs
+                .iter()
+                .find(|(k, _)| k == "name")
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            if sc {
+                if tag == "ProtectedString" && prop_name == "Source" {
+                    source = Some(String::new());
+                } else if tag == "string" && prop_name == "Name" {
+                    item_name = Some(String::new());
+                }
+                continue;
+            }
+            match tag.as_str() {
+                "string" => {
+                    let val = self.read_text_body(&tag)?;
+                    if prop_name == "Name" {
+                        item_name = Some(val);
+                    } else if !prop_name.is_empty() {
+                        props.insert(prop_name, Value::String(val));
+                    }
+                }
+                "ProtectedString" => {
+                    let val = self.read_text_body(&tag)?;
+                    if prop_name == "Source" {
+                        source = Some(val);
+                    } else if !prop_name.is_empty() {
+                        props.insert(prop_name, Value::String(val));
+                    }
+                }
+                "bool" => {
+                    let raw = self.read_text_body(&tag)?;
+                    let b = match raw.trim() {
+                        "true" => true,
+                        "false" => false,
+                        other => return Err(format!("invalid bool '{other}' for '{prop_name}'")),
+                    };
+                    if !prop_name.is_empty() {
+                        props.insert(prop_name, Value::Bool(b));
+                    }
+                }
+                "int" | "int64" => {
+                    let raw = self.read_text_body(&tag)?;
+                    let n = raw
+                        .trim()
+                        .parse::<i64>()
+                        .map_err(|_| format!("invalid integer for '{prop_name}'"))?;
+                    if !prop_name.is_empty() {
+                        props.insert(prop_name, json!(n));
+                    }
+                }
+                "float" | "double" => {
+                    let raw = self.read_text_body(&tag)?;
+                    let f = raw
+                        .trim()
+                        .parse::<f64>()
+                        .map_err(|_| format!("invalid float for '{prop_name}'"))?;
+                    if !f.is_finite() {
+                        return Err(format!("non-finite float for '{prop_name}'"));
+                    }
+                    if !prop_name.is_empty() {
+                        props.insert(prop_name, json!(f));
+                    }
+                }
+                "token" => {
+                    let raw = self.read_text_body(&tag)?;
+                    let tok = raw
+                        .trim()
+                        .parse::<u32>()
+                        .map_err(|_| format!("invalid token for '{prop_name}'"))?;
+                    if prop_name == "Material" {
+                        if let Some(m) = token_to_material_name(tok) {
+                            props.insert("Material".into(), json!(m));
+                        } else {
+                            props.insert("Material".into(), json!(tok));
+                        }
+                    } else if prop_name == "shape" || prop_name == "Shape" {
+                        let s = match tok {
+                            0 => Some("Ball"),
+                            1 => Some("Block"),
+                            2 => Some("Cylinder"),
+                            3 => Some("Wedge"),
+                            4 => Some("CornerWedge"),
+                            _ => None,
+                        };
+                        if let Some(sh) = s {
+                            props.insert("Shape".into(), json!(sh));
+                        } else {
+                            props.insert("Shape".into(), json!(tok));
+                        }
+                    } else if !prop_name.is_empty() {
+                        props.insert(prop_name, json!(tok));
+                    }
+                }
+                "Content" => {
+                    let url = self.read_content_url(depth + 1)?;
+                    if !prop_name.is_empty() {
+                        props.insert(prop_name, Value::String(url));
+                    }
+                }
+                "Color3uint8" => {
+                    let raw = self.read_text_body(&tag)?;
+                    let c = raw
+                        .trim()
+                        .parse::<u32>()
+                        .map_err(|_| format!("invalid Color3uint8 for '{prop_name}'"))?;
+                    let r = ((c >> 16) & 0xFF) as f64 / 255.0;
+                    let g = ((c >> 8) & 0xFF) as f64 / 255.0;
+                    let b = (c & 0xFF) as f64 / 255.0;
+                    let round4 = |x: f64| (x * 10_000.0).round() / 10_000.0;
+                    props.insert("Color".into(), json!([round4(r), round4(g), round4(b)]));
+                }
+                "Color3" => {
+                    let fields = self.read_numeric_fields(&tag, depth + 1)?;
+                    let round4 = |x: f64| (x.clamp(0.0, 1.0) * 10_000.0).round() / 10_000.0;
+                    let r = round4(fields.get("R").copied().unwrap_or(0.0));
+                    let g = round4(fields.get("G").copied().unwrap_or(0.0));
+                    let b = round4(fields.get("B").copied().unwrap_or(0.0));
+                    let key = if prop_name == "Color3" || prop_name.is_empty() {
+                        "Color".to_string()
+                    } else {
+                        prop_name
+                    };
+                    props.insert(key, json!([r, g, b]));
+                }
+                "Vector3" => {
+                    let fields = self.read_numeric_fields(&tag, depth + 1)?;
+                    let key = if prop_name == "size" { "Size".to_string() } else { prop_name };
+                    if !key.is_empty() {
+                        props.insert(
+                            key,
+                            json!([
+                                fields.get("X").copied().unwrap_or(0.0),
+                                fields.get("Y").copied().unwrap_or(0.0),
+                                fields.get("Z").copied().unwrap_or(0.0),
+                            ]),
+                        );
+                    }
+                }
+                "Vector2" => {
+                    let fields = self.read_numeric_fields(&tag, depth + 1)?;
+                    if !prop_name.is_empty() {
+                        props.insert(
+                            prop_name,
+                            json!([
+                                fields.get("X").copied().unwrap_or(0.0),
+                                fields.get("Y").copied().unwrap_or(0.0),
+                            ]),
+                        );
+                    }
+                }
+                "UDim2" => {
+                    let fields = self.read_numeric_fields(&tag, depth + 1)?;
+                    if !prop_name.is_empty() {
+                        props.insert(
+                            prop_name,
+                            json!({
+                                "UDim2": [
+                                    [fields.get("XS").copied().unwrap_or(0.0), fields.get("XO").copied().unwrap_or(0.0)],
+                                    [fields.get("YS").copied().unwrap_or(0.0), fields.get("YO").copied().unwrap_or(0.0)],
+                                ]
+                            }),
+                        );
+                    }
+                }
+                "UDim" => {
+                    let fields = self.read_numeric_fields(&tag, depth + 1)?;
+                    if !prop_name.is_empty() {
+                        props.insert(
+                            prop_name,
+                            json!({
+                                "UDim": [
+                                    fields.get("S").copied().unwrap_or(0.0),
+                                    fields.get("O").copied().unwrap_or(0.0),
+                                ]
+                            }),
+                        );
+                    }
+                }
+                "CoordinateFrame" => {
+                    let fields = self.read_numeric_fields(&tag, depth + 1)?;
+                    let cf = [
+                        fields.get("X").copied().unwrap_or(0.0),
+                        fields.get("Y").copied().unwrap_or(0.0),
+                        fields.get("Z").copied().unwrap_or(0.0),
+                        fields.get("R00").copied().unwrap_or(1.0),
+                        fields.get("R01").copied().unwrap_or(0.0),
+                        fields.get("R02").copied().unwrap_or(0.0),
+                        fields.get("R10").copied().unwrap_or(0.0),
+                        fields.get("R11").copied().unwrap_or(1.0),
+                        fields.get("R12").copied().unwrap_or(0.0),
+                        fields.get("R20").copied().unwrap_or(0.0),
+                        fields.get("R21").copied().unwrap_or(0.0),
+                        fields.get("R22").copied().unwrap_or(1.0),
+                    ];
+                    if !prop_name.is_empty() {
+                        props.insert(prop_name, crate::scene::cframe_to_rojo_json(cf));
+                    }
+                }
+                _ => {
+                    self.skip_element_body(&tag, depth + 1)?;
+                }
+            }
+        }
+    }
+
+    fn parse_item(
+        &mut self,
+        attrs: &[(String, String)],
+        self_closing: bool,
+        depth: usize,
+    ) -> Result<ImportedNode, String> {
+        if depth > MAX_PREFAB_XML_DEPTH {
+            return Err(format!("XML nesting exceeds maximum depth {MAX_PREFAB_XML_DEPTH}"));
+        }
+        self.items_seen += 1;
+        if self.items_seen > MAX_PREFAB_XML_ITEMS {
+            return Err(format!("XML exceeds maximum item count ({MAX_PREFAB_XML_ITEMS})"));
+        }
+        let class_name = attrs
+            .iter()
+            .find(|(k, _)| k == "class")
+            .map(|(_, v)| v.clone())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "Item element missing 'class' attribute".to_string())?;
+        let mut node = ImportedNode {
+            class_name: class_name.clone(),
+            name: class_name,
+            properties: BTreeMap::new(),
+            source: None,
+            children: Vec::new(),
+        };
+        if self_closing {
+            return Ok(node);
+        }
+        loop {
+            self.skip_misc()?;
+            if self.is_eof() {
+                return Err(format!("unclosed <Item class=\"{}\">", node.class_name));
+            }
+            if self.starts_with("</") {
+                self.read_close_tag("Item")?;
+                return Ok(node);
+            }
+            let (tag, child_attrs, sc) = self.read_open_tag()?;
+            if tag == "Properties" {
+                if !sc {
+                    let (n, src, props) = self.parse_properties(depth + 1)?;
+                    if let Some(name) = n.filter(|s| !s.trim().is_empty()) {
+                        node.name = name;
+                    }
+                    if src.is_some() {
+                        node.source = src;
+                    }
+                    node.properties.extend(props);
+                }
+            } else if tag == "Item" {
+                node.children.push(self.parse_item(&child_attrs, sc, depth + 1)?);
+            } else if !sc {
+                self.skip_element_body(&tag, depth + 1)?;
+            }
+        }
+    }
+}
+
+fn token_to_material_name(tok: u32) -> Option<&'static str> {
+    Some(match tok {
+        256 => "Plastic",
+        272 => "SmoothPlastic",
+        288 => "Neon",
+        512 => "Wood",
+        528 => "WoodPlanks",
+        784 => "Marble",
+        800 => "Slate",
+        816 => "Concrete",
+        832 => "Granite",
+        848 => "Brick",
+        864 => "Pebble",
+        880 => "Cobblestone",
+        896 => "Rock",
+        912 => "Sandstone",
+        1040 => "Metal",
+        1056 => "CorrodedMetal",
+        1072 => "DiamondPlate",
+        1088 => "Foil",
+        1280 => "Grass",
+        1296 => "Sand",
+        1312 => "Fabric",
+        1328 => "Snow",
+        1344 => "Mud",
+        1360 => "Ground",
+        1376 => "Asphalt",
+        1536 => "Ice",
+        1568 => "Glass",
+        1584 => "ForceField",
+        _ => return None,
+    })
+}
+
+fn parse_prefab_xml_items(bytes: &[u8]) -> Result<Vec<ImportedNode>, String> {
+    if bytes.len() > MAX_PREFAB_BYTES {
+        return Err(format!("XML exceeds {MAX_PREFAB_BYTES} byte limit"));
+    }
+    if bytes.contains(&0) {
+        return Err("XML payload must not contain NUL bytes".to_string());
+    }
+    let xml = std::str::from_utf8(bytes).map_err(|_| "XML payload is not valid UTF-8".to_string())?;
+    let upper = xml.to_ascii_uppercase();
+    if upper.contains("<!DOCTYPE") || upper.contains("<!ENTITY") {
+        return Err("XML DOCTYPE/ENTITY declarations are forbidden (XXE protection)".to_string());
+    }
+    if xml.trim().is_empty() {
+        return Err("empty XML document".to_string());
+    }
+    let mut parser = PrefabXmlParser::new(xml);
+    parser.skip_misc()?;
+    if parser.is_eof() {
+        return Err("empty XML document".to_string());
+    }
+    let (root_tag, _, root_sc) = parser.read_open_tag()?;
+    if root_tag != "roblox" {
+        return Err(format!("expected <roblox> root element, found <{root_tag}>"));
+    }
+    let mut roots = Vec::new();
+    if !root_sc {
+        loop {
+            parser.skip_misc()?;
+            if parser.is_eof() {
+                return Err("unclosed <roblox> root element".to_string());
+            }
+            if parser.starts_with("</") {
+                parser.read_close_tag("roblox")?;
+                break;
+            }
+            let (tag, attrs, sc) = parser.read_open_tag()?;
+            if tag == "Item" {
+                roots.push(parser.parse_item(&attrs, sc, 1)?);
+            } else if !sc {
+                parser.skip_element_body(&tag, 1)?;
+            }
+        }
+    }
+    parser.skip_misc()?;
+    if !parser.is_eof() {
+        return Err("unexpected trailing content after </roblox>".to_string());
+    }
+    Ok(roots)
+}
+
+fn decompress_lz4_block(src: &[u8], expected_len: usize) -> Result<Vec<u8>, String> {
+    if expected_len > MAX_PREFAB_BYTES {
+        return Err("rbxm chunk exceeds 16 MiB limit".to_string());
+    }
+    let mut out = Vec::with_capacity(expected_len);
+    let mut i = 0usize;
+    while i < src.len() {
+        let token = src[i];
+        i += 1;
+        let mut lit_len = (token >> 4) as usize;
+        if lit_len == 15 {
+            loop {
+                let b = *src.get(i).ok_or("corrupt rbxm LZ4 literal length")?;
+                i += 1;
+                lit_len = lit_len.checked_add(b as usize).ok_or("rbxm LZ4 overflow")?;
+                if b != 255 {
+                    break;
+                }
+            }
+        }
+        let end_lit = i.checked_add(lit_len).ok_or("rbxm LZ4 overflow")?;
+        let slice = src.get(i..end_lit).ok_or("corrupt rbxm LZ4 literal slice")?;
+        if out.len().saturating_add(slice.len()) > expected_len {
+            return Err("corrupt rbxm LZ4 output overflow".to_string());
+        }
+        out.extend_from_slice(slice);
+        i = end_lit;
+        if i >= src.len() {
+            break;
+        }
+        let off_lo = *src.get(i).ok_or("corrupt rbxm LZ4 offset")? as usize;
+        let off_hi = *src.get(i + 1).ok_or("corrupt rbxm LZ4 offset")? as usize;
+        i += 2;
+        let offset = off_lo | (off_hi << 8);
+        if offset == 0 || offset > out.len() {
+            return Err("corrupt rbxm LZ4 match offset".to_string());
+        }
+        let mut match_len = ((token & 0x0F) as usize) + 4;
+        if (token & 0x0F) == 15 {
+            loop {
+                let b = *src.get(i).ok_or("corrupt rbxm LZ4 match length")?;
+                i += 1;
+                match_len = match_len.checked_add(b as usize).ok_or("rbxm LZ4 overflow")?;
+                if b != 255 {
+                    break;
+                }
+            }
+        }
+        if out.len().saturating_add(match_len) > expected_len {
+            return Err("corrupt rbxm LZ4 match overflow".to_string());
+        }
+        for _ in 0..match_len {
+            let idx = out.len() - offset;
+            let byte = out[idx];
+            out.push(byte);
+        }
+    }
+    if out.len() != expected_len {
+        return Err("corrupt rbxm LZ4 length mismatch".to_string());
+    }
+    Ok(out)
+}
+
+fn read_u32_le(bytes: &[u8], off: &mut usize) -> Result<u32, String> {
+    let slice = bytes
+        .get(*off..*off + 4)
+        .ok_or_else(|| "unexpected EOF in binary rbxm".to_string())?;
+    *off += 4;
+    Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+fn read_rbxm_referents(bytes: &[u8], off: &mut usize, count: usize) -> Result<Vec<i32>, String> {
+    let need = count.checked_mul(4).ok_or("rbxm referent count overflow")?;
+    let slice = bytes
+        .get(*off..*off + need)
+        .ok_or_else(|| "truncated rbxm referent array".to_string())?;
+    *off += need;
+    let mut out = Vec::with_capacity(count);
+    let mut acc: i32 = 0;
+    for i in 0..count {
+        let u = u32::from_be_bytes([
+            slice[i],
+            slice[count + i],
+            slice[2 * count + i],
+            slice[3 * count + i],
+        ]);
+        let signed = ((u >> 1) as i32) ^ (-((u & 1) as i32));
+        acc = acc.wrapping_add(signed);
+        out.push(acc);
+    }
+    Ok(out)
+}
+
+fn parse_rbxm_binary(bytes: &[u8], fallback_name: &str) -> Result<(Vec<ImportedNode>, Vec<String>), String> {
+    const ROBLOX_BIN_MAGIC: &[u8; 14] = b"<roblox!\x89\xff\x0d\x0a\x1a\x0a";
+    if bytes.len() < 32 {
+        return Err("invalid .rbxm binary: header smaller than 32 bytes".to_string());
+    }
+    if bytes.get(..14) != Some(ROBLOX_BIN_MAGIC.as_slice()) {
+        if bytes.starts_with(b"<roblox") {
+            return Err("file looks like XML (.rbxmx/.rbxlx), not binary .rbxm".to_string());
+        }
+        return Err("invalid .rbxm binary: missing <roblox! binary signature".to_string());
+    }
+    let version = u16::from_le_bytes([bytes[14], bytes[15]]);
+    if version > 1 {
+        return Err(format!("unsupported .rbxm binary version {version}"));
+    }
+    let class_count = u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let inst_count = u32::from_le_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    if class_count > 100_000 || inst_count > 100_000 {
+        return Err("invalid .rbxm header: class/instance count exceeds bounds".to_string());
+    }
+
+    let mut pos = 32usize;
+    let mut warnings = Vec::new();
+    let mut zstd_seen = false;
+    let mut classes: BTreeMap<u32, (String, Vec<i32>)> = BTreeMap::new();
+    let mut nodes: BTreeMap<i32, ImportedNode> = BTreeMap::new();
+    let mut parent_links: Vec<(i32, i32)> = Vec::new();
+
+    while pos < bytes.len() {
+        if bytes.len() - pos < 16 {
+            return Err("corrupt .rbxm binary: truncated chunk header".to_string());
+        }
+        let tag = &bytes[pos..pos + 4];
+        let comp_len = u32::from_le_bytes([bytes[pos + 4], bytes[pos + 5], bytes[pos + 6], bytes[pos + 7]]) as usize;
+        let uncomp_len = u32::from_le_bytes([bytes[pos + 8], bytes[pos + 9], bytes[pos + 10], bytes[pos + 11]]) as usize;
+        pos += 16;
+
+        let payload_len = if comp_len == 0 { uncomp_len } else { comp_len };
+        if payload_len > MAX_PREFAB_BYTES || uncomp_len > MAX_PREFAB_BYTES {
+            return Err("corrupt .rbxm binary: chunk size exceeds 16 MiB".to_string());
+        }
+        let next_pos = pos
+            .checked_add(payload_len)
+            .ok_or_else(|| "corrupt .rbxm binary: chunk length overflow".to_string())?;
+        if next_pos > bytes.len() {
+            return Err("corrupt .rbxm binary: chunk extends past EOF".to_string());
+        }
+        let raw_payload = &bytes[pos..next_pos];
+        pos = next_pos;
+
+        if tag == b"END\0" {
+            break;
+        }
+        let data_buf: Vec<u8>;
+        let payload: &[u8] = if comp_len == 0 {
+            raw_payload
+        } else if raw_payload.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]) {
+            zstd_seen = true;
+            continue;
+        } else {
+            data_buf = decompress_lz4_block(raw_payload, uncomp_len)?;
+            &data_buf
+        };
+
+        if tag == b"INST" {
+            let mut off = 0usize;
+            let cid = read_u32_le(payload, &mut off)?;
+            let cname_len = read_u32_le(payload, &mut off)? as usize;
+            let cname_end = off.checked_add(cname_len).ok_or("corrupt INST class name")?;
+            let cname_bytes = payload.get(off..cname_end).ok_or("truncated INST class name")?;
+            let cname = std::str::from_utf8(cname_bytes)
+                .map_err(|_| "non-UTF8 INST class name".to_string())?
+                .to_string();
+            off = cname_end;
+            let _obj_fmt = *payload.get(off).ok_or("truncated INST format byte")?;
+            off += 1;
+            let count = read_u32_le(payload, &mut off)? as usize;
+            if count > 100_000 {
+                return Err("INST instance count exceeds limit".to_string());
+            }
+            let refs = read_rbxm_referents(payload, &mut off, count)?;
+            for &r in &refs {
+                nodes.insert(
+                    r,
+                    ImportedNode {
+                        class_name: cname.clone(),
+                        name: cname.clone(),
+                        properties: BTreeMap::new(),
+                        source: None,
+                        children: Vec::new(),
+                    },
+                );
+            }
+            classes.insert(cid, (cname, refs));
+        } else if tag == b"PROP" {
+            let mut off = 0usize;
+            let cid = read_u32_le(payload, &mut off)?;
+            let pname_len = read_u32_le(payload, &mut off)? as usize;
+            let pname_end = off.checked_add(pname_len).ok_or("corrupt PROP name")?;
+            let pname_bytes = payload.get(off..pname_end).ok_or("truncated PROP name")?;
+            let pname = std::str::from_utf8(pname_bytes)
+                .map_err(|_| "non-UTF8 PROP name".to_string())?
+                .to_string();
+            off = pname_end;
+            let type_id = *payload.get(off).ok_or("truncated PROP type id")?;
+            off += 1;
+            if let Some((_cname, refs)) = classes.get(&cid) {
+                let count = refs.len();
+                match type_id {
+                    0x01 => {
+                        for &r in refs {
+                            let slen = read_u32_le(payload, &mut off)? as usize;
+                            let send = off.checked_add(slen).ok_or("corrupt PROP string")?;
+                            let sbytes = payload.get(off..send).ok_or("truncated PROP string")?;
+                            off = send;
+                            let val = String::from_utf8_lossy(sbytes).into_owned();
+                            if let Some(node) = nodes.get_mut(&r) {
+                                if pname == "Name" && !val.trim().is_empty() {
+                                    node.name = val;
+                                } else if pname == "Source" {
+                                    node.source = Some(val);
+                                } else {
+                                    node.properties.insert(pname.clone(), Value::String(val));
+                                }
+                            }
+                        }
+                    }
+                    0x02 => {
+                        let bslice = payload.get(off..off + count).ok_or("truncated PROP bools")?;
+                        for (idx, &r) in refs.iter().enumerate() {
+                            if let Some(node) = nodes.get_mut(&r) {
+                                node.properties.insert(pname.clone(), Value::Bool(bslice[idx] != 0));
+                            }
+                        }
+                    }
+                    0x03 => {
+                        let need = count.checked_mul(4).ok_or("PROP int overflow")?;
+                        let slice = payload.get(off..off + need).ok_or("truncated PROP ints")?;
+                        for (idx, &r) in refs.iter().enumerate() {
+                            let u = u32::from_be_bytes([
+                                slice[idx],
+                                slice[count + idx],
+                                slice[2 * count + idx],
+                                slice[3 * count + idx],
+                            ]);
+                            let v = ((u >> 1) as i32) ^ (-((u & 1) as i32));
+                            if let Some(node) = nodes.get_mut(&r) {
+                                node.properties.insert(pname.clone(), json!(v));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        } else if tag == b"PRNT" {
+            let mut off = 0usize;
+            let _ver = *payload.get(off).ok_or("truncated PRNT version")?;
+            off += 1;
+            let count = read_u32_le(payload, &mut off)? as usize;
+            if count > 100_000 {
+                return Err("PRNT count exceeds limit".to_string());
+            }
+            let child_refs = read_rbxm_referents(payload, &mut off, count)?;
+            let parent_refs = read_rbxm_referents(payload, &mut off, count)?;
+            for (c, p) in child_refs.into_iter().zip(parent_refs.into_iter()) {
+                parent_links.push((c, p));
+            }
+        }
+    }
+
+    if zstd_seen && nodes.is_empty() {
+        warnings.push(
+            "Binary .rbxm uses Zstd-compressed chunks; validated header and created placeholder Model container (re-export as .rbxmx in Studio for full property extraction)."
+                .to_string(),
+        );
+    }
+
+    if nodes.is_empty() {
+        if !zstd_seen && inst_count == 0 {
+            warnings.push(
+                "Binary .rbxm header contained 0 instances; created empty Model container."
+                    .to_string(),
+            );
+        }
+        return Ok((
+            vec![ImportedNode {
+                class_name: "Model".to_string(),
+                name: fallback_name.to_string(),
+                properties: BTreeMap::new(),
+                source: None,
+                children: Vec::new(),
+            }],
+            warnings,
+        ));
+    }
+
+    let mut child_map: BTreeMap<i32, Vec<i32>> = BTreeMap::new();
+    let mut root_refs: Vec<i32> = Vec::new();
+    for (c, p) in parent_links {
+        if p < 0 || !nodes.contains_key(&p) {
+            root_refs.push(c);
+        } else {
+            child_map.entry(p).or_default().push(c);
+        }
+    }
+    if root_refs.is_empty() {
+        root_refs = nodes.keys().copied().collect();
+    }
+
+    fn build_subtree(
+        id: i32,
+        nodes: &mut BTreeMap<i32, ImportedNode>,
+        child_map: &BTreeMap<i32, Vec<i32>>,
+        depth: usize,
+    ) -> Option<ImportedNode> {
+        if depth > MAX_PREFAB_XML_DEPTH {
+            return None;
+        }
+        let mut node = nodes.remove(&id)?;
+        if let Some(kids) = child_map.get(&id) {
+            for &kid in kids {
+                if let Some(child) = build_subtree(kid, nodes, child_map, depth + 1) {
+                    node.children.push(child);
+                }
+            }
+        }
+        Some(node)
+    }
+
+    let mut roots = Vec::new();
+    for r in root_refs {
+        if let Some(tree) = build_subtree(r, &mut nodes, &child_map, 0) {
+            roots.push(tree);
+        }
+    }
+    Ok((roots, warnings))
+}
+
+fn decompose_imported_node(
+    node: &ImportedNode,
+    ctx: &mut DecomposeCtx<'_>,
+    rel_segs: &[String],
+    depth: usize,
+) -> Result<Option<Value>, String> {
+    let safe_name = sanitize_prefab_node_name(&node.name, &node.class_name);
+    if is_script_class(&node.class_name) {
+        let suffix = match node.class_name.as_str() {
+            "Script" => ".server.luau",
+            "LocalScript" => ".client.luau",
+            _ => ".luau",
+        };
+        let parent_dir = if rel_segs.is_empty() {
+            format!("src/prefabs/{}", ctx.slug_name)
+        } else {
+            format!("src/prefabs/{}/{}", ctx.slug_name, rel_segs.join("/"))
+        };
+        let file_stem = slug(&safe_name);
+        let file_stem = if file_stem.is_empty() { "Script".to_string() } else { safe_name.clone() };
+        let mut candidate = format!("{parent_dir}/{file_stem}{suffix}");
+        let mut counter = 2usize;
+        while ctx.used_script_paths.contains(&candidate) {
+            candidate = format!("{parent_dir}/{file_stem}_{counter}{suffix}");
+            counter += 1;
+        }
+        ctx.used_script_paths.insert(candidate.clone());
+        let src = node.source.as_deref().unwrap_or("");
+        prefab_write_atomic(ctx.dir, &candidate, src)?;
+        ctx.extracted_scripts.push(candidate.clone());
+        if depth == 1 {
+            ctx.direct_root_scripts.push((safe_name, candidate));
+        } else {
+            ctx.deep_scripts
+                .push((node.class_name.clone(), safe_name, candidate));
+        }
+        return Ok(None);
+    }
+
+    let mut next_segs = rel_segs.to_vec();
+    if depth > 0 {
+        next_segs.push(safe_name.clone());
+    }
+    let mut children_json = Vec::new();
+    for child in &node.children {
+        if let Some(child_val) = decompose_imported_node(child, ctx, &next_segs, depth + 1)? {
+            children_json.push(child_val);
+        }
+    }
+    let props_map: serde_json::Map<String, Value> = node
+        .properties
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    Ok(Some(json!({
+        "className": node.class_name,
+        "name": safe_name,
+        "properties": Value::Object(props_map),
+        "children": children_json,
+    })))
+}
+
+/// Import a `.rbxmx`, `.rbxm`, or `.rbxlx` prefab payload (base64, <= 16 MiB),
+/// decomposing its hierarchy into `scene/models/<slug>.model.json` and extracted
+/// `.luau` scripts, and wiring them into `default.project.json`.
+pub fn import_prefab_model(
+    dir: &Path,
+    file_name: &str,
+    format: &str,
+    bytes_base64: &str,
+    target_service: Option<&str>,
+) -> Result<Value, String> {
+    let raw_fname = file_name.trim();
+    if raw_fname.is_empty()
+        || raw_fname.contains('\0')
+        || raw_fname.contains("..")
+        || raw_fname.chars().any(|c| c.is_control())
+    {
+        return Err("invalid file_name (path traversal or control characters forbidden)".into());
+    }
+    let base_name = raw_fname.rsplit(['/', '\\']).next().unwrap_or(raw_fname);
+    let stem = base_name
+        .strip_suffix(".rbxmx")
+        .or_else(|| base_name.strip_suffix(".rbxm"))
+        .or_else(|| base_name.strip_suffix(".rbxlx"))
+        .or_else(|| base_name.strip_suffix(".RBXMX"))
+        .or_else(|| base_name.strip_suffix(".RBXM"))
+        .or_else(|| base_name.strip_suffix(".RBXLX"))
+        .unwrap_or(base_name);
+    let model_slug = slug(stem);
+    if model_slug.is_empty() {
+        return Err("file_name must contain alphanumeric characters".into());
+    }
+
+    let fmt = format.trim().to_ascii_lowercase();
+    if !matches!(fmt.as_str(), "rbxmx" | "rbxm" | "rbxlx") {
+        return Err(format!("unsupported format '{format}': expected rbxmx, rbxm, or rbxlx"));
+    }
+
+    let wired_service = target_service
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Workspace");
+    if !ALLOWED_PREFAB_SERVICES.contains(&wired_service) {
+        return Err(format!("invalid target_service '{wired_service}'"));
+    }
+
+    let b64_clean = bytes_base64
+        .trim()
+        .split_once(";base64,")
+        .map(|(_, rest)| rest)
+        .unwrap_or(bytes_base64.trim());
+    if b64_clean.is_empty() {
+        return Err("bytes_base64 must not be empty".into());
+    }
+    // Quick pre-decode upper bound check (~22.4 MB base64 for 16 MiB binary)
+    let non_ws_len = b64_clean.bytes().filter(|b| !b.is_ascii_whitespace()).count();
+    if (non_ws_len / 4) * 3 > MAX_PREFAB_BYTES + 3 {
+        return Err(format!("decoded prefab exceeds {MAX_PREFAB_BYTES} byte (16 MiB) limit"));
+    }
+    let decoded = crate::assets::decode_base64(b64_clean)?;
+    if decoded.is_empty() {
+        return Err("decoded prefab payload is empty".into());
+    }
+    if decoded.len() > MAX_PREFAB_BYTES {
+        return Err(format!("decoded prefab exceeds {MAX_PREFAB_BYTES} byte (16 MiB) limit"));
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+    let display_name = sanitize_prefab_node_name(stem, &model_slug);
+
+    let root_node = match fmt.as_str() {
+        "rbxmx" => {
+            let roots = parse_prefab_xml_items(&decoded)?;
+            if roots.is_empty() {
+                warnings.push("XML .rbxmx contained no <Item> elements; created empty Model.".into());
+                ImportedNode {
+                    class_name: "Model".into(),
+                    name: display_name.clone(),
+                    properties: BTreeMap::new(),
+                    source: None,
+                    children: Vec::new(),
+                }
+            } else if roots.len() == 1 {
+                roots.into_iter().next().unwrap()
+            } else {
+                ImportedNode {
+                    class_name: "Model".into(),
+                    name: display_name.clone(),
+                    properties: BTreeMap::new(),
+                    source: None,
+                    children: roots,
+                }
+            }
+        }
+        "rbxlx" => {
+            let roots = parse_prefab_xml_items(&decoded)?;
+            let mut target_children = Vec::new();
+            let mut extra_scripts = Vec::new();
+            for r in roots {
+                if r.class_name == wired_service || r.name == wired_service {
+                    target_children.extend(r.children);
+                } else if ALLOWED_PREFAB_SERVICES.contains(&r.class_name.as_str()) {
+                    fn collect_svc_scripts(n: &ImportedNode, out: &mut Vec<ImportedNode>) {
+                        if is_script_class(&n.class_name) {
+                            out.push(n.clone());
+                        } else {
+                            for c in &n.children {
+                                collect_svc_scripts(c, out);
+                            }
+                        }
+                    }
+                    collect_svc_scripts(&r, &mut extra_scripts);
+                    if !r.children.is_empty() && r.class_name != "ServerScriptService" && r.class_name != "StarterPlayer" && r.class_name != "ReplicatedStorage" {
+                        target_children.extend(r.children);
+                    }
+                } else {
+                    target_children.push(r);
+                }
+            }
+            if !extra_scripts.is_empty() {
+                warnings.push(format!(
+                    "Extracted {} script(s) from non-{wired_service} services in .rbxlx.",
+                    extra_scripts.len()
+                ));
+                target_children.extend(extra_scripts);
+            }
+            ImportedNode {
+                class_name: "Model".into(),
+                name: display_name.clone(),
+                properties: BTreeMap::new(),
+                source: None,
+                children: target_children,
+            }
+        }
+        "rbxm" => {
+            let (roots, rbxm_warnings) = parse_rbxm_binary(&decoded, &display_name)?;
+            warnings.extend(rbxm_warnings);
+            if roots.len() == 1 {
+                roots.into_iter().next().unwrap()
+            } else {
+                ImportedNode {
+                    class_name: "Model".into(),
+                    name: display_name.clone(),
+                    properties: BTreeMap::new(),
+                    source: None,
+                    children: roots,
+                }
+            }
+        }
+        _ => unreachable!(),
+    };
+
+    let mut ctx = DecomposeCtx {
+        dir,
+        slug_name: &model_slug,
+        extracted_scripts: Vec::new(),
+        direct_root_scripts: Vec::new(),
+        deep_scripts: Vec::new(),
+        used_script_paths: std::collections::HashSet::new(),
+    };
+
+    let model_json = match decompose_imported_node(&root_node, &mut ctx, &[], 0)? {
+        Some(v) => v,
+        None => {
+            // Root itself was a script; emit an empty Folder placeholder for model_path
+            json!({
+                "className": "Folder",
+                "name": display_name,
+                "properties": {},
+                "children": []
+            })
+        }
+    };
+    let extracted_scripts = ctx.extracted_scripts;
+    let direct_root_scripts = ctx.direct_root_scripts;
+    let deep_scripts = ctx.deep_scripts;
+
+    let model_rel = format!("scene/models/{model_slug}.model.json");
+    let model_text = serde_json::to_string_pretty(&model_json).map_err(|e| e.to_string())? + "\n";
+    prefab_write_atomic(dir, &model_rel, &model_text)?;
+
+    let m = manifest(dir)?;
+    let rojo_file = m["rojoProject"]
+        .as_str()
+        .unwrap_or(DEFAULT_ROJO_FILE)
+        .to_string();
+    let rojo_full = safe_join(dir, &rojo_file)?;
+    let mut rojo: Value = if rojo_full.is_file() {
+        let raw = std::fs::read_to_string(&rojo_full).map_err(|e| format!("read {rojo_file}: {e}"))?;
+        serde_json::from_str(&raw).map_err(|e| format!("{rojo_file}: {e}"))?
+    } else {
+        json!({
+            "name": m["name"].as_str().unwrap_or("Project"),
+            "tree": {
+                "$className": "DataModel",
+                "$ignoreUnknownInstances": true
+            }
+        })
+    };
+
+    let model_node_name = model_json
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&model_slug)
+        .to_string();
+
+    {
+        let root_obj = rojo
+            .as_object_mut()
+            .ok_or_else(|| format!("{rojo_file} must be a JSON object"))?;
+        let tree_obj = root_obj
+            .entry("tree")
+            .or_insert_with(|| json!({ "$className": "DataModel" }))
+            .as_object_mut()
+            .ok_or_else(|| format!("{rojo_file} tree must be an object"))?;
+
+        let svc_obj = tree_obj
+            .entry(wired_service.to_string())
+            .or_insert_with(|| {
+                json!({
+                    "$className": wired_service,
+                    "$ignoreUnknownInstances": true
+                })
+            })
+            .as_object_mut()
+            .ok_or_else(|| format!("{rojo_file} {wired_service} must be an object"))?;
+        if !svc_obj.contains_key("$path") && !svc_obj.contains_key("$className") {
+            svc_obj.insert("$className".into(), json!(wired_service));
+        }
+        svc_obj.entry("$ignoreUnknownInstances").or_insert(json!(true));
+
+        let mut model_wire = serde_json::Map::new();
+        model_wire.insert("$path".into(), json!(model_rel));
+        for (s_name, s_rel) in &direct_root_scripts {
+            model_wire.insert(s_name.clone(), json!({ "$path": s_rel }));
+        }
+        svc_obj.insert(model_node_name.clone(), Value::Object(model_wire));
+
+        if !deep_scripts.is_empty() {
+            warnings.push(format!(
+                "Relocated {} nested prefab script(s) under service Prefabs/{model_slug} to keep Rojo tree valid.",
+                deep_scripts.len()
+            ));
+            for (idx, (cls, s_name, s_rel)) in deep_scripts.iter().enumerate() {
+                let target_svc = match cls.as_str() {
+                    "LocalScript" => "StarterPlayer",
+                    "ModuleScript" => "ReplicatedStorage",
+                    _ => "ServerScriptService",
+                };
+                let container = if target_svc == "StarterPlayer" {
+                    tree_obj
+                        .entry("StarterPlayer".to_string())
+                        .or_insert_with(|| json!({ "$className": "StarterPlayer", "$ignoreUnknownInstances": true }))
+                        .as_object_mut()
+                        .ok_or("StarterPlayer must be object")?
+                        .entry("StarterPlayerScripts".to_string())
+                        .or_insert_with(|| json!({ "$className": "StarterPlayerScripts", "$ignoreUnknownInstances": true }))
+                        .as_object_mut()
+                        .ok_or("StarterPlayerScripts must be object")?
+                } else {
+                    tree_obj
+                        .entry(target_svc.to_string())
+                        .or_insert_with(|| json!({ "$className": target_svc, "$ignoreUnknownInstances": true }))
+                        .as_object_mut()
+                        .ok_or("target script service must be object")?
+                };
+                let prefabs_folder = container
+                    .entry("Prefabs".to_string())
+                    .or_insert_with(|| json!({ "$className": "Folder", "$ignoreUnknownInstances": true }))
+                    .as_object_mut()
+                    .ok_or("Prefabs must be object")?
+                    .entry(model_slug.clone())
+                    .or_insert_with(|| json!({ "$className": "Folder", "$ignoreUnknownInstances": true }))
+                    .as_object_mut()
+                    .ok_or("Prefab slug folder must be object")?;
+                let mut key = s_name.clone();
+                if prefabs_folder.contains_key(&key) {
+                    key = format!("{s_name}_{}", idx + 2);
+                }
+                prefabs_folder.insert(key, json!({ "$path": s_rel }));
+            }
+        }
+    }
+
+    let rojo_text = serde_json::to_string_pretty(&rojo).map_err(|e| e.to_string())? + "\n";
+    prefab_write_atomic(dir, &rojo_file, &rojo_text)?;
+
+    // Validate the resulting Rojo tree loads cleanly
+    let _ = load_tree(dir, &rojo_file)?;
+
+    Ok(json!({
+        "ok": true,
+        "model_path": model_rel,
+        "extracted_scripts": extracted_scripts,
+        "wired_service": wired_service,
+        "warnings": warnings,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

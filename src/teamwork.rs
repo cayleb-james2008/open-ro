@@ -3290,7 +3290,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
             "Follow Study -> Build -> Check -> Refine: check `study_status`/`unknowns_list`, record verified behavior with `evidence_record`/`unknown_add`/`unknown_update` (capping guesswork), cite `ev_*` IDs in `docs/mechanics.json` (`mechanics_check`), build, check (`project_check`/`project_playtest`, pass `\"force\":true` to bypass `KeptChecks`), and refine.\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_summary`.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_summary`.\n",
             "Formatting: `project_check` with `{\"format\":true}` or `project_format` auto-formats your claimed `.luau` files with `stylua` instead of hand-editing whitespace.\n",
             "Asset arg signatures:\n",
             "- project_scene_mutate: {\"ops\":[{\"op\":\"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\",\"path\":\"Workspace.Name\",\"class_name\":\"Part|Model|SpawnLocation|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\",\"new_parent\":\"Workspace.Parent\",\"enabled\":true,\"generator\":{\"kind\":\"flat|hills|island|canyon\",\"seed\":1,\"amplitude\":24,\"water_level\":0},\"paint_box\":{\"min\":[0,0,0],\"max\":[16,8,16],\"material\":\"Grass\"}}]}\n",
@@ -3714,6 +3714,7 @@ fn execute_agent_tool(
         "gui_compile" => tool_gui_compile(handle, agent_name, args),
         "project_build" => tool_project_build(handle, args),
         "project_sync" => tool_project_sync(shared, mgr, handle, agent_name, gen, args),
+        "project_sync_pull" => tool_project_sync_pull(shared, mgr, handle, agent_name, gen, args),
         "project_playtest" => {
             tool_project_playtest(shared, mgr, handle, agent_name, gen, args)
         }
@@ -5858,6 +5859,39 @@ fn tool_project_sync(
         args,
     );
     let res = reply_to_tool_result(crate::studio_sync::run(shared, &project_ref, prune, dry_run));
+    drop(_lease);
+    handle.notify_all();
+    res
+}
+
+fn tool_project_sync_pull(
+    shared: &Arc<Shared>,
+    mgr: &Arc<TeamworkManager>,
+    handle: &Arc<RunHandle>,
+    agent_name: &str,
+    gen: u64,
+    args: &Value,
+) -> Result<Value, String> {
+    let project_ref = project_ref_for_run(handle);
+    let task_id = args.get("task_id").and_then(|v| v.as_str()).map(String::from);
+    let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let _lease = mgr
+        .studio_lease
+        .acquire(agent_name, task_id, "sync_pull", || is_cancelled(handle, agent_name, gen))?;
+    handle.notify_all();
+    crate::project_api::ensure_studio_place_open_for_dir(
+        shared,
+        &project_ref.id,
+        &project_ref.dir,
+        args,
+    );
+    let reply = if dry_run {
+        crate::studio_sync::pull_diff(shared, &project_ref)
+    } else {
+        crate::studio_sync::pull_apply(shared, &project_ref, args)
+    };
+    let res = reply_to_tool_result(reply);
     drop(_lease);
     handle.notify_all();
     res
