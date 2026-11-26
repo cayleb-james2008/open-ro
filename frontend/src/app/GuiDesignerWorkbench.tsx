@@ -465,7 +465,8 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
   const handleCompileToLuau = async () => {
     setCompiling(true);
     try {
-      const slug = sanitizeGuiSlug(doc.slug);
+      const rawSlug = doc.slug.trim();
+      const slug = isValidGuiSlug(rawSlug) ? rawSlug : sanitizeGuiSlug(rawSlug);
       const nextDoc = { ...doc, slug };
       const res = await compileGuiScreen(slug, nextDoc, projectId, { save_luau: true });
       if (res.ok && typeof res.luau_source === "string" && res.luau_source.length > 0) {
@@ -777,8 +778,12 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
               onChange={(e) => {
                 const n = Number(e.target.value);
                 if (!Number.isFinite(n)) return;
+                const clamped =
+                  field === "x_scale" || field === "y_scale"
+                    ? clampGuiNum(n, -10, 10)
+                    : clampGuiNum(n, -16384, 16384);
                 updateSelectedNodeProps({
-                  [propKey]: { ...val, [field]: n },
+                  [propKey]: { ...val, [field]: clamped },
                 });
               }}
               className="h-7 px-1.5 font-mono text-xs tabular-nums"

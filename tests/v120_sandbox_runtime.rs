@@ -679,10 +679,37 @@ lbl.Parent = sg
     let llm = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let llm_port = llm.local_addr().unwrap().port();
     std::thread::spawn(move || {
-        for turn in 0..2 {
+        for turn in 0..4 {
             let Ok((mut s, _)) = llm.accept() else { break };
-            let mut buf = [0u8; 8192];
-            let _ = s.read(&mut buf);
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 4096];
+            let mut header_end = None;
+            let mut content_len = 0usize;
+            while let Ok(n) = s.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+                if header_end.is_none() {
+                    if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let hend = pos + 4;
+                        header_end = Some(hend);
+                        let head = String::from_utf8_lossy(&raw[..hend]);
+                        for line in head.lines() {
+                            if let Some((k, v)) = line.split_once(':') {
+                                if k.trim().eq_ignore_ascii_case("content-length") {
+                                    content_len = v.trim().parse().unwrap_or(0);
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(hend) = header_end {
+                    if raw.len() >= hend + content_len {
+                        break;
+                    }
+                }
+            }
             let content = if turn == 0 {
                 r#"{"tool":"sandbox_playtest","args":{"timeout_secs":15}}"#
             } else {
@@ -698,6 +725,7 @@ lbl.Parent = sg
                 body
             );
             let _ = s.write_all(resp.as_bytes());
+            let _ = s.flush();
         }
     });
 

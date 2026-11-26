@@ -567,7 +567,21 @@ fn shell_has_themes_and_settings() {
     assert!(html.contains("data-theme=\"light\""), "light is the default theme");
     assert!(html.contains("[data-theme=light]"), "a light theme must be defined (the bundle is minified: no attribute quotes)");
     assert!(html.contains("openroSetTheme"), "the theme setter is in the shipped shell");
-    assert!(html.contains("Appearance"), "appearance toggle missing from settings");
+    let has_appearance_inline = html.contains("Appearance");
+    let has_appearance_chunk = html
+        .split("chunks/SettingsDialog-")
+        .nth(1)
+        .and_then(|rest| rest.split(".js").next())
+        .map(|hash| {
+            let chunk_path = format!("/chunks/SettingsDialog-{hash}.js");
+            let (cst, cbody) = http_request(port, "GET", &chunk_path, None);
+            cst == 200 && cbody.contains("Appearance")
+        })
+        .unwrap_or(false);
+    assert!(
+        has_appearance_inline || has_appearance_chunk,
+        "appearance toggle missing from settings"
+    );
     assert!(html.contains("localStorage.setItem(\"openro-theme\""), "the toggle must SAVE the theme choice");
     assert!(html.contains("localStorage.getItem(\"openro-theme\")"), "the page must READ the saved theme choice");
     assert!(html.contains(":focus-visible"), "keyboard focus must be visible");

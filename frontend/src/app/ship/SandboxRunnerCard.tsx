@@ -275,13 +275,13 @@ export function SandboxRunnerCard({
         },
         projectId,
       );
-      if (!res.ok && !res.engine) {
+      const luneMissing = res.engine === "lune_missing" || res.diagnostics?.lune_found === false;
+      if (!res.ok && !luneMissing && (res.httpStatus >= 400 || !res.engine)) {
         const msg = res.error || "Could not run the headless sandbox.";
         setError(msg);
         toast.error(msg);
         return;
       }
-      const luneMissing = res.engine === "lune_missing" || res.diagnostics?.lune_found === false;
       const payload: SandboxRunResponse = {
         ok: Boolean(res.ok),
         engine: luneMissing ? "lune_missing" : (res.engine ?? "browser_sim"),

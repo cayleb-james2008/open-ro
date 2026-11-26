@@ -4,6 +4,13 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.22.0 - 2026-11-26
+
+- Hardened path containment and symlink checks across the unified workspace, 3D scene graph, GUI designer, and headless Luau sandbox (`src/project_api.rs`, `src/scene.rs`, `src/gui_designer.rs`, `src/sandbox.rs`, `src/server.rs`, `tests/v122_cycle2_hardening.rs`). API handlers now reject NUL bytes, backslash traversal, non-string GUI slugs, and symlinked `ui/`, `.screen.json`, `assets/meshes/`, `manifest.json`, `.obj`, `workspace.model.json`, and `scene-undo.json` targets, while atomic writers use exclusive `O_CREAT | O_EXCL` temp files.
+- Bounded GUI designer and scene undo inputs on both server and client. `GuiNode::from_json` caps depth at 32, node count at 500, properties per node at 64, and payload size at 2 MiB, while rejecting NaN or infinite numbers and clamping `UDim2` scale (`-10..10`) and offset (`-16384..16384`), `AnchorPoint`, `Rect`, and color values. `src/scene.rs` replaces `upsert_model_node` `.expect()` panics with `Result` errors, recovers poisoned mutexes, limits undo/redo batches to 500 ops and 32 path segments, and caps undo/redo history stacks at 50 entries.
+- Hardened the Lune sandbox runner and Luau shim (`src/sandbox.rs`, `src/sandbox_runtime.luau`). The runner enforces strict `timeout_secs` bounds, up to 32 players and 200 journey steps, symlink and 8 MiB caps on `report.json`, and `pcall`-wrapped script loading, while tracking `ProcessReceipt` duplicate idempotency by `PurchaseId`.
+- Added panel error boundaries, malformed input normalization, and timeout/400/503 recovery across the React workbench (`PanelErrorBoundary.tsx`, `App.tsx`, `guiDesignerEngine.ts`, `GuiDesignerWorkbench.tsx`, `StudioViewport3D.tsx`, `SandboxRunnerCard.tsx`, `ship/api.ts`, and `web-engine/install.ts`). Also lazy-loaded `SettingsDialog`, dropped the runtime import from `ship/api.ts` to `guiDesignerEngine.ts`, and trimmed the initial `assets/index.html` shell payload.
+
 ## 1.21.0 - 2026-11-26
 
 - Added the Visual ScreenGui and HUD Designer, Multi-Device Safe-Area Simulator, and deterministic `--!strict` Luau + Rojo `.model.json` compiler (`src/gui_designer.rs`, `GET/POST /api/projects/:id/gui*`, `GET/POST /api/studio/gui*`, `gui_save` and `gui_compile` tools in `src/agent.rs` and `src/teamwork.rs`, `GuiDesignerWorkbench.tsx`, `guiDesignerEngine.ts`, and offline `web-engine/install.ts` parity).

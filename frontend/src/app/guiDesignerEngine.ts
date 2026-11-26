@@ -202,50 +202,81 @@ function safeHexColor(val: unknown, fallback: string): string {
   return fallback;
 }
 
+const UDIM_SCALE_MIN = -10;
+const UDIM_SCALE_MAX = 10;
+const UDIM_OFFSET_MIN = -16384;
+const UDIM_OFFSET_MAX = 16384;
+
+function clampUDim2Value(u: UDim2Value): UDim2Value {
+  return {
+    x_scale: clampFinite(u.x_scale, UDIM_SCALE_MIN, UDIM_SCALE_MAX, 0),
+    x_offset: clampFinite(u.x_offset, UDIM_OFFSET_MIN, UDIM_OFFSET_MAX, 0),
+    y_scale: clampFinite(u.y_scale, UDIM_SCALE_MIN, UDIM_SCALE_MAX, 0),
+    y_offset: clampFinite(u.y_offset, UDIM_OFFSET_MIN, UDIM_OFFSET_MAX, 0),
+  };
+}
+
 export function normalizeUDim2(val: unknown, fallback: UDim2Value): UDim2Value {
-  if (!val) return { ...fallback };
+  if (!val) return clampUDim2Value(fallback);
+  if (typeof val === "object" && !Array.isArray(val) && "UDim2" in (val as Record<string, unknown>)) {
+    return normalizeUDim2((val as Record<string, unknown>).UDim2, fallback);
+  }
+  if (Array.isArray(val) && val.length === 2 && Array.isArray(val[0]) && Array.isArray(val[1])) {
+    return clampUDim2Value({
+      x_scale: asNumber(val[0][0], fallback.x_scale),
+      x_offset: asNumber(val[0][1], fallback.x_offset),
+      y_scale: asNumber(val[1][0], fallback.y_scale),
+      y_offset: asNumber(val[1][1], fallback.y_offset),
+    });
+  }
   if (Array.isArray(val) && val.length >= 4) {
-    return {
+    return clampUDim2Value({
       x_scale: asNumber(val[0], fallback.x_scale),
       x_offset: asNumber(val[1], fallback.x_offset),
       y_scale: asNumber(val[2], fallback.y_scale),
       y_offset: asNumber(val[3], fallback.y_offset),
-    };
+    });
   }
   if (typeof val === "object") {
     const obj = val as Record<string, unknown>;
     if ("x_scale" in obj || "x_offset" in obj || "y_scale" in obj || "y_offset" in obj) {
-      return {
+      return clampUDim2Value({
         x_scale: asNumber(obj.x_scale, fallback.x_scale),
         x_offset: asNumber(obj.x_offset, fallback.x_offset),
         y_scale: asNumber(obj.y_scale, fallback.y_scale),
         y_offset: asNumber(obj.y_offset, fallback.y_offset),
-      };
+      });
     }
-    const xObj = obj.X as Record<string, unknown> | undefined;
-    const yObj = obj.Y as Record<string, unknown> | undefined;
+    const xObj = (obj.X ?? obj.x) as Record<string, unknown> | undefined;
+    const yObj = (obj.Y ?? obj.y) as Record<string, unknown> | undefined;
     if (xObj || yObj) {
-      return {
-        x_scale: asNumber(xObj?.Scale, fallback.x_scale),
-        x_offset: asNumber(xObj?.Offset, fallback.x_offset),
-        y_scale: asNumber(yObj?.Scale, fallback.y_scale),
-        y_offset: asNumber(yObj?.Offset, fallback.y_offset),
-      };
+      return clampUDim2Value({
+        x_scale: asNumber(xObj?.Scale ?? xObj?.scale, fallback.x_scale),
+        x_offset: asNumber(xObj?.Offset ?? xObj?.offset, fallback.x_offset),
+        y_scale: asNumber(yObj?.Scale ?? yObj?.scale, fallback.y_scale),
+        y_offset: asNumber(yObj?.Offset ?? yObj?.offset, fallback.y_offset),
+      });
     }
   }
-  return { ...fallback };
+  return clampUDim2Value(fallback);
 }
 
 function normalizeUDimPair(val: unknown): [number, number] | undefined {
   if (Array.isArray(val) && val.length >= 2) {
-    return [asNumber(val[0], 0), asNumber(val[1], 0)];
+    return [
+      clampFinite(val[0], UDIM_SCALE_MIN, UDIM_SCALE_MAX, 0),
+      clampFinite(val[1], UDIM_OFFSET_MIN, UDIM_OFFSET_MAX, 0),
+    ];
   }
   if (typeof val === "number" && Number.isFinite(val)) {
-    return [0, val];
+    return [0, clampFinite(val, UDIM_OFFSET_MIN, UDIM_OFFSET_MAX, 0)];
   }
   if (val && typeof val === "object") {
     const o = val as Record<string, unknown>;
-    return [asNumber(o.scale ?? o.Scale ?? o.s, 0), asNumber(o.offset ?? o.Offset ?? o.o, 0)];
+    return [
+      clampFinite(o.scale ?? o.Scale ?? o.s, UDIM_SCALE_MIN, UDIM_SCALE_MAX, 0),
+      clampFinite(o.offset ?? o.Offset ?? o.o, UDIM_OFFSET_MIN, UDIM_OFFSET_MAX, 0),
+    ];
   }
   return undefined;
 }
