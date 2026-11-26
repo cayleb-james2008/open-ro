@@ -1,5 +1,5 @@
 import { Suspense, lazy, memo, useEffect, useState } from "react";
-import { Check, FolderOpen, FlaskConical, Images, Palette, RefreshCw, Rocket, ShieldCheck } from "lucide-react";
+import { Check, FolderOpen, FlaskConical, Images, Palette, Radio, RefreshCw, Rocket, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
@@ -14,19 +14,21 @@ import { MonetizationPackCard } from "../MonetizationPackCard";
 import type { Place } from "../data";
 import type { Ship } from "./useShip";
 
+const LiveOpsPanel = lazy(() => import("./LiveOpsPanel").then((m) => ({ default: m.LiveOpsPanel })));
 const AssetsPanel = lazy(() => import("./AssetsPanel").then((m) => ({ default: m.AssetsPanel })));
 const ArtStudioPanel = lazy(() => import("./ArtStudioPanel").then((m) => ({ default: m.ArtStudioPanel })));
 const PlaytestPanel = lazy(() => import("./PlaytestPanel").then((m) => ({ default: m.PlaytestPanel })));
 
-type Section = "publish" | "assets" | "art" | "playtests";
+type Section = "publish" | "liveops" | "assets" | "art" | "playtests";
 const SECTIONS: { id: Section; label: string; Icon: typeof Rocket }[] = [
   { id: "publish", label: "Publish & Monetize", Icon: Rocket },
+  { id: "liveops", label: "LiveOps", Icon: Radio },
   { id: "assets", label: "Assets", Icon: Images },
   { id: "art", label: "Art & Refs", Icon: Palette },
   { id: "playtests", label: "Playtests", Icon: FlaskConical },
 ];
 
-/** The Ship & Monetize surface: readiness autopilot, publish readiness, monetization pack, assets, and playtests. */
+/** The Ship & Monetize surface: readiness autopilot, live-ops control plane, publish readiness, monetization pack, assets, and playtests. */
 export const ShipPanel = memo(function ShipPanel({
   ship,
   studioOk,
@@ -219,6 +221,7 @@ export const ShipPanel = memo(function ShipPanel({
           </div>
         )}
         <Suspense fallback={<div className="p-3 text-sm text-ink-2">Loading section…</div>}>
+          {section === "liveops" && <LiveOpsPanel ship={ship} onOpenCodeFile={onOpenCodeDiff} />}
           {section === "assets" && <AssetsPanel ship={ship} onOpenSettings={onOpenSettings} />}
           {section === "art" && <ArtStudioPanel ship={ship} />}
           {section === "playtests" && <PlaytestPanel ship={ship} studioOk={studioOk} onJumpToIssue={onOpenCodeDiff} />}

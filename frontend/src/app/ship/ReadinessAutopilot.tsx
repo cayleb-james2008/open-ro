@@ -29,7 +29,7 @@ export function ReadinessAutopilot({
   onCompleted?: () => Promise<void> | void;
   onOpenCodeFile?: (scriptPath: string) => void;
   onOpenSettings?: () => void;
-  onOpenSection?: (section: "publish" | "assets" | "art" | "playtests") => void;
+  onOpenSection?: (section: "publish" | "liveops" | "assets" | "art" | "playtests") => void;
 }) {
   const [readiness, setReadiness] = useState<ProjectReadiness | null>(null);
   const [loading, setLoading] = useState(true);
