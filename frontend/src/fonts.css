@@ -1,4 +1,4 @@
-/* Self-hosted House fonts: Geist (400, 500) and Geist Mono (400), SIL Open Font Licence in ./fonts/. */
+/* Hallmark: self-hosted house fonts (Geist 400/500, Geist Mono 400), SIL Open Font Licence in ./fonts/. */
 @font-face { font-family: "Geist"; font-weight: 400; font-style: normal; font-display: swap; src: url("./fonts/Geist-Regular.woff2") format("woff2"); }
 @font-face { font-family: "Geist"; font-weight: 500; font-style: normal; font-display: swap; src: url("./fonts/Geist-Medium.woff2") format("woff2"); }
 @font-face { font-family: "Geist Mono"; font-weight: 400; font-style: normal; font-display: swap; src: url("./fonts/GeistMono-Regular.woff2") format("woff2"); }

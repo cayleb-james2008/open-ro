@@ -147,7 +147,7 @@ export function SystemLibrary({
                 </div>
 
                 {filtered.length === 0 ? (
-                  <p className="rounded-card border border-hairline bg-board p-3 text-sm text-ink-2">
+                  <p className="rounded-sm border border-hairline bg-board p-3 text-sm text-ink-2">
                     No Roblox game systems match &ldquo;{query}&rdquo;.
                   </p>
                 ) : (
@@ -158,7 +158,7 @@ export function SystemLibrary({
                       return (
                         <div
                           key={sys.id}
-                          className="flex flex-col justify-between gap-2.5 rounded-card border border-hairline bg-board/40 p-3"
+                          className="flex flex-col justify-between gap-2.5 rounded-sm border border-hairline bg-board/40 p-3"
                         >
                           <div className="flex flex-col gap-1.5">
                             <div className="flex flex-wrap items-center justify-between gap-1.5">

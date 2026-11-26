@@ -237,7 +237,7 @@ export function SnapshotRollbackCard({
 
       {snapshots.length === 0 ? (
         <div className="rounded-sm border border-hairline bg-board/40 px-3 py-2.5 text-xs text-ink-2">
-          No checkpoints saved yet. Run a playtest or save a snapshot to track script diffs and unlock 1-click rollback.
+          No checkpoints saved yet. Run a playtest or save a snapshot to track script diffs and enable 1-click rollback.
         </div>
       ) : (
         <ul className="flex flex-col gap-2" aria-label="Playable snapshot timeline">

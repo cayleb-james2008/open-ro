@@ -64,7 +64,7 @@ export function DependencyGraphCard({
                 {s.healthy ? (
                   <>
                     <Check className="size-3" strokeWidth={2} aria-hidden />
-                    <span>0 broken · 0 unused · 0 orphan</span>
+                    <span>0 broken, 0 unused, 0 orphan</span>
                   </>
                 ) : (
                   <span>{issues} issue(s)</span>

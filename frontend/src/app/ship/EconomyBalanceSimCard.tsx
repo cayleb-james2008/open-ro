@@ -240,12 +240,12 @@ export function EconomyBalanceSimCard({
                 Projected: Rebirth at{" "}
                 <span className="font-mono text-ink">
                   {report.suggestion.projected_summary.time_to_rebirth_min ?? 16}m
-                </span>{" "}
-                · Completion{" "}
+                </span>
+                , Completion{" "}
                 <span className="font-mono text-ink">
                   {report.suggestion.projected_summary.f2p_completion_pct.toFixed(0)}%
-                </span>{" "}
-                · Inflation{" "}
+                </span>
+                , Inflation{" "}
                 <span className="font-mono text-ink">
                   {report.suggestion.projected_summary.inflation_ratio.toFixed(1)}x
                 </span>

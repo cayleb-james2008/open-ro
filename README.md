@@ -97,10 +97,10 @@ flowchart LR
 | Metric | `v1.2.0` baseline | `v1.22.0` verified (`#154` pinned) | Delta |
 | --- | --- | --- | --- |
 | Release binary size | `19.00 MB` | **`9.53 MiB`** (`9,995,128 B`) | **`-49.8%`** |
-| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`229.4 KB`** raw (`234,946 B`) / **`55.2 KB`** gz (`56,554 B`) | **`-88.0%` wire** |
-| Cold boot (`#154` pinned) | `1,470 ms` | **`31.65 ms`** | **`-97.8%`** |
-| Peak RSS (`VmHWM`) | `115.20 MB` | **`13.47 MB`** (`13,796 KB`, `scale-audit` + 10 SSE) | **`-88.3%`** |
-| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`7,783.3 req/s`** Python cold (`2.05 ms` p50, `2.35 ms` p95, `0/19,465` errs) | **`8.89x` (`-98.3%` p95)** |
+| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`229.9 KB`** raw (`235,427 B`) / **`55.3 KB`** gz (`56,631 B`) | **`-88.0%` wire** |
+| Cold boot (`#154` pinned) | `1,470 ms` | **`29.28 ms`** | **`-98.0%`** |
+| Peak RSS (`VmHWM`) | `115.20 MB` | **`13.05 MB`** (`13,368 KB`, `scale-audit` + 10 SSE) | **`-88.7%`** |
+| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`5,438.0 req/s`** Python cold (`2.72 ms` p50, `4.23 ms` p95, `0/13,603` errs) | **`6.21x` (`-97.0%` p95)** |
 | Security and UI gates | `43/43` fuzz | **`43/43` fuzz, `10/10` SSE, `0` sloplint fails/warns, `339/339` Rust tests (`4/4` `v122_cycle2_hardening`), `gate 110/110`, `replay 11/11`** | Pass |
 
 ## Quick start

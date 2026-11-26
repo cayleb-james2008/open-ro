@@ -1125,16 +1125,17 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                     backgroundColor: bg,
                     borderRadius: `${radiusPx}px`,
                     border: strokeWidthPx > 0 ? `${strokeWidthPx}px solid ${strokeColor}` : undefined,
-                    outline: isSelected
-                      ? "2px solid #4A86FF"
-                      : nodeWarn
-                        ? "1.5px dashed #F5A524"
-                        : isRoot
-                          ? undefined
-                          : "1px solid rgba(255,255,255,0.08)",
                     cursor: isRoot ? "default" : "move",
                   }}
-                  className="absolute flex items-center justify-center overflow-visible"
+                  className={`absolute flex items-center justify-center overflow-visible ${
+                    isSelected
+                      ? "outline-2 outline-focus"
+                      : nodeWarn
+                        ? "outline-[1.5px] outline-dashed outline-dot-amber"
+                        : isRoot
+                          ? ""
+                          : "outline outline-white/10"
+                  }`}
                 >
                   {imgUrl ? (
                     <img
@@ -1156,9 +1157,9 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
 
                   {(node.class_name === "TextLabel" || node.class_name === "TextButton") && (
                     <span
-                      className="pointer-events-none truncate px-1 text-center font-medium"
+                      className={`pointer-events-none truncate px-1 text-center font-medium ${node.props.TextColor3 ? "" : "text-white"}`}
                       style={{
-                        color: node.props.TextColor3 || "#F3F4F6",
+                        ...(node.props.TextColor3 ? { color: node.props.TextColor3 } : {}),
                         fontSize: `${Math.max(10, Math.round((node.props.TextSize ?? 14) * scale))}px`,
                       }}
                     >

@@ -738,12 +738,12 @@ export function StudioViewport3D({
         ev.kind === "part_created"
           ? "+"
           : ev.kind === "script_written"
-            ? "✎"
+            ? "*"
             : ev.kind === "playtest_passed"
-              ? "▶"
+              ? ">"
               : ev.kind === "decal_bound"
-                ? "◈"
-                : "•";
+                ? "#"
+                : "-";
       anim.callout = `${shortPrefix} ${ev.path || ev.summary}`;
       anim.calloutUntil = performance.now() + 4200;
 
