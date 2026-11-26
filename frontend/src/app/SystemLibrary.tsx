@@ -67,11 +67,11 @@ export function SystemLibrary({
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <Layers className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
                 <h3 className="text-ui font-medium text-ink">Game Systems Library</h3>
-                <Pill className="bg-tag-sky-bg px-2 py-0.5 font-mono text-xs tabular-nums text-tag-sky-fg">
+                <Pill className="bg-tag-sky-bg px-2 py-0.5 text-xs tabular-nums text-tag-sky-fg">
                   28 Game Systems
                 </Pill>
                 {installedCount > 0 && (
-                  <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-active-fg">
+                  <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs tabular-nums text-pill-active-fg">
                     {installedCount} in place
                   </Pill>
                 )}

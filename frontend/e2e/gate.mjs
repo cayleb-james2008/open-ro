@@ -327,6 +327,9 @@ try {
     await p.locator("[data-sandbox-step-key]").first().waitFor({ state: "visible", timeout: 4000 });
     const httpMocksInput = p.locator("[data-sandbox-http-mocks]");
     await httpMocksInput.waitFor({ state: "visible", timeout: 4000 });
+    await httpMocksInput.fill('[{"status":999}]');
+    await p.locator("[data-sandbox-http-mocks-error]").waitFor({ state: "visible", timeout: 4000 });
+    check("Sandbox malformed HTTP Mocks displays inline validation error", true);
     await httpMocksInput.fill('[{"url":"https://api.example.com/boost","status":200,"body":{"mult":2}}]');
     check("Sandbox Journey Steps builder renders spatial/prompt/detector/key & HTTP Mocks", true);
     await httpMocksInput.fill("");
@@ -401,8 +404,15 @@ try {
       rcStatusText,
     );
 
-    // Confirmation-gated MessagingService broadcast
+    // Confirmation-gated MessagingService broadcast + invalid JSON guard
     await p.locator("[data-msg-topic]").fill("GateLiveEvent");
+    const msgPayloadInput = p.locator("[data-msg-payload]");
+    const prevMsgPayload = await msgPayloadInput.inputValue();
+    await msgPayloadInput.fill("{bad-json");
+    await p.locator("[data-msg-json-error]").waitFor({ state: "visible", timeout: 4000 });
+    const msgDisabledOnBadJson = await p.locator("[data-msg-publish]").isDisabled();
+    check("LiveOps MessagingService blocks invalid JSON payload", msgDisabledOnBadJson);
+    await msgPayloadInput.fill(prevMsgPayload);
     const msgPublishBtn = p.locator("[data-msg-publish]");
     const gatedBeforeConfirm = await msgPublishBtn.isDisabled();
     const ocState = await p.evaluate(async () => {

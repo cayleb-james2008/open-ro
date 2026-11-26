@@ -1649,17 +1649,44 @@ function runWebSandboxSim(
   };
 }
 
+const MAX_SANDBOX_HISTORY = 50;
+const MAX_LIVEOPS_BACKUPS = 50;
+
 function persistWebSandboxReport(proj: WebProject, sim: ReturnType<typeof runWebSandboxSim>) {
   const serialized = JSON.stringify(sim, null, 2);
   proj.files[".openro/sandbox/latest.json"] = serialized;
   proj.files[`.openro/sandbox/${sim.run_id}.json`] = serialized;
+
+  const historyEntries: Array<{ key: string; atMs: number }> = [];
+  for (const [relPath, raw] of Object.entries(proj.files)) {
+    if (!relPath.startsWith(".openro/sandbox/") || relPath === ".openro/sandbox/latest.json" || !relPath.endsWith(".json")) {
+      continue;
+    }
+    let atMs = 0;
+    try {
+      const parsed = JSON.parse(raw) as { at_ms?: unknown };
+      if (typeof parsed?.at_ms === "number" && Number.isFinite(parsed.at_ms)) atMs = parsed.at_ms;
+    } catch {
+      atMs = 0;
+    }
+    historyEntries.push({ key: relPath, atMs });
+  }
+  if (historyEntries.length > MAX_SANDBOX_HISTORY) {
+    historyEntries.sort((a, b) => a.atMs - b.atMs || a.key.localeCompare(b.key));
+    const toRemove = historyEntries.length - MAX_SANDBOX_HISTORY;
+    for (let i = 0; i < toRemove; i++) {
+      delete proj.files[historyEntries[i].key];
+    }
+  }
 }
 
 function getWebSandboxLatest(proj: WebProject): ReturnType<typeof runWebSandboxSim> | null {
   const raw = proj.files?.[".openro/sandbox/latest.json"];
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as ReturnType<typeof runWebSandboxSim>;
+    const parsed = JSON.parse(raw) as ReturnType<typeof runWebSandboxSim>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed;
   } catch {
     return null;
   }
@@ -1681,6 +1708,7 @@ function listWebSandboxRuns(proj: WebProject) {
     }
     try {
       const parsed = JSON.parse(raw) as ReturnType<typeof runWebSandboxSim>;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
       const fallbackId = relPath.slice(".openro/sandbox/".length, -".json".length);
       out.push({
         run_id: parsed.run_id || fallbackId,
@@ -1695,7 +1723,7 @@ function listWebSandboxRuns(proj: WebProject) {
       // ignore malformed historical file
     }
   }
-  return out.sort((a, b) => b.at_ms - a.at_ms).slice(0, 25);
+  return out.sort((a, b) => b.at_ms - a.at_ms).slice(0, MAX_SANDBOX_HISTORY);
 }
 
 function computeWebProjectReadiness(proj: WebProject) {
@@ -1998,16 +2026,31 @@ function validateWebTerrainRegion(raw: Record<string, unknown>): { ok: true; reg
   }
   const mat = typeof raw.material === "string" && raw.material.trim() ? raw.material.trim() : "Grass";
   let generator: WebProjectTerrainGenerator | null | undefined;
-  if (raw.generator && typeof raw.generator === "object" && !Array.isArray(raw.generator)) {
+  if (raw.generator !== undefined && raw.generator !== null) {
+    if (typeof raw.generator !== "object" || Array.isArray(raw.generator)) {
+      return { ok: false, error: "Terrain generator must be an object" };
+    }
     const g = raw.generator as Record<string, unknown>;
     const k = String(g.kind || "hills");
+    if (g.kind !== undefined && k !== "flat" && k !== "hills" && k !== "island" && k !== "canyon") {
+      return { ok: false, error: `Unsupported terrain generator kind: ${k}` };
+    }
     const kind: WebProjectTerrainGenerator["kind"] =
       k === "flat" || k === "hills" || k === "island" || k === "canyon" ? k : "hills";
+    if (g.seed !== undefined && (typeof g.seed !== "number" || !Number.isFinite(g.seed))) {
+      return { ok: false, error: "Terrain generator seed must be a finite number" };
+    }
+    if (g.amplitude !== undefined && (typeof g.amplitude !== "number" || !Number.isFinite(g.amplitude) || g.amplitude < 0 || g.amplitude > 512)) {
+      return { ok: false, error: "Terrain generator amplitude must be between 0 and 512" };
+    }
+    if (g.water_level !== undefined && (typeof g.water_level !== "number" || !Number.isFinite(g.water_level))) {
+      return { ok: false, error: "Terrain generator water_level must be a finite number" };
+    }
     generator = {
       kind,
-      seed: typeof g.seed === "number" && Number.isFinite(g.seed) ? Math.trunc(g.seed) : 42,
-      amplitude: typeof g.amplitude === "number" && Number.isFinite(g.amplitude) ? g.amplitude : 16,
-      water_level: typeof g.water_level === "number" && Number.isFinite(g.water_level) ? g.water_level : -2,
+      seed: typeof g.seed === "number" ? Math.trunc(g.seed) : 42,
+      amplitude: typeof g.amplitude === "number" ? g.amplitude : 16,
+      water_level: typeof g.water_level === "number" ? g.water_level : -2,
     };
   }
   return {
@@ -2080,6 +2123,15 @@ function createDefaultWebLiveOps(): WebLiveOpsState {
 function ensureWebLiveOps(proj: WebProject): WebLiveOpsState {
   if (!proj.liveops) {
     proj.liveops = createDefaultWebLiveOps();
+  }
+  if (Array.isArray(proj.liveops.backups) && proj.liveops.backups.length > MAX_LIVEOPS_BACKUPS) {
+    proj.liveops.backups = proj.liveops.backups.slice(-MAX_LIVEOPS_BACKUPS);
+  }
+  if (Array.isArray(proj.liveops.messages) && proj.liveops.messages.length > 50) {
+    proj.liveops.messages = proj.liveops.messages.slice(-50);
+  }
+  if (Array.isArray(proj.liveops.telemetry) && proj.liveops.telemetry.length > 1000) {
+    proj.liveops.telemetry = proj.liveops.telemetry.slice(-1000);
   }
   return proj.liveops;
 }
@@ -5476,21 +5528,39 @@ export function installWebEngine() {
               for (const k of Object.keys(proj.instances)) {
                 if (k.startsWith(`${targetPath}.`)) delete proj.instances[k];
               }
-            } else if (op === "reparent" && targetPath) {
+            } else if (op === "reparent") {
               const newParent = typeof opObj.new_parent === "string" ? opObj.new_parent.trim() : "";
+              const hasBadSegs = (p: string) =>
+                !p ||
+                p.includes("..") ||
+                p.includes("/") ||
+                p.includes("\\") ||
+                p.split(".").some((s) => !s.trim());
+              const leaf = targetPath.split(".").pop() || "Instance";
+              const destBase = `${newParent}.${leaf}`;
               if (
-                !newParent ||
+                !targetPath ||
+                hasBadSegs(targetPath) ||
+                hasBadSegs(newParent) ||
                 !(targetPath in proj.instances) ||
                 newParent === targetPath ||
-                newParent.startsWith(`${targetPath}.`)
+                newParent.startsWith(`${targetPath}.`) ||
+                (destBase !== targetPath && destBase in proj.instances)
               ) {
                 proj.instances = prevSnap.instances;
                 proj.lighting = prevSnap.lighting;
                 proj.terrain = prevSnap.terrain;
-                return jsonResponse({ ok: false, error: "invalid reparent path or target" }, 400);
+                return jsonResponse(
+                  {
+                    ok: false,
+                    error:
+                      destBase !== targetPath && destBase in proj.instances
+                        ? `reparent collision: '${newParent}' already has a child named '${leaf}'`
+                        : "invalid or circular reparent path/target",
+                  },
+                  400,
+                );
               }
-              const leaf = targetPath.split(".").pop() || "Instance";
-              const destBase = `${newParent}.${leaf}`;
               const moved: Array<[string, { class_name: string; properties: Record<string, unknown>; source_file?: string }]> = [];
               for (const [k, v] of Object.entries(proj.instances)) {
                 if (k === targetPath) moved.push([destBase, v]);
@@ -5546,27 +5616,39 @@ export function installWebEngine() {
               const curT = proj.terrain || defaultWebTerrain();
               let nextRegions = [...curT.regions];
               let nextEnabled = curT.enabled;
+              let nextCellSize = curT.cell_size || 4;
+              const rollbackTerrain = (error: string) => {
+                proj.instances = prevSnap.instances;
+                proj.lighting = prevSnap.lighting;
+                proj.terrain = prevSnap.terrain;
+                return jsonResponse({ ok: false, error }, 400);
+              };
 
+              if (opObj.cell_size !== undefined) {
+                if (typeof opObj.cell_size !== "number" || !Number.isFinite(opObj.cell_size) || opObj.cell_size <= 0 || opObj.cell_size > 64) {
+                  return rollbackTerrain("Terrain cell_size must be a finite number between 1 and 64");
+                }
+                nextCellSize = opObj.cell_size;
+              }
               if (opObj.clear === true) {
                 nextRegions = [];
                 nextEnabled = false;
               }
-              if (Array.isArray(opObj.regions)) {
+              if (opObj.regions !== undefined && opObj.regions !== null) {
+                if (!Array.isArray(opObj.regions)) {
+                  return rollbackTerrain("set_terrain regions must be an array");
+                }
                 if (opObj.regions.length > 100) {
-                  proj.instances = prevSnap.instances;
-                  proj.lighting = prevSnap.lighting;
-                  proj.terrain = prevSnap.terrain;
-                  return jsonResponse({ ok: false, error: "Terrain exceeds maximum 100 regions" }, 400);
+                  return rollbackTerrain("Terrain exceeds maximum 100 regions");
                 }
                 nextRegions = [];
                 for (const rRaw of opObj.regions) {
-                  if (!rRaw || typeof rRaw !== "object") continue;
+                  if (!rRaw || typeof rRaw !== "object" || Array.isArray(rRaw)) {
+                    return rollbackTerrain("Terrain region entry must be an object");
+                  }
                   const val = validateWebTerrainRegion(rRaw as Record<string, unknown>);
                   if (!val.ok) {
-                    proj.instances = prevSnap.instances;
-                    proj.lighting = prevSnap.lighting;
-                    proj.terrain = prevSnap.terrain;
-                    return jsonResponse({ ok: false, error: val.error }, 400);
+                    return rollbackTerrain(val.error);
                   }
                   nextRegions.push(val.region);
                 }
@@ -5574,32 +5656,39 @@ export function installWebEngine() {
               if (opObj.generator && typeof opObj.generator === "object" && !Array.isArray(opObj.generator)) {
                 const gRaw = opObj.generator as Record<string, unknown>;
                 const hasGenRegion = nextRegions.some((r) => Boolean(r.generator));
+                const explicitMin = opObj.bounds_min ?? opObj.min;
+                const explicitMax = opObj.bounds_max ?? opObj.max;
                 if (!hasGenRegion) {
                   const val = validateWebTerrainRegion({
                     id: "terrain-main",
-                    bounds_min: [-96, -16, -96],
-                    bounds_max: [96, 48, 96],
-                    material: gRaw.kind === "canyon" ? "Rock" : "Grass",
+                    bounds_min: explicitMin ?? [-96, -16, -96],
+                    bounds_max: explicitMax ?? [96, 48, 96],
+                    material: typeof opObj.material === "string" && opObj.material.trim()
+                      ? opObj.material.trim()
+                      : gRaw.kind === "canyon"
+                        ? "Rock"
+                        : "Grass",
                     generator: gRaw,
                   });
-                  if (val.ok) nextRegions.unshift(val.region);
+                  if (!val.ok) {
+                    return rollbackTerrain(val.error);
+                  }
+                  nextRegions.unshift(val.region);
                 } else {
-                  const k = String(gRaw.kind || "hills");
-                  const kind: WebProjectTerrainGenerator["kind"] =
-                    k === "flat" || k === "hills" || k === "island" || k === "canyon" ? k : "hills";
-                  nextRegions = nextRegions.map((r) =>
-                    r.generator
-                      ? {
-                          ...r,
-                          generator: {
-                            kind,
-                            seed: typeof gRaw.seed === "number" && Number.isFinite(gRaw.seed) ? Math.trunc(gRaw.seed) : r.generator.seed,
-                            amplitude: typeof gRaw.amplitude === "number" && Number.isFinite(gRaw.amplitude) ? gRaw.amplitude : r.generator.amplitude,
-                            water_level: typeof gRaw.water_level === "number" && Number.isFinite(gRaw.water_level) ? gRaw.water_level : r.generator.water_level,
-                          },
-                        }
-                      : r,
-                  );
+                  const curGen = nextRegions.find((r) => Boolean(r.generator))!;
+                  const val = validateWebTerrainRegion({
+                    id: curGen.id,
+                    bounds_min: explicitMin ?? curGen.bounds_min,
+                    bounds_max: explicitMax ?? curGen.bounds_max,
+                    material: typeof opObj.material === "string" && opObj.material.trim()
+                      ? opObj.material.trim()
+                      : curGen.material,
+                    generator: gRaw,
+                  });
+                  if (!val.ok) {
+                    return rollbackTerrain(val.error);
+                  }
+                  nextRegions = nextRegions.map((r) => (r.generator ? val.region : r));
                 }
                 nextEnabled = true;
               }
@@ -5607,16 +5696,10 @@ export function installWebEngine() {
                 const pb = opObj.paint_box as Record<string, unknown>;
                 const val = validateWebTerrainRegion(pb);
                 if (!val.ok) {
-                  proj.instances = prevSnap.instances;
-                  proj.lighting = prevSnap.lighting;
-                  proj.terrain = prevSnap.terrain;
-                  return jsonResponse({ ok: false, error: val.error }, 400);
+                  return rollbackTerrain(val.error);
                 }
                 if (nextRegions.length >= 100) {
-                  proj.instances = prevSnap.instances;
-                  proj.lighting = prevSnap.lighting;
-                  proj.terrain = prevSnap.terrain;
-                  return jsonResponse({ ok: false, error: "Terrain exceeds maximum 100 regions" }, 400);
+                  return rollbackTerrain("Terrain exceeds maximum 100 regions");
                 }
                 const existingIdx = nextRegions.findIndex((r) => r.id === val.region.id);
                 if (existingIdx >= 0) nextRegions[existingIdx] = val.region;
@@ -5628,7 +5711,7 @@ export function installWebEngine() {
               }
               proj.terrain = {
                 enabled: nextEnabled,
-                cell_size: 4,
+                cell_size: nextCellSize,
                 regions: nextRegions,
               };
             }
@@ -5726,7 +5809,7 @@ export function installWebEngine() {
             );
           }
           const now = new Date().toISOString();
-          const backupPath = `.openro/liveops/ds-backups/${Date.now()}.json`;
+          const backupPath = `.openro/liveops/ds-backups/${Date.now()}-${lo.revSeq || 1}.json`;
           if (existing) {
             lo.backups.push({
               path: backupPath,
@@ -5737,7 +5820,7 @@ export function installWebEngine() {
               value: existing.value,
               created_at: now,
             });
-            lo.backups = lo.backups.slice(-50);
+            lo.backups = lo.backups.slice(-MAX_LIVEOPS_BACKUPS);
           }
           lo.revSeq = (lo.revSeq || 1) + 1;
           const nextEntry: WebLiveOpsDataStoreRecord = {
@@ -5784,7 +5867,7 @@ export function installWebEngine() {
             );
           }
           const now = new Date().toISOString();
-          const backupPath = `.openro/liveops/ds-backups/${Date.now()}.json`;
+          const backupPath = `.openro/liveops/ds-backups/${Date.now()}-${lo.revSeq || 1}.json`;
           lo.backups.push({
             path: backupPath,
             store,
@@ -5794,7 +5877,7 @@ export function installWebEngine() {
             value: existing.value,
             created_at: now,
           });
-          lo.backups = lo.backups.slice(-50);
+          lo.backups = lo.backups.slice(-MAX_LIVEOPS_BACKUPS);
           delete lo.datastores[mapKey];
           persist();
           return jsonResponse({

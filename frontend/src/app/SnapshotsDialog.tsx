@@ -138,7 +138,7 @@ export function SnapshotsDialog({
                           </span>
                         </div>
                         <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                          <Pill className="bg-surface px-2 py-0 font-mono text-xs tabular-nums text-ink-2">
+                          <Pill className="bg-surface px-2 py-0 text-xs tabular-nums text-ink-2">
                             {snap.parts_count} parts, {snap.scripts_count} scripts
                           </Pill>
                           {addN > 0 && (

@@ -189,10 +189,31 @@ export function StudioViewport3D({
   const [rendererMode, setRendererMode] = useState<RendererMode>("canvas2d-fallback");
   const [glContextLost, setGlContextLost] = useState(false);
 
+  const mountedRef = useRef(true);
   const imgCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  const failedImgUrlsRef = useRef<Set<string>>(new Set());
   const [imgTick, setImgTick] = useState(0);
   const meshCacheRef = useRef<Map<string, ParsedObjGeometry | "loading" | "error">>(new Map());
+  const meshAbortControllersRef = useRef<Set<AbortController>>(new Set());
   const [meshTick, setMeshTick] = useState(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      for (const ctrl of meshAbortControllersRef.current) {
+        ctrl.abort();
+      }
+      meshAbortControllersRef.current.clear();
+      meshCacheRef.current.clear();
+      for (const img of imgCacheRef.current.values()) {
+        img.onload = null;
+        img.onerror = null;
+      }
+      imgCacheRef.current.clear();
+      failedImgUrlsRef.current.clear();
+    };
+  }, []);
 
   const [tool, setTool] = useState<StudioTool>("select");
   const [followAgent, setFollowAgent] = useState(true);
@@ -257,6 +278,7 @@ export function StudioViewport3D({
         meshes?: WorkspaceMeshEntry[];
         lighting?: WorkspaceLighting;
       };
+      if (!mountedRef.current) return;
       if (data.terrain !== undefined) setWsTerrain(data.terrain);
       if (Array.isArray(data.lights)) setWsLights(data.lights);
       if (Array.isArray(data.meshes)) setWsMeshes(data.meshes);
@@ -402,15 +424,23 @@ export function StudioViewport3D({
     for (const url of urls) {
       if (meshCacheRef.current.has(url)) continue;
       meshCacheRef.current.set(url, "loading");
-      void fetch(url, { cache: "no-store" })
-        .then((r) => (r.ok ? r.text() : Promise.reject(new Error("mesh fetch"))))
+      const ctrl = new AbortController();
+      meshAbortControllersRef.current.add(ctrl);
+      void fetch(url, { cache: "no-store", signal: ctrl.signal })
+        .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`mesh fetch ${r.status}`))))
         .then((txt) => {
-          const parsed = parseObjGeometry(txt);
+          if (!mountedRef.current) return;
+          const trimmed = txt.trimStart();
+          const parsed = trimmed && !trimmed.startsWith("<") ? parseObjGeometry(txt) : null;
           meshCacheRef.current.set(url, parsed ?? "error");
           setMeshTick((t) => t + 1);
         })
         .catch(() => {
+          if (!mountedRef.current) return;
           meshCacheRef.current.set(url, "error");
+        })
+        .finally(() => {
+          meshAbortControllersRef.current.delete(ctrl);
         });
     }
   }, [effectiveMeshes, parts]);
@@ -425,11 +455,20 @@ export function StudioViewport3D({
       if (m.texture_url) urls.add(m.texture_url);
     }
     for (const url of urls) {
-      if (imgCacheRef.current.has(url)) continue;
+      if (imgCacheRef.current.has(url) || failedImgUrlsRef.current.has(url)) continue;
       const img = new Image();
-      img.onload = () => setImgTick((t) => t + 1);
+      img.onload = () => {
+        if (!mountedRef.current) return;
+        if (img.naturalWidth <= 0 || img.naturalHeight <= 0) {
+          imgCacheRef.current.delete(url);
+          failedImgUrlsRef.current.add(url);
+          return;
+        }
+        setImgTick((t) => t + 1);
+      };
       img.onerror = () => {
         imgCacheRef.current.delete(url);
+        failedImgUrlsRef.current.add(url);
       };
       img.src = url;
       imgCacheRef.current.set(url, img);
@@ -441,8 +480,12 @@ export function StudioViewport3D({
     const canvas = canvasRef.current;
     if (!canvas) return;
     const renderer = WebGL2ViewportRenderer.tryCreate(canvas, {
-      onContextLost: () => setGlContextLost(true),
-      onContextRestored: () => setGlContextLost(false),
+      onContextLost: () => {
+        if (mountedRef.current) setGlContextLost(true);
+      },
+      onContextRestored: () => {
+        if (mountedRef.current) setGlContextLost(false);
+      },
     });
     if (renderer) {
       glRendererRef.current = renderer;
@@ -451,7 +494,13 @@ export function StudioViewport3D({
       glRendererRef.current = null;
       setRendererMode("canvas2d-fallback");
     }
+    const handleWindowBlur = () => {
+      keysRef.current.clear();
+    };
+    window.addEventListener("blur", handleWindowBlur);
     return () => {
+      window.removeEventListener("blur", handleWindowBlur);
+      keysRef.current.clear();
       renderer?.dispose();
       glRendererRef.current = null;
     };

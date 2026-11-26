@@ -155,7 +155,7 @@ export function EconomyBalanceSimCard({
               <div className="font-mono text-sm font-semibold tabular-nums text-ink">
                 {report.constants.earn_per_min.toFixed(0)}/min
               </div>
-              <div className="font-mono text-[11px] tabular-nums text-ink-3">
+              <div className="text-[11px] tabular-nums text-ink-3">
                 Rebirth {report.constants.rebirth_mult.toFixed(1)}x
               </div>
             </div>
@@ -166,25 +166,25 @@ export function EconomyBalanceSimCard({
                   ? `${report.summary.time_to_rebirth_min} min`
                   : ">60 min"}
               </div>
-              <div className="font-mono text-[11px] tabular-nums text-ink-3">
+              <div className="text-[11px] tabular-nums text-ink-3">
                 Cost {report.constants.rebirth_cost.toFixed(0)}
               </div>
             </div>
             <div className="rounded-sm border border-hairline bg-board/50 px-2.5 py-2">
               <div className="text-[11px] text-ink-2">60m Completion</div>
-              <div className="font-mono text-sm font-semibold tabular-nums text-ink">
+              <div className="text-sm font-semibold tabular-nums text-ink">
                 {report.summary.f2p_completion_pct.toFixed(0)}% F2P
               </div>
-              <div className="font-mono text-[11px] tabular-nums text-ink-3">
+              <div className="text-[11px] tabular-nums text-ink-3">
                 {report.summary.pass_completion_pct.toFixed(0)}% GamePass
               </div>
             </div>
             <div className="rounded-sm border border-hairline bg-board/50 px-2.5 py-2">
               <div className="text-[11px] text-ink-2">Inflation Ratio</div>
-              <div className="font-mono text-sm font-semibold tabular-nums text-ink">
+              <div className="text-sm font-semibold tabular-nums text-ink">
                 {report.summary.inflation_ratio.toFixed(1)}x
               </div>
-              <div className="font-mono text-[11px] tabular-nums text-ink-3">
+              <div className="text-[11px] tabular-nums text-ink-3">
                 {report.summary.f2p_vs_pass_ratio.toFixed(1)}x Pass gap
               </div>
             </div>
@@ -218,7 +218,7 @@ export function EconomyBalanceSimCard({
                         title={`${pt.minute}m Pass: ${pt.pass_earned}`}
                       />
                     </div>
-                    <span className="font-mono text-[10px] tabular-nums text-ink-3">
+                    <span className="text-[10px] tabular-nums text-ink-3">
                       {pt.minute}m
                     </span>
                   </div>
@@ -238,15 +238,15 @@ export function EconomyBalanceSimCard({
               </div>
               <div className="mt-1 text-ink-2">
                 Projected: Rebirth at{" "}
-                <span className="font-mono text-ink">
+                <span className="tabular-nums text-ink">
                   {report.suggestion.projected_summary.time_to_rebirth_min ?? 16}m
                 </span>
                 , Completion{" "}
-                <span className="font-mono text-ink">
+                <span className="tabular-nums text-ink">
                   {report.suggestion.projected_summary.f2p_completion_pct.toFixed(0)}%
                 </span>
                 , Inflation{" "}
-                <span className="font-mono text-ink">
+                <span className="tabular-nums text-ink">
                   {report.suggestion.projected_summary.inflation_ratio.toFixed(1)}x
                 </span>
               </div>

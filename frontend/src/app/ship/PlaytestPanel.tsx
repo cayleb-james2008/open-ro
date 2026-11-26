@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Check, ChevronDown, CircleCheck, CircleX, Cpu, Download, ExternalLink, Play, RotateCw, ShieldCheck, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -165,7 +165,7 @@ function RunDetail({ id, run, onAppliedFix }: { id: string; run: PlaytestRun; on
                 <div className="flex flex-wrap items-center gap-2">
                   <h4 className="text-sm font-medium text-ink">Deterministic Assertions</h4>
                   {report.assertion_diff && (
-                    <span className="font-mono text-xs tabular-nums text-ink-2">
+                    <span className="text-xs tabular-nums text-ink-2">
                       {report.assertion_diff.passed}/{report.assertion_diff.total} pass
                       {report.assertion_diff.fixed > 0 ? ` · +${report.assertion_diff.fixed} fixed` : ""}
                       {report.assertion_diff.regressed > 0 ? ` · -${report.assertion_diff.regressed} regressed` : ""}
@@ -349,6 +349,10 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
   const [rerunBusy, setRerunBusy] = useState(false);
   const [fixAllBusy, setFixAllBusy] = useState(false);
   const [sandboxVerifyBusy, setSandboxVerifyBusy] = useState(false);
+  const runLockRef = useRef(false);
+  const rerunLockRef = useRef(false);
+  const fixAllLockRef = useRef(false);
+  const sandboxLockRef = useRef(false);
   const [fixAllResult, setFixAllResult] = useState<FixAllAssertionsResult | null>(null);
   const [latestAssertionDiff, setLatestAssertionDiff] = useState<AssertionDiff | null>(null);
   const [syncFirst, setSyncFirst] = useState(false);
@@ -408,78 +412,98 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
   }, [load, loadStudy, loadVerificationProof]);
 
   const verifyViaHeadlessSandbox = async () => {
-    if (!id) return;
+    if (!id || sandboxLockRef.current || running || rerunBusy || fixAllBusy) return;
+    sandboxLockRef.current = true;
     setSandboxVerifyBusy(true);
     setError("");
-    const res = await runSandbox(
-      {
-        timeout_secs: 15,
-        players: [{ user_id: 1001, name: "TestPlayer", owns_passes: [] }],
-        journey: [
-          { op: "move_player", player_id: 1001, to: [0, 3, 12] },
-          { op: "wait", ms: 50 },
-          { op: "key_down", player_id: 1001, key: "E" },
-          { op: "key_up", player_id: 1001, key: "E" },
-          { op: "assert_luau", name: "Core runtime & loop healthy", luau: "return true", expect: { truthy: true } },
-        ],
-      },
-      id,
-    );
-    setSandboxVerifyBusy(false);
-    const luneMissing = res.engine === "lune_missing" || res.diagnostics?.lune_found === false;
-    if (!res.ok && !luneMissing) {
-      setError(res.error || "Headless Sandbox verification failed.");
-      return;
+    try {
+      const res = await runSandbox(
+        {
+          timeout_secs: 15,
+          players: [{ user_id: 1001, name: "TestPlayer", owns_passes: [] }],
+          journey: [
+            { op: "move_player", player_id: 1001, to: [0, 3, 12] },
+            { op: "wait", ms: 50 },
+            { op: "key_down", player_id: 1001, key: "E" },
+            { op: "key_up", player_id: 1001, key: "E" },
+            { op: "assert_luau", name: "Core runtime & loop healthy", luau: "return true", expect: { truthy: true } },
+          ],
+        },
+        id,
+      );
+      const luneMissing = res.engine === "lune_missing" || res.diagnostics?.lune_found === false;
+      if (!res.ok && !luneMissing) {
+        setError(res.error || "Headless Sandbox verification failed.");
+        return;
+      }
+      if (luneMissing) {
+        toast.error(res.diagnostic || "Lune runtime not detected on PATH.");
+        return;
+      }
+      await Promise.all([loadStudy(), loadVerificationProof()]);
+      if (res.passed) toast.success("Headless Sandbox Core Loop verified");
+      else toast.error("Headless Sandbox finished with failures");
+    } finally {
+      sandboxLockRef.current = false;
+      setSandboxVerifyBusy(false);
     }
-    if (luneMissing) {
-      toast.error(res.diagnostic || "Lune runtime not detected on PATH.");
-      return;
-    }
-    await Promise.all([loadStudy(), loadVerificationProof()]);
-    if (res.passed) toast.success("Headless Sandbox Core Loop verified");
-    else toast.error("Headless Sandbox finished with failures");
   };
 
-  const run = async () => {
-    if (!id) return;
+  const run = async (bypassLock = false) => {
+    if (!id || (!bypassLock && (runLockRef.current || rerunBusy || fixAllBusy || sandboxVerifyBusy))) return;
+    if (!bypassLock) runLockRef.current = true;
     setRunning(true); setError("");
-    const r = await call<{ run_id: string; passed: boolean; assertion_diff?: AssertionDiff }>(projUrl(id, "/playtest"), { sync_first: syncFirst });
-    setRunning(false);
-    if (!r.ok) { setError(r.error || "The playtest could not run."); return; }
-    if (r.assertion_diff) setLatestAssertionDiff(r.assertion_diff);
-    if (r.passed) toast.success("Playtest passed"); else toast.error("Playtest failed. The report shows why.");
-    await Promise.all([load(r.run_id), loadStudy()]);
+    try {
+      const r = await call<{ run_id: string; passed: boolean; assertion_diff?: AssertionDiff }>(projUrl(id, "/playtest"), { sync_first: syncFirst });
+      if (!r.ok) { setError(r.error || "The playtest could not run."); return; }
+      if (r.assertion_diff) setLatestAssertionDiff(r.assertion_diff);
+      if (r.passed) toast.success("Playtest passed"); else toast.error("Playtest failed. The report shows why.");
+      await Promise.all([load(r.run_id), loadStudy()]);
+    } finally {
+      if (!bypassLock) runLockRef.current = false;
+      setRunning(false);
+    }
   };
 
   const rerunAssertions = async () => {
-    if (!id) return;
+    if (!id || rerunLockRef.current || running || fixAllBusy || sandboxVerifyBusy) return;
+    rerunLockRef.current = true;
     setRerunBusy(true); setError("");
-    const r = await call<{ run_id: string; passed: boolean; assertion_diff?: AssertionDiff }>(
-      projUrl(id, "/playtests/rerun"),
-      { sync_first: syncFirst },
-    );
-    setRerunBusy(false);
-    if (!r.ok) { setError(r.error || "Assertion suite re-run failed."); return; }
-    if (r.assertion_diff) setLatestAssertionDiff(r.assertion_diff);
-    if (r.passed) toast.success("All deterministic assertions passed");
-    else toast.error("Assertion suite found failures; see per-room diff");
-    await Promise.all([load(r.run_id), loadStudy()]);
+    try {
+      const r = await call<{ run_id: string; passed: boolean; assertion_diff?: AssertionDiff }>(
+        projUrl(id, "/playtests/rerun"),
+        { sync_first: syncFirst },
+      );
+      if (!r.ok) { setError(r.error || "Assertion suite re-run failed."); return; }
+      if (r.assertion_diff) setLatestAssertionDiff(r.assertion_diff);
+      if (r.passed) toast.success("All deterministic assertions passed");
+      else toast.error("Assertion suite found failures; see per-room diff");
+      await Promise.all([load(r.run_id), loadStudy()]);
+    } finally {
+      rerunLockRef.current = false;
+      setRerunBusy(false);
+    }
   };
 
   const fixAllAssertions = async () => {
-    if (!id) return;
+    if (!id || fixAllLockRef.current || running || rerunBusy || sandboxVerifyBusy) return;
+    fixAllLockRef.current = true;
     setFixAllBusy(true); setError("");
-    const r = await call<FixAllAssertionsResult>(
-      projUrl(id, "/playtests/fix-all"),
-      { offline: true, sync_first: syncFirst },
-    );
-    setFixAllBusy(false);
-    if (!r.ok) { setError(r.error || "Batch fix & export check failed."); return; }
-    setFixAllResult(r as FixAllAssertionsResult);
-    if (r.rerun?.assertion_diff) setLatestAssertionDiff(r.rerun.assertion_diff);
-    if (r.export_ready) toast.success("All failing checks fixed; place & Ship Pack ready to export");
-    else toast.error("Fixes applied, but some readiness checks still need attention");
-    await Promise.all([load(r.rerun?.run_id), loadStudy()]);
+    try {
+      const r = await call<FixAllAssertionsResult>(
+        projUrl(id, "/playtests/fix-all"),
+        { offline: true, sync_first: syncFirst },
+      );
+      if (!r.ok) { setError(r.error || "Batch fix & export check failed."); return; }
+      setFixAllResult(r as FixAllAssertionsResult);
+      if (r.rerun?.assertion_diff) setLatestAssertionDiff(r.rerun.assertion_diff);
+      if (r.export_ready) toast.success("All failing checks fixed; place & Ship Pack ready to export");
+      else toast.error("Fixes applied, but some readiness checks still need attention");
+      await Promise.all([load(r.rerun?.run_id), loadStudy()]);
+    } finally {
+      fixAllLockRef.current = false;
+      setFixAllBusy(false);
+    }
   };
 
   if (!ship.active) return null;
@@ -551,12 +575,19 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
           <Button
             variant="outline"
             size="lg"
-            disabled={running}
+            disabled={running || rerunBusy || fixAllBusy || sandboxVerifyBusy}
             onClick={async () => {
+              if (runLockRef.current || rerunBusy || fixAllBusy || sandboxVerifyBusy) return;
+              runLockRef.current = true;
               setRunning(true); setError("");
-              const l = await call<{ studio_connected?: boolean }>("/api/studio/launch-and-continue", {});
-              if (!l.ok || !l.studio_connected) { setRunning(false); setError(l.error || "Could not launch Studio."); return; }
-              await run();
+              try {
+                const l = await call<{ studio_connected?: boolean }>("/api/studio/launch-and-continue", {});
+                if (!l.ok || !l.studio_connected) { setError(l.error || "Could not launch Studio."); return; }
+                await run(true);
+              } finally {
+                runLockRef.current = false;
+                setRunning(false);
+              }
             }}
             className="active:opacity-80 max-md:min-h-11"
           >
@@ -573,13 +604,20 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
         </Button>
         <Button variant="default" size="lg" disabled={!studioOk || running || rerunBusy || fixAllBusy} onClick={() => void run()} data-run-playtest className="active:opacity-80 max-md:min-h-11"><Play className="size-4" strokeWidth={1.5} aria-hidden />{running ? "Playing…" : "Run playtest"}</Button>
         {latestAssertionDiff && (
-          <span className="font-mono text-xs tabular-nums text-ink-2" data-rerun-summary>
+          <span className="text-xs tabular-nums text-ink-2" data-rerun-summary>
             {latestAssertionDiff.passed}/{latestAssertionDiff.total} assertions
             {latestAssertionDiff.fixed > 0 ? ` (+${latestAssertionDiff.fixed} fixed)` : ""}
             {latestAssertionDiff.regressed > 0 ? ` (-${latestAssertionDiff.regressed} regressed)` : ""}
           </span>
         )}
-        {error && <p role="alert" className="w-full rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">{error}</p>}
+        {error && (
+          <div role="alert" className="flex w-full flex-wrap items-center justify-between gap-2 rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">
+            <span>{error}</span>
+            <Button variant="ghost" size="xs" onClick={() => void load()}>
+              Retry
+            </Button>
+          </div>
+        )}
       </section>
 
       {fixAllResult && (
@@ -593,7 +631,7 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
               <Pill className={fixAllResult.export_ready ? "bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg" : "bg-pill-warn-bg px-2 py-0.5 text-xs text-pill-warn-fg"}>
                 {fixAllResult.export_ready ? "Export Ready (.rbxlx / .zip)" : "Needs Manual Review"}
               </Pill>
-              <span className="font-mono text-xs tabular-nums text-ink-2">
+              <span className="text-xs tabular-nums text-ink-2">
                 {fixAllResult.fixed_ids.length} fixed · {fixAllResult.ship_pack_integrity.entry_count} ZIP entries · {fixAllResult.ship_pack_integrity.crc_verified ? "CRC-32 verified" : "ZIP warning"}
               </span>
             </div>
