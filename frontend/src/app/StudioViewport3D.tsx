@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useReducedMotion } from "@/motion";
 import {
+  Box,
   ChevronDown,
   CopyPlus,
   Crosshair,
@@ -58,6 +59,7 @@ import { buildTerrainMeshData } from "./viewport/terrainMesh";
 import {
   extractLightsFromPlace,
   extractParts,
+  extractPrefabModels,
   parseObjGeometry,
   type AgentAnimState,
   type CameraState,
@@ -234,6 +236,7 @@ export function StudioViewport3D({
   const [wsLights, setWsLights] = useState<WorkspaceLight[] | null>(null);
   const [wsMeshes, setWsMeshes] = useState<WorkspaceMeshEntry[]>([]);
   const [wsLighting, setWsLighting] = useState<WorkspaceLighting | null>(null);
+  const [wsSourceFiles, setWsSourceFiles] = useState<Record<string, string>>({});
 
   const inferredProjectId = useMemo(() => {
     if (projectIdProp) return projectIdProp;
@@ -277,12 +280,22 @@ export function StudioViewport3D({
         lights?: WorkspaceLight[];
         meshes?: WorkspaceMeshEntry[];
         lighting?: WorkspaceLighting;
+        instances?: Record<string, { source_file?: string }>;
       };
       if (!mountedRef.current) return;
       if (data.terrain !== undefined) setWsTerrain(data.terrain);
       if (Array.isArray(data.lights)) setWsLights(data.lights);
       if (Array.isArray(data.meshes)) setWsMeshes(data.meshes);
       if (data.lighting) setWsLighting(data.lighting);
+      if (data.instances && typeof data.instances === "object") {
+        const nextSources: Record<string, string> = {};
+        for (const [k, inst] of Object.entries(data.instances)) {
+          if (inst && typeof inst.source_file === "string" && inst.source_file) {
+            nextSources[k] = inst.source_file;
+          }
+        }
+        setWsSourceFiles(nextSources);
+      }
     } catch {
       /* ignore transient fetch failure */
     }
@@ -362,6 +375,11 @@ export function StudioViewport3D({
   const selectedPart = useMemo(
     () => parts.find((p) => p.path === selectedPath) || null,
     [parts, selectedPath],
+  );
+
+  const prefabModels = useMemo(
+    () => extractPrefabModels(place, parts, wsSourceFiles),
+    [place, parts, wsSourceFiles],
   );
 
   const replaySteps = useMemo<StudioActionEvent[]>(() => {
@@ -1623,6 +1641,35 @@ export function StudioViewport3D({
           onDeleteLight={handleDeleteLight}
           onSetLightingPreset={handleSetLightingPreset}
         />
+
+        {prefabModels.length > 0 && (
+          <div
+            data-viewport-models
+            className="flex flex-wrap items-center gap-1.5 border-t border-hairline pt-2"
+          >
+            <span className="text-xs font-medium text-ink-2">Models:</span>
+            {prefabModels.map((m) => {
+              const activeModel = Boolean(selectedPath && (selectedPath === m.rootPath || m.partPaths.includes(selectedPath)));
+              return (
+                <Button
+                  key={m.sourceFile}
+                  variant={activeModel ? "default" : "outline"}
+                  size="xs"
+                  data-viewport-model-chip={m.sourceFile}
+                  onClick={() => {
+                    onSelectPart?.(m.rootPath);
+                    focusOnCoords(m.focusPos, m.focusSize);
+                  }}
+                  className={activeModel ? "gap-1 max-md:min-h-11" : "gap-1 bg-surface max-md:min-h-11"}
+                >
+                  <Box className="size-3" strokeWidth={1.5} aria-hidden />
+                  <span>{m.name}</span>
+                  <span className="font-mono text-xs opacity-80">{m.nodeCount}</span>
+                </Button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Main 3D Viewport Canvas */}

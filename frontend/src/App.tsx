@@ -16,6 +16,7 @@ import { AnimatePresence, LayoutGroup, LazyMotion, MotionConfig, domMax, m, useR
 import { Toaster, toast } from "sonner";
 import { Drawer } from "vaul";
 import {
+  ArrowLeftRight,
   Check,
   Coins,
   Command,
@@ -24,6 +25,7 @@ import {
   FileDiff,
   FolderArchive,
   FolderTree,
+  FolderUp,
   FolderKanban,
   Hammer,
   Images,
@@ -122,8 +124,11 @@ import { analyzePlaceLuau, computePlaceDiff, type LuauDiagnostic } from "./app/l
 import { useShip } from "./app/ship/useShip";
 import { ProjectsRail } from "./app/ship/ProjectsRail";
 import {
+  bytesToBase64,
   call as apiCall,
   fetchProjectWorkspace,
+  importProjectModel,
+  inferPrefabFormat,
   mutateProjectScene,
   projUrl,
   writeProjectFile,
@@ -189,6 +194,9 @@ const SystemLibrary = lazy(() =>
 );
 const ToolLibraryDialog = lazy(() =>
   import("./app/ToolLibraryDialog").then((m) => ({ default: m.ToolLibraryDialog })),
+);
+const SyncConflictsCard = lazy(() =>
+  import("./app/ship/SyncConflictsCard").then((m) => ({ default: m.SyncConflictsCard })),
 );
 import {
   defaultMarketTasteSnapshot,
@@ -281,6 +289,7 @@ function workspaceBundleToPlace(ws: WorkspaceBundle): Place {
       instances[dmPath] = {
         class_name: typeof inst.class_name === "string" && inst.class_name ? inst.class_name : "Part",
         properties: inst.properties && typeof inst.properties === "object" && !Array.isArray(inst.properties) ? inst.properties : {},
+        ...(typeof inst.source_file === "string" && inst.source_file ? { source_file: inst.source_file } : {}),
       };
     }
   }
@@ -411,6 +420,7 @@ export function App() {
     }
   });
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [twoWaySyncOpen, setTwoWaySyncOpen] = useState(false);
   const [openedDialogs, setOpenedDialogs] = useState<{
     starters?: boolean;
     palette?: boolean;
@@ -419,6 +429,7 @@ export function App() {
     plugin?: boolean;
     settings?: boolean;
     wizard?: boolean;
+    twoWaySync?: boolean;
   }>(() => ({ settings: settingsOpen }));
 
   useEffect(() => {
@@ -430,7 +441,8 @@ export function App() {
         (toolLibraryOpen && !prev.toolLibrary) ||
         (pluginDialogOpen && !prev.plugin) ||
         (settingsOpen && !prev.settings) ||
-        (wizardOpen && !prev.wizard)
+        (wizardOpen && !prev.wizard) ||
+        (twoWaySyncOpen && !prev.twoWaySync)
       ) {
         return {
           starters: prev.starters || startersOpen,
@@ -440,11 +452,12 @@ export function App() {
           plugin: prev.plugin || pluginDialogOpen,
           settings: prev.settings || settingsOpen,
           wizard: prev.wizard || wizardOpen,
+          twoWaySync: prev.twoWaySync || twoWaySyncOpen,
         };
       }
       return prev;
     });
-  }, [startersOpen, paletteOpen, snapshotsOpen, toolLibraryOpen, pluginDialogOpen, settingsOpen, wizardOpen]);
+  }, [startersOpen, paletteOpen, snapshotsOpen, toolLibraryOpen, pluginDialogOpen, settingsOpen, wizardOpen, twoWaySyncOpen]);
 
   // Studio Copilot Modes, Proposals & Diffs
   const [composerMode, setComposerMode] = useState<ComposerMode>("agent");
@@ -525,6 +538,7 @@ export function App() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const chatSearchRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const modelFileInputRef = useRef<HTMLInputElement>(null);
   const menuKeyRef = useRef<HTMLButtonElement>(null);
   const wasMenuOpenRef = useRef(false);
   const showUpdateRef = useRef<HTMLButtonElement>(null);
@@ -1879,6 +1893,50 @@ export function App() {
     toast.success(`Imported ${filename} (${partN} parts, ${scrN} scripts)`);
   };
 
+  const handleImportPrefabModel = async (file: File) => {
+    const projectId = shipActiveIdRef.current;
+    if (!projectId) {
+      if (/\.rbxlx$/i.test(file.name)) {
+        const xml = await file.text();
+        await handleImportRbxlx(file.name, xml);
+        return;
+      }
+      toast.error("Open or create a project first to import .rbxmx or .rbxm prefab models.");
+      setLeftDockCollapsed(false);
+      setLeftDockTab("projects");
+      return;
+    }
+    const format = inferPrefabFormat(file.name);
+    if (!format) {
+      toast.error("Select a .rbxmx, .rbxm, or .rbxlx file.");
+      return;
+    }
+    if (file.size === 0 || file.size > 16 * 1024 * 1024) {
+      toast.error("Model file must be between 1 byte and 16 MB.");
+      return;
+    }
+    try {
+      const buf = await file.arrayBuffer();
+      const bytes_base64 = bytesToBase64(new Uint8Array(buf));
+      const res = await importProjectModel(projectId, {
+        file_name: file.name,
+        format,
+        bytes_base64,
+        target_service: "Workspace",
+      });
+      if (!res.ok) {
+        toast.error(res.error || "Could not import prefab model.");
+        return;
+      }
+      toast.success(`Imported ${res.model_path || file.name} into ${res.wired_service || "Workspace"}`);
+      await refreshPlace(projectId);
+      await ship.refresh();
+      setCenterTab("studio-3d");
+    } catch {
+      toast.error("Could not read selected model file.");
+    }
+  };
+
   const onFileInputChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -1887,6 +1945,13 @@ export function App() {
       (xml) => void handleImportRbxlx(file.name, xml),
       () => toast.error("Could not read selected file."),
     );
+  };
+
+  const onModelInputChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    void handleImportPrefabModel(file);
   };
 
   const onAppDragOver = (e: DragEvent<HTMLDivElement>) => {
@@ -1903,8 +1968,12 @@ export function App() {
   const onAppDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setDragActive(false);
-    const file = [...e.dataTransfer.files].find((f) => /\.(rbxlx|xml)$/i.test(f.name)) || e.dataTransfer.files[0];
+    const file = [...e.dataTransfer.files].find((f) => /\.(rbxmx|rbxm|rbxlx|xml)$/i.test(f.name)) || e.dataTransfer.files[0];
     if (!file) return;
+    if (/\.(rbxmx|rbxm)$/i.test(file.name)) {
+      void handleImportPrefabModel(file);
+      return;
+    }
     file.text().then(
       (xml) => void handleImportRbxlx(file.name, xml),
       () => toast.error("Could not read dropped file."),
@@ -2901,7 +2970,7 @@ export function App() {
 
       {/* Main Dock Scroll Region */}
       {leftDockTab === "projects" ? (
-        <ProjectsRail ship={ship} studioOk={studioOk} />
+        <ProjectsRail ship={ship} studioOk={studioOk} onOpenTwoWaySync={() => setTwoWaySyncOpen(true)} />
       ) : leftDockTab === "explorer" ? (
         <LeftExplorerTree
           place={place}
@@ -2922,6 +2991,7 @@ export function App() {
           onOpenScript={(p) => handleOpenScriptInCodeDiff(p)}
           onAttachContext={handleToggleContextPath}
           onRefreshPlace={() => void refreshPlace()}
+          onImportModel={() => modelFileInputRef.current?.click()}
           onSelectLighting={() => {
             setSelectedPath("Lighting");
             setBottomDrawerTab("properties");
@@ -3165,17 +3235,30 @@ export function App() {
           )}
         </SegmentedControl>
 
-        {!narrow && (
+        <div className="flex items-center gap-1.5">
           <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => setRightDockCollapsed(true)}
-            aria-label="Collapse Workbench"
-            className="size-8 text-ink-2 hover:text-ink"
+            variant="outline"
+            size="xs"
+            data-studio-sync-toolbar-btn
+            onClick={() => setTwoWaySyncOpen(true)}
+            aria-label="Two-Way Studio Sync"
+            className="gap-1 bg-surface max-md:min-h-11"
           >
-            <PanelRightClose className="size-3.5" strokeWidth={1.5} aria-hidden />
+            <ArrowLeftRight className="size-3.5" strokeWidth={1.5} aria-hidden />
+            <span>Two-Way Sync</span>
           </Button>
-        )}
+          {!narrow && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => setRightDockCollapsed(true)}
+              aria-label="Collapse Workbench"
+              className="size-8 text-ink-2 hover:text-ink"
+            >
+              <PanelRightClose className="size-3.5" strokeWidth={1.5} aria-hidden />
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Active Workbench Surface */}
@@ -3264,6 +3347,7 @@ export function App() {
               onInstalledMonetization={() => { void refreshPlace(); }}
               onRunPlaytest={() => handleRunStudioPlaytest()}
               onOpenCodeDiff={(p) => handleOpenScriptInCodeDiff(p)}
+              onOpenViewport={() => setCenterTab("studio-3d")}
             />
           ) : (
             <CodeDiffWorkbench
@@ -3610,6 +3694,14 @@ export function App() {
         hidden
         onChange={onFileInputChange}
       />
+      <input
+        ref={modelFileInputRef}
+        type="file"
+        accept=".rbxmx,.rbxm,.rbxlx"
+        hidden
+        data-app-import-model-input
+        onChange={onModelInputChange}
+      />
 
       {dragActive && (
         <div
@@ -3618,8 +3710,8 @@ export function App() {
         >
           <div className="flex flex-col items-center gap-2 rounded-panel border-2 border-dashed border-blue bg-surface px-8 py-6 text-center shadow-lift">
             <Upload className="size-6 text-blue" strokeWidth={1.5} aria-hidden />
-            <p className="text-base font-medium text-ink">Drop .rbxlx XML file to import</p>
-            <p className="text-sm text-ink-2">Parses Workspace parts, CFrame/Size/Color, and Luau scripts directly into Studio.</p>
+            <p className="text-base font-medium text-ink">Drop .rbxlx, .rbxmx, or .rbxm file to import</p>
+            <p className="text-sm text-ink-2">Parses Workspace parts, CFrame/Size/Color, prefab models, and Luau scripts directly into Studio.</p>
           </div>
         </div>
       )}
@@ -3814,6 +3906,16 @@ export function App() {
                   >
                     <Upload className="size-3.5" strokeWidth={1.5} aria-hidden />
                     <span>Import .rbxlx</span>
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    data-menu-import-model
+                    onClick={() => modelFileInputRef.current?.click()}
+                    className="w-full justify-start gap-2"
+                  >
+                    <FolderUp className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    <span>Import Model</span>
                   </Button>
                 </Popover.Content>
               </Popover.Portal>
@@ -4124,6 +4226,44 @@ export function App() {
               onDoneFocusComposer={() => inputRef.current?.focus()}
             />
           </Suspense>
+        )}
+        {(twoWaySyncOpen || openedDialogs.twoWaySync) && (
+          <MorphingDialog transition={dialogSpring} open={twoWaySyncOpen} onOpenChange={setTwoWaySyncOpen}>
+            <MorphingDialogContainer>
+              <MorphingDialogContent
+                data-two-way-sync-dialog
+                className="relative mx-3 flex max-h-[86dvh] w-full max-w-[780px] flex-col gap-4 overflow-y-auto rounded-dialog border border-hairline bg-surface p-5 text-ink shadow-lift"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <MorphingDialogTitle className="font-heading text-title font-semibold">
+                      Two-Way Studio Sync
+                    </MorphingDialogTitle>
+                    <MorphingDialogDescription className="mt-1 text-sm text-ink-2">
+                      Pull edits from live Roblox Studio into your project, review 3-way diffs, and resolve conflicts.
+                    </MorphingDialogDescription>
+                  </div>
+                  <MorphingDialogClose
+                    aria-label="Close"
+                    className="static inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-hairline bg-surface px-3 text-sm font-medium text-ink outline-none hover:bg-board focus-visible:ring-2 focus-visible:ring-focus"
+                  >
+                    Close
+                  </MorphingDialogClose>
+                </div>
+                <Suspense fallback={<div className="p-4 text-sm text-ink-2">Loading Studio sync…</div>}>
+                  <SyncConflictsCard
+                    projectId={ship.activeId}
+                    studioOk={studioOk}
+                    autoPullOnMount
+                    onResolved={async () => {
+                      await refreshPlace(ship.activeId);
+                      await ship.refresh();
+                    }}
+                  />
+                </Suspense>
+              </MorphingDialogContent>
+            </MorphingDialogContainer>
+          </MorphingDialog>
         )}
         <Toaster
           position="bottom-right"

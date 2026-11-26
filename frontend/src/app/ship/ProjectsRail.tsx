@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
-import { FolderOpen, FolderPlus, Hammer, RefreshCw, ScanSearch, UploadCloud } from "lucide-react";
+import { ArrowLeftRight, FolderOpen, FolderPlus, Hammer, RefreshCw, ScanSearch, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Pill } from "@/components/kibo-ui/pill";
@@ -100,7 +100,15 @@ function Count({ label, value, tone }: { label: string; value: number; tone: str
 }
 
 /** The left dock's Projects section: list, create/open, and the open project's build and Studio sync. */
-export function ProjectsRail({ ship, studioOk }: { ship: Ship; studioOk: boolean }) {
+export function ProjectsRail({
+  ship,
+  studioOk,
+  onOpenTwoWaySync,
+}: {
+  ship: Ship;
+  studioOk: boolean;
+  onOpenTwoWaySync?: () => void;
+}) {
   const { projects, active, busy, build, diff, sync, detail } = ship;
   const lastBuild = build ?? active?.last_build ?? null;
   const syncBlocked = !studioOk || !active;
@@ -160,7 +168,12 @@ export function ProjectsRail({ ship, studioOk }: { ship: Ship; studioOk: boolean
                 <Button variant="default" size="lg" disabled={!!busy} onClick={() => void ship.buildNow()} className="max-md:min-h-11"><Hammer className="size-4" strokeWidth={1.5} aria-hidden />{busy === "build" ? "Building…" : "Build"}</Button>
                 <Button variant="outline" size="lg" disabled={!!busy || syncBlocked} onClick={() => void ship.checkChanges()} className="max-md:min-h-11"><ScanSearch className="size-4" strokeWidth={1.5} aria-hidden />{busy === "diff" ? "Comparing…" : "Compare"}</Button>
               </div>
-              <Button variant="outline" size="lg" disabled={!!busy || syncBlocked} onClick={() => void ship.syncNow(false)} className="w-full max-md:min-h-11"><UploadCloud className="size-4" strokeWidth={1.5} aria-hidden />{busy === "sync" ? "Sending to Studio…" : "Send to Studio"}</Button>
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant="outline" size="lg" disabled={!!busy || syncBlocked} onClick={() => void ship.syncNow(false)} className="max-md:min-h-11"><UploadCloud className="size-4" strokeWidth={1.5} aria-hidden />{busy === "sync" ? "Sending…" : "Send to Studio"}</Button>
+                {onOpenTwoWaySync && (
+                  <Button variant="outline" size="lg" onClick={onOpenTwoWaySync} data-projects-two-way-sync className="max-md:min-h-11"><ArrowLeftRight className="size-4" strokeWidth={1.5} aria-hidden />Two-Way Sync</Button>
+                )}
+              </div>
               {!studioOk && (
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-sm text-ink-2">Studio is not connected.</span>

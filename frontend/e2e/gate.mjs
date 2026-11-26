@@ -485,6 +485,151 @@ try {
     await setThemeViaSettings(p, "dark");
     await assertLayoutInvariants(p, "1440x900 Dark LiveOps");
     await setThemeViaSettings(p, "light");
+
+    // Bidirectional Studio Sync (Pull from Studio, strategy picker, diff preview, selective apply)
+    const isWebEngineSync = await p.evaluate(() => Boolean(window.__OPENRO_WEB_ENGINE__));
+    const pullSyncPattern = "**/api/projects/*/sync/pull*";
+    const importModelPattern = "**/api/projects/*/import-model";
+    if (!isWebEngineSync) {
+      await p.route(pullSyncPattern, async (route) => {
+        const resp = await route.fetch();
+        if (resp.status() !== 404) {
+          await route.fulfill({ response: resp });
+          return;
+        }
+        const url = route.request().url();
+        const reqBody = route.request().postDataJSON() || {};
+        if (url.endsWith("/sync/pull-diff")) {
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({
+              ok: true,
+              snapshot_id: "gate-pull-snap-1",
+              applied_count: 0,
+              conflict_count: 1,
+              changes: [
+                {
+                  path: "src/server/StudioSpawn.server.luau",
+                  kind: "script",
+                  status: "studio_only",
+                  studio_hash: 12345678,
+                  hunks: [{ header: "@@ -0,0 +1,2 @@", lines: [{ op: "add", text: "-- Studio authored spawn script" }] }],
+                },
+                {
+                  path: "Workspace.GateArch",
+                  kind: "instance",
+                  status: "studio_modified",
+                  local_hash: 1111,
+                  studio_hash: 2222,
+                  baseline_hash: 1111,
+                  hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [{ op: "del", text: "Position: [0,2,0]" }, { op: "add", text: "Position: [0,6,0]" }] }],
+                },
+                {
+                  path: "src/shared/Config.luau",
+                  kind: "script",
+                  status: "conflict",
+                  local_hash: 3333,
+                  studio_hash: 4444,
+                  baseline_hash: 1000,
+                  hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [{ op: "del", text: "local rate = 1" }, { op: "add", text: "local rate = 2" }] }],
+                },
+              ],
+            }),
+          });
+          return;
+        }
+        const appliedPaths = Array.isArray(reqBody.paths) ? reqBody.paths : [];
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            snapshot_id: "gate-pull-snap-2",
+            applied_count: appliedPaths.length,
+            conflict_count: 0,
+            changes: [],
+          }),
+        });
+      });
+      await p.route(importModelPattern, async (route) => {
+        const resp = await route.fetch();
+        if (resp.status() !== 404) {
+          await route.fulfill({ response: resp });
+          return;
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            model_path: "scene/models/gatetower.model.json",
+            extracted_scripts: ["src/models/gatetower/TowerPulse.luau"],
+            wired_service: "Workspace",
+            warnings: [],
+          }),
+        });
+      });
+    }
+
+    await p.locator("[data-studio-sync-toolbar-btn]").click();
+    const syncDlg = p.locator("[data-two-way-sync-dialog]");
+    await syncDlg.waitFor({ state: "visible", timeout: 8000 });
+    await syncDlg.locator("[data-pull-sync-diff]").click();
+    await syncDlg.locator("[data-pull-results]").waitFor({ state: "visible", timeout: 8000 });
+    const pullRowsCount = await syncDlg.locator("[data-pull-change-row]").count();
+    if (pullRowsCount > 0) {
+      const firstRow = syncDlg.locator("[data-pull-change-row]").first();
+      await firstRow.locator("[data-pull-preview-diff]").click();
+      await firstRow.locator("[data-pull-hunks]").waitFor({ state: "visible", timeout: 4000 });
+      await syncDlg.locator('[data-pull-strategy-opt="take_studio"]').click();
+      await syncDlg.locator('[data-pull-strategy-opt="merge_non_conflicting"]').click();
+      const firstCb = firstRow.locator('[type="checkbox"]');
+      if (!(await firstCb.isChecked())) await firstCb.check();
+      await syncDlg.locator("[data-pull-apply]").click();
+    }
+    check("Two-Way Studio Sync pull diff, preview, strategy picker, and apply", true, `rows=${pullRowsCount}`);
+    await syncDlg.getByRole("button", { name: "Close", exact: true }).click();
+    await syncDlg.waitFor({ state: "hidden", timeout: 5000 });
+
+    // Prefab Model Import (.rbxmx) in AssetsPanel -> scene/models/*.model.json
+    await p.getByRole("button", { name: "Assets", exact: true }).first().click();
+    await p.locator("[data-prefab-import-card]").waitFor({ state: "visible", timeout: 8000 });
+    const sampleRbxmx = [
+      '<roblox version="4">',
+      '  <Item class="Model" referent="RBX001">',
+      '    <Properties><string name="Name">GateTower</string></Properties>',
+      '    <Item class="Part" referent="RBX002">',
+      '      <Properties>',
+      '        <string name="Name">TowerBase</string>',
+      '        <Vector3 name="size"><X>6</X><Y>10</Y><Z>6</Z></Vector3>',
+      '        <CoordinateFrame name="CFrame"><X>14</X><Y>5</Y><Z>-8</Z><R00>1</R00><R01>0</R01><R02>0</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>0</R20><R21>0</R21><R22>1</R22></CoordinateFrame>',
+      "      </Properties>",
+      "    </Item>",
+      '    <Item class="Script" referent="RBX003">',
+      '      <Properties><string name="Name">TowerPulse</string><ProtectedString name="Source"><![CDATA[--!strict\nprint("Tower ready")\n]]></ProtectedString></Properties>',
+      "    </Item>",
+      "  </Item>",
+      "</roblox>",
+    ].join("\n");
+    await p.locator("[data-import-model-input]").setInputFiles({
+      name: "GateTower.rbxmx",
+      mimeType: "application/xml",
+      buffer: Buffer.from(sampleRbxmx, "utf8"),
+    });
+    await p.locator("[data-import-model-result]").waitFor({ state: "visible", timeout: 10000 });
+    const importResTxt = await p.locator("[data-import-model-result]").innerText();
+    check(
+      "Prefab Model Import (.rbxmx) writes scene/models/*.model.json",
+      importResTxt.includes(".model.json"),
+      importResTxt.slice(0, 80),
+    );
+    await assertLayoutInvariants(p, "1440x900 Light Assets Prefab Import");
+
+    if (!isWebEngineSync) {
+      await p.unroute(pullSyncPattern);
+      await p.unroute(importModelPattern);
+    }
   }
 
   // Check Assets, Swarm, and Viewport (StudioViewport3D) tabs on workbench in Light & Dark

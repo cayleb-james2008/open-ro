@@ -310,6 +310,9 @@ export function parseRbxlxXml(xml: string): { ok: true; gameName: string; place:
   if (!trimmed || !trimmed.includes("<roblox")) {
     return { ok: false, error: "File does not look like a Roblox Studio XML (.rbxlx) document." };
   }
+  if (/<!DOCTYPE|<!ENTITY/i.test(trimmed)) {
+    return { ok: false, error: "Rejected XML document containing DOCTYPE or ENTITY declarations." };
+  }
   if (typeof DOMParser === "undefined") {
     return { ok: false, error: "Browser XML parser is unavailable." };
   }

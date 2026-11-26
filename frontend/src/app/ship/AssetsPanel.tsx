@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { toast } from "sonner";
-import { Box, Clock, CloudUpload, Image as ImageIcon, Lock, Music, Search, ShieldCheck, ShieldOff } from "lucide-react";
+import { Box, Clock, CloudUpload, FolderUp, Image as ImageIcon, Lock, Music, Search, ShieldCheck, ShieldOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Pill } from "@/components/kibo-ui/pill";
@@ -9,8 +9,22 @@ import { ProgressCircle } from "@/components/ProgressCircle/ProgressCircle";
 import { SlidingNumber } from "@/components/ui/sliding-number";
 import { MorphingDialog, MorphingDialogClose, MorphingDialogContainer, MorphingDialogContent, MorphingDialogDescription, MorphingDialogTitle, MorphingDialogTrigger } from "@/components/ui/morphing-dialog";
 import { open as dialogSpring } from "@/motion";
-import { call, enc, prettyBytes, projUrl, type AssetFile, type UploadResult } from "./api";
+import {
+  bytesToBase64,
+  call,
+  enc,
+  importProjectModel,
+  inferPrefabFormat,
+  prettyBytes,
+  projUrl,
+  type AssetFile,
+  type ImportModelResponse,
+  type UploadResult,
+} from "./api";
 import type { Ship } from "./useShip";
+
+const PREFAB_TARGET_SERVICES = ["Workspace", "ReplicatedStorage", "ServerStorage", "StarterGui"] as const;
+const MAX_PREFAB_BYTES = 16 * 1024 * 1024;
 
 type AssetFilter = "all" | "cards" | "weapons" | "audio" | "3d" | "pending";
 
@@ -46,7 +60,17 @@ function Tally({ label, value, tone }: { label: string; value: number; tone: str
   );
 }
 
-export function AssetsPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSettings: () => void }) {
+export function AssetsPanel({
+  ship,
+  onOpenSettings,
+  onImportedModel,
+  onOpenViewport,
+}: {
+  ship: Ship;
+  onOpenSettings: () => void;
+  onImportedModel?: () => Promise<void> | void;
+  onOpenViewport?: () => void;
+}) {
   const { active, cloud } = ship;
   const [files, setFiles] = useState<AssetFile[] | null>(null);
   const [error, setError] = useState("");
@@ -56,6 +80,11 @@ export function AssetsPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSettin
   const [uploading, setUploading] = useState(false);
   const [results, setResults] = useState<UploadResult[] | null>(null);
   const [note, setNote] = useState("");
+  const [importingModel, setImportingModel] = useState(false);
+  const [importTargetService, setImportTargetService] = useState<(typeof PREFAB_TARGET_SERVICES)[number]>("Workspace");
+  const [importError, setImportError] = useState("");
+  const [importResult, setImportResult] = useState<ImportModelResponse | null>(null);
+  const modelFileInputRef = useRef<HTMLInputElement>(null);
   const poll = useRef<number | null>(null);
   const id = active?.id;
 
@@ -112,9 +141,167 @@ export function AssetsPanel({ ship, onOpenSettings }: { ship: Ship; onOpenSettin
     await load(); await ship.refresh();
   };
 
+  const handleModelFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !id) return;
+    const format = inferPrefabFormat(file.name);
+    if (!format) {
+      const msg = "Select a .rbxmx, .rbxm, or .rbxlx file.";
+      setImportError(msg);
+      toast.error(msg);
+      return;
+    }
+    if (file.size === 0 || file.size > MAX_PREFAB_BYTES) {
+      const msg = "Model file must be between 1 byte and 16 MB.";
+      setImportError(msg);
+      toast.error(msg);
+      return;
+    }
+    setImportingModel(true);
+    setImportError("");
+    try {
+      const buf = await file.arrayBuffer();
+      const bytes_base64 = bytesToBase64(new Uint8Array(buf));
+      const res = await importProjectModel(id, {
+        file_name: file.name,
+        format,
+        bytes_base64,
+        target_service: importTargetService,
+      });
+      if (!res.ok) {
+        const msg = res.error || "Could not import prefab model.";
+        setImportError(msg);
+        toast.error(msg);
+        return;
+      }
+      const imported: ImportModelResponse = {
+        ok: true,
+        model_path: res.model_path || "",
+        extracted_scripts: Array.isArray(res.extracted_scripts) ? res.extracted_scripts : [],
+        wired_service: res.wired_service || importTargetService,
+        warnings: Array.isArray(res.warnings) ? res.warnings : [],
+      };
+      setImportResult(imported);
+      toast.success(`Imported ${imported.model_path} into ${imported.wired_service}`);
+      await load();
+      await ship.refresh();
+      await onImportedModel?.();
+    } catch {
+      const msg = "Could not read selected model file.";
+      setImportError(msg);
+      toast.error(msg);
+    } finally {
+      setImportingModel(false);
+    }
+  };
+
   if (!active) return null;
   return (
     <div className="flex flex-col gap-4" data-panel="assets">
+      <section
+        aria-label="Prefab Model Import"
+        data-prefab-import-card
+        className="card-stock flex flex-col gap-3 p-4"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <Box className="size-4 text-blue" strokeWidth={1.5} aria-hidden />
+              <h3 className="font-heading text-ui font-medium text-ink">
+                Prefab Model Import (.rbxmx / .rbxm / .rbxlx)
+              </h3>
+            </div>
+            <p className="mt-0.5 text-xs text-ink-2">
+              Decompose Roblox model or place files into reusable scene/models/*.model.json prefabs and extracted Luau scripts, wired into default.project.json.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              ref={modelFileInputRef}
+              type="file"
+              accept=".rbxmx,.rbxm,.rbxlx"
+              hidden
+              data-import-model-input
+              onChange={(ev) => void handleModelFileChange(ev)}
+            />
+            <Button
+              variant="default"
+              size="sm"
+              loading={importingModel}
+              onClick={() => modelFileInputRef.current?.click()}
+              data-import-model-btn
+              className="max-md:min-h-11"
+            >
+              <FolderUp className="size-3.5" strokeWidth={1.5} aria-hidden />
+              Import Model
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-ink-2">Target service:</span>
+          <SegmentedControl aria-label="Target service for imported model" size="sm" data-import-target-service className="max-w-full flex-wrap">
+            {PREFAB_TARGET_SERVICES.map((svc) => (
+              <SegmentedControlItem
+                key={svc}
+                data-checked={importTargetService === svc ? "" : undefined}
+                aria-pressed={importTargetService === svc}
+                onClick={() => setImportTargetService(svc)}
+                className="max-md:!h-11 max-md:px-2"
+              >
+                {svc}
+              </SegmentedControlItem>
+            ))}
+          </SegmentedControl>
+        </div>
+
+        {importError && (
+          <p role="alert" data-import-model-error className="rounded-sm bg-pill-pro-bg px-3 py-2 text-xs text-pill-pro-fg">
+            {importError}
+          </p>
+        )}
+
+        {importResult && (
+          <div
+            data-import-model-result
+            className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-board/45 px-3 py-2 text-xs"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg">Imported</Pill>
+                <code className="font-mono text-xs text-ink">{importResult.model_path}</code>
+                <span className="text-ink-2">wired to {importResult.wired_service}</span>
+              </div>
+              {onOpenViewport && (
+                <Button
+                  variant="outline"
+                  size="xs"
+                  data-import-open-viewport
+                  onClick={onOpenViewport}
+                  className="bg-surface max-md:min-h-11"
+                >
+                  View in 3D
+                </Button>
+              )}
+            </div>
+            {importResult.extracted_scripts.length > 0 && (
+              <div className="text-ink-2">
+                Extracted scripts:{" "}
+                <span className="font-mono text-ink">{importResult.extracted_scripts.join(", ")}</span>
+              </div>
+            )}
+            {importResult.warnings.length > 0 && (
+              <ul className="flex flex-col gap-0.5 text-pill-warn-fg">
+                {importResult.warnings.map((w, wi) => (
+                  <li key={wi}>{w}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </section>
+
       <section aria-label="Upload queue" className="card-stock flex flex-col gap-3 p-4">
         <div className="flex flex-wrap gap-2">
           <Tally label="files" value={tally.files} tone="bg-pill-inactive-bg text-pill-inactive-fg" />

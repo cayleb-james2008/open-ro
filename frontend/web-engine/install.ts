@@ -179,6 +179,19 @@ type WebLiveOpsState = {
   revSeq: number;
 };
 
+type WebProjectSyncBaseline = {
+  snapshot_id: string;
+  scripts: Record<string, number>;
+  instances: Record<string, number>;
+  lighting_hash: number;
+};
+
+type WebProjectStudioMirror = {
+  scripts: Record<string, string>;
+  instances: Record<string, { class_name: string; properties: Record<string, unknown>; source_file?: string }>;
+  lighting: WebProjectLighting;
+};
+
 type WebProject = {
   id: string;
   name: string;
@@ -192,6 +205,8 @@ type WebProject = {
   sceneUndo: WebProjectSceneSnapshot[];
   sceneRedo: WebProjectSceneSnapshot[];
   liveops?: WebLiveOpsState;
+  syncBaseline?: WebProjectSyncBaseline;
+  studioMirror?: WebProjectStudioMirror;
 };
 
 type EngineState = {
@@ -6093,6 +6108,537 @@ export function installWebEngine() {
           top_sinks,
           alerts,
           updated_at: new Date().toISOString(),
+        });
+      }
+
+      const hash31Web = (s: string): number => {
+        let h = 0x811c9dc5;
+        for (let i = 0; i < s.length; i++) {
+          h ^= s.charCodeAt(i);
+          h = Math.imul(h, 0x01000193) >>> 0;
+        }
+        return h >>> 0;
+      };
+
+      const cloneJsonVal = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+
+      const buildLineHunks = (beforeText: string, afterText: string) => {
+        const bLines = beforeText ? beforeText.split("\n") : [];
+        const aLines = afterText ? afterText.split("\n") : [];
+        const lines = [
+          ...bLines.slice(0, 10).map((t, i) => ({ op: "del", text: t, old_line: i + 1, new_line: null })),
+          ...aLines.slice(0, 10).map((t, i) => ({ op: "add", text: t, old_line: null, new_line: i + 1 })),
+        ];
+        return [{ header: `@@ -1,${bLines.length} +1,${aLines.length} @@`, lines }];
+      };
+
+      const ensureSyncState = () => {
+        if (!proj.studioMirror) {
+          const mirrorScripts: Record<string, string> = {};
+          for (const [k, v] of Object.entries(proj.files || {})) {
+            if (/\.luau?$/i.test(k)) mirrorScripts[k] = v;
+          }
+          proj.studioMirror = {
+            scripts: mirrorScripts,
+            instances: cloneJsonVal(proj.instances || {}),
+            lighting: cloneJsonVal(proj.lighting),
+          };
+        }
+        if (!proj.syncBaseline) {
+          const bScripts: Record<string, number> = {};
+          for (const [k, v] of Object.entries(proj.files || {})) {
+            if (/\.luau?$/i.test(k)) bScripts[k] = hash31Web(v);
+          }
+          const bInst: Record<string, number> = {};
+          for (const [k, v] of Object.entries(proj.instances || {})) {
+            bInst[k] = hash31Web(JSON.stringify({ class_name: v.class_name, properties: v.properties }));
+          }
+          proj.syncBaseline = {
+            snapshot_id: `sync-${Date.now().toString(36)}`,
+            scripts: bScripts,
+            instances: bInst,
+            lighting_hash: hash31Web(JSON.stringify(proj.lighting || {})),
+          };
+        }
+        return { mirror: proj.studioMirror, baseline: proj.syncBaseline };
+      };
+
+      const computePullChanges = () => {
+        const { mirror, baseline } = ensureSyncState();
+        const localScripts: Record<string, string> = {};
+        for (const [k, v] of Object.entries(proj.files || {})) {
+          if (/\.luau?$/i.test(k)) localScripts[k] = v;
+        }
+        const changes: Array<{
+          path: string;
+          kind: "script" | "instance" | "lighting";
+          status: "studio_only" | "studio_modified" | "conflict" | "local_only";
+          local_hash?: number;
+          studio_hash?: number;
+          baseline_hash?: number;
+          hunks: Array<Record<string, unknown>>;
+        }> = [];
+
+        const classify = (
+          inLocal: boolean,
+          inStudio: boolean,
+          localHash: number | undefined,
+          studioHash: number | undefined,
+          baseHash: number | undefined,
+        ): "studio_only" | "studio_modified" | "conflict" | "local_only" | null => {
+          if (inStudio && !inLocal) return baseHash === undefined ? "studio_only" : localHash === baseHash ? "studio_modified" : "conflict";
+          if (!inStudio && inLocal) return baseHash === undefined ? "local_only" : studioHash === baseHash ? "local_only" : "conflict";
+          if (!inStudio || !inLocal || localHash === studioHash) return null;
+          if (baseHash !== undefined) {
+            if (localHash === baseHash && studioHash !== baseHash) return "studio_modified";
+            if (studioHash === baseHash && localHash !== baseHash) return "local_only";
+          }
+          return "conflict";
+        };
+
+        for (const p of Array.from(new Set([...Object.keys(localScripts), ...Object.keys(mirror.scripts)])).sort()) {
+          const inLocal = p in localScripts;
+          const inStudio = p in mirror.scripts;
+          const lh = inLocal ? hash31Web(localScripts[p]) : undefined;
+          const sh = inStudio ? hash31Web(mirror.scripts[p]) : undefined;
+          const bh = baseline.scripts[p];
+          const status = classify(inLocal, inStudio, lh, sh, bh);
+          if (!status) continue;
+          changes.push({
+            path: p,
+            kind: "script",
+            status,
+            ...(lh !== undefined ? { local_hash: lh } : {}),
+            ...(sh !== undefined ? { studio_hash: sh } : {}),
+            ...(bh !== undefined ? { baseline_hash: bh } : {}),
+            hunks: buildLineHunks(localScripts[p] ?? "", mirror.scripts[p] ?? ""),
+          });
+        }
+
+        for (const p of Array.from(new Set([...Object.keys(proj.instances || {}), ...Object.keys(mirror.instances)])).sort()) {
+          const inLocal = p in (proj.instances || {});
+          const inStudio = p in mirror.instances;
+          const localVal = inLocal ? JSON.stringify({ class_name: proj.instances[p].class_name, properties: proj.instances[p].properties }, null, 2) : "";
+          const studioVal = inStudio ? JSON.stringify({ class_name: mirror.instances[p].class_name, properties: mirror.instances[p].properties }, null, 2) : "";
+          const lh = inLocal ? hash31Web(JSON.stringify({ class_name: proj.instances[p].class_name, properties: proj.instances[p].properties })) : undefined;
+          const sh = inStudio ? hash31Web(JSON.stringify({ class_name: mirror.instances[p].class_name, properties: mirror.instances[p].properties })) : undefined;
+          const bh = baseline.instances[p];
+          const status = classify(inLocal, inStudio, lh, sh, bh);
+          if (!status) continue;
+          changes.push({
+            path: p,
+            kind: "instance",
+            status,
+            ...(lh !== undefined ? { local_hash: lh } : {}),
+            ...(sh !== undefined ? { studio_hash: sh } : {}),
+            ...(bh !== undefined ? { baseline_hash: bh } : {}),
+            hunks: buildLineHunks(localVal, studioVal),
+          });
+        }
+
+        const localLightingStr = JSON.stringify(proj.lighting || {}, null, 2);
+        const studioLightingStr = JSON.stringify(mirror.lighting || {}, null, 2);
+        const llh = hash31Web(JSON.stringify(proj.lighting || {}));
+        const slh = hash31Web(JSON.stringify(mirror.lighting || {}));
+        const blh = baseline.lighting_hash;
+        const lStatus = classify(true, true, llh, slh, blh);
+        if (lStatus) {
+          changes.push({
+            path: "Lighting",
+            kind: "lighting",
+            status: lStatus,
+            local_hash: llh,
+            studio_hash: slh,
+            baseline_hash: blh,
+            hunks: buildLineHunks(localLightingStr, studioLightingStr),
+          });
+        }
+
+        const conflictCount = changes.filter((c) => c.status === "conflict").length;
+        return { snapshot_id: baseline.snapshot_id, changes, conflict_count: conflictCount };
+      };
+
+      if (method === "GET" && tail === "sync-conflicts") {
+        const { mirror, baseline } = ensureSyncState();
+        const conflicts: Array<Record<string, unknown>> = [];
+        for (const [k, localSrc] of Object.entries(proj.files || {})) {
+          if (!/\.luau?$/i.test(k)) continue;
+          const studioSrc = mirror.scripts[k] ?? "";
+          if (localSrc !== studioSrc) {
+            const pLines = studioSrc ? studioSrc.split("\n") : [];
+            const lLines = localSrc ? localSrc.split("\n") : [];
+            conflicts.push({
+              path: k,
+              place_path: k,
+              status: k in mirror.scripts ? "modified" : "added",
+              added_lines: lLines.length,
+              removed_lines: pLines.length,
+              local_source: localSrc,
+              place_source: studioSrc,
+              hunks: buildLineHunks(studioSrc, localSrc),
+            });
+          }
+        }
+        return jsonResponse({
+          ok: true,
+          schema: "openro.sync_conflicts.v1",
+          has_baseline: true,
+          baseline_id: baseline.snapshot_id,
+          in_sync: conflicts.length === 0,
+          conflict_count: conflicts.length,
+          conflicts,
+        });
+      }
+
+      if (method === "POST" && tail === "sync-conflicts/resolve") {
+        const action = typeof body.action === "string" ? body.action.trim() : "";
+        const rel = typeof body.path === "string" ? body.path.trim() : "";
+        if (!["accept_local", "keep_place", "backup_snapshot"].includes(action) || !isSafeRelPath(rel)) {
+          return jsonResponse({ ok: false, error: "invalid sync conflict resolve payload" }, 400);
+        }
+        const { mirror, baseline } = ensureSyncState();
+        if (action === "accept_local") {
+          if (rel in proj.files) {
+            mirror.scripts[rel] = proj.files[rel];
+            baseline.scripts[rel] = hash31Web(proj.files[rel]);
+          } else {
+            delete mirror.scripts[rel];
+            delete baseline.scripts[rel];
+          }
+        } else if (action === "keep_place") {
+          if (rel in mirror.scripts) {
+            proj.files[rel] = mirror.scripts[rel];
+            baseline.scripts[rel] = hash31Web(mirror.scripts[rel]);
+          } else {
+            delete proj.files[rel];
+            delete baseline.scripts[rel];
+          }
+        }
+        persist();
+        return jsonResponse({
+          ok: true,
+          action,
+          path: rel,
+          backup_snapshot_id: baseline.snapshot_id,
+          in_sync: true,
+          conflict_count: 0,
+          conflicts: [],
+        });
+      }
+
+      if (method === "POST" && tail === "sync/diff") {
+        const { mirror } = ensureSyncState();
+        const changes: Array<{ op: "create" | "update" | "extra"; path: string }> = [];
+        let unchanged = 0;
+        for (const p of Object.keys(proj.instances || {})) {
+          if (!(p in mirror.instances)) changes.push({ op: "create", path: p });
+          else if (JSON.stringify(proj.instances[p]) !== JSON.stringify(mirror.instances[p])) changes.push({ op: "update", path: p });
+          else unchanged++;
+        }
+        for (const p of Object.keys(mirror.instances)) {
+          if (!(p in (proj.instances || {}))) changes.push({ op: "extra", path: p });
+        }
+        return jsonResponse({
+          ok: true,
+          summary: {
+            create: changes.filter((c) => c.op === "create").length,
+            update: changes.filter((c) => c.op === "update").length,
+            unchanged,
+            extra: changes.filter((c) => c.op === "extra").length,
+          },
+          changes,
+        });
+      }
+
+      if (method === "POST" && tail === "sync") {
+        const { mirror, baseline } = ensureSyncState();
+        const prune = Boolean(body.prune);
+        let created = 0;
+        let updated = 0;
+        let deleted = 0;
+        for (const [k, v] of Object.entries(proj.files || {})) {
+          if (!/\.luau?$/i.test(k)) continue;
+          if (!(k in mirror.scripts)) created++;
+          else if (mirror.scripts[k] !== v) updated++;
+          mirror.scripts[k] = v;
+          baseline.scripts[k] = hash31Web(v);
+        }
+        for (const [k, v] of Object.entries(proj.instances || {})) {
+          if (!(k in mirror.instances)) created++;
+          else if (JSON.stringify(mirror.instances[k]) !== JSON.stringify(v)) updated++;
+          mirror.instances[k] = cloneJsonVal(v);
+          baseline.instances[k] = hash31Web(JSON.stringify({ class_name: v.class_name, properties: v.properties }));
+        }
+        if (prune) {
+          for (const k of Object.keys(mirror.instances)) {
+            if (!(k in (proj.instances || {}))) {
+              delete mirror.instances[k];
+              delete baseline.instances[k];
+              deleted++;
+            }
+          }
+        }
+        mirror.lighting = cloneJsonVal(proj.lighting);
+        baseline.lighting_hash = hash31Web(JSON.stringify(proj.lighting || {}));
+        baseline.snapshot_id = `sync-${Date.now().toString(36)}`;
+        proj.files[".openro/sync-baseline.json"] = JSON.stringify(baseline, null, 2);
+        persist();
+        return jsonResponse({
+          ok: true,
+          applied: { created, updated, deleted },
+          errors: [],
+          verify: { remaining: 0 },
+        });
+      }
+
+      if (method === "POST" && tail === "sync/pull-diff") {
+        if (body.studio_snapshot && typeof body.studio_snapshot === "object") {
+          const snap = body.studio_snapshot as Partial<WebProjectStudioMirror>;
+          const { mirror } = ensureSyncState();
+          if (snap.scripts) mirror.scripts = cloneJsonVal(snap.scripts);
+          if (snap.instances) mirror.instances = cloneJsonVal(snap.instances);
+          if (snap.lighting) mirror.lighting = cloneJsonVal(snap.lighting);
+        }
+        const diff = computePullChanges();
+        persist();
+        return jsonResponse({
+          ok: true,
+          snapshot_id: diff.snapshot_id,
+          changes: diff.changes,
+          applied_count: 0,
+          conflict_count: diff.conflict_count,
+        });
+      }
+
+      if (method === "POST" && tail === "sync/pull") {
+        const strategy = typeof body.strategy === "string" ? body.strategy : "merge_non_conflicting";
+        if (!["take_studio", "keep_local", "merge_non_conflicting"].includes(strategy)) {
+          return jsonResponse({ ok: false, error: `Invalid pull strategy: ${strategy}` }, 400);
+        }
+        const confirmOverwrite = Boolean(body.confirm_overwrite);
+        const { mirror, baseline } = ensureSyncState();
+        const before = computePullChanges();
+        const filterSet = Array.isArray(body.paths) && body.paths.length > 0
+          ? new Set(body.paths.map((x: unknown) => String(x)))
+          : null;
+        const targets = filterSet ? before.changes.filter((c) => filterSet.has(c.path)) : before.changes;
+        if (strategy === "take_studio" && !confirmOverwrite && targets.some((t) => t.status === "conflict" || t.status === "local_only")) {
+          return jsonResponse(
+            { ok: false, error: "Confirmation required: pass confirm_overwrite: true to overwrite conflicting local changes." },
+            409,
+          );
+        }
+
+        let appliedCount = 0;
+        for (const ch of targets) {
+          if (strategy === "merge_non_conflicting" && (ch.status === "conflict" || ch.status === "local_only")) {
+            continue;
+          }
+          if (strategy === "keep_local") {
+            if (ch.kind === "script") {
+              if (ch.path in proj.files) {
+                mirror.scripts[ch.path] = proj.files[ch.path];
+                baseline.scripts[ch.path] = hash31Web(proj.files[ch.path]);
+              } else {
+                delete mirror.scripts[ch.path];
+                delete baseline.scripts[ch.path];
+              }
+            } else if (ch.kind === "instance") {
+              if (ch.path in proj.instances) {
+                const inst = proj.instances[ch.path];
+                mirror.instances[ch.path] = cloneJsonVal(inst);
+                baseline.instances[ch.path] = hash31Web(JSON.stringify({ class_name: inst.class_name, properties: inst.properties }));
+              } else {
+                delete mirror.instances[ch.path];
+                delete baseline.instances[ch.path];
+              }
+            } else if (ch.kind === "lighting") {
+              mirror.lighting = cloneJsonVal(proj.lighting);
+              baseline.lighting_hash = hash31Web(JSON.stringify(proj.lighting || {}));
+            }
+            appliedCount++;
+            continue;
+          }
+
+          // take_studio or non-conflicting merge from studio
+          if (ch.kind === "script") {
+            if (ch.path in mirror.scripts) {
+              proj.files[ch.path] = mirror.scripts[ch.path];
+              baseline.scripts[ch.path] = hash31Web(mirror.scripts[ch.path]);
+            } else {
+              delete proj.files[ch.path];
+              delete baseline.scripts[ch.path];
+            }
+            appliedCount++;
+          } else if (ch.kind === "instance") {
+            if (ch.path in mirror.instances) {
+              const inst = cloneJsonVal(mirror.instances[ch.path]);
+              proj.instances[ch.path] = inst;
+              baseline.instances[ch.path] = hash31Web(JSON.stringify({ class_name: inst.class_name, properties: inst.properties }));
+            } else {
+              delete proj.instances[ch.path];
+              delete baseline.instances[ch.path];
+            }
+            appliedCount++;
+          } else if (ch.kind === "lighting") {
+            proj.lighting = cloneJsonVal(mirror.lighting);
+            baseline.lighting_hash = hash31Web(JSON.stringify(proj.lighting || {}));
+            appliedCount++;
+          }
+        }
+        baseline.snapshot_id = `sync-${Date.now().toString(36)}`;
+        proj.files[".openro/sync-baseline.json"] = JSON.stringify(baseline, null, 2);
+        const after = computePullChanges();
+        persist();
+        return jsonResponse({
+          ok: true,
+          snapshot_id: after.snapshot_id,
+          changes: after.changes,
+          applied_count: appliedCount,
+          conflict_count: after.conflict_count,
+        });
+      }
+
+      if (method === "POST" && tail === "import-model") {
+        const rawFileName = typeof body.file_name === "string" ? body.file_name.trim() : "";
+        const format = typeof body.format === "string" ? body.format.trim().toLowerCase() : "";
+        const b64 = typeof body.bytes_base64 === "string" ? body.bytes_base64.trim() : "";
+        const targetSvc = typeof body.target_service === "string" && body.target_service.trim()
+          ? body.target_service.trim()
+          : "Workspace";
+        if (!rawFileName || rawFileName.includes("..") || rawFileName.includes("/") || rawFileName.includes("\\") || rawFileName.includes("\0")) {
+          return jsonResponse({ ok: false, error: "Invalid prefab file name." }, 400);
+        }
+        if (!["rbxmx", "rbxm", "rbxlx"].includes(format)) {
+          return jsonResponse({ ok: false, error: `Unsupported model format: ${format}` }, 400);
+        }
+        if (!["Workspace", "ReplicatedStorage", "ServerStorage", "StarterGui", "StarterPack", "Lighting"].includes(targetSvc)) {
+          return jsonResponse({ ok: false, error: `Unsupported target_service: ${targetSvc}` }, 400);
+        }
+        if (!b64) {
+          return jsonResponse({ ok: false, error: "bytes_base64 is required." }, 400);
+        }
+        let decodedBin = "";
+        try {
+          decodedBin = atob(b64);
+        } catch {
+          return jsonResponse({ ok: false, error: "Invalid base64 model payload." }, 400);
+        }
+        if (decodedBin.length === 0 || decodedBin.length > 16 * 1024 * 1024) {
+          return jsonResponse({ ok: false, error: "Decoded model payload must be between 1 byte and 16 MiB." }, 400);
+        }
+
+        const baseSlug = rawFileName
+          .replace(/\.(rbxmx|rbxm|rbxlx)$/i, "")
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]+/g, "-")
+          .replace(/^-+|-+$/g, "") || "imported-model";
+        const modelPath = `scene/models/${baseSlug}.model.json`;
+        const extractedScripts: string[] = [];
+        const warnings: string[] = [];
+
+        if (format === "rbxm") {
+          if (!decodedBin.startsWith("ROBLOX!")) {
+            return jsonResponse({ ok: false, error: "Invalid binary .rbxm header: expected ROBLOX! signature." }, 400);
+          }
+          const rootName = rawFileName.replace(/\.rbxm$/i, "").replace(/[^A-Za-z0-9_ -]/g, "") || baseSlug;
+          const modelRootPath = `${targetSvc}.${rootName}`;
+          proj.instances[modelRootPath] = {
+            class_name: "Model",
+            properties: { Position: [0, 2, 0] },
+            source_file: modelPath,
+          };
+          proj.instances[`${modelRootPath}.ProxyPart`] = {
+            class_name: "Part",
+            properties: { Position: [0, 2, 0], Size: [4, 4, 4], Color: "#4E79A7", Anchored: true },
+            source_file: modelPath,
+          };
+          proj.files[modelPath] = JSON.stringify(
+            {
+              className: "Model",
+              name: rootName,
+              properties: {},
+              children: [
+                {
+                  name: "ProxyPart",
+                  className: "Part",
+                  properties: { Position: [0, 2, 0], Size: [4, 4, 4], Color: "#4E79A7", Anchored: true },
+                },
+              ],
+            },
+            null,
+            2,
+          );
+          warnings.push("Binary .rbxm imported as proxy model node in offline browser mode; desktop OpenRO parses full binary chunks.");
+        } else {
+          const bytes = new Uint8Array(decodedBin.length);
+          for (let i = 0; i < decodedBin.length; i++) bytes[i] = decodedBin.charCodeAt(i);
+          const xml = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+          if (/<!DOCTYPE|<!ENTITY/i.test(xml)) {
+            return jsonResponse({ ok: false, error: "Rejected XML document containing DOCTYPE or ENTITY declarations." }, 400);
+          }
+          const parsed = parseRbxlxXml(xml);
+          if (!parsed.ok) {
+            return jsonResponse({ ok: false, error: parsed.error }, 400);
+          }
+          const knownSvc = new Set(["Workspace", "ReplicatedStorage", "ServerStorage", "StarterGui", "StarterPlayer", "ServerScriptService", "Lighting", "SoundService"]);
+          const modelChildren: Array<{ name: string; className: string; properties: Record<string, unknown> }> = [];
+          for (const [instPath, inst] of Object.entries(parsed.place.instances || {})) {
+            const top = instPath.split(".")[0];
+            const finalPath = knownSvc.has(top) ? instPath : `${targetSvc}.${instPath}`;
+            proj.instances[finalPath] = {
+              class_name: inst.class_name || "Part",
+              properties: inst.properties || {},
+              source_file: modelPath,
+            };
+            modelChildren.push({
+              name: finalPath.split(".").pop() || "Part",
+              className: inst.class_name || "Part",
+              properties: inst.properties || {},
+            });
+          }
+          for (const [scPath, scSrc] of Object.entries(parsed.place.scripts || {})) {
+            const safeSc = scPath.replace(/[^A-Za-z0-9_./-]/g, "_").replace(/\./g, "/");
+            const outRel = `src/models/${baseSlug}/${safeSc}.luau`;
+            proj.files[outRel] = scSrc;
+            extractedScripts.push(outRel);
+          }
+          proj.files[modelPath] = JSON.stringify(
+            {
+              className: "Model",
+              name: baseSlug,
+              wiredService: targetSvc,
+              children: modelChildren,
+            },
+            null,
+            2,
+          );
+        }
+
+        // Wire into default.project.json
+        let defaultProj: Record<string, unknown> = { name: proj.name, tree: { $className: "DataModel" } };
+        if (proj.files["default.project.json"]) {
+          try {
+            defaultProj = JSON.parse(proj.files["default.project.json"]) as Record<string, unknown>;
+          } catch {
+            /* keep fallback */
+          }
+        }
+        const tree = (defaultProj.tree && typeof defaultProj.tree === "object" ? defaultProj.tree : { $className: "DataModel" }) as Record<string, unknown>;
+        const svcNode = (tree[targetSvc] && typeof tree[targetSvc] === "object" ? tree[targetSvc] : { $className: targetSvc }) as Record<string, unknown>;
+        svcNode[baseSlug] = { $path: modelPath };
+        tree[targetSvc] = svcNode;
+        defaultProj.tree = tree;
+        proj.files["default.project.json"] = JSON.stringify(defaultProj, null, 2);
+        proj.scene_revision++;
+        persist();
+
+        return jsonResponse({
+          ok: true,
+          model_path: modelPath,
+          extracted_scripts: extractedScripts,
+          wired_service: targetSvc,
+          warnings,
         });
       }
     }

@@ -1,7 +1,7 @@
 // Data contracts and runtime shape guards for OpenRO's HTTP API (/api/*).
 export type Chat = { id: string; title: string };
 export type Idea = { id: string; title: string; pitch: string; skills: string[] };
-export type PlaceInstance = { class_name?: string; properties?: Record<string, unknown> };
+export type PlaceInstance = { class_name?: string; properties?: Record<string, unknown>; source_file?: string };
 export type Place = { scripts: Record<string, string>; instances: Record<string, PlaceInstance> };
 export type ChatList = { chats: Chat[]; active: string; can_undo: boolean; can_redo?: boolean };
 export type PartPreset = "block" | "sphere" | "cylinder" | "spawn" | "jump_pad" | "kill_brick" | "decal_board";
