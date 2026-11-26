@@ -616,6 +616,124 @@ export async function call<T = Record<string, unknown>>(url: string, body?: unkn
 
 export const enc = encodeURIComponent;
 export const projUrl = (id: string, tail = "") => `/api/projects/${enc(id)}${tail}`;
+
+export type WorkspaceScriptEntry = {
+  source: string;
+  service_path?: string;
+  class_name?: string;
+  sha256?: string;
+  lines?: number;
+};
+
+export type WorkspaceInstanceEntry = {
+  class_name?: string;
+  properties?: Record<string, unknown>;
+  source_file?: string;
+};
+
+export type WorkspaceMeshEntry = {
+  name: string;
+  obj_path?: string;
+  texture_path?: string | null;
+  obj_url: string;
+  texture_url?: string | null;
+  size?: [number, number, number] | number;
+  tris?: number;
+};
+
+export type WorkspaceAtmosphere = {
+  density?: number;
+  offset?: number;
+  color?: string;
+  decay?: string;
+  glare?: number;
+  haze?: number;
+};
+
+export type WorkspaceLighting = {
+  clock_time?: number;
+  brightness?: number;
+  ambient?: string;
+  outdoor_ambient?: string;
+  fog_end?: number;
+  fog_start?: number;
+  fog_color?: string;
+  technology?: string;
+  atmosphere?: WorkspaceAtmosphere | null;
+};
+
+export type WorkspaceDiagnostic = {
+  severity: "error" | "warning" | "info" | string;
+  file?: string | null;
+  service_path?: string;
+  line: number;
+  col?: number | null;
+  message: string;
+  code: string;
+};
+
+export type WorkspaceBundle = {
+  project_id: string;
+  project_name?: string;
+  mode: string;
+  scene_revision?: number;
+  can_undo?: boolean;
+  can_redo?: boolean;
+  scripts: Record<string, WorkspaceScriptEntry>;
+  instances: Record<string, WorkspaceInstanceEntry>;
+  meshes: WorkspaceMeshEntry[];
+  lighting: WorkspaceLighting;
+  diagnostics: WorkspaceDiagnostic[];
+  skipped?: string[];
+  tree_error?: string | null;
+};
+
+export type SceneMutateOp = {
+  op: "upsert" | "delete" | "duplicate" | "set_lighting" | "undo" | "redo";
+  path?: string;
+  class_name?: string;
+  properties?: Record<string, unknown>;
+  offset?: [number, number, number];
+  new_path?: string;
+  name?: string;
+};
+
+export type SceneMutateResult = {
+  project_id?: string;
+  scene_revision?: number;
+  can_undo?: boolean;
+  can_redo?: boolean;
+  undone?: boolean;
+  redone?: boolean;
+  instances?: Record<string, WorkspaceInstanceEntry>;
+  lighting?: WorkspaceLighting;
+  modified_files?: string[];
+};
+
+export function meshAssetUrl(projectId: string, relPath: string): string {
+  return projUrl(projectId, `/mesh-asset?path=${enc(relPath)}`);
+}
+
+export async function fetchProjectWorkspace(projectId: string): Promise<Res<WorkspaceBundle>> {
+  return call<WorkspaceBundle>(projUrl(projectId, "/workspace"));
+}
+
+export async function mutateProjectScene(projectId: string, ops: SceneMutateOp[]): Promise<Res<SceneMutateResult>> {
+  return call<SceneMutateResult>(projUrl(projectId, "/scene/mutate"), { ops });
+}
+
+export async function writeProjectFile(projectId: string, path: string, content: string, expectSha256?: string): Promise<Res<{ path: string; created: boolean; bytes: number; sha256: string }>> {
+  return call(projUrl(projectId, "/file"), {
+    path,
+    content,
+    ...(expectSha256 ? { expect_sha256: expectSha256 } : {}),
+  });
+}
+
+export async function deleteProjectFile(projectId: string, path: string): Promise<Res<{ path: string; deleted: boolean }>> {
+  return call(projUrl(projectId, "/file/delete"), { path });
+}
+
 export const prettyBytes = (n: number) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 export const stamp = (at: string | number | undefined) => {
   if (at === undefined || at === null) return "";

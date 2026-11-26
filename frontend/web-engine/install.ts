@@ -78,6 +78,36 @@ type ChatSession = {
   consoleLogs?: string[];
 };
 
+type WebProjectLighting = {
+  clock_time: number;
+  brightness: number;
+  ambient: string;
+  outdoor_ambient: string;
+  fog_end: number;
+  fog_start: number;
+  fog_color: string;
+  technology: string;
+  atmosphere: { density: number; offset: number; color: string; decay: string; glare: number; haze: number } | null;
+};
+
+type WebProjectSceneSnapshot = {
+  instances: Record<string, { class_name: string; properties: Record<string, unknown>; source_file?: string }>;
+  lighting: WebProjectLighting;
+};
+
+type WebProject = {
+  id: string;
+  name: string;
+  path: string;
+  files: Record<string, string>;
+  instances: Record<string, { class_name: string; properties: Record<string, unknown>; source_file?: string }>;
+  lighting: WebProjectLighting;
+  meshes: Record<string, { name: string; obj: string; tris: number; size: [number, number, number] }>;
+  scene_revision: number;
+  sceneUndo: WebProjectSceneSnapshot[];
+  sceneRedo: WebProjectSceneSnapshot[];
+};
+
 type EngineState = {
   active: string;
   counter: number;
@@ -92,6 +122,8 @@ type EngineState = {
   installedPackIds?: string[];
   packConfigs?: Record<string, { provider?: string; base_url?: string; binary_path?: string; masked_key?: string | null }>;
   activeMarketNiche?: string;
+  activeProjectId?: string | null;
+  projects?: Record<string, WebProject>;
 };
 
 function synthesizeWavBase64(preset: string): { b64: string; bytes: number; durationMs: number; sampleRate: number } {
@@ -1085,6 +1117,63 @@ function evaluateWebEconomySim(chat: ChatRecord, overrides: any = {}) {
   };
 }
 
+function defaultWebProjects(): Record<string, WebProject> {
+  const pedestal = buildProceduralObj("pedestal");
+  return {
+    "starter-rojo": {
+      id: "starter-rojo",
+      name: "Starter Rojo Place",
+      path: "/browser-workspace/starter-rojo",
+      files: {
+        "src/server/MonetizationService.luau": `--!strict\nlocal MarketplaceService = game:GetService("MarketplaceService")\n\nlocal MonetizationService = {}\nfunction MonetizationService.Init()\n\tMarketplaceService.ProcessReceipt = function(_receiptInfo)\n\t\treturn Enum.ProductPurchaseDecision.PurchaseGranted\n\tend\nend\n\nreturn MonetizationService\n`,
+        "src/client/Main.client.luau": `--!strict\nprint("[OpenRO] Starter Rojo client ready")\n`,
+        "src/shared/Config.luau": `--!strict\nreturn { Currency = "Coins", StartingCoins = 100 }\n`,
+      },
+      instances: {
+        "Workspace.SpawnLocation": {
+          class_name: "SpawnLocation",
+          properties: { Position: [0, 0.5, 0], Size: [8, 1, 8], Color: "#2D68DF", Material: "SmoothPlastic", Anchored: true },
+          source_file: "scene/workspace.model.json",
+        },
+        "Workspace.PedestalProp": {
+          class_name: "MeshPart",
+          properties: {
+            Position: [0, 3, 12],
+            Size: [6, 6, 6],
+            Color: "#D49B26",
+            Material: "SmoothPlastic",
+            Anchored: true,
+            MeshId: "assets/meshes/pedestal.obj",
+          },
+          source_file: "scene/workspace.model.json",
+        },
+      },
+      lighting: {
+        clock_time: 14.0,
+        brightness: 2.0,
+        ambient: "#707A8A",
+        outdoor_ambient: "#8A94A6",
+        fog_end: 10000.0,
+        fog_start: 0.0,
+        fog_color: "#C8D8EA",
+        technology: "ShadowMap",
+        atmosphere: { density: 0.3, offset: 0.25, color: "#D6E6F5", decay: "#8BA3BE", glare: 0, haze: 0 },
+      },
+      meshes: {
+        "assets/meshes/pedestal.obj": {
+          name: "pedestal.obj",
+          obj: pedestal.obj,
+          tris: pedestal.triangles,
+          size: [6, 6, 6],
+        },
+      },
+      scene_revision: 1,
+      sceneUndo: [],
+      sceneRedo: [],
+    },
+  };
+}
+
 function defaultState(): EngineState {
   const id = "chat-studio-1";
   return {
@@ -1110,6 +1199,8 @@ function defaultState(): EngineState {
     localServerUrl: "http://127.0.0.1:8077",
     imageProvider: "auto",
     customAssets: [],
+    activeProjectId: null,
+    projects: defaultWebProjects(),
   };
 }
 
@@ -3725,6 +3816,302 @@ export function installWebEngine() {
         can_undo: chat.undoStack.length > 0,
         can_redo: chat.redoStack.length > 0,
       });
+    }
+
+    // Unified Rojo project workspace, scene mutation, mesh asset, and file parity handlers
+    if (method === "GET" && u.pathname === "/api/projects") {
+      if (!state.projects) state.projects = defaultWebProjects();
+      const list = Object.values(state.projects).map((pr) => ({
+        id: pr.id,
+        name: pr.name,
+        path: pr.path,
+        has_manifest: true,
+        has_rojo: true,
+        last_build: null,
+      }));
+      return jsonResponse({
+        ok: true,
+        roots: ["/browser-workspace"],
+        active: state.activeProjectId ?? null,
+        projects: list,
+      });
+    }
+    if (method === "POST" && (u.pathname === "/api/projects/open" || u.pathname === "/api/projects/create")) {
+      if (!state.projects) state.projects = defaultWebProjects();
+      const isCreate = u.pathname.endsWith("/create");
+      const rawName = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "";
+      const rawPath = typeof body.path === "string" && body.path.trim() ? body.path.trim() : "";
+      let proj: WebProject | undefined;
+      if (!isCreate && rawPath) {
+        proj = Object.values(state.projects).find((p) => p.path === rawPath || p.id === rawPath);
+      }
+      if (!proj) {
+        const baseName = rawName || rawPath.split("/").filter(Boolean).pop() || "Browser Rojo Project";
+        const slug = baseName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || `proj-${Date.now()}`;
+        const id = state.projects[slug] ? `${slug}-${Date.now().toString(36)}` : slug;
+        const baseSeed = defaultWebProjects()["starter-rojo"];
+        proj = {
+          ...JSON.parse(JSON.stringify(baseSeed)),
+          id,
+          name: baseName,
+          path: rawPath || `/browser-workspace/${id}`,
+        };
+        state.projects[id] = proj!;
+      }
+      state.activeProjectId = proj.id;
+      persist();
+      return jsonResponse(
+        {
+          ok: true,
+          project: { id: proj.id, name: proj.name, path: proj.path, has_manifest: true, has_rojo: true, last_build: null },
+        },
+        isCreate ? 201 : 200,
+      );
+    }
+
+    const projRoute = u.pathname.match(/^\/api\/projects\/([^/]+)(?:\/(.*))?$/);
+    if (projRoute) {
+      if (!state.projects) state.projects = defaultWebProjects();
+      const projId = decodeURIComponent(projRoute[1]);
+      const tail = projRoute[2] || "";
+      const proj = state.projects[projId];
+      if (!proj) return jsonResponse({ ok: false, error: `project not found: ${projId}` }, 404);
+
+      const inferRojoMeta = (relPath: string) => {
+        const fileName = (relPath.split("/").pop() || relPath).replace(/\.(server|client)?\.luau?$/i, "");
+        const class_name = /\.client\.luau?$/i.test(relPath)
+          ? "LocalScript"
+          : /\.server\.luau?$/i.test(relPath) || /^src\/server\//i.test(relPath)
+            ? "Script"
+            : "ModuleScript";
+        const service_path = /^src\/server\//i.test(relPath)
+          ? `ServerScriptService.Server.${fileName}`
+          : /^src\/client\//i.test(relPath)
+            ? `StarterPlayer.StarterPlayerScripts.Client.${fileName}`
+            : /^src\/shared\//i.test(relPath)
+              ? `ReplicatedStorage.Shared.${fileName}`
+              : `ReplicatedStorage.${fileName}`;
+        return { class_name, service_path };
+      };
+
+      const isSafeRelPath = (rel: string): boolean => {
+        const norm = rel.replace(/\\/g, "/");
+        if (!norm || norm.startsWith("/") || norm.includes("\0") || norm.includes(":")) return false;
+        const parts = norm.split("/");
+        return !parts.some((seg) => seg === "..");
+      };
+
+      if (method === "GET" && tail === "") {
+        state.activeProjectId = proj.id;
+        persist();
+        return jsonResponse({
+          ok: true,
+          project: {
+            id: proj.id,
+            name: proj.name,
+            path: proj.path,
+            has_manifest: true,
+            has_rojo: true,
+            last_build: null,
+            tree: {
+              instances: Object.keys(proj.instances).length,
+              scripts: Object.keys(proj.files).filter((k) => /\.luau?$/i.test(k)).length,
+              services: ["Workspace", "ReplicatedStorage", "ServerScriptService", "StarterPlayer", "Lighting"],
+            },
+          },
+        });
+      }
+
+      if (method === "GET" && tail === "workspace") {
+        const scripts: Record<string, { source: string; service_path: string; class_name: string; sha256: string; lines: number }> = {};
+        const pseudoPlace: PlaceState = { scripts: {}, instances: {} };
+        for (const [dmPath, inst] of Object.entries(proj.instances)) {
+          pseudoPlace.instances[dmPath] = { class_name: inst.class_name, properties: inst.properties };
+        }
+        for (const [relPath, source] of Object.entries(proj.files)) {
+          if (!/\.luau?$/i.test(relPath)) continue;
+          const meta = inferRojoMeta(relPath);
+          scripts[relPath] = {
+            source,
+            service_path: meta.service_path,
+            class_name: meta.class_name,
+            sha256: `web-${source.length}`,
+            lines: source ? source.split("\n").length : 1,
+          };
+          pseudoPlace.scripts[relPath] = source;
+        }
+        const diags = analyzePlaceLuau(pseudoPlace).map((d) => ({
+          severity: d.severity,
+          file: d.path,
+          service_path: scripts[d.path]?.service_path || d.path,
+          line: d.line,
+          col: 1,
+          message: d.message,
+          code: d.code,
+        }));
+        const meshes = Object.entries(proj.meshes || {}).map(([objPath, m]) => ({
+          name: m.name,
+          obj_url: `/api/projects/${encodeURIComponent(proj.id)}/mesh-asset?path=${encodeURIComponent(objPath)}`,
+          texture_url: null,
+          size: m.size,
+          tris: m.tris,
+          obj_path: objPath,
+          texture_path: null,
+        }));
+        return jsonResponse({
+          ok: true,
+          project_id: proj.id,
+          project_name: proj.name,
+          mode: "rojo",
+          scene_revision: proj.scene_revision,
+          can_undo: proj.sceneUndo.length > 0,
+          can_redo: proj.sceneRedo.length > 0,
+          scripts,
+          instances: proj.instances,
+          meshes,
+          lighting: proj.lighting,
+          diagnostics: diags,
+          skipped: [],
+          tree_error: null,
+        });
+      }
+
+      if (method === "GET" && tail === "mesh-asset") {
+        const rel = u.searchParams.get("path") || "";
+        if (!isSafeRelPath(rel)) {
+          return jsonResponse({ ok: false, error: "invalid or unsafe mesh asset path" }, 400);
+        }
+        const entry = proj.meshes?.[rel];
+        if (!entry) {
+          return jsonResponse({ ok: false, error: `mesh asset not found: ${rel}` }, 404);
+        }
+        return new Response(entry.obj, {
+          status: 200,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+
+      if (method === "GET" && tail === "file") {
+        const rel = u.searchParams.get("path") || "";
+        if (!isSafeRelPath(rel)) return jsonResponse({ ok: false, error: "invalid path" }, 400);
+        const content = proj.files[rel];
+        if (content === undefined) return jsonResponse({ ok: false, error: "that file does not exist" }, 404);
+        return jsonResponse({ ok: true, path: rel, content, bytes: content.length, sha256: `web-${content.length}` });
+      }
+
+      if (method === "POST" && tail === "file") {
+        const rel = typeof body.path === "string" ? body.path.trim().replace(/\\/g, "/") : "";
+        const content = typeof body.content === "string" ? body.content : null;
+        if (!isSafeRelPath(rel) || content === null) {
+          return jsonResponse({ ok: false, error: "invalid file path or content" }, 400);
+        }
+        const created = proj.files[rel] === undefined;
+        proj.files[rel] = content;
+        persist();
+        return jsonResponse({ ok: true, path: rel, created, bytes: content.length, sha256: `web-${content.length}` });
+      }
+
+      if (method === "POST" && tail === "scene/mutate") {
+        const ops = Array.isArray(body.ops) ? (body.ops as Array<Record<string, unknown>>) : [];
+        const snap = () => ({
+          instances: JSON.parse(JSON.stringify(proj.instances)),
+          lighting: JSON.parse(JSON.stringify(proj.lighting)),
+        });
+        let undone = false;
+        let redone = false;
+
+        if (body.undo === true || (ops.length === 1 && ops[0].op === "undo")) {
+          const prev = proj.sceneUndo.pop();
+          if (prev) {
+            proj.sceneRedo.push(snap());
+            proj.instances = prev.instances;
+            proj.lighting = prev.lighting;
+            proj.scene_revision++;
+            undone = true;
+          }
+        } else if (body.redo === true || (ops.length === 1 && ops[0].op === "redo")) {
+          const next = proj.sceneRedo.pop();
+          if (next) {
+            proj.sceneUndo.push(snap());
+            proj.instances = next.instances;
+            proj.lighting = next.lighting;
+            proj.scene_revision++;
+            redone = true;
+          }
+        } else if (ops.length > 0) {
+          proj.sceneUndo.push(snap());
+          proj.sceneRedo = [];
+          for (const opObj of ops) {
+            const op = String(opObj.op || "");
+            const targetPath = typeof opObj.path === "string" ? opObj.path.trim() : "";
+            if (op === "upsert" && targetPath) {
+              const cls = typeof opObj.class_name === "string" && opObj.class_name ? opObj.class_name : "Part";
+              const props =
+                opObj.properties && typeof opObj.properties === "object" && !Array.isArray(opObj.properties)
+                  ? (opObj.properties as Record<string, unknown>)
+                  : {};
+              proj.instances[targetPath] = {
+                class_name: cls,
+                properties: props,
+                source_file: "scene/workspace.model.json",
+              };
+            } else if (op === "delete" && targetPath) {
+              delete proj.instances[targetPath];
+            } else if (op === "duplicate" && targetPath && proj.instances[targetPath]) {
+              const src = proj.instances[targetPath];
+              const segs = targetPath.split(".");
+              const leaf = segs.pop() || "Part";
+              const parent = segs.join(".") || "Workspace";
+              let dupName = `${leaf}Copy`;
+              for (let i = 2; i < 500 && `${parent}.${dupName}` in proj.instances; i++) dupName = `${leaf}Copy${i}`;
+              const dupPath = typeof opObj.new_path === "string" && opObj.new_path ? opObj.new_path : `${parent}.${dupName}`;
+              const clonedProps: Record<string, unknown> = JSON.parse(JSON.stringify(src.properties || {}));
+              const offset = propVec3(opObj.offset) || [4, 0, 4];
+              const oldPos = propVec3(clonedProps.Position) || [0, 2, 0];
+              clonedProps.Position = [oldPos[0] + offset[0], oldPos[1] + offset[1], oldPos[2] + offset[2]];
+              proj.instances[dupPath] = {
+                class_name: src.class_name,
+                properties: clonedProps,
+                source_file: "scene/workspace.model.json",
+              };
+            } else if (op === "set_lighting") {
+              const lp =
+                opObj.properties && typeof opObj.properties === "object" && !Array.isArray(opObj.properties)
+                  ? (opObj.properties as Record<string, unknown>)
+                  : {};
+              const num = (a: unknown, b: unknown, fb: number) =>
+                typeof a === "number" && Number.isFinite(a) ? a : typeof b === "number" && Number.isFinite(b) ? b : fb;
+              const str = (a: unknown, b: unknown, fb: string) =>
+                typeof a === "string" && a ? a : typeof b === "string" && b ? b : fb;
+              proj.lighting = {
+                ...proj.lighting,
+                clock_time: num(lp.clock_time, lp.ClockTime, proj.lighting.clock_time),
+                brightness: num(lp.brightness, lp.Brightness, proj.lighting.brightness),
+                ambient: str(lp.ambient, lp.Ambient, proj.lighting.ambient),
+                outdoor_ambient: str(lp.outdoor_ambient, lp.OutdoorAmbient, proj.lighting.outdoor_ambient),
+                fog_end: num(lp.fog_end, lp.FogEnd, proj.lighting.fog_end),
+                fog_start: num(lp.fog_start, lp.FogStart, proj.lighting.fog_start),
+                fog_color: str(lp.fog_color, lp.FogColor, proj.lighting.fog_color),
+                technology: str(lp.technology, lp.Technology, proj.lighting.technology),
+              };
+            }
+          }
+          proj.scene_revision++;
+        }
+        persist();
+        return jsonResponse({
+          ok: true,
+          project_id: proj.id,
+          scene_revision: proj.scene_revision,
+          can_undo: proj.sceneUndo.length > 0,
+          can_redo: proj.sceneRedo.length > 0,
+          undone,
+          redone,
+          instances: proj.instances,
+          lighting: proj.lighting,
+          modified_files: ["scene/workspace.model.json", "default.project.json"],
+        });
+      }
     }
 
     return jsonResponse({ ok: false, error: "not found" }, 404);

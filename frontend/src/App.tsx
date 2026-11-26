@@ -120,7 +120,18 @@ import { CopilotComposer } from "./app/CopilotComposer";
 import { analyzePlaceLuau, computePlaceDiff, type LuauDiagnostic } from "./app/luauAudit";
 import { useShip } from "./app/ship/useShip";
 import { ProjectsRail } from "./app/ship/ProjectsRail";
-import { call as apiCall, projUrl, type CreatorHubSetupResult } from "./app/ship/api";
+import {
+  call as apiCall,
+  fetchProjectWorkspace,
+  mutateProjectScene,
+  projUrl,
+  writeProjectFile,
+  type CreatorHubSetupResult,
+  type WorkspaceBundle,
+  type WorkspaceDiagnostic,
+  type WorkspaceLighting,
+  type WorkspaceMeshEntry,
+} from "./app/ship/api";
 import { SwarmSidebarFeed } from "./app/SwarmSidebarFeed";
 import {
   createRun as createSwarmRun,
@@ -245,6 +256,76 @@ function clonePlace(p: Place | null | "error"): Place | null {
   } catch {
     return null;
   }
+}
+
+function workspaceBundleToPlace(ws: WorkspaceBundle): Place {
+  const scripts: Record<string, string> = {};
+  for (const [relPath, entry] of Object.entries(ws.scripts || {})) {
+    scripts[relPath] = typeof entry?.source === "string" ? entry.source : "";
+  }
+  const instances: Place["instances"] = {};
+  for (const [dmPath, inst] of Object.entries(ws.instances || {})) {
+    instances[dmPath] = {
+      class_name: inst?.class_name || "Part",
+      properties: inst?.properties || {},
+    };
+  }
+  return { scripts, instances };
+}
+
+function mapWorkspaceDiagnostics(diags: WorkspaceDiagnostic[]): LuauDiagnostic[] {
+  return diags
+    .filter((d) => Boolean(d && (d.file || d.service_path) && d.message))
+    .map((d) => ({
+      path: String(d.file || d.service_path || ""),
+      line: typeof d.line === "number" && Number.isFinite(d.line) ? d.line : 1,
+      severity: d.severity === "error" ? "error" : "warning",
+      code: typeof d.code === "string" ? d.code : "LUAU_CHECK",
+      message: d.message,
+    }));
+}
+
+function resolveScriptPathInWorkspace(
+  inputPath: string,
+  curPlace: Place | null | "error",
+  ws: WorkspaceBundle | null,
+): string {
+  const clean = inputPath.trim().replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
+  if (!clean) return inputPath;
+  const scripts = curPlace && curPlace !== "error" ? curPlace.scripts || {} : {};
+  if (clean in scripts) return clean;
+  if (inputPath in scripts) return inputPath;
+
+  const lower = clean.toLowerCase();
+  for (const k of Object.keys(scripts)) {
+    const kl = k.toLowerCase();
+    if (kl === lower || kl.endsWith(`/${lower}`)) return k;
+  }
+
+  if (ws?.scripts) {
+    for (const [relPath, entry] of Object.entries(ws.scripts)) {
+      if (entry?.service_path && (entry.service_path === inputPath || entry.service_path === clean)) {
+        return relPath;
+      }
+    }
+    const segs = inputPath.split(".");
+    const leaf = segs[segs.length - 1]?.toLowerCase() || "";
+    const svc = segs[0]?.toLowerCase() || "";
+    if (leaf && segs.length >= 2) {
+      for (const [relPath, entry] of Object.entries(ws.scripts)) {
+        const sp = (entry?.service_path || "").toLowerCase();
+        const fileBase = (relPath.split("/").pop() || "").replace(/\.(server|client)?\.luau?$/i, "").toLowerCase();
+        if (sp === `${svc}.${leaf}` || (sp.startsWith(`${svc}.`) && (sp.endsWith(`.${leaf}`) || fileBase === leaf))) {
+          return relPath;
+        }
+      }
+      for (const relPath of Object.keys(scripts)) {
+        const fileBase = (relPath.split("/").pop() || "").replace(/\.(server|client)?\.luau?$/i, "").toLowerCase();
+        if (fileBase === leaf) return relPath;
+      }
+    }
+  }
+  return clean;
 }
 
 export function App() {
@@ -424,6 +505,7 @@ export function App() {
   const [buildDiff, setBuildDiff] = useState<PlaceDiff | null>(null);
   const [snapshots, setSnapshots] = useState<PlaceSnapshot[]>([]);
   const [serverDiagnostics, setServerDiagnostics] = useState<LuauDiagnostic[]>([]);
+  const [projectWorkspace, setProjectWorkspace] = useState<WorkspaceBundle | null>(null);
   const [dragActive, setDragActive] = useState(false);
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -435,9 +517,13 @@ export function App() {
   const threadRef = useRef<HTMLDivElement>(null);
   const placeRef = useRef<Place | null | "error">(place);
   placeRef.current = place;
+  const projectWorkspaceRef = useRef<WorkspaceBundle | null>(projectWorkspace);
+  projectWorkspaceRef.current = projectWorkspace;
 
   const update = useUpdate(showUpdateRef);
-  const ship = useShip(!isBrowserEngine);
+  const ship = useShip(true);
+  const shipActiveIdRef = useRef<string | null>(ship.activeId);
+  shipActiveIdRef.current = ship.activeId;
 
   useEffect(() => {
     if (wasMenuOpenRef.current && !menuOpen) {
@@ -547,9 +633,43 @@ export function App() {
     }
   }, [refreshThread]);
 
-  const refreshPlace = useCallback(async (): Promise<Place | null> => {
+  const refreshPlace = useCallback(async (overrideProjectId?: string | null): Promise<Place | null> => {
+    const projId = overrideProjectId !== undefined ? overrideProjectId : shipActiveIdRef.current;
     setSyncingPlace(true);
     try {
+      if (projId) {
+        const ws = await fetchProjectWorkspace(projId);
+        if (ws.ok && ws.scripts && ws.instances) {
+          const bundle: WorkspaceBundle = {
+            project_id: ws.project_id || projId,
+            project_name: ws.project_name,
+            mode: ws.mode || "rojo",
+            scene_revision: ws.scene_revision,
+            can_undo: ws.can_undo,
+            can_redo: ws.can_redo,
+            scripts: ws.scripts,
+            instances: ws.instances,
+            meshes: ws.meshes || [],
+            lighting: ws.lighting || {},
+            diagnostics: ws.diagnostics || [],
+            skipped: ws.skipped,
+            tree_error: ws.tree_error,
+          };
+          setProjectWorkspace(bundle);
+          const unified = workspaceBundleToPlace(bundle);
+          setPlace(unified);
+          if (Array.isArray(bundle.diagnostics)) {
+            setServerDiagnostics(mapWorkspaceDiagnostics(bundle.diagnostics));
+          }
+          return unified;
+        }
+        if (ws.httpStatus !== 404) {
+          setPlace("error");
+          return null;
+        }
+      } else {
+        setProjectWorkspace(null);
+      }
       const raw = await read("/api/place-tree");
       const norm = normalizePlace(raw);
       setPlace(norm);
@@ -561,6 +681,23 @@ export function App() {
       setSyncingPlace(false);
     }
   }, []);
+
+  const prevShipProjectRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ship.loaded) return;
+    if (prevShipProjectRef.current === ship.activeId && projectWorkspaceRef.current?.project_id === ship.activeId) {
+      return;
+    }
+    const switching = prevShipProjectRef.current !== null && prevShipProjectRef.current !== ship.activeId;
+    prevShipProjectRef.current = ship.activeId;
+    if (switching) {
+      setSelectedPath(null);
+      setSelectedScriptPath(null);
+      setBuildDiff(null);
+      setLatestFileDiffs([]);
+    }
+    void refreshPlace(ship.activeId);
+  }, [refreshPlace, ship.activeId, ship.loaded]);
 
   const refreshSnapshots = useCallback(
     async (forceServer = false) => {
@@ -581,6 +718,7 @@ export function App() {
 
   const refreshDiagnostics = useCallback(
     async (forceServer = false) => {
+      if (shipActiveIdRef.current) return;
       if (!v050Ready && !forceServer) return;
       try {
         const raw = await read<{ diagnostics?: Array<Partial<LuauDiagnostic>> }>("/api/luau/check");
@@ -1058,11 +1196,13 @@ export function App() {
   }, []);
 
   const handleOpenScriptInCodeDiff = useCallback((path: string, proposalId?: string) => {
-    setSelectedScriptPath(path);
-    setSelectedPath(path);
-    setContextPaths((prev) => (prev.includes(path) ? prev : [...prev, path].slice(-8)));
+    const resolved = resolveScriptPathInWorkspace(path, placeRef.current, projectWorkspaceRef.current);
+    setSelectedScriptPath(resolved);
+    setSelectedPath(resolved);
+    setContextPaths((prev) => (prev.includes(resolved) ? prev : [...prev, resolved].slice(-8)));
     if (proposalId) setActiveProposalId(proposalId);
     setCenterTab("code-diff");
+    setRightDockCollapsed(false);
     setMobilePane("studio");
     setMenuOpen(false);
   }, []);
@@ -1518,8 +1658,112 @@ export function App() {
     }
   };
 
+  const applyProjectSceneResult = (
+    res: {
+      instances?: WorkspaceBundle["instances"];
+      lighting?: WorkspaceLighting;
+      scene_revision?: number;
+      can_undo?: boolean;
+      can_redo?: boolean;
+    },
+    beforePlace: Place | null,
+  ): Place | null => {
+    const curWs = projectWorkspaceRef.current;
+    if (curWs && res.instances) {
+      const nextWs: WorkspaceBundle = {
+        ...curWs,
+        instances: res.instances,
+        lighting: res.lighting ?? curWs.lighting,
+        scene_revision: res.scene_revision ?? curWs.scene_revision,
+        can_undo: res.can_undo ?? curWs.can_undo,
+        can_redo: res.can_redo ?? curWs.can_redo,
+      };
+      setProjectWorkspace(nextWs);
+      const updated = workspaceBundleToPlace(nextWs);
+      setPlace(updated);
+      setBuildDiff(computePlaceDiff(beforePlace, updated));
+      return updated;
+    }
+    return null;
+  };
+
+  const handleSaveLighting = async (nextLighting: WorkspaceLighting) => {
+    const projId = shipActiveIdRef.current;
+    if (!projId) return;
+    const beforePlace = clonePlace(placeRef.current);
+    const res = await mutateProjectScene(projId, [
+      { op: "set_lighting", path: "Lighting", properties: nextLighting as Record<string, unknown> },
+    ]);
+    if (res.ok) {
+      if (!applyProjectSceneResult(res, beforePlace)) {
+        await refreshPlace(projId);
+      }
+      toast.success("Saved scene lighting");
+    } else {
+      toast.error(res.error || "Could not update scene lighting.");
+    }
+  };
+
+  const handleSelectMesh = async (mesh: WorkspaceMeshEntry) => {
+    const projId = shipActiveIdRef.current;
+    const curPlace = placeRef.current && placeRef.current !== "error" ? placeRef.current : null;
+    if (curPlace) {
+      const meshPathLow = (mesh.obj_path || mesh.obj_url || "").toLowerCase();
+      const meshBase = mesh.name.replace(/\.obj$/i, "").toLowerCase();
+      const existing = Object.entries(curPlace.instances || {}).find(([dmPath, inst]) => {
+        const mid = typeof inst.properties?.MeshId === "string" ? inst.properties.MeshId.toLowerCase() : "";
+        return (
+          dmPath.startsWith("Workspace.") &&
+          ((mid && (mid.includes(meshPathLow) || mid.includes(meshBase))) ||
+            (inst.class_name === "MeshPart" && dmPath.toLowerCase().includes(meshBase)))
+        );
+      });
+      if (existing) {
+        setSelectedPath(existing[0]);
+        setCenterTab("studio-3d");
+        setBottomDrawerTab("properties");
+        setBottomDrawerOpen(true);
+        return;
+      }
+    }
+    if (!projId) return;
+    const beforePlace = clonePlace(curPlace) || { scripts: {}, instances: {} };
+    const cleanBase = mesh.name.replace(/\.obj$/i, "").replace(/[^A-Za-z0-9_]/g, "") || "MeshProp";
+    let name = cleanBase;
+    for (let i = 2; i < 200 && `Workspace.${name}` in beforePlace.instances; i++) name = `${cleanBase}${i}`;
+    const targetPath = `Workspace.${name}`;
+    const size = Array.isArray(mesh.size) && mesh.size.length >= 3 ? mesh.size : [6, 6, 6];
+    const res = await mutateProjectScene(projId, [
+      {
+        op: "upsert",
+        path: targetPath,
+        class_name: "MeshPart",
+        properties: {
+          Position: [0, Math.max(2, Number(size[1]) / 2), 8],
+          Size: size,
+          Color: "#8B939E",
+          Material: "SmoothPlastic",
+          Anchored: true,
+          MeshId: mesh.obj_path || mesh.obj_url,
+          ...(mesh.texture_path || mesh.texture_url ? { TextureID: mesh.texture_path || mesh.texture_url } : {}),
+        },
+      },
+    ]);
+    if (res.ok) {
+      applyProjectSceneResult(res, beforePlace);
+      setSelectedPath(targetPath);
+      setCenterTab("studio-3d");
+      setBottomDrawerTab("properties");
+      setBottomDrawerOpen(true);
+      toast.success(`Placed ${name} mesh in Workspace`);
+    } else {
+      toast.error(res.error || "Could not place mesh in scene.");
+    }
+  };
+
   const handleSaveInstance = async (payload: InstanceEditPayload) => {
     const beforePlace = clonePlace(placeRef.current);
+    const projId = shipActiveIdRef.current;
     const applyOptimistic = () => {
       if (!beforePlace) return;
       const updated: Place = {
@@ -1532,6 +1776,28 @@ export function App() {
       setPlace(updated);
       setBuildDiff(computePlaceDiff(beforePlace, updated));
     };
+
+    if (projId) {
+      const res = await mutateProjectScene(projId, [
+        {
+          op: "upsert",
+          path: payload.path,
+          class_name: payload.class_name,
+          properties: payload.properties,
+        },
+      ]);
+      if (res.ok) {
+        toast.success(`Saved ${payload.path} properties`);
+        if (!applyProjectSceneResult(res, beforePlace)) {
+          const afterPlace = await refreshPlace(projId);
+          if (afterPlace) setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+        }
+      } else {
+        applyOptimistic();
+        toast.error(res.error || "Could not persist scene instance on server.");
+      }
+      return;
+    }
 
     if (!v050Ready) {
       applyOptimistic();
@@ -1835,6 +2101,7 @@ export function App() {
     const beforePlace = clonePlace(placeRef.current) || { scripts: {}, instances: {} };
     const spec = buildPartPresetSpec(preset, beforePlace.instances || {});
     const fallbackPath = `Workspace.${spec.name}`;
+    const projId = shipActiveIdRef.current;
     const applyLocal = () => {
       const updated: Place = {
         scripts: { ...beforePlace.scripts },
@@ -1847,6 +2114,28 @@ export function App() {
       setSelectedPath(fallbackPath);
       setBuildDiff(computePlaceDiff(beforePlace, updated));
     };
+
+    if (projId) {
+      const res = await mutateProjectScene(projId, [
+        {
+          op: "upsert",
+          path: fallbackPath,
+          class_name: spec.class_name,
+          properties: spec.properties,
+        },
+      ]);
+      if (res.ok) {
+        setSelectedPath(fallbackPath);
+        toast.success(`Added ${fallbackPath} to Workspace`);
+        if (!applyProjectSceneResult(res, beforePlace)) {
+          const afterPlace = await refreshPlace(projId);
+          if (afterPlace) setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+        }
+      } else {
+        toast.error(res.error || "Could not create part in project scene.");
+      }
+      return;
+    }
 
     if (!v080Ready) {
       applyLocal();
@@ -1886,6 +2175,7 @@ export function App() {
   const handleDuplicatePart = async (path: string) => {
     const beforePlace = clonePlace(placeRef.current);
     if (!beforePlace || !beforePlace.instances[path]) return;
+    const projId = shipActiveIdRef.current;
 
     const applyLocal = () => {
       const src = beforePlace.instances[path];
@@ -1909,6 +2199,27 @@ export function App() {
       setBuildDiff(computePlaceDiff(beforePlace, updated));
       return dupPath;
     };
+
+    if (projId) {
+      const res = await mutateProjectScene(projId, [
+        { op: "duplicate", path, offset: [4, 0, 4] },
+      ]);
+      if (res.ok) {
+        const addedPath =
+          (res.instances &&
+            Object.keys(res.instances).find((k) => !(k in beforePlace.instances))) ||
+          path;
+        setSelectedPath(addedPath);
+        toast.success(`Duplicated ${path.split(".").pop() || path} as ${addedPath.split(".").pop() || addedPath}`);
+        if (!applyProjectSceneResult(res, beforePlace)) {
+          const afterPlace = await refreshPlace(projId);
+          if (afterPlace) setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+        }
+      } else {
+        toast.error(res.error || "Could not duplicate part in project scene.");
+      }
+      return;
+    }
 
     if (!v080Ready) {
       const dupPath = applyLocal();
@@ -1942,6 +2253,7 @@ export function App() {
   const handleDeletePart = async (path: string) => {
     const beforePlace = clonePlace(placeRef.current);
     if (!beforePlace || !beforePlace.instances[path]) return;
+    const projId = shipActiveIdRef.current;
 
     const applyLocal = () => {
       const nextInstances = { ...beforePlace.instances };
@@ -1951,6 +2263,21 @@ export function App() {
       if (selectedPath === path) setSelectedPath(null);
       setBuildDiff(computePlaceDiff(beforePlace, updated));
     };
+
+    if (projId) {
+      const res = await mutateProjectScene(projId, [{ op: "delete", path }]);
+      if (res.ok) {
+        if (selectedPath === path) setSelectedPath(null);
+        toast.success(`Deleted ${path}`);
+        if (!applyProjectSceneResult(res, beforePlace)) {
+          const afterPlace = await refreshPlace(projId);
+          if (afterPlace) setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+        }
+      } else {
+        toast.error(res.error || "Could not delete part from project scene.");
+      }
+      return;
+    }
 
     if (!v080Ready) {
       applyLocal();
@@ -1979,6 +2306,7 @@ export function App() {
 
   const handleSaveScript = async (path: string, source: string) => {
     const beforePlace = clonePlace(placeRef.current);
+    const projId = shipActiveIdRef.current;
     const localDiags = analyzePlaceLuau({ scripts: { [path]: source }, instances: beforePlace?.instances || {} });
     const applyLocal = () => {
       const base = beforePlace || { scripts: {}, instances: {} };
@@ -1990,6 +2318,27 @@ export function App() {
       setBuildDiff(computePlaceDiff(beforePlace, updated));
       setLatestFileDiffs(computeLocalScriptDiffs(beforePlace, updated));
     };
+
+    if (projId) {
+      const targetPath = resolveScriptPathInWorkspace(path, beforePlace, projectWorkspaceRef.current);
+      const res = await writeProjectFile(projId, targetPath, source);
+      if (res.ok) {
+        const short = targetPath.includes("/") ? targetPath.split("/").pop() || targetPath : targetPath.split(".").pop() || targetPath;
+        const errs = localDiags.filter((d) => d.severity === "error").length;
+        if (errs > 0) toast.error(`Saved ${short} (${errs} Luau error${errs === 1 ? "" : "s"})`);
+        else toast.success(`Saved ${short} to project`);
+        const afterPlace = await refreshPlace(projId);
+        void ship.refresh();
+        if (afterPlace) {
+          setBuildDiff(computePlaceDiff(beforePlace, afterPlace));
+          const diffs = computeLocalScriptDiffs(beforePlace, afterPlace);
+          if (diffs.length > 0) setLatestFileDiffs(diffs);
+        }
+      } else {
+        toast.error(res.error || "Could not save project Luau file.");
+      }
+      return;
+    }
 
     if (!v080Ready) {
       applyLocal();
@@ -2046,6 +2395,17 @@ export function App() {
   const handleRedo = async () => {
     const chatId = activeId || "default";
     const beforePlace = clonePlace(placeRef.current);
+    const projId = shipActiveIdRef.current;
+    if (projId && projectWorkspaceRef.current?.can_redo && !chats?.can_redo) {
+      const res = await mutateProjectScene(projId, [{ op: "redo" }]);
+      if (res.ok) {
+        applyProjectSceneResult(res, beforePlace);
+        toast.success("Redid scene mutation");
+      } else {
+        toast.error(res.error || "Nothing to redo in scene.");
+      }
+      return;
+    }
     if (!v080Ready) {
       toast.error("Redo requires OpenRO v0.8.0 or newer.");
       return;
@@ -2509,17 +2869,15 @@ export function App() {
           <MessageSquare className="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden />
           <span>Chats</span>
         </SegmentedControlItem>
-        {!isBrowserEngine && (
-          <SegmentedControlItem
-            data-checked={leftDockTab === "projects" ? "" : undefined}
-            aria-pressed={leftDockTab === "projects"}
-            onClick={() => setLeftDockTab("projects")}
-            className="flex-1 justify-center gap-1 !px-1.5 sm:text-xs max-md:!h-11"
-          >
-            <FolderKanban className="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden />
-            <span>Projects</span>
-          </SegmentedControlItem>
-        )}
+        <SegmentedControlItem
+          data-checked={leftDockTab === "projects" ? "" : undefined}
+          aria-pressed={leftDockTab === "projects"}
+          onClick={() => setLeftDockTab("projects")}
+          className="flex-1 justify-center gap-1 !px-1.5 sm:text-xs max-md:!h-11"
+        >
+          <FolderKanban className="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden />
+          <span>Projects</span>
+        </SegmentedControlItem>
       </SegmentedControl>
 
       {/* Main Dock Scroll Region */}
@@ -2536,10 +2894,24 @@ export function App() {
           buildDiff={buildDiff}
           serverDiagnostics={serverDiagnostics}
           syncing={syncingPlace}
+          projectMode={Boolean(ship.activeId)}
+          projectName={projectWorkspace?.project_name || ship.active?.name || null}
+          scriptMeta={projectWorkspace?.scripts}
+          projectMeshes={projectWorkspace?.meshes}
+          hasLighting={Boolean(projectWorkspace?.lighting)}
           onSelectPart={handleSelectPartAndInspect}
           onOpenScript={(p) => handleOpenScriptInCodeDiff(p)}
           onAttachContext={handleToggleContextPath}
           onRefreshPlace={() => void refreshPlace()}
+          onSelectLighting={() => {
+            setSelectedPath("Lighting");
+            setBottomDrawerTab("properties");
+            setBottomDrawerOpen(true);
+            setCenterTab("studio-3d");
+            setMobilePane("studio");
+            setMenuOpen(false);
+          }}
+          onSelectMesh={(mesh) => void handleSelectMesh(mesh)}
         />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-2">
@@ -2807,11 +3179,13 @@ export function App() {
               place={safePlace}
               theme={theme}
               assets={projectAssets}
+              meshes={projectWorkspace?.meshes}
+              lighting={projectWorkspace?.lighting}
               selectedPath={selectedPath}
               studioMode={studioMode}
               actions={studioActions}
               building={Boolean(building)}
-              canRedo={canRedo}
+              canRedo={canRedo || Boolean(projectWorkspace?.can_redo)}
               hideConsole
               onSelectPart={handleSelectPartAndInspect}
               onSaveInstance={handleSaveInstance}
@@ -2850,6 +3224,8 @@ export function App() {
               latestFileDiffs={latestFileDiffs}
               serverDiagnostics={serverDiagnostics}
               busy={busy}
+              projectMode={Boolean(ship.activeId)}
+              scriptMeta={projectWorkspace?.scripts}
               onSaveScript={handleSaveScript}
               onRunPlaytest={handleRunStudioPlaytest}
               onApplyProposal={handleApplyProposal}
@@ -2869,6 +3245,8 @@ export function App() {
         place={safePlace}
         selectedPath={selectedPath}
         studioActions={studioActions}
+        lighting={projectWorkspace?.lighting}
+        projectMode={Boolean(ship.activeId)}
         onSelectPath={(p) => {
           setSelectedPath(p);
           setCenterTab("studio-3d");
@@ -2876,6 +3254,7 @@ export function App() {
         onOpenScript={(p) => handleOpenScriptInCodeDiff(p)}
         onAttachContext={handleAddContextPath}
         onSaveInstance={handleSaveInstance}
+        onSaveLighting={ship.activeId ? handleSaveLighting : undefined}
         onDuplicatePart={handleDuplicatePart}
         onDeletePart={handleDeletePart}
         onInvokeStudioTool={handleInvokeStudioTool}
