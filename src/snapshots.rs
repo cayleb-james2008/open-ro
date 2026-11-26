@@ -360,6 +360,10 @@ impl SnapshotStore {
         self.snapshots.iter().find(|s| s.id == id)
     }
 
+    pub fn latest(&self) -> Option<&PlaceSnapshot> {
+        self.snapshots.last()
+    }
+
     pub fn latest_diff(&self) -> Value {
         match self.snapshots.last() {
             Some(s) => json!({

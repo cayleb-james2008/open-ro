@@ -227,9 +227,9 @@ fn main() {
         let bg_data_dir = data_dir.clone();
         let bg_env_model = env_model.clone();
         std::thread::spawn(move || {
-            openro_rs::server::prewarm_index_cache(&bg_shared);
             bg_shared.updater.start_background();
             std::thread::sleep(std::time::Duration::from_millis(200));
+            openro_rs::server::prewarm_index_cache(&bg_shared);
 
             if warmup_agy_models {
                 let _ = openro_rs::model::agy_models(false);

@@ -205,6 +205,34 @@ export type ProjectSnapshotRestoreResult = {
   snapshots?: ProjectSnapshotItem[];
   latest_verified_id?: string | null;
 };
+export type HookIntegrityIssue = {
+  id: string;
+  category: "monetization" | "spawn" | "strict_luau" | "core" | string;
+  kind: string;
+  file: string;
+  label: string;
+  detail: string;
+};
+export type HookIntegrityReport = {
+  schema?: string;
+  has_baseline: boolean;
+  baseline_snapshot_id?: string | null;
+  baseline_label?: string | null;
+  healthy: boolean;
+  missing_count: number;
+  preserved_new_scripts: string[];
+  missing_hooks: HookIntegrityIssue[];
+};
+export type HookRestoreResult = {
+  restored_id: string;
+  label?: string;
+  hooks_restored: number;
+  restored_files: string[];
+  modified_files: string[];
+  preserved_new_scripts: string[];
+  after?: HookIntegrityReport;
+  rerun?: PlaytestReport;
+};
 export type PlaytestReport = {
   run_id: string; passed: boolean; build_id?: string; mode?: string; duration_ms?: number;
   checks?: { name: string; passed: boolean; value?: unknown; error?: string | null; datamodel?: string }[];

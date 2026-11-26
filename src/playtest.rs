@@ -2804,6 +2804,8 @@ pub fn create_project_snapshot(r: &ProjectRef, body: &Value) -> Result<Reply, Re
     let scripts = collect_project_luau_map(&r.dir);
     let summary = eval_project_assertion_summary(&r.dir);
     let verified = summary["passed"].as_bool().unwrap_or(false);
+    let default_proj_raw = std::fs::read_to_string(r.dir.join("default.project.json")).ok();
+    let workspace_has_spawn = project_has_spawn_location(&scripts, default_proj_raw.as_deref());
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -2818,6 +2820,8 @@ pub fn create_project_snapshot(r: &ProjectRef, body: &Value) -> Result<Reply, Re
         "verified": verified,
         "assertion_summary": summary,
         "scripts": scripts,
+        "workspace_has_spawn": workspace_has_spawn,
+        "default_project_json": default_proj_raw,
     });
     let target = root.join(format!("{sid}.json"));
     let tmp = root.join(format!("{sid}.json.tmp-openro"));
@@ -2908,6 +2912,565 @@ pub fn restore_project_snapshot(
         "snapshots": list["snapshots"],
         "latest_verified_id": list["latest_verified_id"],
     })))
+}
+
+fn is_critical_hook_file(path: &str) -> bool {
+    let low = path.to_ascii_lowercase();
+    low.contains("monetization")
+        || low.contains("productids")
+        || low.contains("economyshop")
+        || low.contains("shopprompt")
+        || low.contains("dailyreward")
+        || low.contains("spawnguard")
+}
+
+fn has_strict_pragma(src: &str) -> bool {
+    src.lines().take(3).any(|l| l.trim() == "--!strict")
+}
+
+fn project_has_spawn_location(
+    scripts: &std::collections::BTreeMap<String, String>,
+    default_proj_raw: Option<&str>,
+) -> bool {
+    if scripts.values().any(|s| s.contains("SpawnLocation")) {
+        return true;
+    }
+    default_proj_raw.is_some_and(|raw| raw.contains("SpawnLocation"))
+}
+
+fn extract_nonzero_robux_ids(src: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("--") {
+            continue;
+        }
+        let Some((lhs, rhs)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key = lhs.trim().trim_end_matches([',', ';']).trim();
+        let val = rhs.trim().trim_end_matches([',', ';']).trim();
+        let key_low = key.to_ascii_lowercase();
+        let is_id_key = key_low.contains("gamepass")
+            || key_low.contains("productid")
+            || key_low.contains("passid")
+            || key_low.ends_with("_id")
+            || key_low.ends_with("id");
+        if !is_id_key || val.is_empty() || !val.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        if let Ok(num) = val.parse::<u64>() {
+            if num > 0 {
+                out.push((key.to_string(), val.to_string()));
+            }
+        }
+    }
+    out
+}
+
+fn find_hook_owner(
+    scripts: &std::collections::BTreeMap<String, String>,
+    needle: &str,
+) -> Option<String> {
+    scripts
+        .iter()
+        .find(|(_, src)| src.contains(needle))
+        .map(|(k, _)| k.clone())
+}
+
+/// Evaluate Preflight Hook-Integrity against a verified baseline script map.
+pub fn evaluate_hook_integrity(
+    baseline_scripts: &std::collections::BTreeMap<String, String>,
+    current_scripts: &std::collections::BTreeMap<String, String>,
+    baseline_has_spawn: bool,
+    current_has_spawn: bool,
+) -> Vec<Value> {
+    let mut missing = Vec::new();
+
+    for path in baseline_scripts.keys() {
+        if is_critical_hook_file(path) && !current_scripts.contains_key(path) {
+            missing.push(json!({
+                "id": format!("hook:file:{path}"),
+                "category": "monetization",
+                "kind": "missing_file",
+                "file": path,
+                "label": format!("Missing critical script {path}"),
+                "detail": "Verified baseline script was deleted by a recent edit.",
+            }));
+        }
+    }
+
+    for (path, base_src) in baseline_scripts {
+        if let Some(curr_src) = current_scripts.get(path) {
+            if has_strict_pragma(base_src) && !has_strict_pragma(curr_src) {
+                missing.push(json!({
+                    "id": format!("hook:strict:{path}"),
+                    "category": "strict_luau",
+                    "kind": "missing_strict",
+                    "file": path,
+                    "label": format!("Dropped --!strict in {path}"),
+                    "detail": "Baseline script enforced --!strict typechecking.",
+                }));
+            }
+        }
+    }
+
+    let hook_checks: [(&str, &str, &str, &str, &str); 5] = [
+        (
+            "ProcessReceipt",
+            "monetization",
+            "hook:monetization:ProcessReceipt",
+            "Missing MarketplaceService.ProcessReceipt handler",
+            "Server-authoritative DevProduct receipt verification was dropped.",
+        ),
+        (
+            "PromptGamePassPurchase",
+            "monetization",
+            "hook:monetization:PromptGamePassPurchase",
+            "Missing GamePass purchase prompt hook",
+            "PromptGamePassPurchase wiring was dropped from place scripts.",
+        ),
+        (
+            "PromptProductPurchase",
+            "monetization",
+            "hook:monetization:PromptProductPurchase",
+            "Missing DevProduct purchase prompt hook",
+            "PromptProductPurchase wiring was dropped from place scripts.",
+        ),
+        (
+            "Players.PlayerAdded",
+            "core",
+            "hook:core:Players.PlayerAdded",
+            "Missing Players.PlayerAdded lifecycle hook",
+            "Core player join initialization hook was removed.",
+        ),
+        (
+            "BindToClose",
+            "core",
+            "hook:core:BindToClose",
+            "Missing game:BindToClose shutdown guard",
+            "Graceful server shutdown persistence hook was removed.",
+        ),
+    ];
+    for (needle, cat, id, label, detail) in hook_checks {
+        if let Some(owner) = find_hook_owner(baseline_scripts, needle) {
+            if find_hook_owner(current_scripts, needle).is_none()
+                && current_scripts.contains_key(&owner)
+            {
+                missing.push(json!({
+                    "id": id,
+                    "category": cat,
+                    "kind": if cat == "monetization" { "missing_revenue_hook" } else { "missing_core_hook" },
+                    "file": owner,
+                    "label": label,
+                    "detail": detail,
+                }));
+            }
+        }
+    }
+
+    let mut baseline_ids: Vec<(String, String, String)> = Vec::new();
+    for (path, src) in baseline_scripts {
+        for (k, v) in extract_nonzero_robux_ids(src) {
+            baseline_ids.push((path.clone(), k, v));
+        }
+    }
+    if !baseline_ids.is_empty() {
+        let mut current_ids = std::collections::HashSet::new();
+        for src in current_scripts.values() {
+            for (k, v) in extract_nonzero_robux_ids(src) {
+                current_ids.insert((k, v));
+            }
+        }
+        for (file, key, val) in baseline_ids {
+            if !current_ids.contains(&(key.clone(), val.clone()))
+                && current_scripts.contains_key(&file)
+            {
+                missing.push(json!({
+                    "id": format!("hook:id:{key}"),
+                    "category": "monetization",
+                    "kind": "missing_revenue_id",
+                    "file": file,
+                    "label": format!("Dropped Robux ID {key} = {val}"),
+                    "detail": format!("Baseline {file} wired {key} = {val}, now zeroed or removed."),
+                }));
+            }
+        }
+    }
+
+    if baseline_has_spawn && !current_has_spawn {
+        let spawn_owner = find_hook_owner(baseline_scripts, "SpawnLocation")
+            .unwrap_or_else(|| "default.project.json".to_string());
+        missing.push(json!({
+            "id": "hook:spawn:Workspace.SpawnLocation",
+            "category": "spawn",
+            "kind": "missing_spawn",
+            "file": spawn_owner,
+            "label": "Missing Workspace.SpawnLocation",
+            "detail": "Verified baseline included Workspace.SpawnLocation; spawn point was removed.",
+        }));
+    }
+
+    missing
+}
+
+fn surgical_restore_hooks(
+    baseline_scripts: &std::collections::BTreeMap<String, String>,
+    current_scripts: &mut std::collections::BTreeMap<String, String>,
+    baseline_has_spawn: bool,
+    current_has_spawn: bool,
+    default_spawn_target: &str,
+) -> (Vec<String>, Vec<String>, usize) {
+    let mut restored_files = Vec::new();
+    let mut modified_files = std::collections::BTreeSet::new();
+    let mut hooks_restored = 0usize;
+
+    for (path, base_src) in baseline_scripts {
+        if is_critical_hook_file(path) && !current_scripts.contains_key(path) {
+            current_scripts.insert(path.clone(), base_src.clone());
+            restored_files.push(path.clone());
+            hooks_restored += 1;
+        }
+    }
+
+    for (path, base_src) in baseline_scripts {
+        if let Some(curr) = current_scripts.get_mut(path) {
+            if has_strict_pragma(base_src) && !has_strict_pragma(curr) {
+                *curr = format!("--!strict\n{curr}");
+                modified_files.insert(path.clone());
+                hooks_restored += 1;
+            }
+        }
+    }
+
+    // Restore dropped non-zero Robux IDs in existing config scripts
+    for (path, base_src) in baseline_scripts {
+        let base_ids = extract_nonzero_robux_ids(base_src);
+        if base_ids.is_empty() {
+            continue;
+        }
+        let Some(curr) = current_scripts.get_mut(path) else {
+            continue;
+        };
+        let curr_ids: std::collections::HashSet<(String, String)> =
+            extract_nonzero_robux_ids(curr).into_iter().collect();
+        for (key, val) in base_ids {
+            if curr_ids.contains(&(key.clone(), val.clone())) {
+                continue;
+            }
+            let zero_pat = format!("{key} = 0");
+            if curr.contains(&zero_pat) {
+                *curr = curr.replace(&zero_pat, &format!("{key} = {val}"));
+                modified_files.insert(path.clone());
+                hooks_restored += 1;
+            } else {
+                // Append clean key preservation comment/override if table exists
+                if let Some(pos) = curr.rfind("return ") {
+                    curr.insert_str(
+                        pos,
+                        &format!("local _OpenRO_{key}: number = {val}\n"),
+                    );
+                } else {
+                    curr.push_str(&format!("\nlocal {key} = {val}\n"));
+                }
+                modified_files.insert(path.clone());
+                hooks_restored += 1;
+            }
+        }
+    }
+
+    let hook_snippets: [(&str, &str); 5] = [
+        (
+            "ProcessReceipt",
+            "\n-- Restored by OpenRO Preflight Hook-Integrity Guard\ndo\n\tlocal MarketplaceService = game:GetService(\"MarketplaceService\")\n\tlocal Players = game:GetService(\"Players\")\n\tif not MarketplaceService.ProcessReceipt then\n\t\tMarketplaceService.ProcessReceipt = function(receiptInfo)\n\t\t\tlocal player = Players:GetPlayerByUserId(receiptInfo.PlayerId)\n\t\t\tif not player then\n\t\t\t\treturn Enum.ProductPurchaseDecision.NotProcessedYet\n\t\t\tend\n\t\t\treturn Enum.ProductPurchaseDecision.PurchaseGranted\n\t\tend\n\tend\nend\n",
+        ),
+        (
+            "PromptGamePassPurchase",
+            "\n-- Restored by OpenRO Preflight Hook-Integrity Guard\ndo\n\tlocal MarketplaceService = game:GetService(\"MarketplaceService\")\n\tlocal _promptGamePass = function(player: Player, passId: number)\n\t\tif passId > 0 then\n\t\t\tMarketplaceService:PromptGamePassPurchase(player, passId)\n\t\tend\n\tend\nend\n",
+        ),
+        (
+            "PromptProductPurchase",
+            "\n-- Restored by OpenRO Preflight Hook-Integrity Guard\ndo\n\tlocal MarketplaceService = game:GetService(\"MarketplaceService\")\n\tlocal _promptProduct = function(player: Player, productId: number)\n\t\tif productId > 0 then\n\t\t\tMarketplaceService:PromptProductPurchase(player, productId)\n\t\tend\n\tend\nend\n",
+        ),
+        (
+            "Players.PlayerAdded",
+            "\n-- Restored by OpenRO Preflight Hook-Integrity Guard\ndo\n\tlocal Players = game:GetService(\"Players\")\n\tPlayers.PlayerAdded:Connect(function(player: Player)\n\t\tplayer:SetAttribute(\"OpenROHookReady\", true)\n\tend)\nend\n",
+        ),
+        (
+            "BindToClose",
+            "\n-- Restored by OpenRO Preflight Hook-Integrity Guard\ngame:BindToClose(function()\n\ttask.wait(0.2)\nend)\n",
+        ),
+    ];
+    for (needle, snippet) in hook_snippets {
+        if let Some(owner) = find_hook_owner(baseline_scripts, needle) {
+            if find_hook_owner(current_scripts, needle).is_none() {
+                if let Some(curr) = current_scripts.get_mut(&owner) {
+                    curr.push_str(snippet);
+                    modified_files.insert(owner);
+                    hooks_restored += 1;
+                }
+            }
+        }
+    }
+
+    if baseline_has_spawn && !current_has_spawn {
+        let target = find_hook_owner(baseline_scripts, "SpawnLocation")
+            .filter(|p| current_scripts.contains_key(p))
+            .unwrap_or_else(|| default_spawn_target.to_string());
+        let spawn_snippet = "\n-- Restored Workspace.SpawnLocation by OpenRO Preflight Hook-Integrity Guard\ndo\n\tlocal Workspace = game:GetService(\"Workspace\")\n\tif not Workspace:FindFirstChildOfClass(\"SpawnLocation\") then\n\t\tlocal spawn = Instance.new(\"SpawnLocation\")\n\t\tspawn.Name = \"SpawnLocation\"\n\t\tspawn.Anchored = true\n\t\tspawn.Parent = Workspace\n\tend\nend\n";
+        let entry = current_scripts
+            .entry(target.clone())
+            .or_insert_with(|| "--!strict\n".to_string());
+        entry.push_str(spawn_snippet);
+        if target == default_spawn_target && !restored_files.contains(&target) {
+            restored_files.push(target.clone());
+        } else {
+            modified_files.insert(target);
+        }
+        hooks_restored += 1;
+    }
+
+    (restored_files, modified_files.into_iter().collect(), hooks_restored)
+}
+
+fn json_obj_to_scripts_map(obj: Option<&serde_json::Map<String, Value>>) -> std::collections::BTreeMap<String, String> {
+    let mut map = std::collections::BTreeMap::new();
+    if let Some(m) = obj {
+        for (k, v) in m {
+            if let Some(s) = v.as_str() {
+                map.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    map
+}
+
+pub fn project_hook_integrity(r: &ProjectRef) -> Result<Value, Reply> {
+    let snaps = load_sorted_project_snapshots(&r.dir);
+    let baseline = snaps
+        .iter()
+        .rev()
+        .find(|s| s["verified"].as_bool().unwrap_or(false));
+    let current_scripts = collect_project_luau_map(&r.dir);
+    let current_proj_raw = std::fs::read_to_string(r.dir.join("default.project.json")).ok();
+    let Some(base) = baseline else {
+        return Ok(json!({
+            "schema": "openro.hook_integrity.v1",
+            "has_baseline": false,
+            "baseline_snapshot_id": Value::Null,
+            "baseline_label": Value::Null,
+            "healthy": true,
+            "missing_count": 0,
+            "preserved_new_scripts": [],
+            "missing_hooks": [],
+        }));
+    };
+    let baseline_scripts = json_obj_to_scripts_map(base.get("scripts").and_then(Value::as_object));
+    let baseline_has_spawn = base
+        .get("workspace_has_spawn")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| {
+            project_has_spawn_location(
+                &baseline_scripts,
+                base.get("default_project_json").and_then(Value::as_str),
+            )
+        });
+    let current_has_spawn =
+        project_has_spawn_location(&current_scripts, current_proj_raw.as_deref());
+    let missing = evaluate_hook_integrity(
+        &baseline_scripts,
+        &current_scripts,
+        baseline_has_spawn,
+        current_has_spawn,
+    );
+    let preserved_new_scripts: Vec<String> = current_scripts
+        .keys()
+        .filter(|k| !baseline_scripts.contains_key(*k))
+        .cloned()
+        .collect();
+    Ok(json!({
+        "schema": "openro.hook_integrity.v1",
+        "has_baseline": true,
+        "baseline_snapshot_id": base["snapshot_id"],
+        "baseline_label": base["label"],
+        "healthy": missing.is_empty(),
+        "missing_count": missing.len(),
+        "preserved_new_scripts": preserved_new_scripts,
+        "missing_hooks": missing,
+    }))
+}
+
+pub fn restore_project_hooks(
+    shared: &Shared,
+    r: &ProjectRef,
+    sid: &str,
+    body: &Value,
+) -> Result<Reply, Reply> {
+    if !plain_name(sid) {
+        return Err(Reply::bad("invalid snapshot id"));
+    }
+    let target = project_snapshots_dir(&r.dir).join(format!("{sid}.json"));
+    if !target.is_file() {
+        return Err(Reply::err("404 Not Found", format!("snapshot not found: {sid}")));
+    }
+    let raw = std::fs::read_to_string(&target)
+        .map_err(|e| Reply::err("500 Internal Server Error", format!("read snapshot: {e}")))?;
+    let snap: Value = serde_json::from_str(&raw)
+        .map_err(|e| Reply::err("500 Internal Server Error", format!("corrupt snapshot: {e}")))?;
+    let baseline_scripts = json_obj_to_scripts_map(snap.get("scripts").and_then(Value::as_object));
+    let mut current_scripts = collect_project_luau_map(&r.dir);
+    let current_proj_raw = std::fs::read_to_string(r.dir.join("default.project.json")).ok();
+    let baseline_has_spawn = snap
+        .get("workspace_has_spawn")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| {
+            project_has_spawn_location(
+                &baseline_scripts,
+                snap.get("default_project_json").and_then(Value::as_str),
+            )
+        });
+    let current_has_spawn =
+        project_has_spawn_location(&current_scripts, current_proj_raw.as_deref());
+
+    let auto_checkpoint = body
+        .get("auto_checkpoint")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let before_missing = evaluate_hook_integrity(
+        &baseline_scripts,
+        &current_scripts,
+        baseline_has_spawn,
+        current_has_spawn,
+    );
+    if auto_checkpoint && !before_missing.is_empty() {
+        let _ = create_project_snapshot(
+            r,
+            &json!({ "label": "Pre-hook-restore safety checkpoint" }),
+        );
+    }
+
+    let original_scripts = current_scripts.clone();
+    let (restored_files, modified_files, hooks_restored) = surgical_restore_hooks(
+        &baseline_scripts,
+        &mut current_scripts,
+        baseline_has_spawn,
+        current_has_spawn,
+        "src/server/SpawnGuard.server.luau",
+    );
+    for (rel, src) in &current_scripts {
+        if original_scripts.get(rel) != Some(src) {
+            write_project_luau(&r.dir, rel, src)?;
+        }
+    }
+
+    let rerun_reply = rerun_assertions(shared, r, &json!({ "offline": true }))?;
+    let rerun_json: Value = serde_json::from_slice(&rerun_reply.body).unwrap_or_else(|_| json!({}));
+    let after = project_hook_integrity(r)?;
+    let list = list_project_snapshots(r)?;
+
+    Ok(Reply::ok(json!({
+        "restored_id": sid,
+        "label": snap["label"],
+        "hooks_restored": hooks_restored,
+        "restored_files": restored_files,
+        "modified_files": modified_files,
+        "preserved_new_scripts": after["preserved_new_scripts"],
+        "after": after,
+        "rerun": rerun_json,
+        "snapshots": list["snapshots"],
+        "latest_verified_id": list["latest_verified_id"],
+    })))
+}
+
+pub fn studio_hook_integrity_from_trees(
+    baseline_id: Option<&str>,
+    baseline_label: Option<&str>,
+    baseline_tree: Option<&Value>,
+    current_tree: &Value,
+) -> Value {
+    let Some(base_tree) = baseline_tree else {
+        return json!({
+            "schema": "openro.hook_integrity.v1",
+            "has_baseline": false,
+            "baseline_snapshot_id": Value::Null,
+            "baseline_label": Value::Null,
+            "healthy": true,
+            "missing_count": 0,
+            "preserved_new_scripts": [],
+            "missing_hooks": [],
+        });
+    };
+    let baseline_scripts = json_obj_to_scripts_map(base_tree.get("scripts").and_then(Value::as_object));
+    let current_scripts = json_obj_to_scripts_map(current_tree.get("scripts").and_then(Value::as_object));
+    let tree_has_spawn = |tree: &Value, scripts: &std::collections::BTreeMap<String, String>| {
+        scripts.values().any(|s| s.contains("SpawnLocation"))
+            || tree
+                .get("instances")
+                .and_then(Value::as_object)
+                .is_some_and(|m| m.keys().any(|k| k.contains("SpawnLocation")))
+    };
+    let base_spawn = tree_has_spawn(base_tree, &baseline_scripts);
+    let curr_spawn = tree_has_spawn(current_tree, &current_scripts);
+    let missing = evaluate_hook_integrity(&baseline_scripts, &current_scripts, base_spawn, curr_spawn);
+    let preserved_new_scripts: Vec<String> = current_scripts
+        .keys()
+        .filter(|k| !baseline_scripts.contains_key(*k))
+        .cloned()
+        .collect();
+    json!({
+        "schema": "openro.hook_integrity.v1",
+        "has_baseline": true,
+        "baseline_snapshot_id": baseline_id,
+        "baseline_label": baseline_label,
+        "healthy": missing.is_empty(),
+        "missing_count": missing.len(),
+        "preserved_new_scripts": preserved_new_scripts,
+        "missing_hooks": missing,
+    })
+}
+
+pub fn studio_restore_hooks_tree(baseline_tree: &Value, current_tree: &Value) -> (Value, Vec<String>, Vec<String>, usize) {
+    let baseline_scripts = json_obj_to_scripts_map(baseline_tree.get("scripts").and_then(Value::as_object));
+    let mut current_scripts = json_obj_to_scripts_map(current_tree.get("scripts").and_then(Value::as_object));
+    let tree_has_spawn = |tree: &Value, scripts: &std::collections::BTreeMap<String, String>| {
+        scripts.values().any(|s| s.contains("SpawnLocation"))
+            || tree
+                .get("instances")
+                .and_then(Value::as_object)
+                .is_some_and(|m| m.keys().any(|k| k.contains("SpawnLocation")))
+    };
+    let base_spawn = tree_has_spawn(baseline_tree, &baseline_scripts);
+    let curr_spawn = tree_has_spawn(current_tree, &current_scripts);
+    let (restored_files, modified_files, mut hooks_restored) = surgical_restore_hooks(
+        &baseline_scripts,
+        &mut current_scripts,
+        base_spawn,
+        curr_spawn,
+        "ServerScriptService.SpawnGuard",
+    );
+    let mut next_tree = current_tree.clone();
+    if let Some(obj) = next_tree.as_object_mut() {
+        let mut s_map = serde_json::Map::new();
+        for (k, v) in current_scripts {
+            s_map.insert(k, Value::String(v));
+        }
+        obj.insert("scripts".to_string(), Value::Object(s_map));
+        if base_spawn && !curr_spawn {
+            if let Some(base_insts) = baseline_tree.get("instances").and_then(Value::as_object) {
+                if let Some((k, v)) = base_insts.iter().find(|(k, _)| k.contains("SpawnLocation")) {
+                    let inst_obj = obj
+                        .entry("instances")
+                        .or_insert_with(|| json!({}))
+                        .as_object_mut();
+                    if let Some(m) = inst_obj {
+                        m.insert(k.clone(), v.clone());
+                        hooks_restored += 1;
+                    }
+                }
+            }
+        }
+    }
+    (next_tree, restored_files, modified_files, hooks_restored)
 }
 
 /// Summary of the most recent stored playtest report for `study/status` (#62).

@@ -1,4 +1,4 @@
-// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.13.0 standalone web builds.
+// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.14.0 standalone web builds.
 // Features:
 //  - RoPilot-Grade 3-Pane Studio IDE (Agent | Plan | Ask, Reviewable Unified Diffs, @Context Chips, Companion Plugin)
 //  - Embedded Studio Workbench & 13 Official Studio MCP Tools running live against the in-browser Place DataModel
@@ -443,6 +443,8 @@ function clonePlace(p: PlaceState): PlaceState {
 function recordSnapshot(chat: ChatSession, label: string, prevPlace: PlaceState | null) {
   const diff: PlaceDiff = computePlaceDiff(prevPlace, chat.place);
   const verdict = validatePlace(chat.place);
+  const hookCheck = evaluateWebHookIntegrity(chat);
+  const verified = verdict.passed && hookCheck.healthy;
   const errCount = verdict.diagnostics.filter((d) => d.severity === "error").length;
   const snap: StoredSnapshot = {
     id: `snap-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -450,12 +452,12 @@ function recordSnapshot(chat: ChatSession, label: string, prevPlace: PlaceState 
     created_at: Math.floor(Date.now() / 1000),
     parts_count: Object.keys(chat.place.instances).length,
     scripts_count: Object.keys(chat.place.scripts).length,
-    verified: verdict.passed,
+    verified,
     assertion_summary: {
-      passed: verdict.passed,
+      passed: verified,
       total: Math.max(1, verdict.diagnostics.length),
-      passed_count: verdict.passed ? 1 : 0,
-      failed_count: errCount,
+      passed_count: verified ? 1 : 0,
+      failed_count: errCount + (hookCheck.healthy ? 0 : hookCheck.missing_count),
     },
     diff,
     place: clonePlace(chat.place),
@@ -516,6 +518,95 @@ function serializeWebSnapshots(chat: ChatSession) {
     };
   });
   return { latest_verified_id: latestVerifiedId, snapshots: items };
+}
+
+function evaluateWebHookIntegrity(chat: ChatSession) {
+  const snaps = chat.snapshots || [];
+  const baseline = snaps.find((s) => s.verified !== false);
+  if (!baseline) {
+    return {
+      schema: "openro.hook_integrity.v1",
+      has_baseline: false,
+      baseline_snapshot_id: null,
+      baseline_label: null,
+      healthy: true,
+      missing_count: 0,
+      preserved_new_scripts: [] as string[],
+      missing_hooks: [] as Array<{ id: string; category: string; kind: string; file: string; label: string; detail: string }>,
+    };
+  }
+  const baseScripts = baseline.place?.scripts || {};
+  const currScripts = chat.place?.scripts || {};
+  const missing: Array<{ id: string; category: string; kind: string; file: string; label: string; detail: string }> = [];
+  const criticalRe = /(monetization|productids|economyshop|shopprompt|dailyreward|spawnguard)/i;
+  for (const p of Object.keys(baseScripts)) {
+    if (criticalRe.test(p) && !(p in currScripts)) {
+      missing.push({
+        id: `hook:file:${p}`,
+        category: "monetization",
+        kind: "missing_file",
+        file: p,
+        label: `Missing critical script ${p}`,
+        detail: "Verified baseline script was deleted by a recent edit.",
+      });
+    }
+  }
+  for (const [p, src] of Object.entries(baseScripts)) {
+    const curr = currScripts[p];
+    if (curr !== undefined && src.split("\n").slice(0, 3).some((l) => l.trim() === "--!strict") && !curr.split("\n").slice(0, 3).some((l) => l.trim() === "--!strict")) {
+      missing.push({
+        id: `hook:strict:${p}`,
+        category: "strict_luau",
+        kind: "missing_strict",
+        file: p,
+        label: `Dropped --!strict in ${p}`,
+        detail: "Baseline script enforced --!strict typechecking.",
+      });
+    }
+  }
+  const hookPairs: Array<[string, string, string, string]> = [
+    ["ProcessReceipt", "monetization", "Missing MarketplaceService.ProcessReceipt handler", "Server-authoritative receipt verification was dropped."],
+    ["PromptGamePassPurchase", "monetization", "Missing GamePass purchase prompt hook", "PromptGamePassPurchase wiring was dropped."],
+    ["PromptProductPurchase", "monetization", "Missing DevProduct purchase prompt hook", "PromptProductPurchase wiring was dropped."],
+    ["Players.PlayerAdded", "core", "Missing Players.PlayerAdded lifecycle hook", "Core player join hook was removed."],
+    ["BindToClose", "core", "Missing game:BindToClose shutdown guard", "Graceful shutdown hook was removed."],
+  ];
+  for (const [needle, category, label, detail] of hookPairs) {
+    const owner = Object.keys(baseScripts).find((k) => baseScripts[k].includes(needle));
+    if (owner && !Object.values(currScripts).some((s) => s.includes(needle)) && owner in currScripts) {
+      missing.push({
+        id: `hook:${category}:${needle}`,
+        category,
+        kind: category === "monetization" ? "missing_revenue_hook" : "missing_core_hook",
+        file: owner,
+        label,
+        detail,
+      });
+    }
+  }
+  const baseSpawn = Object.values(baseScripts).some((s) => s.includes("SpawnLocation")) || Object.keys(baseline.place?.instances || {}).some((k) => k.includes("SpawnLocation"));
+  const currSpawn = Object.values(currScripts).some((s) => s.includes("SpawnLocation")) || Object.keys(chat.place?.instances || {}).some((k) => k.includes("SpawnLocation"));
+  if (baseSpawn && !currSpawn) {
+    missing.push({
+      id: "hook:spawn:Workspace.SpawnLocation",
+      category: "spawn",
+      kind: "missing_spawn",
+      file: "Workspace.SpawnLocation",
+      label: "Missing Workspace.SpawnLocation",
+      detail: "Verified baseline included Workspace.SpawnLocation.",
+    });
+  }
+  const preserved_new_scripts = Object.keys(currScripts).filter((k) => !(k in baseScripts));
+  return {
+    schema: "openro.hook_integrity.v1",
+    has_baseline: true,
+    baseline_snapshot_id: baseline.id,
+    baseline_label: baseline.label,
+    healthy: missing.length === 0,
+    missing_count: missing.length,
+    preserved_new_scripts,
+    missing_hooks: missing,
+  };
 }
 
 function defaultState(): EngineState {
@@ -1206,7 +1297,7 @@ export function installWebEngine() {
     if (!chat.playMode) chat.playMode = "edit";
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "1.13.0" });
+      return jsonResponse({ name: "openro-rs", version: "1.14.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -1217,7 +1308,7 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "1.13.0",
+        version: "1.14.0",
         sse_build_stream: true,
         studio_stream: true,
         assets_api: true,
@@ -2532,6 +2623,75 @@ export function installWebEngine() {
         },
         201,
       );
+    }
+    if (method === "GET" && u.pathname === "/api/studio/snapshots/hook-integrity") {
+      return jsonResponse({ ok: true, ...evaluateWebHookIntegrity(chat) });
+    }
+    const hookRestoreMatch = u.pathname.match(/^\/api\/snapshots\/([^/]+)\/restore-hooks$/);
+    if (method === "POST" && hookRestoreMatch) {
+      const id = decodeURIComponent(hookRestoreMatch[1]);
+      const found = chat.snapshots.find((s) => s.id === id);
+      if (!found) return jsonResponse({ ok: false, error: "snapshot not found" }, 404);
+      const before = clonePlace(chat.place);
+      const baseScripts = found.place?.scripts || {};
+      const restored_files: string[] = [];
+      const modified_files: string[] = [];
+      let hooks_restored = 0;
+      const criticalRe = /(monetization|productids|economyshop|shopprompt|dailyreward|spawnguard)/i;
+      for (const [p, src] of Object.entries(baseScripts)) {
+        if (criticalRe.test(p) && !(p in chat.place.scripts)) {
+          chat.place.scripts[p] = src;
+          restored_files.push(p);
+          hooks_restored++;
+        }
+      }
+      for (const [p, src] of Object.entries(baseScripts)) {
+        const curr = chat.place.scripts[p];
+        if (curr !== undefined && src.split("\n").slice(0, 3).some((l) => l.trim() === "--!strict") && !curr.split("\n").slice(0, 3).some((l) => l.trim() === "--!strict")) {
+          chat.place.scripts[p] = `--!strict\n${curr}`;
+          modified_files.push(p);
+          hooks_restored++;
+        }
+      }
+      const snippets: Array<[string, string]> = [
+        ["ProcessReceipt", '\ndo\n\tlocal MarketplaceService = game:GetService("MarketplaceService")\n\tif not MarketplaceService.ProcessReceipt then\n\t\tMarketplaceService.ProcessReceipt = function() return Enum.ProductPurchaseDecision.PurchaseGranted end\n\tend\nend\n'],
+        ["PromptGamePassPurchase", '\ndo\n\tlocal MarketplaceService = game:GetService("MarketplaceService")\n\tlocal _p = function(pl: Player, id: number) if id > 0 then MarketplaceService:PromptGamePassPurchase(pl, id) end end\nend\n'],
+        ["PromptProductPurchase", '\ndo\n\tlocal MarketplaceService = game:GetService("MarketplaceService")\n\tlocal _p = function(pl: Player, id: number) if id > 0 then MarketplaceService:PromptProductPurchase(pl, id) end end\n'],
+        ["Players.PlayerAdded", '\ndo\n\tlocal Players = game:GetService("Players")\n\tPlayers.PlayerAdded:Connect(function(p: Player) p:SetAttribute("OpenROHookReady", true) end)\nend\n'],
+        ["BindToClose", "\ngame:BindToClose(function() task.wait(0.2) end)\n"],
+      ];
+      for (const [needle, snip] of snippets) {
+        const owner = Object.keys(baseScripts).find((k) => baseScripts[k].includes(needle));
+        if (owner && !Object.values(chat.place.scripts).some((s) => s.includes(needle)) && owner in chat.place.scripts) {
+          chat.place.scripts[owner] += snip;
+          if (!modified_files.includes(owner)) modified_files.push(owner);
+          hooks_restored++;
+        }
+      }
+      const baseSpawnKey = Object.keys(found.place?.instances || {}).find((k) => k.includes("SpawnLocation"));
+      const currHasSpawn = Object.values(chat.place.scripts).some((s) => s.includes("SpawnLocation")) || Object.keys(chat.place.instances).some((k) => k.includes("SpawnLocation"));
+      if (baseSpawnKey && !currHasSpawn) {
+        chat.place.instances[baseSpawnKey] = JSON.parse(JSON.stringify(found.place.instances[baseSpawnKey])) as PlaceInstance;
+        hooks_restored++;
+      }
+      if (body.auto_checkpoint !== false && hooks_restored > 0) {
+        recordSnapshot(chat, "Pre-hook-restore safety checkpoint", before);
+      }
+      const preserved_new_scripts = Object.keys(chat.place.scripts).filter((k) => !(k in baseScripts));
+      recordSnapshot(chat, `Restored hooks from ${found.label}`, before);
+      persist();
+      const after = evaluateWebHookIntegrity(chat);
+      return jsonResponse({
+        ok: true,
+        restored_id: found.id,
+        label: found.label,
+        hooks_restored,
+        restored_files,
+        modified_files,
+        preserved_new_scripts,
+        after,
+        ...serializeWebSnapshots(chat),
+      });
     }
     const snapRestoreMatch = u.pathname.match(/^\/api\/snapshots\/([^/]+)\/restore$/);
     if (method === "POST" && snapRestoreMatch) {
