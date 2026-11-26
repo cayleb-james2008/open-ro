@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   CircleCheck,
@@ -6,6 +6,7 @@ import {
   Code2,
   Cpu,
   Database,
+  History,
   LayoutGrid,
   Play,
   Plus,
@@ -20,18 +21,23 @@ import { Pill } from "@/components/kibo-ui/pill";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { Expandable, ExpandableTrigger } from "@/components/ui/expandable";
 import {
+  getSandboxLatest,
+  getSandboxRuns,
   runSandbox,
+  stamp,
   type CoreLoopClaim,
+  type SandboxHttpMock,
   type SandboxJourneyOp,
   type SandboxJourneyStep,
   type SandboxPlayerConfig,
   type SandboxReceiptEntry,
   type SandboxRunResponse,
+  type SandboxRunSummary,
 } from "./api";
 
 type InspectorTab = "console" | "datastores" | "leaderstats" | "receipts" | "playergui";
 
-type PresetId = "boot_join" | "receipt_idempotency" | "save_rejoin";
+type PresetId = "boot_join" | "spatial_loop" | "receipt_idempotency" | "save_rejoin";
 
 const DEFAULT_PLAYERS: SandboxPlayerConfig[] = [
   { user_id: 1001, name: "TestPlayer", owns_passes: [] },
@@ -48,6 +54,17 @@ const PRESETS: Record<
       { op: "wait", ms: 50 },
       { op: "fire_server", remote: "ReplicatedStorage/Net/Ping", player_id: 1001, args: ["hello"] },
       { op: "assert_luau", name: "Player booted cleanly", luau: "return true", expect: { truthy: true } },
+    ],
+  },
+  spatial_loop: {
+    label: "Spatial + Input",
+    description: "Moves player 1001 across parts (Touched), dispatches Key Down/Up input, and advances tweens.",
+    steps: [
+      { op: "move_player", player_id: 1001, to: [0, 3, 12] },
+      { op: "key_down", player_id: 1001, key: "E" },
+      { op: "key_up", player_id: 1001, key: "E" },
+      { op: "wait", ms: 50 },
+      { op: "assert_luau", name: "Spatial & input loop healthy", luau: "return true", expect: { truthy: true } },
     ],
   },
   receipt_idempotency: {
@@ -86,17 +103,45 @@ const PRESETS: Record<
 };
 
 const BUILDER_OPS: { op: SandboxJourneyOp; label: string }[] = [
+  { op: "move_player", label: "Move Player (Touched)" },
+  { op: "trigger_prompt", label: "Trigger Prompt" },
+  { op: "click_detector", label: "Click Detector" },
+  { op: "key_down", label: "Key Down" },
+  { op: "key_up", label: "Key Up" },
   { op: "fire_server", label: "fire_server" },
+  { op: "invoke_server", label: "invoke_server" },
   { op: "purchase_receipt", label: "purchase_receipt" },
   { op: "rejoin", label: "rejoin" },
   { op: "click_gui", label: "click_gui" },
   { op: "assert_luau", label: "assert_luau" },
   { op: "wait", label: "wait" },
-  { op: "invoke_server", label: "invoke_server" },
+];
+
+const QUICK_ADD_OPS: { op: SandboxJourneyOp; label: string }[] = [
+  { op: "move_player", label: "Move Player (Touched)" },
+  { op: "trigger_prompt", label: "Trigger Prompt" },
+  { op: "click_detector", label: "Click Detector" },
+  { op: "key_down", label: "Key Down" },
+  { op: "key_up", label: "Key Up" },
+  { op: "fire_server", label: "fire_server" },
+  { op: "purchase_receipt", label: "purchase_receipt" },
+  { op: "rejoin", label: "rejoin" },
+  { op: "click_gui", label: "click_gui" },
+  { op: "assert_luau", label: "assert_luau" },
 ];
 
 function makeBlankStep(op: SandboxJourneyOp, idx: number): SandboxJourneyStep {
   switch (op) {
+    case "move_player":
+      return { op: "move_player", player_id: 1001, to: [0, 3, 12] };
+    case "trigger_prompt":
+      return { op: "trigger_prompt", player_id: 1001, path: "Workspace.ShopNpc.ProximityPrompt" };
+    case "click_detector":
+      return { op: "click_detector", player_id: 1001, path: "Workspace.PedestalProp.ClickDetector" };
+    case "key_down":
+      return { op: "key_down", player_id: 1001, key: "E" };
+    case "key_up":
+      return { op: "key_up", player_id: 1001, key: "E" };
     case "fire_server":
       return { op: "fire_server", remote: "ReplicatedStorage/Net/Roll", player_id: 1001, args: [] };
     case "invoke_server":
@@ -123,6 +168,51 @@ function makeBlankStep(op: SandboxJourneyOp, idx: number): SandboxJourneyStep {
     case "wait":
       return { op: "wait", ms: 100 };
   }
+}
+
+function normalizeSandboxResponse(res: Partial<SandboxRunResponse> & { error?: string }): SandboxRunResponse {
+  const luneMissing = res.engine === "lune_missing" || res.diagnostics?.lune_found === false;
+  const rawConsole = res.console as unknown;
+  const consoleNorm = Array.isArray(rawConsole)
+    ? { lines: rawConsole.map(String), errors: [] as string[], warnings: [] as string[] }
+    : {
+        lines: Array.isArray((rawConsole as { lines?: unknown })?.lines)
+          ? (rawConsole as { lines: string[] }).lines
+          : [],
+        errors: Array.isArray((rawConsole as { errors?: unknown })?.errors)
+          ? (rawConsole as { errors: string[] }).errors
+          : [],
+        warnings: Array.isArray((rawConsole as { warnings?: unknown })?.warnings)
+          ? (rawConsole as { warnings: string[] }).warnings
+          : [],
+      };
+  return {
+    ok: Boolean(res.ok),
+    run_id: typeof res.run_id === "string" ? res.run_id : undefined,
+    at_ms: typeof res.at_ms === "number" ? res.at_ms : undefined,
+    project_fingerprint: typeof res.project_fingerprint === "string" ? res.project_fingerprint : undefined,
+    error_count: typeof res.error_count === "number" ? res.error_count : consoleNorm.errors.length,
+    engine: luneMissing ? "lune_missing" : (res.engine ?? "browser_sim"),
+    passed: Boolean(res.passed),
+    duration_ms: typeof res.duration_ms === "number" && Number.isFinite(res.duration_ms) ? res.duration_ms : 0,
+    steps: Array.isArray(res.steps) ? res.steps : [],
+    assertions: Array.isArray(res.assertions) ? res.assertions : [],
+    console: consoleNorm,
+    state_snapshot: {
+      leaderstats: res.state_snapshot?.leaderstats ?? {},
+      datastores: res.state_snapshot?.datastores ?? {},
+      receipts_processed: Array.isArray(res.state_snapshot?.receipts_processed)
+        ? res.state_snapshot.receipts_processed
+        : [],
+      remotes_fired: typeof res.state_snapshot?.remotes_fired === "number" ? res.state_snapshot.remotes_fired : 0,
+      player_gui_tree: Array.isArray(res.state_snapshot?.player_gui_tree)
+        ? res.state_snapshot.player_gui_tree
+        : [],
+    },
+    core_loop: res.core_loop ?? { move: "not tested", act: "not tested", hud: "not tested" },
+    diagnostic: res.diagnostic ?? (luneMissing ? res.error : undefined),
+    diagnostics: res.diagnostics,
+  };
 }
 
 function extractFileLineRef(text: string): { file: string; line: number } | null {
@@ -216,9 +306,11 @@ function GuiTreeNode({ node, depth = 0 }: { node: unknown; depth?: number }) {
 export function SandboxRunnerCard({
   projectId,
   onJumpToIssue,
+  onCompleted,
 }: {
   projectId?: string | null;
   onJumpToIssue?: (scriptPath: string, line?: number) => void;
+  onCompleted?: (res: SandboxRunResponse) => Promise<void> | void;
 }) {
   const [activePreset, setActivePreset] = useState<PresetId>("boot_join");
   const [steps, setSteps] = useState<SandboxJourneyStep[]>(() =>
@@ -227,13 +319,41 @@ export function SandboxRunnerCard({
   const [builderOpen, setBuilderOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<SandboxRunResponse | null>(null);
+  const [runs, setRuns] = useState<SandboxRunSummary[]>([]);
   const [error, setError] = useState("");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("console");
   const [argsDrafts, setArgsDrafts] = useState<Record<number, string>>({});
   const [argsErrors, setArgsErrors] = useState<Record<number, string>>({});
+  const [httpMocksDraft, setHttpMocksDraft] = useState("");
+  const [httpMocksError, setHttpMocksError] = useState("");
+  const [parsedHttpMocks, setParsedHttpMocks] = useState<SandboxHttpMock[] | Record<string, unknown> | undefined>(
+    undefined,
+  );
+
+  const loadPersisted = useCallback(async () => {
+    const [runsRes, latestRes] = await Promise.all([
+      getSandboxRuns(projectId),
+      getSandboxLatest(projectId),
+    ]);
+    if (runsRes.ok && Array.isArray(runsRes.runs)) {
+      setRuns(runsRes.runs);
+    } else if (runsRes.httpStatus === 404) {
+      setRuns([]);
+    }
+    if (latestRes.ok && (latestRes.engine || latestRes.core_loop || Array.isArray(latestRes.steps))) {
+      setResult(normalizeSandboxResponse(latestRes));
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    setResult(null);
+    setRuns([]);
+    void loadPersisted();
+  }, [loadPersisted]);
 
   const validateJourney = (journeyToRun: SandboxJourneyStep[]): string | null => {
     if (journeyToRun.length === 0) return "Add at least one journey step or select a preset.";
+    if (httpMocksError) return httpMocksError;
     const badArgIdx = Object.keys(argsErrors).find((k) => argsErrors[Number(k)]);
     if (badArgIdx !== undefined) {
       return `Step #${Number(badArgIdx) + 1}: ${argsErrors[Number(badArgIdx)]}`;
@@ -248,6 +368,18 @@ export function SandboxRunnerCard({
       }
       if (st.op === "assert_luau" && !(st.luau || "").trim()) {
         return `Step #${i + 1} (assert_luau): Luau expression is required.`;
+      }
+      if (st.op === "move_player") {
+        const coords = st.to;
+        if (!Array.isArray(coords) || coords.length !== 3 || !coords.every((n) => typeof n === "number" && Number.isFinite(n))) {
+          return `Step #${i + 1} (move_player): target [x, y, z] coordinates are required.`;
+        }
+      }
+      if ((st.op === "trigger_prompt" || st.op === "click_detector") && !(st.path || "").trim()) {
+        return `Step #${i + 1} (${st.op}): instance path is required.`;
+      }
+      if ((st.op === "key_down" || st.op === "key_up") && !(st.key || "").trim()) {
+        return `Step #${i + 1} (${st.op}): key code is required.`;
       }
     }
     return null;
@@ -272,6 +404,7 @@ export function SandboxRunnerCard({
           timeout_secs: 15,
           players: DEFAULT_PLAYERS,
           journey: journeyToRun,
+          ...(parsedHttpMocks !== undefined ? { http_mocks: parsedHttpMocks } : {}),
         },
         projectId,
       );
@@ -282,33 +415,16 @@ export function SandboxRunnerCard({
         toast.error(msg);
         return;
       }
-      const payload: SandboxRunResponse = {
-        ok: Boolean(res.ok),
-        engine: luneMissing ? "lune_missing" : (res.engine ?? "browser_sim"),
-        passed: Boolean(res.passed),
-        duration_ms: typeof res.duration_ms === "number" && Number.isFinite(res.duration_ms) ? res.duration_ms : 0,
-        steps: Array.isArray(res.steps) ? res.steps : [],
-        assertions: Array.isArray(res.assertions) ? res.assertions : [],
-        console: {
-          lines: Array.isArray(res.console?.lines) ? res.console.lines : [],
-          errors: Array.isArray(res.console?.errors) ? res.console.errors : [],
-          warnings: Array.isArray(res.console?.warnings) ? res.console.warnings : [],
-        },
-        state_snapshot: {
-          leaderstats: res.state_snapshot?.leaderstats ?? {},
-          datastores: res.state_snapshot?.datastores ?? {},
-          receipts_processed: Array.isArray(res.state_snapshot?.receipts_processed) ? res.state_snapshot.receipts_processed : [],
-          remotes_fired: typeof res.state_snapshot?.remotes_fired === "number" ? res.state_snapshot.remotes_fired : 0,
-          player_gui_tree: Array.isArray(res.state_snapshot?.player_gui_tree) ? res.state_snapshot.player_gui_tree : [],
-        },
-        core_loop: res.core_loop ?? { move: "not tested", act: "not tested", hud: "not tested" },
-        diagnostic: res.diagnostic ?? (luneMissing ? res.error : undefined),
-        diagnostics: res.diagnostics,
-      };
+      const payload = normalizeSandboxResponse(res);
       setResult(payload);
       if (payload.console.errors.length > 0 || payload.steps.some((s) => !s.passed)) {
         setInspectorTab("console");
       }
+      const runsRes = await getSandboxRuns(projectId);
+      if (runsRes.ok && Array.isArray(runsRes.runs)) {
+        setRuns(runsRes.runs);
+      }
+      await onCompleted?.(payload);
       const label = presetLabel || "Sandbox journey";
       if (luneMissing) {
         toast.error(payload.diagnostic || "Lune runtime not detected on PATH.");
@@ -328,7 +444,7 @@ export function SandboxRunnerCard({
 
   const applyPreset = (id: PresetId) => {
     setActivePreset(id);
-    const cloned = PRESETS[id].steps.map((s) => ({ ...s }));
+    const cloned = PRESETS[id].steps.map((s) => ({ ...s, ...(s.to ? { to: [...s.to] as [number, number, number] } : {}) }));
     setSteps(cloned);
     setArgsDrafts({});
     setArgsErrors({});
@@ -482,17 +598,17 @@ export function SandboxRunnerCard({
               </Pill>
             </ExpandableTrigger>
             <div className="flex flex-wrap items-center gap-1.5">
-              {(["fire_server", "purchase_receipt", "rejoin", "click_gui", "assert_luau"] as const).map((op) => (
+              {QUICK_ADD_OPS.map((item) => (
                 <Button
-                  key={op}
+                  key={item.op}
                   variant="outline"
                   size="xs"
-                  data-sandbox-add-step={op}
-                  onClick={() => addStep(op)}
+                  data-sandbox-add-step={item.op}
+                  onClick={() => addStep(item.op)}
                   className="max-md:min-h-11"
                 >
                   <Plus className="size-3" strokeWidth={1.5} aria-hidden />
-                  {op}
+                  {item.label}
                 </Button>
               ))}
             </div>
@@ -517,7 +633,7 @@ export function SandboxRunnerCard({
                             aria-label={`Step ${idx + 1} operation`}
                             value={step.op}
                             onChange={(e) => replaceStepOp(idx, e.target.value as SandboxJourneyOp)}
-                            className="min-h-8 rounded-sm border border-hairline bg-board px-2 font-mono text-xs text-ink outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                            className="min-h-8 rounded-sm border border-hairline bg-board px-2 text-xs text-ink outline-none focus-visible:ring-2 focus-visible:ring-focus"
                           >
                             {BUILDER_OPS.map((o) => (
                               <option key={o.op} value={o.op}>
@@ -538,6 +654,66 @@ export function SandboxRunnerCard({
                       </div>
 
                       <div className="grid gap-2 sm:grid-cols-2">
+                        {step.op === "move_player" && (
+                          <>
+                            <div className="grid grid-cols-3 gap-1.5 sm:col-span-2" data-sandbox-step-to={idx}>
+                              {(["X", "Y", "Z"] as const).map((axis, axisIdx) => {
+                                const curCoords = Array.isArray(step.to) ? step.to : [0, 3, 12];
+                                return (
+                                  <Input
+                                    key={axis}
+                                    type="number"
+                                    step="0.5"
+                                    aria-label={`Step ${idx + 1} target ${axis}`}
+                                    value={String(curCoords[axisIdx] ?? 0)}
+                                    onChange={(e) => {
+                                      const nextCoords: [number, number, number] = [
+                                        Number(curCoords[0]) || 0,
+                                        Number(curCoords[1]) || 0,
+                                        Number(curCoords[2]) || 0,
+                                      ];
+                                      const parsed = Number(e.target.value);
+                                      nextCoords[axisIdx] = Number.isFinite(parsed) ? parsed : 0;
+                                      updateStep(idx, { to: nextCoords });
+                                    }}
+                                    placeholder={axis}
+                                    className="h-8 font-mono text-xs tabular-nums"
+                                  />
+                                );
+                              })}
+                            </div>
+                            <p className="text-[11px] text-ink-2 sm:col-span-2">
+                              Moves player character to [X, Y, Z], firing BasePart.Touched and TouchEnded on intersected parts.
+                            </p>
+                          </>
+                        )}
+
+                        {(step.op === "trigger_prompt" || step.op === "click_detector") && (
+                          <Input
+                            aria-label={`Step ${idx + 1} ${step.op === "trigger_prompt" ? "prompt path" : "detector path"}`}
+                            data-sandbox-step-path={idx}
+                            value={step.path ?? ""}
+                            onChange={(e) => updateStep(idx, { path: e.target.value })}
+                            placeholder={
+                              step.op === "trigger_prompt"
+                                ? "Workspace.ShopNpc.ProximityPrompt"
+                                : "Workspace.PedestalProp.ClickDetector"
+                            }
+                            className="h-8 font-mono text-xs sm:col-span-2"
+                          />
+                        )}
+
+                        {(step.op === "key_down" || step.op === "key_up") && (
+                          <Input
+                            aria-label={`Step ${idx + 1} key code`}
+                            data-sandbox-step-key={idx}
+                            value={step.key ?? ""}
+                            onChange={(e) => updateStep(idx, { key: e.target.value })}
+                            placeholder="E"
+                            className="h-8 font-mono text-xs"
+                          />
+                        )}
+
                         {(step.op === "fire_server" || step.op === "invoke_server") && (
                           <>
                             <Input
@@ -686,6 +862,48 @@ export function SandboxRunnerCard({
                   ))}
                 </ul>
               )}
+              <div className="flex flex-col gap-1 border-t border-hairline pt-2">
+                <label className="text-xs font-medium text-ink" htmlFor="sandbox-http-mocks-input">
+                  HTTP Mocks (optional JSON)
+                </label>
+                <textarea
+                  id="sandbox-http-mocks-input"
+                  rows={2}
+                  data-sandbox-http-mocks
+                  aria-label="HTTP Mocks JSON (optional)"
+                  aria-invalid={Boolean(httpMocksError)}
+                  value={httpMocksDraft}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    setHttpMocksDraft(raw);
+                    if (!raw.trim()) {
+                      setHttpMocksError("");
+                      setParsedHttpMocks(undefined);
+                      if (error) setError("");
+                      return;
+                    }
+                    try {
+                      const parsed = JSON.parse(raw);
+                      if (parsed && typeof parsed === "object") {
+                        setParsedHttpMocks(parsed as SandboxHttpMock[] | Record<string, unknown>);
+                        setHttpMocksError("");
+                        if (error) setError("");
+                      } else {
+                        setHttpMocksError("HTTP Mocks must be a JSON object or array of mock routes.");
+                      }
+                    } catch {
+                      setHttpMocksError("Invalid JSON in HTTP Mocks. Expected an object or array.");
+                    }
+                  }}
+                  placeholder='[{"url":"https://api.example.com/config","status":200,"body":{"boost":2}}]'
+                  className="w-full rounded-sm border border-hairline bg-surface px-2.5 py-1.5 font-mono text-xs text-ink outline-none focus-visible:ring-2 focus-visible:ring-focus"
+                />
+                {httpMocksError && (
+                  <p role="alert" data-sandbox-http-mocks-error className="text-xs text-pill-pro-fg">
+                    {httpMocksError}
+                  </p>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -740,12 +958,18 @@ export function SandboxRunnerCard({
                 )}
                 {result.passed ? "Sandbox Passed" : "Sandbox Failed"}
               </Pill>
-              <span className="font-mono text-xs tabular-nums text-ink-2">
-                {result.steps.filter((s) => s.passed).length}/{result.steps.length} steps
+              <span className="text-xs text-ink-2">
+                <span className="font-mono tabular-nums">
+                  {result.steps.filter((s) => s.passed).length}/{result.steps.length}
+                </span>{" "}
+                steps
               </span>
               {result.assertions.length > 0 && (
-                <span className="font-mono text-xs tabular-nums text-ink-2">
-                  {result.assertions.filter((a) => a.passed).length}/{result.assertions.length} assertions
+                <span className="text-xs text-ink-2">
+                  <span className="font-mono tabular-nums">
+                    {result.assertions.filter((a) => a.passed).length}/{result.assertions.length}
+                  </span>{" "}
+                  assertions
                 </span>
               )}
             </div>
@@ -985,6 +1209,53 @@ export function SandboxRunnerCard({
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {runs.length > 0 && (
+        <div
+          data-sandbox-history
+          className="flex flex-col gap-2 rounded-sm border border-hairline bg-board/40 px-3 py-2.5"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-ink">
+              <History className="size-3.5 text-ink-2" strokeWidth={1.5} aria-hidden />
+              <span>Sandbox Run History</span>
+              <Pill className="bg-surface px-2 py-0.5 text-xs text-ink-2">
+                <span className="font-mono tabular-nums">{runs.length}</span>
+              </Pill>
+            </div>
+            <span className="text-[11px] text-ink-3">Persisted across reloads</span>
+          </div>
+          <ul className="grid gap-1.5 sm:grid-cols-2" aria-label="Persisted sandbox runs">
+            {runs.slice(0, 8).map((r) => (
+              <li
+                key={r.run_id}
+                data-sandbox-history-item={r.run_id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-hairline bg-surface px-2.5 py-1.5 text-xs"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <Pill
+                    className={`shrink-0 px-2 py-0.5 text-xs ${
+                      r.passed ? "bg-pill-active-bg text-pill-active-fg" : "bg-pill-pro-bg text-pill-pro-fg"
+                    }`}
+                  >
+                    {r.passed ? "Pass" : "Fail"}
+                  </Pill>
+                  <span className="truncate font-mono text-ink">{r.run_id}</span>
+                </div>
+                <div className="flex shrink-0 items-center gap-2 text-ink-2">
+                  <span className="font-mono tabular-nums">{formatDuration(r.duration_ms)}</span>
+                  {r.error_count > 0 && (
+                    <span className="text-pill-pro-fg">
+                      <span className="font-mono tabular-nums">{r.error_count}</span> err
+                    </span>
+                  )}
+                  {r.at_ms > 0 && <span className="text-ink-3">{stamp(r.at_ms)}</span>}
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </section>

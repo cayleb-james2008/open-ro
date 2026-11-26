@@ -292,6 +292,55 @@ try {
     check("Sandbox invalid journey JSON displays recovery error UI", true);
     await runPresetAndVerify("boot_join", "Sandbox recovery after invalid JSON");
 
+    // Sandbox spatial/prompt/detector/key step builders + HTTP Mocks JSON + persisted history across reload
+    for (const op of ["move_player", "trigger_prompt", "click_detector", "key_down"]) {
+      await p.locator(`[data-sandbox-add-step="${op}"]`).click();
+    }
+    await p.locator("[data-sandbox-step-to]").first().waitFor({ state: "visible", timeout: 4000 });
+    await p.locator("[data-sandbox-step-path]").first().waitFor({ state: "visible", timeout: 4000 });
+    await p.locator("[data-sandbox-step-key]").first().waitFor({ state: "visible", timeout: 4000 });
+    const httpMocksInput = p.locator("[data-sandbox-http-mocks]");
+    await httpMocksInput.waitFor({ state: "visible", timeout: 4000 });
+    await httpMocksInput.fill('[{"url":"https://api.example.com/boost","status":200,"body":{"mult":2}}]');
+    check("Sandbox Journey Steps builder renders spatial/prompt/detector/key & HTTP Mocks", true);
+    await httpMocksInput.fill("");
+
+    await runPresetAndVerify("spatial_loop", "Spatial + Input Light");
+    await p.locator("[data-sandbox-history]").waitFor({ state: "visible", timeout: 8000 });
+    const historyCountBefore = await p.locator("[data-sandbox-history-item]").count();
+    check("Sandbox Run History displays persisted runs", historyCountBefore >= 1, `${historyCountBefore} run(s)`);
+
+    // Reload page and confirm persisted run history + latest report survive reload
+    await p.reload({ waitUntil: "domcontentloaded" });
+    await p.locator("[data-top-chrome]").waitFor({ state: "visible", timeout: 15000 });
+    await p.getByRole("button", { name: "Ship", exact: true }).first().click();
+    await p.locator("[data-ship]").waitFor({ state: "visible", timeout: 10000 });
+    await p.locator('[aria-label="Ship section"]').getByRole("button", { name: "Playtests", exact: true }).click();
+    await p.locator("[data-sandbox-history]").waitFor({ state: "visible", timeout: 8000 });
+    await p.locator("[data-sandbox-result]").waitFor({ state: "visible", timeout: 8000 });
+    const historyCountAfter = await p.locator("[data-sandbox-history-item]").count();
+    check("Sandbox Run History & latest proof survive reload", historyCountAfter >= 1, `${historyCountAfter} run(s)`);
+
+    // Readiness Autopilot: 1-click Verify via Headless Sandbox + Headless Sandbox tier badge (Light & Dark)
+    await p.locator('[aria-label="Ship section"]').getByRole("button", { name: "Publish & Monetize", exact: true }).click();
+    await p.locator("[data-ship-autopilot]").waitFor({ state: "visible", timeout: 8000 });
+    const verifySbxBtn = p.locator("[data-verify-headless-sandbox]").first();
+    await verifySbxBtn.waitFor({ state: "visible", timeout: 5000 });
+    await verifySbxBtn.click();
+    const tierBadge = p.locator('[data-verification-tier="headless_sandbox"]').first();
+    await tierBadge.waitFor({ state: "visible", timeout: 15000 });
+    const tierTextLight = await tierBadge.innerText();
+    check(
+      "Readiness surfaces Headless Sandbox tier badge (1440x900 Light)",
+      /Headless Sandbox/i.test(tierTextLight),
+      tierTextLight,
+    );
+    await assertLayoutInvariants(p, "1440x900 Light Readiness Sandbox Tier");
+    await setThemeViaSettings(p, "dark");
+    await tierBadge.waitFor({ state: "visible", timeout: 5000 });
+    await assertLayoutInvariants(p, "1440x900 Dark Readiness Sandbox Tier");
+    await setThemeViaSettings(p, "light");
+
     // Live-Ops Control Plane & Player Telemetry (DataStores, MessagingService, Remote Config, Telemetry)
     await p.locator('[aria-label="Ship section"]').getByRole("button", { name: "LiveOps", exact: true }).click();
     await p.locator("[data-liveops-panel]").waitFor({ state: "visible", timeout: 8000 });
@@ -560,6 +609,29 @@ try {
   await setThemeViaSettings(p, "dark");
   await assertLayoutInvariants(p, "390x844 Dark StudioViewport3D");
   await setThemeViaSettings(p, "light");
+
+  // Mobile 390x844 Ship Readiness Headless Sandbox tier badge + Sandbox history in Light & Dark
+  const shipTabMob = p.getByRole("button", { name: "Ship", exact: true }).first();
+  if ((await shipTabMob.count()) > 0) {
+    await shipTabMob.click();
+    if ((await p.locator("[data-ship]").count()) > 0) {
+      await p.locator('[aria-label="Ship section"]').getByRole("button", { name: "Publish & Monetize", exact: true }).click();
+      await p.locator("[data-ship-autopilot]").waitFor({ state: "visible", timeout: 8000 });
+      const mobTier = p.locator('[data-verification-tier="headless_sandbox"]').first();
+      await mobTier.waitFor({ state: "visible", timeout: 8000 });
+      check("390x844 Mobile Readiness shows Headless Sandbox tier badge", /Headless Sandbox/i.test(await mobTier.innerText()));
+      await assertLayoutInvariants(p, "390x844 Light Readiness");
+      await setThemeViaSettings(p, "dark");
+      await assertLayoutInvariants(p, "390x844 Dark Readiness");
+      await setThemeViaSettings(p, "light");
+      await p.locator('[aria-label="Ship section"]').getByRole("button", { name: "Playtests", exact: true }).click();
+      await p.locator("[data-sandbox-history]").waitFor({ state: "visible", timeout: 8000 });
+      await assertLayoutInvariants(p, "390x844 Light Sandbox History");
+      await setThemeViaSettings(p, "dark");
+      await assertLayoutInvariants(p, "390x844 Dark Sandbox History");
+      await setThemeViaSettings(p, "light");
+    }
+  }
   await p.locator('[aria-label="Switch Copilot or Workbench view"]').getByRole("button", { name: "Copilot", exact: true }).click();
 
   await p.emulateMedia({ reducedMotion: "reduce" });
