@@ -734,6 +734,90 @@ export async function deleteProjectFile(projectId: string, path: string): Promis
   return call(projUrl(projectId, "/file/delete"), { path });
 }
 
+export type SandboxPlayerConfig = {
+  user_id: number;
+  name: string;
+  owns_passes?: number[];
+};
+
+export type SandboxJourneyOp =
+  | "wait"
+  | "fire_server"
+  | "invoke_server"
+  | "purchase_receipt"
+  | "click_gui"
+  | "rejoin"
+  | "assert_luau";
+
+export type SandboxJourneyStep = {
+  op: SandboxJourneyOp;
+  ms?: number;
+  remote?: string;
+  player_id?: number;
+  args?: unknown[];
+  product_id?: number;
+  purchase_id?: string;
+  replay_duplicate?: boolean;
+  gui_path?: string;
+  name?: string;
+  luau?: string;
+  expect?: Record<string, unknown>;
+};
+
+export type SandboxRunRequest = {
+  timeout_secs?: number;
+  players?: SandboxPlayerConfig[];
+  journey?: SandboxJourneyStep[];
+};
+
+export type SandboxStepResult = {
+  index: number;
+  op: string;
+  passed: boolean;
+  duration_ms: number;
+  result?: unknown;
+  error?: string;
+};
+
+export type SandboxAssertionResult = {
+  name: string;
+  passed: boolean;
+  value?: unknown;
+  error?: string;
+};
+
+export type SandboxConsoleOutput = {
+  lines: string[];
+  errors: string[];
+  warnings: string[];
+};
+
+export type SandboxStateSnapshot = {
+  leaderstats: Record<string, unknown>;
+  datastores: Record<string, unknown>;
+  receipts_processed: string[];
+  remotes_fired: number;
+  player_gui_tree: unknown[];
+};
+
+export type SandboxRunResponse = {
+  ok: boolean;
+  engine: "lune_roblox_shim" | "browser_sim" | "lune_missing";
+  passed: boolean;
+  duration_ms: number;
+  steps: SandboxStepResult[];
+  assertions: SandboxAssertionResult[];
+  console: SandboxConsoleOutput;
+  state_snapshot: SandboxStateSnapshot;
+  core_loop: { move: string; act: string; hud: string };
+  diagnostic?: string;
+};
+
+export async function runSandbox(req: SandboxRunRequest = {}, projectId?: string | null): Promise<Res<SandboxRunResponse>> {
+  const url = projectId ? projUrl(projectId, "/sandbox/run") : "/api/studio/sandbox/run";
+  return call<SandboxRunResponse>(url, req);
+}
+
 export const prettyBytes = (n: number) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 export const stamp = (at: string | number | undefined) => {
   if (at === undefined || at === null) return "";
