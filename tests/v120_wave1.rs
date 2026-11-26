@@ -105,7 +105,7 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.13.0"));
+    assert_eq!(ver_json["version"], json!("1.14.0"));
 
     // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
     if let Ok(entries) = std::fs::read_dir("assets/chunks") {
@@ -727,7 +727,7 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
         assert!(n > 0, "unexpected EOF on first keep-alive response");
         first_buf.extend_from_slice(&tmp[..n]);
         let s = String::from_utf8_lossy(&first_buf);
-        if s.contains("1.13.0") {
+        if s.contains("1.14.0") {
             assert!(s.contains("Connection: keep-alive"), "{s}");
             break;
         }
@@ -739,7 +739,7 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
     let _ = ka.read_to_end(&mut second_buf);
     let s2_txt = String::from_utf8_lossy(&second_buf);
     assert!(s2_txt.contains("HTTP/1.1 200 OK"), "{s2_txt}");
-    assert!(s2_txt.contains("1.13.0"), "{s2_txt}");
+    assert!(s2_txt.contains("1.14.0"), "{s2_txt}");
 
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -933,6 +933,132 @@ fn v1130_wave12_snapshot_diff_and_safe_rollback() {
     assert_eq!(st_miss, 404);
     let bad_req = format!(
         "POST /api/projects/{pid}/snapshots/{s1_id}/restore HTTP/1.1\r\nHost: attacker.example:{port}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+    );
+    let (st_403, _, _) = send_raw_bytes(port, bad_req.as_bytes());
+    assert_eq!(st_403, 403);
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn v1140_wave13_hook_integrity_and_surgical_restore() {
+    let base = std::env::temp_dir().join(format!(
+        "openro-v1140-wave13-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let data = base.join("data");
+    let ws = base.join("ws");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let port = start_server_with_dir(Some(data));
+    let (st_ws, _) = send_json(port, "POST", "/api/projects/workspace", Some(&json!({ "path": ws })));
+    assert_eq!(st_ws, 200);
+    let (st_cr, cr) = send_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(&json!({ "name": "Wave13HookGuard" })),
+    );
+    assert_eq!(st_cr, 201, "{cr}");
+    let pid = cr["project"]["id"].as_str().unwrap().to_string();
+    let proj_dir = std::path::PathBuf::from(cr["project"]["path"].as_str().unwrap());
+
+    // Seed verified monetization + SpawnLocation + --!strict baseline
+    let (st_cg, _) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/monetization/codegen"),
+        Some(&json!({ "tier_preset": "anime_gacha_rpg", "vip_pass_id": 777111, "starter_pack_id": 888222, "seed_defaults": true })),
+    );
+    assert_eq!(st_cg, 200);
+    let (st_fix, _) = send_json(port, "POST", &format!("/api/projects/{pid}/playtests/fix-all"), Some(&json!({})));
+    assert_eq!(st_fix, 200);
+    std::fs::write(
+        proj_dir.join("src/server/SpawnArena.server.luau"),
+        "--!strict\nlocal Players = game:GetService(\"Players\")\nlocal Workspace = game:GetService(\"Workspace\")\nlocal sp = Instance.new(\"SpawnLocation\")\nsp.Name = \"SpawnLocation\"\nsp.Anchored = true\nsp.Parent = Workspace\nPlayers.PlayerAdded:Connect(function(p) print(p.Name) end)\n",
+    )
+    .unwrap();
+
+    let (st_s1, s1) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/snapshots"),
+        Some(&json!({ "label": "Verified Hook Baseline" })),
+    );
+    assert_eq!(st_s1, 200, "{s1}");
+    let s1_id = s1["snapshot"]["snapshot_id"].as_str().unwrap().to_string();
+    assert_eq!(s1["snapshot"]["verified"], json!(true), "{s1}");
+
+    // Simulate AI regression: add a NEW feature script that MUST be preserved, while dropping --!strict, SpawnLocation, ProcessReceipt, and zeroing VipGamePassId
+    let new_feature_src = "--!strict\nlocal BossArena = {}\nfunction BossArena.Start() print(\"Boss Arena active\") end\nreturn BossArena\n";
+    std::fs::write(proj_dir.join("src/server/BossArenaFeature.server.luau"), new_feature_src).unwrap();
+    std::fs::write(
+        proj_dir.join("src/server/SpawnArena.server.luau"),
+        "local Workspace = game:GetService(\"Workspace\")\nprint(Workspace.Name)\n",
+    )
+    .unwrap();
+    let cfg_path = proj_dir.join("src/shared/MonetizationConfig.luau");
+    let cfg_raw = std::fs::read_to_string(&cfg_path).unwrap();
+    std::fs::write(&cfg_path, cfg_raw.replace("VipGamePassId = 777111", "VipGamePassId = 0")).unwrap();
+    let svc_path = proj_dir.join("src/server/MonetizationService.server.luau");
+    std::fs::remove_file(&svc_path).unwrap();
+
+    // Preflight Hook-Integrity detects regressions while tracking preserved new script
+    let (st_hi, hi) = send_json(port, "GET", &format!("/api/projects/{pid}/snapshots/hook-integrity"), None);
+    assert_eq!(st_hi, 200, "{hi}");
+    assert_eq!(hi["schema"], json!("openro.hook_integrity.v1"));
+    assert_eq!(hi["healthy"], json!(false), "{hi}");
+    assert!(hi["missing_count"].as_u64().unwrap() >= 4, "{hi}");
+    assert!(
+        hi["preserved_new_scripts"].as_array().unwrap().iter().any(|p| p == &json!("src/server/BossArenaFeature.server.luau")),
+        "{hi}"
+    );
+
+    // 1-Click Surgical Restore restores missing hooks WITHOUT clobbering BossArenaFeature.server.luau
+    let (st_rh, rh) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/snapshots/{s1_id}/restore-hooks"),
+        Some(&json!({ "auto_checkpoint": true })),
+    );
+    assert_eq!(st_rh, 200, "{rh}");
+    assert!(rh["hooks_restored"].as_u64().unwrap() >= 4, "{rh}");
+    assert_eq!(rh["after"]["healthy"], json!(true), "{rh}");
+    assert_eq!(rh["rerun"]["passed"], json!(true), "{rh}");
+    assert_eq!(
+        std::fs::read_to_string(proj_dir.join("src/server/BossArenaFeature.server.luau")).unwrap(),
+        new_feature_src,
+        "new feature script must be preserved untouched"
+    );
+    assert!(svc_path.is_file(), "MonetizationService.server.luau must be restored");
+    assert!(std::fs::read_to_string(&cfg_path).unwrap().contains("VipGamePassId = 777111"));
+    let spawn_after = std::fs::read_to_string(proj_dir.join("src/server/SpawnArena.server.luau")).unwrap();
+    assert!(spawn_after.starts_with("--!strict\n"), "{spawn_after}");
+    assert!(spawn_after.contains("SpawnLocation"), "{spawn_after}");
+    let svc_after = std::fs::read_to_string(&svc_path).unwrap();
+    assert!(svc_after.contains("ProcessReceipt"), "{svc_after}");
+
+    // Traversal + 404 + loopback-403 protections
+    let (st_bad, _) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/snapshots/..%2Fevil/restore-hooks"),
+        Some(&json!({})),
+    );
+    assert_eq!(st_bad, 400);
+    let (st_miss, _) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/snapshots/psnap-missing/restore-hooks"),
+        Some(&json!({})),
+    );
+    assert_eq!(st_miss, 404);
+    let bad_req = format!(
+        "GET /api/studio/snapshots/hook-integrity HTTP/1.1\r\nHost: attacker.example:{port}\r\nConnection: close\r\n\r\n"
     );
     let (st_403, _, _) = send_raw_bytes(port, bad_req.as_bytes());
     assert_eq!(st_403, 403);

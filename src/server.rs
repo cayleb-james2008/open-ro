@@ -984,6 +984,8 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
                 || clean_path == "/api/studio/economy/simulate"
                 || clean_path == "/api/studio/dependencies"
                 || clean_path == "/api/studio/dependencies/prune"
+                || clean_path == "/api/studio/snapshots/hook-integrity"
+                || (clean_path.starts_with("/api/snapshots/") && clean_path.ends_with("/restore-hooks"))
                 || clean_path == "/api/studio/capture"
                 || clean_path == "/api/studio/launch-and-continue"))
 }
@@ -1741,8 +1743,14 @@ fn handle(
         }
     }
 
-    // Parameterized snapshot routes: POST /api/snapshots/:id/restore & GET /api/snapshots/:id/rbxlx
+    // Parameterized snapshot routes: POST /api/snapshots/:id/restore, POST /api/snapshots/:id/restore-hooks & GET /api/snapshots/:id/rbxlx
     if let Some(rest) = path.strip_prefix("/api/snapshots/") {
+        if let Some(snap_id) = rest.strip_suffix("/restore-hooks") {
+            if req.method == "POST" {
+                handle_snapshot_restore_hooks(&mut stream, shared, snap_id);
+                break 'req_done;
+            }
+        }
         if let Some(snap_id) = rest.strip_suffix("/restore") {
             if req.method == "POST" {
                 handle_snapshot_restore(&mut stream, shared, snap_id);
@@ -2203,6 +2211,23 @@ fn handle(
         }
         ("POST", "/api/studio/economy/simulate") => {
             handle_studio_economy_simulate(&mut stream, shared, &req.body);
+        }
+        ("GET", "/api/studio/snapshots/hook-integrity") => {
+            let latest_snap = shared.snapshots.lock().unwrap().latest().cloned();
+            let current_tree = shared
+                .agent
+                .lock()
+                .unwrap()
+                .as_mut()
+                .and_then(|a| a.place_tree().ok())
+                .unwrap_or_else(|| json!({ "instances": {}, "scripts": {} }));
+            let report = crate::playtest::studio_hook_integrity_from_trees(
+                latest_snap.as_ref().map(|s| s.id.as_str()),
+                latest_snap.as_ref().map(|s| s.label.as_str()),
+                latest_snap.as_ref().map(|s| &s.tree),
+                &current_tree,
+            );
+            respond_json(&mut stream, "200 OK", &report);
         }
         ("GET", "/api/studio/dependencies") => {
             let tree = shared
@@ -3322,6 +3347,76 @@ fn handle_snapshot_restore(stream: &mut TcpStream, shared: &Shared, snap_id: &st
                     "instance_count": new_snap.instance_count,
                     "script_count": new_snap.script_count,
                     "diff": diff.to_json(),
+                }),
+            );
+        }
+        Err(e) => respond_json(
+            stream,
+            "502 Bad Gateway",
+            &json!({ "ok": false, "error": e }),
+        ),
+    }
+}
+
+fn handle_snapshot_restore_hooks(stream: &mut TcpStream, shared: &Shared, snap_id: &str) {
+    let _busy = BusyGuard::new(&shared.busy);
+    if !snap_id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) || snap_id.contains("..") {
+        respond_json(stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid snapshot id" }));
+        return;
+    }
+    let snap = {
+        let store = shared.snapshots.lock().unwrap();
+        store.get(snap_id).cloned()
+    };
+    let Some(target) = snap else {
+        respond_json(
+            stream,
+            "404 Not Found",
+            &json!({ "ok": false, "error": format!("snapshot not found: {snap_id}") }),
+        );
+        return;
+    };
+    let mut guard = shared.agent.lock().unwrap();
+    let Some(agent) = guard.as_mut() else {
+        respond_json(
+            stream,
+            "503 Service Unavailable",
+            &json!({ "ok": false, "error": "Studio not connected" }),
+        );
+        return;
+    };
+    let current_tree = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+    let (next_tree, restored_files, modified_files, hooks_restored) =
+        crate::playtest::studio_restore_hooks_tree(&target.tree, &current_tree);
+    match agent.apply_place_tree(&next_tree) {
+        Ok(diff) => {
+            let chat_id = shared.active_chat.lock().unwrap().clone();
+            let after_tree = agent.place_tree().unwrap_or(next_tree);
+            let _ = shared.snapshots.lock().unwrap().record(
+                format!("Restored hooks from {}", target.label),
+                "restore-hooks",
+                Some(chat_id),
+                after_tree.clone(),
+                Some(diff),
+            );
+            let after = crate::playtest::studio_hook_integrity_from_trees(
+                Some(target.id.as_str()),
+                Some(target.label.as_str()),
+                Some(&target.tree),
+                &after_tree,
+            );
+            respond_json(
+                stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "restored_id": target.id,
+                    "label": target.label,
+                    "hooks_restored": hooks_restored,
+                    "restored_files": restored_files,
+                    "modified_files": modified_files,
+                    "preserved_new_scripts": after["preserved_new_scripts"],
+                    "after": after,
                 }),
             );
         }

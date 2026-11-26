@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
 import { ProgressCircle } from "@/components/ProgressCircle/ProgressCircle";
 import { call, projUrl, type AutopilotResult, type MonetizationCodegenResult, type ProjectReadiness, type PublishGateResult } from "./api";
+import { HookIntegrityCard } from "./HookIntegrityCard";
 
 /**
  * 1-click Ship & Monetization Readiness Autopilot:
@@ -412,6 +413,15 @@ export function ReadinessAutopilot({
           ))}
         </div>
       )}
+
+      <HookIntegrityCard
+        projectId={projectId}
+        hideWhenHealthy
+        onRestored={async () => {
+          await loadReadiness();
+          await onCompleted?.();
+        }}
+      />
 
       {gateResult && (
         <div className="flex flex-col gap-2 rounded-lg border border-hairline bg-board/40 p-3 text-xs" data-publish-gate-panel>

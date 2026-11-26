@@ -260,8 +260,8 @@ pub fn route(shared: &Arc<Shared>, method: &str, full_path: &str, body: &[u8], l
             | ("GET", [_])
             | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "format" | "run-lune" | "open-in-studio"])
             | ("POST", [_, "sync", "diff"] | [_, "playtests", "rerun"] | [_, "playtests", "fix-plan"] | [_, "playtests", "fix-apply"] | [_, "playtests", "fix-all"])
-            | ("GET", [_, "builds" | "playtests" | "dependencies" | "snapshots" | "files" | "file" | "preview"])
-            | ("POST", [_, "dependencies", "prune"] | [_, "snapshots"] | [_, "snapshots", _, "restore"])
+            | ("GET", [_, "builds" | "playtests" | "dependencies" | "snapshots" | "files" | "file" | "preview"] | [_, "snapshots", "hook-integrity"])
+            | ("POST", [_, "dependencies", "prune"] | [_, "snapshots"] | [_, "snapshots", _, "restore"] | [_, "snapshots", _, "restore-hooks"])
             | ("POST", [_, "file"] | [_, "file", "delete"] | [_, "file", "edit"])
             | ("GET", [_, "git", "status" | "log"])
             | ("POST", [_, "git", "commit" | "revert"])
@@ -731,6 +731,10 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
             let r = project_of(shared, id)?;
             crate::playtest::prune_or_fix_dependencies(&r)
         }
+        ("GET", [id, "snapshots", "hook-integrity"]) => {
+            let r = project_of(shared, id)?;
+            crate::playtest::project_hook_integrity(&r).map(Reply::ok)
+        }
         ("GET", [id, "snapshots"]) => {
             let r = project_of(shared, id)?;
             crate::playtest::list_project_snapshots(&r).map(Reply::ok)
@@ -744,6 +748,11 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
             let r = project_of(shared, id)?;
             let b = parse_body(body)?;
             crate::playtest::restore_project_snapshot(shared, &r, sid, &b)
+        }
+        ("POST", [id, "snapshots", sid, "restore-hooks"]) => {
+            let r = project_of(shared, id)?;
+            let b = parse_body(body)?;
+            crate::playtest::restore_project_hooks(shared, &r, sid, &b)
         }
         ("GET", [id, "playtests", run]) => {
             let r = project_of(shared, id)?;

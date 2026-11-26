@@ -4,6 +4,13 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.14.0 - 2026-11-25
+
+- **Preflight Hook-Integrity & Regression Diff Guard (`src/playtest.rs`, `src/project_api.rs`, `src/server.rs`, `frontend/src/app/ship/{HookIntegrityCard.tsx,PlaytestPanel.tsx,ReadinessAutopilot.tsx,api.ts}`, `frontend/web-engine/install.ts`):**
+  - Added `GET /api/projects/:id/snapshots/hook-integrity`, `POST /api/projects/:id/snapshots/:sid/restore-hooks`, `GET /api/studio/snapshots/hook-integrity`, and `POST /api/snapshots/:id/restore-hooks` (with full `web-engine` parity and traversal + loopback-403 guards) to detect dropped Robux GamePass/DevProduct IDs, `ProcessReceipt`, `PromptGamePassPurchase`/`PromptProductPurchase`, `Workspace.SpawnLocation`, `--!strict` headers, and `Players.PlayerAdded`/`BindToClose` hooks relative to the latest verified snapshot and surgically restore them without discarding newly authored feature scripts.
+- **Sub-`10.6 MB` Binary & Cold-Boot Diet (`Cargo.toml`, `src/main.rs`, `src/server.rs`):**
+  - Switched crate-wide release codegen to `opt-level = "z"` while preserving `opt-level = 3` on hot JSON/compression/hash crates, deferred `prewarm_index_cache` behind the startup window so cold `/api/version` stays fast, and trimmed initial worker spawn to `POOL_WORKERS_BOOT = 2` (auto-scaling to `32` under burst).
+
 ## 1.13.0 - 2026-11-25
 
 - **Playable Snapshot Diff & 1-Click Safe Rollback (`src/playtest.rs`, `src/project_api.rs`, `frontend/src/app/{SnapshotsDialog.tsx,ship/SnapshotRollbackCard.tsx,ship/PlaytestPanel.tsx,ship/api.ts}`, `frontend/web-engine/install.ts`):**
