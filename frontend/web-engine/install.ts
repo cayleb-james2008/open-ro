@@ -99,9 +99,46 @@ type WebProjectLighting = {
   atmosphere: { density: number; offset: number; color: string; decay: string; glare: number; haze: number } | null;
 };
 
+type WebProjectTerrainGenerator = {
+  kind: "flat" | "hills" | "island" | "canyon";
+  seed: number;
+  amplitude: number;
+  water_level: number;
+};
+
+type WebProjectTerrainRegion = {
+  id: string;
+  bounds_min: [number, number, number];
+  bounds_max: [number, number, number];
+  material: string;
+  generator?: WebProjectTerrainGenerator | null;
+};
+
+type WebProjectTerrain = {
+  enabled: boolean;
+  cell_size: number;
+  regions: WebProjectTerrainRegion[];
+};
+
+type WebProjectLight = {
+  id: string;
+  path: string;
+  kind: "PointLight" | "SpotLight" | "SurfaceLight";
+  parent_path: string;
+  position: [number, number, number];
+  direction?: [number, number, number];
+  color: string;
+  brightness: number;
+  range: number;
+  angle?: number;
+  shadows?: boolean;
+  enabled?: boolean;
+};
+
 type WebProjectSceneSnapshot = {
   instances: Record<string, { class_name: string; properties: Record<string, unknown>; source_file?: string }>;
   lighting: WebProjectLighting;
+  terrain?: WebProjectTerrain;
 };
 
 type WebLiveOpsDataStoreRecord = {
@@ -149,7 +186,8 @@ type WebProject = {
   files: Record<string, string>;
   instances: Record<string, { class_name: string; properties: Record<string, unknown>; source_file?: string }>;
   lighting: WebProjectLighting;
-  meshes: Record<string, { name: string; obj: string; tris: number; size: [number, number, number] }>;
+  terrain?: WebProjectTerrain;
+  meshes: Record<string, { name: string; obj: string; tris: number; size: [number, number, number]; texture_path?: string | null }>;
   scene_revision: number;
   sceneUndo: WebProjectSceneSnapshot[];
   sceneRedo: WebProjectSceneSnapshot[];
@@ -1555,10 +1593,91 @@ function defaultWebProjects(): Record<string, WebProject> {
           size: [6, 6, 6],
         },
       },
+      terrain: { enabled: false, cell_size: 4, regions: [] },
       scene_revision: 1,
       sceneUndo: [],
       sceneRedo: [],
       liveops: createDefaultWebLiveOps(),
+    },
+  };
+}
+
+function defaultWebTerrain(): WebProjectTerrain {
+  return { enabled: false, cell_size: 4, regions: [] };
+}
+
+function extractWebProjectLights(
+  instances: Record<string, { class_name: string; properties: Record<string, unknown>; source_file?: string }>,
+): WebProjectLight[] {
+  const out: WebProjectLight[] = [];
+  for (const [path, inst] of Object.entries(instances || {})) {
+    if (!inst || typeof inst !== "object") continue;
+    const kind = inst.class_name;
+    if (kind !== "PointLight" && kind !== "SpotLight" && kind !== "SurfaceLight") continue;
+    const props = inst.properties || {};
+    const dotIdx = path.lastIndexOf(".");
+    const parent_path = dotIdx > 0 ? path.slice(0, dotIdx) : "Workspace";
+    const parentPos = propVec3(instances[parent_path]?.properties?.Position) || [0, 4, 0];
+    const parentSize = propVec3(instances[parent_path]?.properties?.Size) || [4, 4, 4];
+    const position = propVec3(props.Position) || [parentPos[0], parentPos[1] + parentSize[1] * 0.5 + 1.5, parentPos[2]];
+    const direction = propVec3(props.Direction) || [0, -1, 0];
+    const color = typeof props.Color === "string" && /^#[0-9a-f]{6}$/i.test(props.Color.trim()) ? props.Color.trim() : "#FFE4B5";
+    const brightness = typeof props.Brightness === "number" && Number.isFinite(props.Brightness) ? props.Brightness : 2;
+    const range = typeof props.Range === "number" && Number.isFinite(props.Range) ? props.Range : 28;
+    const angle = typeof props.Angle === "number" && Number.isFinite(props.Angle) ? props.Angle : 65;
+    out.push({
+      id: path,
+      path,
+      kind,
+      parent_path,
+      position,
+      direction,
+      color,
+      brightness,
+      range,
+      angle,
+      shadows: props.Shadows !== false,
+      enabled: props.Enabled !== false,
+    });
+  }
+  return out;
+}
+
+function validateWebTerrainRegion(raw: Record<string, unknown>): { ok: true; region: WebProjectTerrainRegion } | { ok: false; error: string } {
+  const bMin = propVec3(raw.bounds_min ?? raw.min);
+  const bMax = propVec3(raw.bounds_max ?? raw.max);
+  if (!bMin || !bMax) return { ok: false, error: "Terrain region requires bounds_min and bounds_max [x,y,z]" };
+  const dx = bMax[0] - bMin[0];
+  const dy = bMax[1] - bMin[1];
+  const dz = bMax[2] - bMin[2];
+  if (dx <= 0 || dy <= 0 || dz <= 0) {
+    return { ok: false, error: "Terrain bounds_max must exceed bounds_min on all axes" };
+  }
+  if (dx > 2048 || dy > 512 || dz > 2048) {
+    return { ok: false, error: "Terrain region exceeds maximum 2048x512x2048 stud bounds" };
+  }
+  const mat = typeof raw.material === "string" && raw.material.trim() ? raw.material.trim() : "Grass";
+  let generator: WebProjectTerrainGenerator | null | undefined;
+  if (raw.generator && typeof raw.generator === "object" && !Array.isArray(raw.generator)) {
+    const g = raw.generator as Record<string, unknown>;
+    const k = String(g.kind || "hills");
+    const kind: WebProjectTerrainGenerator["kind"] =
+      k === "flat" || k === "hills" || k === "island" || k === "canyon" ? k : "hills";
+    generator = {
+      kind,
+      seed: typeof g.seed === "number" && Number.isFinite(g.seed) ? Math.trunc(g.seed) : 42,
+      amplitude: typeof g.amplitude === "number" && Number.isFinite(g.amplitude) ? g.amplitude : 16,
+      water_level: typeof g.water_level === "number" && Number.isFinite(g.water_level) ? g.water_level : -2,
+    };
+  }
+  return {
+    ok: true,
+    region: {
+      id: typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : `region-${Date.now().toString(36)}`,
+      bounds_min: bMin,
+      bounds_max: bMax,
+      material: mat,
+      ...(generator ? { generator } : {}),
     },
   };
 }
@@ -2020,6 +2139,7 @@ export function installWebEngine() {
               if (!p.files || typeof p.files !== "object") p.files = {};
               if (!p.instances || typeof p.instances !== "object") p.instances = {};
               if (!p.lighting || typeof p.lighting !== "object") p.lighting = {};
+              if (!p.terrain || typeof p.terrain !== "object") p.terrain = defaultWebTerrain();
               if (!p.meshes || typeof p.meshes !== "object") p.meshes = {};
               if (typeof p.scene_revision !== "number" || !Number.isFinite(p.scene_revision)) p.scene_revision = 1;
               if (!Array.isArray(p.sceneUndo)) p.sceneUndo = [];
@@ -4644,15 +4764,22 @@ export function installWebEngine() {
           message: d.message,
           code: d.code,
         }));
-        const meshes = Object.entries(proj.meshes || {}).map(([objPath, m]) => ({
-          name: m.name,
-          obj_url: `/api/projects/${encodeURIComponent(proj.id)}/mesh-asset?path=${encodeURIComponent(objPath)}`,
-          texture_url: null,
-          size: m.size,
-          tris: m.tris,
-          obj_path: objPath,
-          texture_path: null,
-        }));
+        const meshes = Object.entries(proj.meshes || {}).map(([objPath, m]) => {
+          const texPath = m.texture_path || null;
+          return {
+            name: m.name,
+            obj_url: `/api/projects/${encodeURIComponent(proj.id)}/mesh-asset?file=${encodeURIComponent(objPath)}`,
+            texture_url: texPath
+              ? `/api/projects/${encodeURIComponent(proj.id)}/mesh-asset?file=${encodeURIComponent(texPath)}`
+              : null,
+            size: m.size,
+            tris: m.tris,
+            obj_path: objPath,
+            texture_path: texPath,
+          };
+        });
+        const terrain = proj.terrain || defaultWebTerrain();
+        const lights = extractWebProjectLights(proj.instances);
         return jsonResponse({
           ok: true,
           project_id: proj.id,
@@ -4665,6 +4792,8 @@ export function installWebEngine() {
           instances: proj.instances,
           meshes,
           lighting: proj.lighting,
+          terrain,
+          lights,
           diagnostics: diags,
           skipped: [],
           tree_error: null,
@@ -4672,18 +4801,29 @@ export function installWebEngine() {
       }
 
       if (method === "GET" && tail === "mesh-asset") {
-        const rel = u.searchParams.get("path") || "";
-        if (!isSafeRelPath(rel)) {
+        const rel = u.searchParams.get("file") || u.searchParams.get("path") || "";
+        if (!isSafeRelPath(rel) || !/\.(obj|mtl|png|jpe?g)$/i.test(rel)) {
           return jsonResponse({ ok: false, error: "invalid or unsafe mesh asset path" }, 400);
         }
         const entry = proj.meshes?.[rel];
-        if (!entry) {
-          return jsonResponse({ ok: false, error: `mesh asset not found: ${rel}` }, 404);
+        if (entry) {
+          return new Response(entry.obj, {
+            status: 200,
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+          });
         }
-        return new Response(entry.obj, {
-          status: 200,
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-        });
+        const fileBody = proj.files?.[rel];
+        if (fileBody !== undefined) {
+          const ext = rel.toLowerCase().split(".").pop() || "";
+          const ct =
+            ext === "png"
+              ? "image/png"
+              : ext === "jpg" || ext === "jpeg"
+                ? "image/jpeg"
+                : "text/plain; charset=utf-8";
+          return new Response(fileBody, { status: 200, headers: { "Content-Type": ct } });
+        }
+        return jsonResponse({ ok: false, error: `mesh asset not found: ${rel}` }, 404);
       }
 
       if (method === "GET" && tail === "file") {
@@ -4852,9 +4992,11 @@ export function installWebEngine() {
 
       if (method === "POST" && tail === "scene/mutate") {
         const ops = Array.isArray(body.ops) ? (body.ops as Array<Record<string, unknown>>) : [];
-        const snap = () => ({
+        if (!proj.terrain) proj.terrain = defaultWebTerrain();
+        const snap = (): WebProjectSceneSnapshot => ({
           instances: JSON.parse(JSON.stringify(proj.instances)),
           lighting: JSON.parse(JSON.stringify(proj.lighting)),
+          terrain: JSON.parse(JSON.stringify(proj.terrain || defaultWebTerrain())),
         });
         let undone = false;
         let redone = false;
@@ -4865,6 +5007,7 @@ export function installWebEngine() {
             proj.sceneRedo.push(snap());
             proj.instances = prev.instances;
             proj.lighting = prev.lighting;
+            proj.terrain = prev.terrain || defaultWebTerrain();
             proj.scene_revision++;
             undone = true;
           }
@@ -4874,12 +5017,12 @@ export function installWebEngine() {
             proj.sceneUndo.push(snap());
             proj.instances = next.instances;
             proj.lighting = next.lighting;
+            proj.terrain = next.terrain || defaultWebTerrain();
             proj.scene_revision++;
             redone = true;
           }
         } else if (ops.length > 0) {
-          proj.sceneUndo.push(snap());
-          proj.sceneRedo = [];
+          const prevSnap = snap();
           for (const opObj of ops) {
             const op = String(opObj.op || "");
             const targetPath = typeof opObj.path === "string" ? opObj.path.trim() : "";
@@ -4896,6 +5039,38 @@ export function installWebEngine() {
               };
             } else if (op === "delete" && targetPath) {
               delete proj.instances[targetPath];
+              for (const k of Object.keys(proj.instances)) {
+                if (k.startsWith(`${targetPath}.`)) delete proj.instances[k];
+              }
+            } else if (op === "reparent" && targetPath) {
+              const newParent = typeof opObj.new_parent === "string" ? opObj.new_parent.trim() : "";
+              if (
+                !newParent ||
+                !(targetPath in proj.instances) ||
+                newParent === targetPath ||
+                newParent.startsWith(`${targetPath}.`)
+              ) {
+                proj.instances = prevSnap.instances;
+                proj.lighting = prevSnap.lighting;
+                proj.terrain = prevSnap.terrain;
+                return jsonResponse({ ok: false, error: "invalid reparent path or target" }, 400);
+              }
+              const leaf = targetPath.split(".").pop() || "Instance";
+              const destBase = `${newParent}.${leaf}`;
+              const moved: Array<[string, { class_name: string; properties: Record<string, unknown>; source_file?: string }]> = [];
+              for (const [k, v] of Object.entries(proj.instances)) {
+                if (k === targetPath) moved.push([destBase, v]);
+                else if (k.startsWith(`${targetPath}.`)) {
+                  moved.push([`${destBase}${k.slice(targetPath.length)}`, v]);
+                }
+              }
+              delete proj.instances[targetPath];
+              for (const k of Object.keys(proj.instances)) {
+                if (k.startsWith(`${targetPath}.`)) delete proj.instances[k];
+              }
+              for (const [nk, nv] of moved) {
+                proj.instances[nk] = nv;
+              }
             } else if (op === "duplicate" && targetPath && proj.instances[targetPath]) {
               const src = proj.instances[targetPath];
               const segs = targetPath.split(".");
@@ -4933,8 +5108,99 @@ export function installWebEngine() {
                 fog_color: str(lp.fog_color, lp.FogColor, proj.lighting.fog_color),
                 technology: str(lp.technology, lp.Technology, proj.lighting.technology),
               };
+            } else if (op === "set_terrain") {
+              const curT = proj.terrain || defaultWebTerrain();
+              let nextRegions = [...curT.regions];
+              let nextEnabled = curT.enabled;
+
+              if (opObj.clear === true) {
+                nextRegions = [];
+                nextEnabled = false;
+              }
+              if (Array.isArray(opObj.regions)) {
+                if (opObj.regions.length > 100) {
+                  proj.instances = prevSnap.instances;
+                  proj.lighting = prevSnap.lighting;
+                  proj.terrain = prevSnap.terrain;
+                  return jsonResponse({ ok: false, error: "Terrain exceeds maximum 100 regions" }, 400);
+                }
+                nextRegions = [];
+                for (const rRaw of opObj.regions) {
+                  if (!rRaw || typeof rRaw !== "object") continue;
+                  const val = validateWebTerrainRegion(rRaw as Record<string, unknown>);
+                  if (!val.ok) {
+                    proj.instances = prevSnap.instances;
+                    proj.lighting = prevSnap.lighting;
+                    proj.terrain = prevSnap.terrain;
+                    return jsonResponse({ ok: false, error: val.error }, 400);
+                  }
+                  nextRegions.push(val.region);
+                }
+              }
+              if (opObj.generator && typeof opObj.generator === "object" && !Array.isArray(opObj.generator)) {
+                const gRaw = opObj.generator as Record<string, unknown>;
+                const hasGenRegion = nextRegions.some((r) => Boolean(r.generator));
+                if (!hasGenRegion) {
+                  const val = validateWebTerrainRegion({
+                    id: "terrain-main",
+                    bounds_min: [-96, -16, -96],
+                    bounds_max: [96, 48, 96],
+                    material: gRaw.kind === "canyon" ? "Rock" : "Grass",
+                    generator: gRaw,
+                  });
+                  if (val.ok) nextRegions.unshift(val.region);
+                } else {
+                  const k = String(gRaw.kind || "hills");
+                  const kind: WebProjectTerrainGenerator["kind"] =
+                    k === "flat" || k === "hills" || k === "island" || k === "canyon" ? k : "hills";
+                  nextRegions = nextRegions.map((r) =>
+                    r.generator
+                      ? {
+                          ...r,
+                          generator: {
+                            kind,
+                            seed: typeof gRaw.seed === "number" && Number.isFinite(gRaw.seed) ? Math.trunc(gRaw.seed) : r.generator.seed,
+                            amplitude: typeof gRaw.amplitude === "number" && Number.isFinite(gRaw.amplitude) ? gRaw.amplitude : r.generator.amplitude,
+                            water_level: typeof gRaw.water_level === "number" && Number.isFinite(gRaw.water_level) ? gRaw.water_level : r.generator.water_level,
+                          },
+                        }
+                      : r,
+                  );
+                }
+                nextEnabled = true;
+              }
+              if (opObj.paint_box && typeof opObj.paint_box === "object" && !Array.isArray(opObj.paint_box)) {
+                const pb = opObj.paint_box as Record<string, unknown>;
+                const val = validateWebTerrainRegion(pb);
+                if (!val.ok) {
+                  proj.instances = prevSnap.instances;
+                  proj.lighting = prevSnap.lighting;
+                  proj.terrain = prevSnap.terrain;
+                  return jsonResponse({ ok: false, error: val.error }, 400);
+                }
+                if (nextRegions.length >= 100) {
+                  proj.instances = prevSnap.instances;
+                  proj.lighting = prevSnap.lighting;
+                  proj.terrain = prevSnap.terrain;
+                  return jsonResponse({ ok: false, error: "Terrain exceeds maximum 100 regions" }, 400);
+                }
+                const existingIdx = nextRegions.findIndex((r) => r.id === val.region.id);
+                if (existingIdx >= 0) nextRegions[existingIdx] = val.region;
+                else nextRegions.push(val.region);
+                nextEnabled = true;
+              }
+              if (typeof opObj.enabled === "boolean") {
+                nextEnabled = opObj.enabled;
+              }
+              proj.terrain = {
+                enabled: nextEnabled,
+                cell_size: 4,
+                regions: nextRegions,
+              };
             }
           }
+          proj.sceneUndo.push(prevSnap);
+          proj.sceneRedo = [];
           proj.scene_revision++;
         }
         persist();
@@ -4948,7 +5214,9 @@ export function installWebEngine() {
           redone,
           instances: proj.instances,
           lighting: proj.lighting,
-          modified_files: ["scene/workspace.model.json", "default.project.json"],
+          terrain: proj.terrain || defaultWebTerrain(),
+          lights: extractWebProjectLights(proj.instances),
+          modified_files: ["scene/workspace.model.json", "scene/terrain.json", "default.project.json"],
         });
       }
 

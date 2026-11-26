@@ -404,6 +404,48 @@ try {
     await previewBtn.click();
   }
   await p.locator("[data-studio-viewport-3d]").waitFor({ state: "visible", timeout: 8000 });
+  const vpCanvas = p.locator('[data-testid="viewport-canvas"]');
+  await vpCanvas.waitFor({ state: "visible", timeout: 8000 });
+  const rendererKind = await vpCanvas.getAttribute("data-renderer");
+  const rendererBadgeText = await p.locator('[data-testid="viewport-renderer-badge"]').innerText();
+  check(
+    "StudioViewport3D renderer ready (webgl2 or canvas2d-fallback)",
+    (rendererKind === "webgl2" || rendererKind === "canvas2d-fallback") && rendererBadgeText.trim().length > 0,
+    `${rendererKind} (${rendererBadgeText.trim()})`,
+  );
+
+  // Terrain generator preset + Paint Box + Dynamic Light upsert persistence
+  await p.locator("[data-toggle-terrain-panel]").click();
+  await p.locator("[data-terrain-toolbar]").waitFor({ state: "visible", timeout: 4000 });
+  await p.locator('[data-terrain-preset="hills"]').click();
+  await p.waitForTimeout(200);
+  await p.locator("[data-terrain-paint]").click();
+  await p.waitForTimeout(200);
+  await assertLayoutInvariants(p, "1440x900 Light StudioViewport3D Terrain");
+
+  await p.locator("[data-toggle-lights-panel]").click();
+  await p.locator("[data-lights-toolbar]").waitFor({ state: "visible", timeout: 4000 });
+  const lightCountBefore = await p.locator("[data-light-item]").count();
+  await p.locator('[data-add-light="PointLight"]').click();
+  await p.waitForFunction(
+    (prev) => document.querySelectorAll("[data-light-item]").length > prev,
+    lightCountBefore,
+    { timeout: 8000 },
+  );
+  // Switch tabs and return to verify scene light persistence
+  await p.getByRole("button", { name: "Code", exact: true }).first().click();
+  await p.locator("[data-code-diff-workbench]").waitFor({ state: "visible", timeout: 5000 });
+  await p.getByRole("button", { name: "Viewport", exact: true }).first().click();
+  await p.locator("[data-studio-viewport-3d]").waitFor({ state: "visible", timeout: 8000 });
+  await p.locator("[data-toggle-lights-panel]").click();
+  const lightCountAfter = await p.locator("[data-light-item]").count();
+  check(
+    "StudioViewport3D Terrain & PointLight upsert persist across tab switches",
+    lightCountAfter > lightCountBefore,
+    `lights=${lightCountAfter}`,
+  );
+  await p.locator("[data-toggle-lights-panel]").click();
+
   await assertLayoutInvariants(p, "1440x900 Light StudioViewport3D");
   await setThemeViaSettings(p, "dark");
   await assertLayoutInvariants(p, "1440x900 Dark StudioViewport3D");
@@ -497,6 +539,12 @@ try {
     await mobPreviewBtn.click();
   }
   await p.locator("[data-studio-viewport-3d]").waitFor({ state: "visible", timeout: 8000 });
+  const mobCanvasRenderer = await p.locator('[data-testid="viewport-canvas"]').getAttribute("data-renderer");
+  check(
+    "390x844 Mobile StudioViewport3D renderer ready",
+    mobCanvasRenderer === "webgl2" || mobCanvasRenderer === "canvas2d-fallback",
+    String(mobCanvasRenderer),
+  );
   await assertLayoutInvariants(p, "390x844 Light StudioViewport3D");
   await setThemeViaSettings(p, "dark");
   await assertLayoutInvariants(p, "390x844 Dark StudioViewport3D");
