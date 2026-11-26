@@ -1152,9 +1152,9 @@ fn validate_terrain_bounds(
         if !bmin[axis].is_finite() || !bmax[axis].is_finite() {
             return Err(format!("terrain region '{id}' has non-finite bounds"));
         }
-        if bmax[axis] < bmin[axis] {
+        if bmax[axis] <= bmin[axis] {
             return Err(format!(
-                "terrain region '{id}' bounds_max[{axis}] ({}) must be >= bounds_min[{axis}] ({})",
+                "terrain region '{id}' bounds_max[{axis}] ({}) must be > bounds_min[{axis}] ({})",
                 bmax[axis], bmin[axis]
             ));
         }
@@ -1165,11 +1165,6 @@ fn validate_terrain_bounds(
                 MAX_TERRAIN_EXTENT[0], MAX_TERRAIN_EXTENT[1], MAX_TERRAIN_EXTENT[2]
             ));
         }
-    }
-    if (bmax[0] - bmin[0]) <= 0.0 || (bmax[2] - bmin[2]) <= 0.0 {
-        return Err(format!(
-            "terrain region '{id}' must have positive X and Z extents"
-        ));
     }
     Ok(())
 }
@@ -1411,6 +1406,19 @@ fn apply_set_terrain_op(terrain: &mut Value, op: &Value) -> Result<(), String> {
             let _ = rid;
             regions.push(region);
         }
+    }
+
+    if !has_generator
+        && (obj.get("bounds_min").is_some_and(|v| !v.is_null())
+            || obj.get("min").is_some_and(|v| !v.is_null())
+            || obj.get("bounds_max").is_some_and(|v| !v.is_null())
+            || obj.get("max").is_some_and(|v| !v.is_null()))
+    {
+        let bmin = parse_vec3(obj.get("bounds_min").or_else(|| obj.get("min")))
+            .ok_or("set_terrain requires finite [x, y, z] bounds_min/min")?;
+        let bmax = parse_vec3(obj.get("bounds_max").or_else(|| obj.get("max")))
+            .ok_or("set_terrain requires finite [x, y, z] bounds_max/max")?;
+        validate_terrain_bounds("set_terrain", bmin, bmax)?;
     }
 
     if let Some(en) = explicit_enabled {
@@ -1714,9 +1722,13 @@ fn validate_workspace_path(raw: &str) -> Result<Vec<String>, String> {
     if segs.len() < 2
         || segs.len() > MAX_SCENE_PATH_DEPTH + 1
         || segs[0] != "Workspace"
-        || segs
-            .iter()
-            .any(|s| s.trim().is_empty() || s.len() > MAX_SCENE_SEG_LEN || *s == "." || *s == "..")
+        || segs.iter().any(|s| {
+            s.trim().is_empty()
+                || s.trim() != *s
+                || s.len() > MAX_SCENE_SEG_LEN
+                || *s == "."
+                || *s == ".."
+        })
     {
         return Err(format!(
             "scene instance path '{raw}' must start with 'Workspace.' and have 1..={MAX_SCENE_PATH_DEPTH} valid segments"
@@ -2101,6 +2113,15 @@ fn duplicate_model_node(
     Ok(())
 }
 
+fn subtree_depth(node: &Value) -> usize {
+    let child_max = node
+        .get("children")
+        .and_then(|c| c.as_array())
+        .map(|arr| arr.iter().map(subtree_depth).max().unwrap_or(0))
+        .unwrap_or(0);
+    1 + child_max
+}
+
 fn reparent_model_node(
     root: &mut Value,
     src_segs: &[String],
@@ -2115,7 +2136,7 @@ fn reparent_model_node(
     let src_parent_segs = &src_segs[..src_segs.len() - 1];
     let src_leaf = &src_segs[src_segs.len() - 1];
 
-    // Verify source exists before mutating tree
+    // Verify source exists (and check depth budget) before mutating tree
     {
         let mut cur = &*root;
         for seg in src_parent_segs {
@@ -2132,11 +2153,14 @@ fn reparent_model_node(
             .get("children")
             .and_then(|c| c.as_array())
             .ok_or_else(|| format!("instance 'Workspace.{}' not found", src_segs.join(".")))?;
-        if !kids
+        let src_node = kids
             .iter()
-            .any(|c| c.get("name").and_then(|n| n.as_str()) == Some(src_leaf.as_str()))
-        {
-            return Err(format!("instance 'Workspace.{}' not found", src_segs.join(".")));
+            .find(|c| c.get("name").and_then(|n| n.as_str()) == Some(src_leaf.as_str()))
+            .ok_or_else(|| format!("instance 'Workspace.{}' not found", src_segs.join(".")))?;
+        if new_parent_segs.len() + subtree_depth(src_node) > MAX_SCENE_PATH_DEPTH {
+            return Err(format!(
+                "reparent exceeds max scene depth {MAX_SCENE_PATH_DEPTH}"
+            ));
         }
     }
 

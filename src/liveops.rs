@@ -27,6 +27,7 @@ const MAX_REMOTE_CONFIG_BYTES: usize = 64 * 1024;
 const MAX_MESSAGE_BYTES: usize = 1024;
 const MAX_INGEST_BATCH: usize = 1000;
 const MAX_TELEMETRY_FILE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_DS_BACKUPS: usize = 50;
 const DEFAULT_REMOTE_CONFIG_STORE: &str = "OpenRO_RemoteConfig";
 const DEFAULT_REMOTE_CONFIG_KEY: &str = "config";
 
@@ -94,7 +95,7 @@ fn validate_ds_token(name: &str, label: &str, max_len: usize) -> R<String> {
     if t.len() > max_len {
         return bad(format!("{label} exceeds {max_len} characters."));
     }
-    if t.contains('\0') || t.contains('\r') || t.contains('\n') || t.contains("..") {
+    if t.chars().any(|c| c.is_control()) || t.contains("..") {
         return bad(format!("{label} contains invalid characters."));
     }
     Ok(t.to_string())
@@ -103,6 +104,31 @@ fn validate_ds_token(name: &str, label: &str, max_len: usize) -> R<String> {
 fn validate_scope(raw: Option<&str>) -> R<String> {
     let s = raw.map(str::trim).filter(|v| !v.is_empty()).unwrap_or("global");
     validate_ds_token(s, "scope", 64)
+}
+
+fn body_opt_str<'a>(body: &'a Value, key: &str, label: &str) -> R<Option<&'a str>> {
+    match body.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.as_str())),
+        Some(_) => bad(format!("{label} must be a string.")),
+    }
+}
+
+fn parse_expected_revision(body: &Value) -> R<Option<String>> {
+    match body.get("expected_revision") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => {
+            let t = s.trim();
+            if t.is_empty() {
+                return bad("expected_revision cannot be empty when provided.");
+            }
+            if t.len() > 256 || t.chars().any(|c| c.is_control()) {
+                return bad("expected_revision contains invalid characters or exceeds 256 characters.");
+            }
+            Ok(Some(t.to_string()))
+        }
+        Some(_) => bad("expected_revision must be a string."),
+    }
 }
 
 fn str_or_q<'a>(body: &'a Value, key: &str, query: &'a str) -> Option<String> {
@@ -166,6 +192,46 @@ struct DsTarget<'a> {
     key: &'a str,
 }
 
+fn parse_backup_order_key(fname: &str) -> (u128, u64) {
+    let stem = fname.strip_suffix(".json").unwrap_or(fname);
+    if let Some((ms_s, seq_s)) = stem.split_once('-') {
+        let ms = ms_s.parse::<u128>().unwrap_or(0);
+        let seq = seq_s.parse::<u64>().unwrap_or(0);
+        return (ms, seq);
+    }
+    (0, 0)
+}
+
+fn prune_ds_backups(dir: &Path, max_keep: usize) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(u128, u64, String, PathBuf)> = Vec::new();
+    for entry in rd.flatten() {
+        let fname = entry.file_name().to_string_lossy().into_owned();
+        if !fname.ends_with(".json") || fname.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            continue;
+        }
+        let (ms, seq) = parse_backup_order_key(&fname);
+        files.push((ms, seq, fname, path));
+    }
+    if files.len() <= max_keep {
+        return;
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2)));
+    let drop_n = files.len() - max_keep;
+    for (_, _, _, path) in files.into_iter().take(drop_n) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 fn write_ds_backup(
     root: &Path,
     action: &str,
@@ -183,6 +249,9 @@ fn write_ds_backup(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| Oc { status: 500, msg: format!("create backup dir: {e}") })?;
+        if std::fs::symlink_metadata(parent).is_ok_and(|m| m.file_type().is_symlink()) {
+            return bad("ds-backups directory cannot be a symlink.");
+        }
     }
     let payload = json!({
         "ts": now_iso(),
@@ -196,6 +265,9 @@ fn write_ds_backup(
         "previous": previous.cloned().unwrap_or(Value::Null),
     });
     write_json_atomic(&path, &payload)?;
+    if let Some(parent) = path.parent() {
+        prune_ds_backups(parent, MAX_DS_BACKUPS);
+    }
     Ok(rel)
 }
 
@@ -349,15 +421,16 @@ fn datastore_entry_set(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
     }
     let u = universe_id(&read_manifest(root))?;
     let client = Client::new(ctx)?;
-    let (kind, seg) = ds_kind_segment(body.get("kind").and_then(Value::as_str))?;
+    let kind_raw = body_opt_str(body, "kind", "kind")?;
+    let (kind, seg) = ds_kind_segment(kind_raw)?;
     let store = validate_ds_token(
-        body.get("store").and_then(Value::as_str).unwrap_or(""),
+        body_opt_str(body, "store", "store")?.unwrap_or(""),
         "store",
         128,
     )?;
-    let scope = validate_scope(body.get("scope").and_then(Value::as_str))?;
+    let scope = validate_scope(body_opt_str(body, "scope", "scope")?)?;
     let key = validate_ds_token(
-        body.get("key").and_then(Value::as_str).unwrap_or(""),
+        body_opt_str(body, "key", "key")?.unwrap_or(""),
         "key",
         256,
     )?;
@@ -369,11 +442,7 @@ fn datastore_entry_set(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
         return bad("OrderedDataStore value must be an integer.");
     }
 
-    let expected_rev = body
-        .get("expected_revision")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+    let expected_rev = parse_expected_revision(body)?;
 
     let entry_path = format!(
         "/cloud/v2/universes/{u}/{seg}/{}/scopes/{}/entries/{}",
@@ -383,7 +452,7 @@ fn datastore_entry_set(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
     );
     let existing = fetch_existing_ds_entry(&client, &entry_path, &store, &scope, &key)?;
 
-    match (&existing, expected_rev) {
+    match (&existing, expected_rev.as_deref()) {
         (None, Some(exp)) => {
             return err(
                 409,
@@ -415,7 +484,7 @@ fn datastore_entry_set(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
             scope: &scope,
             key: &key,
         },
-        expected_rev,
+        expected_rev.as_deref(),
         existing.as_ref().map(|(e, _)| e),
     )?;
 
@@ -456,6 +525,10 @@ fn datastore_entry_delete(ctx: &Ctx, root: &Path, query: &str, body: &Value) -> 
     }
     let u = universe_id(&read_manifest(root))?;
     let client = Client::new(ctx)?;
+    let _ = body_opt_str(body, "kind", "kind")?;
+    let _ = body_opt_str(body, "store", "store")?;
+    let _ = body_opt_str(body, "scope", "scope")?;
+    let _ = body_opt_str(body, "key", "key")?;
     let (kind, seg) = ds_kind_segment(str_or_q(body, "kind", query).as_deref())?;
     let store = validate_ds_token(
         &str_or_q(body, "store", query).unwrap_or_default(),
@@ -468,11 +541,7 @@ fn datastore_entry_delete(ctx: &Ctx, root: &Path, query: &str, body: &Value) -> 
         "key",
         256,
     )?;
-    let expected_rev = body
-        .get("expected_revision")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+    let expected_rev = parse_expected_revision(body)?;
 
     let entry_path = format!(
         "/cloud/v2/universes/{u}/{seg}/{}/scopes/{}/entries/{}",
@@ -485,7 +554,7 @@ fn datastore_entry_delete(ctx: &Ctx, root: &Path, query: &str, body: &Value) -> 
     else {
         return err(404, format!("DataStore entry '{key}' was not found in '{store}'."));
     };
-    if let Some(exp) = expected_rev {
+    if let Some(exp) = expected_rev.as_deref() {
         if cur_rev != exp {
             return err(
                 409,
@@ -504,7 +573,7 @@ fn datastore_entry_delete(ctx: &Ctx, root: &Path, query: &str, body: &Value) -> 
             scope: &scope,
             key: &key,
         },
-        expected_rev,
+        expected_rev.as_deref(),
         Some(&prev_entry),
     )?;
 
@@ -925,26 +994,79 @@ fn remote_config_set(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
 
 // ----------------------------------------------------------------- telemetry
 
+fn telemetry_max_bytes() -> u64 {
+    std::env::var("OPENRO_TELEMETRY_MAX_BYTES")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|n| n.clamp(512, MAX_TELEMETRY_FILE_BYTES))
+        .unwrap_or(MAX_TELEMETRY_FILE_BYTES)
+}
+
 fn telemetry_path(root: &Path) -> R<PathBuf> {
     safe_rel(root, ".openro/liveops/telemetry.jsonl")
 }
 
 fn normalize_user_id(v: Option<&Value>) -> R<String> {
     match v {
-        Some(Value::String(s)) if !s.trim().is_empty() && s.trim().len() <= 128 => {
-            Ok(s.trim().to_string())
+        Some(Value::String(s)) => {
+            let t = s.trim();
+            if t.is_empty() || t.len() > 128 || t.chars().any(|c| c.is_control()) {
+                return bad("Each telemetry event requires a valid non-empty user_id.");
+            }
+            Ok(t.to_string())
         }
         Some(Value::Number(n)) => Ok(n.to_string()),
         _ => bad("Each telemetry event requires a non-empty user_id."),
     }
 }
 
+fn opt_clean_str(obj: &Map<String, Value>, key: &str, max_len: usize) -> R<Option<String>> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => {
+            let t = s.trim();
+            if t.is_empty() {
+                return Ok(None);
+            }
+            if t.chars().any(|c| c.is_control()) {
+                return bad(format!("{key} contains invalid control characters."));
+            }
+            Ok(Some(t.chars().take(max_len).collect()))
+        }
+        Some(_) => bad(format!("{key} must be a string.")),
+    }
+}
+
 fn normalize_ts(v: Option<&Value>) -> String {
     match v {
-        Some(Value::String(s)) if !s.trim().is_empty() => s.trim().to_string(),
+        Some(Value::String(s)) if !s.trim().is_empty() && !s.chars().any(|c| c.is_control()) => {
+            s.trim().to_string()
+        }
         Some(Value::Number(n)) => n.to_string(),
         _ => now_iso(),
     }
+}
+
+fn rotate_telemetry_if_needed(path: &Path, incoming_bytes: u64, max_bytes: u64) -> R<()> {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    if meta.file_type().is_symlink() {
+        return bad("telemetry.jsonl cannot be a symlink.");
+    }
+    if meta.len().saturating_add(incoming_bytes) <= max_bytes {
+        return Ok(());
+    }
+    let archive = path.with_file_name("telemetry.jsonl.1");
+    if let Ok(arch_meta) = std::fs::symlink_metadata(&archive) {
+        if arch_meta.file_type().is_symlink() {
+            return bad("telemetry.jsonl.1 cannot be a symlink.");
+        }
+        let _ = std::fs::remove_file(&archive);
+    }
+    std::fs::rename(path, &archive)
+        .map_err(|e| Oc { status: 500, msg: format!("rotate telemetry.jsonl: {e}") })?;
+    Ok(())
 }
 
 fn telemetry_ingest(root: &Path, body: &Value) -> R<Value> {
@@ -958,7 +1080,8 @@ fn telemetry_ingest(root: &Path, body: &Value) -> R<Value> {
         return bad(format!("events batch exceeds max {MAX_INGEST_BATCH} entries."));
     }
 
-    let mut normalized = Vec::with_capacity(events.len());
+    let mut serialized_lines = Vec::with_capacity(events.len());
+    let mut incoming_bytes: u64 = 0;
     for (idx, ev) in events.iter().enumerate() {
         let Some(obj) = ev.as_object() else {
             return bad(format!("events[{idx}] must be an object."));
@@ -974,18 +1097,8 @@ fn telemetry_ingest(root: &Path, body: &Value) -> R<Value> {
             ));
         }
         let user_id = normalize_user_id(obj.get("user_id"))?;
-        let step = obj
-            .get("step")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.chars().take(128).collect::<String>());
-        let currency = obj
-            .get("currency")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.chars().take(64).collect::<String>());
+        let step = opt_clean_str(obj, "step", 128)?;
+        let currency = opt_clean_str(obj, "currency", 64)?;
         let amount = match obj.get("amount") {
             None | Some(Value::Null) => None,
             Some(v) => match v.as_f64() {
@@ -993,26 +1106,12 @@ fn telemetry_ingest(root: &Path, body: &Value) -> R<Value> {
                 _ => return bad(format!("events[{idx}].amount must be a finite number.")),
             },
         };
-        let flow_type = obj
-            .get("flow_type")
-            .and_then(Value::as_str)
-            .map(|s| s.trim().to_ascii_lowercase())
-            .filter(|s| !s.is_empty());
-        let transaction_type = obj
-            .get("transaction_type")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.chars().take(128).collect::<String>());
-        let item_sku = obj
-            .get("item_sku")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| s.chars().take(128).collect::<String>());
+        let flow_type = opt_clean_str(obj, "flow_type", 64)?.map(|s| s.to_ascii_lowercase());
+        let transaction_type = opt_clean_str(obj, "transaction_type", 128)?;
+        let item_sku = opt_clean_str(obj, "item_sku", 128)?;
         let ts = normalize_ts(obj.get("ts"));
 
-        normalized.push(json!({
+        let item = json!({
             "kind": kind,
             "user_id": user_id,
             "step": step,
@@ -1022,7 +1121,11 @@ fn telemetry_ingest(root: &Path, body: &Value) -> R<Value> {
             "transaction_type": transaction_type,
             "item_sku": item_sku,
             "ts": ts,
-        }));
+        });
+        let line = serde_json::to_string(&item)
+            .map_err(|e| Oc { status: 500, msg: format!("serialize telemetry event: {e}") })?;
+        incoming_bytes = incoming_bytes.saturating_add(line.len() as u64 + 1);
+        serialized_lines.push(line);
     }
 
     let path = telemetry_path(root)?;
@@ -1030,19 +1133,13 @@ fn telemetry_ingest(root: &Path, body: &Value) -> R<Value> {
         std::fs::create_dir_all(parent)
             .map_err(|e| Oc { status: 500, msg: format!("create telemetry dir: {e}") })?;
     }
-    if let Ok(meta) = std::fs::symlink_metadata(&path) {
-        if meta.file_type().is_symlink() {
-            return bad("telemetry.jsonl cannot be a symlink.");
-        }
-    }
+    rotate_telemetry_if_needed(&path, incoming_bytes, telemetry_max_bytes())?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
         .map_err(|e| Oc { status: 500, msg: format!("open telemetry.jsonl: {e}") })?;
-    for item in &normalized {
-        let line = serde_json::to_string(item)
-            .map_err(|e| Oc { status: 500, msg: format!("serialize telemetry event: {e}") })?;
+    for line in &serialized_lines {
         writeln!(file, "{line}")
             .map_err(|e| Oc { status: 500, msg: format!("write telemetry.jsonl: {e}") })?;
     }
@@ -1052,7 +1149,7 @@ fn telemetry_ingest(root: &Path, body: &Value) -> R<Value> {
     let total_events = count_telemetry_lines(&path);
     Ok(json!({
         "ok": true,
-        "ingested": normalized.len(),
+        "ingested": serialized_lines.len(),
         "total_events": total_events,
     }))
 }
@@ -1064,15 +1161,24 @@ fn count_telemetry_lines(path: &Path) -> usize {
     BufReader::new(f)
         .lines()
         .map_while(Result::ok)
-        .filter(|l| !l.trim().is_empty())
+        .filter(|l| {
+            let t = l.trim();
+            !t.is_empty() && serde_json::from_str::<Value>(t).is_ok_and(|v| v.is_object())
+        })
         .count()
 }
 
 fn round1(v: f64) -> f64 {
+    if !v.is_finite() {
+        return 0.0;
+    }
     (v * 10.0).round() / 10.0
 }
 
 fn round2(v: f64) -> f64 {
+    if !v.is_finite() {
+        return 0.0;
+    }
     (v * 100.0).round() / 100.0
 }
 
@@ -1097,7 +1203,7 @@ fn telemetry_summary(root: &Path) -> R<Value> {
         if meta.file_type().is_symlink() {
             return bad("telemetry.jsonl cannot be a symlink.");
         }
-        if meta.len() > MAX_TELEMETRY_FILE_BYTES {
+        if meta.len() > telemetry_max_bytes() {
             return err(413, "telemetry.jsonl exceeds maximum size.");
         }
     }
@@ -1119,6 +1225,9 @@ fn telemetry_summary(root: &Path) -> R<Value> {
         let Ok(ev) = serde_json::from_str::<Value>(trimmed) else {
             continue;
         };
+        if !ev.is_object() {
+            continue;
+        }
         total_events += 1;
         let user_id = ev
             .get("user_id")
@@ -1144,7 +1253,11 @@ fn telemetry_summary(root: &Path) -> R<Value> {
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .unwrap_or("");
-            let amount = ev.get("amount").and_then(Value::as_f64).unwrap_or(0.0);
+            let amount = ev
+                .get("amount")
+                .and_then(Value::as_f64)
+                .filter(|a| a.is_finite())
+                .unwrap_or(0.0);
             let flow = ev.get("flow_type").and_then(Value::as_str).unwrap_or("");
             if currency.eq_ignore_ascii_case("robux") || currency.eq_ignore_ascii_case("rbx") {
                 robux_revenue += amount.abs();

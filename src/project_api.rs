@@ -1054,6 +1054,17 @@ fn preview_image(dir: &Path, rel: &str) -> Result<Reply, Reply> {
 
 /// Serve a CWE-22/CWE-59 jailed project mesh or texture asset (`<= 10 MB`) for `GET /api/projects/:id/mesh-asset?file=...` (or `?path=...`).
 fn serve_mesh_asset(dir: &Path, rel: &str) -> Result<Reply, Reply> {
+    let lower = rel.to_ascii_lowercase();
+    if lower.contains("%2e")
+        || lower.contains("%2f")
+        || lower.contains("%5c")
+        || lower.contains("%00")
+        || rel.contains("..")
+    {
+        return Err(Reply::bad(
+            "mesh-asset path contains forbidden encoding or traversal",
+        ));
+    }
     let full = file_path(dir, rel, false)?;
     let shown = projects::rel_display(dir, &full);
     if !shown.starts_with("assets/meshes/") && !shown.starts_with("art/") {

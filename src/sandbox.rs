@@ -27,6 +27,7 @@ const STDIO_CAP_BYTES: u64 = 65_536;
 const MAX_PLAYERS: usize = 32;
 const MAX_JOURNEY_STEPS: usize = 200;
 const MAX_REPORT_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_SANDBOX_RUN_HISTORY: usize = 50;
 
 static RUN_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -724,8 +725,75 @@ fn write_safe_report_file(project_dir: &Path, rel: &str, bytes: &[u8]) -> Result
     }
     let _ = validate_safe_report_file(project_dir, rel)?;
     let target = projects::safe_join(project_dir, rel)?;
-    std::fs::write(&target, bytes).map_err(|e| format!("write '{rel}': {e}"))?;
+    let seq = RUN_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp_name = format!(
+        ".{}.tmp-{}-{seq}",
+        target.file_name().and_then(|n| n.to_str()).unwrap_or("report"),
+        std::process::id()
+    );
+    let tmp_path = target.with_file_name(tmp_name);
+    if std::fs::symlink_metadata(&tmp_path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err("sandbox temp file must not be a symlink".to_string());
+    }
+    std::fs::write(&tmp_path, bytes).map_err(|e| format!("write '{rel}': {e}"))?;
+    std::fs::rename(&tmp_path, &target).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        format!("commit '{rel}': {e}")
+    })?;
     Ok(())
+}
+
+fn parse_sb_filename_order(stem: &str) -> (u64, u64) {
+    if let Some(rest) = stem.strip_prefix("sb-") {
+        if let Some((ms_s, seq_s)) = rest.split_once('-') {
+            return (ms_s.parse().unwrap_or(0), seq_s.parse().unwrap_or(0));
+        }
+    }
+    (0, 0)
+}
+
+fn prune_sandbox_history(dir: &Path, max_keep: usize) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut runs: Vec<(u64, u64, String, PathBuf)> = Vec::new();
+    for entry in rd.flatten() {
+        let fname = entry.file_name().to_string_lossy().into_owned();
+        if fname == "latest.json" || fname.starts_with('.') || !fname.ends_with(".json") {
+            continue;
+        }
+        let stem = fname.trim_end_matches(".json");
+        if !is_plain_run_id(stem) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            continue;
+        }
+        let (fn_ms, fn_seq) = parse_sb_filename_order(stem);
+        let json_at_ms = read_json_report_capped(&path)
+            .ok()
+            .and_then(|v| v.get("at_ms").and_then(Value::as_u64));
+        let mtime_ms = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let order_ms = json_at_ms.unwrap_or(if fn_ms > 0 { fn_ms } else { mtime_ms });
+        runs.push((order_ms, fn_seq, fname, path));
+    }
+    if runs.len() <= max_keep {
+        return;
+    }
+    runs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2)));
+    let drop_n = runs.len() - max_keep;
+    for (_, _, _, path) in runs.into_iter().take(drop_n) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 fn persist_project_sandbox_report(
@@ -736,11 +804,12 @@ fn persist_project_sandbox_report(
     if !is_plain_run_id(run_id) {
         return Err("invalid sandbox run_id".to_string());
     }
-    let _dir = ensure_safe_sandbox_dir(project_dir)?;
+    let dir = ensure_safe_sandbox_dir(project_dir)?;
     let bytes = serde_json::to_vec_pretty(report)
         .map_err(|e| format!("serialize sandbox report: {e}"))?;
     write_safe_report_file(project_dir, &format!(".openro/sandbox/{run_id}.json"), &bytes)?;
     write_safe_report_file(project_dir, ".openro/sandbox/latest.json", &bytes)?;
+    prune_sandbox_history(&dir, MAX_SANDBOX_RUN_HISTORY);
     Ok(())
 }
 
@@ -759,7 +828,7 @@ fn read_json_report_capped(path: &Path) -> Result<Value, String> {
 }
 
 /// Read `<project>/.openro/sandbox/latest.json` enforcing CWE-59 symlink containment
-/// and `MAX_REPORT_BYTES`.
+/// and `MAX_REPORT_BYTES`, recovering gracefully (`Ok(None)`) from corrupt/truncated JSON.
 pub fn read_latest_sandbox_report(project_dir: &Path) -> Result<Option<Value>, String> {
     let dir = projects::safe_join(project_dir, ".openro/sandbox")?;
     if !dir.exists() {
@@ -773,7 +842,12 @@ pub fn read_latest_sandbox_report(project_dir: &Path) -> Result<Option<Value>, S
     let Some(path) = validate_safe_report_file(project_dir, ".openro/sandbox/latest.json")? else {
         return Ok(None);
     };
-    let mut rep = read_json_report_capped(&path)?;
+    let Ok(mut rep) = read_json_report_capped(&path) else {
+        return Ok(None);
+    };
+    if !rep.is_object() {
+        return Ok(None);
+    }
     normalize_report_json(&mut rep);
     Ok(Some(rep))
 }
@@ -802,12 +876,15 @@ pub fn list_sandbox_runs(project_dir: &Path) -> Result<Vec<Value>, String> {
             continue;
         }
         let rel = format!(".openro/sandbox/{fname}");
-        let Some(path) = validate_safe_report_file(project_dir, &rel)? else {
+        let Ok(Some(path)) = validate_safe_report_file(project_dir, &rel) else {
             continue;
         };
         let Ok(mut rep) = read_json_report_capped(&path) else {
             continue;
         };
+        if !rep.is_object() {
+            continue;
+        }
         normalize_report_json(&mut rep);
         let at_ms = rep["at_ms"].as_u64().unwrap_or(0);
         let run_id = rep["run_id"].as_str().unwrap_or(stem).to_string();

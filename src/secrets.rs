@@ -136,13 +136,77 @@ pub fn mask(k: &str) -> String {
     }
 }
 
-/// Remove every secret (and its URL-encoded form) from `text`.
+fn pct_encode_variant(s: &str, uppercase: bool, space_as_plus: bool) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if space_as_plus && b == b' ' {
+            out.push('+');
+        } else if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else if uppercase {
+            out.push_str(&format!("%{b:02X}"));
+        } else {
+            out.push_str(&format!("%{b:02x}"));
+        }
+    }
+    out
+}
+
+/// Remove every secret (plus its URL-encoded and JSON-escaped forms) from `text`.
 pub fn scrub(text: &str, secrets: &[&str]) -> String {
     let mut out = text.to_string();
     for s in secrets.iter().filter(|s| s.len() >= 6) {
         out = out.replace(s, "••••");
+        for variant in [
+            pct_encode_variant(s, true, false),
+            pct_encode_variant(s, false, false),
+            pct_encode_variant(s, true, true),
+            pct_encode_variant(s, false, true),
+        ] {
+            if variant != *s {
+                out = out.replace(&variant, "••••");
+            }
+        }
+        if let Ok(json_quoted) = serde_json::to_string(s) {
+            let escaped = &json_quoted[1..json_quoted.len().saturating_sub(1)];
+            if escaped != *s {
+                out = out.replace(escaped, "••••");
+            }
+            if escaped.contains('/') {
+                let slash_escaped = escaped.replace('/', "\\/");
+                out = out.replace(&slash_escaped, "••••");
+            }
+        }
     }
     out
+}
+
+/// Recursively scrub secrets from any string inside a nested JSON value.
+pub fn scrub_value(val: &mut serde_json::Value, secrets: &[&str]) {
+    if secrets.iter().all(|s| s.len() < 6) {
+        return;
+    }
+    match val {
+        serde_json::Value::String(s) => {
+            *s = scrub(s, secrets);
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                scrub_value(item, secrets);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            let keys: Vec<String> = map.keys().cloned().collect();
+            for k in keys {
+                let clean_k = scrub(&k, secrets);
+                if let Some(mut v) = map.remove(&k) {
+                    scrub_value(&mut v, secrets);
+                    map.insert(clean_k, v);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -188,5 +252,20 @@ mod tests {
         assert_eq!(mask("abcdefghijkl"), "••••ijkl");
         assert_eq!(mask("short"), "••••••••");
         assert_eq!(scrub("bad key secretKEY99 here", &["secretKEY99"]), "bad key •••• here");
+        let special = "rbk+abc/def=123";
+        assert_eq!(
+            scrub("url=rbk%2Babc%2Fdef%3D123 lower=rbk%2babc%2fdef%3d123 json=rbk+abc\\/def=123", &[special]),
+            "url=•••• lower=•••• json=••••"
+        );
+        let mut nested = serde_json::json!({
+            "error": {
+                "message": "upstream failed for rbk+abc/def=123",
+                "details": ["token rbk%2Babc%2Fdef%3D123 invalid"]
+            }
+        });
+        scrub_value(&mut nested, &[special]);
+        let dumped = nested.to_string();
+        assert!(!dumped.contains(special), "{dumped}");
+        assert!(!dumped.contains("%2B"), "{dumped}");
     }
 }

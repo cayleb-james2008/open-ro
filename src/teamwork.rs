@@ -4892,8 +4892,9 @@ fn record_task_file_mutation(st: &mut RunState, task_id: &str, norm_path: &str) 
         }
         st.tasks[t_idx].last_edit_ms = ts;
         st.tasks[t_idx].updated_at_ms = ts;
-        // Editing invalidates any prior playtest or Lune check.
+        // Editing invalidates any prior playtest, sandbox, or Lune check.
         st.tasks[t_idx].last_playtest = None;
+        st.tasks[t_idx].last_sandbox = None;
         st.tasks[t_idx].last_lune = None;
         st.save_tasks_file();
     }

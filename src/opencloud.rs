@@ -260,10 +260,9 @@ impl Client {
         let detail = serde_json::from_str::<Value>(&text)
             .ok()
             .and_then(|v| {
-                v.get("message")
-                    .and_then(|m| m.as_str())
-                    .map(String::from)
-                    .or_else(|| v.pointer("/errors/0/message").and_then(|m| m.as_str()).map(String::from))
+                ["/message", "/error/message", "/error/detail", "/errors/0/message", "/errors/0/detail", "/detail", "/error"]
+                    .iter()
+                    .find_map(|ptr| v.pointer(ptr).and_then(Value::as_str).map(String::from))
             })
             .unwrap_or_else(|| text.chars().take(200).collect());
         let head = match status {
@@ -272,7 +271,8 @@ impl Client {
             429 => "Roblox rate limit reached (429). Try again shortly.".to_string(),
             s => format!("Roblox answered {s}."),
         };
-        self.scrub(&if detail.trim().is_empty() { head } else { format!("{head} {detail}") })
+        let combined = if detail.trim().is_empty() { head } else { format!("{head} {detail}") };
+        self.scrub(&combined)
     }
 }
 
@@ -3879,8 +3879,9 @@ pub fn route(ctx: &Ctx, method: &str, path: &str, query: &str, body: &Value) -> 
             let Some(root) = (ctx.resolve)(id) else {
                 return Some(fail(Oc { status: 404, msg: "Unknown project.".into() }));
             };
-            return crate::liveops::route(ctx, method, &root, tail, query, body)
+            let reply = crate::liveops::route(ctx, method, &root, tail, query, body)
                 .map(|r| r.unwrap_or_else(fail));
+            return reply.map(|r| scrub_error_reply(ctx, r));
         }
         (_, ["projects", id, tail @ ..]) if matches!(tail, ["assets"] | ["assets", _] | ["publish"] | ["products"] | ["products", "sync"] | ["products", "codegen"] | ["monetization", "pack"] | ["monetization", "codegen"] | ["monetization", "simulate"] | ["publish-gate"] | ["readiness"] | ["autopilot"] | ["universe"]) => {
             let Some(root) = (ctx.resolve)(id) else {
@@ -3909,7 +3910,28 @@ pub fn route(ctx: &Ctx, method: &str, path: &str, query: &str, body: &Value) -> 
         }
         _ => return None,
     };
-    Some(out.unwrap_or_else(fail))
+    Some(scrub_error_reply(ctx, out.unwrap_or_else(fail)))
+}
+
+fn scrub_error_reply(ctx: &Ctx, reply: Reply) -> Reply {
+    match reply {
+        Reply::Json(code, mut val) if code >= 400 => {
+            let vals: Vec<String> = [
+                secrets::OPENCLOUD_KEY,
+                secrets::GEMINI_KEY,
+                secrets::OPENAI_IMAGE_KEY,
+            ]
+            .into_iter()
+            .filter_map(|k| ctx.store.get(k))
+            .collect();
+            let refs: Vec<&str> = vals.iter().map(String::as_str).collect();
+            if !refs.is_empty() {
+                secrets::scrub_value(&mut val, &refs);
+            }
+            Reply::Json(code, val)
+        }
+        other => other,
+    }
 }
 
 fn read_manifest_lock(root: &Path) -> R<Value> {

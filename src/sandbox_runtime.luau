@@ -236,6 +236,21 @@ end
 -- ---------------------------------------------------------------------------
 -- Roblox Value / Geometry / Enum Types
 -- ---------------------------------------------------------------------------
+local function isFiniteNumber(n)
+	return type(n) == "number" and n == n and math.abs(n) < math.huge
+end
+
+local function sanitizeFiniteNonNeg(raw, fallback)
+	if raw == nil then
+		return fallback
+	end
+	local n = tonumber(raw)
+	if not isFiniteNumber(n) or n < 0 then
+		return 0
+	end
+	return n
+end
+
 local Vector3 = {}
 local Vector3Meta = {}
 Vector3Meta.__index = function(v, k)
@@ -310,6 +325,10 @@ Vector3.one = Vector3.new(1, 1, 1)
 Vector3.xAxis = Vector3.new(1, 0, 0)
 Vector3.yAxis = Vector3.new(0, 1, 0)
 Vector3.zAxis = Vector3.new(0, 0, 1)
+
+local function isFiniteVec3(v)
+	return robloxTypeof(v) == "Vector3" and isFiniteNumber(v.X) and isFiniteNumber(v.Y) and isFiniteNumber(v.Z)
+end
 
 local Vector2 = {}
 local Vector2Meta = {}
@@ -774,13 +793,22 @@ local Rect = {
 }
 local TweenInfo = {
 	new = function(t, style, dir, rep, rev, delay)
+		local cleanTime = sanitizeFiniteNonNeg(t, 1)
+		local cleanDelay = sanitizeFiniteNonNeg(delay, 0)
+		local cleanRep = 0
+		if rep ~= nil then
+			local r = tonumber(rep)
+			if isFiniteNumber(r) and r >= -1 then
+				cleanRep = math.floor(r)
+			end
+		end
 		return tagType({
-			Time = t or 1,
+			Time = cleanTime,
 			EasingStyle = style,
 			EasingDirection = dir,
-			RepeatCount = rep or 0,
-			Reverses = rev or false,
-			DelayTime = delay or 0,
+			RepeatCount = cleanRep,
+			Reverses = rev == true,
+			DelayTime = cleanDelay,
 		}, "TweenInfo")
 	end,
 }
@@ -2137,6 +2165,12 @@ local function raycastOBB(entry, origin, dir)
 end
 
 local function queryPartBoundsInBoxImpl(cframe, size, params)
+	if robloxTypeof(cframe) ~= "CFrame" or not isFiniteVec3(cframe.Position) then
+		return {}
+	end
+	if not isFiniteVec3(size) or size.X <= 0 or size.Y <= 0 or size.Z <= 0 then
+		return {}
+	end
 	local box = makeBoxEntry(cframe, size, nil)
 	local maxParts = if type(params) == "table" and tonumber(params.MaxParts) and tonumber(params.MaxParts) > 0
 		then math.floor(tonumber(params.MaxParts))
@@ -2184,7 +2218,7 @@ INST_STATE[Workspace].customMethods = {
 		return queryPartBoundsInBoxImpl(cframe, size, params)
 	end,
 	GetPartBoundsInRadius = function(_, pos, radius, params)
-		if robloxTypeof(pos) ~= "Vector3" or type(radius) ~= "number" or radius < 0 then
+		if not isFiniteVec3(pos) or not isFiniteNumber(radius) or radius <= 0 then
 			return {}
 		end
 		local maxParts = if type(params) == "table" and tonumber(params.MaxParts) and tonumber(params.MaxParts) > 0
@@ -2202,11 +2236,11 @@ INST_STATE[Workspace].customMethods = {
 		return results
 	end,
 	Raycast = function(_, origin, dir, params)
-		if robloxTypeof(origin) ~= "Vector3" or robloxTypeof(dir) ~= "Vector3" then
+		if not isFiniteVec3(origin) or not isFiniteVec3(dir) then
 			return nil
 		end
 		local dirMag = dir.Magnitude
-		if dirMag <= 1e-8 then
+		if not isFiniteNumber(dirMag) or dirMag <= 1e-8 then
 			return nil
 		end
 		local bestT = 2
@@ -2522,8 +2556,15 @@ INST_STATE[TweenService].customMethods = {
 	Create = function(_, target, tweenInfo, props)
 		local completed = newSignal("Tween.Completed")
 		local info = if type(tweenInfo) == "table" then tweenInfo else {}
-		local dur = math.max(0, tonumber(info.Time) or 1)
-		local delayTime = math.max(0, tonumber(info.DelayTime) or 0)
+		local dur = sanitizeFiniteNonNeg(info.Time, 1)
+		local delayTime = sanitizeFiniteNonNeg(info.DelayTime, 0)
+		local repeatCount = 0
+		if info.RepeatCount ~= nil then
+			local r = tonumber(info.RepeatCount)
+			if isFiniteNumber(r) and r >= -1 then
+				repeatCount = math.floor(r)
+			end
+		end
 		local tween = {
 			Completed = completed,
 			PlaybackState = Enum.PlaybackState.Begin,
@@ -2535,7 +2576,7 @@ INST_STATE[TweenService].customMethods = {
 			_delayRemaining = delayTime,
 			_easingStyle = info.EasingStyle,
 			_easingDirection = info.EasingDirection,
-			_repeatCount = tonumber(info.RepeatCount) or 0,
+			_repeatCount = repeatCount,
 			_repeatsDone = 0,
 			_reverses = info.Reverses == true,
 			_reversingPhase = false,
@@ -2559,7 +2600,7 @@ INST_STATE[TweenService].customMethods = {
 			self._delayRemaining = self._delayTime
 			self._repeatsDone = 0
 			self._reversingPhase = false
-			if self._duration <= 0 and self._delayTime <= 0 and not self._reverses and self._repeatCount == 0 then
+			if self._duration <= 0 and self._delayTime <= 0 and ((not self._reverses and self._repeatCount == 0) or self._repeatCount < 0) then
 				if isInstance(self._target) then
 					for k, v in pairs(self._goalProps) do
 						pcall(function()
@@ -2604,7 +2645,36 @@ INST_STATE[TweenService].customMethods = {
 local httpMockRules = {}
 local httpMockLog = {}
 
+local function sanitizeMockHeaders(rawHeaders)
+	local out = { ["content-type"] = "application/json" }
+	if type(rawHeaders) ~= "table" then
+		return out
+	end
+	for k, v in pairs(rawHeaders) do
+		if type(k) == "string" and k ~= "" and (type(v) == "string" or type(v) == "number" or type(v) == "boolean") then
+			out[k] = tostring(v)
+		end
+	end
+	return out
+end
+
 local function normalizeHttpMockSpec(urlPattern, spec, isPrefixDefault)
+	if type(urlPattern) ~= "string" then
+		return nil
+	end
+	local pat = string.gsub(urlPattern, "^%s*(.-)%s*$", "%1")
+	if pat == "" or pat == "*" then
+		return nil
+	end
+	local prefix = isPrefixDefault == true
+	if string.sub(pat, -1) == "*" then
+		pat = string.sub(pat, 1, -2)
+		prefix = true
+		if pat == "" then
+			return nil
+		end
+	end
+
 	local method = nil
 	local status = 200
 	local statusMsg = "OK"
@@ -2613,38 +2683,40 @@ local function normalizeHttpMockSpec(urlPattern, spec, isPrefixDefault)
 	if type(spec) == "string" then
 		bodyStr = spec
 	elseif type(spec) == "table" then
-		if spec.method ~= nil then
-			method = string.upper(tostring(spec.method))
-		elseif spec.Method ~= nil then
-			method = string.upper(tostring(spec.Method))
+		local rawMethod = if type(spec.method) == "string" then spec.method elseif type(spec.Method) == "string" then spec.Method else nil
+		if rawMethod and rawMethod ~= "" then
+			method = string.upper(rawMethod)
 		end
-		status = tonumber(spec.status or spec.status_code or spec.StatusCode) or 200
-		statusMsg = tostring(spec.status_message or spec.StatusMessage or (if status >= 200 and status < 300 then "OK" else "Error"))
-		if type(spec.headers) == "table" then
-			headers = spec.headers
-		elseif type(spec.Headers) == "table" then
-			headers = spec.Headers
+		local rawStatus = tonumber(spec.status or spec.status_code or spec.StatusCode)
+		if isFiniteNumber(rawStatus) and rawStatus >= 100 and rawStatus <= 599 then
+			status = math.floor(rawStatus)
 		end
+		local rawMsg = spec.status_message or spec.StatusMessage
+		if type(rawMsg) == "string" and rawMsg ~= "" then
+			statusMsg = rawMsg
+		else
+			statusMsg = if status >= 200 and status < 300 then "OK" else "Error"
+		end
+		headers = sanitizeMockHeaders(spec.headers or spec.Headers)
 		local rawBody = if spec.body ~= nil then spec.body else spec.Body
 		if rawBody == nil then
-			if spec.status == nil and spec.status_code == nil and spec.StatusCode == nil and spec.headers == nil and spec.Headers == nil and spec.method == nil then
-				bodyStr = serde.encode("json", spec)
+			if spec.status == nil and spec.status_code == nil and spec.StatusCode == nil and spec.headers == nil and spec.Headers == nil and spec.method == nil and spec.Method == nil and spec.url == nil and spec.Url == nil and spec.url_prefix == nil and spec.match == nil then
+				local okEnc, encoded = pcall(serde.encode, "json", spec)
+				bodyStr = if okEnc and type(encoded) == "string" then encoded else ""
 			else
 				bodyStr = ""
 			end
 		elseif type(rawBody) == "string" then
 			bodyStr = rawBody
 		else
-			bodyStr = serde.encode("json", rawBody)
+			local okEnc, encoded = pcall(serde.encode, "json", rawBody)
+			if not okEnc or type(encoded) ~= "string" then
+				return nil
+			end
+			bodyStr = encoded
 		end
-	elseif spec ~= nil then
-		bodyStr = tostring(spec)
-	end
-	local pat = tostring(urlPattern or "")
-	local prefix = isPrefixDefault == true
-	if string.sub(pat, -1) == "*" then
-		pat = string.sub(pat, 1, -2)
-		prefix = true
+	else
+		return nil
 	end
 	return {
 		pattern = pat,
@@ -2658,17 +2730,40 @@ local function normalizeHttpMockSpec(urlPattern, spec, isPrefixDefault)
 end
 
 if type(inputData.http_mocks) == "table" then
-	if #inputData.http_mocks > 0 then
-		for _, entry in ipairs(inputData.http_mocks) do
+	local hasNumericKey = false
+	for k, _ in pairs(inputData.http_mocks) do
+		if type(k) == "number" then
+			hasNumericKey = true
+			break
+		end
+	end
+	if #inputData.http_mocks > 0 or hasNumericKey then
+		for _, entry in pairs(inputData.http_mocks) do
 			if type(entry) == "table" then
-				local pat = entry.url_prefix or entry.url or entry.Url or ""
-				local isPref = (entry.url_prefix ~= nil) or (entry.match == "prefix")
-				table.insert(httpMockRules, normalizeHttpMockSpec(pat, entry, isPref))
+				local pat = if type(entry.url_prefix) == "string"
+					then entry.url_prefix
+					elseif type(entry.url) == "string" then entry.url
+					elseif type(entry.Url) == "string" then entry.Url
+					else nil
+				local isPref = (type(entry.url_prefix) == "string") or (entry.match == "prefix")
+				local rule = normalizeHttpMockSpec(pat, entry, isPref)
+				if rule then
+					table.insert(httpMockRules, rule)
+				else
+					pushWarning("Ignored malformed http_mocks array entry")
+				end
+			else
+				pushWarning("Ignored non-table http_mocks array entry")
 			end
 		end
 	else
 		for urlKey, spec in pairs(inputData.http_mocks) do
-			table.insert(httpMockRules, normalizeHttpMockSpec(urlKey, spec, false))
+			local rule = normalizeHttpMockSpec(urlKey, spec, false)
+			if rule then
+				table.insert(httpMockRules, rule)
+			else
+				pushWarning("Ignored malformed http_mocks entry")
+			end
 		end
 	end
 end
