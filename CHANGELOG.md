@@ -4,6 +4,11 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.16.0 - 2026-11-25
+
+- Added Pre-Publish Luau & Asset Readiness Guard (`GET /api/projects/:id/publish-guard`, `POST /api/projects/:id/publish-guard/autofix`, `GET /api/studio/publish-guard`, `POST /api/studio/publish-guard/autofix`, `PublishGuardCard.tsx`, and `web-engine` parity) catching placeholder `rbxassetid://0` and local path leaks, orphan `AssetIds` keys, broken requires and unattached remotes, unsafe `loadstring`, `getfenv`, `setfenv`, or numeric `require()` calls, and missing `Workspace.SpawnLocation` or `ProcessReceipt` shop hooks with 1-click issue jump and safe autofix.
+- Disabled unused default `rune` formatting features (`default-features = false, features = ["std"]`) in `Cargo.toml` to keep the release binary smaller and reduce instruction pages loaded at startup.
+
 ## 1.15.0 - 2026-11-25
 
 - Added 1-click Rojo Live-Sync Conflict Resolver (`GET /api/projects/:id/sync-conflicts`, `POST /api/projects/:id/sync-conflicts/resolve`, `GET /api/studio/sync-conflicts`, `POST /api/studio/sync-conflicts/resolve`, `SyncConflictsCard.tsx`, and `web-engine` parity) using `compute_file_diffs` for unified hunk previews and Accept Local, Keep Place, or Backup Snapshot resolution with CWE-22 path confinement and loopback-403 checks.

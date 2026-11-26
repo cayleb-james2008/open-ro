@@ -1,6 +1,6 @@
 [package]
 name = "openro-rs"
-version = "1.15.0"
+version = "1.16.0"
 edition = "2021"
 
 [dependencies]
@@ -8,13 +8,13 @@ flate2 = "1"
 serde_json = "1"
 ureq = { version = "2", features = ["json", "tls"] }
 sha2 = "0.11"
-rune = "0.14"
+rune = { version = "0.14", default-features = false, features = ["std"] }
 
 [profile.dev]
 debug = 0
 
 [profile.release]
-opt-level = "s"
+opt-level = "z"
 lto = "fat"
 codegen-units = 1
 strip = "symbols"

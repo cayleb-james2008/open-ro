@@ -105,7 +105,7 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.15.0"));
+    assert_eq!(ver_json["version"], json!("1.16.0"));
 
     // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
     if let Ok(entries) = std::fs::read_dir("assets/chunks") {
@@ -727,7 +727,7 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
         assert!(n > 0, "unexpected EOF on first keep-alive response");
         first_buf.extend_from_slice(&tmp[..n]);
         let s = String::from_utf8_lossy(&first_buf);
-        if s.contains("1.15.0") {
+        if s.contains("1.16.0") {
             assert!(s.contains("Connection: keep-alive"), "{s}");
             break;
         }
@@ -739,7 +739,7 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
     let _ = ka.read_to_end(&mut second_buf);
     let s2_txt = String::from_utf8_lossy(&second_buf);
     assert!(s2_txt.contains("HTTP/1.1 200 OK"), "{s2_txt}");
-    assert!(s2_txt.contains("1.15.0"), "{s2_txt}");
+    assert!(s2_txt.contains("1.16.0"), "{s2_txt}");
 
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -1173,6 +1173,82 @@ fn v1150_wave14_rojo_sync_conflict_resolver_and_cwe22() {
     assert_eq!(st_act, 400);
     let bad_req = format!(
         "GET /api/studio/sync-conflicts HTTP/1.1\r\nHost: attacker.example:{port}\r\nConnection: close\r\n\r\n"
+    );
+    let (st_403, _, _) = send_raw_bytes(port, bad_req.as_bytes());
+    assert_eq!(st_403, 403);
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn v1160_wave15_pre_publish_luau_asset_guard_and_autofix() {
+    let base = std::env::temp_dir().join(format!(
+        "openro-v1160-wave15-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let data = base.join("data");
+    let ws = base.join("ws");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let port = start_server_with_dir(Some(data));
+    let (st_ws, _) = send_json(port, "POST", "/api/projects/workspace", Some(&json!({ "path": ws })));
+    assert_eq!(st_ws, 200);
+    let (st_cr, cr) = send_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(&json!({ "name": "Wave15PublishGuard" })),
+    );
+    assert_eq!(st_cr, 201, "{cr}");
+    let pid = cr["project"]["id"].as_str().unwrap().to_string();
+    let proj_dir = std::path::PathBuf::from(cr["project"]["path"].as_str().unwrap());
+
+    std::fs::create_dir_all(proj_dir.join("src/server")).unwrap();
+    std::fs::write(
+        proj_dir.join("src/server/UnsafeShop.server.luau"),
+        "--!strict\nlocal ReplicatedStorage = game:GetService(\"ReplicatedStorage\")\nlocal SoundService = game:GetService(\"SoundService\")\nlocal s = Instance.new(\"Sound\")\ns.SoundId = \"rbxassetid://0\"\ns.Parent = SoundService\nlocal ev = Instance.new(\"RemoteEvent\")\nev.Name = \"DeadShopRemote\"\nev.Parent = ReplicatedStorage\nlocal bad = loadstring(\"return 1\")\nlocal backdoor = require(99912345)\n",
+    )
+    .unwrap();
+
+    // GET publish-guard flags placeholder asset, orphan remote, loadstring, numeric require, missing spawn, and empty shop receipt
+    let (st_pg, pg) = send_json(port, "GET", &format!("/api/projects/{pid}/publish-guard"), None);
+    assert_eq!(st_pg, 200, "{pg}");
+    assert_eq!(pg["schema"], json!("openro.publish_guard.v1"));
+    assert_eq!(pg["ready_to_publish"], json!(false), "{pg}");
+    assert!(pg["blocker_count"].as_u64().unwrap() >= 4, "{pg}");
+    assert_eq!(pg["checks"]["assets"], json!(false), "{pg}");
+    assert_eq!(pg["checks"]["remotes"], json!(false), "{pg}");
+    assert_eq!(pg["checks"]["security"], json!(false), "{pg}");
+    assert_eq!(pg["checks"]["hooks"], json!(false), "{pg}");
+
+    // 1-Click Safe Autofix clears all autofixable issues
+    let (st_af, af) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/publish-guard/autofix"),
+        Some(&json!({})),
+    );
+    assert_eq!(st_af, 200, "{af}");
+    assert!(af["fixed_count"].as_u64().unwrap() >= 4, "{af}");
+    assert_eq!(af["report"]["ready_to_publish"], json!(true), "{af}");
+    assert_eq!(af["report"]["blocker_count"], json!(0), "{af}");
+
+    let after_src = std::fs::read_to_string(proj_dir.join("src/server/UnsafeShop.server.luau")).unwrap();
+    assert!(!after_src.contains("rbxassetid://0"), "{after_src}");
+    assert!(after_src.contains("ProcessReceipt"), "{after_src}");
+    assert!(after_src.contains("blocked unsafe"), "{after_src}");
+    assert!(proj_dir.join("src/server/SpawnGuard.server.luau").is_file());
+
+    // Studio parity + loopback-403
+    let (st_loc, loc) = send_json(port, "GET", "/api/studio/publish-guard", None);
+    assert_eq!(st_loc, 200, "{loc}");
+    assert_eq!(loc["schema"], json!("openro.publish_guard.v1"));
+    let bad_req = format!(
+        "POST /api/projects/{pid}/publish-guard/autofix HTTP/1.1\r\nHost: attacker.example:{port}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
     );
     let (st_403, _, _) = send_raw_bytes(port, bad_req.as_bytes());
     assert_eq!(st_403, 403);

@@ -270,6 +270,38 @@ export type SyncConflictResolveResult = {
   conflicts: SyncConflictItem[];
   report?: SyncConflictsReport;
 };
+export type PublishGuardIssue = {
+  id: string;
+  category: "assets" | "remotes" | "security" | "hooks" | string;
+  severity: "error" | "warning" | string;
+  title: string;
+  detail: string;
+  file: string;
+  place_path?: string;
+  line: number;
+  autofixable: boolean;
+  fix_action: string;
+  fix_hint: string;
+};
+export type PublishGuardReport = {
+  schema?: string;
+  ready_to_publish: boolean;
+  blocker_count: number;
+  warning_count: number;
+  autofixable_count: number;
+  checks: {
+    assets: boolean;
+    remotes: boolean;
+    security: boolean;
+    hooks: boolean;
+  };
+  issues: PublishGuardIssue[];
+};
+export type PublishGuardAutofixResult = {
+  fixed_count: number;
+  modified_files: string[];
+  report?: PublishGuardReport;
+};
 export type PlaytestReport = {
   run_id: string; passed: boolean; build_id?: string; mode?: string; duration_ms?: number;
   checks?: { name: string; passed: boolean; value?: unknown; error?: string | null; datamodel?: string }[];

@@ -5,6 +5,7 @@ import { Pill } from "@/components/kibo-ui/pill";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { call, projUrl, type StudyStatus } from "./api";
 import { PublishPanel } from "./PublishPanel";
+import { PublishGuardCard } from "./PublishGuardCard";
 import { ReadinessAutopilot } from "./ReadinessAutopilot";
 import { EconomySimulatorCard } from "./EconomySimulatorCard";
 import { MonetizationPackCard } from "../MonetizationPackCard";
@@ -90,6 +91,12 @@ export const ShipPanel = memo(function ShipPanel({
           onOpenCodeDiff={onOpenCodeDiff}
         />
         <EconomySimulatorCard projectId={activeId} studioOk={studioOk} />
+        <PublishGuardCard
+          studioOk={studioOk}
+          hideWhenClean
+          onJumpToIssue={onOpenCodeDiff}
+          onFixed={onInstalledMonetization}
+        />
         {ship.available && (
           <div className="card-stock flex flex-col items-start gap-2.5 p-4">
             <h3 className="font-heading text-ui font-medium text-ink">Link a Roblox project to publish</h3>
@@ -200,7 +207,7 @@ export const ShipPanel = memo(function ShipPanel({
         <Suspense fallback={<div className="p-3 text-sm text-ink-2">Loading section…</div>}>
           {section === "assets" && <AssetsPanel ship={ship} onOpenSettings={onOpenSettings} />}
           {section === "art" && <ArtStudioPanel ship={ship} />}
-          {section === "playtests" && <PlaytestPanel ship={ship} studioOk={studioOk} />}
+          {section === "playtests" && <PlaytestPanel ship={ship} studioOk={studioOk} onJumpToIssue={onOpenCodeDiff} />}
         </Suspense>
       </div>
     </div>

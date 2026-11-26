@@ -3730,6 +3730,568 @@ pub fn resolve_project_sync_conflict(
     })))
 }
 
+fn find_numeric_require_id(line: &str) -> Option<&str> {
+    let mut rest = line;
+    while let Some(pos) = rest.find("require(") {
+        let after = &rest[pos + 8..];
+        let trimmed = after.trim_start();
+        if let Some(end) = trimmed.find(')') {
+            let inner = trimmed[..end].trim();
+            if !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit()) {
+                return Some(inner);
+            }
+        }
+        rest = after;
+    }
+    None
+}
+
+fn extract_quoted_arg(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let q = bytes.first().copied()?;
+    if q != b'"' && q != b'\'' {
+        return None;
+    }
+    let rest = &s[1..];
+    let end = rest.find(q as char)?;
+    Some(rest[..end].to_string())
+}
+
+pub fn evaluate_publish_guard(
+    scripts: &std::collections::BTreeMap<String, String>,
+    dep_report: &Value,
+    has_spawn: bool,
+    has_server_entry: bool,
+    asset_ids_src: Option<&str>,
+) -> Value {
+    let mut issues: Vec<Value> = Vec::new();
+    let mut assets_ok = true;
+    let mut remotes_ok = true;
+    let mut security_ok = true;
+    let mut hooks_ok = true;
+
+    for (path, src) in scripts {
+        let place_path = if path.contains('/') {
+            rel_script_to_place_path(path)
+        } else {
+            path.clone()
+        };
+        for (idx, line) in src.lines().enumerate() {
+            let line_no = idx + 1;
+            let trimmed = line.trim();
+            if trimmed.starts_with("--") {
+                continue;
+            }
+            if trimmed.contains("rbxassetid://0") || trimmed.contains("rbxassetid://TODO") {
+                assets_ok = false;
+                issues.push(json!({
+                    "id": format!("guard:asset:zero:{path}:{line_no}"),
+                    "category": "assets",
+                    "severity": "error",
+                    "title": "Placeholder rbxassetid://0 asset reference",
+                    "detail": "Replace placeholder asset URI with an uploaded or valid Roblox asset ID.",
+                    "file": path,
+                    "place_path": place_path,
+                    "line": line_no,
+                    "autofixable": true,
+                    "fix_action": "sync_asset_ids",
+                    "fix_hint": "Replace placeholder URI with default verified asset ID or AssetIds lookup.",
+                }));
+            }
+            if trimmed.contains("file:///") || trimmed.contains("/home/") {
+                assets_ok = false;
+                issues.push(json!({
+                    "id": format!("guard:asset:local_path:{path}:{line_no}"),
+                    "category": "assets",
+                    "severity": "error",
+                    "title": "Hardcoded local filesystem path in Luau",
+                    "detail": "Local file:// or /home/ paths fail on live Roblox servers.",
+                    "file": path,
+                    "place_path": place_path,
+                    "line": line_no,
+                    "autofixable": true,
+                    "fix_action": "sync_asset_ids",
+                    "fix_hint": "Comment unsafe local path reference cleanly.",
+                }));
+            }
+            if let Some(asset_src) = asset_ids_src {
+                if !path.ends_with("AssetIds.luau") && !path.ends_with(".AssetIds") {
+                    for pat in ["AssetIds.get(", "AssetIds.byKey["] {
+                        if let Some(pos) = trimmed.find(pat) {
+                            let after = trimmed[pos + pat.len()..].trim_start();
+                            if let Some(key) = extract_quoted_arg(after) {
+                                let key_lit = format!("\"{key}\"");
+                                if !key.is_empty() && !asset_src.contains(&key_lit) {
+                                    assets_ok = false;
+                                    issues.push(json!({
+                                        "id": format!("guard:asset:orphan:{path}:{line_no}"),
+                                        "category": "assets",
+                                        "severity": "warning",
+                                        "title": format!("Orphan AssetIds reference \"{key}\""),
+                                        "detail": "Referenced asset key was not found in AssetIds.luau.",
+                                        "file": path,
+                                        "place_path": place_path,
+                                        "line": line_no,
+                                        "autofixable": true,
+                                        "fix_action": "sync_asset_ids",
+                                        "fix_hint": "Regenerate AssetIds.luau from assets.lock.json.",
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for unsafe_fn in ["loadstring(", "getfenv(", "setfenv("] {
+                if trimmed.contains(unsafe_fn) {
+                    security_ok = false;
+                    let fn_name = unsafe_fn.trim_end_matches('(');
+                    issues.push(json!({
+                        "id": format!("guard:security:{fn_name}:{path}:{line_no}"),
+                        "category": "security",
+                        "severity": "error",
+                        "title": format!("Unsafe {fn_name}() call"),
+                        "detail": format!("Dynamic {fn_name}() is disabled in strict Roblox runtime and flagged by safety review."),
+                        "file": path,
+                        "place_path": place_path,
+                        "line": line_no,
+                        "autofixable": true,
+                        "fix_action": "quarantine_unsafe_calls",
+                        "fix_hint": format!("Replace unsafe {fn_name}() with a guarded nil/stub fallback."),
+                    }));
+                }
+            }
+            if let Some(asset_id) = find_numeric_require_id(trimmed) {
+                security_ok = false;
+                issues.push(json!({
+                    "id": format!("guard:security:num_require:{path}:{line_no}"),
+                    "category": "security",
+                    "severity": "error",
+                    "title": format!("Unsafe external require({asset_id})"),
+                    "detail": "External numeric asset require() can inject unverified runtime code.",
+                    "file": path,
+                    "place_path": place_path,
+                    "line": line_no,
+                    "autofixable": true,
+                    "fix_action": "quarantine_unsafe_calls",
+                    "fix_hint": "Disable external numeric require() call before export.",
+                }));
+            }
+        }
+    }
+
+    if let Some(broken) = dep_report.get("broken_requires").and_then(Value::as_array) {
+        for (i, b) in broken.iter().enumerate() {
+            remotes_ok = false;
+            let file = b["rel_file"]
+                .as_str()
+                .or_else(|| b["from"].as_str())
+                .unwrap_or("Script");
+            let from = b["from"].as_str().unwrap_or(file);
+            let line_no = b["line"].as_u64().unwrap_or(1);
+            let raw_expr = b["raw_expr"].as_str().unwrap_or("...");
+            issues.push(json!({
+                "id": format!("guard:remotes:require:{from}:{line_no}:{i}"),
+                "category": "remotes",
+                "severity": "error",
+                "title": format!("Broken require({raw_expr})"),
+                "detail": format!("Target {} could not be resolved.", b["resolved_target"].as_str().unwrap_or("unknown")),
+                "file": file,
+                "place_path": from,
+                "line": line_no,
+                "autofixable": true,
+                "fix_action": "prune_dependencies",
+                "fix_hint": "Fix closest module match or prune dead require() line.",
+            }));
+        }
+    }
+    if let Some(orphans) = dep_report.get("orphan_remotes").and_then(Value::as_array) {
+        for (i, o) in orphans.iter().enumerate() {
+            remotes_ok = false;
+            let name = o["name"].as_str().unwrap_or("RemoteEvent");
+            let script = o["script"].as_str().unwrap_or("Script");
+            let line_no = o["line"].as_u64().unwrap_or(1);
+            let file = scripts
+                .keys()
+                .find(|k| rel_script_to_place_path(k) == script || *k == script)
+                .map(String::as_str)
+                .unwrap_or(script);
+            issues.push(json!({
+                "id": format!("guard:remotes:orphan:{name}:{i}"),
+                "category": "remotes",
+                "severity": "warning",
+                "title": format!("Unattached remote \"{name}\""),
+                "detail": o["reason"].as_str().unwrap_or("RemoteEvent/RemoteFunction has no active handler."),
+                "file": file,
+                "place_path": script,
+                "line": line_no,
+                "autofixable": true,
+                "fix_action": "prune_dependencies",
+                "fix_hint": "Remove unattached remote allocation.",
+            }));
+        }
+    }
+
+    if !has_spawn {
+        hooks_ok = false;
+        issues.push(json!({
+            "id": "guard:hooks:spawn",
+            "category": "hooks",
+            "severity": "error",
+            "title": "Missing Workspace.SpawnLocation",
+            "detail": "Players have no guaranteed spawn point before .rbxlx export.",
+            "file": "src/server/SpawnGuard.server.luau",
+            "place_path": "ServerScriptService.SpawnGuard",
+            "line": 1,
+            "autofixable": true,
+            "fix_action": "seed_spawn_and_shop_hooks",
+            "fix_hint": "Create a safe SpawnGuard script that ensures Workspace.SpawnLocation exists.",
+        }));
+    }
+    if !has_server_entry {
+        hooks_ok = false;
+        issues.push(json!({
+            "id": "guard:hooks:server_entry",
+            "category": "hooks",
+            "severity": "error",
+            "title": "Empty or missing server entrypoint",
+            "detail": "Add at least one non-empty server script before publishing.",
+            "file": "src/server/Main.server.luau",
+            "place_path": "ServerScriptService.Main",
+            "line": 1,
+            "autofixable": true,
+            "fix_action": "seed_spawn_and_shop_hooks",
+            "fix_hint": "Seed a valid --!strict server Main entrypoint.",
+        }));
+    }
+    let has_shop_script = scripts
+        .keys()
+        .any(|k| k.to_ascii_lowercase().contains("shop") || k.to_ascii_lowercase().contains("monetization"));
+    let has_receipt = scripts.values().any(|s| s.contains("ProcessReceipt"));
+    if has_shop_script && !has_receipt {
+        hooks_ok = false;
+        let shop_file = scripts
+            .keys()
+            .find(|k| k.to_ascii_lowercase().contains("monetization") || k.to_ascii_lowercase().contains("shop"))
+            .cloned()
+            .unwrap_or_else(|| "src/server/MonetizationService.server.luau".to_string());
+        issues.push(json!({
+            "id": "guard:hooks:empty_shop",
+            "category": "hooks",
+            "severity": "error",
+            "title": "Shop script missing ProcessReceipt handler",
+            "detail": "Developer Products require MarketplaceService.ProcessReceipt on the server.",
+            "file": shop_file,
+            "place_path": if shop_file.contains('/') { rel_script_to_place_path(&shop_file) } else { shop_file.clone() },
+            "line": 1,
+            "autofixable": true,
+            "fix_action": "seed_spawn_and_shop_hooks",
+            "fix_hint": "Wire a safe ProcessReceipt guard into the shop service.",
+        }));
+    }
+
+    let blocker_count = issues
+        .iter()
+        .filter(|i| i["severity"] == "error")
+        .count();
+    let warning_count = issues
+        .iter()
+        .filter(|i| i["severity"] == "warning")
+        .count();
+    let autofixable_count = issues
+        .iter()
+        .filter(|i| i["autofixable"] == true)
+        .count();
+
+    json!({
+        "schema": "openro.publish_guard.v1",
+        "ready_to_publish": blocker_count == 0 && warning_count == 0,
+        "blocker_count": blocker_count,
+        "warning_count": warning_count,
+        "autofixable_count": autofixable_count,
+        "checks": {
+            "assets": assets_ok,
+            "remotes": remotes_ok,
+            "security": security_ok,
+            "hooks": hooks_ok,
+        },
+        "issues": issues,
+    })
+}
+
+fn sanitize_unsafe_and_asset_lines(src: &str, fix_assets: bool, fix_security: bool) -> (String, usize) {
+    let mut changed = 0usize;
+    let mut out_lines = Vec::new();
+    for line in src.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("--") {
+            out_lines.push(line.to_string());
+            continue;
+        }
+        let mut next = line.to_string();
+        let mut line_fixed = false;
+        if fix_assets {
+            if next.contains("rbxassetid://0") {
+                next = next.replace("rbxassetid://0", "rbxassetid://12222200");
+                line_fixed = true;
+            }
+            if next.contains("rbxassetid://TODO") {
+                next = next.replace("rbxassetid://TODO", "rbxassetid://12222200");
+                line_fixed = true;
+            }
+            if next.contains("file:///") || next.contains("/home/") {
+                next = format!("-- [OpenRO Guard] removed local filesystem path: {trimmed}");
+                line_fixed = true;
+            }
+        }
+        if fix_security
+            && (trimmed.contains("loadstring(")
+                || trimmed.contains("getfenv(")
+                || trimmed.contains("setfenv(")
+                || find_numeric_require_id(trimmed).is_some())
+        {
+            if trimmed.starts_with("local ") && trimmed.contains('=') {
+                let lhs = trimmed.split('=').next().unwrap_or("local _guarded").trim();
+                next = format!("{lhs} = nil -- [OpenRO Guard] blocked unsafe dynamic call");
+            } else {
+                next = format!("-- [OpenRO Guard] blocked unsafe call: {trimmed}");
+            }
+            line_fixed = true;
+        }
+        if line_fixed {
+            changed += 1;
+        }
+        out_lines.push(next);
+    }
+    let mut joined = out_lines.join("\n");
+    if src.ends_with('\n') || changed > 0 {
+        joined.push('\n');
+    }
+    (joined, changed)
+}
+
+pub fn project_publish_guard(r: &ProjectRef) -> Result<Value, Reply> {
+    let scripts = collect_project_luau_map(&r.dir);
+    let dep = project_dependencies_report(r)?;
+    let default_proj_raw = std::fs::read_to_string(r.dir.join("default.project.json")).ok();
+    let has_spawn = project_has_spawn_location(&scripts, default_proj_raw.as_deref());
+    let has_server_entry = scripts
+        .iter()
+        .any(|(k, v)| k.ends_with(".server.luau") && !v.trim().is_empty());
+    let asset_ids_src = scripts
+        .get("src/shared/AssetIds.luau")
+        .map(String::as_str);
+    Ok(evaluate_publish_guard(
+        &scripts,
+        &dep,
+        has_spawn,
+        has_server_entry,
+        asset_ids_src,
+    ))
+}
+
+pub fn autofix_project_publish_guard(
+    _shared: &Shared,
+    r: &ProjectRef,
+    body: &Value,
+) -> Result<Reply, Reply> {
+    let action_filter = body
+        .get("fix_action")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let should_run = |name: &str| action_filter.is_none() || action_filter == Some(name);
+
+    let before = project_publish_guard(r)?;
+    if before["issues"].as_array().is_some_and(|a| a.is_empty()) {
+        return Ok(Reply::ok(json!({
+            "fixed_count": 0,
+            "modified_files": [],
+            "report": before,
+        })));
+    }
+
+    let _ = create_project_snapshot_opts(
+        r,
+        &json!({ "label": "Pre-publish-guard autofix checkpoint" }),
+        false,
+    );
+
+    let mut fixed_count = 0usize;
+    let mut modified_files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    if should_run("prune_dependencies") {
+        if let Ok(pr_rep) = prune_or_fix_dependencies(r) {
+            if let Ok(v) = serde_json::from_slice::<Value>(&pr_rep.body) {
+                let n = v["pruned_modules"].as_u64().unwrap_or(0)
+                    + v["fixed_requires"].as_u64().unwrap_or(0)
+                    + v["pruned_remotes"].as_u64().unwrap_or(0);
+                fixed_count += n as usize;
+                if let Some(arr) = v["applied_files"].as_array() {
+                    for f in arr {
+                        if let Some(s) = f.as_str() {
+                            modified_files.insert(s.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let fix_assets = should_run("sync_asset_ids");
+    let fix_security = should_run("quarantine_unsafe_calls");
+    if fix_assets || fix_security {
+        if fix_assets && r.dir.join("assets.lock.json").is_file() {
+            if let Ok(cg) = crate::opencloud::assets_codegen(&r.dir, &serde_json::json!({})) {
+                if cg.get("ok").and_then(Value::as_bool) == Some(true) {
+                    modified_files.insert("src/shared/AssetIds.luau".to_string());
+                    fixed_count += 1;
+                }
+            }
+        }
+        let scripts = collect_project_luau_map(&r.dir);
+        for (rel, src) in scripts {
+            let (next, n) = sanitize_unsafe_and_asset_lines(&src, fix_assets, fix_security);
+            if n > 0 && next != src {
+                write_project_luau(&r.dir, &rel, &next)?;
+                modified_files.insert(rel);
+                fixed_count += n;
+            }
+        }
+    }
+
+    if should_run("seed_spawn_and_shop_hooks") {
+        let scripts = collect_project_luau_map(&r.dir);
+        let default_proj_raw = std::fs::read_to_string(r.dir.join("default.project.json")).ok();
+        if !project_has_spawn_location(&scripts, default_proj_raw.as_deref()) {
+            let spawn_src = "--!strict\nlocal Workspace = game:GetService(\"Workspace\")\nif not Workspace:FindFirstChildOfClass(\"SpawnLocation\") then\n\tlocal spawn = Instance.new(\"SpawnLocation\")\n\tspawn.Name = \"SpawnLocation\"\n\tspawn.Anchored = true\n\tspawn.Parent = Workspace\nend\n";
+            write_project_luau(&r.dir, "src/server/SpawnGuard.server.luau", spawn_src)?;
+            modified_files.insert("src/server/SpawnGuard.server.luau".to_string());
+            fixed_count += 1;
+        }
+        let has_server_entry = scripts
+            .iter()
+            .any(|(k, v)| k.ends_with(".server.luau") && !v.trim().is_empty());
+        if !has_server_entry {
+            write_project_luau(
+                &r.dir,
+                "src/server/Main.server.luau",
+                "--!strict\nlocal Players = game:GetService(\"Players\")\nPlayers.PlayerAdded:Connect(function(player: Player)\n\tplayer:SetAttribute(\"Ready\", true)\nend)\n",
+            )?;
+            modified_files.insert("src/server/Main.server.luau".to_string());
+            fixed_count += 1;
+        }
+        let has_shop_script = scripts
+            .keys()
+            .any(|k| k.to_ascii_lowercase().contains("shop") || k.to_ascii_lowercase().contains("monetization"));
+        let has_receipt = scripts.values().any(|s| s.contains("ProcessReceipt"));
+        if has_shop_script && !has_receipt {
+            let target = scripts
+                .keys()
+                .find(|k| k.to_ascii_lowercase().contains("monetization") || k.to_ascii_lowercase().contains("shop"))
+                .cloned()
+                .unwrap_or_else(|| "src/server/MonetizationService.server.luau".to_string());
+            let mut src = scripts.get(&target).cloned().unwrap_or_else(|| "--!strict\n".to_string());
+            src.push_str("\ndo\n\tlocal MarketplaceService = game:GetService(\"MarketplaceService\")\n\tif not MarketplaceService.ProcessReceipt then\n\t\tMarketplaceService.ProcessReceipt = function()\n\t\t\treturn Enum.ProductPurchaseDecision.PurchaseGranted\n\t\tend\n\tend\nend\n");
+            write_project_luau(&r.dir, &target, &src)?;
+            modified_files.insert(target);
+            fixed_count += 1;
+        }
+    }
+
+    let after = project_publish_guard(r)?;
+    Ok(Reply::ok(json!({
+        "fixed_count": fixed_count,
+        "modified_files": modified_files.into_iter().collect::<Vec<_>>(),
+        "report": after,
+    })))
+}
+
+pub fn studio_publish_guard_from_tree(tree: &Value) -> Value {
+    let mut scripts = std::collections::BTreeMap::new();
+    let mut dep_scripts = Vec::new();
+    if let Some(obj) = tree.get("scripts").and_then(Value::as_object) {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                scripts.insert(k.clone(), s.to_string());
+                let is_mod = is_module_script(k, None);
+                let leaf = k.rsplit('.').next().unwrap_or("");
+                let is_cfg = is_mod && matches!(leaf, "Config" | "MonetizationConfig" | "ProductIds" | "AssetIds");
+                dep_scripts.push(DepScript {
+                    dot_path: k.clone(),
+                    source: s.to_string(),
+                    rel_file: None,
+                    is_module: is_mod,
+                    is_config_module: is_cfg,
+                });
+            }
+        }
+    }
+    let dep = analyze_dep_scripts(&dep_scripts);
+    let has_spawn = scripts.values().any(|s| s.contains("SpawnLocation"))
+        || tree
+            .get("instances")
+            .and_then(Value::as_object)
+            .is_some_and(|m| m.keys().any(|k| k.contains("SpawnLocation")));
+    let has_server_entry = scripts
+        .iter()
+        .any(|(k, v)| k.starts_with("ServerScriptService.") && !v.trim().is_empty());
+    let asset_ids_src = scripts
+        .iter()
+        .find(|(k, _)| k.ends_with(".AssetIds") || *k == "ReplicatedStorage.AssetIds")
+        .map(|(_, v)| v.as_str());
+    evaluate_publish_guard(&scripts, &dep, has_spawn, has_server_entry, asset_ids_src)
+}
+
+pub fn studio_autofix_publish_guard_tree(
+    tree: &Value,
+    fix_action: Option<&str>,
+) -> (Value, Vec<String>, usize) {
+    let should_run = |name: &str| fix_action.is_none() || fix_action == Some(name);
+    let mut next_tree = tree.clone();
+    let mut modified_files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut fixed_count = 0usize;
+
+    let fix_assets = should_run("sync_asset_ids");
+    let fix_security = should_run("quarantine_unsafe_calls");
+    if fix_assets || fix_security {
+        if let Some(obj) = next_tree.get_mut("scripts").and_then(Value::as_object_mut) {
+            let keys: Vec<String> = obj.keys().cloned().collect();
+            for k in keys {
+                if let Some(src) = obj.get(&k).and_then(Value::as_str).map(String::from) {
+                    let (next, n) = sanitize_unsafe_and_asset_lines(&src, fix_assets, fix_security);
+                    if n > 0 && next != src {
+                        obj.insert(k.clone(), Value::String(next));
+                        modified_files.insert(k);
+                        fixed_count += n;
+                    }
+                }
+            }
+        }
+    }
+    if should_run("seed_spawn_and_shop_hooks") {
+        let guard_before = studio_publish_guard_from_tree(&next_tree);
+        if guard_before["checks"]["hooks"] == false {
+            if let Some(obj) = next_tree.get_mut("scripts").and_then(Value::as_object_mut) {
+                let has_spawn = obj.values().any(|v| v.as_str().is_some_and(|s| s.contains("SpawnLocation")))
+                    || tree
+                        .get("instances")
+                        .and_then(Value::as_object)
+                        .is_some_and(|m| m.keys().any(|k| k.contains("SpawnLocation")));
+                if !has_spawn {
+                    obj.insert(
+                        "ServerScriptService.SpawnGuard".to_string(),
+                        Value::String("--!strict\nlocal Workspace = game:GetService(\"Workspace\")\nif not Workspace:FindFirstChildOfClass(\"SpawnLocation\") then\n\tlocal spawn = Instance.new(\"SpawnLocation\")\n\tspawn.Name = \"SpawnLocation\"\n\tspawn.Anchored = true\n\tspawn.Parent = Workspace\nend\n".to_string()),
+                    );
+                    modified_files.insert("ServerScriptService.SpawnGuard".to_string());
+                    fixed_count += 1;
+                }
+            }
+        }
+    }
+    (next_tree, modified_files.into_iter().collect(), fixed_count)
+}
+
 /// Summary of the most recent stored playtest report for `study/status` (#62).
 pub fn latest_report_summary(dir: &Path) -> Option<Value> {
     let rep = latest_report_json(dir)?;

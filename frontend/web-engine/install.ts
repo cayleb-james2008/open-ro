@@ -1,4 +1,4 @@
-// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.15.0 standalone web builds.
+// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.16.0 standalone web builds.
 // Features:
 //  - RoPilot-Grade 3-Pane Studio IDE (Agent | Plan | Ask, Reviewable Unified Diffs, @Context Chips, Companion Plugin)
 //  - Embedded Studio Workbench & 13 Official Studio MCP Tools running live against the in-browser Place DataModel
@@ -655,6 +655,159 @@ function buildWebSyncConflicts(chat: ChatSession) {
     in_sync: conflicts.length === 0,
     conflict_count: conflicts.length,
     conflicts,
+  };
+}
+
+function evaluateWebPublishGuard(chat: ChatSession) {
+  const scripts = chat.place?.scripts || {};
+  const instances = chat.place?.instances || {};
+  const issues: Array<Record<string, unknown>> = [];
+  let assetsOk = true;
+  let remotesOk = true;
+  let securityOk = true;
+  let hooksOk = true;
+
+  for (const [path, src] of Object.entries(scripts)) {
+    const lines = src.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      const lineNo = i + 1;
+      if (trimmed.startsWith("--")) continue;
+      if (trimmed.includes("rbxassetid://0") || trimmed.includes("rbxassetid://TODO")) {
+        assetsOk = false;
+        issues.push({
+          id: `guard:asset:zero:${path}:${lineNo}`,
+          category: "assets",
+          severity: "error",
+          title: "Placeholder rbxassetid://0 asset reference",
+          detail: "Replace placeholder asset URI with a valid Roblox asset ID.",
+          file: path,
+          place_path: path,
+          line: lineNo,
+          autofixable: true,
+          fix_action: "sync_asset_ids",
+          fix_hint: "Replace placeholder URI with valid default asset ID.",
+        });
+      }
+      if (trimmed.includes("file:///") || trimmed.includes("/home/")) {
+        assetsOk = false;
+        issues.push({
+          id: `guard:asset:local_path:${path}:${lineNo}`,
+          category: "assets",
+          severity: "error",
+          title: "Hardcoded local filesystem path in Luau",
+          detail: "Local filesystem paths fail on live Roblox servers.",
+          file: path,
+          place_path: path,
+          line: lineNo,
+          autofixable: true,
+          fix_action: "sync_asset_ids",
+          fix_hint: "Remove unsafe local path reference cleanly.",
+        });
+      }
+      for (const fn of ["loadstring(", "getfenv(", "setfenv("]) {
+        if (trimmed.includes(fn)) {
+          securityOk = false;
+          const fnName = fn.slice(0, -1);
+          issues.push({
+            id: `guard:security:${fnName}:${path}:${lineNo}`,
+            category: "security",
+            severity: "error",
+            title: `Unsafe ${fnName}() call`,
+            detail: `Dynamic ${fnName}() is disabled in strict Roblox runtime.`,
+            file: path,
+            place_path: path,
+            line: lineNo,
+            autofixable: true,
+            fix_action: "quarantine_unsafe_calls",
+            fix_hint: `Replace unsafe ${fnName}() with a guarded stub.`,
+          });
+        }
+      }
+      const numReq = /require\(\s*(\d+)\s*\)/.exec(trimmed);
+      if (numReq) {
+        securityOk = false;
+        issues.push({
+          id: `guard:security:num_require:${path}:${lineNo}`,
+          category: "security",
+          severity: "error",
+          title: `Unsafe external require(${numReq[1]})`,
+          detail: "External numeric asset require() can inject unverified runtime code.",
+          file: path,
+          place_path: path,
+          line: lineNo,
+          autofixable: true,
+          fix_action: "quarantine_unsafe_calls",
+          fix_hint: "Disable external numeric require() call before export.",
+        });
+      }
+    }
+  }
+
+  const createdRemotes = new Set<string>();
+  for (const src of Object.values(scripts)) {
+    const m = src.matchAll(/\.Name\s*=\s*["']([^"']+)["']/g);
+    for (const hit of m) createdRemotes.add(hit[1]);
+  }
+  for (const [k, inst] of Object.entries(instances)) {
+    if (inst.class_name === "RemoteEvent" || inst.class_name === "RemoteFunction") {
+      createdRemotes.add(k.split(".").pop() || k);
+    }
+  }
+  for (const [path, src] of Object.entries(scripts)) {
+    const lines = src.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const m = /WaitForChild\(\s*["']([^"']*Remote[^"']*)["']\s*\)/.exec(lines[i]);
+      if (m && !createdRemotes.has(m[1])) {
+        remotesOk = false;
+        issues.push({
+          id: `guard:remotes:orphan:${m[1]}:${i + 1}`,
+          category: "remotes",
+          severity: "warning",
+          title: `Unattached remote "${m[1]}"`,
+          detail: "Remote binding references a missing RemoteEvent/RemoteFunction.",
+          file: path,
+          place_path: path,
+          line: i + 1,
+          autofixable: true,
+          fix_action: "prune_dependencies",
+          fix_hint: "Prune or create missing remote binding.",
+        });
+      }
+    }
+  }
+
+  const hasSpawn =
+    Object.values(scripts).some((s) => s.includes("SpawnLocation")) ||
+    Object.keys(instances).some((k) => k.includes("SpawnLocation"));
+  if (!hasSpawn) {
+    hooksOk = false;
+    issues.push({
+      id: "guard:hooks:spawn",
+      category: "hooks",
+      severity: "error",
+      title: "Missing Workspace.SpawnLocation",
+      detail: "Players have no guaranteed spawn point before .rbxlx export.",
+      file: "ServerScriptService.SpawnGuard",
+      place_path: "ServerScriptService.SpawnGuard",
+      line: 1,
+      autofixable: true,
+      fix_action: "seed_spawn_and_shop_hooks",
+      fix_hint: "Create a safe SpawnGuard script ensuring Workspace.SpawnLocation exists.",
+    });
+  }
+
+  const blocker_count = issues.filter((i) => i.severity === "error").length;
+  const warning_count = issues.filter((i) => i.severity === "warning").length;
+  const autofixable_count = issues.filter((i) => i.autofixable === true).length;
+  return {
+    schema: "openro.publish_guard.v1",
+    ready_to_publish: blocker_count === 0 && warning_count === 0,
+    blocker_count,
+    warning_count,
+    autofixable_count,
+    checks: { assets: assetsOk, remotes: remotesOk, security: securityOk, hooks: hooksOk },
+    issues,
   };
 }
 
@@ -1346,7 +1499,7 @@ export function installWebEngine() {
     if (!chat.playMode) chat.playMode = "edit";
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "1.15.0" });
+      return jsonResponse({ name: "openro-rs", version: "1.16.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -1357,7 +1510,7 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "1.15.0",
+        version: "1.16.0",
         sse_build_stream: true,
         studio_stream: true,
         assets_api: true,
@@ -2674,6 +2827,68 @@ export function installWebEngine() {
         },
         201,
       );
+    }
+    if (method === "GET" && u.pathname === "/api/studio/publish-guard") {
+      return jsonResponse({ ok: true, ...evaluateWebPublishGuard(chat) });
+    }
+    if (method === "POST" && u.pathname === "/api/studio/publish-guard/autofix") {
+      const actionFilter = typeof body.fix_action === "string" && body.fix_action.trim() ? body.fix_action.trim() : null;
+      const shouldRun = (name: string) => !actionFilter || actionFilter === name;
+      const before = clonePlace(chat.place);
+      let fixed_count = 0;
+      const modified_files: string[] = [];
+      const fixAssets = shouldRun("sync_asset_ids");
+      const fixSec = shouldRun("quarantine_unsafe_calls");
+      if (fixAssets || fixSec) {
+        for (const [k, src] of Object.entries(chat.place.scripts)) {
+          let changed = 0;
+          const lines = src.split("\n").map((ln) => {
+            const tr = ln.trim();
+            if (tr.startsWith("--")) return ln;
+            let next = ln;
+            let hit = false;
+            if (fixAssets) {
+              if (next.includes("rbxassetid://0")) { next = next.replaceAll("rbxassetid://0", "rbxassetid://12222200"); hit = true; }
+              if (next.includes("rbxassetid://TODO")) { next = next.replaceAll("rbxassetid://TODO", "rbxassetid://12222200"); hit = true; }
+              if (next.includes("file:///") || next.includes("/home/")) { next = `-- [OpenRO Guard] removed local path: ${tr}`; hit = true; }
+            }
+            if (fixSec && (tr.includes("loadstring(") || tr.includes("getfenv(") || tr.includes("setfenv(") || /require\(\s*\d+\s*\)/.test(tr))) {
+              next = tr.startsWith("local ") && tr.includes("=")
+                ? `${tr.split("=")[0].trim()} = nil -- [OpenRO Guard] blocked unsafe dynamic call`
+                : `-- [OpenRO Guard] blocked unsafe call: ${tr}`;
+              hit = true;
+            }
+            if (hit) changed++;
+            return next;
+          });
+          if (changed > 0) {
+            chat.place.scripts[k] = lines.join("\n");
+            modified_files.push(k);
+            fixed_count += changed;
+          }
+        }
+      }
+      if (shouldRun("seed_spawn_and_shop_hooks")) {
+        const hasSpawn =
+          Object.values(chat.place.scripts).some((s) => s.includes("SpawnLocation")) ||
+          Object.keys(chat.place.instances).some((k) => k.includes("SpawnLocation"));
+        if (!hasSpawn) {
+          chat.place.scripts["ServerScriptService.SpawnGuard"] =
+            '--!strict\nlocal Workspace = game:GetService("Workspace")\nif not Workspace:FindFirstChildOfClass("SpawnLocation") then\n\tlocal spawn = Instance.new("SpawnLocation")\n\tspawn.Name = "SpawnLocation"\n\tspawn.Anchored = true\n\tspawn.Parent = Workspace\nend\n';
+          modified_files.push("ServerScriptService.SpawnGuard");
+          fixed_count++;
+        }
+      }
+      if (fixed_count > 0) {
+        recordSnapshot(chat, "Pre-publish-guard autofix checkpoint", before);
+        persist();
+      }
+      return jsonResponse({
+        ok: true,
+        fixed_count,
+        modified_files,
+        report: evaluateWebPublishGuard(chat),
+      });
     }
     if (method === "GET" && u.pathname === "/api/studio/sync-conflicts") {
       return jsonResponse({ ok: true, ...buildWebSyncConflicts(chat) });

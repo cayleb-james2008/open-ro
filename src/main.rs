@@ -42,9 +42,9 @@ fn main() {
     #[cfg(target_env = "gnu")]
     unsafe {
         // Bound glibc heap arenas (M_ARENA_MAX = -8, M_MMAP_THRESHOLD = -3) so concurrent
-        // worker threads share 1 compact arena and free large JSON/HTML buffers via munmap.
+        // worker threads share 1 compact arena and free JSON/HTML buffers (>=8 KiB) via munmap.
         let _ = mallopt(-8, 1);
-        let _ = mallopt(-3, 32 * 1024);
+        let _ = mallopt(-3, 8 * 1024);
     }
     let cli_args: Vec<String> = std::env::args().collect();
     if cli_args

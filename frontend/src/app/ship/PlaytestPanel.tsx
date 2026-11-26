@@ -11,6 +11,7 @@ import { call, enc, projUrl, stamp, type AssertionDiff, type AssertionFixApplyRe
 import { DependencyGraphCard } from "./DependencyGraphCard";
 import { EconomySimulatorCard } from "./EconomySimulatorCard";
 import { HookIntegrityCard } from "./HookIntegrityCard";
+import { PublishGuardCard } from "./PublishGuardCard";
 import { SnapshotRollbackCard } from "./SnapshotRollbackCard";
 import { SyncConflictsCard } from "./SyncConflictsCard";
 import type { Ship } from "./useShip";
@@ -309,7 +310,7 @@ function ClaimChip({ label, claim }: { label: string; claim?: CoreLoopClaim }) {
   );
 }
 
-export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioOk: boolean; onCount?: (n: number) => void }) {
+export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship: Ship; studioOk: boolean; onCount?: (n: number) => void; onJumpToIssue?: (scriptPath: string, line?: number) => void }) {
   const id = ship.active?.id;
   const [runs, setRuns] = useState<PlaytestRun[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -605,6 +606,14 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
           )}
         </div>
       )}
+      <PublishGuardCard
+        projectId={id}
+        studioOk={studioOk}
+        onJumpToIssue={onJumpToIssue}
+        onFixed={async () => {
+          await Promise.all([load(), loadStudy()]);
+        }}
+      />
       <DependencyGraphCard projectId={id} studioOk={studioOk} />
       <SyncConflictsCard
         projectId={id}

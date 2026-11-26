@@ -98,9 +98,8 @@ pub struct Shared {
     pub studio_stream: Arc<StudioStreamHub>,
     /// Cached lightweight status so concurrent polling never stalls behind an active build.
     status_cache: Mutex<StatusInfo>,
-    /// Cached latest place tree so `GET /api/place-tree` never blocks during long `/api/chat` runs (#31).
-    cached_place_tree: Mutex<Option<Value>>,
-    /// Cached serialized bytes of place tree keyed by `local_place_revision` for zero-clone concurrent reads.
+    /// Cached latest place tree bytes keyed by `local_place_revision` so `GET /api/place-tree`
+    /// never clones a `Value` DOM or stalls behind an active build (#31).
     cached_place_tree_bytes: CachedPlaceBytes,
     /// Cached serialized bytes of `GET /api/luau/check` keyed by `local_place_revision`.
     cached_luau_report: Mutex<Option<(u64, Arc<Vec<u8>>)>>,
@@ -196,7 +195,6 @@ impl Shared {
             events,
             studio_stream,
             status_cache: Mutex::new(initial_status),
-            cached_place_tree: Mutex::new(None),
             cached_place_tree_bytes: Mutex::new(None),
             cached_luau_report: Mutex::new(None),
             game_assets: Mutex::new(GameAssetsIndex::default()),
@@ -278,7 +276,6 @@ impl Shared {
             events,
             studio_stream,
             status_cache: Mutex::new(initial_status),
-            cached_place_tree: Mutex::new(None),
             cached_place_tree_bytes: Mutex::new(None),
             cached_luau_report: Mutex::new(None),
             game_assets: Mutex::new(GameAssetsIndex::default()),
@@ -664,7 +661,7 @@ fn spawn_pool_worker(
 ) {
     let _ = std::thread::Builder::new()
         .name(format!("openro-http-{idx}"))
-        .stack_size(1024 * 1024)
+        .stack_size(512 * 1024)
         .spawn(move || loop {
             let job = {
                 let (lock, cvar) = &*q;
@@ -988,6 +985,8 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
                 || clean_path == "/api/studio/snapshots/hook-integrity"
                 || clean_path == "/api/studio/sync-conflicts"
                 || clean_path == "/api/studio/sync-conflicts/resolve"
+                || clean_path == "/api/studio/publish-guard"
+                || clean_path == "/api/studio/publish-guard/autofix"
                 || (clean_path.starts_with("/api/snapshots/") && clean_path.ends_with("/restore-hooks"))
                 || clean_path == "/api/studio/capture"
                 || clean_path == "/api/studio/launch-and-continue"))
@@ -2216,6 +2215,61 @@ fn handle(
         ("POST", "/api/studio/economy/simulate") => {
             handle_studio_economy_simulate(&mut stream, shared, &req.body);
         }
+        ("GET", "/api/studio/publish-guard") => {
+            let current_tree = shared
+                .agent
+                .lock()
+                .unwrap()
+                .as_mut()
+                .and_then(|a| a.place_tree().ok())
+                .unwrap_or_else(|| json!({ "instances": {}, "scripts": {} }));
+            let report = crate::playtest::studio_publish_guard_from_tree(&current_tree);
+            respond_json(&mut stream, "200 OK", &report);
+        }
+        ("POST", "/api/studio/publish-guard/autofix") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let action_filter = body
+                .get("fix_action")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let mut guard = shared.agent.lock().unwrap();
+            let Some(agent) = guard.as_mut() else {
+                respond_json(&mut stream, "503 Service Unavailable", &json!({ "ok": false, "error": "Studio not connected" }));
+                break 'req_done;
+            };
+            let current_tree = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+            let chat_id = shared.active_chat.lock().unwrap().clone();
+            if action_filter.is_none() || action_filter == Some("prune_dependencies") {
+                let _ = crate::playtest::prune_or_fix_studio_place(agent, &chat_id);
+            }
+            let refreshed = agent.place_tree().unwrap_or(current_tree);
+            let (next_tree, modified_files, fixed_count) =
+                crate::playtest::studio_autofix_publish_guard_tree(&refreshed, action_filter);
+            if fixed_count > 0 {
+                let _ = agent.apply_place_tree(&next_tree);
+                let _ = shared.snapshots.lock().unwrap().record(
+                    "Pre-publish-guard autofix checkpoint".to_string(),
+                    "publish-guard",
+                    Some(chat_id),
+                    next_tree.clone(),
+                    None,
+                );
+            }
+            let final_tree = agent.place_tree().unwrap_or(next_tree);
+            drop(guard);
+            let report = crate::playtest::studio_publish_guard_from_tree(&final_tree);
+            respond_json(
+                &mut stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "fixed_count": fixed_count,
+                    "modified_files": modified_files,
+                    "report": report,
+                }),
+            );
+        }
         ("GET", "/api/studio/sync-conflicts") => {
             let latest_snap = shared.snapshots.lock().unwrap().latest().cloned();
             let current_tree = shared
@@ -2768,10 +2822,9 @@ fn handle(
                         }
                         match agent.place_tree() {
                             Ok(tree) => {
-                                let bytes = Arc::new(tree.to_string().into_bytes());
+                                let bytes = Arc::new(serde_json::to_vec(&tree).unwrap_or_default());
                                 *shared.cached_place_tree_bytes.lock().unwrap() =
                                     Some((rev, Arc::clone(&bytes)));
-                                *shared.cached_place_tree.lock().unwrap() = Some(tree);
                                 drop(guard);
                                 respond_bytes(
                                     &mut stream,
@@ -2796,25 +2849,37 @@ fn handle(
                 },
                 Err(_) => {
                     // Agent mutex is held by an active build/chat turn (#31): return cached
-                    // or on-disk LocalPlace tree immediately instead of blocking/timing out.
-                    let mut tree = shared
-                        .cached_place_tree
-                        .lock()
-                        .unwrap()
-                        .clone()
-                        .or_else(|| {
-                            shared.data_dir.as_ref().and_then(|dir| {
-                                dir.join("place.json")
-                                    .is_file()
-                                    .then(|| LocalPlace::open(dir.clone(), shared.game_name.clone()).tree_json())
-                            })
-                        })
-                        .unwrap_or_else(|| json!({ "scripts": {}, "instances": {} }));
-                    if let Some(o) = tree.as_object_mut() {
-                        o.insert("cached".to_string(), json!(true));
-                        o.insert("busy".to_string(), json!(true));
+                    // or single-flight on-disk LocalPlace bytes immediately without thundering-herd loads.
+                    let cached = {
+                        let mut cache = shared.cached_place_tree_bytes.lock().unwrap();
+                        if cache.is_none() {
+                            if let Some(dir) = shared.data_dir.as_ref().filter(|d| d.join("place.json").is_file()) {
+                                let tree = LocalPlace::open(dir.clone(), shared.game_name.clone()).tree_json();
+                                let bytes = Arc::new(serde_json::to_vec(&tree).unwrap_or_default());
+                                *cache = Some((None, bytes));
+                            }
+                        }
+                        cache.as_ref().map(|(_, b)| Arc::clone(b))
+                    };
+                    if let Some(bytes) = cached {
+                        let out = if bytes.len() > 2 && bytes.ends_with(b"}") {
+                            let mut buf = Vec::with_capacity(bytes.len() + 28);
+                            buf.extend_from_slice(&bytes[..bytes.len() - 1]);
+                            buf.extend_from_slice(br#","cached":true,"busy":true}"#);
+                            buf
+                        } else {
+                            br#"{"scripts":{},"instances":{},"cached":true,"busy":true}"#.to_vec()
+                        };
+                        respond_bytes(&mut stream, "200 OK", "application/json", "no-store", &out);
+                    } else {
+                        respond_bytes(
+                            &mut stream,
+                            "200 OK",
+                            "application/json",
+                            "no-store",
+                            br#"{"scripts":{},"instances":{},"cached":true,"busy":true}"#,
+                        );
                     }
-                    respond_json(&mut stream, "200 OK", &tree);
                 }
             }
         }
