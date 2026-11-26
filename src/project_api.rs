@@ -7,9 +7,13 @@ use crate::place::PlaceBackend;
 use crate::projects::{self, ProjectRef};
 use crate::server::Shared;
 use serde_json::{json, Value};
+use std::fs::OpenOptions;
+use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+static TMP_SEQ: AtomicU64 = AtomicU64::new(1);
 
 pub struct Reply {
     pub status: &'static str,
@@ -970,6 +974,9 @@ const PREVIEW_CAP: usize = 10 * 1024 * 1024;
 
 /// May this relative path be read or written through the file API?
 fn file_path(dir: &Path, rel: &str, writing: bool) -> Result<std::path::PathBuf, Reply> {
+    if rel.contains('\0') || rel.contains('\\') {
+        return Err(Reply::bad("path contains forbidden characters"));
+    }
     let full = projects::safe_join(dir, rel).map_err(Reply::bad)?;
     let shown = projects::rel_display(dir, &full);
     if shown.is_empty() || shown == "." {
@@ -1061,7 +1068,14 @@ fn serve_mesh_asset(dir: &Path, rel: &str) -> Result<Reply, Reply> {
     if sym_meta.len() as usize > PREVIEW_CAP {
         return Err(Reply::bad("mesh asset is over 10 MB"));
     }
-    let body = std::fs::read(&canon_full).map_err(|e| Reply::bad(e.to_string()))?;
+    let mut file = std::fs::File::open(&canon_full).map_err(|e| Reply::bad(e.to_string()))?;
+    let file_meta = file.metadata().map_err(|e| Reply::bad(e.to_string()))?;
+    if !file_meta.is_file() || file_meta.len() as usize > PREVIEW_CAP {
+        return Err(Reply::bad("mesh asset is over 10 MB"));
+    }
+    let mut body = Vec::with_capacity(file_meta.len() as usize);
+    file.read_to_end(&mut body)
+        .map_err(|e| Reply::bad(e.to_string()))?;
     Ok(Reply { status: "200 OK", content_type, body })
 }
 
@@ -1098,8 +1112,10 @@ fn read_file(dir: &Path, rel: &str) -> Result<Reply, Reply> {
         return Err(Reply::bad("that file is over 1 MB; the file API only handles text up to that size"));
     }
     let bytes = std::fs::read(&full).map_err(|e| Reply::bad(e.to_string()))?;
-    let text = String::from_utf8(bytes.clone()).map_err(|_| Reply::bad("that file is not text"))?;
-    Ok(Reply::ok(json!({ "path": projects::rel_display(dir, &full), "content": text, "bytes": bytes.len(), "sha256": projects::sha256_hex(&bytes) })))
+    let byte_len = bytes.len();
+    let sha = projects::sha256_hex(&bytes);
+    let text = String::from_utf8(bytes).map_err(|_| Reply::bad("that file is not text"))?;
+    Ok(Reply::ok(json!({ "path": projects::rel_display(dir, &full), "content": text, "bytes": byte_len, "sha256": sha })))
 }
 
 fn check_expect(full: &Path, body: &Value) -> Result<(), Reply> {
@@ -1116,9 +1132,27 @@ fn write_atomic(full: &Path, content: &[u8]) -> Result<(), Reply> {
     if let Some(parent) = full.parent() {
         std::fs::create_dir_all(parent).map_err(|e| Reply::bad(format!("create folder: {e}")))?;
     }
-    let tmp = full.with_extension("openro-tmp");
-    std::fs::write(&tmp, content).map_err(|e| Reply::bad(format!("write file: {e}")))?;
-    std::fs::rename(&tmp, full).map_err(|e| Reply::bad(format!("write file: {e}")))
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let file_name = full
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file");
+    let tmp = full.with_file_name(format!(".{file_name}.openro-tmp.{}.{seq}", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .map_err(|e| Reply::bad(format!("write file: {e}")))?;
+    if let Err(e) = file.write_all(content).and_then(|_| file.flush()) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Reply::bad(format!("write file: {e}")));
+    }
+    drop(file);
+    if let Err(e) = std::fs::rename(&tmp, full) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Reply::bad(format!("write file: {e}")));
+    }
+    Ok(())
 }
 
 fn write_file(dir: &Path, body: &Value) -> Result<Reply, Reply> {

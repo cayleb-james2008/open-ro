@@ -1099,7 +1099,8 @@ function InstanceMethods:WaitForChild(name, timeout)
 	if found then
 		return found
 	end
-	local cap = math.min(timeout or 2, 2)
+	local t = tonumber(timeout)
+	local cap = if t ~= nil and t == t then math.clamp(t, 0, 2) else 2
 	local deadline = os.clock() + cap
 	while os.clock() < deadline do
 		task.wait(0.01)
@@ -2290,13 +2291,14 @@ requireModule = function(target, isClient, localPlayer)
 	local st = INST_STATE[target]
 	local debugName = st.sourceFile or target:GetFullName()
 	local env = buildScriptEnv(target, isClient, localPlayer)
-	local compiled, loadErr = luau.load(st.props.Source or "", {
+	local src = if type(st.props.Source) == "string" then st.props.Source else tostring(st.props.Source or "")
+	local okCompile, compiled, loadErr = pcall(luau.load, src, {
 		debugName = debugName,
 		environment = env,
 	})
-	if type(compiled) ~= "function" then
+	if not okCompile or type(compiled) ~= "function" then
 		moduleLoading[cacheKey] = nil
-		error(tostring(loadErr))
+		error(tostring(if not okCompile then compiled else (loadErr or "failed to compile ModuleScript")))
 	end
 	local ok, ret = xpcall(compiled, function(err)
 		return tostring(err) .. "\n" .. debug.traceback(nil, 2)
@@ -2440,12 +2442,13 @@ local function executeScriptInstance(scriptInst, isClient, localPlayer)
 	end
 	local label = st.sourceFile or scriptInst:GetFullName()
 	local env = buildScriptEnv(scriptInst, isClient, localPlayer)
-	local okCompile, fnOrErr = pcall(luau.load, st.props.Source or "", {
+	local src = if type(st.props.Source) == "string" then st.props.Source else tostring(st.props.Source or "")
+	local okCompile, fnOrErr, loadErr = pcall(luau.load, src, {
 		debugName = label,
 		environment = env,
 	})
-	if not okCompile then
-		pushError(label, fnOrErr)
+	if not okCompile or type(fnOrErr) ~= "function" then
+		pushError(label, if not okCompile then fnOrErr else (loadErr or "failed to compile Luau script"))
 		return false
 	end
 	task.spawn(function()
@@ -2756,9 +2759,21 @@ local function deepEquals(a, b)
 end
 
 local receiptsProcessed = {}
+local grantedByPurchaseId = {}
 local receiptSeq = 0
 local stepResults = {}
 local assertionResults = {}
+
+local function makeReceiptInfo(pid, playerId, productId)
+	return {
+		PurchaseId = pid,
+		PlayerId = playerId,
+		ProductId = productId,
+		CurrencySpent = 0,
+		CurrencyType = Enum.CurrencyType.Robux,
+		PlaceIdWherePurchased = 1,
+	}
+end
 
 local function runPurchaseReceipt(playerId, productId, purchaseId, replayDuplicate)
 	local cb = INST_STATE[MarketplaceService].props.ProcessReceipt
@@ -2767,25 +2782,57 @@ local function runPurchaseReceipt(playerId, productId, purchaseId, replayDuplica
 	end
 	receiptSeq += 1
 	local pid = purchaseId or ("rcpt_" .. tostring(receiptSeq))
-	local receiptInfo = {
-		PurchaseId = pid,
-		PlayerId = playerId,
-		ProductId = productId,
-		CurrencySpent = 0,
-		CurrencyType = Enum.CurrencyType.Robux,
-		PlaceIdWherePurchased = 1,
-	}
+
+	-- Handle non-adjacent duplicate PurchaseId sent via separate journey steps
+	if grantedByPurchaseId[pid] ~= nil then
+		local prevMutated = grantedByPurchaseId[pid]
+		local lsBeforeDup = snapshotLeaderstats()
+		local dsBeforeDup = snapshotDataStores()
+		local okDup, decisionDup = safeCall("ProcessReceipt(duplicate)", cb, makeReceiptInfo(pid, playerId, productId))
+		tickFrames(2)
+		if not okDup then
+			return false, nil, tostring(decisionDup)
+		end
+		local grantedDup = (decisionDup == Enum.ProductPurchaseDecision.PurchaseGranted)
+		local lsAfterDup = snapshotLeaderstats()
+		local dsAfterDup = snapshotDataStores()
+		local lsChangedDup = not deepEquals(lsBeforeDup, lsAfterDup)
+		local dsChangedDup = not deepEquals(dsBeforeDup, dsAfterDup)
+		local idempotent = grantedDup and not (prevMutated and (lsChangedDup or dsChangedDup))
+		table.insert(receiptsProcessed, {
+			purchase_id = pid,
+			product_id = productId,
+			player_id = playerId,
+			decision = tostring(decisionDup),
+			duplicate_replay = true,
+			idempotent = idempotent,
+		})
+		if not grantedDup then
+			return false, { decision = tostring(decisionDup), idempotent = false }, "Duplicate ProcessReceipt replay did not return PurchaseGranted"
+		end
+		if not idempotent then
+			return false, { decision = tostring(decisionDup), idempotent = false }, "Duplicate PurchaseId was granted more than once (idempotency violation)"
+		end
+		return true, { decision = tostring(decisionDup), purchase_id = pid, idempotent = true }, nil
+	end
 
 	local lsBefore = snapshotLeaderstats()
-	local dsBefore = serde.encode("json", snapshotDataStores())
-	local ok1, decision1 = safeCall("ProcessReceipt#1", cb, receiptInfo)
+	local dsBefore = snapshotDataStores()
+	local ok1, decision1 = safeCall("ProcessReceipt#1", cb, makeReceiptInfo(pid, playerId, productId))
 	tickFrames(2)
 	if not ok1 then
 		return false, nil, tostring(decision1)
 	end
 	local granted1 = (decision1 == Enum.ProductPurchaseDecision.PurchaseGranted)
 	local lsAfter1 = snapshotLeaderstats()
-	local dsAfter1 = serde.encode("json", snapshotDataStores())
+	local dsAfter1 = snapshotDataStores()
+
+	local lsChanged1 = not deepEquals(lsBefore, lsAfter1)
+	local dsChanged1 = not deepEquals(dsBefore, dsAfter1)
+	local mutated1 = lsChanged1 or dsChanged1
+	if granted1 then
+		grantedByPurchaseId[pid] = mutated1
+	end
 
 	table.insert(receiptsProcessed, {
 		purchase_id = pid,
@@ -2801,22 +2848,20 @@ local function runPurchaseReceipt(playerId, productId, purchaseId, replayDuplica
 	end
 
 	if replayDuplicate then
-		local ok2, decision2 = safeCall("ProcessReceipt#2(duplicate)", cb, receiptInfo)
+		local ok2, decision2 = safeCall("ProcessReceipt#2(duplicate)", cb, makeReceiptInfo(pid, playerId, productId))
 		tickFrames(2)
 		if not ok2 then
 			return false, nil, tostring(decision2)
 		end
 		local granted2 = (decision2 == Enum.ProductPurchaseDecision.PurchaseGranted)
 		local lsAfter2 = snapshotLeaderstats()
-		local dsAfter2 = serde.encode("json", snapshotDataStores())
+		local dsAfter2 = snapshotDataStores()
 
-		local uidKey = tostring(playerId)
-		local lsChanged1 = not leaderstatsEqual(lsBefore[uidKey] or {}, lsAfter1[uidKey] or {})
-		local lsChanged2 = not leaderstatsEqual(lsAfter1[uidKey] or {}, lsAfter2[uidKey] or {})
-		local dsChanged1 = (dsBefore ~= dsAfter1)
-		local dsChanged2 = (dsAfter1 ~= dsAfter2)
+		local lsChanged2 = not deepEquals(lsAfter1, lsAfter2)
+		local dsChanged2 = not deepEquals(dsAfter1, dsAfter2)
+		local mutated2 = lsChanged2 or dsChanged2
 
-		local idempotent = granted2 and (not (lsChanged1 and lsChanged2)) and (not (dsChanged1 and dsChanged2))
+		local idempotent = granted2 and not (mutated1 and mutated2)
 		table.insert(receiptsProcessed, {
 			purchase_id = pid,
 			product_id = productId,
@@ -2889,6 +2934,9 @@ local function executeStep(idx, step)
 
 	if op == "wait" then
 		local ms = tonumber(step.ms) or ((tonumber(step.seconds) or 0.05) * 1000)
+		if ms ~= ms then
+			ms = 50
+		end
 		local sec = math.clamp(ms / 1000, 0.001, 5)
 		local frames = math.max(1, math.min(20, math.floor(sec * 30)))
 		tickFrames(frames, sec / frames)
@@ -3014,13 +3062,13 @@ local function executeStep(idx, step)
 			receipts_processed = receiptsProcessed,
 			remotes_fired = remotesFiredCount,
 		}
-		local okCompile, fnOrErr = pcall(luau.load, code, {
+		local okCompile, fnOrErr, loadErr = pcall(luau.load, code, {
 			debugName = "assert_luau:" .. aName,
 			environment = env,
 		})
-		if not okCompile then
+		if not okCompile or type(fnOrErr) ~= "function" then
 			ok = false
-			errMsg = tostring(fnOrErr)
+			errMsg = tostring(if not okCompile then fnOrErr else (loadErr or "failed to compile assert_luau"))
 			pushError("assert_luau:" .. aName, errMsg)
 		else
 			local runOk, val = safeCall("assert_luau:" .. aName, fnOrErr)

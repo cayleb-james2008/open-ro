@@ -4,14 +4,25 @@
 use crate::projects::{self, Node};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 pub const SCENE_MODEL_REL: &str = "scene/workspace.model.json";
 pub const UNDO_FILE_REL: &str = ".openro/scene-undo.json";
 const MAX_UNDO_CHECKPOINTS: usize = 50;
+const MAX_SCENE_OPS_PER_MUTATE: usize = 500;
+const MAX_SCENE_PATH_DEPTH: usize = 32;
+const MAX_SCENE_SEG_LEN: usize = 128;
+const MAX_SCENE_MODEL_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_MESH_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 
 static SCENE_LOCK: Mutex<()> = Mutex::new(());
+static TMP_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
 struct SceneCheckpoint {
@@ -55,13 +66,53 @@ fn write_atomic_str(path: &Path, content: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create folder: {e}"))?;
     }
-    let tmp = path.with_extension("openro-tmp");
-    std::fs::write(&tmp, content.as_bytes()).map_err(|e| format!("write {}: {e}", path.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("rename {}: {e}", path.display()))
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("scene");
+    let tmp = path.with_file_name(format!(".{file_name}.openro-tmp.{}.{seq}", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .map_err(|e| format!("create temp for {}: {e}", path.display()))?;
+    if let Err(e) = file.write_all(content.as_bytes()).and_then(|_| file.flush()) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("write {}: {e}", path.display()));
+    }
+    drop(file);
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("rename {}: {e}", path.display()));
+    }
+    Ok(())
+}
+
+fn safe_project_path(dir: &Path, rel: &str) -> Result<std::path::PathBuf, String> {
+    if rel.contains('\0') || rel.contains('\\') {
+        return Err(format!("invalid project relative path '{rel}'"));
+    }
+    projects::safe_join(dir, rel)
+}
+
+fn cap_checkpoints(stack: &mut Vec<SceneCheckpoint>) {
+    if stack.len() > MAX_UNDO_CHECKPOINTS {
+        let drop_n = stack.len() - MAX_UNDO_CHECKPOINTS;
+        stack.drain(0..drop_n);
+    }
 }
 
 fn load_undo_store(dir: &Path) -> SceneUndoStore {
-    let path = dir.join(UNDO_FILE_REL);
+    let Ok(path) = safe_project_path(dir, UNDO_FILE_REL) else {
+        return SceneUndoStore::default();
+    };
+    let Ok(meta) = std::fs::symlink_metadata(&path) else {
+        return SceneUndoStore::default();
+    };
+    if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > MAX_SCENE_MODEL_BYTES {
+        return SceneUndoStore::default();
+    }
     let Ok(text) = std::fs::read_to_string(path) else {
         return SceneUndoStore::default();
     };
@@ -69,10 +120,13 @@ fn load_undo_store(dir: &Path) -> SceneUndoStore {
         return SceneUndoStore::default();
     };
     let parse_stack = |key: &str| -> Vec<SceneCheckpoint> {
-        v.get(key)
+        let mut stack: Vec<SceneCheckpoint> = v
+            .get(key)
             .and_then(|a| a.as_array())
             .map(|arr| arr.iter().filter_map(SceneCheckpoint::from_json).collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        cap_checkpoints(&mut stack);
+        stack
     };
     SceneUndoStore {
         revision: v.get("revision").and_then(|x| x.as_u64()).unwrap_or(0),
@@ -82,13 +136,13 @@ fn load_undo_store(dir: &Path) -> SceneUndoStore {
 }
 
 fn save_undo_store(dir: &Path, store: &SceneUndoStore) -> Result<(), String> {
-    let path = dir.join(UNDO_FILE_REL);
+    let path = safe_project_path(dir, UNDO_FILE_REL)?;
     let payload = json!({
         "revision": store.revision,
         "undo_stack": store.undo_stack.iter().map(SceneCheckpoint::to_json).collect::<Vec<_>>(),
         "redo_stack": store.redo_stack.iter().map(SceneCheckpoint::to_json).collect::<Vec<_>>(),
     });
-    let json_text = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())? + "\n";
+    let json_text = serde_json::to_string(&payload).map_err(|e| e.to_string())? + "\n";
     write_atomic_str(&path, &json_text)
 }
 
@@ -506,25 +560,42 @@ fn pct_encode_query_val(s: &str) -> String {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
             out.push(b as char);
         } else {
-            out.push_str(&format!("%{b:02X}"));
+            let _ = write!(out, "%{b:02X}");
         }
     }
     out
 }
 
 fn inspect_obj_metrics(obj_path: &Path) -> ([f64; 3], u64) {
-    let Ok(text) = std::fs::read_to_string(obj_path) else {
+    let Ok(meta) = std::fs::symlink_metadata(obj_path) else {
         return ([1.0, 1.0, 1.0], 0);
     };
+    if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > MAX_MESH_BYTES {
+        return ([1.0, 1.0, 1.0], 0);
+    }
+    let Ok(file) = std::fs::File::open(obj_path) else {
+        return ([1.0, 1.0, 1.0], 0);
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
     let mut min_v = [f64::INFINITY; 3];
     let mut max_v = [f64::NEG_INFINITY; 3];
     let mut any_v = false;
     let mut tris = 0u64;
 
-    for line in text.lines() {
+    loop {
+        line.clear();
+        let Ok(n) = reader.read_line(&mut line) else {
+            break;
+        };
+        if n == 0 {
+            break;
+        }
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("v ") {
-            let mut nums = rest.split_whitespace().filter_map(|s| s.parse::<f64>().ok());
+            let mut nums = rest
+                .split_whitespace()
+                .filter_map(|s| s.parse::<f64>().ok().filter(|v| v.is_finite()));
             if let (Some(x), Some(y), Some(z)) = (nums.next(), nums.next(), nums.next()) {
                 any_v = true;
                 min_v[0] = min_v[0].min(x);
@@ -555,12 +626,22 @@ fn inspect_obj_metrics(obj_path: &Path) -> ([f64; 3], u64) {
 }
 
 pub fn scan_project_meshes(dir: &Path, project_id: &str) -> Vec<Value> {
-    let meshes_dir = dir.join("assets").join("meshes");
-    if !meshes_dir.is_dir() {
+    let Ok(meshes_dir) = safe_project_path(dir, "assets/meshes") else {
+        return Vec::new();
+    };
+    let Ok(dir_meta) = std::fs::symlink_metadata(&meshes_dir) else {
+        return Vec::new();
+    };
+    if dir_meta.file_type().is_symlink() || !dir_meta.is_dir() {
         return Vec::new();
     }
-    let manifest_val: Value = std::fs::read_to_string(meshes_dir.join("manifest.json"))
+    let manifest_val: Value = safe_project_path(dir, "assets/meshes/manifest.json")
         .ok()
+        .filter(|p| {
+            std::fs::symlink_metadata(p)
+                .is_ok_and(|m| !m.file_type().is_symlink() && m.is_file() && m.len() <= MAX_MANIFEST_BYTES)
+        })
+        .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_else(|| json!({}));
 
@@ -570,11 +651,14 @@ pub fn scan_project_meshes(dir: &Path, project_id: &str) -> Vec<Value> {
         .flatten()
         .filter_map(|e| e.ok())
         .filter_map(|e| {
+            let ft = e.file_type().ok()?;
+            if ft.is_symlink() || !ft.is_file() {
+                return None;
+            }
             let p = e.path();
-            if p.is_file()
-                && p.extension()
-                    .and_then(|ex| ex.to_str())
-                    .is_some_and(|ex| ex.eq_ignore_ascii_case("obj"))
+            if p.extension()
+                .and_then(|ex| ex.to_str())
+                .is_some_and(|ex| ex.eq_ignore_ascii_case("obj"))
             {
                 Some(e.file_name().to_string_lossy().into_owned())
             } else {
@@ -585,7 +669,7 @@ pub fn scan_project_meshes(dir: &Path, project_id: &str) -> Vec<Value> {
     obj_files.sort();
 
     let encoded_id = pct_encode_query_val(project_id);
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(obj_files.len());
     for fname in obj_files {
         let stem = fname
             .strip_suffix(".obj")
@@ -618,14 +702,26 @@ pub fn scan_project_meshes(dir: &Path, project_id: &str) -> Vec<Value> {
             })
             .or_else(|| {
                 let png = format!("{stem}.png");
-                meshes_dir.join(&png).is_file().then_some(png)
+                safe_project_path(dir, &format!("assets/meshes/{png}"))
+                    .ok()
+                    .filter(|p| {
+                        std::fs::symlink_metadata(p)
+                            .is_ok_and(|m| !m.file_type().is_symlink() && m.is_file())
+                    })
+                    .map(|_| png)
             });
 
         let texture_path = tex_candidate.and_then(|tex| {
+            if tex.contains('\\') || tex.contains('\0') {
+                return None;
+            }
             let rel = format!("assets/meshes/{tex}");
-            projects::safe_join(dir, &rel)
+            safe_project_path(dir, &rel)
                 .ok()
-                .filter(|p| p.is_file())
+                .filter(|p| {
+                    std::fs::symlink_metadata(p)
+                        .is_ok_and(|m| !m.file_type().is_symlink() && m.is_file())
+                })
                 .map(|_| rel)
         });
         let texture_url = texture_path.as_ref().map(|tp| {
@@ -683,14 +779,27 @@ fn default_workspace_model() -> Value {
 }
 
 fn load_workspace_model(dir: &Path) -> Result<(Value, Option<String>), String> {
-    let full = dir.join(SCENE_MODEL_REL);
-    if !full.is_file() {
+    let full = safe_project_path(dir, SCENE_MODEL_REL)?;
+    let meta = match std::fs::symlink_metadata(&full) {
+        Ok(m) => m,
+        Err(_) => return Ok((default_workspace_model(), None)),
+    };
+    if meta.file_type().is_symlink() {
+        return Err(format!("{SCENE_MODEL_REL} must not be a symlink"));
+    }
+    if !meta.is_file() {
         return Ok((default_workspace_model(), None));
+    }
+    if meta.len() > MAX_SCENE_MODEL_BYTES {
+        return Err(format!("{SCENE_MODEL_REL} exceeds 16 MB limit"));
     }
     let raw = std::fs::read_to_string(&full)
         .map_err(|e| format!("read {SCENE_MODEL_REL}: {e}"))?;
     let mut val: Value = serde_json::from_str(&raw)
         .map_err(|e| format!("{SCENE_MODEL_REL} is invalid JSON: {e}"))?;
+    if !val.is_object() {
+        return Err(format!("{SCENE_MODEL_REL} root must be a JSON object"));
+    }
     normalize_model_node_keys(&mut val);
     Ok((val, Some(raw)))
 }
@@ -737,13 +846,24 @@ fn normalize_model_node_keys(v: &mut Value) {
 
 fn validate_workspace_path(raw: &str) -> Result<Vec<String>, String> {
     let trimmed = raw.trim();
-    if trimmed.is_empty() || trimmed.contains('\0') || trimmed.contains('/') || trimmed.contains('\\') {
+    if trimmed.is_empty()
+        || trimmed.contains('\0')
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.chars().any(|c| c.is_control())
+    {
         return Err(format!("invalid scene instance path '{raw}'"));
     }
     let segs: Vec<&str> = trimmed.split('.').collect();
-    if segs.len() < 2 || segs[0] != "Workspace" || segs.iter().any(|s| s.trim().is_empty() || *s == "." || *s == "..") {
+    if segs.len() < 2
+        || segs.len() > MAX_SCENE_PATH_DEPTH + 1
+        || segs[0] != "Workspace"
+        || segs
+            .iter()
+            .any(|s| s.trim().is_empty() || s.len() > MAX_SCENE_SEG_LEN || *s == "." || *s == "..")
+    {
         return Err(format!(
-            "scene instance path '{raw}' must start with 'Workspace.' and have non-empty segments"
+            "scene instance path '{raw}' must start with 'Workspace.' and have 1..={MAX_SCENE_PATH_DEPTH} valid segments"
         ));
     }
     Ok(segs[1..].iter().map(|s| (*s).to_string()).collect())
@@ -850,16 +970,18 @@ fn upsert_model_node(
     segs: &[String],
     class_name: Option<&str>,
     props_patch: Option<&Map<String, Value>>,
-) {
+) -> Result<(), String> {
     let mut cur = root;
     for (idx, seg) in segs.iter().enumerate() {
         let is_leaf = idx + 1 == segs.len();
-        let obj = cur.as_object_mut().expect("model node must be object");
+        let obj = cur
+            .as_object_mut()
+            .ok_or_else(|| "corrupt scene model: node must be a JSON object".to_string())?;
         let kids = obj
             .entry("children")
             .or_insert_with(|| json!([]))
             .as_array_mut()
-            .expect("children must be array");
+            .ok_or_else(|| "corrupt scene model: 'children' must be a JSON array".to_string())?;
         let existing_idx = kids
             .iter()
             .position(|c| c.get("name").and_then(|n| n.as_str()) == Some(seg.as_str()));
@@ -882,7 +1004,9 @@ fn upsert_model_node(
         };
         cur = &mut kids[target_idx];
         if is_leaf {
-            let leaf_obj = cur.as_object_mut().expect("leaf node object");
+            let leaf_obj = cur
+                .as_object_mut()
+                .ok_or_else(|| "corrupt scene model: leaf node must be a JSON object".to_string())?;
             if let Some(cls) = class_name {
                 leaf_obj.insert("className".into(), json!(cls));
             }
@@ -895,6 +1019,7 @@ fn upsert_model_node(
             }
         }
     }
+    Ok(())
 }
 
 fn delete_model_node(root: &mut Value, segs: &[String]) -> Result<(), String> {
@@ -1115,11 +1240,13 @@ fn apply_lighting_mutation(rojo: &mut Value, op: &Value) -> Result<(), String> {
     lighting.entry("$className").or_insert_with(|| json!("Lighting"));
     lighting.entry("$ignoreUnknownInstances").or_insert_with(|| json!(true));
 
-    let props_source = op
-        .get("properties")
-        .and_then(|p| p.as_object())
-        .cloned()
-        .unwrap_or_else(|| op.as_object().cloned().unwrap_or_default());
+    let props_source = match op.get("properties") {
+        None | Some(Value::Null) => op
+            .as_object()
+            .ok_or_else(|| "set_lighting op must be a JSON object".to_string())?,
+        Some(Value::Object(m)) => m,
+        Some(_) => return Err("set_lighting 'properties' must be a JSON object".to_string()),
+    };
 
     let path = op.get("path").and_then(|v| v.as_str()).unwrap_or("Lighting");
     let round4 = |x: f64| (x * 10_000.0).round() / 10_000.0;
@@ -1142,26 +1269,26 @@ fn apply_lighting_mutation(rojo: &mut Value, op: &Value) -> Result<(), String> {
             .or_insert_with(|| json!({}))
             .as_object_mut()
             .ok_or("Atmosphere $properties must be an object")?;
-        for (k, v) in &props_source {
+        for (k, v) in props_source {
             match k.as_str() {
                 "density" | "Density" => {
-                    if let Some(n) = v.as_f64() {
-                        ap.insert("Density".into(), json!(n));
+                    if let Some(n) = v.as_f64().filter(|x| x.is_finite()) {
+                        ap.insert("Density".into(), json!(n.clamp(0.0, 1.0)));
                     }
                 }
                 "offset" | "Offset" => {
-                    if let Some(n) = v.as_f64() {
-                        ap.insert("Offset".into(), json!(n));
+                    if let Some(n) = v.as_f64().filter(|x| x.is_finite()) {
+                        ap.insert("Offset".into(), json!(n.clamp(0.0, 1.0)));
                     }
                 }
                 "glare" | "Glare" => {
-                    if let Some(n) = v.as_f64() {
-                        ap.insert("Glare".into(), json!(n));
+                    if let Some(n) = v.as_f64().filter(|x| x.is_finite()) {
+                        ap.insert("Glare".into(), json!(n.clamp(0.0, 10.0)));
                     }
                 }
                 "haze" | "Haze" => {
-                    if let Some(n) = v.as_f64() {
-                        ap.insert("Haze".into(), json!(n));
+                    if let Some(n) = v.as_f64().filter(|x| x.is_finite()) {
+                        ap.insert("Haze".into(), json!(n.clamp(0.0, 10.0)));
                     }
                 }
                 "color" | "Color" => set_color(ap, "Color", v),
@@ -1178,29 +1305,29 @@ fn apply_lighting_mutation(rojo: &mut Value, op: &Value) -> Result<(), String> {
         .as_object_mut()
         .ok_or("Lighting $properties must be an object")?;
 
-    let mut atmo_val: Option<Value> = None;
-    for (k, v) in &props_source {
+    let mut atmo_val: Option<&Value> = None;
+    for (k, v) in props_source {
         match k.as_str() {
             "clock_time" | "ClockTime" => {
-                if let Some(n) = v.as_f64() {
+                if let Some(n) = v.as_f64().filter(|x| x.is_finite()) {
                     lprops.insert("ClockTime".into(), json!(n.clamp(0.0, 24.0)));
                 }
             }
             "brightness" | "Brightness" => {
-                if let Some(n) = v.as_f64() {
-                    lprops.insert("Brightness".into(), json!(n.max(0.0)));
+                if let Some(n) = v.as_f64().filter(|x| x.is_finite()) {
+                    lprops.insert("Brightness".into(), json!(n.clamp(0.0, 100.0)));
                 }
             }
             "ambient" | "Ambient" => set_color(lprops, "Ambient", v),
             "outdoor_ambient" | "OutdoorAmbient" => set_color(lprops, "OutdoorAmbient", v),
             "fog_end" | "FogEnd" => {
-                if let Some(n) = v.as_f64() {
-                    lprops.insert("FogEnd".into(), json!(n.max(0.0)));
+                if let Some(n) = v.as_f64().filter(|x| x.is_finite()) {
+                    lprops.insert("FogEnd".into(), json!(n.clamp(0.0, 1_000_000.0)));
                 }
             }
             "fog_start" | "FogStart" => {
-                if let Some(n) = v.as_f64() {
-                    lprops.insert("FogStart".into(), json!(n.max(0.0)));
+                if let Some(n) = v.as_f64().filter(|x| x.is_finite()) {
+                    lprops.insert("FogStart".into(), json!(n.clamp(0.0, 1_000_000.0)));
                 }
             }
             "fog_color" | "FogColor" => set_color(lprops, "FogColor", v),
@@ -1216,12 +1343,12 @@ fn apply_lighting_mutation(rojo: &mut Value, op: &Value) -> Result<(), String> {
                 }
             }
             "exposure_compensation" | "ExposureCompensation" => {
-                if let Some(n) = v.as_f64() {
-                    lprops.insert("ExposureCompensation".into(), json!(n));
+                if let Some(n) = v.as_f64().filter(|x| x.is_finite()) {
+                    lprops.insert("ExposureCompensation".into(), json!(n.clamp(-10.0, 10.0)));
                 }
             }
             "atmosphere" | "Atmosphere" => {
-                atmo_val = Some(v.clone());
+                atmo_val = Some(v);
             }
             "op" | "path" | "class_name" | "properties" => {}
             other => {
@@ -1230,7 +1357,7 @@ fn apply_lighting_mutation(rojo: &mut Value, op: &Value) -> Result<(), String> {
         }
     }
 
-    if let Some(av) = atmo_val {
+    if let Some(av) = atmo_val.cloned() {
         if av.is_null() {
             lighting.remove("Atmosphere");
         } else if let Some(aobj) = av.as_object() {
@@ -1248,20 +1375,31 @@ fn apply_lighting_mutation(rojo: &mut Value, op: &Value) -> Result<(), String> {
 /// Apply declarative scene mutations (`upsert`, `delete`, `duplicate`, `set_lighting`, `undo`, `redo`),
 /// atomically updating `scene/workspace.model.json` and auto-wiring `default.project.json`.
 pub fn mutate_scene(dir: &Path, project_id: &str, body: &Value) -> Result<Value, String> {
-    let _guard = SCENE_LOCK.lock().unwrap();
+    if !body.is_object() {
+        return Err("scene/mutate request body must be a JSON object".to_string());
+    }
+    let _guard = SCENE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let m = projects::manifest(dir)?;
     let rojo_rel = m["rojoProject"]
         .as_str()
         .unwrap_or(projects::DEFAULT_ROJO_FILE)
         .to_string();
-    let rojo_full = projects::safe_join(dir, &rojo_rel)?;
+    let rojo_full = safe_project_path(dir, &rojo_rel)?;
+    let rojo_meta = std::fs::symlink_metadata(&rojo_full)
+        .map_err(|_| format!("{rojo_rel} not found in project"))?;
+    if rojo_meta.file_type().is_symlink() || !rojo_meta.is_file() {
+        return Err(format!("{rojo_rel} must be a regular non-symlink file"));
+    }
+    if rojo_meta.len() > MAX_SCENE_MODEL_BYTES {
+        return Err(format!("{rojo_rel} exceeds 16 MB limit"));
+    }
     let rojo_raw_before = std::fs::read_to_string(&rojo_full)
         .map_err(|_| format!("{rojo_rel} not found in project"))?;
     let mut rojo_val: Value = serde_json::from_str(&rojo_raw_before)
         .map_err(|e| format!("{rojo_rel} is not valid JSON: {e}"))?;
 
-    let scene_full = projects::safe_join(dir, SCENE_MODEL_REL)?;
+    let scene_full = safe_project_path(dir, SCENE_MODEL_REL)?;
     let (mut ws_model, ws_raw_before) = load_workspace_model(dir)?;
     let mut undo_store = load_undo_store(dir);
 
@@ -1274,6 +1412,10 @@ pub fn mutate_scene(dir: &Path, project_id: &str, body: &Value) -> Result<Value,
             ops.len() == 1 && ops[0].get("op").and_then(|o| o.as_str()) == Some("redo")
         });
 
+    if wants_undo && wants_redo {
+        return Err("scene/mutate cannot specify both undo and redo".to_string());
+    }
+
     if wants_undo {
         let cp = undo_store
             .undo_stack
@@ -1284,6 +1426,7 @@ pub fn mutate_scene(dir: &Path, project_id: &str, body: &Value) -> Result<Value,
             workspace_model_raw: ws_raw_before.clone(),
             default_project_raw: Some(rojo_raw_before.clone()),
         });
+        cap_checkpoints(&mut undo_store.redo_stack);
         undo_store.revision += 1;
 
         let mut modified_files = Vec::new();
@@ -1332,6 +1475,7 @@ pub fn mutate_scene(dir: &Path, project_id: &str, body: &Value) -> Result<Value,
             workspace_model_raw: ws_raw_before.clone(),
             default_project_raw: Some(rojo_raw_before.clone()),
         });
+        cap_checkpoints(&mut undo_store.undo_stack);
         undo_store.revision += 1;
 
         let mut modified_files = Vec::new();
@@ -1375,6 +1519,11 @@ pub fn mutate_scene(dir: &Path, project_id: &str, body: &Value) -> Result<Value,
         .and_then(|v| v.as_array())
         .filter(|a| !a.is_empty())
         .ok_or_else(|| "scene/mutate requires non-empty 'ops' array (or undo/redo: true)".to_string())?;
+    if ops.len() > MAX_SCENE_OPS_PER_MUTATE {
+        return Err(format!(
+            "scene/mutate exceeds max {MAX_SCENE_OPS_PER_MUTATE} ops per request"
+        ));
+    }
 
     let mut touched_workspace = false;
     let mut touched_lighting = false;
@@ -1391,9 +1540,28 @@ pub fn mutate_scene(dir: &Path, project_id: &str, body: &Value) -> Result<Value,
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| format!("ops[{idx}] upsert requires 'path'"))?;
                 let segs = validate_workspace_path(raw_path)?;
-                let class_name = op.get("class_name").and_then(|v| v.as_str());
-                let props = op.get("properties").and_then(|v| v.as_object());
-                upsert_model_node(&mut ws_model, &segs, class_name, props);
+                let class_name = match op.get("class_name") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(s)) => {
+                        let t = s.trim();
+                        if t.is_empty()
+                            || t.len() > 64
+                            || t.chars().any(|c| c.is_control())
+                        {
+                            return Err(format!("ops[{idx}] invalid class_name '{s}'"));
+                        }
+                        Some(t)
+                    }
+                    Some(_) => return Err(format!("ops[{idx}] class_name must be a string")),
+                };
+                let props = match op.get("properties") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::Object(m)) => Some(m),
+                    Some(_) => {
+                        return Err(format!("ops[{idx}] properties must be a JSON object"))
+                    }
+                };
+                upsert_model_node(&mut ws_model, &segs, class_name, props)?;
                 touched_workspace = true;
             }
             "delete" => {
@@ -1420,7 +1588,12 @@ pub fn mutate_scene(dir: &Path, project_id: &str, body: &Value) -> Result<Value,
                     .and_then(|v| v.as_str())
                     .map(str::trim)
                     .filter(|s| !s.is_empty());
-                let offset = parse_vec3(op.get("offset")).unwrap_or([4.0, 0.0, 4.0]);
+                let offset = match op.get("offset") {
+                    None | Some(Value::Null) => [4.0, 0.0, 4.0],
+                    Some(v) => parse_vec3(Some(v)).ok_or_else(|| {
+                        format!("ops[{idx}] duplicate offset must be a finite [x, y, z] Vector3")
+                    })?,
+                };
                 duplicate_model_node(
                     &mut ws_model,
                     &src_segs,
@@ -1448,10 +1621,7 @@ pub fn mutate_scene(dir: &Path, project_id: &str, body: &Value) -> Result<Value,
         workspace_model_raw: ws_raw_before.clone(),
         default_project_raw: Some(rojo_raw_before.clone()),
     });
-    if undo_store.undo_stack.len() > MAX_UNDO_CHECKPOINTS {
-        let drop_n = undo_store.undo_stack.len() - MAX_UNDO_CHECKPOINTS;
-        undo_store.undo_stack.drain(0..drop_n);
-    }
+    cap_checkpoints(&mut undo_store.undo_stack);
     undo_store.redo_stack.clear();
     undo_store.revision += 1;
 
