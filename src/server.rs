@@ -647,7 +647,7 @@ impl Drop for HandlerSlot {
     }
 }
 
-const POOL_WORKERS_BOOT: usize = 4;
+const POOL_WORKERS_BOOT: usize = 2;
 const POOL_WORKERS: usize = 32;
 
 struct WorkerJob {
@@ -664,7 +664,7 @@ fn spawn_pool_worker(
 ) {
     let _ = std::thread::Builder::new()
         .name(format!("openro-http-{idx}"))
-        .stack_size(2 * 1024 * 1024)
+        .stack_size(1024 * 1024)
         .spawn(move || loop {
             let job = {
                 let (lock, cvar) = &*q;
@@ -953,6 +953,7 @@ fn host_name(authority: &str) -> String {
     a.split(':').next().unwrap_or("").to_string()
 }
 
+#[inline]
 fn host_allowed(host: &str, allowed: &[String]) -> bool {
     let name = host_name(host);
     ["localhost", "127.0.0.1", "[::1]"].contains(&name.as_str())
@@ -985,6 +986,8 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
                 || clean_path == "/api/studio/dependencies"
                 || clean_path == "/api/studio/dependencies/prune"
                 || clean_path == "/api/studio/snapshots/hook-integrity"
+                || clean_path == "/api/studio/sync-conflicts"
+                || clean_path == "/api/studio/sync-conflicts/resolve"
                 || (clean_path.starts_with("/api/snapshots/") && clean_path.ends_with("/restore-hooks"))
                 || clean_path == "/api/studio/capture"
                 || clean_path == "/api/studio/launch-and-continue"))
@@ -1069,6 +1072,7 @@ fn conn_header_line(status: &str) -> &'static str {
     }
 }
 
+#[inline]
 fn write_all_vectored(stream: &mut TcpStream, header: &[u8], body: &[u8]) {
     if body.is_empty() {
         let _ = stream.write_all(header);
@@ -2211,6 +2215,142 @@ fn handle(
         }
         ("POST", "/api/studio/economy/simulate") => {
             handle_studio_economy_simulate(&mut stream, shared, &req.body);
+        }
+        ("GET", "/api/studio/sync-conflicts") => {
+            let latest_snap = shared.snapshots.lock().unwrap().latest().cloned();
+            let current_tree = shared
+                .agent
+                .lock()
+                .unwrap()
+                .as_mut()
+                .and_then(|a| a.place_tree().ok())
+                .unwrap_or_else(|| json!({ "instances": {}, "scripts": {} }));
+            let mut place_scripts = std::collections::BTreeMap::new();
+            let mut local_scripts = std::collections::BTreeMap::new();
+            if let Some(obj) = current_tree.get("scripts").and_then(Value::as_object) {
+                for (k, v) in obj {
+                    if let Some(s) = v.as_str() {
+                        local_scripts.insert(k.clone(), s.to_string());
+                    }
+                }
+            }
+            let (has_base, bid) = if let Some(s) = &latest_snap {
+                if let Some(obj) = s.tree.get("scripts").and_then(Value::as_object) {
+                    for (k, v) in obj {
+                        if let Some(src) = v.as_str() {
+                            place_scripts.insert(k.clone(), src.to_string());
+                        }
+                    }
+                }
+                (true, Some(s.id.as_str()))
+            } else {
+                (false, None)
+            };
+            let report = crate::playtest::build_sync_conflicts_report(
+                &place_scripts,
+                &local_scripts,
+                has_base,
+                bid,
+            );
+            respond_json(&mut stream, "200 OK", &report);
+        }
+        ("POST", "/api/studio/sync-conflicts/resolve") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let action = body.get("action").and_then(Value::as_str).unwrap_or("").trim();
+            let path_key = body.get("path").and_then(Value::as_str).unwrap_or("").trim();
+            if !matches!(action, "accept_local" | "keep_place" | "backup_snapshot")
+                || path_key.is_empty()
+                || path_key.contains("..")
+                || path_key.contains('/')
+                || path_key.contains('\\')
+                || path_key.contains('\0')
+            {
+                respond_json(&mut stream, "400 Bad Request", &json!({ "ok": false, "error": "invalid sync conflict resolve payload" }));
+                break 'req_done;
+            }
+            let latest_snap = shared.snapshots.lock().unwrap().latest().cloned();
+            let mut guard = shared.agent.lock().unwrap();
+            let Some(agent) = guard.as_mut() else {
+                respond_json(&mut stream, "503 Service Unavailable", &json!({ "ok": false, "error": "Studio not connected" }));
+                break 'req_done;
+            };
+            let current_tree = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+            let chat_id = shared.active_chat.lock().unwrap().clone();
+            let backup_snap = shared.snapshots.lock().unwrap().record(
+                format!("Sync backup ({action}: {path_key})"),
+                "sync-resolve",
+                Some(chat_id.clone()),
+                current_tree.clone(),
+                None,
+            );
+            if action == "keep_place" {
+                if let Some(src) = latest_snap
+                    .as_ref()
+                    .and_then(|s| s.tree.get("scripts"))
+                    .and_then(|m| m.get(path_key))
+                    .and_then(Value::as_str)
+                {
+                    let mut next_tree = current_tree.clone();
+                    if let Some(m) = next_tree.get_mut("scripts").and_then(Value::as_object_mut) {
+                        m.insert(path_key.to_string(), Value::String(src.to_string()));
+                    }
+                    let _ = agent.apply_place_tree(&next_tree);
+                }
+            }
+            let after_tree = agent.place_tree().unwrap_or(current_tree);
+            if action == "accept_local" || action == "keep_place" {
+                let _ = shared.snapshots.lock().unwrap().record(
+                    format!("Sync resolved ({action}: {path_key})"),
+                    "sync-resolve",
+                    Some(chat_id),
+                    after_tree.clone(),
+                    None,
+                );
+            }
+            drop(guard);
+            let mut local_scripts = std::collections::BTreeMap::new();
+            if let Some(obj) = after_tree.get("scripts").and_then(Value::as_object) {
+                for (k, v) in obj {
+                    if let Some(s) = v.as_str() {
+                        local_scripts.insert(k.clone(), s.to_string());
+                    }
+                }
+            }
+            let place_scripts = if action == "accept_local" {
+                local_scripts.clone()
+            } else if let Some(s) = &latest_snap {
+                let mut m = std::collections::BTreeMap::new();
+                if let Some(obj) = s.tree.get("scripts").and_then(Value::as_object) {
+                    for (k, v) in obj {
+                        if let Some(src) = v.as_str() {
+                            m.insert(k.clone(), src.to_string());
+                        }
+                    }
+                }
+                m
+            } else {
+                local_scripts.clone()
+            };
+            let report = crate::playtest::build_sync_conflicts_report(
+                &place_scripts,
+                &local_scripts,
+                latest_snap.is_some(),
+                latest_snap.as_ref().map(|s| s.id.as_str()),
+            );
+            respond_json(
+                &mut stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "action": action,
+                    "path": path_key,
+                    "backup_snapshot_id": backup_snap.id,
+                    "in_sync": report["in_sync"],
+                    "conflict_count": report["conflict_count"],
+                    "conflicts": report["conflicts"],
+                    "report": report,
+                }),
+            );
         }
         ("GET", "/api/studio/snapshots/hook-integrity") => {
             let latest_snap = shared.snapshots.lock().unwrap().latest().cloned();

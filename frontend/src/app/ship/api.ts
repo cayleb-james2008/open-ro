@@ -233,6 +233,43 @@ export type HookRestoreResult = {
   after?: HookIntegrityReport;
   rerun?: PlaytestReport;
 };
+export type SyncConflictHunkLine = {
+  op: "context" | "add" | "del" | string;
+  text: string;
+  old_line?: number | null;
+  new_line?: number | null;
+};
+export type SyncConflictHunk = {
+  header: string;
+  lines: SyncConflictHunkLine[];
+};
+export type SyncConflictItem = {
+  path: string;
+  place_path: string;
+  status: "modified" | "added" | "removed" | string;
+  added_lines: number;
+  removed_lines: number;
+  local_source: string;
+  place_source: string;
+  hunks: SyncConflictHunk[];
+};
+export type SyncConflictsReport = {
+  schema?: string;
+  has_baseline: boolean;
+  baseline_id?: string | null;
+  in_sync: boolean;
+  conflict_count: number;
+  conflicts: SyncConflictItem[];
+};
+export type SyncConflictResolveResult = {
+  action: "accept_local" | "keep_place" | "backup_snapshot" | string;
+  path: string;
+  backup_snapshot_id?: string | null;
+  in_sync: boolean;
+  conflict_count: number;
+  conflicts: SyncConflictItem[];
+  report?: SyncConflictsReport;
+};
 export type PlaytestReport = {
   run_id: string; passed: boolean; build_id?: string; mode?: string; duration_ms?: number;
   checks?: { name: string; passed: boolean; value?: unknown; error?: string | null; datamodel?: string }[];

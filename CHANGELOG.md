@@ -4,6 +4,12 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.15.0 - 2026-11-25
+
+- Added 1-click Rojo Live-Sync Conflict Resolver (`GET /api/projects/:id/sync-conflicts`, `POST /api/projects/:id/sync-conflicts/resolve`, `GET /api/studio/sync-conflicts`, `POST /api/studio/sync-conflicts/resolve`, `SyncConflictsCard.tsx`, and `web-engine` parity) using `compute_file_diffs` for unified hunk previews and Accept Local, Keep Place, or Backup Snapshot resolution with CWE-22 path confinement and loopback-403 checks.
+- Bounded glibc heap arenas (`M_ARENA_MAX = 1`, `M_MMAP_THRESHOLD = 32 KB`) and trimmed initial worker pool boot spawns (`POOL_WORKERS_BOOT = 2`, `1 MB` stack) while keeping the release binary under `10 MB`.
+- Rewrote visible docs and component copy in plain prose following `humanizer v4.0.0`.
+
 ## 1.14.0 - 2026-11-25
 
 - **Preflight Hook-Integrity & Regression Diff Guard (`src/playtest.rs`, `src/project_api.rs`, `src/server.rs`, `frontend/src/app/ship/{HookIntegrityCard.tsx,PlaytestPanel.tsx,ReadinessAutopilot.tsx,api.ts}`, `frontend/web-engine/install.ts`):**

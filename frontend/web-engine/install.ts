@@ -1,4 +1,4 @@
-// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.14.0 standalone web builds.
+// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.15.0 standalone web builds.
 // Features:
 //  - RoPilot-Grade 3-Pane Studio IDE (Agent | Plan | Ask, Reviewable Unified Diffs, @Context Chips, Companion Plugin)
 //  - Embedded Studio Workbench & 13 Official Studio MCP Tools running live against the in-browser Place DataModel
@@ -70,6 +70,8 @@ type ChatSession = {
   undoStack: Array<{ changes: ChangeEntry[]; skills: string[] }>;
   redoStack: Array<{ changes: ChangeEntry[]; skills: string[] }>;
   snapshots: StoredSnapshot[];
+  syncBaselineScripts?: Record<string, string>;
+  syncBaselineId?: string | null;
   proposals?: StoredProposal[];
   studioActions: StudioActionEvent[];
   playMode?: StudioPlayMode;
@@ -606,6 +608,53 @@ function evaluateWebHookIntegrity(chat: ChatSession) {
     missing_count: missing.length,
     preserved_new_scripts,
     missing_hooks: missing,
+  };
+}
+
+function buildWebSyncConflicts(chat: ChatSession) {
+  const baseScripts = chat.syncBaselineScripts;
+  if (!baseScripts) {
+    return {
+      schema: "openro.sync_conflicts.v1",
+      has_baseline: false,
+      baseline_id: null,
+      in_sync: true,
+      conflict_count: 0,
+      conflicts: [],
+    };
+  }
+  const currScripts = chat.place?.scripts || {};
+  const allKeys = Array.from(new Set([...Object.keys(baseScripts), ...Object.keys(currScripts)])).sort();
+  const conflicts = allKeys
+    .filter((k) => baseScripts[k] !== currScripts[k])
+    .map((k) => {
+      const placeSrc = baseScripts[k] ?? "";
+      const localSrc = currScripts[k] ?? "";
+      const status = !(k in baseScripts) ? "added" : !(k in currScripts) ? "removed" : "modified";
+      const pLines = placeSrc ? placeSrc.split("\n") : [];
+      const lLines = localSrc ? localSrc.split("\n") : [];
+      const lines = [
+        ...pLines.slice(0, 8).map((t, i) => ({ op: "del", text: t, old_line: i + 1, new_line: null })),
+        ...lLines.slice(0, 8).map((t, i) => ({ op: "add", text: t, old_line: null, new_line: i + 1 })),
+      ];
+      return {
+        path: k,
+        place_path: k,
+        status,
+        added_lines: lLines.length,
+        removed_lines: pLines.length,
+        local_source: localSrc,
+        place_source: placeSrc,
+        hunks: [{ header: `@@ -1,${pLines.length} +1,${lLines.length} @@`, lines }],
+      };
+    });
+  return {
+    schema: "openro.sync_conflicts.v1",
+    has_baseline: true,
+    baseline_id: chat.syncBaselineId ?? null,
+    in_sync: conflicts.length === 0,
+    conflict_count: conflicts.length,
+    conflicts,
   };
 }
 
@@ -1297,7 +1346,7 @@ export function installWebEngine() {
     if (!chat.playMode) chat.playMode = "edit";
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "1.14.0" });
+      return jsonResponse({ name: "openro-rs", version: "1.15.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -1308,7 +1357,7 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "1.14.0",
+        version: "1.15.0",
         sse_build_stream: true,
         studio_stream: true,
         assets_api: true,
@@ -2603,6 +2652,8 @@ export function installWebEngine() {
           ? body.label.trim()
           : `Checkpoint ${chat.snapshots.length + 1}`;
       const snap = recordSnapshot(chat, label, chat.snapshots[0]?.place || null);
+      chat.syncBaselineScripts = clonePlace(chat.place).scripts;
+      chat.syncBaselineId = snap.id;
       persist();
       const serialized = serializeWebSnapshots(chat);
       return jsonResponse(
@@ -2623,6 +2674,55 @@ export function installWebEngine() {
         },
         201,
       );
+    }
+    if (method === "GET" && u.pathname === "/api/studio/sync-conflicts") {
+      return jsonResponse({ ok: true, ...buildWebSyncConflicts(chat) });
+    }
+    if (method === "POST" && u.pathname === "/api/studio/sync-conflicts/resolve") {
+      const action = typeof body.action === "string" ? body.action.trim() : "";
+      const rel = typeof body.path === "string" ? body.path.trim() : "";
+      if (
+        !["accept_local", "keep_place", "backup_snapshot"].includes(action) ||
+        !rel ||
+        rel.includes("..") ||
+        rel.includes("\\") ||
+        rel.includes("\0") ||
+        rel.startsWith("/")
+      ) {
+        return jsonResponse({ ok: false, error: "invalid sync conflict resolve payload" }, 400);
+      }
+      const before = clonePlace(chat.place);
+      const backupSnap = recordSnapshot(chat, `Sync backup (${action}: ${rel})`, before);
+      if (!chat.syncBaselineScripts && chat.snapshots.length > 0) {
+        chat.syncBaselineScripts = { ...(chat.snapshots[chat.snapshots.length - 1]?.place?.scripts || {}) };
+      }
+      const baseScripts = { ...(chat.syncBaselineScripts || {}) };
+      if (action === "accept_local") {
+        if (rel in chat.place.scripts) {
+          baseScripts[rel] = chat.place.scripts[rel];
+        } else {
+          delete baseScripts[rel];
+        }
+        chat.syncBaselineScripts = baseScripts;
+      } else if (action === "keep_place") {
+        if (rel in baseScripts) {
+          chat.place.scripts[rel] = baseScripts[rel];
+        } else {
+          delete chat.place.scripts[rel];
+        }
+      }
+      persist();
+      const report = buildWebSyncConflicts(chat);
+      return jsonResponse({
+        ok: true,
+        action,
+        path: rel,
+        backup_snapshot_id: backupSnap.id,
+        in_sync: report.in_sync,
+        conflict_count: report.conflict_count,
+        conflicts: report.conflicts,
+        report,
+      });
     }
     if (method === "GET" && u.pathname === "/api/studio/snapshots/hook-integrity") {
       return jsonResponse({ ok: true, ...evaluateWebHookIntegrity(chat) });

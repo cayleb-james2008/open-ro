@@ -6,6 +6,7 @@ import { Pill } from "@/components/kibo-ui/pill";
 import { ProgressCircle } from "@/components/ProgressCircle/ProgressCircle";
 import { call, projUrl, type AutopilotResult, type MonetizationCodegenResult, type ProjectReadiness, type PublishGateResult } from "./api";
 import { HookIntegrityCard } from "./HookIntegrityCard";
+import { SyncConflictsCard } from "./SyncConflictsCard";
 
 /**
  * 1-click Ship & Monetization Readiness Autopilot:
@@ -413,6 +414,15 @@ export function ReadinessAutopilot({
           ))}
         </div>
       )}
+
+      <SyncConflictsCard
+        projectId={projectId}
+        hideWhenInSync
+        onResolved={async () => {
+          await loadReadiness();
+          await onCompleted?.();
+        }}
+      />
 
       <HookIntegrityCard
         projectId={projectId}

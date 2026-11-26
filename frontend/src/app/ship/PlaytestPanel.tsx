@@ -12,6 +12,7 @@ import { DependencyGraphCard } from "./DependencyGraphCard";
 import { EconomySimulatorCard } from "./EconomySimulatorCard";
 import { HookIntegrityCard } from "./HookIntegrityCard";
 import { SnapshotRollbackCard } from "./SnapshotRollbackCard";
+import { SyncConflictsCard } from "./SyncConflictsCard";
 import type { Ship } from "./useShip";
 
 type View = "summary" | "html" | "json";
@@ -605,6 +606,13 @@ export function PlaytestPanel({ ship, studioOk, onCount }: { ship: Ship; studioO
         </div>
       )}
       <DependencyGraphCard projectId={id} studioOk={studioOk} />
+      <SyncConflictsCard
+        projectId={id}
+        studioOk={studioOk}
+        onResolved={async () => {
+          await Promise.all([load(), loadStudy()]);
+        }}
+      />
       <HookIntegrityCard
         projectId={id}
         studioOk={studioOk}
