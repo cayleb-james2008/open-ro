@@ -1,4 +1,4 @@
-# OpenRO (`v1.16.0`)
+# OpenRO (`v1.17.0`)
 
 [![Release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/cayleb-james2008/open-ro/release.yml?branch=main&label=build)](https://github.com/cayleb-james2008/open-ro/actions)
@@ -17,6 +17,7 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
 ## What it does
 
 - The three-pane workspace puts the Place explorer on the left, the Agent/Plan/Ask thread in the middle, and tabbed panels (`Viewport`, `Code`, `Assets`, `Ship`, `Swarm`) on the right.
+- The monetization and retention safety audit checks Luau scripts for missing `MarketplaceService.ProcessReceipt` idempotency (`PurchaseId` ledger and `PurchaseGranted` return), missing `DataStore` `BindToClose` shutdown flushes, unguarded `PromptGamePassPurchase` or `UserOwnsGamePassAsync` calls without `pcall`, and missing first-60s onboarding or daily streak hooks, with one-click jump and safe snippet repair.
 - Before exporting or publishing, the preflight Luau and asset readiness guard checks for orphan asset refs (`rbxassetid://0`, local file paths, or missing `AssetIds` keys), broken `RemoteEvent` and `require()` bindings, unsafe `loadstring`, `getfenv`, `setfenv`, or numeric `require()` calls, and empty spawn or shop hooks, with one-click Jump to Issue and Apply Safe Autofix actions.
 - Before publishing, the Rojo live-sync conflict resolver compares local `.luau` files on disk against your synced Place baseline, shows line diffs, and lets you accept local changes, restore the Place version, or save a backup snapshot in one click.
 - The preflight hook-integrity check catches dropped Robux GamePass or DevProduct IDs, `ProcessReceipt` handlers, `Workspace.SpawnLocation`, and `--!strict` headers against your last verified snapshot, restoring missing hooks without overwriting new feature scripts.
@@ -58,16 +59,16 @@ flowchart LR
   SRV --> OC["Open Cloud &amp; Creator Hub<br/>0600 Secrets + Price Approval Gate"]
 ```
 
-## Verified benchmarks (`v1.16.0` vs `v1.2.0`)
+## Verified benchmarks (`v1.17.0` vs `v1.2.0`)
 
-| Metric | `v1.2.0` baseline | `v1.16.0` verified (`#154` pinned) | Delta |
+| Metric | `v1.2.0` baseline | `v1.17.0` verified (`#154` pinned) | Delta |
 | --- | --- | --- | --- |
-| Release binary size | `19.00 MB` | **`9.06 MB`** (`9,499,480 B`) | **`-52.3%`** |
-| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`236.7 KB`** raw (`242,332 B`) / **`56.4 KB`** gz (`57,799 B`) | **`-87.7%` wire** |
-| Cold boot (`#154` pinned) | `1,470 ms` | **`32.01 ms`** | **`-97.8%`** |
-| Peak RSS (`VmHWM`) | `115.20 MB` | **`9.48 MB`** (`9,708 KB`, 16w) / **`13.79 MB`** (`14,120 KB`, `scale-audit` + 10 SSE) | **`-91.8%`** |
-| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`65,014.6 req/s`** keep-alive (`0.44 ms` p95) / **`59,340.3 req/s`** close (`0.50 ms` p95) / **`8,088.9 req/s`** Python cold (`2.47 ms` p95, `0` errs) | **`74.3x` (`-98.3%` p95)** |
-| Security and UI gates | `43/43` fuzz | **`36/36` fuzz, `10/10` SSE, `0` sloplint fails/warns, `314` Rust tests, `gate 56/56`, `replay 9/9`** | Pass |
+| Release binary size | `19.00 MB` | **`9.08 MB`** (`9,519,960 B`) | **`-52.2%`** |
+| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`236.9 KB`** raw (`242,552 B`) / **`56.5 KB`** gz (`57,816 B`) | **`-87.7%` wire** |
+| Cold boot (`#154` pinned) | `1,470 ms` | **`36.22 ms`** | **`-97.5%`** |
+| Peak RSS (`VmHWM`) | `115.20 MB` | **`12.73 MB`** (`13,032 KB`, `scale-audit` + 10 SSE) | **`-88.9%`** |
+| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`4,276.6 req/s`** Python cold (`3.61 ms` p50, `5.21 ms` p95, `0` errs) | **`4.89x` (`-96.3%` p95)** |
+| Security and UI gates | `43/43` fuzz | **`39/39` fuzz, `10/10` SSE, `0` sloplint fails/warns, `315` Rust tests, `gate 56/56`, `replay 9/9`** | Pass |
 
 ## Quick start
 

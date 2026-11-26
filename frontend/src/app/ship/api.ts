@@ -302,6 +302,40 @@ export type PublishGuardAutofixResult = {
   modified_files: string[];
   report?: PublishGuardReport;
 };
+export type MonetizationAuditIssue = {
+  id: string;
+  category: "process_receipt" | "bind_to_close" | "gamepass_pcall" | "onboarding_retention" | string;
+  severity: "error" | "warning" | string;
+  title: string;
+  detail: string;
+  file: string;
+  place_path?: string;
+  line: number;
+  autofixable: boolean;
+  fix_action: string;
+  fix_hint: string;
+  snippet?: string;
+};
+export type MonetizationAuditReport = {
+  schema?: string;
+  ready: boolean;
+  blocker_count: number;
+  warning_count: number;
+  autofixable_count: number;
+  checks: {
+    process_receipt: boolean;
+    bind_to_close: boolean;
+    gamepass_pcall: boolean;
+    onboarding_retention: boolean;
+  };
+  issues: MonetizationAuditIssue[];
+};
+export type MonetizationAuditRepairResult = {
+  schema?: string;
+  fixed_count: number;
+  modified_files: string[];
+  report?: MonetizationAuditReport;
+};
 export type PlaytestReport = {
   run_id: string; passed: boolean; build_id?: string; mode?: string; duration_ms?: number;
   checks?: { name: string; passed: boolean; value?: unknown; error?: string | null; datamodel?: string }[];

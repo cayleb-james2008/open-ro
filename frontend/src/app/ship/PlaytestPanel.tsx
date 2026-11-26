@@ -11,6 +11,7 @@ import { call, enc, projUrl, stamp, type AssertionDiff, type AssertionFixApplyRe
 import { DependencyGraphCard } from "./DependencyGraphCard";
 import { EconomySimulatorCard } from "./EconomySimulatorCard";
 import { HookIntegrityCard } from "./HookIntegrityCard";
+import { MonetizationAuditCard } from "./MonetizationAuditCard";
 import { PublishGuardCard } from "./PublishGuardCard";
 import { SnapshotRollbackCard } from "./SnapshotRollbackCard";
 import { SyncConflictsCard } from "./SyncConflictsCard";
@@ -611,6 +612,14 @@ export function PlaytestPanel({ ship, studioOk, onCount, onJumpToIssue }: { ship
         studioOk={studioOk}
         onJumpToIssue={onJumpToIssue}
         onFixed={async () => {
+          await Promise.all([load(), loadStudy()]);
+        }}
+      />
+      <MonetizationAuditCard
+        projectId={id}
+        studioOk={studioOk}
+        onJumpToIssue={onJumpToIssue}
+        onRepaired={async () => {
           await Promise.all([load(), loadStudy()]);
         }}
       />

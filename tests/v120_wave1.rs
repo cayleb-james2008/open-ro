@@ -105,7 +105,7 @@ fn index_serves_gzip_strong_etag_304_and_security_headers() {
 
     let (st_ver, ver_json) = send_json(port, "GET", "/api/version", None);
     assert_eq!(st_ver, 200);
-    assert_eq!(ver_json["version"], json!("1.16.0"));
+    assert_eq!(ver_json["version"], json!("1.17.0"));
 
     // Verify lazy UI JS chunks under /chunks/* also serve gzip + strong ETag + 304 + immutable + security headers
     if let Ok(entries) = std::fs::read_dir("assets/chunks") {
@@ -727,7 +727,7 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
         assert!(n > 0, "unexpected EOF on first keep-alive response");
         first_buf.extend_from_slice(&tmp[..n]);
         let s = String::from_utf8_lossy(&first_buf);
-        if s.contains("1.16.0") {
+        if s.contains("1.17.0") {
             assert!(s.contains("Connection: keep-alive"), "{s}");
             break;
         }
@@ -739,7 +739,7 @@ fn v1110_wave10_economy_funnel_simulator_and_keep_alive() {
     let _ = ka.read_to_end(&mut second_buf);
     let s2_txt = String::from_utf8_lossy(&second_buf);
     assert!(s2_txt.contains("HTTP/1.1 200 OK"), "{s2_txt}");
-    assert!(s2_txt.contains("1.16.0"), "{s2_txt}");
+    assert!(s2_txt.contains("1.17.0"), "{s2_txt}");
 
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -1249,6 +1249,99 @@ fn v1160_wave15_pre_publish_luau_asset_guard_and_autofix() {
     assert_eq!(loc["schema"], json!("openro.publish_guard.v1"));
     let bad_req = format!(
         "POST /api/projects/{pid}/publish-guard/autofix HTTP/1.1\r\nHost: attacker.example:{port}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+    );
+    let (st_403, _, _) = send_raw_bytes(port, bad_req.as_bytes());
+    assert_eq!(st_403, 403);
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn v1170_wave16_monetization_retention_safety_audit_and_repair() {
+    let base = std::env::temp_dir().join(format!(
+        "openro-v1170-wave16-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let data = base.join("data");
+    let ws = base.join("ws");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+
+    let port = start_server_with_dir(Some(data));
+    let (st_ws, _) = send_json(port, "POST", "/api/projects/workspace", Some(&json!({ "path": ws })));
+    assert_eq!(st_ws, 200);
+    let (st_cr, cr) = send_json(
+        port,
+        "POST",
+        "/api/projects/create",
+        Some(&json!({ "name": "Wave16MonetizationAudit" })),
+    );
+    assert_eq!(st_cr, 201, "{cr}");
+    let pid = cr["project"]["id"].as_str().unwrap().to_string();
+    let proj_dir = std::path::PathBuf::from(cr["project"]["path"].as_str().unwrap());
+
+    std::fs::create_dir_all(proj_dir.join("src/server")).unwrap();
+    std::fs::write(
+        proj_dir.join("src/server/BrokenShop.server.luau"),
+        "--!strict\nlocal DataStoreService = game:GetService(\"DataStoreService\")\nlocal MarketplaceService = game:GetService(\"MarketplaceService\")\nlocal store = DataStoreService:GetDataStore(\"Purchases_v1\")\nMarketplaceService.ProcessReceipt = function(receiptInfo)\n\treturn Enum.ProductPurchaseDecision.PurchaseGranted\nend\nlocal function promptVip(player: Player)\n\tMarketplaceService:PromptGamePassPurchase(player, 777123)\nend\n",
+    )
+    .unwrap();
+
+    // GET monetization-audit flags unsafe ProcessReceipt, missing BindToClose, unguarded PromptGamePassPurchase, and missing onboarding hook
+    let (st_ma, ma) = send_json(port, "GET", &format!("/api/projects/{pid}/monetization-audit"), None);
+    assert_eq!(st_ma, 200, "{ma}");
+    assert_eq!(ma["schema"], json!("openro.monetization_audit.v1"));
+    assert_eq!(ma["ready"], json!(false), "{ma}");
+    assert_eq!(ma["checks"]["process_receipt"], json!(false), "{ma}");
+    assert_eq!(ma["checks"]["bind_to_close"], json!(false), "{ma}");
+    assert_eq!(ma["checks"]["gamepass_pcall"], json!(false), "{ma}");
+    assert_eq!(ma["checks"]["onboarding_retention"], json!(false), "{ma}");
+    assert!(ma["blocker_count"].as_u64().unwrap() >= 4, "{ma}");
+
+    // 1-click safe repair clears all 4 monetization & retention issues
+    let (st_rp, rp) = send_json(
+        port,
+        "POST",
+        &format!("/api/projects/{pid}/monetization-audit"),
+        Some(&json!({})),
+    );
+    assert_eq!(st_rp, 200, "{rp}");
+    assert_eq!(rp["schema"], json!("openro.monetization_audit.v1"));
+    assert!(rp["fixed_count"].as_u64().unwrap() >= 4, "{rp}");
+    assert_eq!(rp["report"]["ready"], json!(true), "{rp}");
+    assert_eq!(rp["report"]["blocker_count"], json!(0), "{rp}");
+
+    let repaired = std::fs::read_to_string(proj_dir.join("src/server/BrokenShop.server.luau")).unwrap();
+    assert!(repaired.contains("PurchaseId"), "{repaired}");
+    assert!(repaired.contains("UpdateAsync"), "{repaired}");
+    assert!(repaired.contains("NotProcessedYet"), "{repaired}");
+    assert!(repaired.contains("BindToClose"), "{repaired}");
+    assert!(repaired.contains("pcall("), "{repaired}");
+    assert!(proj_dir.join("src/server/OnboardingRetention.server.luau").is_file());
+
+    // Studio Local Place parity + loopback-403 check
+    let (st_sc, _) = send_json(
+        port,
+        "POST",
+        "/api/place/script",
+        Some(&json!({
+            "path": "ServerScriptService.ShopBridge",
+            "source": "--!strict\nlocal DataStoreService = game:GetService(\"DataStoreService\")\nlocal MarketplaceService = game:GetService(\"MarketplaceService\")\nlocal _s = DataStoreService:GetDataStore(\"Coins\")\nMarketplaceService:PromptGamePassPurchase(nil, 42)\n"
+        })),
+    );
+    assert_eq!(st_sc, 200);
+    let (st_sg, sg) = send_json(port, "GET", "/api/studio/monetization-audit", None);
+    assert_eq!(st_sg, 200, "{sg}");
+    assert_eq!(sg["ready"], json!(false), "{sg}");
+    let (st_sr, sr) = send_json(port, "POST", "/api/studio/monetization-audit", Some(&json!({})));
+    assert_eq!(st_sr, 200, "{sr}");
+    assert_eq!(sr["report"]["ready"], json!(true), "{sr}");
+
+    let bad_req = format!(
+        "POST /api/studio/monetization-audit HTTP/1.1\r\nHost: attacker.example:{port}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
     );
     let (st_403, _, _) = send_raw_bytes(port, bad_req.as_bytes());
     assert_eq!(st_403, 403);

@@ -2388,11 +2388,15 @@ promptRemote.OnServerEvent:Connect(function(player: Player, kind: unknown, targe
 \tend\n\
 \tif kind == \"pass\" then\n\
 \t\tif not playerOwnsPass(player, idNum) then\n\
-\t\t\tMarketplaceService:PromptGamePassPurchase(player, idNum)\n\
+\t\t\tpcall(function()\n\
+\t\t\t\tMarketplaceService:PromptGamePassPurchase(player, idNum)\n\
+\t\t\tend)\n\
 \t\tend\n\
 \telseif kind == \"product\" then\n\
 \t\tlocal _ = checkPaidRandomAllowed(player)\n\
-\t\tMarketplaceService:PromptProductPurchase(player, idNum)\n\
+\t\tpcall(function()\n\
+\t\t\tMarketplaceService:PromptProductPurchase(player, idNum)\n\
+\t\tend)\n\
 \tend\n\
 end)\n\n\
 Players.PlayerAdded:Connect(function(player: Player)\n\

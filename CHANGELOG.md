@@ -4,6 +4,11 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.17.0 - 2026-11-25
+
+- Added Monetization and Retention Safety Audit plus 1-click safe repair (`GET/POST /api/projects/:id/monetization-audit`, `GET/POST /api/studio/monetization-audit`, `MonetizationAuditCard.tsx`, and `web-engine` parity) detecting missing `MarketplaceService.ProcessReceipt` `PurchaseId` idempotency and `PurchaseGranted` returns, `DataStore` scripts without `game:BindToClose` shutdown flushes, unguarded `PromptGamePassPurchase`, `PromptProductPurchase`, or `UserOwnsGamePassAsync` calls lacking `pcall`, and missing first-60s onboarding or daily streak hooks, with safe snippet previews, issue jump, and pre-repair snapshot checkpoints.
+- Added zero-DOM `LocalPlace::tree_bytes` direct serialization, stopped caching the uncompressed HTML template after gzip warm-up, and moved `serde_json` to `opt-level = "s"` in `Cargo.toml`, dropping Peak RSS to `12.73 MB` (`13,032 KB`) while keeping the release binary at `9.08 MB` (`9,519,960 B`).
+
 ## 1.16.0 - 2026-11-25
 
 - Added Pre-Publish Luau & Asset Readiness Guard (`GET /api/projects/:id/publish-guard`, `POST /api/projects/:id/publish-guard/autofix`, `GET /api/studio/publish-guard`, `POST /api/studio/publish-guard/autofix`, `PublishGuardCard.tsx`, and `web-engine` parity) catching placeholder `rbxassetid://0` and local path leaks, orphan `AssetIds` keys, broken requires and unattached remotes, unsafe `loadstring`, `getfenv`, `setfenv`, or numeric `require()` calls, and missing `Workspace.SpawnLocation` or `ProcessReceipt` shop hooks with 1-click issue jump and safe autofix.

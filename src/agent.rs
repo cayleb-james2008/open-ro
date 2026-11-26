@@ -5218,6 +5218,10 @@ impl Agent {
         self.studio_mut()?.get_place_tree()
     }
 
+    pub fn place_tree_bytes(&mut self) -> Result<Vec<u8>, String> {
+        self.studio_mut()?.get_place_tree_bytes()
+    }
+
     pub fn local_place_revision(&self) -> Option<u64> {
         self.studio.as_ref().and_then(|s| s.local_revision())
     }

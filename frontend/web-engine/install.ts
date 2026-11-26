@@ -1,4 +1,4 @@
-// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.16.0 standalone web builds.
+// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.17.0 standalone web builds.
 // Features:
 //  - RoPilot-Grade 3-Pane Studio IDE (Agent | Plan | Ask, Reviewable Unified Diffs, @Context Chips, Companion Plugin)
 //  - Embedded Studio Workbench & 13 Official Studio MCP Tools running live against the in-browser Place DataModel
@@ -811,6 +811,157 @@ function evaluateWebPublishGuard(chat: ChatSession) {
   };
 }
 
+const WEB_IDEMPOTENT_RECEIPT_SNIPPET = `\n-- Added by OpenRO Monetization & Retention Safety Audit\ndo\n\tlocal DataStoreService = game:GetService("DataStoreService")\n\tlocal MarketplaceService = game:GetService("MarketplaceService")\n\tlocal Players = game:GetService("Players")\n\tlocal receiptStore = DataStoreService:GetDataStore("OpenRO_ReceiptLedger_v1")\n\tMarketplaceService.ProcessReceipt = function(receiptInfo)\n\t\tlocal player = Players:GetPlayerByUserId(receiptInfo.PlayerId)\n\t\tif not player then\n\t\t\treturn Enum.ProductPurchaseDecision.NotProcessedYet\n\t\tend\n\t\tlocal receiptKey = tostring(receiptInfo.PlayerId) .. "_" .. tostring(receiptInfo.PurchaseId)\n\t\tlocal alreadyGranted = false\n\t\tlocal ok = pcall(function()\n\t\t\treceiptStore:UpdateAsync(receiptKey, function(existing)\n\t\t\t\tif existing == true then alreadyGranted = true return true end\n\t\t\t\treturn true\n\t\t\tend)\n\t\tend)\n\t\tif not ok then return Enum.ProductPurchaseDecision.NotProcessedYet end\n\t\tif not alreadyGranted then player:SetAttribute("LastPurchaseId", tostring(receiptInfo.PurchaseId)) end\n\t\treturn Enum.ProductPurchaseDecision.PurchaseGranted\n\tend\nend\n`;
+
+const WEB_ONBOARDING_SNIPPET = `--!strict\n-- First-60s onboarding welcome reward + daily streak persistence.\nlocal DataStoreService = game:GetService("DataStoreService")\nlocal Players = game:GetService("Players")\nlocal onboardingStore = DataStoreService:GetDataStore("OpenRO_Onboarding_v1")\n\nPlayers.PlayerAdded:Connect(function(player: Player)\n\tlocal key = "u_" .. tostring(player.UserId)\n\tlocal ok, state = pcall(function() return onboardingStore:GetAsync(key) end)\n\tlocal streak = if ok and type(state) == "table" and type(state.streak) == "number" then state.streak + 1 else 1\n\tplayer:SetAttribute("OnboardingStreak", streak)\n\tplayer:SetAttribute("StarterBonusGranted", true)\n\tplayer:SetAttribute("Onboarded", true)\n\tpcall(function() onboardingStore:UpdateAsync(key, function() return { streak = streak, onboardedAt = os.time() } end) end)\nend)\n\ngame:BindToClose(function()\n\ttask.wait(0.2)\nend)\n`;
+
+function webLineIsPcallGuarded(lines: string[], idx: number): boolean {
+  if (lines[idx].includes("pcall(") || lines[idx].includes("xpcall(")) return true;
+  let depth = 0;
+  for (let i = idx - 1; i >= Math.max(0, idx - 12); i--) {
+    const tr = lines[i].trim();
+    if (tr.startsWith("--")) continue;
+    if (tr === "end)" || tr.endsWith("end)")) depth++;
+    if (tr.includes("pcall(") || tr.includes("xpcall(")) {
+      if (depth <= 0) return true;
+      depth--;
+    }
+  }
+  return false;
+}
+
+function evaluateWebMonetizationAudit(chat: ChatRecord) {
+  const scripts = chat.place.scripts || {};
+  const issues: any[] = [];
+  let receiptOk = true;
+  let bindOk = true;
+  let pcallOk = true;
+  let onboardingOk = true;
+
+  const entries = Object.entries(scripts);
+  const hasMonSignals = entries.some(([k, s]) => {
+    const lk = k.toLowerCase();
+    return lk.includes("shop") || lk.includes("monetization") || lk.includes("economy") || s.includes("MarketplaceService") || s.includes("ProcessReceipt") || s.includes("PromptProductPurchase") || s.includes("PromptGamePassPurchase");
+  });
+  const hasReceipt = entries.some(([, s]) => s.includes("ProcessReceipt"));
+  if (hasMonSignals && !hasReceipt) {
+    receiptOk = false;
+    issues.push({
+      id: "audit:monetization:missing_process_receipt",
+      category: "process_receipt",
+      severity: "error",
+      title: "Missing MarketplaceService.ProcessReceipt handler",
+      detail: "Monetization scripts require an idempotent ProcessReceipt callback returning Enum.ProductPurchaseDecision.PurchaseGranted.",
+      file: "ServerScriptService.MonetizationService",
+      place_path: "ServerScriptService.MonetizationService",
+      line: 1,
+      autofixable: true,
+      fix_action: "wire_process_receipt",
+      fix_hint: "Install an idempotent ProcessReceipt callback backed by a PurchaseId DataStore ledger.",
+      snippet: WEB_IDEMPOTENT_RECEIPT_SNIPPET.trim(),
+    });
+  }
+
+  for (const [k, src] of entries) {
+    const lines = src.split("\n");
+    const rIdx = lines.findIndex((l) => !l.trim().startsWith("--") && l.includes("ProcessReceipt"));
+    if (rIdx >= 0) {
+      const hasLedger = src.includes("PurchaseId") && (src.includes("UpdateAsync") || src.includes("GetAsync"));
+      const hasDecision = src.includes("PurchaseGranted") && src.includes("NotProcessedYet");
+      if (!hasLedger || !hasDecision) {
+        receiptOk = false;
+        issues.push({
+          id: `audit:monetization:unsafe_process_receipt:${k}`,
+          category: "process_receipt",
+          severity: "error",
+          title: "Unsafe ProcessReceipt handler lacks PurchaseId idempotency",
+          detail: "ProcessReceipt must record receiptInfo.PurchaseId via UpdateAsync/GetAsync and return PurchaseGranted or NotProcessedYet.",
+          file: k,
+          place_path: k,
+          line: rIdx + 1,
+          autofixable: true,
+          fix_action: "harden_process_receipt",
+          fix_hint: "Upgrade ProcessReceipt to persist PurchaseId with UpdateAsync.",
+          snippet: WEB_IDEMPOTENT_RECEIPT_SNIPPET.trim(),
+        });
+      }
+    }
+    const dsIdx = lines.findIndex((l) => !l.trim().startsWith("--") && (l.includes("GetDataStore(") || l.includes("GetOrderedDataStore(")));
+    if (dsIdx >= 0 && !src.includes("BindToClose")) {
+      bindOk = false;
+      issues.push({
+        id: `audit:monetization:missing_bind_to_close:${k}`,
+        category: "bind_to_close",
+        severity: "error",
+        title: "DataStore script missing game:BindToClose flush",
+        detail: "Without BindToClose, in-flight purchase writes can drop on server shutdown.",
+        file: k,
+        place_path: k,
+        line: dsIdx + 1,
+        autofixable: true,
+        fix_action: "add_bind_to_close",
+        fix_hint: "Append a game:BindToClose shutdown flush guard.",
+        snippet: "game:BindToClose(function()\n\ttask.wait(0.2)\nend)",
+      });
+    }
+    for (let i = 0; i < lines.length; i++) {
+      const tr = lines[i].trim();
+      if (tr.startsWith("--")) continue;
+      if ((tr.includes("PromptGamePassPurchase(") || tr.includes("PromptProductPurchase(") || tr.includes("UserOwnsGamePassAsync(")) && !webLineIsPcallGuarded(lines, i)) {
+        pcallOk = false;
+        issues.push({
+          id: `audit:monetization:unguarded_prompt:${k}:${i + 1}`,
+          category: "gamepass_pcall",
+          severity: "error",
+          title: "Unguarded GamePass or purchase API call",
+          detail: "Wrap PromptGamePassPurchase, PromptProductPurchase, and UserOwnsGamePassAsync in pcall.",
+          file: k,
+          place_path: k,
+          line: i + 1,
+          autofixable: true,
+          fix_action: "guard_gamepass_pcall",
+          fix_hint: "Wrap the purchase prompt or ownership lookup inside pcall(function() ... end).",
+          snippet: `pcall(function()\n\t${tr}\nend)`,
+        });
+      }
+    }
+  }
+
+  const hasOnboarding = entries.some(([k, s]) => {
+    const lk = k.toLowerCase();
+    return lk.includes("onboarding") || lk.includes("retention") || lk.includes("dailyreward") || s.includes("ClaimDailyReward") || s.includes("StarterBonusGranted") || s.includes("OnboardingStreak");
+  });
+  if (!hasOnboarding) {
+    onboardingOk = false;
+    issues.push({
+      id: "audit:monetization:missing_onboarding_retention",
+      category: "onboarding_retention",
+      severity: "error",
+      title: "Missing first-60s onboarding and retention hook",
+      detail: "Add a PlayerAdded onboarding reward and daily streak persistence hook.",
+      file: "ServerScriptService.OnboardingRetention",
+      place_path: "ServerScriptService.OnboardingRetention",
+      line: 1,
+      autofixable: true,
+      fix_action: "seed_onboarding_retention",
+      fix_hint: "Seed OnboardingRetention with StarterBonus and daily streak DataStore tracking.",
+      snippet: WEB_ONBOARDING_SNIPPET,
+    });
+  }
+
+  const blocker_count = issues.filter((i) => i.severity === "error").length;
+  const warning_count = issues.filter((i) => i.severity === "warning").length;
+  return {
+    schema: "openro.monetization_audit.v1",
+    ready: blocker_count === 0 && warning_count === 0,
+    blocker_count,
+    warning_count,
+    autofixable_count: issues.filter((i) => i.autofixable).length,
+    checks: { process_receipt: receiptOk, bind_to_close: bindOk, gamepass_pcall: pcallOk, onboarding_retention: onboardingOk },
+    issues,
+  };
+}
+
 function defaultState(): EngineState {
   const id = "chat-studio-1";
   return {
@@ -1499,7 +1650,7 @@ export function installWebEngine() {
     if (!chat.playMode) chat.playMode = "edit";
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "1.16.0" });
+      return jsonResponse({ name: "openro-rs", version: "1.17.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -1510,7 +1661,7 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "1.16.0",
+        version: "1.17.0",
         sse_build_stream: true,
         studio_stream: true,
         assets_api: true,
@@ -2888,6 +3039,87 @@ export function installWebEngine() {
         fixed_count,
         modified_files,
         report: evaluateWebPublishGuard(chat),
+      });
+    }
+    if (method === "GET" && u.pathname === "/api/studio/monetization-audit") {
+      return jsonResponse({ ok: true, ...evaluateWebMonetizationAudit(chat) });
+    }
+    if (method === "POST" && u.pathname === "/api/studio/monetization-audit") {
+      const actionFilter = typeof body.fix_action === "string" && body.fix_action.trim() ? body.fix_action.trim() : null;
+      const shouldRun = (name: string) => !actionFilter || actionFilter === name;
+      const before = clonePlace(chat.place);
+      const beforeAudit = evaluateWebMonetizationAudit(chat);
+      let fixed_count = 0;
+      const modified_files = new Set<string>();
+      if (shouldRun("wire_process_receipt") && beforeAudit.issues.some((i) => i.fix_action === "wire_process_receipt")) {
+        const target = Object.keys(chat.place.scripts).find((k) => /monetization|shop|economy/i.test(k)) || "ServerScriptService.MonetizationService";
+        let src = chat.place.scripts[target] || "--!strict\n";
+        src += WEB_IDEMPOTENT_RECEIPT_SNIPPET;
+        if (!src.includes("BindToClose")) src += "\ngame:BindToClose(function()\n\ttask.wait(0.2)\nend)\n";
+        chat.place.scripts[target] = src;
+        modified_files.add(target);
+        fixed_count++;
+      }
+      if (shouldRun("harden_process_receipt")) {
+        for (const [k, src] of Object.entries(chat.place.scripts)) {
+          if (src.includes("ProcessReceipt") && (!src.includes("PurchaseId") || !src.includes("NotProcessedYet") || !src.includes("PurchaseGranted"))) {
+            const cleaned = src.split("\n").map((ln) => (ln.includes("ProcessReceipt") || ln.includes("PurchaseGranted")) ? `-- [OpenRO Audit] replaced: ${ln}` : ln).join("\n");
+            let next = cleaned + WEB_IDEMPOTENT_RECEIPT_SNIPPET;
+            if (!next.includes("BindToClose")) next += "\ngame:BindToClose(function()\n\ttask.wait(0.2)\nend)\n";
+            chat.place.scripts[k] = next;
+            modified_files.add(k);
+            fixed_count++;
+          }
+        }
+      }
+      if (shouldRun("add_bind_to_close")) {
+        for (const [k, src] of Object.entries(chat.place.scripts)) {
+          if ((src.includes("GetDataStore(") || src.includes("GetOrderedDataStore(")) && !src.includes("BindToClose")) {
+            chat.place.scripts[k] = src + "\ngame:BindToClose(function()\n\ttask.wait(0.2)\nend)\n";
+            modified_files.add(k);
+            fixed_count++;
+          }
+        }
+      }
+      if (shouldRun("guard_gamepass_pcall")) {
+        for (const [k, src] of Object.entries(chat.place.scripts)) {
+          const lines = src.split("\n");
+          let changed = 0;
+          const nextLines: string[] = [];
+          for (let i = 0; i < lines.length; i++) {
+            const tr = lines[i].trim();
+            if (!tr.startsWith("--") && (tr.includes("PromptGamePassPurchase(") || tr.includes("PromptProductPurchase(") || tr.includes("UserOwnsGamePassAsync(")) && !webLineIsPcallGuarded(lines, i)) {
+              const indent = lines[i].slice(0, lines[i].length - lines[i].trimStart().length);
+              nextLines.push(`${indent}pcall(function()`);
+              nextLines.push(`${indent}\t${tr}`);
+              nextLines.push(`${indent}end)`);
+              changed++;
+            } else {
+              nextLines.push(lines[i]);
+            }
+          }
+          if (changed > 0) {
+            chat.place.scripts[k] = nextLines.join("\n");
+            modified_files.add(k);
+            fixed_count += changed;
+          }
+        }
+      }
+      if (shouldRun("seed_onboarding_retention") && evaluateWebMonetizationAudit(chat).checks.onboarding_retention === false) {
+        chat.place.scripts["ServerScriptService.OnboardingRetention"] = WEB_ONBOARDING_SNIPPET;
+        modified_files.add("ServerScriptService.OnboardingRetention");
+        fixed_count++;
+      }
+      if (fixed_count > 0) {
+        recordSnapshot(chat, "Pre-monetization-audit repair checkpoint", before);
+        persist();
+      }
+      return jsonResponse({
+        ok: true,
+        schema: "openro.monetization_audit.v1",
+        fixed_count,
+        modified_files: Array.from(modified_files),
+        report: evaluateWebMonetizationAudit(chat),
       });
     }
     if (method === "GET" && u.pathname === "/api/studio/sync-conflicts") {

@@ -129,6 +129,16 @@ impl PlaceBackend {
         }
     }
 
+    pub fn get_place_tree_bytes(&mut self) -> Result<Vec<u8>, String> {
+        match self {
+            PlaceBackend::Local(p) => Ok(p.tree_bytes()),
+            _ => {
+                let tree = self.get_place_tree()?;
+                serde_json::to_vec(&tree).map_err(|e| format!("serialize place_tree: {e}"))
+            }
+        }
+    }
+
     pub fn mode_name(&self) -> &'static str {
         match self {
             PlaceBackend::Mcp(_) => "studio_mcp",
@@ -1063,6 +1073,16 @@ impl LocalPlace {
             "scripts": self.scripts,
             "instances": self.instances,
         })
+    }
+
+    pub fn tree_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(64 * 1024);
+        buf.extend_from_slice(br#"{"scripts":"#);
+        let _ = serde_json::to_writer(&mut buf, &self.scripts);
+        buf.extend_from_slice(br#","instances":"#);
+        let _ = serde_json::to_writer(&mut buf, &self.instances);
+        buf.push(b'}');
+        buf
     }
 
     fn persist(&self) {

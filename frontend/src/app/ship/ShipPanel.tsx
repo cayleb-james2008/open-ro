@@ -5,6 +5,7 @@ import { Pill } from "@/components/kibo-ui/pill";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
 import { call, projUrl, type StudyStatus } from "./api";
 import { PublishPanel } from "./PublishPanel";
+import { MonetizationAuditCard } from "./MonetizationAuditCard";
 import { PublishGuardCard } from "./PublishGuardCard";
 import { ReadinessAutopilot } from "./ReadinessAutopilot";
 import { EconomySimulatorCard } from "./EconomySimulatorCard";
@@ -96,6 +97,12 @@ export const ShipPanel = memo(function ShipPanel({
           hideWhenClean
           onJumpToIssue={onOpenCodeDiff}
           onFixed={onInstalledMonetization}
+        />
+        <MonetizationAuditCard
+          studioOk={studioOk}
+          hideWhenClean
+          onJumpToIssue={onOpenCodeDiff}
+          onRepaired={onInstalledMonetization}
         />
         {ship.available && (
           <div className="card-stock flex flex-col items-start gap-2.5 p-4">

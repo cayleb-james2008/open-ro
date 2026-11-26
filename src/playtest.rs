@@ -4292,6 +4292,531 @@ pub fn studio_autofix_publish_guard_tree(
     (next_tree, modified_files.into_iter().collect(), fixed_count)
 }
 
+const IDEMPOTENT_PROCESS_RECEIPT_SNIPPET: &str = "\n-- Added by OpenRO Monetization & Retention Safety Audit\ndo\n\tlocal DataStoreService = game:GetService(\"DataStoreService\")\n\tlocal MarketplaceService = game:GetService(\"MarketplaceService\")\n\tlocal Players = game:GetService(\"Players\")\n\tlocal receiptStore = DataStoreService:GetDataStore(\"OpenRO_ReceiptLedger_v1\")\n\tMarketplaceService.ProcessReceipt = function(receiptInfo)\n\t\tlocal player = Players:GetPlayerByUserId(receiptInfo.PlayerId)\n\t\tif not player then\n\t\t\treturn Enum.ProductPurchaseDecision.NotProcessedYet\n\t\tend\n\t\tlocal receiptKey = tostring(receiptInfo.PlayerId) .. \"_\" .. tostring(receiptInfo.PurchaseId)\n\t\tlocal alreadyGranted = false\n\t\tlocal ok = pcall(function()\n\t\t\treceiptStore:UpdateAsync(receiptKey, function(existing)\n\t\t\t\tif existing == true then\n\t\t\t\t\talreadyGranted = true\n\t\t\t\t\treturn true\n\t\t\t\tend\n\t\t\t\treturn true\n\t\t\tend)\n\t\tend)\n\t\tif not ok then\n\t\t\treturn Enum.ProductPurchaseDecision.NotProcessedYet\n\t\tend\n\t\tif not alreadyGranted then\n\t\t\tplayer:SetAttribute(\"LastPurchaseId\", tostring(receiptInfo.PurchaseId))\n\t\tend\n\t\treturn Enum.ProductPurchaseDecision.PurchaseGranted\n\tend\nend\n";
+
+const BIND_TO_CLOSE_SNIPPET: &str = "\n-- Added by OpenRO Monetization & Retention Safety Audit\ngame:BindToClose(function()\n\ttask.wait(0.2)\nend)\n";
+
+const ONBOARDING_RETENTION_SNIPPET: &str = "--!strict\n-- First-60s onboarding welcome reward + daily streak persistence.\nlocal DataStoreService = game:GetService(\"DataStoreService\")\nlocal Players = game:GetService(\"Players\")\nlocal onboardingStore = DataStoreService:GetDataStore(\"OpenRO_Onboarding_v1\")\n\nPlayers.PlayerAdded:Connect(function(player: Player)\n\tlocal key = \"u_\" .. tostring(player.UserId)\n\tlocal ok, state = pcall(function()\n\t\treturn onboardingStore:GetAsync(key)\n\tend)\n\tlocal streak = if ok and type(state) == \"table\" and type(state.streak) == \"number\" then state.streak + 1 else 1\n\tplayer:SetAttribute(\"OnboardingStreak\", streak)\n\tplayer:SetAttribute(\"StarterBonusGranted\", true)\n\tplayer:SetAttribute(\"Onboarded\", true)\n\tlocal _ = pcall(function()\n\t\tonboardingStore:UpdateAsync(key, function()\n\t\t\treturn { streak = streak, onboardedAt = os.time() }\n\t\tend)\n\tend)\nend)\n\ngame:BindToClose(function()\n\ttask.wait(0.2)\nend)\n";
+
+fn line_is_pcall_guarded(lines: &[&str], idx: usize) -> bool {
+    let cur = lines[idx];
+    if cur.contains("pcall(") || cur.contains("xpcall(") {
+        return true;
+    }
+    let mut depth: isize = 0;
+    let start = idx.saturating_sub(12);
+    for l in lines[start..idx].iter().rev() {
+        let tr = l.trim();
+        if tr.starts_with("--") {
+            continue;
+        }
+        if tr == "end)" || tr.ends_with("end)") {
+            depth += 1;
+        }
+        if tr.contains("pcall(") || tr.contains("xpcall(") {
+            if depth <= 0 {
+                return true;
+            }
+            depth -= 1;
+        }
+    }
+    false
+}
+
+fn script_location(key: &str) -> (String, String) {
+    let place_path = if key.contains('/') {
+        rel_script_to_place_path(key)
+    } else {
+        key.to_string()
+    };
+    (key.to_string(), place_path)
+}
+
+pub fn evaluate_monetization_audit(scripts: &std::collections::BTreeMap<String, String>) -> Value {
+    let mut issues: Vec<Value> = Vec::new();
+    let mut receipt_ok = true;
+    let mut bind_ok = true;
+    let mut pcall_ok = true;
+    let mut onboarding_ok = true;
+
+    let has_monetization_signals = scripts.iter().any(|(k, s)| {
+        let lk = k.to_ascii_lowercase();
+        lk.contains("shop")
+            || lk.contains("monetization")
+            || lk.contains("economy")
+            || lk.contains("productids")
+            || s.contains("MarketplaceService")
+            || s.contains("ProcessReceipt")
+            || s.contains("PromptProductPurchase")
+            || s.contains("PromptGamePassPurchase")
+    });
+    let has_receipt = scripts.values().any(|s| s.contains("ProcessReceipt"));
+    if has_monetization_signals && !has_receipt {
+        receipt_ok = false;
+        let target = scripts
+            .keys()
+            .find(|k| {
+                let lk = k.to_ascii_lowercase();
+                lk.contains("monetization") || lk.contains("shop") || lk.contains("economy")
+            })
+            .cloned()
+            .unwrap_or_else(|| {
+                if scripts.keys().any(|k| k.contains('/')) {
+                    "src/server/MonetizationService.server.luau".to_string()
+                } else {
+                    "ServerScriptService.MonetizationService".to_string()
+                }
+            });
+        let (file, place_path) = script_location(&target);
+        issues.push(json!({
+            "id": "audit:monetization:missing_process_receipt",
+            "category": "process_receipt",
+            "severity": "error",
+            "title": "Missing MarketplaceService.ProcessReceipt handler",
+            "detail": "Monetization or shop scripts require an idempotent ProcessReceipt callback returning Enum.ProductPurchaseDecision.PurchaseGranted.",
+            "file": file,
+            "place_path": place_path,
+            "line": 1,
+            "autofixable": true,
+            "fix_action": "wire_process_receipt",
+            "fix_hint": "Install an idempotent ProcessReceipt callback backed by a PurchaseId DataStore ledger.",
+            "snippet": IDEMPOTENT_PROCESS_RECEIPT_SNIPPET.trim(),
+        }));
+    }
+
+    for (k, src) in scripts {
+        let lines: Vec<&str> = src.lines().collect();
+        let (file, place_path) = script_location(k);
+
+        if let Some(pos) = lines.iter().position(|l| {
+            let tr = l.trim();
+            !tr.starts_with("--") && tr.contains("ProcessReceipt")
+        }) {
+            let has_ledger = src.contains("PurchaseId")
+                && (src.contains("UpdateAsync") || src.contains("GetAsync"));
+            let has_decision = src.contains("PurchaseGranted") && src.contains("NotProcessedYet");
+            if !has_ledger || !has_decision {
+                receipt_ok = false;
+                issues.push(json!({
+                    "id": format!("audit:monetization:unsafe_process_receipt:{file}"),
+                    "category": "process_receipt",
+                    "severity": "error",
+                    "title": "Unsafe ProcessReceipt handler lacks PurchaseId idempotency",
+                    "detail": "ProcessReceipt must record receiptInfo.PurchaseId via DataStore UpdateAsync/GetAsync and return Enum.ProductPurchaseDecision.PurchaseGranted or NotProcessedYet.",
+                    "file": file,
+                    "place_path": place_path,
+                    "line": pos + 1,
+                    "autofixable": true,
+                    "fix_action": "harden_process_receipt",
+                    "fix_hint": "Upgrade ProcessReceipt to persist PurchaseId with UpdateAsync and handle NotProcessedYet cleanly.",
+                    "snippet": IDEMPOTENT_PROCESS_RECEIPT_SNIPPET.trim(),
+                }));
+            }
+        }
+
+        if let Some(pos) = lines.iter().position(|l| {
+            let tr = l.trim();
+            !tr.starts_with("--")
+                && (tr.contains("GetDataStore(") || tr.contains("GetOrderedDataStore("))
+        }) {
+            if !src.contains("BindToClose") {
+                bind_ok = false;
+                issues.push(json!({
+                    "id": format!("audit:monetization:missing_bind_to_close:{file}"),
+                    "category": "bind_to_close",
+                    "severity": "error",
+                    "title": "DataStore script missing game:BindToClose flush",
+                    "detail": "Without BindToClose, in-flight purchases and currency writes can drop when a server shuts down.",
+                    "file": file,
+                    "place_path": place_path,
+                    "line": pos + 1,
+                    "autofixable": true,
+                    "fix_action": "add_bind_to_close",
+                    "fix_hint": "Append a game:BindToClose shutdown flush guard.",
+                    "snippet": BIND_TO_CLOSE_SNIPPET.trim(),
+                }));
+            }
+        }
+
+        for (idx, line) in lines.iter().enumerate() {
+            let tr = line.trim();
+            if tr.starts_with("--") {
+                continue;
+            }
+            if (tr.contains("PromptGamePassPurchase(")
+                || tr.contains("PromptProductPurchase(")
+                || tr.contains("UserOwnsGamePassAsync("))
+                && !line_is_pcall_guarded(&lines, idx)
+            {
+                pcall_ok = false;
+                issues.push(json!({
+                    "id": format!("audit:monetization:unguarded_prompt:{file}:{}", idx + 1),
+                    "category": "gamepass_pcall",
+                    "severity": "error",
+                    "title": "Unguarded GamePass or purchase API call",
+                    "detail": "Wrap PromptGamePassPurchase, PromptProductPurchase, and UserOwnsGamePassAsync in pcall so Roblox service errors never break the loop.",
+                    "file": file,
+                    "place_path": place_path,
+                    "line": idx + 1,
+                    "autofixable": true,
+                    "fix_action": "guard_gamepass_pcall",
+                    "fix_hint": "Wrap the purchase prompt or ownership lookup inside pcall(function() ... end).",
+                    "snippet": format!("pcall(function()\n\t{tr}\nend)"),
+                }));
+            }
+        }
+    }
+
+    let has_onboarding_retention = scripts.iter().any(|(k, s)| {
+        let lk = k.to_ascii_lowercase();
+        lk.contains("onboarding")
+            || lk.contains("retention")
+            || lk.contains("dailyreward")
+            || s.contains("ClaimDailyReward")
+            || s.contains("StarterBonusGranted")
+            || s.contains("OnboardingStreak")
+            || (s.contains("PlayerAdded")
+                && (s.contains("Onboarded")
+                    || s.contains("WelcomeBonus")
+                    || s.contains("DailyRewards")
+                    || s.contains("COMEBACK")))
+    });
+    if !has_onboarding_retention {
+        onboarding_ok = false;
+        let is_rojo = scripts.keys().any(|k| k.contains('/'));
+        let file = if is_rojo {
+            "src/server/OnboardingRetention.server.luau".to_string()
+        } else {
+            "ServerScriptService.OnboardingRetention".to_string()
+        };
+        let (_, place_path) = script_location(&file);
+        issues.push(json!({
+            "id": "audit:monetization:missing_onboarding_retention",
+            "category": "onboarding_retention",
+            "severity": "error",
+            "title": "Missing first-60s onboarding and retention hook",
+            "detail": "Add a PlayerAdded onboarding reward and daily streak persistence hook so new players receive immediate feedback.",
+            "file": file,
+            "place_path": place_path,
+            "line": 1,
+            "autofixable": true,
+            "fix_action": "seed_onboarding_retention",
+            "fix_hint": "Seed OnboardingRetention with StarterBonus and daily streak DataStore tracking.",
+            "snippet": ONBOARDING_RETENTION_SNIPPET,
+        }));
+    }
+
+    let blocker_count = issues.iter().filter(|i| i["severity"] == "error").count();
+    let warning_count = issues.iter().filter(|i| i["severity"] == "warning").count();
+    let autofixable_count = issues.iter().filter(|i| i["autofixable"] == true).count();
+    json!({
+        "schema": "openro.monetization_audit.v1",
+        "ready": blocker_count == 0 && warning_count == 0,
+        "blocker_count": blocker_count,
+        "warning_count": warning_count,
+        "autofixable_count": autofixable_count,
+        "checks": {
+            "process_receipt": receipt_ok,
+            "bind_to_close": bind_ok,
+            "gamepass_pcall": pcall_ok,
+            "onboarding_retention": onboarding_ok,
+        },
+        "issues": issues,
+    })
+}
+
+fn comment_out_unsafe_process_receipt(src: &str) -> (String, bool) {
+    let lines: Vec<&str> = src.lines().collect();
+    let Some(start) = lines.iter().position(|l| {
+        let tr = l.trim();
+        !tr.starts_with("--") && tr.contains("ProcessReceipt") && tr.contains("function")
+    }) else {
+        return (src.to_string(), false);
+    };
+    let mut depth: isize = 0;
+    let mut end_idx = start;
+    for (i, line) in lines.iter().enumerate().skip(start) {
+        let tr = line.trim();
+        if tr.contains("function") {
+            depth += 1;
+        }
+        if tr.starts_with("do")
+            || tr.starts_with("if ") && tr.ends_with(" then")
+            || tr.starts_with("for ") && tr.ends_with(" do")
+            || tr.starts_with("while ") && tr.ends_with(" do")
+        {
+            depth += 1;
+        }
+        if tr == "end" || tr == "end)" || tr.starts_with("end ") {
+            depth -= 1;
+            if depth <= 0 {
+                end_idx = i;
+                break;
+            }
+        }
+        end_idx = i;
+    }
+    let mut out = Vec::with_capacity(lines.len() + 2);
+    for (i, l) in lines.iter().enumerate() {
+        if i >= start && i <= end_idx {
+            out.push(format!("-- [OpenRO Audit] replaced unsafe ProcessReceipt: {l}"));
+        } else {
+            out.push((*l).to_string());
+        }
+    }
+    let mut joined = out.join("\n");
+    joined.push_str(IDEMPOTENT_PROCESS_RECEIPT_SNIPPET);
+    (joined, true)
+}
+
+fn wrap_unguarded_gamepass_lines(src: &str) -> (String, usize) {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out = Vec::with_capacity(lines.len());
+    let mut fixed = 0usize;
+    for (idx, line) in lines.iter().enumerate() {
+        let tr = line.trim();
+        let needs_wrap = !tr.starts_with("--")
+            && (tr.contains("PromptGamePassPurchase(")
+                || tr.contains("PromptProductPurchase(")
+                || tr.contains("UserOwnsGamePassAsync("))
+            && !line_is_pcall_guarded(&lines, idx);
+        if !needs_wrap {
+            out.push((*line).to_string());
+            continue;
+        }
+        let indent_len = line.len() - line.trim_start().len();
+        let indent = &line[..indent_len];
+        if tr.starts_with("local ") && tr.contains('=') {
+            if let Some((lhs, rhs)) = tr.split_once('=') {
+                let var = lhs.trim().trim_start_matches("local ").trim();
+                let rhs = rhs.trim();
+                out.push(format!(
+                    "{indent}local _ok_{var}, {var} = pcall(function() return {rhs} end)"
+                ));
+                out.push(format!(
+                    "{indent}if not _ok_{var} then {var} = false end"
+                ));
+                fixed += 1;
+                continue;
+            }
+        }
+        out.push(format!("{indent}pcall(function()"));
+        out.push(format!("{indent}\t{tr}"));
+        out.push(format!("{indent}end)"));
+        fixed += 1;
+    }
+    let mut joined = out.join("\n");
+    if src.ends_with('\n') || fixed > 0 {
+        joined.push('\n');
+    }
+    (joined, fixed)
+}
+
+fn apply_monetization_repairs_to_map(
+    scripts: &mut std::collections::BTreeMap<String, String>,
+    is_rojo: bool,
+    fix_action: Option<&str>,
+) -> (Vec<String>, usize) {
+    let should_run = |name: &str| fix_action.is_none() || fix_action == Some(name);
+    let mut modified: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut fixed_count = 0usize;
+
+    let before = evaluate_monetization_audit(scripts);
+    let need_wire_receipt = should_run("wire_process_receipt")
+        && before["issues"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|i| i["fix_action"] == "wire_process_receipt"));
+    let need_harden_receipt = should_run("harden_process_receipt")
+        && before["issues"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|i| i["fix_action"] == "harden_process_receipt"));
+
+    if need_wire_receipt {
+        let target = scripts
+            .keys()
+            .find(|k| {
+                let lk = k.to_ascii_lowercase();
+                lk.contains("monetization") || lk.contains("shop") || lk.contains("economy")
+            })
+            .cloned()
+            .unwrap_or_else(|| {
+                if is_rojo {
+                    "src/server/MonetizationService.server.luau".to_string()
+                } else {
+                    "ServerScriptService.MonetizationService".to_string()
+                }
+            });
+        let mut next = scripts
+            .get(&target)
+            .cloned()
+            .unwrap_or_else(|| "--!strict\n".to_string());
+        next.push_str(IDEMPOTENT_PROCESS_RECEIPT_SNIPPET);
+        scripts.insert(target.clone(), next);
+        modified.insert(target);
+        fixed_count += 1;
+    }
+
+    if need_harden_receipt {
+        let keys: Vec<String> = scripts.keys().cloned().collect();
+        for k in keys {
+            if let Some(src) = scripts.get(&k).cloned() {
+                if src.contains("ProcessReceipt")
+                    && (!src.contains("PurchaseId")
+                        || !(src.contains("UpdateAsync") || src.contains("GetAsync"))
+                        || !src.contains("NotProcessedYet")
+                        || !src.contains("PurchaseGranted"))
+                {
+                    let (mut next, replaced) = comment_out_unsafe_process_receipt(&src);
+                    if !replaced {
+                        next.push_str(IDEMPOTENT_PROCESS_RECEIPT_SNIPPET);
+                    }
+                    scripts.insert(k.clone(), next);
+                    modified.insert(k);
+                    fixed_count += 1;
+                }
+            }
+        }
+    }
+
+    if should_run("add_bind_to_close") {
+        let keys: Vec<String> = scripts.keys().cloned().collect();
+        for k in keys {
+            if let Some(src) = scripts.get(&k).cloned() {
+                let uses_ds = src.lines().any(|l| {
+                    let tr = l.trim();
+                    !tr.starts_with("--")
+                        && (tr.contains("GetDataStore(") || tr.contains("GetOrderedDataStore("))
+                });
+                if uses_ds && !src.contains("BindToClose") {
+                    let mut next = src;
+                    next.push_str(BIND_TO_CLOSE_SNIPPET);
+                    scripts.insert(k.clone(), next);
+                    modified.insert(k);
+                    fixed_count += 1;
+                }
+            }
+        }
+    }
+
+    if should_run("guard_gamepass_pcall") {
+        let keys: Vec<String> = scripts.keys().cloned().collect();
+        for k in keys {
+            if let Some(src) = scripts.get(&k).cloned() {
+                let (next, n) = wrap_unguarded_gamepass_lines(&src);
+                if n > 0 && next != src {
+                    scripts.insert(k.clone(), next);
+                    modified.insert(k);
+                    fixed_count += n;
+                }
+            }
+        }
+    }
+
+    if should_run("seed_onboarding_retention") {
+        let check_now = evaluate_monetization_audit(scripts);
+        if check_now["checks"]["onboarding_retention"] == false {
+            let key = if is_rojo {
+                "src/server/OnboardingRetention.server.luau".to_string()
+            } else {
+                "ServerScriptService.OnboardingRetention".to_string()
+            };
+            scripts.insert(key.clone(), ONBOARDING_RETENTION_SNIPPET.to_string());
+            modified.insert(key);
+            fixed_count += 1;
+        }
+    }
+
+    (modified.into_iter().collect(), fixed_count)
+}
+
+pub fn project_monetization_audit(r: &ProjectRef) -> Result<Value, Reply> {
+    let scripts = collect_project_luau_map(&r.dir);
+    Ok(evaluate_monetization_audit(&scripts))
+}
+
+pub fn repair_project_monetization_audit(
+    _shared: &Shared,
+    r: &ProjectRef,
+    body: &Value,
+) -> Result<Reply, Reply> {
+    let action_filter = body
+        .get("fix_action")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let mut scripts = collect_project_luau_map(&r.dir);
+    let before = evaluate_monetization_audit(&scripts);
+    if before["issues"].as_array().is_some_and(|a| a.is_empty()) {
+        return Ok(Reply::ok(json!({
+            "schema": "openro.monetization_audit.v1",
+            "fixed_count": 0,
+            "modified_files": [],
+            "report": before,
+        })));
+    }
+    let _ = create_project_snapshot_opts(
+        r,
+        &json!({ "label": "Pre-monetization-audit repair checkpoint" }),
+        false,
+    );
+    let (modified_files, fixed_count) =
+        apply_monetization_repairs_to_map(&mut scripts, true, action_filter);
+    for rel in &modified_files {
+        if let Some(src) = scripts.get(rel) {
+            write_project_luau(&r.dir, rel, src)?;
+        }
+    }
+    let after = project_monetization_audit(r)?;
+    Ok(Reply::ok(json!({
+        "schema": "openro.monetization_audit.v1",
+        "fixed_count": fixed_count,
+        "modified_files": modified_files,
+        "report": after,
+    })))
+}
+
+pub fn studio_monetization_audit_from_tree(tree: &Value) -> Value {
+    let mut scripts = std::collections::BTreeMap::new();
+    if let Some(obj) = tree.get("scripts").and_then(Value::as_object) {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                scripts.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    evaluate_monetization_audit(&scripts)
+}
+
+pub fn studio_repair_monetization_audit_tree(
+    tree: &Value,
+    fix_action: Option<&str>,
+) -> (Value, Vec<String>, usize) {
+    let mut scripts = std::collections::BTreeMap::new();
+    if let Some(obj) = tree.get("scripts").and_then(Value::as_object) {
+        for (k, v) in obj {
+            if let Some(s) = v.as_str() {
+                scripts.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    let (modified_files, fixed_count) =
+        apply_monetization_repairs_to_map(&mut scripts, false, fix_action);
+    let mut next_tree = tree.clone();
+    if fixed_count > 0 {
+        if next_tree.get("scripts").and_then(Value::as_object).is_none() {
+            next_tree["scripts"] = json!({});
+        }
+        if let Some(obj) = next_tree.get_mut("scripts").and_then(Value::as_object_mut) {
+            for k in &modified_files {
+                if let Some(src) = scripts.get(k) {
+                    obj.insert(k.clone(), Value::String(src.clone()));
+                }
+            }
+        }
+    }
+    (next_tree, modified_files, fixed_count)
+}
+
 /// Summary of the most recent stored playtest report for `study/status` (#62).
 pub fn latest_report_summary(dir: &Path) -> Option<Value> {
     let rep = latest_report_json(dir)?;

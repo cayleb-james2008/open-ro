@@ -970,6 +970,7 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
         || clean_path.starts_with("/api/art/")
         || clean_path == "/api/tools/image/process"
         || clean_path == "/api/monetization/pack"
+        || clean_path == "/api/studio/monetization-audit"
         || clean_path == "/api/assets/upload"
         || clean_path == "/api/assets/generate"
         || (method == "DELETE" && clean_path.starts_with("/api/assets/"))
@@ -987,6 +988,7 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
                 || clean_path == "/api/studio/sync-conflicts/resolve"
                 || clean_path == "/api/studio/publish-guard"
                 || clean_path == "/api/studio/publish-guard/autofix"
+                || clean_path == "/api/studio/monetization-audit"
                 || (clean_path.starts_with("/api/snapshots/") && clean_path.ends_with("/restore-hooks"))
                 || clean_path == "/api/studio/capture"
                 || clean_path == "/api/studio/launch-and-continue"))
@@ -2270,6 +2272,59 @@ fn handle(
                 }),
             );
         }
+        ("GET", "/api/studio/monetization-audit") => {
+            let current_tree = shared
+                .agent
+                .lock()
+                .unwrap()
+                .as_mut()
+                .and_then(|a| a.place_tree().ok())
+                .unwrap_or_else(|| json!({ "instances": {}, "scripts": {} }));
+            let mut report = crate::playtest::studio_monetization_audit_from_tree(&current_tree);
+            report["ok"] = json!(true);
+            respond_json(&mut stream, "200 OK", &report);
+        }
+        ("POST", "/api/studio/monetization-audit") => {
+            let body: Value = serde_json::from_slice(&req.body).unwrap_or(json!({}));
+            let action_filter = body
+                .get("fix_action")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let mut guard = shared.agent.lock().unwrap();
+            let Some(agent) = guard.as_mut() else {
+                respond_json(&mut stream, "503 Service Unavailable", &json!({ "ok": false, "error": "Studio not connected" }));
+                break 'req_done;
+            };
+            let current_tree = agent.place_tree().unwrap_or_else(|_| json!({ "instances": {}, "scripts": {} }));
+            let chat_id = shared.active_chat.lock().unwrap().clone();
+            let (next_tree, modified_files, fixed_count) =
+                crate::playtest::studio_repair_monetization_audit_tree(&current_tree, action_filter);
+            if fixed_count > 0 {
+                let _ = shared.snapshots.lock().unwrap().record(
+                    "Pre-monetization-audit repair checkpoint".to_string(),
+                    "monetization-audit",
+                    Some(chat_id),
+                    current_tree,
+                    None,
+                );
+                let _ = agent.apply_place_tree(&next_tree);
+            }
+            let final_tree = agent.place_tree().unwrap_or(next_tree);
+            drop(guard);
+            let report = crate::playtest::studio_monetization_audit_from_tree(&final_tree);
+            respond_json(
+                &mut stream,
+                "200 OK",
+                &json!({
+                    "ok": true,
+                    "schema": "openro.monetization_audit.v1",
+                    "fixed_count": fixed_count,
+                    "modified_files": modified_files,
+                    "report": report,
+                }),
+            );
+        }
         ("GET", "/api/studio/sync-conflicts") => {
             let latest_snap = shared.snapshots.lock().unwrap().latest().cloned();
             let current_tree = shared
@@ -2820,9 +2875,9 @@ fn handle(
                                 }
                             }
                         }
-                        match agent.place_tree() {
-                            Ok(tree) => {
-                                let bytes = Arc::new(serde_json::to_vec(&tree).unwrap_or_default());
+                        match agent.place_tree_bytes() {
+                            Ok(raw) => {
+                                let bytes = Arc::new(raw);
                                 *shared.cached_place_tree_bytes.lock().unwrap() =
                                     Some((rev, Arc::clone(&bytes)));
                                 drop(guard);
@@ -2854,8 +2909,7 @@ fn handle(
                         let mut cache = shared.cached_place_tree_bytes.lock().unwrap();
                         if cache.is_none() {
                             if let Some(dir) = shared.data_dir.as_ref().filter(|d| d.join("place.json").is_file()) {
-                                let tree = LocalPlace::open(dir.clone(), shared.game_name.clone()).tree_json();
-                                let bytes = Arc::new(serde_json::to_vec(&tree).unwrap_or_default());
+                                let bytes = Arc::new(LocalPlace::open(dir.clone(), shared.game_name.clone()).tree_bytes());
                                 *cache = Some((None, bytes));
                             }
                         }
@@ -8541,15 +8595,12 @@ fn handle_assets_generate(stream: &mut TcpStream, shared: &Shared, raw_body: &[u
 /// The single-page UI (pre-gzipped assets/index.html.gz); values are substituted in render_page.
 const INDEX_HTML_GZ: &[u8] = include_bytes!("../assets/index.html.gz");
 
-fn index_html() -> &'static str {
-    static CACHE: OnceLock<String> = OnceLock::new();
-    CACHE.get_or_init(|| {
-        use flate2::read::GzDecoder;
-        let mut decoder = GzDecoder::new(INDEX_HTML_GZ);
-        let mut html = String::with_capacity(INDEX_HTML_GZ.len() * 3);
-        let _ = decoder.read_to_string(&mut html);
-        html
-    })
+fn index_html() -> String {
+    use flate2::read::GzDecoder;
+    let mut decoder = GzDecoder::new(INDEX_HTML_GZ);
+    let mut html = String::with_capacity(INDEX_HTML_GZ.len() * 3);
+    let _ = decoder.read_to_string(&mut html);
+    html
 }
 
 /// Escape a value interpolated into the page (the game name comes from
@@ -8610,7 +8661,7 @@ pub fn render_page_full(
     let game_escaped = esc_html(game_name);
     let template = index_html();
     let mut out = String::with_capacity(template.len() + banners.len() + 64);
-    let mut rest = template;
+    let mut rest = template.as_str();
     while let Some(pos) = rest.find("__") {
         out.push_str(&rest[..pos]);
         let after = &rest[pos..];
