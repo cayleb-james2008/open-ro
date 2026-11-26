@@ -260,8 +260,8 @@ pub fn route(shared: &Arc<Shared>, method: &str, full_path: &str, body: &[u8], l
             | ("GET", [_])
             | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "format" | "run-lune" | "open-in-studio"])
             | ("POST", [_, "sync", "diff"] | [_, "scene", "mutate"] | [_, "sandbox", "run"] | [_, "playtests", "rerun"] | [_, "playtests", "fix-plan"] | [_, "playtests", "fix-apply"] | [_, "playtests", "fix-all"])
-            | ("GET", [_, "workspace" | "mesh-asset" | "builds" | "playtests" | "dependencies" | "snapshots" | "sync-conflicts" | "publish-guard" | "monetization-audit" | "economy-sim" | "files" | "file" | "preview"] | [_, "snapshots", "hook-integrity"])
-            | ("POST", [_, "dependencies", "prune"] | [_, "monetization-audit"] | [_, "economy-sim"] | [_, "snapshots"] | [_, "snapshots", _, "restore"] | [_, "snapshots", _, "restore-hooks"] | [_, "sync-conflicts", "resolve"] | [_, "publish-guard", "autofix"])
+            | ("GET", [_, "workspace" | "mesh-asset" | "builds" | "playtests" | "dependencies" | "snapshots" | "sync-conflicts" | "publish-guard" | "monetization-audit" | "economy-sim" | "files" | "file" | "preview" | "gui"] | [_, "snapshots", "hook-integrity"] | [_, "gui", _])
+            | ("POST", [_, "dependencies", "prune"] | [_, "monetization-audit"] | [_, "economy-sim"] | [_, "snapshots"] | [_, "snapshots", _, "restore"] | [_, "snapshots", _, "restore-hooks"] | [_, "sync-conflicts", "resolve"] | [_, "publish-guard", "autofix"] | [_, "gui", _] | [_, "gui", _, "compile"])
             | ("POST", [_, "file"] | [_, "file", "delete"] | [_, "file", "edit"])
             | ("GET", [_, "git", "status" | "log"])
             | ("POST", [_, "git", "commit" | "revert"])
@@ -543,6 +543,59 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
             crate::scene::mutate_scene(&r.dir, &r.id, &b)
                 .map(Reply::ok)
                 .map_err(Reply::bad)
+        }
+        ("GET", [id, "gui"]) => {
+            let r = project_of(shared, id)?;
+            crate::gui_designer::list_project_screens(&r.dir)
+                .map(Reply::ok)
+                .map_err(Reply::bad)
+        }
+        ("GET", [id, "gui", slug]) => {
+            let r = project_of(shared, id)?;
+            let decoded = pct_decode(slug);
+            let clean = crate::gui_designer::validate_slug(&decoded).map_err(Reply::bad)?;
+            if slug.contains('%') && decoded != *slug {
+                return Err(Reply::bad(format!("invalid gui slug '{slug}'")));
+            }
+            crate::gui_designer::get_project_screen(&r.dir, &clean)
+                .map(Reply::ok)
+                .map_err(|e| {
+                    if e.contains("not found") {
+                        Reply::err("404 Not Found", e)
+                    } else {
+                        Reply::bad(e)
+                    }
+                })
+        }
+        ("POST", [id, "gui", slug]) => {
+            let r = project_of(shared, id)?;
+            let decoded = pct_decode(slug);
+            let clean = crate::gui_designer::validate_slug(&decoded).map_err(Reply::bad)?;
+            if slug.contains('%') && decoded != *slug {
+                return Err(Reply::bad(format!("invalid gui slug '{slug}'")));
+            }
+            let b = parse_body(body)?;
+            crate::gui_designer::save_project_screen(&r.dir, &clean, &b)
+                .map(Reply::ok)
+                .map_err(Reply::bad)
+        }
+        ("POST", [id, "gui", slug, "compile"]) => {
+            let r = project_of(shared, id)?;
+            let decoded = pct_decode(slug);
+            let clean = crate::gui_designer::validate_slug(&decoded).map_err(Reply::bad)?;
+            if slug.contains('%') && decoded != *slug {
+                return Err(Reply::bad(format!("invalid gui slug '{slug}'")));
+            }
+            let b = parse_body(body)?;
+            crate::gui_designer::compile_project_screen(&r.dir, &clean, &b)
+                .map(Reply::ok)
+                .map_err(|e| {
+                    if e.contains("not found") {
+                        Reply::err("404 Not Found", e)
+                    } else {
+                        Reply::bad(e)
+                    }
+                })
         }
         ("GET", [id, "mesh-asset"]) => {
             let r = project_of(shared, id)?;

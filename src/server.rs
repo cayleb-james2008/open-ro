@@ -134,6 +134,8 @@ pub struct Shared {
     /// Persistent FIFO Run Queue + Plan->Execute checkpoints (`data_dir/runs/`).
     pub runs: Arc<crate::agent::runs::RunStore>,
     runs_worker_started: std::sync::atomic::AtomicBool,
+    /// Studio / LocalPlace ScreenGui Designer store (`data_dir/ui/*.screen.json` or in-memory).
+    pub gui_store: Mutex<crate::gui_designer::LocalGuiStore>,
 }
 
 #[derive(Clone, Default)]
@@ -212,6 +214,7 @@ impl Shared {
             bound_port: AtomicU16::new(4040),
             runs: crate::agent::runs::RunStore::in_memory(),
             runs_worker_started: std::sync::atomic::AtomicBool::new(false),
+            gui_store: Mutex::new(crate::gui_designer::LocalGuiStore::in_memory()),
         })
     }
 
@@ -258,6 +261,7 @@ impl Shared {
         let assets_root = data_dir.clone();
         let projects = Mutex::new(crate::projects::ProjectStore::load(Some(&data_dir)));
         let teamwork = crate::teamwork::TeamworkManager::open(data_dir.clone());
+        let gui_store = Mutex::new(crate::gui_designer::LocalGuiStore::open(Some(&data_dir)));
         let shared = Arc::new(Shared {
             agent: Mutex::new(agent),
             chats: Mutex::new(chats),
@@ -293,6 +297,7 @@ impl Shared {
             bound_port: AtomicU16::new(4040),
             runs,
             runs_worker_started: std::sync::atomic::AtomicBool::new(false),
+            gui_store,
         });
         shared.teamwork.resume_pending_runs(&shared);
         shared
@@ -968,6 +973,8 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
         || clean_path == "/api/monetization/pack"
         || clean_path == "/api/studio/monetization-audit"
         || clean_path == "/api/studio/economy-sim"
+        || clean_path == "/api/studio/gui"
+        || clean_path.starts_with("/api/studio/gui/")
         || clean_path == "/api/assets/upload"
         || clean_path == "/api/assets/generate"
         || (method == "DELETE" && clean_path.starts_with("/api/assets/"))
@@ -2054,6 +2061,167 @@ fn handle(
                         "error": e
                     }),
                 ),
+            }
+        }
+        ("GET", "/api/studio/gui") => {
+            let pid = query_param(query, "project_id");
+            let proj_dir = resolve_studio_gui_project_dir(shared, pid);
+            if let Some(slug) = query_param(query, "slug") {
+                match crate::gui_designer::validate_slug(slug) {
+                    Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+                    Ok(clean) => {
+                        let res = if let Some(dir) = proj_dir {
+                            crate::gui_designer::get_project_screen(&dir, &clean)
+                        } else {
+                            let store = shared.gui_store.lock().unwrap();
+                            match store.get(&clean) {
+                                Ok(Some(doc)) => {
+                                    let analysis = crate::gui_designer::analyze_safe_areas(&doc);
+                                    Ok(json!({
+                                        "slug": clean,
+                                        "doc": doc.to_json(),
+                                        "analysis": analysis.to_json(),
+                                        "safe_area_warnings": analysis.warnings.iter().map(crate::gui_designer::SafeAreaWarning::to_json).collect::<Vec<_>>(),
+                                    }))
+                                }
+                                Ok(None) => Err(format!("screen '{clean}' not found")),
+                                Err(e) => Err(e),
+                            }
+                        };
+                        match res {
+                            Ok(mut v) => {
+                                if let Some(obj) = v.as_object_mut() {
+                                    obj.insert("ok".to_string(), json!(true));
+                                }
+                                respond_json(&mut stream, "200 OK", &v);
+                            }
+                            Err(e) => {
+                                let st = if e.contains("not found") { "404 Not Found" } else { "400 Bad Request" };
+                                respond_err(&mut stream, st, &e);
+                            }
+                        }
+                    }
+                }
+            } else {
+                let res = if let Some(dir) = proj_dir {
+                    crate::gui_designer::list_project_screens(&dir)
+                } else {
+                    let store = shared.gui_store.lock().unwrap();
+                    let screens: Vec<Value> = store
+                        .list()
+                        .into_iter()
+                        .map(|(slug, doc)| {
+                            let analysis = crate::gui_designer::analyze_safe_areas(&doc);
+                            json!({
+                                "slug": slug,
+                                "name": doc.name,
+                                "version": doc.version,
+                                "warning_count": analysis.warning_count,
+                                "doc": doc.to_json(),
+                            })
+                        })
+                        .collect();
+                    Ok(json!({
+                        "screens": screens,
+                        "presets": crate::gui_designer::list_presets_metadata(),
+                    }))
+                };
+                match res {
+                    Ok(mut v) => {
+                        if let Some(obj) = v.as_object_mut() {
+                            obj.insert("ok".to_string(), json!(true));
+                        }
+                        respond_json(&mut stream, "200 OK", &v);
+                    }
+                    Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+                }
+            }
+        }
+        ("POST", "/api/studio/gui") => {
+            let body: Value = if req.body.is_empty() {
+                json!({})
+            } else {
+                match serde_json::from_slice(&req.body) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        respond_err(&mut stream, "400 Bad Request", "the request body is not valid JSON");
+                        break 'req_done;
+                    }
+                }
+            };
+            let clean = match extract_studio_gui_slug(&body) {
+                Ok(s) => s,
+                Err(e) => {
+                    respond_err(&mut stream, "400 Bad Request", &e);
+                    break 'req_done;
+                }
+            };
+            let pid = body.get("project_id").and_then(Value::as_str);
+            let res = if let Some(dir) = resolve_studio_gui_project_dir(shared, pid) {
+                crate::gui_designer::save_project_screen(&dir, &clean, &body)
+            } else {
+                crate::gui_designer::doc_from_save_body(&clean, &body).and_then(|doc| {
+                    let (saved_slug, validated, path) = shared.gui_store.lock().unwrap().save(&clean, doc)?;
+                    let analysis = crate::gui_designer::analyze_safe_areas(&validated);
+                    Ok(json!({
+                        "ok": true,
+                        "slug": saved_slug,
+                        "path": path,
+                        "doc": validated.to_json(),
+                        "analysis": analysis.to_json(),
+                        "safe_area_warnings": analysis.warnings.iter().map(crate::gui_designer::SafeAreaWarning::to_json).collect::<Vec<_>>(),
+                    }))
+                })
+            };
+            match res {
+                Ok(v) => respond_json(&mut stream, "200 OK", &v),
+                Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+            }
+        }
+        ("POST", "/api/studio/gui/compile") => {
+            let body: Value = if req.body.is_empty() {
+                json!({})
+            } else {
+                match serde_json::from_slice(&req.body) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        respond_err(&mut stream, "400 Bad Request", "the request body is not valid JSON");
+                        break 'req_done;
+                    }
+                }
+            };
+            let clean = match extract_studio_gui_slug(&body) {
+                Ok(s) => s,
+                Err(e) => {
+                    respond_err(&mut stream, "400 Bad Request", &e);
+                    break 'req_done;
+                }
+            };
+            let pid = body.get("project_id").and_then(Value::as_str);
+            let res = if let Some(dir) = resolve_studio_gui_project_dir(shared, pid) {
+                crate::gui_designer::compile_project_screen(&dir, &clean, &body)
+            } else {
+                let doc_res = if body.get("doc").is_some()
+                    || (body.get("root").is_some() && body.get("version").is_some())
+                    || body.get("preset").is_some()
+                {
+                    crate::gui_designer::doc_from_save_body(&clean, &body)
+                } else {
+                    shared
+                        .gui_store
+                        .lock()
+                        .unwrap()
+                        .get(&clean)
+                        .and_then(|opt| opt.ok_or_else(|| format!("screen '{clean}' not found")))
+                };
+                doc_res.and_then(|doc| crate::gui_designer::compile_screen_doc(&clean, &doc, None))
+            };
+            match res {
+                Ok(v) => respond_json(&mut stream, "200 OK", &v),
+                Err(e) => {
+                    let st = if e.contains("not found") { "404 Not Found" } else { "400 Bad Request" };
+                    respond_err(&mut stream, st, &e);
+                }
             }
         }
         ("POST", "/api/studio/playtest/fix-all") => {
@@ -3601,6 +3769,40 @@ fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+fn extract_studio_gui_slug(body: &Value) -> Result<String, String> {
+    let raw = body
+        .get("slug")
+        .and_then(Value::as_str)
+        .map(String::from)
+        .or_else(|| {
+            body.pointer("/doc/name")
+                .or_else(|| body.get("name"))
+                .and_then(Value::as_str)
+                .map(crate::projects::slug)
+        })
+        .or_else(|| {
+            body.get("preset")
+                .and_then(Value::as_str)
+                .map(crate::projects::slug)
+        })
+        .unwrap_or_default();
+    crate::gui_designer::validate_slug(&raw)
+}
+
+fn resolve_studio_gui_project_dir(shared: &Arc<Shared>, project_id: Option<&str>) -> Option<PathBuf> {
+    if let Some(pid) = project_id.map(str::trim).filter(|s| !s.is_empty()) {
+        return shared.projects.lock().unwrap().find(pid).map(|r| r.dir);
+    }
+    let from_agent = {
+        let guard = shared.agent.lock().unwrap();
+        guard.as_ref().and_then(|a| match &a.studio {
+            Some(PlaceBackend::Local(_)) => None,
+            _ => a.project_root.clone(),
+        })
+    };
+    from_agent.or_else(|| shared.active_project_dir())
 }
 
 fn handle_snapshot_restore(stream: &mut TcpStream, shared: &Shared, snap_id: &str) {

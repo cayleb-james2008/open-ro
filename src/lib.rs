@@ -6,6 +6,7 @@ pub mod board;
 pub mod config;
 pub mod creator_hub;
 pub mod desktop;
+pub mod gui_designer;
 pub mod ideas;
 pub mod image_ops;
 pub mod library;

@@ -221,6 +221,8 @@ STUDIO & WHOLE-GAME TOOLS:\n\
 - {{\"tool\": \"project_build\", \"args\": {{\"engine\": \"auto\"}}}} builds the project to .rbxlx\n\
 - {{\"tool\": \"project_scene_get\", \"args\": {{}}}} returns the unified Rojo workspace bundle (scripts, Workspace instances, meshes, lighting, diagnostics)\n\
 - {{\"tool\": \"project_scene_mutate\", \"args\": {{\"ops\": [{{\"op\": \"upsert\", \"path\": \"Workspace.SpawnPad\", \"class_name\": \"SpawnLocation\", \"properties\": {{\"Position\": [0, 1, 0], \"Size\": [8, 1, 8], \"Anchored\": true}}}}]}}}} mutates scene/workspace.model.json & Lighting (auto-wiring default.project.json)\n\
+- {{\"tool\": \"gui_save\", \"args\": {{\"slug\": \"main-hud\", \"preset\": \"rpg\"}}}} saves ScreenDoc v1 to ui/<slug>.screen.json and runs multi-device safe-area checks\n\
+- {{\"tool\": \"gui_compile\", \"args\": {{\"slug\": \"main-hud\", \"emit_model_json\": false}}}} compiles ScreenDoc v1 to --!strict Luau create(parent, callbacks) + Rojo .model.json\n\
 - {{\"tool\": \"project_sync\", \"args\": {{\"prune\": false}}}} one-way syncs the project to Studio\n\
 - {{\"tool\": \"project_playtest\", \"args\": {{\"sync_first\": true, \"suite\": \"playtest/suite.json\"}}}} runs the Playtest Runner (checks, screenshots, console errors)\n\n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
@@ -285,6 +287,8 @@ PROJECT FILE & BUILD TOOLS:\n\
 - project_build {{\"engine\": \"auto\"}} (.rbxlx build)\n\
 - project_scene_get {{}} (unified workspace: scripts, instances, meshes, lighting, diagnostics)\n\
 - project_scene_mutate {{\"ops\": [{{\"op\": \"upsert|delete|duplicate|set_lighting|undo\", \"path\": \"Workspace.Name\", ...}}]}} (declarative scene/workspace.model.json + Lighting)\n\
+- gui_save {{\"slug\": \"main-hud\", \"doc\": {{...}} | \"preset\": \"rpg|obby|tycoon|gacha\"}} (saves ui/<slug>.screen.json + safe-area analysis)\n\
+- gui_compile {{\"slug\": \"main-hud\", \"emit_model_json\": false}} (compiles --!strict Luau create(parent, callbacks) + Rojo .model.json)\n\
 - project_sync {{\"prune\": false}} (one-way push sync to Studio)\n\
 - project_playtest {{\"sync_first\": true, \"suite\": \"playtest/suite.json\"}} (Playtest Runner checks, screenshots, console errors)\n\n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
@@ -3033,11 +3037,13 @@ impl Agent {
                                         | "project_delete_file"
                                         | "project_update_manifest"
                                         | "project_scene_mutate"
+                                        | "gui_save"
+                                        | "gui_compile"
                                 ) {
                                     changes_made += 1;
                                     let path_arg = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                                    let needs_playtest = !matches!(other, "project_update_manifest")
-                                        && (matches!(other, "delete_script" | "create_instance" | "delete_instance" | "project_scene_mutate")
+                                    let needs_playtest = !matches!(other, "project_update_manifest" | "gui_save")
+                                        && (matches!(other, "delete_script" | "create_instance" | "delete_instance" | "project_scene_mutate" | "gui_compile")
                                             || path_arg.ends_with(".luau")
                                             || path_arg.ends_with(".lua")
                                             || path_arg == "default.project.json");
@@ -3502,11 +3508,13 @@ impl Agent {
                                 | "project_delete_file"
                                 | "project_update_manifest"
                                 | "project_scene_mutate"
+                                | "gui_save"
+                                | "gui_compile"
                         ) {
                             changes_made += 1;
                             let path_arg = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                            let needs_playtest = !matches!(tool, "project_update_manifest")
-                                && (matches!(tool, "delete_script" | "create_instance" | "delete_instance" | "project_scene_mutate")
+                            let needs_playtest = !matches!(tool, "project_update_manifest" | "gui_save")
+                                && (matches!(tool, "delete_script" | "create_instance" | "delete_instance" | "project_scene_mutate" | "gui_compile")
                                     || path_arg.ends_with(".luau")
                                     || path_arg.ends_with(".lua")
                                     || path_arg == "default.project.json");
@@ -4546,6 +4554,62 @@ impl Agent {
                 transcript.push(format!("tool project_scene_mutate -> rev={}", res["scene_revision"]));
                 thread.push(format!("Updated 3D scene (revision {}).", res["scene_revision"]));
                 Ok(format!("tool_result: project_scene_mutate: {text}"))
+            }
+            "gui_save" => {
+                let root = self
+                    .effective_project_root()
+                    .unwrap_or_else(|| self.effective_assets_root());
+                let raw_slug = args
+                    .get("slug")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .or_else(|| {
+                        args.pointer("/doc/name")
+                            .or_else(|| args.get("name"))
+                            .and_then(|v| v.as_str())
+                            .map(crate::projects::slug)
+                    })
+                    .or_else(|| {
+                        args.get("preset")
+                            .and_then(|v| v.as_str())
+                            .map(crate::projects::slug)
+                    })
+                    .ok_or("gui_save needs args.slug (plus args.doc or args.preset)")?;
+                let res = crate::gui_designer::save_project_screen(&root, &raw_slug, args)?;
+                let text = res.to_string();
+                let warn_count = res["safe_area_warnings"]
+                    .as_array()
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                transcript.push(format!("tool gui_save -> {} warnings={warn_count}", res["path"]));
+                thread.push(format!("Saved ScreenGui {} ({warn_count} safe-area warning(s)).", res["slug"]));
+                Ok(format!("tool_result: gui_save: {text}"))
+            }
+            "gui_compile" => {
+                let root = self
+                    .effective_project_root()
+                    .unwrap_or_else(|| self.effective_assets_root());
+                let raw_slug = args
+                    .get("slug")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .or_else(|| {
+                        args.pointer("/doc/name")
+                            .or_else(|| args.get("name"))
+                            .and_then(|v| v.as_str())
+                            .map(crate::projects::slug)
+                    })
+                    .or_else(|| {
+                        args.get("preset")
+                            .and_then(|v| v.as_str())
+                            .map(crate::projects::slug)
+                    })
+                    .ok_or("gui_compile needs args.slug")?;
+                let res = crate::gui_designer::compile_project_screen(&root, &raw_slug, args)?;
+                let text = res.to_string();
+                transcript.push(format!("tool gui_compile -> {}", res["luau_path"]));
+                thread.push(format!("Compiled ScreenGui to {}.", res["luau_path"]));
+                Ok(format!("tool_result: gui_compile: {text}"))
             }
             "project_sync" => {
                 let res = if let Some(hook) = &self.hooks.project_sync {

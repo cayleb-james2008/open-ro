@@ -2640,6 +2640,8 @@ fn is_write_or_submit_tool(tool: &str) -> bool {
             | "project_format"
             | "project_update_manifest"
             | "project_scene_mutate"
+            | "gui_save"
+            | "gui_compile"
             | "submit_task"
             | "mesh_generate"
             | "blender_generate"
@@ -3242,7 +3244,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
             "Follow Study -> Build -> Check -> Refine: check `study_status`/`unknowns_list`, record verified behavior with `evidence_record`/`unknown_add`/`unknown_update` (capping guesswork), cite `ev_*` IDs in `docs/mechanics.json` (`mechanics_check`), build, check (`project_check`/`project_playtest`, pass `\"force\":true` to bypass `KeptChecks`), and refine.\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`.\n",
             "Formatting: `project_check` with `{\"format\":true}` or `project_format` auto-formats your claimed `.luau` files with `stylua` instead of hand-editing whitespace.\n",
             "Asset arg signatures:\n",
             "- reference_search: {\"character\":\"...\",\"show\":\"...\",\"card_id\":\"...\"}\n",
@@ -3660,6 +3662,8 @@ fn execute_agent_tool(
         "project_update_manifest" => tool_project_update_manifest(handle, agent_name, args),
         "project_scene_get" => tool_project_scene_get(handle),
         "project_scene_mutate" => tool_project_scene_mutate(handle, agent_name, args),
+        "gui_save" => tool_gui_save(handle, agent_name, args),
+        "gui_compile" => tool_gui_compile(handle, agent_name, args),
         "project_build" => tool_project_build(handle, args),
         "project_sync" => tool_project_sync(shared, mgr, handle, agent_name, gen, args),
         "project_playtest" => {
@@ -4951,6 +4955,99 @@ fn tool_project_scene_mutate(
     if let Some(obj) = res.as_object_mut() {
         obj.insert("ok".into(), json!(true));
         obj.insert("task_id".into(), json!(task_id));
+    }
+    Ok(res)
+}
+
+fn resolve_gui_slug_from_args(args: &Value) -> Result<String, String> {
+    let raw = args
+        .get("slug")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .or_else(|| {
+            args.pointer("/doc/name")
+                .or_else(|| args.get("name"))
+                .and_then(|v| v.as_str())
+                .map(projects::slug)
+        })
+        .or_else(|| {
+            args.get("preset")
+                .and_then(|v| v.as_str())
+                .map(projects::slug)
+        })
+        .unwrap_or_default();
+    crate::gui_designer::validate_slug(&raw)
+}
+
+fn tool_gui_save(
+    handle: &Arc<RunHandle>,
+    caller: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let explicit_task = args.get("task_id").and_then(|v| v.as_str());
+    let slug = resolve_gui_slug_from_args(args)?;
+    let rel_path = format!("{}/{slug}.screen.json", crate::gui_designer::UI_DIR_REL);
+    let project_ref = project_ref_for_run(handle);
+    let task_id = {
+        let mut st = handle.state.lock().unwrap();
+        ensure_write_claim(&mut st, caller, &rel_path, explicit_task)?
+    };
+    let mut res = crate::gui_designer::save_project_screen(&project_ref.dir, &slug, args)?;
+    {
+        let mut st = handle.state.lock().unwrap();
+        record_task_file_mutation(&mut st, &task_id, &rel_path);
+    }
+    if let Some(obj) = res.as_object_mut() {
+        obj.insert("ok".into(), json!(true));
+        obj.insert("task_id".into(), json!(task_id));
+    }
+    Ok(res)
+}
+
+fn tool_gui_compile(
+    handle: &Arc<RunHandle>,
+    caller: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let explicit_task = args.get("task_id").and_then(|v| v.as_str());
+    let slug = resolve_gui_slug_from_args(args)?;
+    let should_write = args.get("write").and_then(|v| v.as_bool()).unwrap_or(true);
+    let out_rel = args
+        .get("out_path")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| {
+            format!(
+                "src/client/ui/{}.luau",
+                crate::gui_designer::pascal_case_slug(&slug)
+            )
+        });
+    let project_ref = project_ref_for_run(handle);
+    let task_id = if should_write {
+        let mut st = handle.state.lock().unwrap();
+        Some(ensure_write_claim(&mut st, caller, &out_rel, explicit_task)?)
+    } else {
+        None
+    };
+    let mut res = crate::gui_designer::compile_project_screen(&project_ref.dir, &slug, args)?;
+    if let Some(tid) = &task_id {
+        let modified: Vec<String> = res
+            .get("modified_files")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let mut st = handle.state.lock().unwrap();
+        for f in &modified {
+            record_task_file_mutation(&mut st, tid, f);
+        }
+        if let Some(obj) = res.as_object_mut() {
+            obj.insert("task_id".into(), json!(tid));
+        }
+    }
+    if let Some(obj) = res.as_object_mut() {
+        obj.insert("ok".into(), json!(true));
     }
     Ok(res)
 }
