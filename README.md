@@ -1,4 +1,4 @@
-# <img src="docs/logo.svg" alt="OpenRO Studio logo" width="28" height="28" align="absmiddle" /> OpenRO (`v1.22.0`)
+# <img src="docs/logo.svg" alt="OpenRO Studio logo" width="28" height="28" align="absmiddle" /> OpenRO (`v1.23.0`)
 
 [![Release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/cayleb-james2008/open-ro/release.yml?branch=main&label=build)](https://github.com/cayleb-james2008/open-ro/actions)
@@ -16,6 +16,7 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
 
 ## What it does
 
+- The LiveOps control plane and telemetry workbench (`src/liveops.rs`, `LiveOpsPanel.tsx`, `/api/projects/:id/liveops/*`, and offline `web-engine/install.ts` parity) lets you inspect and edit Open Cloud v2 standard and ordered DataStores with `expected_revision` conflict checks, pre-mutation backups in `.openro/liveops/ds-backups/`, and explicit `confirm: true` gates. You can broadcast `MessagingService` payloads up to 1024 bytes, manage Remote Config (`liveops/remote-config.json` capped at 64 KiB) with deterministic `--!strict` `src/shared/LiveConfig.luau` generation, and inspect sandbox or live player funnel drop-offs, Robux ARPDAU, and currency sinks from `.openro/liveops/telemetry.jsonl`.
 - The visual ScreenGui and HUD designer (`src/gui_designer.rs`, `GuiDesignerWorkbench.tsx`, `/api/projects/:id/gui*`, `/api/studio/gui*`, and the `gui_save` and `gui_compile` tools) lets you drag and resize a 12-class Roblox UI hierarchy (`Frame`, `TextLabel`, `TextButton`, `ImageLabel`, `ImageButton`, `ScrollingFrame`, `UICorner`, `UIStroke`, `UIListLayout`, `UIGridLayout`, `UIAspectRatioConstraint`, `UIPadding`) over Desktop (`1920x1080`), Tablet (`1024x768`), and Mobile Landscape (`844x390`) viewports. Live overlays check the 58px TopBar inset, Mobile thumbstick and jump zones, offscreen bounds, and 44x44px tap targets, while `Compile to Luau` emits deterministic `--!strict` `ScreenModule.create(parent, callbacks)` scripts and Rojo `.model.json` files validated by `luau_check` and `stylua`.
 - The headless local Luau runtime sandbox (`POST /api/projects/:id/sandbox/run`, `POST /api/studio/sandbox/run`, and the `sandbox_playtest` agent and teamwork tool) materializes your Rojo project or in-memory Local Place into an isolated scratch run and executes real Server and Client Luau scripts via Lune `0.11.1` (`lune_roblox_shim`) against an embedded Roblox `DataModel`, `DataStoreService`, `MarketplaceService.ProcessReceipt`, `RemoteEvent`, `RemoteFunction`, and `PlayerGui` shim. You can run Boot + Join, Purchase Receipt Idempotency, Save/Rejoin Persistence, or custom multi-step journeys and inspect console traces (with click-to-jump line links), DataStores, leaderstats, receipts, and PlayerGui trees without launching Roblox Studio, mirrored offline in the browser simulator (`browser_sim`).
 
@@ -69,12 +70,20 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
     </td>
   </tr>
   <tr>
-    <td colspan="2" align="center">
+    <td width="50%" align="center">
       <strong>Unified Rojo workspace, 3D scene graph, and lighting preview</strong>
       <br /><br />
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/unified-workspace-dark.png" />
-        <img src="docs/screenshots/unified-workspace-light.png" alt="OpenRO Unified Rojo Explorer and Declarative 3D Scene Preview" width="60%" />
+        <img src="docs/screenshots/unified-workspace-light.png" alt="OpenRO Unified Rojo Explorer and Declarative 3D Scene Preview" width="100%" />
+      </picture>
+    </td>
+    <td width="50%" align="center">
+      <strong>LiveOps control plane and player telemetry (`v1.23.0`)</strong>
+      <br /><br />
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/liveops-dark.png" />
+        <img src="docs/screenshots/liveops-light.png" alt="OpenRO v1.23.0 LiveOps Control Plane with DataStores, MessagingService, Remote Config, and Telemetry Funnel" width="100%" />
       </picture>
     </td>
   </tr>
@@ -88,20 +97,21 @@ flowchart LR
   SRV --> LP["Unified Workspace &amp; Scene Graph<br/>scene/workspace.model.json + .rbxlx + CWE-22 /mesh-asset"]
   SRV --> GD["ScreenGui Designer &amp; Compiler<br/>12-Class Allowlist + Safe-Area + --!strict Luau"]
   SRV --> SB["Headless Luau Runtime Sandbox<br/>Lune 0.11.1 DataModel/DataStore/Receipt Shim"]
+  SRV --> LO["LiveOps Control Plane &amp; Telemetry<br/>Open Cloud DataStores + Messaging + LiveConfig.luau"]
   SRV --> PJ["Rojo Project &amp; Ship Pack<br/>ZIP CRC-32 + Playtest Assertions"]
   SRV --> MCP["Roblox Studio MCP &amp; Open Cloud<br/>13 Live Tools + Price Approval Gate"]
 ```
 
-## Verified benchmarks (`v1.22.0` vs `v1.2.0`)
+## Verified benchmarks (`v1.23.0` vs `v1.2.0`)
 
-| Metric | `v1.2.0` baseline | `v1.22.0` verified (`#154` pinned) | Delta |
+| Metric | `v1.2.0` baseline | `v1.23.0` verified (`#154` pinned) | Delta |
 | --- | --- | --- | --- |
-| Release binary size | `19.00 MB` | **`9.53 MiB`** (`9,995,128 B`) | **`-49.8%`** |
-| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`229.9 KB`** raw (`235,427 B`) / **`55.3 KB`** gz (`56,631 B`) | **`-88.0%` wire** |
-| Cold boot (`#154` pinned) | `1,470 ms` | **`29.28 ms`** | **`-98.0%`** |
-| Peak RSS (`VmHWM`) | `115.20 MB` | **`13.05 MB`** (`13,368 KB`, `scale-audit` + 10 SSE) | **`-88.7%`** |
-| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`5,438.0 req/s`** Python cold (`2.72 ms` p50, `4.23 ms` p95, `0/13,603` errs) | **`6.21x` (`-97.0%` p95)** |
-| Security and UI gates | `43/43` fuzz | **`43/43` fuzz, `10/10` SSE, `0` sloplint fails/warns, `339/339` Rust tests (`4/4` `v122_cycle2_hardening`), `gate 110/110`, `replay 11/11`** | Pass |
+| Release binary size | `19.00 MB` | **`9.65 MiB`** (`10,113,920 B`) | **`-49.2%`** |
+| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`231.0 KB`** raw (`236,543 B`) / **`55.4 KB`** gz (`56,767 B`) | **`-87.9%` wire** |
+| Cold boot (`#154` pinned) | `1,470 ms` | **`36.45 ms`** | **`-97.5%`** |
+| Peak RSS (`VmHWM`) | `115.20 MB` | **`13.07 MB`** (`13,380 KB`, `scale-audit` + 10 SSE) | **`-88.7%`** |
+| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`6,826.7 req/s`** Python cold (`2.30 ms` p50, `2.95 ms` p95, `0/17,076` errs) | **`7.80x` (`-97.9%` p95)** |
+| Security and UI gates | `43/43` fuzz | **`43/43` fuzz, `10/10` SSE, `0` sloplint fails/warns, `347/347` Rust tests (`6/6` `v123_liveops`), `gate 124/124`, `replay 11/11`** | Pass |
 
 ## Quick start
 

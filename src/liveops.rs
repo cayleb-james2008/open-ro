@@ -273,6 +273,7 @@ fn datastores_list(ctx: &Ctx, root: &Path, query: &str) -> R<Value> {
             "stores": stores,
             "entries": [],
             "next_cursor": next_cursor,
+            "source": "opencloud",
         }));
     }
 
@@ -314,6 +315,7 @@ fn datastores_list(ctx: &Ctx, root: &Path, query: &str) -> R<Value> {
         "stores": [store_name],
         "entries": entries,
         "next_cursor": next_cursor,
+        "source": "opencloud",
     }))
 }
 
@@ -337,6 +339,7 @@ fn datastore_entry_get(ctx: &Ctx, root: &Path, query: &str) -> R<Value> {
         "ok": true,
         "kind": kind,
         "entry": entry,
+        "source": "opencloud",
     }))
 }
 
@@ -443,6 +446,7 @@ fn datastore_entry_set(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
         "kind": kind,
         "entry": entry,
         "backup_path": backup_path,
+        "source": "opencloud",
     }))
 }
 
@@ -517,6 +521,7 @@ fn datastore_entry_delete(ctx: &Ctx, root: &Path, query: &str, body: &Value) -> 
         "scope": scope,
         "key": key,
         "backup_path": backup_path,
+        "source": "opencloud",
     }))
 }
 
@@ -664,6 +669,7 @@ pub fn generate_live_config_luau(sorted: &BTreeMap<String, Value>) -> String {
 
 local DataStoreService = game:GetService(\"DataStoreService\")
 local MessagingService = game:GetService(\"MessagingService\")
+local RunService = game:GetService(\"RunService\")
 
 local STORE_NAME = \"OpenRO_RemoteConfig\"
 local CONFIG_KEY = \"config\"
@@ -714,6 +720,9 @@ function LiveConfig.OnChanged(callback: (string, any) -> ()): () -> ()
 end
 
 function LiveConfig.Refresh(): boolean
+\tif not RunService:IsServer() then
+\t\treturn false
+\tend
 \tlocal ok, result = pcall(function()
 \t\tlocal store = DataStoreService:GetDataStore(STORE_NAME)
 \t\treturn store:GetAsync(CONFIG_KEY)
@@ -727,6 +736,11 @@ end
 
 function LiveConfig.StartPolling(intervalSeconds: number?)
 \tlocal interval = math.max(10, intervalSeconds or 60)
+\tif RunService:IsServer() then
+\t\tpcall(function()
+\t\t\tgame:BindToClose(function() end)
+\t\tend)
+\tend
 \tpcall(function()
 \t\tMessagingService:SubscribeAsync(TOPIC_NAME, function(msg)
 \t\t\tif type(msg) == \"table\" and type(msg.Data) == \"table\" then
@@ -851,6 +865,7 @@ fn remote_config_set(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
         let client = Client::new(ctx)?;
         let store = validate_ds_token(
             body.get("datastore")
+                .or_else(|| body.get("datastore_name"))
                 .and_then(Value::as_str)
                 .unwrap_or(DEFAULT_REMOTE_CONFIG_STORE),
             "datastore",
@@ -859,6 +874,7 @@ fn remote_config_set(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
         let scope = validate_scope(body.get("scope").and_then(Value::as_str))?;
         let key = validate_ds_token(
             body.get("key")
+                .or_else(|| body.get("datastore_key"))
                 .and_then(Value::as_str)
                 .unwrap_or(DEFAULT_REMOTE_CONFIG_KEY),
             "key",
@@ -1271,5 +1287,11 @@ mod tests {
         assert!(a.contains("--!strict"));
         assert!(a.contains("DataStoreService:GetDataStore"));
         assert!(a.contains("MessagingService:SubscribeAsync"));
+        let rep = crate::luau_check::analyze_script("ReplicatedStorage.Shared.LiveConfig", &a);
+        assert!(
+            rep.diagnostics.is_empty(),
+            "LiveConfig.luau diagnostics: {:?}",
+            rep.diagnostics
+        );
     }
 }

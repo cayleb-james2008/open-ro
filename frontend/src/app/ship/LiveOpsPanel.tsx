@@ -190,7 +190,7 @@ export function LiveOpsPanel({
       setSelectedKey(current.key);
       setSelectedRevision(current.revision ?? null);
       setSelectedUpdatedAt(current.updated_at ?? null);
-      if (current.value !== undefined) {
+      if (current.value !== undefined && current.value !== null) {
         setDsValueText(formatJsonValue(current.value));
       } else {
         void inspectEntry(current.store, current.scope, current.key, dsKind);
@@ -464,7 +464,7 @@ export function LiveOpsPanel({
           </SegmentedControl>
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-4">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 2xl:grid-cols-4">
           <Field label="DataStore">
             <Input
               value={dsStore}
@@ -529,21 +529,21 @@ export function LiveOpsPanel({
           </div>
         )}
 
-        <div className="grid gap-4 border-t border-hairline pt-3 lg:grid-cols-5">
-          <div className="flex flex-col gap-2 lg:col-span-2">
-            <div className="flex items-center justify-between gap-2">
+        <div className="grid grid-cols-1 gap-4 border-t border-hairline pt-3 2xl:grid-cols-5">
+          <div className="flex min-w-0 flex-col gap-2 2xl:col-span-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs font-medium text-ink-2">
                 Entries <span className="font-mono tabular-nums text-ink">{dsEntries.length}</span>
               </span>
-              <div className="flex items-center gap-1.5">
+              <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
                 <Input
                   value={dsNewKey}
                   onChange={(e) => setDsNewKey(e.target.value)}
                   placeholder="New key…"
-                  className="h-8 w-32 font-mono text-xs"
+                  className="h-8 min-w-0 flex-1 font-mono text-xs sm:max-w-44"
                   data-ds-new-key
                 />
-                <Button variant="outline" size="xs" onClick={createNewKey} disabled={!dsNewKey.trim()} data-ds-new-btn>
+                <Button variant="outline" size="xs" onClick={createNewKey} disabled={!dsNewKey.trim()} className="shrink-0" data-ds-new-btn>
                   <Plus className="size-3.5" strokeWidth={1.5} aria-hidden />
                   Add
                 </Button>
@@ -568,7 +568,7 @@ export function LiveOpsPanel({
                           setSelectedUpdatedAt(entry.updated_at ?? null);
                           setDsError("");
                           setDsConflict(false);
-                          if (entry.value !== undefined) {
+                          if (entry.value !== undefined && entry.value !== null) {
                             setDsValueText(formatJsonValue(entry.value));
                           } else {
                             void inspectEntry(entry.store, entry.scope, entry.key, dsKind);
@@ -591,7 +591,7 @@ export function LiveOpsPanel({
             )}
           </div>
 
-          <div className="flex flex-col gap-2.5 lg:col-span-3">
+          <div className="flex min-w-0 flex-col gap-2.5 2xl:col-span-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-xs font-medium text-ink">
@@ -703,7 +703,7 @@ export function LiveOpsPanel({
           </div>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 2xl:grid-cols-3">
           <Field label="Topic">
             <Input
               value={msgTopic}
@@ -713,7 +713,7 @@ export function LiveOpsPanel({
               data-msg-topic
             />
           </Field>
-          <div className="flex flex-col gap-1 md:col-span-2">
+          <div className="flex flex-col gap-1 2xl:col-span-2">
             <span className="text-sm font-medium text-ink-2">JSON payload</span>
             <Textarea
               value={msgPayloadText}
@@ -1045,7 +1045,7 @@ export function LiveOpsPanel({
           </div>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 2xl:grid-cols-2">
           <div className="flex flex-col gap-2" data-telemetry-funnel>
             <h4 className="text-xs font-medium text-ink-2">Onboarding &amp; Funnel Drop-off</h4>
             {(telemetry?.funnel_steps.length ?? 0) === 0 ? (
@@ -1117,7 +1117,7 @@ export function LiveOpsPanel({
             <ul className="flex flex-col gap-1.5">
               {telemetry!.alerts.map((al, idx) => {
                 const high = al.severity === "high" || al.severity === "error";
-                const warn = al.severity === "warn" || al.severity === "medium";
+                const warn = al.severity === "warn" || al.severity === "warning" || al.severity === "medium";
                 return (
                   <li
                     key={`${al.title}-${idx}`}

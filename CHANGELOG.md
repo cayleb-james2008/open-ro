@@ -4,6 +4,13 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.23.0 - 2026-11-26
+
+- Added the LiveOps control plane and player telemetry system (`src/liveops.rs`, `src/opencloud.rs`, `src/server.rs`, `src/agent.rs`, `src/teamwork.rs`, `tests/v123_liveops.rs`). The `/api/projects/:id/liveops/*` routes handle Open Cloud v2 standard and ordered DataStore listing, inspection, optimistic-concurrency writes (`confirm: true`, `expected_revision`, and pre-mutation backups under `.openro/liveops/ds-backups/`), deletes, and `MessagingService` broadcasts under a 1024-byte cap, all restricted to loopback hosts.
+- Added Remote Config editing and `--!strict` Luau generation (`liveops/remote-config.json` with a 64 KiB cap, valid Luau identifier checks, deterministic `src/shared/LiveConfig.luau` output, and optional DataStore push).
+- Replaced the four no-op `AnalyticsService` stubs in `src/sandbox_runtime.luau` and `src/sandbox.rs` with event capture into sandbox reports, added a `MessagingService` shim for `LiveConfig.luau`, and wired `telemetry/ingest` (`.openro/liveops/telemetry.jsonl`) and `telemetry/summary` (DAU sample, onboarding funnel drop-off, Robux ARPDAU, currency sinks, and alerts).
+- Added the `LiveOps` section to the Ship workbench (`LiveOpsPanel.tsx`, `ShipPanel.tsx`, `ship/api.ts`, and offline `web-engine/install.ts` parity), along with `liveops_*` tools for Agent and Teamwork modes that block live DataStore mutations and `MessagingService` broadcasts unless `confirm: true` is passed.
+
 ## 1.22.0 - 2026-11-26
 
 - Hardened path containment and symlink checks across the unified workspace, 3D scene graph, GUI designer, and headless Luau sandbox (`src/project_api.rs`, `src/scene.rs`, `src/gui_designer.rs`, `src/sandbox.rs`, `src/server.rs`, `tests/v122_cycle2_hardening.rs`). API handlers now reject NUL bytes, backslash traversal, non-string GUI slugs, and symlinked `ui/`, `.screen.json`, `assets/meshes/`, `manifest.json`, `.obj`, `workspace.model.json`, and `scene-undo.json` targets, while atomic writers use exclusive `O_CREAT | O_EXCL` temp files.

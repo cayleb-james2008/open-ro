@@ -308,18 +308,18 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - opencloud_status {{}} / creator_hub_status {{\"check_login\": true, \"save_creator\": true}} / creator_hub_setup {{...}} / creator_hub_configure {{...}} (loopback browser CDP; stop cleanly on action_required)\n\
 - assets_authorise {{\"paths\": [...]}} / assets_upload {{\"paths\": [...]}} / assets_codegen {{}} (-> assets.lock.json + AssetIds.luau)\n\
 - products_sync {{}} / products_codegen {{}} (-> ProductIds.luau) / universe_get {{}} / universe_set {{...}}\n\
-- liveops_datastore_list {{\"store\":\"...?\",\"scope\":\"global\",\"prefix\":\"...?\"}} / liveops_datastore_get {{\"store\":\"...\",\"key\":\"...\"}} / liveops_datastore_set {{...,\"expected_revision\":\"...\",\"confirm\":true}} / liveops_messaging_publish {{\"topic\":\"...\",\"message\":{{...}},\"confirm\":true}} / liveops_remote_config_push {{\"config\":{{...}},\"generate_luau\":true,\"push_to_datastore\":false}} / liveops_telemetry_summary {{}} (live DataStore writes & MessagingService broadcasts require owner confirm: true)\n\
+- liveops_datastore_list {{\"store\":\"...?\",\"scope\":\"global\"}} / liveops_datastore_get {{\"store\":\"...\",\"key\":\"...\"}} / liveops_datastore_set {{...,\"expected_revision\":\"...\",\"confirm\":true}} / liveops_messaging_publish {{\"topic\":\"...\",\"message\":{{...}},\"confirm\":true}} / liveops_remote_config_push {{\"config\":{{...}},\"generate_luau\":true,\"push_to_datastore\":false}} / liveops_telemetry_summary {{}} (live writes/broadcasts need confirm:true)\n\
 - project_publish {{\"versionType\": \"Saved\"}} (live \"Published\" requires confirm: true ONLY after owner approval)\n\n\
-STUDY, EVIDENCE & CONTRACT CHECK TOOLS (Study -> Build -> Check -> Refine):\n\
-- evidence_record {{\"summary\": \"...\", \"confidence\": \"observed|derived|inferred\", \"kind\": \"...\", \"source\": \"...\"}} / evidence_list {{\"confidence\": \"...?\", \"limit\": 50}}\n\
-- unknown_add {{\"title\": \"...\", \"question\": \"...\", \"severity\": \"high\", \"domain\": \"...\"}} / unknowns_list {{\"status\": \"open\"}}\n\
-- unknown_update {{\"id\": \"unk_...\", \"expected_revision\": 1, \"status\": \"resolved\", \"resolution\": \"...\", \"evidence_for\": [\"ev_...\"]}} (fail-closed: resolving requires resolution + verified ev_*)\n\
-- mechanics_check {{\"path\": \"docs/mechanics.json\", \"strict\": false}} / study_status {{}}\n\n\
+STUDY & EVIDENCE TOOLS (Study -> Build -> Check -> Refine):\n\
+- evidence_record {{\"summary\":\"...\",\"confidence\":\"observed|derived|inferred\",\"kind\":\"...\",\"source\":\"...\"}} / evidence_list {{\"confidence\":\"...?\",\"limit\":50}}\n\
+- unknown_add {{\"title\":\"...\",\"question\":\"...\",\"severity\":\"high\",\"domain\":\"...\"}} / unknowns_list {{\"status\":\"open\"}}\n\
+- unknown_update {{\"id\":\"unk_...\",\"expected_revision\":1,\"status\":\"resolved\",\"resolution\":\"...\",\"evidence_for\":[\"ev_...\"]}} (needs resolution + ev_*)\n\
+- mechanics_check {{\"path\":\"docs/mechanics.json\",\"strict\":false}} / study_status {{}}\n\n\
 3D, VFX & UI GUARDRAILS:\n\
-- PartType.Cylinder runs along LOCAL X: upright pillars MUST set Size = Vector3.new(height, diameter, diameter) + CFrame.Angles(0, 0, math.rad(90)).\n\
-- Mobile StreamingEnabled budgets: <=20,000 tris/mesh, <=40 active ParticleEmitters, <=12 non-shadow lights. Clean up transient VFX/Parts/Sounds via Debris:AddItem or pooling.\n\
-- Enforce Settings-only Light/Dark theme and FlashEnabled/ReducedMotion toggles; wire meshes/art via assets/meshes/manifest.json and src/shared/AssetIds.luau.\n\
-- Follow Study -> Build -> Check -> Refine: record evidence, track/resolve unknowns with verified ev_* IDs, batch file writes, then verify with mechanics_check, project_check / project_run_lune, and project_playtest (sync_first: true) before finishing.\n\n{}",
+- PartType.Cylinder runs along LOCAL X: upright pillars MUST use Size=Vector3.new(h,d,d) + CFrame.Angles(0,0,math.rad(90)).\n\
+- Mobile budgets: <=20k tris/mesh, <=40 ParticleEmitters, <=12 non-shadow lights; clean transient VFX/Parts/Sounds via Debris:AddItem or pooling.\n\
+- Enforce Settings-only Light/Dark theme and FlashEnabled/ReducedMotion; wire meshes/art via assets/meshes/manifest.json + src/shared/AssetIds.luau.\n\
+- Workflow Study -> Build -> Check -> Refine: record evidence, resolve unknowns with ev_* IDs, batch edits, verify with mechanics_check, project_check / project_run_lune, and project_playtest (sync_first: true).\n\n{}",
         crate::art_knowledge::prompt_guidance()
     )
 }
