@@ -259,7 +259,7 @@ pub fn route(shared: &Arc<Shared>, method: &str, full_path: &str, body: &[u8], l
             | ("POST", ["workspace"] | ["workspace", "remove"] | ["create"] | ["open"])
             | ("GET", [_])
             | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "format" | "run-lune" | "open-in-studio"])
-            | ("POST", [_, "sync", "diff"] | [_, "scene", "mutate"] | [_, "playtests", "rerun"] | [_, "playtests", "fix-plan"] | [_, "playtests", "fix-apply"] | [_, "playtests", "fix-all"])
+            | ("POST", [_, "sync", "diff"] | [_, "scene", "mutate"] | [_, "sandbox", "run"] | [_, "playtests", "rerun"] | [_, "playtests", "fix-plan"] | [_, "playtests", "fix-apply"] | [_, "playtests", "fix-all"])
             | ("GET", [_, "workspace" | "mesh-asset" | "builds" | "playtests" | "dependencies" | "snapshots" | "sync-conflicts" | "publish-guard" | "monetization-audit" | "economy-sim" | "files" | "file" | "preview"] | [_, "snapshots", "hook-integrity"])
             | ("POST", [_, "dependencies", "prune"] | [_, "monetization-audit"] | [_, "economy-sim"] | [_, "snapshots"] | [_, "snapshots", _, "restore"] | [_, "snapshots", _, "restore-hooks"] | [_, "sync-conflicts", "resolve"] | [_, "publish-guard", "autofix"])
             | ("POST", [_, "file"] | [_, "file", "delete"] | [_, "file", "edit"])
@@ -385,6 +385,16 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
             let timeout = b["timeout_secs"].as_u64().unwrap_or(30);
             let res = projects::run_lune(&r.dir, script, &args, timeout).map_err(Reply::bad)?;
             Ok(Reply::ok(res))
+        }
+        ("POST", [id, "sandbox", "run"]) => {
+            let r = project_of(shared, id)?;
+            let b = parse_body(body)?;
+            let _busy = Busy::new(&shared.busy);
+            let res = crate::sandbox::run_project_sandbox(&r.dir, &b).map_err(Reply::bad)?;
+            if res.pointer("/diagnostics/lune_found").and_then(Value::as_bool) == Some(false) {
+                return Ok(Reply::json("503 Service Unavailable", res));
+            }
+            Ok(Reply::json("200 OK", res))
         }
         ("POST", [id, "build"]) => {
             let r = project_of(shared, id)?;

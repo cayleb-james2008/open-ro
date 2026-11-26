@@ -3225,7 +3225,8 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
         ),
         "verifier" => concat!(
             "You are the Teamwork verifier.\n",
-            "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `project_scene_get`, `luau_check`, `project_check`, `project_run_lune`, `project_build`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`, `opencloud_status`, `creator_hub_status`, `universe_get`).\n",
+            "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `project_scene_get`, `luau_check`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`, `opencloud_status`, `creator_hub_status`, `universe_get`).\n",
+            "Run `sandbox_playtest` first on game_code tasks for `<2s` headless Luau runtime verification (remotes, DataStores, ProcessReceipt idempotency, stack traces) before paying for live Studio `project_playtest`.\n",
             "For game_code tasks (or `src/` / `ui/` changes), you MUST run `project_playtest` with `{\"task_id\":\"<id>\"}` and confirm 0 console errors BEFORE calling `verify_task` with `passed: true`.\n",
             "For `tools/**/*.luau` tasks (not touching `src/` or `ui/`), run `project_run_lune` (confirm `passed: true`) instead of `project_playtest` BEFORE calling `verify_task(passed=true)`.\n",
             "If checks, contracts (`mechanics_check`), or critical unknowns fail, call `verify_task` with `passed: false` and clear failure notes."
@@ -3241,7 +3242,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
             "Follow Study -> Build -> Check -> Refine: check `study_status`/`unknowns_list`, record verified behavior with `evidence_record`/`unknown_add`/`unknown_update` (capping guesswork), cite `ev_*` IDs in `docs/mechanics.json` (`mechanics_check`), build, check (`project_check`/`project_playtest`, pass `\"force\":true` to bypass `KeptChecks`), and refine.\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`.\n",
             "Formatting: `project_check` with `{\"format\":true}` or `project_format` auto-formats your claimed `.luau` files with `stylua` instead of hand-editing whitespace.\n",
             "Asset arg signatures:\n",
             "- reference_search: {\"character\":\"...\",\"show\":\"...\",\"card_id\":\"...\"}\n",
@@ -3655,6 +3656,7 @@ fn execute_agent_tool(
         "project_format" => tool_project_format(handle, agent_name, args),
         "project_check" => tool_project_check(handle, agent_name, args),
         "project_run_lune" => tool_project_run_lune(handle, agent_name, args),
+        "sandbox_playtest" => tool_sandbox_playtest(handle, args),
         "project_update_manifest" => tool_project_update_manifest(handle, agent_name, args),
         "project_scene_get" => tool_project_scene_get(handle),
         "project_scene_mutate" => tool_project_scene_mutate(handle, agent_name, args),
@@ -5556,6 +5558,11 @@ fn tool_project_sync(
     drop(_lease);
     handle.notify_all();
     res
+}
+
+fn tool_sandbox_playtest(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    crate::sandbox::run_project_sandbox(&project_dir, args)
 }
 
 fn tool_project_playtest(

@@ -217,6 +217,7 @@ STUDIO & WHOLE-GAME TOOLS:\n\
 - {{\"tool\": \"project_update_manifest\", \"args\": {{\"patch\": {{\"assets\": {{\"authorised\": [\"art/cards/**\"]}}}}}}}} safely updates openro.project.json (cannot auto-approve product prices)\n\
 - {{\"tool\": \"project_check\", \"args\": {{}}}} runs selene, stylua --check, and static Luau checks across the project\n\
 - {{\"tool\": \"project_run_lune\", \"args\": {{\"script\": \"tools/sim.luau\"}}}} runs a project-relative Lune test/sim script with timeout\n\
+- {{\"tool\": \"sandbox_playtest\", \"args\": {{\"timeout_secs\": 15}}}} runs the headless local Roblox Luau runtime sandbox (<2s, no Studio needed; executes server/client scripts, remotes, DataStores, ProcessReceipt idempotency, PlayerGui)\n\
 - {{\"tool\": \"project_build\", \"args\": {{\"engine\": \"auto\"}}}} builds the project to .rbxlx\n\
 - {{\"tool\": \"project_scene_get\", \"args\": {{}}}} returns the unified Rojo workspace bundle (scripts, Workspace instances, meshes, lighting, diagnostics)\n\
 - {{\"tool\": \"project_scene_mutate\", \"args\": {{\"ops\": [{{\"op\": \"upsert\", \"path\": \"Workspace.SpawnPad\", \"class_name\": \"SpawnLocation\", \"properties\": {{\"Position\": [0, 1, 0], \"Size\": [8, 1, 8], \"Anchored\": true}}}}]}}}} mutates scene/workspace.model.json & Lighting (auto-wiring default.project.json)\n\
@@ -280,6 +281,7 @@ PROJECT FILE & BUILD TOOLS:\n\
 - project_update_manifest {{\"patch\": {{...}}}} (safely updates openro.project.json; cannot auto-approve product prices)\n\
 - project_check {{}} (runs selene, stylua --check, static Luau checks)\n\
 - project_run_lune {{\"script\": \"tools/sim.luau\"}} (timeout-bounded Lune execution)\n\
+- sandbox_playtest {{\"timeout_secs\": 15, \"journey\": [...]}} (<2s headless Roblox Luau runtime sandbox: server/client, remotes, DataStores, ProcessReceipt idempotency, PlayerGui)\n\
 - project_build {{\"engine\": \"auto\"}} (.rbxlx build)\n\
 - project_scene_get {{}} (unified workspace: scripts, instances, meshes, lighting, diagnostics)\n\
 - project_scene_mutate {{\"ops\": [{{\"op\": \"upsert|delete|duplicate|set_lighting|undo\", \"path\": \"Workspace.Name\", ...}}]}} (declarative scene/workspace.model.json + Lighting)\n\
@@ -518,6 +520,7 @@ pub struct AgentHooks {
     pub project_playtest: Option<HookFn>,
     pub project_check: Option<HookFn>,
     pub project_run_lune: Option<HookFn>,
+    pub sandbox_playtest: Option<HookFn>,
     pub reference_search: Option<HookFn>,
     pub art_generate: Option<HookFn>,
     pub image_process: Option<HookFn>,
@@ -4488,6 +4491,32 @@ impl Agent {
                 transcript.push(format!("tool project_run_lune -> exit={}", res["exit_code"]));
                 Ok(format!("tool_result: project_run_lune: {text}"))
             }
+            "sandbox_playtest" => {
+                let res = if let Some(hook) = &self.hooks.sandbox_playtest {
+                    hook(args)?
+                } else if let Some(root) = self.effective_project_root() {
+                    crate::sandbox::run_project_sandbox(&root, args)?
+                } else if let Some(PlaceBackend::Local(local)) = &self.studio {
+                    crate::sandbox::run_local_place_sandbox(
+                        local.game_name(),
+                        local.scripts(),
+                        local.instances(),
+                        args,
+                    )?
+                } else {
+                    return Err("sandbox_playtest requires an active project or LocalPlace".to_string());
+                };
+                let passed = res.get("passed").and_then(Value::as_bool).unwrap_or(false);
+                let err_count = res
+                    .pointer("/console/errors")
+                    .and_then(Value::as_array)
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                transcript.push(format!(
+                    "tool sandbox_playtest -> passed={passed} errors={err_count}"
+                ));
+                Ok(format!("tool_result: sandbox_playtest: {res}"))
+            }
             "project_build" => {
                 let res = if let Some(hook) = &self.hooks.project_build {
                     hook(args)?
@@ -5810,6 +5839,7 @@ fn is_read_only_tool(tool: &str) -> bool {
             | "project_grep"
             | "project_check"
             | "project_run_lune"
+            | "sandbox_playtest"
             | "project_scene_get"
             | "research_roblox_game"
             | "web_fetch"

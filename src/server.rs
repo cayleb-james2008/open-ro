@@ -977,6 +977,7 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
                 || clean_path.starts_with("/api/studio/tools/")
                 || clean_path == "/api/studio/playtest"
                 || clean_path == "/api/studio/playtest/fix-all"
+                || clean_path == "/api/studio/sandbox/run"
                 || clean_path == "/api/studio/economy/simulate"
                 || clean_path == "/api/studio/dependencies"
                 || clean_path == "/api/studio/dependencies/prune"
@@ -1949,6 +1950,109 @@ fn handle(
                     &mut stream,
                     "503 Service Unavailable",
                     &json!({ "ok": false, "passed": false, "error": "Studio not connected" }),
+                ),
+            }
+        }
+        ("POST", "/api/studio/sandbox/run") => {
+            let body: Value = if req.body.is_empty() {
+                json!({})
+            } else {
+                match serde_json::from_slice(&req.body) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        respond_json(
+                            &mut stream,
+                            "400 Bad Request",
+                            &json!({ "ok": false, "passed": false, "error": "the request body is not valid JSON" }),
+                        );
+                        return Ok(());
+                    }
+                }
+            };
+            let _busy = BusyGuard::new(&shared.busy);
+            enum SandboxSource {
+                Local(String, std::collections::BTreeMap<String, String>, std::collections::BTreeMap<String, Value>),
+                Rojo(PathBuf),
+            }
+            let explicit_project = body
+                .get("project_id")
+                .and_then(Value::as_str)
+                .and_then(|pid| shared.projects.lock().unwrap().find(pid).map(|r| r.dir));
+            let source = if let Some(dir) = explicit_project {
+                Some(SandboxSource::Rojo(dir))
+            } else {
+                let agent_src = {
+                    let guard = shared.agent.lock().unwrap();
+                    guard.as_ref().and_then(|agent| match &agent.studio {
+                        Some(PlaceBackend::Local(local)) => Some(SandboxSource::Local(
+                            local.game_name().to_string(),
+                            local.scripts().clone(),
+                            local.instances().clone(),
+                        )),
+                        _ => agent.project_root.clone().map(SandboxSource::Rojo),
+                    })
+                };
+                agent_src
+                    .or_else(|| {
+                        let store = shared.projects.lock().unwrap();
+                        store
+                            .active
+                            .as_deref()
+                            .and_then(|id| store.find(id))
+                            .map(|r| SandboxSource::Rojo(r.dir))
+                    })
+                    .or_else(|| {
+                        shared.data_dir.as_ref().and_then(|dir| {
+                            dir.join("place.json").is_file().then(|| {
+                                let lp = LocalPlace::open(dir.clone(), shared.game_name.clone());
+                                SandboxSource::Local(
+                                    lp.game_name().to_string(),
+                                    lp.scripts().clone(),
+                                    lp.instances().clone(),
+                                )
+                            })
+                        })
+                    })
+            };
+            let Some(src) = source else {
+                respond_json(
+                    &mut stream,
+                    "503 Service Unavailable",
+                    &json!({
+                        "ok": false,
+                        "engine": "lune_roblox_shim",
+                        "passed": false,
+                        "error": "No LocalPlace or active Rojo project is loaded"
+                    }),
+                );
+                return Ok(());
+            };
+            let run_res = match src {
+                SandboxSource::Local(name, scripts, instances) => {
+                    crate::sandbox::run_local_place_sandbox(&name, &scripts, &instances, &body)
+                }
+                SandboxSource::Rojo(dir) => crate::sandbox::run_project_sandbox(&dir, &body),
+            };
+            match run_res {
+                Ok(val) => {
+                    let status = if val.pointer("/diagnostics/lune_found").and_then(Value::as_bool)
+                        == Some(false)
+                    {
+                        "503 Service Unavailable"
+                    } else {
+                        "200 OK"
+                    };
+                    respond_json(&mut stream, status, &val);
+                }
+                Err(e) => respond_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    &json!({
+                        "ok": false,
+                        "engine": "lune_roblox_shim",
+                        "passed": false,
+                        "error": e
+                    }),
                 ),
             }
         }
