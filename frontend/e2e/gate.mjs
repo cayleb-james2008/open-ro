@@ -221,22 +221,33 @@ try {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ layout: "skybridge-crest", skin: "obsidian-prism", sheet: "chrome_sheet", procedural_fallback: true }),
     }).then((r) => r.json());
+    const bordersGen = await fetch("/api/studio/ui-kit/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ layout: "skybridge-crest", skin: "obsidian-prism", sheet: "card_borders_sheet", procedural_fallback: true }),
+    }).then((r) => r.json());
     const adp = await fetch("/api/adapters").then((r) => r.json());
-    return { pr, gen, adp };
+    return { pr, gen, bordersGen, adp };
   });
+  const sheetIds = Array.isArray(uiKitApiRes.pr?.sheets) ? uiKitApiRes.pr.sheets.map((x) => x.id) : [];
   check(
-    "GET /api/ui-kit/presets returns 7 rules, 4 layouts, 5 skins, 3 sheets",
+    "GET /api/ui-kit/presets returns 7 rules, 4 layouts, 5 skins, 4 sheets (incl. card_borders_sheet)",
     uiKitApiRes.pr?.ok === true &&
       uiKitApiRes.pr?.craft_rules?.length === 7 &&
       uiKitApiRes.pr?.layouts?.length === 4 &&
       uiKitApiRes.pr?.skins?.length === 5 &&
-      uiKitApiRes.pr?.sheets?.length === 3,
-    JSON.stringify({ rules: uiKitApiRes.pr?.craft_rules?.length, layouts: uiKitApiRes.pr?.layouts?.length }),
+      uiKitApiRes.pr?.sheets?.length === 4 &&
+      sheetIds.includes("card_borders_sheet"),
+    JSON.stringify({ rules: uiKitApiRes.pr?.craft_rules?.length, layouts: uiKitApiRes.pr?.layouts?.length, sheetIds }),
   );
   check(
-    "POST /api/studio/ui-kit/generate slices transparent chrome assets",
-    uiKitApiRes.gen?.ok === true && Number(uiKitApiRes.gen?.sliced_count) >= 8,
-    `sliced=${uiKitApiRes.gen?.sliced_count}`,
+    "POST /api/studio/ui-kit/generate slices transparent chrome & 7 card_borders_sheet overlays",
+    uiKitApiRes.gen?.ok === true &&
+      Number(uiKitApiRes.gen?.sliced_count) >= 8 &&
+      uiKitApiRes.bordersGen?.ok === true &&
+      Number(uiKitApiRes.bordersGen?.sliced_count) === 7 &&
+      uiKitApiRes.bordersGen?.slices_json === "art/ui/slices.json",
+    `chrome=${uiKitApiRes.gen?.sliced_count} borders=${uiKitApiRes.bordersGen?.sliced_count}`,
   );
   const presetIds = Array.isArray(uiKitApiRes.adp?.presets) ? uiKitApiRes.adp.presets.map((x) => x.id) : [];
   check(
@@ -1236,6 +1247,62 @@ try {
   await p.waitForFunction(() => document.querySelector("[data-cua-pause-btn]")?.textContent?.includes("Pause"), null, { timeout: 5000 });
   await p.evaluate(() => fetch("/api/studio/embed/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }));
   check("Resume CUA unlocks agent control cleanly", true);
+
+  // Gap #87C: Studio Autonomous Checks popover + Ship Playtests bar + Assets Poll Moderation control
+  await p.locator("[data-studio-checks-trigger]").click();
+  await p.locator("[data-studio-checks-popover]").waitFor({ state: "visible", timeout: 5000 });
+  const studioChecksVisible =
+    (await p.locator("[data-studio-stage-content]").isVisible()) &&
+    (await p.locator("[data-studio-verify-phone]").isVisible()) &&
+    (await p.locator("[data-studio-verify-desktop]").isVisible()) &&
+    (await p.locator("[data-studio-verify-audio]").isVisible());
+  check("EmbeddedStudioPanel exposes Studio autonomous Stage/Verify controls", studioChecksVisible);
+  const activeProjInfo = await fetch(`${BASE}api/projects`).then((r) => r.json()).catch(() => null);
+  const activeProjId = activeProjInfo?.active;
+  const stageProbeStatus = activeProjId
+    ? await fetch(`${BASE}api/projects/${encodeURIComponent(activeProjId)}/studio/stage-content`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      })
+        .then((r) => r.status)
+        .catch(() => 404)
+    : 404;
+  if (stageProbeStatus !== 404) {
+    await p.locator("[data-studio-stage-content]").click();
+    await p.locator("[data-studio-check-result]").waitFor({ state: "visible", timeout: 8000 });
+    await p.locator("[data-studio-checks-trigger]").click();
+    await p.locator("[data-studio-verify-phone]").click();
+    await p.locator("[data-studio-check-result]").waitFor({ state: "visible", timeout: 8000 });
+    await p.locator("[data-studio-checks-trigger]").click();
+    await p.locator("[data-studio-verify-audio]").click();
+    await p.locator("[data-studio-check-result]").waitFor({ state: "visible", timeout: 8000 });
+    check("EmbeddedStudioPanel Stage/Verify controls execute cleanly against backend", true);
+  } else {
+    await p.keyboard.press("Escape");
+  }
+
+  await p.getByRole("button", { name: "Ship", exact: true }).first().click();
+  await p.locator("[data-ship]").waitFor({ state: "visible", timeout: 8000 });
+  await p.locator('[aria-label="Ship section"]').getByRole("button", { name: "Playtests", exact: true }).click();
+  await p.locator("[data-ship-studio-checks]").waitFor({ state: "visible", timeout: 5000 });
+  check(
+    "Ship Playtests exposes Studio Autonomous Checks bar (Stage, 844x390, Desktop, Audio)",
+    (await p.locator("[data-ship-stage-content]").isVisible()) &&
+      (await p.locator("[data-ship-verify-phone]").isVisible()) &&
+      (await p.locator("[data-ship-verify-desktop]").isVisible()) &&
+      (await p.locator("[data-ship-verify-audio]").isVisible()),
+  );
+  await p.locator('[aria-label="Ship section"]').getByRole("button", { name: "Assets", exact: true }).click();
+  await p.locator("[data-poll-moderation]").waitFor({ state: "visible", timeout: 5000 });
+  check("AssetsPanel exposes Poll Moderation control", await p.locator("[data-poll-moderation]").isVisible());
+  if (stageProbeStatus !== 404) {
+    await p.locator("[data-poll-moderation]").click();
+    await p.waitForFunction(() => document.body.innerText.includes("Moderation"), null, { timeout: 8000 });
+    check("AssetsPanel Poll Moderation executes cleanly against backend", true);
+  }
+  await studioTab.click();
+  await p.locator("[data-embedded-studio-panel]").waitFor({ state: "visible", timeout: 5000 });
 
   // Dark theme at 1440x900
   await setThemeViaSettings(p, "dark");

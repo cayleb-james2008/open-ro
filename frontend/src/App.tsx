@@ -3360,6 +3360,11 @@ export function App() {
               actions={studioActions}
               cuaEvents={cuaEvents}
               cuaPaused={cuaPaused}
+              activeProjectId={ship.activeId}
+              activeProjectName={ship.active?.name ?? null}
+              onStageStudioContent={ship.stageStudioContent}
+              onVerifyStudioDevice={ship.verifyStudioDevice}
+              onVerifyStudioAudio={ship.verifyStudioAudio}
               onToggleCuaPause={handleToggleCuaPause}
               onLaunchEmbed={handleLaunchEmbed}
               onAttachEmbed={handleAttachEmbed}
