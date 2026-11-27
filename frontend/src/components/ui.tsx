@@ -189,11 +189,25 @@ export function Kbd({ className, children, ...props }: React.HTMLAttributes<HTML
   );
 }
 
-export function Badge({ className, children, ...props }: React.HTMLAttributes<HTMLSpanElement>) {
+export type BadgeVariant = "default" | "outline" | "secondary";
+
+export function Badge({
+  className,
+  variant = "default",
+  children,
+  ...props
+}: React.HTMLAttributes<HTMLSpanElement> & { variant?: BadgeVariant }) {
+  const variantCls =
+    variant === "outline"
+      ? "border-hairline bg-transparent text-ink-2"
+      : variant === "secondary"
+        ? "border-transparent bg-surface text-ink-2"
+        : "border-hairline bg-board text-ink-2";
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded-chip border border-hairline bg-board px-2 py-0.5 text-xs font-medium text-ink-2",
+        "inline-flex items-center gap-1 rounded-chip border px-2 py-0.5 text-xs font-medium",
+        variantCls,
         className,
       )}
       {...props}
