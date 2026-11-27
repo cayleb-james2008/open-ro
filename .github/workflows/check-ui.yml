@@ -1,0 +1,78 @@
+name: check-ui
+
+# Runs the UI gate and worst-case replay (`npm run check:ui` from frontend/) on every
+# pull request and on pushes to main. check:ui builds the single-file frontend and the
+# Rust binary, starts an isolated fixture instance, and drives it with headless Chromium.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-ui-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: check-ui-cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: check-ui-cargo-${{ runner.os }}-
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # check:ui builds with `cargo build --offline`, so fetch crates first.
+      - name: Fetch crates
+        run: cargo fetch --locked
+
+      # The Headless Sandbox checks in the gate run real Luau through Lune (README pins 0.11.1).
+      # The fixture picks it up from ~/.local/bin/lune.
+      - name: Install Lune
+        run: |
+          mkdir -p "$HOME/.local/bin" "$RUNNER_TEMP/lune"
+          curl -fsSL -o "$RUNNER_TEMP/lune/lune.zip" https://github.com/lune-org/lune/releases/download/v0.11.1/lune-0.11.1-linux-x86_64.zip
+          unzip -o "$RUNNER_TEMP/lune/lune.zip" -d "$RUNNER_TEMP/lune"
+          install -m755 "$RUNNER_TEMP/lune/lune" "$HOME/.local/bin/lune"
+          "$HOME/.local/bin/lune" --version
+
+      - name: Install Chromium
+        working-directory: frontend
+        run: |
+          npx playwright-core install --with-deps chromium
+          echo "CHROME_PATH=$(node -e "console.log(require('playwright-core').chromium.executablePath())")" >> "$GITHUB_ENV"
+
+      - name: check:ui
+        working-directory: frontend
+        run: npm run check:ui
+
+      - name: Upload fixture logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-ui-out
+          path: frontend/e2e/.out
+          if-no-files-found: ignore
