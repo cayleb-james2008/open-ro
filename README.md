@@ -1,4 +1,4 @@
-# <img src="docs/logo.svg" alt="OpenRO Studio logo" width="28" height="28" align="absmiddle" /> OpenRO (`v1.29.0`)
+# <img src="docs/logo.svg" alt="OpenRO Studio logo" width="28" height="28" align="absmiddle" /> OpenRO (`v1.30.0`)
 
 [![Release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/cayleb-james2008/open-ro/release.yml?branch=main&label=build)](https://github.com/cayleb-james2008/open-ro/actions)
@@ -38,6 +38,14 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
 <table>
   <tr>
     <td width="50%" align="center">
+      <strong>Hardened Cycle 4 LiveOps, Studio sync, and Luau workbench (`v1.30.0`)</strong>
+      <br /><br />
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/hardening-c4h1-dark.png" />
+        <img src="docs/screenshots/hardening-c4h1-light.png" alt="OpenRO v1.30.0 Cycle 4 hardened LiveOps DataStores inspector, Explorer, and Studio thread" width="100%" />
+      </picture>
+    </td>
+    <td width="50%" align="center">
       <strong>Semantic Luau code workbench and symbols outline (`v1.29.0`)</strong>
       <br /><br />
       <picture>
@@ -45,6 +53,8 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
         <img src="docs/screenshots/luau-types-ide-c4e3-light.png" alt="OpenRO v1.29.0 CodeDiffWorkbench showing Check Types badge, Symbols & Exports outline rail, and clickable line-gutter contract mismatch tooltip" width="100%" />
       </picture>
     </td>
+  </tr>
+  <tr>
     <td width="50%" align="center">
       <strong>Ship readiness autopilot and pre-publish gate</strong>
       <br /><br />
@@ -53,8 +63,6 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
         <img src="docs/screenshots/ship-readiness-light.png" alt="OpenRO Ship Readiness Autopilot, 5-pillar score, and Pre-Publish Gate" width="100%" />
       </picture>
     </td>
-  </tr>
-  <tr>
     <td width="50%" align="center">
       <strong>Monetization tier and 48h comeback retention designer</strong>
       <br /><br />
@@ -63,6 +71,8 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
         <img src="docs/screenshots/monetization-light.png" alt="OpenRO Monetization Tier and Retention Curve Designer" width="100%" />
       </picture>
     </td>
+  </tr>
+  <tr>
     <td width="50%" align="center">
       <strong>Production LiveOps telemetry collector and sync (`v1.28.0`)</strong>
       <br /><br />
@@ -71,8 +81,6 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
         <img src="docs/screenshots/liveops-telemetry-c4e2-light.png" alt="OpenRO v1.28.0 LiveOps Telemetry Collector codegen, Open Cloud sync cursor, and source filter" width="100%" />
       </picture>
     </td>
-  </tr>
-  <tr>
     <td width="50%" align="center">
       <strong>LiveOps funnel cohort and live server errors (`v1.28.0`)</strong>
       <br /><br />
@@ -81,6 +89,8 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
         <img src="docs/screenshots/liveops-errors-c4e2-light.png" alt="OpenRO v1.28.0 LiveOps funnel alerts and aggregated Live Server Errors with script jump" width="100%" />
       </picture>
     </td>
+  </tr>
+  <tr>
     <td width="50%" align="center">
       <strong>Two-way Studio sync and 3-way conflict preview (`v1.27.0`)</strong>
       <br /><br />
@@ -89,7 +99,6 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
         <img src="docs/screenshots/bidirectional-sync-c4e1-light.png" alt="OpenRO v1.27.0 Two-Way Studio Sync dialog showing 3-way pull diff, strategy picker, and hunk preview" width="100%" />
       </picture>
     </td>
-  </tr>
     <td width="50%" align="center">
       <strong>Prefab model import and WebGL2 3D inspector (`v1.27.0`)</strong>
       <br /><br />
@@ -150,16 +159,16 @@ flowchart LR
   SRV --> MCP["Roblox Studio MCP &amp; Open Cloud<br/>13 Live Tools + Price Approval Gate"]
 ```
 
-## Verified benchmarks (`v1.29.0` vs `v1.2.0`)
+## Verified benchmarks (`v1.30.0` vs `v1.2.0`)
 
-| Metric | `v1.2.0` baseline | `v1.29.0` verified (pinned) | Delta |
+| Metric | `v1.2.0` baseline | `v1.30.0` verified (pinned) | Delta |
 | --- | --- | --- | --- |
-| Release binary size | `19.00 MB` | **`10.21 MiB`** (`10,707,856 B`) | **`-46.3%`** |
-| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`237.2 KB`** raw (`242,921 B`) / **`56.7 KB`** gz (`58,035 B` wire) | **`-87.6%` wire** |
-| Cold boot (pinned) | `1,470 ms` | **`22.60 ms`** | **`-98.5%`** |
-| Peak RSS (`VmHWM`) | `115.20 MB` | **`13.20 MB`** (`13,516 KB`, `scale-audit` + 10 SSE) | **`-88.5%`** |
-| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`5,893.5 req/s`** Python cold (`2.55 ms` p50, `3.73 ms` p95, `0/14,741` errs) | **`6.74x` (`-97.4%` p95)** |
-| Security and UI gates | `43/43` fuzz | **`43/43` fuzz, `10/10` SSE, `0` sloplint fails/reflex/warns (`65` files + render), `374/374` Rust tests (`5/5` `v129_luau_typecheck_symbols`), `gate 208/208`, `replay 11/11`** | Pass |
+| Release binary size | `19.00 MB` | **`10.25 MiB`** (`10,744,760 B`) | **`-46.1%`** |
+| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`237.6 KB`** raw (`243,337 B`) / **`56.7 KB`** gz (`58,111 B` wire) | **`-87.6%` wire** |
+| Cold boot (pinned) | `1,470 ms` | **`449.75 ms`** | **`-69.4%`** |
+| Peak RSS (`VmHWM`) | `115.20 MB` | **`13.38 MB`** (`13,696 KB`, `scale-audit` + 10 SSE) | **`-88.4%`** |
+| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`6,443.7 req/s`** Python cold (`2.28 ms` p50, `2.99 ms` p95, `0/16,116` errs) | **`7.36x` (`-97.9%` p95)** |
+| Security and UI gates | `43/43` fuzz | **`43/43` fuzz, `10/10` SSE, `0` sloplint fails/reflex/warns (`65` files + render), `380/380` Rust tests (`6/6` `v130_cycle4_hardening`), `gate 221/221`, `replay 11/11`** | Pass |
 
 ## Quick start
 
