@@ -2,7 +2,7 @@
 //! - 7 Dissected AAA UI Craft Rules
 //! - 4 Mixable Layout Topologies (`skybridge-crest`, `perimeter-command`, `workshop-ribbon`, `compact-mobile-split`)
 //! - 5 Original Visual Skins (`obsidian-prism`, `skybridge-gilded`, `sakura-lacquer`, `cyber-forge`, `clean-monochrome`)
-//! - 3 Cohesive UI Asset Sheet Recipes (`chrome_sheet`, `icons_sheet`, `rarity_frames_sheet`)
+//! - 4 Cohesive UI Asset Sheet Recipes (`chrome_sheet`, `icons_sheet`, `rarity_frames_sheet`, `card_borders_sheet`)
 //! - Single-line `character_art = false` ChatGPT Image Gen prompts + deterministic 2x Pillow `procedural_fallback`
 //! - Auto-slicer integration (`image_ops::slice_ui_sheet`) -> `art/ui/<skin>/*.png` + `art/ui/slices.json`
 
@@ -513,6 +513,77 @@ pub fn sheet_recipes() -> Vec<UiSheetRecipe> {
                 SheetItemSpec { name: "frame_legacy", row: 1, col: 2, is_9slice: true, cutout_interior: true, target_size: [512, 712], prompt_desc: "Legacy ivory-and-gold filigree heirloom card frame with hollow center" },
             ],
         },
+        UiSheetRecipe {
+            id: "card_borders_sheet",
+            name: "Sleek Edge-Hugging Collector Card Borders Sheet (Common -> Mythic + Legacy)",
+            cols: 4,
+            rows: 2,
+            items: vec![
+                SheetItemSpec {
+                    name: "border_common",
+                    row: 0,
+                    col: 0,
+                    is_9slice: true,
+                    cutout_interior: true,
+                    target_size: [512, 712],
+                    prompt_desc: "sleek ultra-thin Common brushed pewter edge-hugging collector card border with crisp chamfered corner notches, side border thickness <=6%, >=88% open hollow chroma-key window",
+                },
+                SheetItemSpec {
+                    name: "border_uncommon",
+                    row: 0,
+                    col: 1,
+                    is_9slice: true,
+                    cutout_interior: true,
+                    target_size: [512, 712],
+                    prompt_desc: "sleek ultra-thin Uncommon emerald double-pinline edge-hugging collector card border with stepped corner notches, side border thickness <=6%, >=88% open hollow chroma-key window",
+                },
+                SheetItemSpec {
+                    name: "border_rare",
+                    row: 0,
+                    col: 2,
+                    is_9slice: true,
+                    cutout_interior: true,
+                    target_size: [512, 712],
+                    prompt_desc: "sleek ultra-thin Rare sapphire edge-hugging collector card border with twin-blade upper wing fins and lower corner chevrons, side border thickness <=6%, >=88% open hollow chroma-key window",
+                },
+                SheetItemSpec {
+                    name: "border_epic",
+                    row: 0,
+                    col: 3,
+                    is_9slice: true,
+                    cutout_interior: true,
+                    target_size: [512, 712],
+                    prompt_desc: "sleek ultra-thin Epic violet sigil corner-bracket edge-hugging collector card border with geometric inlaid corner wards, side border thickness <=7%, >=88% open hollow chroma-key window",
+                },
+                SheetItemSpec {
+                    name: "border_legendary",
+                    row: 1,
+                    col: 0,
+                    is_9slice: true,
+                    cutout_interior: true,
+                    target_size: [512, 712],
+                    prompt_desc: "sleek ultra-thin Legendary amber temple corner-filigree edge-hugging collector card border with slim top architrave keystone, side border thickness <=7%, >=88% open hollow chroma-key window",
+                },
+                SheetItemSpec {
+                    name: "border_mythic",
+                    row: 1,
+                    col: 1,
+                    is_9slice: true,
+                    cutout_interior: true,
+                    target_size: [512, 712],
+                    prompt_desc: "sleek ultra-thin Mythic iridescent cyan-magenta celestial prism top crest and corner energy wisps edge-hugging collector card border, side border thickness <=8%, >=88% open hollow chroma-key window",
+                },
+                SheetItemSpec {
+                    name: "border_legacy",
+                    row: 1,
+                    col: 2,
+                    is_9slice: true,
+                    cutout_interior: true,
+                    target_size: [512, 712],
+                    prompt_desc: "sleek ultra-thin Legacy alabaster-gold triumphal corner crown edge-hugging collector card border with heirloom clasp, side border thickness <=8%, >=88% open hollow chroma-key window",
+                },
+            ],
+        },
     ]
 }
 
@@ -526,11 +597,12 @@ pub fn find_sheet_recipe(sheet_id: &str) -> Result<UiSheetRecipe, String> {
 
 pub fn slice_items_for_recipe(sheet_id: &str) -> Result<Vec<Value>, String> {
     let recipe = find_sheet_recipe(sheet_id)?;
+    let is_borders = recipe.id == "card_borders_sheet";
     Ok(recipe
         .items
         .into_iter()
         .map(|it| {
-            json!({
+            let mut obj = json!({
                 "name": it.name,
                 "row": it.row,
                 "col": it.col,
@@ -539,7 +611,11 @@ pub fn slice_items_for_recipe(sheet_id: &str) -> Result<Vec<Value>, String> {
                 "is_9slice": it.is_9slice,
                 "cutout_interior": it.cutout_interior,
                 "target_size": it.target_size,
-            })
+            });
+            if is_borders {
+                obj["pad_px"] = json!(2);
+            }
+            obj
         })
         .collect())
 }
@@ -551,13 +627,18 @@ pub fn build_ui_sheet_prompt(skin_id: &str, sheet_id: &str) -> Result<String, St
     let recipe = find_sheet_recipe(sheet_id)?;
     let items_list: Vec<&str> = recipe.items.iter().map(|i| i.prompt_desc).collect();
     let joined = items_list.join("; ");
+    let chroma = if recipe.id == "card_borders_sheet" {
+        "#00FF00"
+    } else {
+        skin.chroma_key
+    };
     let raw = format!(
         "2D game UI sprite sheet in {} aesthetic ({}), cleanly arranged in an evenly spaced {}x{} grid with generous gutters on a flat uniform {} chroma-key background for clean alpha cutout, razor-sharp crisp vector-painted bevels and cel-shaded highlights, containing: {}, strictly zero text, no letters, no numbers, no watermarks, no logos, original architectural geometry with zero anime franchise likenesses and zero crimson star ribbons",
         skin.name,
         skin.mood,
         recipe.cols,
         recipe.rows,
-        skin.chroma_key,
+        chroma,
         joined
     );
     Ok(raw
@@ -679,7 +760,7 @@ pub fn presets_json() -> Value {
 }
 
 pub fn prompt_guidance() -> &'static str {
-    "UI Craft (7 Rules, zero copying): ui_kit_presets/ui_kit_generate -> 9-slice transparent PNGs + AssetIds.slices, BlurEffect modal depth, >=5.25:1 Dark/Light glass, original crests (zero ANRX), >=44px CTA + UIStroke numerals, Master-Detail + 844x390 safe."
+    "UI Craft (7 Rules, zero copying): ui_kit_presets/ui_kit_generate -> 9-slice transparent PNGs + AssetIds.slices (including card_borders_sheet -> card-borders/*), BlurEffect modal depth, >=5.25:1 Dark/Light glass, original crests, >=44px CTA + UIStroke numerals, Master-Detail + 844x390 safe; render full-bleed edge-to-edge ImageLabel portraits (UDim2.fromScale(1, 1), Enum.ScaleType.Crop) overlaid with sleek card-borders/* 9-slices + Anime Nexus RNG X perimeter icon docks + bottom roll/team hotbar (NEVER crude SaaS bordered boxes)."
 }
 
 /// Generate (or slice an existing) UI Kit asset sheet + build the matching mixable ScreenDoc.
@@ -737,12 +818,17 @@ pub fn generate_ui_kit(
         } else {
             skin.dark.to_json()
         };
+        let chroma = if sheet_id.eq_ignore_ascii_case("card_borders_sheet") {
+            "#00FF00"
+        } else {
+            skin.chroma_key
+        };
         match render_procedural_ui_sheet(
             root,
             sheet_id,
             &default_sheet_rel,
             &pal,
-            skin.chroma_key,
+            chroma,
         ) {
             Ok(rendered) => (
                 default_sheet_rel.clone(),
@@ -818,12 +904,15 @@ pub fn generate_ui_kit(
         (path, json!({ "source": raw_provider, "generation": gen_res }))
     };
 
-    let slice_body = json!({
+    let mut slice_body = json!({
         "project": project_id.unwrap_or(""),
         "input": sheet_rel,
         "skin": skin.id,
         "sheet": sheet_id,
     });
+    if let Some(out_dir) = body.get("out_dir").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+        slice_body["out_dir"] = json!(out_dir);
+    }
     let sliced = slice_ui_sheet(root, &slice_body)?;
     let screen_doc = ui_kit_screen_doc(
         layout_id,
@@ -971,7 +1060,11 @@ fn generate_rust_fallback_kit(
             }
         }
         let png_bytes = encode_rgba_png(w, h, &rgba)?;
-        let rel = format!("art/ui/{}/{}.png", skin.id, item.name);
+        let rel = if sheet_id.eq_ignore_ascii_case("card_borders_sheet") {
+            format!("art/ui/card-borders/{}.png", item.name)
+        } else {
+            format!("art/ui/{}/{}.png", skin.id, item.name)
+        };
         let abs = safe_rel(root, &rel)?;
         if let Some(p) = abs.parent() {
             std::fs::create_dir_all(p).or_else(|e| Err(Oc { status: 500, msg: format!("mkdir: {e}") }))?;

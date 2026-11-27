@@ -1614,6 +1614,65 @@ pub fn ensure_agent_hooks(shared: &Arc<Shared>, agent: &mut Agent) {
             cua_exec_window(&srv, "agent", args).map_err(|(_, e)| e)
         }));
     }
+    if agent.hooks.studio_stage_content.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.studio_stage_content = Some(Arc::new(move |args| {
+            let pid = resolve_agent_project_id(&srv, args, "studio_stage_content")?;
+            let r = srv
+                .projects
+                .lock()
+                .unwrap()
+                .find(&pid)
+                .ok_or_else(|| format!("no project '{pid}'"))?;
+            let slug = args
+                .get("slug")
+                .or_else(|| args.get("studio_project_slug"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(crate::studio_embed::sanitize_studio_content_slug)
+                .unwrap_or_else(|| crate::studio_embed::default_studio_project_slug(&r.dir));
+            crate::studio_embed::stage_project_studio_content(&r.dir, &slug)
+        }));
+    }
+    if agent.hooks.studio_verify_device.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.studio_verify_device = Some(Arc::new(move |args| {
+            let pid = resolve_agent_project_id(&srv, args, "studio_verify_device")?;
+            let r = srv
+                .projects
+                .lock()
+                .unwrap()
+                .find(&pid)
+                .ok_or_else(|| format!("no project '{pid}'"))?;
+            crate::playtest::verify_studio_device(&srv, &r, args).map_err(|(_, e)| e)
+        }));
+    }
+    if agent.hooks.studio_verify_audio.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.studio_verify_audio = Some(Arc::new(move |args| {
+            let pid = resolve_agent_project_id(&srv, args, "studio_verify_audio")?;
+            let r = srv
+                .projects
+                .lock()
+                .unwrap()
+                .find(&pid)
+                .ok_or_else(|| format!("no project '{pid}'"))?;
+            crate::playtest::verify_studio_audio(&srv, &r, args).map_err(|(_, e)| e)
+        }));
+    }
+    if agent.hooks.assets_moderation_poll.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.assets_moderation_poll = Some(Arc::new(move |args| {
+            let pid = resolve_agent_project_id(&srv, args, "assets_moderation_poll")?;
+            invoke_opencloud_tool(
+                &srv,
+                "POST",
+                &format!("/api/projects/{pid}/assets/moderation"),
+                args,
+            )
+        }));
+    }
 }
 
 fn ensure_run_worker(shared: &Arc<Shared>) {
@@ -1914,6 +1973,11 @@ fn handle(
         host_allowed(&req.host, &[]),
     ) {
         respond_bytes(&mut stream, reply.status, reply.content_type, "no-store", &reply.body);
+        break 'req_done;
+    }
+
+    // Gap #84/#85 project-scoped Studio bridge & live verification routes.
+    if try_route_project_studio(&mut stream, shared, &req, path) {
         break 'req_done;
     }
 
@@ -6601,11 +6665,150 @@ fn spawn_embed_mcp_auto_attacher(
     });
 }
 
+fn stage_active_project_studio_content_best_effort(
+    shared: &Shared,
+    project_id_override: Option<&str>,
+) {
+    let proj_dir = {
+        let store = shared.projects.lock().unwrap();
+        project_id_override
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .and_then(|pid| store.find(pid))
+            .or_else(|| store.active.as_deref().and_then(|aid| store.find(aid)))
+            .map(|r| r.dir)
+    };
+    if let Some(dir) = proj_dir {
+        let slug = crate::studio_embed::default_studio_project_slug(&dir);
+        let _ = crate::studio_embed::stage_project_studio_content(&dir, &slug);
+    }
+}
+
+fn resolve_active_project_latest_rbxlx(
+    shared: &Shared,
+    project_id_override: Option<&str>,
+) -> Option<PathBuf> {
+    let proj_dir = {
+        let store = shared.projects.lock().unwrap();
+        project_id_override
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .and_then(|pid| store.find(pid))
+            .or_else(|| store.active.as_deref().and_then(|aid| store.find(aid)))
+            .map(|r| r.dir)
+    }?;
+    if let Some((_, p)) = crate::opencloud::latest_build_file(&proj_dir) {
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    crate::projects::builds(&proj_dir)
+        .into_iter()
+        .find_map(|rec| {
+            let rel = rec.get("path")?.as_str()?;
+            let full = crate::projects::safe_join(&proj_dir, rel).ok()?;
+            full.is_file().then_some(full)
+        })
+}
+
+fn try_route_project_studio(
+    stream: &mut TcpStream,
+    shared: &Shared,
+    req: &Request,
+    path: &str,
+) -> bool {
+    let Some(rest) = path.strip_prefix("/api/projects/") else {
+        return false;
+    };
+    let segs: Vec<&str> = rest.split('/').collect();
+    if segs.len() != 3 || segs[1] != "studio" {
+        return false;
+    }
+    let id = segs[0];
+    let action = segs[2];
+    if !matches!(action, "stage-content" | "verify-device" | "verify-audio") {
+        return false;
+    }
+    if req.method != "POST" {
+        respond_err(stream, "405 Method Not Allowed", "use POST for this endpoint");
+        return true;
+    }
+    if !host_allowed(&req.host, &[]) {
+        respond_err(
+            stream,
+            "403 Forbidden",
+            "Studio project bridge & verification endpoints are only allowed from this machine (loopback)",
+        );
+        return true;
+    }
+    let body: Value = if req.body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
+                return true;
+            }
+        }
+    };
+    let Some(proj_ref) = shared.projects.lock().unwrap().find(id) else {
+        respond_err(stream, "404 Not Found", &format!("no project '{id}'"));
+        return true;
+    };
+    match action {
+        "stage-content" => {
+            let slug = body
+                .get("slug")
+                .or_else(|| body.get("studio_project_slug"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(crate::studio_embed::sanitize_studio_content_slug)
+                .unwrap_or_else(|| crate::studio_embed::default_studio_project_slug(&proj_ref.dir));
+            match crate::studio_embed::stage_project_studio_content(&proj_ref.dir, &slug) {
+                Ok(v) => respond_json(stream, "200 OK", &v),
+                Err(e) => {
+                    if crate::studio_embed::find_studio_content_dir().is_none() {
+                        respond_json(
+                            stream,
+                            "200 OK",
+                            &json!({
+                                "ok": false,
+                                "studio_found": false,
+                                "staged_count": 0,
+                                "skipped_count": 0,
+                                "error": e,
+                            }),
+                        )
+                    } else {
+                        respond_err(stream, "400 Bad Request", &e)
+                    }
+                }
+            }
+        }
+        "verify-device" => match crate::playtest::verify_studio_device(shared, &proj_ref, &body) {
+            Ok(v) => respond_json(stream, "200 OK", &v),
+            Err((code, msg)) => respond_err(stream, status_line_for_code(code), &msg),
+        },
+        "verify-audio" => match crate::playtest::verify_studio_audio(shared, &proj_ref, &body) {
+            Ok(v) => respond_json(stream, "200 OK", &v),
+            Err((code, msg)) => respond_err(stream, status_line_for_code(code), &msg),
+        },
+        _ => return false,
+    }
+    true
+}
+
 fn perform_studio_embed_launch(
     shared: &Arc<Shared>,
     body: &Value,
     attach_only: bool,
 ) -> Result<Value, (&'static str, String)> {
+    stage_active_project_studio_content_best_effort(
+        shared,
+        body.get("project_id").and_then(Value::as_str),
+    );
     let mut cfg = crate::studio_embed::EmbedConfig::from_json(body)
         .map_err(|e| ("400 Bad Request", e))?;
     if attach_only {
@@ -6767,6 +6970,7 @@ pub(crate) fn perform_studio_embed_transfer(
     shared: &Arc<Shared>,
     opts: crate::studio_embed::TransferOptions,
 ) -> Result<Value, (&'static str, String)> {
+    stage_active_project_studio_content_best_effort(shared, None);
     let (res, stop_flag) = {
         let mut mgr = shared.studio_embed.lock().unwrap();
         let res = crate::studio_embed::transfer_to_embedded_studio(
@@ -6993,6 +7197,10 @@ fn handle_studio_embed_transfer(stream: &mut TcpStream, shared: &Arc<Shared>, re
         }
     }
 
+    stage_active_project_studio_content_best_effort(
+        shared,
+        body.get("project_id").and_then(Value::as_str),
+    );
     let opts = crate::studio_embed::TransferOptions {
         display,
         width,
@@ -7022,16 +7230,7 @@ fn handle_studio_embed_transfer(stream: &mut TcpStream, shared: &Arc<Shared>, re
     }
 }
 
-fn handle_studio_embed_stop(stream: &mut TcpStream, shared: &Shared, req: &Request) {
-    if !host_allowed(&req.host, &[]) {
-        respond_err(stream, "403 Forbidden", "stopping Embedded Roblox Studio is only allowed from this machine (loopback)");
-        return;
-    }
-    if shared.busy.load(Ordering::SeqCst) > 0 {
-        respond_err(stream, "409 Conflict", "a build or playtest is currently running; stop Studio once it finishes");
-        return;
-    }
-
+fn stop_studio_embed_runtime(shared: &Shared) -> Value {
     {
         let mut mgr = shared.studio_embed.lock().unwrap();
         let _ = crate::studio_embed::stop_embedded_studio(&mut mgr);
@@ -7060,19 +7259,29 @@ fn handle_studio_embed_stop(stream: &mut TcpStream, shared: &Shared, req: &Reque
     shared.studio_stream.record_action(ev);
 
     let status_obj = build_embed_status_payload(shared);
-    respond_json(
-        stream,
-        "200 OK",
-        &json!({
-            "ok": true,
-            "running": false,
-            "connected": false,
-            "studio_connected": true,
-            "workspace_mode": "local_place",
-            "studio_mode": "local_place",
-            "status": status_obj,
-        }),
-    );
+    json!({
+        "ok": true,
+        "running": false,
+        "connected": false,
+        "stopped": true,
+        "studio_connected": true,
+        "workspace_mode": "local_place",
+        "studio_mode": "local_place",
+        "status": status_obj,
+    })
+}
+
+fn handle_studio_embed_stop(stream: &mut TcpStream, shared: &Shared, req: &Request) {
+    if !host_allowed(&req.host, &[]) {
+        respond_err(stream, "403 Forbidden", "stopping Embedded Roblox Studio is only allowed from this machine (loopback)");
+        return;
+    }
+    if shared.busy.load(Ordering::SeqCst) > 0 {
+        respond_err(stream, "409 Conflict", "a build or playtest is currently running; stop Studio once it finishes");
+        return;
+    }
+    let payload = stop_studio_embed_runtime(shared);
+    respond_json(stream, "200 OK", &payload);
 }
 
 /// Capture the current live/embedded Studio frame to `<data_dir>/cua-frames/<id>.png`
@@ -7385,6 +7594,76 @@ fn cua_exec_keyboard(shared: &Shared, actor: &str, body: &Value) -> Result<Value
     }))
 }
 
+fn prepare_cua_window_body(shared: &Shared, body: &Value, is_transfer: bool) -> Result<Value, (u16, String)> {
+    let mut out = if body.is_object() {
+        body.clone()
+    } else {
+        json!({})
+    };
+    let project_id = out
+        .get("project_id")
+        .or_else(|| out.get("project"))
+        .and_then(Value::as_str)
+        .map(String::from);
+    let explicit_pf = out
+        .get("place_file")
+        .or_else(|| out.get("rbxlx_path"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+
+    if let Some(raw_pf) = explicit_pf {
+        if raw_pf.contains('\0') || raw_pf.contains('\n') || raw_pf.contains('\r') {
+            return Err((400, "place_file must not contain control characters".to_string()));
+        }
+        let p = PathBuf::from(&raw_pf);
+        if p.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err((
+                400,
+                "place_file must not contain '..' traversal segments".to_string(),
+            ));
+        }
+        if !p.is_absolute() {
+            let proj_dir = {
+                let store = shared.projects.lock().unwrap();
+                project_id
+                    .as_deref()
+                    .and_then(|pid| store.find(pid))
+                    .or_else(|| store.active.as_deref().and_then(|aid| store.find(aid)))
+                    .map(|r| r.dir)
+            };
+            if let Some(dir) = proj_dir {
+                let resolved = crate::projects::safe_join(&dir, &raw_pf).map_err(|e| (400, e))?;
+                if let Some(obj) = out.as_object_mut() {
+                    obj.insert(
+                        "place_file".to_string(),
+                        json!(resolved.to_string_lossy().into_owned()),
+                    );
+                }
+            }
+        }
+    } else if let Some(latest_rbxlx) =
+        resolve_active_project_latest_rbxlx(shared, project_id.as_deref())
+    {
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert(
+                "place_file".to_string(),
+                json!(latest_rbxlx.to_string_lossy().into_owned()),
+            );
+        }
+    }
+
+    if is_transfer {
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert("transfer".to_string(), json!(true));
+        }
+    }
+    Ok(out)
+}
+
 fn cua_exec_window(
     shared: &Arc<Shared>,
     actor: &str,
@@ -7416,8 +7695,37 @@ fn cua_exec_window(
                 "event": ev.to_json(),
             }))
         }
+        "stop" => {
+            let mut out = stop_studio_embed_runtime(shared);
+            let ev = shared
+                .cua_log
+                .record(crate::studio_embed::StudioCuaEventInput {
+                    actor: actor.to_string(),
+                    kind: "window_stop".to_string(),
+                    summary: format!("{actor} · Studio window stop"),
+                    norm_x: None,
+                    norm_y: None,
+                    to_norm_x: None,
+                    to_norm_y: None,
+                    key: None,
+                    hotkey: None,
+                    frame_url: None,
+                    ok: true,
+                });
+            if let Some(obj) = out.as_object_mut() {
+                obj.insert("action".to_string(), json!("stop"));
+                obj.insert("event".to_string(), ev.to_json());
+                obj.insert("cua_paused".to_string(), json!(shared.cua_log.is_paused()));
+            }
+            Ok(out)
+        }
         "launch" | "attach" => {
-            let mut out = perform_studio_embed_launch(shared, body, action == "attach")
+            let launch_body = if action == "launch" {
+                prepare_cua_window_body(shared, body, false)?
+            } else {
+                body.clone()
+            };
+            let mut out = perform_studio_embed_launch(shared, &launch_body, action == "attach")
                 .map_err(|(st, msg)| {
                     let code = if st.starts_with("400") { 400 } else { 502 };
                     (code, msg)
@@ -7444,10 +7752,7 @@ fn cua_exec_window(
             Ok(out)
         }
         "transfer" => {
-            let mut transfer_body = body.clone();
-            if let Some(obj) = transfer_body.as_object_mut() {
-                obj.insert("transfer".to_string(), json!(true));
-            }
+            let transfer_body = prepare_cua_window_body(shared, body, true)?;
             let mut out = perform_studio_embed_launch(shared, &transfer_body, false)
                 .map_err(|(st, msg)| {
                     let code = if st.starts_with("400") { 400 } else { 502 };
@@ -7476,7 +7781,7 @@ fn cua_exec_window(
         }
         other => Err((
             400,
-            format!("unsupported CUA window action '{other}' (expected status, launch, attach, transfer, pause, or resume)"),
+            format!("unsupported CUA window action '{other}' (expected status, launch, attach, transfer, stop, pause, or resume)"),
         )),
     }
 }

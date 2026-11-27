@@ -209,7 +209,10 @@ STUDIO & WHOLE-GAME TOOLS:\n\
 - {{\"tool\": \"studio_cua_screenshot\", \"args\": {{\"label\": \"viewport\"}}}} captures a PNG frame from the live embedded/headed Studio window\n\
 - {{\"tool\": \"studio_cua_mouse\", \"args\": {{\"action\": \"click|double_click|right_click|move|drag|scroll\", \"x\": 0.5, \"y\": 0.5, \"to_x\": 0.7, \"to_y\": 0.7, \"normalized\": true}}}} drives the headed Studio cursor (click, smooth drag, scroll)\n\
 - {{\"tool\": \"studio_cua_keyboard\", \"args\": {{\"hotkey\": [\"ctrl\", \"s\"]}}}} (or `key` / `text`) sends safe hotkeys/keystrokes to headed Studio (OS-escape shortcuts blocked)\n\
-- {{\"tool\": \"studio_cua_window\", \"args\": {{\"action\": \"status|launch|attach|transfer|pause|resume\"}}}} manages or pauses/resumes the embedded Studio window\n\
+- {{\"tool\": \"studio_cua_window\", \"args\": {{\"action\": \"status|launch|attach|transfer|stop|pause|resume\", \"place_file\": \"...?\"}}}} manages, launches/transfers (auto-resolving active project .rbxlx), stops, or pauses/resumes the embedded Studio window\n\
+- {{\"tool\": \"studio_stage_content\", \"args\": {{\"slug\": \"...?\"}}}} stages local project PNG/audio into Studio's local content dir (`rbxasset://openro/<slug>/...`) for instant preview before Open Cloud moderation\n\
+- {{\"tool\": \"studio_verify_device\", \"args\": {{\"profile\": \"desktop_1920x1080|tablet_1024x768|phone_844x390\", \"capture_screenshot\": true}}}} runs live Studio PlayerGui layout/touch-target/overflow/overlap verification (fails closed when Studio is disconnected)\n\
+- {{\"tool\": \"studio_verify_audio\", \"args\": {{}}}} runs offline RIFF/WAVE PCM checks plus live Studio `ContentProvider:PreloadAsync` & `Sound.IsLoaded` verification (fails closed when Studio is disconnected)\n\
 \nStudio-Native First WORKFLOW:\n\
 - Push native Luau scripts, ScreenGuis, and instances directly into live Roblox Studio via MCP/Rojo sync (`project_sync`, `execute_luau`, `multi_edit`, `project_scene_mutate`, `gui_compile`).\n\
 - Use `studio_cua_*` (`studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, `studio_cua_window`) over the headed/embedded Studio window for any native Studio UI or dialog outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor, dialogs).\n\
@@ -251,7 +254,7 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - {{\"tool\": \"adapter_invoke\", \"args\": {{\"capability\": \"...\", \"adapter_id\": \"...?\", \"params\": {{...}}}}}} runs an installed CLI/HTTP adapter (or capability priority chain)\n\
 - {{\"tool\": \"opencloud_status\", \"args\": {{}}}} / {{\"tool\": \"creator_hub_status\", \"args\": {{\"check_login\": true, \"save_creator\": true}}}} checks Open Cloud key/creator & open loopback Chromium Creator Hub status\n\
 - {{\"tool\": \"creator_hub_setup\", \"args\": {{\"ensure_experience\": true}}}} / {{\"tool\": \"creator_hub_configure\", \"args\": {{\"private_servers\": {{\"enabled\": true, \"price_robux\": 0}}}}}} automates Creator Hub via loopback CDP (stops cleanly on `action_required` — never bypass login/2FA/CAPTCHA)\n\
-- {{\"tool\": \"assets_authorise\", \"args\": {{\"paths\": [\"art/cards/**\"]}}}} / {{\"tool\": \"assets_upload\", \"args\": {{\"paths\": [...]}}}} / {{\"tool\": \"assets_codegen\", \"args\": {{}}}} authorises, uploads, and generates `src/shared/AssetIds.luau`\n\
+- {{\"tool\": \"assets_authorise\", \"args\": {{\"paths\": [\"art/cards/**\"]}}}} / {{\"tool\": \"assets_upload\", \"args\": {{\"paths\": [...], \"max_audio_uploads\": 5}}}} / {{\"tool\": \"assets_moderation_poll\", \"args\": {{}}}} / {{\"tool\": \"assets_codegen\", \"args\": {{\"studio_local_fallback\": true}}}} authorises, uploads, polls Open Cloud moderation (auto-resolving Decal imageAssetId + regenerating `AssetIds.luau`), and generates `src/shared/AssetIds.luau`\n\
 - {{\"tool\": \"products_sync\", \"args\": {{}}}} / {{\"tool\": \"products_codegen\", \"args\": {{}}}} syncs approved Game Passes/Dev Products and generates `src/shared/ProductIds.luau`\n\
 - {{\"tool\": \"universe_get\", \"args\": {{}}}} / {{\"tool\": \"universe_set\", \"args\": {{\"settings\": {{\"displayName\": \"...\", \"description\": \"...\"}}}}}} reads/updates Roblox Experience metadata\n\
 - {{\"tool\": \"liveops_datastore_list\", \"args\": {{\"store\": \"...?\", \"scope\": \"global\", \"prefix\": \"...?\"}}}} / {{\"tool\": \"liveops_datastore_get\", \"args\": {{\"store\": \"...\", \"scope\": \"global\", \"key\": \"...\"}}}} inspects Open Cloud v2 DataStores\n\
@@ -288,45 +291,35 @@ Workflow — Study -> Build -> Check -> Refine (ONE JSON object per turn): First
 pub fn project_system_prompt() -> String {
     format!(
         "You are OpenRO, a Roblox Studio AI IDE agent working on an active Rojo project on disk. \
-Reply with ONLY one JSON object per turn — no prose outside the JSON.\n\n\
-BATCHED STEPS (RECOMMENDED — saves turns and quota):\n\
-You may execute multiple actions in one turn using:\n\
-{{\"steps\": [{{\"tool\": \"...\", \"args\": {{...}}}}, ...], \"done\": true, \"summary\": \"...\"}}\n\
-Steps run in order and abort on first error. \
-Omit \"done\" if you need to inspect tool results before continuing. Single-step {{\"tool\": \"...\", \"args\": {{...}}}} and {{\"done\": true, \"summary\": \"...\"}} also work.\n\n\
+Reply with ONLY one JSON object per turn — no prose outside JSON.\n\n\
+BATCHED STEPS (RECOMMENDED — saves turns/quota):\n\
+{{\"steps\":[{{\"tool\":\"...\",\"args\":{{...}}}},...],\"done\":true,\"summary\":\"...\"}}\n\
+Steps run in order and abort on first error; omit \"done\" to inspect results. Single-step {{\"tool\":\"...\",\"args\":{{...}}}} and {{\"done\":true,\"summary\":\"...\"}} also work.\n\n\
 PROJECT FILE & BUILD TOOLS:\n\
-- project_list {{}}\n\
-- project_files {{\"dir\": \"src\"}}\n\
-- project_read_file {{\"path\": \"src/...\", \"start_line\": 1, \"end_line\": 200}}\n\
-- project_write_file {{\"path\": \"src/server/Main.server.luau\", \"content\": \"...\"}} (auto-checked by Static Luau Prover)\n\
-- project_edit_file {{\"path\": \"src/...\", \"edits\": [{{\"old\": \"...\", \"new\": \"...\"}}]}} (atomic multi-hunk edit)\n\
-- project_delete_file {{\"path\": \"src/old.luau\"}}\n\
-- project_grep {{\"query\": \"RemoteEvent\", \"dir\": \"src\"}}\n\
-- project_update_manifest {{\"patch\": {{...}}}} (safely updates openro.project.json; cannot auto-approve product prices)\n\
-- project_check {{}} (selene/stylua/Luau) / project_symbols {{\"path\": \"...?\"}} / project_typecheck {{}}\n\
-- project_run_lune {{\"script\": \"tools/sim.luau\"}} (timeout-bounded Lune execution)\n\
-- sandbox_playtest {{\"timeout_secs\": 15, \"journey\": [...]}} (<2s headless Roblox Luau runtime sandbox: server/client, remotes, DataStores, ProcessReceipt idempotency, PlayerGui)\n\
-- project_build {{\"engine\": \"auto\"}} (.rbxlx build)\n\
-- project_scene_get {{}} / project_scene_mutate {{\"ops\": [{{\"op\": \"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\", \"path\": \"Workspace.Name\", \"class_name\": \"Part|Model|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\", ...}}]}}
-- gui_save {{\"slug\": \"main-hud\", \"doc\": {{...}} | \"preset\": \"rpg|obby|tycoon|gacha\"}} / gui_compile {{\"slug\": \"main-hud\"}}\n\
-- project_sync {{\"prune\": false}} / project_sync_pull {{\"strategy\": \"merge_non_conflicting\"}} / project_playtest {{\"sync_first\": true, \"suite\": \"playtest/suite.json\"}}\n\n\
+- project_list {{}} / project_files {{\"dir\":\"src\"}} / project_read_file {{\"path\":\"src/...\",\"start_line\":1,\"end_line\":200}}\n\
+- project_write_file {{\"path\":\"src/server/Main.server.luau\",\"content\":\"...\"}} / project_edit_file {{\"path\":\"src/...\",\"edits\":[{{\"old\":\"...\",\"new\":\"...\"}}]}} / project_delete_file {{\"path\":\"src/old.luau\"}}\n\
+- project_grep {{\"query\":\"RemoteEvent\",\"dir\":\"src\"}} / project_update_manifest {{\"patch\":{{...}}}} (cannot auto-approve product prices)\n\
+- project_check {{}} (selene/stylua/Luau) / project_symbols {{\"path\":\"...?\"}} / project_typecheck {{}} / project_run_lune {{\"script\":\"tools/sim.luau\"}}\n\
+- sandbox_playtest {{\"timeout_secs\":15,\"journey\":[...]}} (<2s headless Luau sandbox: remotes, DataStores, ProcessReceipt, PlayerGui)\n\
+- project_build {{\"engine\":\"auto\"}} (.rbxlx) / project_scene_get {{}} / project_scene_mutate {{\"ops\":[{{\"op\":\"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\",\"path\":\"Workspace.Name\",\"class_name\":\"Part|Model|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\",...}}]}}\n\
+- gui_save {{\"slug\":\"main-hud\",\"doc\":{{...}}|\"preset\":\"rpg|obby|tycoon|gacha\"}} / gui_compile {{\"slug\":\"main-hud\"}}\n\
+- project_sync {{\"prune\":false}} / project_sync_pull {{\"strategy\":\"merge_non_conflicting\"}} / project_playtest {{\"sync_first\":true,\"suite\":\"playtest/suite.json\"}}\n\n\
 Studio-Native First & LIVE CUA TOOLS:\n\
 - Push native Luau/ScreenGui/instances into live Roblox Studio via MCP/Rojo sync (`project_sync`, `execute_luau`, `multi_edit`, `project_scene_mutate`, `gui_compile`).\n\
-- Use `studio_cua_*` over the headed Studio window for any native Studio UI/dialog outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor, dialogs).\n\
-- Use local-hardware adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`, `adapter_invoke`) for asset generation Studio cannot do natively.\n\
-- studio_cua_screenshot {{\"label\": \"viewport\"}} / studio_cua_mouse {{\"action\": \"click|drag|scroll\", \"x\": 0.5, \"y\": 0.5, \"to_x\": 0.7, \"to_y\": 0.7, \"normalized\": true}} / studio_cua_keyboard {{\"hotkey\": [\"ctrl\", \"s\"]}} / studio_cua_window {{\"action\": \"status|launch|attach|transfer|pause|resume\"}}\n\n\
+- Use `studio_cua_*` over the headed Studio window for native Studio UI/dialogs outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor).\n\
+- Use local-hardware adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`, `adapter_invoke`) for assets Studio cannot do natively.\n\
+- studio_cua_screenshot {{\"label\":\"viewport\"}} / studio_cua_mouse {{\"action\":\"click|drag|scroll\",\"x\":0.5,\"y\":0.5,\"normalized\":true}} / studio_cua_keyboard {{\"hotkey\":[\"ctrl\",\"s\"]}} / studio_cua_window {{\"action\":\"status|launch|attach|transfer|stop|pause|resume\",\"place_file\":\"...?\"}} / studio_stage_content {{}} / studio_verify_device {{\"profile\":\"phone_844x390|tablet_1024x768|desktop_1920x1080\"}} / studio_verify_audio {{}}\n\n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
-- research_roblox_game {{\"target\": \"<URL or ID>\"}} / web_search {{\"query\": \"...\", \"limit\": 5}} / web_fetch {{\"url\": \"https://...\"}}\n\
-- reference_search {{\"query\": \"...\", \"character\": \"...\", \"show\": \"...\"}}\n\
-- art_generate {{\"prompt\": \"single-line eye-level three-quarter prompt\", \"out_path\": \"art/cards/x/art.png\", \"references\": [...]}} (ChatGPT default; never Higgsfield)\n\
-- image_process {{\"input\": \"...\", \"output\": \"...\", \"ops\": [...]}} / art_pack_card {{\"card_id\": \"...\"}}\n\
-- ui_kit_presets {{}} / ui_kit_generate {{\"layout\": \"skybridge-crest\", \"skin\": \"obsidian-prism\", \"sheet\": \"chrome_sheet\"}} (9-slice PNGs + BlurEffect + >=5.25:1 + 844x390 safe)\n\
-- mesh_generate {{\"name\": \"Prop\", \"description\": \"...\", \"script\": \"...\"}} / audio_generate {{\"name\": \"Sfx\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}}\n\
-- adapter_list {{\"capability\": \"...?\"}} / adapter_invoke {{\"capability\": \"...\", \"adapter_id\": \"...?\", \"params\": {{...}}}}\n\
-- opencloud_status {{}} / creator_hub_status {{\"check_login\": true, \"save_creator\": true}} / creator_hub_setup {{...}} / creator_hub_configure {{...}}\n\
-- assets_authorise {{\"paths\": [...]}} / assets_upload {{\"paths\": [...]}} / assets_codegen {{}} / products_sync {{}} / products_codegen {{}} / universe_get {{}} / universe_set {{...}}\n\
+- research_roblox_game {{\"target\":\"<URL|ID>\"}} / web_search {{\"query\":\"...\",\"limit\":5}} / web_fetch {{\"url\":\"https://...\"}} / reference_search {{\"query\":\"...\",\"character\":\"...\",\"show\":\"...\"}}\n\
+- art_generate {{\"prompt\":\"single-line eye-level three-quarter prompt\",\"out_path\":\"art/cards/x/art.png\",\"references\":[...]}} (ChatGPT default; never Higgsfield)\n\
+- image_process {{\"input\":\"...\",\"output\":\"...\",\"ops\":[...]}} / art_pack_card {{\"card_id\":\"...\"}}\n\
+- ui_kit_presets {{}} / ui_kit_generate {{\"layout\":\"skybridge-crest\",\"skin\":\"obsidian-prism\",\"sheet\":\"chrome_sheet\"}} (9-slice PNGs + BlurEffect + >=5.25:1 + 844x390 safe)\n\
+- mesh_generate {{\"name\":\"Prop\",\"description\":\"...\",\"script\":\"...\"}} / audio_generate {{\"name\":\"Sfx\",\"preset\":\"...\",\"recipe\":{{...}},\"duration_ms\":1200}}\n\
+- adapter_list {{\"capability\":\"...?\"}} / adapter_invoke {{\"capability\":\"...\",\"adapter_id\":\"...?\",\"params\":{{...}}}}\n\
+- opencloud_status {{}} / creator_hub_status {{\"check_login\":true,\"save_creator\":true}} / creator_hub_setup {{...}} / creator_hub_configure {{...}}\n\
+- assets_authorise {{\"paths\":[...]}} / assets_upload {{\"paths\":[...],\"max_audio_uploads\":5}} / assets_moderation_poll {{}} / assets_codegen {{\"studio_local_fallback\":true}} / products_sync {{}} / products_codegen {{}} / universe_get {{}} / universe_set {{...}}\n\
 - liveops_datastore_list {{}} / liveops_datastore_get {{store,key}} / liveops_datastore_set {{...,confirm:true}} / liveops_messaging_publish {{topic,message,confirm:true}} / liveops_remote_config_push {{config,generate_luau,push_to_datastore}} / liveops_telemetry_codegen {{mode,store_name,flush_interval_secs}} / liveops_telemetry_sync {{source,days}} / liveops_telemetry_summary {{}}\n\
-- project_publish {{\"versionType\": \"Saved\"}} (live \"Published\" needs confirm: true)\n\n\
+- project_publish {{\"versionType\":\"Saved\"}} (live \"Published\" needs confirm: true)\n\n\
 STUDY & EVIDENCE (Study -> Build -> Check -> Refine):\n\
 - evidence_record {{summary,confidence,kind,source}} / evidence_list {{confidence?,limit?}} / unknown_add {{title,question,severity,domain}} / unknowns_list {{status?}} / unknown_update {{id,expected_revision,status,resolution,evidence_for}} / mechanics_check {{path,strict?}} / study_status {{}}\n\n\
 3D, VFX & UI GUARDRAILS:\n\
@@ -571,6 +564,10 @@ pub struct AgentHooks {
     pub studio_cua_mouse: Option<HookFn>,
     pub studio_cua_keyboard: Option<HookFn>,
     pub studio_cua_window: Option<HookFn>,
+    pub studio_stage_content: Option<HookFn>,
+    pub studio_verify_device: Option<HookFn>,
+    pub studio_verify_audio: Option<HookFn>,
+    pub assets_moderation_poll: Option<HookFn>,
 }
 
 impl Agent {
@@ -3087,6 +3084,8 @@ impl Agent {
                                         | "blender_generate"
                                         | "audio_generate"
                                         | "assets_upload"
+                                        | "assets_moderation_poll"
+                                        | "studio_stage_content"
                                         | "creator_hub_setup"
                                         | "creator_hub_configure"
                                         | "assets_authorise"
@@ -3564,6 +3563,8 @@ impl Agent {
                                 | "blender_generate"
                                 | "audio_generate"
                                 | "assets_upload"
+                                | "assets_moderation_poll"
+                                | "studio_stage_content"
                                 | "creator_hub_setup"
                                 | "creator_hub_configure"
                                 | "assets_authorise"
@@ -4862,6 +4863,91 @@ impl Agent {
                 let text = res.to_string();
                 transcript.push(format!("tool {tool} -> {text}"));
                 Ok(format!("tool_result: {tool}: {text}"))
+            }
+            "studio_stage_content" => {
+                let res = if let Some(hook) = &self.hooks.studio_stage_content {
+                    hook(args)?
+                } else {
+                    let root = self.require_project_root()?;
+                    let slug = args
+                        .get("slug")
+                        .or_else(|| args.get("studio_project_slug"))
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(crate::studio_embed::sanitize_studio_content_slug)
+                        .unwrap_or_else(|| crate::studio_embed::default_studio_project_slug(&root));
+                    crate::studio_embed::stage_project_studio_content(&root, &slug)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool studio_stage_content -> {text}"));
+                thread.push("Staged project assets into local Roblox Studio content bridge.".to_string());
+                Ok(format!("tool_result: studio_stage_content: {text}"))
+            }
+            "studio_verify_device" => {
+                let res = if let Some(hook) = &self.hooks.studio_verify_device {
+                    hook(args)?
+                } else {
+                    let profile = args
+                        .get("profile")
+                        .and_then(Value::as_str)
+                        .unwrap_or("desktop_1920x1080");
+                    json!({
+                        "ok": true,
+                        "mode": "studio_disconnected",
+                        "live_studio_connected": false,
+                        "profile": profile,
+                        "checked_buttons": 0,
+                        "violations": [{
+                            "code": "studio_disconnected",
+                            "severity": "error",
+                            "message": "Roblox Studio MCP is not connected."
+                        }],
+                        "screenshot_path": Value::Null,
+                        "passed": false,
+                        "error": "Tool 'studio_verify_device' requires a connected Roblox Studio MCP session."
+                    })
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool studio_verify_device -> {text}"));
+                Ok(format!("tool_result: studio_verify_device: {text}"))
+            }
+            "studio_verify_audio" => {
+                let res = if let Some(hook) = &self.hooks.studio_verify_audio {
+                    hook(args)?
+                } else {
+                    let root = self.require_project_root()?;
+                    let offline = crate::playtest::inspect_project_audio_wavs(&root);
+                    let offline_passed = offline
+                        .iter()
+                        .all(|c| c.get("passed").and_then(Value::as_bool) == Some(true));
+                    json!({
+                        "ok": true,
+                        "mode": "studio_disconnected",
+                        "offline_wav_checks": offline,
+                        "offline_wav_passed": offline_passed,
+                        "live_studio_connected": false,
+                        "studio_sounds_checked": 0,
+                        "studio_sounds_loaded": 0,
+                        "passed": false,
+                        "error": "Roblox Studio MCP is not connected."
+                    })
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool studio_verify_audio -> {text}"));
+                Ok(format!("tool_result: studio_verify_audio: {text}"))
+            }
+            "assets_moderation_poll" => {
+                let res = if let Some(hook) = &self.hooks.assets_moderation_poll {
+                    hook(args)?
+                } else {
+                    let _ = self.require_project_root()?;
+                    self.invoke_opencloud_local("POST", "/api/projects/_active/assets/moderation", "", args)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool assets_moderation_poll -> {text}"));
+                thread.push("Polled Roblox Open Cloud asset moderation status.".to_string());
+                Ok(format!("tool_result: assets_moderation_poll: {text}"))
             }
             "assets_upload" => {
                 let res = if let Some(hook) = &self.hooks.assets_upload {

@@ -4,6 +4,14 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.32.0 - 2026-11-27
+
+- Added `gemini-4-neon-{xhigh,high,medium,low}` to OpenRO's Antigravity fallback model roster (`src/model.rs`) so OpenRO Studio agents and Teamwork pipelines can run on Neon XHigh by default.
+- Added the Instant Local Roblox Studio Content Bridge (`src/studio_embed.rs`, `src/opencloud.rs`, `src/server.rs`, `src/agent.rs`, `src/teamwork.rs`, Gap `#84`): `POST /api/projects/:id/studio/stage-content` (`studio_stage_content`) stages project art/UI/audio under Studio's `content/openro/<slug>/`, auto-runs on embed launch/transfer, and upgrades `assets_codegen` to emit `AssetIds.{cards,icons,audio,slices}` with `rbxasset://openro/...` Studio fallbacks that seamlessly swap to `rbxassetid://` once approved.
+- Added agent-controllable live Studio Device & Audio verification (`src/playtest.rs`, `src/server.rs`, Gap `#85`, `tests/studio_autonomous_e2e.rs`): `POST /api/projects/:id/studio/verify-device` (`studio_verify_device`, live `PlayerGui` layout/touch checks + viewport PNG capture across desktop/tablet/`844x390` phone, failing closed when Studio is disconnected) and `POST /api/projects/:id/studio/verify-audio` (`studio_verify_audio`, RIFF/PCM WAV analysis + live Studio `ContentProvider:PreloadAsync` & `Sound.IsLoaded`), plus `place_file` and `stop` actions on `cua_exec_window`.
+- Added Open Cloud moderation polling (`POST /api/projects/:id/assets/moderation`, `assets_moderation_poll`), Rojo root `build/*.rbxlx` selection in `latest_build`, `max_audio_uploads` caps, quarantined/incoming exclusion, and `assets/images/manifest.json` `local_file` resolution (`src/opencloud.rs`, Gap `#86`).
+- Shipped true edge-to-edge full-bleed card packing (`cover_resize` `math.ceil` + `anchor="upper"` + transparent exterior alpha mask in `src/image_ops.rs`, `tests/fullbleed_card_packer.rs`), the 4th UI sheet recipe `card_borders_sheet` with 7 thin edge-hugging collector borders (`src/ui_kit.rs`, `tests/m2_ui_kit_slicer.rs`), and Studio/Ship/Assets UI controls (`EmbeddedStudioPanel.tsx`, `ShipPanel.tsx`, `AssetsPanel.tsx`, `frontend/e2e/gate.mjs`, `docs/OPENRO-GAPS.md`, Gap `#87`).
+
 ## 1.31.0 - 2026-11-27
 
 - Added pull-request `check-ui` CI workflow (`.github/workflows/check-ui.yml`, `#5`) and mobile top/chat bar layout sizing (`frontend/src/App.tsx`, `#6`), and enforced 100% original anime-style character design guidance across prompts, templates, and tests (`src/art_knowledge.rs`, `src/library.rs`, `tests/original_anime_guidance.rs`, PR `#7`).

@@ -2696,6 +2696,8 @@ fn is_write_or_submit_tool(tool: &str) -> bool {
             | "assets_authorise"
             | "assets_codegen"
             | "assets_upload"
+            | "assets_moderation_poll"
+            | "studio_stage_content"
             | "creator_hub_setup"
             | "creator_hub_configure"
             | "products_sync"
@@ -3269,12 +3271,12 @@ fn role_rules_for(role: &str) -> &'static str {
             "Studio-Native First: push native Luau/ScreenGui/instances into live Roblox Studio via MCP/Rojo sync; use `studio_cua_*` over the headed Studio window for any native Studio UI/dialog outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor, dialogs); use local-hardware adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`) for assets Studio cannot generate natively.\n",
             "To wait for workers, return {\"done\":true,\"summary\":\"waiting\"} — NEVER poll board_read.\n",
             "Call `finish_run` once all tasks are `done`.\n",
-            "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, project_scene_get, study_status, unknowns_list, evidence_list, studio_cua_screenshot, studio_cua_mouse, studio_cua_keyboard, studio_cua_window, opencloud_status, creator_hub_status, creator_hub_setup, creator_hub_configure, assets_authorise, assets_upload, assets_codegen, products_sync, products_codegen, project_publish, universe_get, universe_set, liveops_datastore_list, liveops_datastore_get, liveops_datastore_set, liveops_messaging_publish, liveops_remote_config_push, liveops_telemetry_codegen, liveops_telemetry_sync, liveops_telemetry_summary, finish_run.\n",
+            "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, project_scene_get, study_status, unknowns_list, evidence_list, studio_cua_screenshot, studio_cua_mouse, studio_cua_keyboard, studio_cua_window, studio_stage_content, studio_verify_device, studio_verify_audio, opencloud_status, creator_hub_status, creator_hub_setup, creator_hub_configure, assets_authorise, assets_upload, assets_moderation_poll, assets_codegen, products_sync, products_codegen, project_publish, universe_get, universe_set, liveops_datastore_list, liveops_datastore_get, liveops_datastore_set, liveops_messaging_publish, liveops_remote_config_push, liveops_telemetry_codegen, liveops_telemetry_sync, liveops_telemetry_summary, finish_run.\n",
             "Cloud/Publish rules: check `opencloud_status` / `creator_hub_status` before publishing; `creator_hub_*` uses loopback CDP and NEVER bypasses login/2FA/CAPTCHA (if `status:\"action_required\"`, stop and report `blocked_reason`/`url` to owner); `project_publish` with `versionType:\"Published\"` REQUIRES explicit owner approval and `{\"versionType\":\"Published\",\"confirm\":true}` (default `versionType` is `\"Saved\"`); `liveops_datastore_set`, `liveops_messaging_publish`, and `liveops_remote_config_push` (`push_to_datastore:true`) REQUIRE explicit owner `confirm:true`; never self-approve product prices."
         ),
         "verifier" => concat!(
             "You are the Teamwork verifier.\n",
-            "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `project_scene_get`, `luau_check`, `project_symbols`, `project_typecheck`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `studio_cua_screenshot`, `studio_cua_window`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`, `opencloud_status`, `creator_hub_status`, `universe_get`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_telemetry_summary`).\n",
+            "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `project_scene_get`, `luau_check`, `project_symbols`, `project_typecheck`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `studio_cua_screenshot`, `studio_cua_window`, `studio_verify_device`, `studio_verify_audio`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`, `opencloud_status`, `creator_hub_status`, `universe_get`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_telemetry_summary`).\n",
             "Run `sandbox_playtest` first on game_code tasks for `<2s` headless Luau runtime verification (remotes, DataStores, ProcessReceipt idempotency, stack traces) before paying for live Studio `project_playtest`.\n",
             "For game_code tasks (or `src/` / `ui/` changes), run `sandbox_playtest` with `{\"task_id\":\"<id>\"}` (or `project_playtest` when live Studio MCP is needed / `require_studio: true`) and confirm 0 errors BEFORE calling `verify_task` with `passed: true`.\n",
             "For `tools/**/*.luau` tasks (not touching `src/` or `ui/`), run `project_run_lune` (confirm `passed: true`) instead of `project_playtest` BEFORE calling `verify_task(passed=true)`.\n",
@@ -3292,8 +3294,8 @@ fn role_rules_for(role: &str) -> &'static str {
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
             "Follow Study -> Build -> Check -> Refine: check `study_status`/`unknowns_list`, record verified behavior with `evidence_record`/`unknown_add`/`unknown_update` (capping guesswork), cite `ev_*` IDs in `docs/mechanics.json` (`mechanics_check`), build, check (`project_check`/`project_playtest`, pass `\"force\":true` to bypass `KeptChecks`), and refine.\n",
             "Studio-Native First: push native Luau/ScreenGui/instances into live Roblox Studio via MCP/Rojo sync (`project_sync`, `project_scene_mutate`, `gui_compile`); use `studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, and `studio_cua_window` over the headed Studio window for any native Studio UI/dialog outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor, dialogs); use local-hardware adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`, `adapter_invoke`) for asset generation Studio cannot do natively.\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_symbols`, `project_typecheck`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, `studio_cua_window`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `ui_kit_presets`, `ui_kit_generate`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_codegen`, `liveops_telemetry_sync`, `liveops_telemetry_summary`.\n",
-            "Live Studio CUA signatures: `studio_cua_screenshot {\"label\":\"viewport\"}`, `studio_cua_mouse {\"action\":\"click|double_click|right_click|move|drag|scroll\",\"x\":0.5,\"y\":0.5,\"to_x\":0.7,\"to_y\":0.7,\"normalized\":true}`, `studio_cua_keyboard {\"hotkey\":[\"ctrl\",\"s\"]}`, `studio_cua_window {\"action\":\"status|launch|attach|transfer|pause|resume\"}`.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_symbols`, `project_typecheck`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, `studio_cua_window`, `studio_stage_content`, `studio_verify_device`, `studio_verify_audio`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `ui_kit_presets`, `ui_kit_generate`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `assets_moderation_poll`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_codegen`, `liveops_telemetry_sync`, `liveops_telemetry_summary`.\n",
+            "Live Studio CUA & Bridge signatures: `studio_cua_screenshot {\"label\":\"viewport\"}`, `studio_cua_mouse {\"action\":\"click|double_click|right_click|move|drag|scroll\",\"x\":0.5,\"y\":0.5,\"to_x\":0.7,\"to_y\":0.7,\"normalized\":true}`, `studio_cua_keyboard {\"hotkey\":[\"ctrl\",\"s\"]}`, `studio_cua_window {\"action\":\"status|launch|attach|transfer|stop|pause|resume\",\"place_file\":\"...?\"}`, `studio_stage_content {}`, `studio_verify_device {\"profile\":\"phone_844x390|tablet_1024x768|desktop_1920x1080\"}`, `studio_verify_audio {}`.\n",
             "UI Craft (7 Rules, zero copying): use `ui_kit_presets` / `ui_kit_generate` (ChatGPT sheet -> auto-sliced 9-slice transparent PNGs + `AssetIds.slices` + mixable layouts `skybridge-crest`/`perimeter-command`/`workshop-ribbon`/`compact-mobile-split` with >=5.25:1 Dark/Light glass, `Lighting.BlurEffect` modal depth, original header crests, >=44px glossy buttons, 1.5-2px dark `UIStroke` numerals, 844x390 safe-area clearance; never copy ANRX star-ribbons or layouts).\n",
             "Formatting: `project_check` with `{\"format\":true}` or `project_format` auto-formats your claimed `.luau` files with `stylua` instead of hand-editing whitespace.\n",
             "Asset arg signatures:\n",
@@ -3305,7 +3307,7 @@ fn role_rules_for(role: &str) -> &'static str {
             "- audio_generate: {\"name\":\"sfx_name\",\"preset\":\"summon_roll|mythic_fanfare|battle_crit|potion_drink|ui_click|level_up\",\"duration_ms\":1200,\"out_path\":\"assets/audio/sfx.wav\"}\n",
             "Cloud & Creator Hub rules & signatures:\n",
             "- creator_hub_status {\"cdp_url\":\"http://127.0.0.1:9222\",\"check_login\":true,\"save_creator\":true} / creator_hub_setup / creator_hub_configure: loopback CDP only; NEVER bypass login/2FA/CAPTCHA — if `status:\"action_required\"`, stop and report `blocked_reason`/`url` to owner; keys stay in 0600 SecretStore (never logged)\n",
-            "- assets_authorise {\"paths\":[\"art/**\"]} -> assets_upload {\"paths\":[...]} -> assets_codegen {}\n",
+            "- assets_authorise {\"paths\":[\"art/**\"]} -> assets_upload {\"paths\":[...],\"max_audio_uploads\":5} -> assets_moderation_poll {} -> assets_codegen {\"studio_local_fallback\":true}\n",
             "- products_sync {\"dry_run\":false,\"default_for_sale\":false,\"auto_codegen\":true} -> products_codegen {} (emits src/shared/ProductIds.luau; never self-approve product prices)\n",
             "- project_publish {\"versionType\":\"Saved\"|\"Published\",\"confirm\":true?} (`versionType:\"Published\"` REQUIRES explicit owner approval + `confirm:true`); universe_get {} / universe_set {\"settings\":{...}}\n",
             "- liveops_datastore_list {\"store\":\"...?\",\"scope\":\"global\",\"prefix\":\"...?\"} / liveops_datastore_get {\"store\":\"...\",\"key\":\"...\"} / liveops_datastore_set {\"store\":\"...\",\"key\":\"...\",\"value\":{...},\"expected_revision\":\"...\",\"confirm\":true} / liveops_messaging_publish {\"topic\":\"...\",\"message\":{...},\"confirm\":true} / liveops_remote_config_push {\"config\":{...},\"generate_luau\":true,\"push_to_datastore\":false} / liveops_telemetry_codegen {\"mode\":\"opencloud_datastore|webhook_relay\",\"store_name\":\"OpenRO_LiveTelemetry\",\"flush_interval_secs\":60} / liveops_telemetry_sync {\"source\":\"opencloud_datastore|creator_analytics\",\"days\":7} / liveops_telemetry_summary {}\n",
@@ -3828,6 +3830,11 @@ fn execute_agent_tool(
             record_generated_asset_files(handle, agent_name, tool, args, &res);
             Ok(res)
         }
+        "assets_moderation_poll" => {
+            let res = run_opencloud_route(shared, handle, "POST", "/api/projects/active/assets/moderation", args)?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
         "products_sync" => {
             let res = run_opencloud_route(shared, handle, "POST", "/api/projects/active/products/sync", args)?;
             record_generated_asset_files(handle, agent_name, tool, args, &res);
@@ -3979,6 +3986,60 @@ fn execute_agent_tool(
         "studio_cua_screenshot" | "studio_cua_mouse" | "studio_cua_keyboard"
         | "studio_cua_window" => {
             crate::server::execute_cua_tool(shared, &format!("teamwork:{agent_name}"), tool, args)
+        }
+        "studio_stage_content" => {
+            let project_dir = handle.state.lock().unwrap().project_dir.clone();
+            let slug = args
+                .get("slug")
+                .or_else(|| args.get("studio_project_slug"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(crate::studio_embed::sanitize_studio_content_slug)
+                .unwrap_or_else(|| crate::studio_embed::default_studio_project_slug(&project_dir));
+            crate::studio_embed::stage_project_studio_content(&project_dir, &slug)
+        }
+        "studio_verify_device" | "studio_verify_audio" => {
+            let (project_ref, target_task_id) = {
+                let st = handle.state.lock().unwrap();
+                let tid = args
+                    .get("task_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .or_else(|| {
+                        st.agent_index(agent_name)
+                            .and_then(|i| st.roster[i].current_task_id.clone())
+                    });
+                let id = st
+                    .project_id
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| {
+                        st.project_dir
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(projects::slug)
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| "project".to_string())
+                    });
+                (ProjectRef { id, dir: st.project_dir.clone() }, tid)
+            };
+            let _lease = mgr.studio_lease.acquire(
+                agent_name,
+                target_task_id,
+                tool,
+                || is_cancelled(handle, agent_name, gen),
+            )?;
+            handle.notify_all();
+            let res = if tool == "studio_verify_device" {
+                crate::playtest::verify_studio_device(shared, &project_ref, args)
+                    .map_err(|(_, e)| e)?
+            } else {
+                crate::playtest::verify_studio_audio(shared, &project_ref, args)
+                    .map_err(|(_, e)| e)?
+            };
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
         }
         other => Err(format!("unknown Teamwork tool '{other}'")),
     }
@@ -6243,6 +6304,22 @@ fn collect_generated_asset_paths(tool: &str, res: &Value) -> Vec<String> {
                         .and_then(Value::as_str),
                 );
             }
+        }
+        "assets_moderation_poll" => {
+            if res.get("polled").and_then(Value::as_u64).unwrap_or(0) > 0 {
+                raw.push("assets.lock.json".to_string());
+                push_str(
+                    &mut raw,
+                    res.pointer("/asset_ids_luau/path")
+                        .and_then(Value::as_str),
+                );
+            }
+        }
+        "studio_verify_device" => {
+            push_str(&mut raw, res.get("screenshot_path").and_then(Value::as_str));
+        }
+        "studio_verify_audio" => {
+            push_str(&mut raw, res.get("report_path").and_then(Value::as_str));
         }
         "products_sync" => {
             if res.get("dry_run").and_then(Value::as_bool) != Some(true) {

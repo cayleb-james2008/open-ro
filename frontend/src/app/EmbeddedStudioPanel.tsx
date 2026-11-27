@@ -11,6 +11,7 @@ import * as Popover from "@radix-ui/react-popover";
 import {
   Box,
   Camera,
+  FolderSync,
   Keyboard,
   Monitor,
   MoreHorizontal,
@@ -19,13 +20,23 @@ import {
   Plug,
   RefreshCw,
   Rocket,
+  ShieldCheck,
+  Smartphone,
   Square,
   Unplug,
+  Volume2,
+  X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Pill, PillIndicator } from "@/components/kibo-ui/pill";
+import type {
+  StageStudioContentResult,
+  StudioDeviceProfile,
+  VerifyStudioAudioResult,
+  VerifyStudioDeviceResult,
+} from "./ship/useShip";
 import {
   type StudioActionEvent,
   type StudioCuaEvent,
@@ -75,6 +86,11 @@ export function EmbeddedStudioPanel({
   actions,
   cuaEvents = [],
   cuaPaused = false,
+  activeProjectId = null,
+  activeProjectName = null,
+  onStageStudioContent,
+  onVerifyStudioDevice,
+  onVerifyStudioAudio,
   onToggleCuaPause,
   onLaunchEmbed,
   onAttachEmbed,
@@ -97,6 +113,11 @@ export function EmbeddedStudioPanel({
   actions: StudioActionEvent[];
   cuaEvents?: StudioCuaEvent[];
   cuaPaused?: boolean;
+  activeProjectId?: string | null;
+  activeProjectName?: string | null;
+  onStageStudioContent?: () => Promise<StageStudioContentResult>;
+  onVerifyStudioDevice?: (profile: StudioDeviceProfile) => Promise<VerifyStudioDeviceResult>;
+  onVerifyStudioAudio?: () => Promise<VerifyStudioAudioResult>;
   onToggleCuaPause?: () => Promise<void> | void;
   onLaunchEmbed?: (command?: string) => Promise<void> | void;
   onAttachEmbed?: () => Promise<void> | void;
@@ -128,6 +149,79 @@ export function EmbeddedStudioPanel({
   const [keyboardCapture, setKeyboardCapture] = useState(false);
   const [lastPointer, setLastPointer] = useState<{ x: number; y: number; action: string } | null>(null);
   const [lastKey, setLastKey] = useState<string | null>(null);
+  const [autoBusy, setAutoBusy] = useState<"" | "stage" | "device" | "audio">("");
+  const [autoResult, setAutoResult] = useState<{ label: string; ok: boolean; detail: string } | null>(null);
+  const [checksOpen, setChecksOpen] = useState(false);
+
+  const runStageContent = async () => {
+    if (!onStageStudioContent || autoBusy) return;
+    setChecksOpen(false);
+    setAutoBusy("stage");
+    try {
+      const r = await onStageStudioContent();
+      if (r.ok) {
+        setAutoResult({
+          label: "Staged",
+          ok: true,
+          detail: `${r.staged_count ?? 0} file(s) at ${r.prefix || "rbxasset://openro/"}`,
+        });
+      } else {
+        setAutoResult({ label: "Stage", ok: false, detail: r.error || "Unavailable" });
+      }
+    } finally {
+      setAutoBusy("");
+    }
+  };
+
+  const runVerifyDevice = async (profile: StudioDeviceProfile) => {
+    if (!onVerifyStudioDevice || autoBusy) return;
+    setChecksOpen(false);
+    setAutoBusy("device");
+    try {
+      const r = await onVerifyStudioDevice(profile);
+      const vp = profile === "phone_844x390" ? "844x390" : profile === "tablet_1024x768" ? "1024x768" : "1920x1080";
+      if (r.mode === "studio_disconnected") {
+        setAutoResult({ label: vp, ok: false, detail: "Studio disconnected (open Studio to run live check)" });
+      } else if (r.ok && r.passed) {
+        setAutoResult({ label: `${vp} Pass`, ok: true, detail: `${r.checked_buttons ?? 0} buttons checked` });
+      } else {
+        setAutoResult({
+          label: `${vp} Check`,
+          ok: false,
+          detail: r.error || `${Array.isArray(r.violations) ? r.violations.length : 0} violation(s)`,
+        });
+      }
+    } finally {
+      setAutoBusy("");
+    }
+  };
+
+  const runVerifyAudio = async () => {
+    if (!onVerifyStudioAudio || autoBusy) return;
+    setChecksOpen(false);
+    setAutoBusy("audio");
+    try {
+      const r = await onVerifyStudioAudio();
+      const wavCount = Array.isArray(r.offline_wav_checks) ? r.offline_wav_checks.length : 0;
+      if (r.ok && r.passed) {
+        setAutoResult({
+          label: "Audio Pass",
+          ok: true,
+          detail: `${r.studio_sounds_loaded ?? 0}/${r.studio_sounds_checked ?? 0} loaded (${wavCount} WAV)`,
+        });
+      } else if (r.ok && r.live_studio_connected === false) {
+        setAutoResult({
+          label: "Audio Offline",
+          ok: false,
+          detail: `${wavCount} WAV checked (connect Studio for preload check)`,
+        });
+      } else {
+        setAutoResult({ label: "Audio Check", ok: false, detail: r.error || "Verification failed" });
+      }
+    } finally {
+      setAutoBusy("");
+    }
+  };
 
   useEffect(() => {
     setFrameFailed(false);
@@ -460,6 +554,94 @@ export function EmbeddedStudioPanel({
             </Button>
           )}
 
+          {(onStageStudioContent || onVerifyStudioDevice || onVerifyStudioAudio) && (
+            <Popover.Root open={checksOpen} onOpenChange={setChecksOpen}>
+              <Popover.Trigger asChild>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  data-studio-checks-trigger
+                  aria-label="Studio stage and verification checks"
+                  className="bg-surface max-md:min-h-11"
+                >
+                  <ShieldCheck className="size-3.5" strokeWidth={1.5} aria-hidden />
+                  <span>Checks</span>
+                </Button>
+              </Popover.Trigger>
+              <Popover.Portal>
+                <Popover.Content
+                  align="end"
+                  sideOffset={6}
+                  data-studio-checks-popover
+                  className="z-50 flex w-64 flex-col gap-1 rounded-card border border-hairline bg-surface p-1.5 shadow-lift"
+                >
+                  {activeProjectName && (
+                    <div className="truncate px-2 py-1 text-xs font-medium text-ink-2">
+                      {activeProjectName}
+                    </div>
+                  )}
+                  {onStageStudioContent && (
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      data-studio-stage-content
+                      disabled={!activeProjectId || autoBusy !== ""}
+                      onClick={() => void runStageContent()}
+                      className="w-full justify-start gap-2 max-md:min-h-11"
+                    >
+                      <FolderSync className="size-3.5" strokeWidth={1.5} aria-hidden />
+                      <span>{autoBusy === "stage" ? "Staging…" : "Stage Studio Art/Audio"}</span>
+                    </Button>
+                  )}
+                  {onVerifyStudioDevice && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        data-studio-verify-phone
+                        disabled={!activeProjectId || autoBusy !== ""}
+                        onClick={() => void runVerifyDevice("phone_844x390")}
+                        className="w-full justify-start gap-2 max-md:min-h-11"
+                      >
+                        <Smartphone className="size-3.5" strokeWidth={1.5} aria-hidden />
+                        <span>{autoBusy === "device" ? "Verifying…" : "Verify Phone (844x390)"}</span>
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        data-studio-verify-desktop
+                        disabled={!activeProjectId || autoBusy !== ""}
+                        onClick={() => void runVerifyDevice("desktop_1920x1080")}
+                        className="w-full justify-start gap-2 max-md:min-h-11"
+                      >
+                        <Monitor className="size-3.5" strokeWidth={1.5} aria-hidden />
+                        <span>Verify Desktop (1920x1080)</span>
+                      </Button>
+                    </>
+                  )}
+                  {onVerifyStudioAudio && (
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      data-studio-verify-audio
+                      disabled={!activeProjectId || autoBusy !== ""}
+                      onClick={() => void runVerifyAudio()}
+                      className="w-full justify-start gap-2 max-md:min-h-11"
+                    >
+                      <Volume2 className="size-3.5" strokeWidth={1.5} aria-hidden />
+                      <span>{autoBusy === "audio" ? "Checking…" : "Verify Studio Audio"}</span>
+                    </Button>
+                  )}
+                  {!activeProjectId && (
+                    <p className="px-2 py-1 text-xs text-ink-2">
+                      Open a project to stage or verify Studio assets.
+                    </p>
+                  )}
+                </Popover.Content>
+              </Popover.Portal>
+            </Popover.Root>
+          )}
+
           <Popover.Root>
             <Popover.Trigger asChild>
               <Button
@@ -574,6 +756,29 @@ export function EmbeddedStudioPanel({
               )
             )}
           </div>
+        </div>
+      )}
+
+      {autoResult && (
+        <div
+          data-studio-check-result
+          className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline bg-board/40 px-3 py-1.5 text-xs"
+        >
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Pill className={autoResult.ok ? "bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg" : "bg-pill-warn-bg px-2 py-0.5 text-xs text-pill-warn-fg"}>
+              {autoResult.label}
+            </Pill>
+            <span className="min-w-0 break-words font-mono text-ink-2">{autoResult.detail}</span>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Dismiss Studio check result"
+            onClick={() => setAutoResult(null)}
+            className="size-7 text-ink-2 hover:text-ink max-md:size-11"
+          >
+            <X className="size-3.5" strokeWidth={1.5} aria-hidden />
+          </Button>
         </div>
       )}
 

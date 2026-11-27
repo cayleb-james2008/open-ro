@@ -78,6 +78,7 @@ export function AssetsPanel({
   const [filter, setFilter] = useState<AssetFilter>("all");
   const [brokenImgs, setBrokenImgs] = useState<Record<string, boolean>>({});
   const [uploading, setUploading] = useState(false);
+  const [pollingModeration, setPollingModeration] = useState(false);
   const [results, setResults] = useState<UploadResult[] | null>(null);
   const [note, setNote] = useState("");
   const [importingModel, setImportingModel] = useState(false);
@@ -149,6 +150,21 @@ export function AssetsPanel({
     const r = await call<{ path?: string; count?: number }>(projUrl(id, "/assets/codegen"), {});
     if (!r.ok) { toast.error(r.error || "Could not write AssetIds.luau."); return; }
     toast.success(`Wrote ${r.path || "src/shared/AssetIds.luau"} (${r.count ?? 0} ids)`);
+  };
+  const runPollModeration = async () => {
+    if (!id || pollingModeration) return;
+    setPollingModeration(true);
+    try {
+      const r = await ship.pollModeration();
+      if (r.ok) {
+        setNote(`Moderation poll: ${r.approved ?? 0} approved, ${r.pending ?? 0} pending, ${r.rejected ?? 0} rejected`);
+        await load();
+      } else {
+        setNote(r.error || "Moderation poll did not complete.");
+      }
+    } finally {
+      setPollingModeration(false);
+    }
   };
   const setAuthorised = async (paths: string[], revoke: boolean) => {
     if (!id) return;
@@ -341,6 +357,7 @@ export function AssetsPanel({
           <Button variant="default" size="lg" disabled={!hasKey || uploading || tally.waiting === 0} onClick={() => void upload({ authorised: true })} data-upload className="active:opacity-80 max-md:min-h-11"><CloudUpload className="size-4" strokeWidth={1.5} aria-hidden />{uploading ? "Uploading…" : `Upload ${tally.waiting} allowed`}</Button>
           <Button variant="outline" size="lg" disabled={!hasKey || uploading} onClick={() => void upload({ authorised: true, dry_run: true })} className="active:opacity-80 max-md:min-h-11">Preview only</Button>
           <Button variant="outline" size="lg" disabled={uploading} onClick={() => void codegen()} className="active:opacity-80 max-md:min-h-11">Write AssetIds.luau</Button>
+          <Button variant="outline" size="lg" loading={pollingModeration} disabled={uploading || pollingModeration} onClick={() => void runPollModeration()} data-poll-moderation className="active:opacity-80 max-md:min-h-11"><ShieldCheck className="size-4" strokeWidth={1.5} aria-hidden />{pollingModeration ? "Polling…" : "Poll Moderation"}</Button>
           <MorphingDialog transition={dialogSpring}>
             <MorphingDialogTrigger blocked={!hasKey || uploading} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-hairline bg-surface px-3 text-sm font-medium text-pill-pro-fg outline-none hover:bg-pill-pro-bg active:opacity-80 focus-visible:ring-2 focus-visible:ring-focus disabled:border-hairline disabled:bg-track disabled:text-ink-3" thing="upload-everything">Upload everything…</MorphingDialogTrigger>
             <MorphingDialogContainer>

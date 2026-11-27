@@ -1,5 +1,5 @@
 import { Suspense, lazy, memo, useEffect, useState } from "react";
-import { Check, FolderOpen, FlaskConical, Images, Palette, Radio, RefreshCw, Rocket, ShieldCheck } from "lucide-react";
+import { Check, FolderOpen, FolderSync, FlaskConical, Images, Monitor, Palette, Radio, RefreshCw, Rocket, ShieldCheck, Smartphone, Volume2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
 import { SegmentedControl, SegmentedControlItem } from "@/components/ui/segmented-control";
@@ -12,7 +12,7 @@ import { ReadinessAutopilot } from "./ReadinessAutopilot";
 import { EconomySimulatorCard } from "./EconomySimulatorCard";
 import { MonetizationPackCard } from "../MonetizationPackCard";
 import type { Place } from "../data";
-import type { Ship } from "./useShip";
+import type { Ship, StudioDeviceProfile } from "./useShip";
 
 const LiveOpsPanel = lazy(() => import("./LiveOpsPanel").then((m) => ({ default: m.LiveOpsPanel })));
 const AssetsPanel = lazy(() => import("./AssetsPanel").then((m) => ({ default: m.AssetsPanel })));
@@ -54,7 +54,64 @@ export const ShipPanel = memo(function ShipPanel({
 }) {
   const [section, setSection] = useState<Section>(initialSection);
   const [study, setStudy] = useState<StudyStatus | null>(null);
+  const [studioCheckBusy, setStudioCheckBusy] = useState<"" | "stage" | "device" | "audio">("");
+  const [studioCheckStatus, setStudioCheckStatus] = useState<{ label: string; ok: boolean; detail: string } | null>(null);
   const activeId = ship.active?.id ?? null;
+
+  const runStageContent = async () => {
+    if (studioCheckBusy) return;
+    setStudioCheckBusy("stage");
+    try {
+      const r = await ship.stageStudioContent();
+      setStudioCheckStatus({
+        label: r.ok ? "Staged" : "Stage",
+        ok: r.ok,
+        detail: r.ok ? `${r.staged_count ?? 0} file(s) staged` : r.error || "Unavailable",
+      });
+    } finally {
+      setStudioCheckBusy("");
+    }
+  };
+
+  const runVerifyDevice = async (profile: StudioDeviceProfile) => {
+    if (studioCheckBusy) return;
+    setStudioCheckBusy("device");
+    try {
+      const r = await ship.verifyStudioDevice(profile);
+      const vp = profile === "phone_844x390" ? "844x390" : profile === "tablet_1024x768" ? "1024x768" : "1920x1080";
+      setStudioCheckStatus({
+        label: r.ok && r.passed ? `${vp} Pass` : vp,
+        ok: Boolean(r.ok && r.passed),
+        detail: r.mode === "studio_disconnected"
+          ? "Studio disconnected"
+          : r.ok && r.passed
+            ? `${r.checked_buttons ?? 0} buttons checked`
+            : r.error || "Issues detected",
+      });
+    } finally {
+      setStudioCheckBusy("");
+    }
+  };
+
+  const runVerifyAudio = async () => {
+    if (studioCheckBusy) return;
+    setStudioCheckBusy("audio");
+    try {
+      const r = await ship.verifyStudioAudio();
+      const wavCount = Array.isArray(r.offline_wav_checks) ? r.offline_wav_checks.length : 0;
+      setStudioCheckStatus({
+        label: r.ok && r.passed ? "Audio Pass" : "Audio",
+        ok: Boolean(r.ok && r.passed),
+        detail: r.ok && r.passed
+          ? `${r.studio_sounds_loaded ?? 0}/${r.studio_sounds_checked ?? 0} loaded`
+          : r.live_studio_connected === false
+            ? `${wavCount} WAV checked (Studio offline)`
+            : r.error || "Check failed",
+      });
+    } finally {
+      setStudioCheckBusy("");
+    }
+  };
 
   useEffect(() => {
     setSection(initialSection);
@@ -233,7 +290,77 @@ export const ShipPanel = memo(function ShipPanel({
             />
           )}
           {section === "art" && <ArtStudioPanel ship={ship} />}
-          {section === "playtests" && <PlaytestPanel ship={ship} studioOk={studioOk} onJumpToIssue={onOpenCodeDiff} />}
+          {section === "playtests" && (
+            <div className="flex flex-col gap-4">
+              <div
+                data-ship-studio-checks
+                className="card-stock flex flex-wrap items-center justify-between gap-2 px-3 py-2"
+              >
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium text-ink">Studio Autonomous Checks</span>
+                  {studioCheckStatus && (
+                    <Pill
+                      data-ship-studio-check-badge
+                      className={studioCheckStatus.ok ? "bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg" : "bg-pill-warn-bg px-2 py-0.5 text-xs text-pill-warn-fg"}
+                    >
+                      <span>{studioCheckStatus.label}</span>
+                      <span className="font-mono">{studioCheckStatus.detail}</span>
+                    </Pill>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    data-ship-stage-content
+                    loading={studioCheckBusy === "stage"}
+                    disabled={studioCheckBusy !== ""}
+                    onClick={() => void runStageContent()}
+                    className="bg-surface max-md:min-h-11"
+                  >
+                    <FolderSync className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    <span>Stage Art/Audio</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    data-ship-verify-phone
+                    loading={studioCheckBusy === "device"}
+                    disabled={studioCheckBusy !== ""}
+                    onClick={() => void runVerifyDevice("phone_844x390")}
+                    className="bg-surface max-md:min-h-11"
+                  >
+                    <Smartphone className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    <span>Verify 844x390</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    data-ship-verify-desktop
+                    disabled={studioCheckBusy !== ""}
+                    onClick={() => void runVerifyDevice("desktop_1920x1080")}
+                    className="bg-surface max-md:min-h-11"
+                  >
+                    <Monitor className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    <span>Verify Desktop</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    data-ship-verify-audio
+                    loading={studioCheckBusy === "audio"}
+                    disabled={studioCheckBusy !== ""}
+                    onClick={() => void runVerifyAudio()}
+                    className="bg-surface max-md:min-h-11"
+                  >
+                    <Volume2 className="size-3.5" strokeWidth={1.5} aria-hidden />
+                    <span>Verify Audio</span>
+                  </Button>
+                </div>
+              </div>
+              <PlaytestPanel ship={ship} studioOk={studioOk} onJumpToIssue={onOpenCodeDiff} />
+            </div>
+          )}
         </Suspense>
       </div>
     </div>

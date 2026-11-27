@@ -5684,6 +5684,888 @@ pub fn stored(dir: &Path, run: &str, file: &str, content_type: &'static str) -> 
     Err(Reply::err("404 Not Found", "no such playtest run or file"))
 }
 
+// ---------------------------------------------------------------------------
+// Gap #85: Live Studio Device (`844x390` & Desktop) + Live Audio Verification
+// ---------------------------------------------------------------------------
+
+fn parse_device_profile(raw: Option<&str>) -> Result<(&'static str, u32, u32, u32), String> {
+    let norm = raw
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("desktop_1920x1080");
+    match norm {
+        "desktop_1920x1080" => Ok(("desktop_1920x1080", 1920, 1080, 32)),
+        "tablet_1024x768" => Ok(("tablet_1024x768", 1024, 768, 32)),
+        "phone_844x390" => Ok(("phone_844x390", 844, 390, 44)),
+        other => Err(format!(
+            "unsupported device profile '{other}' (expected desktop_1920x1080, tablet_1024x768, or phone_844x390)"
+        )),
+    }
+}
+
+fn studio_is_playing(mcp: &mut McpClient) -> bool {
+    if !mcp.has_exact_tool("get_studio_state") {
+        return false;
+    }
+    let Ok(val) = mcp.get_studio_state() else {
+        return false;
+    };
+    if val.get("playing").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    let dm = val
+        .get("active_datamodel")
+        .or_else(|| val.get("datamodel_type"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if dm.eq_ignore_ascii_case("Client") || dm.eq_ignore_ascii_case("Server") {
+        return true;
+    }
+    let mode = val
+        .get("mode")
+        .or_else(|| val.get("studio_mode"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(mode.as_str(), "play" | "playing" | "start_play" | "run_server")
+}
+
+fn luau_for_verify_device(profile: &str, target_w: u32, target_h: u32, min_btn: u32) -> String {
+    let payload = crate::mcp::luau_long_string(
+        &json!({
+            "profile": profile,
+            "target_width": target_w,
+            "target_height": target_h,
+            "min_button_px": min_btn,
+        })
+        .to_string(),
+    );
+    format!(
+        "-- openro:v132:verify_device\n\
+local HttpService = game:GetService(\"HttpService\")\n\
+local Players = game:GetService(\"Players\")\n\
+local GuiService = game:GetService(\"GuiService\")\n\
+local PAYLOAD = {payload}\n\
+local ok, res = pcall(function()\n\
+\tlocal spec = HttpService:JSONDecode(PAYLOAD)\n\
+\tlocal player = Players.LocalPlayer\n\
+\tif not player then\n\
+\t\treturn {{ ok = false, error = \"Players.LocalPlayer is nil; ensure Studio is in start_play mode\", violations = {{{{ code = \"no_local_player\", severity = \"error\", message = \"Players.LocalPlayer is nil\" }}}} }}\n\
+\tend\n\
+\tlocal pgui = player:FindFirstChildOfClass(\"PlayerGui\")\n\
+\tif not pgui then\n\
+\t\treturn {{ ok = false, error = \"LocalPlayer has no PlayerGui\", violations = {{{{ code = \"no_player_gui\", severity = \"error\", message = \"LocalPlayer has no PlayerGui\" }}}} }}\n\
+\tend\n\
+\tlocal cam = workspace.CurrentCamera\n\
+\tlocal vp = cam and cam.ViewportSize or Vector2.new(spec.target_width, spec.target_height)\n\
+\tlocal topInset, bottomInset = GuiService:GetGuiInset()\n\
+\tlocal isPhone = (spec.profile == \"phone_844x390\")\n\
+\tlocal minBtn = tonumber(spec.min_button_px) or (isPhone and 44 or 32)\n\
+\tlocal safeLeft = isPhone and 44 or 8\n\
+\tlocal safeRight = isPhone and 44 or 8\n\
+\tlocal safeTop = math.max(topInset.Y, isPhone and 36 or 0)\n\
+\tlocal safeBottom = math.max(bottomInset.Y, isPhone and 20 or 8)\n\
+\tlocal violations = {{}}\n\
+\tlocal checkedButtons = 0\n\
+\tlocal checkedTexts = 0\n\
+\tlocal modals = {{}}\n\
+\tlocal docks = {{}}\n\
+\tlocal function isVisibleTree(inst)\n\
+\t\tlocal cur = inst\n\
+\t\twhile cur and cur ~= pgui do\n\
+\t\t\tif cur:IsA(\"GuiObject\") and not cur.Visible then\n\
+\t\t\t\treturn false\n\
+\t\t\tend\n\
+\t\t\tif cur:IsA(\"LayerCollector\") and not cur.Enabled then\n\
+\t\t\t\treturn false\n\
+\t\t\tend\n\
+\t\t\tcur = cur.Parent\n\
+\t\tend\n\
+\t\treturn true\n\
+\tend\n\
+\tlocal function insideScrollingFrame(inst)\n\
+\t\tlocal cur = inst.Parent\n\
+\t\twhile cur and cur ~= pgui do\n\
+\t\t\tif cur:IsA(\"ScrollingFrame\") then\n\
+\t\t\t\treturn true\n\
+\t\t\tend\n\
+\t\t\tcur = cur.Parent\n\
+\t\tend\n\
+\t\treturn false\n\
+\tend\n\
+\tlocal function isBackdrop(obj, sz)\n\
+\t\tlocal low = string.lower(obj.Name)\n\
+\t\tif string.find(low, \"backdrop\") or string.find(low, \"background\") or string.find(low, \"scrim\") or string.find(low, \"dim\") then\n\
+\t\t\treturn true\n\
+\t\tend\n\
+\t\tif vp.X > 0 and vp.Y > 0 and sz.X >= vp.X * 0.85 and sz.Y >= vp.Y * 0.85 then\n\
+\t\t\treturn true\n\
+\t\tend\n\
+\t\treturn false\n\
+\tend\n\
+\tlocal function screenRect(obj)\n\
+\t\tlocal pos = obj.AbsolutePosition\n\
+\t\tlocal sz = obj.AbsoluteSize\n\
+\t\treturn pos.X + topInset.X, pos.Y + topInset.Y, sz.X, sz.Y\n\
+\tend\n\
+\tlocal function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh)\n\
+\t\treturn ax < bx + bw - 2 and ax + aw > bx + 2 and ay < by + bh - 2 and ay + ah > by + 2\n\
+\tend\n\
+\tfor _, inst in ipairs(pgui:GetDescendants()) do\n\
+\t\tif inst:IsA(\"GuiObject\") and isVisibleTree(inst) then\n\
+\t\t\tlocal x, y, w, h = screenRect(inst)\n\
+\t\t\tlocal low = string.lower(inst.Name)\n\
+\t\t\tlocal inScroll = insideScrollingFrame(inst)\n\
+\t\t\tlocal fullPath = inst:GetFullName()\n\
+\t\t\tif w > 0 and h > 0 then\n\
+\t\t\t\tlocal backdrop = isBackdrop(inst, Vector2.new(w, h))\n\
+\t\t\t\tif inst:IsA(\"GuiButton\") and inst.Active then\n\
+\t\t\t\t\tcheckedButtons += 1\n\
+\t\t\t\t\tif w < minBtn or h < minBtn then\n\
+\t\t\t\t\t\ttable.insert(violations, {{\n\
+\t\t\t\t\t\t\tcode = \"button_too_small\",\n\
+\t\t\t\t\t\t\tseverity = \"error\",\n\
+\t\t\t\t\t\t\tpath = fullPath,\n\
+\t\t\t\t\t\t\tsize = {{ w, h }},\n\
+\t\t\t\t\t\t\tmin_px = minBtn,\n\
+\t\t\t\t\t\t\tmessage = string.format(\"GuiButton %s is %.1fx%.1f (< %dx%d for %s)\", fullPath, w, h, minBtn, minBtn, spec.profile),\n\
+\t\t\t\t\t\t}})\n\
+\t\t\t\t\tend\n\
+\t\t\t\t\tif not inScroll and vp.X > 0 and vp.Y > 0 then\n\
+\t\t\t\t\t\tif x < safeLeft - 1 or (x + w) > (vp.X - safeRight + 1) or y < safeTop - 1 or (y + h) > (vp.Y - safeBottom + 1) then\n\
+\t\t\t\t\t\t\tif x < -2 or y < -2 or (x + w) > vp.X + 2 or (y + h) > vp.Y + 2 then\n\
+\t\t\t\t\t\t\t\ttable.insert(violations, {{\n\
+\t\t\t\t\t\t\t\t\tcode = \"offscreen_bounds\",\n\
+\t\t\t\t\t\t\t\t\tseverity = \"error\",\n\
+\t\t\t\t\t\t\t\t\tpath = fullPath,\n\
+\t\t\t\t\t\t\t\t\trect = {{ x, y, w, h }},\n\
+\t\t\t\t\t\t\t\t\tmessage = \"GuiButton \" .. fullPath .. \" extends outside viewport bounds\",\n\
+\t\t\t\t\t\t\t\t}})\n\
+\t\t\t\t\t\t\telseif isPhone then\n\
+\t\t\t\t\t\t\t\ttable.insert(violations, {{\n\
+\t\t\t\t\t\t\t\t\tcode = \"safe_area_violation\",\n\
+\t\t\t\t\t\t\t\t\tseverity = \"error\",\n\
+\t\t\t\t\t\t\t\t\tpath = fullPath,\n\
+\t\t\t\t\t\t\t\t\trect = {{ x, y, w, h }},\n\
+\t\t\t\t\t\t\t\t\tmessage = \"GuiButton \" .. fullPath .. \" intrudes into phone safe-area margin\",\n\
+\t\t\t\t\t\t\t\t}})\n\
+\t\t\t\t\t\t\tend\n\
+\t\t\t\t\t\tend\n\
+\t\t\t\t\tend\n\
+\t\t\t\tend\n\
+\t\t\t\tif (inst:IsA(\"TextLabel\") or inst:IsA(\"TextButton\") or inst:IsA(\"TextBox\")) and inst.Text ~= \"\" then\n\
+\t\t\t\t\tcheckedTexts += 1\n\
+\t\t\t\t\tlocal fits = inst.TextFits\n\
+\t\t\t\t\tlocal tb = inst.TextBounds\n\
+\t\t\t\t\tif not inScroll and (fits == false or tb.X > w + 2 or tb.Y > h + 2) then\n\
+\t\t\t\t\t\ttable.insert(violations, {{\n\
+\t\t\t\t\t\t\tcode = \"text_overflow\",\n\
+\t\t\t\t\t\t\tseverity = \"error\",\n\
+\t\t\t\t\t\t\tpath = fullPath,\n\
+\t\t\t\t\t\t\ttext_bounds = {{ tb.X, tb.Y }},\n\
+\t\t\t\t\t\t\tsize = {{ w, h }},\n\
+\t\t\t\t\t\t\tmessage = \"Text overflow/truncation on \" .. fullPath,\n\
+\t\t\t\t\t\t}})\n\
+\t\t\t\t\tend\n\
+\t\t\t\t\tif not inScroll and not backdrop and vp.X > 0 and vp.Y > 0 and (x < -2 or y < -2 or (x + w) > vp.X + 2 or (y + h) > vp.Y + 2) then\n\
+\t\t\t\t\t\ttable.insert(violations, {{\n\
+\t\t\t\t\t\t\tcode = \"offscreen_bounds\",\n\
+\t\t\t\t\t\t\tseverity = \"error\",\n\
+\t\t\t\t\t\t\tpath = fullPath,\n\
+\t\t\t\t\t\t\trect = {{ x, y, w, h }},\n\
+\t\t\t\t\t\t\tmessage = \"Text element \" .. fullPath .. \" extends outside viewport bounds\",\n\
+\t\t\t\t\t\t}})\n\
+\t\t\t\t\tend\n\
+\t\t\t\tend\n\
+\t\t\t\tif not backdrop and vp.X > 0 and vp.Y > 0 then\n\
+\t\t\t\t\tif (string.find(low, \"modal\") or string.find(low, \"dialog\") or string.find(low, \"popup\") or string.find(low, \"shop\") or string.find(low, \"inventory\") or string.find(low, \"settings\") or string.find(low, \"summon\")) and (w * h) >= (vp.X * vp.Y * 0.20) then\n\
+\t\t\t\t\t\ttable.insert(modals, {{ inst = inst, path = fullPath, x = x, y = y, w = w, h = h }})\n\
+\t\t\t\t\tend\n\
+\t\t\t\t\tif string.find(low, \"dock\") or string.find(low, \"navbar\") or string.find(low, \"toolbar\") or string.find(low, \"hotbar\") or string.find(low, \"bottombar\") or string.find(low, \"topbar\") then\n\
+\t\t\t\t\t\ttable.insert(docks, {{ inst = inst, path = fullPath, x = x, y = y, w = w, h = h }})\n\
+\t\t\t\t\tend\n\
+\t\t\t\tend\n\
+\t\t\tend\n\
+\t\tend\n\
+\tend\n\
+\tfor _, m in ipairs(modals) do\n\
+\t\tfor _, d in ipairs(docks) do\n\
+\t\t\tif d.inst ~= m.inst and not d.inst:IsDescendantOf(m.inst) and not m.inst:IsDescendantOf(d.inst) then\n\
+\t\t\t\tif rectsOverlap(m.x, m.y, m.w, m.h, d.x, d.y, d.w, d.h) then\n\
+\t\t\t\t\ttable.insert(violations, {{\n\
+\t\t\t\t\t\tcode = \"modal_dock_overlap\",\n\
+\t\t\t\t\t\tseverity = \"error\",\n\
+\t\t\t\t\t\tmodal = m.path,\n\
+\t\t\t\t\t\tdock = d.path,\n\
+\t\t\t\t\t\tmessage = \"Modal \" .. m.path .. \" overlaps visible background dock \" .. d.path,\n\
+\t\t\t\t\t}})\n\
+\t\t\t\tend\n\
+\t\t\tend\n\
+\t\tend\n\
+\tend\n\
+\treturn {{\n\
+\t\tok = true,\n\
+\t\tprofile = spec.profile,\n\
+\t\tviewport = {{ width = vp.X, height = vp.Y, target_width = spec.target_width, target_height = spec.target_height }},\n\
+\t\tchecked_buttons = checkedButtons,\n\
+\t\tchecked_texts = checkedTexts,\n\
+\t\tviolations = violations,\n\
+\t}}\n\
+end)\n\
+if ok then\n\
+\treturn \"OPENRO_V011:\" .. HttpService:JSONEncode(res)\n\
+end\n\
+return \"OPENRO_V011:\" .. HttpService:JSONEncode({{ ok = false, error = tostring(res), violations = {{{{ code = \"luau_error\", severity = \"error\", message = tostring(res) }}}} }})\n"
+    )
+}
+
+fn luau_for_verify_audio() -> &'static str {
+    "-- openro:v132:verify_audio\n\
+local HttpService = game:GetService(\"HttpService\")\n\
+local ContentProvider = game:GetService(\"ContentProvider\")\n\
+local SoundService = game:GetService(\"SoundService\")\n\
+local ReplicatedStorage = game:GetService(\"ReplicatedStorage\")\n\
+local Players = game:GetService(\"Players\")\n\
+local ok, res = pcall(function()\n\
+\tlocal roots = { SoundService, workspace, ReplicatedStorage }\n\
+\tif Players.LocalPlayer then\n\
+\t\ttable.insert(roots, Players.LocalPlayer)\n\
+\tend\n\
+\tlocal sounds = {}\n\
+\tlocal seenIds = {}\n\
+\tlocal probes = {}\n\
+\tfor _, root in ipairs(roots) do\n\
+\t\tfor _, desc in ipairs(root:GetDescendants()) do\n\
+\t\t\tif desc:IsA(\"Sound\") and desc.SoundId ~= \"\" then\n\
+\t\t\t\ttable.insert(sounds, { inst = desc, name = desc.Name, path = desc:GetFullName(), sound_id = desc.SoundId })\n\
+\t\t\t\tseenIds[desc.SoundId] = true\n\
+\t\t\tend\n\
+\t\tend\n\
+\tend\n\
+\tlocal function collectCatalogTable(tbl, prefix)\n\
+\t\tif type(tbl) ~= \"table\" then return end\n\
+\t\tfor k, v in pairs(tbl) do\n\
+\t\t\tif type(v) == \"string\" and (string.sub(v, 1, 13) == \"rbxassetid://\" or string.sub(v, 1, 11) == \"rbxasset://\") then\n\
+\t\t\t\tif not seenIds[v] then\n\
+\t\t\t\t\tseenIds[v] = true\n\
+\t\t\t\t\tlocal s = Instance.new(\"Sound\")\n\
+\t\t\t\t\ts.Name = tostring(prefix) .. \"_\" .. tostring(k)\n\
+\t\t\t\t\ts.SoundId = v\n\
+\t\t\t\t\ts.Parent = SoundService\n\
+\t\t\t\t\ttable.insert(probes, s)\n\
+\t\t\t\t\ttable.insert(sounds, { inst = s, name = tostring(k), path = prefix .. \".\" .. tostring(k), sound_id = v })\n\
+\t\t\t\tend\n\
+\t\t\telseif type(v) == \"table\" then\n\
+\t\t\t\tlocal sid = v.soundId or v.SoundId or v.assetId or v.id\n\
+\t\t\t\tif type(sid) == \"string\" and (string.sub(sid, 1, 13) == \"rbxassetid://\" or string.sub(sid, 1, 11) == \"rbxasset://\") then\n\
+\t\t\t\t\tif not seenIds[sid] then\n\
+\t\t\t\t\t\tseenIds[sid] = true\n\
+\t\t\t\t\t\tlocal s = Instance.new(\"Sound\")\n\
+\t\t\t\t\t\ts.Name = tostring(prefix) .. \"_\" .. tostring(k)\n\
+\t\t\t\t\t\ts.SoundId = sid\n\
+\t\t\t\t\t\ts.Parent = SoundService\n\
+\t\t\t\t\t\ttable.insert(probes, s)\n\
+\t\t\t\t\t\ttable.insert(sounds, { inst = s, name = tostring(k), path = prefix .. \".\" .. tostring(k), sound_id = sid })\n\
+\t\t\t\t\tend\n\
+\t\t\t\tend\n\
+\t\t\tend\n\
+\t\tend\n\
+\tend\n\
+\tfor _, modName in ipairs({ \"AudioCatalog\", \"AssetIds\" }) do\n\
+\t\tlocal mod = ReplicatedStorage:FindFirstChild(modName, true)\n\
+\t\tif mod and mod:IsA(\"ModuleScript\") then\n\
+\t\t\tlocal okReq, tbl = pcall(require, mod)\n\
+\t\t\tif okReq and type(tbl) == \"table\" then\n\
+\t\t\t\tif modName == \"AssetIds\" and type(tbl.audio) == \"table\" then\n\
+\t\t\t\t\tcollectCatalogTable(tbl.audio, \"AssetIds.audio\")\n\
+\t\t\t\telse\n\
+\t\t\t\t\tcollectCatalogTable(tbl, modName)\n\
+\t\t\t\tend\n\
+\t\t\tend\n\
+\t\tend\n\
+\tend\n\
+\tlocal preloadList = {}\n\
+\tfor _, item in ipairs(sounds) do\n\
+\t\ttable.insert(preloadList, item.inst)\n\
+\tend\n\
+\tif #preloadList > 0 then\n\
+\t\tpcall(function()\n\
+\t\t\tContentProvider:PreloadAsync(preloadList)\n\
+\t\tend)\n\
+\tend\n\
+\tlocal report = {}\n\
+\tlocal loadedCount = 0\n\
+\tfor _, item in ipairs(sounds) do\n\
+\t\tlocal s = item.inst\n\
+\t\tlocal isLoaded = s.IsLoaded == true\n\
+\t\tlocal timeLen = tonumber(s.TimeLength) or 0\n\
+\t\tlocal isPlaying = s.IsPlaying == true\n\
+\t\tif isLoaded then\n\
+\t\t\tloadedCount += 1\n\
+\t\tend\n\
+\t\ttable.insert(report, {\n\
+\t\t\tname = item.name,\n\
+\t\t\tpath = item.path,\n\
+\t\t\tsound_id = item.sound_id,\n\
+\t\t\tis_loaded = isLoaded,\n\
+\t\t\ttime_length = timeLen,\n\
+\t\t\tis_playing = isPlaying,\n\
+\t\t})\n\
+\tend\n\
+\tfor _, p in ipairs(probes) do\n\
+\t\tpcall(function() p:Destroy() end)\n\
+\tend\n\
+\treturn {\n\
+\t\tok = true,\n\
+\t\tstudio_sounds_checked = #report,\n\
+\t\tstudio_sounds_loaded = loadedCount,\n\
+\t\tsounds = report,\n\
+\t}\n\
+end)\n\
+if ok then\n\
+\treturn \"OPENRO_V011:\" .. HttpService:JSONEncode(res)\n\
+end\n\
+return \"OPENRO_V011:\" .. HttpService:JSONEncode({ ok = false, error = tostring(res), studio_sounds_checked = 0, studio_sounds_loaded = 0, sounds = {} })\n"
+}
+
+fn write_project_bytes_atomic(root: &Path, rel: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let dest = projects::safe_join(root, rel)?;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create parent dir for '{rel}': {e}"))?;
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(&dest) {
+        if meta.file_type().is_symlink() {
+            return Err(format!("refusing to overwrite symlink '{rel}' (CWE-59)"));
+        }
+    }
+    let tmp = dest.with_file_name(format!(
+        ".{}.openro-tmp.{}",
+        dest.file_name().and_then(|s| s.to_str()).unwrap_or("out"),
+        std::process::id()
+    ));
+    std::fs::write(&tmp, bytes).map_err(|e| format!("write '{rel}': {e}"))?;
+    if let Err(e) = std::fs::rename(&tmp, &dest) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("rename '{rel}': {e}"));
+    }
+    Ok(dest)
+}
+
+/// Gap #85: Live Studio Device (`desktop_1920x1080`, `tablet_1024x768`, `phone_844x390`)
+/// verification against a connected Roblox Studio MCP session. Fails closed when Studio is
+/// disconnected (NEVER fakes offline results as live Studio evidence).
+pub fn verify_studio_device(
+    shared: &Shared,
+    r: &ProjectRef,
+    req: &Value,
+) -> Result<Value, (u16, String)> {
+    let (profile, target_w, target_h, min_btn) =
+        parse_device_profile(req.get("profile").and_then(Value::as_str)).map_err(|e| (400, e))?;
+    let capture_screenshot = req
+        .get("capture_screenshot")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let suite = req
+        .get("suite")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let settle_ms = req
+        .get("settle_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(400)
+        .min(15_000);
+
+    let live_res: Option<(Value, Option<Vec<u8>>)> = {
+        let mut guard = shared.agent.lock().unwrap();
+        let mcp_opt = guard.as_mut().and_then(|agent| match agent.studio.as_mut() {
+            Some(crate::place::PlaceBackend::Mcp(m)) => {
+                if m.has_live_studio() {
+                    Some(m)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        });
+        match mcp_opt {
+            None => None,
+            Some(mcp) => {
+                let already_playing = studio_is_playing(mcp);
+                let mut started_play = false;
+                if !already_playing {
+                    mcp.start_stop_play("start_play")
+                        .map_err(|e| (502, format!("could not start Play for studio_verify_device: {e}")))?;
+                    started_play = true;
+                    if settle_ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(settle_ms));
+                    }
+                }
+                let prev_dm = mcp.datamodel_type().to_string();
+                mcp.set_datamodel_type("Client");
+                let luau_code = luau_for_verify_device(profile, target_w, target_h, min_btn);
+                let luau_out = mcp.execute_luau(&luau_code);
+                let shot_bytes = if capture_screenshot {
+                    mcp.screen_capture()
+                        .ok()
+                        .map(|f| f.bytes)
+                        .filter(|b| !b.is_empty())
+                } else {
+                    None
+                };
+                mcp.set_datamodel_type(&prev_dm);
+                if started_play {
+                    let _ = mcp.start_stop_play("stop");
+                }
+                let parsed = match luau_out {
+                    Ok(v) => extract_result(&v).unwrap_or_else(|| {
+                        json!({
+                            "ok": false,
+                            "error": "Studio answered without a device verification result",
+                            "violations": [{ "code": "no_luau_result", "severity": "error", "message": "Studio answered without a device verification result" }]
+                        })
+                    }),
+                    Err(e) => json!({
+                        "ok": false,
+                        "error": e,
+                        "violations": [{ "code": "execute_luau_failed", "severity": "error", "message": e }]
+                    }),
+                };
+                Some((parsed, shot_bytes))
+            }
+        }
+    };
+
+    let Some((parsed, mut shot_bytes)) = live_res else {
+        return Ok(json!({
+            "ok": true,
+            "mode": "studio_disconnected",
+            "live_studio_connected": false,
+            "project": r.id,
+            "profile": profile,
+            "viewport": {
+                "width": target_w,
+                "height": target_h,
+                "target_width": target_w,
+                "target_height": target_h,
+                "min_button_px": min_btn,
+            },
+            "checked_buttons": 0,
+            "violations": [{
+                "code": "studio_disconnected",
+                "severity": "error",
+                "message": "Roblox Studio MCP is not connected; live PlayerGui device verification cannot run offline."
+            }],
+            "screenshot_path": Value::Null,
+            "suite": suite,
+            "passed": false,
+            "error": "Roblox Studio MCP is not connected; launch or attach Roblox Studio before running studio_verify_device."
+        }));
+    };
+
+    if capture_screenshot && shot_bytes.is_none() {
+        // Fallback to CUA screenshot capture from live StudioStreamHub / X11 if MCP screen_capture was unavailable.
+        let cua_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+        if let Ok(cua_shot) = crate::server::capture_studio_frame_png(
+            shared,
+            cua_dir,
+            Some(&format!("device-{profile}")),
+        ) {
+            if let Some(p) = cua_shot.get("path").and_then(Value::as_str) {
+                if let Ok(bytes) = std::fs::read(p) {
+                    if !bytes.is_empty() {
+                        shot_bytes = Some(bytes);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut screenshot_path: Option<String> = None;
+    if let Some(bytes) = shot_bytes {
+        let rel = format!("build/reports/studio-device-{profile}.png");
+        write_project_bytes_atomic(&r.dir, &rel, &bytes).map_err(|e| (500, e))?;
+        screenshot_path = Some(rel);
+    }
+
+    let luau_ok = parsed.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let violations = parsed
+        .get("violations")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let checked_buttons = parsed
+        .get("checked_buttons")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let viewport = parsed.get("viewport").cloned().unwrap_or_else(|| {
+        json!({
+            "width": target_w,
+            "height": target_h,
+            "target_width": target_w,
+            "target_height": target_h,
+        })
+    });
+    let passed = luau_ok && violations.is_empty();
+
+    Ok(json!({
+        "ok": true,
+        "mode": "live_studio",
+        "live_studio_connected": true,
+        "project": r.id,
+        "profile": profile,
+        "viewport": viewport,
+        "checked_buttons": checked_buttons,
+        "violations": violations,
+        "screenshot_path": screenshot_path,
+        "suite": suite,
+        "passed": passed,
+        "error": parsed.get("error").cloned().unwrap_or(Value::Null),
+    }))
+}
+
+/// Real offline RIFF/WAVE PCM inspector for a single `.wav` file (Gap #85).
+/// Verifies RIFF/WAVE header, 44.1 kHz sample rate, duration > 0, peak dBFS < -0.5, and RMS energy.
+pub fn inspect_offline_wav_file(project_dir: &Path, abs_path: &Path) -> Value {
+    let rel = projects::rel_display(project_dir, abs_path);
+    let fail_row = |reason: &str| {
+        json!({
+            "path": rel,
+            "valid_header": false,
+            "sample_rate": 0,
+            "channels": 0,
+            "bits_per_sample": 0,
+            "duration_secs": 0.0,
+            "peak_dbfs": -120.0,
+            "rms_linear": 0.0,
+            "rms_dbfs": -120.0,
+            "passed": false,
+            "issues": [reason],
+        })
+    };
+
+    let Ok(bytes) = std::fs::read(abs_path) else {
+        return fail_row("could not read WAV file");
+    };
+    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return fail_row("invalid RIFF/WAVE header");
+    }
+
+    let mut fmt_info: Option<(u16, u16, u32, u16)> = None;
+    let mut data_slice: Option<&[u8]> = None;
+    let mut off = 12usize;
+    while off + 8 <= bytes.len() {
+        let id = &bytes[off..off + 4];
+        let size = u32::from_le_bytes([
+            bytes[off + 4],
+            bytes[off + 5],
+            bytes[off + 6],
+            bytes[off + 7],
+        ]) as usize;
+        let payload_start = off + 8;
+        let payload_end = payload_start.saturating_add(size).min(bytes.len());
+        let chunk = &bytes[payload_start..payload_end];
+        if id == b"fmt " && chunk.len() >= 16 {
+            let audio_format = u16::from_le_bytes([chunk[0], chunk[1]]);
+            let channels = u16::from_le_bytes([chunk[2], chunk[3]]);
+            let sample_rate = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+            let bits_per_sample = u16::from_le_bytes([chunk[14], chunk[15]]);
+            fmt_info = Some((audio_format, channels, sample_rate, bits_per_sample));
+        } else if id == b"data" {
+            data_slice = Some(chunk);
+        }
+        let step = 8usize
+            .saturating_add(size)
+            .saturating_add(size & 1);
+        if step == 0 {
+            break;
+        }
+        off = off.saturating_add(step);
+    }
+
+    let Some((audio_format, channels, sample_rate, bits_per_sample)) = fmt_info else {
+        return fail_row("missing valid WAV fmt chunk");
+    };
+    let Some(data) = data_slice else {
+        return fail_row("missing WAV data chunk");
+    };
+    let valid_pcm_fmt = (audio_format == 1 && matches!(bits_per_sample, 8 | 16 | 24 | 32))
+        || (audio_format == 3 && bits_per_sample == 32);
+    if !valid_pcm_fmt || channels == 0 || sample_rate == 0 {
+        return fail_row("unsupported or malformed PCM format in WAV fmt chunk");
+    }
+
+    let bytes_per_sample = (bits_per_sample / 8) as usize;
+    let frame_bytes = bytes_per_sample.saturating_mul(channels as usize);
+    if frame_bytes == 0 || data.len() < frame_bytes {
+        return fail_row("WAV data chunk contains zero audio frames");
+    }
+
+    let total_frames = data.len() / frame_bytes;
+    let duration_secs = total_frames as f64 / sample_rate as f64;
+
+    let mut peak_linear: f64 = 0.0;
+    let mut sum_sq: f64 = 0.0;
+    let mut sample_count: usize = 0;
+
+    match (audio_format, bits_per_sample) {
+        (1, 16) => {
+            for ch in data.chunks_exact(2) {
+                let s = i16::from_le_bytes([ch[0], ch[1]]) as f64 / 32768.0;
+                peak_linear = peak_linear.max(s.abs());
+                sum_sq += s * s;
+                sample_count += 1;
+            }
+        }
+        (1, 8) => {
+            for &b in data {
+                let s = (b as f64 - 128.0) / 128.0;
+                peak_linear = peak_linear.max(s.abs());
+                sum_sq += s * s;
+                sample_count += 1;
+            }
+        }
+        (1, 24) => {
+            for ch in data.chunks_exact(3) {
+                let raw = ((ch[0] as i32) | ((ch[1] as i32) << 8) | ((ch[2] as i8 as i32) << 16)) as f64;
+                let s = raw / 8_388_608.0;
+                peak_linear = peak_linear.max(s.abs());
+                sum_sq += s * s;
+                sample_count += 1;
+            }
+        }
+        (1, 32) => {
+            for ch in data.chunks_exact(4) {
+                let s = i32::from_le_bytes([ch[0], ch[1], ch[2], ch[3]]) as f64 / 2_147_483_648.0;
+                peak_linear = peak_linear.max(s.abs());
+                sum_sq += s * s;
+                sample_count += 1;
+            }
+        }
+        (3, 32) => {
+            for ch in data.chunks_exact(4) {
+                let v = f32::from_le_bytes([ch[0], ch[1], ch[2], ch[3]]) as f64;
+                if v.is_finite() {
+                    peak_linear = peak_linear.max(v.abs());
+                    sum_sq += v * v;
+                    sample_count += 1;
+                }
+            }
+        }
+        _ => return fail_row("unsupported WAV bit depth"),
+    }
+
+    let rms_linear = if sample_count > 0 {
+        (sum_sq / sample_count as f64).sqrt()
+    } else {
+        0.0
+    };
+    let peak_dbfs = if peak_linear > 0.0 {
+        20.0 * peak_linear.log10()
+    } else {
+        -120.0
+    };
+    let rms_dbfs = if rms_linear > 0.0 {
+        20.0 * rms_linear.log10()
+    } else {
+        -120.0
+    };
+
+    let mut issues: Vec<String> = Vec::new();
+    if sample_rate != 44_100 {
+        issues.push(format!("sample_rate is {sample_rate} Hz (expected 44100 Hz)"));
+    }
+    if duration_secs <= 0.0 {
+        issues.push("duration must be > 0s".to_string());
+    }
+    if peak_dbfs >= -0.5 {
+        issues.push(format!("peak_dbfs is {peak_dbfs:.2} dBFS (must be < -0.5 dBFS)"));
+    }
+    if rms_linear <= 1e-5 {
+        issues.push("audio signal is silent (RMS energy near 0)".to_string());
+    }
+
+    json!({
+        "path": rel,
+        "valid_header": true,
+        "audio_format": audio_format,
+        "channels": channels,
+        "sample_rate": sample_rate,
+        "bits_per_sample": bits_per_sample,
+        "duration_secs": (duration_secs * 1000.0).round() / 1000.0,
+        "peak_dbfs": (peak_dbfs * 100.0).round() / 100.0,
+        "rms_linear": (rms_linear * 10_000.0).round() / 10_000.0,
+        "rms_dbfs": (rms_dbfs * 100.0).round() / 100.0,
+        "passed": issues.is_empty(),
+        "issues": issues,
+    })
+}
+
+/// Inspect every `assets/audio/*.wav` file in `project_dir` (skipping symlinks).
+pub fn inspect_project_audio_wavs(project_dir: &Path) -> Vec<Value> {
+    let audio_dir = project_dir.join("assets/audio");
+    let Ok(dmeta) = std::fs::symlink_metadata(&audio_dir) else {
+        return Vec::new();
+    };
+    if dmeta.file_type().is_symlink() || !dmeta.is_dir() {
+        return Vec::new();
+    }
+    let Ok(rd) = std::fs::read_dir(&audio_dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = rd
+        .flatten()
+        .filter(|e| {
+            e.file_type()
+                .ok()
+                .is_some_and(|ft| !ft.is_symlink() && ft.is_file())
+        })
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("wav"))
+        })
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|p| inspect_offline_wav_file(project_dir, &p))
+        .collect()
+}
+
+/// Gap #85: Offline WAV PCM validation + live Studio `ContentProvider:PreloadAsync` &
+/// `Sound.IsLoaded` verification. Fails closed (`live_studio_connected: false, passed: false`)
+/// when Studio MCP is disconnected.
+pub fn verify_studio_audio(
+    shared: &Shared,
+    r: &ProjectRef,
+    req: &Value,
+) -> Result<Value, (u16, String)> {
+    let offline_wav_checks = inspect_project_audio_wavs(&r.dir);
+    let offline_wav_passed = offline_wav_checks
+        .iter()
+        .all(|c| c.get("passed").and_then(Value::as_bool) == Some(true));
+    let settle_ms = req
+        .get("settle_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(400)
+        .min(15_000);
+
+    let live_out: Option<Value> = {
+        let mut guard = shared.agent.lock().unwrap();
+        let mcp_opt = guard.as_mut().and_then(|agent| match agent.studio.as_mut() {
+            Some(crate::place::PlaceBackend::Mcp(m)) => {
+                if m.has_live_studio() {
+                    Some(m)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        });
+        match mcp_opt {
+            None => None,
+            Some(mcp) => {
+                let already_playing = studio_is_playing(mcp);
+                let mut started_play = false;
+                if !already_playing {
+                    mcp.start_stop_play("start_play")
+                        .map_err(|e| (502, format!("could not start Play for studio_verify_audio: {e}")))?;
+                    started_play = true;
+                    if settle_ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(settle_ms));
+                    }
+                }
+                let prev_dm = mcp.datamodel_type().to_string();
+                mcp.set_datamodel_type("Client");
+                let luau_res = mcp.execute_luau(luau_for_verify_audio());
+                mcp.set_datamodel_type(&prev_dm);
+                if started_play {
+                    let _ = mcp.start_stop_play("stop");
+                }
+                let parsed = match luau_res {
+                    Ok(v) => extract_result(&v).unwrap_or_else(|| {
+                        json!({
+                            "ok": false,
+                            "error": "Studio answered without an audio verification result",
+                            "studio_sounds_checked": 0,
+                            "studio_sounds_loaded": 0,
+                            "sounds": [],
+                        })
+                    }),
+                    Err(e) => json!({
+                        "ok": false,
+                        "error": e,
+                        "studio_sounds_checked": 0,
+                        "studio_sounds_loaded": 0,
+                        "sounds": [],
+                    }),
+                };
+                Some(parsed)
+            }
+        }
+    };
+
+    let Some(parsed) = live_out else {
+        return Ok(json!({
+            "ok": true,
+            "mode": "studio_disconnected",
+            "project": r.id,
+            "offline_wav_checks": offline_wav_checks,
+            "offline_wav_passed": offline_wav_passed,
+            "live_studio_connected": false,
+            "studio_sounds_checked": 0,
+            "studio_sounds_loaded": 0,
+            "studio_sounds": [],
+            "passed": false,
+            "error": "Roblox Studio MCP is not connected; offline WAV checks completed, but live Sound.IsLoaded verification requires a connected Studio session."
+        }));
+    };
+
+    let luau_ok = parsed.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let studio_sounds_checked = parsed
+        .get("studio_sounds_checked")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let studio_sounds_loaded = parsed
+        .get("studio_sounds_loaded")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let studio_sounds = parsed
+        .get("sounds")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let passed = offline_wav_passed
+        && luau_ok
+        && studio_sounds_checked > 0
+        && studio_sounds_loaded == studio_sounds_checked;
+
+    let report_rel = "ops/audio/studio-audio-verify.json";
+    let report = json!({
+        "ok": true,
+        "mode": "live_studio",
+        "project": r.id,
+        "offline_wav_checks": offline_wav_checks,
+        "offline_wav_passed": offline_wav_passed,
+        "live_studio_connected": true,
+        "studio_sounds_checked": studio_sounds_checked,
+        "studio_sounds_loaded": studio_sounds_loaded,
+        "studio_sounds": studio_sounds,
+        "report_path": report_rel,
+        "passed": passed,
+        "error": parsed.get("error").cloned().unwrap_or(Value::Null),
+    });
+
+    let serialized = serde_json::to_string_pretty(&report).unwrap_or_default();
+    write_project_bytes_atomic(&r.dir, report_rel, format!("{serialized}\n").as_bytes())
+        .map_err(|e| (500, e))?;
+
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
