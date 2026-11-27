@@ -3361,12 +3361,14 @@ export function App() {
               serverDiagnostics={serverDiagnostics}
               busy={busy}
               projectMode={Boolean(ship.activeId)}
+              projectId={ship.activeId}
               scriptMeta={projectWorkspace?.scripts}
               onSaveScript={handleSaveScript}
               onRunPlaytest={handleRunStudioPlaytest}
               onApplyProposal={handleApplyProposal}
               onRejectProposal={handleRejectProposal}
               onAttachContext={handleAddContextPath}
+              onTypecheckDiagnostics={setServerDiagnostics}
             />
           )}
         </Suspense>
