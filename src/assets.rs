@@ -2154,19 +2154,27 @@ fn art_generate_openai(
         .or_else(|| std::env::var("OPENRO_OPENAI_IMAGE_BASE").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
+    let want_transparent = body
+        .get("transparent")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| kind.eq_ignore_ascii_case("ui_sheet"));
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(90)).build();
     let res = if refs.is_empty() {
         let url = format!("{}/images/generations", base.trim_end_matches('/'));
+        let mut payload = json!({
+            "model": model,
+            "prompt": prompt,
+            "size": size,
+            "response_format": "b64_json",
+        });
+        if want_transparent {
+            payload["background"] = json!("transparent");
+        }
         agent
             .post(&url)
             .set("Authorization", &format!("Bearer {api_key}"))
             .set("Content-Type", "application/json")
-            .send_json(json!({
-                "model": model,
-                "prompt": prompt,
-                "size": size,
-                "response_format": "b64_json",
-            }))
+            .send_json(payload)
     } else {
         let url = format!("{}/images/edits", base.trim_end_matches('/'));
         let mut mp = Multipart::new();

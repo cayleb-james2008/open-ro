@@ -984,6 +984,7 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
         || clean_path == "/api/studio/economy-sim"
         || clean_path == "/api/studio/gui"
         || clean_path.starts_with("/api/studio/gui/")
+        || clean_path == "/api/studio/ui-kit/generate"
         || clean_path == "/api/assets/upload"
         || clean_path == "/api/assets/generate"
         || (method == "DELETE" && clean_path.starts_with("/api/assets/"))
@@ -1368,6 +1369,33 @@ fn sync_agent_project(
         let srv = Arc::clone(shared);
         agent.hooks.art_pack_card = Some(Arc::new(move |args| {
             invoke_opencloud_tool(&srv, "POST", "/api/art/pack-card", args)
+        }));
+    }
+    if agent.hooks.ui_kit_presets.is_none() {
+        agent.hooks.ui_kit_presets = Some(Arc::new(|_args| Ok(crate::ui_kit::presets_json())));
+    }
+    if agent.hooks.ui_kit_generate.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.ui_kit_generate = Some(Arc::new(move |args| {
+            let pid = resolve_agent_project_id(&srv, args, "ui_kit_generate")
+                .unwrap_or_else(|_| String::new());
+            if pid.is_empty() {
+                let mut body = args.clone();
+                let data_dir = srv
+                    .data_dir
+                    .as_deref()
+                    .unwrap_or_else(|| std::path::Path::new("openro-data"));
+                if let Some(obj) = body.as_object_mut() {
+                    obj.entry("data_dir".to_string())
+                        .or_insert_with(|| json!(data_dir.to_string_lossy()));
+                }
+                let studio_root = data_dir.join("ui-kit-studio");
+                let _ = std::fs::create_dir_all(studio_root.join("art"));
+                let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+                crate::ui_kit::generate_ui_kit(&studio_root, &store, None, &body).map_err(|oc| oc.msg)
+            } else {
+                invoke_opencloud_tool(&srv, "POST", &format!("/api/projects/{pid}/ui-kit/generate"), args)
+            }
         }));
     }
     if agent.hooks.assets_upload.is_none() {
@@ -2230,6 +2258,56 @@ fn handle(
                 Err(e) => {
                     let st = if e.contains("not found") { "404 Not Found" } else { "400 Bad Request" };
                     respond_err(&mut stream, st, &e);
+                }
+            }
+        }
+        ("GET", "/api/ui-kit/presets") => {
+            respond_json(&mut stream, "200 OK", &crate::ui_kit::presets_json());
+        }
+        ("POST", "/api/studio/ui-kit/generate") => {
+            let mut body: Value = if req.body.is_empty() {
+                json!({})
+            } else {
+                match serde_json::from_slice(&req.body) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        respond_err(&mut stream, "400 Bad Request", "the request body is not valid JSON");
+                        break 'req_done;
+                    }
+                }
+            };
+            let data_dir = shared
+                .data_dir
+                .as_deref()
+                .unwrap_or_else(|| std::path::Path::new("openro-data"));
+            if let Some(obj) = body.as_object_mut() {
+                obj.entry("data_dir".to_string())
+                    .or_insert_with(|| json!(data_dir.to_string_lossy()));
+            }
+            let pid = body.get("project_id").and_then(Value::as_str).map(str::to_string);
+            let proj_dir = resolve_studio_gui_project_dir(shared, pid.as_deref());
+            let (root_dir, eff_pid) = match proj_dir {
+                Some(d) => (d, pid.as_deref()),
+                None => {
+                    let studio_root = data_dir.join("ui-kit-studio");
+                    let _ = std::fs::create_dir_all(studio_root.join("art"));
+                    (studio_root, None)
+                }
+            };
+            let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+            match crate::ui_kit::generate_ui_kit(&root_dir, &store, eff_pid, &body) {
+                Ok(v) => respond_json(&mut stream, "200 OK", &v),
+                Err(oc) => {
+                    let st = match oc.status {
+                        404 => "404 Not Found",
+                        429 => "429 Too Many Requests",
+                        500 => "500 Internal Server Error",
+                        502 => "502 Bad Gateway",
+                        503 => "503 Service Unavailable",
+                        504 => "504 Gateway Timeout",
+                        _ => "400 Bad Request",
+                    };
+                    respond_err(&mut stream, st, &oc.msg);
                 }
             }
         }

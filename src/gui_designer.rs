@@ -314,6 +314,7 @@ pub struct ScreenDoc {
     pub name: String,
     pub ignore_gui_inset: bool,
     pub reset_on_spawn: bool,
+    pub modal_blur: bool,
     pub theme: ScreenTheme,
     pub root: GuiNode,
 }
@@ -325,6 +326,7 @@ impl ScreenDoc {
             "name": self.name,
             "ignore_gui_inset": self.ignore_gui_inset,
             "reset_on_spawn": self.reset_on_spawn,
+            "modal_blur": self.modal_blur,
             "theme": self.theme.to_json(),
             "root": self.root.to_json(),
         })
@@ -351,6 +353,10 @@ impl ScreenDoc {
             .get("reset_on_spawn")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let modal_blur = obj
+            .get("modal_blur")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let theme = match obj.get("theme") {
             Some(tv) => ScreenTheme::from_json(tv)?,
             None => ScreenTheme::default(),
@@ -362,6 +368,7 @@ impl ScreenDoc {
             name,
             ignore_gui_inset,
             reset_on_spawn,
+            modal_blur,
             theme,
             root,
         })
@@ -2230,6 +2237,8 @@ fn emit_luau_node(
 
     let mut asset_ref: Option<String> = None;
     let mut fallback_image: Option<String> = None;
+    let mut slice_center_val: Option<Value> = None;
+    let mut is_slice_scale = false;
     let mut product_key: Option<String> = None;
     let mut product_id_num: Option<u64> = None;
     let mut callback_name: Option<String> = None;
@@ -2248,6 +2257,16 @@ fn emit_luau_node(
             "Image" => {
                 let s = v.as_str().unwrap_or("");
                 fallback_image = Some(s.to_string());
+            }
+            "SliceCenter" => {
+                slice_center_val = Some(v.clone());
+            }
+            "ScaleType" => {
+                if v.as_str().is_some_and(|s| s.eq_ignore_ascii_case("Slice")) {
+                    is_slice_scale = true;
+                }
+                let rhs = format_luau_prop_rhs(canon, v)?;
+                let _ = writeln!(buf, "\t{var}.{canon} = {rhs}");
             }
             "ProductKey" => {
                 if let Some(s) = v.as_str() {
@@ -2295,8 +2314,30 @@ fn emit_luau_node(
             luau_str(&asset_key),
             luau_str(fb)
         );
-    } else if let Some(fb) = fallback_image {
-        let _ = writeln!(buf, "\t{var}.Image = {}", luau_str(&fb));
+        if is_slice_scale {
+            let fb_rect = if let Some(scv) = &slice_center_val {
+                format_luau_prop_rhs("SliceCenter", scv)?
+            } else {
+                "Rect.new(24, 24, 232, 232)".to_string()
+            };
+            let _ = writeln!(
+                buf,
+                "\t{var}.SliceCenter = resolveSliceCenter(assetIds, {}, {})",
+                luau_str(&asset_key),
+                fb_rect
+            );
+        } else if let Some(scv) = &slice_center_val {
+            let rhs = format_luau_prop_rhs("SliceCenter", scv)?;
+            let _ = writeln!(buf, "\t{var}.SliceCenter = {rhs}");
+        }
+    } else {
+        if let Some(fb) = fallback_image {
+            let _ = writeln!(buf, "\t{var}.Image = {}", luau_str(&fb));
+        }
+        if let Some(scv) = &slice_center_val {
+            let rhs = format_luau_prop_rhs("SliceCenter", scv)?;
+            let _ = writeln!(buf, "\t{var}.SliceCenter = {rhs}");
+        }
     }
 
     if matches!(node.class_name.as_str(), "TextButton" | "ImageButton")
@@ -2386,6 +2427,9 @@ fn compile_validated_to_luau(clean_slug: &str, validated: &ScreenDoc) -> Result<
     if uses_products {
         out.push_str("local MarketplaceService = game:GetService(\"MarketplaceService\")\n");
     }
+    if validated.modal_blur {
+        out.push_str("local Lighting = game:GetService(\"Lighting\")\n");
+    }
     out.push_str("local Players = game:GetService(\"Players\")\n");
     if uses_assets || uses_products {
         out.push_str("local ReplicatedStorage = game:GetService(\"ReplicatedStorage\")\n");
@@ -2433,6 +2477,12 @@ fn compile_validated_to_luau(clean_slug: &str, validated: &ScreenDoc) -> Result<
         out.push_str("\t\t\t\treturn resolved\n");
         out.push_str("\t\t\tend\n");
         out.push_str("\t\tend\n");
+        out.push_str("\t\tif type(assetIds.slices) == \"table\" then\n");
+        out.push_str("\t\t\tlocal sliceEntry = assetIds.slices[keyOrPath]\n");
+        out.push_str("\t\t\tif type(sliceEntry) == \"table\" and type(sliceEntry.assetId) == \"string\" and sliceEntry.assetId ~= \"\" then\n");
+        out.push_str("\t\t\t\treturn sliceEntry.assetId\n");
+        out.push_str("\t\t\tend\n");
+        out.push_str("\t\tend\n");
         out.push_str("\t\tif type(assetIds.byKey) == \"table\" and type(assetIds.byKey[keyOrPath]) == \"string\" then\n");
         out.push_str("\t\t\treturn assetIds.byKey[keyOrPath]\n");
         out.push_str("\t\tend\n");
@@ -2441,6 +2491,32 @@ fn compile_validated_to_luau(clean_slug: &str, validated: &ScreenDoc) -> Result<
         out.push_str("\t\tend\n");
         out.push_str("\tend\n");
         out.push_str("\treturn fallback\n");
+        out.push_str("end\n\n");
+        out.push_str(
+            "local function resolveSliceCenter(assetIds: { [string]: any }?, keyOrPath: string, fallback: Rect): Rect\n",
+        );
+        out.push_str("\tif assetIds and type(assetIds.slices) == \"table\" then\n");
+        out.push_str("\t\tlocal sliceEntry = assetIds.slices[keyOrPath]\n");
+        out.push_str("\t\tif type(sliceEntry) == \"table\" and typeof(sliceEntry.slice) == \"Rect\" then\n");
+        out.push_str("\t\t\treturn sliceEntry.slice\n");
+        out.push_str("\t\tend\n");
+        out.push_str("\tend\n");
+        out.push_str("\treturn fallback\n");
+        out.push_str("end\n\n");
+    }
+
+    if validated.modal_blur {
+        out.push_str("function ScreenModule.setModalBlur(enabled: boolean)\n");
+        out.push_str("\tlocal existing = Lighting:FindFirstChild(\"OpenROModalBlur\")\n");
+        out.push_str("\tif enabled then\n");
+        out.push_str("\t\tlocal blur = if existing and existing:IsA(\"BlurEffect\") then existing else Instance.new(\"BlurEffect\")\n");
+        out.push_str("\t\tblur.Name = \"OpenROModalBlur\"\n");
+        out.push_str("\t\tblur.Size = 16\n");
+        out.push_str("\t\tblur.Enabled = true\n");
+        out.push_str("\t\tblur.Parent = Lighting\n");
+        out.push_str("\telseif existing and existing:IsA(\"BlurEffect\") then\n");
+        out.push_str("\t\texisting:Destroy()\n");
+        out.push_str("\tend\n");
         out.push_str("end\n\n");
     }
 
@@ -2530,6 +2606,12 @@ fn compile_validated_to_luau(clean_slug: &str, validated: &ScreenDoc) -> Result<
     let mut used_vars = BTreeSet::new();
     emit_luau_node(&mut out, &validated.root, "screenGui", &mut counter, &mut used_vars)?;
 
+    if validated.modal_blur {
+        out.push_str("\tScreenModule.setModalBlur(true)\n");
+        out.push_str("\tscreenGui.Destroying:Connect(function()\n");
+        out.push_str("\t\tScreenModule.setModalBlur(false)\n");
+        out.push_str("\tend)\n");
+    }
     out.push_str("\tscreenGui.Parent = targetParent\n");
     out.push_str("\treturn screenGui\n");
     out.push_str("end\n\n");
@@ -3032,6 +3114,7 @@ pub fn preset_screen_doc(preset: &str, slug_override: Option<&str>) -> Result<Sc
             name: title.unwrap_or_else(|| "RpgHud".to_string()),
             ignore_gui_inset: true,
             reset_on_spawn: false,
+            modal_blur: false,
             theme: ScreenTheme {
                 accent: "#F59E0B".to_string(),
                 surface: "#0F172A".to_string(),
@@ -3168,6 +3251,7 @@ pub fn preset_screen_doc(preset: &str, slug_override: Option<&str>) -> Result<Sc
             name: title.unwrap_or_else(|| "ObbyHud".to_string()),
             ignore_gui_inset: true,
             reset_on_spawn: false,
+            modal_blur: false,
             theme: ScreenTheme {
                 accent: "#22C55E".to_string(),
                 surface: "#0F172A".to_string(),
@@ -3229,6 +3313,7 @@ pub fn preset_screen_doc(preset: &str, slug_override: Option<&str>) -> Result<Sc
             name: title.unwrap_or_else(|| "TycoonHud".to_string()),
             ignore_gui_inset: true,
             reset_on_spawn: false,
+            modal_blur: false,
             theme: ScreenTheme {
                 accent: "#10B981".to_string(),
                 surface: "#111827".to_string(),
@@ -3291,6 +3376,7 @@ pub fn preset_screen_doc(preset: &str, slug_override: Option<&str>) -> Result<Sc
             name: title.unwrap_or_else(|| "GachaHud".to_string()),
             ignore_gui_inset: true,
             reset_on_spawn: false,
+            modal_blur: false,
             theme: ScreenTheme {
                 accent: "#8B5CF6".to_string(),
                 surface: "#0F172A".to_string(),
@@ -3438,6 +3524,7 @@ pub fn template_screen_doc(template_id: &str) -> Result<ScreenDoc, String> {
             name: "AnimeRngCardsHud".to_string(),
             ignore_gui_inset: true,
             reset_on_spawn: false,
+            modal_blur: false,
             theme: ScreenTheme {
                 accent: "#FCD34D".to_string(),
                 surface: "#0B0B0C".to_string(),
@@ -3558,6 +3645,7 @@ pub fn template_screen_doc(template_id: &str) -> Result<ScreenDoc, String> {
             name: "ViralSimTycoonHud".to_string(),
             ignore_gui_inset: true,
             reset_on_spawn: false,
+            modal_blur: false,
             theme: ScreenTheme {
                 accent: "#10B981".to_string(),
                 surface: "#111827".to_string(),
@@ -3662,6 +3750,7 @@ pub fn template_screen_doc(template_id: &str) -> Result<ScreenDoc, String> {
                 name: "AnimeActionRpgTdHud".to_string(),
                 ignore_gui_inset: true,
                 reset_on_spawn: false,
+                modal_blur: false,
                 theme: ScreenTheme {
                     accent: "#F59E0B".to_string(),
                     surface: "#0F172A".to_string(),
@@ -3778,6 +3867,539 @@ pub fn template_screen_doc(template_id: &str) -> Result<ScreenDoc, String> {
             }
         }
         other => return Err(format!("unknown template ScreenDoc '{other}'")),
+    };
+    validate_screen_doc(doc)
+}
+
+fn sliced_chrome_bg(id: &str, name: &str, asset_key: &str, slice: [i64; 4], tint: &str) -> GuiNode {
+    make_node(
+        id,
+        name,
+        "ImageLabel",
+        vec![
+            ("Position", json!([[0, 0], [0, 0]])),
+            ("Size", json!([[1, 0], [1, 0]])),
+            ("BackgroundTransparency", json!(1)),
+            ("AssetKey", json!(asset_key)),
+            ("Image", json!("rbxassetid://0")),
+            ("ImageColor3", json!(tint)),
+            ("ImageTransparency", json!(0.18)),
+            ("ScaleType", json!("Slice")),
+            ("SliceCenter", json!(slice)),
+            ("ZIndex", json!(1)),
+        ],
+        vec![],
+    )
+}
+
+fn outlined_numeral_label(
+    id: &str,
+    name: &str,
+    pos: Value,
+    size: Value,
+    text: &str,
+    text_color: &str,
+    stroke_color: &str,
+    font_size: i64,
+) -> GuiNode {
+    make_node(
+        id,
+        name,
+        "TextLabel",
+        vec![
+            ("Position", pos),
+            ("Size", size),
+            ("BackgroundTransparency", json!(1)),
+            ("Text", json!(text)),
+            ("TextColor3", json!(text_color)),
+            ("TextSize", json!(font_size)),
+            ("Font", json!("GothamBold")),
+            ("TextXAlignment", json!("Center")),
+            ("ZIndex", json!(2)),
+        ],
+        vec![make_node(
+            &format!("{id}_stroke"),
+            "UIStroke",
+            "UIStroke",
+            vec![
+                ("Color", json!(stroke_color)),
+                ("Thickness", json!(1.8)),
+                ("Transparency", json!(0.15)),
+                ("ApplyStrokeMode", json!("Contextual")),
+            ],
+            vec![],
+        )],
+    )
+}
+
+fn ui_kit_cta_button(
+    id: &str,
+    name: &str,
+    order: i64,
+    width: i64,
+    height: i64,
+    bg_hex: &str,
+    fg_hex: &str,
+    rim_hex: &str,
+    text: &str,
+    callback: &str,
+) -> GuiNode {
+    make_node(
+        id,
+        name,
+        "TextButton",
+        vec![
+            ("Size", json!([[0, width], [0, height]])),
+            ("LayoutOrder", json!(order)),
+            ("BackgroundColor3", json!(bg_hex)),
+            ("BackgroundTransparency", json!(0.04)),
+            ("Text", json!(text)),
+            ("TextColor3", json!(fg_hex)),
+            ("TextSize", json!(15)),
+            ("Font", json!("GothamBold")),
+            ("Callback", json!(callback)),
+        ],
+        vec![
+            corner_node(&format!("{id}_corner"), 10.0),
+            stroke_node(&format!("{id}_rim"), rim_hex, 1.5),
+        ],
+    )
+}
+
+/// Build a validated, 3-viewport-safe (`1920x1080`, `1024x768`, `844x390`) ScreenDoc
+/// combining any of the 4 mixable layout topologies with any of the 5 visual skins.
+pub fn ui_kit_screen_doc(
+    layout_id: &str,
+    skin_id: &str,
+    theme_mode: Option<&str>,
+    slug_override: Option<&str>,
+) -> Result<ScreenDoc, String> {
+    let layout = crate::ui_kit::find_layout(layout_id)?;
+    let skin = crate::ui_kit::find_skin(skin_id)?;
+    let is_light = theme_mode.is_some_and(|m| m.eq_ignore_ascii_case("light"));
+    let tok = if is_light { &skin.light } else { &skin.dark };
+
+    let panel_key = format!("{}/modal_panel", skin.id);
+    let crest_key = format!("{}/header_crest", skin.id);
+
+    let title = slug_override
+        .map(pascal_case_slug)
+        .unwrap_or_else(|| pascal_case_slug(&format!("{}-{}", layout.id, skin.id)));
+
+    let children = match layout.id {
+        "skybridge-crest" => vec![
+            make_node(
+                "crest_banner",
+                "SkybridgeCrestBanner",
+                "Frame",
+                vec![
+                    ("AnchorPoint", json!([0.5, 0])),
+                    ("Position", json!([[0.5, 0], [0, 64]])),
+                    ("Size", json!([[0, 260], [0, 52]])),
+                    ("BackgroundColor3", json!(tok.surface)),
+                    ("BackgroundTransparency", json!(0.12)),
+                ],
+                vec![
+                    corner_node("crest_corner", 12.0),
+                    stroke_node("crest_rim", tok.crest_trim, 1.5),
+                    sliced_chrome_bg("crest_chrome", "CrestChrome", &crest_key, [80, 28, 360, 100], tok.crest_fill),
+                    outlined_numeral_label(
+                        "crest_title",
+                        "CrestTitle",
+                        json!([[0, 12], [0, 6]]),
+                        json!([[1, -24], [1, -12]]),
+                        "SKYBRIDGE  •  STAGE 12",
+                        tok.text,
+                        tok.stroke_dark,
+                        15,
+                    ),
+                ],
+            ),
+            make_node(
+                "currency_pill",
+                "CurrencyPill",
+                "Frame",
+                vec![
+                    ("AnchorPoint", json!([1, 0])),
+                    ("Position", json!([[1, -16], [0, 64]])),
+                    ("Size", json!([[0, 224], [0, 52]])),
+                    ("BackgroundColor3", json!(tok.surface)),
+                    ("BackgroundTransparency", json!(0.12)),
+                ],
+                vec![
+                    corner_node("curr_corner", 12.0),
+                    stroke_node("curr_rim", tok.rim, 1.5),
+                    sliced_chrome_bg("curr_chrome", "PanelChrome", &panel_key, [64, 48, 448, 272], tok.surface_elevated),
+                    outlined_numeral_label(
+                        "curr_val",
+                        "CurrencyValue",
+                        json!([[0, 10], [0, 6]]),
+                        json!([[1, -20], [1, -12]]),
+                        "2,450 SHARDS  •  PITY 18/50",
+                        tok.text,
+                        tok.stroke_dark,
+                        14,
+                    ),
+                ],
+            ),
+            make_node(
+                "left_rail",
+                "QuickNavRail",
+                "Frame",
+                vec![
+                    ("Position", json!([[0, 16], [0, 124]])),
+                    ("Size", json!([[0, 152], [0, 88]])),
+                    ("BackgroundColor3", json!(tok.surface)),
+                    ("BackgroundTransparency", json!(0.14)),
+                ],
+                vec![
+                    corner_node("rail_corner", 12.0),
+                    stroke_node("rail_rim", tok.rim, 1.5),
+                    make_node(
+                        "rail_list",
+                        "UIListLayout",
+                        "UIListLayout",
+                        vec![
+                            ("FillDirection", json!("Horizontal")),
+                            ("HorizontalAlignment", json!("Center")),
+                            ("VerticalAlignment", json!("Center")),
+                            ("Padding", json!([0, 8])),
+                        ],
+                        vec![],
+                    ),
+                    ui_kit_cta_button("rail_codex", "CodexButton", 1, 64, 48, tok.surface_elevated, tok.text, tok.rim, "Codex", "onOpenCodex"),
+                    ui_kit_cta_button("rail_quests", "QuestButton", 2, 64, 48, tok.surface_elevated, tok.text, tok.rim, "Quests", "onOpenQuests"),
+                ],
+            ),
+            make_node(
+                "action_dock",
+                "PrimaryActionDock",
+                "Frame",
+                vec![
+                    ("AnchorPoint", json!([0.5, 1])),
+                    ("Position", json!([[0.5, 0], [1, -16]])),
+                    ("Size", json!([[0, 360], [0, 64]])),
+                    ("BackgroundColor3", json!(tok.surface)),
+                    ("BackgroundTransparency", json!(0.12)),
+                ],
+                vec![
+                    corner_node("dock_corner", 14.0),
+                    stroke_node("dock_rim", tok.rim, 1.5),
+                    sliced_chrome_bg("dock_chrome", "DockChrome", &panel_key, [64, 48, 448, 272], tok.surface_elevated),
+                    make_node(
+                        "dock_row",
+                        "ButtonRow",
+                        "Frame",
+                        vec![
+                            ("Position", json!([[0, 0], [0, 0]])),
+                            ("Size", json!([[1, 0], [1, 0]])),
+                            ("BackgroundTransparency", json!(1)),
+                            ("ZIndex", json!(2)),
+                        ],
+                        vec![
+                            make_node(
+                                "dock_list",
+                                "UIListLayout",
+                                "UIListLayout",
+                                vec![
+                                    ("FillDirection", json!("Horizontal")),
+                                    ("HorizontalAlignment", json!("Center")),
+                                    ("VerticalAlignment", json!("Center")),
+                                    ("Padding", json!([0, 10])),
+                                ],
+                                vec![],
+                            ),
+                            ui_kit_cta_button("btn_summon", "SummonButton", 1, 110, 48, tok.accent, tok.accent_fg, tok.crest_trim, "Summon x1", "onSummonOne"),
+                            ui_kit_cta_button("btn_deck", "DeckButton", 2, 108, 48, tok.surface_elevated, tok.text, tok.rim, "Deck", "onOpenDeck"),
+                            ui_kit_cta_button("btn_battle", "BattleButton", 3, 108, 48, tok.surface_elevated, tok.text, tok.rim, "Battle", "onStartBattle"),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+        "perimeter-command" => vec![
+            make_node(
+                "commander_badge",
+                "CommanderBadge",
+                "Frame",
+                vec![
+                    ("Position", json!([[0, 16], [0, 64]])),
+                    ("Size", json!([[0, 224], [0, 52]])),
+                    ("BackgroundColor3", json!(tok.surface)),
+                    ("BackgroundTransparency", json!(0.12)),
+                ],
+                vec![
+                    corner_node("cmd_corner", 12.0),
+                    stroke_node("cmd_rim", tok.rim, 1.5),
+                    sliced_chrome_bg("cmd_chrome", "CrestChrome", &crest_key, [80, 28, 360, 100], tok.crest_fill),
+                    outlined_numeral_label("cmd_lbl", "CommanderLabel", json!([[0, 10], [0, 6]]), json!([[1, -20], [1, -12]]), "LVL 24  •  RANK S", tok.text, tok.stroke_dark, 15),
+                ],
+            ),
+            make_node(
+                "top_right_cluster",
+                "CurrencyOrbCluster",
+                "Frame",
+                vec![
+                    ("AnchorPoint", json!([1, 0])),
+                    ("Position", json!([[1, -16], [0, 64]])),
+                    ("Size", json!([[0, 232], [0, 52]])),
+                    ("BackgroundColor3", json!(tok.surface)),
+                    ("BackgroundTransparency", json!(0.12)),
+                ],
+                vec![
+                    corner_node("trc_corner", 12.0),
+                    stroke_node("trc_rim", tok.rim, 1.5),
+                    outlined_numeral_label("trc_lbl", "ShardsLabel", json!([[0, 10], [0, 6]]), json!([[1, -20], [1, -12]]), "8,120 CR  •  4/5 WINS", tok.text, tok.stroke_dark, 14),
+                ],
+            ),
+            make_node(
+                "milestone_strip",
+                "MilestoneStrip",
+                "Frame",
+                vec![
+                    ("AnchorPoint", json!([1, 0])),
+                    ("Position", json!([[1, -16], [0, 124]])),
+                    ("Size", json!([[0, 212], [0, 84]])),
+                    ("BackgroundColor3", json!(tok.surface)),
+                    ("BackgroundTransparency", json!(0.14)),
+                ],
+                vec![
+                    corner_node("ms_corner", 12.0),
+                    stroke_node("ms_rim", tok.crest_trim, 1.5),
+                    sliced_chrome_bg("ms_chrome", "MilestoneChrome", &panel_key, [64, 48, 448, 272], tok.surface_elevated),
+                    outlined_numeral_label("ms_lbl", "MilestoneLabel", json!([[0, 10], [0, 8]]), json!([[1, -20], [0, 32]]), "MILESTONE 3 / 5", tok.text, tok.stroke_dark, 14),
+                    outlined_numeral_label("ms_sub", "MilestoneSub", json!([[0, 10], [0, 42]]), json!([[1, -20], [0, 28]]), "NEXT REWARD: MYTHIC KEY", tok.text_muted, tok.stroke_dark, 12),
+                ],
+            ),
+            make_node(
+                "command_bar",
+                "CommandDock",
+                "Frame",
+                vec![
+                    ("AnchorPoint", json!([0.5, 1])),
+                    ("Position", json!([[0.5, 0], [1, -16]])),
+                    ("Size", json!([[0, 352], [0, 64]])),
+                    ("BackgroundColor3", json!(tok.surface)),
+                    ("BackgroundTransparency", json!(0.12)),
+                ],
+                vec![
+                    corner_node("cb_corner", 14.0),
+                    stroke_node("cb_rim", tok.rim, 1.5),
+                    make_node(
+                        "cb_list",
+                        "UIListLayout",
+                        "UIListLayout",
+                        vec![
+                            ("FillDirection", json!("Horizontal")),
+                            ("HorizontalAlignment", json!("Center")),
+                            ("VerticalAlignment", json!("Center")),
+                            ("Padding", json!([0, 8])),
+                        ],
+                        vec![],
+                    ),
+                    ui_kit_cta_button("cmd_deploy", "DeployButton", 1, 108, 48, tok.accent, tok.accent_fg, tok.crest_trim, "Deploy", "onDeploy"),
+                    ui_kit_cta_button("cmd_roster", "RosterButton", 2, 104, 48, tok.surface_elevated, tok.text, tok.rim, "Roster", "onRoster"),
+                    ui_kit_cta_button("cmd_shop", "ShopButton", 3, 104, 48, tok.surface_elevated, tok.text, tok.rim, "Shop", "onShop"),
+                ],
+            ),
+        ],
+        "workshop-ribbon" => vec![
+            make_node(
+                "forge_quick",
+                "ForgeQuickPill",
+                "Frame",
+                vec![
+                    ("Position", json!([[0, 16], [0, 64]])),
+                    ("Size", json!([[0, 188], [0, 52]])),
+                    ("BackgroundColor3", json!(tok.surface)),
+                    ("BackgroundTransparency", json!(0.12)),
+                ],
+                vec![
+                    corner_node("fq_corner", 12.0),
+                    stroke_node("fq_rim", tok.rim, 1.5),
+                    outlined_numeral_label("fq_lbl", "ForgeStatus", json!([[0, 8], [0, 6]]), json!([[1, -16], [1, -12]]), "ESSENCE 640", tok.text, tok.stroke_dark, 15),
+                ],
+            ),
+            make_node(
+                "stepper_ribbon",
+                "MilestoneStepperRibbon",
+                "Frame",
+                vec![
+                    ("AnchorPoint", json!([0.5, 0])),
+                    ("Position", json!([[0.5, 0], [0, 64]])),
+                    ("Size", json!([[0, 320], [0, 52]])),
+                    ("BackgroundColor3", json!(tok.surface)),
+                    ("BackgroundTransparency", json!(0.12)),
+                ],
+                vec![
+                    corner_node("sr_corner", 12.0),
+                    stroke_node("sr_rim", tok.crest_trim, 1.5),
+                    sliced_chrome_bg("sr_chrome", "StepperChrome", &crest_key, [80, 28, 360, 100], tok.crest_fill),
+                    outlined_numeral_label("sr_lbl", "StepperText", json!([[0, 10], [0, 6]]), json!([[1, -20], [1, -12]]), "TIER I  >  TIER II  >  TIER III", tok.text, tok.stroke_dark, 14),
+                ],
+            ),
+            make_node(
+                "workshop_dock",
+                "WorkshopRibbonDock",
+                "Frame",
+                vec![
+                    ("AnchorPoint", json!([0.5, 1])),
+                    ("Position", json!([[0.5, 0], [1, -16]])),
+                    ("Size", json!([[0, 344], [0, 64]])),
+                    ("BackgroundColor3", json!(tok.surface)),
+                    ("BackgroundTransparency", json!(0.12)),
+                ],
+                vec![
+                    corner_node("wd_corner", 14.0),
+                    stroke_node("wd_rim", tok.rim, 1.5),
+                    sliced_chrome_bg("wd_chrome", "RibbonChrome", &panel_key, [64, 48, 448, 272], tok.surface_elevated),
+                    make_node(
+                        "wd_row",
+                        "ButtonRow",
+                        "Frame",
+                        vec![
+                            ("Position", json!([[0, 0], [0, 0]])),
+                            ("Size", json!([[1, 0], [1, 0]])),
+                            ("BackgroundTransparency", json!(1)),
+                            ("ZIndex", json!(2)),
+                        ],
+                        vec![
+                            make_node(
+                                "wd_list",
+                                "UIListLayout",
+                                "UIListLayout",
+                                vec![
+                                    ("FillDirection", json!("Horizontal")),
+                                    ("HorizontalAlignment", json!("Center")),
+                                    ("VerticalAlignment", json!("Center")),
+                                    ("Padding", json!([0, 8])),
+                                ],
+                                vec![],
+                            ),
+                            ui_kit_cta_button("wk_forge", "ForgeButton", 1, 106, 48, tok.accent, tok.accent_fg, tok.crest_trim, "Forge", "onForge"),
+                            ui_kit_cta_button("wk_inspect", "InspectButton", 2, 104, 48, tok.surface_elevated, tok.text, tok.rim, "Inspect", "onInspect"),
+                            ui_kit_cta_button("wk_auto", "AutoButton", 3, 98, 48, tok.surface_elevated, tok.text, tok.rim, "Auto", "onToggleAuto"),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+        "compact-mobile-split" => vec![
+            make_node(
+                "split_status",
+                "SplitStatusCard",
+                "Frame",
+                vec![
+                    ("Position", json!([[0, 16], [0, 64]])),
+                    ("Size", json!([[0, 206], [0, 52]])),
+                    ("BackgroundColor3", json!(tok.surface)),
+                    ("BackgroundTransparency", json!(0.12)),
+                ],
+                vec![
+                    corner_node("ss_corner", 12.0),
+                    stroke_node("ss_rim", tok.rim, 1.5),
+                    sliced_chrome_bg("ss_chrome", "StatusChrome", &crest_key, [80, 28, 360, 100], tok.crest_fill),
+                    outlined_numeral_label("ss_lbl", "StatusTitle", json!([[0, 10], [0, 6]]), json!([[1, -20], [1, -12]]), "HP 100%  •  W3", tok.text, tok.stroke_dark, 15),
+                ],
+            ),
+            make_node(
+                "split_right",
+                "SplitCurrencyBag",
+                "Frame",
+                vec![
+                    ("AnchorPoint", json!([1, 0])),
+                    ("Position", json!([[1, -16], [0, 64]])),
+                    ("Size", json!([[0, 240], [0, 56]])),
+                    ("BackgroundColor3", json!(tok.surface)),
+                    ("BackgroundTransparency", json!(0.12)),
+                ],
+                vec![
+                    corner_node("sp_corner", 12.0),
+                    stroke_node("sp_rim", tok.rim, 1.5),
+                    outlined_numeral_label("sp_curr", "SplitCoins", json!([[0, 10], [0, 6]]), json!([[0, 146], [1, -12]]), "1,250 G", tok.text, tok.stroke_dark, 15),
+                    make_node(
+                        "sp_bag_btn",
+                        "BagButton",
+                        "TextButton",
+                        vec![
+                            ("AnchorPoint", json!([1, 0.5])),
+                            ("Position", json!([[1, -6], [0.5, 0]])),
+                            ("Size", json!([[0, 68], [0, 44]])),
+                            ("BackgroundColor3", json!(tok.surface_elevated)),
+                            ("BackgroundTransparency", json!(0.04)),
+                            ("Text", json!("Bag")),
+                            ("TextColor3", json!(tok.text)),
+                            ("TextSize", json!(14)),
+                            ("Font", json!("GothamBold")),
+                            ("Callback", json!("onOpenBag")),
+                        ],
+                        vec![
+                            corner_node("sp_bag_corner", 8.0),
+                            stroke_node("sp_bag_rim", tok.rim, 1.5),
+                        ],
+                    ),
+                ],
+            ),
+            make_node(
+                "split_dock",
+                "SplitActionDock",
+                "Frame",
+                vec![
+                    ("AnchorPoint", json!([0.5, 1])),
+                    ("Position", json!([[0.5, 0], [1, -16]])),
+                    ("Size", json!([[0, 312], [0, 64]])),
+                    ("BackgroundColor3", json!(tok.surface)),
+                    ("BackgroundTransparency", json!(0.12)),
+                ],
+                vec![
+                    corner_node("sd_corner", 14.0),
+                    stroke_node("sd_rim", tok.rim, 1.5),
+                    sliced_chrome_bg("sd_chrome", "SplitDockChrome", &panel_key, [64, 48, 448, 272], tok.surface_elevated),
+                    make_node(
+                        "sd_row",
+                        "ButtonRow",
+                        "Frame",
+                        vec![
+                            ("Position", json!([[0, 0], [0, 0]])),
+                            ("Size", json!([[1, 0], [1, 0]])),
+                            ("BackgroundTransparency", json!(1)),
+                            ("ZIndex", json!(2)),
+                        ],
+                        vec![
+                            make_node(
+                                "sd_list",
+                                "UIListLayout",
+                                "UIListLayout",
+                                vec![
+                                    ("FillDirection", json!("Horizontal")),
+                                    ("HorizontalAlignment", json!("Center")),
+                                    ("VerticalAlignment", json!("Center")),
+                                    ("Padding", json!([0, 12])),
+                                ],
+                                vec![],
+                            ),
+                            ui_kit_cta_button("sd_roll", "RollButton", 1, 140, 48, tok.accent, tok.accent_fg, tok.crest_trim, "Roll Card", "onRoll"),
+                            ui_kit_cta_button("sd_fight", "FightButton", 2, 136, 48, tok.surface_elevated, tok.text, tok.rim, "Auto Battle", "onAutoBattle"),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+        _ => unreachable!(),
+    };
+
+    let doc = ScreenDoc {
+        version: 1,
+        name: title,
+        ignore_gui_inset: true,
+        reset_on_spawn: false,
+        modal_blur: false,
+        theme: ScreenTheme {
+            accent: tok.accent.to_string(),
+            surface: tok.surface.to_string(),
+            text: tok.text.to_string(),
+        },
+        root: preset_root_frame(children),
     };
     validate_screen_doc(doc)
 }

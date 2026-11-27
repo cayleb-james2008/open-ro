@@ -2692,6 +2692,7 @@ fn is_write_or_submit_tool(tool: &str) -> bool {
             | "art_generate"
             | "image_process"
             | "art_pack_card"
+            | "ui_kit_generate"
             | "assets_authorise"
             | "assets_codegen"
             | "assets_upload"
@@ -3292,7 +3293,8 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
             "Follow Study -> Build -> Check -> Refine: check `study_status`/`unknowns_list`, record verified behavior with `evidence_record`/`unknown_add`/`unknown_update` (capping guesswork), cite `ev_*` IDs in `docs/mechanics.json` (`mechanics_check`), build, check (`project_check`/`project_playtest`, pass `\"force\":true` to bypass `KeptChecks`), and refine.\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_symbols`, `project_typecheck`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_codegen`, `liveops_telemetry_sync`, `liveops_telemetry_summary`.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_symbols`, `project_typecheck`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `ui_kit_presets`, `ui_kit_generate`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_codegen`, `liveops_telemetry_sync`, `liveops_telemetry_summary`.\n",
+            "UI Craft (7 Rules, zero copying): use `ui_kit_presets` / `ui_kit_generate` (ChatGPT sheet -> auto-sliced 9-slice transparent PNGs + `AssetIds.slices` + mixable layouts `skybridge-crest`/`perimeter-command`/`workshop-ribbon`/`compact-mobile-split` with >=5.25:1 Dark/Light glass, `Lighting.BlurEffect` modal depth, original header crests, >=44px glossy buttons, 1.5-2px dark `UIStroke` numerals, 844x390 safe-area clearance; never copy ANRX star-ribbons or layouts).\n",
             "Formatting: `project_check` with `{\"format\":true}` or `project_format` auto-formats your claimed `.luau` files with `stylua` instead of hand-editing whitespace.\n",
             "Asset arg signatures:\n",
             "- project_scene_mutate: {\"ops\":[{\"op\":\"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\",\"path\":\"Workspace.Name\",\"class_name\":\"Part|Model|SpawnLocation|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\",\"new_parent\":\"Workspace.Parent\",\"enabled\":true,\"generator\":{\"kind\":\"flat|hills|island|canyon\",\"seed\":1,\"amplitude\":24,\"water_level\":0},\"paint_box\":{\"min\":[0,0,0],\"max\":[16,8,16],\"material\":\"Grass\"}}]}\n",
@@ -3757,6 +3759,18 @@ fn execute_agent_tool(
         }
         "art_pack_card" => {
             let res = run_opencloud_route(shared, handle, "POST", "/api/art/pack-card", args)?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
+        "ui_kit_presets" => Ok(crate::ui_kit::presets_json()),
+        "ui_kit_generate" => {
+            let res = run_opencloud_route(
+                shared,
+                handle,
+                "POST",
+                "/api/projects/active/ui-kit/generate",
+                args,
+            )?;
             record_generated_asset_files(handle, agent_name, tool, args, &res);
             Ok(res)
         }
@@ -6167,6 +6181,17 @@ fn collect_generated_asset_paths(tool: &str, res: &Value) -> Vec<String> {
         "art_pack_card" => {
             for ptr in ["/art/path", "/icon/path", "/full/path", "/contact_sheet/path"] {
                 push_str(&mut raw, res.pointer(ptr).and_then(Value::as_str));
+            }
+            raw.push("art/ART-LOG.jsonl".to_string());
+        }
+        "ui_kit_generate" => {
+            push_str(&mut raw, res.get("sheet_path").and_then(Value::as_str));
+            push_str(&mut raw, res.get("slices_json").and_then(Value::as_str));
+            push_str(&mut raw, res.pointer("/saved_screen/path").and_then(Value::as_str));
+            if let Some(arr) = res.get("sliced").and_then(Value::as_array) {
+                for item in arr {
+                    push_str(&mut raw, item.get("path").and_then(Value::as_str));
+                }
             }
             raw.push("art/ART-LOG.jsonl".to_string());
         }

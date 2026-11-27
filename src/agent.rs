@@ -235,6 +235,8 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - {{\"tool\": \"art_generate\", \"args\": {{\"prompt\": \"single-line eye-level three-quarter prompt\", \"out_path\": \"art/cards/x/art.png\", \"references\": [\"art/references/...\"]}}}} generates art (ChatGPT shared browser default; never Higgsfield)\n\
 - {{\"tool\": \"image_process\", \"args\": {{\"input\": \"...\", \"output\": \"...\", \"ops\": [...]}}}} crops/resizes/composites/removes background on PNGs\n\
 - {{\"tool\": \"art_pack_card\", \"args\": {{\"card_id\": \"...\"}}}} packs card art/icon/full variants + contact sheet\n\
+- {{\"tool\": \"ui_kit_presets\", \"args\": {{}}}} lists 7 UI Craft rules, 4 mixable layouts, 5 visual skins, and 3 UI sheet recipes\n\
+- {{\"tool\": \"ui_kit_generate\", \"args\": {{\"layout\": \"skybridge-crest|perimeter-command|workshop-ribbon|compact-mobile-split\", \"skin\": \"obsidian-prism|skybridge-gilded|sakura-lacquer|cyber-forge|clean-monochrome\", \"sheet\": \"chrome_sheet|icons_sheet|rarity_frames_sheet\", \"procedural_fallback\": false}}}} generates & auto-slices transparent 9-slice UI chrome/icons/frames into art/ui/<skin>/ + art/ui/slices.json\n\
 - {{\"tool\": \"mesh_generate\", \"args\": {{\"name\": \"PropName\", \"description\": \"...\", \"script\": \"...\"}}}} (alias `blender_generate`) generates smart-UV AO-baked .obj + PNG + manifest.json (<=20k tris) into assets/meshes/\n\
 - {{\"tool\": \"audio_generate\", \"args\": {{\"name\": \"SfxName\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}}}} synthesizes 44.1kHz WAV into assets/audio/\n\
 - {{\"tool\": \"adapter_list\", \"args\": {{\"capability\": \"image_gen|reference_search|mesh_gen|audio_gen|custom\"}}}} lists installed CLI/HTTP tool adapters and availability\n\
@@ -265,7 +267,9 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - PartType.Cylinder runs along its LOCAL X axis: upright columns/pillars MUST set Size = Vector3.new(height, diameter, diameter) with CFrame.Angles(0, 0, math.rad(90)).\n\
 - Mobile StreamingEnabled budgets: <=20,000 tris/mesh, <=40 active ParticleEmitters, <=12 non-shadow lights. Clean up every transient VFX/Part/Sound via Debris:AddItem or pooling.\n\
 - Respect Settings-only Light/Dark theme and FlashEnabled/ReducedMotion toggles; wire meshes via assets/meshes/manifest.json + src/shared/AssetIds.luau.\n\n\
+{}\n\n\
 Workflow — Study -> Build -> Check -> Refine (ONE JSON object per turn): First Study (respect `clean_room`; record verified facts with `evidence_record`, log open questions with `unknown_add`, validate `mechanics_check`), then Build (`project_write_file`/`project_edit_file`), then Check (`project_check`/`project_run_lune`/`project_sync`/`project_playtest`, resolving unknowns via `unknown_update` only with verified `ev_*` IDs), then Refine until `study_status` and verification pass cleanly before {{\"done\": true, \"summary\": \"...\"}}.\n\n{}",
+        crate::ui_kit::prompt_guidance(),
         crate::art_knowledge::prompt_guidance()
     )
 }
@@ -295,35 +299,27 @@ PROJECT FILE & BUILD TOOLS:\n\
 - project_run_lune {{\"script\": \"tools/sim.luau\"}} (timeout-bounded Lune execution)\n\
 - sandbox_playtest {{\"timeout_secs\": 15, \"journey\": [...]}} (<2s headless Roblox Luau runtime sandbox: server/client, remotes, DataStores, ProcessReceipt idempotency, PlayerGui)\n\
 - project_build {{\"engine\": \"auto\"}} (.rbxlx build)\n\
-- project_scene_get {{}} (unified workspace: scripts, instances, meshes, lighting, lights, terrain, diagnostics)\n\
-- project_scene_mutate {{\"ops\": [{{\"op\": \"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\", \"path\": \"Workspace.Name\", \"class_name\": \"Part|Model|SpawnLocation|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\", ...}}]}} (workspace.model.json, terrain.json & Lighting; set_terrain: generator/paint_box/clear; reparent: new_parent)\n\
-- gui_save {{\"slug\": \"main-hud\", \"doc\": {{...}} | \"preset\": \"rpg|obby|tycoon|gacha\"}} (ui/<slug>.screen.json + safe-area)\n\
-- gui_compile {{\"slug\": \"main-hud\", \"emit_model_json\": false}} (--!strict Luau + Rojo .model.json)\n\
+- project_scene_get {{}} / project_scene_mutate {{\"ops\": [{{\"op\": \"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\", \"path\": \"Workspace.Name\", \"class_name\": \"Part|Model|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\", ...}}]}}
+- gui_save {{\"slug\": \"main-hud\", \"doc\": {{...}} | \"preset\": \"rpg|obby|tycoon|gacha\"}} / gui_compile {{\"slug\": \"main-hud\"}}\n\
 - project_sync {{\"prune\": false}} / project_sync_pull {{\"strategy\": \"merge_non_conflicting\"}} / project_playtest {{\"sync_first\": true, \"suite\": \"playtest/suite.json\"}}\n\n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
-- research_roblox_game {{\"target\": \"<URL or ID>\"}} (Roblox API + thumbs -> refs/<universeId>/)\n\
-- web_search {{\"query\": \"...\", \"limit\": 5}} / web_fetch {{\"url\": \"https://...\"}}\n\
-- reference_search {{\"query\": \"...\", \"character\": \"...\", \"show\": \"...\"}} (-> art/references/)\n\
-- art_generate {{\"prompt\": \"single-line eye-level neutral three-quarter prompt\", \"out_path\": \"art/cards/x/art.png\", \"references\": [...]}} (ChatGPT browser default; never Higgsfield)\n\
+- research_roblox_game {{\"target\": \"<URL or ID>\"}} / web_search {{\"query\": \"...\", \"limit\": 5}} / web_fetch {{\"url\": \"https://...\"}}\n\
+- reference_search {{\"query\": \"...\", \"character\": \"...\", \"show\": \"...\"}}\n\
+- art_generate {{\"prompt\": \"single-line eye-level three-quarter prompt\", \"out_path\": \"art/cards/x/art.png\", \"references\": [...]}} (ChatGPT default; never Higgsfield)\n\
 - image_process {{\"input\": \"...\", \"output\": \"...\", \"ops\": [...]}} / art_pack_card {{\"card_id\": \"...\"}}\n\
-- mesh_generate {{\"name\": \"Prop\", \"description\": \"...\", \"script\": \"...\"}} (AO-baked .obj + PNG <=20k tris -> assets/meshes/)\n\
-- audio_generate {{\"name\": \"Sfx\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}} (-> assets/audio/)\n\
+- ui_kit_presets {{}} / ui_kit_generate {{\"layout\": \"skybridge-crest\", \"skin\": \"obsidian-prism\", \"sheet\": \"chrome_sheet\"}} (9-slice PNGs + BlurEffect + >=5.25:1 + 844x390 safe)\n\
+- mesh_generate {{\"name\": \"Prop\", \"description\": \"...\", \"script\": \"...\"}} / audio_generate {{\"name\": \"Sfx\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}}\n\
 - adapter_list {{\"capability\": \"...?\"}} / adapter_invoke {{\"capability\": \"...\", \"adapter_id\": \"...?\", \"params\": {{...}}}}\n\
-- opencloud_status {{}} / creator_hub_status {{\"check_login\": true, \"save_creator\": true}} / creator_hub_setup {{...}} / creator_hub_configure {{...}} (loopback CDP; stop on action_required)\n\
-- assets_authorise {{\"paths\": [...]}} / assets_upload {{\"paths\": [...]}} / assets_codegen {{}} (-> AssetIds.luau)\n\
-- products_sync {{}} / products_codegen {{}} (-> ProductIds.luau) / universe_get {{}} / universe_set {{...}}\n\
-- liveops_datastore_list {{}} / liveops_datastore_get {{store,key}} / liveops_datastore_set {{...,confirm:true}} / liveops_messaging_publish {{topic,message,confirm:true}} / liveops_remote_config_push {{config,generate_luau,push_to_datastore}} / liveops_telemetry_codegen {{mode,store_name,flush_interval_secs}} / liveops_telemetry_sync {{source,days}} / liveops_telemetry_summary {{}} (live writes need confirm:true)\n\
-- project_publish {{\"versionType\": \"Saved\"}} (live \"Published\" requires confirm: true ONLY after owner approval)\n\n\
-STUDY & EVIDENCE TOOLS (Study -> Build -> Check -> Refine):\n\
-- evidence_record {{\"summary\":\"...\",\"confidence\":\"observed|derived|inferred\",\"kind\":\"...\",\"source\":\"...\"}} / evidence_list {{\"confidence\":\"...?\",\"limit\":50}}\n\
-- unknown_add {{\"title\":\"...\",\"question\":\"...\",\"severity\":\"high\",\"domain\":\"...\"}} / unknowns_list {{\"status\":\"open\"}}\n\
-- unknown_update {{\"id\":\"unk_...\",\"expected_revision\":1,\"status\":\"resolved\",\"resolution\":\"...\",\"evidence_for\":[\"ev_...\"]}} (needs resolution + ev_*)\n\
-- mechanics_check {{\"path\":\"docs/mechanics.json\",\"strict\":false}} / study_status {{}}\n\n\
+- opencloud_status {{}} / creator_hub_status {{\"check_login\": true, \"save_creator\": true}} / creator_hub_setup {{...}} / creator_hub_configure {{...}}\n\
+- assets_authorise {{\"paths\": [...]}} / assets_upload {{\"paths\": [...]}} / assets_codegen {{}} / products_sync {{}} / products_codegen {{}} / universe_get {{}} / universe_set {{...}}\n\
+- liveops_datastore_list {{}} / liveops_datastore_get {{store,key}} / liveops_datastore_set {{...,confirm:true}} / liveops_messaging_publish {{topic,message,confirm:true}} / liveops_remote_config_push {{config,generate_luau,push_to_datastore}} / liveops_telemetry_codegen {{mode,store_name,flush_interval_secs}} / liveops_telemetry_sync {{source,days}} / liveops_telemetry_summary {{}}\n\
+- project_publish {{\"versionType\": \"Saved\"}} (live \"Published\" needs confirm: true)\n\n\
+STUDY & EVIDENCE (Study -> Build -> Check -> Refine):\n\
+- evidence_record {{summary,confidence,kind,source}} / evidence_list {{confidence?,limit?}} / unknown_add {{title,question,severity,domain}} / unknowns_list {{status?}} / unknown_update {{id,expected_revision,status,resolution,evidence_for}} / mechanics_check {{path,strict?}} / study_status {{}}\n\n\
 3D, VFX & UI GUARDRAILS:\n\
 - PartType.Cylinder runs along LOCAL X: upright pillars MUST use Size=Vector3.new(h,d,d) + CFrame.Angles(0,0,math.rad(90)).\n\
-- Mobile budgets: <=20k tris/mesh, <=40 ParticleEmitters, <=12 non-shadow lights; clean transient VFX/Parts/Sounds via Debris:AddItem or pooling.\n\
-- Enforce Settings-only Light/Dark theme and FlashEnabled/ReducedMotion; wire meshes/art via assets/meshes/manifest.json + src/shared/AssetIds.luau.\n\
-- Workflow Study -> Build -> Check -> Refine: record evidence, resolve unknowns with ev_* IDs, batch edits, verify with mechanics_check, project_check / project_run_lune, and project_playtest (sync_first: true).\n\n{}",
+- Mobile: <=20k tris/mesh, <=40 ParticleEmitters, <=12 non-shadow lights; clean VFX/Sounds via Debris/pooling; Settings-only Light/Dark + ReducedMotion; bind assets/meshes/manifest.json + AssetIds.luau.\n\
+- Workflow Study -> Build -> Check -> Refine: record evidence, resolve unknowns with ev_* IDs, verify mechanics_check, project_check / project_run_lune, and project_playtest.\n\n{}",
         crate::art_knowledge::prompt_guidance()
     )
 }
@@ -540,6 +536,8 @@ pub struct AgentHooks {
     pub art_generate: Option<HookFn>,
     pub image_process: Option<HookFn>,
     pub art_pack_card: Option<HookFn>,
+    pub ui_kit_presets: Option<HookFn>,
+    pub ui_kit_generate: Option<HookFn>,
     pub mesh_generate: Option<HookFn>,
     pub audio_generate: Option<HookFn>,
     pub assets_upload: Option<HookFn>,
@@ -3067,6 +3065,7 @@ impl Agent {
                                     "art_generate"
                                         | "image_process"
                                         | "art_pack_card"
+                                        | "ui_kit_generate"
                                         | "mesh_generate"
                                         | "blender_generate"
                                         | "audio_generate"
@@ -3543,6 +3542,7 @@ impl Agent {
                             "art_generate"
                                 | "image_process"
                                 | "art_pack_card"
+                                | "ui_kit_generate"
                                 | "mesh_generate"
                                 | "blender_generate"
                                 | "audio_generate"
@@ -4800,6 +4800,31 @@ impl Agent {
                 let text = res.to_string();
                 transcript.push(format!("tool art_pack_card -> {text}"));
                 Ok(format!("tool_result: art_pack_card: {text}"))
+            }
+            "ui_kit_presets" => {
+                let res = if let Some(hook) = &self.hooks.ui_kit_presets {
+                    hook(args)?
+                } else {
+                    crate::ui_kit::presets_json()
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool ui_kit_presets -> {text}"));
+                Ok(format!("tool_result: ui_kit_presets: {text}"))
+            }
+            "ui_kit_generate" => {
+                let res = if let Some(hook) = &self.hooks.ui_kit_generate {
+                    hook(args)?
+                } else {
+                    let root = self.require_project_root()?;
+                    let data_dir = root.parent().unwrap_or(&root);
+                    let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+                    crate::ui_kit::generate_ui_kit(&root, &store, self.project_id.as_deref(), args)
+                        .map_err(|oc| oc.msg)?
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool ui_kit_generate -> {text}"));
+                thread.push("Generated and sliced UI Kit asset sheet.".to_string());
+                Ok(format!("tool_result: ui_kit_generate: {text}"))
             }
             "assets_upload" => {
                 let res = if let Some(hook) = &self.hooks.assets_upload {

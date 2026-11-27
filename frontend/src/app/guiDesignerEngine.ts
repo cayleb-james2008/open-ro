@@ -120,6 +120,7 @@ export type ScreenDoc = {
   name: string;
   ignore_gui_inset: boolean;
   reset_on_spawn: boolean;
+  modal_blur?: boolean;
   theme: ScreenDocTheme;
   root: GuiNode;
 };
@@ -158,6 +159,9 @@ export type SafeAreaWarning = {
 };
 
 export type GuiPresetId = "rpg" | "obby" | "tycoon" | "gacha";
+export type UiKitLayoutId = "skybridge-crest" | "perimeter-command" | "workshop-ribbon" | "compact-mobile-split";
+export type UiKitSkinId = "obsidian-prism" | "skybridge-gilded" | "sakura-lacquer" | "cyber-forge" | "clean-monochrome";
+export type UiKitSheetId = "chrome_sheet" | "icons_sheet" | "rarity_frames_sheet";
 
 export type ComputedNodeRect = {
   node: GuiNode;
@@ -411,6 +415,7 @@ export function normalizeScreenDoc(raw: unknown, fallbackSlug = "main-hud"): Scr
     name: typeof docObj.name === "string" && docObj.name.trim() ? docObj.name.trim() : "MainHud",
     ignore_gui_inset: docObj.ignore_gui_inset !== false,
     reset_on_spawn: docObj.reset_on_spawn === true,
+    modal_blur: docObj.modal_blur === true,
     theme: {
       accent: safeHexColor(themeRaw.accent, "#1562FC"),
       surface: safeHexColor(themeRaw.surface, "#141820"),
@@ -1452,6 +1457,117 @@ export const GUI_PRESET_META: Array<{ id: GuiPresetId; label: string; summary: s
   { id: "gacha", label: "Gacha", summary: "9-slice banner frame, gem counter, and roll buttons" },
 ];
 
+export const UI_KIT_LAYOUT_META: Array<{ id: UiKitLayoutId; label: string }> = [
+  { id: "skybridge-crest", label: "Skybridge Crest" },
+  { id: "perimeter-command", label: "Perimeter Command" },
+  { id: "workshop-ribbon", label: "Workshop Ribbon" },
+  { id: "compact-mobile-split", label: "Compact Mobile Split" },
+];
+
+export const UI_KIT_SKIN_META: Array<{
+  id: UiKitSkinId;
+  label: string;
+  surface: string;
+  elevated: string;
+  text: string;
+  muted: string;
+  accent: string;
+  accentFg: string;
+  rim: string;
+  stroke: string;
+  crestFill: string;
+  crestTrim: string;
+}> = [
+  { id: "obsidian-prism", label: "Obsidian Prism", surface: "#0A0D14", elevated: "#131926", text: "#F4F7FC", muted: "#B6C2D9", accent: "#38BDF8", accentFg: "#08101C", rim: "#38BDF8", stroke: "#05070B", crestFill: "#172033", crestTrim: "#7DD3FC" },
+  { id: "skybridge-gilded", label: "Skybridge Gilded", surface: "#0B1220", elevated: "#141F33", text: "#F8FAFC", muted: "#CBD5E1", accent: "#F59E0B", accentFg: "#0B1220", rim: "#FBBF24", stroke: "#070B14", crestFill: "#1B2840", crestTrim: "#FCD34D" },
+  { id: "sakura-lacquer", label: "Sakura Lacquer", surface: "#120B14", elevated: "#1F1424", text: "#FDF2F8", muted: "#E2C6D8", accent: "#F472B6", accentFg: "#120B14", rim: "#F472B6", stroke: "#09050B", crestFill: "#2A1A30", crestTrim: "#F9A8D4" },
+  { id: "cyber-forge", label: "Cyber Forge", surface: "#090F12", elevated: "#111D22", text: "#ECFDF5", muted: "#A7F3D0", accent: "#2DD4BF", accentFg: "#090F12", rim: "#14B8A6", stroke: "#04080A", crestFill: "#152830", crestTrim: "#5EEAD4" },
+  { id: "clean-monochrome", label: "Clean Monochrome", surface: "#0A0D14", elevated: "#141923", text: "#F7F8FA", muted: "#B8C0CC", accent: "#E2E8F0", accentFg: "#0A0D14", rim: "#94A3B8", stroke: "#05070B", crestFill: "#1C2330", crestTrim: "#CBD5E1" },
+];
+
+export const UI_KIT_SHEET_META: Array<{ id: UiKitSheetId; label: string }> = [
+  { id: "chrome_sheet", label: "9-Slice Chrome" },
+  { id: "icons_sheet", label: "12 Game Icons" },
+  { id: "rarity_frames_sheet", label: "Rarity Frames" },
+];
+
+export function buildUiKitScreenDoc(layout: UiKitLayoutId, skinId: UiKitSkinId): ScreenDoc {
+  const s = UI_KIT_SKIN_META.find((x) => x.id === skinId) ?? UI_KIT_SKIN_META[0];
+  const slug = `${layout}-${s.id}`;
+  const name = slug.split("-").map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join("");
+  const corner = (id: string, px = 12): GuiNode => ({ id, name: "UICorner", class_name: "UICorner", props: { CornerRadius: [0, px] }, children: [] });
+  const rim = (id: string, col = s.rim): GuiNode => ({ id, name: "UIStroke", class_name: "UIStroke", props: { Color: col, Thickness: 1.5, Transparency: 0.25, ApplyStrokeMode: "Border" }, children: [] });
+  const sliceImg = (id: string, nm: string, path: string, slice: [number, number, number, number], tint: string): GuiNode => ({
+    id,
+    name: nm,
+    class_name: "ImageLabel",
+    props: { Position: udim2(0, 0, 0, 0), Size: udim2(1, 0, 1, 0), BackgroundTransparency: 1, Image: path, AssetPath: path, ImageColor3: tint, ImageTransparency: 0.18, ScaleType: "Slice", SliceCenter: slice, ZIndex: 1 },
+    children: [],
+  });
+  const lbl = (id: string, nm: string, pos: UDim2Value, size: UDim2Value, txt: string, col = s.text, sz = 14): GuiNode => ({
+    id,
+    name: nm,
+    class_name: "TextLabel",
+    props: { Position: pos, Size: size, BackgroundTransparency: 1, Text: txt, TextColor3: col, TextSize: sz, Font: "GothamBold", TextXAlignment: "Center", ZIndex: 2 },
+    children: [{ id: `${id}-s`, name: "UIStroke", class_name: "UIStroke", props: { Color: s.stroke, Thickness: 1.8, Transparency: 0.15, ApplyStrokeMode: "Contextual" }, children: [] }],
+  });
+  const btn = (id: string, nm: string, order: number, w: number, bg: string, fg: string, txt: string, cb: string, r = s.rim): GuiNode => ({
+    id,
+    name: nm,
+    class_name: "TextButton",
+    props: { Size: udim2(0, w, 0, 48), LayoutOrder: order, BackgroundColor3: bg, BackgroundTransparency: 0.04, Text: txt, TextColor3: fg, TextSize: 15, Font: "GothamBold", CallbackName: cb },
+    children: [corner(`${id}-c`, 10), rim(`${id}-r`, r)],
+  });
+  const panelPath = `art/ui/${s.id}/modal_panel.png`;
+  const crestPath = `art/ui/${s.id}/header_crest.png`;
+  const hRow = (id: string, gap: number, btns: GuiNode[]): GuiNode => ({
+    id,
+    name: "ButtonRow",
+    class_name: "Frame",
+    props: { Position: udim2(0, 0, 0, 0), Size: udim2(1, 0, 1, 0), BackgroundTransparency: 1, ZIndex: 2 },
+    children: [{ id: `${id}-l`, name: "UIListLayout", class_name: "UIListLayout", props: { FillDirection: "Horizontal", HorizontalAlignment: "Center", VerticalAlignment: "Center", Padding: [0, gap] }, children: [] }, ...btns],
+  });
+
+  let children: GuiNode[];
+  if (layout === "perimeter-command") {
+    children = [
+      { id: "uk-cmd", name: "CommanderBadge", class_name: "Frame", props: { Position: udim2(0, 16, 0, 64), Size: udim2(0, 224, 0, 52), BackgroundColor3: s.surface, BackgroundTransparency: 0.12 }, children: [corner("uk-cc"), rim("uk-cr"), sliceImg("uk-ci", "CrestChrome", crestPath, [80, 28, 360, 100], s.crestFill), lbl("uk-cl", "CommanderLabel", udim2(0, 10, 0, 6), udim2(1, -20, 1, -12), "LVL 24  •  RANK S", s.text, 15)] },
+      { id: "uk-tr", name: "CurrencyOrbCluster", class_name: "Frame", props: { AnchorPoint: [1, 0], Position: udim2(1, -16, 0, 64), Size: udim2(0, 232, 0, 52), BackgroundColor3: s.surface, BackgroundTransparency: 0.12 }, children: [corner("uk-tc"), rim("uk-trm"), lbl("uk-tl", "ShardsLabel", udim2(0, 10, 0, 6), udim2(1, -20, 1, -12), "8,120 CR  •  4/5 WINS")] },
+      { id: "uk-ms", name: "MilestoneStrip", class_name: "Frame", props: { AnchorPoint: [1, 0], Position: udim2(1, -16, 0, 124), Size: udim2(0, 212, 0, 84), BackgroundColor3: s.surface, BackgroundTransparency: 0.14 }, children: [corner("uk-mc"), rim("uk-mr", s.crestTrim), sliceImg("uk-mi", "MilestoneChrome", panelPath, [64, 48, 448, 272], s.elevated), lbl("uk-ml", "MilestoneLabel", udim2(0, 10, 0, 8), udim2(1, -20, 0, 32), "MILESTONE 3 / 5"), lbl("uk-msub", "MilestoneSub", udim2(0, 10, 0, 42), udim2(1, -20, 0, 28), "NEXT: MYTHIC KEY", s.muted, 12)] },
+      { id: "uk-dock", name: "CommandDock", class_name: "Frame", props: { AnchorPoint: [0.5, 1], Position: udim2(0.5, 0, 1, -16), Size: udim2(0, 352, 0, 64), BackgroundColor3: s.surface, BackgroundTransparency: 0.12 }, children: [corner("uk-dc", 14), rim("uk-dr"), hRow("uk-dl", 8, [btn("uk-b1", "DeployButton", 1, 108, s.accent, s.accentFg, "Deploy", "onDeploy", s.crestTrim), btn("uk-b2", "RosterButton", 2, 104, s.elevated, s.text, "Roster", "onRoster"), btn("uk-b3", "ShopButton", 3, 104, s.elevated, s.text, "Shop", "onShop")])] },
+    ];
+  } else if (layout === "workshop-ribbon") {
+    children = [
+      { id: "uk-fq", name: "ForgeQuickPill", class_name: "Frame", props: { Position: udim2(0, 16, 0, 64), Size: udim2(0, 188, 0, 52), BackgroundColor3: s.surface, BackgroundTransparency: 0.12 }, children: [corner("uk-fc"), rim("uk-fr"), lbl("uk-fl", "ForgeStatus", udim2(0, 8, 0, 6), udim2(1, -16, 1, -12), "ESSENCE 640", s.text, 15)] },
+      { id: "uk-sr", name: "MilestoneStepperRibbon", class_name: "Frame", props: { AnchorPoint: [0.5, 0], Position: udim2(0.5, 0, 0, 64), Size: udim2(0, 320, 0, 52), BackgroundColor3: s.surface, BackgroundTransparency: 0.12 }, children: [corner("uk-sc"), rim("uk-srm", s.crestTrim), sliceImg("uk-si", "StepperChrome", crestPath, [80, 28, 360, 100], s.crestFill), lbl("uk-sl", "StepperText", udim2(0, 10, 0, 6), udim2(1, -20, 1, -12), "TIER I  >  TIER II  >  TIER III")] },
+      { id: "uk-wd", name: "WorkshopRibbonDock", class_name: "Frame", props: { AnchorPoint: [0.5, 1], Position: udim2(0.5, 0, 1, -16), Size: udim2(0, 344, 0, 64), BackgroundColor3: s.surface, BackgroundTransparency: 0.12 }, children: [corner("uk-wc", 14), rim("uk-wr"), sliceImg("uk-wi", "RibbonChrome", panelPath, [64, 48, 448, 272], s.elevated), hRow("uk-wl", 8, [btn("uk-b1", "ForgeButton", 1, 106, s.accent, s.accentFg, "Forge", "onForge", s.crestTrim), btn("uk-b2", "InspectButton", 2, 104, s.elevated, s.text, "Inspect", "onInspect"), btn("uk-b3", "AutoButton", 3, 98, s.elevated, s.text, "Auto", "onToggleAuto")])] },
+    ];
+  } else if (layout === "compact-mobile-split") {
+    children = [
+      { id: "uk-ss", name: "SplitStatusCard", class_name: "Frame", props: { Position: udim2(0, 16, 0, 64), Size: udim2(0, 206, 0, 52), BackgroundColor3: s.surface, BackgroundTransparency: 0.12 }, children: [corner("uk-sc"), rim("uk-sr"), sliceImg("uk-si", "StatusChrome", crestPath, [80, 28, 360, 100], s.crestFill), lbl("uk-sl", "StatusTitle", udim2(0, 10, 0, 6), udim2(1, -20, 1, -12), "HP 100%  •  W3", s.text, 15)] },
+      { id: "uk-sp", name: "SplitCurrencyBag", class_name: "Frame", props: { AnchorPoint: [1, 0], Position: udim2(1, -16, 0, 64), Size: udim2(0, 240, 0, 56), BackgroundColor3: s.surface, BackgroundTransparency: 0.12 }, children: [corner("uk-spc"), rim("uk-spr"), lbl("uk-spl", "SplitCoins", udim2(0, 10, 0, 6), udim2(0, 146, 1, -12), "1,250 G", s.text, 15), { id: "uk-bag", name: "BagButton", class_name: "TextButton", props: { AnchorPoint: [1, 0.5], Position: udim2(1, -6, 0.5, 0), Size: udim2(0, 68, 0, 44), BackgroundColor3: s.elevated, BackgroundTransparency: 0.04, Text: "Bag", TextColor3: s.text, TextSize: 14, Font: "GothamBold", CallbackName: "onOpenBag" }, children: [corner("uk-bc", 8), rim("uk-br")] }] },
+      { id: "uk-sd", name: "SplitActionDock", class_name: "Frame", props: { AnchorPoint: [0.5, 1], Position: udim2(0.5, 0, 1, -16), Size: udim2(0, 312, 0, 64), BackgroundColor3: s.surface, BackgroundTransparency: 0.12 }, children: [corner("uk-sdc", 14), rim("uk-sdr"), sliceImg("uk-sdi", "SplitDockChrome", panelPath, [64, 48, 448, 272], s.elevated), hRow("uk-sdl", 12, [btn("uk-b1", "RollButton", 1, 140, s.accent, s.accentFg, "Roll Card", "onRoll", s.crestTrim), btn("uk-b2", "FightButton", 2, 136, s.elevated, s.text, "Auto Battle", "onAutoBattle")])] },
+    ];
+  } else {
+    children = [
+      { id: "uk-crest", name: "SkybridgeCrestBanner", class_name: "Frame", props: { AnchorPoint: [0.5, 0], Position: udim2(0.5, 0, 0, 64), Size: udim2(0, 260, 0, 52), BackgroundColor3: s.surface, BackgroundTransparency: 0.12 }, children: [corner("uk-cc"), rim("uk-cr", s.crestTrim), sliceImg("uk-ci", "CrestChrome", crestPath, [80, 28, 360, 100], s.crestFill), lbl("uk-cl", "CrestTitle", udim2(0, 12, 0, 6), udim2(1, -24, 1, -12), "SKYBRIDGE  •  STAGE 12", s.text, 15)] },
+      { id: "uk-curr", name: "CurrencyPill", class_name: "Frame", props: { AnchorPoint: [1, 0], Position: udim2(1, -16, 0, 64), Size: udim2(0, 224, 0, 52), BackgroundColor3: s.surface, BackgroundTransparency: 0.12 }, children: [corner("uk-curc"), rim("uk-curr-r"), sliceImg("uk-curi", "PanelChrome", panelPath, [64, 48, 448, 272], s.elevated), lbl("uk-curl", "CurrencyValue", udim2(0, 10, 0, 6), udim2(1, -20, 1, -12), "2,450 SHARDS  •  PITY 18/50")] },
+      { id: "uk-rail", name: "QuickNavRail", class_name: "Frame", props: { Position: udim2(0, 16, 0, 124), Size: udim2(0, 152, 0, 88), BackgroundColor3: s.surface, BackgroundTransparency: 0.14 }, children: [corner("uk-rc"), rim("uk-rr"), hRow("uk-rl", 8, [btn("uk-rb1", "CodexButton", 1, 64, s.elevated, s.text, "Codex", "onOpenCodex"), btn("uk-rb2", "QuestButton", 2, 64, s.elevated, s.text, "Quests", "onOpenQuests")])] },
+      { id: "uk-dock", name: "PrimaryActionDock", class_name: "Frame", props: { AnchorPoint: [0.5, 1], Position: udim2(0.5, 0, 1, -16), Size: udim2(0, 360, 0, 64), BackgroundColor3: s.surface, BackgroundTransparency: 0.12 }, children: [corner("uk-dc", 14), rim("uk-dr"), sliceImg("uk-di", "DockChrome", panelPath, [64, 48, 448, 272], s.elevated), hRow("uk-dl", 10, [btn("uk-b1", "SummonButton", 1, 110, s.accent, s.accentFg, "Summon x1", "onSummonOne", s.crestTrim), btn("uk-b2", "DeckButton", 2, 108, s.elevated, s.text, "Deck", "onOpenDeck"), btn("uk-b3", "BattleButton", 3, 108, s.elevated, s.text, "Battle", "onStartBattle")])] },
+    ];
+  }
+  return {
+    version: 1,
+    slug,
+    name,
+    ignore_gui_inset: true,
+    reset_on_spawn: false,
+    modal_blur: false,
+    theme: { accent: s.accent, surface: s.surface, text: s.text },
+    root: { id: "root", name: "HudRoot", class_name: "Frame", props: { Position: udim2(0, 0, 0, 0), Size: udim2(1, 0, 1, 0), BackgroundTransparency: 1 }, children },
+  };
+}
+
 export function computeNodeRects(doc: ScreenDoc, viewportW: number, viewportH: number): ComputedNodeRect[] {
   const out: ComputedNodeRect[] = [];
 
@@ -1747,9 +1863,27 @@ export function compileScreenDocToLuau(doc: ScreenDoc): {
     "}",
     "",
     'local MarketplaceService = game:GetService("MarketplaceService")',
+    ...(doc.modal_blur ? ['local Lighting = game:GetService("Lighting")'] : []),
     'local Players = game:GetService("Players")',
     "",
     "local Module = {}",
+    ...(doc.modal_blur
+      ? [
+          "",
+          "function Module.setModalBlur(enabled: boolean)",
+          '\tlocal existing = Lighting:FindFirstChild("OpenROModalBlur")',
+          "\tif enabled then",
+          '\t\tlocal blur = if existing and existing:IsA("BlurEffect") then existing else Instance.new("BlurEffect")',
+          '\t\tblur.Name = "OpenROModalBlur"',
+          "\t\tblur.Size = 16",
+          "\t\tblur.Enabled = true",
+          "\t\tblur.Parent = Lighting",
+          '\telseif existing and existing:IsA("BlurEffect") then',
+          "\t\texisting:Destroy()",
+          "\tend",
+          "end",
+        ]
+      : []),
     "",
     "function Module.create(parent: Instance, callbacks: GuiCallbacks?): ScreenGui",
     "\tlocal cbMap: GuiCallbacks = callbacks or {}",
@@ -1866,6 +2000,12 @@ export function compileScreenDocToLuau(doc: ScreenDoc): {
 
   emitNode(doc.root, "screenGui");
 
+  if (doc.modal_blur) {
+    lines.push("\tModule.setModalBlur(true)");
+    lines.push("\tscreenGui.Destroying:Connect(function()");
+    lines.push("\t\tModule.setModalBlur(false)");
+    lines.push("\tend)");
+  }
   lines.push("\tscreenGui.Parent = parent");
   lines.push("\treturn screenGui");
   lines.push("end");

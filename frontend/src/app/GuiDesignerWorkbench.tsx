@@ -54,8 +54,12 @@ import {
   GUI_MODIFIER_CLASSES,
   GUI_PRESET_META,
   GUI_VISUAL_CLASSES,
+  UI_KIT_LAYOUT_META,
+  UI_KIT_SHEET_META,
+  UI_KIT_SKIN_META,
   analyzeSafeArea,
   buildGuiPreset,
+  buildUiKitScreenDoc,
   cloneGuiNodeWithNewIds,
   compileScreenDocToLuau,
   computeNodeRects,
@@ -76,6 +80,9 @@ import {
   type SafeAreaWarning,
   type ScreenDoc,
   type UDim2Value,
+  type UiKitLayoutId,
+  type UiKitSheetId,
+  type UiKitSkinId,
 } from "./guiDesignerEngine";
 
 type ResizeHandle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
@@ -247,6 +254,11 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
   const [slugError, setSlugError] = useState("");
   const [guiError, setGuiError] = useState("");
   const [showNewSlugRow, setShowNewSlugRow] = useState(false);
+  const [uiKitLayout, setUiKitLayout] = useState<UiKitLayoutId>("skybridge-crest");
+  const [uiKitSkin, setUiKitSkin] = useState<UiKitSkinId>("obsidian-prism");
+  const [uiKitSheet, setUiKitSheet] = useState<UiKitSheetId>("chrome_sheet");
+  const [uiKitBusy, setUiKitBusy] = useState(false);
+  const [uiKitSliceCount, setUiKitSliceCount] = useState<number | null>(null);
 
   const stageWrapRef = useRef<HTMLDivElement>(null);
   const [stageWidth, setStageWidth] = useState(640);
@@ -461,6 +473,50 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
       }
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleApplyUiKitLayout = (nextLayout: UiKitLayoutId = uiKitLayout, nextSkin: UiKitSkinId = uiKitSkin) => {
+    const next = buildUiKitScreenDoc(nextLayout, nextSkin);
+    setDoc(next);
+    setSelectedNodeId(next.root.children[0]?.id ?? next.root.id);
+    setDirty(true);
+    setServerWarnings(null);
+    setCompiledLuau("");
+    setGuiError("");
+    toast.success(`Applied ${nextLayout} (${nextSkin})`);
+  };
+
+  const handleGenerateUiKitSheet = async () => {
+    setUiKitBusy(true);
+    try {
+      const url = projectId
+        ? projUrl(projectId, "/ui-kit/generate")
+        : "/api/studio/ui-kit/generate";
+      const res = await call<{
+        sliced_count?: number;
+        screen_doc?: unknown;
+      }>(url, {
+        layout: uiKitLayout,
+        skin: uiKitSkin,
+        sheet: uiKitSheet,
+      });
+      if (!res.ok) {
+        toast.error(res.error || "Could not generate UI Kit sheet.");
+        return;
+      }
+      const count = typeof res.sliced_count === "number" ? res.sliced_count : 0;
+      setUiKitSliceCount(count);
+      if (res.screen_doc) {
+        const next = normalizeScreenDoc(res.screen_doc, `${uiKitLayout}-${uiKitSkin}`);
+        setDoc(next);
+        setSelectedNodeId(next.root.children[0]?.id ?? next.root.id);
+        setDirty(true);
+      }
+      toast.success(`Sliced ${count} UI assets (${uiKitSkin})`);
+      await onSavedScreenOrLuau?.();
+    } finally {
+      setUiKitBusy(false);
     }
   };
 
@@ -981,6 +1037,93 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
         </div>
       )}
 
+      {/* UI Kit Generator Strip: Mixable Layout Topology + Visual Skin + Asset Sheet */}
+      <div
+        data-ui-kit-strip
+        className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-hairline bg-surface px-2.5 py-1.5"
+      >
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <span className="flex items-center gap-1 text-xs font-medium text-ink">
+            <Sparkles className="size-3.5 text-blue" strokeWidth={1.5} aria-hidden />
+            <span>UI Kit</span>
+          </span>
+          <select
+            aria-label="UI Kit layout topology"
+            data-ui-kit-layout
+            value={uiKitLayout}
+            onChange={(e) => {
+              const next = e.target.value as UiKitLayoutId;
+              setUiKitLayout(next);
+              handleApplyUiKitLayout(next, uiKitSkin);
+            }}
+            className="h-8 max-w-full rounded-lg border border-hairline bg-board px-2 text-xs text-ink max-md:min-h-11"
+          >
+            {UI_KIT_LAYOUT_META.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="UI Kit visual skin"
+            data-ui-kit-skin
+            value={uiKitSkin}
+            onChange={(e) => {
+              const next = e.target.value as UiKitSkinId;
+              setUiKitSkin(next);
+              handleApplyUiKitLayout(uiKitLayout, next);
+            }}
+            className="h-8 max-w-full rounded-lg border border-hairline bg-board px-2 text-xs text-ink max-md:min-h-11"
+          >
+            {UI_KIT_SKIN_META.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="UI Kit asset sheet"
+            data-ui-kit-sheet
+            value={uiKitSheet}
+            onChange={(e) => setUiKitSheet(e.target.value as UiKitSheetId)}
+            className="h-8 max-w-full rounded-lg border border-hairline bg-board px-2 text-xs text-ink max-md:min-h-11"
+          >
+            {UI_KIT_SHEET_META.map((sh) => (
+              <option key={sh.id} value={sh.id}>
+                {sh.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {uiKitSliceCount !== null && (
+            <Pill className="bg-pill-active-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-active-fg">
+              {uiKitSliceCount} slices
+            </Pill>
+          )}
+          <Button
+            variant="outline"
+            size="xs"
+            data-ui-kit-apply
+            onClick={() => handleApplyUiKitLayout()}
+            className="max-md:min-h-11"
+          >
+            <span>Apply Layout</span>
+          </Button>
+          <Button
+            variant="secondary"
+            size="xs"
+            data-ui-kit-generate
+            loading={uiKitBusy}
+            onClick={() => void handleGenerateUiKitSheet()}
+            className="max-md:min-h-11"
+          >
+            <ImageIcon className="size-3.5" strokeWidth={1.5} aria-hidden />
+            <span>Generate UI Kit Sheet</span>
+          </Button>
+        </div>
+      </div>
+
       {/* Safe-Area Overlay Strip */}
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-hairline bg-surface px-2.5 py-1.5">
         <div className="flex flex-wrap items-center gap-1.5">
@@ -1147,6 +1290,14 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                       onError={() => setBrokenImgUrls((prev) => new Set(prev).add(imgUrl))}
                       className="pointer-events-none h-full w-full object-cover"
                       style={{ borderRadius: `${radiusPx}px` }}
+                    />
+                  ) : isImage && node.props.ScaleType === "Slice" && node.props.ZIndex === 1 ? (
+                    <div
+                      className="pointer-events-none h-full w-full border border-white/15"
+                      style={{
+                        borderRadius: `${radiusPx}px`,
+                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.12)",
+                      }}
                     />
                   ) : isImage ? (
                     <div className="pointer-events-none flex flex-col items-center justify-center gap-0.5 px-1 text-center text-xs text-white/75">

@@ -507,6 +507,8 @@ if __name__ == "__main__":
         fail(e)
 "##;
 
+const PY_UI_SHEET_DRIVER: &str = include_str!("ui_sheet_driver.py");
+
 fn art_url(project: &str, rel: &str) -> String {
     if project.is_empty() {
         format!("/api/art/image?path={rel}")
@@ -515,7 +517,24 @@ fn art_url(project: &str, rel: &str) -> String {
     }
 }
 
-fn update_slices_json(root: &Path, slices_rel: &str, target_rel: &str, slice: &[i64; 4], w: u64, h: u64) -> R<String> {
+fn slice_key_for_path(target_rel: &str) -> String {
+    let norm = target_rel.trim().replace('\\', "/");
+    if let Some(sub) = norm.strip_prefix("art/ui/") {
+        if let Some((stem, _)) = sub.rsplit_once('.') {
+            return stem.to_string();
+        }
+        return sub.to_string();
+    }
+    norm.rsplit('/')
+        .next()
+        .unwrap_or(&norm)
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(&norm)
+        .to_string()
+}
+
+pub(crate) fn update_slices_json(root: &Path, slices_rel: &str, target_rel: &str, slice: &[i64; 4], w: u64, h: u64) -> R<String> {
     let abs = safe_rel(root, slices_rel)?;
     if let Some(p) = abs.parent() {
         std::fs::create_dir_all(p).or_else(|e| err(500, format!("create slices dir: {e}")))?;
@@ -525,14 +544,8 @@ fn update_slices_json(root: &Path, slices_rel: &str, target_rel: &str, slice: &[
         .and_then(|t| serde_json::from_str(&t).ok())
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}));
-    let stem = target_rel
-        .rsplit('/')
-        .next()
-        .unwrap_or(target_rel)
-        .rsplit_once('.')
-        .map(|(s, _)| s)
-        .unwrap_or(target_rel);
-    doc[stem] = json!({
+    let key = slice_key_for_path(target_rel);
+    doc[key] = json!({
         "slice": slice,
         "size": [w, h],
         "path": target_rel,
@@ -841,5 +854,177 @@ pub fn pack_card(root: &Path, body: &Value) -> R<Value> {
         "icon": { "path": icon_rel, "url": art_url(project, &icon_rel), "info": res.get("icon") },
         "full": { "path": full_rel, "url": art_url(project, &full_rel), "info": res.get("full") },
         "contact_sheet": { "path": contact_rel, "url": art_url(project, &contact_rel), "info": res.get("contact") },
+    }))
+}
+
+/// Deterministic 2x-supersampled Pillow UI sheet renderer (used for offline/CI `procedural_fallback`).
+pub fn render_procedural_ui_sheet(
+    root: &Path,
+    sheet: &str,
+    out_rel: &str,
+    palette: &Value,
+    chroma: &str,
+) -> R<Value> {
+    let out_abs = safe_rel(root, out_rel)?;
+    let art_dir = root.join("art");
+    std::fs::create_dir_all(&art_dir).or_else(|e| err(500, format!("create art dir: {e}")))?;
+    let payload = json!({
+        "mode": "render_ui_sheet",
+        "sheet": sheet,
+        "out_abs": out_abs.to_string_lossy(),
+        "palette": palette,
+        "chroma": chroma,
+        "max_bytes": DEFAULT_MAX_PNG_BYTES,
+    });
+    let res = run_python_json(PY_UI_SHEET_DRIVER, &payload, &art_dir, 60)?;
+    let _ = append_art_log(
+        root,
+        &json!({
+            "at": now_iso(),
+            "action": "render_ui_sheet",
+            "sheet": sheet,
+            "path": out_rel,
+            "width": res.get("width"),
+            "height": res.get("height"),
+            "bytes": res.get("bytes"),
+            "sha256": res.get("sha256"),
+        }),
+    );
+    Ok(json!({
+        "ok": true,
+        "path": out_rel,
+        "width": res.get("width"),
+        "height": res.get("height"),
+        "bytes": res.get("bytes"),
+        "sha256": res.get("sha256"),
+    }))
+}
+
+/// Auto-slice a UI asset sheet PNG into individual de-fringed transparent PNGs under `art/ui/<skin>/`,
+/// auto-compute 9-slice `SliceCenter` rects for panels/crests/buttons/bars/frames, update
+/// `art/ui/slices.json`, verify `<= 5 MB` + decode + sha256, and log to `art/ART-LOG.jsonl`.
+pub fn slice_ui_sheet(root: &Path, body: &Value) -> R<Value> {
+    let project = body.get("project").and_then(Value::as_str).unwrap_or("");
+    let src_rel = body
+        .get("input")
+        .or_else(|| body.get("sheet_path"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| Oc {
+            status: 400,
+            msg: "Send 'input' (or 'sheet_path') pointing to a project-relative PNG sheet.".into(),
+        })?;
+    let src_abs = safe_rel(root, src_rel)?;
+    if !src_abs.is_file() {
+        return err(404, format!("Input UI sheet '{src_rel}' not found."));
+    }
+
+    let raw_skin = body.get("skin").and_then(Value::as_str).unwrap_or("obsidian-prism");
+    let skin = sanitize_art_slug(raw_skin).replace('_', "-");
+    let out_dir_rel = body
+        .get("out_dir")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| format!("art/ui/{skin}"));
+    let out_dir_abs = safe_rel(root, &out_dir_rel)?;
+    std::fs::create_dir_all(&out_dir_abs).or_else(|e| err(500, format!("create ui out dir: {e}")))?;
+
+    let slices_rel = body
+        .get("slices_json")
+        .and_then(Value::as_str)
+        .unwrap_or("art/ui/slices.json");
+
+    let items: Vec<Value> = if let Some(arr) = body.get("items").and_then(Value::as_array) {
+        arr.clone()
+    } else {
+        let sheet_id = body.get("sheet").and_then(Value::as_str).unwrap_or("chrome_sheet");
+        crate::ui_kit::slice_items_for_recipe(sheet_id)
+            .map_err(|msg| Oc { status: 400, msg })?
+    };
+    if items.is_empty() {
+        return bad("No slice items provided or resolved for UI sheet.");
+    }
+
+    let max_bytes = body
+        .get("max_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or(DEFAULT_MAX_PNG_BYTES)
+        .clamp(1024, 20 * 1024 * 1024);
+
+    let art_dir = root.join("art");
+    std::fs::create_dir_all(&art_dir).or_else(|e| err(500, format!("create art dir: {e}")))?;
+
+    let payload = json!({
+        "mode": "slice_sheet",
+        "input_abs": src_abs.to_string_lossy(),
+        "out_dir_abs": out_dir_abs.to_string_lossy(),
+        "out_dir_rel": out_dir_rel,
+        "items": items,
+        "bg_color": body.get("bg_color").cloned().unwrap_or(Value::Null),
+        "method": body.get("method").and_then(Value::as_str).unwrap_or("auto"),
+        "tolerance": body.get("tolerance").and_then(Value::as_i64).unwrap_or(42),
+        "defringe": body.get("defringe").and_then(Value::as_bool).unwrap_or(true),
+        "max_bytes": max_bytes,
+    });
+    let res = run_python_json(PY_UI_SHEET_DRIVER, &payload, &art_dir, 60)?;
+
+    let sliced_items = res
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut out_items = Vec::with_capacity(sliced_items.len());
+    let mut slice_count = 0usize;
+
+    for mut item in sliced_items {
+        let item_path = item.get("path").and_then(Value::as_str).unwrap_or("").to_string();
+        let w = item.get("width").and_then(Value::as_u64).unwrap_or(0);
+        let h = item.get("height").and_then(Value::as_u64).unwrap_or(0);
+        if item.get("is_9slice").and_then(Value::as_bool) == Some(true) {
+            if let Some(arr) = item.get("slice").and_then(Value::as_array) {
+                if arr.len() == 4 {
+                    let sl = [
+                        arr[0].as_i64().unwrap_or(16),
+                        arr[1].as_i64().unwrap_or(16),
+                        arr[2].as_i64().unwrap_or((w as i64).saturating_sub(16)),
+                        arr[3].as_i64().unwrap_or((h as i64).saturating_sub(16)),
+                    ];
+                    update_slices_json(root, slices_rel, &item_path, &sl, w, h)?;
+                    slice_count += 1;
+                }
+            }
+        }
+        item["url"] = json!(art_url(project, &item_path));
+        let _ = append_art_log(
+            root,
+            &json!({
+                "at": now_iso(),
+                "action": "slice_ui_sheet",
+                "skin": skin,
+                "path": item_path,
+                "width": w,
+                "height": h,
+                "bytes": item.get("bytes"),
+                "sha256": item.get("sha256"),
+                "has_alpha": item.get("has_alpha"),
+                "opaque_ratio": item.get("opaque_ratio"),
+                "slice": item.get("slice"),
+            }),
+        );
+        out_items.push(item);
+    }
+
+    Ok(json!({
+        "ok": true,
+        "skin": skin,
+        "input": src_rel,
+        "out_dir": out_dir_rel,
+        "slices_json": if slice_count > 0 { json!(slices_rel) } else { Value::Null },
+        "sliced_count": out_items.len(),
+        "nine_slice_count": slice_count,
+        "sliced": out_items,
     }))
 }
