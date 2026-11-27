@@ -3450,7 +3450,7 @@ export function App() {
       className="flex min-h-0 min-w-0 flex-1 flex-col bg-canvas text-ink"
     >
       {/* Copilot Header */}
-      <div className="flex h-10 flex-none items-center justify-between gap-2 border-b border-hairline bg-surface px-3.5">
+      <div className="flex h-10 flex-none items-center justify-between gap-2 border-b border-hairline bg-surface px-3.5 max-md:h-12">
         <div className="flex min-w-0 items-center gap-2">
           <Sparkles className="size-4 shrink-0 text-blue" strokeWidth={1.5} aria-hidden />
           <h2 className="truncate text-sm font-medium text-ink" title={activeTitle}>
@@ -3725,7 +3725,7 @@ export function App() {
       {/* Slim 44px Top Chrome */}
       <header
         data-top-chrome
-        className="flex h-11 flex-none items-center justify-between gap-2 border-b border-hairline bg-surface px-3"
+        className="flex h-11 flex-none items-center justify-between gap-2 border-b border-hairline bg-surface px-3 max-md:h-12"
       >
         <div className="flex min-w-0 items-center gap-2">
           {narrow ? (
@@ -3782,10 +3782,10 @@ export function App() {
           )}
 
           <div className="flex min-w-0 items-center gap-2">
-            <span className="grid size-7 flex-none place-items-center rounded-lg border border-hairline bg-board">
+            <span className="grid size-7 flex-none place-items-center rounded-lg border border-hairline bg-board max-[359px]:hidden">
               <OpenRoLogo className="size-5" />
             </span>
-            <h1 className="truncate text-sm font-medium text-ink">OpenRO</h1>
+            <h1 className="truncate text-sm font-medium text-ink max-md:sr-only">OpenRO</h1>
             <span className="hidden truncate rounded-chip bg-board px-2 py-0.5 text-xs text-ink-2 sm:inline-block" title={ship.active?.name || shell.gameName}>
               {ship.active?.name || shell.gameName}
             </span>
@@ -3809,7 +3809,7 @@ export function App() {
 
         <div className="flex shrink-0 items-center gap-1.5">
           {narrow && (
-            <SegmentedControl aria-label="Switch Copilot or Workbench view" size="sm">
+            <SegmentedControl aria-label="Switch Copilot or Workbench view" size="sm" className="max-md:p-0">
               <SegmentedControlItem
                 data-checked={mobilePane === "copilot" ? "" : undefined}
                 aria-pressed={mobilePane === "copilot"}
