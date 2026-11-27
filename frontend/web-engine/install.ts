@@ -2706,7 +2706,7 @@ function executePlan(
         playtestPassed = true;
         produced.push("Playtest passed.");
       } else {
-        produced.push("Playtest failed — reading the console and repairing.");
+        produced.push("Playtest failed: reading the console and repairing.");
         produced.push(`Console from the failed test run: ${verdict.console}`);
       }
     }
@@ -3374,7 +3374,7 @@ export function installWebEngine() {
         kind: verdict.passed ? "playtest_passed" : "playtest_failed",
         path: "Workspace",
         class_name: "Playtest",
-        summary: verdict.passed ? "Applied proposal — Playtest passed (0 errors)" : "Applied proposal — Playtest flagged issues",
+        summary: verdict.passed ? "Applied proposal: Playtest passed (0 errors)" : "Applied proposal: Playtest flagged issues",
         console_line: verdict.console,
       });
       persist();
@@ -3393,7 +3393,7 @@ export function installWebEngine() {
       const found = (chat.proposals || []).find((p) => p.id === pid);
       if (!found) return jsonResponse({ ok: false, error: "proposal not found" }, 404);
       found.status = "rejected";
-      chat.lines.push(`OpenRO: Rejected staged proposal "${found.message.slice(0, 48)}" — Studio place unchanged.`);
+      chat.lines.push(`OpenRO: Rejected staged proposal "${found.message.slice(0, 48)}"; Studio place unchanged.`);
       persist();
       const { after_place: _ap, skills_used: _su, ...pub } = found;
       return jsonResponse({ ok: true, proposal: pub });
@@ -3630,7 +3630,7 @@ export function installWebEngine() {
         kind: verdict.passed ? "playtest_passed" : "playtest_failed",
         path: "Workspace",
         class_name: "Playtest",
-        summary: exportReady ? "Fix All Checks passed — ready to export" : `Fix All Checks finished (${verdict.errors.length} error(s))`,
+        summary: exportReady ? "Fix All Checks passed; ready to export" : `Fix All Checks finished (${verdict.errors.length} error(s))`,
         console_line: verdict.console,
       });
       persist();
@@ -3916,8 +3916,8 @@ export function installWebEngine() {
         const verdict = validatePlace(chat.place);
         const summary =
           nextMode === "edit"
-            ? "Stopped Studio simulation — returned to Edit mode"
-            : `Started Studio ${nextMode === "server" ? "Run Server" : "Solo Play"} — ${verdict.passed ? "0 Luau errors" : `${verdict.errors.length} Luau error(s)`}`;
+            ? "Stopped Studio simulation and returned to Edit mode"
+            : `Started Studio ${nextMode === "server" ? "Run Server" : "Solo Play"} (${verdict.passed ? "0 Luau errors" : `${verdict.errors.length} Luau error(s)`})`;
         chat.consoleLogs.push(`[start_stop_play] ${summary}`);
         chat.consoleLogs = chat.consoleLogs.slice(-80);
         recordStudioAction(state, chat, {
@@ -5118,13 +5118,13 @@ export function installWebEngine() {
       const idea = STARTER_CATALOG.find((x) => x.id === id);
       if (!idea) return jsonResponse({ ok: false, error: `unknown idea: ${id}` }, 404);
       if (chat.title === "New chat") chat.title = idea.title;
-      chat.lines.push(`You: Build this — ${idea.title}`);
+      chat.lines.push(`You: Build this: ${idea.title}`);
       const res = executePlan(
         state,
         chat,
         idea.plan,
         idea.skills,
-        `Built "${idea.title}" — verified Luau syntax and Roblox wiring with 0 playtest errors.`,
+        `Built "${idea.title}": verified Luau syntax and Roblox wiring with 0 playtest errors.`,
         idea.title,
       );
       const next = ideasFor(chat);
@@ -5262,7 +5262,7 @@ export function installWebEngine() {
     if (method === "POST" && u.pathname === "/api/revert") {
       const top = chat.undoStack.pop();
       if (!top) {
-        chat.lines.push("OpenRO: Nothing to revert — no change set is waiting in this chat.");
+        chat.lines.push("OpenRO: Nothing to revert; no change set is waiting in this chat.");
         persist();
         return jsonResponse({ ok: false, error: "nothing to revert" });
       }

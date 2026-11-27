@@ -172,6 +172,16 @@ export function LiveOpsPanel({
   const [errorsBusy, setErrorsBusy] = useState(false);
   const [errorsError, setErrorsError] = useState("");
 
+  const activeProjectRef = useRef(projectId);
+  activeProjectRef.current = projectId;
+  const telSourceRef = useRef(telSource);
+  telSourceRef.current = telSource;
+  const dsSeqRef = useRef(0);
+  const dsInspectSeqRef = useRef(0);
+  const rcSeqRef = useRef(0);
+  const telSeqRef = useRef(0);
+  const errorsSeqRef = useRef(0);
+
   const dsMutationLockRef = useRef(false);
   const msgPublishLockRef = useRef(false);
   const rcSaveLockRef = useRef(false);
@@ -182,6 +192,8 @@ export function LiveOpsPanel({
   const inspectEntry = useCallback(
     async (storeName: string, scopeName: string, keyName: string, kindVal: LiveOpsDataStoreKind) => {
       if (!projectId || !storeName.trim() || !keyName.trim()) return;
+      const reqSeq = ++dsInspectSeqRef.current;
+      const reqProject = projectId;
       setDsError("");
       setDsConflict(false);
       const r = await getLiveOpsDataStoreEntry(projectId, {
@@ -190,6 +202,7 @@ export function LiveOpsPanel({
         key: keyName.trim(),
         kind: kindVal,
       });
+      if (reqSeq !== dsInspectSeqRef.current || activeProjectRef.current !== reqProject) return;
       if (!r.ok || !r.entry) {
         setDsError(r.error || "Could not load entry revision.");
         return;
@@ -207,6 +220,8 @@ export function LiveOpsPanel({
 
   const loadDataStores = useCallback(async () => {
     if (!projectId) return;
+    const reqSeq = ++dsSeqRef.current;
+    const reqProject = projectId;
     setDsBusy(true);
     setDsError("");
     setDsConflict(false);
@@ -216,6 +231,7 @@ export function LiveOpsPanel({
       prefix: dsPrefix.trim() || undefined,
       kind: dsKind,
     });
+    if (reqSeq !== dsSeqRef.current || activeProjectRef.current !== reqProject) return;
     setDsBusy(false);
     if (!r.ok) {
       setDsError(r.error || "Could not list DataStore entries.");
@@ -239,9 +255,12 @@ export function LiveOpsPanel({
 
   const loadRemoteConfig = useCallback(async () => {
     if (!projectId) return;
+    const reqSeq = ++rcSeqRef.current;
+    const reqProject = projectId;
     setRcBusy(true);
     setRcError("");
     const r = await getLiveOpsRemoteConfig(projectId);
+    if (reqSeq !== rcSeqRef.current || activeProjectRef.current !== reqProject) return;
     setRcBusy(false);
     if (!r.ok) {
       setRcError(r.error || "Could not load Remote Config.");
@@ -259,10 +278,13 @@ export function LiveOpsPanel({
   const loadTelemetry = useCallback(
     async (sourceOverride?: TelemetrySourceFilter) => {
       if (!projectId) return;
-      const activeSource = sourceOverride ?? telSource;
+      const activeSource = sourceOverride ?? telSourceRef.current;
+      const reqSeq = ++telSeqRef.current;
+      const reqProject = projectId;
       setTelBusy(true);
       setTelError("");
       const r = await getLiveOpsTelemetrySummary(projectId, activeSource);
+      if (reqSeq !== telSeqRef.current || activeProjectRef.current !== reqProject || telSourceRef.current !== activeSource) return;
       setTelBusy(false);
       if (!r.ok) {
         setTelError(r.error || "Could not load player telemetry summary.");
@@ -283,16 +305,19 @@ export function LiveOpsPanel({
         setSyncState(r.sync_state);
       }
     },
-    [projectId, telSource],
+    [projectId],
   );
 
   const loadErrors = useCallback(
     async (sourceOverride?: TelemetrySourceFilter) => {
       if (!projectId) return;
-      const activeSource = sourceOverride ?? telSource;
+      const activeSource = sourceOverride ?? telSourceRef.current;
+      const reqSeq = ++errorsSeqRef.current;
+      const reqProject = projectId;
       setErrorsBusy(true);
       setErrorsError("");
       const r = await getLiveOpsErrors(projectId, activeSource);
+      if (reqSeq !== errorsSeqRef.current || activeProjectRef.current !== reqProject || telSourceRef.current !== activeSource) return;
       setErrorsBusy(false);
       if (!r.ok) {
         setErrorsError(r.error || "Could not load live server errors.");
@@ -303,34 +328,46 @@ export function LiveOpsPanel({
         setSyncState(r.sync_state);
       }
     },
-    [projectId, telSource],
+    [projectId],
   );
 
   useEffect(() => {
     if (!projectId) return;
+    dsSeqRef.current++;
+    dsInspectSeqRef.current++;
+    rcSeqRef.current++;
+    telSeqRef.current++;
+    errorsSeqRef.current++;
     setDsConfirm(false);
     setMsgConfirm(false);
+    setDsEntries([]);
+    setDsSource("");
+    setSelectedKey("");
+    setSelectedRevision(null);
+    setSelectedUpdatedAt(null);
     setDsBackupPath(null);
     setMsgReceipt(null);
     setDsError("");
     setDsConflict(false);
     setMsgError("");
+    setRcRows([]);
+    setRcSavedInfo(null);
     setRcError("");
+    setTelemetry(null);
     setTelError("");
     setSyncError("");
     setSyncState(null);
     setLastImportedDelta(null);
     setCollectorError("");
     setCollectorResult(null);
+    setLiveErrors([]);
     setErrorsError("");
     if (openCloudReady) {
       void loadDataStores();
-    } else {
-      setDsEntries([]);
     }
     void loadRemoteConfig();
-    void loadTelemetry(telSource);
-    void loadErrors(telSource);
+    void loadTelemetry(telSourceRef.current);
+    void loadErrors(telSourceRef.current);
   }, [projectId, openCloudReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const dsParsed = useMemo(() => tryParseJson(dsValueText), [dsValueText]);
@@ -550,6 +587,7 @@ export function LiveOpsPanel({
   };
 
   const handleTelemetrySourceChange = (next: TelemetrySourceFilter) => {
+    telSourceRef.current = next;
     setTelSource(next);
     void loadTelemetry(next);
     void loadErrors(next);
@@ -557,6 +595,7 @@ export function LiveOpsPanel({
 
   const handleGenerateCollector = async () => {
     if (collectorLockRef.current) return;
+    const reqProject = projectId;
     const trimmedRelay = collectorRelayUrl.trim();
     if (collectorMode === "webhook_relay" && !trimmedRelay.startsWith("https://")) {
       setCollectorError("Webhook relay mode requires an https:// relay URL.");
@@ -574,6 +613,7 @@ export function LiveOpsPanel({
         flush_interval_secs: flushSecs,
         ...(collectorMode === "webhook_relay" ? { relay_url: trimmedRelay } : {}),
       });
+      if (activeProjectRef.current !== reqProject) return;
       if (!r.ok) {
         setCollectorError(r.error || "Failed to generate telemetry collector scripts.");
         return;
@@ -596,6 +636,7 @@ export function LiveOpsPanel({
 
   const handleSyncTelemetry = async () => {
     if (telSyncLockRef.current) return;
+    const reqProject = projectId;
     const parsedDays = Number(syncDays);
     const days = Number.isFinite(parsedDays) ? Math.max(1, Math.min(90, Math.round(parsedDays))) : 7;
     telSyncLockRef.current = true;
@@ -607,6 +648,7 @@ export function LiveOpsPanel({
         days,
         store_name: collectorStore.trim() || "OpenRO_LiveTelemetry",
       });
+      if (activeProjectRef.current !== reqProject) return;
       if (!r.ok) {
         setSyncError(r.error || "Could not sync production telemetry.");
         return;
@@ -616,7 +658,8 @@ export function LiveOpsPanel({
       if (r.sync_state) {
         setSyncState(r.sync_state);
       }
-      if (telSource !== "sandbox" && r.summary) {
+      const curSource = telSourceRef.current;
+      if (curSource !== "sandbox" && r.summary) {
         setTelemetry({
           dau_sample: typeof r.summary.dau_sample === "number" ? r.summary.dau_sample : 0,
           total_events: typeof r.summary.total_events === "number" ? r.summary.total_events : 0,
@@ -629,12 +672,12 @@ export function LiveOpsPanel({
           sync_state: r.sync_state,
         });
       } else {
-        await loadTelemetry(telSource);
+        await loadTelemetry(curSource);
       }
-      if (telSource !== "sandbox" && Array.isArray(r.top_errors)) {
+      if (curSource !== "sandbox" && Array.isArray(r.top_errors)) {
         setLiveErrors(r.top_errors);
       } else {
-        await loadErrors(telSource);
+        await loadErrors(curSource);
       }
       toast.success(`Synced ${imported} live telemetry event(s)`);
     } finally {
@@ -661,14 +704,26 @@ export function LiveOpsPanel({
             <SegmentedControlItem
               data-checked={dsKind === "standard" ? "" : undefined}
               aria-pressed={dsKind === "standard"}
-              onClick={() => setDsKind("standard")}
+              onClick={() => {
+                setDsKind("standard");
+                setSelectedRevision(null);
+                setSelectedUpdatedAt(null);
+                setDsConflict(false);
+                setDsError("");
+              }}
             >
               Standard
             </SegmentedControlItem>
             <SegmentedControlItem
               data-checked={dsKind === "ordered" ? "" : undefined}
               aria-pressed={dsKind === "ordered"}
-              onClick={() => setDsKind("ordered")}
+              onClick={() => {
+                setDsKind("ordered");
+                setSelectedRevision(null);
+                setSelectedUpdatedAt(null);
+                setDsConflict(false);
+                setDsError("");
+              }}
             >
               Ordered
             </SegmentedControlItem>
@@ -815,13 +870,13 @@ export function LiveOpsPanel({
           </div>
 
           <div className="flex min-w-0 flex-col gap-2.5 2xl:col-span-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-mono text-xs font-medium text-ink">
+            <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                <span className="min-w-0 max-w-full break-all font-mono text-xs font-medium text-ink">
                   {selectedKey ? `${dsStore}/${dsScope || "global"}/${selectedKey}` : "Select or add a key"}
                 </span>
                 {selectedRevision && (
-                  <Pill className="bg-track px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2" data-ds-revision>
+                  <Pill className="max-w-full truncate bg-track px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2" data-ds-revision>
                     {selectedRevision}
                   </Pill>
                 )}
@@ -830,15 +885,15 @@ export function LiveOpsPanel({
                 )}
               </div>
               <Pill
-                className={
+                className={`max-w-full ${
                   dsBackupPath
                     ? "bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg"
                     : "bg-tag-neutral-bg px-2 py-0.5 text-xs text-tag-neutral-fg"
-                }
+                }`}
                 data-ds-backup
               >
-                <Archive className="size-3" strokeWidth={1.5} aria-hidden />
-                <span>{dsBackupPath ? `Backup: ${dsBackupPath}` : "Pre-write backup active"}</span>
+                <Archive className="size-3 shrink-0" strokeWidth={1.5} aria-hidden />
+                <span className="truncate">{dsBackupPath ? `Backup: ${dsBackupPath}` : "Pre-write backup active"}</span>
               </Pill>
             </div>
 
@@ -1009,11 +1064,12 @@ export function LiveOpsPanel({
           <div
             role="status"
             data-msg-receipt
-            className="flex flex-wrap items-center justify-between gap-2 rounded-sm bg-pill-active-bg px-3 py-2 text-sm text-pill-active-fg"
+            className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-sm bg-pill-active-bg px-3 py-2 text-sm text-pill-active-fg"
           >
-            <span className="inline-flex items-center gap-1.5">
-              <Check className="size-3.5" strokeWidth={2} aria-hidden />
-              Published to <span className="font-mono font-medium">{msgReceipt.topic}</span>
+            <span className="inline-flex min-w-0 flex-wrap items-center gap-1.5">
+              <Check className="size-3.5 shrink-0" strokeWidth={2} aria-hidden />
+              <span>Published to</span>
+              <span className="min-w-0 break-all font-mono font-medium">{msgReceipt.topic}</span>
             </span>
             <span className="font-mono text-xs tabular-nums">
               {msgReceipt.target} {stamp(msgReceipt.at)}
@@ -1065,7 +1121,11 @@ export function LiveOpsPanel({
           </p>
         )}
 
-        {rcRows.length === 0 ? (
+        {rcBusy && rcRows.length === 0 ? (
+          <p className="rounded-sm border border-hairline bg-board/40 p-3 text-sm text-ink-2">
+            Loading Remote Config…
+          </p>
+        ) : rcRows.length === 0 ? (
           <p className="rounded-sm border border-hairline bg-board/40 p-3 text-sm text-ink-2">
             No Remote Config keys defined yet. Add a key to generate typed Luau defaults.
           </p>
@@ -1204,14 +1264,14 @@ export function LiveOpsPanel({
         {rcSavedInfo && (
           <div
             data-rc-status
-            className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-hairline bg-board/50 px-3 py-2 text-xs text-ink-2"
+            className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-sm border border-hairline bg-board/50 px-3 py-2 text-xs text-ink-2"
           >
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-mono text-ink">{rcSavedInfo.path || "liveops/remote-config.json"}</span>
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              <span className="min-w-0 break-all font-mono text-ink">{rcSavedInfo.path || "liveops/remote-config.json"}</span>
               {(rcSavedInfo.luau_written || rcSavedInfo.luau_exists) && (
-                <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg">
-                  <FileCode2 className="size-3" strokeWidth={1.5} aria-hidden />
-                  <span>{rcSavedInfo.luau_path || "src/shared/LiveConfig.luau"}</span>
+                <Pill className="max-w-full bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg">
+                  <FileCode2 className="size-3 shrink-0" strokeWidth={1.5} aria-hidden />
+                  <span className="truncate">{rcSavedInfo.luau_path || "src/shared/LiveConfig.luau"}</span>
                 </Pill>
               )}
               {rcSavedInfo.datastore_pushed && (
@@ -1276,7 +1336,7 @@ export function LiveOpsPanel({
                   : "Never synced"}
               </span>
             </span>
-            <Pill className="bg-track px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2" data-telemetry-sync-cursor>
+            <Pill className="max-w-full truncate bg-track px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2" data-telemetry-sync-cursor>
               {syncState?.shard_cursor || syncState?.cursor
                 ? `Cursor ${syncState.shard_cursor || syncState.cursor}`
                 : typeof syncState?.shards_tracked === "number" && (syncState.last_sync_at || syncState.last_synced_at)
@@ -1472,18 +1532,18 @@ export function LiveOpsPanel({
                   Generated strict Luau collector ({collectorResult.mode})
                 </span>
                 {collectorResult.store_name && (
-                  <Pill className="bg-tag-ops-bg px-2 py-0.5 font-mono text-xs text-tag-ops-fg">
+                  <Pill className="max-w-full truncate bg-tag-ops-bg px-2 py-0.5 font-mono text-xs text-tag-ops-fg">
                     {collectorResult.store_name}
                   </Pill>
                 )}
               </div>
               {collectorResult.files.length > 0 && (
-                <ul className="flex flex-col gap-1">
+                <ul className="flex min-w-0 flex-col gap-1">
                   {collectorResult.files.map((file) => (
                     <li
                       key={file}
                       data-telemetry-codegen-file={file}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded-sm bg-board/40 px-2 py-1"
+                      className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-sm bg-board/40 px-2 py-1"
                     >
                       <span className="min-w-0 truncate font-mono text-ink">{file}</span>
                       {onOpenCodeFile && (
@@ -1530,9 +1590,13 @@ export function LiveOpsPanel({
         </div>
 
         <div className="grid grid-cols-1 gap-4 2xl:grid-cols-2">
-          <div className="flex flex-col gap-2" data-telemetry-funnel>
+          <div className="flex min-w-0 flex-col gap-2" data-telemetry-funnel>
             <h4 className="text-xs font-medium text-ink-2">Onboarding &amp; Funnel Drop-off</h4>
-            {(telemetry?.funnel_steps.length ?? 0) === 0 ? (
+            {telBusy && !telemetry ? (
+              <p className="rounded-sm border border-hairline bg-board/40 p-3 text-sm text-ink-2">
+                Loading telemetry summary…
+              </p>
+            ) : (telemetry?.funnel_steps.length ?? 0) === 0 ? (
               <p className="rounded-sm border border-hairline bg-board/40 p-3 text-sm text-ink-2">
                 No funnel steps recorded yet. Trigger a sample batch or sync live production telemetry.
               </p>
@@ -1542,9 +1606,9 @@ export function LiveOpsPanel({
                   const pct = Math.max(0, Math.min(100, Math.round(step.pct)));
                   const drop = Math.max(0, Math.round(step.drop_off_pct ?? 0));
                   return (
-                    <li key={step.step} className="flex flex-col gap-1">
-                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                        <span className="font-mono font-medium text-ink">{step.step}</span>
+                    <li key={step.step} className="flex min-w-0 flex-col gap-1">
+                      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 text-xs">
+                        <span className="min-w-0 truncate font-mono font-medium text-ink" title={step.step}>{step.step}</span>
                         <div className="flex items-center gap-2">
                           <span className="font-mono tabular-nums text-ink-2">
                             {step.users} users ({pct}%)
@@ -1614,9 +1678,9 @@ export function LiveOpsPanel({
                     }`}
                   >
                     <AlertTriangle className="mt-0.5 size-4 shrink-0" strokeWidth={1.5} aria-hidden />
-                    <div className="min-w-0">
-                      <p className="font-medium">{al.title}</p>
-                      <p className="text-xs">{al.detail}</p>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium [overflow-wrap:anywhere]">{al.title}</p>
+                      <p className="text-xs [overflow-wrap:anywhere]">{al.detail}</p>
                     </div>
                   </li>
                 );
@@ -1662,7 +1726,11 @@ export function LiveOpsPanel({
           </p>
         )}
 
-        {liveErrors.length === 0 ? (
+        {errorsBusy && liveErrors.length === 0 ? (
+          <p className="rounded-sm border border-hairline bg-board/40 p-3 text-sm text-ink-2" data-errors-empty>
+            Loading live server errors…
+          </p>
+        ) : liveErrors.length === 0 ? (
           <p className="rounded-sm border border-hairline bg-board/40 p-3 text-sm text-ink-2" data-errors-empty>
             No server script errors recorded for this telemetry source.
           </p>
@@ -1672,12 +1740,12 @@ export function LiveOpsPanel({
               <li
                 key={err.fingerprint}
                 data-error-item={err.fingerprint}
-                className="flex flex-col gap-2 px-3 py-2.5"
+                className="flex min-w-0 flex-col gap-2 px-3 py-2.5"
               >
                 <div className="min-w-0 space-y-1">
-                  <p className="break-words text-sm font-medium text-ink">{err.message}</p>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-ink-3">
-                    <span className="font-mono">{err.fingerprint}</span>
+                  <p className="text-sm font-medium text-ink [overflow-wrap:anywhere]">{err.message}</p>
+                  <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-ink-3">
+                    <span className="min-w-0 max-w-full break-all font-mono">{err.fingerprint}</span>
                     <span>
                       Last seen{" "}
                       <span className="font-mono tabular-nums">{stamp(err.last_seen) || err.last_seen}</span>

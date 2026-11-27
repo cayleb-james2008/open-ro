@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Archive, ArrowDownToLine, ArrowLeftRight, Check, FileDiff, GitMerge, RotateCcw, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -39,25 +39,25 @@ function formatShortHash(val: number | null | undefined): string | null {
 function renderPullHunk(hunk: StudioPullHunk, idx: number) {
   if (typeof hunk === "string") {
     return (
-      <div key={idx} className="whitespace-pre-wrap text-ink-2">
+      <div key={idx} className="whitespace-pre-wrap [overflow-wrap:anywhere] text-ink-2">
         {hunk}
       </div>
     );
   }
   if (hunk && typeof hunk === "object" && Array.isArray(hunk.lines)) {
     return (
-      <div key={idx} className="mb-1 last:mb-0">
-        {hunk.header && <div className="text-ink-3">{hunk.header}</div>}
+      <div key={idx} className="mb-1 min-w-0 last:mb-0">
+        {hunk.header && <div className="[overflow-wrap:anywhere] text-ink-3">{hunk.header}</div>}
         {hunk.lines.slice(0, 16).map((l, li) => (
           <div
             key={li}
-            className={
+            className={`whitespace-pre-wrap [overflow-wrap:anywhere] ${
               l.op === "add"
                 ? "bg-pill-active-bg/30 text-pill-active-fg"
                 : l.op === "del"
                   ? "bg-pill-warn-bg/30 text-pill-pro-fg"
                   : "text-ink-2"
-            }
+            }`}
           >
             {l.op === "add" ? "+" : l.op === "del" ? "-" : " "}
             {l.text}
@@ -71,13 +71,13 @@ function renderPullHunk(hunk: StudioPullHunk, idx: number) {
     return (
       <div
         key={idx}
-        className={
+        className={`whitespace-pre-wrap [overflow-wrap:anywhere] ${
           op === "add"
             ? "bg-pill-active-bg/30 text-pill-active-fg"
             : op === "del"
               ? "bg-pill-warn-bg/30 text-pill-pro-fg"
               : "text-ink-2"
-        }
+        }`}
       >
         {op === "add" ? "+" : op === "del" ? "-" : " "}
         {hunk.text}
@@ -85,7 +85,7 @@ function renderPullHunk(hunk: StudioPullHunk, idx: number) {
     );
   }
   return (
-    <pre key={idx} className="overflow-x-auto whitespace-pre-wrap text-ink-2">
+    <pre key={idx} className="overflow-x-auto whitespace-pre-wrap [overflow-wrap:anywhere] text-ink-2">
       {JSON.stringify(hunk, null, 2)}
     </pre>
   );
@@ -106,6 +106,7 @@ export function SyncConflictsCard({
 }) {
   const [report, setReport] = useState<SyncConflictsReport | null>(null);
   const [busy, setBusy] = useState(false);
+  const [syncError, setSyncError] = useState("");
   const [resolvingKey, setResolvingKey] = useState<string | null>(null);
   const [expandedPath, setExpandedPath] = useState<string | null>(null);
 
@@ -118,19 +119,31 @@ export function SyncConflictsCard({
   const [confirmOverwrite, setConfirmOverwrite] = useState(false);
   const [expandedPullPath, setExpandedPullPath] = useState<string | null>(null);
 
+  const activeProjectRef = useRef(projectId);
+  activeProjectRef.current = projectId;
+  const loadSeqRef = useRef(0);
+  const pullSeqRef = useRef(0);
+
   const load = useCallback(async () => {
     if (!projectId && !studioOk) return;
+    const reqSeq = ++loadSeqRef.current;
+    const reqProject = projectId;
     setBusy(true);
+    setSyncError("");
     const endpoint = projectId ? projUrl(projectId, "/sync-conflicts") : "/api/studio/sync-conflicts";
     const res = await call<SyncConflictsReport>(endpoint);
+    if (reqSeq !== loadSeqRef.current || activeProjectRef.current !== reqProject) return;
     setBusy(false);
     if (res.ok && typeof res.in_sync === "boolean") {
       setReport(res as SyncConflictsReport);
-      if (Array.isArray(res.conflicts) && res.conflicts.length > 0 && !expandedPath) {
-        setExpandedPath(res.conflicts[0].path);
+      setSyncError("");
+      if (Array.isArray(res.conflicts) && res.conflicts.length > 0) {
+        setExpandedPath((prev) => prev ?? res.conflicts![0].path);
       }
+    } else if (!res.ok) {
+      setSyncError(res.error || "Could not check Studio sync status.");
     }
-  }, [projectId, studioOk, expandedPath]);
+  }, [projectId, studioOk]);
 
   const applySelectionFromChanges = useCallback((changes: StudioPullChange[]) => {
     const nextSel: Record<string, boolean> = {};
@@ -141,9 +154,7 @@ export function SyncConflictsCard({
     }
     setSelectedPaths(nextSel);
     setConfirmOverwrite(false);
-    if (changes.length > 0) {
-      setExpandedPullPath(changes[0].path);
-    }
+    setExpandedPullPath(changes.length > 0 ? changes[0].path : null);
   }, []);
 
   const runPullDiff = useCallback(async () => {
@@ -151,9 +162,12 @@ export function SyncConflictsCard({
       toast.error("Open a project to pull changes from Studio.");
       return;
     }
+    const reqSeq = ++pullSeqRef.current;
+    const reqProject = projectId;
     setPullBusy(true);
     setPullError("");
     const res = await pullSyncDiff(projectId);
+    if (reqSeq !== pullSeqRef.current || activeProjectRef.current !== reqProject) return;
     setPullBusy(false);
     if (!res.ok) {
       const msg = res.error || "Could not inspect Studio changes.";
@@ -173,8 +187,21 @@ export function SyncConflictsCard({
   }, [applySelectionFromChanges, projectId]);
 
   useEffect(() => {
+    loadSeqRef.current++;
+    pullSeqRef.current++;
+    setReport(null);
+    setSyncError("");
+    setResolvingKey(null);
+    setExpandedPath(null);
+    setPullReport(null);
+    setPullError("");
+    setSelectedPaths({});
+    setConfirmOverwrite(false);
+    setExpandedPullPath(null);
+    setPullBusy(false);
+    setApplyBusy(false);
     void load();
-  }, [load]);
+  }, [load, projectId]);
 
   useEffect(() => {
     if (autoPullOnMount && projectId) {
@@ -202,6 +229,7 @@ export function SyncConflictsCard({
       toast.error("Check confirm overwrite before replacing conflicting local files.");
       return;
     }
+    const reqProject = projectId;
     setApplyBusy(true);
     setPullError("");
     const res = await pullSyncApply(projectId, {
@@ -209,6 +237,7 @@ export function SyncConflictsCard({
       strategy,
       confirm_overwrite: needsOverwriteConfirm ? confirmOverwrite : undefined,
     });
+    if (activeProjectRef.current !== reqProject) return;
     setApplyBusy(false);
     if (!res.ok) {
       const msg = res.error || "Could not apply Studio pull changes.";
@@ -235,6 +264,7 @@ export function SyncConflictsCard({
     action: "accept_local" | "keep_place" | "backup_snapshot",
   ) => {
     if (!projectId && !studioOk) return;
+    const reqProject = projectId;
     setResolvingKey(`${item.path}:${action}`);
     const endpoint = projectId
       ? projUrl(projectId, "/sync-conflicts/resolve")
@@ -243,6 +273,7 @@ export function SyncConflictsCard({
       path: item.path,
       action,
     });
+    if (activeProjectRef.current !== reqProject) return;
     setResolvingKey(null);
     if (!res.ok) {
       toast.error(res.error || "Could not resolve sync conflict.");
@@ -263,7 +294,7 @@ export function SyncConflictsCard({
     toast.success(`${label}: ${item.path}`);
   };
 
-  if (hideWhenInSync && !pullReport && (!report || !report.has_baseline || report.in_sync)) {
+  if (hideWhenInSync && !pullReport && !pullBusy && (!report || !report.has_baseline || report.in_sync)) {
     return null;
   }
 
@@ -338,21 +369,36 @@ export function SyncConflictsCard({
         </div>
       </div>
 
+      {syncError && (
+        <div role="alert" data-sync-error className="flex flex-wrap items-center justify-between gap-2 rounded-sm bg-pill-pro-bg px-3 py-2 text-xs text-pill-pro-fg">
+          <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{syncError}</span>
+          <Button variant="outline" size="xs" onClick={() => void load()} className="shrink-0 bg-surface">
+            Retry
+          </Button>
+        </div>
+      )}
+
       {pullError && (
-        <p role="alert" data-pull-error className="rounded-sm bg-pill-pro-bg px-3 py-2 text-xs text-pill-pro-fg">
+        <p role="alert" data-pull-error className="rounded-sm bg-pill-pro-bg px-3 py-2 text-xs text-pill-pro-fg [overflow-wrap:anywhere]">
           {pullError}
         </p>
+      )}
+
+      {pullBusy && !pullReport && (
+        <div data-pull-loading className="rounded-sm border border-hairline bg-board/40 px-3 py-2 text-xs text-ink-2">
+          Inspecting Roblox Studio for pending pull changes…
+        </div>
       )}
 
       {pullReport && (
         <div
           data-pull-results
-          className="flex flex-col gap-2.5 rounded-sm border border-hairline bg-board/50 p-3"
+          className="flex min-w-0 flex-col gap-2.5 rounded-sm border border-hairline bg-board/50 p-3"
         >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-2">
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               <span className="text-xs font-medium text-ink">Studio Pull Preview</span>
-              <Pill className="bg-surface px-2 py-0.5 font-mono text-xs text-ink-2">
+              <Pill className="max-w-full truncate bg-surface px-2 py-0.5 font-mono text-xs text-ink-2">
                 {pullReport.snapshot_id}
               </Pill>
               <Pill className="bg-tag-sky-bg px-2 py-0.5 text-xs text-tag-sky-fg">
@@ -489,7 +535,7 @@ export function SyncConflictsCard({
                       {open && (
                         <div
                           data-pull-hunks={c.path}
-                          className="rounded-sm border border-hairline bg-board/40 p-2 font-mono text-xs"
+                          className="min-w-0 max-w-full overflow-x-auto rounded-sm border border-hairline bg-board/40 p-2 font-mono text-xs"
                         >
                           {c.hunks.length > 0 ? (
                             c.hunks.slice(0, 4).map((h, hi) => renderPullHunk(h, hi))
@@ -548,7 +594,11 @@ export function SyncConflictsCard({
         </div>
       )}
 
-      {conflicts.length === 0 ? (
+      {busy && !report ? (
+        <div data-sync-loading className="rounded-sm border border-hairline bg-board/40 px-3 py-2 text-xs text-ink-2">
+          Checking Rojo workspace sync baseline…
+        </div>
+      ) : conflicts.length === 0 ? (
         <div className="rounded-sm border border-hairline bg-board/40 px-3 py-2 text-xs text-ink-2">
           {report?.has_baseline
             ? "Local Rojo workspace scripts match the active synced Place baseline cleanly."
@@ -564,19 +614,19 @@ export function SyncConflictsCard({
               <li
                 key={c.path}
                 data-sync-conflict-row={c.path}
-                className="flex flex-col gap-2 rounded-sm border border-hairline bg-board/40 p-3"
+                className="flex min-w-0 flex-col gap-2 rounded-sm border border-hairline bg-board/40 p-3"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <FileDiff className="size-3.5 text-pill-pro-fg" strokeWidth={1.5} aria-hidden />
-                      <span className="truncate font-mono text-xs font-medium text-ink">{c.path}</span>
+                      <FileDiff className="size-3.5 shrink-0 text-pill-pro-fg" strokeWidth={1.5} aria-hidden />
+                      <span className="min-w-0 truncate font-mono text-xs font-medium text-ink" title={c.path}>{c.path}</span>
                       <Pill className="bg-pill-warn-bg px-1.5 py-0.5 text-xs text-pill-warn-fg">
                         {c.status} +{c.added_lines}/-{c.removed_lines}L
                       </Pill>
                     </div>
                     <div className="mt-0.5 text-xs text-ink-2">
-                      Place target: <code className="font-mono">{c.place_path}</code>
+                      Place target: <code className="break-all font-mono">{c.place_path}</code>
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
@@ -628,40 +678,40 @@ export function SyncConflictsCard({
                 </div>
 
                 {open && (
-                  <div className="flex flex-col gap-2" data-sync-hunks={c.path}>
-                    <div className="grid gap-2 md:grid-cols-2">
-                      <div className="rounded-sm border border-hairline bg-surface p-2">
-                        <div className="mb-1 font-mono text-xs font-medium text-ink-2">
+                  <div className="flex min-w-0 flex-col gap-2" data-sync-hunks={c.path}>
+                    <div className="grid min-w-0 gap-2 md:grid-cols-2">
+                      <div className="min-w-0 rounded-sm border border-hairline bg-surface p-2">
+                        <div className="mb-1 truncate font-mono text-xs font-medium text-ink-2" title={c.place_path}>
                           Place Baseline ({c.place_path})
                         </div>
                         <pre className="max-h-36 overflow-auto font-mono text-xs leading-relaxed text-ink">
-                          {placeLines.length ? placeLines.join("\n") : "-- (empty / not in baseline)"}
+                          {placeLines.length ? placeLines.join("\n") : "(empty / not in baseline)"}
                         </pre>
                       </div>
-                      <div className="rounded-sm border border-hairline bg-surface p-2">
-                        <div className="mb-1 font-mono text-xs font-medium text-ink-2">
+                      <div className="min-w-0 rounded-sm border border-hairline bg-surface p-2">
+                        <div className="mb-1 truncate font-mono text-xs font-medium text-ink-2" title={c.path}>
                           Local Workspace ({c.path})
                         </div>
                         <pre className="max-h-36 overflow-auto font-mono text-xs leading-relaxed text-ink">
-                          {localLines.length ? localLines.join("\n") : "-- (deleted on disk)"}
+                          {localLines.length ? localLines.join("\n") : "(deleted on disk)"}
                         </pre>
                       </div>
                     </div>
                     {c.hunks.length > 0 && (
-                      <div className="rounded-sm border border-hairline bg-surface p-2 font-mono text-xs">
+                      <div className="min-w-0 max-w-full overflow-x-auto rounded-sm border border-hairline bg-surface p-2 font-mono text-xs">
                         {c.hunks.slice(0, 2).map((h, hi) => (
-                          <div key={hi} className="mb-1 last:mb-0">
-                            <div className="text-ink-3">{h.header}</div>
+                          <div key={hi} className="mb-1 min-w-0 last:mb-0">
+                            <div className="[overflow-wrap:anywhere] text-ink-3">{h.header}</div>
                             {h.lines.slice(0, 12).map((l, li) => (
                               <div
                                 key={li}
-                                className={
+                                className={`whitespace-pre-wrap [overflow-wrap:anywhere] ${
                                   l.op === "add"
                                     ? "bg-pill-active-bg/30 text-pill-active-fg"
                                     : l.op === "del"
                                       ? "bg-pill-warn-bg/30 text-pill-pro-fg"
                                       : "text-ink-2"
-                                }
+                                }`}
                               >
                                 {l.op === "add" ? "+" : l.op === "del" ? "-" : " "}
                                 {l.text}

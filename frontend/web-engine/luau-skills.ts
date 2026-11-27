@@ -220,7 +220,7 @@ export const STARTER_CATALOG: CatalogIdea[] = [
   {
     id: "obby-starter",
     title: "Lava Obby",
-    pitch: "A lava obby that plays fair: a spawn pad, checkpoints that remember your stage so a fall doesn't restart you, lava bricks that burn, and coins that keep paying while you climb — and save between sessions.",
+    pitch: "A lava obby that plays fair: a spawn pad, checkpoints that remember your stage so a fall doesn't restart you, lava bricks that burn, and coins that keep paying while you climb, and save between sessions.",
     skills: ["spawn_link", "checkpoints", "kill_brick", "currency", "day_night"],
     needs: [],
     plan: [
@@ -284,7 +284,7 @@ export const STARTER_CATALOG: CatalogIdea[] = [
   {
     id: "add-shop",
     title: "A shop for the money",
-    pitch: "Your game has money now — give players something to spend it on: a shop selling a Speed Coil, plus the game screen with the balance and the shop button on it.",
+    pitch: "Your game has money now, give players something to spend it on: a shop selling a Speed Coil, plus the game screen with the balance and the shop button on it.",
     skills: ["shop", "game_gui"],
     needs: ["currency"],
     plan: [
@@ -310,7 +310,7 @@ export const STARTER_CATALOG: CatalogIdea[] = [
   {
     id: "add-day-night",
     title: "A living sky",
-    pitch: "Add a day/night cycle so the place breathes — the light turns through a full day every few minutes.",
+    pitch: "Add a day/night cycle so the place breathes, the light turns through a full day every few minutes.",
     skills: ["day_night"],
     needs: [],
     plan: [
@@ -322,7 +322,7 @@ export const STARTER_CATALOG: CatalogIdea[] = [
   {
     id: "add-soundtrack",
     title: "A soundtrack",
-    pitch: "Wire up the music: a soundtrack slot in SoundService, looping, volume set — silent until you pick a real audio id, then it's just there.",
+    pitch: "Wire up the music: a soundtrack slot in SoundService, looping, volume set, silent until you pick a real audio id, then it's just there.",
     skills: ["soundtrack"],
     needs: [],
     plan: [
@@ -394,7 +394,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.SpawnLink", skill: "spawn_link" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added SpawnPad and ServerScriptService.SpawnLink — playtest passed.",
+        summary: "Added SpawnPad and ServerScriptService.SpawnLink, playtest passed.",
       };
     case "checkpoints":
       return {
@@ -405,7 +405,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.Checkpoints", skill: "checkpoints" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added 6 Stage Checkpoints in ServerScriptService.Checkpoints — playtest passed.",
+        summary: "Added 6 Stage Checkpoints in ServerScriptService.Checkpoints, playtest passed.",
       };
     case "jump_pad":
       return {
@@ -417,7 +417,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "Workspace.JumpPad.JumpPad", skill: "jump_pad" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added Workspace.JumpPad with launch velocity physics — playtest passed.",
+        summary: "Added Workspace.JumpPad with launch velocity physics, playtest passed.",
       };
     case "moving_platform":
       return {
@@ -429,7 +429,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.MovingPlatform", skill: "moving_platform" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added Workspace.MovingPlatform with Heartbeat carry physics — playtest passed.",
+        summary: "Added Workspace.MovingPlatform with Heartbeat carry physics, playtest passed.",
       };
     case "portal_teleporter":
       return {
@@ -442,7 +442,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.PortalTeleporter", skill: "portal_teleporter" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added paired PortalA <-> PortalB teleporters with debounce — playtest passed.",
+        summary: "Added paired PortalA <-> PortalB teleporters with debounce, playtest passed.",
       };
     case "vehicle_spawner":
       return {
@@ -454,7 +454,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.VehicleSpawner", skill: "vehicle_spawner" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added Workspace.VehiclePad and ServerScriptService.VehicleSpawner — playtest passed.",
+        summary: "Added Workspace.VehiclePad and ServerScriptService.VehicleSpawner, playtest passed.",
       };
     case "currency":
       return {
@@ -465,7 +465,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.Currency", skill: "currency" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added Saved Coins Currency with DataStore + BindToClose — playtest passed.",
+        summary: "Added Saved Coins Currency with DataStore + BindToClose, playtest passed.",
       };
     case "shop": {
       const steps: PlanStep[] = [];
@@ -487,7 +487,7 @@ export function buildPlanForSkill(
         title: "Item Shop (RemoteEvent)",
         skills,
         steps,
-        summary: "Added server-validated OpenROShopBuy shop — playtest passed.",
+        summary: "Added server-validated OpenROShopBuy shop, playtest passed.",
       };
     }
     case "tycoon_dropper": {
@@ -511,7 +511,7 @@ export function buildPlanForSkill(
         title: "Tycoon Dropper & Conveyor",
         skills,
         steps,
-        summary: "Added Workspace.TycoonDropper & ServerScriptService.TycoonDropper — playtest passed.",
+        summary: "Added Workspace.TycoonDropper & ServerScriptService.TycoonDropper, playtest passed.",
       };
     }
     case "quest_tracker":
@@ -523,7 +523,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.QuestTracker", skill: "quest_tracker" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added QuestTracker with OpenROQuestProgress RemoteEvent & rewards — playtest passed.",
+        summary: "Added QuestTracker with OpenROQuestProgress RemoteEvent & rewards, playtest passed.",
       };
     case "kill_brick":
       return {
@@ -535,7 +535,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "Workspace.LavaBrick.KillBrick", skill: "kill_brick" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added Workspace.LavaBrick hazard with debounced KillBrick script — playtest passed.",
+        summary: "Added Workspace.LavaBrick hazard with debounced KillBrick script, playtest passed.",
       };
     case "round_manager":
       return {
@@ -546,7 +546,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.RoundManager", skill: "round_manager" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added ServerScriptService.RoundManager arena loop — playtest passed.",
+        summary: "Added ServerScriptService.RoundManager arena loop, playtest passed.",
       };
     case "combat_sword":
       return {
@@ -557,7 +557,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.CombatSword", skill: "combat_sword" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added server-validated CombatSword with range/cooldown guards — playtest passed.",
+        summary: "Added server-validated CombatSword with range/cooldown guards, playtest passed.",
       };
     case "npc_patrol":
       return {
@@ -569,7 +569,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.NpcPatrol", skill: "npc_patrol" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added Workspace.NpcGuard and PathfindingService patrol loop — playtest passed.",
+        summary: "Added Workspace.NpcGuard and PathfindingService patrol loop, playtest passed.",
       };
     case "day_night":
       return {
@@ -580,7 +580,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.DayNight", skill: "day_night" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added Day/Night sky cycle in ServerScriptService.DayNight — playtest passed.",
+        summary: "Added Day/Night sky cycle in ServerScriptService.DayNight, playtest passed.",
       };
     case "soundtrack":
       return {
@@ -591,7 +591,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.Soundtrack", skill: "soundtrack" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added SoundService looped soundtrack — playtest passed.",
+        summary: "Added SoundService looped soundtrack, playtest passed.",
       };
     case "weather_cycle":
       return {
@@ -602,7 +602,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.WeatherCycle", skill: "weather_cycle" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added dynamic Lighting/Atmosphere WeatherCycle — playtest passed.",
+        summary: "Added dynamic Lighting/Atmosphere WeatherCycle, playtest passed.",
       };
     case "datastore_save":
       return {
@@ -613,7 +613,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.DataStoreSave", skill: "datastore_save" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added pcall-guarded DataStoreSave with UpdateAsync & BindToClose — playtest passed.",
+        summary: "Added pcall-guarded DataStoreSave with UpdateAsync & BindToClose, playtest passed.",
       };
     case "inventory_backpack":
       return {
@@ -624,7 +624,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.InventoryBackpack", skill: "inventory_backpack" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added server-authoritative InventoryBackpack with equip RemoteEvent — playtest passed.",
+        summary: "Added server-authoritative InventoryBackpack with equip RemoteEvent, playtest passed.",
       };
     case "game_gui": {
       const steps: PlanStep[] = [];
@@ -653,7 +653,7 @@ export function buildPlanForSkill(
         title: "Balance & Shop HUD",
         skills,
         steps,
-        summary: "Added StarterGui.GameGui HUD wired to leaderstats & OpenROShopBuy — playtest passed.",
+        summary: "Added StarterGui.GameGui HUD wired to leaderstats & OpenROShopBuy, playtest passed.",
       };
     }
     case "leaderboard":
@@ -665,7 +665,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.Leaderboard", skill: "leaderboard" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added Wins Leaderboard in ServerScriptService.Leaderboard — playtest passed.",
+        summary: "Added Wins Leaderboard in ServerScriptService.Leaderboard, playtest passed.",
       };
     case "admin_spectate":
       return {
@@ -676,7 +676,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "StarterGui.AdminSpectate", skill: "admin_spectate" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added StarterGui.AdminSpectate camera cycler — playtest passed.",
+        summary: "Added StarterGui.AdminSpectate camera cycler, playtest passed.",
       };
     case "card_gacha_roller":
       return {
@@ -688,7 +688,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.CardGachaRoller", skill: "card_gacha_roller" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added weighted 7-tier CardGachaRoller with pity, foils & promo codes — playtest passed.",
+        summary: "Added weighted 7-tier CardGachaRoller with pity, foils & promo codes, playtest passed.",
       };
     case "deck_builder":
       return {
@@ -699,7 +699,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.DeckBuilder", skill: "deck_builder" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added 4-card DeckBuilder with elemental synergies, star fusion & DataStore persistence — playtest passed.",
+        summary: "Added 4-card DeckBuilder with elemental synergies, star fusion & DataStore persistence, playtest passed.",
       };
     case "card_battle_arena":
       return {
@@ -711,7 +711,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.CardBattleArena", skill: "card_battle_arena" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added server-authoritative CardBattleArena with elemental counters & burst ultimates — playtest passed.",
+        summary: "Added server-authoritative CardBattleArena with elemental counters & burst ultimates, playtest passed.",
       };
     case "tower_progression":
       return {
@@ -723,7 +723,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.TowerProgression", skill: "tower_progression" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added 50-Floor TowerProgression & Rebirth ascension multipliers — playtest passed.",
+        summary: "Added 50-Floor TowerProgression & Rebirth ascension multipliers, playtest passed.",
       };
     case "potions_weather":
       return {
@@ -735,7 +735,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.PotionsWeather", skill: "potions_weather" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added PotionsWeather with live server weather multipliers and luck brews — playtest passed.",
+        summary: "Added PotionsWeather with live server weather multipliers and luck brews, playtest passed.",
       };
     case "card_gallery_world":
       return {
@@ -748,7 +748,7 @@ export function buildPlanForSkill(
           { tool: "write_script", args: { path: "ServerScriptService.CardGalleryWorld", skill: "card_gallery_world" } },
           { tool: "playtest", args: {} },
         ],
-        summary: "Added 3D CardGalleryWorld showcase billboards with Decal textures & SurfaceGui plates — playtest passed.",
+        summary: "Added 3D CardGalleryWorld showcase billboards with Decal textures & SurfaceGui plates, playtest passed.",
       };
     default:
       return null;
@@ -803,7 +803,7 @@ export function compilePromptToPlan(prompt: string, existing: PlaceState): { ste
       return {
         steps: apex.plan,
         skills: apex.skills,
-        summary: "Built Untitled Anime Card Game (6 systems, sunlit floating archipelago, Torii Summon Shrine, Fusion Weather Storms & 4v4 Chain Overdrive tower) — playtest passed.",
+        summary: "Built Untitled Anime Card Game (6 systems, sunlit floating archipelago, Torii Summon Shrine, Fusion Weather Storms & 4v4 Chain Overdrive tower), playtest passed.",
       };
     }
   }
@@ -1052,6 +1052,6 @@ export function compilePromptToPlan(prompt: string, existing: PlaceState): { ste
   return {
     steps,
     skills: [...new Set(skills)],
-    summary: `Built ${features.join(", ")} — verified Luau syntax and Roblox wiring with 0 playtest errors. Ready to playtest or export as .rbxlx.`,
+    summary: `Built ${features.join(", ")}, verified Luau syntax and Roblox wiring with 0 playtest errors. Ready to playtest or export as .rbxlx.`,
   };
 }

@@ -27,7 +27,7 @@ export function validatePlace(place: PlaceState): {
       errors: [],
       warnings,
       diagnostics,
-      console: `[OpenRO Playtest] Verified ${Object.keys(place.scripts).length} Luau script(s) and ${Object.keys(place.instances).length} Workspace instance(s) — syntax OK, block balance OK, service roots OK, cross-references OK (0 errors${warnNote}).`,
+      console: `[OpenRO Playtest] Verified ${Object.keys(place.scripts).length} Luau script(s) and ${Object.keys(place.instances).length} Workspace instance(s): syntax OK, block balance OK, service roots OK, cross-references OK (0 errors${warnNote}).`,
     };
   }
   return {

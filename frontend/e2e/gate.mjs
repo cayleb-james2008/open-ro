@@ -957,6 +957,27 @@ try {
     );
     check("Cross-file Go-to-Definition navigates to GateTypes.luau", true);
 
+    // H1 regression: Symbols filter empty state + F12 on comment shows feedback without phantom tab
+    const symFilterInput = symbolsRail.locator('input[aria-label="Filter symbols"]');
+    await symFilterInput.fill("__nonexistent_symbol_h1__");
+    await symbolsRail.locator("[data-symbols-empty]").waitFor({ state: "visible", timeout: 4000 });
+    const emptySymTxt = await symbolsRail.locator("[data-symbols-empty]").innerText();
+    await symbolsRail.getByRole("button", { name: "Clear filter" }).click();
+    check(
+      "H1: Symbols outline distinguishes empty filter state and clears cleanly",
+      emptySymTxt.includes("No symbols match your filter"),
+      emptySymTxt.slice(0, 80),
+    );
+    const tabsBeforeF12 = await p.locator("[data-code-diff-workbench] button").count();
+    await codeTextarea.evaluate((el) => {
+      el.focus();
+      el.setSelectionRange(2, 2);
+    });
+    await p.keyboard.press("F12");
+    await p.locator("[data-sonner-toast]").filter({ hasText: /No definition found|Place the cursor/i }).first().waitFor({ state: "visible", timeout: 5000 });
+    const tabsAfterF12 = await p.locator("[data-code-diff-workbench] button").count();
+    check("H1: F12 on comment shows failure toast and creates zero phantom tabs", tabsAfterF12 === tabsBeforeF12, `before=${tabsBeforeF12} after=${tabsAfterF12}`);
+
     await assertLayoutInvariants(p, "1440x900 Light Code Workbench");
     await setThemeViaSettings(p, "dark");
     await assertLayoutInvariants(p, "1440x900 Dark Code Workbench");
@@ -1190,6 +1211,29 @@ try {
       await setThemeViaSettings(p, "dark");
       await assertLayoutInvariants(p, "390x844 Dark Sandbox History");
       await setThemeViaSettings(p, "light");
+
+      // H1 regression: 390x844 LiveOps Light/Dark + Two-Way Sync modal scrollWidth & Close reachability
+      await p.locator('[aria-label="Ship section"]').getByRole("button", { name: "LiveOps", exact: true }).click();
+      await p.locator("[data-liveops-panel]").waitFor({ state: "visible", timeout: 8000 });
+      await assertLayoutInvariants(p, "390x844 Light LiveOps");
+      await setThemeViaSettings(p, "dark");
+      await assertLayoutInvariants(p, "390x844 Dark LiveOps");
+      await setThemeViaSettings(p, "light");
+
+      await p.locator("[data-studio-sync-toolbar-btn]").click();
+      const mobSyncDlg = p.locator("[data-two-way-sync-dialog]");
+      await mobSyncDlg.waitFor({ state: "visible", timeout: 5000 });
+      const mobSyncMetrics = await mobSyncDlg.evaluate((el) => ({
+        scrollOver: el.scrollWidth > el.clientWidth + 1,
+        closeVisible: Boolean(el.querySelector('button[aria-label="Close"]')?.getBoundingClientRect().height),
+      }));
+      check(
+        "H1: 390x844 Two-Way Sync dialog has 0 horizontal overflow and reachable Close",
+        !mobSyncMetrics.scrollOver && mobSyncMetrics.closeVisible,
+        JSON.stringify(mobSyncMetrics),
+      );
+      await mobSyncDlg.getByRole("button", { name: "Close", exact: true }).click();
+      await mobSyncDlg.waitFor({ state: "hidden", timeout: 5000 });
     }
   }
   await p.locator('[aria-label="Switch Copilot or Workbench view"]').getByRole("button", { name: "Copilot", exact: true }).click();

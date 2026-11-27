@@ -874,7 +874,7 @@ export function ToolLibraryDialog({
                     </div>
                   </section>
 
-                  {/* Dimensions 2–7: Production Craft Taste Dossier */}
+                  {/* Dimensions 2-7: Production Craft Taste Dossier */}
                   <div data-market-dossier-dimensions className="grid gap-3 md:grid-cols-2">
                     <section className="flex flex-col gap-2 rounded-card border border-hairline bg-board/45 p-3">
                       <div className="flex items-center gap-1.5">

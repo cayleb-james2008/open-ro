@@ -44,6 +44,162 @@ const WORKSPACE_BUILTINS = new Set([
   "Parent",
 ]);
 
+const IDENT_START_RE = /[\p{L}_]/u;
+const IDENT_CHAR_RE = /[\p{L}\p{N}_]/u;
+const IDENT_PAT = "[\\p{L}_][\\p{L}\\p{N}_]*";
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchLongBracketOpen(src: string, idx: number): number | null {
+  if (src[idx] !== "[") return null;
+  let j = idx + 1;
+  while (j < src.length && src[j] === "=") j++;
+  if (src[j] === "[") return j - idx - 1;
+  return null;
+}
+
+function findLongBracketClose(src: string, startAfterOpen: number, eqCount: number): { end: number; newlines: number } | null {
+  let i = startAfterOpen;
+  let newlines = 0;
+  while (i < src.length) {
+    if (src[i] === "\n") newlines++;
+    if (src[i] === "]") {
+      let ok = true;
+      for (let k = 1; k <= eqCount; k++) {
+        if (src[i + k] !== "=") {
+          ok = false;
+          break;
+        }
+      }
+      if (ok && src[i + eqCount + 1] === "]") {
+        return { end: i + eqCount + 2, newlines };
+      }
+    }
+    i++;
+  }
+  return null;
+}
+
+type ScannedLuau = {
+  codeOnlySrc: string;
+  codeNoCommentsSrc: string;
+  codeOnlyLines: string[];
+  codeNoCommentsLines: string[];
+  isCommentOffset: Uint8Array;
+  isStringOffset: Uint8Array;
+};
+
+/** Scan Luau source into 1:1 line-aligned views masking comments and string interiors. */
+function scanLuauCode(src: string): ScannedLuau {
+  const n = src.length;
+  const codeOnlyArr = new Array<string>(n);
+  const noCommentArr = new Array<string>(n);
+  const isCommentOffset = new Uint8Array(n);
+  const isStringOffset = new Uint8Array(n);
+
+  const maskRange = (from: number, to: number, kind: "comment" | "string-inner" | "quote") => {
+    for (let k = from; k < to; k++) {
+      const ch = src[k];
+      if (kind === "comment") {
+        isCommentOffset[k] = 1;
+        codeOnlyArr[k] = ch === "\n" ? "\n" : " ";
+        noCommentArr[k] = ch === "\n" ? "\n" : " ";
+      } else if (kind === "string-inner") {
+        isStringOffset[k] = 1;
+        codeOnlyArr[k] = ch === "\n" ? "\n" : " ";
+        noCommentArr[k] = ch;
+      } else {
+        isStringOffset[k] = 1;
+        codeOnlyArr[k] = ch;
+        noCommentArr[k] = ch;
+      }
+    }
+  };
+
+  let i = 0;
+  while (i < n) {
+    const c = src[i];
+    if (c === "-" && src[i + 1] === "-") {
+      const eq = matchLongBracketOpen(src, i + 2);
+      if (eq !== null) {
+        const close = findLongBracketClose(src, i + 4 + eq, eq);
+        const end = close ? close.end : n;
+        maskRange(i, end, "comment");
+        i = end;
+        continue;
+      }
+      let end = i + 2;
+      while (end < n && src[end] !== "\n") end++;
+      maskRange(i, end, "comment");
+      i = end;
+      continue;
+    }
+
+    if (c === '"' || c === "'" || c === "`") {
+      const q = c;
+      maskRange(i, i + 1, "quote");
+      let j = i + 1;
+      let closed = false;
+      while (j < n) {
+        if (src[j] === "\\" && j + 1 < n) {
+          j += 2;
+          continue;
+        }
+        if (src[j] === "\n" && q !== "`") {
+          break;
+        }
+        if (src[j] === q) {
+          maskRange(i + 1, j, "string-inner");
+          maskRange(j, j + 1, "quote");
+          j++;
+          closed = true;
+          break;
+        }
+        j++;
+      }
+      if (!closed) {
+        maskRange(i + 1, j, "string-inner");
+      }
+      i = j;
+      continue;
+    }
+
+    const eq = matchLongBracketOpen(src, i);
+    if (eq !== null) {
+      const openLen = 2 + eq;
+      const close = findLongBracketClose(src, i + openLen, eq);
+      const closeStart = close ? close.end - openLen : n;
+      const end = close ? close.end : n;
+      maskRange(i, Math.min(i + openLen, n), "quote");
+      if (closeStart > i + openLen) {
+        maskRange(i + openLen, closeStart, "string-inner");
+      }
+      if (close) {
+        maskRange(closeStart, end, "quote");
+      }
+      i = end;
+      continue;
+    }
+
+    codeOnlyArr[i] = c;
+    noCommentArr[i] = c;
+    i++;
+  }
+
+  const codeOnlySrc = codeOnlyArr.join("");
+  const codeNoCommentsSrc = noCommentArr.join("");
+  return {
+    codeOnlySrc,
+    codeNoCommentsSrc,
+    codeOnlyLines: codeOnlySrc.split("\n"),
+    codeNoCommentsLines: codeNoCommentsSrc.split("\n"),
+    isCommentOffset,
+    isStringOffset,
+  };
+}
+
 export function checkLuauSyntaxDetailed(source: string): { line: number; code: string; message: string } | null {
   if (!source.trim()) return { line: 1, code: "LUAU_EMPTY", message: "Empty Luau script" };
   let line = 1;
@@ -65,20 +221,13 @@ export function checkLuauSyntaxDetailed(source: string): { line: number; code: s
       continue;
     }
     if (c === "-" && source[i + 1] === "-") {
-      if (source[i + 2] === "[" && source[i + 3] === "[") {
+      const eq = matchLongBracketOpen(source, i + 2);
+      if (eq !== null) {
         const startLine = line;
-        i += 4;
-        let closed = false;
-        while (i + 1 < source.length) {
-          if (source[i] === "\n") line++;
-          if (source[i] === "]" && source[i + 1] === "]") {
-            i += 2;
-            closed = true;
-            break;
-          }
-          i++;
-        }
-        if (!closed) return { line: startLine, code: "LUAU_COMMENT", message: "Unclosed block comment --[[" };
+        const close = findLongBracketClose(source, i + 4 + eq, eq);
+        if (!close) return { line: startLine, code: "LUAU_COMMENT", message: "Unclosed block comment --[[" };
+        line += close.newlines;
+        i = close.end;
       } else {
         while (i < source.length && source[i] !== "\n") i++;
       }
@@ -108,20 +257,13 @@ export function checkLuauSyntaxDetailed(source: string): { line: number; code: s
       tokens.push({ kind: "str", value: "", line: startLine, isMember: false });
       continue;
     }
-    if (c === "[" && source[i + 1] === "[") {
+    const longStrEq = matchLongBracketOpen(source, i);
+    if (longStrEq !== null) {
       const startLine = line;
-      i += 2;
-      let closed = false;
-      while (i + 1 < source.length) {
-        if (source[i] === "\n") line++;
-        if (source[i] === "]" && source[i + 1] === "]") {
-          i += 2;
-          closed = true;
-          break;
-        }
-        i++;
-      }
-      if (!closed) return { line: startLine, code: "LUAU_LONG_STR", message: "Unclosed long string [[" };
+      const close = findLongBracketClose(source, i + 2 + longStrEq, longStrEq);
+      if (!close) return { line: startLine, code: "LUAU_LONG_STR", message: "Unclosed long string [[" };
+      line += close.newlines;
+      i = close.end;
       tokens.push({ kind: "str", value: "", line: startLine, isMember: false });
       continue;
     }
@@ -146,10 +288,10 @@ export function checkLuauSyntaxDetailed(source: string): { line: number; code: s
       i++;
       continue;
     }
-    if (/[A-Za-z_]/.test(c)) {
+    if (IDENT_START_RE.test(c)) {
       const start = i;
       const prevMember = start > 0 && (source[start - 1] === "." || source[start - 1] === ":");
-      while (i < source.length && /[A-Za-z0-9_]/.test(source[i])) i++;
+      while (i < source.length && IDENT_CHAR_RE.test(source[i])) i++;
       tokens.push({ kind: "ident", value: source.slice(start, i), line, isMember: prevMember });
       continue;
     }
@@ -226,17 +368,24 @@ function findLineOf(source: string, needle: RegExp): number {
 
 export function analyzePlaceLuau(place: Place): LuauDiagnostic[] {
   const diagnostics: LuauDiagnostic[] = [];
-  const allSources = Object.values(place.scripts || {});
+  const scannedByPath = new Map<string, ScannedLuau>();
+  for (const [p, s] of Object.entries(place.scripts || {})) {
+    scannedByPath.set(p, scanLuauCode(s));
+  }
+  const allCodeNoComments = [...scannedByPath.values()].map((s) => s.codeNoCommentsSrc);
   const createsName = (name: string) =>
-    allSources.some((s) => s.includes(`Name = "${name}"`) || s.includes(`Name = '${name}'`));
+    allCodeNoComments.some((s) => s.includes(`Name = "${name}"`) || s.includes(`Name = '${name}'`));
   const createsRemote = (name?: string) =>
-    allSources.some(
+    allCodeNoComments.some(
       (s) =>
         (s.includes('Instance.new("RemoteEvent")') || s.includes("Instance.new('RemoteEvent')")) &&
         (!name || s.includes(`"${name}"`) || s.includes(`'${name}'`)),
     );
 
   for (const [path, source] of Object.entries(place.scripts || {})) {
+    const scanned = scannedByPath.get(path)!;
+    const codeOnly = scanned.codeOnlySrc;
+    const codeNoComments = scanned.codeNoCommentsSrc;
     const isProjectFile = path.includes("/") || /\.luau?$/i.test(path);
     const root = path.split(".")[0] || "";
     if (!isProjectFile && !VALID_SERVICES.has(root)) {
@@ -261,10 +410,10 @@ export function analyzePlaceLuau(place: Place): LuauDiagnostic[] {
     }
 
     // Check infinite `while true do` without task.wait / wait
-    if (/\bwhile\s+true\s+do\b/.test(source) && !/\b(?:task\.wait|wait)\s*\(/.test(source)) {
+    if (/\bwhile\s+true\s+do\b/.test(codeOnly) && !/\b(?:task\.wait|wait)\s*\(/.test(codeOnly)) {
       diagnostics.push({
         path,
-        line: findLineOf(source, /\bwhile\s+true\s+do\b/),
+        line: findLineOf(codeOnly, /\bwhile\s+true\s+do\b/),
         severity: "error",
         code: "LUAU_INFINITE_LOOP",
         message: "Infinite 'while true do' loop missing task.wait() yield",
@@ -272,19 +421,19 @@ export function analyzePlaceLuau(place: Place): LuauDiagnostic[] {
     }
 
     // Check DataStore calls missing pcall or BindToClose
-    if (/\b(?:GetAsync|SetAsync|UpdateAsync)\s*\(/.test(source) && !/\bpcall\s*\(/.test(source)) {
+    if (/\b(?:GetAsync|SetAsync|UpdateAsync)\s*\(/.test(codeOnly) && !/\bpcall\s*\(/.test(codeOnly)) {
       diagnostics.push({
         path,
-        line: findLineOf(source, /\b(?:GetAsync|SetAsync|UpdateAsync)\s*\(/),
+        line: findLineOf(codeOnly, /\b(?:GetAsync|SetAsync|UpdateAsync)\s*\(/),
         severity: "warning",
         code: "DS_NO_PCALL",
         message: "DataStoreService call should be wrapped in pcall()",
       });
     }
-    if (source.includes("GetDataStore(") && !source.includes("BindToClose")) {
+    if (codeOnly.includes("GetDataStore(") && !codeOnly.includes("BindToClose")) {
       diagnostics.push({
         path,
-        line: findLineOf(source, /GetDataStore\(/),
+        line: findLineOf(codeOnly, /GetDataStore\(/),
         severity: "error",
         code: "DS_NO_BINDTOCLOSE",
         message: "DataStore script missing game:BindToClose shutdown save",
@@ -292,13 +441,15 @@ export function analyzePlaceLuau(place: Place): LuauDiagnostic[] {
     }
 
     // Check OnServerEvent with extra arguments missing validation
-    const serverEventMatch = source.match(/OnServerEvent:Connect\s*\(\s*function\s*\(\s*[A-Za-z_]\w*\s*,\s*([A-Za-z_]\w*)/);
+    const serverEventMatch = codeOnly.match(
+      new RegExp(`OnServerEvent:Connect\\s*\\(\\s*function\\s*\\(\\s*${IDENT_PAT}\\s*,\\s*(${IDENT_PAT})`, "u"),
+    );
     if (serverEventMatch) {
-      const hasCheck = /\btypeof\s*\(|\bif\s+not\b|\btype\s*\(/.test(source);
+      const hasCheck = /\btypeof\s*\(|\bif\s+not\b|\btype\s*\(/.test(codeOnly);
       if (!hasCheck) {
         diagnostics.push({
           path,
-          line: findLineOf(source, /OnServerEvent:Connect/),
+          line: findLineOf(codeOnly, /OnServerEvent:Connect/),
           severity: "warning",
           code: "NET_UNVALIDATED",
           message: `OnServerEvent handler accepts client arg '${serverEventMatch[1]}' without typeof/guard check`,
@@ -307,14 +458,14 @@ export function analyzePlaceLuau(place: Place): LuauDiagnostic[] {
     }
 
     // Check workspace.<Member> references
-    const clean = source.replace(/--[^\n]*/g, "").replace(/"[^"\n]*"|'[^'\n]*'/g, " ");
-    for (const m of clean.matchAll(/\bworkspace\.([A-Za-z_][A-Za-z0-9_]*)/g)) {
+    const wsRe = new RegExp(`(?<![\\p{L}\\p{N}_])workspace\\.(${IDENT_PAT})`, "gu");
+    for (const m of codeOnly.matchAll(wsRe)) {
       const member = m[1];
       if (WORKSPACE_BUILTINS.has(member)) continue;
       if (!place.instances[`Workspace.${member}`] && !createsName(member)) {
         diagnostics.push({
           path,
-          line: findLineOf(source, new RegExp(`\\bworkspace\\.${member}\\b`)),
+          line: findLineOf(codeOnly, new RegExp(`(?<![\\p{L}\\p{N}_])workspace\\.${escapeRegExp(member)}(?![\\p{L}\\p{N}_])`, "u")),
           severity: "error",
           code: "XREF_WORKSPACE",
           message: `Workspace.${member} is not present in Workspace or created by a script`,
@@ -327,12 +478,12 @@ export function analyzePlaceLuau(place: Place): LuauDiagnostic[] {
       Object.keys(place.scripts || {}).some(
         (k) => k === `ReplicatedStorage.${name}` || scriptShortStem(k).toLowerCase() === name.toLowerCase(),
       );
-    for (const m of source.matchAll(/ReplicatedStorage:WaitForChild\(\s*["']([^"']+)["']\s*\)/g)) {
+    for (const m of codeNoComments.matchAll(/ReplicatedStorage:WaitForChild\(\s*["']([^"']+)["']\s*\)/g)) {
       const remoteName = m[1];
       if (!createsRemote(remoteName) && !place.instances[`ReplicatedStorage.${remoteName}`] && !hasScriptNamed(remoteName)) {
         diagnostics.push({
           path,
-          line: findLineOf(source, new RegExp(remoteName)),
+          line: findLineOf(codeNoComments, new RegExp(escapeRegExp(remoteName))),
           severity: "error",
           code: "XREF_REMOTE",
           message: `ReplicatedStorage.${remoteName} RemoteEvent was never created`,
@@ -342,13 +493,13 @@ export function analyzePlaceLuau(place: Place): LuauDiagnostic[] {
 
     // Check Shop charging leaderstats without leaderstats creator
     if (
-      (source.includes('Instance.new("RemoteEvent")') || source.includes("Instance.new('RemoteEvent')")) &&
-      source.includes("leaderstats") &&
+      (codeNoComments.includes('Instance.new("RemoteEvent")') || codeNoComments.includes("Instance.new('RemoteEvent')")) &&
+      codeNoComments.includes("leaderstats") &&
       !createsName("leaderstats")
     ) {
       diagnostics.push({
         path,
-        line: findLineOf(source, /leaderstats/),
+        line: findLineOf(codeNoComments, /leaderstats/),
         severity: "error",
         code: "XREF_LEADERSTATS",
         message: "Shop script references leaderstats but no script creates it",
@@ -467,7 +618,7 @@ export function tokenizeLuauLine(line: string): LuauToken[] {
       i = j;
       continue;
     }
-    if (/[0-9]/.test(ch) && (i === 0 || !/[A-Za-z0-9_]/.test(line[i - 1]))) {
+    if (/[0-9]/.test(ch) && (i === 0 || !IDENT_CHAR_RE.test(line[i - 1]))) {
       flushPlain();
       let j = i;
       while (j < line.length && /[0-9._xXa-fA-F]/.test(line[j])) j++;
@@ -475,9 +626,9 @@ export function tokenizeLuauLine(line: string): LuauToken[] {
       i = j;
       continue;
     }
-    if (/[A-Za-z_]/.test(ch)) {
+    if (IDENT_START_RE.test(ch)) {
       let j = i;
-      while (j < line.length && /[A-Za-z0-9_]/.test(line[j])) j++;
+      while (j < line.length && IDENT_CHAR_RE.test(line[j])) j++;
       const word = line.slice(i, j);
       if (LUAU_KEYWORDS.has(word)) {
         flushPlain();
@@ -634,7 +785,7 @@ function resolveRequireTarget(expr: string, fromPath: string, scriptPaths: strin
   const identParts = expr
     .replace(/game:GetService\(\s*["'][^"']+["']\s*\)/g, "")
     .replace(/WaitForChild|FindFirstChild/g, " ")
-    .match(/[A-Za-z_][A-Za-z0-9_]*/g);
+    .match(new RegExp(IDENT_PAT, "gu"));
 
   const candidates: string[] = [];
   if (stringArgs.length > 0) {
@@ -695,15 +846,20 @@ function parseRemoteMap(scripts: Record<string, string>, instances?: Record<stri
     }
   }
   for (const [path, src] of Object.entries(scripts)) {
-    const lines = src.split("\n");
+    const scanned = scanLuauCode(src);
+    const codeOnlyLines = scanned.codeOnlyLines;
+    const codeNoCommentsLines = scanned.codeNoCommentsLines;
     const varToKind = new Map<string, "remote_event" | "remote_function">();
-    for (let i = 0; i < lines.length; i++) {
-      const ln = lines[i];
-      const newMatch = /\blocal\s+([A-Za-z_]\w*)\s*=\s*Instance\.new\(\s*["'](RemoteEvent|RemoteFunction)["']\s*\)/.exec(ln);
+    const newRe = new RegExp(`(?<![\\p{L}\\p{N}_])local\\s+(${IDENT_PAT})\\s*=\\s*Instance\\.new\\(\\s*["'](RemoteEvent|RemoteFunction)["']\\s*\\)`, "u");
+    const nameAssignRe = new RegExp(`(?<![\\p{L}\\p{N}_])(${IDENT_PAT})\\.Name\\s*=\\s*["']([^"']+)["']`, "u");
+    for (let i = 0; i < codeNoCommentsLines.length; i++) {
+      if (!codeOnlyLines[i]?.trim()) continue;
+      const ln = codeNoCommentsLines[i];
+      const newMatch = newRe.exec(ln);
       if (newMatch) {
         const kind = newMatch[2] === "RemoteFunction" ? "remote_function" : "remote_event";
         varToKind.set(newMatch[1], kind);
-        const inlineName = new RegExp(`\\b${newMatch[1]}\\.Name\\s*=\\s*["']([^"']+)["']`).exec(src);
+        const inlineName = new RegExp(`(?<![\\p{L}\\p{N}_])${escapeRegExp(newMatch[1])}\\.Name\\s*=\\s*["']([^"']+)["']`, "u").exec(scanned.codeNoCommentsSrc);
         const rName = inlineName ? inlineName[1] : newMatch[1];
         remoteDefs.set(rName, {
           name: rName,
@@ -713,7 +869,7 @@ function parseRemoteMap(scripts: Record<string, string>, instances?: Record<stri
           signature: kind === "remote_function" ? "RemoteFunction" : "RemoteEvent",
         });
       }
-      const nameAssign = /\b([A-Za-z_]\w*)\.Name\s*=\s*["']([^"']+)["']/.exec(ln);
+      const nameAssign = nameAssignRe.exec(ln);
       if (nameAssign && varToKind.has(nameAssign[1])) {
         const kind = varToKind.get(nameAssign[1])!;
         remoteDefs.set(nameAssign[2], {
@@ -727,6 +883,44 @@ function parseRemoteMap(scripts: Record<string, string>, instances?: Record<stri
     }
   }
   return remoteDefs;
+}
+
+function extractBalancedCallArg(line: string, openParenIdx: number): string {
+  if (openParenIdx < 0 || line[openParenIdx] !== "(") return "";
+  let depth = 1;
+  let quote: string | null = null;
+  for (let i = openParenIdx + 1; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === "\\" && i + 1 < line.length) {
+        i++;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) return line.slice(openParenIdx + 1, i);
+    }
+  }
+  return line.slice(openParenIdx + 1);
+}
+
+function extractRequireCallArg(codeOnlyLine: string, codeNoCommentLine: string, alias?: string): { alias: string; expr: string } | null {
+  const reqRe = alias
+    ? new RegExp(`(?<![\\p{L}\\p{N}_])local\\s+(${escapeRegExp(alias)})\\s*=\\s*require\\s*\\(`, "u")
+    : new RegExp(`(?<![\\p{L}\\p{N}_])local\\s+(${IDENT_PAT})\\s*=\\s*require\\s*\\(`, "u");
+  const m = reqRe.exec(codeOnlyLine);
+  if (!m) return null;
+  const openIdx = codeNoCommentLine.indexOf("(", m.index + m[0].length - 1);
+  if (openIdx < 0) return null;
+  return { alias: m[1], expr: extractBalancedCallArg(codeNoCommentLine, openIdx) };
 }
 
 export function buildWorkspaceSymbolIndex(
@@ -745,30 +939,46 @@ export function buildWorkspaceSymbolIndex(
     if (sym.path in scripts) symbols.push(sym);
   }
 
-  // Pass 1: extract symbols & exports per file
+  const scannedByPath = new Map<string, ScannedLuau>();
   for (const [path, src] of Object.entries(scripts)) {
-    const lines = src.split("\n");
+    scannedByPath.set(path, scanLuauCode(src));
+  }
+
+  const topReturnRe = new RegExp(`^return\\s+(${IDENT_PAT})\\s*$`, "gmu");
+  const anyReturnRe = new RegExp(`(?<![\\p{L}\\p{N}_])return\\s+(${IDENT_PAT})\\s*$`, "gmu");
+  const typeRe = new RegExp(`^(export\\s+)?type\\s+(${IDENT_PAT}(?:<[^>]+>)?)\\s*=\\s*(.+)$`, "u");
+  const modFnRe = new RegExp(`^(?:local\\s+)?function\\s+(${IDENT_PAT})([.:])(${IDENT_PAT})\\s*\\(([^)]*)\\)(?:\\s*:\\s*([^\\n]+))?`, "u");
+  const localFnRe = new RegExp(`^(local\\s+)?function\\s+(${IDENT_PAT})\\s*\\(([^)]*)\\)(?:\\s*:\\s*([^\\n]+))?`, "u");
+  const assignFnRe = new RegExp(`^(${IDENT_PAT})\\.(${IDENT_PAT})\\s*=\\s*function\\s*\\(([^)]*)\\)`, "u");
+  const retTableRe = /(?<![\p{L}\p{N}_])return\s*\{([\s\S]*?)\}\s*$/mu;
+  const kvEntryRe = new RegExp(`^(${IDENT_PAT})(?:\\s*=\\s*(${IDENT_PAT}))?$`, "u");
+
+  // Pass 1: extract symbols & exports per file
+  for (const [path] of Object.entries(scripts)) {
+    const scanned = scannedByPath.get(path)!;
+    const codeLines = scanned.codeOnlyLines;
+    const noCommentLines = scanned.codeNoCommentsLines;
     const fnMap = new Map<string, ParsedFunctionMeta>();
     const exportNames = new Set<string>();
     const localFns = new Map<string, ParsedFunctionMeta>();
 
-    // Track returned module identifier (e.g. `return Economy`)
-    const topReturnMatches = [...src.matchAll(/^return\s+([A-Za-z_]\w*)\s*(?:--.*)?$/gm)];
-    const anyReturnMatches = topReturnMatches.length > 0 ? topReturnMatches : [...src.matchAll(/\breturn\s+([A-Za-z_]\w*)\s*(?:--.*)?$/gm)];
+    // Track returned module identifier (e.g. `return Economy`) from comment/string-stripped code
+    const topReturnMatches = [...scanned.codeOnlySrc.matchAll(topReturnRe)];
+    const anyReturnMatches = topReturnMatches.length > 0 ? topReturnMatches : [...scanned.codeOnlySrc.matchAll(anyReturnRe)];
     const moduleTableName =
       [...anyReturnMatches]
         .reverse()
         .map((m) => m[1])
         .find((id) => id !== "true" && id !== "false" && id !== "nil") ?? null;
 
-    for (let i = 0; i < lines.length; i++) {
+    for (let i = 0; i < codeLines.length; i++) {
       const lineNo = i + 1;
-      const raw = lines[i];
-      const trimmed = raw.trim();
-      if (!trimmed || trimmed.startsWith("--")) continue;
+      const trimmed = (codeLines[i] || "").trim();
+      if (!trimmed) continue;
+      const noCommentTrimmed = (noCommentLines[i] || "").trim();
 
-      const typeMatch = /^(export\s+)?type\s+([A-Za-z_]\w*(?:<[^>]+>)?)\s*=\s*(.+)$/.exec(trimmed);
-      if (typeMatch) {
+      const typeMatch = typeRe.exec(noCommentTrimmed);
+      if (typeMatch && typeRe.test(trimmed)) {
         const cleanName = typeMatch[2].replace(/<.*>$/, "");
         symbols.push({
           name: cleanName,
@@ -781,8 +991,8 @@ export function buildWorkspaceSymbolIndex(
         continue;
       }
 
-      const modFnMatch = /^(?:local\s+)?function\s+([A-Za-z_]\w*)([.:])([A-Za-z_]\w*)\s*\(([^)]*)\)(?:\s*:\s*([^-\n]+))?/.exec(trimmed);
-      if (modFnMatch) {
+      const modFnMatch = modFnRe.exec(noCommentTrimmed);
+      if (modFnMatch && /^(?:local\s+)?function\b/.test(trimmed)) {
         const tbl = modFnMatch[1];
         const sep = modFnMatch[2];
         const fnName = modFnMatch[3];
@@ -807,8 +1017,8 @@ export function buildWorkspaceSymbolIndex(
         continue;
       }
 
-      const localFnMatch = /^(local\s+)?function\s+([A-Za-z_]\w*)\s*\(([^)]*)\)(?:\s*:\s*([^-\n]+))?/.exec(trimmed);
-      if (localFnMatch) {
+      const localFnMatch = localFnRe.exec(noCommentTrimmed);
+      if (localFnMatch && /^(?:local\s+)?function\b/.test(trimmed)) {
         const isLocal = Boolean(localFnMatch[1]);
         const fnName = localFnMatch[2];
         const paramsRaw = localFnMatch[3] || "";
@@ -832,8 +1042,8 @@ export function buildWorkspaceSymbolIndex(
         continue;
       }
 
-      const assignFnMatch = /^([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*function\s*\(([^)]*)\)/.exec(trimmed);
-      if (assignFnMatch) {
+      const assignFnMatch = assignFnRe.exec(noCommentTrimmed);
+      if (assignFnMatch && assignFnRe.test(trimmed)) {
         const fnName = assignFnMatch[2];
         const paramsRaw = assignFnMatch[3] || "";
         const arity = parseParamArity(paramsRaw, false);
@@ -852,11 +1062,11 @@ export function buildWorkspaceSymbolIndex(
     }
 
     // Detect `return { Foo = Foo, Bar = ... }` table exports
-    const retTableMatch = /\breturn\s*\{([\s\S]*?)\}\s*(?:--.*)?$/m.exec(src);
+    const retTableMatch = retTableRe.exec(scanned.codeOnlySrc);
     if (retTableMatch) {
       const entries = splitTopLevelCommas(retTableMatch[1]);
       for (const entry of entries) {
-        const kv = /^([A-Za-z_]\w*)(?:\s*=\s*([A-Za-z_]\w*))?$/.exec(entry.trim());
+        const kv = kvEntryRe.exec(entry.trim());
         if (kv) {
           const expName = kv[1];
           const refName = kv[2] || kv[1];
@@ -867,7 +1077,7 @@ export function buildWorkspaceSymbolIndex(
               fnMap.set(expName, lf);
               lf.symbol.kind = "export";
             } else {
-              symbols.push({ name: expName, kind: "export", path, line: lines.length, signature: null });
+              symbols.push({ name: expName, kind: "export", path, line: codeLines.length, signature: null });
             }
           }
         }
@@ -880,32 +1090,40 @@ export function buildWorkspaceSymbolIndex(
 
   // Pass 2: cross-file require() contracts & RemoteEvent/RemoteFunction payload contracts
   const remoteEndpoints: RemoteEndpoint[] = [];
+  const remBindRe = new RegExp(`(?<![\\p{L}\\p{N}_])local\\s+(${IDENT_PAT})\\s*=\\s*[^\\n]*?(?:WaitForChild|FindFirstChild)\\(\\s*["']([^"']+)["']\\s*\\)`, "u");
+  const remBindCodeRe = new RegExp(`(?<![\\p{L}\\p{N}_])local\\s+(${IDENT_PAT})\\s*=\\s*[^\\n]*?(?:WaitForChild|FindFirstChild)\\(`, "u");
 
-  for (const [callerPath, src] of Object.entries(scripts)) {
-    const lines = src.split("\n");
+  for (const [callerPath] of Object.entries(scripts)) {
+    const scanned = scannedByPath.get(callerPath)!;
+    const codeLines = scanned.codeOnlyLines;
+    const noCommentLines = scanned.codeNoCommentsLines;
     const requireAliases = new Map<string, string>();
     const remoteAliases = new Map<string, string>();
 
-    for (let i = 0; i < lines.length; i++) {
+    for (let i = 0; i < codeLines.length; i++) {
       const lineNo = i + 1;
-      const trimmed = lines[i].trim();
-      if (!trimmed || trimmed.startsWith("--")) continue;
+      const codeLine = codeLines[i] || "";
+      const trimmed = codeLine.trim();
+      if (!trimmed) continue;
+      const noCommentLine = noCommentLines[i] || "";
 
-      const reqMatch = /\blocal\s+([A-Za-z_]\w*)\s*=\s*require\((.+)\)\s*(?:--.*)?$/.exec(trimmed);
+      const reqMatch = extractRequireCallArg(codeLine, noCommentLine);
       if (reqMatch) {
-        const alias = reqMatch[1];
-        const target = resolveRequireTarget(reqMatch[2], callerPath, scriptPaths);
-        if (target) requireAliases.set(alias, target);
+        const target = resolveRequireTarget(reqMatch.expr, callerPath, scriptPaths);
+        if (target) requireAliases.set(reqMatch.alias, target);
       }
 
-      const remBindMatch = /\blocal\s+([A-Za-z_]\w*)\s*=\s*[^-\n]*?(?:WaitForChild|FindFirstChild)\(\s*["']([^"']+)["']\s*\)/.exec(trimmed);
-      if (remBindMatch && (remoteDefs.has(remBindMatch[2]) || /Remote|Event|Func|Buy|Shop|Roll/i.test(remBindMatch[2]))) {
-        remoteAliases.set(remBindMatch[1], remBindMatch[2]);
+      if (remBindCodeRe.test(codeLine)) {
+        const remBindMatch = remBindRe.exec(noCommentLine);
+        if (remBindMatch && (remoteDefs.has(remBindMatch[2]) || /Remote|Event|Func|Buy|Shop|Roll/i.test(remBindMatch[2]))) {
+          remoteAliases.set(remBindMatch[1], remBindMatch[2]);
+        }
       }
 
       // Check require() alias calls: Alias.Fn(args) or Alias:Fn(args)
       for (const [alias, targetPath] of requireAliases.entries()) {
-        const callRe = new RegExp(`\\b${alias}([.:])([A-Za-z_]\\w*)\\s*\\(([^)]*)\\)`, "g");
+        const escAlias = escapeRegExp(alias);
+        const callRe = new RegExp(`(?<![\\p{L}\\p{N}_])${escAlias}([.:])(${IDENT_PAT})\\s*\\(([^)]*)\\)`, "gu");
         for (const m of trimmed.matchAll(callRe)) {
           const isColon = m[1] === ":";
           const fnName = m[2];
@@ -942,7 +1160,8 @@ export function buildWorkspaceSymbolIndex(
 
       // Collect RemoteEvent / RemoteFunction callers and handlers
       for (const [alias, remoteName] of remoteAliases.entries()) {
-        const fireServer = new RegExp(`\\b${alias}:(FireServer|InvokeServer)\\s*\\(([^)]*)\\)`).exec(trimmed);
+        const escAlias = escapeRegExp(alias);
+        const fireServer = new RegExp(`(?<![\\p{L}\\p{N}_])${escAlias}:(FireServer|InvokeServer)\\s*\\(([^)]*)\\)`, "u").exec(trimmed);
         if (fireServer) {
           remoteEndpoints.push({
             remoteName,
@@ -953,7 +1172,7 @@ export function buildWorkspaceSymbolIndex(
             kind: fireServer[1] === "InvokeServer" ? "remote_function" : "remote_event",
           });
         }
-        const fireClient = new RegExp(`\\b${alias}:FireClient\\s*\\(([^)]*)\\)`).exec(trimmed);
+        const fireClient = new RegExp(`(?<![\\p{L}\\p{N}_])${escAlias}:FireClient\\s*\\(([^)]*)\\)`, "u").exec(trimmed);
         if (fireClient) {
           const args = splitTopLevelCommas(fireClient[1] || "");
           remoteEndpoints.push({
@@ -965,7 +1184,7 @@ export function buildWorkspaceSymbolIndex(
             kind: "remote_event",
           });
         }
-        const srvHandler = new RegExp(`\\b${alias}\\.OnServerEvent:Connect\\s*\\(\\s*function\\s*\\(([^)]*)\\)`).exec(trimmed);
+        const srvHandler = new RegExp(`(?<![\\p{L}\\p{N}_])${escAlias}\\.OnServerEvent:Connect\\s*\\(\\s*function\\s*\\(([^)]*)\\)`, "u").exec(trimmed);
         if (srvHandler) {
           const params = splitTopLevelCommas(srvHandler[1] || "");
           remoteEndpoints.push({
@@ -977,7 +1196,7 @@ export function buildWorkspaceSymbolIndex(
             kind: "remote_event",
           });
         }
-        const srvInvoke = new RegExp(`\\b${alias}\\.OnServerInvoke\\s*=\\s*function\\s*\\(([^)]*)\\)`).exec(trimmed);
+        const srvInvoke = new RegExp(`(?<![\\p{L}\\p{N}_])${escAlias}\\.OnServerInvoke\\s*=\\s*function\\s*\\(([^)]*)\\)`, "u").exec(trimmed);
         if (srvInvoke) {
           const params = splitTopLevelCommas(srvInvoke[1] || "");
           remoteEndpoints.push({
@@ -1029,20 +1248,32 @@ export function buildWorkspaceSymbolIndex(
 }
 
 function identAtColumn(lineText: string, col1: number): { word: string; qualifier: string | null } {
+  if (!lineText) return { word: "", qualifier: null };
   const idx = Math.max(0, Math.min(lineText.length - 1, col1 - 1));
   let s = idx;
   let e = idx;
-  while (s > 0 && /[A-Za-z0-9_]/.test(lineText[s - 1])) s--;
-  while (e < lineText.length && /[A-Za-z0-9_]/.test(lineText[e])) e++;
+  while (s > 0 && IDENT_CHAR_RE.test(lineText[s - 1])) s--;
+  while (e < lineText.length && IDENT_CHAR_RE.test(lineText[e])) e++;
   const word = lineText.slice(s, e);
   let qualifier: string | null = null;
   if (s >= 2 && (lineText[s - 1] === "." || lineText[s - 1] === ":")) {
     let qs = s - 1;
-    while (qs > 0 && /[A-Za-z0-9_]/.test(lineText[qs - 1])) qs--;
+    while (qs > 0 && IDENT_CHAR_RE.test(lineText[qs - 1])) qs--;
     const q = lineText.slice(qs, s - 1);
     if (q) qualifier = q;
   }
   return { word, qualifier };
+}
+
+function lineColToOffset(src: string, line1: number, col1: number): number {
+  const lines = src.split("\n");
+  const row = Math.max(1, Math.min(line1, lines.length));
+  let offset = 0;
+  for (let i = 0; i < row - 1; i++) {
+    offset += lines[i].length + 1;
+  }
+  const lineLen = lines[row - 1]?.length ?? 0;
+  return offset + Math.max(0, Math.min(Math.max(0, col1 - 1), lineLen));
 }
 
 export function resolveLuauDefinitionClient(
@@ -1056,28 +1287,58 @@ export function resolveLuauDefinitionClient(
   if (src === undefined) {
     return { ok: false, target_path: null, line: 1, col: 1, symbol: null };
   }
+  const scanned = scanLuauCode(src);
+  const offset = lineColToOffset(src, line, col);
+  if (scanned.isCommentOffset[offset] === 1) {
+    return { ok: false, target_path: null, line: 1, col: 1, symbol: null };
+  }
+
   const index = buildWorkspaceSymbolIndex(scripts, instances);
   const lines = src.split("\n");
-  const lineText = lines[Math.max(0, Math.min(lines.length - 1, line - 1))] || "";
+  const lineIdx = Math.max(0, Math.min(lines.length - 1, line - 1));
+  const lineText = lines[lineIdx] || "";
+  const codeOnlyLine = scanned.codeOnlyLines[lineIdx] || "";
+  const codeNoCommentLine = scanned.codeNoCommentsLines[lineIdx] || "";
   const scriptPaths = Object.keys(scripts);
+  const inString = scanned.isStringOffset[offset] === 1;
 
-  // Check require(...) on the current line
-  const reqOnLine = /require\((.+)\)/.exec(lineText);
+  // Check real-code require(...) on the current line
+  const reqCodeMatch = /(?<![\p{L}\p{N}_])require\s*\(/u.exec(codeOnlyLine);
   const { word, qualifier } = identAtColumn(lineText, col);
-  if (reqOnLine && (word === "require" || reqOnLine[0].includes(word) || !word)) {
-    const target = resolveRequireTarget(reqOnLine[1], path, scriptPaths);
-    if (target) {
-      const sym = index.symbols.find((s) => s.path === target) || null;
-      return { ok: true, target_path: target, line: sym?.line ?? 1, col: 1, symbol: sym };
+  if (reqCodeMatch) {
+    const openIdx = codeNoCommentLine.indexOf("(", reqCodeMatch.index);
+    const reqExpr = openIdx >= 0 ? extractBalancedCallArg(codeNoCommentLine, openIdx) : "";
+    const reqCallEnd = openIdx >= 0 ? openIdx + reqExpr.length + 2 : codeNoCommentLine.length;
+    const col0 = Math.max(0, col - 1);
+    if (col0 >= reqCodeMatch.index && col0 <= reqCallEnd) {
+      const target = resolveRequireTarget(reqExpr, path, scriptPaths);
+      if (target) {
+        const sym = index.symbols.find((s) => s.path === target) || null;
+        return { ok: true, target_path: target, line: sym?.line ?? 1, col: 1, symbol: sym };
+      }
     }
+  }
+
+  // Check remote name inside WaitForChild / FindFirstChild / Instance.new string
+  const quoted = /["']([^"']+)["']/.exec(codeNoCommentLine);
+  if (quoted && /(?:WaitForChild|FindFirstChild|Instance\.new)/.test(codeOnlyLine)) {
+    const rSym = index.symbols.find((s) => (s.kind === "remote_event" || s.kind === "remote_function") && s.name === quoted[1]);
+    if (rSym) {
+      return { ok: true, target_path: rSym.path, line: rSym.line, col: 1, symbol: rSym };
+    }
+  }
+
+  // Never resolve plain identifier jumps when cursor is inside a string literal
+  if (inString) {
+    return { ok: false, target_path: null, line: 1, col: 1, symbol: null };
   }
 
   // Check qualified call like Alias.Fn or Alias:Fn
   if (qualifier && word) {
-    for (const ln of lines) {
-      const reqMatch = new RegExp(`\\blocal\\s+${qualifier}\\s*=\\s*require\\((.+)\\)`).exec(ln);
+    for (let i = 0; i < scanned.codeOnlyLines.length; i++) {
+      const reqMatch = extractRequireCallArg(scanned.codeOnlyLines[i], scanned.codeNoCommentsLines[i], qualifier);
       if (reqMatch) {
-        const target = resolveRequireTarget(reqMatch[1], path, scriptPaths);
+        const target = resolveRequireTarget(reqMatch.expr, path, scriptPaths);
         if (target) {
           const sym = index.symbols.find((s) => s.path === target && s.name === word) || null;
           return { ok: true, target_path: target, line: sym?.line ?? 1, col: 1, symbol: sym };
@@ -1086,31 +1347,26 @@ export function resolveLuauDefinitionClient(
     }
   }
 
-  // Check remote alias or quoted remote name on line
-  const quoted = /["']([^"']+)["']/.exec(lineText);
-  if (quoted) {
-    const rSym = index.symbols.find((s) => (s.kind === "remote_event" || s.kind === "remote_function") && s.name === quoted[1]);
-    if (rSym) {
-      return { ok: true, target_path: rSym.path, line: rSym.line, col: 1, symbol: rSym };
-    }
-  }
-
   if (word) {
-    // Check if word is a require alias itself
-    for (const ln of lines) {
-      const reqMatch = new RegExp(`\\blocal\\s+${word}\\s*=\\s*require\\((.+)\\)`).exec(ln);
+    // Check if word is a require alias or remote alias itself
+    const remLineRe = new RegExp(`(?<![\\p{L}\\p{N}_])local\\s+${escapeRegExp(word)}\\s*=\\s*[^\\n]*?(?:WaitForChild|FindFirstChild)\\(\\s*["']([^"']+)["']\\s*\\)`, "u");
+    const remCodeRe = new RegExp(`(?<![\\p{L}\\p{N}_])local\\s+${escapeRegExp(word)}\\s*=\\s*[^\\n]*?(?:WaitForChild|FindFirstChild)\\(`, "u");
+    for (let i = 0; i < scanned.codeOnlyLines.length; i++) {
+      const reqMatch = extractRequireCallArg(scanned.codeOnlyLines[i], scanned.codeNoCommentsLines[i], word);
       if (reqMatch) {
-        const target = resolveRequireTarget(reqMatch[1], path, scriptPaths);
+        const target = resolveRequireTarget(reqMatch.expr, path, scriptPaths);
         if (target) {
           const sym = index.symbols.find((s) => s.path === target) || null;
           return { ok: true, target_path: target, line: sym?.line ?? 1, col: 1, symbol: sym };
         }
       }
-      const remMatch = new RegExp(`\\blocal\\s+${word}\\s*=\\s*[^-\\n]*?(?:WaitForChild|FindFirstChild)\\(\\s*["']([^"']+)["']\\s*\\)`).exec(ln);
-      if (remMatch) {
-        const rSym = index.symbols.find((s) => (s.kind === "remote_event" || s.kind === "remote_function") && s.name === remMatch[1]);
-        if (rSym) {
-          return { ok: true, target_path: rSym.path, line: rSym.line, col: 1, symbol: rSym };
+      if (remCodeRe.test(scanned.codeOnlyLines[i])) {
+        const remMatch = remLineRe.exec(scanned.codeNoCommentsLines[i]);
+        if (remMatch) {
+          const rSym = index.symbols.find((s) => (s.kind === "remote_event" || s.kind === "remote_function") && s.name === remMatch[1]);
+          if (rSym) {
+            return { ok: true, target_path: rSym.path, line: rSym.line, col: 1, symbol: rSym };
+          }
         }
       }
     }
