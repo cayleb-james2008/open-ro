@@ -1,4 +1,4 @@
-# <img src="docs/logo.svg" alt="OpenRO Studio logo" width="28" height="28" align="absmiddle" /> OpenRO (`v1.28.0`)
+# <img src="docs/logo.svg" alt="OpenRO Studio logo" width="28" height="28" align="absmiddle" /> OpenRO (`v1.29.0`)
 
 [![Release](https://img.shields.io/github/v/release/cayleb-james2008/open-ro)](https://github.com/cayleb-james2008/open-ro/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/cayleb-james2008/open-ro/release.yml?branch=main&label=build)](https://github.com/cayleb-james2008/open-ro/actions)
@@ -16,6 +16,7 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
 
 ## What it does
 
+- Semantic Luau workspace typechecking, symbol indexing, and cross-file contract proving (`src/luau_check.rs`, `src/projects.rs`, `src/project_api.rs`, `CodeDiffWorkbench.tsx`, `luauAudit.ts`, and offline `web-engine/install.ts` parity) index functions, exported types, `RemoteEvent`/`RemoteFunction` definitions, and `require()` edges across the whole workspace (`GET /api/projects/:id/luau/symbols`), run the strict built-in contract prover alongside external `luau-analyze` when installed (`POST /api/projects/:id/luau/typecheck`), and resolve cross-file F12 / `Go to Definition` jumps (`GET /api/projects/:id/luau/definition`) for `require()` modules, exported functions, and remote handlers while surfacing clickable line-gutter mismatch tooltips (`missing_export`, `arity_mismatch`, `remote_arg_mismatch`, `strict_type_error`) and a filterable `Symbols & Exports` outline rail.
 - Bidirectional Studio Sync and Prefab Model Import (`src/studio_sync.rs`, `src/place.rs`, `src/projects.rs`, `SyncConflictsCard.tsx`, `AssetsPanel.tsx`, and offline `web-engine/install.ts` parity) fetch cursor-paginated 64 KiB Studio snapshots (`scripts`, `script_meta`, `instances`, `lighting`), run 3-way diffs against local files and `.openro/sync-baseline.json`, preview unified hunks, and apply selective `merge_non_conflicting`, `take_studio` (requiring `confirm_overwrite: true` on conflicts), or `keep_local` resolutions atomically, including `.model.json` script overlays that preserve part parenting. Uploading `.rbxmx`, `.rbxm`, or `.rbxlx` files (`<= 16 MiB`, XXE-hardened) decomposes models into `scene/models/<slug>.model.json` and extracted `.luau` scripts, wires `default.project.json`, and surfaces clickable model chips in the 3D viewport.
 - The WebGL2 3D viewport (`frontend/src/app/viewport/`, `StudioViewport3D.tsx`, `src/scene.rs`, and offline `web-engine/install.ts` parity) renders workspace parts, `.obj` meshes, `.png`/`.jpg` textures, sky and fog lighting, water planes, and up to 8 dynamic `PointLight`, `SpotLight`, and `SurfaceLight` sources with an automatic Canvas2D fallback. You can generate `flat`, `hills`, `island`, or `canyon` terrain in `scene/terrain.json` (which also emits `src/server/OpenROTerrain.server.luau`), paint material boxes, insert and toggle scene lights, reparent instances, and manipulate objects with 3D Move, Scale, and Rotate gizmos while `GET /api/projects/:id/mesh-asset?file=` serves project meshes and textures inside `assets/meshes/` and `art/` with symlink and path-traversal checks.
 - The LiveOps control plane and telemetry workbench (`src/liveops.rs`, `LiveOpsPanel.tsx`, `/api/projects/:id/liveops/*`, and offline `web-engine/install.ts` parity) lets you inspect and edit Open Cloud v2 standard and ordered DataStores with `expected_revision` conflict checks, pre-mutation backups in `.openro/liveops/ds-backups/`, and explicit `confirm: true` gates. You can broadcast `MessagingService` payloads up to 1024 bytes, manage Remote Config (`liveops/remote-config.json` capped at 64 KiB) with deterministic `--!strict` `src/shared/LiveConfig.luau` generation, install `--!strict` `LiveTelemetry.luau` and `LiveTelemetryFlush.server.luau` collectors (`opencloud_datastore` or SSRF-guarded `webhook_relay`), run idempotent Open Cloud shard syncs via `.openro/liveops/telemetry-sync-state.json`, filter `All`, `Live Production`, and `Headless Sandbox` telemetry, and inspect aggregated `Live Server Errors` with one-click script jump.
@@ -37,6 +38,14 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
 <table>
   <tr>
     <td width="50%" align="center">
+      <strong>Semantic Luau code workbench and symbols outline (`v1.29.0`)</strong>
+      <br /><br />
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/luau-types-ide-c4e3-dark.png" />
+        <img src="docs/screenshots/luau-types-ide-c4e3-light.png" alt="OpenRO v1.29.0 CodeDiffWorkbench showing Check Types badge, Symbols & Exports outline rail, and clickable line-gutter contract mismatch tooltip" width="100%" />
+      </picture>
+    </td>
+    <td width="50%" align="center">
       <strong>Ship readiness autopilot and pre-publish gate</strong>
       <br /><br />
       <picture>
@@ -44,6 +53,8 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
         <img src="docs/screenshots/ship-readiness-light.png" alt="OpenRO Ship Readiness Autopilot, 5-pillar score, and Pre-Publish Gate" width="100%" />
       </picture>
     </td>
+  </tr>
+  <tr>
     <td width="50%" align="center">
       <strong>Monetization tier and 48h comeback retention designer</strong>
       <br /><br />
@@ -52,8 +63,6 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
         <img src="docs/screenshots/monetization-light.png" alt="OpenRO Monetization Tier and Retention Curve Designer" width="100%" />
       </picture>
     </td>
-  </tr>
-  <tr>
     <td width="50%" align="center">
       <strong>Production LiveOps telemetry collector and sync (`v1.28.0`)</strong>
       <br /><br />
@@ -62,6 +71,8 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
         <img src="docs/screenshots/liveops-telemetry-c4e2-light.png" alt="OpenRO v1.28.0 LiveOps Telemetry Collector codegen, Open Cloud sync cursor, and source filter" width="100%" />
       </picture>
     </td>
+  </tr>
+  <tr>
     <td width="50%" align="center">
       <strong>LiveOps funnel cohort and live server errors (`v1.28.0`)</strong>
       <br /><br />
@@ -70,8 +81,6 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
         <img src="docs/screenshots/liveops-errors-c4e2-light.png" alt="OpenRO v1.28.0 LiveOps funnel alerts and aggregated Live Server Errors with script jump" width="100%" />
       </picture>
     </td>
-  </tr>
-  <tr>
     <td width="50%" align="center">
       <strong>Two-way Studio sync and 3-way conflict preview (`v1.27.0`)</strong>
       <br /><br />
@@ -80,6 +89,7 @@ OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 inte
         <img src="docs/screenshots/bidirectional-sync-c4e1-light.png" alt="OpenRO v1.27.0 Two-Way Studio Sync dialog showing 3-way pull diff, strategy picker, and hunk preview" width="100%" />
       </picture>
     </td>
+  </tr>
     <td width="50%" align="center">
       <strong>Prefab model import and WebGL2 3D inspector (`v1.27.0`)</strong>
       <br /><br />
@@ -140,16 +150,16 @@ flowchart LR
   SRV --> MCP["Roblox Studio MCP &amp; Open Cloud<br/>13 Live Tools + Price Approval Gate"]
 ```
 
-## Verified benchmarks (`v1.28.0` vs `v1.2.0`)
+## Verified benchmarks (`v1.29.0` vs `v1.2.0`)
 
-| Metric | `v1.2.0` baseline | `v1.28.0` verified (pinned) | Delta |
+| Metric | `v1.2.0` baseline | `v1.29.0` verified (pinned) | Delta |
 | --- | --- | --- | --- |
-| Release binary size | `19.00 MB` | **`10.10 MiB`** (`10,593,168 B`) | **`-46.8%`** |
-| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`235.9 KB`** raw (`241,573 B`) / **`56.5 KB`** gz (`57,823 B` wire) | **`-87.7%` wire** |
-| Cold boot (pinned) | `1,470 ms` | **`23.11 ms`** | **`-98.4%`** |
-| Peak RSS (`VmHWM`) | `115.20 MB` | **`13.45 MB`** (`13,772 KB`, `scale-audit` + 10 SSE) | **`-88.3%`** |
-| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`6,749.2 req/s`** Python cold (`2.30 ms` p50, `2.86 ms` p95, `0/16,882` errs) | **`7.71x` (`-98.0%` p95)** |
-| Security and UI gates | `43/43` fuzz | **`43/43` fuzz, `10/10` SSE, `0` sloplint fails/reflex/warns (`65` files + render), `369/369` Rust tests (`3/3` `v128_liveops_telemetry_sync`), `gate 184/184`, `replay 11/11`** | Pass |
+| Release binary size | `19.00 MB` | **`10.21 MiB`** (`10,707,856 B`) | **`-46.3%`** |
+| Initial `/` payload | `~1,368 KB` raw / `~459 KB` gz | **`237.2 KB`** raw (`242,921 B`) / **`56.7 KB`** gz (`58,035 B` wire) | **`-87.6%` wire** |
+| Cold boot (pinned) | `1,470 ms` | **`22.60 ms`** | **`-98.5%`** |
+| Peak RSS (`VmHWM`) | `115.20 MB` | **`13.20 MB`** (`13,516 KB`, `scale-audit` + 10 SSE) | **`-88.5%`** |
+| Concurrent HTTP (`16w`) | `875 req/s` (`141.7 ms` p95) | **`5,893.5 req/s`** Python cold (`2.55 ms` p50, `3.73 ms` p95, `0/14,741` errs) | **`6.74x` (`-97.4%` p95)** |
+| Security and UI gates | `43/43` fuzz | **`43/43` fuzz, `10/10` SSE, `0` sloplint fails/reflex/warns (`65` files + render), `374/374` Rust tests (`5/5` `v129_luau_typecheck_symbols`), `gate 208/208`, `replay 11/11`** | Pass |
 
 ## Quick start
 

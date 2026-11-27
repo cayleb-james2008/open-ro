@@ -842,7 +842,7 @@ try {
           content: [
             "--!strict",
             'local ReplicatedStorage = game:GetService("ReplicatedStorage")',
-            'local GateTypes = require(ReplicatedStorage:WaitForChild("GateTypes"))',
+            'local GateTypes = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GateTypes"))',
             "GateTypes.Award(nil)",
             "GateTypes.NonExistentCall()",
             "",
@@ -857,14 +857,28 @@ try {
       await p.waitForTimeout(300);
     }
 
+    const symbolsRespPromise = !isWebEngine
+      ? p.waitForResponse((r) => r.url().includes("/luau/symbols") && r.request().method() === "GET", { timeout: 10000 }).catch(() => null)
+      : Promise.resolve(null);
     await p.getByRole("button", { name: "Code", exact: true }).first().click();
     await p.locator("[data-code-diff-workbench]").waitFor({ state: "visible", timeout: 8000 });
+    const symbolsResp = await symbolsRespPromise;
+    if (symbolsResp) {
+      check("Live Rust GET /luau/symbols returns HTTP 200", symbolsResp.status() === 200, `status=${symbolsResp.status()}`);
+    }
 
     const callerTab = p.locator("[data-code-diff-workbench] button").filter({ hasText: "GateCaller.server.luau" }).first();
     await callerTab.waitFor({ state: "visible", timeout: 8000 });
     await callerTab.click();
 
+    const typecheckRespPromise = !isWebEngine
+      ? p.waitForResponse((r) => r.url().includes("/luau/typecheck") && r.request().method() === "POST", { timeout: 10000 })
+      : Promise.resolve(null);
     await p.locator("[data-check-types-btn]").click();
+    const typecheckResp = await typecheckRespPromise;
+    if (typecheckResp) {
+      check("Live Rust POST /luau/typecheck returns HTTP 200", typecheckResp.status() === 200, `status=${typecheckResp.status()}`);
+    }
     await p.locator("[data-diagnostics-source]").waitFor({ state: "visible", timeout: 8000 });
     const diagSourceTxt = await p.locator("[data-diagnostics-source]").innerText();
     check(
@@ -878,6 +892,19 @@ try {
       await p.locator("[data-symbols-toggle]").click();
     }
     await symbolsRail.waitFor({ state: "visible", timeout: 5000 });
+    const railOverflow1440 = await p.evaluate(() => {
+      const wb = document.querySelector("[data-code-diff-workbench]");
+      const rail = document.querySelector("[data-symbols-rail]");
+      return {
+        wbOver: wb ? wb.scrollWidth > wb.clientWidth + 1 : true,
+        railOver: rail ? rail.scrollWidth > rail.clientWidth + 1 : true,
+      };
+    });
+    check(
+      "1440x900 Code Workbench & Symbols rail have zero horizontal clipping",
+      !railOverflow1440.wbOver && !railOverflow1440.railOver,
+      JSON.stringify(railOverflow1440),
+    );
     const awardSymBtn = symbolsRail.locator('[data-symbol-item="Award"]').first();
     await awardSymBtn.waitFor({ state: "visible", timeout: 8000 });
     await awardSymBtn.click();
@@ -910,7 +937,19 @@ try {
         el.setSelectionRange(idx + 2, idx + 2);
       }
     });
+    const defRespPromise = !isWebEngine
+      ? p.waitForResponse((r) => r.url().includes("/luau/definition") && r.request().method() === "GET", { timeout: 10000 })
+      : Promise.resolve(null);
     await p.locator("[data-goto-definition-btn]").click();
+    const defResp = await defRespPromise;
+    if (defResp) {
+      const defJson = await defResp.json().catch(() => null);
+      check(
+        "Live Rust GET /luau/definition resolves GateTypes.Award",
+        defResp.status() === 200 && Boolean(defJson?.ok) && defJson?.target_path === "src/shared/GateTypes.luau",
+        `status=${defResp.status()} target=${defJson?.target_path}`,
+      );
+    }
     await p.waitForFunction(
       () => document.querySelector("[data-code-diff-workbench]")?.textContent?.includes("src/shared/GateTypes.luau"),
       null,
@@ -922,6 +961,30 @@ try {
     await setThemeViaSettings(p, "dark");
     await assertLayoutInvariants(p, "1440x900 Dark Code Workbench");
     await setThemeViaSettings(p, "light");
+
+    // Repair GateCaller.server.luau to valid strict Luau so subsequent Headless Sandbox verification passes cleanly
+    await p.evaluate(async () => {
+      const projs = await fetch("/api/projects").then((r) => r.json());
+      const activeId = projs?.active;
+      if (!activeId) return;
+      await fetch(`/api/projects/${encodeURIComponent(activeId)}/file`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: "src/server/GateCaller.server.luau",
+          content: [
+            "--!strict",
+            'local Players = game:GetService("Players")',
+            'local ReplicatedStorage = game:GetService("ReplicatedStorage")',
+            'local GateTypes = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GateTypes"))',
+            "Players.PlayerAdded:Connect(function(player: Player)",
+            "\tGateTypes.Award(player, 10)",
+            "end)",
+            "",
+          ].join("\n"),
+        }),
+      });
+    });
   }
 
   // Check Assets, Swarm, and Viewport (StudioViewport3D) tabs on workbench in Light & Dark
@@ -1061,8 +1124,28 @@ try {
   check("Mobile left drawer opens & closes on Escape", true);
   await p.screenshot({ path: `${OUT}/mobile-explorer-390-light.png` });
 
-  // Mobile 390x844 Workbench: GuiDesigner + StudioViewport3D theme switch & 0px overflow
+  // Mobile 390x844 Workbench: CodeDiffWorkbench + GuiDesigner + StudioViewport3D theme switch & 0px overflow
   await p.locator('[aria-label="Switch Copilot or Workbench view"]').getByRole("button", { name: "Workbench", exact: true }).click();
+  await p.getByRole("button", { name: "Code", exact: true }).first().click();
+  await p.locator("[data-code-diff-workbench]").waitFor({ state: "visible", timeout: 8000 });
+  if ((await p.locator("[data-symbols-rail]").count()) === 0) {
+    await p.locator("[data-symbols-toggle]").click();
+  }
+  await p.locator("[data-symbols-rail]").waitFor({ state: "visible", timeout: 5000 });
+  const railOverflow390 = await p.evaluate(() => {
+    const wb = document.querySelector("[data-code-diff-workbench]");
+    const rail = document.querySelector("[data-symbols-rail]");
+    return {
+      wbOver: wb ? wb.scrollWidth > wb.clientWidth + 1 : true,
+      railOver: rail ? rail.scrollWidth > rail.clientWidth + 1 : true,
+    };
+  });
+  check(
+    "390x844 Mobile Code Workbench & Symbols rail have zero horizontal clipping",
+    !railOverflow390.wbOver && !railOverflow390.railOver,
+    JSON.stringify(railOverflow390),
+  );
+  await assertLayoutInvariants(p, "390x844 Light Code Workbench");
   await p.getByRole("button", { name: "UI", exact: true }).first().click();
   await p.locator("[data-gui-designer]").waitFor({ state: "visible", timeout: 8000 });
   await assertLayoutInvariants(p, "390x844 Light UI Designer");

@@ -753,8 +753,13 @@ export function buildWorkspaceSymbolIndex(
     const localFns = new Map<string, ParsedFunctionMeta>();
 
     // Track returned module identifier (e.g. `return Economy`)
-    const returnIdentMatch = /\breturn\s+([A-Za-z_]\w*)\s*(?:--.*)?$/m.exec(src);
-    const moduleTableName = returnIdentMatch ? returnIdentMatch[1] : null;
+    const topReturnMatches = [...src.matchAll(/^return\s+([A-Za-z_]\w*)\s*(?:--.*)?$/gm)];
+    const anyReturnMatches = topReturnMatches.length > 0 ? topReturnMatches : [...src.matchAll(/\breturn\s+([A-Za-z_]\w*)\s*(?:--.*)?$/gm)];
+    const moduleTableName =
+      [...anyReturnMatches]
+        .reverse()
+        .map((m) => m[1])
+        .find((id) => id !== "true" && id !== "false" && id !== "nil") ?? null;
 
     for (let i = 0; i < lines.length; i++) {
       const lineNo = i + 1;

@@ -250,7 +250,9 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
 
   const applySymbolResponse = useCallback(
     (res: Awaited<ReturnType<typeof fetchLuauSymbols>>) => {
-      if (!res.ok) return false;
+      const hasPayload =
+        Array.isArray(res.symbols) || Array.isArray(res.mismatches) || Array.isArray(res.diagnostics);
+      if (!res.ok && !(res.httpStatus === 200 && hasPayload)) return false;
       setBackendSymbols(Array.isArray(res.symbols) ? res.symbols : []);
       setBackendMismatches(Array.isArray(res.mismatches) ? res.mismatches : []);
       const mappedDiags: LuauDiagnostic[] = Array.isArray(res.diagnostics)
@@ -349,14 +351,19 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
     [currentPath, scriptMeta],
   );
 
-  const fileDiagnostics = useMemo(
-    () => allDiagnostics.filter((d) => matchesCurrentFile(d.path)),
-    [allDiagnostics, matchesCurrentFile],
-  );
-
   const fileMismatches = useMemo(
     () => workspaceMismatches.filter((m) => matchesCurrentFile(m.caller_path)),
     [matchesCurrentFile, workspaceMismatches],
+  );
+
+  const fileDiagnostics = useMemo(
+    () =>
+      allDiagnostics.filter(
+        (d) =>
+          matchesCurrentFile(d.path) &&
+          !fileMismatches.some((m) => m.caller_line === d.line && m.kind === d.code && m.message === d.message),
+      ),
+    [allDiagnostics, fileMismatches, matchesCurrentFile],
   );
 
   const diagnosticsByLine = useMemo(() => {
@@ -979,7 +986,7 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
             )}
           </div>
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
             {/* Synchronized Line-Numbered Code Editor + Highlight Overlay */}
             <div className="flex min-h-0 min-w-0 flex-1 flex-col p-2.5">
               <div className="mb-1.5 flex items-center justify-between gap-2 text-xs text-ink-2">
@@ -992,38 +999,42 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
                 <div
                   data-gutter-tooltip
                   role="status"
-                  className="mb-2 flex flex-wrap items-start justify-between gap-2 rounded-lg border border-hairline bg-board px-3 py-2 text-xs"
+                  className="mb-2 flex items-start justify-between gap-2 rounded-lg border border-hairline bg-board px-3 py-2 text-xs"
                 >
-                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                  <div className="flex min-w-0 flex-1 flex-col gap-1.5 overflow-hidden">
                     {inspectedEntry.mismatches.map((m, idx) => (
-                      <div key={`mm-${idx}`} className="flex flex-wrap items-center gap-2 text-pill-pro-fg">
-                        <Badge className="border-transparent bg-pill-pro-bg px-1.5 py-0.5 tabular-nums text-xs text-pill-pro-fg">
-                          L{inspectedLine} {m.kind}
-                        </Badge>
-                        <span className="min-w-0 flex-1 text-ink">{m.message}</span>
-                        <Button
-                          variant="outline"
-                          size="xs"
-                          data-mismatch-jump-target
-                          onClick={() => jumpToLocation(m.target_path, 1, 1)}
-                          className="bg-surface font-mono max-md:min-h-11"
-                        >
-                          Open {shortName(m.target_path)}
-                        </Button>
+                      <div key={`mm-${idx}`} className="flex flex-col gap-1 text-pill-pro-fg">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <Badge className="max-w-full shrink-0 truncate border-transparent bg-pill-pro-bg px-1.5 py-0.5 tabular-nums text-xs text-pill-pro-fg">
+                            L{inspectedLine} {m.kind}
+                          </Badge>
+                          <Button
+                            variant="outline"
+                            size="xs"
+                            data-mismatch-jump-target
+                            onClick={() => jumpToLocation(m.target_path, 1, 1)}
+                            className="shrink-0 bg-surface font-mono max-md:min-h-11"
+                          >
+                            Open {shortName(m.target_path)}
+                          </Button>
+                        </div>
+                        <span className="text-ink [overflow-wrap:anywhere]">{m.message}</span>
                       </div>
                     ))}
                     {inspectedEntry.diagnostics.map((d, idx) => (
-                      <div key={`dg-${idx}`} className="flex flex-wrap items-center gap-2">
-                        <Badge
-                          className={`border-transparent px-1.5 py-0.5 tabular-nums text-xs ${
-                            d.severity === "error"
-                              ? "bg-pill-pro-bg text-pill-pro-fg"
-                              : "bg-pill-warn-bg text-pill-warn-fg"
-                          }`}
-                        >
-                          L{inspectedLine} {d.code}
-                        </Badge>
-                        <span className="min-w-0 flex-1 text-ink">{d.message}</span>
+                      <div key={`dg-${idx}`} className="flex flex-col gap-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <Badge
+                            className={`max-w-full shrink-0 truncate border-transparent px-1.5 py-0.5 tabular-nums text-xs ${
+                              d.severity === "error"
+                                ? "bg-pill-pro-bg text-pill-pro-fg"
+                                : "bg-pill-warn-bg text-pill-warn-fg"
+                            }`}
+                          >
+                            L{inspectedLine} {d.code}
+                          </Badge>
+                        </div>
+                        <span className="text-ink [overflow-wrap:anywhere]">{d.message}</span>
                       </div>
                     ))}
                   </div>
@@ -1032,14 +1043,14 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
                     size="icon-xs"
                     aria-label="Close line diagnostic tooltip"
                     onClick={() => setInspectedLine(null)}
-                    className="text-ink-2 hover:text-ink max-md:size-11"
+                    className="shrink-0 text-ink-2 hover:text-ink max-md:size-11"
                   >
                     <X className="size-3.5" strokeWidth={1.5} aria-hidden />
                   </Button>
                 </div>
               )}
 
-              <div className="relative flex min-h-[260px] min-w-0 flex-1 overflow-hidden rounded-lg border border-hairline bg-board/35">
+              <div className="relative flex min-h-[200px] min-w-0 flex-1 overflow-hidden rounded-lg border border-hairline bg-board/35 md:min-h-[260px]">
                 {/* Synchronized Line-Number & Diagnostic Gutter */}
                 <div
                   ref={gutterRef}
@@ -1169,7 +1180,7 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
               <aside
                 data-symbols-rail
                 aria-label="Symbols & Exports"
-                className="flex max-h-52 w-full shrink-0 flex-col border-t border-hairline bg-board/50 md:max-h-none md:w-64 md:border-t-0 md:border-l"
+                className="flex max-h-52 w-full min-w-0 shrink-0 flex-col overflow-x-hidden border-t border-hairline bg-board/50 md:max-h-none md:w-52 lg:w-56 md:border-t-0 md:border-l"
               >
                 <div className="flex items-center justify-between gap-2 border-b border-hairline px-2.5 py-2">
                   <div className="flex items-center gap-1.5">
@@ -1253,7 +1264,7 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
                                       </span>
                                       <span className="min-w-0 truncate font-mono">{sym.name}</span>
                                     </span>
-                                    <span className="shrink-0 font-mono tabular-nums text-ink-3">
+                                    <span className="max-w-[112px] shrink-0 truncate font-mono tabular-nums text-ink-3">
                                       {shortName(sym.path)}:{sym.line}
                                     </span>
                                   </button>

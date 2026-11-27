@@ -1628,8 +1628,8 @@ export type WorkspaceSymbolIndex = {
 export type LuauDefinitionResult = {
   ok: boolean;
   target_path: string | null;
-  line: number;
-  col: number;
+  line: number | null;
+  col: number | null;
   symbol: LuauSymbol | null;
 };
 
