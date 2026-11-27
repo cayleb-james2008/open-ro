@@ -216,6 +216,8 @@ STUDIO & WHOLE-GAME TOOLS:\n\
 - {{\"tool\": \"project_grep\", \"args\": {{\"query\": \"RemoteEvent\", \"dir\": \"src\"}}}} searches across project files\n\
 - {{\"tool\": \"project_update_manifest\", \"args\": {{\"patch\": {{\"assets\": {{\"authorised\": [\"art/cards/**\"]}}}}}}}} safely updates openro.project.json (cannot auto-approve product prices)\n\
 - {{\"tool\": \"project_check\", \"args\": {{}}}} runs selene, stylua --check, and static Luau checks across the project\n\
+- {{\"tool\": \"project_symbols\", \"args\": {{\"path\": \"src/...\"}}}} returns workspace Luau symbols, require edges, and remote contracts (optional path filter)\n\
+- {{\"tool\": \"project_typecheck\", \"args\": {{}}}} runs luau-analyze (when available), static Place analysis, and cross-file Luau contracts\n\
 - {{\"tool\": \"project_run_lune\", \"args\": {{\"script\": \"tools/sim.luau\"}}}} runs a project-relative Lune test/sim script with timeout\n\
 - {{\"tool\": \"sandbox_playtest\", \"args\": {{\"timeout_secs\": 15}}}} runs the headless local Roblox Luau runtime sandbox (<2s, no Studio needed; executes server/client scripts, remotes, DataStores, ProcessReceipt idempotency, PlayerGui)\n\
 - {{\"tool\": \"project_build\", \"args\": {{\"engine\": \"auto\"}}}} builds the project to .rbxlx\n\
@@ -278,7 +280,7 @@ Reply with ONLY one JSON object per turn — no prose outside the JSON.\n\n\
 BATCHED STEPS (RECOMMENDED — saves turns and quota):\n\
 You may execute multiple actions in one turn using:\n\
 {{\"steps\": [{{\"tool\": \"...\", \"args\": {{...}}}}, ...], \"done\": true, \"summary\": \"...\"}}\n\
-Steps run in order and abort immediately on the first error (returning all completed results plus the error). \
+Steps run in order and abort on first error. \
 Omit \"done\" if you need to inspect tool results before continuing. Single-step {{\"tool\": \"...\", \"args\": {{...}}}} and {{\"done\": true, \"summary\": \"...\"}} also work.\n\n\
 PROJECT FILE & BUILD TOOLS:\n\
 - project_list {{}}\n\
@@ -289,7 +291,7 @@ PROJECT FILE & BUILD TOOLS:\n\
 - project_delete_file {{\"path\": \"src/old.luau\"}}\n\
 - project_grep {{\"query\": \"RemoteEvent\", \"dir\": \"src\"}}\n\
 - project_update_manifest {{\"patch\": {{...}}}} (safely updates openro.project.json; cannot auto-approve product prices)\n\
-- project_check {{}} (runs selene, stylua --check, static Luau checks)\n\
+- project_check {{}} (selene/stylua/Luau) / project_symbols {{\"path\": \"...?\"}} / project_typecheck {{}}\n\
 - project_run_lune {{\"script\": \"tools/sim.luau\"}} (timeout-bounded Lune execution)\n\
 - sandbox_playtest {{\"timeout_secs\": 15, \"journey\": [...]}} (<2s headless Roblox Luau runtime sandbox: server/client, remotes, DataStores, ProcessReceipt idempotency, PlayerGui)\n\
 - project_build {{\"engine\": \"auto\"}} (.rbxlx build)\n\
@@ -4391,6 +4393,71 @@ impl Agent {
                 transcript.push(format!("tool project_check -> passed={}", res["passed"]));
                 Ok(format!("tool_result: project_check: {text}"))
             }
+            "project_symbols" => {
+                let mut index = if let Some(root) = self.effective_project_root() {
+                    let mut idx = crate::projects::workspace_luau_symbols(&root)?;
+                    if let Some(raw_path) = args
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        let full = crate::projects::safe_join(&root, raw_path)?;
+                        let norm = crate::projects::rel_display(&root, &full);
+                        idx.filter_by_path(&norm);
+                    }
+                    idx
+                } else if let Some(PlaceBackend::Local(local)) = &self.studio {
+                    let mut idx = crate::luau_check::analyze_workspace_symbols(
+                        local.scripts(),
+                        local.instances(),
+                        &std::collections::BTreeMap::new(),
+                        None,
+                        false,
+                    );
+                    if let Some(raw_path) = args
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        idx.filter_by_path(raw_path);
+                    }
+                    idx
+                } else {
+                    return Err("project_symbols requires an active project".to_string());
+                };
+                let res = index.to_json();
+                let count = index.symbols.len();
+                let text = res.to_string();
+                let _ = &mut index;
+                transcript.push(format!("tool project_symbols -> {count} symbols"));
+                Ok(format!("tool_result: project_symbols: {text}"))
+            }
+            "project_typecheck" => {
+                let index = if let Some(root) = self.effective_project_root() {
+                    crate::projects::typecheck_project(&root)?
+                } else if let Some(PlaceBackend::Local(local)) = &self.studio {
+                    crate::luau_check::analyze_workspace_symbols(
+                        local.scripts(),
+                        local.instances(),
+                        &std::collections::BTreeMap::new(),
+                        None,
+                        true,
+                    )
+                } else {
+                    return Err("project_typecheck requires an active project".to_string());
+                };
+                let res = index.to_json();
+                let text = res.to_string();
+                transcript.push(format!(
+                    "tool project_typecheck -> ok={} mismatches={} diagnostics={}",
+                    index.ok,
+                    index.mismatches.len(),
+                    index.diagnostics.len()
+                ));
+                Ok(format!("tool_result: project_typecheck: {text}"))
+            }
             "evidence_record" => {
                 let root = self.require_project_root()?;
                 let res = crate::study_check::record_evidence(&root, args)
@@ -6057,6 +6124,8 @@ fn is_read_only_tool(tool: &str) -> bool {
             | "project_read_file"
             | "project_grep"
             | "project_check"
+            | "project_symbols"
+            | "project_typecheck"
             | "project_run_lune"
             | "sandbox_playtest"
             | "project_scene_get"

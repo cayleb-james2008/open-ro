@@ -91,6 +91,14 @@ pub fn query_param(query: &str, key: &str) -> Option<String> {
     query.split('&').filter_map(|p| p.split_once('=')).find(|(k, _)| *k == key).map(|(_, v)| pct_decode(v))
 }
 
+fn raw_query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
+    query
+        .split('&')
+        .filter_map(|p| p.split_once('='))
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| v)
+}
+
 fn parse_body(body: &[u8]) -> Result<Value, Reply> {
     if body.is_empty() {
         return Ok(json!({}));
@@ -265,7 +273,8 @@ pub fn route(shared: &Arc<Shared>, method: &str, full_path: &str, body: &[u8], l
             | ("GET", [_])
             | ("POST", [_, "manifest" | "build" | "sync" | "playtest" | "check" | "format" | "run-lune" | "open-in-studio" | "import-model"])
             | ("POST", [_, "sync", "diff" | "pull-diff" | "pull"] | [_, "scene", "mutate"] | [_, "sandbox", "run"] | [_, "playtests", "rerun"] | [_, "playtests", "fix-plan"] | [_, "playtests", "fix-apply"] | [_, "playtests", "fix-all"])
-            | ("GET", [_, "workspace" | "mesh-asset" | "builds" | "playtests" | "dependencies" | "snapshots" | "sync-conflicts" | "publish-guard" | "monetization-audit" | "economy-sim" | "files" | "file" | "preview" | "gui"] | [_, "snapshots", "hook-integrity"] | [_, "gui", _] | [_, "sandbox", "runs" | "latest"])
+            | ("GET", [_, "workspace" | "mesh-asset" | "builds" | "playtests" | "dependencies" | "snapshots" | "sync-conflicts" | "publish-guard" | "monetization-audit" | "economy-sim" | "files" | "file" | "preview" | "gui"] | [_, "snapshots", "hook-integrity"] | [_, "gui", _] | [_, "sandbox", "runs" | "latest"] | [_, "luau", "symbols" | "definition"])
+            | ("POST", [_, "luau", "typecheck"])
             | ("POST", [_, "dependencies", "prune"] | [_, "monetization-audit"] | [_, "economy-sim"] | [_, "snapshots"] | [_, "snapshots", _, "restore"] | [_, "snapshots", _, "restore-hooks"] | [_, "sync-conflicts", "resolve"] | [_, "publish-guard", "autofix"] | [_, "gui", _] | [_, "gui", _, "compile"])
             | ("POST", [_, "file"] | [_, "file", "delete"] | [_, "file", "edit"])
             | ("GET", [_, "git", "status" | "log"])
@@ -369,6 +378,70 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
             )
             .map_err(Reply::bad)?;
             Ok(Reply::ok(res))
+        }
+        ("GET", [id, "luau", "symbols"]) => {
+            let r = project_of(shared, id)?;
+            let mut index = projects::workspace_luau_symbols(&r.dir).map_err(Reply::bad)?;
+            if let Some(raw) = raw_query_param(query, "path").filter(|s| !s.is_empty()) {
+                let lower = raw.to_ascii_lowercase();
+                if lower.contains("%2e") || lower.contains("%5c") || lower.contains("%00") {
+                    return Err(Reply::bad("path contains forbidden encoding"));
+                }
+                let decoded = query_param(query, "path").unwrap_or_default();
+                let full = file_path(&r.dir, &decoded, false)?;
+                let norm = projects::rel_display(&r.dir, &full);
+                index.filter_by_path(&norm);
+            }
+            Ok(Reply::json("200 OK", index.to_json()))
+        }
+        ("POST", [id, "luau", "typecheck"]) => {
+            let r = project_of(shared, id)?;
+            let _b = parse_body(body)?;
+            let _busy = Busy::new(&shared.busy);
+            let index = projects::typecheck_project(&r.dir).map_err(Reply::bad)?;
+            Ok(Reply::json("200 OK", index.to_json()))
+        }
+        ("GET", [id, "luau", "definition"]) => {
+            let r = project_of(shared, id)?;
+            let raw_path = raw_query_param(query, "path")
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| Reply::bad("path query parameter is required"))?;
+            let lower = raw_path.to_ascii_lowercase();
+            if lower.contains("%2e") || lower.contains("%5c") || lower.contains("%00") {
+                return Err(Reply::bad("path contains forbidden encoding"));
+            }
+            let rel = query_param(query, "path").unwrap_or_default();
+            if rel.contains("..") {
+                return Err(Reply::bad("path traversal is not allowed"));
+            }
+            let full = file_path(&r.dir, &rel, false)?;
+            if crate::scene::has_symlink_component(&r.dir, &full) {
+                return Err(Reply::bad("symlink path refused"));
+            }
+            let meta = std::fs::symlink_metadata(&full)
+                .map_err(|_| Reply::err("404 Not Found", "that file does not exist"))?;
+            if meta.file_type().is_symlink() {
+                return Err(Reply::bad("symlink path refused"));
+            }
+            if !meta.is_file() {
+                return Err(Reply::bad("that path is not a file"));
+            }
+            let line = query_param(query, "line")
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .filter(|&n| n >= 1)
+                .ok_or_else(|| Reply::bad("line query parameter must be >= 1"))?;
+            let col = match query_param(query, "col") {
+                None => 1usize,
+                Some(v) => v
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|&n| n >= 1)
+                    .ok_or_else(|| Reply::bad("col query parameter must be >= 1"))?,
+            };
+            let norm = projects::rel_display(&r.dir, &full);
+            let def = projects::luau_definition(&r.dir, &norm, line, col).map_err(Reply::bad)?;
+            Ok(Reply::json("200 OK", def.to_json()))
         }
         ("POST", [id, "format"]) => {
             let r = project_of(shared, id)?;

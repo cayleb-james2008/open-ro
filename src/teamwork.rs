@@ -3275,7 +3275,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
         ),
         "verifier" => concat!(
             "You are the Teamwork verifier.\n",
-            "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `project_scene_get`, `luau_check`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`, `opencloud_status`, `creator_hub_status`, `universe_get`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_telemetry_summary`).\n",
+            "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `project_scene_get`, `luau_check`, `project_symbols`, `project_typecheck`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`, `opencloud_status`, `creator_hub_status`, `universe_get`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_telemetry_summary`).\n",
             "Run `sandbox_playtest` first on game_code tasks for `<2s` headless Luau runtime verification (remotes, DataStores, ProcessReceipt idempotency, stack traces) before paying for live Studio `project_playtest`.\n",
             "For game_code tasks (or `src/` / `ui/` changes), run `sandbox_playtest` with `{\"task_id\":\"<id>\"}` (or `project_playtest` when live Studio MCP is needed / `require_studio: true`) and confirm 0 errors BEFORE calling `verify_task` with `passed: true`.\n",
             "For `tools/**/*.luau` tasks (not touching `src/` or `ui/`), run `project_run_lune` (confirm `passed: true`) instead of `project_playtest` BEFORE calling `verify_task(passed=true)`.\n",
@@ -3292,7 +3292,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
             "Follow Study -> Build -> Check -> Refine: check `study_status`/`unknowns_list`, record verified behavior with `evidence_record`/`unknown_add`/`unknown_update` (capping guesswork), cite `ev_*` IDs in `docs/mechanics.json` (`mechanics_check`), build, check (`project_check`/`project_playtest`, pass `\"force\":true` to bypass `KeptChecks`), and refine.\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_codegen`, `liveops_telemetry_sync`, `liveops_telemetry_summary`.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_symbols`, `project_typecheck`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_codegen`, `liveops_telemetry_sync`, `liveops_telemetry_summary`.\n",
             "Formatting: `project_check` with `{\"format\":true}` or `project_format` auto-formats your claimed `.luau` files with `stylua` instead of hand-editing whitespace.\n",
             "Asset arg signatures:\n",
             "- project_scene_mutate: {\"ops\":[{\"op\":\"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\",\"path\":\"Workspace.Name\",\"class_name\":\"Part|Model|SpawnLocation|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\",\"new_parent\":\"Workspace.Parent\",\"enabled\":true,\"generator\":{\"kind\":\"flat|hills|island|canyon\",\"seed\":1,\"amplitude\":24,\"water_level\":0},\"paint_box\":{\"min\":[0,0,0],\"max\":[16,8,16],\"material\":\"Grass\"}}]}\n",
@@ -3705,6 +3705,8 @@ fn execute_agent_tool(
         "project_edit_file" => tool_project_edit_file(handle, agent_name, args),
         "project_delete_file" => tool_project_delete_file(handle, agent_name, args),
         "luau_check" => tool_luau_check(handle, args),
+        "project_symbols" => tool_project_symbols(handle, args),
+        "project_typecheck" => tool_project_typecheck(handle),
         "project_format" => tool_project_format(handle, agent_name, args),
         "project_check" => tool_project_check(handle, agent_name, args),
         "project_run_lune" => tool_project_run_lune(handle, agent_name, args),
@@ -5091,6 +5093,27 @@ fn tool_luau_check(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, Strin
     };
     let rep = crate::luau_check::analyze_source(path, &source);
     Ok(rep.to_json())
+}
+
+fn tool_project_symbols(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let mut index = crate::projects::workspace_luau_symbols(&project_dir)?;
+    if let Some(path) = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let norm = normalize_rel_path(&project_dir, path, false)?;
+        index.filter_by_path(&norm);
+    }
+    Ok(index.to_json())
+}
+
+fn tool_project_typecheck(handle: &Arc<RunHandle>) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    let index = crate::projects::typecheck_project(&project_dir)?;
+    Ok(index.to_json())
 }
 
 fn project_ref_for_run(handle: &Arc<RunHandle>) -> ProjectRef {

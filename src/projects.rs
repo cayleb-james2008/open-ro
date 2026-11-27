@@ -2152,7 +2152,7 @@ pub fn git_log(dir: &Path, limit: usize) -> Result<Vec<Value>, String> {
 
 const TOOL_OUT_CAP: usize = 65_536;
 
-fn run_bounded(
+pub(crate) fn run_bounded(
     bin: &Path,
     dir: &Path,
     args: &[String],
@@ -2492,6 +2492,95 @@ pub fn check_project_with_full_options(
     }
     crate::study_check::store_kept_check(dir, "check", &fp_after, &mode_spec, &out);
     Ok(out)
+}
+
+/// Collected Rojo scripts, instances, and path mappings for static Luau analysis.
+pub struct LoadedPlaceScripts {
+    pub scripts: BTreeMap<String, String>,
+    pub instances: BTreeMap<String, Value>,
+    pub service_to_file: BTreeMap<String, String>,
+}
+
+/// Load scripts, instances, and Rojo `service_path -> rel_file_path` mappings for a project.
+pub fn collect_place_scripts(dir: &Path) -> Result<LoadedPlaceScripts, String> {
+    let m = manifest(dir)?;
+    let rojo_file = m["rojoProject"]
+        .as_str()
+        .unwrap_or(DEFAULT_ROJO_FILE)
+        .to_string();
+    let tree = load_tree(dir, &rojo_file)?;
+    let mut scripts = BTreeMap::new();
+    let mut instances = BTreeMap::new();
+    let mut service_to_file = BTreeMap::new();
+    for (f, source_file) in tree.flatten_with_source() {
+        let dot = f.path.replace('/', ".");
+        if let Some(src) = f.source {
+            if let Some(ref sf) = source_file {
+                service_to_file.insert(dot.clone(), sf.clone());
+            }
+            scripts.insert(dot, src);
+        } else if !f.service {
+            instances.insert(
+                dot,
+                json!({
+                    "class_name": f.class,
+                    "properties": f.props,
+                    "source_file": source_file,
+                }),
+            );
+        }
+    }
+    Ok(LoadedPlaceScripts {
+        scripts,
+        instances,
+        service_to_file,
+    })
+}
+
+/// Build the workspace Luau symbol index and cross-file contract analysis (builtin).
+pub fn workspace_luau_symbols(
+    dir: &Path,
+) -> Result<crate::luau_check::WorkspaceSymbolIndex, String> {
+    let loaded = collect_place_scripts(dir)?;
+    Ok(crate::luau_check::analyze_workspace_symbols(
+        &loaded.scripts,
+        &loaded.instances,
+        &loaded.service_to_file,
+        Some(dir),
+        false,
+    ))
+}
+
+/// Run full Luau typecheck (`luau-analyze` when installed + `analyze_place` + cross-file contracts).
+pub fn typecheck_project(
+    dir: &Path,
+) -> Result<crate::luau_check::WorkspaceSymbolIndex, String> {
+    let loaded = collect_place_scripts(dir)?;
+    Ok(crate::luau_check::analyze_workspace_symbols(
+        &loaded.scripts,
+        &loaded.instances,
+        &loaded.service_to_file,
+        Some(dir),
+        true,
+    ))
+}
+
+/// Resolve definition for a symbol, `require()` target, or Remote reference at `(rel_path, line, col)`.
+pub fn luau_definition(
+    dir: &Path,
+    rel_path: &str,
+    line: usize,
+    col: usize,
+) -> Result<crate::luau_check::DefinitionResult, String> {
+    let loaded = collect_place_scripts(dir)?;
+    Ok(crate::luau_check::lookup_definition(
+        &loaded.scripts,
+        &loaded.instances,
+        &loaded.service_to_file,
+        rel_path,
+        line,
+        col,
+    ))
 }
 
 /// Run a project-relative `.luau`/`.lua` script with `lune run`, timeout-bounded (#18).
