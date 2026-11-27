@@ -400,6 +400,14 @@ fn parse_http_mocks(req: &Value) -> Result<Cow<'_, Value>, String> {
     }
 }
 
+fn parse_is_studio(req: &Value) -> Result<Option<bool>, String> {
+    match req.get("is_studio") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err("is_studio must be a boolean".to_string()),
+    }
+}
+
 fn ensure_array_field(obj: &mut Map<String, Value>, key: &str) {
     match obj.get(key) {
         Some(Value::Array(_)) => {}
@@ -505,6 +513,7 @@ fn run_lune_sandbox(
     let players = parse_players(req)?;
     let (auto_journey, journey) = parse_journey(req)?;
     let http_mocks = parse_http_mocks(req)?;
+    let is_studio: bool = parse_is_studio(req)?.unwrap_or(true);
 
     let (lune_bin, searched) = match lune_override {
         Some(Some(p)) => (
@@ -559,6 +568,7 @@ fn run_lune_sandbox(
         "timeout_secs": timeout_secs,
         "require_saved_data": require_saved_data,
         "fail_on_init_warnings": fail_on_init_warnings,
+        "is_studio": is_studio,
     });
     {
         let input_file = std::fs::File::create(&input_path)

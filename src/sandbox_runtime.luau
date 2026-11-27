@@ -13,6 +13,7 @@ local outputPath = process.args[2] or "report.json"
 
 local rawInput = fs.readFile(inputPath)
 local inputData = serde.decode("json", rawInput)
+local isStudioMode = (inputData.is_studio ~= false)
 
 local consoleLines = {}
 local consoleErrors = {}
@@ -2404,7 +2405,7 @@ INST_STATE[RunService].customMethods = {
 		return false
 	end,
 	IsStudio = function()
-		return false
+		return isStudioMode
 	end,
 	IsRunning = function()
 		return true
@@ -3257,6 +3258,10 @@ local function makeContextWrappers(isClient, localPlayer)
 			elseif k == "IsServer" then
 				return function()
 					return false
+				end
+			elseif k == "IsStudio" then
+				return function()
+					return isStudioMode
 				end
 			end
 			local v = RunService[k]
