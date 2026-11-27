@@ -384,10 +384,17 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
             let mut index = projects::workspace_luau_symbols(&r.dir).map_err(Reply::bad)?;
             if let Some(raw) = raw_query_param(query, "path").filter(|s| !s.is_empty()) {
                 let lower = raw.to_ascii_lowercase();
-                if lower.contains("%2e") || lower.contains("%5c") || lower.contains("%00") {
+                if lower.contains("%2e")
+                    || lower.contains("%5c")
+                    || lower.contains("%00")
+                    || lower.contains("%25")
+                {
                     return Err(Reply::bad("path contains forbidden encoding"));
                 }
                 let decoded = query_param(query, "path").unwrap_or_default();
+                if decoded.contains("..") || decoded.contains('\\') || decoded.contains('\0') {
+                    return Err(Reply::bad("path traversal is not allowed"));
+                }
                 let full = file_path(&r.dir, &decoded, false)?;
                 let norm = projects::rel_display(&r.dir, &full);
                 index.filter_by_path(&norm);
@@ -407,11 +414,15 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
                 .filter(|s| !s.trim().is_empty())
                 .ok_or_else(|| Reply::bad("path query parameter is required"))?;
             let lower = raw_path.to_ascii_lowercase();
-            if lower.contains("%2e") || lower.contains("%5c") || lower.contains("%00") {
+            if lower.contains("%2e")
+                || lower.contains("%5c")
+                || lower.contains("%00")
+                || lower.contains("%25")
+            {
                 return Err(Reply::bad("path contains forbidden encoding"));
             }
             let rel = query_param(query, "path").unwrap_or_default();
-            if rel.contains("..") {
+            if rel.contains("..") || rel.contains('\\') || rel.contains('\0') {
                 return Err(Reply::bad("path traversal is not allowed"));
             }
             let full = file_path(&r.dir, &rel, false)?;

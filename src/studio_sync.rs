@@ -662,7 +662,13 @@ fn write_atomic_str_safe(dir: &Path, rel: &str, content: &str) -> Result<(), Str
     if rel.contains('\0') || rel.contains('\\') {
         return Err(format!("invalid project relative path '{rel}'"));
     }
+    if rel == ".git" || rel.starts_with(".git/") || rel.split('/').any(|s| s == ".git") {
+        return Err(format!("refusing to write inside .git '{rel}'"));
+    }
     let full = projects::safe_join(dir, rel)?;
+    if scene::has_symlink_component(dir, &full) {
+        return Err(format!("refusing to write through symlink '{rel}'"));
+    }
     if let Ok(meta) = std::fs::symlink_metadata(&full) {
         if meta.file_type().is_symlink() {
             return Err(format!("refusing to write through symlink '{rel}'"));
@@ -670,6 +676,9 @@ fn write_atomic_str_safe(dir: &Path, rel: &str, content: &str) -> Result<(), Str
     }
     if let Some(parent) = full.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create parent for {rel}: {e}"))?;
+        if scene::has_symlink_component(dir, parent) {
+            return Err(format!("refusing to write through symlink parent '{rel}'"));
+        }
     }
     let seq = BASELINE_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let fname = full
@@ -1201,7 +1210,14 @@ fn build_studio_state(snap: &Value, local: &LocalState) -> StudioSnapshotState {
                 .get(&dot_path)
                 .cloned()
                 .unwrap_or_else(|| {
-                    if (raw_key.ends_with(".luau") || raw_key.ends_with(".lua")) && !raw_key.contains("..") && !raw_key.starts_with('/') {
+                    let safe_direct = (raw_key.ends_with(".luau") || raw_key.ends_with(".lua"))
+                        && !raw_key.contains("..")
+                        && !raw_key.contains('\\')
+                        && !raw_key.contains('\0')
+                        && !raw_key.chars().any(|c| c.is_control())
+                        && !raw_key.starts_with('/')
+                        && !raw_key.split('/').any(|s| matches!(s, "" | "." | ".." | ".git" | ".openro"));
+                    if safe_direct {
                         raw_key.clone()
                     } else {
                         infer_rel_script_path(&local.rojo_json, &dot_path, &class_name)
@@ -2191,7 +2207,7 @@ pub fn pull_apply_with_backend(
 }
 
 pub fn pull_diff(shared: &Shared, r: &ProjectRef) -> Result<Reply, Reply> {
-    let mut guard = shared.agent.lock().unwrap();
+    let mut guard = shared.agent.lock().unwrap_or_else(|e| e.into_inner());
     let Some(agent) = guard.as_mut() else {
         return Err(Reply::err("503 Service Unavailable", "Studio not connected"));
     };
@@ -2226,7 +2242,7 @@ pub fn pull_apply(shared: &Shared, r: &ProjectRef, body: &Value) -> Result<Reply
         Some(_) => return Err(Reply::bad("paths must be an array of strings")),
     };
 
-    let mut guard = shared.agent.lock().unwrap();
+    let mut guard = shared.agent.lock().unwrap_or_else(|e| e.into_inner());
     let Some(agent) = guard.as_mut() else {
         return Err(Reply::err("503 Service Unavailable", "Studio not connected"));
     };

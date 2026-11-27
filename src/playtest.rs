@@ -3498,14 +3498,46 @@ fn write_sync_baseline(
     let p = sync_baseline_path(dir);
     if let Some(parent) = p.parent() {
         std::fs::create_dir_all(parent)?;
+        if std::fs::symlink_metadata(parent).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "refusing to write sync-baseline through symlink directory",
+            ));
+        }
     }
-    let tmp = dir.join(".openro").join("sync-baseline.json.tmp-openro");
+    if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "refusing to write sync-baseline through symlink",
+        ));
+    }
+    static PLAYTEST_BASELINE_SEQ: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(1);
+    let seq = PLAYTEST_BASELINE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir
+        .join(".openro")
+        .join(format!(".sync-baseline.json.openro-tmp.{}.{seq}", std::process::id()));
     let doc = json!({
         "baseline_id": baseline_id,
         "scripts": scripts,
     });
-    std::fs::write(&tmp, serde_json::to_vec(&doc).unwrap_or_default())?;
-    std::fs::rename(&tmp, &p)
+    let payload = serde_json::to_vec(&doc).unwrap_or_default();
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        if let Err(e) = f.write_all(&payload).and_then(|_| f.flush()) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+    }
+    if let Err(e) = std::fs::rename(&tmp, &p) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
 }
 
 fn load_sync_baseline(

@@ -156,17 +156,21 @@ impl ProjectStore {
             s.env_roots = v.split(':').filter(|p| !p.trim().is_empty()).map(PathBuf::from).collect();
         }
         if let Some(file) = &s.file {
-            if let Ok(text) = std::fs::read_to_string(file) {
-                if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                    let paths = |k: &str| -> Vec<PathBuf> {
-                        v.get(k)
-                            .and_then(|x| x.as_array())
-                            .map(|a| a.iter().filter_map(|p| p.as_str().map(PathBuf::from)).collect())
-                            .unwrap_or_default()
-                    };
-                    s.roots = paths("roots");
-                    s.opened = paths("opened");
-                    s.active = v.get("active").and_then(|a| a.as_str()).map(String::from);
+            if let Ok(meta) = std::fs::symlink_metadata(file) {
+                if !meta.file_type().is_symlink() && meta.is_file() && meta.len() <= 16 * 1024 * 1024 {
+                    if let Ok(text) = std::fs::read_to_string(file) {
+                        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                            let paths = |k: &str| -> Vec<PathBuf> {
+                                v.get(k)
+                                    .and_then(|x| x.as_array())
+                                    .map(|a| a.iter().filter_map(|p| p.as_str().map(PathBuf::from)).collect())
+                                    .unwrap_or_default()
+                            };
+                            s.roots = paths("roots");
+                            s.opened = paths("opened");
+                            s.active = v.get("active").and_then(|a| a.as_str()).map(String::from);
+                        }
+                    }
                 }
             }
         }
@@ -175,14 +179,26 @@ impl ProjectStore {
 
     fn save(&self) {
         let Some(file) = &self.file else { return };
+        if std::fs::symlink_metadata(file).is_ok_and(|m| m.file_type().is_symlink()) {
+            return;
+        }
         let v = json!({
             "roots": self.roots.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
             "opened": self.opened.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
             "active": self.active,
         });
-        let tmp = file.with_extension("json.tmp");
-        if std::fs::write(&tmp, v.to_string()).is_ok() {
-            let _ = std::fs::rename(&tmp, file);
+        static STORE_TMP_SEQ: AtomicU64 = AtomicU64::new(1);
+        let seq = STORE_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = file.with_file_name(format!(".projects.json.openro-tmp.{}.{seq}", std::process::id()));
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            use std::io::Write;
+            if f.write_all(v.to_string().as_bytes()).and_then(|_| f.flush()).is_ok() {
+                drop(f);
+                if std::fs::rename(&tmp, file).is_ok() {
+                    return;
+                }
+            }
+            let _ = std::fs::remove_file(&tmp);
         }
     }
 
@@ -410,10 +426,34 @@ pub fn manifest(dir: &Path) -> Result<Value, String> {
 }
 
 pub fn write_manifest(dir: &Path, m: &Value) -> Result<(), String> {
-    let path = dir.join(MANIFEST_FILE);
-    let tmp = dir.join(format!("{MANIFEST_FILE}.tmp"));
-    std::fs::write(&tmp, serde_json::to_string_pretty(m).map_err(|e| e.to_string())? + "\n").map_err(|e| format!("write manifest: {e}"))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("write manifest: {e}"))
+    let path = safe_join(dir, MANIFEST_FILE)?;
+    if crate::scene::has_symlink_component(dir, &path) {
+        return Err(format!("refusing to write through symlink '{MANIFEST_FILE}'"));
+    }
+    if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(format!("refusing to write through symlink '{MANIFEST_FILE}'"));
+    }
+    static MANIFEST_TMP_SEQ: AtomicU64 = AtomicU64::new(1);
+    let seq = MANIFEST_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!(".{MANIFEST_FILE}.openro-tmp.{}.{seq}", std::process::id()));
+    let payload = serde_json::to_string_pretty(m).map_err(|e| e.to_string())? + "\n";
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| format!("write manifest: {e}"))?;
+        if let Err(e) = f.write_all(payload.as_bytes()).and_then(|_| f.flush()) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("write manifest: {e}"));
+        }
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("write manifest: {e}"));
+    }
+    Ok(())
 }
 
 fn opt_id(v: &Value, key: &str) -> Result<(), String> {
@@ -2658,6 +2698,9 @@ fn prefab_write_atomic(dir: &Path, rel: &str, content: &str) -> Result<(), Strin
         return Err(format!("invalid path '{rel}'"));
     }
     let full = safe_join(dir, rel)?;
+    if crate::scene::has_symlink_component(dir, &full) {
+        return Err(format!("refusing to write through symlink '{rel}'"));
+    }
     if let Ok(meta) = std::fs::symlink_metadata(&full) {
         if meta.file_type().is_symlink() {
             return Err(format!("refusing to write through symlink '{rel}'"));
@@ -2665,12 +2708,26 @@ fn prefab_write_atomic(dir: &Path, rel: &str, content: &str) -> Result<(), Strin
     }
     if let Some(parent) = full.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create dir for {rel}: {e}"))?;
+        if crate::scene::has_symlink_component(dir, parent) {
+            return Err(format!("refusing to write through symlink parent '{rel}'"));
+        }
     }
     static PREFAB_TMP_SEQ: AtomicU64 = AtomicU64::new(1);
     let seq = PREFAB_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let fname = full.file_name().and_then(|s| s.to_str()).unwrap_or("prefab");
     let tmp = full.with_file_name(format!(".{fname}.openro-tmp.{}.{seq}", std::process::id()));
-    std::fs::write(&tmp, content.as_bytes()).map_err(|e| format!("write {rel}: {e}"))?;
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| format!("write {rel}: {e}"))?;
+        if let Err(e) = f.write_all(content.as_bytes()).and_then(|_| f.flush()) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("write {rel}: {e}"));
+        }
+    }
     if let Err(e) = std::fs::rename(&tmp, &full) {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("rename {rel}: {e}"));
@@ -2679,29 +2736,45 @@ fn prefab_write_atomic(dir: &Path, rel: &str, content: &str) -> Result<(), Strin
 }
 
 fn sanitize_prefab_node_name(raw: &str, fallback: &str) -> String {
-    let cleaned: String = raw
-        .chars()
-        .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
-        .collect();
-    let trimmed = cleaned.trim();
-    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
-        fallback.to_string()
+    let clean_one = |s: &str| -> String {
+        let cleaned: String = s
+            .chars()
+            .filter(|c| !c.is_control() && !matches!(*c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+            .collect();
+        let trimmed = cleaned.trim();
+        if trimmed.is_empty() || trimmed == "." || trimmed == ".." || trimmed.contains("..") {
+            String::new()
+        } else {
+            trimmed.chars().take(128).collect()
+        }
+    };
+    let primary = clean_one(raw);
+    if !primary.is_empty() {
+        return primary;
+    }
+    let fb = clean_one(fallback);
+    if !fb.is_empty() {
+        fb
     } else {
-        trimmed.chars().take(128).collect()
+        "Instance".to_string()
     }
 }
 
-fn prefab_xml_unescape(s: &str) -> String {
+fn prefab_xml_unescape(s: &str) -> Result<String, String> {
     if !s.contains('&') {
-        return s.to_string();
+        return Ok(s.to_string());
     }
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'&' {
-            if let Some(semi) = s[i..].find(';') {
-                let ent = &s[i + 1..i + semi];
+            // Bound entity scan window to 16 bytes so malformed `&...` never degrades to O(N^2)
+            // and reject oversized custom entity amplification.
+            let scan_end = (i + 16).min(bytes.len());
+            if let Some(rel_semi) = bytes[i + 1..scan_end].iter().position(|&b| b == b';') {
+                let semi = i + 1 + rel_semi;
+                let ent = &s[i + 1..semi];
                 let ch = match ent {
                     "amp" => Some('&'),
                     "lt" => Some('<'),
@@ -2709,14 +2782,27 @@ fn prefab_xml_unescape(s: &str) -> String {
                     "quot" => Some('"'),
                     "apos" => Some('\''),
                     _ if ent.starts_with("#x") || ent.starts_with("#X") => {
-                        u32::from_str_radix(&ent[2..], 16).ok().and_then(char::from_u32)
+                        let cp = u32::from_str_radix(&ent[2..], 16)
+                            .map_err(|_| format!("invalid XML hex character entity '&{ent};'"))?;
+                        if cp == 0 {
+                            return Err("XML NUL character entity &#x0; is forbidden".to_string());
+                        }
+                        Some(char::from_u32(cp).ok_or_else(|| format!("invalid XML Unicode scalar '&{ent};'"))?)
                     }
-                    _ if ent.starts_with('#') => ent[1..].parse::<u32>().ok().and_then(char::from_u32),
+                    _ if ent.starts_with('#') => {
+                        let cp = ent[1..]
+                            .parse::<u32>()
+                            .map_err(|_| format!("invalid XML decimal character entity '&{ent};'"))?;
+                        if cp == 0 {
+                            return Err("XML NUL character entity &#0; is forbidden".to_string());
+                        }
+                        Some(char::from_u32(cp).ok_or_else(|| format!("invalid XML Unicode scalar '&{ent};'"))?)
+                    }
                     _ => None,
                 };
                 if let Some(c) = ch {
                     out.push(c);
-                    i += semi + 1;
+                    i = semi + 1;
                     continue;
                 }
             }
@@ -2725,7 +2811,7 @@ fn prefab_xml_unescape(s: &str) -> String {
         out.push(c);
         i += c.len_utf8();
     }
-    out
+    Ok(out)
 }
 
 type XmlAttrs = Vec<(String, String)>;
@@ -2835,7 +2921,7 @@ impl<'a> PrefabXmlParser<'a> {
         }
         let raw = &self.src[start..self.pos];
         self.pos += 1;
-        Ok(prefab_xml_unescape(raw))
+        prefab_xml_unescape(raw)
     }
 
     fn read_open_tag(&mut self) -> Result<XmlOpenTag, String> {
@@ -2860,6 +2946,9 @@ impl<'a> PrefabXmlParser<'a> {
             if self.starts_with(">") {
                 self.pos += 1;
                 return Ok((name, attrs, false));
+            }
+            if attrs.len() >= 256 {
+                return Err(format!("XML element <{name}> exceeds maximum attribute count (256)"));
             }
             let attr_name = self.read_name()?.to_string();
             self.skip_ws();
@@ -2925,7 +3014,7 @@ impl<'a> PrefabXmlParser<'a> {
                 return Err(format!("unexpected element inside <{expected}>"));
             }
             let next_lt = self.remaining().find('<').unwrap_or(self.remaining().len());
-            out.push_str(&prefab_xml_unescape(&self.remaining()[..next_lt]));
+            out.push_str(&prefab_xml_unescape(&self.remaining()[..next_lt])?);
             self.pos += next_lt;
         }
     }
@@ -3019,7 +3108,7 @@ impl<'a> PrefabXmlParser<'a> {
                 continue;
             }
             let next_lt = self.remaining().find('<').unwrap_or(self.remaining().len());
-            let t = prefab_xml_unescape(self.remaining()[..next_lt].trim());
+            let t = prefab_xml_unescape(self.remaining()[..next_lt].trim())?;
             if !t.is_empty() && url.is_empty() {
                 url = t;
             }
@@ -3269,6 +3358,9 @@ impl<'a> PrefabXmlParser<'a> {
             .map(|(_, v)| v.clone())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| "Item element missing 'class' attribute".to_string())?;
+        if class_name.contains('/') || class_name.contains('\\') || class_name.contains("..") || class_name.chars().any(|c| c.is_control()) {
+            return Err(format!("invalid Item class attribute '{class_name}'"));
+        }
         let mut node = ImportedNode {
             class_name: class_name.clone(),
             name: class_name,
@@ -3510,6 +3602,7 @@ fn parse_rbxm_binary(bytes: &[u8], fallback_name: &str) -> Result<(Vec<ImportedN
     let mut pos = 32usize;
     let mut warnings = Vec::new();
     let mut zstd_seen = false;
+    let mut total_uncomp = 0usize;
     let mut classes: BTreeMap<u32, (String, Vec<i32>)> = BTreeMap::new();
     let mut nodes: BTreeMap<i32, ImportedNode> = BTreeMap::new();
     let mut parent_links: Vec<(i32, i32)> = Vec::new();
@@ -3546,6 +3639,10 @@ fn parse_rbxm_binary(bytes: &[u8], fallback_name: &str) -> Result<(Vec<ImportedN
             zstd_seen = true;
             continue;
         } else {
+            total_uncomp = total_uncomp
+                .checked_add(uncomp_len)
+                .filter(|&t| t <= MAX_PREFAB_BYTES * 4)
+                .ok_or_else(|| "corrupt .rbxm binary: cumulative decompressed size exceeds limit".to_string())?;
             data_buf = decompress_lz4_block(raw_payload, uncomp_len)?;
             &data_buf
         };
@@ -3559,11 +3656,19 @@ fn parse_rbxm_binary(bytes: &[u8], fallback_name: &str) -> Result<(Vec<ImportedN
             let cname = std::str::from_utf8(cname_bytes)
                 .map_err(|_| "non-UTF8 INST class name".to_string())?
                 .to_string();
+            if cname.is_empty()
+                || cname.contains('/')
+                || cname.contains('\\')
+                || cname.contains("..")
+                || cname.chars().any(|c| c.is_control())
+            {
+                return Err(format!("invalid INST class name '{cname}'"));
+            }
             off = cname_end;
             let _obj_fmt = *payload.get(off).ok_or("truncated INST format byte")?;
             off += 1;
             let count = read_u32_le(payload, &mut off)? as usize;
-            if count > 100_000 {
+            if count > 100_000 || nodes.len().saturating_add(count) > 100_000 {
                 return Err("INST instance count exceeds limit".to_string());
             }
             let refs = read_rbxm_referents(payload, &mut off, count)?;
@@ -3614,7 +3719,8 @@ fn parse_rbxm_binary(bytes: &[u8], fallback_name: &str) -> Result<(Vec<ImportedN
                         }
                     }
                     0x02 => {
-                        let bslice = payload.get(off..off + count).ok_or("truncated PROP bools")?;
+                        let end = off.checked_add(count).ok_or("PROP bool overflow")?;
+                        let bslice = payload.get(off..end).ok_or("truncated PROP bools")?;
                         for (idx, &r) in refs.iter().enumerate() {
                             if let Some(node) = nodes.get_mut(&r) {
                                 node.properties.insert(pname.clone(), Value::Bool(bslice[idx] != 0));
@@ -3623,7 +3729,8 @@ fn parse_rbxm_binary(bytes: &[u8], fallback_name: &str) -> Result<(Vec<ImportedN
                     }
                     0x03 => {
                         let need = count.checked_mul(4).ok_or("PROP int overflow")?;
-                        let slice = payload.get(off..off + need).ok_or("truncated PROP ints")?;
+                        let end = off.checked_add(need).ok_or("PROP int offset overflow")?;
+                        let slice = payload.get(off..end).ok_or("truncated PROP ints")?;
                         for (idx, &r) in refs.iter().enumerate() {
                             let u = u32::from_be_bytes([
                                 slice[idx],
@@ -3645,12 +3752,15 @@ fn parse_rbxm_binary(bytes: &[u8], fallback_name: &str) -> Result<(Vec<ImportedN
             let _ver = *payload.get(off).ok_or("truncated PRNT version")?;
             off += 1;
             let count = read_u32_le(payload, &mut off)? as usize;
-            if count > 100_000 {
+            if count > 100_000 || parent_links.len().saturating_add(count) > 100_000 {
                 return Err("PRNT count exceeds limit".to_string());
             }
             let child_refs = read_rbxm_referents(payload, &mut off, count)?;
             let parent_refs = read_rbxm_referents(payload, &mut off, count)?;
             for (c, p) in child_refs.into_iter().zip(parent_refs.into_iter()) {
+                if c == p {
+                    return Err("corrupt .rbxm binary: self-referential parent relationship".to_string());
+                }
                 parent_links.push((c, p));
             }
         }
@@ -3692,33 +3802,58 @@ fn parse_rbxm_binary(bytes: &[u8], fallback_name: &str) -> Result<(Vec<ImportedN
         }
     }
     if root_refs.is_empty() {
-        root_refs = nodes.keys().copied().collect();
+        return Err("corrupt .rbxm binary: cyclic parent relationship (no root instance)".to_string());
     }
 
     fn build_subtree(
         id: i32,
         nodes: &mut BTreeMap<i32, ImportedNode>,
         child_map: &BTreeMap<i32, Vec<i32>>,
+        visiting: &mut std::collections::HashSet<i32>,
         depth: usize,
-    ) -> Option<ImportedNode> {
+    ) -> Result<Option<ImportedNode>, String> {
         if depth > MAX_PREFAB_XML_DEPTH {
-            return None;
+            return Err(format!("binary .rbxm nesting exceeds maximum depth {MAX_PREFAB_XML_DEPTH}"));
         }
-        let mut node = nodes.remove(&id)?;
+        if !visiting.insert(id) {
+            return Err("corrupt .rbxm binary: cyclic parent relationship".to_string());
+        }
+        let Some(mut node) = nodes.remove(&id) else {
+            visiting.remove(&id);
+            return Ok(None);
+        };
         if let Some(kids) = child_map.get(&id) {
             for &kid in kids {
-                if let Some(child) = build_subtree(kid, nodes, child_map, depth + 1) {
+                if visiting.contains(&kid) {
+                    return Err("corrupt .rbxm binary: cyclic parent relationship".to_string());
+                }
+                if let Some(child) = build_subtree(kid, nodes, child_map, visiting, depth + 1)? {
                     node.children.push(child);
                 }
             }
         }
-        Some(node)
+        visiting.remove(&id);
+        Ok(Some(node))
     }
 
     let mut roots = Vec::new();
+    let mut visiting = std::collections::HashSet::new();
     for r in root_refs {
-        if let Some(tree) = build_subtree(r, &mut nodes, &child_map, 0) {
+        if let Some(tree) = build_subtree(r, &mut nodes, &child_map, &mut visiting, 0)? {
             roots.push(tree);
+        }
+    }
+    if !nodes.is_empty() {
+        // Any remaining unreachable nodes that were parented to each other form a disconnected cycle.
+        let remaining_has_parents = nodes.keys().any(|id| child_map.contains_key(id));
+        if remaining_has_parents {
+            return Err("corrupt .rbxm binary: cyclic parent relationship".to_string());
+        }
+        let orphan_ids: Vec<i32> = nodes.keys().copied().collect();
+        for oid in orphan_ids {
+            if let Some(tree) = build_subtree(oid, &mut nodes, &child_map, &mut visiting, 0)? {
+                roots.push(tree);
+            }
         }
     }
     Ok((roots, warnings))
@@ -3730,6 +3865,9 @@ fn decompose_imported_node(
     rel_segs: &[String],
     depth: usize,
 ) -> Result<Option<Value>, String> {
+    if depth > MAX_PREFAB_XML_DEPTH {
+        return Err(format!("prefab nesting exceeds maximum depth {MAX_PREFAB_XML_DEPTH}"));
+    }
     let safe_name = sanitize_prefab_node_name(&node.name, &node.class_name);
     if is_script_class(&node.class_name) {
         let suffix = match node.class_name.as_str() {
