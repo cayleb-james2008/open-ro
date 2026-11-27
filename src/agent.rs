@@ -206,6 +206,14 @@ STUDIO & WHOLE-GAME TOOLS:\n\
 - {{\"tool\": \"screen_capture\", \"args\": {{}}}} captures the live Studio 3D viewport\n\
 - {{\"tool\": \"start_stop_play\", \"args\": {{\"mode\": \"start_play|run_server|stop\"}}}} controls live Studio play mode\n\
 - {{\"tool\": \"user_mouse_input\", \"args\": {{\"action\": \"click\", \"x\": 0.5, \"y\": 0.5}}}} and {{\"tool\": \"user_keyboard_input\", \"args\": {{\"key\": \"W\"}}}} send live input to Studio\n\
+- {{\"tool\": \"studio_cua_screenshot\", \"args\": {{\"label\": \"viewport\"}}}} captures a PNG frame from the live embedded/headed Studio window\n\
+- {{\"tool\": \"studio_cua_mouse\", \"args\": {{\"action\": \"click|double_click|right_click|move|drag|scroll\", \"x\": 0.5, \"y\": 0.5, \"to_x\": 0.7, \"to_y\": 0.7, \"normalized\": true}}}} drives the headed Studio cursor (click, smooth drag, scroll)\n\
+- {{\"tool\": \"studio_cua_keyboard\", \"args\": {{\"hotkey\": [\"ctrl\", \"s\"]}}}} (or `key` / `text`) sends safe hotkeys/keystrokes to headed Studio (OS-escape shortcuts blocked)\n\
+- {{\"tool\": \"studio_cua_window\", \"args\": {{\"action\": \"status|launch|attach|transfer|pause|resume\"}}}} manages or pauses/resumes the embedded Studio window\n\
+\nStudio-Native First WORKFLOW:\n\
+- Push native Luau scripts, ScreenGuis, and instances directly into live Roblox Studio via MCP/Rojo sync (`project_sync`, `execute_luau`, `multi_edit`, `project_scene_mutate`, `gui_compile`).\n\
+- Use `studio_cua_*` (`studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, `studio_cua_window`) over the headed/embedded Studio window for any native Studio UI or dialog outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor, dialogs).\n\
+- Use local-hardware adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`, `adapter_invoke`) for asset generation Studio cannot do natively.\n\
 \nPROJECT FILE, BUILD & VERIFICATION TOOLS (for Rojo projects on disk):\n\
 - {{\"tool\": \"project_list\", \"args\": {{}}}} lists workspace projects\n\
 - {{\"tool\": \"project_files\", \"args\": {{\"dir\": \"src\"}}}} lists files/dirs inside the active project\n\
@@ -302,6 +310,11 @@ PROJECT FILE & BUILD TOOLS:\n\
 - project_scene_get {{}} / project_scene_mutate {{\"ops\": [{{\"op\": \"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\", \"path\": \"Workspace.Name\", \"class_name\": \"Part|Model|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\", ...}}]}}
 - gui_save {{\"slug\": \"main-hud\", \"doc\": {{...}} | \"preset\": \"rpg|obby|tycoon|gacha\"}} / gui_compile {{\"slug\": \"main-hud\"}}\n\
 - project_sync {{\"prune\": false}} / project_sync_pull {{\"strategy\": \"merge_non_conflicting\"}} / project_playtest {{\"sync_first\": true, \"suite\": \"playtest/suite.json\"}}\n\n\
+Studio-Native First & LIVE CUA TOOLS:\n\
+- Push native Luau/ScreenGui/instances into live Roblox Studio via MCP/Rojo sync (`project_sync`, `execute_luau`, `multi_edit`, `project_scene_mutate`, `gui_compile`).\n\
+- Use `studio_cua_*` over the headed Studio window for any native Studio UI/dialog outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor, dialogs).\n\
+- Use local-hardware adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`, `adapter_invoke`) for asset generation Studio cannot do natively.\n\
+- studio_cua_screenshot {{\"label\": \"viewport\"}} / studio_cua_mouse {{\"action\": \"click|drag|scroll\", \"x\": 0.5, \"y\": 0.5, \"to_x\": 0.7, \"to_y\": 0.7, \"normalized\": true}} / studio_cua_keyboard {{\"hotkey\": [\"ctrl\", \"s\"]}} / studio_cua_window {{\"action\": \"status|launch|attach|transfer|pause|resume\"}}\n\n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - research_roblox_game {{\"target\": \"<URL or ID>\"}} / web_search {{\"query\": \"...\", \"limit\": 5}} / web_fetch {{\"url\": \"https://...\"}}\n\
 - reference_search {{\"query\": \"...\", \"character\": \"...\", \"show\": \"...\"}}\n\
@@ -554,6 +567,10 @@ pub struct AgentHooks {
     pub universe_set: Option<HookFn>,
     pub adapter_list: Option<HookFn>,
     pub adapter_invoke: Option<HookFn>,
+    pub studio_cua_screenshot: Option<HookFn>,
+    pub studio_cua_mouse: Option<HookFn>,
+    pub studio_cua_keyboard: Option<HookFn>,
+    pub studio_cua_window: Option<HookFn>,
 }
 
 impl Agent {
@@ -4825,6 +4842,26 @@ impl Agent {
                 transcript.push(format!("tool ui_kit_generate -> {text}"));
                 thread.push("Generated and sliced UI Kit asset sheet.".to_string());
                 Ok(format!("tool_result: ui_kit_generate: {text}"))
+            }
+            "studio_cua_screenshot" | "studio_cua_mouse" | "studio_cua_keyboard"
+            | "studio_cua_window" => {
+                let hook = match tool {
+                    "studio_cua_screenshot" => &self.hooks.studio_cua_screenshot,
+                    "studio_cua_mouse" => &self.hooks.studio_cua_mouse,
+                    "studio_cua_keyboard" => &self.hooks.studio_cua_keyboard,
+                    _ => &self.hooks.studio_cua_window,
+                };
+                let res = match hook {
+                    Some(h) => h(args)?,
+                    None => {
+                        return Err(format!(
+                            "Tool '{tool}' requires the OpenRO server CUA runtime (Embedded Studio)."
+                        ));
+                    }
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool {tool} -> {text}"));
+                Ok(format!("tool_result: {tool}: {text}"))
             }
             "assets_upload" => {
                 let res = if let Some(hook) = &self.hooks.assets_upload {

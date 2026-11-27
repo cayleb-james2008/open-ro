@@ -2708,6 +2708,9 @@ fn is_write_or_submit_tool(tool: &str) -> bool {
             | "liveops_telemetry_codegen"
             | "liveops_telemetry_sync"
             | "adapter_invoke"
+            | "studio_cua_mouse"
+            | "studio_cua_keyboard"
+            | "studio_cua_window"
             | "create_task"
             | "verify_task"
             | "finish_run"
@@ -3257,26 +3260,21 @@ fn run_agent_wake_cycle(
     Ok(())
 }
 
-fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
-    let a = &st.roster[idx];
-    let roster_list: Vec<String> = st
-        .roster
-        .iter()
-        .map(|m| format!("{} ({})", m.name, m.role))
-        .collect();
-    let role_rules = match a.role.as_str() {
+fn role_rules_for(role: &str) -> &'static str {
+    match role {
         "coordinator" => concat!(
             "You are the Teamwork coordinator.\n",
             "Split the goal into concrete non-overlapping tasks with `create_task` (specify owner, verifier, kind, and non-overlapping `files`); spread tasks across all available workers in parallel instead of stacking everything onto one worker.\n",
             "Follow Study -> Build -> Check -> Refine: check `study_status` so gaps are investigated with `evidence_record`/`unknown_add` before coding and checked with `mechanics_check`/`project_check`.\n",
+            "Studio-Native First: push native Luau/ScreenGui/instances into live Roblox Studio via MCP/Rojo sync; use `studio_cua_*` over the headed Studio window for any native Studio UI/dialog outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor, dialogs); use local-hardware adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`) for assets Studio cannot generate natively.\n",
             "To wait for workers, return {\"done\":true,\"summary\":\"waiting\"} — NEVER poll board_read.\n",
             "Call `finish_run` once all tasks are `done`.\n",
-            "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, project_scene_get, study_status, unknowns_list, evidence_list, opencloud_status, creator_hub_status, creator_hub_setup, creator_hub_configure, assets_authorise, assets_upload, assets_codegen, products_sync, products_codegen, project_publish, universe_get, universe_set, liveops_datastore_list, liveops_datastore_get, liveops_datastore_set, liveops_messaging_publish, liveops_remote_config_push, liveops_telemetry_codegen, liveops_telemetry_sync, liveops_telemetry_summary, finish_run.\n",
+            "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, project_scene_get, study_status, unknowns_list, evidence_list, studio_cua_screenshot, studio_cua_mouse, studio_cua_keyboard, studio_cua_window, opencloud_status, creator_hub_status, creator_hub_setup, creator_hub_configure, assets_authorise, assets_upload, assets_codegen, products_sync, products_codegen, project_publish, universe_get, universe_set, liveops_datastore_list, liveops_datastore_get, liveops_datastore_set, liveops_messaging_publish, liveops_remote_config_push, liveops_telemetry_codegen, liveops_telemetry_sync, liveops_telemetry_summary, finish_run.\n",
             "Cloud/Publish rules: check `opencloud_status` / `creator_hub_status` before publishing; `creator_hub_*` uses loopback CDP and NEVER bypasses login/2FA/CAPTCHA (if `status:\"action_required\"`, stop and report `blocked_reason`/`url` to owner); `project_publish` with `versionType:\"Published\"` REQUIRES explicit owner approval and `{\"versionType\":\"Published\",\"confirm\":true}` (default `versionType` is `\"Saved\"`); `liveops_datastore_set`, `liveops_messaging_publish`, and `liveops_remote_config_push` (`push_to_datastore:true`) REQUIRE explicit owner `confirm:true`; never self-approve product prices."
         ),
         "verifier" => concat!(
             "You are the Teamwork verifier.\n",
-            "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `project_scene_get`, `luau_check`, `project_symbols`, `project_typecheck`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`, `opencloud_status`, `creator_hub_status`, `universe_get`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_telemetry_summary`).\n",
+            "Follow Study -> Build -> Check -> Refine: inspect submitted work (`project_read_file`, `project_grep`, `project_scene_get`, `luau_check`, `project_symbols`, `project_typecheck`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `studio_cua_screenshot`, `studio_cua_window`, `evidence_list`, `unknowns_list`, `mechanics_check`, `study_status`, `opencloud_status`, `creator_hub_status`, `universe_get`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_telemetry_summary`).\n",
             "Run `sandbox_playtest` first on game_code tasks for `<2s` headless Luau runtime verification (remotes, DataStores, ProcessReceipt idempotency, stack traces) before paying for live Studio `project_playtest`.\n",
             "For game_code tasks (or `src/` / `ui/` changes), run `sandbox_playtest` with `{\"task_id\":\"<id>\"}` (or `project_playtest` when live Studio MCP is needed / `require_studio: true`) and confirm 0 errors BEFORE calling `verify_task` with `passed: true`.\n",
             "For `tools/**/*.luau` tasks (not touching `src/` or `ui/`), run `project_run_lune` (confirm `passed: true`) instead of `project_playtest` BEFORE calling `verify_task(passed=true)`.\n",
@@ -3293,7 +3291,9 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
             "Follow Study -> Build -> Check -> Refine: check `study_status`/`unknowns_list`, record verified behavior with `evidence_record`/`unknown_add`/`unknown_update` (capping guesswork), cite `ev_*` IDs in `docs/mechanics.json` (`mechanics_check`), build, check (`project_check`/`project_playtest`, pass `\"force\":true` to bypass `KeptChecks`), and refine.\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_symbols`, `project_typecheck`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `ui_kit_presets`, `ui_kit_generate`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_codegen`, `liveops_telemetry_sync`, `liveops_telemetry_summary`.\n",
+            "Studio-Native First: push native Luau/ScreenGui/instances into live Roblox Studio via MCP/Rojo sync (`project_sync`, `project_scene_mutate`, `gui_compile`); use `studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, and `studio_cua_window` over the headed Studio window for any native Studio UI/dialog outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor, dialogs); use local-hardware adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`, `adapter_invoke`) for asset generation Studio cannot do natively.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_symbols`, `project_typecheck`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, `studio_cua_window`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `ui_kit_presets`, `ui_kit_generate`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_codegen`, `liveops_telemetry_sync`, `liveops_telemetry_summary`.\n",
+            "Live Studio CUA signatures: `studio_cua_screenshot {\"label\":\"viewport\"}`, `studio_cua_mouse {\"action\":\"click|double_click|right_click|move|drag|scroll\",\"x\":0.5,\"y\":0.5,\"to_x\":0.7,\"to_y\":0.7,\"normalized\":true}`, `studio_cua_keyboard {\"hotkey\":[\"ctrl\",\"s\"]}`, `studio_cua_window {\"action\":\"status|launch|attach|transfer|pause|resume\"}`.\n",
             "UI Craft (7 Rules, zero copying): use `ui_kit_presets` / `ui_kit_generate` (ChatGPT sheet -> auto-sliced 9-slice transparent PNGs + `AssetIds.slices` + mixable layouts `skybridge-crest`/`perimeter-command`/`workshop-ribbon`/`compact-mobile-split` with >=5.25:1 Dark/Light glass, `Lighting.BlurEffect` modal depth, original header crests, >=44px glossy buttons, 1.5-2px dark `UIStroke` numerals, 844x390 safe-area clearance; never copy ANRX star-ribbons or layouts).\n",
             "Formatting: `project_check` with `{\"format\":true}` or `project_format` auto-formats your claimed `.luau` files with `stylua` instead of hand-editing whitespace.\n",
             "Asset arg signatures:\n",
@@ -3311,7 +3311,26 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "- liveops_datastore_list {\"store\":\"...?\",\"scope\":\"global\",\"prefix\":\"...?\"} / liveops_datastore_get {\"store\":\"...\",\"key\":\"...\"} / liveops_datastore_set {\"store\":\"...\",\"key\":\"...\",\"value\":{...},\"expected_revision\":\"...\",\"confirm\":true} / liveops_messaging_publish {\"topic\":\"...\",\"message\":{...},\"confirm\":true} / liveops_remote_config_push {\"config\":{...},\"generate_luau\":true,\"push_to_datastore\":false} / liveops_telemetry_codegen {\"mode\":\"opencloud_datastore|webhook_relay\",\"store_name\":\"OpenRO_LiveTelemetry\",\"flush_interval_secs\":60} / liveops_telemetry_sync {\"source\":\"opencloud_datastore|creator_analytics\",\"days\":7} / liveops_telemetry_summary {}\n",
             "When your task is ready for verification, call `submit_task` to hand it to `@verifier`."
         ),
-    };
+    }
+}
+
+/// Preview the Teamwork system prompt for a given role without spawning a run.
+pub fn teamwork_role_prompt_preview(role: &str, goal: &str, project_dir: &Path) -> String {
+    let rules = role_rules_for(role);
+    format!(
+        "[Role: {role}] [Agent: {role}]\nGoal: {goal}\nProject dir: {}\n\n{rules}",
+        project_dir.display()
+    )
+}
+
+fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
+    let a = &st.roster[idx];
+    let roster_list: Vec<String> = st
+        .roster
+        .iter()
+        .map(|m| format!("{} ({})", m.name, m.role))
+        .collect();
+    let role_rules = role_rules_for(a.role.as_str());
     let custom_brief = a
         .brief
         .as_deref()
@@ -3956,6 +3975,10 @@ fn execute_agent_tool(
             let res = crate::tool_adapters::invoke(&ctx, cap, id, params)?;
             record_generated_asset_files(handle, agent_name, tool, args, &res);
             Ok(res)
+        }
+        "studio_cua_screenshot" | "studio_cua_mouse" | "studio_cua_keyboard"
+        | "studio_cua_window" => {
+            crate::server::execute_cua_tool(shared, &format!("teamwork:{agent_name}"), tool, args)
         }
         other => Err(format!("unknown Teamwork tool '{other}'")),
     }

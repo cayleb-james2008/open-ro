@@ -107,6 +107,8 @@ pub struct Shared {
     pub game_assets: Mutex<GameAssetsIndex>,
     /// Directly embedded Roblox Studio host lifecycle manager (`src/studio_embed.rs`).
     pub studio_embed: Mutex<crate::studio_embed::StudioEmbedManager>,
+    /// Bounded 80-entry Studio CUA activity log + `cua_paused` human-takeover lock.
+    pub cua_log: Arc<crate::studio_embed::StudioCuaLog>,
     /// Built-in Developer Skill & Connection Library manager (`data_dir/library.json`).
     pub library: Mutex<crate::library::LibraryManager>,
     /// Live Roblox Market Taste & 8-Dimension Craft Dossier store (`data_dir/market_taste_cache.json`).
@@ -195,12 +197,13 @@ impl Shared {
             config: Mutex::new(RuntimeConfig::default()),
             snapshots: Mutex::new(SnapshotStore::in_memory()),
             events,
-            studio_stream,
+            studio_stream: Arc::clone(&studio_stream),
             status_cache: Mutex::new(initial_status),
             cached_place_tree_bytes: Mutex::new(None),
             cached_luau_report: Mutex::new(None),
             game_assets: Mutex::new(GameAssetsIndex::default()),
             studio_embed: Mutex::new(crate::studio_embed::StudioEmbedManager::new()),
+            cua_log: Arc::new(crate::studio_embed::StudioCuaLog::new(Some(Arc::clone(&studio_stream)))),
             library: Mutex::new(library),
             market_taste: Mutex::new(market_taste),
             last_researched_dossier_prompt: Mutex::new(String::new()),
@@ -278,12 +281,13 @@ impl Shared {
             config: Mutex::new(cfg),
             snapshots: Mutex::new(snap_store),
             events,
-            studio_stream,
+            studio_stream: Arc::clone(&studio_stream),
             status_cache: Mutex::new(initial_status),
             cached_place_tree_bytes: Mutex::new(None),
             cached_luau_report: Mutex::new(None),
             game_assets: Mutex::new(GameAssetsIndex::default()),
             studio_embed: Mutex::new(crate::studio_embed::StudioEmbedManager::new()),
+            cua_log: Arc::new(crate::studio_embed::StudioCuaLog::new(Some(Arc::clone(&studio_stream)))),
             library: Mutex::new(library),
             market_taste: Mutex::new(market_taste),
             last_researched_dossier_prompt: Mutex::new(String::new()),
@@ -974,6 +978,8 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
         || clean_path.starts_with("/api/creator-hub/")
         || clean_path == "/api/studio/mcp"
         || clean_path.starts_with("/api/studio/mcp/")
+        || clean_path == "/api/studio/cua"
+        || clean_path.starts_with("/api/studio/cua/")
         || clean_path == "/api/projects"
         || clean_path.starts_with("/api/projects/")
         || clean_path == "/api/art"
@@ -1339,6 +1345,11 @@ fn sync_agent_project(
     if root.is_some() {
         agent.set_project(root, id);
     }
+    ensure_agent_hooks(shared, agent);
+}
+
+/// Wire all `openro-core`, `openro-assets`, and `studio_cua_*` hooks onto `agent`.
+pub fn ensure_agent_hooks(shared: &Arc<Shared>, agent: &mut Agent) {
     if agent.hooks.project_list.is_none() {
         let srv = Arc::clone(shared);
         agent.hooks.project_list = Some(Arc::new(move |_args| {
@@ -1577,6 +1588,30 @@ fn sync_agent_project(
                 project_dir: proj.as_deref(),
             };
             crate::tool_adapters::invoke(&ctx, cap, id, params)
+        }));
+    }
+    if agent.hooks.studio_cua_screenshot.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.studio_cua_screenshot = Some(Arc::new(move |args| {
+            cua_exec_screenshot(&srv, "agent", args).map_err(|(_, e)| e)
+        }));
+    }
+    if agent.hooks.studio_cua_mouse.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.studio_cua_mouse = Some(Arc::new(move |args| {
+            cua_exec_mouse(&srv, "agent", args).map_err(|(_, e)| e)
+        }));
+    }
+    if agent.hooks.studio_cua_keyboard.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.studio_cua_keyboard = Some(Arc::new(move |args| {
+            cua_exec_keyboard(&srv, "agent", args).map_err(|(_, e)| e)
+        }));
+    }
+    if agent.hooks.studio_cua_window.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.studio_cua_window = Some(Arc::new(move |args| {
+            cua_exec_window(&srv, "agent", args).map_err(|(_, e)| e)
         }));
     }
 }
@@ -1889,6 +1924,11 @@ fn handle(
 
     // Universal Anything-to-API / Anything-to-CLI tool adapter registry routes (#52).
     if try_route_tool_adapters(&mut stream, shared, &req, path, query) {
+        break 'req_done;
+    }
+
+    // Studio Computer Use (CUA) routes (Gap #81, strictly loopback-guarded).
+    if try_route_studio_cua(&mut stream, shared, &req, path, query) {
         break 'req_done;
     }
 
@@ -5890,7 +5930,7 @@ fn handle_studio_input_mouse(stream: &mut TcpStream, shared: &Shared, req: &Requ
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
     if let Some((ref disp, res, true)) = x11_info {
-        match crate::studio_embed::send_x11_mouse(disp, res, &action, x, y, &button, delta_y) {
+        match crate::studio_embed::send_x11_mouse(disp, res, &action, x, y, None, &button, delta_y) {
             Ok(result) => {
                 if let Ok(mut mgr) = shared.studio_embed.try_lock() {
                     mgr.record_input(format!("x11 mouse {action} ({x:.2}, {y:.2})"));
@@ -5949,7 +5989,7 @@ fn handle_studio_input_mouse(stream: &mut TcpStream, shared: &Shared, req: &Requ
             if let Some((disp, res, _)) = x11_info {
                 drop(guard);
                 if let Ok(result) =
-                    crate::studio_embed::send_x11_mouse(&disp, res, &action, x, y, &button, delta_y)
+                    crate::studio_embed::send_x11_mouse(&disp, res, &action, x, y, None, &button, delta_y)
                 {
                     if let Ok(mut mgr) = shared.studio_embed.try_lock() {
                         mgr.record_input(format!("x11 mouse {action} ({x:.2}, {y:.2})"));
@@ -6050,6 +6090,7 @@ fn handle_studio_input_keyboard(stream: &mut TcpStream, shared: &Shared, req: &R
             &action,
             key_str.as_deref(),
             text_str.as_deref(),
+            None,
         ) {
             Ok(result) => {
                 if let Ok(mut mgr) = shared.studio_embed.try_lock() {
@@ -6111,6 +6152,7 @@ fn handle_studio_input_keyboard(stream: &mut TcpStream, shared: &Shared, req: &R
                     &action,
                     key_str.as_deref(),
                     text_str.as_deref(),
+                    None,
                 ) {
                     if let Ok(mut mgr) = shared.studio_embed.try_lock() {
                         mgr.record_input(format!("x11 keyboard {action}"));
@@ -6559,6 +6601,116 @@ fn spawn_embed_mcp_auto_attacher(
     });
 }
 
+fn perform_studio_embed_launch(
+    shared: &Arc<Shared>,
+    body: &Value,
+    attach_only: bool,
+) -> Result<Value, (&'static str, String)> {
+    let mut cfg = crate::studio_embed::EmbedConfig::from_json(body)
+        .map_err(|e| ("400 Bad Request", e))?;
+    if attach_only {
+        cfg.launch_studio_process = false;
+        if cfg.mcp_command.is_none() {
+            cfg.mcp_command = shared
+                .config
+                .lock()
+                .unwrap()
+                .mcp_command
+                .clone()
+                .or_else(|| {
+                    std::env::var("OPENRO_MCP_COMMAND")
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                });
+        }
+    } else if body.get("transfer").and_then(|v| v.as_bool()) == Some(true)
+        || (cfg.place_file.is_some() && cfg.mcp_command.is_none())
+    {
+        let opts = crate::studio_embed::TransferOptions {
+            display: cfg.display,
+            width: cfg.width,
+            height: cfg.height,
+            place_file: cfg.place_file,
+            force_transfer: body.get("transfer").and_then(|v| v.as_bool()).unwrap_or(false),
+            wait_secs: (cfg.startup_timeout_ms / 1000).clamp(3, 90),
+            mcp_command: cfg.mcp_command,
+        };
+        return perform_studio_embed_transfer(shared, opts);
+    }
+
+    let (launch_res, stop_flag) = {
+        let mut mgr = shared.studio_embed.lock().unwrap();
+        let res = crate::studio_embed::launch_or_attach_live(
+            &mut mgr,
+            cfg,
+            Some(Arc::clone(&shared.studio_stream)),
+        );
+        let flag = mgr.stop_flag();
+        (res, flag)
+    };
+    invalidate_embed_detect_cache(shared);
+
+    match launch_res {
+        Ok(crate::studio_embed::EmbedLaunchOutcome::Connected(embed_state, mcp)) => {
+            let (frame_seq, frame_meta, available_tools) = attach_embed_mcp_client(shared, *mcp);
+            if !embed_state.x11grab_active {
+                spawn_mcp_screen_capture_pump(Arc::clone(shared), stop_flag);
+            }
+            let status_obj = build_embed_status_payload(shared);
+            Ok(json!({
+                "ok": true,
+                "running": true,
+                "connected": true,
+                "awaiting_signin": false,
+                "place_open": embed_state.place_open,
+                "phase": "connected",
+                "studio_connected": true,
+                "workspace_mode": "studio_mcp",
+                "studio_mode": "live_mcp",
+                "x11grab_active": embed_state.x11grab_active,
+                "has_live_frame": frame_seq > 0,
+                "frame_seq": frame_seq,
+                "frame": frame_meta,
+                "stream_url": "/api/studio/stream.mjpg",
+                "frame_url": "/api/studio/frame",
+                "available_tools": available_tools,
+                "status": status_obj,
+            }))
+        }
+        Ok(crate::studio_embed::EmbedLaunchOutcome::StreamingAwaitingAuth { state, mcp_cmd }) => {
+            spawn_embed_mcp_auto_attacher(Arc::clone(shared), mcp_cmd, stop_flag);
+            if state.x11grab_active && shared.studio_stream.latest_frame_seq() == 0 {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+                while shared.studio_stream.latest_frame_seq() == 0
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+            }
+            let frame_seq = shared.studio_stream.latest_frame_seq();
+            let status_obj = build_embed_status_payload(shared);
+            Ok(json!({
+                "ok": true,
+                "running": true,
+                "connected": false,
+                "awaiting_signin": true,
+                "phase": "awaiting_signin",
+                "studio_connected": false,
+                "studio_mode": "awaiting_signin",
+                "x11grab_active": state.x11grab_active,
+                "has_live_frame": frame_seq > 0,
+                "frame_seq": frame_seq,
+                "stream_url": "/api/studio/stream.mjpg",
+                "frame_url": "/api/studio/frame",
+                "message": "Studio viewport is streaming live — sign in or open a place to attach MCP automatically.",
+                "status": status_obj,
+            }))
+        }
+        Err(e) => Err(("502 Bad Gateway", e)),
+    }
+}
+
 fn handle_studio_embed_launch(
     stream: &mut TcpStream,
     shared: &Arc<Shared>,
@@ -6584,139 +6736,24 @@ fn handle_studio_embed_launch(
             }
         }
     };
-    let mut cfg = match crate::studio_embed::EmbedConfig::from_json(&body) {
-        Ok(c) => c,
-        Err(e) => {
-            respond_err(stream, "400 Bad Request", &e);
-            return;
-        }
-    };
-    if attach_only {
-        cfg.launch_studio_process = false;
-        if cfg.mcp_command.is_none() {
-            cfg.mcp_command = shared.config.lock().unwrap().mcp_command.clone();
-        }
-    } else if body.get("transfer").and_then(|v| v.as_bool()) == Some(true)
-        || (cfg.place_file.is_some() && cfg.mcp_command.is_none())
-    {
-        let opts = crate::studio_embed::TransferOptions {
-            display: cfg.display,
-            width: cfg.width,
-            height: cfg.height,
-            place_file: cfg.place_file,
-            force_transfer: body.get("transfer").and_then(|v| v.as_bool()).unwrap_or(false),
-            wait_secs: (cfg.startup_timeout_ms / 1000).clamp(3, 90),
-            mcp_command: cfg.mcp_command,
-        };
-        match perform_studio_embed_transfer(shared, opts) {
-            Ok(payload) => respond_json(stream, "200 OK", &payload),
-            Err((status, msg)) => {
-                let status_obj = build_embed_status_payload(shared);
-                respond_json(
-                    stream,
-                    status,
-                    &json!({
-                        "ok": false,
-                        "running": false,
-                        "connected": false,
-                        "awaiting_signin": false,
-                        "error": msg,
-                        "status": status_obj,
-                    }),
-                );
-            }
-        }
-        return;
-    }
-
-    let (launch_res, stop_flag) = {
-        let mut mgr = shared.studio_embed.lock().unwrap();
-        let res = crate::studio_embed::launch_or_attach_live(
-            &mut mgr,
-            cfg,
-            Some(Arc::clone(&shared.studio_stream)),
-        );
-        let flag = mgr.stop_flag();
-        (res, flag)
-    };
-    invalidate_embed_detect_cache(shared);
-
-    match launch_res {
-        Ok(crate::studio_embed::EmbedLaunchOutcome::Connected(embed_state, mcp)) => {
-            let (frame_seq, frame_meta, available_tools) = attach_embed_mcp_client(shared, *mcp);
-            if !embed_state.x11grab_active {
-                spawn_mcp_screen_capture_pump(Arc::clone(shared), stop_flag);
+    match perform_studio_embed_launch(shared, &body, attach_only) {
+        Ok(payload) => respond_json(stream, "200 OK", &payload),
+        Err((status, msg)) => {
+            if status == "400 Bad Request" {
+                respond_err(stream, status, &msg);
+                return;
             }
             let status_obj = build_embed_status_payload(shared);
             respond_json(
                 stream,
-                "200 OK",
-                &json!({
-                    "ok": true,
-                    "running": true,
-                    "connected": true,
-                    "awaiting_signin": false,
-                    "place_open": embed_state.place_open,
-                    "phase": "connected",
-                    "studio_connected": true,
-                    "workspace_mode": "studio_mcp",
-                    "studio_mode": "live_mcp",
-                    "x11grab_active": embed_state.x11grab_active,
-                    "has_live_frame": frame_seq > 0,
-                    "frame_seq": frame_seq,
-                    "frame": frame_meta,
-                    "stream_url": "/api/studio/stream.mjpg",
-                    "frame_url": "/api/studio/frame",
-                    "available_tools": available_tools,
-                    "status": status_obj,
-                }),
-            );
-        }
-        Ok(crate::studio_embed::EmbedLaunchOutcome::StreamingAwaitingAuth { state, mcp_cmd }) => {
-            spawn_embed_mcp_auto_attacher(Arc::clone(shared), mcp_cmd, stop_flag);
-            if state.x11grab_active && shared.studio_stream.latest_frame_seq() == 0 {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
-                while shared.studio_stream.latest_frame_seq() == 0
-                    && std::time::Instant::now() < deadline
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(25));
-                }
-            }
-            let frame_seq = shared.studio_stream.latest_frame_seq();
-            let status_obj = build_embed_status_payload(shared);
-            respond_json(
-                stream,
-                "200 OK",
-                &json!({
-                    "ok": true,
-                    "running": true,
-                    "connected": false,
-                    "awaiting_signin": true,
-                    "phase": "awaiting_signin",
-                    "studio_connected": false,
-                    "studio_mode": "awaiting_signin",
-                    "x11grab_active": state.x11grab_active,
-                    "has_live_frame": frame_seq > 0,
-                    "frame_seq": frame_seq,
-                    "stream_url": "/api/studio/stream.mjpg",
-                    "frame_url": "/api/studio/frame",
-                    "message": "Studio viewport is streaming live — sign in or open a place to attach MCP automatically.",
-                    "status": status_obj,
-                }),
-            );
-        }
-        Err(e) => {
-            let status_obj = build_embed_status_payload(shared);
-            respond_json(
-                stream,
-                "502 Bad Gateway",
+                status,
                 &json!({
                     "ok": false,
                     "running": false,
                     "connected": false,
                     "awaiting_signin": false,
                     "studio_mode": shared.studio_stream.studio_mode(),
-                    "error": e,
+                    "error": msg,
                     "status": status_obj,
                 }),
             );
@@ -7036,6 +7073,534 @@ fn handle_studio_embed_stop(stream: &mut TcpStream, shared: &Shared, req: &Reque
             "status": status_obj,
         }),
     );
+}
+
+/// Capture the current live/embedded Studio frame to `<data_dir>/cua-frames/<id>.png`
+/// (CWE-22/59 safe, pruned to 40 frames).
+pub fn capture_studio_frame_png(
+    shared: &Shared,
+    data_dir: &std::path::Path,
+    label: Option<&str>,
+) -> Result<Value, String> {
+    if shared.studio_stream.latest_frame().is_none() {
+        if let Ok(mut guard) = shared.agent.try_lock() {
+            if let Some(agent) = guard.as_mut() {
+                if matches!(agent.studio, Some(PlaceBackend::Mcp(_))) {
+                    let _ = agent.capture_studio_frame();
+                }
+            }
+        }
+    }
+    let state = shared
+        .studio_embed
+        .try_lock()
+        .map(|g| g.state())
+        .unwrap_or_else(|_| crate::studio_embed::StudioEmbedState::idle());
+    crate::studio_embed::capture_studio_frame_png_from_hub(
+        &shared.studio_stream,
+        &state,
+        data_dir,
+        label,
+    )
+}
+
+fn cua_data_dir(shared: &Shared) -> &std::path::Path {
+    shared.data_dir.as_deref().unwrap_or(&shared.assets_root)
+}
+
+fn cua_embed_resolution(shared: &Shared) -> (Option<String>, [u32; 2], bool) {
+    shared
+        .studio_embed
+        .try_lock()
+        .ok()
+        .map(|g| {
+            let st = g.state();
+            (st.display, st.resolution, st.x11grab_active)
+        })
+        .unwrap_or((
+            None,
+            [
+                crate::studio_embed::DEFAULT_EMBED_WIDTH,
+                crate::studio_embed::DEFAULT_EMBED_HEIGHT,
+            ],
+            false,
+        ))
+}
+
+pub fn cua_status_json(shared: &Shared) -> Value {
+    let embed = build_embed_status_payload(shared);
+    let (_, res, _) = cua_embed_resolution(shared);
+    let recent: Vec<Value> = shared
+        .cua_log
+        .recent(24)
+        .into_iter()
+        .map(|e| e.to_json())
+        .collect();
+    json!({
+        "ok": true,
+        "cua_paused": shared.cua_log.is_paused(),
+        "running": embed["running"],
+        "embedded": embed["embedded"],
+        "state": embed["state"],
+        "phase": embed["phase"],
+        "platform": embed["platform"],
+        "display": embed["display"],
+        "resolution": res,
+        "width": res[0],
+        "height": res[1],
+        "place_open": embed["place_open"],
+        "mcp_connected": embed["mcp_connected"],
+        "has_live_frame": embed["has_live_frame"],
+        "frame_seq": embed["frame_seq"],
+        "stream_url": embed["stream_url"],
+        "recent_events": recent,
+    })
+}
+
+fn cua_exec_screenshot(shared: &Shared, actor: &str, body: &Value) -> Result<Value, (u16, String)> {
+    let label = body
+        .get("label")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let mut shot = capture_studio_frame_png(shared, cua_data_dir(shared), label)
+        .map_err(|e| (503, e))?;
+    let frame_url = shot.get("url").and_then(Value::as_str).map(String::from);
+    let ev = shared
+        .cua_log
+        .record(crate::studio_embed::StudioCuaEventInput {
+            actor: actor.to_string(),
+            kind: "screenshot".to_string(),
+            summary: format!(
+                "Captured Studio frame ({}x{})",
+                shot["width"], shot["height"]
+            ),
+            norm_x: None,
+            norm_y: None,
+            to_norm_x: None,
+            to_norm_y: None,
+            key: None,
+            hotkey: None,
+            frame_url,
+            ok: true,
+        });
+    if let Some(obj) = shot.as_object_mut() {
+        obj.insert("event".to_string(), ev.to_json());
+        obj.insert("cua_paused".to_string(), json!(shared.cua_log.is_paused()));
+    }
+    Ok(shot)
+}
+
+fn cua_exec_mouse(shared: &Shared, actor: &str, body: &Value) -> Result<Value, (u16, String)> {
+    if shared.cua_log.is_paused() {
+        return Err((
+            409,
+            "Agent CUA is paused by human takeover. Resume CUA before sending mouse input."
+                .to_string(),
+        ));
+    }
+    let (disp_opt, res, x11_active) = cua_embed_resolution(shared);
+    let cmd = crate::studio_embed::validate_cua_mouse_payload(body, res)
+        .map_err(|e| (400, e))?;
+
+    let to_coords = cmd
+        .to_norm_x
+        .zip(cmd.to_norm_y);
+    let x11_disp = disp_opt.filter(|d| {
+        x11_active
+            || std::path::Path::new(&format!("/tmp/.X11-unix/X{}", d.trim_start_matches(':'))).exists()
+    });
+
+    let result = if let Some(ref disp) = x11_disp {
+        crate::studio_embed::send_x11_mouse(
+            disp,
+            res,
+            &cmd.action,
+            cmd.norm_x,
+            cmd.norm_y,
+            to_coords,
+            &cmd.button,
+            cmd.delta_y,
+        )
+        .map_err(|e| (502, e))?
+    } else {
+        let mut mcp_payload = json!({
+            "action": cmd.action,
+            "x": cmd.norm_x,
+            "y": cmd.norm_y,
+            "button": cmd.button,
+            "delta_y": cmd.delta_y,
+        });
+        if let (Some(tx), Some(ty)) = (cmd.to_norm_x, cmd.to_norm_y) {
+            mcp_payload["to_x"] = json!(tx);
+            mcp_payload["to_y"] = json!(ty);
+        }
+        let mut guard = shared.agent.lock().unwrap();
+        let Some(agent) = guard.as_mut() else {
+            return Err((
+                503,
+                "No live Roblox Studio window or X11 display active. Launch or attach Studio first."
+                    .to_string(),
+            ));
+        };
+        if !matches!(agent.studio, Some(PlaceBackend::Mcp(_))) {
+            return Err((
+                503,
+                "No live Roblox Studio window or X11 display active. Launch or attach Studio first."
+                    .to_string(),
+            ));
+        }
+        let chat_id = shared.active_chat.lock().unwrap().clone();
+        agent
+            .invoke_studio_tool(&chat_id, "user_mouse_input", mcp_payload)
+            .map(|(v, _)| v)
+            .map_err(|e| (502, e))?
+    };
+
+    if let Ok(mut mgr) = shared.studio_embed.try_lock() {
+        mgr.record_input(format!(
+            "cua {} ({:.2}, {:.2})",
+            cmd.action, cmd.norm_x, cmd.norm_y
+        ));
+    }
+    let summary = if cmd.action == "drag" {
+        format!(
+            "{actor} · drag ({:.2}, {:.2}) -> ({:.2}, {:.2})",
+            cmd.norm_x,
+            cmd.norm_y,
+            cmd.to_norm_x.unwrap_or(cmd.norm_x),
+            cmd.to_norm_y.unwrap_or(cmd.norm_y)
+        )
+    } else {
+        format!("{actor} · {} ({:.2}, {:.2})", cmd.action, cmd.norm_x, cmd.norm_y)
+    };
+    let ev = shared
+        .cua_log
+        .record(crate::studio_embed::StudioCuaEventInput {
+            actor: actor.to_string(),
+            kind: cmd.action.clone(),
+            summary,
+            norm_x: Some(cmd.norm_x),
+            norm_y: Some(cmd.norm_y),
+            to_norm_x: cmd.to_norm_x,
+            to_norm_y: cmd.to_norm_y,
+            key: None,
+            hotkey: None,
+            frame_url: None,
+            ok: true,
+        });
+    Ok(json!({
+        "ok": true,
+        "cua_paused": false,
+        "event": ev.to_json(),
+        "result": result,
+    }))
+}
+
+fn cua_exec_keyboard(shared: &Shared, actor: &str, body: &Value) -> Result<Value, (u16, String)> {
+    if shared.cua_log.is_paused() {
+        return Err((
+            409,
+            "Agent CUA is paused by human takeover. Resume CUA before sending keyboard input."
+                .to_string(),
+        ));
+    }
+    let cmd = crate::studio_embed::validate_cua_keyboard_payload(body).map_err(|e| (400, e))?;
+    let (disp_opt, _, x11_active) = cua_embed_resolution(shared);
+    let x11_disp = disp_opt.filter(|d| {
+        x11_active
+            || std::path::Path::new(&format!("/tmp/.X11-unix/X{}", d.trim_start_matches(':'))).exists()
+    });
+
+    let result = if let Some(ref disp) = x11_disp {
+        crate::studio_embed::send_x11_keyboard(
+            disp,
+            &cmd.action,
+            cmd.key.as_deref(),
+            cmd.text.as_deref(),
+            cmd.hotkey.as_deref(),
+        )
+        .map_err(|e| (502, e))?
+    } else {
+        let mut mcp_payload = json!({ "action": cmd.action });
+        if let Some(ref hk) = cmd.hotkey {
+            mcp_payload["hotkey"] = json!(hk);
+        }
+        if let Some(ref k) = cmd.key {
+            mcp_payload["key"] = json!(k);
+        }
+        if let Some(ref t) = cmd.text {
+            mcp_payload["text"] = json!(t);
+        }
+        let mut guard = shared.agent.lock().unwrap();
+        let Some(agent) = guard.as_mut() else {
+            return Err((
+                503,
+                "No live Roblox Studio window or X11 display active. Launch or attach Studio first."
+                    .to_string(),
+            ));
+        };
+        if !matches!(agent.studio, Some(PlaceBackend::Mcp(_))) {
+            return Err((
+                503,
+                "No live Roblox Studio window or X11 display active. Launch or attach Studio first."
+                    .to_string(),
+            ));
+        }
+        let chat_id = shared.active_chat.lock().unwrap().clone();
+        agent
+            .invoke_studio_tool(&chat_id, "user_keyboard_input", mcp_payload)
+            .map(|(v, _)| v)
+            .map_err(|e| (502, e))?
+    };
+
+    let summary = if let Some(ref hk) = cmd.hotkey {
+        format!("{actor} · {}", hk.join("+"))
+    } else if let Some(ref t) = cmd.text {
+        let preview: String = t.chars().take(24).collect();
+        format!("{actor} · type \"{preview}\"")
+    } else {
+        format!("{actor} · key {}", cmd.key.as_deref().unwrap_or(""))
+    };
+    let ev = shared
+        .cua_log
+        .record(crate::studio_embed::StudioCuaEventInput {
+            actor: actor.to_string(),
+            kind: cmd.action.clone(),
+            summary,
+            norm_x: None,
+            norm_y: None,
+            to_norm_x: None,
+            to_norm_y: None,
+            key: cmd.key.clone(),
+            hotkey: cmd.hotkey.clone(),
+            frame_url: None,
+            ok: true,
+        });
+    Ok(json!({
+        "ok": true,
+        "cua_paused": false,
+        "event": ev.to_json(),
+        "result": result,
+    }))
+}
+
+fn cua_exec_window(
+    shared: &Arc<Shared>,
+    actor: &str,
+    body: &Value,
+) -> Result<Value, (u16, String)> {
+    let action = body
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("status")
+        .trim()
+        .to_ascii_lowercase();
+    match action.as_str() {
+        "status" => Ok(cua_status_json(shared)),
+        "pause" => {
+            let ev = shared.cua_log.pause(actor);
+            Ok(json!({
+                "ok": true,
+                "action": "pause",
+                "cua_paused": true,
+                "event": ev.to_json(),
+            }))
+        }
+        "resume" => {
+            let ev = shared.cua_log.resume(actor);
+            Ok(json!({
+                "ok": true,
+                "action": "resume",
+                "cua_paused": false,
+                "event": ev.to_json(),
+            }))
+        }
+        "launch" | "attach" => {
+            let mut out = perform_studio_embed_launch(shared, body, action == "attach")
+                .map_err(|(st, msg)| {
+                    let code = if st.starts_with("400") { 400 } else { 502 };
+                    (code, msg)
+                })?;
+            let ev = shared
+                .cua_log
+                .record(crate::studio_embed::StudioCuaEventInput {
+                    actor: actor.to_string(),
+                    kind: format!("window_{action}"),
+                    summary: format!("{actor} · Studio window {action}"),
+                    norm_x: None,
+                    norm_y: None,
+                    to_norm_x: None,
+                    to_norm_y: None,
+                    key: None,
+                    hotkey: None,
+                    frame_url: None,
+                    ok: true,
+                });
+            if let Some(obj) = out.as_object_mut() {
+                obj.insert("event".to_string(), ev.to_json());
+                obj.insert("cua_paused".to_string(), json!(shared.cua_log.is_paused()));
+            }
+            Ok(out)
+        }
+        "transfer" => {
+            let mut transfer_body = body.clone();
+            if let Some(obj) = transfer_body.as_object_mut() {
+                obj.insert("transfer".to_string(), json!(true));
+            }
+            let mut out = perform_studio_embed_launch(shared, &transfer_body, false)
+                .map_err(|(st, msg)| {
+                    let code = if st.starts_with("400") { 400 } else { 502 };
+                    (code, msg)
+                })?;
+            let ev = shared
+                .cua_log
+                .record(crate::studio_embed::StudioCuaEventInput {
+                    actor: actor.to_string(),
+                    kind: "window_transfer".to_string(),
+                    summary: format!("{actor} · Studio window transfer"),
+                    norm_x: None,
+                    norm_y: None,
+                    to_norm_x: None,
+                    to_norm_y: None,
+                    key: None,
+                    hotkey: None,
+                    frame_url: None,
+                    ok: true,
+                });
+            if let Some(obj) = out.as_object_mut() {
+                obj.insert("event".to_string(), ev.to_json());
+                obj.insert("cua_paused".to_string(), json!(shared.cua_log.is_paused()));
+            }
+            Ok(out)
+        }
+        other => Err((
+            400,
+            format!("unsupported CUA window action '{other}' (expected status, launch, attach, transfer, pause, or resume)"),
+        )),
+    }
+}
+
+/// Shared dispatch entry point for `studio_cua_*` tools from both Agent hooks and Teamwork.
+pub fn execute_cua_tool(
+    shared: &Arc<Shared>,
+    actor: &str,
+    tool: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    match tool {
+        "studio_cua_screenshot" => cua_exec_screenshot(shared, actor, args).map_err(|(_, e)| e),
+        "studio_cua_mouse" => cua_exec_mouse(shared, actor, args).map_err(|(_, e)| e),
+        "studio_cua_keyboard" => cua_exec_keyboard(shared, actor, args).map_err(|(_, e)| e),
+        "studio_cua_window" => cua_exec_window(shared, actor, args).map_err(|(_, e)| e),
+        other => Err(format!("unknown Studio CUA tool '{other}'")),
+    }
+}
+
+fn try_route_studio_cua(
+    stream: &mut TcpStream,
+    shared: &Arc<Shared>,
+    req: &Request,
+    path: &str,
+    query: &str,
+) -> bool {
+    if path != "/api/studio/cua" && !path.starts_with("/api/studio/cua/") {
+        return false;
+    }
+    if !host_allowed(&req.host, &[]) {
+        respond_err(
+            stream,
+            "403 Forbidden",
+            "Studio CUA endpoints are only allowed from this machine (loopback)",
+        );
+        return true;
+    }
+
+    if req.method == "GET" && path == "/api/studio/cua/status" {
+        respond_json(stream, "200 OK", &cua_status_json(shared));
+        return true;
+    }
+    if req.method == "GET" && path == "/api/studio/cua/events" {
+        let since = query_param(query, "since")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let limit = query_param(query, "limit")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(crate::studio_embed::MAX_CUA_LOG_ENTRIES);
+        let list = if since > 0 {
+            shared.cua_log.since(since, limit)
+        } else {
+            shared.cua_log.recent(limit)
+        };
+        let events: Vec<Value> = list.into_iter().map(|e| e.to_json()).collect();
+        respond_json(
+            stream,
+            "200 OK",
+            &json!({
+                "ok": true,
+                "cua_paused": shared.cua_log.is_paused(),
+                "events": events,
+            }),
+        );
+        return true;
+    }
+    if req.method == "GET" && path.starts_with("/api/studio/cua/frame/") {
+        let file = path.trim_start_matches("/api/studio/cua/frame/");
+        match crate::studio_embed::resolve_cua_frame_path(cua_data_dir(shared), file) {
+            Ok(resolved) => match std::fs::read(&resolved) {
+                Ok(bytes) => {
+                    respond_bytes(stream, "200 OK", "image/png", "no-store", &bytes);
+                }
+                Err(_) => respond_err(stream, "404 Not Found", "CUA frame not found"),
+            },
+            Err((code, msg)) => {
+                respond_err(stream, status_line_for_code(code), &msg);
+            }
+        }
+        return true;
+    }
+
+    if req.method != "POST" {
+        return false;
+    }
+    let body: Value = if req.body.is_empty() {
+        json!({})
+    } else {
+        match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_err(stream, "400 Bad Request", "invalid JSON object body for CUA action");
+                return true;
+            }
+        }
+    };
+    let actor = body
+        .get("actor")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("agent");
+
+    let res = match path {
+        "/api/studio/cua/screenshot" => cua_exec_screenshot(shared, actor, &body),
+        "/api/studio/cua/mouse" => cua_exec_mouse(shared, actor, &body),
+        "/api/studio/cua/keyboard" => cua_exec_keyboard(shared, actor, &body),
+        "/api/studio/cua/window" => cua_exec_window(shared, actor, &body),
+        _ => return false,
+    };
+    match res {
+        Ok(val) => respond_json(stream, "200 OK", &val),
+        Err((code, msg)) => respond_json(
+            stream,
+            status_line_for_code(code),
+            &json!({
+                "ok": false,
+                "cua_paused": shared.cua_log.is_paused(),
+                "error": msg,
+            }),
+        ),
+    }
+    true
 }
 
 fn respond_library_error(stream: &mut TcpStream, err: crate::library::LibraryError) {

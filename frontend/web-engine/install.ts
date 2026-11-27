@@ -3775,6 +3775,140 @@ export function installWebEngine() {
       persist();
       return jsonResponse({ ok: true, forwarded: false, mode: "browser_place", summary: note });
     }
+    if (u.pathname === "/api/studio/cua" || u.pathname.startsWith("/api/studio/cua/")) {
+      const g = globalThis as unknown as {
+        __openroCuaState?: {
+          paused: boolean;
+          nextId: number;
+          events: Array<Record<string, unknown>>;
+          frames: Map<string, Uint8Array>;
+        };
+      };
+      if (!g.__openroCuaState) {
+        g.__openroCuaState = { paused: false, nextId: 1, events: [], frames: new Map() };
+      }
+      const cua = g.__openroCuaState;
+      const pushCua = (ev: Record<string, unknown>) => {
+        const item = { id: cua.nextId++, at_ms: Date.now(), ok: true, ...ev };
+        cua.events.push(item);
+        if (cua.events.length > 80) cua.events.shift();
+        emitStudioStreamEvent("studio_cua", item);
+        return item;
+      };
+      if (method === "GET" && u.pathname === "/api/studio/cua/status") {
+        return jsonResponse({
+          ok: true,
+          cua_paused: cua.paused,
+          running: false,
+          embedded: false,
+          state: "browser_place",
+          phase: "idle",
+          platform: "browser",
+          display: null,
+          resolution: [1440, 900],
+          width: 1440,
+          height: 900,
+          place_open: true,
+          mcp_connected: false,
+          has_live_frame: true,
+          frame_seq: studioFrameSeq,
+          stream_url: "/api/studio/stream.mjpg",
+          recent_events: cua.events.slice(-24),
+        });
+      }
+      if (method === "GET" && u.pathname === "/api/studio/cua/events") {
+        return jsonResponse({ ok: true, cua_paused: cua.paused, events: cua.events });
+      }
+      if (method === "GET" && u.pathname.startsWith("/api/studio/cua/frame/")) {
+        const file = u.pathname.slice("/api/studio/cua/frame/".length);
+        if (!file || file.includes("/") || file.includes("\\") || file.includes("..") || !file.endsWith(".png")) {
+          return jsonResponse({ ok: false, error: "invalid CUA frame filename" }, 400);
+        }
+        const bytes = cua.frames.get(file);
+        if (!bytes) return jsonResponse({ ok: false, error: "CUA frame not found" }, 404);
+        return new Response(new Uint8Array(bytes), {
+          status: 200,
+          headers: { "Content-Type": "image/png", "Cache-Control": "no-store" },
+        });
+      }
+      if (method === "POST" && u.pathname === "/api/studio/cua/screenshot") {
+        const label = String(body.label || "frame").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 32) || "frame";
+        const file = `cua-${Date.now()}-${cua.nextId}-${label}.png`;
+        const b64 = chat.latestFramePngBase64 || renderMockFramePngBase64(chat, studioFrameSeq);
+        const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        cua.frames.set(file, bin);
+        if (cua.frames.size > 40) {
+          const oldest = cua.frames.keys().next().value;
+          if (oldest) cua.frames.delete(oldest);
+        }
+        const url = `/api/studio/cua/frame/${file}`;
+        const event = pushCua({ actor: String(body.actor || "agent"), kind: "screenshot", summary: "Captured Studio frame (browser)", frame_url: url });
+        return jsonResponse({ ok: true, path: url, file, url, width: 1440, height: 900, seq: studioFrameSeq, display: null, phase: "browser_place", place_open: true, event, cua_paused: cua.paused });
+      }
+      if (method === "POST" && u.pathname === "/api/studio/cua/mouse") {
+        if (cua.paused) return jsonResponse({ ok: false, cua_paused: true, error: "Agent CUA is paused by human takeover." }, 409);
+        const action = String(body.action || "click").toLowerCase();
+        if (!["click", "double_click", "right_click", "move", "drag", "scroll", "wheel"].includes(action)) {
+          return jsonResponse({ ok: false, error: `unsupported mouse action '${action}'` }, 400);
+        }
+        const x = Number(body.from_x ?? body.x ?? 0.5);
+        const y = Number(body.from_y ?? body.y ?? 0.5);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) {
+          return jsonResponse({ ok: false, error: "invalid mouse coordinates" }, 400);
+        }
+        const normX = x <= 1 ? x : x / 1440;
+        const normY = y <= 1 ? y : y / 900;
+        const evData: Record<string, unknown> = { actor: String(body.actor || "agent"), kind: action === "wheel" ? "scroll" : action, norm_x: normX, norm_y: normY, summary: `${String(body.actor || "agent")} · ${action} (${normX.toFixed(2)}, ${normY.toFixed(2)})` };
+        if (action === "drag") {
+          const tx = Number(body.to_x ?? body.end_x);
+          const ty = Number(body.to_y ?? body.end_y);
+          if (!Number.isFinite(tx) || !Number.isFinite(ty) || tx < 0 || ty < 0) {
+            return jsonResponse({ ok: false, error: "drag requires valid to_x/to_y" }, 400);
+          }
+          evData.to_norm_x = tx <= 1 ? tx : tx / 1440;
+          evData.to_norm_y = ty <= 1 ? ty : ty / 900;
+        }
+        const event = pushCua(evData);
+        return jsonResponse({ ok: true, cua_paused: false, event, result: { ok: true, mode: "browser_place" } });
+      }
+      if (method === "POST" && u.pathname === "/api/studio/cua/keyboard") {
+        if (cua.paused) return jsonResponse({ ok: false, cua_paused: true, error: "Agent CUA is paused by human takeover." }, 409);
+        const hk = Array.isArray(body.hotkey) ? body.hotkey.map((s) => String(s).toLowerCase()) : [];
+        const hasSuper = hk.some((k) => ["super", "meta", "win", "cmd"].includes(k)) || ["super", "meta"].includes(String(body.key || "").toLowerCase());
+        const altF4 = hk.includes("alt") && hk.includes("f4");
+        const cad = hk.includes("ctrl") && hk.includes("alt") && hk.includes("delete");
+        const caf = hk.includes("ctrl") && hk.includes("alt") && hk.some((k) => /^f([1-9]|1[0-2])$/.test(k));
+        if (hasSuper || altF4 || cad || caf) {
+          return jsonResponse({ ok: false, error: "blocked OS-escape shortcut" }, 400);
+        }
+        const event = pushCua({
+          actor: String(body.actor || "agent"),
+          kind: hk.length > 0 ? "hotkey" : body.text ? "type" : "press",
+          hotkey: hk.length > 0 ? hk : undefined,
+          key: typeof body.key === "string" ? body.key : undefined,
+          summary: hk.length > 0 ? `${String(body.actor || "agent")} · ${hk.join("+")}` : `${String(body.actor || "agent")} · key`,
+        });
+        return jsonResponse({ ok: true, cua_paused: false, event, result: { ok: true, mode: "browser_place" } });
+      }
+      if (method === "POST" && u.pathname === "/api/studio/cua/window") {
+        const action = String(body.action || "status").toLowerCase();
+        if (action === "pause") {
+          cua.paused = true;
+          const event = pushCua({ actor: String(body.actor || "user"), kind: "pause", summary: "Agent CUA paused by human takeover" });
+          return jsonResponse({ ok: true, action, cua_paused: true, event });
+        }
+        if (action === "resume") {
+          cua.paused = false;
+          const event = pushCua({ actor: String(body.actor || "user"), kind: "resume", summary: "Agent CUA resumed" });
+          return jsonResponse({ ok: true, action, cua_paused: false, event });
+        }
+        if (action === "status") {
+          return jsonResponse({ ok: true, cua_paused: cua.paused, running: false, state: "browser_place", recent_events: cua.events.slice(-24) });
+        }
+        const event = pushCua({ actor: String(body.actor || "agent"), kind: `window_${action}`, summary: `Studio window ${action} (browser mode)` });
+        return jsonResponse({ ok: true, action, cua_paused: cua.paused, event });
+      }
+    }
     const toolMatch = u.pathname.match(/^\/api\/studio\/tools\/([a-z0-9_]+)$/i);
     if (method === "POST" && toolMatch) {
       const toolName = toolMatch[1];
