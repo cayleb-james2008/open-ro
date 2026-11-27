@@ -1257,8 +1257,11 @@ export type TelemetrySyncState = {
   shard_cursor?: string | null;
   cursor?: string | null;
   shards_scanned?: number;
+  shards_tracked?: number;
+  shard_revisions?: Record<string, string>;
   last_imported_count?: number;
   imported_total?: number;
+  total_imported_count?: number;
   status?: string | null;
 };
 
@@ -1303,8 +1306,10 @@ export type TelemetrySyncResponse = {
 
 export type LiveErrorsResponse = {
   ok?: boolean;
+  source?: TelemetrySourceFilter | string;
+  total_error_events?: number;
   errors: LiveErrorAggregate[];
-  sync_state?: TelemetrySyncState;
+  sync_state?: TelemetrySyncState | null;
 };
 
 export type LiveOpsTelemetrySummary = {

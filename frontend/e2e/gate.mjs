@@ -485,22 +485,25 @@ try {
 
     // Install Live Telemetry Collector codegen
     await p.locator("[data-collector-store]").fill("GateTelemetry");
-    await p.locator("[data-collector-interval]").fill("15");
+    await p.locator("[data-collector-interval]").fill("90");
     await p.locator("[data-telemetry-codegen-btn]").click();
     await p.locator("[data-telemetry-codegen-result]").waitFor({ state: "visible", timeout: 8000 });
     const codegenFileCount = await p.locator("[data-telemetry-codegen-file]").count();
     const codegenResultText = await p.locator("[data-telemetry-codegen-result]").innerText();
     check(
       "LiveOps Telemetry Collector codegen generates strict Luau files",
-      codegenFileCount > 0 && codegenResultText.includes(".luau"),
+      codegenFileCount >= 2 && codegenResultText.includes("LiveTelemetry.luau"),
       `${codegenFileCount} file(s)`,
     );
 
     // Sync Live Production Telemetry + Live Server Errors
     const syncRoutePattern = "**/api/projects/*/liveops/telemetry/sync";
+    let liveSyncStatus = null;
     if (!isWebEngine && !ocState?.has_key) {
       await p.route(syncRoutePattern, async (route) => {
         const resp = await route.fetch();
+        liveSyncStatus = resp.status();
+        // Fail loudly on 404 (missing route) or 500; synthesize offline fixture only on 400/503 (missing Open Cloud key/universe).
         if (resp.status() === 200) {
           await route.fulfill({ response: resp });
           return;
@@ -562,8 +565,10 @@ try {
     }
     check(
       "LiveOps Sync Live Production Telemetry updates delta and shard cursor",
-      syncDeltaText.includes("imported") && syncCursorText.length > 0,
-      `${syncDeltaText} | ${syncCursorText}`,
+      syncDeltaText.includes("imported") &&
+        syncCursorText.length > 0 &&
+        (isWebEngine || ocState?.has_key || (liveSyncStatus !== null && liveSyncStatus !== 404)),
+      `${syncDeltaText} | ${syncCursorText} | status=${liveSyncStatus ?? "direct"}`,
     );
 
     const errorItemCount = await p.locator("[data-errors-list] [data-error-item]").count();
@@ -574,6 +579,31 @@ try {
       `items=${errorItemCount}, jumps=${errorJumpCount}`,
     );
 
+    // Exercise live /liveops/errors and ?source= filtering against real ingested telemetry
+    if (!isWebEngine) {
+      await p.evaluate(async () => {
+        const projs = await fetch("/api/projects").then((r) => r.json());
+        const activeId = projs?.active;
+        if (!activeId) return;
+        await fetch(`/api/projects/${encodeURIComponent(activeId)}/liveops/telemetry/ingest`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            events: [
+              {
+                kind: "error",
+                user_id: "server",
+                source: "sandbox",
+                script_path: "src/server/GateErrorProbe.server.luau",
+                error: "Attempt to index nil with Coins in GateErrorProbe",
+                ts: new Date().toISOString(),
+              },
+            ],
+          }),
+        });
+      });
+    }
+
     // Telemetry Source filter (All, Live Production, Headless Sandbox)
     await p.locator('[data-telemetry-source="sandbox"]').click();
     await p.waitForFunction(
@@ -581,7 +611,9 @@ try {
       null,
       { timeout: 4000 },
     );
+    await p.locator("[data-errors-list] [data-error-item]").first().waitFor({ state: "visible", timeout: 5000 });
     const sandboxPressed = await p.locator('[data-telemetry-source="sandbox"]').getAttribute("aria-pressed");
+    const sandboxErrCount = await p.locator("[data-errors-list] [data-error-item]").count();
     await p.locator('[data-telemetry-source="live_opencloud"]').click();
     await p.waitForFunction(
       () => document.querySelector('[data-telemetry-source="live_opencloud"]')?.getAttribute("aria-pressed") === "true",
@@ -595,10 +627,17 @@ try {
       null,
       { timeout: 4000 },
     );
+    await p.locator("[data-errors-list] [data-error-item]").first().waitFor({ state: "visible", timeout: 5000 });
     const allPressed = await p.locator('[data-telemetry-source="all"]').getAttribute("aria-pressed");
+    const allErrCount = await p.locator("[data-errors-list] [data-error-item]").count();
     check(
       "LiveOps Telemetry Source filter switches All, Live Production, and Headless Sandbox",
-      sandboxPressed === "true" && livePressed === "true" && allPressed === "true",
+      sandboxPressed === "true" &&
+        livePressed === "true" &&
+        allPressed === "true" &&
+        sandboxErrCount > 0 &&
+        allErrCount > 0,
+      `sandbox=${sandboxErrCount}, all=${allErrCount}`,
     );
 
     await setThemeViaSettings(p, "dark");

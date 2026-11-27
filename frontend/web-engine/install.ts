@@ -1,4 +1,4 @@
-// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.27.0 standalone web builds.
+// Real in-browser Roblox Studio IDE engine installer for OpenRO v1.28.0 standalone web builds.
 // Features:
 //  - RoPilot-Grade 3-Pane Studio IDE (Agent | Plan | Ask, Reviewable Unified Diffs, @Context Chips, Companion Plugin)
 //  - Embedded Studio Workbench & 13 Official Studio MCP Tools running live against the in-browser Place DataModel
@@ -2362,12 +2362,17 @@ function generateTelemetryCollectorScripts(
     mode === "webhook_relay"
       ? [
           `\tlocal ok, err = pcall(function()`,
-          `\t\tHttpService:PostAsync(${JSON.stringify(relayUrl)}, encoded, Enum.HttpContentType.ApplicationJson)`,
+          `\t\tHttpService:RequestAsync({`,
+          `\t\t\tUrl = ${JSON.stringify(relayUrl)},`,
+          `\t\t\tMethod = "POST",`,
+          `\t\t\tHeaders = { ["Content-Type"] = "application/json" },`,
+          `\t\t\tBody = encoded,`,
+          `\t\t})`,
           `\tend)`,
           `\tif not ok then warn("[OpenRO Telemetry] Relay flush failed: " .. tostring(err)) end`,
         ]
       : [
-          `\tlocal shardKey = string.format("shard_%d_%s", math.floor(os.time() / 3600), game.JobId ~= "" and game.JobId or "studio")`,
+          `\tlocal shardKey = string.format("bucket:%s", os.date("!%Y-%m-%d:%H"))`,
           `\tlocal ok, err = pcall(function()`,
           `\t\tlocal store = DataStoreService:GetDataStore(${JSON.stringify(storeName)})`,
           `\t\tstore:UpdateAsync(shardKey, function(existing: any)`,
@@ -2387,7 +2392,7 @@ function generateTelemetryCollectorScripts(
     'local ReplicatedStorage = game:GetService("ReplicatedStorage")',
     'local ScriptContext = game:GetService("ScriptContext")',
     "",
-    'local TelemetryCollector = require(ReplicatedStorage:WaitForChild("TelemetryCollector"))',
+    'local TelemetryCollector = require(ReplicatedStorage:WaitForChild("LiveTelemetry"))',
     "",
     "local function flushNow(): ()",
     "\tlocal batch = TelemetryCollector.Drain()",
@@ -2420,8 +2425,8 @@ function generateTelemetryCollectorScripts(
   ].join("\n");
 
   return {
-    "src/shared/TelemetryCollector.luau": sharedSource,
-    "src/server/TelemetryAgent.server.luau": agentSource,
+    "src/shared/LiveTelemetry.luau": sharedSource,
+    "src/server/LiveTelemetryFlush.server.luau": agentSource,
   };
 }
 
@@ -3221,7 +3226,7 @@ export function installWebEngine() {
     if (!chat.playMode) chat.playMode = "edit";
 
     if (method === "GET" && u.pathname === "/api/version") {
-      return jsonResponse({ name: "openro-rs", version: "1.27.0" });
+      return jsonResponse({ name: "openro-rs", version: "1.28.0" });
     }
     if (method === "GET" && u.pathname === "/api/status") {
       return jsonResponse({
@@ -3232,7 +3237,7 @@ export function installWebEngine() {
         model_base_url: state.webMode === "byok" ? state.byokBaseUrl : "in-browser",
         is_loopback_model: true,
         game_name: chat.title === "New chat" ? "OpenRO Studio" : chat.title,
-        version: "1.27.0",
+        version: "1.28.0",
         sse_build_stream: true,
         studio_stream: true,
         assets_api: true,
@@ -6341,9 +6346,9 @@ export function installWebEngine() {
       if (tail === "liveops/telemetry/codegen" && method === "POST") {
         const mode = body.mode === "webhook_relay" ? "webhook_relay" : "opencloud_datastore";
         const storeName =
-          typeof body.store_name === "string" && body.store_name.trim() ? body.store_name.trim() : "OpenRO_Telemetry";
-        const rawFlush = typeof body.flush_interval_secs === "number" ? body.flush_interval_secs : 30;
-        const flushSecs = Number.isFinite(rawFlush) ? Math.max(5, Math.min(300, Math.round(rawFlush))) : 30;
+          typeof body.store_name === "string" && body.store_name.trim() ? body.store_name.trim() : "OpenRO_LiveTelemetry";
+        const rawFlush = typeof body.flush_interval_secs === "number" ? body.flush_interval_secs : 60;
+        const flushSecs = Number.isFinite(rawFlush) ? Math.max(60, Math.min(3600, Math.round(rawFlush))) : 60;
         const relayUrl = typeof body.relay_url === "string" ? body.relay_url.trim() : "";
         if (mode === "webhook_relay" && !relayUrl.startsWith("https://")) {
           return jsonResponse({ ok: false, error: "Webhook relay mode requires an https:// relay_url." }, 400);
@@ -6361,6 +6366,7 @@ export function installWebEngine() {
           ok: true,
           mode,
           store_name: storeName,
+          flush_interval_secs: flushSecs,
           files: Object.keys(generated),
           warnings,
         });
@@ -6370,7 +6376,7 @@ export function installWebEngine() {
         const lo = ensureWebLiveOps(proj);
         const source = body.source === "creator_analytics" ? "creator_analytics" : "opencloud_datastore";
         const storeName =
-          typeof body.store_name === "string" && body.store_name.trim() ? body.store_name.trim() : "OpenRO_Telemetry";
+          typeof body.store_name === "string" && body.store_name.trim() ? body.store_name.trim() : "OpenRO_LiveTelemetry";
         const now = new Date().toISOString();
         const batchTag = (lo.syncState?.shards_scanned || 0) + 1;
         const imported: WebLiveOpsTelemetryEvent[] = [
@@ -6418,6 +6424,7 @@ export function installWebEngine() {
         }
 
         const nextShards = (lo.syncState?.shards_scanned || 0) + 4;
+        const totalImported = (lo.syncState?.imported_total || 0) + imported.length;
         lo.syncState = {
           last_synced_at: now,
           source,
@@ -6425,10 +6432,10 @@ export function installWebEngine() {
           shard_cursor: `shard-${String(nextShards).padStart(2, "0")}/${String(nextShards).padStart(2, "0")}`,
           shards_scanned: nextShards,
           last_imported_count: imported.length,
-          imported_total: (lo.syncState?.imported_total || 0) + imported.length,
+          imported_total: totalImported,
           status: "synced",
         };
-        proj.files[".openro/liveops/sync-state.json"] = JSON.stringify(lo.syncState, null, 2) + "\n";
+        proj.files[".openro/liveops/telemetry-sync-state.json"] = JSON.stringify(lo.syncState, null, 2) + "\n";
         persist();
 
         const top_errors = [...(lo.errors || [])].sort((a, b) => b.count - a.count);

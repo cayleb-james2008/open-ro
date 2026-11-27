@@ -161,8 +161,8 @@ export function LiveOpsPanel({
   const [lastImportedDelta, setLastImportedDelta] = useState<number | null>(null);
 
   const [collectorMode, setCollectorMode] = useState<TelemetryCodegenMode>("opencloud_datastore");
-  const [collectorStore, setCollectorStore] = useState("OpenRO_Telemetry");
-  const [collectorFlushSecs, setCollectorFlushSecs] = useState("30");
+  const [collectorStore, setCollectorStore] = useState("OpenRO_LiveTelemetry");
+  const [collectorFlushSecs, setCollectorFlushSecs] = useState("60");
   const [collectorRelayUrl, setCollectorRelayUrl] = useState("");
   const [collectorBusy, setCollectorBusy] = useState(false);
   const [collectorError, setCollectorError] = useState("");
@@ -563,14 +563,14 @@ export function LiveOpsPanel({
       return;
     }
     const parsedFlush = Number(collectorFlushSecs);
-    const flushSecs = Number.isFinite(parsedFlush) ? Math.max(5, Math.min(300, Math.round(parsedFlush))) : 30;
+    const flushSecs = Number.isFinite(parsedFlush) ? Math.max(60, Math.min(3600, Math.round(parsedFlush))) : 60;
     collectorLockRef.current = true;
     setCollectorBusy(true);
     setCollectorError("");
     try {
       const r = await generateLiveOpsTelemetryCollector(projectId, {
         mode: collectorMode,
-        store_name: collectorStore.trim() || "OpenRO_Telemetry",
+        store_name: collectorStore.trim() || "OpenRO_LiveTelemetry",
         flush_interval_secs: flushSecs,
         ...(collectorMode === "webhook_relay" ? { relay_url: trimmedRelay } : {}),
       });
@@ -583,7 +583,7 @@ export function LiveOpsPanel({
       setCollectorResult({
         ok: true,
         mode: r.mode || collectorMode,
-        store_name: r.store_name || collectorStore.trim() || "OpenRO_Telemetry",
+        store_name: r.store_name || collectorStore.trim() || "OpenRO_LiveTelemetry",
         files,
         warnings,
       });
@@ -605,7 +605,7 @@ export function LiveOpsPanel({
       const r = await syncLiveOpsTelemetry(projectId, {
         source: syncSource,
         days,
-        store_name: collectorStore.trim() || "OpenRO_Telemetry",
+        store_name: collectorStore.trim() || "OpenRO_LiveTelemetry",
       });
       if (!r.ok) {
         setSyncError(r.error || "Could not sync production telemetry.");
@@ -1279,7 +1279,9 @@ export function LiveOpsPanel({
             <Pill className="bg-track px-2 py-0.5 font-mono text-xs tabular-nums text-ink-2" data-telemetry-sync-cursor>
               {syncState?.shard_cursor || syncState?.cursor
                 ? `Cursor ${syncState.shard_cursor || syncState.cursor}`
-                : syncState?.status || "Cursor idle"}
+                : typeof syncState?.shards_tracked === "number" && (syncState.last_sync_at || syncState.last_synced_at)
+                  ? `${syncState.shards_tracked} shard${syncState.shards_tracked === 1 ? "" : "s"} tracked`
+                  : syncState?.status || "Cursor idle"}
             </Pill>
             {(lastImportedDelta !== null ||
               (Boolean(syncState?.last_synced_at || syncState?.last_sync_at) &&
@@ -1395,12 +1397,12 @@ export function LiveOpsPanel({
             </SegmentedControl>
           </div>
 
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <Field label="DataStore name">
               <Input
                 value={collectorStore}
                 onChange={(e) => setCollectorStore(e.target.value)}
-                placeholder="OpenRO_Telemetry"
+                placeholder="OpenRO_LiveTelemetry"
                 className="font-mono text-xs"
                 data-collector-store
               />
@@ -1408,63 +1410,51 @@ export function LiveOpsPanel({
             <Field label="Flush interval (secs)">
               <Input
                 type="number"
-                min={5}
-                max={300}
+                min={60}
+                max={3600}
                 value={collectorFlushSecs}
                 onChange={(e) => setCollectorFlushSecs(e.target.value)}
-                placeholder="30"
+                placeholder="60"
                 className="font-mono text-xs tabular-nums"
                 data-collector-interval
               />
             </Field>
-            {collectorMode === "webhook_relay" ? (
-              <Field label="HTTPS relay URL">
-                <Input
-                  value={collectorRelayUrl}
-                  onChange={(e) => {
-                    setCollectorRelayUrl(e.target.value);
-                    if (collectorError) setCollectorError("");
-                  }}
-                  placeholder="https://telemetry.example.com/ingest"
-                  className="font-mono text-xs"
-                  data-collector-relay-url
-                />
-              </Field>
-            ) : (
-              <div className="flex items-end">
-                <Button
-                  variant="outline"
-                  size="default"
-                  loading={collectorBusy}
-                  onClick={() => void handleGenerateCollector()}
-                  data-telemetry-codegen-btn
-                  className="w-full max-md:min-h-11"
-                >
-                  <FileCode2 className="size-3.5" strokeWidth={1.5} aria-hidden />
-                  {collectorBusy ? "Generating…" : "Install Live Telemetry Collector"}
-                </Button>
+            {collectorMode === "webhook_relay" && (
+              <div className="sm:col-span-2">
+                <Field label="HTTPS relay URL">
+                  <Input
+                    value={collectorRelayUrl}
+                    onChange={(e) => {
+                      setCollectorRelayUrl(e.target.value);
+                      if (collectorError) setCollectorError("");
+                    }}
+                    placeholder="https://telemetry.example.com/ingest"
+                    className="font-mono text-xs"
+                    data-collector-relay-url
+                  />
+                </Field>
               </div>
             )}
           </div>
 
-          {collectorMode === "webhook_relay" && (
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs text-ink-2">
-                Generates strict Luau client and server hooks flushing batches over HttpService:PostAsync.
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                loading={collectorBusy}
-                onClick={() => void handleGenerateCollector()}
-                data-telemetry-codegen-btn
-                className="max-md:min-h-11"
-              >
-                <FileCode2 className="size-3.5" strokeWidth={1.5} aria-hidden />
-                {collectorBusy ? "Generating…" : "Install Live Telemetry Collector"}
-              </Button>
-            </div>
-          )}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs text-ink-2">
+              {collectorMode === "webhook_relay"
+                ? "Generates strict Luau shared collector and server flush hooks over HttpService:RequestAsync."
+                : "Generates strict Luau shared ring buffer and hourly DataStoreService flush hooks."}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              loading={collectorBusy}
+              onClick={() => void handleGenerateCollector()}
+              data-telemetry-codegen-btn
+              className="max-md:min-h-11"
+            >
+              <FileCode2 className="size-3.5" strokeWidth={1.5} aria-hidden />
+              {collectorBusy ? "Generating…" : "Install Live Telemetry Collector"}
+            </Button>
+          </div>
 
           {collectorError && (
             <p role="alert" data-telemetry-codegen-error className="rounded-sm bg-pill-pro-bg px-3 py-2 text-sm text-pill-pro-fg">
@@ -1682,9 +1672,9 @@ export function LiveOpsPanel({
               <li
                 key={err.fingerprint}
                 data-error-item={err.fingerprint}
-                className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between"
+                className="flex flex-col gap-2 px-3 py-2.5"
               >
-                <div className="min-w-0 flex-1 space-y-1">
+                <div className="min-w-0 space-y-1">
                   <p className="break-words text-sm font-medium text-ink">{err.message}</p>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-ink-3">
                     <span className="font-mono">{err.fingerprint}</span>
@@ -1694,7 +1684,7 @@ export function LiveOpsPanel({
                     </span>
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
+                <div className="flex flex-wrap items-center gap-2">
                   <Pill
                     className="bg-pill-pro-bg px-2 py-0.5 font-mono text-xs tabular-nums text-pill-pro-fg"
                     data-error-count
@@ -1708,13 +1698,13 @@ export function LiveOpsPanel({
                         size="xs"
                         onClick={() => onOpenCodeFile(err.script_path!)}
                         data-error-jump={err.script_path}
-                        className="max-w-full font-mono max-md:min-h-11"
+                        className="min-w-0 max-w-full font-mono max-md:min-h-11"
                       >
                         <FileCode2 className="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden />
                         <span className="truncate">{err.script_path}</span>
                       </Button>
                     ) : (
-                      <Pill className="bg-track px-2 py-0.5 font-mono text-xs text-ink-2">
+                      <Pill className="min-w-0 max-w-full truncate bg-track px-2 py-0.5 font-mono text-xs text-ink-2">
                         {err.script_path}
                       </Pill>
                     ))}
