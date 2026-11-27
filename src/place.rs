@@ -940,7 +940,7 @@ impl LocalPlace {
                 json!({
                     "class_name": "Decal",
                     "properties": {
-                        "Texture": "rbxasset://openro-assets/supernova-ascended-striker.png",
+                        "Texture": "rbxasset://openro-assets/helios-clockwork-paragon.png",
                         "Face": "Front"
                     }
                 }),
@@ -957,7 +957,7 @@ impl LocalPlace {
                 json!({
                     "class_name": "ImageLabel",
                     "properties": {
-                        "Image": "rbxasset://openro-assets/supernova-ascended-striker.png",
+                        "Image": "rbxasset://openro-assets/helios-clockwork-paragon.png",
                         "BackgroundTransparency": 1.0
                     }
                 }),

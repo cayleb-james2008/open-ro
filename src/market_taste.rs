@@ -1755,7 +1755,7 @@ static NICHE_PROFILES: [NicheProfile; 8] = [
         id: "anime-rng-cards",
         name: "Anime RNG & Card Battlers",
         tagline: "High-clarity anime gacha collection, progression depth, and responsive card battles.",
-        craft_bar: "Match top-charting anime RNG and card-game craft: cohesive stylized lighting and readable hub landmarks, recognizable epithet-named character art, non-overlapping responsive HUDs, snappy TweenService reveal & combat feedback, and server-authoritative odds and saves.",
+        craft_bar: "Match top-charting anime RNG and card-game craft: cohesive stylized lighting and readable hub landmarks, 100% original cel-shaded character art (original silhouettes, costumes, lore, and names), non-overlapping responsive HUDs, snappy TweenService reveal & combat feedback, and server-authoritative odds and saves.",
         gameplay_loop: &[
             "Fast first-touch core loop: clear entry action within seconds -> unmistakable rarity reveal -> immediate equip/upgrade feedback",
             "Multi-mode progression: pair core rolling/collection with meaningful combat, world progression, or challenge modes defined by the project GDD",

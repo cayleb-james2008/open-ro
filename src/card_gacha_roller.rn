@@ -85,30 +85,30 @@ local PACKS = {
 
 local CARD_POOL = {
     Secret = {
-        { id = "supernova-ascended-striker", title = "Supernova Ascended Striker", pack = "Eclipse Legends", element = "Solar", atk = 760, hp = 2350, speed = 99, skill = "Burn AoE" },
+        { id = "helios-clockwork-paragon", title = "Helios Clockwork Paragon", pack = "Eclipse Legends", element = "Solar", atk = 760, hp = 2350, speed = 99, skill = "Burn AoE" },
     },
     Celestial = {
         { id = "celestial-star-oracle", title = "Celestial Star Oracle", pack = "Eclipse Legends", element = "Solar", atk = 570, hp = 1800, speed = 96, skill = "Time Stop", weatherLock = "Starfall" },
     },
     Mythic = {
-        { id = "infinity-void-sorcerer", title = "Infinity Void Sorcerer", pack = "Shibuya Spirit", element = "Arcane", atk = 560, hp = 1780, speed = 96, skill = "Time Stop" },
-        { id = "shadow-sovereign", title = "Shadow Sovereign", pack = "Shadow Gate", element = "Shadow", atk = 585, hp = 1840, speed = 95, skill = "Lifesteal" },
-        { id = "crimson-sea-captain", title = "Crimson Sea Captain", pack = "Crimson Pirate", element = "Crimson", atk = 545, hp = 1720, speed = 92, skill = "Burn AoE" },
-        { id = "nine-tail-ember-shinobi", title = "Nine-Tail Ember Shinobi", pack = "Celestial Alchemy", element = "Solar", atk = 555, hp = 1760, speed = 94, skill = "Domain Buff" },
+        { id = "prism-rift-archivist", title = "Prism-Rift Archivist", pack = "Shibuya Spirit", element = "Arcane", atk = 560, hp = 1780, speed = 96, skill = "Time Stop" },
+        { id = "velvet-bell-warden", title = "Velvet-Bell Warden", pack = "Shadow Gate", element = "Shadow", atk = 585, hp = 1840, speed = 95, skill = "Lifesteal" },
+        { id = "cinder-sail-navigator", title = "Cinder-Sail Navigator", pack = "Crimson Pirate", element = "Crimson", atk = 545, hp = 1720, speed = 92, skill = "Burn AoE" },
+        { id = "amber-crane-dancer", title = "Amber-Crane Dancer", pack = "Celestial Alchemy", element = "Solar", atk = 555, hp = 1760, speed = 94, skill = "Domain Buff" },
     },
     Legendary = {
-        { id = "thunder-flash-ronin", title = "Thunder Flash Ronin", pack = "Celestial Alchemy", element = "Storm", atk = 420, hp = 1240, speed = 100, skill = "Stun" },
+        { id = "gale-lantern-fencer", title = "Gale-Lantern Fencer", pack = "Celestial Alchemy", element = "Storm", atk = 420, hp = 1240, speed = 100, skill = "Stun" },
         { id = "blazing-tides-corsair", title = "Blazing Tides Corsair", pack = "Crimson Pirate", element = "Crimson", atk = 405, hp = 1360, speed = 89, skill = "Burn AoE", weatherLock = "Sandstorm" },
         { id = "abyssal-dread-marshall", title = "Abyssal Dread Marshall", pack = "Shadow Gate", element = "Shadow", atk = 430, hp = 1420, speed = 91, skill = "Domain Buff" },
         { id = "lunar-eclipse-duelist", title = "Lunar Eclipse Duelist", pack = "Eclipse Legends", element = "Storm", atk = 440, hp = 1320, speed = 97, skill = "Counter", weatherLock = "Eclipse 2x Luck" },
     },
     Epic = {
-        { id = "blood-moon-gravity-ronin", title = "Blood-Moon Gravity Ronin", pack = "Shadow Gate", element = "Shadow", atk = 330, hp = 1180, speed = 86, skill = "Guard Break", weatherLock = "Blood Moon" },
+        { id = "basalt-tide-anchorite", title = "Basalt-Tide Anchorite", pack = "Shadow Gate", element = "Shadow", atk = 330, hp = 1180, speed = 86, skill = "Guard Break", weatherLock = "Blood Moon" },
         { id = "domain-curse-blade", title = "Domain Curse Blade", pack = "Shibuya Spirit", element = "Arcane", atk = 315, hp = 1140, speed = 88, skill = "Domain Buff" },
         { id = "sage-transmuter", title = "Sage Transmuter", pack = "Celestial Alchemy", element = "Arcane", atk = 310, hp = 1160, speed = 83, skill = "Mirror Shield", weatherLock = "Snow" },
     },
     Rare = {
-        { id = "eclipse-arcane-alchemist", title = "Eclipse Arcane Alchemist", pack = "Starter", element = "Arcane", atk = 230, hp = 960, speed = 80, skill = "Mirror Shield" },
+        { id = "verdigris-glass-tinker", title = "Verdigris Glass Tinker", pack = "Starter", element = "Arcane", atk = 230, hp = 960, speed = 80, skill = "Mirror Shield" },
         { id = "gale-kunoichi", title = "Gale Kunoichi", pack = "Starter", element = "Storm", atk = 245, hp = 880, speed = 90, skill = "Stun", weatherLock = "Rain" },
         { id = "shikigami-summoner", title = "Shikigami Summoner", pack = "Shibuya Spirit", element = "Shadow", atk = 250, hp = 940, speed = 84, skill = "Lifesteal" },
         { id = "iron-cutlass-firstmate", title = "Iron Cutlass Firstmate", pack = "Crimson Pirate", element = "Crimson", atk = 260, hp = 1020, speed = 82, skill = "Counter" },

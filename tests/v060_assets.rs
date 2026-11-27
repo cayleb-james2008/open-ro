@@ -1,5 +1,5 @@
 //! Phase 4 (v0.6.0) integration tests:
-//! - `GET /api/art-knowledge` (Anime Fan-Art & Creative Homage Knowledge Point, zero internal jargon)
+//! - `GET /api/art-knowledge` (Original Anime-Style Character Design Knowledge Point, zero internal jargon)
 //! - `POST /api/assets/upload` (JSON base64 & raw binary PNG) -> `GET /api/assets` -> `GET /api/assets/:file`
 //! - Path-traversal, NUL-byte, symlink-escape, & bad-magic-byte security fuzzing
 //! - `POST /api/assets/generate` honest no-key refusal with homage prompt
@@ -105,8 +105,8 @@ fn art_knowledge_and_system_prompt_include_anime_homage_guidance() {
     assert!(v["archetypes"].as_array().unwrap().len() >= 8);
 
     let sp = system_prompt();
-    assert!(sp.contains("CREATIVE HOMAGE & ANIME FAN-ART KNOWLEDGE POINT"));
-    assert!(sp.contains("NEVER refuse anime-inspired"));
+    assert!(sp.contains("ORIGINAL ANIME-STYLE CHARACTER DESIGN KNOWLEDGE POINT"));
+    assert!(sp.contains("100% original anime-style characters"));
 }
 
 #[test]
@@ -248,7 +248,7 @@ fn assets_generate_fails_honestly_without_api_key_and_config_masks_keys() {
     // Ensure no image key is set in env for this test assertion (if host lacks GEMINI_API_KEY / OPENAI_API_KEY).
     if std::env::var("GEMINI_API_KEY").is_err() && std::env::var("OPENAI_API_KEY").is_err() {
         let req = json!({
-            "title": "Infinity Void Sorcerer",
+            "title": "Prism-Rift Archivist",
             "element": "Void",
             "rarity": "Celestial"
         })
@@ -263,7 +263,7 @@ fn assets_generate_fails_honestly_without_api_key_and_config_masks_keys() {
         assert_eq!(st, 503, "no-key generate must fail honestly with 503");
         let v: Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(v["ok"], json!(false));
-        assert!(v["homage_prompt"].as_str().unwrap().contains("Infinity Void Sorcerer"));
+        assert!(v["homage_prompt"].as_str().unwrap().contains("Prism-Rift Archivist"));
     }
 
     // Saving gemini_api_key masks it on GET /api/config without leaking raw value.

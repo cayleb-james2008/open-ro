@@ -304,11 +304,11 @@ end
 
 local function defaultProfile()
     return {
-        deck = { "eclipse-arcane-alchemist" },
+        deck = { "verdigris-glass-tinker" },
         owned = {
             {
-                card_id = "eclipse-arcane-alchemist",
-                title = "Eclipse Arcane Alchemist",
+                card_id = "verdigris-glass-tinker",
+                title = "Verdigris Glass Tinker",
                 rarity = "Rare",
                 element = "Arcane",
                 border = "Normal",
@@ -324,7 +324,7 @@ local function defaultProfile()
                 charm = nil,
             },
         },
-        index = { ["eclipse-arcane-alchemist"] = true },
+        index = { ["verdigris-glass-tinker"] = true },
         shards = 35,
         charms_owned = {},
         rebirths = 0,

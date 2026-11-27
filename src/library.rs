@@ -4,8 +4,8 @@
 //! starts fluent in general-purpose Roblox Studio Luau/networking/DataStores/MCP,
 //! Blender 3D UV/mesh generation, and live Roblox Top-Trending Market Taste across
 //! all 8 genres — plus 5 one-click installable packs that dynamically unlock
-//! specialized media tools, `SKILL.md` prompt guidance (including the Stylized
-//! Fan-Art & Title-Epithet Creative Knowledge Point inside `image-gen-studio`),
+//! specialized media tools, `SKILL.md` prompt guidance (including the Original
+//! Anime-Style Character Design Knowledge Point inside `image-gen-studio`),
 //! and `0600`-persisted provider connections:
 //!
 //! Pre-installed universal defaults (always active):
@@ -14,7 +14,7 @@
 //! - `roblox-market-taste` (live Roblox Explore charts, default `"top-trending"` across all 8 genres)
 //!
 //! One-click installable packs:
-//! - `image-gen-studio` (Gemini Nano Banana / OpenAI Image + Stylized Fan-Art & Title-Epithet Knowledge Point)
+//! - `image-gen-studio` (Gemini Nano Banana / OpenAI Image + Original Anime-Style Character Design Knowledge Point)
 //! - `model-3d-gen` (Local Blender / procedural `.obj` + Meshy / Tripo)
 //! - `video-gen-studio` (OpenMotion / Veo / Flow)
 //! - `audio-sfx-gen` (Built-in pure-Rust `.wav` synth + ElevenLabs / Lyria)
@@ -692,14 +692,14 @@ impl LibraryManager {
                     (
                         true,
                         format!(
-                            "Image generation API key configured (Gemini Nano Banana / OpenAI Image) + Stylized Fan-Art & Title-Epithet Knowledge Point loaded ({kp_count} archetype guides)."
+                            "Image generation API key configured (Gemini Nano Banana / OpenAI Image) + Original Anime-Style Character Design Knowledge Point loaded ({kp_count} archetype guides)."
                         ),
                     )
                 } else {
                     (
                         false,
                         format!(
-                            "Stylized Fan-Art & Title-Epithet Knowledge Point loaded ({kp_count} guides), but no GEMINI_API_KEY or OPENAI_API_KEY is configured yet."
+                            "Original Anime-Style Character Design Knowledge Point loaded ({kp_count} guides), but no GEMINI_API_KEY or OPENAI_API_KEY is configured yet."
                         ),
                     )
                 }
@@ -1511,9 +1511,9 @@ static PACK_SPECS: [PackSpec; 8] = [
     // --- 5 One-Click Installable Library Packs ---
     PackSpec {
         id: "image-gen-studio",
-        name: "Image Gen & Stylized Fan-Art Studio",
+        name: "Image Gen & Original Anime Art Studio",
         category: "2D Art & Textures",
-        description: "Unlock AI textures, decals, and stylized character illustrations via Gemini (Nano Banana) or OpenAI Image, including the Stylized Fan-Art Visual Fidelity & Title-Epithet Creative Knowledge Point.",
+        description: "Unlock AI textures, decals, and original anime-style character illustrations via Gemini (Nano Banana) or OpenAI Image, including the Original Anime-Style Character Design Knowledge Point.",
         default_installed: false,
         version: "0.9.0",
         default_provider: "gemini-nano-banana",
@@ -1521,20 +1521,20 @@ static PACK_SPECS: [PackSpec; 8] = [
             "generate_card_art",
             "generate_texture_pack",
             "edit_reference_art",
-            "fan_art_knowledge_point",
+            "original_anime_knowledge_point",
         ],
         capabilities: &[
             "gemini-nano-banana",
             "openai-image",
-            "stylized-fan-art-fidelity",
-            "title-epithet-naming",
+            "original-anime-character-design",
+            "original-silhouettes-and-naming",
             "decal-surfacegui-binding",
         ],
         env_vars: &["GEMINI_API_KEY", "OPENAI_API_KEY"],
-        skill_summary: "Generate textures, icons, decals, and high-fidelity stylized character art with Gemini Nano Banana or OpenAI Image using iconic title/epithet display names.",
-        skill_markdown: "- Default to `reference_search` (shared browser action references saved to gitignored `art/references/`) followed by `art_generate` (ChatGPT shared browser default, single-line prompt with eye-level / neutral three-quarter framing, never low-angle phrases, never Higgsfield Soul Cinema; Gemini and OpenAI optional).\n\
-- **Stylized Fan-Art Visual Fidelity Rule:** Generated fan-art MUST actually look like and be unmistakably recognizable as the original character (faithful hair, eyes, expression, outfit silhouette, weapon/stance, and signature elemental aura).\n\
-- **Title-Epithet Naming Rule:** Display names MUST replace trademarked proper names with the character's iconic title/epithet (e.g., `Joyful Pirate`, `Six-Eyes Sorcerer`, `Shadow Monarch`, `Nine-Tail Shinobi`, `Thunder Flash Blade`, `Steel Alchemist`, `Gravity Ronin`, `Golden Ascended Warrior`).\n\
+        skill_summary: "Generate textures, icons, decals, and 100% original anime-style character art with Gemini Nano Banana or OpenAI Image using original silhouettes, costumes, lore, and names.",
+        skill_markdown: "- Default to `reference_search` (pose/lighting mood references saved to gitignored `art/references/`) followed by `art_generate` (ChatGPT shared browser default, single-line prompt with eye-level / neutral three-quarter framing, never low-angle phrases, never Higgsfield Soul Cinema; Gemini and OpenAI optional).\n\
+- **Original Character Visual Design Rule:** All generated anime-style characters MUST be 100% original — original silhouettes, hair, costumes, props, and lore with zero copied likenesses from existing franchises.\n\
+- **Original Naming Rule:** Display names MUST be 100% original character names and titles (e.g., `Cinder-Sail Navigator`, `Prism-Rift Archivist`, `Velvet-Bell Warden`, `Amber-Crane Dancer`, `Gale-Lantern Fencer`, `Verdigris Glass Tinker`, `Basalt-Tide Anchorite`, `Helios Clockwork Paragon`) — never trademarked names or franchise look-alikes.\n\
 - Save generated assets through `AssetManager` so SHA-256 manifests and Roblox `Decal`/`ImageLabel` bindings stay synchronized.",
     },
     PackSpec {
