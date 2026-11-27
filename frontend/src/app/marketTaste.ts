@@ -558,7 +558,7 @@ export const BASELINE_MARKET_NICHES: MarketTasteNiche[] = [
     model_and_world_3d_style: [
       "Bright sunlit stylized islands (Starter Harbor, Sakura Cliff, Storm Citadel) connected by turquoise ocean & glowing raid portals",
       "Distinct landmark silhouettes per island so players orient immediately without opening a map",
-      "Original elemental VFX palettes and cel-shaded homage silhouettes (zero copyrighted IP)",
+      "Original elemental VFX palettes and 100% original anime-style silhouettes (zero copied likenesses or IP)",
     ],
     audio_cadence: [
       "Crisp elemental whoosh + resonant impact boom per Z/X/C/V ability tier",
@@ -576,7 +576,7 @@ export const BASELINE_MARKET_NICHES: MarketTasteNiche[] = [
       "Co-op Boss Raid portals scaling rewards with party damage contribution",
     ],
     anti_slop_rules: [
-      "Use original ability names, elemental VFX palettes, and homage silhouettes (zero copyrighted IP)",
+      "Use original ability names, elemental VFX palettes, and 100% original silhouettes and costumes (zero copied likenesses or IP)",
       "Keep combat hitboxes responsive and server-checked with clear cooldown HUD indicators",
       "Save player level, mastery XP, unlocked abilities, and quest progress atomically on leave & BindToClose",
     ],

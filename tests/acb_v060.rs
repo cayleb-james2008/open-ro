@@ -2,7 +2,7 @@
 //! - All 6 new Roblox Card-Battler Game Systems (expanding 22 -> 28 total systems)
 //! - Zero user-facing "Rune" jargon across new systems, knowledge point, catalog & blueprint
 //! - Full `anime-card-battles-apex` flagship starter blueprint execution & playtest proof
-//! - Built-in Anime Fan-Art & Creative Homage Knowledge Point (`openro_rs::art_knowledge`)
+//! - Built-in Original Anime-Style Character Design Knowledge Point (`openro_rs::art_knowledge`)
 //! - Game Art Asset Manager (`openro_rs::assets`): security traversal/magic-byte/symlink defenses,
 //!   base64 & raw upload, honest unconfigured API refusal, loopback Gemini/OpenAI HTTP parsing,
 //!   `.rbxlx` `Decal` & `ImageLabel` binding + lossless XML round-trip, and `asset-manifest.json`.
@@ -274,9 +274,9 @@ fn anime_card_battles_apex_blueprint_builds_binds_art_and_roundtrips_rbxlx() {
     // Export .rbxlx XML and verify authentic <Content name="Texture"> + <Content name="Image"> bindings
     let xml = place.to_rbxlx_xml();
     assert!(xml.contains("<Item class=\"Decal\""));
-    assert!(xml.contains("<Content name=\"Texture\"><url>rbxasset://openro-assets/supernova-ascended-striker.png</url></Content>"));
+    assert!(xml.contains("<Content name=\"Texture\"><url>rbxasset://openro-assets/helios-clockwork-paragon.png</url></Content>"));
     assert!(xml.contains("<Item class=\"ImageLabel\""));
-    assert!(xml.contains("<Content name=\"Image\"><url>rbxasset://openro-assets/infinity-void-sorcerer.png</url></Content>"));
+    assert!(xml.contains("<Content name=\"Image\"><url>rbxasset://openro-assets/prism-rift-archivist.png</url></Content>"));
     assert!(xml.contains("<token name=\"Face\">5</token>"));
 
     if let Ok(dump_path) = std::env::var("OPENRO_DUMP_APEX_RBXLX") {
@@ -287,20 +287,20 @@ fn anime_card_battles_apex_blueprint_builds_binds_art_and_roundtrips_rbxlx() {
     let imported = Place::from_rbxlx_xml(&xml).expect("apex rbxlx round-trips cleanly");
     assert_eq!(imported.scripts().len(), place.scripts().len());
     assert_eq!(imported.instances().len(), place.instances().len());
-    let decal = &imported.instances()["Workspace.CardGallery.Showcase_supernova_ascended_striker.CardArtDecal"];
+    let decal = &imported.instances()["Workspace.CardGallery.Showcase_helios_clockwork_paragon.CardArtDecal"];
     assert_eq!(decal["class_name"], "Decal");
     assert_eq!(
         decal["properties"]["Texture"],
-        "rbxasset://openro-assets/supernova-ascended-striker.png"
+        "rbxasset://openro-assets/helios-clockwork-paragon.png"
     );
     assert_eq!(decal["properties"]["Face"], "Front");
 
     let img = &imported.instances()
-        ["Workspace.CardGallery.Showcase_infinity_void_sorcerer.CardDisplayGui.CardArtImage"];
+        ["Workspace.CardGallery.Showcase_prism_rift_archivist.CardDisplayGui.CardArtImage"];
     assert_eq!(img["class_name"], "ImageLabel");
     assert_eq!(
         img["properties"]["Image"],
-        "rbxasset://openro-assets/infinity-void-sorcerer.png"
+        "rbxasset://openro-assets/prism-rift-archivist.png"
     );
 
     let rep2 = imported.analyze();
@@ -317,8 +317,8 @@ fn art_knowledge_point_is_non_refusal_homage_complete_and_jargon_free() {
     assert!(!summary.to_string().to_ascii_lowercase().contains("rune"));
 
     let guidance = art_knowledge::prompt_guidance();
-    assert!(guidance.contains("NEVER refuse anime-inspired"));
-    assert!(guidance.contains("DMCA-safe"));
+    assert!(guidance.contains("100% original anime-style characters"));
+    assert!(guidance.contains("zero copied likenesses"));
     assert!(!guidance.to_ascii_lowercase().contains("rune"));
 
     let prompt = art_knowledge::build_homage_prompt(
@@ -331,6 +331,8 @@ fn art_knowledge_point_is_non_refusal_homage_complete_and_jargon_free() {
         prompt.contains("Astral Blade Empress")
             && prompt.contains("Celestial")
             && prompt.contains("Storm")
+            && prompt.contains("100% original")
+            && prompt.contains("zero copied franchise likenesses")
             && prompt.contains("zero text")
             && prompt.contains("zero watermark")
     );
@@ -383,7 +385,7 @@ fn asset_manager_security_sanitization_magic_bytes_symlinks_and_live_clients() {
 
     let saved_png = mgr
         .save_base64(
-            "shadow-sovereign.png",
+            "velvet-bell-warden.png",
             &format!("data:image/png;base64,{b64}"),
             AssetMetadataInput {
                 source: Some("nano-banana".to_string()),
@@ -392,7 +394,7 @@ fn asset_manager_security_sanitization_magic_bytes_symlinks_and_live_clients() {
         )
         .unwrap();
     assert_eq!(saved_png.sha256.len(), 64);
-    assert_eq!(saved_png.title, "Shadow Sovereign");
+    assert_eq!(saved_png.title, "Velvet-Bell Warden");
 
     mgr.save_bytes("alt.webp", TINY_WEBP, AssetMetadataInput::default())
         .unwrap();
@@ -407,7 +409,7 @@ fn asset_manager_security_sanitization_magic_bytes_symlinks_and_live_clients() {
     // Reopen reads persisted manifest cleanly
     let mgr2 = AssetManager::open(&dir);
     assert_eq!(mgr2.list().len(), 3);
-    let (read_bytes, read_mime) = mgr2.read_bytes("shadow-sovereign.png").unwrap();
+    let (read_bytes, read_mime) = mgr2.read_bytes("velvet-bell-warden.png").unwrap();
     assert_eq!(read_bytes, TINY_PNG);
     assert_eq!(read_mime, "image/png");
 

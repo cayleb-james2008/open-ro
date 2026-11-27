@@ -124,8 +124,8 @@ local function buildPlayerTeam(player)
     end
     if #team == 0 then
         table.insert(team, {
-            card_id = "crimson-sea-captain",
-            title = "Crimson Sea Captain",
+            card_id = "cinder-sail-navigator",
+            title = "Cinder-Sail Navigator",
             element = "Crimson",
             skill = "Burn AoE",
             atk = 420,

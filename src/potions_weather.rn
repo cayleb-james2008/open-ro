@@ -62,11 +62,11 @@ local WEATHERS = {
     { name = "Rain",              alias = "Thunderstorm",      luck = 1.25, clock = 15.6, brightness = 2.1, density = 0.28, haze = 1.20, element = "Storm",   exclusive = "gale-kunoichi" },
     { name = "Snow",              alias = "Frost Veil",        luck = 1.35, clock = 11.4, brightness = 2.5, density = 0.24, haze = 0.90, element = "Arcane",  exclusive = "sage-transmuter" },
     { name = "Sandstorm",         alias = "Solar Flare",       luck = 1.50, clock = 16.5, brightness = 2.3, density = 0.30, haze = 1.40, element = "Crimson", exclusive = "blazing-tides-corsair" },
-    { name = "Blood Moon",        alias = "Blood Moon",        luck = 1.85, clock = 21.8, brightness = 1.3, density = 0.38, haze = 2.00, element = "Shadow",  exclusive = "blood-moon-gravity-ronin" },
+    { name = "Blood Moon",        alias = "Blood Moon",        luck = 1.85, clock = 21.8, brightness = 1.3, density = 0.38, haze = 2.00, element = "Shadow",  exclusive = "basalt-tide-anchorite" },
     { name = "Eclipse 2x Luck",   alias = "Void Eclipse",      luck = 2.00, clock = 20.4, brightness = 1.2, density = 0.38, haze = 2.00, element = "Shadow",  exclusive = "lunar-eclipse-duelist" },
     { name = "Starfall",          alias = "Starfall",          luck = 2.50, clock = 18.8, brightness = 2.0, density = 0.22, haze = 0.85, element = "Solar",   exclusive = "celestial-star-oracle" },
-    { name = "Crimson Eclipse",   alias = "Crimson Eclipse",   luck = 5.00, clock = 20.8, brightness = 1.5, density = 0.34, haze = 1.80, element = "Crimson", exclusive = "crimson-sea-captain" },
-    { name = "Celestial Tempest", alias = "Celestial Tempest", luck = 4.50, clock = 21.4, brightness = 1.7, density = 0.30, haze = 1.50, element = "Storm",   exclusive = "thunder-flash-ronin" },
+    { name = "Crimson Eclipse",   alias = "Crimson Eclipse",   luck = 5.00, clock = 20.8, brightness = 1.5, density = 0.34, haze = 1.80, element = "Crimson", exclusive = "cinder-sail-navigator" },
+    { name = "Celestial Tempest", alias = "Celestial Tempest", luck = 4.50, clock = 21.4, brightness = 1.7, density = 0.30, haze = 1.50, element = "Storm",   exclusive = "gale-lantern-fencer" },
 }
 
 local CODES = {

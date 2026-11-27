@@ -349,7 +349,7 @@ pub fn opening_ideas() -> Vec<Idea> {
         Idea {
             id: "anime-card-battles-apex",
             title: "Untitled Anime Card Game",
-            pitch: "A sunlit anime floating-archipelago card battler: 24 anime-homage cards \
+            pitch: "A sunlit anime floating-archipelago card battler: 24 original anime-style cards \
                     across 6 packs & 6 rarity tiers (Common 1/2 to Secret 1/50,000), pity & \
                     Fusion Weather Storms (Crimson Eclipse 5x / Celestial Tempest 4.5x Luck), \
                     CHAIN OVERDRIVE dual finishers, Living 3D Guardian Auras, Traits & Charms, \

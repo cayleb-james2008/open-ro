@@ -533,8 +533,8 @@ fn gaps_12_15_17_21_31_32_research_ssrf_art_ideas_place_tree_and_config() {
     for a in art_knowledge::anime_archetypes() {
         assert!(!a.art_prompt.contains("dynamic action angle"), "angle_gate violation in {}", a.id);
     }
-    let hp = art_knowledge::build_homage_prompt("Shadow Monarch", "Shadow", "Mythic", "twin daggers\nwith aura");
-    assert!(hp.contains("eye-level") && !hp.contains('\n'), "{hp}");
+    let hp = art_knowledge::build_homage_prompt("Velvet-Bell Warden", "Shadow", "Mythic", "censer halberd\nwith lilac mist");
+    assert!(hp.contains("eye-level") && hp.contains("100% original") && !hp.contains('\n'), "{hp}");
 
     // Gap #12: library 3D/VFX guardrails
     let tmp_lib = scratch("lib");

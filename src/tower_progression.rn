@@ -56,7 +56,7 @@ local WORLDS = {
     { name = "Ember Harbor",        minFloor = 1,  color = Color3.fromRGB(235, 92, 54) },
     { name = "Thunder Spire",       minFloor = 11, color = Color3.fromRGB(70, 170, 255) },
     { name = "Eclipse Citadel",     minFloor = 21, color = Color3.fromRGB(168, 85, 247) },
-    { name = "Shadow Monarch Rift", minFloor = 31, color = Color3.fromRGB(99, 102, 241) },
+    { name = "Velvet Belfry Rift",  minFloor = 31, color = Color3.fromRGB(99, 102, 241) },
     { name = "Celestial Apex",      minFloor = 41, color = Color3.fromRGB(245, 195, 66) },
 }
 

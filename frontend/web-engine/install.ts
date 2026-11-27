@@ -4065,29 +4065,29 @@ export function installWebEngine() {
     if (method === "GET" && u.pathname === "/api/art-knowledge") {
       return jsonResponse({
         ok: true,
-        title: "Anime Fan-Art Visual Fidelity & Title-Epithet Knowledge Point",
+        title: "Original Anime-Style Character Design Knowledge Point",
         summary:
-          "OpenRO builds iconic anime-inspired Roblox games where generated fan-art MUST look unmistakably recognizable as the original character, while every in-game display name uses the character's iconic title/epithet instead of trademarked proper names.",
+          "OpenRO builds anime-inspired Roblox games where every character is 100% original — original silhouettes, costumes, lore, and names, with zero copied franchise likenesses.",
         policy_note:
-          "Visual Fidelity + Title-Epithet Rule: Keep the unmistakable silhouette, hair, costume, and elemental aura fans recognize immediately, while replacing trademarked proper names with iconic titles (Joyful Pirate, Six-Eyes Sorcerer, Shadow Monarch, Nine-Tail Shinobi, Thunder Flash Blade, Steel Alchemist, Gravity Ronin, Golden Ascended Warrior).",
+          "Original Character Design + Naming Rule: Every generated anime-style character must feature a distinct original silhouette, outfit, weapon/prop, lore, and original name (e.g., Cinder-Sail Navigator, Prism-Rift Archivist, Velvet-Bell Warden, Amber-Crane Dancer, Gale-Lantern Fencer, Verdigris Glass Tinker, Basalt-Tide Anchorite, Helios Clockwork Paragon).",
         principles: [
-          "Unmistakable Visual Fidelity: generated fan-art must genuinely look like the original iconic anime character silhouette, outfit cues, and aura.",
-          "Iconic Title-Epithet Naming: replace trademarked proper names with recognizable character titles (Joyful Pirate, Six-Eyes Sorcerer, Shadow Monarch, Nine-Tail Shinobi, Thunder Flash Blade, Steel Alchemist, Gravity Ronin, Golden Ascended Warrior).",
-          "Keep card art watermark-free and text-free (3:4 portrait) so Roblox SurfaceGui/ImageLabel overlays render rarity frames, stats, and foil effects crisply.",
+          "100% Original Character Visuals: every anime-style character must have an original silhouette, hair, eyes, costume, prop, and elemental palette — zero copied likenesses.",
+          "Original Character Naming: use original names and titles (Cinder-Sail Navigator, Prism-Rift Archivist, Velvet-Bell Warden, Amber-Crane Dancer, Gale-Lantern Fencer, Verdigris Glass Tinker, Basalt-Tide Anchorite, Helios Clockwork Paragon) — never trademarked names or franchise look-alikes.",
+          "Keep card art watermark-free and text-free (3:4 portrait, eye-level neutral three-quarter framing) so Roblox SurfaceGui/ImageLabel overlays render rarity frames, stats, and foil effects crisply.",
           "Bind each generated asset through manifest records and Roblox Studio Decal/ImageLabel properties for instant Studio import.",
         ],
         archetype_translations: [
-          { archetype: "Straw-Hat Pirate Captain", homage_title: "Joyful Pirate", element: "Flame", rarity: "Mythic", palette: "Crimson, sunlit gold, ocean spray" },
-          { archetype: "Limitless Spatial Sorcerer", homage_title: "Six-Eyes Sorcerer", element: "Void", rarity: "Celestial", palette: "Electric violet, silver-white, cyan glow" },
-          { archetype: "Lightning Iaido Swordsman", homage_title: "Thunder Flash Blade", element: "Storm", rarity: "Legendary", palette: "Storm gold, deep navy, arc cyan" },
-          { archetype: "Shadow Necromancer Sovereign", homage_title: "Shadow Monarch", element: "Shadow", rarity: "Celestial", palette: "Obsidian black, neon cobalt, phantom violet" },
-          { archetype: "Nine-Tail Chakra Ninja", homage_title: "Nine-Tail Shinobi", element: "Flame", rarity: "Mythic", palette: "Solar orange, crimson embers, warm gold" },
-          { archetype: "Ascended Golden Martial Artist", homage_title: "Golden Ascended Warrior", element: "Flame", rarity: "Secret", palette: "Blazing gold, plasma cyan, starlight white" },
-          { archetype: "Gravity-Blade Ronin", homage_title: "Gravity Ronin", element: "Void", rarity: "Epic", palette: "Blood crimson, dark slate, lunar silver" },
-          { archetype: "Transmutation Alchemist", homage_title: "Steel Alchemist", element: "Arcane", rarity: "Rare", palette: "Alchemical gold, crimson coat, arcane teal" },
+          { archetype: "Skyship Astrolabe Navigator", homage_title: "Cinder-Sail Navigator", element: "Flame", rarity: "Mythic", palette: "Hearth amber, indigo navy, burnished brass" },
+          { archetype: "Observatory Prism Mage", homage_title: "Prism-Rift Archivist", element: "Void", rarity: "Celestial", palette: "Prismatic cyan, plum violet, slate charcoal" },
+          { archetype: "Cloud-Ridge Storm Fencer", homage_title: "Gale-Lantern Fencer", element: "Storm", rarity: "Legendary", palette: "Cerulean cyan, storm teal, copper gold" },
+          { archetype: "Belfry Censer Sentinel", homage_title: "Velvet-Bell Warden", element: "Shadow", rarity: "Celestial", palette: "Velvet plum, midnight indigo, tarnished silver" },
+          { archetype: "Solstice Origami Dancer", homage_title: "Amber-Crane Dancer", element: "Flame", rarity: "Mythic", palette: "Vermilion coral, marigold gold, ivory silk" },
+          { archetype: "Meridian Sundial Vanguard", homage_title: "Helios Clockwork Paragon", element: "Flame", rarity: "Secret", palette: "Porcelain white, sunrise gold, coral plasma" },
+          { archetype: "Abyssal Trench Anchorite", homage_title: "Basalt-Tide Anchorite", element: "Void", rarity: "Epic", palette: "Basalt slate, seafoam cyan, deep abyssal teal" },
+          { archetype: "Botanical Stained-Glass Artificer", homage_title: "Verdigris Glass Tinker", element: "Arcane", rarity: "Rare", palette: "Verdigris mint, stained-glass amber, mahogany" },
         ],
         prompt_template:
-          "High-craft modern anime cel-shaded trading card illustration (3:4 portrait), unmistakably recognizable iconic character silhouette & costume for '{title}' ({rarity} tier), glowing {element} elemental aura, bold inked contours, dramatic rim lighting, no text, no watermark, no borders.",
+          "Modern anime cel-shaded trading card illustration (3:4 portrait), eye-level neutral three-quarter framing, 100% original anime-style character '{title}' ({rarity} tier), original silhouette, costume, and lore, glowing {element} elemental aura, bold inked contours, dramatic rim lighting, zero copied franchise likenesses, no text, no watermark, no borders.",
       });
     }
     if (method === "GET" && u.pathname === "/api/assets") {

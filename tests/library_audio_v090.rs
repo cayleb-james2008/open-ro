@@ -83,11 +83,11 @@ fn library_defaults_install_uninstall_configure_0600_and_test() {
     assert!(art_summary["visual_fidelity_rule"]
         .as_str()
         .unwrap_or("")
-        .contains("unmistakably recognizable"));
+        .contains("100% original"));
     assert!(art_summary["title_epithet_rule"]
         .as_str()
         .unwrap_or("")
-        .contains("Joyful Pirate"));
+        .contains("Cinder-Sail Navigator"));
 
     // Uninstall of default packs -> 400; unknown pack -> 404
     let err_default = mgr
@@ -115,12 +115,12 @@ fn library_defaults_install_uninstall_configure_0600_and_test() {
 
     mgr.install("image-gen-studio")
         .expect("install image-gen-studio");
-    // Installing image-gen-studio injects the Stylized Fan-Art & Title-Epithet Creative Knowledge Point
+    // Installing image-gen-studio injects the Original Anime-Style Character Design Knowledge Point
     let with_img_prompt = mgr.active_skill_prompt();
-    assert!(with_img_prompt.contains("Joyful Pirate"));
-    assert!(with_img_prompt.contains("Six-Eyes Sorcerer"));
-    assert!(with_img_prompt.contains("Shadow Monarch"));
-    assert!(with_img_prompt.contains("Golden Ascended Warrior"));
+    assert!(with_img_prompt.contains("Cinder-Sail Navigator"));
+    assert!(with_img_prompt.contains("Prism-Rift Archivist"));
+    assert!(with_img_prompt.contains("Velvet-Bell Warden"));
+    assert!(with_img_prompt.contains("Helios Clockwork Paragon"));
 
     // Configure secret API key -> persisted 0600, masked in JSON, never echoed raw!
     let secret = "sk-openro-super-secret-987654321";
