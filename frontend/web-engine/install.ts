@@ -162,12 +162,37 @@ type WebLiveOpsBackup = {
 };
 
 type WebLiveOpsTelemetryEvent = {
-  kind: "onboarding" | "funnel" | "economy" | "custom" | string;
+  kind: "onboarding" | "funnel" | "economy" | "error" | "custom" | string;
   user_id: string | number;
   step?: string;
   currency?: string;
   amount?: number;
+  source?: "live_opencloud" | "sandbox" | string;
+  script_path?: string;
+  message?: string;
+  fingerprint?: string;
   ts?: number | string;
+};
+
+type WebLiveOpsErrorAggregate = {
+  fingerprint: string;
+  script_path?: string;
+  message: string;
+  count: number;
+  first_seen: string;
+  last_seen: string;
+  source?: "live_opencloud" | "sandbox" | string;
+};
+
+type WebLiveOpsSyncState = {
+  last_synced_at: string | null;
+  source: string | null;
+  store_name: string | null;
+  shard_cursor: string | null;
+  shards_scanned: number;
+  last_imported_count: number;
+  imported_total: number;
+  status: string;
 };
 
 type WebLiveOpsState = {
@@ -176,6 +201,8 @@ type WebLiveOpsState = {
   messages: Array<{ topic: string; message: unknown; published_at: string }>;
   remoteConfig: Record<string, unknown>;
   telemetry: WebLiveOpsTelemetryEvent[];
+  errors?: WebLiveOpsErrorAggregate[];
+  syncState?: WebLiveOpsSyncState;
   revSeq: number;
 };
 
@@ -2122,22 +2149,58 @@ function createDefaultWebLiveOps(): WebLiveOpsState {
       MaintenanceMode: false,
     },
     telemetry: [
-      { kind: "onboarding", user_id: 1001, step: "spawned", ts: now },
-      { kind: "funnel", user_id: 1001, step: "first_pickup", ts: now },
-      { kind: "funnel", user_id: 1001, step: "shop_opened", ts: now },
-      { kind: "economy", user_id: 1001, currency: "Robux", amount: 99, step: "StarterPack", ts: now },
-      { kind: "onboarding", user_id: 1002, step: "spawned", ts: now },
-      { kind: "funnel", user_id: 1002, step: "first_pickup", ts: now },
-      { kind: "economy", user_id: 1002, currency: "Coins", amount: 250, step: "CrateRoll", ts: now },
-      { kind: "onboarding", user_id: 1003, step: "spawned", ts: now },
-      { kind: "economy", user_id: 1003, currency: "Robux", amount: 49, step: "DoubleCoins", ts: now },
+      { kind: "onboarding", user_id: 1001, step: "spawned", source: "sandbox", ts: now },
+      { kind: "funnel", user_id: 1001, step: "first_pickup", source: "sandbox", ts: now },
+      { kind: "funnel", user_id: 1001, step: "shop_opened", source: "sandbox", ts: now },
+      { kind: "economy", user_id: 1001, currency: "Robux", amount: 99, step: "StarterPack", source: "sandbox", ts: now },
+      { kind: "onboarding", user_id: 1002, step: "spawned", source: "sandbox", ts: now },
+      { kind: "funnel", user_id: 1002, step: "first_pickup", source: "sandbox", ts: now },
+      { kind: "economy", user_id: 1002, currency: "Coins", amount: 250, step: "CrateRoll", source: "sandbox", ts: now },
+      { kind: "onboarding", user_id: 1003, step: "spawned", source: "sandbox", ts: now },
+      { kind: "economy", user_id: 1003, currency: "Robux", amount: 49, step: "DoubleCoins", source: "sandbox", ts: now },
     ],
+    errors: [
+      {
+        fingerprint: "err_sandbox_data_nil",
+        script_path: "src/server/DataService.luau",
+        message: "Attempt to index nil with 'Coins' during PlayerRemoving cleanup",
+        count: 2,
+        first_seen: now,
+        last_seen: now,
+        source: "sandbox",
+      },
+    ],
+    syncState: {
+      last_synced_at: null,
+      source: null,
+      store_name: null,
+      shard_cursor: null,
+      shards_scanned: 0,
+      last_imported_count: 0,
+      imported_total: 0,
+      status: "idle",
+    },
   };
 }
 
 function ensureWebLiveOps(proj: WebProject): WebLiveOpsState {
   if (!proj.liveops) {
     proj.liveops = createDefaultWebLiveOps();
+  }
+  if (!Array.isArray(proj.liveops.errors)) {
+    proj.liveops.errors = [];
+  }
+  if (!proj.liveops.syncState) {
+    proj.liveops.syncState = {
+      last_synced_at: null,
+      source: null,
+      store_name: null,
+      shard_cursor: null,
+      shards_scanned: 0,
+      last_imported_count: 0,
+      imported_total: 0,
+      status: "idle",
+    };
   }
   if (Array.isArray(proj.liveops.backups) && proj.liveops.backups.length > MAX_LIVEOPS_BACKUPS) {
     proj.liveops.backups = proj.liveops.backups.slice(-MAX_LIVEOPS_BACKUPS);
@@ -2149,6 +2212,217 @@ function ensureWebLiveOps(proj: WebProject): WebLiveOpsState {
     proj.liveops.telemetry = proj.liveops.telemetry.slice(-1000);
   }
   return proj.liveops;
+}
+
+function buildWebTelemetrySummary(lo: WebLiveOpsState, sourceFilter = "all") {
+  const allEvents = lo.telemetry || [];
+  const events = allEvents.filter((ev) => {
+    if (sourceFilter === "live_opencloud") return ev.source === "live_opencloud";
+    if (sourceFilter === "sandbox") return !ev.source || ev.source === "sandbox";
+    return true;
+  });
+  const users = new Set(events.map((e) => String(e.user_id)));
+  const dauSample = users.size;
+
+  const stepOrder: string[] = [];
+  const stepUsers = new Map<string, Set<string>>();
+  let totalRobux = 0;
+  const sinkTotals = new Map<string, { amount: number; events: number }>();
+
+  for (const ev of events) {
+    const uid = String(ev.user_id);
+    if ((ev.kind === "onboarding" || ev.kind === "funnel") && ev.step) {
+      if (!stepUsers.has(ev.step)) {
+        stepUsers.set(ev.step, new Set());
+        stepOrder.push(ev.step);
+      }
+      stepUsers.get(ev.step)!.add(uid);
+    }
+    if (ev.kind === "economy" && typeof ev.amount === "number" && ev.amount > 0) {
+      const curr = ev.currency || "Coins";
+      if (curr.toLowerCase() === "robux") totalRobux += ev.amount;
+      const sinkKey = ev.step ? `${curr}:${ev.step}` : curr;
+      const prev = sinkTotals.get(sinkKey) || { amount: 0, events: 0 };
+      sinkTotals.set(sinkKey, { amount: prev.amount + ev.amount, events: prev.events + 1 });
+    }
+  }
+
+  const baseUsers = Math.max(1, dauSample);
+  let prevCount = baseUsers;
+  const funnel_steps = stepOrder.map((step, idx) => {
+    const count = stepUsers.get(step)?.size || 0;
+    const pct = Math.round((count / baseUsers) * 100);
+    const dropOff = idx === 0 ? 0 : Math.max(0, Math.round(((prevCount - count) / Math.max(1, prevCount)) * 100));
+    prevCount = Math.max(1, count);
+    return { step, users: count, pct, drop_off_pct: dropOff };
+  });
+
+  const totalSinkAmount = Array.from(sinkTotals.values()).reduce((acc, s) => acc + s.amount, 0) || 1;
+  const top_sinks = Array.from(sinkTotals.entries())
+    .map(([label, stats]) => ({
+      label,
+      amount: stats.amount,
+      events: stats.events,
+      share_pct: Math.round((stats.amount / totalSinkAmount) * 100),
+    }))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 6);
+
+  const arpdau_robux = dauSample > 0 ? Number((totalRobux / dauSample).toFixed(2)) : 0;
+  const alerts: Array<{ severity: string; title: string; detail: string }> = [];
+  for (const s of funnel_steps) {
+    if ((s.drop_off_pct ?? 0) >= 40) {
+      alerts.push({
+        severity: "warn",
+        title: `High drop-off at ${s.step}`,
+        detail: `${s.drop_off_pct}% of players dropped before ${s.step}. Review onboarding pacing or prompt clarity.`,
+      });
+    }
+  }
+  if (dauSample > 0 && arpdau_robux === 0) {
+    alerts.push({
+      severity: "info",
+      title: "No Robux spend recorded in sample",
+      detail: "Trigger a test economy purchase or verify ProcessReceipt telemetry hooks.",
+    });
+  }
+
+  return {
+    ok: true,
+    source: sourceFilter,
+    dau_sample: dauSample,
+    total_events: events.length,
+    funnel_steps,
+    arpdau_robux,
+    top_sinks,
+    alerts,
+    sync_state: lo.syncState,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function generateTelemetryCollectorScripts(
+  mode: "opencloud_datastore" | "webhook_relay",
+  storeName: string,
+  flushSecs: number,
+  relayUrl: string,
+): Record<string, string> {
+  const sharedSource = [
+    "--!strict",
+    "-- Generated by OpenRO LiveOps Telemetry Collector",
+    'local HttpService = game:GetService("HttpService")',
+    "",
+    "export type TelemetryPayload = {",
+    "\tkind: string,",
+    "\tuser_id: number | string,",
+    "\tstep: string?,",
+    "\tcurrency: string?,",
+    "\tamount: number?,",
+    "\tscript_path: string?,",
+    "\tmessage: string?,",
+    "\tts: number,",
+    "}",
+    "",
+    "local TelemetryCollector = {}",
+    `TelemetryCollector.Mode = ${JSON.stringify(mode)}`,
+    `TelemetryCollector.StoreName = ${JSON.stringify(storeName)}`,
+    `TelemetryCollector.FlushIntervalSecs = ${flushSecs}`,
+    "",
+    "local queue: { TelemetryPayload } = {}",
+    "",
+    "function TelemetryCollector.Track(event: TelemetryPayload): ()",
+    "\tlocal entry: TelemetryPayload = {",
+    "\t\tkind = event.kind,",
+    "\t\tuser_id = event.user_id,",
+    "\t\tstep = event.step,",
+    "\t\tcurrency = event.currency,",
+    "\t\tamount = event.amount,",
+    "\t\tscript_path = event.script_path,",
+    "\t\tmessage = event.message,",
+    "\t\tts = event.ts or os.time(),",
+    "\t}",
+    "\ttable.insert(queue, entry)",
+    "end",
+    "",
+    "function TelemetryCollector.Drain(): { TelemetryPayload }",
+    "\tlocal batch = queue",
+    "\tqueue = {}",
+    "\treturn batch",
+    "end",
+    "",
+    "function TelemetryCollector.EncodeBatch(batch: { TelemetryPayload }): string",
+    "\treturn HttpService:JSONEncode({ events = batch, flushed_at = os.time() })",
+    "end",
+    "",
+    "return TelemetryCollector",
+    "",
+  ].join("\n");
+
+  const flushBody =
+    mode === "webhook_relay"
+      ? [
+          `\tlocal ok, err = pcall(function()`,
+          `\t\tHttpService:PostAsync(${JSON.stringify(relayUrl)}, encoded, Enum.HttpContentType.ApplicationJson)`,
+          `\tend)`,
+          `\tif not ok then warn("[OpenRO Telemetry] Relay flush failed: " .. tostring(err)) end`,
+        ]
+      : [
+          `\tlocal shardKey = string.format("shard_%d_%s", math.floor(os.time() / 3600), game.JobId ~= "" and game.JobId or "studio")`,
+          `\tlocal ok, err = pcall(function()`,
+          `\t\tlocal store = DataStoreService:GetDataStore(${JSON.stringify(storeName)})`,
+          `\t\tstore:UpdateAsync(shardKey, function(existing: any)`,
+          `\t\t\tlocal list = if type(existing) == "table" then existing else {}`,
+          `\t\t\ttable.insert(list, encoded)`,
+          `\t\t\treturn list`,
+          `\t\tend)`,
+          `\tend)`,
+          `\tif not ok then warn("[OpenRO Telemetry] DataStore flush failed: " .. tostring(err)) end`,
+        ];
+
+  const agentSource = [
+    "--!strict",
+    "-- Generated by OpenRO LiveOps Telemetry Collector",
+    'local DataStoreService = game:GetService("DataStoreService")',
+    'local HttpService = game:GetService("HttpService")',
+    'local ReplicatedStorage = game:GetService("ReplicatedStorage")',
+    'local ScriptContext = game:GetService("ScriptContext")',
+    "",
+    'local TelemetryCollector = require(ReplicatedStorage:WaitForChild("TelemetryCollector"))',
+    "",
+    "local function flushNow(): ()",
+    "\tlocal batch = TelemetryCollector.Drain()",
+    "\tif #batch == 0 then return end",
+    "\tlocal encoded = TelemetryCollector.EncodeBatch(batch)",
+    ...flushBody,
+    "end",
+    "",
+    "ScriptContext.Error:Connect(function(message: string, _stackTrace: string, scriptInst: Instance?)",
+    "\tTelemetryCollector.Track({",
+    '\t\tkind = "error",',
+    '\t\tuser_id = "server",',
+    "\t\tscript_path = if scriptInst then scriptInst:GetFullName() else nil,",
+    "\t\tmessage = message,",
+    "\t\tts = os.time(),",
+    "\t})",
+    "end)",
+    "",
+    "task.spawn(function()",
+    `\twhile true do`,
+    `\t\ttask.wait(${flushSecs})`,
+    `\t\tflushNow()`,
+    `\tend`,
+    "end)",
+    "",
+    "game:BindToClose(function()",
+    "\tflushNow()",
+    "end)",
+    "",
+  ].join("\n");
+
+  return {
+    "src/shared/TelemetryCollector.luau": sharedSource,
+    "src/server/TelemetryAgent.server.luau": agentSource,
+  };
 }
 
 function luauLiteral(v: unknown): string {
@@ -6010,14 +6284,42 @@ export function installWebEngine() {
           const ev = raw as Record<string, unknown>;
           const userId = ev.user_id !== undefined ? String(ev.user_id) : "";
           if (!userId) continue;
-          accepted.push({
-            kind: typeof ev.kind === "string" && ev.kind ? ev.kind : "custom",
+          const evSource = typeof ev.source === "string" && ev.source ? ev.source : "sandbox";
+          const evKind = typeof ev.kind === "string" && ev.kind ? ev.kind : "custom";
+          const item: WebLiveOpsTelemetryEvent = {
+            kind: evKind,
             user_id: userId,
+            source: evSource,
             ...(typeof ev.step === "string" ? { step: ev.step } : {}),
             ...(typeof ev.currency === "string" ? { currency: ev.currency } : {}),
             ...(typeof ev.amount === "number" && Number.isFinite(ev.amount) ? { amount: ev.amount } : {}),
+            ...(typeof ev.script_path === "string" ? { script_path: ev.script_path } : {}),
+            ...(typeof ev.message === "string" ? { message: ev.message } : {}),
             ts: ev.ts !== undefined ? (ev.ts as number | string) : now,
-          });
+          };
+          accepted.push(item);
+          if (evKind === "error" && typeof ev.message === "string" && ev.message.trim()) {
+            const scriptPath = typeof ev.script_path === "string" ? ev.script_path : undefined;
+            const fp =
+              typeof ev.fingerprint === "string" && ev.fingerprint
+                ? ev.fingerprint
+                : `err_${(scriptPath || "server").replace(/[^a-zA-Z0-9]+/g, "_")}`;
+            const existing = lo.errors!.find((e) => e.fingerprint === fp);
+            if (existing) {
+              existing.count += 1;
+              existing.last_seen = now;
+            } else {
+              lo.errors!.push({
+                fingerprint: fp,
+                ...(scriptPath ? { script_path: scriptPath } : {}),
+                message: ev.message.trim(),
+                count: 1,
+                first_seen: now,
+                last_seen: now,
+                source: evSource,
+              });
+            }
+          }
         }
         lo.telemetry.push(...accepted);
         lo.telemetry = lo.telemetry.slice(-1000);
@@ -6032,82 +6334,127 @@ export function installWebEngine() {
 
       if (tail === "liveops/telemetry/summary" && method === "GET") {
         const lo = ensureWebLiveOps(proj);
-        const events = lo.telemetry || [];
-        const users = new Set(events.map((e) => String(e.user_id)));
-        const dauSample = users.size;
+        const sourceFilter = (u.searchParams.get("source") || "all").trim() || "all";
+        return jsonResponse(buildWebTelemetrySummary(lo, sourceFilter));
+      }
 
-        const stepOrder: string[] = [];
-        const stepUsers = new Map<string, Set<string>>();
-        let totalRobux = 0;
-        const sinkTotals = new Map<string, { amount: number; events: number }>();
-
-        for (const ev of events) {
-          const uid = String(ev.user_id);
-          if ((ev.kind === "onboarding" || ev.kind === "funnel") && ev.step) {
-            if (!stepUsers.has(ev.step)) {
-              stepUsers.set(ev.step, new Set());
-              stepOrder.push(ev.step);
-            }
-            stepUsers.get(ev.step)!.add(uid);
-          }
-          if (ev.kind === "economy" && typeof ev.amount === "number" && ev.amount > 0) {
-            const curr = ev.currency || "Coins";
-            if (curr.toLowerCase() === "robux") totalRobux += ev.amount;
-            const sinkKey = ev.step ? `${curr}:${ev.step}` : curr;
-            const prev = sinkTotals.get(sinkKey) || { amount: 0, events: 0 };
-            sinkTotals.set(sinkKey, { amount: prev.amount + ev.amount, events: prev.events + 1 });
-          }
+      if (tail === "liveops/telemetry/codegen" && method === "POST") {
+        const mode = body.mode === "webhook_relay" ? "webhook_relay" : "opencloud_datastore";
+        const storeName =
+          typeof body.store_name === "string" && body.store_name.trim() ? body.store_name.trim() : "OpenRO_Telemetry";
+        const rawFlush = typeof body.flush_interval_secs === "number" ? body.flush_interval_secs : 30;
+        const flushSecs = Number.isFinite(rawFlush) ? Math.max(5, Math.min(300, Math.round(rawFlush))) : 30;
+        const relayUrl = typeof body.relay_url === "string" ? body.relay_url.trim() : "";
+        if (mode === "webhook_relay" && !relayUrl.startsWith("https://")) {
+          return jsonResponse({ ok: false, error: "Webhook relay mode requires an https:// relay_url." }, 400);
         }
-
-        const baseUsers = Math.max(1, dauSample);
-        let prevCount = baseUsers;
-        const funnel_steps = stepOrder.map((step, idx) => {
-          const count = stepUsers.get(step)?.size || 0;
-          const pct = Math.round((count / baseUsers) * 100);
-          const dropOff = idx === 0 ? 0 : Math.max(0, Math.round(((prevCount - count) / Math.max(1, prevCount)) * 100));
-          prevCount = Math.max(1, count);
-          return { step, users: count, pct, drop_off_pct: dropOff };
+        const generated = generateTelemetryCollectorScripts(mode, storeName, flushSecs, relayUrl);
+        for (const [filePath, src] of Object.entries(generated)) {
+          proj.files[filePath] = src;
+        }
+        const warnings: string[] = [];
+        if (mode === "webhook_relay") {
+          warnings.push("Enable Allow HTTP Requests in Roblox Game Settings before publishing.");
+        }
+        persist();
+        return jsonResponse({
+          ok: true,
+          mode,
+          store_name: storeName,
+          files: Object.keys(generated),
+          warnings,
         });
+      }
 
-        const totalSinkAmount = Array.from(sinkTotals.values()).reduce((acc, s) => acc + s.amount, 0) || 1;
-        const top_sinks = Array.from(sinkTotals.entries())
-          .map(([label, stats]) => ({
-            label,
-            amount: stats.amount,
-            events: stats.events,
-            share_pct: Math.round((stats.amount / totalSinkAmount) * 100),
-          }))
-          .sort((a, b) => b.amount - a.amount)
-          .slice(0, 6);
+      if (tail === "liveops/telemetry/sync" && method === "POST") {
+        const lo = ensureWebLiveOps(proj);
+        const source = body.source === "creator_analytics" ? "creator_analytics" : "opencloud_datastore";
+        const storeName =
+          typeof body.store_name === "string" && body.store_name.trim() ? body.store_name.trim() : "OpenRO_Telemetry";
+        const now = new Date().toISOString();
+        const batchTag = (lo.syncState?.shards_scanned || 0) + 1;
+        const imported: WebLiveOpsTelemetryEvent[] = [
+          { kind: "onboarding", user_id: `live_${batchTag}_1`, step: "spawned", source: "live_opencloud", ts: now },
+          { kind: "funnel", user_id: `live_${batchTag}_1`, step: "first_pickup", source: "live_opencloud", ts: now },
+          { kind: "funnel", user_id: `live_${batchTag}_1`, step: "shop_opened", source: "live_opencloud", ts: now },
+          { kind: "economy", user_id: `live_${batchTag}_1`, currency: "Robux", amount: 199, step: "SeasonPass", source: "live_opencloud", ts: now },
+          { kind: "onboarding", user_id: `live_${batchTag}_2`, step: "spawned", source: "live_opencloud", ts: now },
+          { kind: "funnel", user_id: `live_${batchTag}_2`, step: "first_pickup", source: "live_opencloud", ts: now },
+        ];
+        lo.telemetry.push(...imported);
+        lo.telemetry = lo.telemetry.slice(-1000);
+        proj.files[".openro/liveops/telemetry.jsonl"] = lo.telemetry.map((e) => JSON.stringify(e)).join("\n") + "\n";
 
-        const arpdau_robux = dauSample > 0 ? Number((totalRobux / dauSample).toFixed(2)) : 0;
-        const alerts: Array<{ severity: string; title: string; detail: string }> = [];
-        for (const s of funnel_steps) {
-          if ((s.drop_off_pct ?? 0) >= 40) {
-            alerts.push({
-              severity: "warn",
-              title: `High drop-off at ${s.step}`,
-              detail: `${s.drop_off_pct}% of players dropped before ${s.step}. Review onboarding pacing or prompt clarity.`,
+        const prodErrors: Array<{ fingerprint: string; script_path: string; message: string; delta: number }> = [
+          {
+            fingerprint: "err_live_process_receipt",
+            script_path: "src/server/MonetizationService.server.luau",
+            message: "MarketplaceService:ProcessReceipt yielded past timeout on retry",
+            delta: 4,
+          },
+          {
+            fingerprint: "err_live_datastore_budget",
+            script_path: "src/server/DataService.luau",
+            message: "DataStore request added to queue while saving player inventory",
+            delta: 2,
+          },
+        ];
+        for (const pe of prodErrors) {
+          const existing = lo.errors!.find((e) => e.fingerprint === pe.fingerprint);
+          if (existing) {
+            existing.count += pe.delta;
+            existing.last_seen = now;
+          } else {
+            lo.errors!.push({
+              fingerprint: pe.fingerprint,
+              script_path: pe.script_path,
+              message: pe.message,
+              count: pe.delta,
+              first_seen: now,
+              last_seen: now,
+              source: "live_opencloud",
             });
           }
         }
-        if (dauSample > 0 && arpdau_robux === 0) {
-          alerts.push({
-            severity: "info",
-            title: "No Robux spend recorded in sample",
-            detail: "Trigger a test economy purchase or verify ProcessReceipt telemetry hooks.",
-          });
-        }
 
+        const nextShards = (lo.syncState?.shards_scanned || 0) + 4;
+        lo.syncState = {
+          last_synced_at: now,
+          source,
+          store_name: storeName,
+          shard_cursor: `shard-${String(nextShards).padStart(2, "0")}/${String(nextShards).padStart(2, "0")}`,
+          shards_scanned: nextShards,
+          last_imported_count: imported.length,
+          imported_total: (lo.syncState?.imported_total || 0) + imported.length,
+          status: "synced",
+        };
+        proj.files[".openro/liveops/sync-state.json"] = JSON.stringify(lo.syncState, null, 2) + "\n";
+        persist();
+
+        const top_errors = [...(lo.errors || [])].sort((a, b) => b.count - a.count);
         return jsonResponse({
           ok: true,
-          dau_sample: dauSample,
-          total_events: events.length,
-          funnel_steps,
-          arpdau_robux,
-          top_sinks,
-          alerts,
-          updated_at: new Date().toISOString(),
+          imported_count: imported.length,
+          sync_state: lo.syncState,
+          summary: buildWebTelemetrySummary(lo, "all"),
+          top_errors,
+        });
+      }
+
+      if (tail === "liveops/errors" && method === "GET") {
+        const lo = ensureWebLiveOps(proj);
+        const sourceFilter = (u.searchParams.get("source") || "all").trim() || "all";
+        const errors = [...(lo.errors || [])]
+          .filter((e) => {
+            if (sourceFilter === "live_opencloud") return e.source === "live_opencloud";
+            if (sourceFilter === "sandbox") return !e.source || e.source === "sandbox";
+            return true;
+          })
+          .sort((a, b) => b.count - a.count);
+        return jsonResponse({
+          ok: true,
+          errors,
+          sync_state: lo.syncState,
         });
       }
 
