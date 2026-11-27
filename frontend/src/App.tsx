@@ -4222,10 +4222,15 @@ export function App() {
               marketTaste={marketTaste}
               marketBusy={marketBusy}
               v090Ready={v090Ready}
+              projectId={ship.activeId}
               onRefresh={() => refreshLibrary(true)}
               onSelectMarketNiche={handleSelectMarketNiche}
               onRefreshMarketTaste={handleRefreshMarketTaste}
               onPitchMarketPrompt={handlePitchMarketPrompt}
+              onSfxAdded={() => {
+                void refreshProjectAssets(true);
+                if (ship.activeId) void refreshPlace(ship.activeId);
+              }}
             />
           </Suspense>
         )}
