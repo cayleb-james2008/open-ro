@@ -143,6 +143,7 @@ impl PlaceBackend {
                 let mut script_meta = Map::new();
                 let mut instances = Map::new();
                 let mut lighting = Map::new();
+                let mut finished = false;
                 for _page in 0..512 {
                     let mut args = Map::new();
                     if let Some(c) = &cursor {
@@ -210,9 +211,16 @@ impl PlaceBackend {
                         .filter(|s| !s.is_empty())
                         .map(String::from);
                     if done || next.is_none() {
+                        finished = true;
                         break;
                     }
+                    if next.as_deref() == cursor.as_deref() {
+                        return Err("plugin get_place_snapshot pagination cursor stalled".into());
+                    }
                     cursor = next;
+                }
+                if !finished {
+                    return Err("plugin get_place_snapshot exceeded max 512 pages without completing".into());
                 }
                 for (path, parts) in script_parts {
                     let combined: String = parts.into_values().collect();
@@ -231,9 +239,11 @@ impl PlaceBackend {
                     let mut cursor: Option<String> = None;
                     let mut snapshot_id: Option<String> = None;
                     let mut scripts = Map::new();
+                    let mut script_parts: BTreeMap<String, BTreeMap<usize, String>> = BTreeMap::new();
                     let mut script_meta = Map::new();
                     let mut instances = Map::new();
                     let mut lighting = Map::new();
+                    let mut finished = false;
                     for _page in 0..512 {
                         let mut args = Map::new();
                         if let Some(cur) = &cursor {
@@ -254,6 +264,19 @@ impl PlaceBackend {
                         if let Some(obj) = chunk.get("scripts").and_then(|v| v.as_object()) {
                             for (k, v) in obj {
                                 scripts.insert(k.clone(), v.clone());
+                            }
+                        }
+                        if let Some(parts_obj) = chunk.get("script_parts").and_then(|v| v.as_object()) {
+                            for (path, part) in parts_obj {
+                                if let (Some(idx), Some(data)) = (
+                                    part.get("index").and_then(|v| v.as_u64()),
+                                    part.get("data").and_then(|v| v.as_str()),
+                                ) {
+                                    script_parts
+                                        .entry(path.clone())
+                                        .or_default()
+                                        .insert(idx as usize, data.to_string());
+                                }
                             }
                         }
                         if let Some(meta_obj) = chunk.get("script_meta").and_then(|v| v.as_object()) {
@@ -278,9 +301,20 @@ impl PlaceBackend {
                             .filter(|s| !s.is_empty())
                             .map(String::from);
                         if done || next.is_none() {
+                            finished = true;
                             break;
                         }
+                        if next.as_deref() == cursor.as_deref() {
+                            return Err("mcp get_place_snapshot pagination cursor stalled".into());
+                        }
                         cursor = next;
+                    }
+                    if !finished {
+                        return Err("mcp get_place_snapshot exceeded max 512 pages without completing".into());
+                    }
+                    for (path, parts) in script_parts {
+                        let combined: String = parts.into_values().collect();
+                        scripts.insert(path, Value::String(combined));
                     }
                     return Ok(json!({
                         "snapshot_id": snapshot_id.unwrap_or_else(|| "snap-mcp".to_string()),

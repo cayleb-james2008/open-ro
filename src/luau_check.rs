@@ -259,6 +259,10 @@ fn scan_long_bracket_close(
     None
 }
 
+const MAX_LUAU_ANALYSIS_BYTES: usize = 2 * 1024 * 1024;
+const MAX_LUAU_TOKENS: usize = 250_000;
+const MAX_EXPR_DEPTH: usize = 64;
+
 struct LexError {
     line: usize,
     code: &'static str,
@@ -266,14 +270,29 @@ struct LexError {
 }
 
 fn tokenize(source: &str) -> Result<Vec<Token>, LexError> {
+    let source = source.strip_prefix('\u{FEFF}').unwrap_or(source);
+    if source.len() > MAX_LUAU_ANALYSIS_BYTES {
+        return Err(LexError {
+            line: 1,
+            code: "FILE_TOO_LARGE",
+            message: format!("1: Luau file exceeds {MAX_LUAU_ANALYSIS_BYTES} byte analysis limit"),
+        });
+    }
     let chars: Vec<char> = source.chars().collect();
-    let mut tokens = Vec::with_capacity(source.len() / 5 + 8);
+    let mut tokens = Vec::with_capacity((source.len() / 5 + 8).min(65_536));
     let mut delims: Vec<(char, usize)> = Vec::new();
     let mut line: usize = 1;
     let mut line_start: usize = 0;
     let mut i: usize = 0;
 
     while i < chars.len() {
+        if tokens.len() >= MAX_LUAU_TOKENS {
+            return Err(LexError {
+                line,
+                code: "TOO_MANY_TOKENS",
+                message: format!("{line}: Luau file exceeds {MAX_LUAU_TOKENS} token limit"),
+            });
+        }
         let c = chars[i];
         if c == '\n' {
             line += 1;
@@ -1904,10 +1923,17 @@ pub struct WorkspaceSymbolIndex {
 
 impl WorkspaceSymbolIndex {
     pub fn filter_by_path(&mut self, path: &str) {
-        let trimmed = path.trim().trim_start_matches("./");
-        if trimmed.is_empty() {
+        if path.trim().is_empty() {
             return;
         }
+        let Some(trimmed) = normalize_luau_rel_path(path) else {
+            self.symbols.clear();
+            self.require_edges.clear();
+            self.remotes.clear();
+            self.mismatches.clear();
+            self.diagnostics.clear();
+            return;
+        };
         self.symbols.retain(|s| {
             s.path == trimmed
                 || s.service_path == trimmed
@@ -1920,7 +1946,7 @@ impl WorkspaceSymbolIndex {
         self.mismatches
             .retain(|m| m.caller_path == trimmed || m.target_path == trimmed);
         self.diagnostics.retain(|d| {
-            d.path == trimmed || d.service_path.as_deref() == Some(trimmed)
+            d.path == trimmed || d.service_path.as_deref() == Some(trimmed.as_str())
         });
     }
 
@@ -2020,8 +2046,37 @@ struct ScriptData {
     remotes: Vec<RemoteRef>,
 }
 
+fn normalize_luau_rel_path(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() || s.contains('\0') || s.contains('\\') || s.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    if s.starts_with('/') {
+        return None;
+    }
+    // Reject Windows drive-letter prefixes like `C:foo`
+    if s.as_bytes().get(1) == Some(&b':') && s.as_bytes()[0].is_ascii_alphabetic() {
+        return None;
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in s.split('/') {
+        match seg {
+            "" | "." => continue,
+            ".." => return None,
+            other => parts.push(other),
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("/"))
+    }
+}
+
 fn has_strict_pragma(source: &str) -> bool {
     source
+        .strip_prefix('\u{FEFF}')
+        .unwrap_or(source)
         .lines()
         .take(5)
         .any(|l| l.trim().eq_ignore_ascii_case("--!strict"))
@@ -2142,8 +2197,11 @@ fn types_compatible(expected_base: Option<&str>, expected_optional: bool, actual
 }
 
 /// Skip a Luau type expression starting at `idx`. Returns the index of the first token after the type.
-fn skip_type_expr(tokens: &[Token], mut idx: usize) -> usize {
-    fn skip_atom(tokens: &[Token], mut idx: usize) -> usize {
+fn skip_type_expr(tokens: &[Token], idx: usize) -> usize {
+    fn skip_atom(tokens: &[Token], mut idx: usize, depth: usize) -> usize {
+        if depth > MAX_EXPR_DEPTH {
+            return idx;
+        }
         let Some(tok) = tokens.get(idx) else {
             return idx;
         };
@@ -2151,7 +2209,7 @@ fn skip_type_expr(tokens: &[Token], mut idx: usize) -> usize {
             if let Some(close) = find_matching_paren(tokens, idx) {
                 idx = close + 1;
                 if tokens.get(idx).is_some_and(|t| t.is_punct("->")) {
-                    return skip_type_expr(tokens, idx + 1);
+                    return skip_type_expr_depth(tokens, idx + 1, depth + 1);
                 }
             } else {
                 idx += 1;
@@ -2174,18 +2232,44 @@ fn skip_type_expr(tokens: &[Token], mut idx: usize) -> usize {
                     idx = close + 1;
                 }
             } else if tokens.get(idx).is_some_and(|t| t.is_punct("<")) {
+                let saved = idx;
                 let mut angle = 0usize;
+                let mut inner_delims = 0usize;
+                let mut closed = false;
                 while idx < tokens.len() {
-                    if tokens[idx].is_punct("<") {
+                    let t = &tokens[idx];
+                    if t.is_punct("(") || t.is_punct("{") || t.is_punct("[") {
+                        inner_delims += 1;
+                    } else if t.is_punct(")") || t.is_punct("}") || t.is_punct("]") {
+                        if inner_delims == 0 {
+                            break;
+                        }
+                        inner_delims -= 1;
+                    } else if inner_delims == 0
+                        && (t.is_punct("=")
+                            || t.is_punct(";")
+                            || (!t.is_member
+                                && matches!(
+                                    t.ident(),
+                                    Some("local" | "function" | "return" | "end" | "if" | "for" | "while" | "repeat" | "type" | "export")
+                                )))
+                    {
+                        break;
+                    } else if t.is_punct("<") {
                         angle += 1;
-                    } else if tokens[idx].is_punct(">") {
+                    } else if t.is_punct(">") {
                         angle = angle.saturating_sub(1);
                         if angle == 0 {
                             idx += 1;
+                            closed = true;
                             break;
                         }
                     }
                     idx += 1;
+                }
+                if !closed {
+                    // Malformed unclosed `<` in type annotation: do not swallow subsequent statements.
+                    idx = saved + 1;
                 }
             }
         } else {
@@ -2197,14 +2281,25 @@ fn skip_type_expr(tokens: &[Token], mut idx: usize) -> usize {
         idx
     }
 
-    idx = skip_atom(tokens, idx);
-    while tokens
-        .get(idx)
-        .is_some_and(|t| t.is_punct("|") || t.is_punct("&") || t.is_punct("->"))
-    {
-        idx = skip_atom(tokens, idx + 1);
+    fn skip_type_expr_depth(tokens: &[Token], mut idx: usize, depth: usize) -> usize {
+        if depth > MAX_EXPR_DEPTH {
+            return idx;
+        }
+        idx = skip_atom(tokens, idx, depth);
+        while tokens
+            .get(idx)
+            .is_some_and(|t| t.is_punct("|") || t.is_punct("&") || t.is_punct("->"))
+        {
+            let next = skip_atom(tokens, idx + 1, depth + 1);
+            if next <= idx {
+                break;
+            }
+            idx = next;
+        }
+        idx
     }
-    idx
+
+    skip_type_expr_depth(tokens, idx, 0)
 }
 
 /// Parse a function parameter list and optional return type starting at `open_paren_idx` (`(`).
@@ -2356,11 +2451,26 @@ fn resolve_dm_expr(
     var_paths: &HashMap<String, Vec<String>>,
     consts: &HashMap<String, String>,
 ) -> Option<(Vec<String>, usize)> {
+    resolve_dm_expr_depth(tokens, expr_start, var_paths, consts, 0)
+}
+
+fn resolve_dm_expr_depth(
+    tokens: &[Token],
+    expr_start: usize,
+    var_paths: &HashMap<String, Vec<String>>,
+    consts: &HashMap<String, String>,
+    depth: usize,
+) -> Option<(Vec<String>, usize)> {
+    if depth > MAX_EXPR_DEPTH {
+        return None;
+    }
     let mut i = expr_start;
     if tokens.get(i).is_some_and(|t| t.is_punct("(")) {
         // Parenthesized expression like `(ReplicatedStorage :: any):FindFirstChild("Shared")`
         if let Some(close) = find_matching_paren(tokens, i) {
-            if let Some((inner_path, _)) = resolve_dm_expr(tokens, i + 1, var_paths, consts) {
+            if let Some((inner_path, _)) =
+                resolve_dm_expr_depth(tokens, i + 1, var_paths, consts, depth + 1)
+            {
                 i = close + 1;
                 return continue_dm_chain(tokens, i, inner_path, consts);
             }
@@ -3470,11 +3580,66 @@ fn check_module_contracts_for_script(
     }
 }
 
+fn compute_function_end_map(tokens: &[Token]) -> HashMap<usize, usize> {
+    let mut blocks: Vec<(bool, usize)> = Vec::new();
+    let mut map = HashMap::new();
+    for (idx, tok) in tokens.iter().enumerate() {
+        if tok.is_member {
+            continue;
+        }
+        let Some(word) = tok.ident() else { continue };
+        match word {
+            "function" => blocks.push((true, idx)),
+            "if" => {
+                let prev = if idx > 0 { Some(&tokens[idx - 1]) } else { None };
+                if !is_if_expression_context(prev) {
+                    blocks.push((false, idx));
+                }
+            }
+            "for" | "while" | "repeat" => blocks.push((false, idx)),
+            "do" => {
+                let is_loop_do = idx > 0 && {
+                    let mut back = idx;
+                    let mut found = false;
+                    while back > 0 {
+                        back -= 1;
+                        if tokens[back].is_kw("for") || tokens[back].is_kw("while") {
+                            found = true;
+                            break;
+                        }
+                        if tokens[back].is_kw("do")
+                            || tokens[back].is_kw("then")
+                            || tokens[back].is_kw("end")
+                            || tokens[back].is_kw("function")
+                        {
+                            break;
+                        }
+                    }
+                    found
+                };
+                if !is_loop_do {
+                    blocks.push((false, idx));
+                }
+            }
+            "end" | "until" => {
+                if let Some((is_fn, open_idx)) = blocks.pop() {
+                    if is_fn && word == "end" {
+                        map.insert(open_idx, idx);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    map
+}
+
 fn check_strict_builtin_for_script(script: &ScriptData, mismatches: &mut Vec<LuauContractMismatch>) {
     if !script.strict {
         return;
     }
     let tokens = &script.tokens;
+    let func_ends = compute_function_end_map(tokens);
     let mut i = 0usize;
     while i < tokens.len() {
         let tok = &tokens[i];
@@ -3577,9 +3742,9 @@ fn check_strict_builtin_for_script(script: &ScriptData, mismatches: &mut Vec<Lua
                 None
             };
             if let Some(op) = open_p {
-                if let (Some((sig, body_start)), Some(end_idx)) = (
+                if let (Some((sig, body_start)), Some(&end_idx)) = (
                     parse_func_sig(tokens, op, false),
-                    find_matching_end(tokens, i),
+                    func_ends.get(&i),
                 ) {
                     if let (Some(ret_base), Some(ret_raw)) =
                         (sig.return_base_type.as_deref(), sig.return_type.as_deref())
@@ -3594,6 +3759,7 @@ fn check_strict_builtin_for_script(script: &ScriptData, mismatches: &mut Vec<Lua
                             ret_raw,
                             &script.display_path,
                             &script.local_var_types,
+                            &func_ends,
                             mismatches,
                         );
                     }
@@ -3659,18 +3825,20 @@ fn check_function_returns(
     ret_raw: &str,
     display_path: &str,
     local_var_types: &HashMap<String, String>,
+    func_ends: &HashMap<usize, usize>,
     mismatches: &mut Vec<LuauContractMismatch>,
 ) {
-    let mut nested_depth = 0usize;
     let mut k = body_start;
     while k < body_end {
         let t = &tokens[k];
         if !t.is_member {
             if t.is_kw("function") {
-                nested_depth += 1;
-            } else if t.is_kw("end") && nested_depth > 0 {
-                nested_depth -= 1;
-            } else if t.is_kw("return") && nested_depth == 0 {
+                if let Some(&nested_end) = func_ends.get(&k) {
+                    k = nested_end + 1;
+                    continue;
+                }
+                break;
+            } else if t.is_kw("return") {
                 let expr_start = k + 1;
                 if expr_start < body_end && tokens[expr_start].line == t.line {
                     let expr_end = find_simple_expr_end(tokens, expr_start);
@@ -3764,6 +3932,70 @@ fn check_remote_contracts(remotes: &[RemoteRef], mismatches: &mut Vec<LuauContra
     }
 }
 
+fn detect_require_cycles(
+    require_edges: &[RequireEdge],
+    mismatches: &mut Vec<LuauContractMismatch>,
+) {
+    let mut adj: BTreeMap<&str, Vec<&RequireEdge>> = BTreeMap::new();
+    for edge in require_edges {
+        adj.entry(edge.caller_path.as_str()).or_default().push(edge);
+    }
+    // 0 = unvisited, 1 = on active DFS stack, 2 = completed
+    let mut state: HashMap<&str, u8> = HashMap::new();
+    let mut reported: HashSet<(String, String)> = HashSet::new();
+
+    for &start in adj.keys() {
+        if state.get(start).copied().unwrap_or(0) != 0 {
+            continue;
+        }
+        let mut stack: Vec<(&str, usize)> = vec![(start, 0)];
+        let mut path_stack: Vec<&str> = vec![start];
+        state.insert(start, 1);
+
+        while let Some((node, edge_idx)) = stack.pop() {
+            let edges = adj.get(node).map(Vec::as_slice).unwrap_or(&[]);
+            if edge_idx < edges.len() {
+                stack.push((node, edge_idx + 1));
+                let edge = edges[edge_idx];
+                let target = edge.target_path.as_str();
+                match state.get(target).copied().unwrap_or(0) {
+                    1 => {
+                        if reported.insert((edge.caller_path.clone(), edge.target_path.clone())) {
+                            let cycle_start = path_stack
+                                .iter()
+                                .position(|&p| p == target)
+                                .unwrap_or(0);
+                            let mut chain: Vec<&str> = path_stack[cycle_start..].to_vec();
+                            chain.push(target);
+                            mismatches.push(LuauContractMismatch {
+                                caller_path: edge.caller_path.clone(),
+                                caller_line: edge.caller_line,
+                                target_path: edge.target_path.clone(),
+                                kind: "cyclic_require".to_string(),
+                                message: format!(
+                                    "{}:{}: cyclic require() detected ({})",
+                                    edge.caller_path,
+                                    edge.caller_line,
+                                    chain.join(" -> ")
+                                ),
+                            });
+                        }
+                    }
+                    0 => {
+                        state.insert(target, 1);
+                        path_stack.push(target);
+                        stack.push((target, 0));
+                    }
+                    _ => {}
+                }
+            } else {
+                state.insert(node, 2);
+                path_stack.pop();
+            }
+        }
+    }
+}
+
 pub fn find_luau_analyze() -> Option<std::path::PathBuf> {
     crate::projects::find_tool("luau-analyze", "OPENRO_LUAU_ANALYZE")
 }
@@ -3786,7 +4018,7 @@ fn parse_luau_analyze_line(line: &str, dir: &Path) -> Option<WorkspaceDiagnostic
                         .next()
                         .and_then(|s| s.trim().parse::<usize>().ok());
                     let (severity, msg) = classify_luau_analyze_msg(rest);
-                    let rel = normalize_diag_path(file_raw, dir);
+                    let rel = normalize_diag_path(file_raw, dir)?;
                     return Some(WorkspaceDiagnostic {
                         path: rel,
                         service_path: None,
@@ -3809,7 +4041,7 @@ fn parse_luau_analyze_line(line: &str, dir: &Path) -> Option<WorkspaceDiagnostic
     let rest = parts.next()?.trim();
     if let (Ok(line_no), Ok(col_no)) = (l_str.parse::<usize>(), c_str.parse::<usize>()) {
         let (severity, msg) = classify_luau_analyze_msg(rest);
-        let rel = normalize_diag_path(p_str, dir);
+        let rel = normalize_diag_path(p_str, dir)?;
         return Some(WorkspaceDiagnostic {
             path: rel,
             service_path: None,
@@ -3836,13 +4068,25 @@ fn classify_luau_analyze_msg(rest: &str) -> (Severity, String) {
     (severity, rest.to_string())
 }
 
-fn normalize_diag_path(raw: &str, dir: &Path) -> String {
-    let p = std::path::Path::new(raw);
-    if p.is_absolute() {
-        crate::projects::rel_display(dir, p)
-    } else {
-        raw.trim_start_matches("./").replace('\\', "/")
+fn normalize_diag_path(raw: &str, dir: &Path) -> Option<String> {
+    let cleaned = raw.trim();
+    if cleaned.is_empty() || cleaned.contains('\0') || cleaned.chars().any(|c| c.is_control()) {
+        return None;
     }
+    let p = std::path::Path::new(cleaned);
+    if p.is_absolute() {
+        if let Ok(rel) = p.strip_prefix(dir) {
+            return normalize_luau_rel_path(&rel.to_string_lossy().replace('\\', "/"));
+        }
+        if let (Ok(canon_dir), Ok(canon_p)) = (dir.canonicalize(), p.canonicalize()) {
+            if let Ok(rel) = canon_p.strip_prefix(&canon_dir) {
+                return normalize_luau_rel_path(&rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+        return None;
+    }
+    let slash = cleaned.replace('\\', "/");
+    normalize_luau_rel_path(&slash)
 }
 
 fn run_luau_analyze_bin(
@@ -3852,7 +4096,12 @@ fn run_luau_analyze_bin(
 ) -> Vec<WorkspaceDiagnostic> {
     let mut files: Vec<String> = service_to_file
         .values()
-        .filter(|f| f.ends_with(".luau") || f.ends_with(".lua"))
+        .filter(|f| {
+            (f.ends_with(".luau") || f.ends_with(".lua"))
+                && !f.starts_with('-')
+                && normalize_luau_rel_path(f).is_some()
+                && crate::projects::safe_join(dir, f).is_ok()
+        })
         .cloned()
         .collect();
     files.sort();
@@ -3957,6 +4206,7 @@ pub fn analyze_workspace_symbols(
         check_module_contracts_for_script(sd, &by_service, &mut mismatches);
         check_strict_builtin_for_script(sd, &mut mismatches);
     }
+    detect_require_cycles(&require_edges, &mut mismatches);
     check_remote_contracts(&remotes, &mut mismatches);
 
     let mut diagnostics: Vec<WorkspaceDiagnostic> = place_report
@@ -4031,14 +4281,19 @@ pub fn lookup_definition(
     line: usize,
     col: usize,
 ) -> DefinitionResult {
-    let norm = path.trim().trim_start_matches("./");
+    if line == 0 || col == 0 {
+        return DefinitionResult::not_found();
+    }
+    let Some(norm) = normalize_luau_rel_path(path) else {
+        return DefinitionResult::not_found();
+    };
     let index = analyze_workspace_symbols(scripts, instances, service_to_file, None, false);
 
     // Find matching ScriptData by rel path or service path
     let mut matched_service: Option<String> = None;
     for sp in scripts.keys() {
         let dp = display_path_for(sp, service_to_file);
-        if dp == norm || sp == norm {
+        if dp == norm || *sp == norm {
             matched_service = Some(sp.clone());
             break;
         }

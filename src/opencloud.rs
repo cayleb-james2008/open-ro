@@ -98,7 +98,10 @@ pub fn base_url() -> String {
 
 /// First poll delay (`OPENRO_OPENCLOUD_POLL_MS` shortens it for tests).
 fn poll_ms() -> Option<u64> {
-    std::env::var("OPENRO_OPENCLOUD_POLL_MS").ok().and_then(|s| s.trim().parse().ok())
+    std::env::var("OPENRO_OPENCLOUD_POLL_MS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|n| n.clamp(1, 60_000))
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -191,6 +194,7 @@ impl Client {
             return err(503, "Add your Open Cloud key in Settings first.");
         };
         let http = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(15))
             .timeout(Duration::from_secs(120))
             .redirects(0) // never forward the key to another host
             .build();
@@ -223,8 +227,9 @@ impl Client {
                     .header("retry-after")
                     .and_then(|s| s.trim().parse::<u64>().ok())
                     .unwrap_or(default_wait);
-                let cap = poll_ms().map(|p| p * 2).unwrap_or(10_000);
-                std::thread::sleep(Duration::from_millis((wait * 1000).min(cap)));
+                let cap = poll_ms().map(|p| p.saturating_mul(2)).unwrap_or(10_000);
+                let sleep_ms = wait.saturating_mul(1000).min(cap);
+                std::thread::sleep(Duration::from_millis(sleep_ms));
                 continue;
             }
             let mut buf = Vec::new();
@@ -317,11 +322,38 @@ pub(crate) fn read_manifest(root: &Path) -> Value {
 }
 
 pub(crate) fn write_json_atomic(path: &Path, v: &Value) -> R<()> {
-    let text = serde_json::to_string_pretty(v).map_err(|e| Oc { status: 500, msg: format!("write {}: {e}", path.display()) })?;
-    let tmp = path.with_extension("tmp-openro");
-    std::fs::write(&tmp, format!("{text}\n"))
-        .and_then(|_| std::fs::rename(&tmp, path))
-        .or_else(|e| err(500, format!("could not write {}: {e}", path.display())))
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return bad("Target file cannot be a symlink.");
+    }
+    if let Some(parent) = path.parent() {
+        if std::fs::symlink_metadata(parent).is_ok_and(|m| m.file_type().is_symlink()) {
+            return bad("Target parent directory cannot be a symlink.");
+        }
+    }
+    let text = serde_json::to_string_pretty(v)
+        .map_err(|e| Oc { status: 500, msg: format!("write {}: {e}", path.display()) })?;
+    static OC_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let seq = OC_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("json");
+    let tmp = path.with_file_name(format!(".{fname}.openro-tmp.{}.{seq}", std::process::id()));
+    let payload = format!("{text}\n");
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| Oc { status: 500, msg: format!("could not write {}: {e}", path.display()) })?;
+        if let Err(e) = f.write_all(payload.as_bytes()).and_then(|_| f.flush()) {
+            let _ = std::fs::remove_file(&tmp);
+            return err(500, format!("could not write {}: {e}", path.display()));
+        }
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return err(500, format!("could not write {}: {e}", path.display()));
+    }
+    Ok(())
 }
 
 /// Merge `f` into a freshly read manifest (unknown fields stay) and save it.
@@ -931,7 +963,7 @@ impl Client {
     fn poll_operation(&self, id: &str) -> R<Value> {
         let first = poll_ms().unwrap_or(500);
         let (max_delay, cap) = match poll_ms() {
-            Some(p) => (p * 4, Duration::from_millis(p * 40)),
+            Some(p) => (p.saturating_mul(4), Duration::from_millis(p.saturating_mul(40))),
             None => (4_000, Duration::from_secs(120)),
         };
         let started = Instant::now();
@@ -945,7 +977,7 @@ impl Client {
             if started.elapsed() > cap {
                 return err(502, format!("Roblox is still processing the upload (operation {id}). Try again in a minute; it is not lost."));
             }
-            delay = (delay * 2).min(max_delay);
+            delay = delay.saturating_mul(2).min(max_delay);
         }
     }
 }

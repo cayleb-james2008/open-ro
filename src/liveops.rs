@@ -17,9 +17,9 @@ use crate::opencloud::{
     universe_id, write_json_atomic, Client, Ctx, Oc, Reply, R,
 };
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1033,10 +1033,26 @@ fn write_text_atomic(path: &Path, content: &str) -> R<()> {
     if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
         return bad("Target file cannot be a symlink.");
     }
-    let tmp = path.with_extension("tmp-openro");
-    std::fs::write(&tmp, content)
-        .and_then(|_| std::fs::rename(&tmp, path))
-        .map_err(|e| Oc { status: 500, msg: format!("write {}: {e}", path.display()) })
+    static LIVEOPS_TMP_SEQ: AtomicU64 = AtomicU64::new(1);
+    let seq = LIVEOPS_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("liveops");
+    let tmp = path.with_file_name(format!(".{fname}.openro-tmp.{}.{seq}", std::process::id()));
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .map_err(|e| Oc { status: 500, msg: format!("write {}: {e}", path.display()) })?;
+        if let Err(e) = f.write_all(content.as_bytes()).and_then(|_| f.flush()) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(Oc { status: 500, msg: format!("write {}: {e}", path.display()) });
+        }
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(Oc { status: 500, msg: format!("write {}: {e}", path.display()) });
+    }
+    Ok(())
 }
 
 fn normalize_user_id(v: Option<&Value>) -> R<String> {
@@ -1314,17 +1330,59 @@ fn is_forbidden_ip(ip: IpAddr) -> bool {
                 || v4.is_unspecified()
                 || (o[0] == 100 && (64..=127).contains(&o[1]))
                 || o[0] == 0
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+                || (o[0] == 192 && o[1] == 0 && o[2] == 2)
+                || (o[0] == 198 && (18..=19).contains(&o[1]))
+                || (o[0] == 198 && o[1] == 51 && o[2] == 100)
+                || (o[0] == 203 && o[1] == 0 && o[2] == 113)
+                || o[0] >= 240
         }
         IpAddr::V6(v6) => {
-            let seg0 = v6.segments()[0];
+            let s = v6.segments();
+            let seg0 = s[0];
+            // Also block deprecated IPv4-compatible `::w.x.y.z` addresses (`s[0..6] == 0`)
+            let ipv4_compat_forbidden = s[..6] == [0, 0, 0, 0, 0, 0]
+                && (s[6] != 0 || s[7] > 1)
+                && is_forbidden_ip(IpAddr::V4(Ipv4Addr::new(
+                    (s[6] >> 8) as u8,
+                    (s[6] & 0xff) as u8,
+                    (s[7] >> 8) as u8,
+                    (s[7] & 0xff) as u8,
+                )));
             v6.is_loopback()
                 || v6.is_multicast()
                 || v6.is_unspecified()
                 || (seg0 & 0xfe00) == 0xfc00
                 || (seg0 & 0xffc0) == 0xfe80
+                || (seg0 & 0xffc0) == 0xfec0
+                || (seg0 == 0x0064 && s[1] == 0xff9b && (s[2] <= 1 || (s[2] == 0 && s[3] == 0)))
+                || (s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0)
+                || (s[0] == 0x2001 && s[1] == 0x0db8)
+                || ipv4_compat_forbidden
                 || v6.to_ipv4_mapped().is_some_and(|v4| is_forbidden_ip(IpAddr::V4(v4)))
         }
     }
+}
+
+fn pct_decode_ascii_lossy(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(hi), Some(lo)) = (
+                (b[i + 1] as char).to_digit(16),
+                (b[i + 2] as char).to_digit(16),
+            ) {
+                out.push(((hi << 4) | lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Validate an HTTPS-only external webhook relay URL against SSRF and secret leakage.
@@ -1357,6 +1415,7 @@ pub fn validate_https_relay_url(raw: &str) -> R<String> {
         return bad("relay_url must not contain embedded credentials (@).");
     }
 
+    let is_bracketed = authority.starts_with('[');
     let (host, port_opt) = if let Some(after_open) = authority.strip_prefix('[') {
         let Some(close_idx) = after_open.find(']') else {
             return bad("relay_url has an unclosed IPv6 host literal.");
@@ -1372,6 +1431,9 @@ pub fn validate_https_relay_url(raw: &str) -> R<String> {
         };
         (ip_str, port)
     } else if let Some((h, p)) = authority.rsplit_once(':') {
+        if h.contains(':') {
+            return bad("relay_url IPv6 literals must be enclosed in brackets.");
+        }
         (h, Some(p))
     } else {
         (authority, None)
@@ -1394,18 +1456,26 @@ pub fn validate_https_relay_url(raw: &str) -> R<String> {
         || lower_host == "localhost"
         || lower_host.ends_with(".localhost")
         || lower_host.ends_with(".local")
+        || lower_host.ends_with(".localdomain")
         || lower_host.ends_with(".internal")
         || lower_host.ends_with(".arpa")
     {
         return bad("relay_url cannot target localhost or internal network hosts (SSRF blocked).");
     }
 
-    if let Ok(ip) = host.parse::<IpAddr>() {
+    if is_bracketed {
+        let v6 = host
+            .parse::<Ipv6Addr>()
+            .map_err(|_| Oc { status: 400, msg: "relay_url has an invalid IPv6 host literal.".into() })?;
+        if is_forbidden_ip(IpAddr::V6(v6)) {
+            return bad("relay_url cannot target loopback, private, link-local, or reserved IP addresses (SSRF blocked).");
+        }
+    } else if let Ok(ip) = host.parse::<IpAddr>().or_else(|_| lower_host.parse::<IpAddr>()) {
         if is_forbidden_ip(ip) {
             return bad("relay_url cannot target loopback, private, link-local, or reserved IP addresses (SSRF blocked).");
         }
     } else {
-        if !lower_host.contains('.') {
+        if lower_host.len() > 253 || !lower_host.contains('.') {
             return bad("relay_url host must be a fully-qualified public domain name.");
         }
         if !lower_host
@@ -1414,15 +1484,39 @@ pub fn validate_https_relay_url(raw: &str) -> R<String> {
         {
             return bad("relay_url host contains invalid domain characters.");
         }
+        let labels: Vec<&str> = lower_host.split('.').collect();
+        if labels.iter().any(|l| {
+            l.is_empty() || l.len() > 63 || l.starts_with('-') || l.ends_with('-')
+        }) {
+            return bad("relay_url host contains malformed domain labels.");
+        }
+        let tld = labels.last().copied().unwrap_or("");
+        // Require a real alphabetic TLD (blocks octal/hex/shorthand IPv4 SSRF like 0177.0.0.1, 0x7f.1, 127.1).
+        if tld.len() < 2
+            || !tld.bytes().any(|b| b.is_ascii_alphabetic())
+            || tld.bytes().all(|b| b.is_ascii_digit())
+            || (tld.starts_with("0x") && tld[2..].bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return bad("relay_url host must use a valid public DNS domain name.");
+        }
     }
 
     if let Some(q_idx) = tail.find('?') {
         let query = tail[q_idx + 1..].split('#').next().unwrap_or("");
         for pair in query.split('&') {
-            let key = pair.split('=').next().unwrap_or("").to_ascii_lowercase();
+            let raw_key = pair.split('=').next().unwrap_or("");
+            let key = pct_decode_ascii_lossy(raw_key).to_ascii_lowercase();
             if matches!(
                 key.as_str(),
-                "token" | "api_key" | "apikey" | "secret" | "password" | "x-api-key" | "key"
+                "token"
+                    | "api_key"
+                    | "apikey"
+                    | "secret"
+                    | "password"
+                    | "x-api-key"
+                    | "key"
+                    | "access_token"
+                    | "auth"
             ) {
                 return bad("relay_url must not embed secrets or API keys in query parameters.");
             }
@@ -1964,16 +2058,21 @@ impl SyncStateStore {
                 }
             }
         }
-        let seen_event_hashes = v
-            .get("seen_event_hashes")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(Value::as_str)
-                    .map(String::from)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let mut seen_event_hashes = Vec::new();
+        let mut seen_dedup = HashSet::new();
+        if let Some(arr) = v.get("seen_event_hashes").and_then(Value::as_array) {
+            for item in arr {
+                if let Some(h) = item.as_str() {
+                    if !h.is_empty() && seen_dedup.insert(h.to_string()) {
+                        seen_event_hashes.push(h.to_string());
+                    }
+                }
+            }
+        }
+        if seen_event_hashes.len() > MAX_SEEN_EVENT_HASHES {
+            let overflow = seen_event_hashes.len() - MAX_SEEN_EVENT_HASHES;
+            seen_event_hashes.drain(..overflow);
+        }
         SyncStateStore {
             store_name,
             source,
@@ -2013,16 +2112,24 @@ impl SyncStateStore {
 
 fn load_sync_state(root: &Path, default_store: &str, default_source: &str) -> R<Option<SyncStateStore>> {
     let path = telemetry_sync_state_path(root)?;
-    if !path.exists() {
+    let Ok(meta) = std::fs::symlink_metadata(&path) else {
         return Ok(None);
-    }
-    if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+    };
+    if meta.file_type().is_symlink() {
         return bad("telemetry-sync-state.json cannot be a symlink.");
     }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| Oc { status: 500, msg: format!("read telemetry-sync-state.json: {e}") })?;
-    let val: Value = serde_json::from_str(&text)
-        .map_err(|e| Oc { status: 500, msg: format!("parse telemetry-sync-state.json: {e}") })?;
+    if !meta.is_file() || meta.len() > MAX_TELEMETRY_FILE_BYTES {
+        return Ok(None);
+    }
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    let Ok(val) = serde_json::from_str::<Value>(&text) else {
+        return Ok(None);
+    };
+    if !val.is_object() {
+        return Ok(None);
+    }
     Ok(Some(SyncStateStore::from_value(&val, default_store, default_source)))
 }
 
@@ -2083,19 +2190,27 @@ fn extract_events_from_shard_value(val: &Value) -> Vec<Map<String, Value>> {
     out
 }
 
-fn event_dedupe_hash(shard_key: &str, idx: usize, raw_obj: &Map<String, Value>) -> String {
-    if let Some(eid) = raw_obj
-        .get("event_id")
-        .or_else(|| raw_obj.get("id"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
+fn event_dedupe_hash(
+    shard_key: &str,
+    occ_counts: &mut HashMap<String, usize>,
+    raw_obj: &Map<String, Value>,
+) -> String {
+    let id_val = raw_obj.get("event_id").or_else(|| raw_obj.get("id"));
+    if let Some(eid) = id_val.and_then(|v| match v {
+        Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() { None } else { Some(t.to_string()) }
+        }
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }) {
         return sha256_hex(format!("id|{shard_key}|{eid}").as_bytes());
     }
     let sorted: BTreeMap<&String, &Value> = raw_obj.iter().collect();
     let encoded = serde_json::to_string(&sorted).unwrap_or_default();
-    sha256_hex(format!("ev|{shard_key}|{idx}|{encoded}").as_bytes())
+    let occ = occ_counts.entry(encoded.clone()).or_insert(0);
+    *occ += 1;
+    sha256_hex(format!("ev|{shard_key}|{}|{encoded}", *occ).as_bytes())
 }
 
 fn push_seen_hash(seen_vec: &mut Vec<String>, seen_set: &mut HashSet<String>, hash: String) {
@@ -2202,10 +2317,11 @@ fn telemetry_sync(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
                 };
 
                 let raw_events = extract_events_from_shard_value(&shard_value);
-                for (idx, raw_obj) in raw_events.iter().enumerate() {
+                let mut occ_counts: HashMap<String, usize> = HashMap::new();
+                for raw_obj in &raw_events {
                     let canonical =
                         normalize_telemetry_event(raw_obj, "live_opencloud", Some("live_opencloud"), None)?;
-                    let h = event_dedupe_hash(&key, idx, raw_obj);
+                    let h = event_dedupe_hash(&key, &mut occ_counts, raw_obj);
                     if seen_set.contains(&h) {
                         continue;
                     }
@@ -2226,6 +2342,9 @@ fn telemetry_sync(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
             if next.is_none() {
                 break;
             }
+            if next.as_deref() == page_token.as_deref() {
+                return err(502, "Roblox DataStore pagination cursor stalled.");
+            }
             page_token = next;
         }
     } else {
@@ -2245,10 +2364,11 @@ fn telemetry_sync(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
                 .map_err(|_| Oc { status: 502, msg: "Roblox answered with invalid JSON for Creator Analytics.".into() })?
         };
         let raw_events = extract_events_from_shard_value(&v);
-        for (idx, raw_obj) in raw_events.iter().enumerate() {
+        let mut occ_counts: HashMap<String, usize> = HashMap::new();
+        for raw_obj in &raw_events {
             let canonical =
                 normalize_telemetry_event(raw_obj, "live_opencloud", Some("live_opencloud"), None)?;
-            let h = event_dedupe_hash("creator_analytics", idx, raw_obj);
+            let h = event_dedupe_hash("creator_analytics", &mut occ_counts, raw_obj);
             if seen_set.contains(&h) {
                 continue;
             }
@@ -2287,6 +2407,48 @@ fn telemetry_sync(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
     }))
 }
 
+fn parse_jsonl_events_from_file(
+    file: std::fs::File,
+    filter: Option<TelemetrySourceFilter>,
+) -> Vec<Value> {
+    const MAX_JSONL_LINE_BYTES: usize = 1024 * 1024;
+    let mut reader = BufReader::new(file);
+    let mut buf: Vec<u8> = Vec::new();
+    let mut events = Vec::new();
+    loop {
+        buf.clear();
+        let Ok(n) = reader.read_until(b'\n', &mut buf) else {
+            break;
+        };
+        if n == 0 {
+            break;
+        }
+        if buf.len() > MAX_JSONL_LINE_BYTES {
+            continue;
+        }
+        let Ok(line_str) = std::str::from_utf8(&buf) else {
+            continue;
+        };
+        let trimmed = line_str.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(ev) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        if !ev.is_object() {
+            continue;
+        }
+        if let Some(f) = filter {
+            if !f.matches(&ev) {
+                continue;
+            }
+        }
+        events.push(ev);
+    }
+    events
+}
+
 fn read_telemetry_events(root: &Path, filter: TelemetrySourceFilter) -> R<Vec<Value>> {
     let path = telemetry_path(root)?;
     if !path.exists() {
@@ -2296,27 +2458,13 @@ fn read_telemetry_events(root: &Path, filter: TelemetrySourceFilter) -> R<Vec<Va
         if meta.file_type().is_symlink() {
             return bad("telemetry.jsonl cannot be a symlink.");
         }
-        if meta.len() > telemetry_max_bytes() {
+        if meta.len() > MAX_TELEMETRY_FILE_BYTES.saturating_mul(2) {
             return err(413, "telemetry.jsonl exceeds maximum size.");
         }
     }
     let file = std::fs::File::open(&path)
         .map_err(|e| Oc { status: 500, msg: format!("read telemetry.jsonl: {e}") })?;
-    let mut events = Vec::new();
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(ev) = serde_json::from_str::<Value>(trimmed) else {
-            continue;
-        };
-        if !ev.is_object() || !filter.matches(&ev) {
-            continue;
-        }
-        events.push(ev);
-    }
-    Ok(events)
+    Ok(parse_jsonl_events_from_file(file, Some(filter)))
 }
 
 fn aggregate_live_errors(events: &[Value]) -> (Vec<Value>, usize) {
@@ -2445,14 +2593,7 @@ fn count_telemetry_lines(path: &Path) -> usize {
     let Ok(f) = std::fs::File::open(path) else {
         return 0;
     };
-    BufReader::new(f)
-        .lines()
-        .map_while(Result::ok)
-        .filter(|l| {
-            let t = l.trim();
-            !t.is_empty() && serde_json::from_str::<Value>(t).is_ok_and(|v| v.is_object())
-        })
-        .count()
+    parse_jsonl_events_from_file(f, None).len()
 }
 
 fn round1(v: f64) -> f64 {
