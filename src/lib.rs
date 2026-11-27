@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod art_knowledge;
 pub mod assets;
+pub mod audio_library;
 pub mod audio_synth;
 pub mod board;
 pub mod config;

@@ -404,6 +404,7 @@ impl LibraryManager {
             "roblox-studio-core" => detect_studio_environment().mcp_command,
             "roblox-market-taste" => Some("built-in:roblox-explore-api".to_string()),
             "audio-sfx-gen" => Some("built-in:openro-audio-synth".to_string()),
+            "cc0-sfx-packs" => Some("built-in:openro-cc0-sfx".to_string()),
             "rojo-open-cloud" => find_on_path("rojo")
                 .map(|p| p.to_string_lossy().into_owned())
                 .or_else(|| Some("built-in:rojo-ship-pack".to_string())),
@@ -411,7 +412,7 @@ impl LibraryManager {
         };
 
         let configured = match spec.id {
-            "roblox-studio-core" | "roblox-market-taste" | "audio-sfx-gen" => true,
+            "roblox-studio-core" | "roblox-market-taste" | "audio-sfx-gen" | "cc0-sfx-packs" => true,
             "blender-3d-pipeline" | "model-3d-gen" => {
                 blender.detected || saved_key.is_some() || env_key_present
             }
@@ -686,6 +687,20 @@ impl LibraryManager {
                 ),
                 Err(e) => (false, format!("local audio synthesizer error: {e}")),
             },
+            "cc0-sfx-packs" => {
+                let snap = crate::audio_library::list_sfx_packs(&self.data_dir);
+                let catalog_count = crate::audio_library::cc0_pack_catalog().len();
+                let installed_packs = snap["installed_packs_count"].as_u64().unwrap_or(0);
+                let installed_clips = snap["installed_clips_total"].as_u64().unwrap_or(0);
+                let runner_ready = snap["runner_installed"].as_bool().unwrap_or(false);
+                (
+                    true,
+                    format!(
+                        "CC0-1.0 SFX pack catalog ready ({catalog_count} free public-domain packs; {installed_packs} installed, {installed_clips} clips indexed; local neural runner {}).",
+                        if runner_ready { "installed" } else { "not installed" }
+                    ),
+                )
+            }
             "image-gen-studio" => {
                 let kp_count = art_knowledge::anime_archetypes().len();
                 if has_key {
@@ -1414,10 +1429,10 @@ fn find_on_path(bin: &str) -> Option<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// Static Pack Catalog (3 Universal Pre-Installed Defaults + 5 Installable)
+// Static Pack Catalog (3 Universal Pre-Installed Defaults + 6 Installable)
 // ---------------------------------------------------------------------------
 
-static PACK_SPECS: [PackSpec; 8] = [
+static PACK_SPECS: [PackSpec; 9] = [
     // --- 3 Universal Pre-Installed Default Packs ---
     PackSpec {
         id: "roblox-studio-core",
@@ -1586,9 +1601,9 @@ static PACK_SPECS: [PackSpec; 8] = [
         id: "audio-sfx-gen",
         name: "Audio & SFX Studio",
         category: "Audio & SFX",
-        description: "Unlock instant offline 44.1 kHz PCM16 .wav sound synthesis (summon rolls, mythic fanfare, battle crits, potions) plus ElevenLabs & Google Lyria connections.",
+        description: "Unlock instant offline 44.1 kHz PCM16 .wav sound synthesis plus hardware-tiered local models (AudioLDM-S, Stable Audio Small/Open, TangoFlux, AudioLDM 2, ACE-Step 1.5) and ElevenLabs / Google Gemini Lyria APIs.",
         default_installed: false,
-        version: "0.9.0",
+        version: "1.33.0",
         default_provider: "openro-synth-local",
         tools: &[
             "generate_audio_sfx",
@@ -1597,13 +1612,44 @@ static PACK_SPECS: [PackSpec; 8] = [
         ],
         capabilities: &[
             "offline-wav-synth",
+            "audioldm-s-local",
+            "stable-audio-small-local",
+            "tangoflux-sfx-local",
+            "audioldm2-sfx-local",
+            "stable-audio-open-local",
+            "ace-step-local-http",
             "elevenlabs-sfx",
             "google-lyria",
         ],
         env_vars: &["ELEVENLABS_API_KEY", "GEMINI_API_KEY"],
-        skill_summary: "Synthesize royalty-free 44.1 kHz PCM16 .wav SFX cues locally or connect ElevenLabs/Lyria for custom soundtracks.",
-        skill_markdown: "- Use `POST /api/tools/audio/generate` (`summon_roll`, `mythic_fanfare`, `battle_crit`, `potion_drink`, `ui_click`, `level_up`) to generate ready-to-upload `.wav` cues immediately offline.\n\
+        skill_summary: "Synthesize royalty-free 44.1 kHz PCM16 .wav SFX cues locally, run hardware-tiered open-weights audio models, or connect ElevenLabs/Google Gemini Lyria.",
+        skill_markdown: "- Use `POST /api/tools/audio/generate` (`summon_roll`, `mythic_fanfare`, `battle_crit`, `potion_drink`, `ui_click`, `level_up`, or custom `layers`) to generate ready-to-upload 44.1 kHz PCM16 `.wav` cues immediately offline, or install a tiered local (`openro-audio-gen`) or cloud (`elevenlabs-sfx-http`, `google-gemini-lyria-http`) `audio_gen` adapter.\n\
 - Register Sound instances under `SoundService` or part attachments with normalized Volume (`0.5..0.85`).",
+    },
+    PackSpec {
+        id: "cc0-sfx-packs",
+        name: "Free CC0-1.0 SFX Pack Library",
+        category: "Audio",
+        description: "Download, search, preview, layer, and master 7 verified 100% free CC0-1.0 game SFX packs (Kenney UI/Cards/Digital, RPG Combat & Fantasy, Universal Game SFX, Arcade Fanfares) into 44.1 kHz PCM16 mono WAV.",
+        default_installed: false,
+        version: "1.33.0",
+        default_provider: "openro-cc0-sfx-local",
+        tools: &[
+            "sfx_pack_list",
+            "sfx_pack_install",
+            "sfx_pack_search",
+            "sfx_pack_use",
+        ],
+        capabilities: &[
+            "cc0-sfx-packs",
+            "safe-zip-extract",
+            "ffmpeg-wav-mastering",
+            "sfx-layer-mixing",
+        ],
+        env_vars: &[],
+        skill_summary: "Browse and install 7 verified CC0-1.0 public-domain SFX packs, search clips by tag/filename, and master single or multi-layered clips to 44.1 kHz mono WAV in assets/audio/.",
+        skill_markdown: "- Call `sfx_pack_list` to see the 7 verified CC0-1.0 SFX packs (`kenney-ui-sfx`, `kenney-casino-cards`, `kenney-digital-sfx`, `rpg-combat-pack`, `rpg-fantasy-80`, `general-game-100`, `arcade-fanfare-pack`), `sfx_pack_install` to download & index a pack locally, `sfx_pack_search` to find clips by keyword, and `sfx_pack_use` to copy/layer/master clips to 44.1 kHz 16-bit PCM mono WAV under `assets/audio/`.\n\
+- All built-in catalog packs are CC0-1.0 Public Domain (no attribution required).",
     },
     PackSpec {
         id: "rojo-open-cloud",

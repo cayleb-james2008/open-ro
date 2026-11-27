@@ -2689,6 +2689,8 @@ fn is_write_or_submit_tool(tool: &str) -> bool {
             | "mesh_generate"
             | "blender_generate"
             | "audio_generate"
+            | "sfx_pack_install"
+            | "sfx_pack_use"
             | "art_generate"
             | "image_process"
             | "art_pack_card"
@@ -3294,7 +3296,7 @@ fn role_rules_for(role: &str) -> &'static str {
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
             "Follow Study -> Build -> Check -> Refine: check `study_status`/`unknowns_list`, record verified behavior with `evidence_record`/`unknown_add`/`unknown_update` (capping guesswork), cite `ev_*` IDs in `docs/mechanics.json` (`mechanics_check`), build, check (`project_check`/`project_playtest`, pass `\"force\":true` to bypass `KeptChecks`), and refine.\n",
             "Studio-Native First: push native Luau/ScreenGui/instances into live Roblox Studio via MCP/Rojo sync (`project_sync`, `project_scene_mutate`, `gui_compile`); use `studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, and `studio_cua_window` over the headed Studio window for any native Studio UI/dialog outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor, dialogs); use local-hardware adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`, `adapter_invoke`) for asset generation Studio cannot do natively.\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_symbols`, `project_typecheck`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, `studio_cua_window`, `studio_stage_content`, `studio_verify_device`, `studio_verify_audio`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `ui_kit_presets`, `ui_kit_generate`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `assets_moderation_poll`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_codegen`, `liveops_telemetry_sync`, `liveops_telemetry_summary`.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_symbols`, `project_typecheck`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, `studio_cua_window`, `studio_stage_content`, `studio_verify_device`, `studio_verify_audio`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `ui_kit_presets`, `ui_kit_generate`, `mesh_generate`, `blender_generate`, `audio_generate`, `sfx_pack_list`, `sfx_pack_install`, `sfx_pack_search`, `sfx_pack_use`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `assets_moderation_poll`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_codegen`, `liveops_telemetry_sync`, `liveops_telemetry_summary`.\n",
             "Live Studio CUA & Bridge signatures: `studio_cua_screenshot {\"label\":\"viewport\"}`, `studio_cua_mouse {\"action\":\"click|double_click|right_click|move|drag|scroll\",\"x\":0.5,\"y\":0.5,\"to_x\":0.7,\"to_y\":0.7,\"normalized\":true}`, `studio_cua_keyboard {\"hotkey\":[\"ctrl\",\"s\"]}`, `studio_cua_window {\"action\":\"status|launch|attach|transfer|stop|pause|resume\",\"place_file\":\"...?\"}`, `studio_stage_content {}`, `studio_verify_device {\"profile\":\"phone_844x390|tablet_1024x768|desktop_1920x1080\"}`, `studio_verify_audio {}`.\n",
             "UI Craft (7 Rules, zero copying): use `ui_kit_presets` / `ui_kit_generate` (ChatGPT sheet -> auto-sliced 9-slice transparent PNGs + `AssetIds.slices` + mixable layouts `skybridge-crest`/`perimeter-command`/`workshop-ribbon`/`compact-mobile-split` with >=5.25:1 Dark/Light glass, `Lighting.BlurEffect` modal depth, original header crests, >=44px glossy buttons, 1.5-2px dark `UIStroke` numerals, 844x390 safe-area clearance; never copy ANRX star-ribbons or layouts).\n",
             "Formatting: `project_check` with `{\"format\":true}` or `project_format` auto-formats your claimed `.luau` files with `stylua` instead of hand-editing whitespace.\n",
@@ -3305,6 +3307,7 @@ fn role_rules_for(role: &str) -> &'static str {
             "- image_process: {\"output\":\"art/ui/x.png\",\"input\":\"...?\",\"ops\":[{\"op\":\"canvas\",\"width\":256,\"height\":256,\"color\":\"#00000000\"},{\"op\":\"draw\",\"shapes\":[...]}]} (or \"script\")\n",
             "- mesh_generate: {\"name\":\"PropName\",\"parts\":[{\"shape\":\"box|cylinder|sphere|cone|torus|wedge\",\"size\":[w,d,h],\"pos\":[x,y,z],\"color\":\"#hex\"}],\"script\":\"...?\"}\n",
             "- audio_generate: {\"name\":\"sfx_name\",\"preset\":\"summon_roll|mythic_fanfare|battle_crit|potion_drink|ui_click|level_up\",\"duration_ms\":1200,\"out_path\":\"assets/audio/sfx.wav\"}\n",
+            "- sfx_pack_list: {} / sfx_pack_install: {\"pack_id\":\"kenney-ui-sfx\"} / sfx_pack_search: {\"query\":\"click\",\"limit\":20} / sfx_pack_use: {\"pack_id\":\"kenney-ui-sfx\",\"clip\":\"...\",\"out_name\":\"ui_click\"}\n",
             "Cloud & Creator Hub rules & signatures:\n",
             "- creator_hub_status {\"cdp_url\":\"http://127.0.0.1:9222\",\"check_login\":true,\"save_creator\":true} / creator_hub_setup / creator_hub_configure: loopback CDP only; NEVER bypass login/2FA/CAPTCHA — if `status:\"action_required\"`, stop and report `blocked_reason`/`url` to owner; keys stay in 0600 SecretStore (never logged)\n",
             "- assets_authorise {\"paths\":[\"art/**\"]} -> assets_upload {\"paths\":[...],\"max_audio_uploads\":5} -> assets_moderation_poll {} -> assets_codegen {\"studio_local_fallback\":true}\n",
@@ -3762,6 +3765,38 @@ fn execute_agent_tool(
         }
         "audio_generate" => {
             let res = tool_audio_generate(shared, handle, args)?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
+        "sfx_pack_list" => {
+            let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+            Ok(crate::audio_library::list_sfx_packs(data_dir))
+        }
+        "sfx_pack_install" => {
+            let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+            let pack_id = args
+                .get("pack_id")
+                .or_else(|| args.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let url = args.get("url").and_then(Value::as_str);
+            crate::audio_library::install_sfx_pack(data_dir, pack_id, url)
+        }
+        "sfx_pack_search" => {
+            let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+            let q = args
+                .get("query")
+                .or_else(|| args.get("q"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let pack_id = args.get("pack_id").and_then(Value::as_str);
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(40) as usize;
+            Ok(crate::audio_library::search_sfx_packs(data_dir, q, pack_id, limit))
+        }
+        "sfx_pack_use" => {
+            let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+            let project_dir = handle.state.lock().unwrap().project_dir.clone();
+            let res = crate::audio_library::use_sfx_clip(data_dir, Some(&project_dir), args)?;
             record_generated_asset_files(handle, agent_name, tool, args, &res);
             Ok(res)
         }
@@ -6254,8 +6289,9 @@ fn collect_generated_asset_paths(tool: &str, res: &Value) -> Vec<String> {
                 res.pointer("/asset_ids_luau/path").and_then(Value::as_str),
             );
         }
-        "audio_generate" => {
+        "audio_generate" | "sfx_pack_use" => {
             push_str(&mut raw, res.get("project_path").and_then(Value::as_str));
+            push_str(&mut raw, res.get("path").and_then(Value::as_str));
         }
         "image_process" => {
             push_str(&mut raw, res.get("path").and_then(Value::as_str));

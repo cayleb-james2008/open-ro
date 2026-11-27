@@ -263,12 +263,12 @@ fn v090_embedded_studio_mjpeg_input_passthrough_and_all_13_mcp_tools() {
 fn v090_library_packs_blender_mesh_and_wav_audio_api() {
     let port = start_local_server("Library & Media Tools v0.9.0");
 
-    // 1. GET /api/library returns 3 universal pre-installed defaults + 5 installable packs (8 total)
+    // 1. GET /api/library returns 3 universal pre-installed defaults + 6 installable packs (9 total)
     let (st, lib) = http_json(port, "GET", "/api/library", "");
     assert_eq!(st, 200, "GET /api/library failed: {lib}");
     assert_eq!(lib["ok"], json!(true));
     let packs = lib["packs"].as_array().unwrap();
-    assert_eq!(packs.len(), 8, "expected 8 library packs: {lib}");
+    assert_eq!(packs.len(), 9, "expected 9 library packs: {lib}");
     let defaults = packs
         .iter()
         .filter(|p| p["default_installed"] == json!(true))

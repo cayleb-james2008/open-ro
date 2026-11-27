@@ -250,6 +250,7 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - {{\"tool\": \"ui_kit_generate\", \"args\": {{\"layout\": \"skybridge-crest|perimeter-command|workshop-ribbon|compact-mobile-split\", \"skin\": \"obsidian-prism|skybridge-gilded|sakura-lacquer|cyber-forge|clean-monochrome\", \"sheet\": \"chrome_sheet|icons_sheet|rarity_frames_sheet\", \"procedural_fallback\": false}}}} generates & auto-slices transparent 9-slice UI chrome/icons/frames into art/ui/<skin>/ + art/ui/slices.json\n\
 - {{\"tool\": \"mesh_generate\", \"args\": {{\"name\": \"PropName\", \"description\": \"...\", \"script\": \"...\"}}}} (alias `blender_generate`) generates smart-UV AO-baked .obj + PNG + manifest.json (<=20k tris) into assets/meshes/\n\
 - {{\"tool\": \"audio_generate\", \"args\": {{\"name\": \"SfxName\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}}}} synthesizes 44.1kHz WAV into assets/audio/\n\
+- {{\"tool\": \"sfx_pack_list\", \"args\": {{}}}} / {{\"tool\": \"sfx_pack_install\", \"args\": {{\"pack_id\": \"kenney-ui-sfx\"}}}} / {{\"tool\": \"sfx_pack_search\", \"args\": {{\"query\": \"click\", \"pack_id\": \"...?\", \"limit\": 20}}}} / {{\"tool\": \"sfx_pack_use\", \"args\": {{\"pack_id\": \"kenney-ui-sfx\", \"clip\": \"...\", \"out_name\": \"ui_click\"}}}} browses, installs, searches, and masters free CC0-1.0 SFX clips into 44.1kHz WAV in assets/audio/\n\
 - {{\"tool\": \"adapter_list\", \"args\": {{\"capability\": \"image_gen|reference_search|mesh_gen|audio_gen|custom\"}}}} lists installed CLI/HTTP tool adapters and availability\n\
 - {{\"tool\": \"adapter_invoke\", \"args\": {{\"capability\": \"...\", \"adapter_id\": \"...?\", \"params\": {{...}}}}}} runs an installed CLI/HTTP adapter (or capability priority chain)\n\
 - {{\"tool\": \"opencloud_status\", \"args\": {{}}}} / {{\"tool\": \"creator_hub_status\", \"args\": {{\"check_login\": true, \"save_creator\": true}}}} checks Open Cloud key/creator & open loopback Chromium Creator Hub status\n\
@@ -315,6 +316,7 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - image_process {{\"input\":\"...\",\"output\":\"...\",\"ops\":[...]}} / art_pack_card {{\"card_id\":\"...\"}}\n\
 - ui_kit_presets {{}} / ui_kit_generate {{\"layout\":\"skybridge-crest\",\"skin\":\"obsidian-prism\",\"sheet\":\"chrome_sheet\"}} (9-slice PNGs + BlurEffect + >=5.25:1 + 844x390 safe)\n\
 - mesh_generate {{\"name\":\"Prop\",\"description\":\"...\",\"script\":\"...\"}} / audio_generate {{\"name\":\"Sfx\",\"preset\":\"...\",\"recipe\":{{...}},\"duration_ms\":1200}}\n\
+- sfx_pack_list {{}} / sfx_pack_install {{\"pack_id\":\"kenney-ui-sfx\"}} / sfx_pack_search {{\"query\":\"click\",\"limit\":20}} / sfx_pack_use {{\"pack_id\":\"...\",\"clip\":\"...\",\"out_name\":\"...\"}} (free CC0-1.0 SFX packs -> 44.1kHz WAV)\n\
 - adapter_list {{\"capability\":\"...?\"}} / adapter_invoke {{\"capability\":\"...\",\"adapter_id\":\"...?\",\"params\":{{...}}}}\n\
 - opencloud_status {{}} / creator_hub_status {{\"check_login\":true,\"save_creator\":true}} / creator_hub_setup {{...}} / creator_hub_configure {{...}}\n\
 - assets_authorise {{\"paths\":[...]}} / assets_upload {{\"paths\":[...],\"max_audio_uploads\":5}} / assets_moderation_poll {{}} / assets_codegen {{\"studio_local_fallback\":true}} / products_sync {{}} / products_codegen {{}} / universe_get {{}} / universe_set {{...}}\n\
@@ -546,6 +548,10 @@ pub struct AgentHooks {
     pub ui_kit_generate: Option<HookFn>,
     pub mesh_generate: Option<HookFn>,
     pub audio_generate: Option<HookFn>,
+    pub sfx_pack_list: Option<HookFn>,
+    pub sfx_pack_install: Option<HookFn>,
+    pub sfx_pack_search: Option<HookFn>,
+    pub sfx_pack_use: Option<HookFn>,
     pub assets_upload: Option<HookFn>,
     pub opencloud_status: Option<HookFn>,
     pub creator_hub_status: Option<HookFn>,
@@ -3083,6 +3089,8 @@ impl Agent {
                                         | "mesh_generate"
                                         | "blender_generate"
                                         | "audio_generate"
+                                        | "sfx_pack_install"
+                                        | "sfx_pack_use"
                                         | "assets_upload"
                                         | "assets_moderation_poll"
                                         | "studio_stage_content"
@@ -3562,6 +3570,8 @@ impl Agent {
                                 | "mesh_generate"
                                 | "blender_generate"
                                 | "audio_generate"
+                                | "sfx_pack_install"
+                                | "sfx_pack_use"
                                 | "assets_upload"
                                 | "assets_moderation_poll"
                                 | "studio_stage_content"
@@ -5250,6 +5260,74 @@ impl Agent {
                 transcript.push(format!("tool audio_generate -> {text}"));
                 thread.push(format!("Synthesized WAV audio {name}."));
                 Ok(format!("tool_result: audio_generate: {text}"))
+            }
+            "sfx_pack_list" => {
+                let res = if let Some(hook) = &self.hooks.sfx_pack_list {
+                    hook(args)?
+                } else {
+                    let data_dir = self.effective_assets_root();
+                    crate::audio_library::list_sfx_packs(&data_dir)
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool sfx_pack_list -> {text}"));
+                Ok(format!("tool_result: sfx_pack_list: {text}"))
+            }
+            "sfx_pack_install" => {
+                let res = if let Some(hook) = &self.hooks.sfx_pack_install {
+                    hook(args)?
+                } else {
+                    let data_dir = self.effective_assets_root();
+                    let pack_id = args
+                        .get("pack_id")
+                        .or_else(|| args.get("id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let url = args.get("url").and_then(|v| v.as_str());
+                    crate::audio_library::install_sfx_pack(&data_dir, pack_id, url)?
+                };
+                let text = res.to_string();
+                let pid = res
+                    .get("pack_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("SFX pack");
+                transcript.push(format!("tool sfx_pack_install -> {text}"));
+                thread.push(format!("Installed CC0 SFX pack {pid}."));
+                Ok(format!("tool_result: sfx_pack_install: {text}"))
+            }
+            "sfx_pack_search" => {
+                let res = if let Some(hook) = &self.hooks.sfx_pack_search {
+                    hook(args)?
+                } else {
+                    let data_dir = self.effective_assets_root();
+                    let q = args
+                        .get("query")
+                        .or_else(|| args.get("q"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let pack_id = args.get("pack_id").and_then(|v| v.as_str());
+                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(40) as usize;
+                    crate::audio_library::search_sfx_packs(&data_dir, q, pack_id, limit)
+                };
+                let text = res.to_string();
+                transcript.push(format!("tool sfx_pack_search -> {text}"));
+                Ok(format!("tool_result: sfx_pack_search: {text}"))
+            }
+            "sfx_pack_use" => {
+                let res = if let Some(hook) = &self.hooks.sfx_pack_use {
+                    hook(args)?
+                } else {
+                    let data_dir = self.effective_assets_root();
+                    let proj = self.effective_project_root();
+                    crate::audio_library::use_sfx_clip(&data_dir, proj.as_deref(), args)?
+                };
+                let text = res.to_string();
+                let out_path = res
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("assets/audio/sfx.wav");
+                transcript.push(format!("tool sfx_pack_use -> {text}"));
+                thread.push(format!("Mastered CC0 SFX clip to {out_path}."));
+                Ok(format!("tool_result: sfx_pack_use: {text}"))
             }
             "adapter_list" => {
                 let res = if let Some(hook) = &self.hooks.adapter_list {
