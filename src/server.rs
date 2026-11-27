@@ -6768,7 +6768,23 @@ fn try_route_project_studio(
                 .unwrap_or_else(|| crate::studio_embed::default_studio_project_slug(&proj_ref.dir));
             match crate::studio_embed::stage_project_studio_content(&proj_ref.dir, &slug) {
                 Ok(v) => respond_json(stream, "200 OK", &v),
-                Err(e) => respond_err(stream, "502 Bad Gateway", &e),
+                Err(e) => {
+                    if crate::studio_embed::find_studio_content_dir().is_none() {
+                        respond_json(
+                            stream,
+                            "200 OK",
+                            &json!({
+                                "ok": false,
+                                "studio_found": false,
+                                "staged_count": 0,
+                                "skipped_count": 0,
+                                "error": e,
+                            }),
+                        )
+                    } else {
+                        respond_err(stream, "400 Bad Request", &e)
+                    }
+                }
             }
         }
         "verify-device" => match crate::playtest::verify_studio_device(shared, &proj_ref, &body) {

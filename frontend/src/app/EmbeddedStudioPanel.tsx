@@ -151,9 +151,11 @@ export function EmbeddedStudioPanel({
   const [lastKey, setLastKey] = useState<string | null>(null);
   const [autoBusy, setAutoBusy] = useState<"" | "stage" | "device" | "audio">("");
   const [autoResult, setAutoResult] = useState<{ label: string; ok: boolean; detail: string } | null>(null);
+  const [checksOpen, setChecksOpen] = useState(false);
 
   const runStageContent = async () => {
     if (!onStageStudioContent || autoBusy) return;
+    setChecksOpen(false);
     setAutoBusy("stage");
     try {
       const r = await onStageStudioContent();
@@ -173,6 +175,7 @@ export function EmbeddedStudioPanel({
 
   const runVerifyDevice = async (profile: StudioDeviceProfile) => {
     if (!onVerifyStudioDevice || autoBusy) return;
+    setChecksOpen(false);
     setAutoBusy("device");
     try {
       const r = await onVerifyStudioDevice(profile);
@@ -195,6 +198,7 @@ export function EmbeddedStudioPanel({
 
   const runVerifyAudio = async () => {
     if (!onVerifyStudioAudio || autoBusy) return;
+    setChecksOpen(false);
     setAutoBusy("audio");
     try {
       const r = await onVerifyStudioAudio();
@@ -551,7 +555,7 @@ export function EmbeddedStudioPanel({
           )}
 
           {(onStageStudioContent || onVerifyStudioDevice || onVerifyStudioAudio) && (
-            <Popover.Root>
+            <Popover.Root open={checksOpen} onOpenChange={setChecksOpen}>
               <Popover.Trigger asChild>
                 <Button
                   variant="outline"
