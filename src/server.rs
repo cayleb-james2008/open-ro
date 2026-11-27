@@ -518,7 +518,16 @@ fn ideas_json(ideas: &[crate::ideas::Idea]) -> Value {
     Value::Array(
         ideas
             .iter()
-            .map(|i| json!({ "id": i.id, "title": i.title, "pitch": i.pitch, "skills": i.skills }))
+            .map(|i| {
+                json!({
+                    "id": i.id,
+                    "title": i.title,
+                    "pitch": i.pitch,
+                    "skills": i.skills,
+                    "niche_id": i.niche_id,
+                    "feel_profile": i.feel_profile.as_ref().map(crate::ideas::FeelProfile::to_json),
+                })
+            })
             .collect(),
     )
 }
@@ -3619,6 +3628,7 @@ fn handle(
                         }
                         let mut snapshot_id = Value::Null;
                         let mut diff_val = Value::Null;
+                        let mut built_tree: Option<Value> = None;
                         if let Ok(after_tree) = agent.place_tree() {
                             let explicit = before_tree
                                 .as_ref()
@@ -3627,12 +3637,79 @@ fn handle(
                                 format!("Blueprint: {}", idea.title),
                                 "idea",
                                 Some(chat_id.clone()),
-                                after_tree,
+                                after_tree.clone(),
                                 explicit,
                             );
                             snapshot_id = json!(snap.id);
                             diff_val = snap.diff.to_json();
+                            built_tree = Some(after_tree);
                         }
+                        let template_proof = if let Some(ref fp) = idea.feel_profile {
+                            let (mut scripts_map, mut instances_map) = match &agent.studio {
+                                Some(PlaceBackend::Local(local)) => (
+                                    local.scripts().clone(),
+                                    local.instances().clone(),
+                                ),
+                                _ => (
+                                    std::collections::BTreeMap::new(),
+                                    std::collections::BTreeMap::new(),
+                                ),
+                            };
+                            if scripts_map.is_empty() {
+                                if let Some(ref tree) = built_tree {
+                                    if let Some(obj) = tree.get("scripts").and_then(Value::as_object) {
+                                        for (k, v) in obj {
+                                            if let Some(src) = v.as_str() {
+                                                scripts_map.insert(k.clone(), src.to_string());
+                                            }
+                                        }
+                                    }
+                                    if let Some(obj) = tree.get("instances").and_then(Value::as_object) {
+                                        for (k, v) in obj {
+                                            instances_map.insert(k.clone(), v.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            let gui_safe_area = match crate::gui_designer::template_screen_doc(idea.id) {
+                                Ok(doc) => {
+                                    let _ = shared.gui_store.lock().unwrap().save(fp.gui_screen_slug, doc.clone());
+                                    crate::gui_designer::analyze_safe_areas(&doc).to_json()
+                                }
+                                Err(e) => json!({ "passed": false, "warning_count": 1, "error": e }),
+                            };
+                            let economy_sim = crate::playtest::evaluate_economy_sim(&scripts_map, &json!({}));
+                            let mut sandbox_rep = match crate::sandbox::run_local_place_sandbox(
+                                idea.title,
+                                &scripts_map,
+                                &instances_map,
+                                &json!({}),
+                            ) {
+                                Ok(r) => r,
+                                Err(e) => json!({ "ok": false, "passed": false, "error_count": 1, "error": e }),
+                            };
+                            let proof_root = shared
+                                .active_project_dir()
+                                .or_else(|| shared.data_dir.clone())
+                                .unwrap_or_else(|| std::env::temp_dir().join("openro-sandbox-proofs"));
+                            if let Ok(proof_path) =
+                                crate::sandbox::persist_sandbox_proof(&proof_root, idea.id, &sandbox_rep)
+                            {
+                                if let Some(obj) = sandbox_rep.as_object_mut() {
+                                    obj.insert(
+                                        "proof_path".to_string(),
+                                        json!(proof_path.to_string_lossy().into_owned()),
+                                    );
+                                }
+                            }
+                            Some(json!({
+                                "sandbox": sandbox_rep,
+                                "economy_sim": economy_sim,
+                                "gui_safe_area": gui_safe_area,
+                            }))
+                        } else {
+                            None
+                        };
                         let (next, pitch) = shared.pitch_for(
                             &chat_id,
                             "OpenRO: That landed. Next, I could add:",
@@ -3640,19 +3717,19 @@ fn handle(
                         if !pitch.is_empty() {
                             shared.append_lines_to(&chat_id, &pitch);
                         }
-                        respond_json(
-                            &mut stream,
-                            "200 OK",
-                            &json!({
-                                "ok": true,
-                                "summary": outcome.summary,
-                                "thread": outcome.thread,
-                                "transcript": outcome.transcript,
-                                "ideas": ideas_json(&next),
-                                "snapshot_id": snapshot_id,
-                                "diff": diff_val,
-                            }),
-                        );
+                        let mut resp = json!({
+                            "ok": true,
+                            "summary": outcome.summary,
+                            "thread": outcome.thread,
+                            "transcript": outcome.transcript,
+                            "ideas": ideas_json(&next),
+                            "snapshot_id": snapshot_id,
+                            "diff": diff_val,
+                        });
+                        if let Some(proof) = template_proof {
+                            resp["template_proof"] = proof;
+                        }
+                        respond_json(&mut stream, "200 OK", &resp);
                     }
                     Err(f) => {
                         shared.append_lines_to(&chat_id, &f.thread);

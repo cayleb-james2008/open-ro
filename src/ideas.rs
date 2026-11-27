@@ -17,11 +17,140 @@
 //! to end against the mock bridge.
 
 use serde_json::{json, Value};
+
+#[derive(Clone, Debug)]
+pub struct RevealTierSpec {
+    pub tier: u8,
+    pub name: &'static str,
+    pub rarities: &'static str,
+    pub duration_ms: u32,
+    pub camera_kick_deg: f64,
+    pub scrim_opacity: f64,
+    pub border_hex_dark: &'static str,
+    pub border_hex_light: &'static str,
+    pub glyph: &'static str,
+}
+
+#[derive(Clone, Debug)]
+pub struct JuiceSpec {
+    pub windup_ms: u32,
+    pub lunge_ms: u32,
+    pub hit_stop_ms: u32,
+    pub recoil_ms: u32,
+    pub defeat_ms: u32,
+    pub crit_camera_kick_deg: f64,
+    pub reduced_motion_fade_ms: u32,
+    pub damage_popups: bool,
+    pub timing_bar_hook: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct HudRolesSpec {
+    pub phone_844x390_layout: &'static str,
+    pub top_bar_max_pct: u8,
+    pub center_clear_min_pct: u8,
+    pub bottom_dock_max_pct: u8,
+    pub reserve_strip_max_pct: u8,
+    pub min_tap_target_px: u32,
+    pub number_format: &'static str,
+    pub anchors: &'static [&'static str],
+}
+
+#[derive(Clone, Debug)]
+pub struct WorldDirectionSpec {
+    pub setting: &'static str,
+    pub lighting_mood: &'static str,
+    pub landmark_hub: &'static str,
+    pub landmarks: &'static [&'static str],
+}
+
+#[derive(Clone, Debug)]
+pub struct EconomyTargetsSpec {
+    pub currency: &'static str,
+    pub earn_per_min: f64,
+    pub rebirth_cost: f64,
+    pub rebirth_mult: f64,
+    pub gamepass_mult: f64,
+    pub max_price: f64,
+    pub zero_paid_luck: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct FeelProfile {
+    pub reveal_tiers: &'static [RevealTierSpec],
+    pub juice: JuiceSpec,
+    pub hud_roles: HudRolesSpec,
+    pub gui_screen_slug: &'static str,
+    pub audio_cues: &'static [&'static str],
+    pub world_direction: WorldDirectionSpec,
+    pub economy_targets: EconomyTargetsSpec,
+    pub playtest_assertions: &'static [&'static str],
+}
+
+impl FeelProfile {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "reveal_tiers": self.reveal_tiers.iter().map(|t| json!({
+                "tier": t.tier,
+                "name": t.name,
+                "rarities": t.rarities,
+                "duration_ms": t.duration_ms,
+                "camera_kick_deg": t.camera_kick_deg,
+                "scrim_opacity": t.scrim_opacity,
+                "border_hex_dark": t.border_hex_dark,
+                "border_hex_light": t.border_hex_light,
+                "glyph": t.glyph,
+            })).collect::<Vec<_>>(),
+            "juice": {
+                "windup_ms": self.juice.windup_ms,
+                "lunge_ms": self.juice.lunge_ms,
+                "hit_stop_ms": self.juice.hit_stop_ms,
+                "recoil_ms": self.juice.recoil_ms,
+                "defeat_ms": self.juice.defeat_ms,
+                "crit_camera_kick_deg": self.juice.crit_camera_kick_deg,
+                "reduced_motion_fade_ms": self.juice.reduced_motion_fade_ms,
+                "damage_popups": self.juice.damage_popups,
+                "timing_bar_hook": self.juice.timing_bar_hook,
+            },
+            "hud_roles": {
+                "phone_844x390_layout": self.hud_roles.phone_844x390_layout,
+                "top_bar_max_pct": self.hud_roles.top_bar_max_pct,
+                "center_clear_min_pct": self.hud_roles.center_clear_min_pct,
+                "bottom_dock_max_pct": self.hud_roles.bottom_dock_max_pct,
+                "reserve_strip_max_pct": self.hud_roles.reserve_strip_max_pct,
+                "min_tap_target_px": self.hud_roles.min_tap_target_px,
+                "number_format": self.hud_roles.number_format,
+                "anchors": self.hud_roles.anchors,
+            },
+            "gui_screen_slug": self.gui_screen_slug,
+            "audio_cues": self.audio_cues,
+            "world_direction": {
+                "setting": self.world_direction.setting,
+                "lighting_mood": self.world_direction.lighting_mood,
+                "landmark_hub": self.world_direction.landmark_hub,
+                "landmarks": self.world_direction.landmarks,
+            },
+            "economy_targets": {
+                "currency": self.economy_targets.currency,
+                "earn_per_min": self.economy_targets.earn_per_min,
+                "rebirth_cost": self.economy_targets.rebirth_cost,
+                "rebirth_mult": self.economy_targets.rebirth_mult,
+                "gamepass_mult": self.economy_targets.gamepass_mult,
+                "max_price": self.economy_targets.max_price,
+                "zero_paid_luck": self.economy_targets.zero_paid_luck,
+            },
+            "playtest_assertions": self.playtest_assertions,
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct Idea {
     pub id: &'static str,
     pub title: &'static str,
     pub pitch: &'static str,
+    pub niche_id: Option<&'static str>,
+    pub feel_profile: Option<FeelProfile>,
     /// The plan's steps, in the agent loop's step format.
     pub plan: Vec<Value>,
     /// Skills the plan uses — recorded as built once it lands.
@@ -230,6 +359,370 @@ fn lava_brick(damage: i64) -> Vec<Value> {
     ]
 }
 
+fn tycoon_workshop_world_instances() -> Vec<Value> {
+    vec![
+        instance(
+            "SpawnLocation",
+            "SpawnPad",
+            "Workspace",
+            json!({
+                "Anchored": true,
+                "CanCollide": true,
+                "Position": [0.0, 2.0, 24.0],
+                "Size": [10.0, 1.0, 10.0],
+                "Color": "#10B981",
+                "Material": "SmoothPlastic",
+            }),
+        ),
+        instance("Folder", "SunlitWorkshop", "Workspace", json!({})),
+        instance("Sky", "WorkshopSky", "Lighting", json!({ "StarCount": 1200 })),
+        instance("Atmosphere", "WorkshopAtmosphere", "Lighting", json!({ "Density": 0.14, "Haze": 0.35 })),
+        instance("BloomEffect", "WorkshopBloom", "Lighting", json!({ "Enabled": true, "Intensity": 0.35, "Size": 14 })),
+        part_at("WorkshopMeadow", "Workspace.SunlitWorkshop", [0.0, -1.5, 0.0], [140.0, 3.0, 140.0], "#4ADE80", "Grass"),
+        part_at("AssemblyFloor", "Workspace.SunlitWorkshop", [0.0, 0.6, 0.0], [56.0, 1.2, 56.0], "#F8FAFC", "SmoothPlastic"),
+        part_at("FactoryGantryL", "Workspace.SunlitWorkshop", [-14.0, 8.0, -6.0], [2.5, 14.0, 2.5], "#334155", "Metal"),
+        part_at("FactoryGantryR", "Workspace.SunlitWorkshop", [14.0, 8.0, -6.0], [2.5, 14.0, 2.5], "#334155", "Metal"),
+        part_at("FactoryCrossbeam", "Workspace.SunlitWorkshop", [0.0, 15.0, -6.0], [30.5, 2.0, 2.5], "#F59E0B", "Metal"),
+        part_at("CollectorBeacon", "Workspace.SunlitWorkshop", [0.0, 5.5, 12.0], [3.0, 8.0, 3.0], "#FACC15", "Neon"),
+        part_at("ShopCanopy", "Workspace.SunlitWorkshop", [-18.0, 4.5, 16.0], [12.0, 1.2, 10.0], "#0EA5E9", "SmoothPlastic"),
+        part_at("QuestBoard", "Workspace.SunlitWorkshop", [18.0, 5.0, 16.0], [10.0, 7.0, 1.5], "#1E293B", "SmoothPlastic"),
+    ]
+}
+
+fn citadel_arena_world_instances() -> Vec<Value> {
+    vec![
+        instance(
+            "SpawnLocation",
+            "SpawnPad",
+            "Workspace",
+            json!({
+                "Anchored": true,
+                "CanCollide": true,
+                "Position": [0.0, 2.0, 32.0],
+                "Size": [10.0, 1.0, 10.0],
+                "Color": "#38BDF8",
+                "Material": "SmoothPlastic",
+            }),
+        ),
+        instance("Folder", "CitadelPlaza", "Workspace", json!({})),
+        instance("Sky", "CitadelSky", "Lighting", json!({ "StarCount": 2400 })),
+        instance("Atmosphere", "CitadelAtmosphere", "Lighting", json!({ "Density": 0.16, "Haze": 0.40 })),
+        instance("BloomEffect", "CitadelBloom", "Lighting", json!({ "Enabled": true, "Intensity": 0.42, "Size": 16 })),
+        part_at("CitadelCourtyard", "Workspace.CitadelPlaza", [0.0, -1.5, 0.0], [150.0, 3.0, 150.0], "#E2E8F0", "Marble"),
+        part_at("ArenaRing", "Workspace.CitadelPlaza", [0.0, 0.5, -12.0], [52.0, 1.4, 52.0], "#1E293B", "Slate"),
+        part_at("PortalArchL", "Workspace.CitadelPlaza", [-12.0, 7.0, -48.0], [3.0, 13.0, 3.0], "#6366F1", "Neon"),
+        part_at("PortalArchR", "Workspace.CitadelPlaza", [12.0, 7.0, -48.0], [3.0, 13.0, 3.0], "#6366F1", "Neon"),
+        part_at("SummonFountain", "Workspace.CitadelPlaza", [-26.0, 2.5, 14.0], [12.0, 3.0, 12.0], "#38BDF8", "Neon"),
+        part_at("BossAltar", "Workspace.CitadelPlaza", [0.0, 2.2, -32.0], [18.0, 2.2, 12.0], "#DC2626", "Marble"),
+        part_at("QuestObelisk", "Workspace.CitadelPlaza", [26.0, 6.0, 14.0], [4.0, 10.0, 4.0], "#F59E0B", "Neon"),
+    ]
+}
+
+const CARD_BATTLER_REVEAL_TIERS: &[RevealTierSpec] = &[
+    RevealTierSpec {
+        tier: 1,
+        name: "Common & Uncommon",
+        rarities: "Common / Uncommon",
+        duration_ms: 450,
+        camera_kick_deg: 0.0,
+        scrim_opacity: 0.15,
+        border_hex_dark: "#CBD5E1",
+        border_hex_light: "#334155",
+        glyph: "●",
+    },
+    RevealTierSpec {
+        tier: 2,
+        name: "Rare & Epic",
+        rarities: "Rare / Epic",
+        duration_ms: 950,
+        camera_kick_deg: 0.5,
+        scrim_opacity: 0.25,
+        border_hex_dark: "#7DD3FC",
+        border_hex_light: "#1D4ED8",
+        glyph: "★",
+    },
+    RevealTierSpec {
+        tier: 3,
+        name: "Legendary",
+        rarities: "Legendary",
+        duration_ms: 1650,
+        camera_kick_deg: 2.5,
+        scrim_opacity: 0.45,
+        border_hex_dark: "#FCD34D",
+        border_hex_light: "#92400E",
+        glyph: "♛",
+    },
+    RevealTierSpec {
+        tier: 4,
+        name: "Mythic & Legacy",
+        rarities: "Mythic / Legacy",
+        duration_ms: 2600,
+        camera_kick_deg: 3.5,
+        scrim_opacity: 0.65,
+        border_hex_dark: "#FDA4AF",
+        border_hex_light: "#BE123C",
+        glyph: "✦",
+    },
+];
+
+const TYCOON_REVEAL_TIERS: &[RevealTierSpec] = &[
+    RevealTierSpec {
+        tier: 1,
+        name: "Standard Drop",
+        rarities: "Standard Ore",
+        duration_ms: 350,
+        camera_kick_deg: 0.0,
+        scrim_opacity: 0.0,
+        border_hex_dark: "#6EE7B7",
+        border_hex_light: "#047857",
+        glyph: "◆",
+    },
+    RevealTierSpec {
+        tier: 2,
+        name: "Upgraded Surge",
+        rarities: "2x / Golden Surge",
+        duration_ms: 750,
+        camera_kick_deg: 1.0,
+        scrim_opacity: 0.20,
+        border_hex_dark: "#FCD34D",
+        border_hex_light: "#92400E",
+        glyph: "★",
+    },
+];
+
+const ACTION_RPG_REVEAL_TIERS: &[RevealTierSpec] = &[
+    RevealTierSpec {
+        tier: 1,
+        name: "Wave Clear",
+        rarities: "Standard Wave",
+        duration_ms: 650,
+        camera_kick_deg: 0.8,
+        scrim_opacity: 0.15,
+        border_hex_dark: "#7DD3FC",
+        border_hex_light: "#1D4ED8",
+        glyph: "★",
+    },
+    RevealTierSpec {
+        tier: 2,
+        name: "Boss Phase & Awakening",
+        rarities: "Boss / Awakening",
+        duration_ms: 1400,
+        camera_kick_deg: 2.0,
+        scrim_opacity: 0.45,
+        border_hex_dark: "#FCD34D",
+        border_hex_light: "#92400E",
+        glyph: "♛",
+    },
+];
+
+fn card_battler_feel_profile() -> FeelProfile {
+    FeelProfile {
+        reveal_tiers: CARD_BATTLER_REVEAL_TIERS,
+        juice: JuiceSpec {
+            windup_ms: 130,
+            lunge_ms: 150,
+            hit_stop_ms: 50,
+            recoil_ms: 220,
+            defeat_ms: 400,
+            crit_camera_kick_deg: 2.0,
+            reduced_motion_fade_ms: 180,
+            damage_popups: true,
+            timing_bar_hook: true,
+        },
+        hud_roles: HudRolesSpec {
+            phone_844x390_layout: "2-col split (44% RevealCard / 56% Pity+Roll), top<=14%, center>=58%, bottom<=26%, reserve<=16%",
+            top_bar_max_pct: 14,
+            center_clear_min_pct: 58,
+            bottom_dock_max_pct: 26,
+            reserve_strip_max_pct: 16,
+            min_tap_target_px: 44,
+            number_format: "1 in N + K/M",
+            anchors: &[
+                "TopEdge: Player/Enemy HP + Turn Pill",
+                "BottomCenter: Reveal Free Card + Mythic Pity + Auto Roll",
+                "BottomLeft: Luck & Buffs Pill (pausable)",
+                "BattleReserveDock: 4-card ordered strip (<=16% height)",
+            ],
+        },
+        gui_screen_slug: "anime-rng-cards-hud",
+        audio_cues: &[
+            "summon_roll",
+            "rare_chime",
+            "legendary_drop",
+            "mythic_fanfare",
+            "battle_hit",
+            "battle_crit",
+            "death_shatter",
+            "ui_click",
+        ],
+        world_direction: WorldDirectionSpec {
+            setting: "Sunlit floating sky-archipelago courtyard with Torii summon shrine and colosseum",
+            lighting_mood: "Clear daylight sky with crisp BloomEffect (0.45) and SunRaysEffect (0.14)",
+            landmark_hub: "ApexLobby",
+            landmarks: &[
+                "SpawnPad",
+                "ToriiSummonShrine",
+                "RollPedestal",
+                "TowerPortal",
+                "BossRaidShrine",
+                "DuelArenaStage",
+            ],
+        },
+        economy_targets: EconomyTargetsSpec {
+            currency: "Coins",
+            earn_per_min: 120.0,
+            rebirth_cost: 1800.0,
+            rebirth_mult: 1.5,
+            gamepass_mult: 1.0,
+            max_price: 250.0,
+            zero_paid_luck: true,
+        },
+        playtest_assertions: &[
+            "First free card draw + battle + reward claim completes within 60s",
+            "Zero paid luck (gamepass_mult == 1.0) and balanced 60m curve",
+            "Safe areas, >=44x44 tap targets, and >=4.5:1 contrast across 1920x1080, 1024x768, 844x390",
+            "DataStore BindToClose persistence + 0 Luau errors in headless sandbox",
+        ],
+    }
+}
+
+fn tycoon_feel_profile() -> FeelProfile {
+    FeelProfile {
+        reveal_tiers: TYCOON_REVEAL_TIERS,
+        juice: JuiceSpec {
+            windup_ms: 90,
+            lunge_ms: 140,
+            hit_stop_ms: 40,
+            recoil_ms: 180,
+            defeat_ms: 300,
+            crit_camera_kick_deg: 1.0,
+            reduced_motion_fade_ms: 150,
+            damage_popups: false,
+            timing_bar_hook: true,
+        },
+        hud_roles: HudRolesSpec {
+            phone_844x390_layout: "Top-right Balance/Quest pill + bottom-center Upgrade/Shop dock clear of thumbsticks",
+            top_bar_max_pct: 14,
+            center_clear_min_pct: 64,
+            bottom_dock_max_pct: 22,
+            reserve_strip_max_pct: 14,
+            min_tap_target_px: 44,
+            number_format: "Comma <10k, K/M >=10k",
+            anchors: &[
+                "TopRight: Coins + Upgrade Lv Pill",
+                "TopCenter: Milestone Quest Tracker",
+                "BottomCenter: Upgrade Dropper + Shop Dock",
+            ],
+        },
+        gui_screen_slug: "viral-sim-tycoon-hud",
+        audio_cues: &[
+            "level_up",
+            "pack_open",
+            "potion_drink",
+            "ui_click",
+            "button_hover",
+            "ambient_plaza",
+        ],
+        world_direction: WorldDirectionSpec {
+            setting: "Sunlit open-air workshop meadow with brass gantry, conveyor foundry, and collector beacon",
+            lighting_mood: "Bright meadow daylight with gentle BloomEffect (0.35) and crisp contrast silhouettes",
+            landmark_hub: "SunlitWorkshop",
+            landmarks: &[
+                "SpawnPad",
+                "AssemblyFloor",
+                "FactoryCrossbeam",
+                "CollectorBeacon",
+                "ShopCanopy",
+                "QuestBoard",
+            ],
+        },
+        economy_targets: EconomyTargetsSpec {
+            currency: "Coins",
+            earn_per_min: 120.0,
+            rebirth_cost: 1800.0,
+            rebirth_mult: 1.5,
+            gamepass_mult: 1.5,
+            max_price: 250.0,
+            zero_paid_luck: false,
+        },
+        playtest_assertions: &[
+            "10-second dropper -> conveyor -> collector -> upgrade loop awards Coins cleanly",
+            "Quest tracker payout + shop purchase validate server-side",
+            "DataStore UpdateAsync + BindToClose persistence passes rejoin check",
+            "Safe areas, >=44x44 tap targets, and >=4.5:1 contrast across 3 viewports",
+        ],
+    }
+}
+
+fn action_rpg_td_feel_profile() -> FeelProfile {
+    FeelProfile {
+        reveal_tiers: ACTION_RPG_REVEAL_TIERS,
+        juice: JuiceSpec {
+            windup_ms: 110,
+            lunge_ms: 150,
+            hit_stop_ms: 50,
+            recoil_ms: 200,
+            defeat_ms: 360,
+            crit_camera_kick_deg: 2.0,
+            reduced_motion_fade_ms: 180,
+            damage_popups: true,
+            timing_bar_hook: true,
+        },
+        hud_roles: HudRolesSpec {
+            phone_844x390_layout: "Top-right HP/Wave/Floor pill + bottom-center 3-button Strike/Portal/Shop dock",
+            top_bar_max_pct: 14,
+            center_clear_min_pct: 62,
+            bottom_dock_max_pct: 24,
+            reserve_strip_max_pct: 14,
+            min_tap_target_px: 44,
+            number_format: "Comma <10k, K/M >=10k",
+            anchors: &[
+                "TopRight: Coins + TowerFloor + KOs Pill",
+                "TopCenter: Wave / Boss Phase Banner",
+                "BottomCenter: Strike + World Warp + Shop Dock",
+            ],
+        },
+        gui_screen_slug: "anime-action-rpg-td-hud",
+        audio_cues: &[
+            "battle_hit",
+            "battle_crit",
+            "death_shatter",
+            "mythic_fanfare",
+            "secret_alarm",
+            "level_up",
+            "ui_click",
+        ],
+        world_direction: WorldDirectionSpec {
+            setting: "Sunlit stone citadel courtyard with arena ring, world portal arches, and summon fountain",
+            lighting_mood: "High-clarity daylight arena with BloomEffect (0.42) and dark slate combat ring",
+            landmark_hub: "CitadelPlaza",
+            landmarks: &[
+                "SpawnPad",
+                "ArenaRing",
+                "PortalArchL",
+                "PortalArchR",
+                "SummonFountain",
+                "BossAltar",
+                "QuestObelisk",
+            ],
+        },
+        economy_targets: EconomyTargetsSpec {
+            currency: "Coins",
+            earn_per_min: 120.0,
+            rebirth_cost: 2000.0,
+            rebirth_mult: 1.5,
+            gamepass_mult: 1.5,
+            max_price: 250.0,
+            zero_paid_luck: false,
+        },
+        playtest_assertions: &[
+            "Server-validated melee sword + tower progression + quest tracker compose with 0 errors",
+            "OrderedDataStore leaderboard + DataStore BindToClose pass rejoin check",
+            "Safe areas, >=44x44 tap targets, and >=4.5:1 contrast across 3 viewports",
+        ],
+    }
+}
+
 /// The complete games pitched on an empty chat.
 pub fn opening_ideas() -> Vec<Idea> {
     vec![
@@ -240,6 +733,8 @@ pub fn opening_ideas() -> Vec<Idea> {
                     remember your stage so a fall doesn't restart you, lava \
                     bricks that burn, and coins that keep paying while you \
                     climb — and save between sessions.",
+            niche_id: None,
+            feel_profile: None,
             plan: [
                 vec![spawn_pad()],
                 vec![
@@ -280,6 +775,8 @@ pub fn opening_ideas() -> Vec<Idea> {
                     between sessions and keeps paying while you play, a shop \
                     selling a Speed Coil, and a proper game screen showing \
                     your balance with the shop button on it.",
+            niche_id: None,
+            feel_profile: None,
             plan: [
                 vec![
                     skill(
@@ -320,6 +817,8 @@ pub fn opening_ideas() -> Vec<Idea> {
             pitch: "A round-based arena: rounds that start themselves, a \
                     leaderboard counting wins, a spawn pad, and a lava pit \
                     in the middle for sudden death.",
+            niche_id: None,
+            feel_profile: None,
             plan: [
                 vec![
                     skill("round_manager", json!({ "create_round": true })),
@@ -348,12 +847,13 @@ pub fn opening_ideas() -> Vec<Idea> {
         },
         Idea {
             id: "anime-card-battles-apex",
-            title: "Untitled Anime Card Game",
-            pitch: "A sunlit anime floating-archipelago card battler: 24 original anime-style cards \
-                    across 6 packs & 6 rarity tiers (Common 1/2 to Secret 1/50,000), pity & \
-                    Fusion Weather Storms (Crimson Eclipse 5x / Celestial Tempest 4.5x Luck), \
-                    CHAIN OVERDRIVE dual finishers, Living 3D Guardian Auras, Traits & Charms, \
-                    4v4 tactical combat, Infinite Tower & World Raid Boss.",
+            title: "Anime RNG Card Battler",
+            pitch: "A sunlit floating-archipelago anime card battler with 100% original \
+                    sky-archipelago Orders, 4-tier rarity reveals (450/950/1650/2600ms), \
+                    whole-card battle juice (50ms hit-stop, 150ms lunge, 220ms recoil, 2deg crit), \
+                    844x390 2-column HUD, zero-paid-luck balanced economy, and 50-floor Tower.",
+            niche_id: Some("anime-rng-cards"),
+            feel_profile: Some(card_battler_feel_profile()),
             plan: {
                 let mut steps = apex_hub_world_instances();
                 steps.extend(vec![
@@ -374,7 +874,7 @@ pub fn opening_ideas() -> Vec<Idea> {
                     write("ServerScriptService.Shop", "shop"),
                     skill(
                         "game_gui",
-                        json!({ "title": "Untitled Anime Card Game", "button_label": "Buy Lucky Charm (250)", "currency": "Coins" }),
+                        json!({ "title": "Anime RNG Card Battler", "button_label": "Buy Lucky Charm (250)", "currency": "Coins" }),
                     ),
                     write("StarterGui.GameGui", "game_gui"),
                     skill(
@@ -431,6 +931,140 @@ pub fn opening_ideas() -> Vec<Idea> {
             ],
             needs: vec![],
         },
+        Idea {
+            id: "viral-sim-tycoon-template",
+            title: "Viral Sim & Tycoon",
+            pitch: "A sunlit workshop & factory tycoon template with instant dropper -> conveyor -> \
+                    collector -> x2 upgrade juice, milestone quests, shop upgrades, BindToClose \
+                    DataStore saves, balanced 60-minute economy, and safe-area mobile HUD.",
+            niche_id: Some("viral-sim-tycoon"),
+            feel_profile: Some(tycoon_feel_profile()),
+            plan: {
+                let mut steps = tycoon_workshop_world_instances();
+                steps.extend(vec![
+                    skill("spawn_link", json!({ "instance_name": "SpawnPad" })),
+                    write("ServerScriptService.SpawnLink", "spawn_link"),
+                    skill(
+                        "currency",
+                        json!({ "currency": "Coins", "start_amount": 100, "earn_amount": 120, "earn_seconds": 60, "bind_close": true }),
+                    ),
+                    write("ServerScriptService.Currency", "currency"),
+                    skill(
+                        "tycoon_dropper",
+                        json!({ "tycoon_name": "SunlitFoundry", "drop_value": 20, "drop_interval": 2, "upgrade_cost": 150, "currency": "Coins" }),
+                    ),
+                    write("ServerScriptService.TycoonDropper", "tycoon_dropper"),
+                    skill(
+                        "shop",
+                        json!({ "item_name": "Magnet Collector", "price": 250, "currency": "Coins" }),
+                    ),
+                    write("ServerScriptService.Shop", "shop"),
+                    skill(
+                        "datastore_save",
+                        json!({ "store_name": "OpenROWorkshopSave_v1", "stat_name": "Coins", "default_value": 100, "autosave_seconds": 60, "bind_close": true }),
+                    ),
+                    write("ServerScriptService.DataStoreSave", "datastore_save"),
+                    skill(
+                        "quest_tracker",
+                        json!({ "quest_name": "Foundry Output", "target_count": 5, "reward_amount": 120, "currency": "Coins" }),
+                    ),
+                    write("ServerScriptService.QuestTracker", "quest_tracker"),
+                    skill(
+                        "game_gui",
+                        json!({ "title": "Viral Sim & Tycoon", "button_label": "Buy Magnet Collector (250)", "currency": "Coins" }),
+                    ),
+                    write("StarterGui.GameGui", "game_gui"),
+                    skill(
+                        "soundtrack",
+                        json!({ "sound_id": 0, "volume": 5, "looped": true }),
+                    ),
+                    write("ServerScriptService.Soundtrack", "soundtrack"),
+                    playtest(),
+                ]);
+                steps
+            },
+            skills: vec![
+                "spawn_link",
+                "currency",
+                "tycoon_dropper",
+                "shop",
+                "datastore_save",
+                "quest_tracker",
+                "game_gui",
+                "soundtrack",
+            ],
+            needs: vec![],
+        },
+        Idea {
+            id: "anime-action-rpg-td-template",
+            title: "Anime Action RPG / Tower Defense",
+            pitch: "A sunlit citadel action RPG & tower defense template with server-validated \
+                    blade combat, 5-world tower portals & OrderedDataStore leaderboard, quest \
+                    milestones, hit-stop boss phases, balanced economy, and safe-area HUD.",
+            niche_id: Some("anime-action-rpg-td"),
+            feel_profile: Some(action_rpg_td_feel_profile()),
+            plan: {
+                let mut steps = citadel_arena_world_instances();
+                steps.extend(vec![
+                    skill("spawn_link", json!({ "instance_name": "SpawnPad" })),
+                    write("ServerScriptService.SpawnLink", "spawn_link"),
+                    skill(
+                        "currency",
+                        json!({ "currency": "Coins", "start_amount": 150, "earn_amount": 120, "earn_seconds": 60, "bind_close": true }),
+                    ),
+                    write("ServerScriptService.Currency", "currency"),
+                    skill(
+                        "datastore_save",
+                        json!({ "store_name": "OpenROCitadelSave_v1", "stat_name": "Coins", "default_value": 150, "autosave_seconds": 60, "bind_close": true }),
+                    ),
+                    write("ServerScriptService.DataStoreSave", "datastore_save"),
+                    skill(
+                        "combat_sword",
+                        json!({ "sword_name": "SkycrestBlade", "damage": 35, "cooldown_ms": 400, "range_studs": 12 }),
+                    ),
+                    write("ServerScriptService.CombatSword", "combat_sword"),
+                    skill(
+                        "tower_progression",
+                        json!({ "max_floors": 50, "world_count": 5, "base_reward": 120, "store_name": "OpenROCitadelTower_v1", "bind_close": true }),
+                    ),
+                    write("ServerScriptService.TowerProgression", "tower_progression"),
+                    skill(
+                        "quest_tracker",
+                        json!({ "quest_name": "Citadel Vanguard", "target_count": 5, "reward_amount": 120, "currency": "Coins" }),
+                    ),
+                    write("ServerScriptService.QuestTracker", "quest_tracker"),
+                    skill(
+                        "shop",
+                        json!({ "item_name": "Tempest Greaves", "price": 250, "currency": "Coins" }),
+                    ),
+                    write("ServerScriptService.Shop", "shop"),
+                    skill(
+                        "game_gui",
+                        json!({ "title": "Anime Action RPG / Tower Defense", "button_label": "Buy Tempest Greaves (250)", "currency": "Coins" }),
+                    ),
+                    write("StarterGui.GameGui", "game_gui"),
+                    skill(
+                        "soundtrack",
+                        json!({ "sound_id": 0, "volume": 6, "looped": true }),
+                    ),
+                    write("ServerScriptService.Soundtrack", "soundtrack"),
+                    playtest(),
+                ]);
+                steps
+            },
+            skills: vec![
+                "spawn_link",
+                "currency",
+                "datastore_save",
+                "combat_sword",
+                "tower_progression",
+                "quest_tracker",
+                "shop",
+                "game_gui",
+                "soundtrack",
+            ],
+            needs: vec![],
+        },
     ]
 }
 
@@ -443,6 +1077,8 @@ fn feature_ideas() -> Vec<Idea> {
             pitch: "Your game has money now — give players something to spend \
                     it on: a shop selling a Speed Coil, plus the game screen \
                     with the balance and the shop button on it.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "shop",
@@ -466,6 +1102,8 @@ fn feature_ideas() -> Vec<Idea> {
                     from a DataStore when they join, keeps paying while they \
                     play, and saves when they leave — they come back to a \
                     balance, not zero.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "currency",
@@ -483,6 +1121,8 @@ fn feature_ideas() -> Vec<Idea> {
             pitch: "Add stage checkpoints: pads that remember each player's \
                     progress and respawn them where they got to, not back at \
                     the start.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "checkpoints",
@@ -500,6 +1140,8 @@ fn feature_ideas() -> Vec<Idea> {
             pitch: "Wire up the music: a soundtrack slot in SoundService, \
                     looping, volume set — silent until you pick a real audio \
                     id, then it's just there.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "soundtrack",
@@ -516,6 +1158,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "A living sky",
             pitch: "Add a day/night cycle so the place breathes — the light \
                     turns through a full day every few minutes.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill("day_night", json!({ "cycle_minutes": 6 })),
                 write("ServerScriptService.DayNight", "day_night"),
@@ -529,6 +1173,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Lava hazards",
             pitch: "Drop in a lava brick that burns anyone who touches it — \
                     instant stakes anywhere you place it.",
+            niche_id: None,
+            feel_profile: None,
             plan: [lava_brick(40), vec![playtest()]]
                 .into_iter()
                 .flatten()
@@ -541,6 +1187,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Velocity jump pads",
             pitch: "Drop in glowing neon bounce pads that launch players sky-high \
                     with per-player cooldowns, burst particles, and bounce SFX.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 instance(
                     "Part",
@@ -570,6 +1218,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Moving platforms",
             pitch: "Add a smooth Heartbeat-driven moving platform that carries \
                     standing players cleanly across gaps without slipping off.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 instance(
                     "Part",
@@ -599,6 +1249,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Resilient DataStore save",
             pitch: "Harden progress persistence with retry-backed UpdateAsync saves, \
                     bad-load protection, periodic autosave, and parallel BindToClose shutdown saves.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "datastore_save",
@@ -615,6 +1267,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Patrolling NPC guard",
             pitch: "Spawn a PathfindingService guard NPC that walks a perimeter route, \
                     speaks overhead callouts, and deals debounced melee damage.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "npc_patrol",
@@ -631,6 +1285,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Paired warp portals",
             pitch: "Link two glowing CFrame warp pads (PortalA <-> PortalB) with \
                     per-player debounce cooldowns and particle warp bursts.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "portal_teleporter",
@@ -647,6 +1303,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Server-validated sword combat",
             pitch: "Give players a ClassicSword tool with server-verified range, \
                     equipped checks, swing cooldowns, and a live KOs leaderboard hook.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "combat_sword",
@@ -663,6 +1321,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Authoritative inventory backpack",
             pitch: "Add a server-owned item inventory with slot caps, replicated \
                     Inventory folder, and rate-limited equip/unequip RemoteEvent.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "inventory_backpack",
@@ -679,6 +1339,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Milestone quest tracker",
             pitch: "Track player objective milestones server-side with progress sync \
                     events and automatic currency rewards upon completion.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "quest_tracker",
@@ -695,6 +1357,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Vehicle spawner bay",
             pitch: "Place a ProximityPrompt vehicle bay that spawns a welded VehicleSeat \
                     rover with a strict 1-vehicle-per-player cap and leave cleanup.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "vehicle_spawner",
@@ -711,6 +1375,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Dynamic weather cycle",
             pitch: "Transition smoothly across Clear, Dusk, Fog, and Rain using \
                     Lighting & Atmosphere tweens plus overhead rain particles.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "weather_cycle",
@@ -727,6 +1393,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Tycoon dropper & upgrader",
             pitch: "Drop in a full dropper -> conveyor -> collector -> x2 purchase \
                     button loop that pays directly into leaderstats currency.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "tycoon_dropper",
@@ -743,6 +1411,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Spectator cycle & status feed",
             pitch: "Wire up a server-validated spectator target switcher with \
                     authorization checks and a live Alive/Total round status feed.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "admin_spectate",
@@ -759,6 +1429,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Card gacha roller & foil borders",
             pitch: "Add a 7-tier card roller (Common to Secret) with Foil/Shiny/Gold/Rainbow/Void \
                     borders, pity guarantees, and fast/auto rolling.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "card_gacha_roller",
@@ -775,6 +1447,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "6-slot deck builder & Star Fusion",
             pitch: "Give players persistent 6-slot card decks, Collection Index bonuses, \
                     duplicate Star Fusion rank-ups, Auto-Equip Best, and Rebirth Ascension.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "deck_builder",
@@ -791,6 +1465,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Tactical card battle arena & boss raids",
             pitch: "Add tactical and auto turn-based card combat with 5 Elemental Synergies, \
                     Ultimate Burst Gauges, Active Counter timing, and multi-phase Raid Bosses.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "card_battle_arena",
@@ -807,6 +1483,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "50-floor Endless Anime Tower",
             pitch: "Build a 50-floor progression tower across 5 themed World Portals with \
                     boss milestone bonuses and a persistent global Tower Leaderboard.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "tower_progression",
@@ -823,6 +1501,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "Server weather, potions & codes",
             pitch: "Add Solar Flare, Void Eclipse, Thunderstorm, and Blood Moon weather \
                     events, craftable Luck & Speed potions, and redeemable reward codes.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "potions_weather",
@@ -839,6 +1519,8 @@ fn feature_ideas() -> Vec<Idea> {
             title: "3D Card Gallery Studio Lobby",
             pitch: "Construct the full 3D card-battler courtyard with Holographic Roll \
                     Pedestal, 3D Card Showcase Billboards, Tower Gate, Boss Shrine, and Leaderboard Wall.",
+            niche_id: None,
+            feel_profile: None,
             plan: vec![
                 skill(
                     "card_gallery_world",

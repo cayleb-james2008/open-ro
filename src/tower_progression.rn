@@ -36,6 +36,13 @@ local MAX_FLOORS = ${max_floors}
 local WORLD_COUNT = ${world_count}
 local BASE_REWARD = ${base_reward}
 local STORE_NAME = "${store_lit}"
+local WAVE_REVEAL_MS = 650
+local BOSS_TELEGRAPH_MS = 900
+local HIT_STOP_MS = 50
+local CRIT_KICK_DEG = 2.0
+local RebirthCost = 2000
+local RebirthMult = 1.5
+local GamePassMult = 1.5
 local towerBoard = DataStoreService:GetOrderedDataStore(STORE_NAME)
 
 local towerEvent = ReplicatedStorage:FindFirstChild("OpenROTowerEvent")
@@ -202,6 +209,15 @@ towerEvent.OnServerEvent:Connect(function(player, action, worldIdx)
             current_floor = floorVal.Value,
             max_floors = MAX_FLOORS,
             worlds = WORLD_COUNT,
+            feel = {
+                wave_reveal_ms = WAVE_REVEAL_MS,
+                boss_telegraph_ms = BOSS_TELEGRAPH_MS,
+                hit_stop_ms = HIT_STOP_MS,
+                crit_kick_deg = CRIT_KICK_DEG,
+                rebirth_cost = RebirthCost,
+                rebirth_mult = RebirthMult,
+                gamepass_mult = GamePassMult,
+            },
         })
     end
 end)

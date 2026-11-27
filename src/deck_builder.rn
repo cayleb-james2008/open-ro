@@ -68,7 +68,7 @@ local TRAITS = {
 }
 
 local CHARMS = {
-    ["Samehada"]      = { cost = 40,  atkFlat = 95,  hpFlat = 180 },
+    ["Tidal Fang Blade"] = { cost = 40,  atkFlat = 95,  hpFlat = 180 },
     ["Spirit Arrow"]  = { cost = 75,  atkFlat = 140, hpFlat = 120 },
     ["Gravity Core"]  = { cost = 120, atkFlat = 110, hpFlat = 420 },
     ["Eclipse Crown"] = { cost = 220, atkFlat = 220, hpFlat = 550 },

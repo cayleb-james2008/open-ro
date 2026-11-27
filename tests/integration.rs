@@ -1804,9 +1804,11 @@ fn builtin_plan_builds_a_complete_game() {
 fn ideas_engine_pitches_by_context() {
     // An empty game gets the complete-game pitches.
     let opening = openro_rs::ideas::ideas_for(&[]);
-    assert_eq!(opening.len(), 4, "four opening games pitched");
+    assert_eq!(opening.len(), 6, "six opening games pitched");
     assert!(opening.iter().any(|i| i.id == "obby-starter"));
     assert!(opening.iter().any(|i| i.id == "anime-card-battles-apex"));
+    assert!(opening.iter().any(|i| i.id == "viral-sim-tycoon-template"));
+    assert!(opening.iter().any(|i| i.id == "anime-action-rpg-td-template"));
     // With money built, the shop follow-up unlocks; built skills are
     // never re-pitched.
     let built = vec!["currency".to_string()];

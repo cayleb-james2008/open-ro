@@ -1,6 +1,8 @@
 // Parametric Luau compiler & all 22 Roblox game-system generators for OpenRO's in-browser Studio engine.
 // Exact 1:1 parity with OpenRO v0.6.0 Rust Game Systems (28 systems) plus parametric custom prompts.
 
+import type { FeelProfile } from "../src/app/data";
+
 export type PlaceInstance = { class_name: string; properties: Record<string, unknown> };
 export type PlaceState = {
   scripts: Record<string, string>;
@@ -19,6 +21,9 @@ export type CatalogIdea = {
   pitch: string;
   skills: string[];
   needs: string[];
+  opening?: boolean;
+  niche_id?: string | null;
+  feel_profile?: FeelProfile | null;
   plan: PlanStep[];
 };
 
@@ -165,24 +170,24 @@ export function generateSkillLuau(skill: string, args: Record<string, unknown>):
     case "tycoon_dropper": {
       const dropperName = toIdent(String(args.dropper_name || "TycoonDropper"), "TycoonDropper");
       const currency = escLuau(String(args.currency || "Coins"));
-      const payout = Math.max(1, Number(args.payout ?? 15) | 0);
-      return `-- TycoonDropper -- compiled by OpenRO (skill: tycoon_dropper)\nlocal Players = game:GetService("Players")\nlocal dropper = workspace.${dropperName}\nlocal CURRENCY = "${currency}"\nlocal PAYOUT = ${payout}\n\ntask.spawn(function()\n    while dropper.Parent do\n        local block = Instance.new("Part")\n        block.Name = "DropOre"\n        block.Size = Vector3.new(2, 2, 2)\n        block.Position = dropper.Position + Vector3.new(0, -2, 0)\n        block.Color = Color3.fromRGB(235, 186, 48)\n        block.Parent = workspace\n        task.delay(4, function()\n            if block.Parent then\n                block:Destroy()\n                for _, p in ipairs(Players:GetPlayers()) do\n                    local stats = p:FindFirstChild("leaderstats")\n                    local stat = stats and stats:FindFirstChild(CURRENCY)\n                    if stat then\n                        stat.Value = stat.Value + PAYOUT\n                    end\n                end\n            end\n        end)\n        task.wait(2.5)\n    end\nend)\n`;
+      const payout = Math.max(1, Number(args.payout ?? 20) | 0);
+      return `-- TycoonDropper -- compiled by OpenRO (skill: tycoon_dropper)\nlocal Players = game:GetService("Players")\nlocal dropper = workspace.${dropperName}\nlocal CURRENCY = "${currency}"\nlocal PAYOUT = ${payout}\nlocal EarnPerMin = 120\nlocal RebirthCost = 1800\nlocal RebirthMult = 1.5\nlocal GamePassMult = 1.5\nlocal DROP_BOUNCE_MS = 180\nlocal PICKUP_BURST_MS = 240\n\ndropper:SetAttribute("EarnPerMin", EarnPerMin)\ndropper:SetAttribute("RebirthCost", RebirthCost)\ndropper:SetAttribute("RebirthMult", RebirthMult)\ndropper:SetAttribute("GamePassMult", GamePassMult)\ndropper:SetAttribute("DropBounceMs", DROP_BOUNCE_MS)\ndropper:SetAttribute("PickupBurstMs", PICKUP_BURST_MS)\n\ntask.spawn(function()\n    while dropper.Parent do\n        local block = Instance.new("Part")\n        block.Name = "DropOre"\n        block.Size = Vector3.new(2, 2, 2)\n        block.Position = dropper.Position + Vector3.new(0, -2, 0)\n        block.Color = Color3.fromRGB(235, 186, 48)\n        block.Parent = workspace\n        task.delay(4, function()\n            if block.Parent then\n                block:Destroy()\n                for _, p in ipairs(Players:GetPlayers()) do\n                    local stats = p:FindFirstChild("leaderstats")\n                    local stat = stats and stats:FindFirstChild(CURRENCY)\n                    if stat then\n                        stat.Value = stat.Value + PAYOUT\n                    end\n                end\n            end\n        end)\n        task.wait(2.5)\n    end\nend)\n`;
     }
     case "admin_spectate": {
       return `-- AdminSpectate -- compiled by OpenRO (skill: admin_spectate)\nlocal Players = game:GetService("Players")\nlocal localPlayer = Players.LocalPlayer\nlocal camera = workspace.CurrentCamera\n\nlocal gui = Instance.new("ScreenGui")\ngui.Name = "SpectateGui"\ngui.Parent = localPlayer:WaitForChild("PlayerGui")\n\nlocal btn = Instance.new("TextButton")\nbtn.Name = "CycleSpectate"\nbtn.Text = "Spectate Next"\nbtn.Size = UDim2.new(0, 148, 0, 38)\nbtn.Position = UDim2.new(0.5, -74, 1, -56)\nbtn.Parent = gui\n\nlocal index = 0\nbtn.MouseButton1Click:Connect(function()\n    local list = Players:GetPlayers()\n    if #list == 0 then\n        return\n    end\n    index = (index % #list) + 1\n    local target = list[index]\n    local hum = target.Character and target.Character:FindFirstChildOfClass("Humanoid")\n    if hum and camera then\n        camera.CameraSubject = hum\n        btn.Text = "Watching: " .. target.Name\n    end\nend)\n`;
     }
     case "card_gacha_roller": {
       const pityMax = Math.max(10, Math.min(200, Number(args.pity_max ?? 50) | 0));
-      return `-- CardGachaRoller -- compiled by OpenRO (skill: card_gacha_roller)\nlocal Players = game:GetService("Players")\nlocal ReplicatedStorage = game:GetService("ReplicatedStorage")\n\nlocal PITY_MAX = ${pityMax}\nlocal rollRemote = Instance.new("RemoteEvent")\nrollRemote.Name = "OpenROCardRoll"\nrollRemote.Parent = ReplicatedStorage\n\nlocal promoRemote = Instance.new("RemoteEvent")\npromoRemote.Name = "OpenROPromoCode"\npromoRemote.Parent = ReplicatedStorage\n\nlocal CATALOG = {\n    { id = "helios-clockwork-paragon", title = "Helios Clockwork Paragon", rarity = "Secret", weight = 1, element = "Flame", atk = 640, hp = 1980 },\n    { id = "prism-rift-archivist", title = "Prism-Rift Archivist", rarity = "Celestial", weight = 3, element = "Void", atk = 520, hp = 1620 },\n    { id = "velvet-bell-warden", title = "Velvet-Bell Warden", rarity = "Celestial", weight = 3, element = "Shadow", atk = 505, hp = 1710 },\n    { id = "amber-crane-dancer", title = "Amber-Crane Dancer", rarity = "Mythic", weight = 10, element = "Flame", atk = 435, hp = 1420 },\n    { id = "cinder-sail-navigator", title = "Cinder-Sail Navigator", rarity = "Mythic", weight = 12, element = "Flame", atk = 420, hp = 1480 },\n    { id = "gale-lantern-fencer", title = "Gale-Lantern Fencer", rarity = "Legendary", weight = 30, element = "Storm", atk = 360, hp = 1150 },\n    { id = "basalt-tide-anchorite", title = "Basalt-Tide Anchorite", rarity = "Epic", weight = 75, element = "Void", atk = 295, hp = 1080 },\n    { id = "verdigris-glass-tinker", title = "Verdigris Glass Tinker", rarity = "Rare", weight = 180, element = "Arcane", atk = 230, hp = 960 },\n}\n\nlocal PROMOS = { REBIRTH = 750, APEX2026 = 500, LUCKBOOST = 250 }\nlocal pityByUser = {}\nlocal redeemedByUser = {}\n\nlocal function rollCard(luckMult, guaranteedHigh)\n    if guaranteedHigh then\n        return CATALOG[math.random(1, 5)]\n    end\n    local total = 0\n    for _, c in ipairs(CATALOG) do\n        local w = c.weight <= 12 and (c.weight * luckMult) or c.weight\n        total = total + w\n    end\n    local pick = math.random() * total\n    for _, c in ipairs(CATALOG) do\n        local w = c.weight <= 12 and (c.weight * luckMult) or c.weight\n        pick = pick - w\n        if pick <= 0 then\n            return c\n        end\n    end\n    return CATALOG[#CATALOG]\nend\n\nPlayers.PlayerAdded:Connect(function(player)\n    pityByUser[player.UserId] = 0\n    redeemedByUser[player.UserId] = {}\n    player:SetAttribute("CardPity", 0)\n    player:SetAttribute("LuckMultiplier", 1)\nend)\n\nPlayers.PlayerRemoving:Connect(function(player)\n    pityByUser[player.UserId] = nil\n    redeemedByUser[player.UserId] = nil\nend)\n\nrollRemote.OnServerEvent:Connect(function(player, count)\n    local rolls = typeof(count) == "number" and math.clamp(math.floor(count), 1, 5) or 1\n    local luck = player:GetAttribute("LuckMultiplier") or 1\n    local results = {}\n    for _ = 1, rolls do\n        local nextPity = (pityByUser[player.UserId] or 0) + 1\n        local hitPity = nextPity >= PITY_MAX\n        pityByUser[player.UserId] = hitPity and 0 or nextPity\n        local card = rollCard(luck, hitPity)\n        local foilRoll = math.random()\n        local foil = foilRoll < 0.02 and "Void" or (foilRoll < 0.06 and "Rainbow" or (foilRoll < 0.14 and "Gold" or "Normal"))\n        table.insert(results, { id = card.id, title = card.title, rarity = card.rarity, foil = foil })\n    end\n    player:SetAttribute("CardPity", pityByUser[player.UserId] or 0)\n    rollRemote:FireClient(player, results)\nend)\n\npromoRemote.OnServerEvent:Connect(function(player, rawCode)\n    if typeof(rawCode) ~= "string" then\n        return\n    end\n    local code = string.upper(string.gsub(rawCode, "%s+", ""))\n    local reward = PROMOS[code]\n    local used = redeemedByUser[player.UserId]\n    if reward and used and not used[code] then\n        used[code] = true\n        local stats = player:FindFirstChild("leaderstats")\n        local coins = stats and stats:FindFirstChild("Coins")\n        if coins then\n            coins.Value = coins.Value + reward\n        end\n    end\nend)\n`;
+      return `-- CardGachaRoller -- compiled by OpenRO (skill: card_gacha_roller)\nlocal Players = game:GetService("Players")\nlocal ReplicatedStorage = game:GetService("ReplicatedStorage")\n\nlocal PITY_MAX = ${pityMax}\nlocal REVEAL_TIER_COMMON_MS = 450\nlocal REVEAL_TIER_RARE_MS = 950\nlocal REVEAL_TIER_LEGENDARY_MS = 1650\nlocal REVEAL_TIER_MYTHIC_MS = 2600\nlocal EarnPerMin = 120\nlocal RebirthCost = 1800\nlocal RebirthMult = 1.5\nlocal GamePassMult = 1.0\nlocal rollRemote = Instance.new("RemoteEvent")\nrollRemote.Name = "OpenROCardRoll"\nrollRemote.Parent = ReplicatedStorage\n\nlocal promoRemote = Instance.new("RemoteEvent")\npromoRemote.Name = "OpenROPromoCode"\npromoRemote.Parent = ReplicatedStorage\n\nlocal CATALOG = {\n    { id = "helios-clockwork-paragon", title = "Helios Clockwork Paragon", rarity = "Secret", weight = 1, element = "Flame", atk = 640, hp = 1980 },\n    { id = "prism-rift-archivist", title = "Prism-Rift Archivist", rarity = "Celestial", weight = 3, element = "Void", atk = 520, hp = 1620 },\n    { id = "velvet-bell-warden", title = "Velvet-Bell Warden", rarity = "Celestial", weight = 3, element = "Shadow", atk = 505, hp = 1710 },\n    { id = "amber-crane-dancer", title = "Amber-Crane Dancer", rarity = "Mythic", weight = 10, element = "Flame", atk = 435, hp = 1420 },\n    { id = "cinder-sail-navigator", title = "Cinder-Sail Navigator", rarity = "Mythic", weight = 12, element = "Flame", atk = 420, hp = 1480 },\n    { id = "gale-lantern-fencer", title = "Gale-Lantern Fencer", rarity = "Legendary", weight = 30, element = "Storm", atk = 360, hp = 1150 },\n    { id = "basalt-tide-anchorite", title = "Basalt-Tide Anchorite", rarity = "Epic", weight = 75, element = "Void", atk = 295, hp = 1080 },\n    { id = "verdigris-glass-tinker", title = "Verdigris Glass Tinker", rarity = "Rare", weight = 180, element = "Arcane", atk = 230, hp = 960 },\n}\n\nlocal PROMOS = { REBIRTH = 750, APEX2026 = 500, LUCKBOOST = 250 }\nlocal pityByUser = {}\nlocal redeemedByUser = {}\n\nlocal function rollCard(luckMult, guaranteedHigh)\n    if guaranteedHigh then\n        return CATALOG[math.random(1, 5)]\n    end\n    local total = 0\n    for _, c in ipairs(CATALOG) do\n        local w = c.weight <= 12 and (c.weight * luckMult) or c.weight\n        total = total + w\n    end\n    local pick = math.random() * total\n    for _, c in ipairs(CATALOG) do\n        local w = c.weight <= 12 and (c.weight * luckMult) or c.weight\n        pick = pick - w\n        if pick <= 0 then\n            return c\n        end\n    end\n    return CATALOG[#CATALOG]\nend\n\nPlayers.PlayerAdded:Connect(function(player)\n    pityByUser[player.UserId] = 0\n    redeemedByUser[player.UserId] = {}\n    player:SetAttribute("CardPity", 0)\n    player:SetAttribute("LuckMultiplier", 1)\n    player:SetAttribute("RevealTierMythicMs", REVEAL_TIER_MYTHIC_MS)\nend)\n\nPlayers.PlayerRemoving:Connect(function(player)\n    pityByUser[player.UserId] = nil\n    redeemedByUser[player.UserId] = nil\nend)\n\nrollRemote.OnServerEvent:Connect(function(player, count)\n    local rolls = typeof(count) == "number" and math.clamp(math.floor(count), 1, 5) or 1\n    local luck = player:GetAttribute("LuckMultiplier") or 1\n    local results = {}\n    for _ = 1, rolls do\n        local nextPity = (pityByUser[player.UserId] or 0) + 1\n        local hitPity = nextPity >= PITY_MAX\n        pityByUser[player.UserId] = hitPity and 0 or nextPity\n        local card = rollCard(luck, hitPity)\n        local foilRoll = math.random()\n        local foil = foilRoll < 0.02 and "Void" or (foilRoll < 0.06 and "Rainbow" or (foilRoll < 0.14 and "Gold" or "Normal"))\n        table.insert(results, { id = card.id, title = card.title, rarity = card.rarity, foil = foil, reveal_ms = REVEAL_TIER_COMMON_MS })\n    end\n    player:SetAttribute("CardPity", pityByUser[player.UserId] or 0)\n    rollRemote:FireClient(player, results)\nend)\n\npromoRemote.OnServerEvent:Connect(function(player, rawCode)\n    if typeof(rawCode) ~= "string" then\n        return\n    end\n    local code = string.upper(string.gsub(rawCode, "%s+", ""))\n    local reward = PROMOS[code]\n    local used = redeemedByUser[player.UserId]\n    if reward and used and not used[code] then\n        used[code] = true\n        local stats = player:FindFirstChild("leaderstats")\n        local coins = stats and stats:FindFirstChild("Coins")\n        if coins then\n            coins.Value = coins.Value + reward\n        end\n    end\nend)\n`;
     }
     case "deck_builder": {
       return `-- DeckBuilder -- compiled by OpenRO (skill: deck_builder)\nlocal Players = game:GetService("Players")\nlocal ReplicatedStorage = game:GetService("ReplicatedStorage")\nlocal DataStoreService = game:GetService("DataStoreService")\n\nlocal deckStore = DataStoreService:GetDataStore("OpenRO_ApexDecks_v1")\nlocal deckEvent = Instance.new("RemoteEvent")\ndeckEvent.Name = "OpenRODeckAction"\ndeckEvent.Parent = ReplicatedStorage\n\nlocal MAX_DECK_SLOTS = 4\nlocal playerDecks = {}\n\nlocal function computeSynergyBonus(elements)\n    local counts = {}\n    for _, elem in ipairs(elements) do\n        counts[elem] = (counts[elem] or 0) + 1\n    end\n    local bonus = 1.0\n    for _, n in pairs(counts) do\n        if n >= 2 then\n            bonus = bonus + 0.15\n        end\n    end\n    return bonus\nend\n\nlocal function saveDeck(player)\n    local deck = playerDecks[player.UserId]\n    if not deck then\n        return\n    end\n    pcall(function()\n        deckStore:SetAsync("deck_" .. player.UserId, deck)\n    end)\nend\n\nPlayers.PlayerAdded:Connect(function(player)\n    local ok, saved = pcall(function()\n        return deckStore:GetAsync("deck_" .. player.UserId)\n    end)\n    playerDecks[player.UserId] = (ok and type(saved) == "table") and saved or { slots = {}, stars = {}, rebirths = 0 }\n    player:SetAttribute("DeckSynergy", 1.0)\n    player:SetAttribute("RebirthLevel", playerDecks[player.UserId].rebirths or 0)\nend)\n\ndeckEvent.OnServerEvent:Connect(function(player, action, payload)\n    local state = playerDecks[player.UserId]\n    if not state or typeof(action) ~= "string" then\n        return\n    end\n    if action == "fuse" and typeof(payload) == "string" then\n        local cur = state.stars[payload] or 1\n        if cur < 5 then\n            state.stars[payload] = cur + 1\n            player:SetAttribute("LastFusedCard", payload)\n        end\n    elseif action == "equip" and typeof(payload) == "table" then\n        local clean = {}\n        for i = 1, math.min(MAX_DECK_SLOTS, #payload) do\n            if typeof(payload[i]) == "string" then\n                table.insert(clean, payload[i])\n            end\n        end\n        state.slots = clean\n        player:SetAttribute("DeckSynergy", computeSynergyBonus(clean))\n    end\nend)\n\nPlayers.PlayerRemoving:Connect(function(player)\n    saveDeck(player)\n    playerDecks[player.UserId] = nil\nend)\n\ngame:BindToClose(function()\n    for _, p in ipairs(Players:GetPlayers()) do\n        saveDeck(p)\n    end\nend)\n`;
     }
     case "card_battle_arena": {
-      return `-- CardBattleArena -- compiled by OpenRO (skill: card_battle_arena)\nlocal Players = game:GetService("Players")\nlocal ReplicatedStorage = game:GetService("ReplicatedStorage")\n\nlocal battleRemote = Instance.new("RemoteEvent")\nbattleRemote.Name = "OpenROCardBattle"\nbattleRemote.Parent = ReplicatedStorage\n\nlocal ELEMENT_ADVANTAGE = { Flame = "Storm", Storm = "Void", Void = "Shadow", Shadow = "Arcane", Arcane = "Flame" }\nlocal activeFights = {}\n\nlocal function calcDamage(atk, attackerElem, targetElem, burstMult)\n    local mult = burstMult or 1.0\n    if ELEMENT_ADVANTAGE[attackerElem] == targetElem then\n        mult = mult * 1.25\n    end\n    return math.floor(atk * mult)\nend\n\nPlayers.PlayerAdded:Connect(function(player)\n    activeFights[player.UserId] = { floor = 1, bossHp = 1800, playerHp = 4200, shield = 0, burst = 0 }\nend)\n\nPlayers.PlayerRemoving:Connect(function(player)\n    activeFights[player.UserId] = nil\nend)\n\nbattleRemote.OnServerEvent:Connect(function(player, move)\n    local fight = activeFights[player.UserId]\n    if not fight or typeof(move) ~= "string" then\n        return\n    end\n    if move == "strike" then\n        local dmg = calcDamage(420, "Flame", "Storm", 1.0)\n        fight.bossHp = math.max(0, fight.bossHp - dmg)\n        fight.burst = math.min(100, fight.burst + 34)\n    elseif move == "guard" then\n        fight.shield = fight.shield + 650\n        fight.burst = math.min(100, fight.burst + 24)\n    elseif move == "ultimate" and fight.burst >= 100 then\n        local dmg = calcDamage(420, "Flame", "Storm", 2.9)\n        fight.bossHp = math.max(0, fight.bossHp - dmg)\n        fight.burst = 0\n    end\n    if fight.bossHp <= 0 then\n        fight.floor = math.min(50, fight.floor + 1)\n        fight.bossHp = 1800 + (fight.floor - 1) * 420\n        player:SetAttribute("TowerFloor", fight.floor)\n    else\n        local incoming = math.max(0, 260 - fight.shield)\n        fight.shield = math.max(0, fight.shield - 260)\n        fight.playerHp = math.max(0, fight.playerHp - incoming)\n    end\n    battleRemote:FireClient(player, fight)\nend)\n`;
+      return `-- CardBattleArena -- compiled by OpenRO (skill: card_battle_arena)\nlocal Players = game:GetService("Players")\nlocal ReplicatedStorage = game:GetService("ReplicatedStorage")\n\nlocal WINDUP_MS = 130\nlocal LUNGE_MS = 150\nlocal HIT_STOP_MS = 50\nlocal RECOIL_MS = 220\nlocal DEFEAT_MS = 400\nlocal CRIT_KICK_DEG = 2.0\nlocal battleRemote = Instance.new("RemoteEvent")\nbattleRemote.Name = "OpenROCardBattle"\nbattleRemote.Parent = ReplicatedStorage\n\nlocal ELEMENT_ADVANTAGE = { Flame = "Storm", Storm = "Void", Void = "Shadow", Shadow = "Arcane", Arcane = "Flame" }\nlocal activeFights = {}\n\nlocal function calcDamage(atk, attackerElem, targetElem, burstMult)\n    local mult = burstMult or 1.0\n    if ELEMENT_ADVANTAGE[attackerElem] == targetElem then\n        mult = mult * 1.25\n    end\n    return math.floor(atk * mult)\nend\n\nPlayers.PlayerAdded:Connect(function(player)\n    activeFights[player.UserId] = { floor = 1, bossHp = 1800, playerHp = 4200, shield = 0, burst = 0, hitStopMs = HIT_STOP_MS }\nend)\n\nPlayers.PlayerRemoving:Connect(function(player)\n    activeFights[player.UserId] = nil\nend)\n\nbattleRemote.OnServerEvent:Connect(function(player, move)\n    local fight = activeFights[player.UserId]\n    if not fight or typeof(move) ~= "string" then\n        return\n    end\n    if move == "strike" then\n        local dmg = calcDamage(420, "Flame", "Storm", 1.0)\n        fight.bossHp = math.max(0, fight.bossHp - dmg)\n        fight.burst = math.min(100, fight.burst + 34)\n    elseif move == "guard" then\n        fight.shield = fight.shield + 650\n        fight.burst = math.min(100, fight.burst + 24)\n    elseif move == "ultimate" and fight.burst >= 100 then\n        local dmg = calcDamage(420, "Flame", "Storm", 2.9)\n        fight.bossHp = math.max(0, fight.bossHp - dmg)\n        fight.burst = 0\n    end\n    if fight.bossHp <= 0 then\n        fight.floor = math.min(50, fight.floor + 1)\n        fight.bossHp = 1800 + (fight.floor - 1) * 420\n        player:SetAttribute("TowerFloor", fight.floor)\n    else\n        local incoming = math.max(0, 260 - fight.shield)\n        fight.shield = math.max(0, fight.shield - 260)\n        fight.playerHp = math.max(0, fight.playerHp - incoming)\n    end\n    battleRemote:FireClient(player, fight)\nend)\n`;
     }
     case "tower_progression": {
-      return `-- TowerProgression -- compiled by OpenRO (skill: tower_progression)\nlocal Players = game:GetService("Players")\nlocal ReplicatedStorage = game:GetService("ReplicatedStorage")\nlocal DataStoreService = game:GetService("DataStoreService")\n\nlocal MAX_FLOOR = 50\nlocal towerStore = DataStoreService:GetDataStore("OpenRO_ApexTower_v1")\nlocal rebirthRemote = Instance.new("RemoteEvent")\nrebirthRemote.Name = "OpenRORebirth"\nrebirthRemote.Parent = ReplicatedStorage\n\nlocal function saveTower(player)\n    local floorVal = player:GetAttribute("TowerFloor") or 1\n    local rebVal = player:GetAttribute("RebirthLevel") or 0\n    pcall(function()\n        towerStore:SetAsync("tower_" .. player.UserId, { floor = floorVal, rebirths = rebVal })\n    end)\nend\n\nPlayers.PlayerAdded:Connect(function(player)\n    local ok, saved = pcall(function()\n        return towerStore:GetAsync("tower_" .. player.UserId)\n    end)\n    local floorVal = (ok and type(saved) == "table" and saved.floor) or 1\n    local rebVal = (ok and type(saved) == "table" and saved.rebirths) or 0\n    player:SetAttribute("TowerFloor", math.clamp(floorVal, 1, MAX_FLOOR))\n    player:SetAttribute("RebirthLevel", rebVal)\nend)\n\nrebirthRemote.OnServerEvent:Connect(function(player)\n    local floorVal = player:GetAttribute("TowerFloor") or 1\n    if floorVal < 5 then\n        return\n    end\n    local rebVal = (player:GetAttribute("RebirthLevel") or 0) + 1\n    player:SetAttribute("RebirthLevel", rebVal)\n    player:SetAttribute("TowerFloor", 1)\n    player:SetAttribute("LuckMultiplier", 1 + rebVal * 0.35)\nend)\n\nPlayers.PlayerRemoving:Connect(saveTower)\n\ngame:BindToClose(function()\n    for _, p in ipairs(Players:GetPlayers()) do\n        saveTower(p)\n    end\nend)\n`;
+      return `-- TowerProgression -- compiled by OpenRO (skill: tower_progression)\nlocal Players = game:GetService("Players")\nlocal ReplicatedStorage = game:GetService("ReplicatedStorage")\nlocal DataStoreService = game:GetService("DataStoreService")\n\nlocal MAX_FLOOR = 50\nlocal WAVE_REVEAL_MS = 650\nlocal BOSS_TELEGRAPH_MS = 900\nlocal HIT_STOP_MS = 50\nlocal CRIT_KICK_DEG = 2.0\nlocal RebirthCost = 2000\nlocal RebirthMult = 1.5\nlocal GamePassMult = 1.5\nlocal towerStore = DataStoreService:GetDataStore("OpenRO_ApexTower_v1")\nlocal rebirthRemote = Instance.new("RemoteEvent")\nrebirthRemote.Name = "OpenRORebirth"\nrebirthRemote.Parent = ReplicatedStorage\n\nlocal function saveTower(player)\n    local floorVal = player:GetAttribute("TowerFloor") or 1\n    local rebVal = player:GetAttribute("RebirthLevel") or 0\n    pcall(function()\n        towerStore:SetAsync("tower_" .. player.UserId, { floor = floorVal, rebirths = rebVal })\n    end)\nend\n\nPlayers.PlayerAdded:Connect(function(player)\n    local ok, saved = pcall(function()\n        return towerStore:GetAsync("tower_" .. player.UserId)\n    end)\n    local floorVal = (ok and type(saved) == "table" and saved.floor) or 1\n    local rebVal = (ok and type(saved) == "table" and saved.rebirths) or 0\n    player:SetAttribute("TowerFloor", math.clamp(floorVal, 1, MAX_FLOOR))\n    player:SetAttribute("RebirthLevel", rebVal)\nend)\n\nrebirthRemote.OnServerEvent:Connect(function(player)\n    local floorVal = player:GetAttribute("TowerFloor") or 1\n    if floorVal < 5 then\n        return\n    end\n    local rebVal = (player:GetAttribute("RebirthLevel") or 0) + 1\n    player:SetAttribute("RebirthLevel", rebVal)\n    player:SetAttribute("TowerFloor", 1)\n    player:SetAttribute("LuckMultiplier", 1 + rebVal * 0.35)\nend)\n\nPlayers.PlayerRemoving:Connect(saveTower)\n\ngame:BindToClose(function()\n    for _, p in ipairs(Players:GetPlayers()) do\n        saveTower(p)\n    end\nend)\n`;
     }
     case "potions_weather": {
       return `-- PotionsWeather -- compiled by OpenRO (skill: potions_weather)\nlocal Players = game:GetService("Players")\nlocal Lighting = game:GetService("Lighting")\nlocal ReplicatedStorage = game:GetService("ReplicatedStorage")\n\nlocal potionRemote = Instance.new("RemoteEvent")\npotionRemote.Name = "OpenROUsePotion"\npotionRemote.Parent = ReplicatedStorage\n\nlocal WEATHERS = {\n    { name = "Solar Flare", luck = 2.0, clock = 12.5, element = "Flame" },\n    { name = "Blood Moon", luck = 2.5, clock = 23.0, element = "Void" },\n    { name = "Thunder Tempest", luck = 1.8, clock = 17.5, element = "Storm" },\n    { name = "Celestial Eclipse", luck = 3.0, clock = 21.0, element = "Shadow" },\n}\n\nlocal currentLuck = 2.0\n\ntask.spawn(function()\n    local idx = 1\n    while true do\n        local w = WEATHERS[idx]\n        currentLuck = w.luck\n        Lighting.ClockTime = w.clock\n        Lighting:SetAttribute("ServerWeather", w.name)\n        Lighting:SetAttribute("WeatherLuckMult", w.luck)\n        Lighting:SetAttribute("WeatherElement", w.element)\n        idx = (idx % #WEATHERS) + 1\n        task.wait(60)\n    end\nend)\n\npotionRemote.OnServerEvent:Connect(function(player, potionId)\n    if typeof(potionId) ~= "string" or (potionId ~= "luck_2x" and potionId ~= "super_luck_4x") then\n        return\n    end\n    local boost = potionId == "super_luck_4x" and 4.0 or 2.0\n    player:SetAttribute("LuckMultiplier", currentLuck * boost)\n    task.delay(45, function()\n        if player.Parent then\n            player:SetAttribute("LuckMultiplier", currentLuck)\n        end\n    end)\nend)\n`;
@@ -223,6 +228,7 @@ export const STARTER_CATALOG: CatalogIdea[] = [
     pitch: "A lava obby that plays fair: a spawn pad, checkpoints that remember your stage so a fall doesn't restart you, lava bricks that burn, and coins that keep paying while you climb, and save between sessions.",
     skills: ["spawn_link", "checkpoints", "kill_brick", "currency", "day_night"],
     needs: [],
+    opening: true,
     plan: [
       { tool: "create_instance", args: { class_name: "SpawnLocation", name: "SpawnPad", parent: "Workspace", properties: { Anchored: true, Position: [0, 1, 0], Size: [8, 1, 8], Color: "#2860D8" } } },
       { skill: "spawn_link", args: { instance_name: "SpawnPad" } },
@@ -245,6 +251,7 @@ export const STARTER_CATALOG: CatalogIdea[] = [
     pitch: "A tycoon starter with a real economy: money that saves between sessions and keeps paying while you play, a shop selling a Speed Coil, and a proper game screen showing your balance with the shop button on it.",
     skills: ["currency", "shop", "game_gui", "day_night"],
     needs: [],
+    opening: true,
     plan: [
       { tool: "create_instance", args: { class_name: "SpawnLocation", name: "SpawnPad", parent: "Workspace", properties: { Anchored: true, Position: [0, 1, 0], Size: [8, 1, 8], Color: "#2860D8" } } },
       { tool: "create_instance", args: { class_name: "Part", name: "TycoonDropper", parent: "Workspace", properties: { Anchored: true, Position: [14, 5, 10], Size: [6, 3, 6], Color: "#B36A2E" } } },
@@ -267,6 +274,7 @@ export const STARTER_CATALOG: CatalogIdea[] = [
     pitch: "A round-based arena: rounds that start themselves, a leaderboard counting wins, a spawn pad, and a lava pit in the middle for sudden death.",
     skills: ["round_manager", "leaderboard", "spawn_link", "kill_brick"],
     needs: [],
+    opening: true,
     plan: [
       { skill: "round_manager", args: { create_round: true } },
       { tool: "write_script", args: { path: "ServerScriptService.RoundManager", skill: "round_manager" } },
@@ -278,6 +286,222 @@ export const STARTER_CATALOG: CatalogIdea[] = [
       { tool: "create_instance", args: { class_name: "Part", name: "LavaBrick", parent: "Workspace", properties: { Anchored: true, Position: [0, 1, 20], Size: [14, 1, 14], Color: "#E0532A" } } },
       { skill: "kill_brick", args: { damage: 50 } },
       { tool: "write_script", args: { path: "Workspace.LavaBrick.KillBrick", skill: "kill_brick" } },
+      { tool: "playtest", args: {} },
+    ],
+  },
+  {
+    id: "anime-card-battles-apex",
+    title: "Anime RNG Card Battler",
+    pitch: "A sunlit floating-archipelago anime card battler with 100% original sky-archipelago Orders, 4-tier rarity reveals (450/950/1650/2600ms), whole-card battle juice (50ms hit-stop, 150ms lunge, 220ms recoil, 2deg crit), 844x390 2-column HUD, zero-paid-luck balanced economy, and 50-floor Tower.",
+    skills: [
+      "leaderboard",
+      "datastore_save",
+      "shop",
+      "game_gui",
+      "soundtrack",
+      "card_gacha_roller",
+      "deck_builder",
+      "card_battle_arena",
+      "tower_progression",
+      "potions_weather",
+      "card_gallery_world",
+    ],
+    needs: [],
+    opening: true,
+    niche_id: "anime-rng-cards",
+    feel_profile: {
+      reveal_tiers: [
+        { tier: 1, name: "Common & Uncommon", rarities: "Common / Uncommon", duration_ms: 450, camera_kick_deg: 0, scrim_opacity: 0.15, border_hex_dark: "#CBD5E1", border_hex_light: "#334155", glyph: "●" },
+        { tier: 2, name: "Rare & Epic", rarities: "Rare / Epic", duration_ms: 950, camera_kick_deg: 0.5, scrim_opacity: 0.25, border_hex_dark: "#7DD3FC", border_hex_light: "#1D4ED8", glyph: "★" },
+        { tier: 3, name: "Legendary", rarities: "Legendary", duration_ms: 1650, camera_kick_deg: 2.5, scrim_opacity: 0.45, border_hex_dark: "#FCD34D", border_hex_light: "#92400E", glyph: "♛" },
+        { tier: 4, name: "Mythic & Legacy", rarities: "Mythic / Legacy", duration_ms: 2600, camera_kick_deg: 3.5, scrim_opacity: 0.65, border_hex_dark: "#FDA4AF", border_hex_light: "#BE123C", glyph: "✦" },
+      ],
+      juice: { windup_ms: 130, lunge_ms: 150, hit_stop_ms: 50, recoil_ms: 220, defeat_ms: 400, crit_camera_kick_deg: 2.0, reduced_motion_fade_ms: 180, damage_popups: true, timing_bar_hook: true },
+      hud_roles: {
+        phone_844x390_layout: "2-col split (44% RevealCard / 56% Pity+Roll), top<=14%, center>=58%, bottom<=26%, reserve<=16%",
+        top_bar_max_pct: 14,
+        center_clear_min_pct: 58,
+        bottom_dock_max_pct: 26,
+        reserve_strip_max_pct: 16,
+        min_tap_target_px: 44,
+        number_format: "1 in N + K/M",
+        anchors: ["TopEdge: Player/Enemy HP + Turn Pill", "BottomCenter: Reveal Free Card + Mythic Pity + Auto Roll", "BottomLeft: Luck & Buffs Pill (pausable)", "BattleReserveDock: 4-card ordered strip (<=16% height)"],
+      },
+      gui_screen_slug: "anime-rng-cards-hud",
+      audio_cues: ["summon_roll", "rare_chime", "legendary_drop", "mythic_fanfare", "battle_hit", "battle_crit", "death_shatter", "ui_click"],
+      world_direction: {
+        setting: "Sunlit floating sky-archipelago courtyard with Torii summon shrine and colosseum",
+        lighting_mood: "Clear daylight sky with crisp BloomEffect (0.45) and SunRaysEffect (0.14)",
+        landmark_hub: "ApexLobby",
+        landmarks: ["SpawnPad", "ToriiSummonShrine", "RollPedestal", "TowerPortal", "BossRaidShrine", "DuelArenaStage"],
+      },
+      economy_targets: { currency: "Coins", earn_per_min: 120, rebirth_cost: 1800, rebirth_mult: 1.5, gamepass_mult: 1.0, max_price: 250, zero_paid_luck: true },
+      playtest_assertions: [
+        "First free card draw + battle + reward claim completes within 60s",
+        "Zero paid luck (gamepass_mult == 1.0) and balanced 60m curve",
+        "Safe areas, >=44x44 tap targets, and >=4.5:1 contrast across 1920x1080, 1024x768, 844x390",
+        "DataStore BindToClose persistence + 0 Luau errors in headless sandbox",
+      ],
+    },
+    plan: [
+      { tool: "create_instance", args: { class_name: "SpawnLocation", name: "SpawnPad", parent: "Workspace", properties: { Anchored: true, Position: [0, 1, 0], Size: [10, 1, 10], Color: "#2860D8" } } },
+      { tool: "create_instance", args: { class_name: "Part", name: "RollPedestal", parent: "Workspace", properties: { Anchored: true, Material: "Neon", Position: [0, 2, 18], Size: [8, 2, 8], Color: "#C47D16" } } },
+      { tool: "create_instance", args: { class_name: "Part", name: "TowerGate", parent: "Workspace", properties: { Anchored: true, Material: "Neon", Position: [-18, 6, 30], Size: [10, 12, 2], Color: "#7046C8" } } },
+      { tool: "create_instance", args: { class_name: "Part", name: "BossShrine", parent: "Workspace", properties: { Anchored: true, Material: "Marble", Position: [18, 3, 32], Size: [14, 2, 14], Color: "#E0532A" } } },
+      { tool: "create_instance", args: { class_name: "Part", name: "AlchemistStand", parent: "Workspace", properties: { Anchored: true, Material: "SmoothPlastic", Position: [-18, 2, 12], Size: [8, 4, 6], Color: "#1F8C6A" } } },
+      { tool: "create_instance", args: { class_name: "Part", name: "CardBillboard1", parent: "Workspace", properties: { Anchored: true, Material: "SmoothPlastic", Position: [-12, 8, -14], Size: [6, 8, 1], Color: "#D4A017", CardTitle: "Helios Clockwork Paragon", DecalTexture: "/api/assets/helios-clockwork-paragon.webp" } } },
+      { tool: "create_instance", args: { class_name: "Part", name: "CardBillboard2", parent: "Workspace", properties: { Anchored: true, Material: "SmoothPlastic", Position: [-4, 8, -14], Size: [6, 8, 1], Color: "#7046C8", CardTitle: "Prism-Rift Archivist", DecalTexture: "/api/assets/prism-rift-archivist.webp" } } },
+      { tool: "create_instance", args: { class_name: "Part", name: "CardBillboard3", parent: "Workspace", properties: { Anchored: true, Material: "SmoothPlastic", Position: [4, 8, -14], Size: [6, 8, 1], Color: "#3B6EA8", CardTitle: "Velvet-Bell Warden", DecalTexture: "/api/assets/velvet-bell-warden.webp" } } },
+      { tool: "create_instance", args: { class_name: "Part", name: "CardBillboard4", parent: "Workspace", properties: { Anchored: true, Material: "SmoothPlastic", Position: [12, 8, -14], Size: [6, 8, 1], Color: "#E0532A", CardTitle: "Cinder-Sail Navigator", DecalTexture: "/api/assets/cinder-sail-navigator.webp" } } },
+      { skill: "leaderboard", args: { currency: "Coins", start_amount: 250 } },
+      { tool: "write_script", args: { path: "ServerScriptService.Leaderboard", skill: "leaderboard" } },
+      { skill: "datastore_save", args: { store_name: "OpenROApexEconomy_v1", stat_name: "Coins", default_value: 250, autosave_seconds: 60, bind_close: true } },
+      { tool: "write_script", args: { path: "ServerScriptService.DataStoreSave", skill: "datastore_save" } },
+      { skill: "shop", args: { item_name: "Lucky Charm", price: 250, currency: "Coins" } },
+      { tool: "write_script", args: { path: "ServerScriptService.Shop", skill: "shop" } },
+      { skill: "game_gui", args: { title: "Anime RNG Card Battler", button_label: "Buy Lucky Charm (250)", currency: "Coins" } },
+      { tool: "write_script", args: { path: "StarterGui.GameGui", skill: "game_gui" } },
+      { skill: "soundtrack", args: { sound_id: 0, volume: 6, looped: true } },
+      { tool: "write_script", args: { path: "ServerScriptService.Soundtrack", skill: "soundtrack" } },
+      { skill: "card_gacha_roller", args: { pity_max: 50 } },
+      { tool: "write_script", args: { path: "ServerScriptService.CardGachaRoller", skill: "card_gacha_roller" } },
+      { skill: "deck_builder", args: {} },
+      { tool: "write_script", args: { path: "ServerScriptService.DeckBuilder", skill: "deck_builder" } },
+      { skill: "card_battle_arena", args: {} },
+      { tool: "write_script", args: { path: "ServerScriptService.CardBattleArena", skill: "card_battle_arena" } },
+      { skill: "tower_progression", args: {} },
+      { tool: "write_script", args: { path: "ServerScriptService.TowerProgression", skill: "tower_progression" } },
+      { skill: "potions_weather", args: {} },
+      { tool: "write_script", args: { path: "ServerScriptService.PotionsWeather", skill: "potions_weather" } },
+      { skill: "card_gallery_world", args: {} },
+      { tool: "write_script", args: { path: "ServerScriptService.CardGalleryWorld", skill: "card_gallery_world" } },
+      { tool: "playtest", args: {} },
+    ],
+  },
+  {
+    id: "viral-sim-tycoon-template",
+    title: "Viral Sim & Tycoon",
+    pitch: "A sunlit workshop & factory tycoon template with instant dropper -> conveyor -> collector -> x2 upgrade juice, milestone quests, shop upgrades, BindToClose DataStore saves, balanced 60-minute economy, and safe-area mobile HUD.",
+    skills: ["spawn_link", "currency", "tycoon_dropper", "shop", "datastore_save", "quest_tracker", "game_gui", "soundtrack"],
+    needs: [],
+    opening: true,
+    niche_id: "viral-sim-tycoon",
+    feel_profile: {
+      reveal_tiers: [
+        { tier: 1, name: "Standard Drop", rarities: "Standard Ore", duration_ms: 350, camera_kick_deg: 0, scrim_opacity: 0, border_hex_dark: "#6EE7B7", border_hex_light: "#047857", glyph: "◆" },
+        { tier: 2, name: "Upgraded Surge", rarities: "2x / Golden Surge", duration_ms: 750, camera_kick_deg: 1.0, scrim_opacity: 0.2, border_hex_dark: "#FCD34D", border_hex_light: "#92400E", glyph: "★" },
+      ],
+      juice: { windup_ms: 90, lunge_ms: 140, hit_stop_ms: 40, recoil_ms: 180, defeat_ms: 300, crit_camera_kick_deg: 1.0, reduced_motion_fade_ms: 150, damage_popups: false, timing_bar_hook: true },
+      hud_roles: {
+        phone_844x390_layout: "Top-right Balance/Quest pill + bottom-center Upgrade/Shop dock clear of thumbsticks",
+        top_bar_max_pct: 14,
+        center_clear_min_pct: 64,
+        bottom_dock_max_pct: 22,
+        reserve_strip_max_pct: 14,
+        min_tap_target_px: 44,
+        number_format: "Comma <10k, K/M >=10k",
+        anchors: ["TopRight: Coins + Upgrade Lv Pill", "TopCenter: Milestone Quest Tracker", "BottomCenter: Upgrade Dropper + Shop Dock"],
+      },
+      gui_screen_slug: "viral-sim-tycoon-hud",
+      audio_cues: ["level_up", "pack_open", "potion_drink", "ui_click", "button_hover", "ambient_plaza"],
+      world_direction: {
+        setting: "Sunlit open-air workshop meadow with brass gantry, conveyor foundry, and collector beacon",
+        lighting_mood: "Bright meadow daylight with gentle BloomEffect (0.35) and crisp contrast silhouettes",
+        landmark_hub: "SunlitWorkshop",
+        landmarks: ["SpawnPad", "AssemblyFloor", "FactoryCrossbeam", "CollectorBeacon", "ShopCanopy", "QuestBoard"],
+      },
+      economy_targets: { currency: "Coins", earn_per_min: 120, rebirth_cost: 1800, rebirth_mult: 1.5, gamepass_mult: 1.5, max_price: 250, zero_paid_luck: false },
+      playtest_assertions: [
+        "10-second dropper -> conveyor -> collector -> upgrade loop awards Coins cleanly",
+        "Quest tracker payout + shop purchase validate server-side",
+        "DataStore UpdateAsync + BindToClose persistence passes rejoin check",
+        "Safe areas, >=44x44 tap targets, and >=4.5:1 contrast across 3 viewports",
+      ],
+    },
+    plan: [
+      { tool: "create_instance", args: { class_name: "SpawnLocation", name: "SpawnPad", parent: "Workspace", properties: { Anchored: true, Position: [0, 2, 24], Size: [10, 1, 10], Color: "#10B981" } } },
+      { tool: "create_instance", args: { class_name: "Part", name: "SunlitFoundry", parent: "Workspace", properties: { Anchored: true, Material: "SmoothPlastic", Position: [0, 3, 0], Size: [12, 4, 12], Color: "#F8FAFC" } } },
+      { tool: "create_instance", args: { class_name: "Part", name: "CollectorBeacon", parent: "Workspace", properties: { Anchored: true, Material: "Neon", Position: [0, 5.5, 12], Size: [3, 8, 3], Color: "#FACC15" } } },
+      { skill: "spawn_link", args: { instance_name: "SpawnPad" } },
+      { tool: "write_script", args: { path: "ServerScriptService.SpawnLink", skill: "spawn_link" } },
+      { skill: "currency", args: { currency: "Coins", start_amount: 100, earn_amount: 120, earn_seconds: 60, bind_close: true } },
+      { tool: "write_script", args: { path: "ServerScriptService.Currency", skill: "currency" } },
+      { skill: "tycoon_dropper", args: { dropper_name: "SunlitFoundry", currency: "Coins", payout: 20 } },
+      { tool: "write_script", args: { path: "ServerScriptService.TycoonDropper", skill: "tycoon_dropper" } },
+      { skill: "shop", args: { item_name: "Magnet Collector", price: 250, currency: "Coins" } },
+      { tool: "write_script", args: { path: "ServerScriptService.Shop", skill: "shop" } },
+      { skill: "datastore_save", args: { store_name: "OpenROWorkshopSave_v1", stat_name: "Coins", default_value: 100, autosave_seconds: 60, bind_close: true } },
+      { tool: "write_script", args: { path: "ServerScriptService.DataStoreSave", skill: "datastore_save" } },
+      { skill: "quest_tracker", args: { quest_name: "Foundry Output", target_count: 5, reward_amount: 120, currency: "Coins" } },
+      { tool: "write_script", args: { path: "ServerScriptService.QuestTracker", skill: "quest_tracker" } },
+      { skill: "game_gui", args: { title: "Viral Sim & Tycoon", button_label: "Buy Magnet Collector (250)", currency: "Coins" } },
+      { tool: "write_script", args: { path: "StarterGui.GameGui", skill: "game_gui" } },
+      { skill: "soundtrack", args: { sound_id: 0, volume: 5, looped: true } },
+      { tool: "write_script", args: { path: "ServerScriptService.Soundtrack", skill: "soundtrack" } },
+      { tool: "playtest", args: {} },
+    ],
+  },
+  {
+    id: "anime-action-rpg-td-template",
+    title: "Anime Action RPG / Tower Defense",
+    pitch: "A sunlit citadel action RPG & tower defense template with server-validated blade combat, 5-world tower portals & OrderedDataStore leaderboard, quest milestones, hit-stop boss phases, balanced economy, and safe-area HUD.",
+    skills: ["spawn_link", "currency", "datastore_save", "combat_sword", "tower_progression", "quest_tracker", "shop", "game_gui", "soundtrack"],
+    needs: [],
+    opening: true,
+    niche_id: "anime-action-rpg-td",
+    feel_profile: {
+      reveal_tiers: [
+        { tier: 1, name: "Wave Clear", rarities: "Standard Wave", duration_ms: 650, camera_kick_deg: 0.8, scrim_opacity: 0.15, border_hex_dark: "#7DD3FC", border_hex_light: "#1D4ED8", glyph: "★" },
+        { tier: 2, name: "Boss Phase & Awakening", rarities: "Boss / Awakening", duration_ms: 1400, camera_kick_deg: 2.0, scrim_opacity: 0.45, border_hex_dark: "#FCD34D", border_hex_light: "#92400E", glyph: "♛" },
+      ],
+      juice: { windup_ms: 110, lunge_ms: 150, hit_stop_ms: 50, recoil_ms: 200, defeat_ms: 360, crit_camera_kick_deg: 2.0, reduced_motion_fade_ms: 180, damage_popups: true, timing_bar_hook: true },
+      hud_roles: {
+        phone_844x390_layout: "Top-right HP/Wave/Floor pill + bottom-center 3-button Strike/Portal/Shop dock",
+        top_bar_max_pct: 14,
+        center_clear_min_pct: 62,
+        bottom_dock_max_pct: 24,
+        reserve_strip_max_pct: 14,
+        min_tap_target_px: 44,
+        number_format: "Comma <10k, K/M >=10k",
+        anchors: ["TopRight: Coins + TowerFloor + KOs Pill", "TopCenter: Wave / Boss Phase Banner", "BottomCenter: Strike + World Warp + Shop Dock"],
+      },
+      gui_screen_slug: "anime-action-rpg-td-hud",
+      audio_cues: ["battle_hit", "battle_crit", "death_shatter", "mythic_fanfare", "secret_alarm", "level_up", "ui_click"],
+      world_direction: {
+        setting: "Sunlit stone citadel courtyard with arena ring, world portal arches, and summon fountain",
+        lighting_mood: "High-clarity daylight arena with BloomEffect (0.42) and dark slate combat ring",
+        landmark_hub: "CitadelPlaza",
+        landmarks: ["SpawnPad", "ArenaRing", "PortalArchL", "PortalArchR", "SummonFountain", "BossAltar", "QuestObelisk"],
+      },
+      economy_targets: { currency: "Coins", earn_per_min: 120, rebirth_cost: 2000, rebirth_mult: 1.5, gamepass_mult: 1.5, max_price: 250, zero_paid_luck: false },
+      playtest_assertions: [
+        "Server-validated melee sword + tower progression + quest tracker compose with 0 errors",
+        "OrderedDataStore leaderboard + DataStore BindToClose pass rejoin check",
+        "Safe areas, >=44x44 tap targets, and >=4.5:1 contrast across 3 viewports",
+      ],
+    },
+    plan: [
+      { tool: "create_instance", args: { class_name: "SpawnLocation", name: "SpawnPad", parent: "Workspace", properties: { Anchored: true, Position: [0, 2, 32], Size: [10, 1, 10], Color: "#38BDF8" } } },
+      { tool: "create_instance", args: { class_name: "Part", name: "ArenaRing", parent: "Workspace", properties: { Anchored: true, Material: "Slate", Position: [0, 0.5, -12], Size: [52, 1.4, 52], Color: "#1E293B" } } },
+      { tool: "create_instance", args: { class_name: "Part", name: "BossAltar", parent: "Workspace", properties: { Anchored: true, Material: "Marble", Position: [0, 2.2, -32], Size: [18, 2.2, 12], Color: "#DC2626" } } },
+      { skill: "spawn_link", args: { instance_name: "SpawnPad" } },
+      { tool: "write_script", args: { path: "ServerScriptService.SpawnLink", skill: "spawn_link" } },
+      { skill: "currency", args: { currency: "Coins", start_amount: 150, earn_amount: 120, earn_seconds: 60, bind_close: true } },
+      { tool: "write_script", args: { path: "ServerScriptService.Currency", skill: "currency" } },
+      { skill: "datastore_save", args: { store_name: "OpenROCitadelSave_v1", stat_name: "Coins", default_value: 150, autosave_seconds: 60, bind_close: true } },
+      { tool: "write_script", args: { path: "ServerScriptService.DataStoreSave", skill: "datastore_save" } },
+      { skill: "combat_sword", args: { sword_name: "SkycrestBlade", damage: 35, cooldown_ms: 400, range_studs: 12 } },
+      { tool: "write_script", args: { path: "ServerScriptService.CombatSword", skill: "combat_sword" } },
+      { skill: "tower_progression", args: {} },
+      { tool: "write_script", args: { path: "ServerScriptService.TowerProgression", skill: "tower_progression" } },
+      { skill: "quest_tracker", args: { quest_name: "Citadel Vanguard", target_count: 5, reward_amount: 120, currency: "Coins" } },
+      { tool: "write_script", args: { path: "ServerScriptService.QuestTracker", skill: "quest_tracker" } },
+      { skill: "shop", args: { item_name: "Tempest Greaves", price: 250, currency: "Coins" } },
+      { tool: "write_script", args: { path: "ServerScriptService.Shop", skill: "shop" } },
+      { skill: "game_gui", args: { title: "Anime Action RPG / Tower Defense", button_label: "Buy Tempest Greaves (250)", currency: "Coins" } },
+      { tool: "write_script", args: { path: "StarterGui.GameGui", skill: "game_gui" } },
+      { skill: "soundtrack", args: { sound_id: 0, volume: 6, looped: true } },
+      { tool: "write_script", args: { path: "ServerScriptService.Soundtrack", skill: "soundtrack" } },
       { tool: "playtest", args: {} },
     ],
   },
@@ -328,46 +552,6 @@ export const STARTER_CATALOG: CatalogIdea[] = [
     plan: [
       { skill: "soundtrack", args: { sound_id: 0, volume: 5, looped: true } },
       { tool: "write_script", args: { path: "ServerScriptService.Soundtrack", skill: "soundtrack" } },
-      { tool: "playtest", args: {} },
-    ],
-  },
-  {
-    id: "anime-card-battles-apex",
-    title: "Untitled Anime Card Game",
-    pitch: "Complete sunlit floating-archipelago Roblox anime card battler: sculpted Torii Summon Shrine gacha with pity & foils, 4-card synergy deck with star fusion & rebirth, 4v4 Chain Overdrive boss tower, 7 weather biomes + Fusion Weather Storms, and Living 3D Lead-Card Guardian Aura.",
-    skills: [
-      "card_gacha_roller",
-      "deck_builder",
-      "card_battle_arena",
-      "tower_progression",
-      "potions_weather",
-      "card_gallery_world",
-    ],
-    needs: ["__featured_only__"],
-    plan: [
-      { tool: "create_instance", args: { class_name: "SpawnLocation", name: "SpawnPad", parent: "Workspace", properties: { Anchored: true, Position: [0, 1, 0], Size: [10, 1, 10], Color: "#2860D8" } } },
-      { tool: "create_instance", args: { class_name: "Part", name: "RollPedestal", parent: "Workspace", properties: { Anchored: true, Material: "Neon", Position: [0, 2, 18], Size: [8, 2, 8], Color: "#C47D16" } } },
-      { tool: "create_instance", args: { class_name: "Part", name: "TowerGate", parent: "Workspace", properties: { Anchored: true, Material: "Neon", Position: [-18, 6, 30], Size: [10, 12, 2], Color: "#7046C8" } } },
-      { tool: "create_instance", args: { class_name: "Part", name: "BossShrine", parent: "Workspace", properties: { Anchored: true, Material: "Marble", Position: [18, 3, 32], Size: [14, 2, 14], Color: "#E0532A" } } },
-      { tool: "create_instance", args: { class_name: "Part", name: "AlchemistStand", parent: "Workspace", properties: { Anchored: true, Material: "SmoothPlastic", Position: [-18, 2, 12], Size: [8, 4, 6], Color: "#1F8C6A" } } },
-      { tool: "create_instance", args: { class_name: "Part", name: "CardBillboard1", parent: "Workspace", properties: { Anchored: true, Material: "SmoothPlastic", Position: [-12, 8, -14], Size: [6, 8, 1], Color: "#D4A017", CardTitle: "Helios Clockwork Paragon", DecalTexture: "/api/assets/helios-clockwork-paragon.webp" } } },
-      { tool: "create_instance", args: { class_name: "Part", name: "CardBillboard2", parent: "Workspace", properties: { Anchored: true, Material: "SmoothPlastic", Position: [-4, 8, -14], Size: [6, 8, 1], Color: "#7046C8", CardTitle: "Prism-Rift Archivist", DecalTexture: "/api/assets/prism-rift-archivist.webp" } } },
-      { tool: "create_instance", args: { class_name: "Part", name: "CardBillboard3", parent: "Workspace", properties: { Anchored: true, Material: "SmoothPlastic", Position: [4, 8, -14], Size: [6, 8, 1], Color: "#3B6EA8", CardTitle: "Velvet-Bell Warden", DecalTexture: "/api/assets/velvet-bell-warden.webp" } } },
-      { tool: "create_instance", args: { class_name: "Part", name: "CardBillboard4", parent: "Workspace", properties: { Anchored: true, Material: "SmoothPlastic", Position: [12, 8, -14], Size: [6, 8, 1], Color: "#E0532A", CardTitle: "Cinder-Sail Navigator", DecalTexture: "/api/assets/cinder-sail-navigator.webp" } } },
-      { skill: "currency", args: { currency: "Coins", start_amount: 450, earn_amount: 25, earn_seconds: 8, bind_close: true } },
-      { tool: "write_script", args: { path: "ServerScriptService.Currency", skill: "currency" } },
-      { skill: "card_gacha_roller", args: { pity_max: 50 } },
-      { tool: "write_script", args: { path: "ServerScriptService.CardGachaRoller", skill: "card_gacha_roller" } },
-      { skill: "deck_builder", args: {} },
-      { tool: "write_script", args: { path: "ServerScriptService.DeckBuilder", skill: "deck_builder" } },
-      { skill: "card_battle_arena", args: {} },
-      { tool: "write_script", args: { path: "ServerScriptService.CardBattleArena", skill: "card_battle_arena" } },
-      { skill: "tower_progression", args: {} },
-      { tool: "write_script", args: { path: "ServerScriptService.TowerProgression", skill: "tower_progression" } },
-      { skill: "potions_weather", args: {} },
-      { tool: "write_script", args: { path: "ServerScriptService.PotionsWeather", skill: "potions_weather" } },
-      { skill: "card_gallery_world", args: {} },
-      { tool: "write_script", args: { path: "ServerScriptService.CardGalleryWorld", skill: "card_gallery_world" } },
       { tool: "playtest", args: {} },
     ],
   },

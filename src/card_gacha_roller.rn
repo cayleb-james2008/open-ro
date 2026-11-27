@@ -17,6 +17,14 @@ local BASE_LUCK = ${base_luck_pct} / 100
 local PITY_THRESHOLD = ${pity_threshold}
 local FAST_ROLL_SEC = ${fast_roll_ms} / 1000
 local ENABLE_BORDERS = ${borders_lit}
+local REVEAL_TIER_COMMON_MS = 450
+local REVEAL_TIER_RARE_MS = 950
+local REVEAL_TIER_LEGENDARY_MS = 1650
+local REVEAL_TIER_MYTHIC_MS = 2600
+local EarnPerMin = 120
+local RebirthCost = 1800
+local RebirthMult = 1.5
+local GamePassMult = 1.0
 
 local rollFunction = ReplicatedStorage:FindFirstChild("OpenROCardRoll")
 if not rollFunction then
@@ -76,8 +84,8 @@ local BORDER_VARIANTS = {
 
 local PACKS = {
     ["Starter"]           = { cost = 0,   luckBonus = 1.00 },
-    ["Shibuya Spirit"]    = { cost = 150, luckBonus = 1.15 },
-    ["Crimson Pirate"]    = { cost = 200, luckBonus = 1.25 },
+    ["Astral Sanctuary"]  = { cost = 150, luckBonus = 1.15 },
+    ["Crimson Fleet"]     = { cost = 200, luckBonus = 1.25 },
     ["Shadow Gate"]       = { cost = 300, luckBonus = 1.40 },
     ["Celestial Alchemy"] = { cost = 450, luckBonus = 1.65 },
     ["Eclipse Legends"]   = { cost = 750, luckBonus = 2.10 },
@@ -91,27 +99,27 @@ local CARD_POOL = {
         { id = "celestial-star-oracle", title = "Celestial Star Oracle", pack = "Eclipse Legends", element = "Solar", atk = 570, hp = 1800, speed = 96, skill = "Time Stop", weatherLock = "Starfall" },
     },
     Mythic = {
-        { id = "prism-rift-archivist", title = "Prism-Rift Archivist", pack = "Shibuya Spirit", element = "Arcane", atk = 560, hp = 1780, speed = 96, skill = "Time Stop" },
+        { id = "prism-rift-archivist", title = "Prism-Rift Archivist", pack = "Astral Sanctuary", element = "Arcane", atk = 560, hp = 1780, speed = 96, skill = "Time Stop" },
         { id = "velvet-bell-warden", title = "Velvet-Bell Warden", pack = "Shadow Gate", element = "Shadow", atk = 585, hp = 1840, speed = 95, skill = "Lifesteal" },
-        { id = "cinder-sail-navigator", title = "Cinder-Sail Navigator", pack = "Crimson Pirate", element = "Crimson", atk = 545, hp = 1720, speed = 92, skill = "Burn AoE" },
+        { id = "cinder-sail-navigator", title = "Cinder-Sail Navigator", pack = "Crimson Fleet", element = "Crimson", atk = 545, hp = 1720, speed = 92, skill = "Burn AoE" },
         { id = "amber-crane-dancer", title = "Amber-Crane Dancer", pack = "Celestial Alchemy", element = "Solar", atk = 555, hp = 1760, speed = 94, skill = "Domain Buff" },
     },
     Legendary = {
         { id = "gale-lantern-fencer", title = "Gale-Lantern Fencer", pack = "Celestial Alchemy", element = "Storm", atk = 420, hp = 1240, speed = 100, skill = "Stun" },
-        { id = "blazing-tides-corsair", title = "Blazing Tides Corsair", pack = "Crimson Pirate", element = "Crimson", atk = 405, hp = 1360, speed = 89, skill = "Burn AoE", weatherLock = "Sandstorm" },
+        { id = "blazing-tides-corsair", title = "Blazing Tides Corsair", pack = "Crimson Fleet", element = "Crimson", atk = 405, hp = 1360, speed = 89, skill = "Burn AoE", weatherLock = "Sandstorm" },
         { id = "abyssal-dread-marshall", title = "Abyssal Dread Marshall", pack = "Shadow Gate", element = "Shadow", atk = 430, hp = 1420, speed = 91, skill = "Domain Buff" },
         { id = "lunar-eclipse-duelist", title = "Lunar Eclipse Duelist", pack = "Eclipse Legends", element = "Storm", atk = 440, hp = 1320, speed = 97, skill = "Counter", weatherLock = "Eclipse 2x Luck" },
     },
     Epic = {
         { id = "basalt-tide-anchorite", title = "Basalt-Tide Anchorite", pack = "Shadow Gate", element = "Shadow", atk = 330, hp = 1180, speed = 86, skill = "Guard Break", weatherLock = "Blood Moon" },
-        { id = "domain-curse-blade", title = "Domain Curse Blade", pack = "Shibuya Spirit", element = "Arcane", atk = 315, hp = 1140, speed = 88, skill = "Domain Buff" },
+        { id = "rift-seal-blade", title = "Rift-Seal Blade", pack = "Astral Sanctuary", element = "Arcane", atk = 315, hp = 1140, speed = 88, skill = "Domain Buff" },
         { id = "sage-transmuter", title = "Sage Transmuter", pack = "Celestial Alchemy", element = "Arcane", atk = 310, hp = 1160, speed = 83, skill = "Mirror Shield", weatherLock = "Snow" },
     },
     Rare = {
         { id = "verdigris-glass-tinker", title = "Verdigris Glass Tinker", pack = "Starter", element = "Arcane", atk = 230, hp = 960, speed = 80, skill = "Mirror Shield" },
-        { id = "gale-kunoichi", title = "Gale Kunoichi", pack = "Starter", element = "Storm", atk = 245, hp = 880, speed = 90, skill = "Stun", weatherLock = "Rain" },
-        { id = "shikigami-summoner", title = "Shikigami Summoner", pack = "Shibuya Spirit", element = "Shadow", atk = 250, hp = 940, speed = 84, skill = "Lifesteal" },
-        { id = "iron-cutlass-firstmate", title = "Iron Cutlass Firstmate", pack = "Crimson Pirate", element = "Crimson", atk = 260, hp = 1020, speed = 82, skill = "Counter" },
+        { id = "gale-zephyr-scout", title = "Gale Zephyr Scout", pack = "Starter", element = "Storm", atk = 245, hp = 880, speed = 90, skill = "Stun", weatherLock = "Rain" },
+        { id = "lantern-summoner", title = "Lantern Summoner", pack = "Astral Sanctuary", element = "Shadow", atk = 250, hp = 940, speed = 84, skill = "Lifesteal" },
+        { id = "iron-cutlass-firstmate", title = "Iron Cutlass Firstmate", pack = "Crimson Fleet", element = "Crimson", atk = 260, hp = 1020, speed = 82, skill = "Counter" },
         { id = "umbral-dusk-stalker", title = "Umbral Dusk Stalker", pack = "Shadow Gate", element = "Shadow", atk = 255, hp = 920, speed = 87, skill = "Lifesteal" },
     },
     Common = {
@@ -119,8 +127,8 @@ local CARD_POOL = {
         { id = "storm-scout", title = "Storm Scout", pack = "Starter", element = "Storm", atk = 125, hp = 490, speed = 82, skill = "Counter" },
         { id = "void-initiate", title = "Void Initiate", pack = "Starter", element = "Shadow", atk = 120, hp = 510, speed = 75, skill = "Guard Break" },
         { id = "arcane-scribe", title = "Arcane Scribe", pack = "Starter", element = "Arcane", atk = 108, hp = 560, speed = 70, skill = "Mirror Shield" },
-        { id = "cursed-fist-brawler", title = "Cursed Fist Brawler", pack = "Shibuya Spirit", element = "Shadow", atk = 135, hp = 540, speed = 76, skill = "Guard Break" },
-        { id = "harbor-deckhand", title = "Harbor Deckhand", pack = "Crimson Pirate", element = "Crimson", atk = 130, hp = 550, speed = 74, skill = "Burn AoE" },
+        { id = "gale-fist-brawler", title = "Gale-Fist Brawler", pack = "Astral Sanctuary", element = "Shadow", atk = 135, hp = 540, speed = 76, skill = "Guard Break" },
+        { id = "harbor-deckhand", title = "Harbor Deckhand", pack = "Crimson Fleet", element = "Crimson", atk = 130, hp = 550, speed = 74, skill = "Burn AoE" },
     },
 }
 
@@ -347,6 +355,13 @@ rollFunction.OnServerInvoke = function(player, action, arg)
             auto_roll = st.autoRoll,
             total_rolls = st.rolls,
             selected_pack = st.selectedPack,
+            feel = {
+                reveal_tiers_ms = { REVEAL_TIER_COMMON_MS, REVEAL_TIER_RARE_MS, REVEAL_TIER_LEGENDARY_MS, REVEAL_TIER_MYTHIC_MS },
+                earn_per_min = EarnPerMin,
+                rebirth_cost = RebirthCost,
+                rebirth_mult = RebirthMult,
+                gamepass_mult = GamePassMult,
+            },
         }
     end
     return { ok = false, reason = "unknown_action" }

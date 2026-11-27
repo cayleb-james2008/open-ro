@@ -117,6 +117,7 @@ import {
   type StudioPluginStatus,
   type StudioToolName,
   type StudioToolResult,
+  type TemplateProof,
   type WorkspaceMode,
 } from "./app/data";
 import { CopilotComposer } from "./app/CopilotComposer";
@@ -527,6 +528,8 @@ export function App() {
   }, []);
   const [projectAssets, setProjectAssets] = useState<ProjectAssetRecord[]>([]);
   const [lastTriedIdea, setLastTriedIdea] = useState<Idea | null>(null);
+  const [templateProofs, setTemplateProofs] = useState<Record<string, TemplateProof>>({});
+  const [guiSyncSeq, setGuiSyncSeq] = useState(0);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [buildPhase, setBuildPhase] = useState<BuildStreamPhase | null>(null);
   const [buildDiff, setBuildDiff] = useState<PlaceDiff | null>(null);
@@ -1348,9 +1351,24 @@ export function App() {
     const stopStream = subscribeBuildStream(setBuildPhase, v050Ready);
     let failure: string | null = null;
     try {
-      const data = await post<{ ok?: boolean; error?: string }>("/api/ideas/build", { id: idea.id });
-      if (!data.ok) failure = typeof data.error === "string" && data.error ? data.error : "The build did not finish.";
-      else toast.success(`Built ${idea.title} in Studio`);
+      const data = await post<{ ok?: boolean; error?: string; template_proof?: TemplateProof }>("/api/ideas/build", { id: idea.id });
+      if (!data.ok) {
+        failure = typeof data.error === "string" && data.error ? data.error : "The build did not finish.";
+      } else {
+        if (data.template_proof) {
+          const tp = data.template_proof;
+          setTemplateProofs((prev) => ({ ...prev, [idea.id]: tp }));
+          setGuiSyncSeq((s) => s + 1);
+          const sbOk = tp.sandbox?.passed === true && (tp.sandbox?.error_count ?? 0) === 0;
+          const econOk = tp.economy_sim?.balanced === true && (tp.economy_sim?.blocker_count ?? 0) === 0;
+          const guiOk = tp.gui_safe_area?.passed === true && (tp.gui_safe_area?.warning_count ?? 0) === 0;
+          addNotice(chatId, {
+            text: `Template proof: Sandbox ${sbOk ? "passed" : "needs check"}, Economy ${econOk ? "balanced" : "unbalanced"}, UI ${guiOk ? "0 safe-area warnings" : "warnings"}.`,
+            bad: !(sbOk && econOk && guiOk),
+          });
+        }
+        toast.success(`Built ${idea.title} in Studio`);
+      }
     } catch {
       failure = "Could not reach the OpenRO server.";
     }
@@ -1552,16 +1570,7 @@ export function App() {
     await submitPromptText(sys.prompt, false);
   };
 
-  const workbenchIdeas = useMemo(
-    () =>
-      ideas.filter(
-        (i) =>
-          i.id !== "untitled-anime-card-game" &&
-          i.id !== "anime-card-battles-apex" &&
-          !/untitled anime card game|anime card battles/i.test(i.title),
-      ),
-    [ideas],
-  );
+  const workbenchIdeas = ideas;
 
   const send = (e: FormEvent) => {
     e.preventDefault();
@@ -3330,6 +3339,7 @@ export function App() {
               place={safePlace}
               assets={projectAssets}
               products={ship.detail?.products}
+              guiSyncSeq={guiSyncSeq}
               onSavedScreenOrLuau={() => { void refreshPlace(); }}
             />
           ) : centerTab === "assets" || centerTab === "ship" ? (
@@ -4044,6 +4054,7 @@ export function App() {
                       cantBuildWhy={cantBuildWhy}
                       busy={busy}
                       buildingTitle={building?.build}
+                      templateProofs={templateProofs}
                       onBuild={(idea) => void buildIdea(idea)}
                     />
                     <SystemLibrary

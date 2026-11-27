@@ -17,6 +17,7 @@ export type MarketTasteGame = {
 
 export type MarketTasteNiche = {
   id: string;
+  template_id?: string | null;
   name: string;
   tagline: string;
   craft_bar: string;
@@ -146,6 +147,7 @@ export const BASELINE_MARKET_NICHES: MarketTasteNiche[] = [
   },
   {
     id: "anime-rng-cards",
+    template_id: "anime-card-battles-apex",
     name: "Anime RNG & Cards",
     tagline: "Weighted multi-tier gacha summons, foil variants, 4v4 synergy clash, weather storms & boss towers.",
     craft_bar:
@@ -211,6 +213,7 @@ export const BASELINE_MARKET_NICHES: MarketTasteNiche[] = [
   },
   {
     id: "viral-sim-tycoon",
+    template_id: "viral-sim-tycoon-template",
     name: "Viral Sim & Tycoon",
     tagline: "Ultra-tactile collect-steal-upgrade loops with instant first-10-second dopamine and rebirth scaling.",
     craft_bar:
@@ -531,6 +534,7 @@ export const BASELINE_MARKET_NICHES: MarketTasteNiche[] = [
   },
   {
     id: "anime-action-rpg-td",
+    template_id: "anime-action-rpg-td-template",
     name: "Anime Action RPG & TD",
     tagline: "Progression islands, elemental fruit/ability mastery, wave defense & mythic boss raids.",
     craft_bar:
