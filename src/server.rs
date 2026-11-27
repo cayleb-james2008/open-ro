@@ -984,6 +984,9 @@ fn requires_loopback_host(method: &str, clean_path: &str) -> bool {
         || clean_path.starts_with("/api/projects/")
         || clean_path == "/api/art"
         || clean_path.starts_with("/api/art/")
+        || clean_path == "/api/library/sfx-packs"
+        || clean_path.starts_with("/api/library/sfx-packs/")
+        || clean_path == "/api/library/audio-runner/install"
         || clean_path == "/api/tools/image/process"
         || clean_path == "/api/monetization/pack"
         || clean_path == "/api/studio/monetization-audit"
@@ -1534,28 +1537,58 @@ pub fn ensure_agent_hooks(shared: &Arc<Shared>, agent: &mut Agent) {
     if agent.hooks.audio_generate.is_none() {
         let srv = Arc::clone(shared);
         agent.hooks.audio_generate = Some(Arc::new(move |args| {
+            run_audio_generate(&srv, args)
+        }));
+    }
+    if agent.hooks.sfx_pack_list.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.sfx_pack_list = Some(Arc::new(move |_args| {
+            let data_dir = srv.data_dir.as_deref().unwrap_or(&srv.assets_root);
+            Ok(crate::audio_library::list_sfx_packs(data_dir))
+        }));
+    }
+    if agent.hooks.sfx_pack_install.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.sfx_pack_install = Some(Arc::new(move |args| {
+            let data_dir = srv.data_dir.as_deref().unwrap_or(&srv.assets_root);
+            let pack_id = args
+                .get("pack_id")
+                .or_else(|| args.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let url = args.get("url").and_then(|v| v.as_str());
+            let res = crate::audio_library::install_sfx_pack(data_dir, pack_id, url)?;
+            invalidate_library_cache(&srv);
+            Ok(res)
+        }));
+    }
+    if agent.hooks.sfx_pack_search.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.sfx_pack_search = Some(Arc::new(move |args| {
+            let data_dir = srv.data_dir.as_deref().unwrap_or(&srv.assets_root);
+            let q = args
+                .get("query")
+                .or_else(|| args.get("q"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let pack_id = args.get("pack_id").and_then(|v| v.as_str());
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(40) as usize;
+            Ok(crate::audio_library::search_sfx_packs(
+                data_dir, q, pack_id, limit,
+            ))
+        }));
+    }
+    if agent.hooks.sfx_pack_use.is_none() {
+        let srv = Arc::clone(shared);
+        agent.hooks.sfx_pack_use = Some(Arc::new(move |args| {
+            let data_dir = srv.data_dir.as_deref().unwrap_or(&srv.assets_root);
             let proj = args
                 .get("project")
+                .or_else(|| args.get("project_id"))
                 .and_then(|v| v.as_str())
                 .and_then(|id| resolve_project_dir(&srv, id))
                 .or_else(|| srv.active_project_dir());
-            let data_dir = srv.data_dir.as_deref().unwrap_or(&srv.assets_root);
-            let store = crate::secrets::SecretStore::for_data_dir(data_dir);
-            let actx = crate::tool_adapters::InvokeCtx {
-                data_dir,
-                assets_root: &srv.assets_root,
-                store: &store,
-                project_dir: proj.as_deref(),
-            };
-            let explicit = args.get("adapter_id").and_then(|v| v.as_str());
-            if let Some(res) = crate::tool_adapters::maybe_invoke_override(&actx, "audio_gen", explicit, args) {
-                return res;
-            }
-            crate::audio_synth::generate_audio_asset_for_project(
-                &srv.assets_root,
-                proj.as_deref(),
-                args,
-            )
+            crate::audio_library::use_sfx_clip(data_dir, proj.as_deref(), args)
         }));
     }
     if agent.hooks.adapter_list.is_none() {
@@ -1993,6 +2026,11 @@ fn handle(
 
     // Studio Computer Use (CUA) routes (Gap #81, strictly loopback-guarded).
     if try_route_studio_cua(&mut stream, shared, &req, path, query) {
+        break 'req_done;
+    }
+
+    // Free CC0-1.0 SFX Pack Library & Local Neural Audio Runner routes (v1.33.0, Gap #88).
+    if try_route_audio_library(&mut stream, shared, &req, path, query) {
         break 'req_done;
     }
 
@@ -3047,6 +3085,42 @@ fn handle(
             });
             respond_bytes(&mut stream, "200 OK", "application/json", "no-store", bytes);
         }
+        ("GET", "/api/health") => {
+            static HEALTH_BYTES: OnceLock<Vec<u8>> = OnceLock::new();
+            let bytes = HEALTH_BYTES.get_or_init(|| {
+                json!({
+                    "ok": true,
+                    "status": "ok",
+                    "name": "openro-rs",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "cc0_sfx_library": true,
+                    "audio_presets_tiered": true,
+                })
+                .to_string()
+                .into_bytes()
+            });
+            respond_bytes(&mut stream, "200 OK", "application/json", "no-store", bytes);
+        }
+        ("GET", "/api/capabilities") => {
+            static CAPS_BYTES: OnceLock<Vec<u8>> = OnceLock::new();
+            let bytes = CAPS_BYTES.get_or_init(|| {
+                json!({
+                    "ok": true,
+                    "name": "openro-rs",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "library_api": true,
+                    "adapters_api": true,
+                    "audio_synth": true,
+                    "cc0_sfx_library": true,
+                    "audio_presets_tiered": true,
+                    "studio_embed": true,
+                    "market_taste_api": true,
+                })
+                .to_string()
+                .into_bytes()
+            });
+            respond_bytes(&mut stream, "200 OK", "application/json", "no-store", bytes);
+        }
         ("GET", "/api/export/rbxlx") => {
             let stored = all_stored_assets(shared);
             let mut guard = shared.agent.lock().unwrap();
@@ -3274,6 +3348,8 @@ fn handle(
                     "studio_embed": true,
                     "studio_mjpeg": true,
                     "library_api": true,
+                    "cc0_sfx_library": true,
+                    "audio_presets_tiered": true,
                     "market_taste_api": true,
                     "active_niche": active_niche,
                     "embedded_running": embed_running,
@@ -8749,6 +8825,167 @@ fn handle_tools_blender_generate(stream: &mut TcpStream, shared: &Shared, req: &
     }
 }
 
+fn audio_generate_slug_filename(body: &Value) -> String {
+    let raw = body
+        .get("name")
+        .and_then(Value::as_str)
+        .or_else(|| body.get("preset").and_then(Value::as_str))
+        .or_else(|| body.get("prompt").and_then(Value::as_str))
+        .unwrap_or("sfx");
+    let stripped = raw
+        .trim()
+        .strip_suffix(".wav")
+        .or_else(|| raw.trim().strip_suffix(".WAV"))
+        .unwrap_or(raw.trim());
+    let mut slug = String::new();
+    let mut prev_sep = false;
+    for ch in stripped.chars().take(64) {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            prev_sep = false;
+        } else if (ch == '-' || ch == '_' || ch.is_whitespace()) && !prev_sep && !slug.is_empty() {
+            slug.push('-');
+            prev_sep = true;
+        }
+    }
+    let clean = slug.trim_matches('-');
+    let candidate = if clean.is_empty() {
+        "sfx.wav".to_string()
+    } else {
+        format!("{clean}.wav")
+    };
+    crate::audio_synth::sanitize_audio_filename(&candidate).unwrap_or_else(|_| "sfx.wav".to_string())
+}
+
+fn run_audio_generate(shared: &Shared, body: &Value) -> Result<Value, String> {
+    let project_root = body
+        .get("project")
+        .or_else(|| body.get("project_id"))
+        .and_then(|v| v.as_str())
+        .and_then(|id| resolve_project_dir(shared, id))
+        .or_else(|| shared.active_project_dir());
+    let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+    let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+    let actx = crate::tool_adapters::InvokeCtx {
+        data_dir,
+        assets_root: &shared.assets_root,
+        store: &store,
+        project_dir: project_root.as_deref(),
+    };
+    let explicit = body.get("adapter_id").and_then(|v| v.as_str());
+
+    let default_filename = audio_generate_slug_filename(body);
+    let mut enriched_body = body.clone();
+    if let Some(obj) = enriched_body.as_object_mut() {
+        let has_out = obj
+            .get("out_path")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty());
+        if !has_out {
+            let default_out = if project_root.is_some() {
+                format!("assets/audio/{default_filename}")
+            } else {
+                format!("game-assets/audio/{default_filename}")
+            };
+            obj.insert("out_path".into(), json!(default_out));
+        }
+        let has_prompt = obj
+            .get("prompt")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty());
+        if !has_prompt {
+            let fallback_prompt = obj
+                .get("preset")
+                .and_then(Value::as_str)
+                .or_else(|| obj.get("name").and_then(Value::as_str))
+                .unwrap_or("game sound effect")
+                .to_string();
+            obj.insert("prompt".into(), json!(fallback_prompt));
+        }
+    }
+
+    if let Some(res) =
+        crate::tool_adapters::maybe_invoke_override(&actx, "audio_gen", explicit, &enriched_body)
+    {
+        let mut v = res?;
+        let rel_path = v
+            .get("path")
+            .and_then(Value::as_str)
+            .or_else(|| enriched_body.get("out_path").and_then(Value::as_str))
+            .unwrap_or("assets/audio/sfx.wav")
+            .to_string();
+        let fname = std::path::Path::new(&rel_path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .and_then(|s| crate::audio_synth::sanitize_audio_filename(s).ok())
+            .unwrap_or_else(|| default_filename.clone());
+
+        // Mirror project audio output into `<assets_root>/game-assets/audio/<fname>` so browser preview `url` always works.
+        if let Some(ref root) = project_root {
+            if let Ok(abs_src) = crate::projects::safe_join(root, &rel_path) {
+                if let Ok(raw) = std::fs::read(&abs_src) {
+                    let preview_dir = crate::audio_synth::audio_assets_dir(&shared.assets_root);
+                    let _ = std::fs::create_dir_all(&preview_dir);
+                    let dst = preview_dir.join(&fname);
+                    let tmp = preview_dir.join(format!(".{fname}.{}.tmp", std::process::id()));
+                    if std::fs::write(&tmp, &raw).is_ok() {
+                        let _ = std::fs::rename(&tmp, &dst);
+                    }
+                }
+            }
+        }
+
+        let url = format!("/api/assets/audio/{fname}");
+        let adapter_id = v
+            .get("adapter_id")
+            .and_then(Value::as_str)
+            .unwrap_or("custom-audio")
+            .to_string();
+        if let Some(map) = v.as_object_mut() {
+            map.insert("ok".into(), json!(true));
+            map.entry("path").or_insert_with(|| json!(rel_path));
+            if project_root.is_some() {
+                map.entry("project_path")
+                    .or_insert_with(|| json!(rel_path));
+            }
+            map.insert("filename".into(), json!(fname));
+            map.insert("url".into(), json!(url));
+            map.insert("wav_url".into(), json!(url));
+            map.insert("adapter_id".into(), json!(adapter_id));
+            map.insert("source".into(), json!("adapter"));
+        }
+        return Ok(v);
+    }
+
+    let mut v = crate::audio_synth::generate_audio_asset_for_project(
+        &shared.assets_root,
+        project_root.as_deref(),
+        body,
+    )?;
+    let fname = v
+        .get("filename")
+        .and_then(Value::as_str)
+        .unwrap_or(&default_filename)
+        .to_string();
+    let wav_url = v
+        .get("wav_url")
+        .and_then(Value::as_str)
+        .map(String::from)
+        .unwrap_or_else(|| format!("/api/assets/audio/{fname}"));
+    let path_str = v
+        .get("project_path")
+        .and_then(Value::as_str)
+        .map(String::from)
+        .unwrap_or_else(|| format!("game-assets/audio/{fname}"));
+    if let Some(map) = v.as_object_mut() {
+        map.insert("path".into(), json!(path_str));
+        map.insert("url".into(), json!(wav_url));
+        map.insert("adapter_id".into(), json!("rust-synth-builtin"));
+        map.insert("source".into(), json!("builtin"));
+    }
+    Ok(v)
+}
+
 fn handle_tools_audio_generate(stream: &mut TcpStream, shared: &Shared, req: &Request) {
     if !host_allowed(&req.host, &[]) {
         respond_err(stream, "403 Forbidden", "generating audio assets is only allowed from this machine (loopback)");
@@ -8765,33 +9002,219 @@ fn handle_tools_audio_generate(stream: &mut TcpStream, shared: &Shared, req: &Re
             }
         }
     };
-    let project_root = body
-        .get("project")
-        .and_then(|v| v.as_str())
-        .and_then(|id| resolve_project_dir(shared, id))
-        .or_else(|| shared.active_project_dir());
-    let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
-    let store = crate::secrets::SecretStore::for_data_dir(data_dir);
-    let actx = crate::tool_adapters::InvokeCtx {
-        data_dir,
-        assets_root: &shared.assets_root,
-        store: &store,
-        project_dir: project_root.as_deref(),
-    };
-    let explicit = body.get("adapter_id").and_then(|v| v.as_str());
-    let result = if let Some(res) = crate::tool_adapters::maybe_invoke_override(&actx, "audio_gen", explicit, &body) {
-        res
-    } else {
-        crate::audio_synth::generate_audio_asset_for_project(
-            &shared.assets_root,
-            project_root.as_deref(),
-            &body,
-        )
-    };
-    match result {
+    match run_audio_generate(shared, &body) {
         Ok(v) => respond_json(stream, "200 OK", &v),
         Err(e) => respond_err(stream, "400 Bad Request", &e),
     }
+}
+
+fn try_route_audio_library(
+    stream: &mut TcpStream,
+    shared: &Shared,
+    req: &Request,
+    path: &str,
+    query: &str,
+) -> bool {
+    let is_sfx = path == "/api/library/sfx-packs"
+        || path.starts_with("/api/library/sfx-packs/")
+        || path == "/api/library/audio-runner/install";
+    if !is_sfx {
+        return false;
+    }
+    if !host_allowed(&req.host, &[]) {
+        respond_err(
+            stream,
+            "403 Forbidden",
+            "CC0 SFX library and audio runner routes are only allowed from this machine (loopback)",
+        );
+        return true;
+    }
+
+    let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
+
+    if req.method == "GET" && path == "/api/library/sfx-packs" {
+        let body = crate::audio_library::list_sfx_packs(data_dir);
+        respond_json(stream, "200 OK", &body);
+        return true;
+    }
+
+    if req.method == "POST" && path == "/api/library/sfx-packs/install" {
+        let body: Value = match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
+                return true;
+            }
+        };
+        let pack_id = body
+            .get("pack_id")
+            .or_else(|| body.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let custom_url = body.get("url").and_then(Value::as_str);
+        match crate::audio_library::install_sfx_pack(data_dir, pack_id, custom_url) {
+            Ok(v) => {
+                invalidate_library_cache(shared);
+                respond_json(stream, "200 OK", &v);
+            }
+            Err(e) => {
+                let status = if e.contains("unknown CC0 SFX pack") {
+                    "404 Not Found"
+                } else if e.contains("download failed") || e.contains("download returned HTTP") {
+                    "502 Bad Gateway"
+                } else {
+                    "400 Bad Request"
+                };
+                respond_err(stream, status, &e);
+            }
+        }
+        return true;
+    }
+
+    if req.method == "GET" && path == "/api/library/sfx-packs/search" {
+        let q = crate::project_api::query_param(query, "q")
+            .or_else(|| crate::project_api::query_param(query, "query"))
+            .unwrap_or_default();
+        let pack_id = crate::project_api::query_param(query, "pack_id");
+        let limit = crate::project_api::query_param(query, "limit")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(50);
+        let res = crate::audio_library::search_sfx_packs(data_dir, &q, pack_id.as_deref(), limit);
+        respond_json(stream, "200 OK", &res);
+        return true;
+    }
+
+    if req.method == "GET" {
+        if let Some(rest) = path.strip_prefix("/api/library/sfx-packs/preview/") {
+            let Some((pack_id, rel_path)) = rest.split_once('/') else {
+                respond_err(stream, "400 Bad Request", "expected /api/library/sfx-packs/preview/:pack_id/:rel_path");
+                return true;
+            };
+            match crate::audio_library::resolve_preview_clip_path(data_dir, pack_id, rel_path) {
+                Ok((abs_path, mime)) => match std::fs::read(&abs_path) {
+                    Ok(bytes) => {
+                        respond_bytes(stream, "200 OK", mime, "no-store", &bytes);
+                    }
+                    Err(e) => respond_err(stream, "404 Not Found", &format!("read preview clip: {e}")),
+                },
+                Err(e) => {
+                    let status = if e.contains("not found") || e.contains("not installed") {
+                        "404 Not Found"
+                    } else {
+                        "400 Bad Request"
+                    };
+                    respond_err(stream, status, &e);
+                }
+            }
+            return true;
+        }
+    }
+
+    if req.method == "POST" && path == "/api/library/sfx-packs/use" {
+        let body: Value = match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
+                return true;
+            }
+        };
+        let project_root = body
+            .get("project")
+            .or_else(|| body.get("project_id"))
+            .and_then(Value::as_str)
+            .and_then(|id| resolve_project_dir(shared, id))
+            .or_else(|| shared.active_project_dir());
+        match crate::audio_library::use_sfx_clip(data_dir, project_root.as_deref(), &body) {
+            Ok(v) => respond_json(stream, "200 OK", &v),
+            Err(e) => {
+                let status = if e.contains("not found") || e.contains("not installed") {
+                    "404 Not Found"
+                } else {
+                    "400 Bad Request"
+                };
+                respond_err(stream, status, &e);
+            }
+        }
+        return true;
+    }
+
+    if req.method == "POST" && path == "/api/library/sfx-packs/import-local" {
+        let body: Value = match serde_json::from_slice::<Value>(&req.body) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
+                return true;
+            }
+        };
+        let pack_id = body
+            .get("pack_id")
+            .or_else(|| body.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let name = body.get("name").and_then(Value::as_str).unwrap_or("");
+        let license = body
+            .get("license")
+            .and_then(Value::as_str)
+            .unwrap_or("CC0-1.0");
+        let source_dir = body
+            .get("source_dir")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if source_dir.is_empty() {
+            respond_err(stream, "400 Bad Request", "source_dir is required");
+            return true;
+        }
+        match crate::audio_library::import_local_sfx_pack(
+            data_dir,
+            pack_id,
+            name,
+            license,
+            std::path::Path::new(source_dir),
+        ) {
+            Ok(v) => {
+                invalidate_library_cache(shared);
+                respond_json(stream, "200 OK", &v);
+            }
+            Err(e) => respond_err(stream, "400 Bad Request", &e),
+        }
+        return true;
+    }
+
+    if req.method == "DELETE" {
+        if let Some(pack_id) = path.strip_prefix("/api/library/sfx-packs/") {
+            if !pack_id.is_empty() && !pack_id.contains('/') {
+                match crate::audio_library::remove_sfx_pack(data_dir, pack_id) {
+                    Ok(v) => {
+                        invalidate_library_cache(shared);
+                        respond_json(stream, "200 OK", &v);
+                    }
+                    Err(e) => {
+                        let status = if e.contains("not installed") {
+                            "404 Not Found"
+                        } else {
+                            "400 Bad Request"
+                        };
+                        respond_err(stream, status, &e);
+                    }
+                }
+                return true;
+            }
+        }
+    }
+
+    if req.method == "POST" && path == "/api/library/audio-runner/install" {
+        match crate::audio_library::install_local_audio_runner(data_dir) {
+            Ok(v) => {
+                invalidate_library_cache(shared);
+                respond_json(stream, "200 OK", &v);
+            }
+            Err(e) => respond_err(stream, "500 Internal Server Error", &e),
+        }
+        return true;
+    }
+
+    false
 }
 
 fn handle_monetization_pack(stream: &mut TcpStream, shared: &Shared, raw_body: &[u8]) {

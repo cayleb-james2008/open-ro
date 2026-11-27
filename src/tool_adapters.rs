@@ -231,15 +231,59 @@ pub fn resolve_rea_bin() -> Option<PathBuf> {
         .or_else(|| resolve_mise_shim("rea-agents"))
 }
 
-/// Resolve the executable path for a CLI adapter, checking dynamic preset resolvers
-/// first when `command` is the preset's canonical command name.
-pub fn resolve_adapter_cli_binary(adapter_id: &str, command: &str) -> Option<PathBuf> {
-    match (adapter_id, command.trim()) {
+/// Resolve a CLI executable path inside an optional `<data_dir>/bin/<command>`
+/// (or `$OPENRO_DATA_DIR/bin/<command>`) before checking dynamic preset resolvers and `PATH`.
+pub fn resolve_adapter_cli_binary_in(
+    data_dir_opt: Option<&Path>,
+    adapter_id: &str,
+    command: &str,
+) -> Option<PathBuf> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Check `<data_dir>/bin/<command>` and `$OPENRO_DATA_DIR/bin/<command>` for bare command names.
+    if Path::new(trimmed).components().count() == 1 {
+        let names: Vec<String> = if cfg!(windows) {
+            vec![
+                format!("{trimmed}.exe"),
+                format!("{trimmed}.cmd"),
+                trimmed.to_string(),
+            ]
+        } else {
+            vec![trimmed.to_string()]
+        };
+        let mut bin_dirs: Vec<PathBuf> = Vec::new();
+        if let Some(dd) = data_dir_opt {
+            bin_dirs.push(dd.join("bin"));
+        }
+        if let Ok(env_dd) = std::env::var("OPENRO_DATA_DIR") {
+            let t = env_dd.trim();
+            if !t.is_empty() {
+                bin_dirs.push(PathBuf::from(t).join("bin"));
+            }
+        }
+        for dir in bin_dirs {
+            for name in &names {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    match (adapter_id, trimmed) {
         ("playwright-cdp-cli", "playwright" | "playwright-cdp") => resolve_playwright_cdp_bin(),
         ("craft-anything-cli", "craft-anything" | "craft_ledger.py") => resolve_craft_anything_bin(),
         ("rea-cli", "rea" | "rea-agents") => resolve_rea_bin(),
-        _ => resolve_cli_binary(command),
+        _ => resolve_cli_binary(trimmed),
     }
+}
+
+/// Resolve the executable path for a CLI adapter, checking `$OPENRO_DATA_DIR/bin`,
+/// dynamic preset resolvers, and `PATH`.
+pub fn resolve_adapter_cli_binary(adapter_id: &str, command: &str) -> Option<PathBuf> {
+    resolve_adapter_cli_binary_in(None, adapter_id, command)
 }
 
 #[derive(Clone, Debug)]
@@ -510,10 +554,15 @@ impl ResponseExtract {
         };
         if !matches!(
             mode.as_str(),
-            "json" | "image_b64_path" | "image_url_path" | "file_bytes" | "items_path"
+            "json"
+                | "image_b64_path"
+                | "image_url_path"
+                | "audio_b64_path"
+                | "file_bytes"
+                | "items_path"
         ) {
             return Err(
-                "http.response_extract.mode must be json, image_b64_path, image_url_path, file_bytes, or items_path"
+                "http.response_extract.mode must be json, image_b64_path, image_url_path, audio_b64_path, file_bytes, or items_path"
                     .to_string(),
             );
         }
@@ -638,6 +687,9 @@ pub struct ToolAdapter {
     pub required_secrets: Vec<String>,
     pub cli: Option<CliConfig>,
     pub http: Option<HttpConfig>,
+    pub hardware_tier: Option<String>,
+    pub model_size: Option<String>,
+    pub install_hint: Option<String>,
 }
 
 impl ToolAdapter {
@@ -654,6 +706,9 @@ impl ToolAdapter {
             "required_secrets": self.required_secrets,
             "cli": self.cli.as_ref().map(CliConfig::to_json),
             "http": self.http.as_ref().map(HttpConfig::to_json),
+            "hardware_tier": self.hardware_tier,
+            "model_size": self.model_size,
+            "install_hint": self.install_hint,
         })
     }
 
@@ -751,6 +806,17 @@ impl ToolAdapter {
             None
         };
 
+        let opt_meta = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+        };
+        let hardware_tier = opt_meta("hardware_tier");
+        let model_size = opt_meta("model_size");
+        let install_hint = opt_meta("install_hint");
+
         let adapter = ToolAdapter {
             id,
             name,
@@ -763,12 +829,19 @@ impl ToolAdapter {
             required_secrets,
             cli,
             http,
+            hardware_tier,
+            model_size,
+            install_hint,
         };
         check_prohibited_provider(&adapter)?;
         Ok(adapter)
     }
 
     pub fn view_json(&self, store: &SecretStore) -> Value {
+        self.view_json_in(None, store)
+    }
+
+    pub fn view_json_in(&self, data_dir_opt: Option<&Path>, store: &SecretStore) -> Value {
         let mut missing = Vec::new();
         let mut secrets_status = serde_json::Map::new();
         for name in &self.required_secrets {
@@ -784,7 +857,7 @@ impl ToolAdapter {
                 }),
             );
         }
-        let binary_ok = adapter_endpoint_available(self);
+        let binary_ok = adapter_endpoint_available_in(data_dir_opt, self);
         let available = binary_ok && missing.is_empty();
         let mut base = self.to_json();
         if let Some(o) = base.as_object_mut() {
@@ -901,6 +974,9 @@ pub fn default_installed_adapters() -> Vec<ToolAdapter> {
             required_secrets: vec![],
             cli: None,
             http: None,
+            hardware_tier: None,
+            model_size: None,
+            install_hint: None,
         },
         ToolAdapter {
             id: "gemini-nano-banana-http".into(),
@@ -914,6 +990,9 @@ pub fn default_installed_adapters() -> Vec<ToolAdapter> {
             required_secrets: vec![secrets::GEMINI_KEY.into()],
             cli: None,
             http: None,
+            hardware_tier: None,
+            model_size: None,
+            install_hint: None,
         },
         ToolAdapter {
             id: "openai-images-http".into(),
@@ -927,6 +1006,9 @@ pub fn default_installed_adapters() -> Vec<ToolAdapter> {
             required_secrets: vec![secrets::OPENAI_IMAGE_KEY.into()],
             cli: None,
             http: None,
+            hardware_tier: None,
+            model_size: None,
+            install_hint: None,
         },
         ToolAdapter {
             id: "camoufox-browser-cli".into(),
@@ -940,6 +1022,9 @@ pub fn default_installed_adapters() -> Vec<ToolAdapter> {
             required_secrets: vec![],
             cli: None,
             http: None,
+            hardware_tier: None,
+            model_size: None,
+            install_hint: None,
         },
         ToolAdapter {
             id: "builtin-http-search".into(),
@@ -953,6 +1038,9 @@ pub fn default_installed_adapters() -> Vec<ToolAdapter> {
             required_secrets: vec![],
             cli: None,
             http: None,
+            hardware_tier: None,
+            model_size: None,
+            install_hint: None,
         },
         ToolAdapter {
             id: "blender-cycles-cli".into(),
@@ -966,6 +1054,9 @@ pub fn default_installed_adapters() -> Vec<ToolAdapter> {
             required_secrets: vec![],
             cli: None,
             http: None,
+            hardware_tier: None,
+            model_size: None,
+            install_hint: None,
         },
         ToolAdapter {
             id: "rust-synth-builtin".into(),
@@ -979,11 +1070,14 @@ pub fn default_installed_adapters() -> Vec<ToolAdapter> {
             required_secrets: vec![],
             cli: None,
             http: None,
+            hardware_tier: Some("builtin-cpu".into()),
+            model_size: Some("Built-in Pure Rust DSP".into()),
+            install_hint: None,
         },
     ]
 }
 
-/// Optional 1-click installable adapter presets (ComfyUI, fal.ai Flux, Meshy, ElevenLabs).
+/// Optional 1-click installable adapter presets (ComfyUI, fal.ai Flux, Meshy, Hardware-Tiered Audio & ElevenLabs/Lyria).
 pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
     vec![
         ToolAdapter {
@@ -1022,6 +1116,9 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
                 },
                 health_url: Some("http://127.0.0.1:8188/system_stats".into()),
             }),
+            hardware_tier: Some("local-http".into()),
+            model_size: None,
+            install_hint: None,
         },
         ToolAdapter {
             id: "fal-flux-http".into(),
@@ -1065,6 +1162,9 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
                 },
                 health_url: None,
             }),
+            hardware_tier: Some("cloud-api".into()),
+            model_size: None,
+            install_hint: None,
         },
         ToolAdapter {
             id: "recraft-v3-ui".into(),
@@ -1100,6 +1200,9 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
                 },
                 health_url: None,
             }),
+            hardware_tier: Some("cloud-api".into()),
+            model_size: None,
+            install_hint: None,
         },
         ToolAdapter {
             id: "layer-ai-ui".into(),
@@ -1134,6 +1237,9 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
                 },
                 health_url: None,
             }),
+            hardware_tier: Some("cloud-api".into()),
+            model_size: None,
+            install_hint: None,
         },
         ToolAdapter {
             id: "scenario-game-ui".into(),
@@ -1168,6 +1274,9 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
                 },
                 health_url: None,
             }),
+            hardware_tier: Some("cloud-api".into()),
+            model_size: None,
+            install_hint: None,
         },
         ToolAdapter {
             id: "meshy-http".into(),
@@ -1212,6 +1321,9 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
                 },
                 health_url: None,
             }),
+            hardware_tier: Some("cloud-api".into()),
+            model_size: None,
+            install_hint: None,
         },
         ToolAdapter {
             id: "elevenlabs-sfx-http".into(),
@@ -1242,6 +1354,275 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
                 },
                 health_url: None,
             }),
+            hardware_tier: Some("cloud-api".into()),
+            model_size: Some("ElevenLabs Cloud API".into()),
+            install_hint: Some("Add ELEVENLABS_API_KEY in Settings -> Secrets".into()),
+        },
+        ToolAdapter {
+            id: "audioldm-s-local-cli".into(),
+            name: "AudioLDM-S Local (Tiny CPU)".into(),
+            capability: "audio_gen".into(),
+            description: "Lightweight local text-to-SFX model (~185M) via openro-audio-gen, runs on CPU with 4 GB RAM.".into(),
+            transport: "cli".into(),
+            enabled: true,
+            priority: 21,
+            preset: true,
+            required_secrets: vec![],
+            cli: Some(CliConfig {
+                command: "openro-audio-gen".into(),
+                argv: vec![
+                    "--backend".into(),
+                    "audioldm_s".into(),
+                    "--prompt".into(),
+                    "{{prompt}}".into(),
+                    "--duration".into(),
+                    "{{?duration_s}}".into(),
+                    "--out".into(),
+                    "{{out_path}}".into(),
+                    "--seed".into(),
+                    "{{?seed}}".into(),
+                    "--steps".into(),
+                    "{{?steps}}".into(),
+                ],
+                env_secrets: BTreeMap::new(),
+                cwd: "project".into(),
+                timeout_secs: 240,
+                output_mode: "file".into(),
+                result_json_path: None,
+                exit_code_map: BTreeMap::new(),
+                health_argv: vec!["--check".into()],
+            }),
+            http: None,
+            hardware_tier: Some("tiny-cpu".into()),
+            model_size: Some("~185M · CPU / 4GB RAM".into()),
+            install_hint: Some("Install Local Audio Runner, then: pip install torch diffusers transformers scipy soundfile".into()),
+        },
+        ToolAdapter {
+            id: "stable-audio-small-cli".into(),
+            name: "Stable Audio Open Small (CPU)".into(),
+            capability: "audio_gen".into(),
+            description: "Fast local open-weights SFX & loop generator (~341M) via openro-audio-gen for CPU / 8 GB RAM machines.".into(),
+            transport: "cli".into(),
+            enabled: true,
+            priority: 22,
+            preset: true,
+            required_secrets: vec![],
+            cli: Some(CliConfig {
+                command: "openro-audio-gen".into(),
+                argv: vec![
+                    "--backend".into(),
+                    "stable_audio_small".into(),
+                    "--prompt".into(),
+                    "{{prompt}}".into(),
+                    "--duration".into(),
+                    "{{?duration_s}}".into(),
+                    "--out".into(),
+                    "{{out_path}}".into(),
+                    "--seed".into(),
+                    "{{?seed}}".into(),
+                    "--steps".into(),
+                    "{{?steps}}".into(),
+                ],
+                env_secrets: BTreeMap::new(),
+                cwd: "project".into(),
+                timeout_secs: 240,
+                output_mode: "file".into(),
+                result_json_path: None,
+                exit_code_map: BTreeMap::new(),
+                health_argv: vec!["--check".into()],
+            }),
+            http: None,
+            hardware_tier: Some("small-cpu".into()),
+            model_size: Some("~341M · CPU / 8GB RAM".into()),
+            install_hint: Some("Install Local Audio Runner, then: pip install torch diffusers transformers scipy soundfile".into()),
+        },
+        ToolAdapter {
+            id: "tangoflux-sfx-cli".into(),
+            name: "TangoFlux SFX (Medium GPU)".into(),
+            capability: "audio_gen".into(),
+            description: "High-fidelity 44.1 kHz text-to-SFX model (~515M) via openro-audio-gen for 8-12 GB GPUs.".into(),
+            transport: "cli".into(),
+            enabled: true,
+            priority: 23,
+            preset: true,
+            required_secrets: vec![],
+            cli: Some(CliConfig {
+                command: "openro-audio-gen".into(),
+                argv: vec![
+                    "--backend".into(),
+                    "tangoflux".into(),
+                    "--prompt".into(),
+                    "{{prompt}}".into(),
+                    "--duration".into(),
+                    "{{?duration_s}}".into(),
+                    "--out".into(),
+                    "{{out_path}}".into(),
+                    "--seed".into(),
+                    "{{?seed}}".into(),
+                    "--steps".into(),
+                    "{{?steps}}".into(),
+                ],
+                env_secrets: BTreeMap::new(),
+                cwd: "project".into(),
+                timeout_secs: 240,
+                output_mode: "file".into(),
+                result_json_path: None,
+                exit_code_map: BTreeMap::new(),
+                health_argv: vec!["--check".into()],
+            }),
+            http: None,
+            hardware_tier: Some("medium-gpu".into()),
+            model_size: Some("~515M · 8-12GB GPU".into()),
+            install_hint: Some("Install Local Audio Runner, then: pip install torch tangoflux scipy soundfile".into()),
+        },
+        ToolAdapter {
+            id: "audioldm2-sfx-cli".into(),
+            name: "AudioLDM 2 SFX (Large GPU)".into(),
+            capability: "audio_gen".into(),
+            description: "Rich general audio & SFX diffusion model (~1.1B) via openro-audio-gen for 12-16 GB GPUs.".into(),
+            transport: "cli".into(),
+            enabled: true,
+            priority: 24,
+            preset: true,
+            required_secrets: vec![],
+            cli: Some(CliConfig {
+                command: "openro-audio-gen".into(),
+                argv: vec![
+                    "--backend".into(),
+                    "audioldm2".into(),
+                    "--prompt".into(),
+                    "{{prompt}}".into(),
+                    "--duration".into(),
+                    "{{?duration_s}}".into(),
+                    "--out".into(),
+                    "{{out_path}}".into(),
+                    "--seed".into(),
+                    "{{?seed}}".into(),
+                    "--steps".into(),
+                    "{{?steps}}".into(),
+                ],
+                env_secrets: BTreeMap::new(),
+                cwd: "project".into(),
+                timeout_secs: 300,
+                output_mode: "file".into(),
+                result_json_path: None,
+                exit_code_map: BTreeMap::new(),
+                health_argv: vec!["--check".into()],
+            }),
+            http: None,
+            hardware_tier: Some("large-gpu".into()),
+            model_size: Some("~1.1B · 12-16GB GPU".into()),
+            install_hint: Some("Install Local Audio Runner, then: pip install torch diffusers transformers scipy soundfile".into()),
+        },
+        ToolAdapter {
+            id: "stable-audio-open-cli".into(),
+            name: "Stable Audio Open 1.0 (Large GPU)".into(),
+            capability: "audio_gen".into(),
+            description: "Studio-grade 44.1 kHz SFX & music cues (~1.05B) via openro-audio-gen for 16 GB+ GPUs.".into(),
+            transport: "cli".into(),
+            enabled: true,
+            priority: 25,
+            preset: true,
+            required_secrets: vec![],
+            cli: Some(CliConfig {
+                command: "openro-audio-gen".into(),
+                argv: vec![
+                    "--backend".into(),
+                    "stable_audio_open".into(),
+                    "--prompt".into(),
+                    "{{prompt}}".into(),
+                    "--duration".into(),
+                    "{{?duration_s}}".into(),
+                    "--out".into(),
+                    "{{out_path}}".into(),
+                    "--seed".into(),
+                    "{{?seed}}".into(),
+                    "--steps".into(),
+                    "{{?steps}}".into(),
+                ],
+                env_secrets: BTreeMap::new(),
+                cwd: "project".into(),
+                timeout_secs: 300,
+                output_mode: "file".into(),
+                result_json_path: None,
+                exit_code_map: BTreeMap::new(),
+                health_argv: vec!["--check".into()],
+            }),
+            http: None,
+            hardware_tier: Some("large-gpu".into()),
+            model_size: Some("~1.05B · 16GB+ GPU".into()),
+            install_hint: Some("Install Local Audio Runner, then: pip install torch diffusers transformers scipy soundfile".into()),
+        },
+        ToolAdapter {
+            id: "ace-step-local-http".into(),
+            name: "ACE-Step 1.5 (Local HTTP)".into(),
+            capability: "audio_gen".into(),
+            description: "Local ACE-Step 1.5 HTTP audio & soundtrack server on 127.0.0.1:8001.".into(),
+            transport: "http".into(),
+            enabled: true,
+            priority: 26,
+            preset: true,
+            required_secrets: vec![],
+            cli: None,
+            http: Some(HttpConfig {
+                method: "POST".into(),
+                url_template: "http://127.0.0.1:8001/release_task".into(),
+                allow_loopback: true,
+                headers_template: BTreeMap::new(),
+                body_mode: "json".into(),
+                body_template: Some(json!({
+                    "prompt": "{{prompt}}",
+                    "audio_duration": "{{?duration_s}}",
+                    "audio_format": "wav"
+                })),
+                timeout_secs: 180,
+                poll_spec: None,
+                response_extract: ResponseExtract {
+                    mode: "json".into(),
+                    path: None,
+                },
+                health_url: Some("http://127.0.0.1:8001/health".into()),
+            }),
+            hardware_tier: Some("local-http".into()),
+            model_size: Some("ACE-Step 1.5 · Local HTTP".into()),
+            install_hint: Some("Start local ACE-Step 1.5 HTTP server on http://127.0.0.1:8001".into()),
+        },
+        ToolAdapter {
+            id: "google-gemini-lyria-http".into(),
+            name: "Google Gemini Lyria Audio".into(),
+            capability: "audio_gen".into(),
+            description: "Google Gemini Lyria audio clip generation via Interactions API (decoded & normalized to 44.1 kHz WAV).".into(),
+            transport: "http".into(),
+            enabled: true,
+            priority: 27,
+            preset: true,
+            required_secrets: vec!["gemini_api_key".into()],
+            cli: None,
+            http: Some(HttpConfig {
+                method: "POST".into(),
+                url_template: "https://generativelanguage.googleapis.com/v1beta/interactions".into(),
+                allow_loopback: false,
+                headers_template: BTreeMap::from([(
+                    "x-goog-api-key".into(),
+                    "{{secret:gemini_api_key}}".into(),
+                )]),
+                body_mode: "json".into(),
+                body_template: Some(json!({
+                    "model": "lyria-3-clip-preview",
+                    "input": "{{prompt}}",
+                    "response_modalities": ["audio"]
+                })),
+                timeout_secs: 90,
+                poll_spec: None,
+                response_extract: ResponseExtract {
+                    mode: "audio_b64_path".into(),
+                    path: Some("outputs.0.data".into()),
+                },
+                health_url: None,
+            }),
+            hardware_tier: Some("cloud-api".into()),
+            model_size: Some("Google Gemini Lyria API".into()),
+            install_hint: Some("Add GEMINI_API_KEY in Settings -> Secrets".into()),
         },
         ToolAdapter {
             id: "playwright-cdp-cli".into(),
@@ -1280,6 +1661,9 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
                 health_argv: vec!["--version".into()],
             }),
             http: None,
+            hardware_tier: None,
+            model_size: None,
+            install_hint: None,
         },
         ToolAdapter {
             id: "craft-anything-cli".into(),
@@ -1308,6 +1692,9 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
                 health_argv: vec!["--help".into()],
             }),
             http: None,
+            hardware_tier: None,
+            model_size: None,
+            install_hint: None,
         },
         ToolAdapter {
             id: "rea-cli".into(),
@@ -1338,6 +1725,9 @@ pub fn optional_preset_adapters() -> Vec<ToolAdapter> {
                 health_argv: vec!["--version".into()],
             }),
             http: None,
+            hardware_tier: None,
+            model_size: None,
+            install_hint: None,
         },
     ]
 }
@@ -1390,7 +1780,7 @@ pub fn starter_templates() -> Vec<Value> {
     ]
 }
 
-fn adapter_endpoint_available(a: &ToolAdapter) -> bool {
+fn adapter_endpoint_available_in(data_dir_opt: Option<&Path>, a: &ToolAdapter) -> bool {
     match a.transport.as_str() {
         "builtin" => match a.id.as_str() {
             "chatgpt-browser-cli" => resolve_chatgpt_imagegen_bin().is_some_and(|p| p.is_file()),
@@ -1409,7 +1799,7 @@ fn adapter_endpoint_available(a: &ToolAdapter) -> bool {
         "cli" => a
             .cli
             .as_ref()
-            .and_then(|c| resolve_adapter_cli_binary(&a.id, &c.command))
+            .and_then(|c| resolve_adapter_cli_binary_in(data_dir_opt, &a.id, &c.command))
             .is_some(),
         "http" => true,
         _ => false,
@@ -1498,11 +1888,12 @@ impl AdapterRegistry {
     }
 
     pub fn list_json(&self, store: &SecretStore, capability: Option<&str>) -> Value {
+        let data_dir_opt = self.path.parent();
         let adapters: Vec<Value> = self
             .adapters
             .iter()
             .filter(|a| capability.is_none_or(|c| a.capability == c))
-            .map(|a| a.view_json(store))
+            .map(|a| a.view_json_in(data_dir_opt, store))
             .collect();
         let all_presets: Vec<ToolAdapter> = default_installed_adapters()
             .into_iter()
@@ -1516,7 +1907,7 @@ impl AdapterRegistry {
         let presets: Vec<Value> = all_presets
             .iter()
             .map(|p| {
-                let mut v = p.view_json(store);
+                let mut v = p.view_json_in(data_dir_opt, store);
                 let installed = self.adapters.iter().any(|x| x.id == p.id);
                 if let Some(o) = v.as_object_mut() {
                     o.insert("installed".into(), json!(installed));
@@ -1604,6 +1995,27 @@ impl AdapterRegistry {
                     }
                     if let Some(desc) = body.get("description").and_then(Value::as_str) {
                         cur.description = desc.trim().to_string();
+                    }
+                    if let Some(tier) = body.get("hardware_tier") {
+                        cur.hardware_tier = tier
+                            .as_str()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(String::from);
+                    }
+                    if let Some(ms) = body.get("model_size") {
+                        cur.model_size = ms
+                            .as_str()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(String::from);
+                    }
+                    if let Some(ih) = body.get("install_hint") {
+                        cur.install_hint = ih
+                            .as_str()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(String::from);
                     }
                     if let Some(arr) = body.get("required_secrets").and_then(Value::as_array) {
                         let mut reqs = Vec::new();
@@ -1760,7 +2172,7 @@ pub fn test_adapter(
 
     match adapter.transport.as_str() {
         "builtin" => {
-            let avail = adapter_endpoint_available(&adapter);
+            let avail = adapter_endpoint_available_in(Some(data_dir), &adapter);
             Ok(json!({
                 "ok": true,
                 "id": adapter.id,
@@ -1773,7 +2185,7 @@ pub fn test_adapter(
         }
         "cli" => {
             let cfg = adapter.cli.as_ref().unwrap();
-            let Some(bin) = resolve_adapter_cli_binary(&adapter.id, &cfg.command) else {
+            let Some(bin) = resolve_adapter_cli_binary_in(Some(data_dir), &adapter.id, &cfg.command) else {
                 return Ok(json!({
                     "ok": true,
                     "id": adapter.id,
@@ -2144,7 +2556,21 @@ fn build_vars(ctx: &InvokeCtx, params: &Value) -> Result<BuiltVars, InvokeErr> {
         vars.insert("ref_image".into(), safe.to_string_lossy().to_string());
     }
 
-    for key in ["prompt", "query", "width", "height", "name", "card_id", "character", "show"] {
+    for key in [
+        "prompt",
+        "query",
+        "width",
+        "height",
+        "name",
+        "card_id",
+        "character",
+        "show",
+        "duration",
+        "duration_s",
+        "seed",
+        "steps",
+        "preset",
+    ] {
         if let Some(v) = params.get(key) {
             let s = match v {
                 Value::String(s) => s.clone(),
@@ -2153,6 +2579,23 @@ fn build_vars(ctx: &InvokeCtx, params: &Value) -> Result<BuiltVars, InvokeErr> {
                 _ => continue,
             };
             vars.insert(key.to_string(), s);
+        }
+    }
+    // Derive `duration_s` / `duration` automatically from `duration_ms` if not explicitly passed.
+    if !vars.contains_key("duration_s") {
+        if let Some(d) = vars.get("duration").cloned() {
+            vars.insert("duration_s".into(), d);
+        } else if let Some(ms) = params.get("duration_ms").and_then(Value::as_f64) {
+            if ms.is_finite() && ms > 0.0 {
+                let secs = (ms / 1000.0).clamp(0.1, 60.0);
+                let formatted = format!("{secs:.2}");
+                vars.insert("duration_s".into(), formatted.clone());
+                vars.entry("duration".into()).or_insert(formatted);
+            }
+        }
+    } else if !vars.contains_key("duration") {
+        if let Some(ds) = vars.get("duration_s").cloned() {
+            vars.insert("duration".into(), ds);
         }
     }
     if let Some(obj) = params.as_object() {
@@ -2171,12 +2614,13 @@ fn build_vars(ctx: &InvokeCtx, params: &Value) -> Result<BuiltVars, InvokeErr> {
 
 fn invoke_cli(ctx: &InvokeCtx, adapter: &ToolAdapter, params: &Value) -> Result<Value, InvokeErr> {
     let cfg = adapter.cli.as_ref().unwrap();
-    let bin = resolve_adapter_cli_binary(&adapter.id, &cfg.command).ok_or_else(|| {
-        InvokeErr::Fallback(
-            "binary_not_found".into(),
-            format!("CLI binary '{}' not found", cfg.command),
-        )
-    })?;
+    let bin = resolve_adapter_cli_binary_in(Some(ctx.data_dir), &adapter.id, &cfg.command)
+        .ok_or_else(|| {
+            InvokeErr::Fallback(
+                "binary_not_found".into(),
+                format!("CLI binary '{}' not found", cfg.command),
+            )
+        })?;
     let BuiltVars { vars, out_target } = build_vars(ctx, params)?;
     let mut secrets_used = Vec::new();
 
@@ -2506,7 +2950,36 @@ fn invoke_http(ctx: &InvokeCtx, adapter: &ToolAdapter, params: &Value) -> Result
 
     // Extract response according to `response_extract`.
     match cfg.response_extract.mode.as_str() {
-        "file_bytes" => write_or_encode_bytes(resp_bytes, out_target, Some(&content_type)),
+        "file_bytes" => {
+            if adapter.capability == "audio_gen" {
+                let (norm, norm_ct) =
+                    maybe_normalize_audio_wav(resp_bytes, &out_target, Some(&content_type));
+                write_or_encode_bytes(norm, out_target, norm_ct.as_deref())
+            } else {
+                write_or_encode_bytes(resp_bytes, out_target, Some(&content_type))
+            }
+        }
+        "audio_b64_path" => {
+            let v = final_json.as_ref().ok_or_else(|| {
+                InvokeErr::Fallback("not_json".into(), "response was not JSON".into())
+            })?;
+            let p = cfg
+                .response_extract
+                .path
+                .as_deref()
+                .unwrap_or("outputs.0.data");
+            let b64 = extract_json_path(v, p).and_then(Value::as_str).ok_or_else(|| {
+                InvokeErr::Fallback(
+                    "extract_missing".into(),
+                    format!("path '{p}' missing in response"),
+                )
+            })?;
+            let clean_b64 = b64.split_once(',').map(|(_, r)| r).unwrap_or(b64);
+            let bytes = crate::assets::decode_base64(clean_b64)
+                .map_err(|e| InvokeErr::Fallback("base64_error".into(), e))?;
+            let (norm, norm_ct) = maybe_normalize_audio_wav(bytes, &out_target, Some("audio/wav"));
+            write_or_encode_bytes(norm, out_target, norm_ct.as_deref())
+        }
         "image_b64_path" => {
             let v = final_json.as_ref().ok_or_else(|| {
                 InvokeErr::Fallback("not_json".into(), "response was not JSON".into())
@@ -2569,6 +3042,37 @@ fn invoke_http(ctx: &InvokeCtx, adapter: &ToolAdapter, params: &Value) -> Result
             };
             Ok(json!({ "status": "ok", "data": data }))
         }
+    }
+}
+
+fn maybe_normalize_audio_wav(
+    bytes: Vec<u8>,
+    out_target: &Option<(String, PathBuf)>,
+    content_type: Option<&str>,
+) -> (Vec<u8>, Option<String>) {
+    let wants_wav = out_target
+        .as_ref()
+        .is_some_and(|(_, p)| p.to_string_lossy().to_ascii_lowercase().ends_with(".wav"));
+    if !wants_wav {
+        return (bytes, content_type.map(String::from));
+    }
+    let hint_ext = content_type.and_then(|ct| {
+        let low = ct.to_ascii_lowercase();
+        if low.contains("mpeg") || low.contains("mp3") {
+            Some("mp3")
+        } else if low.contains("ogg") {
+            Some("ogg")
+        } else if low.contains("flac") {
+            Some("flac")
+        } else if low.contains("wav") {
+            Some("wav")
+        } else {
+            None
+        }
+    });
+    match crate::audio_library::normalize_audio_bytes_to_wav(&bytes, hint_ext) {
+        Ok(wav) => (wav, Some("audio/wav".to_string())),
+        Err(_) => (bytes, content_type.map(String::from)),
     }
 }
 
@@ -2883,7 +3387,13 @@ fn url_origin(url: &str) -> String {
 fn is_auth_header(name: &str) -> bool {
     matches!(
         name.trim().to_ascii_lowercase().as_str(),
-        "authorization" | "proxy-authorization" | "x-api-key" | "xi-api-key" | "api-key" | "cookie"
+        "authorization"
+            | "proxy-authorization"
+            | "x-api-key"
+            | "xi-api-key"
+            | "x-goog-api-key"
+            | "api-key"
+            | "cookie"
     )
 }
 
@@ -2912,7 +3422,10 @@ pub fn route(
     if path == "/api/adapters" && method == "POST" {
         let mut reg = AdapterRegistry::load(ctx.data_dir);
         return Some(match reg.upsert(ctx.store, body) {
-            Ok(a) => (200, json!({ "ok": true, "adapter": a.view_json(ctx.store) })),
+            Ok(a) => (
+                200,
+                json!({ "ok": true, "adapter": a.view_json_in(Some(ctx.data_dir), ctx.store) }),
+            ),
             Err(e) => (400, json!({ "ok": false, "error": e })),
         });
     }

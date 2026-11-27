@@ -40,7 +40,7 @@ fn library_defaults_install_uninstall_configure_0600_and_test() {
     let initial = mgr.list_json();
     assert_eq!(initial["ok"], true);
     let packs = initial["packs"].as_array().expect("packs array");
-    assert_eq!(packs.len(), 8);
+    assert_eq!(packs.len(), 9);
     assert_eq!(initial["prompt_skills_count"], 3);
 
     let default_ids: Vec<&str> = packs
@@ -68,6 +68,7 @@ fn library_defaults_install_uninstall_configure_0600_and_test() {
             "model-3d-gen",
             "video-gen-studio",
             "audio-sfx-gen",
+            "cc0-sfx-packs",
             "rojo-open-cloud"
         ]
     );

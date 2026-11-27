@@ -1304,10 +1304,190 @@ try {
   await studioTab.click();
   await p.locator("[data-embedded-studio-panel]").waitFor({ state: "visible", timeout: 5000 });
 
+  // Wave 10: Tool Library -> Free CC0 SFX Packs + Local/Cloud Audio Models + Tiered Audio Adapters
+  const sfxProbeStatus = await fetch(`${BASE}api/library/sfx-packs`).then((r) => r.status).catch(() => 404);
+  const sfxLive = sfxProbeStatus === 200;
+  const sfxRoutePatterns = [/\/api\/library\/sfx-packs(\/|\?|$)/, "**/api/library/audio-runner/install"];
+  if (!sfxLive) {
+    const installedSet = new Set();
+    const mockCatalog = [
+      { id: "kenney-ui-sfx", name: "Kenney UI Sound Effects (51 clips)", author: "Kenney", license: "CC0-1.0", description: "51 UI clicks, switches, and rollovers.", clip_count: 51 },
+      { id: "kenney-casino-cards", name: "Kenney Card & Casino Audio (54 clips)", author: "Kenney", license: "CC0-1.0", description: "54 card deal, flip, and shuffle SFX.", clip_count: 54 },
+      { id: "kenney-digital-sfx", name: "Kenney Digital & Sci-Fi SFX (63 clips)", author: "Kenney", license: "CC0-1.0", description: "63 retro lasers, powerups, and chimes.", clip_count: 63 },
+      { id: "rpg-combat-pack", name: "RPG Combat & Foley Pack", author: "Artisticdude", license: "CC0-1.0", description: "Swords, impacts, spells, and foley.", clip_count: 42 },
+      { id: "rpg-fantasy-80", name: "80 CC0 RPG Fantasy SFX", author: "Rubberduck", license: "CC0-1.0", description: "80 fantasy UI, inventory, and spell SFX.", clip_count: 80 },
+      { id: "general-game-100", name: "100 CC0 Universal Game SFX", author: "Rubberduck", license: "CC0-1.0", description: "100 general arcade, menu, and hit SFX.", clip_count: 100 },
+      { id: "arcade-fanfare-pack", name: "Level Up, Power Up & Coin Fanfares (13 clips)", author: "Wobbleboxx", license: "CC0-1.0", description: "13 retro fanfares and coin stingers.", clip_count: 13 },
+    ];
+    let mockRunnerInstalled = false;
+    const buildSfxSnap = () => ({
+      ok: true,
+      packs: mockCatalog.map((pk) => ({
+        ...pk,
+        installed: installedSet.has(pk.id),
+        installed_clips: installedSet.has(pk.id) ? pk.clip_count : 0,
+      })),
+      installed_packs_count: installedSet.size,
+      installed_clips_total: mockCatalog.filter((pk) => installedSet.has(pk.id)).reduce((acc, pk) => acc + pk.clip_count, 0),
+      runner_installed: mockRunnerInstalled,
+      runner_path: mockRunnerInstalled ? "/tmp/openro-audio-gen" : null,
+    });
+    await p.route(sfxRoutePatterns[0], async (route) => {
+      const reqUrl = new URL(route.request().url());
+      const method = route.request().method();
+      if (reqUrl.pathname === "/api/library/sfx-packs" && method === "GET") {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(buildSfxSnap()) });
+        return;
+      }
+      if (reqUrl.pathname === "/api/library/sfx-packs/install" && method === "POST") {
+        const body = route.request().postDataJSON() || {};
+        const pid = String(body.pack_id || body.id || "kenney-ui-sfx");
+        installedSet.add(pid);
+        const snap = buildSfxSnap();
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true, pack_id: pid, installed_clips: 51, ...snap }),
+        });
+        return;
+      }
+      if (reqUrl.pathname.startsWith("/api/library/sfx-packs/") && method === "DELETE") {
+        const pid = decodeURIComponent(reqUrl.pathname.split("/").pop() || "");
+        installedSet.delete(pid);
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, pack_id: pid, removed: true, ...buildSfxSnap() }) });
+        return;
+      }
+      if (reqUrl.pathname === "/api/library/sfx-packs/search" && method === "GET") {
+        const q = (reqUrl.searchParams.get("q") || "").toLowerCase();
+        const clips = installedSet.has("kenney-ui-sfx")
+          ? [
+              {
+                pack_id: "kenney-ui-sfx",
+                pack_name: "Kenney UI Sound Effects (51 clips)",
+                license: "CC0-1.0",
+                rel_path: "click1.ogg",
+                filename: "click1.ogg",
+                bytes: 4096,
+                preview_url: "/api/library/sfx-packs/preview/kenney-ui-sfx/click1.ogg",
+              },
+            ].filter((c) => !q || c.filename.toLowerCase().includes(q))
+          : [];
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, query: q, total: clips.length, clips }) });
+        return;
+      }
+      if (reqUrl.pathname === "/api/library/sfx-packs/use" && method === "POST") {
+        const body = route.request().postDataJSON() || {};
+        const name = String(body.out_name || "click1.wav");
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            path: `assets/audio/${name}`,
+            project_path: `assets/audio/${name}`,
+            filename: name,
+            sample_rate: 44100,
+            bytes: 8192,
+            duration_ms: 180,
+            attribution: "None required (CC0 1.0 Public Domain)",
+          }),
+        });
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+    });
+    await p.route("**/api/library/audio-runner/install", async (route) => {
+      mockRunnerInstalled = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          path: "/tmp/openro-audio-gen",
+          command: "openro-audio-gen",
+          executable: true,
+          python_available: true,
+          install_hint: "Install torch and diffusers for neural audio generation.",
+        }),
+      });
+    });
+  }
+
+  await p.locator('button[aria-label="Open Tool Library"]').click();
+  const toolLibDlg = p.locator("[data-tool-library-dialog]");
+  await toolLibDlg.waitFor({ state: "visible", timeout: 8000 });
+  await toolLibDlg.getByRole("button", { name: "Free CC0 SFX", exact: true }).click();
+  await toolLibDlg.locator("[data-sfx-packs-panel]").waitFor({ state: "visible", timeout: 8000 });
+  await toolLibDlg.locator("[data-sfx-pack]").first().waitFor({ state: "visible", timeout: 8000 });
+  const sfxPackCount = await toolLibDlg.locator("[data-sfx-pack]").count();
+  const audioCardVisible = await toolLibDlg.locator("[data-audio-models-card]").isVisible();
+  check("Tool Library Free CC0 SFX tab lists all 7 CC0-1.0 packs & audio models card", sfxPackCount === 7 && audioCardVisible, `packs=${sfxPackCount}`);
+
+  if (!sfxLive) {
+    await toolLibDlg.locator('[data-sfx-install="kenney-ui-sfx"]').click();
+    await toolLibDlg.locator('[data-sfx-remove="kenney-ui-sfx"]').waitFor({ state: "visible", timeout: 5000 });
+    const searchInput = toolLibDlg.locator('input[aria-label="Search CC0 SFX clips"]');
+    await searchInput.fill("click1");
+    await toolLibDlg.locator('button[aria-label="Search CC0 clips"]').click();
+    await toolLibDlg.locator('[data-sfx-clip-row="click1.ogg"]').waitFor({ state: "visible", timeout: 5000 });
+    const audioPreviewSrc = await toolLibDlg.locator('[data-sfx-clip-row="click1.ogg"] audio').getAttribute("src");
+    await toolLibDlg.locator('input[aria-label="Output name for click1.ogg"]').fill("ui_click_cc0.wav");
+    await toolLibDlg.locator('[data-sfx-use="click1.ogg"]').click();
+    await toolLibDlg.locator("[data-sfx-use-result]").waitFor({ state: "visible", timeout: 5000 });
+    const useResText = await toolLibDlg.locator("[data-sfx-use-result]").innerText();
+    check(
+      "Free CC0 SFX pack install, preview, and Add to Project WAV conversion flow",
+      Boolean(audioPreviewSrc?.includes("/api/library/sfx-packs/preview/")) && useResText.includes("ui_click_cc0.wav") && useResText.includes("CC0 1.0"),
+      useResText.slice(0, 120),
+    );
+    await toolLibDlg.locator('[data-sfx-remove="kenney-ui-sfx"]').click();
+    await toolLibDlg.locator('[data-sfx-install="kenney-ui-sfx"]').waitFor({ state: "visible", timeout: 5000 });
+  } else {
+    const searchStatus = await fetch(`${BASE}api/library/sfx-packs/search?q=click`).then((r) => r.status).catch(() => 0);
+    check("Live GET /api/library/sfx-packs & /search respond HTTP 200", searchStatus === 200, `search=${searchStatus}`);
+  }
+
+  await toolLibDlg.locator("[data-install-audio-runner]").click();
+  await toolLibDlg.locator("[data-audio-runner-result]").waitFor({ state: "visible", timeout: 8000 });
+  check("Local Audio Runner quick-setup installs cleanly", await toolLibDlg.locator("[data-audio-runner-result]").isVisible());
+
+  await assertLayoutInvariants(p, "1440x900 Light Tool Library Free CC0 SFX");
+
+  // Direct button to switch to Adapters tab filtered on Audio + verify custom HTTP audio_b64_path hint
+  await toolLibDlg.locator("[data-open-audio-adapters]").click();
+  await toolLibDlg.locator("[data-adapters-panel]").waitFor({ state: "visible", timeout: 8000 });
+  await toolLibDlg.locator("[data-adapter-row], [data-adapter-preset]").first().waitFor({ state: "visible", timeout: 8000 });
+  await toolLibDlg.getByRole("button", { name: "+ Add CLI / API Tool", exact: true }).click();
+  await toolLibDlg.locator("[data-add-adapter-form]").getByRole("button", { name: "HTTP", exact: true }).click();
+  const addFormText = await toolLibDlg.locator("[data-add-adapter-form]").innerText();
+  check(
+    "AdaptersPanel custom HTTP form documents audio_b64_path alongside image_url_path & file_bytes",
+    addFormText.includes("audio_b64_path") && addFormText.includes("image_url_path") && addFormText.includes("file_bytes"),
+  );
+  if (sfxLive) {
+    const audioTierBadges = await toolLibDlg.locator("[data-model-size]").count();
+    check("AdaptersPanel renders model_size badges for tiered audio presets", audioTierBadges >= 1, `badges=${audioTierBadges}`);
+  }
+
+  await toolLibDlg.locator('button[aria-label="Close Tool Library"]').click();
+  await toolLibDlg.waitFor({ state: "hidden", timeout: 5000 });
+
   // Dark theme at 1440x900
   await setThemeViaSettings(p, "dark");
   await assertLayoutInvariants(p, "1440x900 Dark");
   await p.screenshot({ path: `${OUT}/built-desktop-1440-dark.png` });
+
+  // Verify Free CC0 SFX tab in Dark theme as well
+  await p.locator('button[aria-label="Open Tool Library"]').click();
+  await toolLibDlg.waitFor({ state: "visible", timeout: 8000 });
+  await toolLibDlg.getByRole("button", { name: "Free CC0 SFX", exact: true }).click();
+  await toolLibDlg.locator("[data-sfx-pack]").first().waitFor({ state: "visible", timeout: 8000 });
+  await assertLayoutInvariants(p, "1440x900 Dark Tool Library Free CC0 SFX");
+  await toolLibDlg.locator('button[aria-label="Close Tool Library"]').click();
+  await toolLibDlg.waitFor({ state: "hidden", timeout: 5000 });
+  if (!sfxLive) {
+    for (const pat of sfxRoutePatterns) await p.unroute(pat);
+  }
 
   // 1280x800 laptop viewport Dark & Light
   await p.setViewportSize({ width: 1280, height: 800 });

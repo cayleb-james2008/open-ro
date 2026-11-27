@@ -1855,6 +1855,7 @@ pub fn launch_or_attach_live(
                 config.height = rh;
             }
         } else if config.launch_studio_process && !already_running {
+            cleanup_stale_x11_lock(&display);
             let screen_spec = format!("{}x{}x{}", config.width, config.height, config.depth);
             let child = Command::new("Xvfb")
                 .args([&display, "-screen", "0", &screen_spec, "-ac"])
@@ -2069,6 +2070,7 @@ pub fn launch_embedded_studio_with_hub(
 
         // 1. Attach to existing Xvfb display or spawn an isolated Xvfb owned by this manager.
         if !x11_socket_exists(&display) {
+            cleanup_stale_x11_lock(&display);
             let screen_spec = format!("{}x{}x{}", config.width, config.height, config.depth);
             let child = Command::new("Xvfb")
                 .args([&display, "-screen", "0", &screen_spec, "-ac"])
@@ -2251,6 +2253,7 @@ pub fn launch_embedded_studio_with_hub(
 /// (`ffmpeg_child`, `studio_child`, and `xvfb_child`).
 /// Never runs `pkill -f` and never terminates an external pre-existing display server.
 pub fn stop_embedded_studio(manager: &mut StudioEmbedManager) -> StudioEmbedState {
+    let prev_display = manager.state.display.clone();
     manager.x11grab_stop.store(true, Ordering::SeqCst);
     if let Some(mut child) = manager.ffmpeg_child.take() {
         let _ = child.kill();
@@ -2272,9 +2275,22 @@ pub fn stop_embedded_studio(manager: &mut StudioEmbedManager) -> StudioEmbedStat
         }
     }
     if let Some(mut child) = manager.xvfb_child.take() {
+        #[cfg(unix)]
+        let killed_pid = child.id();
         let _ = child.kill();
         let _ = child.wait();
+        #[cfg(unix)]
+        if let Some(ref disp) = prev_display {
+            let _ = cleanup_stale_x11_lock_in(
+                Path::new("/tmp"),
+                Path::new("/proc"),
+                disp,
+                Some(killed_pid),
+            );
+        }
     }
+    #[cfg(not(unix))]
+    let _ = prev_display;
     manager.state.phase = "stopped".to_string();
     manager.state.embedded = false;
     manager.state.mcp_connected = false;
@@ -2663,6 +2679,7 @@ pub fn transfer_to_embedded_studio(
                 opts.height = rh;
             }
         } else {
+            cleanup_stale_x11_lock(&display);
             let screen_spec = format!("{}x{}x{}", opts.width, opts.height, DEFAULT_EMBED_DEPTH);
             let child = Command::new("Xvfb")
                 .args([&display, "-screen", "0", &screen_spec, "-ac"])
@@ -3680,13 +3697,107 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Parse an X11 display string like `":99"` or `":99.0"` into its numeric display ID (`"99"`).
+pub fn parse_x11_display_num(display: &str) -> Option<&str> {
+    let rest = display.trim().strip_prefix(':')?;
+    let num = rest.split('.').next()?;
+    if !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit()) {
+        Some(num)
+    } else {
+        None
+    }
+}
+
+#[cfg(unix)]
+fn read_x11_lock_pid(lock_path: &Path) -> Option<u32> {
+    let text = std::fs::read_to_string(lock_path).ok()?;
+    text.trim().parse::<u32>().ok().filter(|&p| p > 0)
+}
+
+#[cfg(unix)]
+fn x11_pid_is_live(pid: u32, proc_root: &Path) -> Option<bool> {
+    if proc_root.is_dir() {
+        Some(proc_root.join(pid.to_string()).exists())
+    } else {
+        None
+    }
+}
+
+/// Testable implementation of `x11_socket_exists` (Gap #89): returns `false` when
+/// `/tmp/.X11-unix/X{num}` is missing OR `/tmp/.X{num}-lock` references a dead PID
+/// whose `/proc/{pid}` directory no longer exists on Linux.
+#[cfg(unix)]
+pub fn x11_socket_exists_in(tmp_dir: &Path, proc_root: &Path, display: &str) -> bool {
+    let Some(num) = parse_x11_display_num(display) else {
+        return false;
+    };
+    let sock = tmp_dir.join(".X11-unix").join(format!("X{num}"));
+    if !sock.exists() {
+        return false;
+    }
+    let lock = tmp_dir.join(format!(".X{num}-lock"));
+    if lock.exists() {
+        if let Some(pid) = read_x11_lock_pid(&lock) {
+            if x11_pid_is_live(pid, proc_root) == Some(false) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Unlink stale `/tmp/.X{num}-lock` and `/tmp/.X11-unix/X{num}` ONLY when no live
+/// process owns `.X{num}-lock` (matching either a dead `/proc/{pid}` or `expected_dead_pid`
+/// from our just-terminated `xvfb_child`). Never removes files owned by a live PID.
+#[cfg(unix)]
+pub fn cleanup_stale_x11_lock_in(
+    tmp_dir: &Path,
+    proc_root: &Path,
+    display: &str,
+    expected_dead_pid: Option<u32>,
+) -> bool {
+    let Some(num) = parse_x11_display_num(display) else {
+        return false;
+    };
+    let lock = tmp_dir.join(format!(".X{num}-lock"));
+    let sock = tmp_dir.join(".X11-unix").join(format!("X{num}"));
+
+    if lock.exists() {
+        let Some(pid) = read_x11_lock_pid(&lock) else {
+            return false;
+        };
+        let is_live = x11_pid_is_live(pid, proc_root);
+        if is_live == Some(true) {
+            return false;
+        }
+        let confirmed_dead = is_live == Some(false) || expected_dead_pid == Some(pid);
+        if !confirmed_dead {
+            return false;
+        }
+        let mut removed = false;
+        if std::fs::remove_file(&lock).is_ok() {
+            removed = true;
+        }
+        if sock.exists() && std::fs::remove_file(&sock).is_ok() {
+            removed = true;
+        }
+        return removed;
+    }
+
+    if sock.exists() && expected_dead_pid.is_some() {
+        return std::fs::remove_file(&sock).is_ok();
+    }
+    false
+}
+
+#[cfg(unix)]
+fn cleanup_stale_x11_lock(display: &str) {
+    let _ = cleanup_stale_x11_lock_in(Path::new("/tmp"), Path::new("/proc"), display, None);
+}
+
 #[cfg(unix)]
 fn x11_socket_exists(display: &str) -> bool {
-    if let Some(num) = display.strip_prefix(':') {
-        Path::new(&format!("/tmp/.X11-unix/X{num}")).exists()
-    } else {
-        false
-    }
+    x11_socket_exists_in(Path::new("/tmp"), Path::new("/proc"), display)
 }
 
 /// Returns `true` when `display` is the desktop XWayland display under an active Wayland

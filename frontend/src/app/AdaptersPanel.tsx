@@ -48,6 +48,9 @@ export type AdapterView = {
   secrets_status?: Record<string, AdapterSecretStatus>;
   cli?: AdapterCliSpec | null;
   http?: AdapterHttpSpec | null;
+  hardware_tier?: string | null;
+  model_size?: string | null;
+  install_hint?: string | null;
 };
 
 export type PresetView = {
@@ -58,6 +61,9 @@ export type PresetView = {
   transport: "builtin" | "cli" | "http";
   required_secrets?: string[];
   installed?: boolean;
+  hardware_tier?: string | null;
+  model_size?: string | null;
+  install_hint?: string | null;
 };
 
 type AdaptersListResponse = {
@@ -75,6 +81,54 @@ const CAP_LABELS: Record<string, string> = {
   custom: "Custom",
 };
 
+const BASE_FEATURED_ORDER = [
+  "playwright-cdp-cli",
+  "craft-anything-cli",
+  "rea-cli",
+  "recraft-v3-ui",
+  "layer-ai-ui",
+  "scenario-game-ui",
+];
+
+const AUDIO_FEATURED_ORDER = [
+  "audioldm-s-local-cli",
+  "stable-audio-small-cli",
+  "tangoflux-sfx-cli",
+  "audioldm2-sfx-cli",
+  "stable-audio-open-cli",
+  "ace-step-local-http",
+  "google-gemini-lyria-http",
+  "elevenlabs-sfx-http",
+];
+
+function AdapterTierBadge({
+  modelSize,
+  hardwareTier,
+  installHint,
+}: {
+  modelSize?: string | null;
+  hardwareTier?: string | null;
+  installHint?: string | null;
+}) {
+  const label = modelSize?.trim() || hardwareTier?.trim();
+  if (!label) return null;
+  const tipParts = [
+    hardwareTier?.trim() ? `Hardware tier: ${hardwareTier.trim()}` : "",
+    installHint?.trim() || "",
+  ].filter(Boolean);
+  return (
+    <Badge
+      variant="outline"
+      title={tipParts.length > 0 ? tipParts.join(", ") : undefined}
+      data-hardware-tier={hardwareTier || undefined}
+      data-model-size={modelSize || undefined}
+      className="px-1.5 py-0.5 text-xs tabular-nums text-ink-2"
+    >
+      {label}
+    </Badge>
+  );
+}
+
 function slugifyId(name: string): string {
   return name
     .toLowerCase()
@@ -83,8 +137,8 @@ function slugifyId(name: string): string {
     .slice(0, 48) || `custom-${Date.now()}`;
 }
 
-export function AdaptersPanel() {
-  const [cap, setCap] = useState<string>("all");
+export function AdaptersPanel({ initialCap }: { initialCap?: string } = {}) {
+  const [cap, setCap] = useState<string>(() => initialCap || "all");
   const [adapters, setAdapters] = useState<AdapterView[]>([]);
   const [presets, setPresets] = useState<PresetView[]>([]);
   const [loading, setLoading] = useState(true);
@@ -127,6 +181,10 @@ export function AdaptersPanel() {
     setAdapters(res.adapters ?? []);
     setPresets(res.presets ?? []);
   }, []);
+
+  useEffect(() => {
+    if (initialCap) setCap(initialCap);
+  }, [initialCap]);
 
   useEffect(() => {
     void refresh();
@@ -368,14 +426,12 @@ export function AdaptersPanel() {
     .filter((a) => cap === "all" || a.capability === cap)
     .slice()
     .sort((a, b) => a.priority - b.priority);
-  const FEATURED_ORDER = [
-    "playwright-cdp-cli",
-    "craft-anything-cli",
-    "rea-cli",
-    "recraft-v3-ui",
-    "layer-ai-ui",
-    "scenario-game-ui",
-  ];
+  const featuredOrder =
+    cap === "audio_gen"
+      ? AUDIO_FEATURED_ORDER
+      : cap === "all"
+        ? [...BASE_FEATURED_ORDER, ...AUDIO_FEATURED_ORDER]
+        : BASE_FEATURED_ORDER;
   const filteredPresets = presets
     .filter((p) => {
       if (p.installed || installedIds.has(p.id)) return false;
@@ -384,8 +440,8 @@ export function AdaptersPanel() {
     })
     .slice()
     .sort((a, b) => {
-      const ia = FEATURED_ORDER.indexOf(a.id);
-      const ib = FEATURED_ORDER.indexOf(b.id);
+      const ia = featuredOrder.indexOf(a.id);
+      const ib = featuredOrder.indexOf(b.id);
       if (ia !== -1 || ib !== -1) {
         return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
       }
@@ -551,7 +607,18 @@ export function AdaptersPanel() {
               </div>
               <label className="flex flex-col gap-1 text-xs text-ink-2">
                 <span>Response extract path</span>
-                <Input value={httpExtract} onChange={(e) => setHttpExtract(e.target.value)} className="font-mono text-xs" />
+                <Input
+                  value={httpExtract}
+                  onChange={(e) => setHttpExtract(e.target.value)}
+                  placeholder="image_url_path:data.0.url, audio_b64_path:outputs.0.data, or file_bytes"
+                  className="font-mono text-xs max-md:min-h-11"
+                />
+                <span className="text-xs text-ink-3">
+                  Supports <code className="font-mono">image_url_path:&lt;path&gt;</code>,{" "}
+                  <code className="font-mono">image_b64_path:&lt;path&gt;</code>,{" "}
+                  <code className="font-mono">audio_b64_path:&lt;path&gt;</code>,{" "}
+                  <code className="font-mono">file_bytes</code>, or <code className="font-mono">json</code>.
+                </span>
               </label>
             </div>
           )}
@@ -603,6 +670,7 @@ export function AdaptersPanel() {
                     <Badge className="border-transparent bg-surface px-1.5 py-0.5 text-xs text-ink-2">
                       {a.transport.toUpperCase()}
                     </Badge>
+                    <AdapterTierBadge modelSize={a.model_size} hardwareTier={a.hardware_tier} installHint={a.install_hint} />
                     <span className="text-xs text-ink-3">P<span className="font-mono tabular-nums">{a.priority}</span></span>
                     <Pill className={a.available !== false && a.enabled ? "bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg" : "bg-pill-warn-bg px-2 py-0.5 text-xs text-pill-warn-fg"}>
                       <PillIndicator variant={a.available !== false && a.enabled ? "success" : "warning"} />
@@ -610,6 +678,7 @@ export function AdaptersPanel() {
                     </Pill>
                   </div>
                   {a.description && <p className="line-clamp-1 text-xs text-ink-2">{a.description}</p>}
+                  {a.install_hint && <p className="line-clamp-1 text-xs text-ink-3">{a.install_hint}</p>}
                 </div>
 
                 <div className="flex shrink-0 flex-wrap items-center gap-1">
@@ -690,8 +759,10 @@ export function AdaptersPanel() {
                     <Badge className="border-transparent bg-surface px-1.5 py-0.5 text-xs text-ink-2">
                       {p.transport.toUpperCase()}
                     </Badge>
+                    <AdapterTierBadge modelSize={p.model_size} hardwareTier={p.hardware_tier} installHint={p.install_hint} />
                   </div>
                   {p.description && <p className="line-clamp-1 text-xs text-ink-2">{p.description}</p>}
+                  {p.install_hint && <p className="line-clamp-1 text-xs text-ink-3">{p.install_hint}</p>}
                 </div>
                 <Button
                   variant="outline"

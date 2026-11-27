@@ -4,6 +4,12 @@ Each release is tagged `vMAJOR.MINOR.PATCH` and published on GitHub Releases wit
 binaries and a `SHA256SUMS` file. The running app shows its version and can update
 itself from the newest release (see README, "Versions and updates").
 
+## 1.33.0 - 2026-11-27
+
+- Added the verified 100% Free CC0-1.0 SFX Pack Library and Local Neural Audio Runner (`src/audio_library.rs`, `src/library.rs`, `src/server.rs`, `src/agent.rs`, `src/teamwork.rs`, Gap `#88`): 7 curated CC0-1.0 packs (Kenney UI, Card & Casino, Digital & Sci-Fi, RPG Combat & Foley, 80 RPG Fantasy, 100 Universal Game SFX, Arcade Fanfares), a zero-dependency safe ZIP extractor (`flate2::read::DeflateDecoder`) with strict CWE-22/CWE-59/ZIP-slip/POSIX-symlink/size-limit and SSRF guards, local directory import, ranked clip search, loopback-only `/api/library/sfx-packs*` and `/api/library/audio-runner/install` endpoints, 44.1 kHz 16-bit PCM mono WAV mastering with multi-clip layering & FX filters, Agent/Teamwork `sfx_pack_{list,install,search,use}` tools, and `/api/capabilities` + `/api/health` capability flags (`cc0_sfx_library`, `audio_presets_tiered`).
+- Added 7 hardware-tiered `audio_gen` tool adapter presets (`src/tool_adapters.rs`, Gap `#88`): `audioldm-s-local-cli` (~185M CPU), `stable-audio-small-cli` (~341M CPU), `tangoflux-sfx-cli` (~515M GPU), `audioldm2-sfx-cli` (~1.1B GPU), `stable-audio-open-cli` (~1.05B GPU), `ace-step-local-http`, and `google-gemini-lyria-http` (alongside annotated `elevenlabs-sfx-http`), plus optional adapter metadata (`hardware_tier`, `model_size`, `install_hint`), `"audio_b64_path"` base64 audio decoding with 44.1 kHz WAV normalization, `<data_dir>/bin` CLI lookup, and uniform `POST /api/tools/audio/generate` responses.
+- Fixed stale headless `Xvfb` lock/socket recovery on Linux (`src/studio_embed.rs`, Gap `#89`): `x11_socket_exists` verifies `/tmp/.X{num}-lock` PIDs against `/proc/{pid}` so dead `Xvfb` sockets are unlinked before launching a clean display, and `stop_embedded_studio` cleans up `/tmp/.X{num}-lock` and `/tmp/.X11-unix/X{num}` when tearing down an owned `xvfb_child` without touching locks owned by live processes.
+
 ## 1.32.0 - 2026-11-27
 
 - Added `gemini-4-neon-{xhigh,high,medium,low}` to OpenRO's Antigravity fallback model roster (`src/model.rs`) so OpenRO Studio agents and Teamwork pipelines can run on Neon XHigh by default.

@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   Box,
   Check,
   ChevronDown,
+  Cpu,
   DollarSign,
   Download,
   Flame,
@@ -12,6 +13,7 @@ import {
   Music,
   Package,
   Plug,
+  Plus,
   RefreshCw,
   Search,
   Send,
@@ -53,9 +55,103 @@ import {
   type MarketTasteResearchResult,
   type MarketTasteSnapshot,
 } from "./marketTaste";
+import { call, enc } from "./ship/api";
 import { AdaptersPanel } from "./AdaptersPanel";
 
-type LibraryTab = "installed" | "installable" | "adapters" | "market" | "generators";
+type LibraryTab = "installed" | "installable" | "sfx-packs" | "adapters" | "market" | "generators";
+
+export type SfxPackEntry = {
+  id: string;
+  name: string;
+  author: string;
+  license: string;
+  url?: string;
+  description: string;
+  tags?: string[];
+  clip_count: number;
+  installed: boolean;
+  installed_clips?: number;
+  installed_at_ms?: number | null;
+  custom?: boolean;
+};
+
+export type SfxPacksResponse = {
+  ok?: boolean;
+  packs?: SfxPackEntry[];
+  installed_packs_count?: number;
+  installed_clips_total?: number;
+  runner_installed?: boolean;
+  runner_path?: string | null;
+};
+
+export type SfxSearchClip = {
+  pack_id: string;
+  pack_name: string;
+  license?: string;
+  rel_path: string;
+  filename: string;
+  ext?: string;
+  bytes?: number;
+  tags?: string[];
+  preview_url?: string;
+};
+
+export type SfxSearchResponse = {
+  ok?: boolean;
+  query?: string;
+  total?: number;
+  clips?: SfxSearchClip[];
+};
+
+export type SfxUseResponse = {
+  ok?: boolean;
+  path?: string;
+  project_path?: string;
+  filename?: string;
+  url?: string;
+  wav_url?: string;
+  bytes?: number;
+  duration_ms?: number;
+  sample_rate?: number;
+  attribution?: string;
+  error?: string;
+};
+
+export type AudioRunnerInstallResponse = {
+  ok?: boolean;
+  path?: string;
+  command?: string;
+  executable?: boolean;
+  python_available?: boolean;
+  backends?: string[];
+  install_hint?: string;
+  error?: string;
+};
+
+const AUDIO_MODEL_TIERS = [
+  { tier: "Tiny CPU ~185M", detail: "AudioLDM-S local neural SFX (4GB RAM)" },
+  { tier: "Small CPU ~341M", detail: "Stable Audio Small local SFX (8GB RAM)" },
+  { tier: "Medium GPU ~515M", detail: "TangoFlux local SFX (8-12GB GPU)" },
+  { tier: "Large GPU ~1.1B", detail: "AudioLDM 2 and Stable Audio Open (12-16GB+ GPU)" },
+  { tier: "ACE-Step Local HTTP", detail: "Local ACE-Step 1.5 server on 127.0.0.1:8001" },
+  { tier: "Google Gemini Lyria", detail: "Cloud Lyria audio generation (gemini_api_key)" },
+  { tier: "ElevenLabs", detail: "Cloud Sound Generation API (elevenlabs_api_key)" },
+] as const;
+
+function buildPreviewUrl(clip: SfxSearchClip): string {
+  if (clip.preview_url && clip.preview_url.trim()) return clip.preview_url;
+  const encodedRel = clip.rel_path
+    .split("/")
+    .filter(Boolean)
+    .map((seg) => encodeURIComponent(seg))
+    .join("/");
+  return `/api/library/sfx-packs/preview/${enc(clip.pack_id)}/${encodedRel}`;
+}
+
+function defaultClipOutName(filename: string): string {
+  const stem = filename.replace(/\.[^.]+$/, "").trim();
+  return stem ? `${stem}.wav` : "sfx_clip.wav";
+}
 
 const BLENDER_PRESETS = [
   { id: "torii_gate", label: "Shrine Gate", desc: "Dual-pillar stylized archway scaled to Roblox studs" },
@@ -316,6 +412,523 @@ function PackCard({
   );
 }
 
+function SfxPacksTab({
+  open,
+  projectId,
+  onOpenAudioAdapters,
+  onSfxAdded,
+}: {
+  open: boolean;
+  projectId?: string | null;
+  onOpenAudioAdapters: () => void;
+  onSfxAdded?: () => void;
+}) {
+  const [packs, setPacks] = useState<SfxPackEntry[]>([]);
+  const [installedClipsTotal, setInstalledClipsTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [unavailable, setUnavailable] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [busyPackId, setBusyPackId] = useState<string | null>(null);
+  const [packActionError, setPackActionError] = useState<string | null>(null);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchQueryRef = useRef(searchQuery);
+  searchQueryRef.current = searchQuery;
+  const [searchBusy, setSearchBusy] = useState(false);
+  const [clips, setClips] = useState<SfxSearchClip[]>([]);
+  const [outNames, setOutNames] = useState<Record<string, string>>({});
+  const [useBusyKey, setUseBusyKey] = useState<string | null>(null);
+  const [useResult, setUseResult] = useState<SfxUseResponse | null>(null);
+
+  const [runnerInstalled, setRunnerInstalled] = useState(false);
+  const [runnerPath, setRunnerPath] = useState<string | null>(null);
+  const [runnerBusy, setRunnerBusy] = useState(false);
+  const [runnerResult, setRunnerResult] = useState<AudioRunnerInstallResponse | null>(null);
+  const [runnerNote, setRunnerNote] = useState<string | null>(null);
+
+  const runSearch = useCallback(async (queryText: string) => {
+    setSearchBusy(true);
+    const res = await call<SfxSearchResponse>(
+      `/api/library/sfx-packs/search?q=${encodeURIComponent(queryText.trim())}&limit=40`,
+    );
+    setSearchBusy(false);
+    if (res.ok) {
+      setClips(Array.isArray(res.clips) ? res.clips : []);
+    } else if (res.httpStatus === 404) {
+      setClips([]);
+    }
+  }, []);
+
+  const refreshSfxPacks = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    const res = await call<SfxPacksResponse>("/api/library/sfx-packs");
+    setLoading(false);
+    if (res.httpStatus === 404) {
+      setUnavailable(true);
+      setPacks([]);
+      setInstalledClipsTotal(0);
+      setClips([]);
+      return;
+    }
+    if (!res.ok) {
+      setUnavailable(false);
+      setLoadError(res.error || "Could not load CC0 SFX packs.");
+      return;
+    }
+    setUnavailable(false);
+    const nextPacks = Array.isArray(res.packs) ? res.packs : [];
+    const nextTotal =
+      typeof res.installed_clips_total === "number" && Number.isFinite(res.installed_clips_total)
+        ? res.installed_clips_total
+        : 0;
+    setPacks(nextPacks);
+    setInstalledClipsTotal(nextTotal);
+    setRunnerInstalled(Boolean(res.runner_installed));
+    if (typeof res.runner_path === "string" && res.runner_path.trim()) {
+      setRunnerPath(res.runner_path.trim());
+    }
+    if (nextTotal > 0) {
+      await runSearch(searchQueryRef.current);
+    } else {
+      setClips([]);
+    }
+  }, [runSearch]);
+
+  useEffect(() => {
+    if (open) {
+      void refreshSfxPacks();
+    }
+  }, [open, refreshSfxPacks]);
+
+  const handleInstallPack = async (pack: SfxPackEntry) => {
+    setBusyPackId(pack.id);
+    setPackActionError(null);
+    const res = await call<SfxPacksResponse & { error?: string }>("/api/library/sfx-packs/install", {
+      pack_id: pack.id,
+      id: pack.id,
+    });
+    setBusyPackId(null);
+    if (!res.ok) {
+      const msg =
+        res.httpStatus === 404
+          ? "CC0 SFX pack installation requires the desktop OpenRO server."
+          : res.error || `Offline or download error while installing ${pack.name}.`;
+      setPackActionError(msg);
+      toast.error(msg);
+      return;
+    }
+    if (Array.isArray(res.packs)) setPacks(res.packs);
+    if (typeof res.installed_clips_total === "number") setInstalledClipsTotal(res.installed_clips_total);
+    toast.success(`Downloaded ${pack.name}`);
+    await refreshSfxPacks();
+  };
+
+  const handleRemovePack = async (pack: SfxPackEntry) => {
+    setBusyPackId(pack.id);
+    setPackActionError(null);
+    const res = await call<SfxPacksResponse & { error?: string }>(
+      `/api/library/sfx-packs/${enc(pack.id)}`,
+      undefined,
+      { method: "DELETE" },
+    );
+    setBusyPackId(null);
+    if (!res.ok) {
+      const msg = res.error || `Could not remove ${pack.name}.`;
+      setPackActionError(msg);
+      toast.error(msg);
+      return;
+    }
+    if (Array.isArray(res.packs)) setPacks(res.packs);
+    if (typeof res.installed_clips_total === "number") setInstalledClipsTotal(res.installed_clips_total);
+    toast(`Removed ${pack.name}`);
+    await refreshSfxPacks();
+  };
+
+  const handleUseClip = async (clip: SfxSearchClip) => {
+    const clipKey = `${clip.pack_id}:${clip.rel_path}`;
+    const customOut = (outNames[clipKey] ?? "").trim();
+    setUseBusyKey(clipKey);
+    const res = await call<SfxUseResponse>("/api/library/sfx-packs/use", {
+      pack_id: clip.pack_id,
+      clip: clip.rel_path,
+      ...(customOut ? { out_name: customOut } : {}),
+      ...(projectId ? { project: projectId } : {}),
+    });
+    setUseBusyKey(null);
+    if (!res.ok) {
+      toast.error(res.error || `Could not add ${clip.filename} to project.`);
+      return;
+    }
+    setUseResult(res);
+    toast.success(`Added ${res.filename || clip.filename} to project`);
+    onSfxAdded?.();
+  };
+
+  const handleInstallAudioRunner = async () => {
+    setRunnerBusy(true);
+    setRunnerNote(null);
+    const res = await call<AudioRunnerInstallResponse>("/api/library/audio-runner/install", {});
+    setRunnerBusy(false);
+    if (res.httpStatus === 404) {
+      const msg = "Local Audio Runner installer is available on the desktop server (openro-rs v1.33.0+).";
+      setRunnerNote(msg);
+      toast.info(msg);
+      return;
+    }
+    if (!res.ok) {
+      const msg = res.error || "Could not install Local Audio Runner.";
+      setRunnerNote(msg);
+      toast.error(msg);
+      return;
+    }
+    setRunnerInstalled(true);
+    if (typeof res.path === "string" && res.path.trim()) setRunnerPath(res.path.trim());
+    setRunnerResult(res);
+    toast.success("Installed Local Audio Runner (openro-audio-gen)");
+  };
+
+  const installedPacksCount = packs.filter((p) => p.installed).length;
+
+  return (
+    <div data-sfx-packs-panel className="flex flex-col gap-3">
+      {/* Header Summary + Refresh */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Music className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
+          <h3 className="text-sm font-medium text-ink">Free CC0-1.0 SFX Packs</h3>
+          <Pill className="bg-tag-mint-bg px-2 py-0.5 text-xs text-tag-mint-fg">CC0-1.0</Pill>
+          {!unavailable && (
+            <>
+              <Pill className="bg-board px-2 py-0.5 text-xs tabular-nums text-ink-2">
+                {installedPacksCount}/{packs.length} packs
+              </Pill>
+              <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs tabular-nums text-pill-active-fg">
+                {installedClipsTotal} clips ready
+              </Pill>
+            </>
+          )}
+        </div>
+        <Button
+          variant="outline"
+          size="xs"
+          disabled={loading}
+          aria-label="Refresh CC0 SFX packs"
+          onClick={() => void refreshSfxPacks()}
+          className="bg-surface max-md:min-h-11"
+        >
+          <RefreshCw className={`size-3 ${loading ? "motion-safe:animate-spin" : ""}`} strokeWidth={1.5} aria-hidden />
+          <span>{loading ? "Refreshing…" : "Refresh"}</span>
+        </Button>
+      </div>
+
+      {unavailable && (
+        <div
+          data-sfx-unavailable
+          className="rounded-card border border-hairline bg-board/45 p-3.5 text-xs leading-relaxed text-ink-2"
+        >
+          CC0 SFX Pack library requires the desktop OpenRO server (<code className="font-mono">openro-rs</code> v1.33.0+). You can still review local and cloud audio tiers below or configure custom adapters.
+        </div>
+      )}
+
+      {loadError && (
+        <div
+          data-sfx-error
+          className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-hairline bg-pill-warn-bg/50 p-3 text-xs text-pill-warn-fg"
+        >
+          <span>{loadError}</span>
+          <Button variant="outline" size="xs" onClick={() => void refreshSfxPacks()} className="bg-surface max-md:min-h-11">
+            Retry
+          </Button>
+        </div>
+      )}
+
+      {packActionError && (
+        <div
+          data-sfx-action-error
+          className="rounded-sm border border-hairline bg-pill-warn-bg/40 px-3 py-2 text-xs text-pill-warn-fg"
+        >
+          {packActionError}
+        </div>
+      )}
+
+      {/* Search Bar Across Installed CC0 Clips */}
+      {!unavailable && (
+        <section
+          data-sfx-search-section
+          className="flex flex-col gap-2.5 rounded-card border border-hairline bg-board/45 p-3.5"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5">
+              <Search className="size-3.5 text-icon" strokeWidth={1.5} aria-hidden />
+              <h4 className="text-xs font-medium text-ink">Search Installed CC0 Clips</h4>
+            </div>
+            <Pill className="bg-surface px-2 py-0.5 text-xs tabular-nums text-ink-2">
+              {clips.length} match{clips.length === 1 ? "" : "es"}
+            </Pill>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void runSearch(searchQuery);
+                }
+              }}
+              aria-label="Search CC0 SFX clips"
+              placeholder="Search installed clips (click, sword, fanfare, coin, magic...)"
+              className="h-9 min-w-[200px] flex-1 bg-surface text-xs max-md:min-h-11"
+            />
+            <Button
+              variant="default"
+              size="sm"
+              disabled={searchBusy}
+              aria-label="Search CC0 clips"
+              onClick={() => void runSearch(searchQuery)}
+              className="max-md:min-h-11"
+            >
+              <Search className="size-3.5" strokeWidth={1.5} aria-hidden />
+              <span>{searchBusy ? "Searching…" : "Search"}</span>
+            </Button>
+          </div>
+
+          {installedClipsTotal === 0 && clips.length === 0 ? (
+            <p className="text-xs text-ink-2">
+              Download any CC0-1.0 pack below to preview audio clips and convert them to 44.1 kHz WAV in your project.
+            </p>
+          ) : clips.length === 0 ? (
+            <p className="text-xs text-ink-2">No installed CC0 clips matched your query.</p>
+          ) : (
+            <div data-sfx-clip-list className="flex flex-col gap-2">
+              {clips.slice(0, 20).map((clip) => {
+                const clipKey = `${clip.pack_id}:${clip.rel_path}`;
+                const previewSrc = buildPreviewUrl(clip);
+                const busyUse = useBusyKey === clipKey;
+                return (
+                  <div
+                    key={clipKey}
+                    data-sfx-clip-row={clip.rel_path}
+                    className="flex flex-col gap-2 rounded-sm border border-hairline bg-surface p-2.5"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                        <span className="truncate font-mono text-xs font-medium text-ink">
+                          {clip.filename}
+                        </span>
+                        <Badge variant="outline" className="px-1.5 py-0.5 text-xs">
+                          {clip.pack_name}
+                        </Badge>
+                        {typeof clip.bytes === "number" && clip.bytes > 0 && (
+                          <span className="text-xs tabular-nums text-ink-3">
+                            {Math.max(1, Math.round(clip.bytes / 1024))} KB
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <audio controls preload="none" src={previewSrc} className="h-9 w-full" />
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Input
+                        value={outNames[clipKey] ?? ""}
+                        onChange={(e) =>
+                          setOutNames((prev) => ({ ...prev, [clipKey]: e.target.value }))
+                        }
+                        aria-label={`Output name for ${clip.filename}`}
+                        placeholder={defaultClipOutName(clip.filename)}
+                        className="h-8 min-w-[160px] flex-1 font-mono text-xs max-md:min-h-11"
+                      />
+                      <Button
+                        variant="default"
+                        size="xs"
+                        disabled={busyUse}
+                        data-sfx-use={clip.rel_path}
+                        onClick={() => void handleUseClip(clip)}
+                        className="max-md:min-h-11"
+                      >
+                        <Plus className="size-3" strokeWidth={1.5} aria-hidden />
+                        <span>{busyUse ? "Adding…" : "Add to Project"}</span>
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {useResult && (
+            <div
+              data-sfx-use-result
+              className="flex flex-col gap-1 rounded-sm border border-hairline bg-surface p-2.5 text-xs"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-1.5">
+                <span className="font-mono font-medium text-ink">
+                  {useResult.project_path || useResult.path || useResult.filename}
+                </span>
+                <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs tabular-nums text-pill-active-fg">
+                  {useResult.sample_rate ?? 44100} Hz PCM16 WAV
+                </Pill>
+              </div>
+              <span className="text-ink-2">
+                Attribution: {useResult.attribution || "None required (CC0 1.0 Public Domain)"}
+              </span>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* 7 Free CC0-1.0 Packs Catalog */}
+      {packs.length > 0 && (
+        <div data-sfx-pack-list className="flex flex-col gap-2.5">
+          {packs.map((pack) => {
+            const busy = busyPackId === pack.id;
+            const clipCount = pack.installed ? (pack.installed_clips ?? pack.clip_count) : pack.clip_count;
+            return (
+              <article
+                key={pack.id}
+                data-sfx-pack={pack.id}
+                className="flex flex-col gap-2 rounded-card border border-hairline bg-board/45 p-3.5"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <h4 className="text-sm font-medium text-ink">{pack.name}</h4>
+                      <Pill className="bg-tag-mint-bg px-2 py-0.5 text-xs text-tag-mint-fg">
+                        {pack.license || "CC0-1.0"}
+                      </Pill>
+                      <span className="text-xs text-ink-2">by {pack.author}</span>
+                      <Pill className="bg-surface px-2 py-0.5 text-xs tabular-nums text-ink-2">
+                        {clipCount} clips
+                      </Pill>
+                      {pack.installed && (
+                        <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg">
+                          <PillIndicator variant="success" />
+                          Installed
+                        </Pill>
+                      )}
+                    </div>
+                    <p className="text-xs leading-relaxed text-ink-2">{pack.description}</p>
+                  </div>
+
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {pack.installed ? (
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        disabled={busy}
+                        data-sfx-remove={pack.id}
+                        aria-label={`Remove ${pack.name}`}
+                        onClick={() => void handleRemovePack(pack)}
+                        className="bg-surface max-md:min-h-11"
+                      >
+                        <Trash2 className="size-3" strokeWidth={1.5} aria-hidden />
+                        <span>{busy ? "Removing…" : "Remove"}</span>
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="default"
+                        size="xs"
+                        disabled={busy}
+                        data-sfx-install={pack.id}
+                        aria-label={`Download Pack ${pack.name}`}
+                        onClick={() => void handleInstallPack(pack)}
+                        className="max-md:min-h-11"
+                      >
+                        <Download className="size-3" strokeWidth={1.5} aria-hidden />
+                        <span>{busy ? "Downloading…" : "Download Pack"}</span>
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Local & Cloud Audio Models Quick-Setup Card */}
+      <section
+        data-audio-models-card
+        className="flex flex-col gap-2.5 rounded-card border border-hairline bg-board/45 p-3.5"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Cpu className="size-4 text-icon" strokeWidth={1.5} aria-hidden />
+              <h4 className="text-sm font-medium text-ink">Local &amp; Cloud Audio Models</h4>
+              {runnerInstalled && (
+                <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg">
+                  <PillIndicator variant="success" />
+                  Runner Ready
+                </Pill>
+              )}
+            </div>
+            <p className="text-xs leading-relaxed text-ink-2">
+              Install the unified local neural audio runner or pick a hardware-tiered local CLI, local HTTP, or cloud audio preset in Adapters.
+            </p>
+          </div>
+
+          <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+            <Button
+              variant="default"
+              size="xs"
+              disabled={runnerBusy}
+              data-install-audio-runner
+              onClick={() => void handleInstallAudioRunner()}
+              className="max-md:min-h-11"
+            >
+              <Download className="size-3" strokeWidth={1.5} aria-hidden />
+              <span>{runnerBusy ? "Installing…" : "Install Local Audio Runner"}</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="xs"
+              data-open-audio-adapters
+              onClick={onOpenAudioAdapters}
+              className="bg-surface max-md:min-h-11"
+            >
+              <Plug className="size-3" strokeWidth={1.5} aria-hidden />
+              <span>Open Audio Adapters</span>
+            </Button>
+          </div>
+        </div>
+
+        <div className="grid gap-1.5 sm:grid-cols-2">
+          {AUDIO_MODEL_TIERS.map((item) => (
+            <div
+              key={item.tier}
+              className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-hairline bg-surface px-2.5 py-2 text-xs"
+            >
+              <Badge variant="outline" className="text-xs tabular-nums">
+                {item.tier}
+              </Badge>
+              <span className="text-ink-2">{item.detail}</span>
+            </div>
+          ))}
+        </div>
+
+        {(runnerResult || runnerPath || runnerNote) && (
+          <div
+            data-audio-runner-result
+            className="flex flex-col gap-1 rounded-sm border border-hairline bg-surface p-2.5 text-xs text-ink-2"
+          >
+            {runnerPath && (
+              <span>
+                Runner binary: <code className="font-mono text-ink">{runnerPath}</code>
+              </span>
+            )}
+            {runnerResult?.install_hint && <span>{runnerResult.install_hint}</span>}
+            {runnerNote && <span>{runnerNote}</span>}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 export function ToolLibraryDialog({
   open,
   onOpenChange,
@@ -323,10 +936,12 @@ export function ToolLibraryDialog({
   marketTaste,
   marketBusy,
   v090Ready,
+  projectId,
   onRefresh,
   onSelectMarketNiche,
   onRefreshMarketTaste,
   onPitchMarketPrompt,
+  onSfxAdded,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -334,12 +949,15 @@ export function ToolLibraryDialog({
   marketTaste: MarketTasteSnapshot;
   marketBusy: boolean;
   v090Ready: boolean;
+  projectId?: string | null;
   onRefresh: () => Promise<void>;
   onSelectMarketNiche: (nicheId: string) => Promise<void>;
   onRefreshMarketTaste: () => Promise<void>;
   onPitchMarketPrompt: (prompt: string, nicheName: string) => void;
+  onSfxAdded?: () => void;
 }) {
   const [tab, setTab] = useState<LibraryTab>("installed");
+  const [adaptersInitialCap, setAdaptersInitialCap] = useState<string | undefined>(undefined);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [blenderPreset, setBlenderPreset] = useState<string>("torii_gate");
   const [blenderBusy, setBlenderBusy] = useState(false);
@@ -549,9 +1167,20 @@ export function ToolLibraryDialog({
                   Installable Packs ({installablePacks.length})
                 </SegmentedControlItem>
                 <SegmentedControlItem
+                  data-checked={tab === "sfx-packs" ? "" : undefined}
+                  aria-pressed={tab === "sfx-packs"}
+                  onClick={() => setTab("sfx-packs")}
+                  className="max-md:!h-11 max-md:px-2.5"
+                >
+                  Free CC0 SFX
+                </SegmentedControlItem>
+                <SegmentedControlItem
                   data-checked={tab === "adapters" ? "" : undefined}
                   aria-pressed={tab === "adapters"}
-                  onClick={() => setTab("adapters")}
+                  onClick={() => {
+                    setAdaptersInitialCap(undefined);
+                    setTab("adapters");
+                  }}
                   className="max-md:!h-11 max-md:px-2.5"
                 >
                   Adapters
@@ -614,7 +1243,19 @@ export function ToolLibraryDialog({
                 </div>
               )}
 
-              {tab === "adapters" && <AdaptersPanel />}
+              {tab === "sfx-packs" && (
+                <SfxPacksTab
+                  open={open}
+                  projectId={projectId}
+                  onOpenAudioAdapters={() => {
+                    setAdaptersInitialCap("audio_gen");
+                    setTab("adapters");
+                  }}
+                  onSfxAdded={onSfxAdded}
+                />
+              )}
+
+              {tab === "adapters" && <AdaptersPanel initialCap={adaptersInitialCap} />}
 
               {tab === "market" && activeNiche && (
                 <div data-market-taste-panel className="flex flex-col gap-3">
