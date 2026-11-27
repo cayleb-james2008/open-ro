@@ -134,17 +134,17 @@ def parse_color(val, default=(0, 0, 0, 0)):
 def cover_resize(img, w, h, anchor="center"):
     sw, sh = img.size
     scale = max(w / sw, h / sh)
-    nw, nh = max(1, int(round(sw * scale))), max(1, int(round(sh * scale)))
+    nw, nh = max(w, int(math.ceil(sw * scale))), max(h, int(math.ceil(sh * scale)))
     resized = img.resize((nw, nh), Image.Resampling.LANCZOS)
-    x0 = max(0, (nw - w) // 2)
+    x0 = max(0, min(nw - w, (nw - w) // 2))
     if anchor == "top":
         y0 = 0
-    elif anchor == "top_third":
+    elif anchor in ("upper", "top_third"):
         y0 = max(0, min(nh - h, int((nh - h) * 0.22)))
     elif anchor == "bottom":
         y0 = max(0, nh - h)
     else:
-        y0 = max(0, (nh - h) // 2)
+        y0 = max(0, min(nh - h, (nh - h) // 2))
     return resized.crop((x0, y0, x0 + w, y0 + h))
 
 def remove_bg(img, op):
@@ -381,14 +381,88 @@ def main():
 
     if mode == "pack_card":
         src = Image.open(req["source_abs"]).convert("RGBA")
-        art_w, art_h = req["art_size"]
-        ico_w, ico_h = req["icon_size"]
-        art_img = cover_resize(src, art_w, art_h, "top_third")
-        icon_img = cover_resize(src, ico_w, ico_h, "top_third")
-        full_img = art_img.copy()
+        art_w, art_h = int(req["art_size"][0]), int(req["art_size"][1])
+        ico_w, ico_h = int(req["icon_size"][0]), int(req["icon_size"][1])
+        art_img = cover_resize(src, art_w, art_h, "upper")
+        icon_img = cover_resize(src, ico_w, ico_h, "upper")
+        transparent_exterior = bool(req.get("transparent_exterior", True))
         if req.get("frame_abs") and Path(req["frame_abs"]).is_file():
             fr = Image.open(req["frame_abs"]).convert("RGBA").resize((art_w, art_h), Image.Resampling.LANCZOS)
+            full_canvas = Image.new("RGBA", (art_w, art_h), (0, 0, 0, 0))
+            art_layer = cover_resize(src, art_w, art_h, "upper")
+            if transparent_exterior:
+                fa = fr.getchannel("A").load()
+                ext = bytearray(art_w * art_h)
+                q = deque()
+                for x in range(art_w):
+                    for y in (0, art_h - 1):
+                        idx = y * art_w + x
+                        if not ext[idx] and fa[x, y] < 20:
+                            ext[idx] = 1
+                            q.append((x, y))
+                for y in range(art_h):
+                    for x in (0, art_w - 1):
+                        idx = y * art_w + x
+                        if not ext[idx] and fa[x, y] < 20:
+                            ext[idx] = 1
+                            q.append((x, y))
+                while q:
+                    x, y = q.popleft()
+                    for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+                        if 0 <= nx < art_w and 0 <= ny < art_h:
+                            nidx = ny * art_w + nx
+                            if not ext[nidx] and fa[nx, ny] < 20:
+                                ext[nidx] = 1
+                                q.append((nx, ny))
+                keep_mask = Image.new("L", (art_w, art_h), 255)
+                kpx = keep_mask.load()
+                center_idx = (art_h // 2) * art_w + (art_w // 2)
+                if not ext[center_idx]:
+                    for y in range(art_h):
+                        row_off = y * art_w
+                        for x in range(art_w):
+                            if ext[row_off + x]:
+                                kpx[x, y] = 0
+                else:
+                    # Open-sided frame fallback: preserve pixels bounded horizontally & vertically by opaque frame spans.
+                    row_spans = []
+                    has_opaque = False
+                    for y in range(art_h):
+                        rmin, rmax = art_w, -1
+                        for x in range(art_w):
+                            if fa[x, y] >= 20:
+                                if x < rmin:
+                                    rmin = x
+                                if x > rmax:
+                                    rmax = x
+                        if rmax >= rmin:
+                            has_opaque = True
+                        row_spans.append((rmin, rmax))
+                    col_spans = []
+                    for x in range(art_w):
+                        cmin, cmax = art_h, -1
+                        for y in range(art_h):
+                            if fa[x, y] >= 20:
+                                if y < cmin:
+                                    cmin = y
+                                if y > cmax:
+                                    cmax = y
+                        col_spans.append((cmin, cmax))
+                    if has_opaque:
+                        for y in range(art_h):
+                            rmin, rmax = row_spans[y]
+                            for x in range(art_w):
+                                cmin, cmax = col_spans[x]
+                                inside_row = rmax >= rmin and (rmin <= x <= rmax)
+                                inside_col = cmax >= cmin and (cmin <= y <= cmax)
+                                if not (inside_row and inside_col):
+                                    kpx[x, y] = 0
+                art_layer = art_layer.copy()
+                art_layer.putalpha(ImageChops.darker(art_layer.getchannel("A"), keep_mask))
+            full_img = Image.alpha_composite(full_canvas, art_layer)
             full_img = Image.alpha_composite(full_img, fr)
+        else:
+            full_img = art_img.copy()
         info_art = save_and_verify(art_img, req["art_abs"], max_bytes)
         info_icon = save_and_verify(icon_img, req["icon_abs"], max_bytes)
         info_full = save_and_verify(full_img, req["full_abs"], max_bytes)
@@ -508,6 +582,254 @@ if __name__ == "__main__":
 "##;
 
 const PY_UI_SHEET_DRIVER: &str = include_str!("ui_sheet_driver.py");
+
+const PY_CARD_BORDERS_DRIVER: &str = r##"
+import hashlib, io, json, math, os, sys
+from pathlib import Path
+from PIL import Image, ImageDraw
+
+def fail(msg):
+    print(json.dumps({"ok": False, "error": str(msg)}))
+    sys.exit(1)
+
+def parse_color(val, default=(0, 255, 0, 255)):
+    if val is None:
+        return default
+    if isinstance(val, (list, tuple)) and len(val) in (3, 4):
+        c = [int(max(0, min(255, x))) for x in val]
+        return tuple(c) if len(c) == 4 else (c[0], c[1], c[2], 255)
+    s = str(val).strip().lstrip("#")
+    if len(s) == 6:
+        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16), 255)
+    if len(s) == 8:
+        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16), int(s[6:8], 16))
+    return default
+
+def chamfer_poly(x0, y0, x1, y1, cut):
+    c = max(0, int(cut))
+    return [
+        (x0 + c, y0),
+        (x1 - c, y0),
+        (x1, y0 + c),
+        (x1, y1 - c),
+        (x1 - c, y1),
+        (x0 + c, y1),
+        (x0, y1 - c),
+        (x0, y0 + c),
+    ]
+
+def lerp_col(c1, c2, t):
+    return tuple(int(round(c1[k] + (c2[k] - c1[k]) * t)) for k in range(4))
+
+def save_and_verify(img, out_abs, max_bytes):
+    out_p = Path(out_abs)
+    out_p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out_p.with_suffix(".png.tmp-openro")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    data = buf.getvalue()
+    if len(data) > max_bytes:
+        q = img.quantize(colors=256, method=Image.Quantize.FASTOCTREE)
+        buf = io.BytesIO()
+        q.save(buf, format="PNG", optimize=True)
+        data = buf.getvalue()
+    if len(data) > max_bytes:
+        fail(f"Output PNG is {len(data)} bytes, exceeding limit {max_bytes} bytes.")
+    tmp.write_bytes(data)
+    os.replace(tmp, out_p)
+    with Image.open(out_p) as check:
+        check.load()
+        cw, ch = check.size
+        rgba = check.convert("RGBA")
+        alpha = rgba.getchannel("A")
+        hist = alpha.histogram()
+        total = max(1, cw * ch)
+        opaque = sum(hist[17:])
+        has_alpha = any(hist[:255])
+        opaque_ratio = round(opaque / total, 4)
+    return {
+        "width": cw,
+        "height": ch,
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "has_alpha": has_alpha,
+        "opaque_ratio": opaque_ratio,
+    }
+
+def main():
+    req = json.loads(sys.stdin.read() or "{}")
+    chroma = parse_color(req.get("chroma", "#00FF00"))
+    max_bytes = int(req.get("max_bytes", 5 * 1024 * 1024))
+    pal = req.get("palette") or {}
+    dark = parse_color(pal.get("stroke_dark"), (10, 14, 22, 255))
+
+    w, h = 2048, 1424
+    cols, rows, ss = 4, 2, 2
+    cw, ch = (w * ss) // cols, (h * ss) // rows
+    canvas = Image.new("RGBA", (w * ss, h * ss), chroma)
+    d = ImageDraw.Draw(canvas)
+
+    tiers = [
+        ("border_common",    (196, 206, 220, 255), (104, 116, 134, 255), (236, 242, 250, 255)),
+        ("border_uncommon",  (52, 211, 153, 255),  (16, 128, 92, 255),   (167, 243, 208, 255)),
+        ("border_rare",      (56, 189, 248, 255),  (28, 84, 198, 255),   (186, 230, 253, 255)),
+        ("border_epic",      (192, 132, 252, 255), (108, 40, 182, 255),  (233, 213, 255, 255)),
+        ("border_legendary", (251, 191, 36, 255),  (180, 88, 12, 255),   (254, 243, 199, 255)),
+        ("border_mythic",    (34, 211, 238, 255),  (236, 72, 153, 255),  (253, 224, 71, 255)),
+        ("border_legacy",    (248, 244, 232, 255), (217, 159, 36, 255),  (255, 251, 235, 255)),
+    ]
+
+    for idx, (name, hi, lo, glint) in enumerate(tiers):
+        r, c = divmod(idx, cols)
+        cx, cy = c * cw, r * ch
+        mx, my = cx + cw // 2, cy + ch // 2
+
+        # Outer card bounds inside 2x cell (leaves >=12px 1x gutter margin)
+        inset_x = 56 if idx == 2 else 36
+        inset_y = 48 if idx in (5, 6) else 32
+        bx0, by0, bx1, by1 = cx + inset_x, cy + inset_y, cx + cw - inset_x, cy + ch - inset_y
+        cut_out = [46, 38, 36, 30, 36, 42, 34][idx]
+        rail_w = [16, 16, 16, 14, 18, 18, 18][idx]
+
+        # Base dark outer stroke + metallic rim
+        outer_poly = chamfer_poly(bx0, by0, bx1, by1, cut_out)
+        d.polygon(outer_poly, fill=lo)
+        d.line(outer_poly + [outer_poly[0]], fill=dark, width=6)
+
+        if idx == 5:
+            # Mythic iridescent cyan->magenta gradient along outer rim bands
+            steps = 24
+            for s in range(steps):
+                t = s / max(1, steps - 1)
+                sy0 = by0 + int((by1 - by0) * s / steps)
+                sy1 = by0 + int((by1 - by0) * (s + 1) / steps) + 1
+                col = lerp_col(hi, lo, t)
+                d.rectangle((bx0 + 3, sy0, bx0 + rail_w + 18, sy1), fill=col)
+                d.rectangle((bx1 - rail_w - 18, sy0, bx1 - 3, sy1), fill=col)
+            d.line(outer_poly + [outer_poly[0]], fill=dark, width=6)
+
+        # Tier-specific sleek silhouette accents (all hugging corners/edges)
+        if idx == 0:
+            # Common: crisp chamfered pewter corner bevel ticks
+            for px, py in ((bx0 + 20, by0 + 20), (bx1 - 20, by0 + 20), (bx0 + 20, by1 - 20), (bx1 - 20, by1 - 20)):
+                d.rectangle((px - 10, py - 10, px + 10, py + 10), fill=hi, outline=dark, width=3)
+        elif idx == 1:
+            # Uncommon: emerald double-pinline + stepped corner notches + slim mid-side notches
+            for sx0, sy0, sx1, sy1 in (
+                (bx0 - 6, by0 + 54, bx0 + 22, by0 + 132),
+                (bx1 - 22, by0 + 54, bx1 + 6, by0 + 132),
+                (bx0 - 6, by1 - 132, bx0 + 22, by1 - 54),
+                (bx1 - 22, by1 - 132, bx1 + 6, by1 - 54),
+                (bx0 - 8, my - 56, bx0 + 18, my + 56),
+                (bx1 - 18, my - 56, bx1 + 8, my + 56),
+            ):
+                d.rounded_rectangle((sx0, sy0, sx1, sy1), radius=6, fill=hi, outline=dark, width=4)
+        elif idx == 2:
+            # Rare: twin-blade upper wing fins + bottom corner chevrons
+            for side in (-1, 1):
+                ex = bx0 if side < 0 else bx1
+                # Upper twin blade wing fins sweeping outward
+                blade1 = [(ex, by0 + 24), (ex + side * 44, by0 - 10), (ex + side * 34, by0 + 56), (ex, by0 + 76)]
+                blade2 = [(ex, by0 + 82), (ex + side * 36, by0 + 62), (ex + side * 24, by0 + 114), (ex, by0 + 126)]
+                d.polygon(blade1, fill=hi, outline=dark)
+                d.line(blade1 + [blade1[0]], fill=dark, width=4)
+                d.polygon(blade2, fill=glint, outline=dark)
+                d.line(blade2 + [blade2[0]], fill=dark, width=4)
+                # Bottom chevron fin
+                chev = [(ex, by1 - 92), (ex + side * 24, by1 - 36), (ex + side * 12, by1 - 12), (ex, by1 - 24)]
+                d.polygon(chev, fill=hi, outline=dark)
+        elif idx == 3:
+            # Epic: geometric L-shaped sigil corner brackets with inlaid diamond sigils
+            arm, thk = 104, 26
+            corners = [
+                (bx0 - 6, by0 - 6, 1, 1),
+                (bx1 + 6, by0 - 6, -1, 1),
+                (bx0 - 6, by1 + 6, 1, -1),
+                (bx1 + 6, by1 + 6, -1, -1),
+            ]
+            for ox, oy, sx, sy in corners:
+                h_box = [min(ox, ox + sx * arm), min(oy, oy + sy * thk), max(ox, ox + sx * arm), max(oy, oy + sy * thk)]
+                v_box = [min(ox, ox + sx * thk), min(oy, oy + sy * arm), max(ox, ox + sx * thk), max(oy, oy + sy * arm)]
+                d.rectangle(h_box, fill=hi, outline=dark, width=4)
+                d.rectangle(v_box, fill=hi, outline=dark, width=4)
+                gx, gy = ox + sx * 24, oy + sy * 24
+                sigil = [(gx, gy - 14), (gx + 14, gy), (gx, gy + 14), (gx - 14, gy)]
+                d.polygon(sigil, fill=glint, outline=dark)
+        elif idx == 4:
+            # Legendary: amber stepped temple corner filigree + slim top architrave keystone
+            for ox, oy, sx, sy in (
+                (bx0 - 6, by0 - 6, 1, 1),
+                (bx1 + 6, by0 - 6, -1, 1),
+                (bx0 - 6, by1 + 6, 1, -1),
+                (bx1 + 6, by1 + 6, -1, -1),
+            ):
+                d.rectangle((min(ox, ox + sx * 96), min(oy, oy + sy * 24), max(ox, ox + sx * 96), max(oy, oy + sy * 24)), fill=hi, outline=dark, width=4)
+                d.rectangle((min(ox, ox + sx * 24), min(oy, oy + sy * 96), max(ox, ox + sx * 24), max(oy, oy + sy * 96)), fill=hi, outline=dark, width=4)
+                d.rectangle((min(ox + sx * 12, ox + sx * 52), min(oy + sy * 12, oy + sy * 52), max(ox + sx * 12, ox + sx * 52), max(oy + sy * 12, oy + sy * 52)), fill=glint, outline=dark, width=3)
+            # Top-center temple architrave keystone
+            arch = [(mx - 110, by0 + 18), (mx - 64, by0 - 16), (mx + 64, by0 - 16), (mx + 110, by0 + 18), (mx, by0 + 34)]
+            d.polygon(arch, fill=hi, outline=dark)
+            d.line(arch + [arch[0]], fill=dark, width=4)
+            d.polygon([(mx, by0 - 8), (mx + 20, by0 + 10), (mx, by0 + 28), (mx - 20, by0 + 10)], fill=glint, outline=dark)
+        elif idx == 5:
+            # Mythic: 3-shard celestial prism top crest + sweeping corner energy wisps
+            crest = [(mx - 88, by0 + 22), (mx - 40, by0 - 20), (mx, by0 - 38), (mx + 40, by0 - 20), (mx + 88, by0 + 22), (mx, by0 + 36)]
+            d.polygon(crest, fill=hi, outline=dark)
+            d.line(crest + [crest[0]], fill=dark, width=4)
+            d.polygon([(mx, by0 - 32), (mx + 24, by0 + 6), (mx, by0 + 32), (mx - 24, by0 + 6)], fill=glint, outline=dark)
+            for ox, oy, sx, sy in (
+                (bx0, by0, 1, 1),
+                (bx1, by0, -1, 1),
+                (bx0, by1, 1, -1),
+                (bx1, by1, -1, -1),
+            ):
+                wisp1 = [(ox - sx * 12, oy + sy * 52), (ox + sx * 24, oy - sy * 18), (ox + sx * 96, oy - sy * 6), (ox + sx * 42, oy + sy * 20)]
+                wisp2 = [(ox - sx * 6, oy + sy * 108), (ox + sx * 14, oy + sy * 34), (ox + sx * 36, oy + sy * 58), (ox + sx * 16, oy + sy * 116)]
+                d.polygon(wisp1, fill=hi if sy > 0 else lo, outline=dark)
+                d.polygon(wisp2, fill=glint, outline=dark)
+        else:
+            # Legacy: alabaster-gold triumphal corner crowns + bottom heirloom diamond clasp
+            for ox, oy, sx in ((bx0 - 8, by0 - 4, 1), (bx1 + 8, by0 - 4, -1)):
+                crown = [
+                    (ox, oy + 78),
+                    (ox, oy + 12),
+                    (ox + sx * 28, oy - 24),
+                    (ox + sx * 52, oy + 6),
+                    (ox + sx * 86, oy - 16),
+                    (ox + sx * 104, oy + 22),
+                    (ox + sx * 28, oy + 32),
+                ]
+                d.polygon(crown, fill=lo, outline=dark)
+                d.line(crown + [crown[0]], fill=dark, width=4)
+                d.polygon([(ox + sx * 28, oy - 12), (ox + sx * 44, oy + 12), (ox + sx * 24, oy + 22), (ox + sx * 12, oy + 10)], fill=hi, outline=dark)
+            for ox, oy, sx in ((bx0 - 4, by1 + 4, 1), (bx1 + 4, by1 + 4, -1)):
+                foot = [(ox, oy - 64), (ox + sx * 24, oy - 24), (ox + sx * 76, oy), (ox, oy)]
+                d.polygon(foot, fill=lo, outline=dark)
+                d.line(foot + [foot[0]], fill=dark, width=4)
+            clasp = [(mx - 58, by1 - 24), (mx, by1 - 38), (mx + 58, by1 - 24), (mx, by1 + 12)]
+            d.polygon(clasp, fill=hi, outline=dark)
+            d.line(clasp + [clasp[0]], fill=lo, width=4)
+
+        # Punch crisp hollow interior window (>=88% open transparent interior)
+        ix0, iy0, ix1, iy1 = bx0 + rail_w, by0 + rail_w, bx1 - rail_w, by1 - rail_w
+        cut_in = max(cut_out + 18, 68)
+        inner_poly = chamfer_poly(ix0, iy0, ix1, iy1, cut_in)
+        d.polygon(inner_poly, fill=chroma)
+        d.line(inner_poly + [inner_poly[0]], fill=hi, width=5)
+
+        # Crisp outer bevel highlight strip on top & left edges
+        d.line([(bx0 + cut_out, by0 + 6), (bx1 - cut_out, by0 + 6)], fill=glint, width=3)
+
+    out_img = canvas.resize((w, h), Image.Resampling.LANCZOS)
+    info = save_and_verify(out_img, req["out_abs"], max_bytes)
+    print(json.dumps({"ok": True, **info}))
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        fail(e)
+"##;
 
 fn art_url(project: &str, rel: &str) -> String {
     if project.is_empty() {
@@ -814,6 +1136,10 @@ pub fn pack_card(root: &Path, body: &Value) -> R<Value> {
         .and_then(Value::as_u64)
         .unwrap_or(DEFAULT_MAX_PNG_BYTES);
 
+    let transparent_exterior = body
+        .get("transparent_exterior")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     let art_dir = root.join("art");
     std::fs::create_dir_all(&art_dir).or_else(|e| err(500, format!("create art dir: {e}")))?;
     let payload = json!({
@@ -827,6 +1153,7 @@ pub fn pack_card(root: &Path, body: &Value) -> R<Value> {
         "contact_abs": contact_abs.to_string_lossy(),
         "art_size": art_size,
         "icon_size": icon_size,
+        "transparent_exterior": transparent_exterior,
         "max_bytes": max_bytes,
     });
     let res = run_python_json(PY_OPS_DRIVER, &payload, &art_dir, 45)?;
@@ -876,7 +1203,12 @@ pub fn render_procedural_ui_sheet(
         "chroma": chroma,
         "max_bytes": DEFAULT_MAX_PNG_BYTES,
     });
-    let res = run_python_json(PY_UI_SHEET_DRIVER, &payload, &art_dir, 60)?;
+    let driver = if sheet == "card_borders_sheet" {
+        PY_CARD_BORDERS_DRIVER
+    } else {
+        PY_UI_SHEET_DRIVER
+    };
+    let res = run_python_json(driver, &payload, &art_dir, 60)?;
     let _ = append_art_log(
         root,
         &json!({
@@ -922,13 +1254,20 @@ pub fn slice_ui_sheet(root: &Path, body: &Value) -> R<Value> {
 
     let raw_skin = body.get("skin").and_then(Value::as_str).unwrap_or("obsidian-prism");
     let skin = sanitize_art_slug(raw_skin).replace('_', "-");
+    let sheet_opt = body.get("sheet").and_then(Value::as_str).unwrap_or("chrome_sheet");
     let out_dir_rel = body
         .get("out_dir")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.trim_end_matches('/').to_string())
-        .unwrap_or_else(|| format!("art/ui/{skin}"));
+        .unwrap_or_else(|| {
+            if sheet_opt.eq_ignore_ascii_case("card_borders_sheet") {
+                "art/ui/card-borders".to_string()
+            } else {
+                format!("art/ui/{skin}")
+            }
+        });
     let out_dir_abs = safe_rel(root, &out_dir_rel)?;
     std::fs::create_dir_all(&out_dir_abs).or_else(|e| err(500, format!("create ui out dir: {e}")))?;
 
