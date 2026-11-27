@@ -4996,7 +4996,10 @@ fn extract_economy_params(scripts: &std::collections::BTreeMap<String, String>) 
                 if base_reward_hit.is_none() {
                     base_reward_hit = Some(make_hit(false));
                 }
-            } else if low.contains("persec") || low.contains("persecond") {
+            } else if (low.contains("persec") || low.contains("persecond"))
+                && !low.contains("cost")
+                && !low.contains("price")
+            {
                 earn_hits.push(make_hit(true));
             } else if (low.contains("earn")
                 || low.contains("permin")
@@ -5008,6 +5011,8 @@ fn extract_economy_params(scripts: &std::collections::BTreeMap<String, String>) 
                     && !low.contains("daily")))
                 && !low.contains("second")
                 && !low.contains("cooldown")
+                && !low.contains("cost")
+                && !low.contains("price")
             {
                 earn_hits.push(make_hit(false));
             } else if (low.contains("cost") || low.contains("price"))

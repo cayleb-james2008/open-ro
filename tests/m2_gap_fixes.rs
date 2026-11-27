@@ -504,3 +504,67 @@ print(rf)
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn gap_83_economy_sim_earned_cost_classified_as_price() {
+    let mut scripts = BTreeMap::new();
+    scripts.insert(
+        "src/shared/progression/Config.luau".to_string(),
+        r#"local Config = {}
+Config.ROLL_COOLDOWN_S = 3.5
+Config.EARNED_PACK_COST = 100
+Config.REWARD_WIN_XP = 25
+Config.REWARD_WIN_CURRENCY = 10
+Config.REWARD_BOSS_XP = 100
+Config.REWARD_BOSS_CURRENCY = 50
+return Config
+"#
+        .to_string(),
+    );
+    scripts.insert(
+        "src/shared/monetization/OfferConfig.luau".to_string(),
+        r#"local OfferConfig = {}
+OfferConfig.SUPPORTER_PASS_ID = 0
+OfferConfig.STARTER_BUNDLE_ROBUX = 199
+return OfferConfig
+"#
+        .to_string(),
+    );
+
+    let rep = evaluate_economy_sim(&scripts, &json!({}));
+    assert_eq!(
+        rep["constants"]["gamepass_mult"],
+        json!(1.0),
+        "zero paid multiplier must stay 1.0: {rep}"
+    );
+    assert_eq!(
+        rep["constants"]["min_price"],
+        json!(100.0),
+        "EARNED_PACK_COST=100 must classify as min_price=100: {rep}"
+    );
+    assert_eq!(
+        rep["constants"]["max_price"],
+        json!(800.0),
+        "EARNED_PACK_COST=100 in price_hits must expand [100, 250, 500, 800], not synthetic 2200: {rep}"
+    );
+    assert_eq!(
+        rep["constants"]["rebirth_cost"],
+        json!(1200.0),
+        "rebirth_cost should be 1200.0 rather than 2970.0 synthetic fallback: {rep}"
+    );
+    let earn = rep["constants"]["earn_per_min"].as_f64().unwrap_or(0.0);
+    assert!(
+        (earn - 80.0).abs() < 1e-6,
+        "earn_per_min must derive from REWARD_WIN_CURRENCY=10 and ROLL_COOLDOWN_S=3.5 (80.0/min), not EARNED_PACK_COST=100: {rep}"
+    );
+    assert_eq!(
+        rep["balanced"],
+        json!(true),
+        "card economy with EARNED_PACK_COST=100 and REWARD_WIN_CURRENCY=10 should be balanced: {rep}"
+    );
+    assert_eq!(
+        rep["blocker_count"],
+        json!(0),
+        "card economy should have 0 blockers and not false-fail paywall_dead_end: {rep}"
+    );
+}
