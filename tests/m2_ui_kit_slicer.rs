@@ -226,7 +226,12 @@ fn ui_craft_rules_skins_topologies_and_originality_prompts() {
 
     let recipes = sheet_recipes();
     let recipe_ids: Vec<&str> = recipes.iter().map(|r| r.id).collect();
-    for expected in ["chrome_sheet", "icons_sheet", "rarity_frames_sheet"] {
+    for expected in [
+        "chrome_sheet",
+        "icons_sheet",
+        "rarity_frames_sheet",
+        "card_borders_sheet",
+    ] {
         assert!(recipe_ids.contains(&expected), "missing sheet recipe {expected}");
     }
     let icons = recipes.iter().find(|r| r.id == "icons_sheet").unwrap();
@@ -501,7 +506,23 @@ fn external_ui_gen_adapters_and_http_routes() {
     assert_eq!(presets["craft_rules"].as_array().unwrap().len(), 7);
     assert_eq!(presets["layouts"].as_array().unwrap().len(), 4);
     assert_eq!(presets["skins"].as_array().unwrap().len(), 5);
-    assert_eq!(presets["sheets"].as_array().unwrap().len(), 3);
+    let sheets = presets["sheets"].as_array().unwrap();
+    assert_eq!(sheets.len(), 4);
+    let preset_sheet_ids: Vec<&str> = sheets
+        .iter()
+        .filter_map(|s| s["id"].as_str())
+        .collect();
+    for expected in [
+        "chrome_sheet",
+        "icons_sheet",
+        "rarity_frames_sheet",
+        "card_borders_sheet",
+    ] {
+        assert!(
+            preset_sheet_ids.contains(&expected),
+            "presets missing sheet {expected}: {preset_sheet_ids:?}"
+        );
+    }
 
     let (st_gen, gen_res) = http_req(
         port,
