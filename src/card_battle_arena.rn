@@ -15,6 +15,12 @@ local TEAM_SIZE = ${team_size}
 local ULTIMATE_MAX = ${ultimate_charge_max}
 local COUNTER_WINDOW_SEC = ${counter_window_ms} / 1000
 local BOSS_HP_SCALE = ${boss_hp_scale}
+local WINDUP_MS = 130
+local LUNGE_MS = 150
+local HIT_STOP_MS = 50
+local RECOIL_MS = 220
+local DEFEAT_MS = 400
+local CRIT_KICK_DEG = 2.0
 
 local battleEvent = ReplicatedStorage:FindFirstChild("OpenROBattleEvent")
 if not battleEvent then
@@ -60,7 +66,7 @@ local SYNERGY_BONUSES = {
 
 local STORY_BOSSES = {
     { id = 1, name = "Ember Dock Tyrant",           element = "Crimson", hp = 1200, atk = 140, reward = 220 },
-    { id = 2, name = "Shibuya Curse Weaver",        element = "Shadow",  hp = 2200, atk = 210, reward = 420 },
+    { id = 2, name = "Obsidian Rift Weaver",        element = "Shadow",  hp = 2200, atk = 210, reward = 420 },
     { id = 3, name = "Thunder Spire Shogun",        element = "Storm",   hp = 3600, atk = 290, reward = 680 },
     { id = 4, name = "Arcane Citadel Grandmaster",  element = "Arcane",  hp = 5400, atk = 380, reward = 1050 },
     { id = 5, name = "Impossible Overlord",         element = "Solar",   hp = 8200, atk = 490, reward = 1800 },
@@ -230,6 +236,14 @@ local function startBattle(player, floorNum, modeArg)
             phase = BOSS_PHASES[1].title,
         },
         finished = false,
+        feel = {
+            windup_ms = WINDUP_MS,
+            lunge_ms = LUNGE_MS,
+            hit_stop_ms = HIT_STOP_MS,
+            recoil_ms = RECOIL_MS,
+            defeat_ms = DEFEAT_MS,
+            crit_kick_deg = CRIT_KICK_DEG,
+        },
     }
     battles[player] = state
     battleEvent:FireClient(player, "started", state)

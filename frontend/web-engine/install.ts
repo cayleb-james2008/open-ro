@@ -23,6 +23,7 @@ import {
   compileScreenDocToLuau,
   isValidGuiSlug,
   normalizeScreenDoc,
+  templateScreenDoc,
   type GuiPresetId,
   type ScreenDoc,
 } from "../src/app/guiDesignerEngine";
@@ -2782,14 +2783,25 @@ async function runByokLlm(
 }
 
 function ideasFor(chat: ChatSession) {
-  if (chat.builtSkills.length === 0) return STARTER_CATALOG.slice(0, 3);
-  return STARTER_CATALOG.slice(3)
+  if (chat.builtSkills.length === 0) return STARTER_CATALOG.filter((i) => i.opening);
+  return STARTER_CATALOG.filter((i) => !i.opening)
     .filter(
       (i) =>
         i.needs.every((n) => chat.builtSkills.includes(n)) &&
         i.skills.some((s) => !chat.builtSkills.includes(s)),
     )
     .slice(0, 3);
+}
+
+function serializeCatalogIdea(i: (typeof STARTER_CATALOG)[number]) {
+  return {
+    id: i.id,
+    title: i.title,
+    pitch: i.pitch,
+    skills: i.skills,
+    niche_id: i.niche_id ?? null,
+    feel_profile: i.feel_profile ?? null,
+  };
 }
 
 function builtTitlesFor(chat: ChatSession): string[] {
@@ -3513,7 +3525,7 @@ export function installWebEngine() {
           const presetMatch = (["rpg", "obby", "tycoon", "gacha"] as GuiPresetId[]).find(
             (p) => p === slugParam || `${p}-hud` === slugParam,
           );
-          const doc = guis[slugParam] ?? (presetMatch ? buildGuiPreset(presetMatch) : null);
+          const doc = guis[slugParam] ?? (presetMatch ? buildGuiPreset(presetMatch) : templateScreenDoc(slugParam));
           if (!doc) return jsonResponse({ ok: false, error: `Screen not found: ${slugParam}` }, 404);
           return jsonResponse({
             ok: true,
@@ -5059,7 +5071,7 @@ export function installWebEngine() {
     if (method === "POST" && u.pathname === "/api/ideas") {
       return jsonResponse({
         ok: true,
-        ideas: ideasFor(chat).map(({ id, title, pitch, skills }) => ({ id, title, pitch, skills })),
+        ideas: ideasFor(chat).map(serializeCatalogIdea),
         built_titles: builtTitlesFor(chat),
         pitched_new: false,
       });
@@ -5127,6 +5139,28 @@ export function installWebEngine() {
         `Built "${idea.title}": verified Luau syntax and Roblox wiring with 0 playtest errors.`,
         idea.title,
       );
+      let template_proof: Record<string, unknown> | undefined;
+      if (res.ok && idea.feel_profile) {
+        const guis = ensureStudioGuis();
+        const doc = templateScreenDoc(idea.id);
+        let guiWarnings: ReturnType<typeof analyzeSafeArea> = [];
+        if (doc) {
+          doc.slug = idea.feel_profile.gui_screen_slug;
+          guis[doc.slug] = doc;
+          guiWarnings = analyzeSafeArea(doc);
+        }
+        const sandbox = runWebSandboxSim(chat.place.scripts || {}, chat.place.instances || {}, {});
+        const economy_sim = evaluateWebEconomySim(chat, {});
+        template_proof = {
+          sandbox,
+          economy_sim,
+          gui_safe_area: {
+            passed: guiWarnings.length === 0,
+            warning_count: guiWarnings.length,
+            warnings: guiWarnings,
+          },
+        };
+      }
       const next = ideasFor(chat);
       if (res.ok && next.length) {
         chat.lines.push("OpenRO: That landed. Next, I could add:");
@@ -5138,7 +5172,8 @@ export function installWebEngine() {
         error: res.error,
         summary: res.ok ? `Built ${idea.title}` : res.error,
         thread: res.thread,
-        ideas: next.map(({ id: i, title, pitch, skills }) => ({ id: i, title, pitch, skills })),
+        ideas: next.map(serializeCatalogIdea),
+        ...(template_proof ? { template_proof } : {}),
       });
     }
     if (method === "POST" && u.pathname === "/api/chat") {

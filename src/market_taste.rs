@@ -48,6 +48,7 @@ pub const MARKET_NICHE_IDS: &[&str] = &[
 #[derive(Clone, Debug)]
 pub struct NicheProfile {
     pub id: &'static str,
+    pub template_id: Option<&'static str>,
     pub name: &'static str,
     pub tagline: &'static str,
     pub craft_bar: &'static str,
@@ -581,6 +582,7 @@ pub fn parse_explore_payload(payload: &Value) -> Result<(Vec<MarketGame>, Vec<St
 /// Build the structured 8-dimension Taste Dossier JSON for a niche profile + benchmark games.
 pub fn build_niche_dossier_json(profile: &NicheProfile, top_games: &[MarketGame]) -> Value {
     json!({
+        "template_id": profile.template_id,
         "market_leaders": top_games.iter().map(MarketGame::to_json).collect::<Vec<_>>(),
         "gameplay_loop": profile.gameplay_loop,
         "ui_ux_style": profile.ui_ux_style,
@@ -1189,6 +1191,7 @@ impl MarketTasteStore {
                     .count();
                 json!({
                     "id": p.id,
+                    "template_id": p.template_id,
                     "name": p.name,
                     "tagline": p.tagline,
                     "craft_bar": p.craft_bar,
@@ -1223,6 +1226,7 @@ impl MarketTasteStore {
             "last_error": self.last_error,
             "niche": {
                 "id": profile.id,
+                "template_id": profile.template_id,
                 "name": profile.name,
                 "tagline": profile.tagline,
                 "craft_bar": profile.craft_bar,
@@ -1692,6 +1696,7 @@ fn baseline_games_for_niche(niche_id: &str) -> Vec<MarketGame> {
 
 static TOP_TRENDING_PROFILE: NicheProfile = NicheProfile {
     id: "top-trending",
+    template_id: None,
     name: "Top Trending (All 8 Genres)",
     tagline: "Cross-genre Roblox chart synthesis covering live top-trending, up-and-coming, and top-playing-now hits.",
     craft_bar: "Ship top-trending Roblox quality across ANY genre the user asks for: cohesive sunlit/stylized 3D architecture with clear landmarks, Blender-silhouetted hero props, non-overlapping tactile HUDs, crisp TweenService juice & sound cadence, 100% server-authoritative economy/combat, and 5-second first-touch joy.",
@@ -1753,6 +1758,7 @@ static TOP_TRENDING_PROFILE: NicheProfile = NicheProfile {
 static NICHE_PROFILES: [NicheProfile; 8] = [
     NicheProfile {
         id: "anime-rng-cards",
+        template_id: Some("anime-card-battles-apex"),
         name: "Anime RNG & Card Battlers",
         tagline: "High-clarity anime gacha collection, progression depth, and responsive card battles.",
         craft_bar: "Match top-charting anime RNG and card-game craft: cohesive stylized lighting and readable hub landmarks, 100% original cel-shaded character art (original silhouettes, costumes, lore, and names), non-overlapping responsive HUDs, snappy TweenService reveal & combat feedback, and server-authoritative odds and saves.",
@@ -1818,6 +1824,7 @@ static NICHE_PROFILES: [NicheProfile; 8] = [
     },
     NicheProfile {
         id: "viral-sim-tycoon",
+        template_id: Some("viral-sim-tycoon-template"),
         name: "Viral Simulators & Steal/Collect Tycoons",
         tagline: "Instant hilarious core verbs, escalating base economies, and high-tempo server events.",
         craft_bar: "Match top-charting viral sim polish: saturated playful daylight palettes, readable plot landmarks, hilarious physical animations, and zero-friction 10-second first purchase.",
@@ -1879,6 +1886,7 @@ static NICHE_PROFILES: [NicheProfile; 8] = [
     },
     NicheProfile {
         id: "physics-crash-ragdoll",
+        template_id: None,
         name: "Physics, Crash & Ragdoll Playgrounds",
         tagline: "Clip-worthy kinetic chaos, destructible ramps, and hilarious shared-physics party rounds.",
         craft_bar: "Match top-trending physics sandbox craft: crisp sunlit stunt geometry, tactile impact camera punch, instant zero-latency respawn, and hilarious clip-ready ragdoll chains.",
@@ -1940,6 +1948,7 @@ static NICHE_PROFILES: [NicheProfile; 8] = [
     },
     NicheProfile {
         id: "survival-expedition",
+        template_id: None,
         name: "Co-op Survival & Road-Trip Expeditions",
         tagline: "Escalating co-op journeys (Forest Nights / River Rafts / Armored Trains) with clear extraction milestones.",
         craft_bar: "Match top-trending expedition craft: rich atmospheric day-to-night contrast, tactile lit camp/vehicle refuge, readable landmark horizons, and tight squad synergy.",
@@ -2001,6 +2010,7 @@ static NICHE_PROFILES: [NicheProfile; 8] = [
     },
     NicheProfile {
         id: "horror-coop-mascot",
+        template_id: None,
         name: "Co-op Mascot & Asymmetrical Horror",
         tagline: "Iconic stylized characters, tense objective floors, and tight 3-minute social survival rounds.",
         craft_bar: "Match top-trending mascot horror craft: unmistakable stylized character silhouettes, rim-lit moody rooms with warm guide lamps (never unreadable pitch-black), and tight 3-minute tension arcs.",
@@ -2062,6 +2072,7 @@ static NICHE_PROFILES: [NicheProfile; 8] = [
     },
     NicheProfile {
         id: "tactical-arena-pvp",
+        template_id: None,
         name: "Tactical Arena & Skill PvP",
         tagline: "Sub-5-second matchmaking, razor-sharp combat feel, and mastery cosmetic progression.",
         craft_bar: "Match top-trending competitive arena craft: ultra-readable sunlit symmetrical geometry, crisp hit confirmation, sub-5-second rematch cadence, and 100% server-validated fair combat.",
@@ -2123,6 +2134,7 @@ static NICHE_PROFILES: [NicheProfile; 8] = [
     },
     NicheProfile {
         id: "anime-action-rpg-td",
+        template_id: Some("anime-action-rpg-td-template"),
         name: "Anime Action RPG & Tower Defense",
         tagline: "Impactful awakening combos, summonable hero squads, raid bosses, and deep mastery trees.",
         craft_bar: "Match top-trending anime action/TD craft: vibrant stylized islands & arenas, bold elemental slash/impact VFX, clear boss attack telegraphs, and deeply satisfying awakening power curves.",
@@ -2184,6 +2196,7 @@ static NICHE_PROFILES: [NicheProfile; 8] = [
     },
     NicheProfile {
         id: "social-rp-fashion",
+        template_id: None,
         name: "Social Roleplay, Town & Fashion",
         tagline: "Zero-friction self-expression, timed runway shows, customizable spaces, and social UGC.",
         craft_bar: "Match top-trending social/fashion craft: inviting warm architecture, flattering studio lighting, tactile zero-friction styling/spawning, and share-worthy podium moments.",

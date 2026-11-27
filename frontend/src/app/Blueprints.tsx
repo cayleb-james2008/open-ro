@@ -1,8 +1,8 @@
-import { Check, Hammer, Layers } from "lucide-react";
+import { Check, Hammer, Layers, Sparkles } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/kibo-ui/pill";
-import { ADDS, blueprintMeta, plain, type Idea } from "./data";
+import { ADDS, blueprintMeta, plain, type Idea, type TemplateProof } from "./data";
 
 export function BlueprintCard({
   idea,
@@ -11,6 +11,7 @@ export function BlueprintCard({
   building,
   unavailable,
   featured,
+  templateProof,
   onBuild,
 }: {
   idea: Idea;
@@ -19,14 +20,17 @@ export function BlueprintCard({
   building: boolean;
   unavailable?: "built" | "offer";
   featured?: boolean;
+  templateProof?: TemplateProof;
   onBuild: () => void;
 }) {
   const meta = blueprintMeta(idea);
+  const fp = idea.feel_profile ?? null;
   const pitch = plain(idea.pitch || "Generates Luau scripts, places instances in Studio, and runs a playtest.");
   const adds = [...new Set(idea.skills.map((s) => ADDS[s] || s.replace(/_/g, " ")))];
 
   return (
     <article
+      data-blueprint-card={idea.id}
       className={`flex h-full min-w-0 flex-col justify-between gap-2.5 rounded-card border bg-surface p-3.5 transition-[color,background-color,border-color] duration-(--dur-press) ease-(--ease-house) ${
         building
           ? "border-blue ring-2 ring-blue/30"
@@ -50,6 +54,33 @@ export function BlueprintCard({
         <p className="text-sm leading-snug text-ink-2 [overflow-wrap:anywhere]">
           {pitch}
         </p>
+
+        {fp && (
+          <div
+            data-feel-summary={idea.id}
+            className="flex flex-wrap items-center gap-1.5 rounded-lg border border-hairline bg-board/60 px-2.5 py-1.5 text-xs text-ink-2"
+          >
+            <Sparkles className="size-3.5 shrink-0 text-icon" strokeWidth={1.5} aria-hidden />
+            <span className="font-mono tabular-nums">
+              {fp.reveal_tiers.length} reveal tiers · {fp.juice.hit_stop_ms}ms hit-stop · {fp.audio_cues.length} SFX ·{" "}
+              {fp.economy_targets.zero_paid_luck ? "0 paid luck" : "balanced curve"}
+            </span>
+          </div>
+        )}
+
+        {templateProof && (
+          <div
+            data-template-proof={idea.id}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-pill-active-bg px-2.5 py-1 text-xs font-medium text-pill-active-fg"
+          >
+            <Check className="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden />
+            <span>
+              Sandbox {templateProof.sandbox?.passed ? "OK" : "check"} · Econ{" "}
+              {templateProof.economy_sim?.balanced ? "balanced" : "check"} · UI{" "}
+              {templateProof.gui_safe_area?.warning_count ?? 0} warn
+            </span>
+          </div>
+        )}
 
         {adds.length > 0 && (
           <div className="flex flex-col gap-1">
@@ -101,6 +132,7 @@ export function BlueprintWorkbench({
   cantBuildWhy,
   busy,
   buildingTitle,
+  templateProofs,
   onBuild,
 }: {
   ideas: Idea[];
@@ -109,6 +141,7 @@ export function BlueprintWorkbench({
   cantBuildWhy: string;
   busy: boolean;
   buildingTitle?: string;
+  templateProofs?: Record<string, TemplateProof>;
   onBuild: (idea: Idea) => void;
 }) {
   const hasBuilt = builtTitles.length > 0;
@@ -151,6 +184,7 @@ export function BlueprintWorkbench({
               building={buildingTitle === idea.title}
               unavailable={builtTitles.includes(idea.title) ? "built" : undefined}
               featured={index === 0 && !builtTitles.includes(idea.title)}
+              templateProof={templateProofs?.[idea.id]}
               onBuild={() => onBuild(idea)}
             />
           ))}

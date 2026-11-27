@@ -1248,6 +1248,94 @@ try {
   check("0 page errors", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));
   check("0 HTTP 5xx responses", badResponses.length === 0, badResponses.join(", "));
   await ctx.close();
+
+  // M2 PR B: Isolated fresh server for 3 Feel-Proven Genre Templates + 1-click builds + template_proof + saved ScreenDocs
+  await reset();
+  const tplCtx = await b.newContext({
+    viewport: { width: 1440, height: 900 },
+    acceptDownloads: true,
+    colorScheme: "light",
+  });
+  const tp = await tplCtx.newPage();
+  const tplConsoleErrors = [];
+  const tplPageErrors = [];
+  const tplBadResponses = [];
+  tp.on("console", (m) => {
+    if (m.type() === "error") tplConsoleErrors.push(m.text());
+  });
+  tp.on("pageerror", (e) => tplPageErrors.push(String(e)));
+  tp.on("response", (r) => {
+    if (r.status() >= 500) tplBadResponses.push(`${r.status()} ${r.url()}`);
+  });
+
+  await tp.goto(BASE, { waitUntil: "domcontentloaded" });
+  await tp.locator("[data-top-chrome]").waitFor({ state: "visible", timeout: 15000 });
+  await tp.getByRole("button", { name: "Starters" }).first().click();
+  await tp.locator('[data-blueprint-card="anime-card-battles-apex"]').waitFor({ state: "visible", timeout: 8000 });
+  await tp.locator('[data-blueprint-card="viral-sim-tycoon-template"]').waitFor({ state: "visible", timeout: 8000 });
+  await tp.locator('[data-blueprint-card="anime-action-rpg-td-template"]').waitFor({ state: "visible", timeout: 8000 });
+  const feelBadges = await tp.locator("[data-feel-summary]").count();
+  check("3 Feel-Proven genre templates render in Starters dialog", feelBadges === 3, `feelBadges=${feelBadges}`);
+  await assertLayoutInvariants(tp, "1440x900 Light Starters Genre Templates");
+  await tp.screenshot({ path: `${OUT}/genre-templates-starters.png` });
+  await tp.keyboard.press("Escape");
+
+  const genreTemplates = [
+    ["anime-card-battles-apex", "Anime RNG Card Battler", "anime-rng-cards-hud", "template-1-card-battler.png"],
+    ["viral-sim-tycoon-template", "Viral Sim & Tycoon", "viral-sim-tycoon-hud", "template-2-sim-tycoon.png"],
+    ["anime-action-rpg-td-template", "Anime Action RPG / Tower Defense", "anime-action-rpg-td-hud", "template-3-action-rpg-td.png"],
+  ];
+  for (const [tid, title, screenSlug, shotFile] of genreTemplates) {
+    await tp.getByRole("button", { name: "Starters" }).first().click();
+    const buildBtn = tp.locator(`button[aria-label="Build ${title} in Studio"]`);
+    await buildBtn.waitFor({ state: "visible", timeout: 8000 });
+    const [buildRes] = await Promise.all([
+      tp.waitForResponse((r) => r.url().includes("/api/ideas/build") && r.request().method() === "POST", { timeout: 25000 }),
+      buildBtn.click(),
+    ]);
+    const buildJson = await buildRes.json();
+    const proof = buildJson?.template_proof;
+    const proofOk =
+      buildJson?.ok === true &&
+      proof?.sandbox?.passed === true &&
+      proof?.sandbox?.error_count === 0 &&
+      proof?.sandbox?.core_loop?.all_passed === true &&
+      proof?.economy_sim?.balanced === true &&
+      proof?.economy_sim?.blocker_count === 0 &&
+      proof?.gui_safe_area?.passed === true &&
+      proof?.gui_safe_area?.warning_count === 0;
+    check(`${title}: 1-click build returns passing template_proof (${tid})`, proofOk, JSON.stringify(proof?.economy_sim?.constants || {}));
+
+    const guiCheck = await tp.evaluate(async (slug) => {
+      const r = await fetch(`/api/studio/gui?slug=${encodeURIComponent(slug)}`);
+      return { status: r.status, body: await r.json() };
+    }, screenSlug);
+    check(
+      `${title}: saved ScreenDoc '${screenSlug}' has 0 safe-area warnings`,
+      guiCheck.status === 200 && guiCheck.body?.ok === true && (guiCheck.body?.safe_area_warnings?.length ?? 0) === 0,
+    );
+
+    await tp.getByRole("button", { name: "UI", exact: true }).first().click();
+    await tp.locator("[data-gui-designer]").waitFor({ state: "visible", timeout: 8000 });
+    const sel = tp.locator('select[aria-label="Select saved screen"]');
+    await sel.waitFor({ state: "visible", timeout: 6000 });
+    await tp.waitForFunction(
+      (slug) => Boolean(document.querySelector(`select[aria-label="Select saved screen"] option[value="${slug}"]`)),
+      screenSlug,
+      { timeout: 6000 },
+    );
+    await sel.selectOption(screenSlug);
+    await tp.waitForTimeout(200);
+    await tp.screenshot({ path: `${OUT}/${shotFile}` });
+
+    await tp.getByRole("button", { name: "New chat" }).first().click();
+    await tp.locator("[data-copilot-welcome]").waitFor({ state: "visible", timeout: 8000 });
+  }
+
+  check("Genre templates: 0 console errors", tplConsoleErrors.length === 0, tplConsoleErrors.slice(0, 3).join(" | "));
+  check("Genre templates: 0 page errors", tplPageErrors.length === 0, tplPageErrors.slice(0, 3).join(" | "));
+  check("Genre templates: 0 HTTP 5xx responses", tplBadResponses.length === 0, tplBadResponses.join(", "));
+  await tplCtx.close();
 } finally {
   await b.close();
 }

@@ -214,12 +214,14 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
   place,
   assets,
   products,
+  guiSyncSeq,
   onSavedScreenOrLuau,
 }: {
   projectId?: string | null;
   place?: Place | null;
   assets?: ProjectAssetRecord[];
   products?: Product[];
+  guiSyncSeq?: number;
   onSavedScreenOrLuau?: () => Promise<void> | void;
 }) {
   const [doc, setDoc] = useState<ScreenDoc>(() => buildGuiPreset("rpg"));
@@ -317,7 +319,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
 
   useEffect(() => {
     void refreshScreensAndArt();
-  }, [refreshScreensAndArt]);
+  }, [refreshScreensAndArt, guiSyncSeq]);
 
   const liveWarnings = useMemo(() => analyzeSafeArea(doc), [doc]);
   const activeWarnings = serverWarnings && !dirty ? serverWarnings : liveWarnings;

@@ -1030,3 +1030,21 @@ pub fn run_local_place_sandbox_with_lune(
     stamp_report_metadata(&mut report, &run_id, at_ms, None);
     Ok(report)
 }
+
+/// Persist a template build's headless sandbox proof JSON under `<root_dir>/.openro/sandbox/<template_id>-proof.json`.
+pub fn persist_sandbox_proof(
+    root_dir: &Path,
+    template_id: &str,
+    report: &Value,
+) -> Result<PathBuf, String> {
+    if !is_plain_run_id(template_id) {
+        return Err(format!("invalid template_id for sandbox proof: {template_id}"));
+    }
+    let dir = ensure_safe_sandbox_dir(root_dir)?;
+    let bytes = serde_json::to_vec_pretty(report)
+        .map_err(|e| format!("serialize sandbox proof: {e}"))?;
+    let rel = format!(".openro/sandbox/{template_id}-proof.json");
+    write_safe_report_file(root_dir, &rel, &bytes)?;
+    write_safe_report_file(root_dir, ".openro/sandbox/latest.json", &bytes)?;
+    Ok(dir.join(format!("{template_id}-proof.json")))
+}

@@ -1,6 +1,82 @@
 // Data contracts and runtime shape guards for OpenRO's HTTP API (/api/*).
 export type Chat = { id: string; title: string };
-export type Idea = { id: string; title: string; pitch: string; skills: string[] };
+export type RevealTierSpec = {
+  tier: number;
+  name: string;
+  rarities: string;
+  duration_ms: number;
+  camera_kick_deg: number;
+  scrim_opacity: number;
+  border_hex_dark: string;
+  border_hex_light: string;
+  glyph: string;
+};
+export type FeelProfile = {
+  reveal_tiers: RevealTierSpec[];
+  juice: {
+    windup_ms: number;
+    lunge_ms: number;
+    hit_stop_ms: number;
+    recoil_ms: number;
+    defeat_ms: number;
+    crit_camera_kick_deg: number;
+    reduced_motion_fade_ms: number;
+    damage_popups: boolean;
+    timing_bar_hook: boolean;
+  };
+  hud_roles: {
+    phone_844x390_layout: string;
+    top_bar_max_pct: number;
+    center_clear_min_pct: number;
+    bottom_dock_max_pct: number;
+    reserve_strip_max_pct: number;
+    min_tap_target_px: number;
+    number_format: string;
+    anchors: string[];
+  };
+  gui_screen_slug: string;
+  audio_cues: string[];
+  world_direction: {
+    setting: string;
+    lighting_mood: string;
+    landmark_hub: string;
+    landmarks: string[];
+  };
+  economy_targets: {
+    currency: string;
+    earn_per_min: number;
+    rebirth_cost: number;
+    rebirth_mult: number;
+    gamepass_mult: number;
+    max_price: number;
+    zero_paid_luck: boolean;
+  };
+  playtest_assertions: string[];
+};
+export type TemplateProof = {
+  sandbox: {
+    passed?: boolean;
+    error_count?: number;
+    proof_path?: string;
+    core_loop?: { all_passed?: boolean };
+  };
+  economy_sim: {
+    balanced?: boolean;
+    blocker_count?: number;
+  };
+  gui_safe_area: {
+    passed?: boolean;
+    warning_count?: number;
+  };
+};
+export type Idea = {
+  id: string;
+  title: string;
+  pitch: string;
+  skills: string[];
+  niche_id?: string | null;
+  feel_profile?: FeelProfile | null;
+};
 export type PlaceInstance = { class_name?: string; properties?: Record<string, unknown>; source_file?: string };
 export type Place = { scripts: Record<string, string>; instances: Record<string, PlaceInstance> };
 export type ChatList = { chats: Chat[]; active: string; can_undo: boolean; can_redo?: boolean };
@@ -284,6 +360,8 @@ export function normalizeIdeas(raw: unknown): { ideas: Idea[]; builtTitles: stri
       title: asStr(it.title).trim() || "Untitled blueprint",
       pitch: asStr(it.pitch).trim(),
       skills: Array.isArray(it.skills) ? it.skills.filter((s): s is string => typeof s === "string" && s.trim().length > 0) : [],
+      niche_id: typeof it.niche_id === "string" ? it.niche_id : null,
+      feel_profile: isObj(it.feel_profile) ? (it.feel_profile as FeelProfile) : null,
     }));
   const builtTitles = Array.isArray(raw.built_titles)
     ? raw.built_titles.filter((t): t is string => typeof t === "string" && t.trim().length > 0)
@@ -1639,6 +1717,9 @@ const BLUEPRINT_CATALOG: Record<string, BlueprintMeta> = {
   "obby-starter": { category: "Obby", tagClass: "bg-tag-plan-bg text-tag-plan-fg", counts: "2 parts, 5 scripts" },
   "coin-tycoon": { category: "Economy", tagClass: "bg-tag-mint-bg text-tag-mint-fg", counts: "4 scripts, HUD" },
   "round-arena": { category: "Arena", tagClass: "bg-tag-sky-bg text-tag-sky-fg", counts: "2 parts, 4 scripts" },
+  "anime-card-battles-apex": { category: "Anime RNG", tagClass: "bg-tag-research-bg text-tag-research-fg", counts: "11 scripts, Feel-Proven" },
+  "viral-sim-tycoon-template": { category: "Tycoon", tagClass: "bg-tag-mint-bg text-tag-mint-fg", counts: "8 scripts, Feel-Proven" },
+  "anime-action-rpg-td-template": { category: "Action RPG", tagClass: "bg-tag-sky-bg text-tag-sky-fg", counts: "9 scripts, Feel-Proven" },
   "add-shop": { category: "Economy", tagClass: "bg-tag-mint-bg text-tag-mint-fg", counts: "2 scripts, HUD" },
   "add-currency": { category: "Economy", tagClass: "bg-tag-mint-bg text-tag-mint-fg", counts: "1 script, DataStore" },
   "add-checkpoints": { category: "Obby", tagClass: "bg-tag-plan-bg text-tag-plan-fg", counts: "1 folder, 1 script" },
