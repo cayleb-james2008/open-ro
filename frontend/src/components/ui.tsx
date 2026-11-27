@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useId, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, LayoutGroup, m, useReducedMotion as useMotionReduced } from "motion/react";
 import { clsx, type ClassValue } from "clsx";
@@ -428,15 +428,25 @@ export function Dialog({
 }) {
   const [uncontrolled, setUncontrolled] = useState(false);
   const open = controlledOpen !== undefined ? controlledOpen : uncontrolled;
-  const setOpen = (v: boolean) => {
-    if (controlledOpen === undefined) setUncontrolled(v);
-    onOpenChange?.(v);
-  };
+  const onOpenChangeRef = useRef(onOpenChange);
+  onOpenChangeRef.current = onOpenChange;
+  const isControlled = controlledOpen !== undefined;
+  const setOpen = useCallback(
+    (v: boolean) => {
+      if (!isControlled) setUncontrolled(v);
+      onOpenChangeRef.current?.(v);
+    },
+    [isControlled],
+  );
   const titleId = useId();
   const descId = useId();
   const triggerRef = useRef<HTMLElement | null>(null);
+  const value = useMemo(
+    () => ({ open, setOpen, titleId, descId, triggerRef }),
+    [open, setOpen, titleId, descId],
+  );
   return (
-    <DialogCtx.Provider value={{ open, setOpen, titleId, descId, triggerRef }}>
+    <DialogCtx.Provider value={value}>
       {children}
     </DialogCtx.Provider>
   );
@@ -502,11 +512,14 @@ export function DialogContent({
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) {
   const ctx = useContext(DialogCtx);
+  const ctxRef = useRef(ctx);
+  ctxRef.current = ctx;
+  const isOpen = Boolean(ctx?.open);
   const ref = useRef<HTMLDivElement>(null);
   const reduced = useMotionReduced();
 
   useEffect(() => {
-    if (!ctx?.open) return;
+    if (!isOpen) return;
     const prevActive = document.activeElement as HTMLElement | null;
     const el = ref.current;
     const focusables = () =>
@@ -522,10 +535,11 @@ export function DialogContent({
     firstPreferred?.focus();
 
     const onKey = (e: KeyboardEvent) => {
+      const cur = ctxRef.current;
       if (e.key === "Escape") {
         e.stopPropagation();
-        ctx.setOpen(false);
-        (ctx.triggerRef.current ?? prevActive)?.focus();
+        cur?.setOpen(false);
+        (cur?.triggerRef.current ?? prevActive)?.focus();
         return;
       }
       if (e.key === "Tab") {
@@ -544,7 +558,7 @@ export function DialogContent({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [ctx]);
+  }, [isOpen]);
 
   return (
     <m.div
