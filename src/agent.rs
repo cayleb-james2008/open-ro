@@ -246,7 +246,9 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - {{\"tool\": \"liveops_datastore_set\", \"args\": {{\"store\": \"...\", \"scope\": \"global\", \"key\": \"...\", \"value\": {{...}}, \"expected_revision\": \"...\", \"confirm\": true}}}} writes a DataStore entry with optimistic concurrency & backup (REQUIRES owner `confirm: true`)\n\
 - {{\"tool\": \"liveops_messaging_publish\", \"args\": {{\"topic\": \"...\", \"message\": {{...}}, \"confirm\": true}}}} broadcasts via MessagingService (REQUIRES owner `confirm: true`)\n\
 - {{\"tool\": \"liveops_remote_config_push\", \"args\": {{\"config\": {{...}}, \"generate_luau\": true, \"push_to_datastore\": false}}}} updates `liveops/remote-config.json` & `src/shared/LiveConfig.luau` (`push_to_datastore: true` REQUIRES `confirm: true`)\n\
-- {{\"tool\": \"liveops_telemetry_summary\", \"args\": {{}}}} summarizes player onboarding/funnel drop-off, ARPDAU Robux, and top economy sinks\n\
+- {{\"tool\": \"liveops_telemetry_codegen\", \"args\": {{\"mode\": \"opencloud_datastore|webhook_relay\", \"store_name\": \"OpenRO_LiveTelemetry\", \"flush_interval_secs\": 60, \"relay_url\": \"https://...?\"}}}} generates `--!strict` `src/shared/LiveTelemetry.luau` & `src/server/LiveTelemetryFlush.server.luau`\n\
+- {{\"tool\": \"liveops_telemetry_sync\", \"args\": {{\"source\": \"opencloud_datastore|creator_analytics\", \"store_name\": \"OpenRO_LiveTelemetry\", \"days\": 7}}}} syncs unread production telemetry shards & aggregates live errors\n\
+- {{\"tool\": \"liveops_telemetry_summary\", \"args\": {{\"source\": \"all|live_opencloud|sandbox\"}}}} summarizes player onboarding/funnel drop-off, ARPDAU Robux, top economy sinks, and live errors\n\
 - {{\"tool\": \"project_publish\", \"args\": {{\"versionType\": \"Saved\"}}}} publishes built `.rbxlx` (`versionType: \"Published\"` requires `confirm: true` ONLY after explicit owner approval)\n\
 - {{\"tool\": \"evidence_record\", \"args\": {{\"summary\": \"...\", \"confidence\": \"observed|derived|inferred\", \"kind\": \"...\", \"source\": \"...\"}}}} appends canonical SHA-256 evidence (`ev_*`) to `.openro/investigation/evidence.jsonl`\n\
 - {{\"tool\": \"evidence_list\", \"args\": {{\"confidence\": \"...?\", \"kind\": \"...?\", \"limit\": 50}}}} lists recorded investigation evidence\n\
@@ -308,7 +310,7 @@ RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - opencloud_status {{}} / creator_hub_status {{\"check_login\": true, \"save_creator\": true}} / creator_hub_setup {{...}} / creator_hub_configure {{...}} (loopback CDP; stop on action_required)\n\
 - assets_authorise {{\"paths\": [...]}} / assets_upload {{\"paths\": [...]}} / assets_codegen {{}} (-> AssetIds.luau)\n\
 - products_sync {{}} / products_codegen {{}} (-> ProductIds.luau) / universe_get {{}} / universe_set {{...}}\n\
-- liveops_datastore_list {{}} / liveops_datastore_get {{\"store\":\"...\",\"key\":\"...\"}} / liveops_datastore_set {{...,\"expected_revision\":\"...\",\"confirm\":true}} / liveops_messaging_publish {{\"topic\":\"...\",\"message\":{{...}},\"confirm\":true}} / liveops_remote_config_push {{\"config\":{{...}},\"generate_luau\":true,\"push_to_datastore\":false}} / liveops_telemetry_summary {{}} (live writes need confirm:true)\n\
+- liveops_datastore_list {{}} / liveops_datastore_get {{store,key}} / liveops_datastore_set {{...,confirm:true}} / liveops_messaging_publish {{topic,message,confirm:true}} / liveops_remote_config_push {{config,generate_luau,push_to_datastore}} / liveops_telemetry_codegen {{mode,store_name,flush_interval_secs}} / liveops_telemetry_sync {{source,days}} / liveops_telemetry_summary {{}} (live writes need confirm:true)\n\
 - project_publish {{\"versionType\": \"Saved\"}} (live \"Published\" requires confirm: true ONLY after owner approval)\n\n\
 STUDY & EVIDENCE TOOLS (Study -> Build -> Check -> Refine):\n\
 - evidence_record {{\"summary\":\"...\",\"confidence\":\"observed|derived|inferred\",\"kind\":\"...\",\"source\":\"...\"}} / evidence_list {{\"confidence\":\"...?\",\"limit\":50}}\n\
@@ -3078,6 +3080,8 @@ impl Agent {
                                         | "liveops_datastore_set"
                                         | "liveops_messaging_publish"
                                         | "liveops_remote_config_push"
+                                        | "liveops_telemetry_codegen"
+                                        | "liveops_telemetry_sync"
                                         | "adapter_invoke"
                                         | "evidence_record"
                                         | "unknown_add"
@@ -3552,6 +3556,8 @@ impl Agent {
                                 | "liveops_datastore_set"
                                 | "liveops_messaging_publish"
                                 | "liveops_remote_config_push"
+                                | "liveops_telemetry_codegen"
+                                | "liveops_telemetry_sync"
                                 | "adapter_invoke"
                                 | "evidence_record"
                                 | "unknown_add"
@@ -4955,12 +4961,39 @@ impl Agent {
                 thread.push("Updated liveops/remote-config.json and src/shared/LiveConfig.luau.".to_string());
                 Ok(format!("tool_result: liveops_remote_config_push: {text}"))
             }
+            "liveops_telemetry_codegen" => {
+                let _ = self.require_project_root()?;
+                let res = self.invoke_opencloud_local(
+                    "POST",
+                    "/api/projects/_active/liveops/telemetry/codegen",
+                    "",
+                    args,
+                )?;
+                let text = res.to_string();
+                transcript.push(format!("tool liveops_telemetry_codegen -> {text}"));
+                thread.push("Generated LiveTelemetry.luau and LiveTelemetryFlush.server.luau.".to_string());
+                Ok(format!("tool_result: liveops_telemetry_codegen: {text}"))
+            }
+            "liveops_telemetry_sync" => {
+                let _ = self.require_project_root()?;
+                let res = self.invoke_opencloud_local(
+                    "POST",
+                    "/api/projects/_active/liveops/telemetry/sync",
+                    "",
+                    args,
+                )?;
+                let text = res.to_string();
+                transcript.push(format!("tool liveops_telemetry_sync -> {text}"));
+                thread.push("Synced production LiveOps telemetry shards.".to_string());
+                Ok(format!("tool_result: liveops_telemetry_sync: {text}"))
+            }
             "liveops_telemetry_summary" => {
                 let _ = self.require_project_root()?;
+                let q = build_query_from_args(args, &["source"]);
                 let res = self.invoke_opencloud_local(
                     "GET",
                     "/api/projects/_active/liveops/telemetry/summary",
-                    "",
+                    &q,
                     args,
                 )?;
                 let text = res.to_string();

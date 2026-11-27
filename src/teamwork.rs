@@ -2704,6 +2704,8 @@ fn is_write_or_submit_tool(tool: &str) -> bool {
             | "liveops_datastore_set"
             | "liveops_messaging_publish"
             | "liveops_remote_config_push"
+            | "liveops_telemetry_codegen"
+            | "liveops_telemetry_sync"
             | "adapter_invoke"
             | "create_task"
             | "verify_task"
@@ -3268,7 +3270,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "Follow Study -> Build -> Check -> Refine: check `study_status` so gaps are investigated with `evidence_record`/`unknown_add` before coding and checked with `mechanics_check`/`project_check`.\n",
             "To wait for workers, return {\"done\":true,\"summary\":\"waiting\"} — NEVER poll board_read.\n",
             "Call `finish_run` once all tasks are `done`.\n",
-            "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, project_scene_get, study_status, unknowns_list, evidence_list, opencloud_status, creator_hub_status, creator_hub_setup, creator_hub_configure, assets_authorise, assets_upload, assets_codegen, products_sync, products_codegen, project_publish, universe_get, universe_set, liveops_datastore_list, liveops_datastore_get, liveops_datastore_set, liveops_messaging_publish, liveops_remote_config_push, liveops_telemetry_summary, finish_run.\n",
+            "Tools: create_task, board_post, board_read, project_files, project_read_file, project_grep, project_scene_get, study_status, unknowns_list, evidence_list, opencloud_status, creator_hub_status, creator_hub_setup, creator_hub_configure, assets_authorise, assets_upload, assets_codegen, products_sync, products_codegen, project_publish, universe_get, universe_set, liveops_datastore_list, liveops_datastore_get, liveops_datastore_set, liveops_messaging_publish, liveops_remote_config_push, liveops_telemetry_codegen, liveops_telemetry_sync, liveops_telemetry_summary, finish_run.\n",
             "Cloud/Publish rules: check `opencloud_status` / `creator_hub_status` before publishing; `creator_hub_*` uses loopback CDP and NEVER bypasses login/2FA/CAPTCHA (if `status:\"action_required\"`, stop and report `blocked_reason`/`url` to owner); `project_publish` with `versionType:\"Published\"` REQUIRES explicit owner approval and `{\"versionType\":\"Published\",\"confirm\":true}` (default `versionType` is `\"Saved\"`); `liveops_datastore_set`, `liveops_messaging_publish`, and `liveops_remote_config_push` (`push_to_datastore:true`) REQUIRE explicit owner `confirm:true`; never self-approve product prices."
         ),
         "verifier" => concat!(
@@ -3290,7 +3292,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "You are a Teamwork specialist worker.\n",
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
             "Follow Study -> Build -> Check -> Refine: check `study_status`/`unknowns_list`, record verified behavior with `evidence_record`/`unknown_add`/`unknown_update` (capping guesswork), cite `ev_*` IDs in `docs/mechanics.json` (`mechanics_check`), build, check (`project_check`/`project_playtest`, pass `\"force\":true` to bypass `KeptChecks`), and refine.\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_summary`.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `mesh_generate`, `blender_generate`, `audio_generate`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_codegen`, `liveops_telemetry_sync`, `liveops_telemetry_summary`.\n",
             "Formatting: `project_check` with `{\"format\":true}` or `project_format` auto-formats your claimed `.luau` files with `stylua` instead of hand-editing whitespace.\n",
             "Asset arg signatures:\n",
             "- project_scene_mutate: {\"ops\":[{\"op\":\"upsert|delete|duplicate|reparent|set_lighting|set_terrain|undo|redo\",\"path\":\"Workspace.Name\",\"class_name\":\"Part|Model|SpawnLocation|MeshPart|PointLight|SpotLight|SurfaceLight|ParticleEmitter|Sound|SurfaceAppearance\",\"new_parent\":\"Workspace.Parent\",\"enabled\":true,\"generator\":{\"kind\":\"flat|hills|island|canyon\",\"seed\":1,\"amplitude\":24,\"water_level\":0},\"paint_box\":{\"min\":[0,0,0],\"max\":[16,8,16],\"material\":\"Grass\"}}]}\n",
@@ -3304,7 +3306,7 @@ fn build_role_system_prompt(st: &RunState, idx: usize) -> String {
             "- assets_authorise {\"paths\":[\"art/**\"]} -> assets_upload {\"paths\":[...]} -> assets_codegen {}\n",
             "- products_sync {\"dry_run\":false,\"default_for_sale\":false,\"auto_codegen\":true} -> products_codegen {} (emits src/shared/ProductIds.luau; never self-approve product prices)\n",
             "- project_publish {\"versionType\":\"Saved\"|\"Published\",\"confirm\":true?} (`versionType:\"Published\"` REQUIRES explicit owner approval + `confirm:true`); universe_get {} / universe_set {\"settings\":{...}}\n",
-            "- liveops_datastore_list {\"store\":\"...?\",\"scope\":\"global\",\"prefix\":\"...?\"} / liveops_datastore_get {\"store\":\"...\",\"key\":\"...\"} / liveops_datastore_set {\"store\":\"...\",\"key\":\"...\",\"value\":{...},\"expected_revision\":\"...\",\"confirm\":true} / liveops_messaging_publish {\"topic\":\"...\",\"message\":{...},\"confirm\":true} / liveops_remote_config_push {\"config\":{...},\"generate_luau\":true,\"push_to_datastore\":false} / liveops_telemetry_summary {}\n",
+            "- liveops_datastore_list {\"store\":\"...?\",\"scope\":\"global\",\"prefix\":\"...?\"} / liveops_datastore_get {\"store\":\"...\",\"key\":\"...\"} / liveops_datastore_set {\"store\":\"...\",\"key\":\"...\",\"value\":{...},\"expected_revision\":\"...\",\"confirm\":true} / liveops_messaging_publish {\"topic\":\"...\",\"message\":{...},\"confirm\":true} / liveops_remote_config_push {\"config\":{...},\"generate_luau\":true,\"push_to_datastore\":false} / liveops_telemetry_codegen {\"mode\":\"opencloud_datastore|webhook_relay\",\"store_name\":\"OpenRO_LiveTelemetry\",\"flush_interval_secs\":60} / liveops_telemetry_sync {\"source\":\"opencloud_datastore|creator_analytics\",\"days\":7} / liveops_telemetry_summary {}\n",
             "When your task is ready for verification, call `submit_task` to hand it to `@verifier`."
         ),
     };
@@ -3889,13 +3891,33 @@ fn execute_agent_tool(
             record_generated_asset_files(handle, agent_name, tool, args, &res);
             Ok(res)
         }
-        "liveops_telemetry_summary" => run_opencloud_route(
+        "liveops_telemetry_codegen" => {
+            let res = run_opencloud_route(
+                shared,
+                handle,
+                "POST",
+                "/api/projects/active/liveops/telemetry/codegen",
+                args,
+            )?;
+            record_generated_asset_files(handle, agent_name, tool, args, &res);
+            Ok(res)
+        }
+        "liveops_telemetry_sync" => run_opencloud_route(
             shared,
             handle,
-            "GET",
-            "/api/projects/active/liveops/telemetry/summary",
-            &json!({}),
+            "POST",
+            "/api/projects/active/liveops/telemetry/sync",
+            args,
         ),
+        "liveops_telemetry_summary" => {
+            let q = crate::agent::build_query_from_args(args, &["source"]);
+            let path = if q.is_empty() {
+                "/api/projects/active/liveops/telemetry/summary".to_string()
+            } else {
+                format!("/api/projects/active/liveops/telemetry/summary?{q}")
+            };
+            run_opencloud_route(shared, handle, "GET", &path, &json!({}))
+        }
         "adapter_list" => {
             let data_dir = shared.data_dir.as_deref().unwrap_or(&shared.assets_root);
             let store = crate::secrets::SecretStore::for_data_dir(data_dir);
@@ -6132,6 +6154,13 @@ fn collect_generated_asset_paths(tool: &str, res: &Value) -> Vec<String> {
             push_str(&mut raw, res.get("path").and_then(Value::as_str));
             if res.get("luau_written").and_then(Value::as_bool) == Some(true) {
                 push_str(&mut raw, res.get("luau_path").and_then(Value::as_str));
+            }
+        }
+        "liveops_telemetry_codegen" => {
+            if let Some(arr) = res.get("files").and_then(Value::as_array) {
+                for p in arr {
+                    push_str(&mut raw, p.as_str());
+                }
             }
         }
         "assets_upload" => {
