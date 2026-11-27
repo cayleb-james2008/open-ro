@@ -4234,10 +4234,10 @@ export function App() {
             <MorphingDialogContainer>
               <MorphingDialogContent
                 data-two-way-sync-dialog
-                className="relative mx-3 flex max-h-[86dvh] w-full max-w-[780px] flex-col gap-4 overflow-y-auto rounded-dialog border border-hairline bg-surface p-5 text-ink shadow-lift"
+                className="relative mx-3 flex max-h-[86dvh] w-full max-w-[780px] flex-col gap-3 overflow-hidden rounded-dialog border border-hairline bg-surface p-4 text-ink shadow-lift sm:p-5"
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
+                <div className="flex flex-none items-start justify-between gap-3">
+                  <div className="min-w-0">
                     <MorphingDialogTitle className="font-heading text-title font-semibold">
                       Two-Way Studio Sync
                     </MorphingDialogTitle>
@@ -4247,22 +4247,24 @@ export function App() {
                   </div>
                   <MorphingDialogClose
                     aria-label="Close"
-                    className="static inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-hairline bg-surface px-3 text-sm font-medium text-ink outline-none hover:bg-board focus-visible:ring-2 focus-visible:ring-focus"
+                    className="static inline-flex min-h-11 shrink-0 cursor-pointer items-center rounded-lg border border-hairline bg-surface px-3 text-sm font-medium text-ink outline-none hover:bg-board focus-visible:ring-2 focus-visible:ring-focus"
                   >
                     Close
                   </MorphingDialogClose>
                 </div>
-                <Suspense fallback={<div className="p-4 text-sm text-ink-2">Loading Studio sync…</div>}>
-                  <SyncConflictsCard
-                    projectId={ship.activeId}
-                    studioOk={studioOk}
-                    autoPullOnMount
-                    onResolved={async () => {
-                      await refreshPlace(ship.activeId);
-                      await ship.refresh();
-                    }}
-                  />
-                </Suspense>
+                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-0.5">
+                  <Suspense fallback={<div className="p-4 text-sm text-ink-2">Loading Studio sync…</div>}>
+                    <SyncConflictsCard
+                      projectId={ship.activeId}
+                      studioOk={studioOk}
+                      autoPullOnMount
+                      onResolved={async () => {
+                        await refreshPlace(ship.activeId);
+                        await ship.refresh();
+                      }}
+                    />
+                  </Suspense>
+                </div>
               </MorphingDialogContent>
             </MorphingDialogContainer>
           </MorphingDialog>

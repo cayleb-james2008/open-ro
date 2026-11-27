@@ -193,10 +193,16 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
   const [backendDiagnostics, setBackendDiagnostics] = useState<LuauDiagnostic[] | null>(null);
   const [diagnosticsSource, setDiagnosticsSource] = useState<"luau-analyze+builtin" | "builtin">("builtin");
   const [luauAnalyzeAvailable, setLuauAnalyzeAvailable] = useState(false);
+  const [symbolsLoading, setSymbolsLoading] = useState(false);
+  const [symbolsError, setSymbolsError] = useState("");
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef = useRef<HTMLPreElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
+  const activeProjectRef = useRef(projectId);
+  activeProjectRef.current = projectId;
+  const typecheckSeqRef = useRef(0);
+  const defSeqRef = useRef(0);
 
   useEffect(() => {
     setNewScriptPath((prev) => {
@@ -274,7 +280,20 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
   );
 
   useEffect(() => {
+    setPendingJump(null);
+    setInspectedLine(null);
+    setSymbolsError("");
+    setBackendSymbols(null);
+    setBackendMismatches(null);
+    setBackendDiagnostics(null);
+    setDiagnosticsSource("builtin");
+    setLuauAnalyzeAvailable(false);
+  }, [projectId]);
+
+  useEffect(() => {
     if (!projectMode || !projectId) {
+      setSymbolsLoading(false);
+      setSymbolsError("");
       setBackendSymbols(null);
       setBackendMismatches(null);
       setBackendDiagnostics(null);
@@ -283,14 +302,21 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
       return;
     }
     let cancelled = false;
+    setSymbolsLoading(true);
     void fetchLuauSymbols(projectId).then((res) => {
       if (cancelled) return;
-      if (!applySymbolResponse(res)) {
+      setSymbolsLoading(false);
+      if (applySymbolResponse(res)) {
+        setSymbolsError("");
+      } else {
         setBackendSymbols(null);
         setBackendMismatches(null);
         setBackendDiagnostics(null);
         setDiagnosticsSource("builtin");
         setLuauAnalyzeAvailable(false);
+        if (res.httpStatus !== 404) {
+          setSymbolsError(res.error || "Backend symbol index unavailable; using client static prover.");
+        }
       }
     });
     return () => {
@@ -420,8 +446,17 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
   );
 
   const jumpToLocation = useCallback(
-    (targetPath: string, line: number, col = 1) => {
+    (targetPath: string, line: number, col = 1): boolean => {
       const resolved = resolveTargetPath(targetPath);
+      const targetExists =
+        allPaths.some((p) => normalizePathMatch(p, resolved)) ||
+        Boolean(place.scripts && Object.keys(place.scripts).some((p) => normalizePathMatch(p, resolved))) ||
+        activeDiffs.some((d) => normalizePathMatch(d.path, resolved));
+      if (!targetExists) {
+        setPendingJump(null);
+        toast.error(`Cannot jump: "${shortName(resolved)}" is not in this workspace.`);
+        return false;
+      }
       setViewMode("edit");
       if (currentPath && normalizePathMatch(resolved, currentPath)) {
         requestAnimationFrame(() => focusCursorAt(line, col));
@@ -429,8 +464,9 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
         setPendingJump({ path: resolved, line, col });
         onSelectScriptPath(resolved);
       }
+      return true;
     },
-    [currentPath, focusCursorAt, onSelectScriptPath, resolveTargetPath],
+    [activeDiffs, allPaths, currentPath, focusCursorAt, onSelectScriptPath, place.scripts, resolveTargetPath],
   );
 
   useEffect(() => {
@@ -488,13 +524,19 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
 
   const handleCheckTypes = async () => {
     if (checkingTypes) return;
+    const reqSeq = ++typecheckSeqRef.current;
+    const reqProject = projectId;
     setCheckingTypes(true);
+    setSymbolsError("");
     try {
+      let backendFailureMsg = "";
       if (projectMode && projectId) {
         if (dirty && currentPath) {
           await onSaveScript(currentPath, draft);
         }
+        if (reqSeq !== typecheckSeqRef.current || activeProjectRef.current !== reqProject) return;
         const res = await runLuauTypecheck(projectId);
+        if (reqSeq !== typecheckSeqRef.current || activeProjectRef.current !== reqProject) return;
         if (applySymbolResponse(res)) {
           const totalErrs =
             (res.diagnostics?.filter((d) => d.severity === "error").length ?? 0) +
@@ -505,6 +547,9 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
             toast.success(`Typecheck passed (${res.symbols?.length ?? 0} symbols indexed)`);
           }
           return;
+        }
+        if (res.httpStatus !== 404) {
+          backendFailureMsg = res.error || `Backend typecheck failed (HTTP ${res.httpStatus}).`;
         }
       }
       const local = buildWorkspaceSymbolIndex(virtualScripts, place.instances || {});
@@ -522,31 +567,52 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
       setLuauAnalyzeAvailable(false);
       onTypecheckDiagnostics?.(mapped);
       const total = mapped.filter((d) => d.severity === "error").length + local.mismatches.length;
-      if (total > 0) toast.error(`Static prover found ${total} issue${total === 1 ? "" : "s"}`);
-      else toast.success(`Static prover clean (${local.symbols.length} symbols)`);
+      if (backendFailureMsg) {
+        setSymbolsError(`${backendFailureMsg} Showing client static prover.`);
+        toast.warning(`${backendFailureMsg} Fell back to client static prover.`);
+      } else if (total > 0) {
+        toast.error(`Static prover found ${total} issue${total === 1 ? "" : "s"}`);
+      } else {
+        toast.success(`Static prover clean (${local.symbols.length} symbols)`);
+      }
     } finally {
-      setCheckingTypes(false);
+      if (reqSeq === typecheckSeqRef.current) {
+        setCheckingTypes(false);
+      }
     }
   };
 
   const handleGoToDefinition = useCallback(async () => {
     if (!currentPath) return;
+    if (viewMode === "diff" && currentDiff) {
+      toast.info("Switch to Edit Luau and place the cursor on a symbol or require() to jump.");
+      return;
+    }
+    const reqSeq = ++defSeqRef.current;
+    const reqProject = projectId;
     const ta = textareaRef.current;
     const pos = ta ? getCursorLineCol(ta.value, ta.selectionStart ?? 0) : { line: cursorLine, col: cursorCol };
+    let backendError = "";
     if (projectMode && projectId && !dirty) {
       const res = await fetchLuauDefinition(projectId, currentPath, pos.line, pos.col);
+      if (reqSeq !== defSeqRef.current || activeProjectRef.current !== reqProject) return;
       if (res.ok && res.target_path) {
         jumpToLocation(res.target_path, res.line || 1, res.col || 1);
         return;
+      }
+      if (!res.ok && res.httpStatus !== 404) {
+        backendError = res.error || "";
       }
     }
     const localDef = resolveLuauDefinitionClient(virtualScripts, currentPath, pos.line, pos.col, place.instances || {});
     if (localDef.ok && localDef.target_path) {
       jumpToLocation(localDef.target_path, localDef.line || 1, localDef.col || 1);
+    } else if (backendError) {
+      toast.error(`Definition lookup failed: ${backendError}`);
     } else {
-      toast.info("Place the cursor on a require(), module call, remote, or symbol to jump.");
+      toast.info("No definition found at cursor. Place the cursor on a require(), module call, remote, or symbol.");
     }
-  }, [cursorCol, cursorLine, currentPath, dirty, jumpToLocation, place.instances, projectId, projectMode, virtualScripts]);
+  }, [currentDiff, cursorCol, cursorLine, currentPath, dirty, jumpToLocation, place.instances, projectId, projectMode, viewMode, virtualScripts]);
 
   const handleEditorKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "F12") {
@@ -720,11 +786,15 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
                   variant={active ? "secondary" : "ghost"}
                   size="xs"
                   aria-pressed={active}
-                  onClick={() => onSelectScriptPath(p)}
-                  className={`gap-1.5 font-mono text-xs max-md:min-h-11 ${active ? "bg-surface text-ink shadow-xs" : "text-ink-2"}`}
+                  title={p}
+                  onClick={() => {
+                    setPendingJump(null);
+                    onSelectScriptPath(p);
+                  }}
+                  className={`max-w-[220px] gap-1.5 font-mono text-xs max-md:min-h-11 ${active ? "bg-surface text-ink shadow-xs" : "text-ink-2"}`}
                 >
                   <FileCode className="size-3 shrink-0" strokeWidth={1.5} aria-hidden />
-                  <span>{shortName(p)}</span>
+                  <span className="truncate">{shortName(p)}</span>
                   {diff && (
                     <span className="inline-flex items-center gap-1 tabular-nums">
                       <span className="text-pill-active-fg">+{diff.additions}</span>
@@ -880,9 +950,9 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
       {currentPath && (
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline px-3 py-1.5 text-xs">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <code className="truncate font-mono text-ink">{currentPath}</code>
+            <code className="max-w-full truncate font-mono text-ink" title={currentPath}>{currentPath}</code>
             {scriptMeta?.[currentPath]?.service_path && (
-              <Badge className="hidden border-transparent bg-board px-1.5 py-0.5 font-mono text-xs text-ink-2 sm:inline-flex">
+              <Badge className="hidden max-w-full truncate border-transparent bg-board px-1.5 py-0.5 font-mono text-xs text-ink-2 sm:inline-flex" title={scriptMeta[currentPath].service_path}>
                 {scriptMeta[currentPath].service_path}
               </Badge>
             )}
@@ -999,33 +1069,38 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
                 <div
                   data-gutter-tooltip
                   role="status"
-                  className="mb-2 flex items-start justify-between gap-2 rounded-lg border border-hairline bg-board px-3 py-2 text-xs"
+                  className="mb-2 flex max-w-full items-start justify-between gap-2 overflow-hidden rounded-lg border border-hairline bg-board px-3 py-2 text-xs"
                 >
                   <div className="flex min-w-0 flex-1 flex-col gap-1.5 overflow-hidden">
                     {inspectedEntry.mismatches.map((m, idx) => (
-                      <div key={`mm-${idx}`} className="flex flex-col gap-1 text-pill-pro-fg">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <Badge className="max-w-full shrink-0 truncate border-transparent bg-pill-pro-bg px-1.5 py-0.5 tabular-nums text-xs text-pill-pro-fg">
+                      <div key={`mm-${idx}`} className="flex min-w-0 flex-col gap-1 text-pill-pro-fg">
+                        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                          <Badge
+                            title={`L${inspectedLine} ${m.kind}`}
+                            className="max-w-full truncate border-transparent bg-pill-pro-bg px-1.5 py-0.5 tabular-nums text-xs text-pill-pro-fg"
+                          >
                             L{inspectedLine} {m.kind}
                           </Badge>
                           <Button
                             variant="outline"
                             size="xs"
                             data-mismatch-jump-target
+                            title={m.target_path}
                             onClick={() => jumpToLocation(m.target_path, 1, 1)}
-                            className="shrink-0 bg-surface font-mono max-md:min-h-11"
+                            className="min-w-0 max-w-full bg-surface font-mono max-md:min-h-11"
                           >
-                            Open {shortName(m.target_path)}
+                            <span className="truncate">Open {shortName(m.target_path)}</span>
                           </Button>
                         </div>
                         <span className="text-ink [overflow-wrap:anywhere]">{m.message}</span>
                       </div>
                     ))}
                     {inspectedEntry.diagnostics.map((d, idx) => (
-                      <div key={`dg-${idx}`} className="flex flex-col gap-1">
-                        <div className="flex flex-wrap items-center gap-1.5">
+                      <div key={`dg-${idx}`} className="flex min-w-0 flex-col gap-1">
+                        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                           <Badge
-                            className={`max-w-full shrink-0 truncate border-transparent px-1.5 py-0.5 tabular-nums text-xs ${
+                            title={`L${inspectedLine} ${d.code}`}
+                            className={`max-w-full truncate border-transparent px-1.5 py-0.5 tabular-nums text-xs ${
                               d.severity === "error"
                                 ? "bg-pill-pro-bg text-pill-pro-fg"
                                 : "bg-pill-warn-bg text-pill-warn-fg"
@@ -1182,10 +1257,10 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
                 aria-label="Symbols & Exports"
                 className="flex max-h-52 w-full min-w-0 shrink-0 flex-col overflow-x-hidden border-t border-hairline bg-board/50 md:max-h-none md:w-52 lg:w-56 md:border-t-0 md:border-l"
               >
-                <div className="flex items-center justify-between gap-2 border-b border-hairline px-2.5 py-2">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-medium text-ink">Symbols &amp; Exports</span>
-                    <Pill className="bg-surface px-1.5 py-0.5 text-xs tabular-nums text-ink-2">
+                <div className="flex min-w-0 items-center justify-between gap-2 border-b border-hairline px-2.5 py-2">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate text-xs font-medium text-ink">Symbols &amp; Exports</span>
+                    <Pill className="shrink-0 bg-surface px-1.5 py-0.5 text-xs tabular-nums text-ink-2">
                       {workspaceSymbols.length}
                     </Pill>
                   </div>
@@ -1194,7 +1269,7 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
                     size="icon-xs"
                     aria-label="Collapse Symbols & Exports"
                     onClick={() => setSymbolsOpen(false)}
-                    className="text-ink-2 hover:text-ink max-md:size-11"
+                    className="shrink-0 text-ink-2 hover:text-ink max-md:size-11"
                   >
                     <X className="size-3.5" strokeWidth={1.5} aria-hidden />
                   </Button>
@@ -1210,9 +1285,39 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
                   />
                 </div>
 
+                {symbolsError && (
+                  <p
+                    role="status"
+                    data-symbols-error
+                    className="border-b border-hairline bg-pill-warn-bg/60 px-2.5 py-1.5 text-xs text-pill-warn-fg [overflow-wrap:anywhere]"
+                  >
+                    {symbolsError}
+                  </p>
+                )}
+
                 <div className="min-h-0 flex-1 overflow-y-auto p-2">
-                  {filteredSymbols.inFile.length === 0 && filteredSymbols.others.length === 0 ? (
-                    <p className="px-1 py-3 text-xs text-ink-3">No symbols indexed yet.</p>
+                  {symbolsLoading && workspaceSymbols.length === 0 ? (
+                    <p className="px-1 py-3 text-xs text-ink-3" data-symbols-loading>
+                      Indexing workspace symbols…
+                    </p>
+                  ) : filteredSymbols.inFile.length === 0 && filteredSymbols.others.length === 0 ? (
+                    <div className="flex flex-col items-start gap-1.5 px-1 py-3" data-symbols-empty>
+                      <p className="text-xs text-ink-3">
+                        {symbolFilter.trim() && workspaceSymbols.length > 0
+                          ? "No symbols match your filter."
+                          : "No symbols indexed yet."}
+                      </p>
+                      {symbolFilter.trim() && workspaceSymbols.length > 0 && (
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          onClick={() => setSymbolFilter("")}
+                          className="h-7 px-2 text-xs text-blue max-md:min-h-11"
+                        >
+                          Clear filter
+                        </Button>
+                      )}
+                    </div>
                   ) : (
                     <div className="flex flex-col gap-3">
                       {filteredSymbols.inFile.length > 0 && (
@@ -1221,11 +1326,13 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
                           <ul className="flex flex-col gap-0.5">
                             {filteredSymbols.inFile.map((sym, idx) => {
                               const meta = SYMBOL_KIND_META[sym.kind] || SYMBOL_KIND_META.function;
+                              const symTitle = sym.signature ? `${sym.name}${sym.signature}` : sym.name;
                               return (
                                 <li key={`cur-${sym.path}-${sym.name}-${sym.line}-${idx}`}>
                                   <button
                                     type="button"
                                     data-symbol-item={sym.name}
+                                    title={symTitle}
                                     onClick={() => jumpToLocation(sym.path, sym.line, 1)}
                                     className="flex w-full min-w-0 cursor-pointer items-center justify-between gap-1.5 rounded-md px-1.5 py-1 text-left text-xs text-ink hover:bg-surface max-md:min-h-11"
                                   >
@@ -1250,11 +1357,13 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
                           <ul className="flex flex-col gap-0.5">
                             {filteredSymbols.others.map((sym, idx) => {
                               const meta = SYMBOL_KIND_META[sym.kind] || SYMBOL_KIND_META.function;
+                              const symTitle = sym.signature ? `${sym.name}${sym.signature} (${sym.path}:${sym.line})` : `${sym.name} (${sym.path}:${sym.line})`;
                               return (
                                 <li key={`ws-${sym.path}-${sym.name}-${sym.line}-${idx}`}>
                                   <button
                                     type="button"
                                     data-symbol-item={sym.name}
+                                    title={symTitle}
                                     onClick={() => jumpToLocation(sym.path, sym.line, 1)}
                                     className="flex w-full min-w-0 cursor-pointer items-center justify-between gap-1.5 rounded-md px-1.5 py-1 text-left text-xs text-ink-2 hover:bg-surface hover:text-ink max-md:min-h-11"
                                   >
@@ -1264,7 +1373,7 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
                                       </span>
                                       <span className="min-w-0 truncate font-mono">{sym.name}</span>
                                     </span>
-                                    <span className="max-w-[112px] shrink-0 truncate font-mono tabular-nums text-ink-3">
+                                    <span className="max-w-[92px] shrink-0 truncate font-mono tabular-nums text-ink-3">
                                       {shortName(sym.path)}:{sym.line}
                                     </span>
                                   </button>
@@ -1284,25 +1393,26 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
 
         {/* Inline Luau Diagnostics & Contract Mismatches Footer */}
         {(fileDiagnostics.length > 0 || fileMismatches.length > 0) && (
-          <div data-luau-diagnostics-footer className="max-h-36 overflow-y-auto border-t border-hairline bg-board/50 px-3 py-2">
-            <ul className="flex flex-col gap-1 text-xs">
+          <div data-luau-diagnostics-footer className="max-h-36 overflow-y-auto overflow-x-hidden border-t border-hairline bg-board/50 px-3 py-2">
+            <ul className="flex min-w-0 flex-col gap-1 text-xs">
               {fileMismatches.map((m, idx) => (
-                <li key={`fm-${m.caller_path}-${m.caller_line}-${idx}`} className="flex flex-wrap items-center gap-2 text-pill-pro-fg">
+                <li key={`fm-${m.caller_path}-${m.caller_line}-${idx}`} className="flex min-w-0 flex-wrap items-center gap-2 text-pill-pro-fg">
                   <button
                     type="button"
                     onClick={() => {
                       setInspectedLine(m.caller_line);
                       focusCursorAt(m.caller_line, 1);
                     }}
-                    className="cursor-pointer tabular-nums underline hover:opacity-80"
+                    className="shrink-0 cursor-pointer tabular-nums underline hover:opacity-80"
                   >
                     L{m.caller_line} [{m.kind}]
                   </button>
-                  <span className="min-w-0 flex-1 text-ink">{m.message}</span>
+                  <span className="min-w-0 flex-1 text-ink [overflow-wrap:anywhere]">{m.message}</span>
                   <button
                     type="button"
+                    title={m.target_path}
                     onClick={() => jumpToLocation(m.target_path, 1, 1)}
-                    className="cursor-pointer font-mono text-blue underline hover:opacity-80"
+                    className="max-w-full cursor-pointer truncate font-mono text-blue underline hover:opacity-80"
                   >
                     {shortName(m.target_path)}
                   </button>
@@ -1311,7 +1421,7 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
               {fileDiagnostics.map((d, idx) => (
                 <li
                   key={`${d.path}-${d.line}-${idx}`}
-                  className={`flex flex-wrap items-center gap-2 ${d.severity === "error" ? "text-pill-pro-fg" : "text-pill-warn-fg"}`}
+                  className={`flex min-w-0 flex-wrap items-center gap-2 ${d.severity === "error" ? "text-pill-pro-fg" : "text-pill-warn-fg"}`}
                 >
                   <button
                     type="button"
@@ -1319,11 +1429,11 @@ export const CodeDiffWorkbench = memo(function CodeDiffWorkbench({
                       setInspectedLine(d.line);
                       focusCursorAt(d.line, 1);
                     }}
-                    className="cursor-pointer tabular-nums underline hover:opacity-80"
+                    className="shrink-0 cursor-pointer tabular-nums underline hover:opacity-80"
                   >
                     L{d.line} [{d.code}]
                   </button>
-                  <span className="min-w-0 flex-1">{d.message}</span>
+                  <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{d.message}</span>
                 </li>
               ))}
             </ul>

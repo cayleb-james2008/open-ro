@@ -87,14 +87,30 @@ export function AssetsPanel({
   const modelFileInputRef = useRef<HTMLInputElement>(null);
   const poll = useRef<number | null>(null);
   const id = active?.id;
+  const activeIdRef = useRef(id);
+  activeIdRef.current = id;
+  const loadSeqRef = useRef(0);
 
   const load = useCallback(async () => {
     if (!id) return;
+    const reqSeq = ++loadSeqRef.current;
+    const reqId = id;
     const r = await call<{ files: AssetFile[] }>(projUrl(id, "/assets"));
+    if (reqSeq !== loadSeqRef.current || activeIdRef.current !== reqId) return;
     if (!r.ok) { setError(r.error || "Could not read the project's files."); setFiles((f) => f ?? []); return; }
     setError(""); setFiles(r.files ?? []);
   }, [id]);
-  useEffect(() => { setFiles(null); setResults(null); setNote(""); void load(); }, [load]);
+  useEffect(() => {
+    loadSeqRef.current++;
+    setFiles(null);
+    setResults(null);
+    setNote("");
+    setError("");
+    setBrokenImgs({});
+    setImportError("");
+    setImportResult(null);
+    void load();
+  }, [load]);
   useEffect(() => () => { if (poll.current) window.clearInterval(poll.current); }, []);
 
   const list = files ?? [];
@@ -161,6 +177,7 @@ export function AssetsPanel({
     setImportingModel(true);
     setImportError("");
     try {
+      const reqId = id;
       const buf = await file.arrayBuffer();
       const bytes_base64 = bytesToBase64(new Uint8Array(buf));
       const res = await importProjectModel(id, {
@@ -169,6 +186,7 @@ export function AssetsPanel({
         bytes_base64,
         target_service: importTargetService,
       });
+      if (activeIdRef.current !== reqId) return;
       if (!res.ok) {
         const msg = res.error || "Could not import prefab model.";
         setImportError(msg);
@@ -257,7 +275,7 @@ export function AssetsPanel({
         </div>
 
         {importError && (
-          <p role="alert" data-import-model-error className="rounded-sm bg-pill-pro-bg px-3 py-2 text-xs text-pill-pro-fg">
+          <p role="alert" data-import-model-error className="rounded-sm bg-pill-pro-bg px-3 py-2 text-xs text-pill-pro-fg [overflow-wrap:anywhere]">
             {importError}
           </p>
         )}
@@ -265,12 +283,12 @@ export function AssetsPanel({
         {importResult && (
           <div
             data-import-model-result
-            className="flex flex-col gap-1.5 rounded-sm border border-hairline bg-board/45 px-3 py-2 text-xs"
+            className="flex min-w-0 flex-col gap-1.5 rounded-sm border border-hairline bg-board/45 px-3 py-2 text-xs"
           >
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <Pill className="bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg">Imported</Pill>
-                <code className="font-mono text-xs text-ink">{importResult.model_path}</code>
+            <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                <Pill className="shrink-0 bg-pill-active-bg px-2 py-0.5 text-xs text-pill-active-fg">Imported</Pill>
+                <code className="min-w-0 break-all font-mono text-xs text-ink">{importResult.model_path}</code>
                 <span className="text-ink-2">wired to {importResult.wired_service}</span>
               </div>
               {onOpenViewport && (
@@ -279,16 +297,16 @@ export function AssetsPanel({
                   size="xs"
                   data-import-open-viewport
                   onClick={onOpenViewport}
-                  className="bg-surface max-md:min-h-11"
+                  className="shrink-0 bg-surface max-md:min-h-11"
                 >
                   View in 3D
                 </Button>
               )}
             </div>
             {importResult.extracted_scripts.length > 0 && (
-              <div className="text-ink-2">
+              <div className="min-w-0 text-ink-2 [overflow-wrap:anywhere]">
                 Extracted scripts:{" "}
-                <span className="font-mono text-ink">{importResult.extracted_scripts.join(", ")}</span>
+                <span className="break-all font-mono text-ink">{importResult.extracted_scripts.join(", ")}</span>
               </div>
             )}
             {importResult.warnings.length > 0 && (
@@ -419,8 +437,8 @@ export function AssetsPanel({
                         />
                       </MorphingDialogTrigger>
                       <MorphingDialogContainer>
-                        <MorphingDialogContent className="relative mx-3 flex max-h-[88dvh] w-full max-w-[780px] flex-col gap-3 rounded-dialog border border-hairline bg-surface p-4 text-ink shadow-lift">
-                          <MorphingDialogTitle className="font-heading text-ui font-semibold">{fileName}</MorphingDialogTitle>
+                        <MorphingDialogContent className="relative mx-3 flex max-h-[88dvh] w-full max-w-[780px] flex-col gap-3 overflow-hidden rounded-dialog border border-hairline bg-surface p-4 text-ink shadow-lift">
+                          <MorphingDialogTitle className="truncate font-heading text-ui font-semibold">{fileName}</MorphingDialogTitle>
                           <img src={imgUrl} alt={fileName} className="min-h-0 w-full flex-1 rounded-sm object-contain" />
                           <code className="truncate font-mono text-xs text-ink-3">{f.path}</code>
                           <MorphingDialogClose aria-label="Close preview" className="static inline-flex min-h-11 cursor-pointer items-center justify-center self-end rounded-lg border border-hairline bg-surface px-4 text-sm font-medium text-ink outline-none hover:bg-board focus-visible:ring-2 focus-visible:ring-focus">Close</MorphingDialogClose>
@@ -449,10 +467,10 @@ export function AssetsPanel({
                   </div>
 
                   <div className="flex flex-wrap items-center justify-between gap-1.5 border-t border-hairline pt-2">
-                    <div className="flex flex-wrap items-center gap-1">
+                    <div className="flex min-w-0 flex-wrap items-center gap-1">
                       {f.locked ? (
                         <>
-                          <Pill className="bg-pill-inactive-bg px-1.5 py-0 font-mono text-xs text-pill-inactive-fg"><Lock className="size-3" strokeWidth={1.5} aria-hidden />{f.locked.assetId}</Pill>
+                          <Pill className="max-w-full truncate bg-pill-inactive-bg px-1.5 py-0 font-mono text-xs text-pill-inactive-fg"><Lock className="size-3 shrink-0" strokeWidth={1.5} aria-hidden /><span className="truncate">{f.locked.assetId}</span></Pill>
                           {m && <Pill className={`px-1.5 py-0 text-xs ${m.cls}`}>{m.label}</Pill>}
                           {f.stale && <Pill className="bg-pill-warn-bg px-1.5 py-0 text-xs text-pill-warn-fg">changed</Pill>}
                         </>

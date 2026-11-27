@@ -93,7 +93,7 @@ export const BASELINE_MARKET_NICHES: MarketTasteNiche[] = [
     ],
     gameplay_loop: [
       "First-10-second rule: spawn directly facing an interactive verb (starter pedestal, duel pad, stunt ramp, quest giver, or shared vehicle)",
-      "Tight 2–5 minute core session cycles that reward skill, exploration, or social coordination with immediate visible upgrades",
+      "Tight 2-5 minute core session cycles that reward skill, exploration, or social coordination with immediate visible upgrades",
       "Compounding meta-progression (Rebirths, Ranks, Mastery, Unlockable Zones, or Collection Index) persisted safely via DataStoreService",
     ],
     ui_ux_style: [
@@ -103,11 +103,11 @@ export const BASELINE_MARKET_NICHES: MarketTasteNiche[] = [
     ],
     animations_and_juice: [
       "TweenService squash-and-stretch pops, floating damage/income numbers, and crisp 2-frame hitstop on impacts",
-      "Translucent layered VFX (Transparency 0.65–0.8) & ParticleEmitters that highlight silhouettes instead of obscuring them",
+      "Translucent layered VFX (Transparency 0.65-0.8) & ParticleEmitters that highlight silhouettes instead of obscuring them",
       "Smooth camera framing punches on level-ups, big drops, or round finishes",
     ],
     model_and_world_3d_style: [
-      "Vibrant sunlit stylized 3D worlds (emerald grass, warm marble/timber, turquoise water, crisp cerulean sky ClockTime 13.5) — NEVER dark grey/black box slabs in daylight",
+      "Vibrant sunlit stylized 3D worlds (emerald grass, warm marble/timber, turquoise water, crisp cerulean sky ClockTime 13.5), NEVER dark grey/black box slabs in daylight",
       "Real sculpted Blender 3D landmarks (<6k tris, clean UVs, 1m = 3.57 studs) framing clear player sightlines from SpawnLocation",
       "Reserve moody dark/crimson Atmosphere strictly for intentional night phases, horror corridors (with warm guide lights), or special storm events",
     ],
@@ -127,12 +127,12 @@ export const BASELINE_MARKET_NICHES: MarketTasteNiche[] = [
       "Daily quests and milestone badges that persist reliably across sessions via retry + BindToClose DataStore saving",
     ],
     anti_slop_rules: [
-      "Never ship empty baseplates, unstyled default grey blocks, or 40-line stub scripts — build a cohesive sunlit 3D world with real systems",
+      "Never ship empty baseplates, unstyled default grey blocks, or 40-line stub scripts; build a cohesive sunlit 3D world with real systems",
       "Never stack overlapping HUD buttons over active modals or blind players in pitch-black unlit rooms",
       "Validate every currency grant, purchase, hit, and roll strictly on the server with rate-limited RemoteEvents",
     ],
     automatic_twists: [
-      "DYNAMIC SERVER EVENTS: Every 10–15 minutes trigger a playable server-wide twist (Golden Rain, Storm Surge, Shifting Arena) that transforms the map live",
+      "DYNAMIC SERVER EVENTS: Every 10-15 minutes trigger a playable server-wide twist (Golden Rain, Storm Surge, Shifting Arena) that transforms the map live",
       "SKILL TIMING BONUS: Add a crisp timing mechanic (Overdrive burst, Perfect Parry, Bump-Lock counter) rewarding active players with +35% bonus impact",
       "SOCIAL SHOWCASE PRESENCE: Give every player a visible 3D world flex (upgraded plot landmark, floating companion aura, or streak crown) readable across the hub",
     ],
@@ -173,7 +173,7 @@ export const BASELINE_MARKET_NICHES: MarketTasteNiche[] = [
     ],
     model_and_world_3d_style: [
       "Sunlit vibrant anime floating archipelago: lush stylized emerald grass terraces, warm cream marble plaza, turquoise koi moat, sculpted cliff undersides, cerulean sky (ClockTime 13.5)",
-      "NEVER ship dark obsidian/black neon-box slabs in daylight — reserve dark crimson/indigo Atmosphere strictly for Blood Moon, Eclipse & Fusion Weather Storms",
+      "NEVER ship dark obsidian/black neon-box slabs in daylight; reserve dark crimson/indigo Atmosphere strictly for Blood Moon, Eclipse & Fusion Weather Storms",
       "Blender-sculpted Torii Summon Gate, Hall of Legends pedestals, Alchemist Cauldron & Boss Colosseum Arch (<6k tris, clean UVs, 1m = 3.57 studs)",
     ],
     audio_cadence: [
@@ -315,7 +315,7 @@ export const BASELINE_MARKET_NICHES: MarketTasteNiche[] = [
       "Cosmetic crash trails, horn SFX packs, and VIP instant vehicle respawn",
     ],
     retention_hooks: [
-      "Immediate stunt ramp & launch cannon right in front of SpawnLocation — fun in under 5 seconds",
+      "Immediate stunt ramp & launch cannon right in front of SpawnLocation (fun in under 5 seconds)",
       "Live Crash Score & Distance leaderboard awarding Coins for flips, impact force, and part destruction",
       "Short 90-second shared map chaos events (Tornado, Tsunami, Low-Gravity Derby) with friend spectating",
     ],
@@ -468,7 +468,7 @@ export const BASELINE_MARKET_NICHES: MarketTasteNiche[] = [
   {
     id: "tactical-arena-pvp",
     name: "Tactical Arena PvP",
-    tagline: "Snappy 1v1–4v4 skill-based rounds with crisp hit feedback, loadouts, killstreaks & ranked ladders.",
+    tagline: "Snappy 1v1 to 4v4 skill-based rounds with crisp hit feedback, loadouts, killstreaks & ranked ladders.",
     craft_bar:
       "Razor-sharp symmetrical sunlit arena with unambiguous team silhouettes, sub-5-second rematch tempo, server-validated hit/parry timing, and zero visual noise.",
     games: [
@@ -519,7 +519,7 @@ export const BASELINE_MARKET_NICHES: MarketTasteNiche[] = [
     automatic_twists: [
       "PERFECT CLASH PARRY: Pressing block within 0.22s of a melee/projectile strike reflects 100% damage + resets dash cooldown",
       "SHIFTING ARENA RING: On Round 3+, outer skybridge cover tiles drop cleanly to force electric center-stage duels",
-      "BOUNTY STREAK CROWN: Reaching a 5-win streak ignites a golden crown aura — defeating the crowned player pays a 3x bounty",
+      "BOUNTY STREAK CROWN: Reaching a 5-win streak ignites a golden crown aura; defeating the crowned player pays a 3x bounty",
     ],
     quality_boosts: [
       "Esports-readable sunlit marble arena with calm floor contrast so players & hitboxes pop effortlessly",
