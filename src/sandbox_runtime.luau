@@ -17,6 +17,7 @@ local inputData = serde.decode("json", rawInput)
 local consoleLines = {}
 local consoleErrors = {}
 local consoleWarnings = {}
+local datastoreWritesCount = 0
 
 local function formatArgs(...)
 	local n = select("#", ...)
@@ -1853,6 +1854,7 @@ local function makeDataStore(name, scope)
 			return deepCopyValue(store._data[tostring(k)])
 		end,
 		SetAsync = function(_, k, v)
+			datastoreWritesCount += 1
 			store._data[tostring(k)] = deepCopyValue(v)
 			return "v1"
 		end,
@@ -1861,11 +1863,13 @@ local function makeDataStore(name, scope)
 			local current = deepCopyValue(store._data[sk])
 			local updated = transform(current)
 			if updated ~= nil then
+				datastoreWritesCount += 1
 				store._data[sk] = deepCopyValue(updated)
 			end
 			return deepCopyValue(store._data[sk])
 		end,
 		IncrementAsync = function(_, k, delta)
+			datastoreWritesCount += 1
 			local sk = tostring(k)
 			local prev = tonumber(store._data[sk]) or 0
 			local nextVal = prev + (delta or 1)
@@ -1890,6 +1894,7 @@ local function makeOrderedDataStore(name, scope)
 			return store._data[tostring(k)]
 		end,
 		SetAsync = function(_, k, v)
+			datastoreWritesCount += 1
 			store._data[tostring(k)] = tonumber(v) or 0
 			return "v1"
 		end,
@@ -1897,11 +1902,13 @@ local function makeOrderedDataStore(name, scope)
 			local sk = tostring(k)
 			local updated = transform(store._data[sk])
 			if updated ~= nil then
+				datastoreWritesCount += 1
 				store._data[sk] = tonumber(updated) or 0
 			end
 			return store._data[sk]
 		end,
 		IncrementAsync = function(_, k, delta)
+			datastoreWritesCount += 1
 			local sk = tostring(k)
 			local prev = tonumber(store._data[sk]) or 0
 			local nextVal = prev + (delta or 1)
@@ -4045,6 +4052,44 @@ local function discoverProductIds()
 	return ids
 end
 
+local function findFatalInitWarnings()
+	local hits = {}
+	local patterns = {
+		"init failed",
+		"fatal",
+		"not configured",
+		"missing",
+		"infinite yield",
+		"does not exist",
+	}
+	for _, w in ipairs(consoleWarnings) do
+		local low = string.lower(tostring(w))
+		for _, pat in ipairs(patterns) do
+			if string.find(low, pat, 1, true) then
+				table.insert(hits, tostring(w))
+				break
+			end
+		end
+	end
+	return hits
+end
+
+local function collectVisibleGuiTexts(inst, out)
+	local st = INST_STATE[inst]
+	if not st then
+		return
+	end
+	if st.props.Visible == false or st.props.Enabled == false then
+		return
+	end
+	if type(st.props.Text) == "string" and st.props.Text ~= "" then
+		table.insert(out, st.props.Text)
+	end
+	for _, ch in ipairs(st.children) do
+		collectVisibleGuiTexts(ch, out)
+	end
+end
+
 local function executeStep(idx, step)
 	local t0 = os.clock()
 	local op = tostring(step.op or "")
@@ -4311,6 +4356,174 @@ local function executeStep(idx, step)
 			value = resVal,
 			error = errMsg,
 		})
+	elseif op == "assert_remote" then
+		local remotePath = tostring(step.remote or "")
+		local aName = tostring(step.name or ("assert_remote:" .. remotePath))
+		local expectedKind = if step.kind ~= nil then tostring(step.kind) else nil
+		local remote = resolveInstancePath(remotePath) or ReplicatedStorage:FindFirstChild(remotePath, true)
+		if not remote then
+			ok = false
+			errMsg = "Missing remote in ReplicatedStorage: " .. remotePath
+		elseif expectedKind and not remote:IsA(expectedKind) then
+			ok = false
+			errMsg = string.format("Remote '%s' is %s, expected %s", remotePath, INST_STATE[remote].className, expectedKind)
+		elseif not remote:IsA("RemoteEvent") and not remote:IsA("RemoteFunction") then
+			ok = false
+			errMsg = string.format("Instance '%s' is %s, not a RemoteEvent or RemoteFunction", remotePath, INST_STATE[remote].className)
+		elseif step.require_handler == true and remote:IsA("RemoteFunction") and type(INST_STATE[remote].props.OnServerInvoke) ~= "function" then
+			ok = false
+			errMsg = "RemoteFunction has no OnServerInvoke handler: " .. remote:GetFullName()
+		else
+			resVal = {
+				remote = remote:GetFullName(),
+				class_name = INST_STATE[remote].className,
+			}
+		end
+		table.insert(assertionResults, {
+			name = aName,
+			passed = ok,
+			value = resVal,
+			error = errMsg,
+		})
+	elseif op == "assert_hud" then
+		local pid = tonumber(step.player_id) or 1001
+		local player = activePlayersById[pid] or Players:GetPlayers()[1]
+		local screenName = if step.screen_gui ~= nil then tostring(step.screen_gui) else nil
+		local guiPath = if step.gui_path ~= nil then tostring(step.gui_path) else nil
+		local aName = tostring(step.name or ("assert_hud:" .. (screenName or guiPath or "PlayerGui")))
+		local pg = player and player:FindFirstChild("PlayerGui")
+		if not pg then
+			ok = false
+			errMsg = "PlayerGui not found for player " .. tostring(pid)
+		else
+			local targetRoot = pg
+			if guiPath and guiPath ~= "" then
+				targetRoot = findGuiNode(player, guiPath)
+				if not targetRoot then
+					ok = false
+					errMsg = "HUD node not found in PlayerGui: " .. guiPath
+				end
+			elseif screenName and screenName ~= "" then
+				targetRoot = pg:FindFirstChild(screenName)
+				if not targetRoot then
+					ok = false
+					errMsg = "ScreenGui not found in PlayerGui: " .. screenName
+				elseif INST_STATE[targetRoot].props.Enabled == false then
+					ok = false
+					errMsg = "ScreenGui is disabled: " .. screenName
+				end
+			else
+				local anyEnabled = false
+				for _, ch in ipairs(pg:GetChildren()) do
+					if INST_STATE[ch].props.Enabled ~= false then
+						anyEnabled = true
+						break
+					end
+				end
+				if not anyEnabled then
+					ok = false
+					errMsg = "No enabled ScreenGui rendered in PlayerGui"
+				end
+			end
+			if ok and targetRoot then
+				local texts = {}
+				collectVisibleGuiTexts(targetRoot, texts)
+				if step.require_text ~= false and #texts == 0 then
+					ok = false
+					errMsg = "HUD target has no visible text nodes"
+				end
+				if ok and type(step.text_contains) == "string" and step.text_contains ~= "" then
+					local found = false
+					for _, t in ipairs(texts) do
+						if string.find(t, step.text_contains, 1, true) then
+							found = true
+							break
+						end
+					end
+					if not found then
+						ok = false
+						errMsg = "HUD text missing expected substring: " .. step.text_contains
+					end
+				end
+				local forbid = step.forbid_text or step.text_not_contains
+				if ok and type(forbid) == "string" and forbid ~= "" then
+					local forbidLow = string.lower(forbid)
+					for _, t in ipairs(texts) do
+						if string.find(string.lower(t), forbidLow, 1, true) then
+							ok = false
+							errMsg = string.format("HUD displayed forbidden text '%s' (matched '%s')", t, forbid)
+							break
+						end
+					end
+				end
+				if ok then
+					resVal = {
+						player_id = player.UserId,
+						target = targetRoot:GetFullName(),
+						visible_text_count = #texts,
+					}
+				end
+			end
+		end
+		table.insert(assertionResults, {
+			name = aName,
+			passed = ok,
+			value = resVal,
+			error = errMsg,
+		})
+	elseif op == "assert_datastore" then
+		local storeName = if step.store ~= nil then tostring(step.store) else nil
+		local aName = tostring(step.name or ("assert_datastore:" .. (storeName or "any")))
+		local dsSnap = snapshotDataStores()
+		if next(dsSnap) == nil then
+			ok = false
+			errMsg = "DataStore snapshot is empty"
+		elseif storeName and storeName ~= "" then
+			local storeData = dsSnap[storeName] or dsSnap["ordered:" .. storeName]
+			if type(storeData) ~= "table" or next(storeData) == nil then
+				ok = false
+				errMsg = "DataStore has no saved records: " .. storeName
+			elseif type(step.key) == "string" and step.key ~= "" then
+				local matchedKey = false
+				for k, _ in pairs(storeData) do
+					if k == step.key or string.find(k, step.key, 1, true) then
+						matchedKey = true
+						break
+					end
+				end
+				if not matchedKey then
+					ok = false
+					errMsg = string.format("DataStore '%s' missing key '%s'", storeName, step.key)
+				else
+					resVal = { store = storeName, key = step.key, present = true }
+				end
+			else
+				resVal = { store = storeName, present = true }
+			end
+		else
+			resVal = { stores = dsSnap }
+		end
+		table.insert(assertionResults, {
+			name = aName,
+			passed = ok,
+			value = resVal,
+			error = errMsg,
+		})
+	elseif op == "assert_clean_init" or op == "assert_no_fatal_warnings" then
+		local aName = tostring(step.name or "assert_clean_init")
+		local fatalHits = findFatalInitWarnings()
+		if #fatalHits > 0 then
+			ok = false
+			errMsg = "Server/client init logged fatal or missing-target warnings: " .. table.concat(fatalHits, "; ")
+		else
+			resVal = { warnings_checked = #consoleWarnings, clean = true }
+		end
+		table.insert(assertionResults, {
+			name = aName,
+			passed = ok,
+			value = resVal,
+			error = errMsg,
+		})
 	else
 		ok = false
 		errMsg = "Unknown journey op: " .. op
@@ -4330,6 +4543,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Main Execution Flow
 -- ---------------------------------------------------------------------------
+(function()
 local runStart = os.clock()
 local MAX_TIMEOUT_SECS = 30
 local MAX_PLAYERS = 32
@@ -4408,67 +4622,85 @@ if isAutoJourney then
 	end
 
 	-- Step B: Snapshot state before leave -> PlayerRemoving -> BindToClose -> Rejoin
-	local lsBeforeLeave = snapshotLeaderstats()
-	local dsBeforeLeave = snapshotDataStores()
+	do
+		local lsBeforeLeave = snapshotLeaderstats()
+		local dsBeforeLeave = snapshotDataStores()
 
-	local tLeave = os.clock()
-	removePlayer(primaryPid)
-	triggerBindToClose()
-	table.insert(stepResults, {
-		index = #stepResults,
-		op = "bind_to_close",
-		passed = true,
-		duration_ms = math.max(0, math.round((os.clock() - tLeave) * 1000)),
-		result = { callbacks = #bindToCloseCallbacks },
-		error = nil,
-	})
+		local tLeave = os.clock()
+		removePlayer(primaryPid)
+		triggerBindToClose()
+		table.insert(stepResults, {
+			index = #stepResults,
+			op = "bind_to_close",
+			passed = true,
+			duration_ms = math.max(0, math.round((os.clock() - tLeave) * 1000)),
+			result = { callbacks = #bindToCloseCallbacks },
+			error = nil,
+		})
 
-	local tRejoin = os.clock()
-	spawnPlayer(playerSpecs[1])
-	table.insert(stepResults, {
-		index = #stepResults,
-		op = "rejoin",
-		passed = true,
-		duration_ms = math.max(0, math.round((os.clock() - tRejoin) * 1000)),
-		result = { player_id = primaryPid, rejoined = true },
-		error = nil,
-	})
+		local tRejoin = os.clock()
+		spawnPlayer(playerSpecs[1])
+		table.insert(stepResults, {
+			index = #stepResults,
+			op = "rejoin",
+			passed = true,
+			duration_ms = math.max(0, math.round((os.clock() - tRejoin) * 1000)),
+			result = { player_id = primaryPid, rejoined = true },
+			error = nil,
+		})
 
-	local lsAfterRejoin = snapshotLeaderstats()
-	local dsAfterRejoin = snapshotDataStores()
-	local hadLeaderstats = lsBeforeLeave[tostring(primaryPid)] ~= nil and next(lsBeforeLeave[tostring(primaryPid)]) ~= nil
-	local hasLeaderstatsAfter = lsAfterRejoin[tostring(primaryPid)] ~= nil and next(lsAfterRejoin[tostring(primaryPid)]) ~= nil
-	local hadDataStores = next(dsBeforeLeave) ~= nil
-	local hasDataStoresAfter = next(dsAfterRejoin) ~= nil
+		local lsAfterRejoin = snapshotLeaderstats()
+		local dsAfterRejoin = snapshotDataStores()
+		local hadLeaderstats = lsBeforeLeave[tostring(primaryPid)] ~= nil and next(lsBeforeLeave[tostring(primaryPid)]) ~= nil
+		local hasLeaderstatsAfter = lsAfterRejoin[tostring(primaryPid)] ~= nil and next(lsAfterRejoin[tostring(primaryPid)]) ~= nil
+		local hadDataStores = next(dsBeforeLeave) ~= nil
+		local hasDataStoresAfter = next(dsAfterRejoin) ~= nil
 
-	local persistPassed = true
-	local persistErr = nil
-	if hadLeaderstats and not hasLeaderstatsAfter then
-		persistPassed = false
-		persistErr = "leaderstats were not restored after rejoin"
-	elseif hadLeaderstats and not leaderstatsEqual(lsBeforeLeave[tostring(primaryPid)], lsAfterRejoin[tostring(primaryPid)]) then
-		persistPassed = false
-		persistErr = "leaderstats changed or reset across rejoin"
-	elseif hadDataStores and not hasDataStoresAfter then
-		persistPassed = false
-		persistErr = "DataStore state lost across rejoin"
+		local persistPassed = true
+		local persistErr = nil
+		if (inputData.require_saved_data == true or datastoreWritesCount > 0) and not hasDataStoresAfter then
+			persistPassed = false
+			persistErr = "DataStore snapshot is empty after rejoin"
+		elseif hadLeaderstats and not hasLeaderstatsAfter then
+			persistPassed = false
+			persistErr = "leaderstats were not restored after rejoin"
+		elseif hadLeaderstats and not leaderstatsEqual(lsBeforeLeave[tostring(primaryPid)], lsAfterRejoin[tostring(primaryPid)]) then
+			persistPassed = false
+			persistErr = "leaderstats changed or reset across rejoin"
+		elseif hadDataStores and not hasDataStoresAfter then
+			persistPassed = false
+			persistErr = "DataStore state lost across rejoin"
+		end
+
+		table.insert(assertionResults, {
+			name = "rejoin_persistence",
+			passed = persistPassed,
+			value = {
+				had_leaderstats = hadLeaderstats,
+				had_datastores = hadDataStores,
+				has_datastores_after = hasDataStoresAfter,
+			},
+			error = persistErr,
+		})
 	end
-
-	table.insert(assertionResults, {
-		name = "rejoin_persistence",
-		passed = persistPassed,
-		value = {
-			had_leaderstats = hadLeaderstats,
-			had_datastores = hadDataStores,
-		},
-		error = persistErr,
-	})
 else
 	if #inputData.journey > MAX_JOURNEY_STEPS then
 		pushError("journey", string.format("journey exceeds MAX_JOURNEY_STEPS (%d)", MAX_JOURNEY_STEPS))
 	end
 	for idx = 1, math.min(#inputData.journey, MAX_JOURNEY_STEPS) do
 		executeStep(idx - 1, inputData.journey[idx])
+	end
+end
+
+if inputData.fail_on_init_warnings == true then
+	local fatalHits = findFatalInitWarnings()
+	if #fatalHits > 0 then
+		table.insert(assertionResults, {
+			name = "clean_init_warnings",
+			passed = false,
+			value = fatalHits,
+			error = "Init logged fatal or missing-target warnings: " .. table.concat(fatalHits, "; "),
+		})
 	end
 end
 
@@ -4556,4 +4788,5 @@ local report = {
 }
 
 fs.writeFile(outputPath, serde.encode("json", report))
+end)()
 process.exit(0)

@@ -495,6 +495,7 @@ impl DeviceAnalysis {
 pub struct SafeAreaAnalysis {
     pub passed: bool,
     pub warning_count: usize,
+    pub contrast_warnings: usize,
     pub warnings: Vec<SafeAreaWarning>,
     pub devices: BTreeMap<String, DeviceAnalysis>,
 }
@@ -508,6 +509,7 @@ impl SafeAreaAnalysis {
         json!({
             "passed": self.passed,
             "warning_count": self.warning_count,
+            "contrast_warnings": self.contrast_warnings,
             "warnings": self.warnings.iter().map(SafeAreaWarning::to_json).collect::<Vec<_>>(),
             "devices": Value::Object(dev_map),
         })
@@ -1500,6 +1502,30 @@ struct AnalyzeCtx<'a> {
     nodes: &'a mut Vec<ResolvedNodeBounds>,
 }
 
+const MIN_WCAG_TEXT_CONTRAST: f64 = 4.5;
+
+fn srgb_channel_luminance(c: u8) -> f64 {
+    let cs = (c as f64) / 255.0;
+    if cs <= 0.04045 {
+        cs / 12.92
+    } else {
+        ((cs + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn relative_luminance(rgb: [u8; 3]) -> f64 {
+    0.2126 * srgb_channel_luminance(rgb[0])
+        + 0.7152 * srgb_channel_luminance(rgb[1])
+        + 0.0722 * srgb_channel_luminance(rgb[2])
+}
+
+fn wcag_contrast_ratio(fg: [u8; 3], bg: [u8; 3]) -> f64 {
+    let l1 = relative_luminance(fg);
+    let l2 = relative_luminance(bg);
+    let (hi, lo) = if l1 >= l2 { (l1, l2) } else { (l2, l1) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
 fn analyze_node_on_device(
     ctx: &mut AnalyzeCtx<'_>,
     node: &GuiNode,
@@ -1507,12 +1533,23 @@ fn analyze_node_on_device(
     override_rect: Option<RectBox>,
     is_root: bool,
     inside_scroll: bool,
+    inherited_bg: Option<[u8; 3]>,
 ) {
     if MODIFIER_CLASSES.contains(&node.class_name.as_str()) {
         return;
     }
     let visible = prop_bool(node, "Visible", true);
     let rect = override_rect.unwrap_or_else(|| compute_node_rect(node, parent_rect));
+
+    let bg_t = prop_f64(node, "BackgroundTransparency", 0.0);
+    let own_bg = if bg_t < 0.9 {
+        node.props
+            .get("BackgroundColor3")
+            .and_then(|v| parse_color_rgb_u8(v).ok())
+    } else {
+        None
+    };
+    let next_inherited_bg = own_bg.or(inherited_bg);
 
     ctx.nodes.push(ResolvedNodeBounds {
         id: node.id.clone(),
@@ -1639,6 +1676,44 @@ fn analyze_node_on_device(
                 bounds: rect,
             });
         }
+
+        // 5. WCAG 2.1 text contrast (>= 4.5:1)
+        if matches!(node.class_name.as_str(), "TextLabel" | "TextButton")
+            && node
+                .props
+                .get("Text")
+                .and_then(Value::as_str)
+                .is_some_and(|t| !t.trim().is_empty())
+        {
+            let fg_rgb = node
+                .props
+                .get("TextColor3")
+                .and_then(|v| parse_color_rgb_u8(v).ok())
+                .unwrap_or_else(|| {
+                    parse_color_rgb_u8(&Value::String(ctx.doc.theme.text.clone()))
+                        .unwrap_or([248, 250, 252])
+                });
+            let bg_rgb = own_bg.or(inherited_bg).unwrap_or_else(|| {
+                parse_color_rgb_u8(&Value::String(ctx.doc.theme.surface.clone()))
+                    .unwrap_or([0x17, 0x17, 0x19])
+            });
+            let ratio = wcag_contrast_ratio(fg_rgb, bg_rgb);
+            if ratio < MIN_WCAG_TEXT_CONTRAST {
+                ctx.warnings.push(SafeAreaWarning {
+                    code: "low_contrast".to_string(),
+                    severity: "warning".to_string(),
+                    device: ctx.device.id.to_string(),
+                    node_id: node.id.clone(),
+                    node_name: node.name.clone(),
+                    class_name: node.class_name.clone(),
+                    message: format!(
+                        "{} '{}' text contrast ratio is {:.2}:1 (<4.5:1 WCAG AA minimum) on {}",
+                        node.class_name, node.name, ratio, ctx.device.label
+                    ),
+                    bounds: rect,
+                });
+            }
+        }
     }
 
     let inner_rect = apply_padding(rect, node);
@@ -1750,7 +1825,15 @@ fn analyze_node_on_device(
                 w: cw,
                 h: ch,
             };
-            analyze_node_on_device(ctx, child, inner_rect, Some(child_rect), false, child_scroll);
+            analyze_node_on_device(
+                ctx,
+                child,
+                inner_rect,
+                Some(child_rect),
+                false,
+                child_scroll,
+                next_inherited_bg,
+            );
         }
         return;
     }
@@ -1798,13 +1881,29 @@ fn analyze_node_on_device(
                 w: cw,
                 h: ch,
             };
-            analyze_node_on_device(ctx, child, inner_rect, Some(child_rect), false, child_scroll);
+            analyze_node_on_device(
+                ctx,
+                child,
+                inner_rect,
+                Some(child_rect),
+                false,
+                child_scroll,
+                next_inherited_bg,
+            );
         }
         return;
     }
 
     for child in gui_children {
-        analyze_node_on_device(ctx, child, inner_rect, None, false, child_scroll);
+        analyze_node_on_device(
+            ctx,
+            child,
+            inner_rect,
+            None,
+            false,
+            child_scroll,
+            next_inherited_bg,
+        );
     }
 }
 
@@ -1842,7 +1941,7 @@ pub fn analyze_safe_areas(doc: &ScreenDoc) -> SafeAreaAnalysis {
                 warnings: &mut dev_warnings,
                 nodes: &mut dev_nodes,
             };
-            analyze_node_on_device(&mut ctx, &doc.root, usable_bounds, None, true, false);
+            analyze_node_on_device(&mut ctx, &doc.root, usable_bounds, None, true, false, None);
         }
 
         let mut safe_zones = vec![json!({
@@ -1892,9 +1991,15 @@ pub fn analyze_safe_areas(doc: &ScreenDoc) -> SafeAreaAnalysis {
         );
     }
 
+    let contrast_warnings = all_warnings
+        .iter()
+        .filter(|w| w.code == "low_contrast")
+        .count();
+
     SafeAreaAnalysis {
         passed: all_warnings.is_empty(),
         warning_count: all_warnings.len(),
+        contrast_warnings,
         warnings: all_warnings,
         devices,
     }
@@ -3269,7 +3374,7 @@ pub fn preset_screen_doc(preset: &str, slug_override: Option<&str>) -> Result<Sc
                             vec![
                                 ("Size", json!([[0, 104], [0, 48]])),
                                 ("LayoutOrder", json!(1)),
-                                ("BackgroundColor3", json!("#8B5CF6")),
+                                ("BackgroundColor3", json!("#6D28D9")),
                                 ("Text", json!("Roll x1")),
                                 ("TextColor3", json!("#F8FAFC")),
                                 ("TextSize", json!(15)),
@@ -3285,7 +3390,7 @@ pub fn preset_screen_doc(preset: &str, slug_override: Option<&str>) -> Result<Sc
                             vec![
                                 ("Size", json!([[0, 108], [0, 48]])),
                                 ("LayoutOrder", json!(2)),
-                                ("BackgroundColor3", json!("#EC4899")),
+                                ("BackgroundColor3", json!("#BE185D")),
                                 ("Text", json!("Roll x10")),
                                 ("TextColor3", json!("#F8FAFC")),
                                 ("TextSize", json!(15)),

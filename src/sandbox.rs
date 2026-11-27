@@ -539,6 +539,15 @@ fn run_lune_sandbox(
     std::fs::write(&runtime_path, SANDBOX_RUNTIME_LUAU.as_bytes())
         .map_err(|e| format!("write sandbox runtime: {e}"))?;
 
+    let require_saved_data = req
+        .get("require_saved_data")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let fail_on_init_warnings = req
+        .get("fail_on_init_warnings")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
     let input_payload = json!({
         "project_name": project_name,
         "tree": tree_json,
@@ -548,6 +557,8 @@ fn run_lune_sandbox(
         "http_mocks": http_mocks.as_ref(),
         "product_ids": product_ids,
         "timeout_secs": timeout_secs,
+        "require_saved_data": require_saved_data,
+        "fail_on_init_warnings": fail_on_init_warnings,
     });
     {
         let input_file = std::fs::File::create(&input_path)
@@ -640,6 +651,26 @@ fn run_lune_sandbox(
                     obj.entry("ok").or_insert(json!(true));
                     obj.entry("engine").or_insert(json!("lune_roblox_shim"));
                     obj.insert("duration_ms".to_string(), json!(elapsed_ms));
+                    if require_saved_data {
+                        let ds_empty = obj
+                            .get("state_snapshot")
+                            .and_then(|s| s.get("datastores"))
+                            .and_then(Value::as_object)
+                            .is_none_or(|m| m.is_empty());
+                        if ds_empty {
+                            if let Some(Value::Array(assertions)) = obj.get_mut("assertions") {
+                                for a in assertions.iter_mut() {
+                                    if a.get("name").and_then(Value::as_str) == Some("rejoin_persistence") {
+                                        if let Some(ao) = a.as_object_mut() {
+                                            ao.insert("passed".to_string(), json!(false));
+                                            ao.entry("error").or_insert(json!("DataStore snapshot is empty after rejoin (require_saved_data=true)"));
+                                        }
+                                    }
+                                }
+                            }
+                            obj.insert("passed".to_string(), json!(false));
+                        }
+                    }
                     if exit_code != 0 && obj.get("passed").and_then(Value::as_bool) == Some(true) {
                         obj.insert("passed".to_string(), json!(false));
                     }

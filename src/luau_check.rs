@@ -1256,6 +1256,29 @@ fn extract_string_constants(tokens: &[Token]) -> HashMap<String, String> {
     consts
 }
 
+/// Extract module/table string constants (`Module.CONST = "Value"`).
+fn extract_member_string_constants(tokens: &[Token]) -> HashMap<String, String> {
+    let mut consts = HashMap::new();
+    let mut i = 0;
+    while i + 4 < tokens.len() {
+        if !tokens[i].is_member
+            && tokens[i + 1].is_punct(".")
+            && tokens[i + 2].is_member
+            && tokens[i + 3].is_punct("=")
+        {
+            if let (Some(tbl), Some(field), Some(lit)) = (
+                tokens[i].ident(),
+                tokens[i + 2].ident(),
+                tokens[i + 4].str_lit(),
+            ) {
+                consts.insert(format!("{tbl}.{field}"), lit.to_string());
+            }
+        }
+        i += 1;
+    }
+    consts
+}
+
 /// Extract service variable aliases (`local RS = game:GetService("ReplicatedStorage")`,
 /// plus global `workspace` -> `"Workspace"`).
 fn extract_service_aliases(tokens: &[Token]) -> HashMap<String, String> {
@@ -1288,9 +1311,13 @@ fn extract_service_aliases(tokens: &[Token]) -> HashMap<String, String> {
     aliases
 }
 
-/// Extract all instance names dynamically assigned via `.Name = "Foo"` or `.Name = CONST`
-/// inside a script.
-fn extract_created_names(tokens: &[Token], consts: &HashMap<String, String>) -> HashSet<String> {
+/// Extract all instance names dynamically assigned via `.Name = "Foo"`, `.Name = CONST`,
+/// or `.Name = Module.CONST` inside a script.
+fn extract_created_names(
+    tokens: &[Token],
+    consts: &HashMap<String, String>,
+    member_consts: &HashMap<String, String>,
+) -> HashSet<String> {
     let mut names = HashSet::new();
     let mut i = 0;
     while i + 2 < tokens.len() {
@@ -1300,7 +1327,14 @@ fn extract_created_names(tokens: &[Token], consts: &HashMap<String, String>) -> 
                 names.insert(lit.to_string());
             } else if !rhs.is_member {
                 if let Some(ident) = rhs.ident() {
-                    if let Some(resolved) = consts.get(ident) {
+                    if tokens.get(i + 3).is_some_and(|t| t.is_punct(".")) {
+                        if let Some(field) = tokens.get(i + 4).and_then(Token::ident) {
+                            let key = format!("{ident}.{field}");
+                            if let Some(resolved) = member_consts.get(&key) {
+                                names.insert(resolved.clone());
+                            }
+                        }
+                    } else if let Some(resolved) = consts.get(ident) {
                         names.insert(resolved.clone());
                     }
                 }
@@ -1554,6 +1588,7 @@ pub fn analyze_place(
 
     let mut parsed_scripts: Vec<ParsedScript<'_>> = Vec::with_capacity(scripts.len());
     let mut all_created_names: HashSet<String> = HashSet::new();
+    let mut workspace_member_consts: HashMap<String, String> = HashMap::new();
     let mut creates_shop_remote = false;
 
     for (path, source) in scripts {
@@ -1610,10 +1645,7 @@ pub fn analyze_place(
 
         let consts = extract_string_constants(&tokens);
         let aliases = extract_service_aliases(&tokens);
-        let own_created = extract_created_names(&tokens, &consts);
-        for name in &own_created {
-            all_created_names.insert(name.clone());
-        }
+        workspace_member_consts.extend(extract_member_string_constants(&tokens));
         if (source.contains("Instance.new(\"RemoteEvent\")")
             || source.contains("Instance.new('RemoteEvent')"))
             && source.contains("OpenROShopBuy")
@@ -1627,8 +1659,17 @@ pub fn analyze_place(
             tokens,
             consts,
             aliases,
-            own_created,
+            own_created: HashSet::new(),
         });
+    }
+
+    for ps in &mut parsed_scripts {
+        let own_created =
+            extract_created_names(&ps.tokens, &ps.consts, &workspace_member_consts);
+        for name in &own_created {
+            all_created_names.insert(name.clone());
+        }
+        ps.own_created = own_created;
     }
 
     // 3. Cross-reference every script against Place instances & dynamically created names

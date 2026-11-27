@@ -4891,8 +4891,16 @@ fn parse_luau_numeric_literal(raw: &str) -> Option<f64> {
 
 fn extract_economy_params(scripts: &std::collections::BTreeMap<String, String>) -> EconParams {
     let mut earn_hits: Vec<EconConstHit> = Vec::new();
+    let mut earn_amount_hit: Option<EconConstHit> = None;
+    let mut earn_seconds_hit: Option<EconConstHit> = None;
+    let mut drop_value_hit: Option<EconConstHit> = None;
+    let mut drop_interval_hit: Option<EconConstHit> = None;
+    let mut reward_currency_hit: Option<EconConstHit> = None;
+    let mut base_reward_hit: Option<EconConstHit> = None;
+    let mut roll_cooldown_hit: Option<EconConstHit> = None;
     let mut price_hits: Vec<EconConstHit> = Vec::new();
     let mut rebirth_cost_hits: Vec<EconConstHit> = Vec::new();
+    let mut rebirth_floor_hit: Option<EconConstHit> = None;
     let mut rebirth_mult_hits: Vec<EconConstHit> = Vec::new();
     let mut gp_hits: Vec<EconConstHit> = Vec::new();
     let mut pass_only_gate = false;
@@ -4930,37 +4938,125 @@ fn extract_economy_params(scripts: &std::collections::BTreeMap<String, String>) 
                 is_per_sec,
             };
 
-            if low.contains("rebirthcost") || low.contains("rebirththreshold") || low.contains("prestigecost") {
+            if low.contains("rebirthcost")
+                || low.contains("rebirth_cost")
+                || low.contains("rebirththreshold")
+                || low.contains("rebirth_threshold")
+                || low.contains("prestigecost")
+                || low.contains("prestige_cost")
+            {
                 rebirth_cost_hits.push(make_hit(false));
-            } else if low.contains("rebirthmult") || low.contains("prestigemult") {
+            } else if low == "rebirth_floor" || low == "rebirthfloor" {
+                if rebirth_floor_hit.is_none() {
+                    rebirth_floor_hit = Some(make_hit(false));
+                }
+            } else if low.contains("rebirthmult")
+                || low.contains("rebirth_mult")
+                || low.contains("prestigemult")
+                || low.contains("prestige_mult")
+            {
                 rebirth_mult_hits.push(make_hit(false));
-            } else if low.contains("vipmult") || low.contains("passmult") || low.contains("gamepassmult") || low == "doublecoins" {
+            } else if low.contains("vipmult")
+                || low.contains("vip_mult")
+                || low.contains("passmult")
+                || low.contains("pass_mult")
+                || low.contains("gamepassmult")
+                || low.contains("gamepass_mult")
+                || low == "doublecoins"
+                || low == "double_coins"
+            {
                 gp_hits.push(make_hit(false));
+            } else if low == "earn_amount" || low == "earnamount" {
+                if earn_amount_hit.is_none() {
+                    earn_amount_hit = Some(make_hit(false));
+                }
+            } else if low == "earn_seconds" || low == "earnseconds" {
+                if earn_seconds_hit.is_none() {
+                    earn_seconds_hit = Some(make_hit(false));
+                }
+            } else if low == "drop_value" || low == "dropvalue" || low == "currentdropvalue" {
+                if drop_value_hit.is_none() {
+                    drop_value_hit = Some(make_hit(false));
+                }
+            } else if low == "drop_interval" || low == "dropinterval" {
+                if drop_interval_hit.is_none() {
+                    drop_interval_hit = Some(make_hit(false));
+                }
+            } else if low == "roll_cooldown_s" || low == "rollcooldowns" || low == "roll_cooldown" {
+                if roll_cooldown_hit.is_none() {
+                    roll_cooldown_hit = Some(make_hit(false));
+                }
+            } else if low == "reward_win_currency" {
+                reward_currency_hit = Some(make_hit(false));
+            } else if low == "reward_boss_currency" {
+                if reward_currency_hit.is_none() {
+                    reward_currency_hit = Some(make_hit(false));
+                }
+            } else if low == "base_reward" || low == "basereward" {
+                if base_reward_hit.is_none() {
+                    base_reward_hit = Some(make_hit(false));
+                }
             } else if low.contains("persec") || low.contains("persecond") {
                 earn_hits.push(make_hit(true));
-            } else if low.contains("earn") || low.contains("permin") || low.contains("reward") || low.contains("income") || low.contains("coinspertick") {
-                if !low.contains("daily") || earn_hits.is_empty() {
-                    earn_hits.push(make_hit(false));
-                }
+            } else if (low.contains("earn")
+                || low.contains("permin")
+                || low.contains("income")
+                || low.contains("coinspertick")
+                || (low.contains("reward")
+                    && !low.ends_with("_xp")
+                    && !low.contains("xp_")
+                    && !low.contains("daily")))
+                && !low.contains("second")
+                && !low.contains("cooldown")
+            {
+                earn_hits.push(make_hit(false));
             } else if (low.contains("cost") || low.contains("price"))
                 && !low.contains("robux")
                 && !low.contains("id")
+                && !low.contains("fusion")
             {
                 price_hits.push(make_hit(false));
             }
         }
     }
 
-    let earn_hit = earn_hits.into_iter().next();
-    let earn_per_min = earn_hit
-        .as_ref()
-        .map(|h| if h.is_per_sec { h.value * 60.0 } else { h.value })
-        .unwrap_or(30.0)
-        .max(0.5);
+    let (earn_hit, earn_per_min) = if let Some(h) = earn_hits.into_iter().next() {
+        let rate = if h.is_per_sec { h.value * 60.0 } else { h.value };
+        (Some(h), rate)
+    } else if let Some(amt) = earn_amount_hit {
+        let secs = earn_seconds_hit.map(|s| s.value).unwrap_or(60.0).max(0.5);
+        let rate = amt.value * (60.0 / secs);
+        (Some(amt), rate)
+    } else if let Some(drop_v) = drop_value_hit {
+        let interval = drop_interval_hit.map(|s| s.value).unwrap_or(2.0).max(0.5);
+        let rate = drop_v.value * (60.0 / interval);
+        (Some(drop_v), rate)
+    } else if let Some(rew) = reward_currency_hit {
+        let cycle_s = roll_cooldown_hit
+            .as_ref()
+            .map(|c| (c.value + 4.0).max(4.0))
+            .unwrap_or(10.0);
+        let rate = rew.value * (60.0 / cycle_s);
+        (Some(rew), rate)
+    } else if let Some(base) = base_reward_hit {
+        let rate = base.value * 3.0;
+        (Some(base), rate)
+    } else {
+        (None, 30.0)
+    };
+    let earn_per_min = earn_per_min.max(0.5);
 
     price_hits.sort_by(|a, b| a.value.partial_cmp(&b.value).unwrap_or(std::cmp::Ordering::Equal));
     let mut prices: Vec<f64> = if price_hits.is_empty() {
         vec![100.0, 350.0, 900.0, 2200.0]
+    } else if price_hits.len() == 1 {
+        let p0 = price_hits[0].value.max(1.0);
+        vec![
+            p0,
+            (p0 * 2.5).round(),
+            (p0 * 5.0).round(),
+            (p0 * 8.0).round(),
+        ]
     } else {
         price_hits.iter().map(|h| h.value).collect()
     };
@@ -4971,7 +5067,16 @@ fn extract_economy_params(scripts: &std::collections::BTreeMap<String, String>) 
     let rebirth_cost = rebirth_hit
         .as_ref()
         .map(|h| h.value)
-        .unwrap_or_else(|| (max_price * 1.35).max(1200.0));
+        .unwrap_or_else(|| {
+            if let Some(rf) = &rebirth_floor_hit {
+                (rf.value * earn_per_min * 0.15)
+                    .max(max_price * 1.35)
+                    .max(1200.0)
+                    .round()
+            } else {
+                (max_price * 1.35).max(1200.0)
+            }
+        });
 
     let rebirth_mult_hit = rebirth_mult_hits.into_iter().next();
     let rebirth_mult = rebirth_mult_hit
@@ -4984,7 +5089,7 @@ fn extract_economy_params(scripts: &std::collections::BTreeMap<String, String>) 
     let gamepass_mult = gamepass_hit
         .as_ref()
         .map(|h| h.value)
-        .unwrap_or(2.0)
+        .unwrap_or(1.0)
         .clamp(1.0, 50.0);
 
     EconParams {
@@ -5156,7 +5261,24 @@ pub fn evaluate_economy_sim(
         .keys()
         .find(|k| {
             let l = k.to_ascii_lowercase();
-            l.contains("economy") || l.contains("monetization") || l.contains("config")
+            (l.contains("economy") || l.contains("monetization")) && !l.contains("releaseconfig")
+        })
+        .or_else(|| {
+            scripts.keys().find(|k| {
+                let l = k.to_ascii_lowercase();
+                l.contains("config") && !l.contains("releaseconfig")
+            })
+        })
+        .or_else(|| {
+            p.earn_hit
+                .as_ref()
+                .or_else(|| p.price_hits.first())
+                .map(|h| &h.file)
+        })
+        .or_else(|| {
+            scripts
+                .keys()
+                .find(|k| k.to_ascii_lowercase().contains("config"))
         })
         .cloned()
         .unwrap_or_else(|| {
@@ -5238,7 +5360,11 @@ pub fn evaluate_economy_sim(
     };
     let target_rebirth_cost = (target_earn * 16.0).round().max(600.0);
     let target_rebirth_mult = p.rebirth_mult.clamp(1.25, 2.0);
-    let target_gp_mult = p.gamepass_mult.clamp(1.25, 2.0);
+    let target_gp_mult = if p.gamepass_hit.is_some() || p.gamepass_mult > 1.0 {
+        p.gamepass_mult.clamp(1.25, 2.0)
+    } else {
+        1.0
+    };
     let target_prices = if fast_exhaustion || runaway_inflation || paywall_dead_end {
         vec![
             (target_earn * 2.5).round(),
@@ -5424,7 +5550,7 @@ fn apply_economy_suggestions_to_map(
         let earn = tc["earn_per_min"].as_f64().unwrap_or(40.0).round() as i64;
         let reb = tc["rebirth_cost"].as_f64().unwrap_or(640.0).round() as i64;
         let rmult = tc["rebirth_mult"].as_f64().unwrap_or(1.5);
-        let gmult = tc["gamepass_mult"].as_f64().unwrap_or(2.0);
+        let gmult = tc["gamepass_mult"].as_f64().unwrap_or(1.0);
         let body = format!(
             "--!strict\n-- Balanced economy progression config tuned for a 15 to 25 minute loop.\nlocal EconomyBalanceConfig = {{\n\tEarnPerMin = {earn},\n\tTier1Cost = {},\n\tTier2Cost = {},\n\tRebirthCost = {reb},\n\tRebirthMultiplier = {rmult:.2},\n\tGamePassMultiplier = {gmult:.2},\n}}\nreturn EconomyBalanceConfig\n",
             earn * 3,

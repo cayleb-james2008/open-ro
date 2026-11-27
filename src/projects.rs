@@ -2471,7 +2471,32 @@ pub fn check_project_with_full_options(
     };
     let selene_json = match find_tool("selene", "OPENRO_SELENE") {
         Some(bin) => {
+            struct TempSeleneConfig(Option<PathBuf>);
+            impl Drop for TempSeleneConfig {
+                fn drop(&mut self) {
+                    if let Some(p) = &self.0 {
+                        let _ = std::fs::remove_file(p);
+                    }
+                }
+            }
+            static SELENE_CFG_SEQ: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(1);
+
             let mut args = vec!["--no-summary".to_string()];
+            let _temp_cfg = if !dir.join("selene.toml").is_file() {
+                let seq = SELENE_CFG_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let cfg_path = std::env::temp_dir()
+                    .join(format!("openro-selene-{}-{seq}.toml", std::process::id()));
+                if std::fs::write(&cfg_path, "std = \"roblox\"\n").is_ok() {
+                    args.push("--config".to_string());
+                    args.push(cfg_path.to_string_lossy().into_owned());
+                    TempSeleneConfig(Some(cfg_path))
+                } else {
+                    TempSeleneConfig(None)
+                }
+            } else {
+                TempSeleneConfig(None)
+            };
             args.extend(selene_targets.iter().cloned());
             match run_bounded(&bin, dir, &args, 60) {
                 Ok((code, timed_out, ms, out, err)) => json!({
