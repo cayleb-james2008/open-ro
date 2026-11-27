@@ -990,7 +990,8 @@ function normalizeSafeAreaWarnings(raw: unknown): SafeAreaWarning[] {
           : rawKind === "topbar_overlap" ||
               rawKind === "thumbstick_overlap" ||
               rawKind === "offscreen_bounds" ||
-              rawKind === "tiny_tap_target"
+              rawKind === "tiny_tap_target" ||
+              rawKind === "low_contrast"
             ? rawKind
             : "offscreen_bounds";
       const box = (w.rect ?? w.bounds ?? {}) as Record<string, unknown>;

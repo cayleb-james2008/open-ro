@@ -144,7 +144,8 @@ export type SafeAreaWarningKind =
   | "topbar_overlap"
   | "thumbstick_overlap"
   | "offscreen_bounds"
-  | "tiny_tap_target";
+  | "tiny_tap_target"
+  | "low_contrast";
 
 export type SafeAreaWarning = {
   device: GuiDeviceId;
@@ -666,7 +667,7 @@ export function buildGuiPreset(preset: GuiPresetId): ScreenDoc {
                   BackgroundColor3: "#24946E",
                   BackgroundTransparency: 0,
                   Text: "2x Cash Boost (99 R$)",
-                  TextColor3: "#FFFFFF",
+                  TextColor3: "#12181B",
                   TextSize: 14,
                   Font: "GothamBold",
                   CallbackName: "OnBuyDoubleCash",
@@ -1178,12 +1179,62 @@ function rectsOverlap(
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
+function parseHexRgb(hex: string | undefined): [number, number, number] | null {
+  if (!hex || typeof hex !== "string") return null;
+  const clean = hex.trim().replace(/^#/, "");
+  if (/^[0-9a-fA-F]{6}$/.test(clean)) {
+    return [
+      parseInt(clean.slice(0, 2), 16),
+      parseInt(clean.slice(2, 4), 16),
+      parseInt(clean.slice(4, 6), 16),
+    ];
+  }
+  if (/^[0-9a-fA-F]{3}$/.test(clean)) {
+    return [
+      parseInt(clean[0] + clean[0], 16),
+      parseInt(clean[1] + clean[1], 16),
+      parseInt(clean[2] + clean[2], 16),
+    ];
+  }
+  return null;
+}
+
+function srgbLum(c: number): number {
+  const cs = c / 255;
+  return cs <= 0.04045 ? cs / 12.92 : Math.pow((cs + 0.055) / 1.055, 2.4);
+}
+
+function wcagContrastRatio(fg: [number, number, number], bg: [number, number, number]): number {
+  const l1 = 0.2126 * srgbLum(fg[0]) + 0.7152 * srgbLum(fg[1]) + 0.0722 * srgbLum(fg[2]);
+  const l2 = 0.2126 * srgbLum(bg[0]) + 0.7152 * srgbLum(bg[1]) + 0.0722 * srgbLum(bg[2]);
+  const hi = Math.max(l1, l2);
+  const lo = Math.min(l1, l2);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 export function analyzeSafeArea(doc: ScreenDoc, devices: GuiDeviceId[] = ["desktop", "tablet", "mobile"]): SafeAreaWarning[] {
   const warnings: SafeAreaWarning[] = [];
+  const canvasRgb: [number, number, number] = parseHexRgb(doc.theme?.surface) ?? [0x17, 0x17, 0x19];
+  const defaultTextRgb: [number, number, number] = parseHexRgb(doc.theme?.text) ?? [248, 250, 252];
 
   for (const devId of devices) {
     const spec = GUI_DEVICES[devId];
     const rects = computeNodeRects(doc, spec.width, spec.height);
+    const byId = new Map<string, ComputedNodeRect>();
+    for (const item of rects) byId.set(item.node.id, item);
+
+    const effectiveBgFor = (item: ComputedNodeRect): [number, number, number] => {
+      let cur: ComputedNodeRect | undefined = item;
+      while (cur) {
+        const bgT = cur.node.props.BackgroundTransparency ?? 0;
+        if (bgT < 0.9) {
+          const parsed = parseHexRgb(cur.node.props.BackgroundColor3);
+          if (parsed) return parsed;
+        }
+        cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+      }
+      return canvasRgb;
+    };
 
     for (const item of rects) {
       if (item.node.id === doc.root.id) continue;
@@ -1246,6 +1297,27 @@ export function analyzeSafeArea(doc: ScreenDoc, devices: GuiDeviceId[] = ["deskt
           message: `${item.node.name} is ${r.w}x${r.h}px (under 44x44px touch target minimum) on ${spec.shortLabel}.`,
           rect: r,
         });
+      }
+
+      if (
+        (item.node.class_name === "TextLabel" || item.node.class_name === "TextButton") &&
+        typeof item.node.props.Text === "string" &&
+        item.node.props.Text.trim().length > 0
+      ) {
+        const fg = parseHexRgb(item.node.props.TextColor3) ?? defaultTextRgb;
+        const bg = effectiveBgFor(item);
+        const ratio = wcagContrastRatio(fg, bg);
+        if (ratio < 4.5) {
+          warnings.push({
+            device: devId,
+            node_id: item.node.id,
+            node_name: item.node.name,
+            kind: "low_contrast",
+            severity: "warning",
+            message: `${item.node.name} text contrast ratio is ${ratio.toFixed(2)}:1 (<4.5:1 WCAG AA minimum) on ${spec.shortLabel}.`,
+            rect: r,
+          });
+        }
       }
     }
   }
