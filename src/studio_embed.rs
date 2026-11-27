@@ -2950,6 +2950,12 @@ pub fn open_place_in_studio_inner(
         ));
     }
     let abs = std::fs::canonicalize(rbxlx_path).unwrap_or_else(|_| rbxlx_path.to_path_buf());
+    if !dry_run {
+        if let Some(proj_dir) = infer_project_root_from_place_file(&abs) {
+            let slug = default_studio_project_slug(&proj_dir);
+            let _ = stage_project_studio_content(&proj_dir, &slug);
+        }
+    }
     let abs_str = abs.to_string_lossy().into_owned();
     let platform = current_platform();
     let fname = abs
@@ -4195,4 +4201,476 @@ pub fn resolve_cua_frame_path(data_dir: &Path, file: &str) -> Result<PathBuf, (u
         return Err((403, "CUA frame path traversal refused (CWE-22)".to_string()));
     }
     Ok(canon_file)
+}
+
+// ---------------------------------------------------------------------------
+// Gap #84: Instant Local Roblox Studio Content Bridge (`rbxasset://openro/<slug>/...`)
+// ---------------------------------------------------------------------------
+
+static STUDIO_CONTENT_STAGE_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Sanitize a project slug for `<content_dir>/openro/<slug>/` (`[a-zA-Z0-9_-]`).
+pub fn sanitize_studio_content_slug(raw: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for ch in raw.trim().chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+            prev_dash = false;
+        } else if !prev_dash && !out.is_empty() {
+            out.push('-');
+            prev_dash = true;
+        }
+        if out.len() >= 64 {
+            break;
+        }
+    }
+    let cleaned = out.trim_matches(|c| c == '-' || c == '_').to_string();
+    if cleaned.is_empty() {
+        "project".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Derive the default `studio_project_slug` from a project directory's folder name.
+pub fn default_studio_project_slug(project_dir: &Path) -> String {
+    let raw = project_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("project");
+    let slugged = crate::projects::slug(raw);
+    sanitize_studio_content_slug(&slugged)
+}
+
+fn infer_project_root_from_place_file(rbxlx_path: &Path) -> Option<PathBuf> {
+    let mut cur = rbxlx_path.parent()?;
+    for _ in 0..4 {
+        if cur.join("openro.project.json").is_file() || cur.join("default.project.json").is_file() {
+            return Some(cur.to_path_buf());
+        }
+        cur = cur.parent()?;
+    }
+    None
+}
+
+/// Pure filesystem scanner for Linux Vinegar Studio content directories:
+/// `<vinegar_root>/data/vinegar/versions/version-*/content` (newest version first).
+pub fn find_vinegar_studio_content_dir(vinegar_root: &Path) -> Option<PathBuf> {
+    let versions_dir = vinegar_root.join("data").join("vinegar").join("versions");
+    let entries = std::fs::read_dir(&versions_dir).ok()?;
+    let mut candidates: Vec<(SystemTime, String, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if ft.is_symlink() || !ft.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.to_ascii_lowercase().starts_with("version-") {
+            continue;
+        }
+        let content_dir = path.join("content");
+        let Ok(cmeta) = std::fs::symlink_metadata(&content_dir) else {
+            continue;
+        };
+        if cmeta.file_type().is_symlink() || !cmeta.is_dir() {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(UNIX_EPOCH);
+        candidates.push((modified, name, content_dir));
+    }
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    candidates.into_iter().next().map(|(_, _, p)| p)
+}
+
+/// Pure filesystem scanner for Windows Roblox Studio content directories:
+/// `<local_appdata>\Roblox\Versions\version-*\content`.
+pub fn find_windows_studio_content_dir(local_appdata: &Path) -> Option<PathBuf> {
+    let paths = find_windows_roblox_paths(local_appdata);
+    let content_dir = paths.version_dir?.join("content");
+    let meta = std::fs::symlink_metadata(&content_dir).ok()?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return None;
+    }
+    Some(content_dir)
+}
+
+/// Locate the active Roblox Studio `content/` directory for instant local `rbxasset://` staging.
+///
+/// Precedence:
+/// 1. `OPENRO_STUDIO_CONTENT_DIR` env override
+/// 2. Linux: `$HOME/.var/app/org.vinegarhq.Vinegar/data/vinegar/versions/version-*/content`
+///    (honoring `OPENRO_VINEGAR_ROOT` if set)
+/// 3. Windows: `%LOCALAPPDATA%\Roblox\Versions\version-*\content`
+/// 4. macOS: `/Applications/RobloxStudio.app/Contents/Resources/content`
+pub fn find_studio_content_dir() -> Option<PathBuf> {
+    if let Ok(raw) = std::env::var("OPENRO_STUDIO_CONTENT_DIR") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() && !trimmed.contains('\0') && !trimmed.contains('\n') && !trimmed.contains('\r') {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let vinegar_root = std::env::var("OPENRO_VINEGAR_ROOT")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(&home).join(".var/app/org.vinegarhq.Vinegar"));
+        find_vinegar_studio_content_dir(&vinegar_root)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let local_appdata = std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
+        find_windows_studio_content_dir(&local_appdata)
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let p = PathBuf::from("/Applications/RobloxStudio.app/Contents/Resources/content");
+        std::fs::symlink_metadata(&p)
+            .ok()
+            .filter(|m| !m.file_type().is_symlink() && m.is_dir())
+            .map(|_| p)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+fn is_superseded_or_hidden_name(name: &str) -> bool {
+    name.starts_with('.') || name.to_ascii_lowercase().contains("_superseded")
+}
+
+fn has_ext_ci(name: &str, exts: &[&str]) -> bool {
+    let Some((_, ext)) = name.rsplit_once('.') else {
+        return false;
+    };
+    exts.iter().any(|e| ext.eq_ignore_ascii_case(e))
+}
+
+/// Collect project-relative `(rel_path, abs_path)` pairs eligible for local Studio content
+/// staging (`art/cards/*/*.png`, `art/ui/**/*.png`, `art/store/*.png`, `assets/images/*.png`,
+/// `assets/images/replacements/*.png`, `assets/audio/*.{wav,ogg,mp3}`).
+/// Strictly skips symlinks, hidden files, and `*_superseded*` files, and path-jails every entry.
+pub fn collect_studio_content_files(project_dir: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(canon_root) = std::fs::canonicalize(project_dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
+
+    let mut push_checked = |rel: String, abs: PathBuf| {
+        if let Ok(meta) = std::fs::symlink_metadata(&abs) {
+            if meta.file_type().is_symlink() || !meta.is_file() {
+                return;
+            }
+        } else {
+            return;
+        }
+        if let Ok(canon) = std::fs::canonicalize(&abs) {
+            if canon.starts_with(&canon_root) {
+                out.push((rel, abs));
+            }
+        }
+    };
+
+    // Helper: direct non-symlink files in `<project_dir>/<rel_dir>` matching extensions.
+    let collect_flat = |rel_dir: &str, exts: &[&str], push: &mut dyn FnMut(String, PathBuf)| {
+        let dir = project_dir.join(rel_dir);
+        let Ok(dmeta) = std::fs::symlink_metadata(&dir) else {
+            return;
+        };
+        if dmeta.file_type().is_symlink() || !dmeta.is_dir() {
+            return;
+        }
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        for entry in rd.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_symlink() || !ft.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if is_superseded_or_hidden_name(&name) || !has_ext_ci(&name, exts) {
+                continue;
+            }
+            push(format!("{rel_dir}/{name}"), entry.path());
+        }
+    };
+
+    // 1. art/cards/*/*.png (one level of card subdirs)
+    {
+        let cards_dir = project_dir.join("art/cards");
+        if std::fs::symlink_metadata(&cards_dir)
+            .ok()
+            .is_some_and(|m| !m.file_type().is_symlink() && m.is_dir())
+        {
+            if let Ok(rd) = std::fs::read_dir(&cards_dir) {
+                for entry in rd.flatten() {
+                    let Ok(ft) = entry.file_type() else { continue };
+                    if ft.is_symlink() || !ft.is_dir() {
+                        continue;
+                    }
+                    let card_name = entry.file_name().to_string_lossy().to_string();
+                    if is_superseded_or_hidden_name(&card_name) {
+                        continue;
+                    }
+                    collect_flat(
+                        &format!("art/cards/{card_name}"),
+                        &["png"],
+                        &mut push_checked,
+                    );
+                }
+            }
+        }
+    }
+
+    // 2. art/ui/**/*.png (recursive, excluding symlinks and hidden dirs)
+    {
+        let ui_dir = project_dir.join("art/ui");
+        if std::fs::symlink_metadata(&ui_dir)
+            .ok()
+            .is_some_and(|m| !m.file_type().is_symlink() && m.is_dir())
+        {
+            let mut stack: Vec<(PathBuf, String, u8)> = vec![(ui_dir, "art/ui".to_string(), 0)];
+            while let Some((dir, rel_dir, depth)) = stack.pop() {
+                let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+                for entry in rd.flatten() {
+                    let Ok(ft) = entry.file_type() else { continue };
+                    if ft.is_symlink() {
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if is_superseded_or_hidden_name(&name) {
+                        continue;
+                    }
+                    let child_rel = format!("{rel_dir}/{name}");
+                    if ft.is_dir() && depth < 8 {
+                        stack.push((entry.path(), child_rel, depth + 1));
+                    } else if ft.is_file() && has_ext_ci(&name, &["png"]) {
+                        push_checked(child_rel, entry.path());
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. art/store/*.png
+    collect_flat("art/store", &["png"], &mut push_checked);
+    // 4. assets/images/*.png
+    collect_flat("assets/images", &["png"], &mut push_checked);
+    // 5. assets/images/replacements/*.png
+    collect_flat("assets/images/replacements", &["png"], &mut push_checked);
+    // 6. assets/audio/*.{wav,ogg,mp3}
+    collect_flat("assets/audio", &["wav", "ogg", "mp3"], &mut push_checked);
+
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
+}
+
+fn ensure_safe_dir_no_symlink(base: &Path, rel_parts: &[&str]) -> Result<PathBuf, String> {
+    let mut cur = base.to_path_buf();
+    for part in rel_parts {
+        cur.push(part);
+        if let Ok(meta) = std::fs::symlink_metadata(&cur) {
+            if meta.file_type().is_symlink() {
+                return Err(format!(
+                    "refusing to traverse symlink directory '{}' (CWE-59)",
+                    cur.display()
+                ));
+            }
+            if !meta.is_dir() {
+                return Err(format!(
+                    "expected directory at '{}' but found non-directory",
+                    cur.display()
+                ));
+            }
+        } else {
+            std::fs::create_dir(&cur)
+                .map_err(|e| format!("failed to create directory '{}': {e}", cur.display()))?;
+        }
+    }
+    Ok(cur)
+}
+
+/// Stage local project images and audio into `<studio_content_dir>/openro/<slug>/<rel_path>`
+/// so Roblox Studio renders `rbxasset://openro/<slug>/<rel_path>` instantly without waiting
+/// for Open Cloud moderation (Gap #84).
+///
+/// Path-jailed, skips symlinks, skips unchanged files by byte length + modified timestamp,
+/// and writes atomically via temp file + rename.
+pub fn stage_project_studio_content(
+    project_dir: &Path,
+    project_slug: &str,
+) -> Result<Value, String> {
+    if !project_dir.is_dir() {
+        return Err(format!(
+            "project directory '{}' does not exist",
+            project_dir.display()
+        ));
+    }
+    let slug = sanitize_studio_content_slug(project_slug);
+    let content_dir = find_studio_content_dir().ok_or_else(|| {
+        "Roblox Studio content directory not found (set OPENRO_STUDIO_CONTENT_DIR or install Roblox Studio / Vinegar)".to_string()
+    })?;
+
+    if let Ok(meta) = std::fs::symlink_metadata(&content_dir) {
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "refusing symlink Studio content directory '{}' (CWE-59)",
+                content_dir.display()
+            ));
+        }
+        if !meta.is_dir() {
+            return Err(format!(
+                "Studio content path '{}' is not a directory",
+                content_dir.display()
+            ));
+        }
+    } else {
+        std::fs::create_dir_all(&content_dir).map_err(|e| {
+            format!(
+                "failed to create Studio content directory '{}': {e}",
+                content_dir.display()
+            )
+        })?;
+    }
+
+    let canon_content = std::fs::canonicalize(&content_dir).map_err(|e| {
+        format!(
+            "failed to canonicalize Studio content directory '{}': {e}",
+            content_dir.display()
+        )
+    })?;
+    let dest_root = ensure_safe_dir_no_symlink(&canon_content, &["openro", &slug])?;
+    let canon_dest_root = std::fs::canonicalize(&dest_root).map_err(|e| {
+        format!(
+            "failed to canonicalize staged content root '{}': {e}",
+            dest_root.display()
+        )
+    })?;
+    if !canon_dest_root.starts_with(&canon_content) {
+        return Err("staged content root escaped Studio content directory (CWE-22)".to_string());
+    }
+
+    let candidates = collect_studio_content_files(project_dir);
+    let mut staged_count = 0usize;
+    let mut skipped_count = 0usize;
+    let mut files: Vec<String> = Vec::with_capacity(candidates.len());
+
+    for (rel, src_abs) in candidates {
+        let rel_path = Path::new(&rel);
+        let mut normal_parts: Vec<&str> = Vec::new();
+        let mut valid_rel = true;
+        for comp in rel_path.components() {
+            match comp {
+                std::path::Component::Normal(seg) => {
+                    if let Some(s) = seg.to_str() {
+                        normal_parts.push(s);
+                    } else {
+                        valid_rel = false;
+                        break;
+                    }
+                }
+                _ => {
+                    valid_rel = false;
+                    break;
+                }
+            }
+        }
+        if !valid_rel || normal_parts.is_empty() {
+            continue;
+        }
+
+        let Ok(src_meta) = std::fs::symlink_metadata(&src_abs) else {
+            continue;
+        };
+        if src_meta.file_type().is_symlink() || !src_meta.is_file() {
+            continue;
+        }
+        let src_len = src_meta.len();
+        let src_mtime = src_meta.modified().ok();
+
+        let (parent_parts, file_name) = normal_parts.split_at(normal_parts.len() - 1);
+        let dst_parent = ensure_safe_dir_no_symlink(&canon_dest_root, parent_parts)?;
+        let dst_abs = dst_parent.join(file_name[0]);
+
+        if let Ok(dst_meta) = std::fs::symlink_metadata(&dst_abs) {
+            if dst_meta.file_type().is_symlink() {
+                continue;
+            }
+            if dst_meta.is_file() && dst_meta.len() == src_len {
+                if let (Some(sm), Some(dm)) = (src_mtime, dst_meta.modified().ok()) {
+                    let diff = sm
+                        .duration_since(dm)
+                        .or_else(|_| dm.duration_since(sm))
+                        .ok();
+                    if diff.is_some_and(|d| d <= Duration::from_micros(10)) {
+                        skipped_count += 1;
+                        files.push(rel);
+                        continue;
+                    }
+                }
+            }
+        }
+
+        let bytes = std::fs::read(&src_abs)
+            .map_err(|e| format!("failed to read '{}': {e}", src_abs.display()))?;
+        let seq = STUDIO_CONTENT_STAGE_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = dst_parent.join(format!(
+            ".openro-stage-{}-{}.tmp",
+            std::process::id(),
+            seq
+        ));
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_path)
+                .map_err(|e| format!("failed to create staging temp file '{}': {e}", tmp_path.display()))?;
+            if let Err(e) = f.write_all(&bytes).and_then(|_| f.flush()) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(format!("failed to write staged asset '{rel}': {e}"));
+            }
+            if let Some(sm) = src_mtime {
+                let _ = f.set_modified(sm);
+            }
+        }
+        if let Err(e) = std::fs::rename(&tmp_path, &dst_abs) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(format!("failed to move staged asset '{rel}' into place: {e}"));
+        }
+        if let Ok(canon_dst) = std::fs::canonicalize(&dst_abs) {
+            if !canon_dst.starts_with(&canon_dest_root) {
+                let _ = std::fs::remove_file(&dst_abs);
+                return Err(format!("staged asset '{rel}' escaped content root (CWE-22)"));
+            }
+        }
+        staged_count += 1;
+        files.push(rel);
+    }
+
+    Ok(json!({
+        "ok": true,
+        "slug": slug,
+        "content_dir": canon_content.to_string_lossy(),
+        "target_dir": canon_dest_root.to_string_lossy(),
+        "prefix": format!("rbxasset://openro/{slug}/"),
+        "staged_count": staged_count,
+        "skipped_count": skipped_count,
+        "files": files,
+    }))
 }

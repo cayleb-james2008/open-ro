@@ -984,16 +984,129 @@ impl Client {
     }
 }
 
+fn is_skipped_candidate_path(rel: &str) -> bool {
+    let norm = rel.trim().trim_start_matches("./").replace('\\', "/");
+    let low = norm.to_ascii_lowercase();
+    if low == "assets/images/incoming" || low.starts_with("assets/images/incoming/") {
+        return true;
+    }
+    norm.split('/')
+        .any(|seg| seg.to_ascii_lowercase().contains("_superseded"))
+}
+
+/// Read `assets/images/manifest.json` `local_file` bindings if present so clean replacement
+/// files are automatically resolved in `assets_upload` (Gap #86).
+///
+/// Returns `(key_or_rel_path -> (bound_rel, bound_abs))`.
+fn read_image_manifest_bindings(
+    root: &Path,
+) -> std::collections::BTreeMap<String, (String, PathBuf)> {
+    let mut map = std::collections::BTreeMap::new();
+    let manifest_path = root.join("assets/images/manifest.json");
+    let Ok(text) = std::fs::read_to_string(&manifest_path) else {
+        return map;
+    };
+    let Ok(doc) = serde_json::from_str::<Value>(&text) else {
+        return map;
+    };
+
+    let mut register = |key: &str, obj: &Value| {
+        let Some(raw_lf) = obj
+            .get("local_file")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return;
+        };
+        let norm_lf = raw_lf.trim_start_matches("./").replace('\\', "/");
+        let candidate_rel = if safe_rel(root, &norm_lf).is_ok_and(|p| p.is_file()) {
+            norm_lf
+        } else if !norm_lf.contains('/') {
+            format!("assets/images/{norm_lf}")
+        } else {
+            norm_lf
+        };
+        if is_skipped_candidate_path(&candidate_rel) {
+            return;
+        }
+        let Ok(abs) = safe_rel(root, &candidate_rel) else {
+            return;
+        };
+        if !abs.is_file() {
+            return;
+        }
+        let binding = (candidate_rel.clone(), abs);
+        let norm_key = key.trim().trim_start_matches("./").replace('\\', "/");
+        if !norm_key.is_empty() {
+            map.insert(norm_key.clone(), binding.clone());
+        }
+        for field in ["path", "target", "original_path", "original", "source", "asset_path", "file"] {
+            if let Some(p) = obj
+                .get(field)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let np = p.trim_start_matches("./").replace('\\', "/");
+                map.insert(np, binding.clone());
+            }
+        }
+    };
+
+    if let Some(arr) = doc.as_array() {
+        for item in arr {
+            let key = item
+                .get("path")
+                .or_else(|| item.get("id"))
+                .or_else(|| item.get("key"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            register(key, item);
+        }
+    } else if let Some(obj) = doc.as_object() {
+        for list_key in ["assets", "images", "entries", "items"] {
+            if let Some(arr) = obj.get(list_key).and_then(Value::as_array) {
+                for item in arr {
+                    let key = item
+                        .get("path")
+                        .or_else(|| item.get("id"))
+                        .or_else(|| item.get("key"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    register(key, item);
+                }
+            } else if let Some(sub) = obj.get(list_key).and_then(Value::as_object) {
+                for (k, v) in sub {
+                    register(k, v);
+                }
+            }
+        }
+        for (k, v) in obj {
+            if v.is_object() && v.get("local_file").is_some() {
+                register(k, v);
+            }
+        }
+    }
+    map
+}
+
 fn assets_upload(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
     let manifest = read_manifest(root);
     let authorised = str_list(manifest.pointer("/assets/authorised"));
     let types = type_overrides(&manifest, body);
     let flag = |k: &str| body.get(k).and_then(Value::as_bool).unwrap_or(false);
     let (everything, dry_run, force) = (flag("everything"), flag("dry_run"), flag("force"));
+    let max_audio_uploads: Option<usize> = body
+        .get("max_audio_uploads")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize);
     let explicit = str_list(body.get("paths"));
     if everything && !explicit.is_empty() {
         return bad("Send either paths or everything, not both.");
     }
+
+    let manifest_bindings = read_image_manifest_bindings(root);
 
     // selection: authorised set by default; a list when named; everything only on its own flag
     let all = walk(root);
@@ -1002,6 +1115,21 @@ fn assets_upload(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
     let mut overrun: Vec<String> = Vec::new();
     if !explicit.is_empty() {
         for p in &explicit {
+            let rel = p.trim().trim_start_matches("./").replace('\\', "/");
+            if is_skipped_candidate_path(&rel) {
+                results.push(json!({
+                    "path": rel,
+                    "state": "skipped",
+                    "reason": "superseded_or_incoming",
+                    "error": "skipped superseded or incoming staging asset",
+                }));
+                continue;
+            }
+            if let Some((bound_rel, bound_abs)) = manifest_bindings.get(&rel) {
+                let bytes = bound_abs.metadata().map(|m| m.len()).unwrap_or(0);
+                picked.push((bound_rel.clone(), bound_abs.clone(), bytes));
+                continue;
+            }
             let abs = match safe_rel(root, p) {
                 Ok(a) if a.is_file() => a,
                 Ok(_) => {
@@ -1014,22 +1142,60 @@ fn assets_upload(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
                 }
             };
             let bytes = abs.metadata().map(|m| m.len()).unwrap_or(0);
-            let rel = p.trim().trim_start_matches("./").to_string();
             picked.push((rel, abs, bytes));
         }
     } else {
+        let mut seen_picked: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for f in all {
             if kind_for(&f.rel, &types).is_none() {
                 continue;
             }
             let is_auth = is_authorised(&authorised, &f.rel);
-            if everything {
-                if !is_auth {
-                    overrun.push(f.rel.clone());
+            if !everything && !is_auth {
+                continue;
+            }
+            if is_skipped_candidate_path(&f.rel) {
+                results.push(json!({
+                    "path": f.rel,
+                    "state": "skipped",
+                    "reason": "superseded_or_incoming",
+                    "error": "skipped superseded or incoming staging asset",
+                }));
+                continue;
+            }
+            // If assets/images/manifest.json binds this path to a clean replacement local_file,
+            // upload the clean replacement instead of the stale original.
+            let (cand_rel, cand_abs, cand_bytes) = if let Some((bound_rel, bound_abs)) =
+                manifest_bindings.get(&f.rel)
+            {
+                let b = bound_abs.metadata().map(|m| m.len()).unwrap_or(0);
+                (bound_rel.clone(), bound_abs.clone(), b)
+            } else {
+                (f.rel.clone(), f.abs, f.bytes)
+            };
+            if seen_picked.insert(cand_rel.clone()) {
+                if everything && !is_auth {
+                    overrun.push(cand_rel.clone());
                 }
-                picked.push((f.rel, f.abs, f.bytes));
-            } else if is_auth {
-                picked.push((f.rel, f.abs, f.bytes));
+                picked.push((cand_rel, cand_abs, cand_bytes));
+            }
+        }
+        // Include clean local_file replacements bound in assets/images/manifest.json whose key or
+        // target path falls under authorised globs even if the replacement lives in a subfolder.
+        for (orig_key, (bound_rel, bound_abs)) in &manifest_bindings {
+            if seen_picked.contains(bound_rel) || is_skipped_candidate_path(bound_rel) {
+                continue;
+            }
+            if kind_for(bound_rel, &types).is_none() {
+                continue;
+            }
+            let auth_match = everything
+                || is_authorised(&authorised, bound_rel)
+                || is_authorised(&authorised, orig_key)
+                || is_authorised(&authorised, &format!("assets/images/{orig_key}.png"));
+            if auth_match && seen_picked.insert(bound_rel.clone()) {
+                let b = bound_abs.metadata().map(|m| m.len()).unwrap_or(0);
+                picked.push((bound_rel.clone(), bound_abs.clone(), b));
             }
         }
     }
@@ -1043,7 +1209,17 @@ fn assets_upload(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
     let mut lock_dirty = false;
     let mut halted_reason: Option<&'static str> = None;
     let mut halted_note: Option<String> = None;
+    let mut audio_uploads_attempted: usize = 0;
     for (rel, abs, bytes) in picked {
+        if is_skipped_candidate_path(&rel) {
+            results.push(json!({
+                "path": rel,
+                "state": "skipped",
+                "reason": "superseded_or_incoming",
+                "error": "skipped superseded or incoming staging asset",
+            }));
+            continue;
+        }
         let Some(kind) = kind_for(&rel, &types) else {
             results.push(json!({ "path": rel, "state": "skipped", "error": "not an uploadable file type" }));
             continue;
@@ -1084,6 +1260,22 @@ fn assets_upload(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
                 results.push(json!({ "path": rel, "state": "reused", "assetId": t.get("assetId"), "imageAssetId": t.get("imageAssetId"), "assetType": kind, "sha256": sha }));
                 continue;
             }
+        }
+        if kind == "Audio" {
+            if let Some(cap) = max_audio_uploads {
+                if audio_uploads_attempted >= cap {
+                    results.push(json!({
+                        "path": rel,
+                        "state": "skipped",
+                        "assetType": kind,
+                        "sha256": sha,
+                        "reason": "max_audio_uploads_cap",
+                        "error": format!("skipped: reached max_audio_uploads cap ({cap}) for this batch"),
+                    }));
+                    continue;
+                }
+            }
+            audio_uploads_attempted += 1;
         }
         let Some(client) = &client else {
             results.push(json!({ "path": rel, "state": "would_upload", "assetType": kind, "sha256": sha }));
@@ -1162,9 +1354,13 @@ fn assets_upload(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
         "uploaded": count("uploaded"), "reused": count("reused"), "unchanged": count("unchanged"),
         "skipped": count("skipped"), "failed": count("failed"), "rejected": count("rejected"),
         "would_upload": count("would_upload"),
+        "audio_uploads_used": audio_uploads_attempted,
         "selection": if everything { "everything" } else if !explicit.is_empty() { "paths" } else { "authorised" },
         "dry_run": dry_run,
     });
+    if let Some(cap) = max_audio_uploads {
+        summary["max_audio_uploads"] = json!(cap);
+    }
     if let Some(cg) = codegen_res {
         summary["asset_ids_luau"] = cg;
     }
@@ -1180,6 +1376,197 @@ fn assets_upload(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
         summary["note"] = json!("Nothing is authorised for upload yet. Authorise some files first (POST .../assets/authorise).");
     }
     Ok(json!({ "ok": true, "results": results, "summary": summary }))
+}
+
+/// Gap #86: Poll Open Cloud `GET /assets/v1/assets/{assetId}` for every entry in
+/// `assets.lock.json` whose state is `"pending"`, `"reviewing"`, or `"unknown"`, update
+/// `state`, resolve Decal `imageAssetId` when newly approved, save `assets.lock.json`, and
+/// auto-run `assets_codegen` whenever any asset transitions to `"approved"`.
+pub fn assets_moderation_poll(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
+    let manifest = read_manifest(root);
+    let lock_file = lock_path(root, &manifest)?;
+    let mut lock = read_lock(&lock_file);
+    let filter_paths: std::collections::BTreeSet<String> = str_list(body.get("paths"))
+        .into_iter()
+        .map(|s| s.trim().trim_start_matches("./").replace('\\', "/"))
+        .collect();
+    let include_all = body
+        .get("include_all")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let auto_codegen = body
+        .get("auto_codegen")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+
+    let mut to_poll: Vec<(String, String, String, String)> = Vec::new();
+    if let Some(map) = lock.get("assets").and_then(Value::as_object) {
+        let mut keys: Vec<&String> = map.keys().collect();
+        keys.sort();
+        for rel in keys {
+            if !filter_paths.is_empty() && !filter_paths.contains(rel) {
+                continue;
+            }
+            let entry = &map[rel];
+            let Some(asset_id) = id_of(entry, "assetId") else {
+                continue;
+            };
+            let state = entry
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_ascii_lowercase();
+            let needs_poll = if include_all {
+                state != "rejected"
+            } else {
+                matches!(state.as_str(), "pending" | "reviewing" | "unknown" | "")
+            };
+            if !needs_poll {
+                continue;
+            }
+            let asset_type = entry
+                .get("assetType")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            to_poll.push((rel.clone(), asset_id, asset_type, state));
+        }
+    }
+
+    let client = if to_poll.is_empty() {
+        None
+    } else {
+        Some(Client::new(ctx)?)
+    };
+
+    let mut results: Vec<Value> = Vec::new();
+    let mut polled = 0usize;
+    let mut newly_approved = 0usize;
+    let mut newly_rejected = 0usize;
+    let mut still_pending = 0usize;
+    let mut unchanged = 0usize;
+    let mut failed = 0usize;
+    let mut lock_dirty = false;
+
+    for (rel, asset_id, asset_type, prev_state) in to_poll {
+        let Some(client) = &client else { break };
+        polled += 1;
+        match client.json("GET", &format!("/assets/v1/assets/{asset_id}"), None, None) {
+            Ok(v) => {
+                let raw_mod = v
+                    .pointer("/moderationResult/moderationState")
+                    .or_else(|| v.pointer("/response/moderationResult/moderationState"))
+                    .or_else(|| v.get("moderationState"))
+                    .or_else(|| v.get("state"))
+                    .and_then(Value::as_str);
+                let new_state = norm_state(raw_mod);
+                let effective_type = v
+                    .get("assetType")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or(&asset_type)
+                    .to_string();
+
+                let mut resolved_image_id: Option<String> = None;
+                if new_state == "approved" && effective_type.eq_ignore_ascii_case("Decal") {
+                    let existing_img = lock
+                        .pointer(&format!("/assets/{}", ptr_escape(&rel)))
+                        .and_then(|e| id_of(e, "imageAssetId"));
+                    if existing_img.is_none() {
+                        resolved_image_id = id_of(&v, "imageAssetId")
+                            .or_else(|| id_of(&v, "imageId"))
+                            .or_else(|| client.resolve_decal_image_id(&asset_id));
+                    } else {
+                        resolved_image_id = existing_img;
+                    }
+                }
+
+                let state_changed = new_state != prev_state;
+                let mut img_added = false;
+                if let Some(entry_obj) = lock
+                    .get_mut("assets")
+                    .and_then(Value::as_object_mut)
+                    .and_then(|m| m.get_mut(&rel))
+                    .and_then(Value::as_object_mut)
+                {
+                    if state_changed {
+                        entry_obj.insert("state".to_string(), json!(new_state));
+                        lock_dirty = true;
+                    }
+                    if let Some(ref img_id) = resolved_image_id {
+                        if entry_obj.get("imageAssetId").and_then(Value::as_str)
+                            != Some(img_id.as_str())
+                        {
+                            entry_obj.insert("imageAssetId".to_string(), json!(img_id));
+                            lock_dirty = true;
+                            img_added = true;
+                        }
+                    }
+                    entry_obj.insert("checkedAt".to_string(), json!(now_iso()));
+                    if state_changed || img_added {
+                        lock_dirty = true;
+                    }
+                }
+
+                if new_state == "approved" && prev_state != "approved" {
+                    newly_approved += 1;
+                } else if new_state == "rejected" && prev_state != "rejected" {
+                    newly_rejected += 1;
+                } else if new_state == "pending" {
+                    still_pending += 1;
+                } else {
+                    unchanged += 1;
+                }
+
+                results.push(json!({
+                    "path": rel,
+                    "assetId": asset_id,
+                    "assetType": effective_type,
+                    "previous_state": prev_state,
+                    "state": new_state,
+                    "imageAssetId": resolved_image_id,
+                    "changed": state_changed || img_added,
+                }));
+            }
+            Err(e) => {
+                failed += 1;
+                results.push(json!({
+                    "path": rel,
+                    "assetId": asset_id,
+                    "assetType": asset_type,
+                    "previous_state": prev_state,
+                    "state": "error",
+                    "error": e.msg,
+                }));
+            }
+        }
+    }
+
+    if lock_dirty {
+        lock["version"] = json!(1);
+        write_json_atomic(&lock_file, &lock)?;
+    }
+
+    let codegen_res = if newly_approved > 0 && auto_codegen {
+        assets_codegen(root, &json!({})).ok()
+    } else {
+        None
+    };
+
+    let mut out = json!({
+        "ok": true,
+        "polled": polled,
+        "approved": newly_approved,
+        "rejected": newly_rejected,
+        "pending": still_pending,
+        "unchanged": unchanged,
+        "failed": failed,
+        "results": results,
+    });
+    if let Some(cg) = codegen_res {
+        out["asset_ids_luau"] = cg;
+    }
+    Ok(out)
 }
 
 fn luau_str(s: &str) -> String {
@@ -1200,8 +1587,53 @@ fn short_asset_key(rel: &str) -> String {
     stem.to_string()
 }
 
-/// Generate `src/shared/AssetIds.luau` (or custom `out` path) from `assets.lock.json`
-/// and optional `assets/meshes/manifest.json` (stud bbox + anchors for pre-upload proxies).
+fn read_png_dimensions(path: &Path) -> Option<(u32, u32)> {
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut hdr = [0u8; 24];
+    std::io::Read::read_exact(&mut f, &mut hdr).ok()?;
+    if &hdr[0..8] != b"\x89PNG\r\n\x1a\n" || &hdr[12..16] != b"IHDR" {
+        return None;
+    }
+    let w = u32::from_be_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]);
+    let h = u32::from_be_bytes([hdr[20], hdr[21], hdr[22], hdr[23]]);
+    (w > 0 && h > 0).then_some((w, h))
+}
+
+fn default_slice_rect_for_png(path: &Path) -> [i64; 4] {
+    let (w, h) = read_png_dimensions(path).unwrap_or((64, 64));
+    let wi = w as i64;
+    let hi = h as i64;
+    let l = (wi / 6).max(4).min((wi / 2).saturating_sub(1).max(1));
+    let t = (hi / 6).max(4).min((hi / 2).saturating_sub(1).max(1));
+    let r = (wi - l).max(l + 1).min(wi);
+    let b = (hi - t).max(t + 1).min(hi);
+    [l, t, r, b]
+}
+
+fn is_ui_slice_candidate_stem(stem: &str) -> bool {
+    let low = stem.to_ascii_lowercase();
+    if low.starts_with("icon_") || low.ends_with("_icon") {
+        return false;
+    }
+    [
+        "frame", "border", "panel", "modal", "button", "pill", "badge", "slot", "bar", "header",
+        "card", "toast", "banner", "drawer", "window", "box", "tab", "plate",
+    ]
+    .iter()
+    .any(|kw| low.contains(kw))
+}
+
+fn is_cloud_ready_lock_state(state: &str) -> bool {
+    matches!(
+        state.to_ascii_lowercase().as_str(),
+        "approved" | "locked" | "uploaded"
+    )
+}
+
+/// Generate `src/shared/AssetIds.luau` (or custom `out` path) from `assets.lock.json`,
+/// local Studio content fallbacks (`rbxasset://openro/<slug>/<rel_path>` when
+/// `studio_local_fallback == true`, Gap #84), `art/ui/**/slices.json`, and
+/// `assets/meshes/manifest.json`.
 pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
     let manifest = read_manifest(root);
     let lock = read_lock(&lock_path(root, &manifest)?);
@@ -1219,36 +1651,79 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
         std::fs::create_dir_all(parent).or_else(|e| err(500, format!("create codegen dir: {e}")))?;
     }
 
-    let mut by_path: Vec<(String, String)> = Vec::new();
-    let mut by_key: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-    let mut mesh_asset_ids: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-    let mut card_art_aliases: Vec<(String, String)> = Vec::new();
+    let studio_local_fallback = body
+        .get("studio_local_fallback")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let studio_project_slug = body
+        .get("studio_project_slug")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(crate::studio_embed::sanitize_studio_content_slug)
+        .unwrap_or_else(|| crate::studio_embed::default_studio_project_slug(root));
+
+    // Collect eligible local project art/UI/card/audio files for instant rbxasset:// fallback.
+    let local_files: std::collections::BTreeMap<String, PathBuf> = if studio_local_fallback {
+        crate::studio_embed::collect_studio_content_files(root)
+            .into_iter()
+            .filter(|(rel, _)| {
+                !rel.starts_with("art/ui/sheets/")
+                    && !rel.ends_with("/contact_sheet.png")
+                    && !is_skipped_candidate_path(rel)
+            })
+            .collect()
+    } else {
+        std::collections::BTreeMap::new()
+    };
+
+    let mut path_to_uri: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    let mut rejected_paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut mesh_asset_ids: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    let mut audio_lock_paths: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
     let mut skipped_rejected = 0usize;
+    let mut local_fallback_count = 0usize;
+
     if let Some(map) = lock.get("assets").and_then(Value::as_object) {
         let mut sorted: Vec<(&String, &Value)> = map.iter().collect();
         sorted.sort_by(|a, b| a.0.cmp(b.0));
         for (rel, entry) in sorted {
             let state = entry.get("state").and_then(Value::as_str).unwrap_or("unknown");
-            if state == "rejected" {
+            if state.eq_ignore_ascii_case("rejected") {
                 skipped_rejected += 1;
+                rejected_paths.insert(rel.clone());
                 continue;
             }
-            // Prefer resolved Image asset id when an upload fell back to Decal (#69).
-            let Some(id) = id_of(entry, "imageAssetId").or_else(|| id_of(entry, "assetId")) else {
+            if entry
+                .get("assetType")
+                .and_then(Value::as_str)
+                .is_some_and(|t| t.eq_ignore_ascii_case("Audio"))
+            {
+                audio_lock_paths.insert(rel.clone());
+            }
+            let cloud_ready = is_cloud_ready_lock_state(state);
+            let has_local_fallback = studio_local_fallback && local_files.contains_key(rel);
+            let uri_opt = if cloud_ready {
+                // Prefer resolved Image asset id when an upload fell back to Decal (#69).
+                id_of(entry, "imageAssetId")
+                    .or_else(|| id_of(entry, "assetId"))
+                    .map(|id| format!("rbxassetid://{id}"))
+            } else if has_local_fallback {
+                // Pending/reviewing/unknown asset with a local file on disk -> instant Studio local bridge (#84).
+                local_fallback_count += 1;
+                Some(format!("rbxasset://openro/{studio_project_slug}/{rel}"))
+            } else {
+                id_of(entry, "imageAssetId")
+                    .or_else(|| id_of(entry, "assetId"))
+                    .map(|id| format!("rbxassetid://{id}"))
+            };
+            let Some(uri) = uri_opt else {
                 continue;
             };
-            let uri = format!("rbxassetid://{id}");
-            by_path.push((rel.clone(), uri.clone()));
-            let key = short_asset_key(rel);
-            by_key.entry(key).or_insert_with(|| uri.clone());
-            // Packed card portrait aliases: art/cards/<cardId>/art.png -> "cards/<cardId>" & "<cardId>" (#69).
-            if let Some(card_id) = rel
-                .strip_prefix("art/cards/")
-                .and_then(|s| s.strip_suffix("/art.png"))
-                .filter(|id| !id.is_empty() && !id.contains('/'))
-            {
-                card_art_aliases.push((card_id.to_string(), uri.clone()));
-            }
+            path_to_uri.insert(rel.clone(), uri.clone());
             // Locked mesh asset ids: assets/meshes/<stem>.<mesh_ext> -> AssetIds.meshes["<stem>"].assetId (#69).
             if let Some(fname) = rel
                 .strip_prefix("assets/meshes/")
@@ -1260,8 +1735,106 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
                         "obj" | "fbx" | "glb" | "gltf" | "rbxm" | "rbxmx"
                     ) && !stem.is_empty()
                     {
-                        mesh_asset_ids.entry(stem.to_string()).or_insert_with(|| uri.clone());
+                        mesh_asset_ids.entry(stem.to_string()).or_insert(uri);
                     }
+                }
+            }
+        }
+    }
+
+    // Add local project assets not yet in assets.lock.json (when studio_local_fallback == true).
+    if studio_local_fallback {
+        for rel in local_files.keys() {
+            if rejected_paths.contains(rel) || path_to_uri.contains_key(rel) {
+                continue;
+            }
+            let uri = format!("rbxasset://openro/{studio_project_slug}/{rel}");
+            path_to_uri.insert(rel.clone(), uri);
+            local_fallback_count += 1;
+        }
+    }
+
+    #[derive(Default)]
+    struct CardCodegenRow {
+        art: Option<String>,
+        icon: Option<String>,
+        full: Option<String>,
+    }
+
+    let mut by_path: Vec<(String, String)> = Vec::with_capacity(path_to_uri.len());
+    let mut by_key: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut card_art_aliases: Vec<(String, String)> = Vec::new();
+    let mut card_rows: std::collections::BTreeMap<String, CardCodegenRow> =
+        std::collections::BTreeMap::new();
+    let mut icon_rows: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    let mut audio_rows: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+
+    for (rel, uri) in &path_to_uri {
+        by_path.push((rel.clone(), uri.clone()));
+        let key = short_asset_key(rel);
+        by_key.entry(key).or_insert_with(|| uri.clone());
+
+        // Card portrait / icon / full table (`AssetIds.cards["CARD-ID"]`) + legacy aliases (#69, #84).
+        if let Some(rest) = rel.strip_prefix("art/cards/") {
+            if let Some((card_id, fname)) = rest.split_once('/') {
+                if !card_id.is_empty() && !fname.contains('/') {
+                    match fname {
+                        "art.png" => {
+                            card_art_aliases.push((card_id.to_string(), uri.clone()));
+                            card_rows.entry(card_id.to_string()).or_default().art =
+                                Some(uri.clone());
+                        }
+                        "icon.png" => {
+                            card_rows.entry(card_id.to_string()).or_default().icon =
+                                Some(uri.clone());
+                        }
+                        "full.png" => {
+                            card_rows.entry(card_id.to_string()).or_default().full =
+                                Some(uri.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // UI & HUD icons (`AssetIds.icons`)
+        if let Some(fname) = rel.strip_prefix("art/ui/icons/").filter(|f| !f.contains('/')) {
+            if let Some((stem, _)) = fname.rsplit_once('.') {
+                if !stem.is_empty() {
+                    icon_rows.entry(stem.to_string()).or_insert_with(|| uri.clone());
+                }
+            }
+        } else if rel.starts_with("art/ui/") || rel.starts_with("assets/images/") {
+            let fname = rel.rsplit('/').next().unwrap_or(rel);
+            if let Some((stem, _)) = fname.rsplit_once('.') {
+                let low = stem.to_ascii_lowercase();
+                if low.starts_with("icon_") || low.ends_with("_icon") {
+                    icon_rows.entry(stem.to_string()).or_insert_with(|| uri.clone());
+                }
+            }
+        }
+
+        // Audio cues (`AssetIds.audio["cue_stem"]`)
+        let is_audio_ext = matches!(ext_of(rel).as_str(), "wav" | "ogg" | "mp3" | "flac");
+        if is_audio_ext
+            || rel.starts_with("assets/audio/")
+            || rel.starts_with("art/audio/")
+            || audio_lock_paths.contains(rel)
+        {
+            let fname = rel.rsplit('/').next().unwrap_or(rel);
+            let stem = fname.rsplit_once('.').map(|(s, _)| s).unwrap_or(fname);
+            if !stem.is_empty() {
+                let replace = match audio_rows.get(stem) {
+                    None => true,
+                    Some(prev) => {
+                        uri.starts_with("rbxassetid://") && !prev.starts_with("rbxassetid://")
+                    }
+                };
+                if replace {
+                    audio_rows.insert(stem.to_string(), uri.clone());
                 }
             }
         }
@@ -1332,19 +1905,26 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
             });
     }
 
-    // Optional 9-slice metadata from art/ui/slices.json, enriched with locked assetId (#80).
-    let slices_doc = std::fs::read_to_string(root.join("art/ui/slices.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok());
-    let path_to_uri: std::collections::BTreeMap<String, String> =
-        by_path.iter().cloned().collect();
+    // 9-slice metadata from `art/ui/slices.json`, nested `art/ui/*/slices.json`, and
+    // `art/ui/card-borders` / `art/ui/<skin>` slice PNGs (#80, #84).
     struct SliceCodegenRow {
         slice: [i64; 4],
         asset_uri: String,
     }
     let mut slice_rows: std::collections::BTreeMap<String, SliceCodegenRow> =
         std::collections::BTreeMap::new();
-    if let Some(entries) = slices_doc.as_ref().and_then(Value::as_object) {
+    let load_slices_json = |doc_path: &Path,
+                            subdir_prefix: Option<&str>,
+                            rows: &mut std::collections::BTreeMap<String, SliceCodegenRow>| {
+        let Some(doc) = std::fs::read_to_string(doc_path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        else {
+            return;
+        };
+        let Some(entries) = doc.as_object() else {
+            return;
+        };
         for (k, v) in entries {
             let Some(arr) = v.get("slice").and_then(Value::as_array) else {
                 continue;
@@ -1358,13 +1938,92 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
                 arr[2].as_i64().unwrap_or(0),
                 arr[3].as_i64().unwrap_or(0),
             ];
+            let full_key = match subdir_prefix {
+                Some(sub) if !k.contains('/') => format!("{sub}/{k}"),
+                _ => k.clone(),
+            };
             let rel_path = v.get("path").and_then(Value::as_str).unwrap_or("");
+            let candidate_rel = if !rel_path.is_empty() {
+                rel_path.trim_start_matches("./").replace('\\', "/")
+            } else if let Some(sub) = subdir_prefix {
+                format!("art/ui/{sub}/{k}.png")
+            } else {
+                format!("art/ui/{k}.png")
+            };
             let asset_uri = path_to_uri
-                .get(rel_path)
+                .get(&candidate_rel)
                 .cloned()
+                .or_else(|| {
+                    subdir_prefix.and_then(|sub| {
+                        path_to_uri
+                            .get(&format!("art/ui/{sub}/{rel_path}"))
+                            .cloned()
+                    })
+                })
                 .or_else(|| by_key.get(k).cloned())
+                .or_else(|| by_key.get(&full_key).cloned())
                 .unwrap_or_default();
-            slice_rows.insert(k.clone(), SliceCodegenRow { slice, asset_uri });
+            rows.entry(full_key)
+                .or_insert(SliceCodegenRow { slice, asset_uri });
+        }
+    };
+
+    load_slices_json(&root.join("art/ui/slices.json"), None, &mut slice_rows);
+    if let Ok(rd) = std::fs::read_dir(root.join("art/ui")) {
+        let mut subdirs: Vec<(String, PathBuf)> = rd
+            .flatten()
+            .filter(|e| {
+                e.file_type()
+                    .ok()
+                    .is_some_and(|ft| !ft.is_symlink() && ft.is_dir())
+            })
+            .map(|e| (e.file_name().to_string_lossy().to_string(), e.path()))
+            .filter(|(name, _)| !name.starts_with('.') && name != "sheets")
+            .collect();
+        subdirs.sort_by(|a, b| a.0.cmp(&b.0));
+        for (subdir, dir_path) in subdirs {
+            let nested = dir_path.join("slices.json");
+            if nested.is_file() {
+                load_slices_json(&nested, Some(&subdir), &mut slice_rows);
+            }
+            if subdir == "icons" {
+                continue;
+            }
+            if let Ok(files_rd) = std::fs::read_dir(&dir_path) {
+                let mut pngs: Vec<(String, PathBuf)> = files_rd
+                    .flatten()
+                    .filter(|e| {
+                        e.file_type()
+                            .ok()
+                            .is_some_and(|ft| !ft.is_symlink() && ft.is_file())
+                    })
+                    .map(|e| (e.file_name().to_string_lossy().to_string(), e.path()))
+                    .filter(|(n, _)| {
+                        !n.starts_with('.')
+                            && n.to_ascii_lowercase().ends_with(".png")
+                            && !n.to_ascii_lowercase().contains("_superseded")
+                    })
+                    .collect();
+                pngs.sort_by(|a, b| a.0.cmp(&b.0));
+                for (fname, abs_png) in pngs {
+                    let Some((stem, _)) = fname.rsplit_once('.') else {
+                        continue;
+                    };
+                    let slice_key = format!("{subdir}/{stem}");
+                    if slice_rows.contains_key(&slice_key) {
+                        continue;
+                    }
+                    if subdir == "card-borders" || is_ui_slice_candidate_stem(stem) {
+                        let rel_png = format!("art/ui/{subdir}/{fname}");
+                        let asset_uri = path_to_uri
+                            .get(&rel_png)
+                            .cloned()
+                            .unwrap_or_default();
+                        let slice = default_slice_rect_for_png(&abs_png);
+                        slice_rows.insert(slice_key, SliceCodegenRow { slice, asset_uri });
+                    }
+                }
+            }
         }
     }
 
@@ -1386,6 +2045,58 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
     } else {
         out.push_str("AssetIds.byKey = {\n");
         for (k, uri) in &by_key {
+            out.push_str(&format!("\t[{}] = {},\n", luau_str(k), luau_str(uri)));
+        }
+        out.push_str("}\n\n");
+    }
+    if card_rows.is_empty() {
+        out.push_str("AssetIds.cards = {}\n\n");
+    } else {
+        out.push_str("AssetIds.cards = {\n");
+        for (card_id, row) in &card_rows {
+            let key_s = luau_str(card_id);
+            let mut fields: Vec<String> = Vec::new();
+            if let Some(ref u) = row.art {
+                fields.push(format!("art = {}", luau_str(u)));
+            }
+            if let Some(ref u) = row.icon {
+                fields.push(format!("icon = {}", luau_str(u)));
+            }
+            if let Some(ref u) = row.full {
+                fields.push(format!("full = {}", luau_str(u)));
+            }
+            if fields.is_empty() {
+                continue;
+            }
+            let single = format!("\t[{key_s}] = {{ {} }},", fields.join(", "));
+            let visual_cols = single.len() + 3;
+            if visual_cols <= 120 {
+                out.push_str(&single);
+                out.push('\n');
+            } else {
+                out.push_str(&format!("\t[{key_s}] = {{\n"));
+                for f in &fields {
+                    out.push_str(&format!("\t\t{f},\n"));
+                }
+                out.push_str("\t},\n");
+            }
+        }
+        out.push_str("}\n\n");
+    }
+    if icon_rows.is_empty() {
+        out.push_str("AssetIds.icons = {}\n\n");
+    } else {
+        out.push_str("AssetIds.icons = {\n");
+        for (k, uri) in &icon_rows {
+            out.push_str(&format!("\t[{}] = {},\n", luau_str(k), luau_str(uri)));
+        }
+        out.push_str("}\n\n");
+    }
+    if audio_rows.is_empty() {
+        out.push_str("AssetIds.audio = {}\n\n");
+    } else {
+        out.push_str("AssetIds.audio = {\n");
+        for (k, uri) in &audio_rows {
             out.push_str(&format!("\t[{}] = {},\n", luau_str(k), luau_str(uri)));
         }
         out.push_str("}\n\n");
@@ -1478,8 +2189,14 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
         "ok": true,
         "path": out_rel,
         "count": by_path.len(),
+        "card_count": card_rows.len(),
+        "icon_count": icon_rows.len(),
+        "audio_count": audio_rows.len(),
         "mesh_count": mesh_rows.len(),
         "slice_count": slice_rows.len(),
+        "local_fallback_count": local_fallback_count,
+        "studio_local_fallback": studio_local_fallback,
+        "studio_project_slug": studio_project_slug,
         "skipped_rejected": skipped_rejected,
         "keys": keys,
     }))
@@ -1487,32 +2204,145 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
 
 // ------------------------------------------------------------------ publish
 
+fn system_time_ms(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn find_newest_root_build_place(root: &Path) -> Option<(u64, SystemTime, String, PathBuf)> {
+    let build_dir = root.join("build");
+    let rd = std::fs::read_dir(&build_dir).ok()?;
+    let mut best: Option<(u64, SystemTime, String, PathBuf)> = None;
+    for e in rd.flatten() {
+        let Ok(ft) = e.file_type() else { continue };
+        if ft.is_symlink() || !ft.is_file() {
+            continue;
+        }
+        let fname = e.file_name().to_string_lossy().to_string();
+        if fname.starts_with('.') {
+            continue;
+        }
+        let low = fname.to_ascii_lowercase();
+        if !low.ends_with(".rbxlx") && !low.ends_with(".rbxl") {
+            continue;
+        }
+        let stem = fname
+            .rsplit_once('.')
+            .map(|(s, _)| s)
+            .unwrap_or(&fname)
+            .to_string();
+        let abs = e.path();
+        let mtime = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(UNIX_EPOCH);
+        let ms = system_time_ms(mtime);
+        let replace = match &best {
+            None => true,
+            Some((b_ms, b_mt, b_id, _)) => {
+                (mtime, ms, stem.as_str()) > (*b_mt, *b_ms, b_id.as_str())
+            }
+        };
+        if replace {
+            best = Some((ms, mtime, stem, abs));
+        }
+    }
+    best
+}
+
+/// Resolve the newest `.rbxlx` / `.rbxl` build for a project (checking both `build/builds/*.json`
+/// and direct `build/*.rbxlx` Rojo outputs, picking whichever is newer, Gap #86).
+pub fn latest_build_file(root: &Path) -> Option<(String, PathBuf)> {
+    latest_build(root, None).ok()
+}
+
 fn latest_build(root: &Path, want: Option<&str>) -> R<(String, PathBuf)> {
     let dir = root.join("build").join("builds");
-    let mut best: Option<(u64, String, String)> = None;
     if let Some(id) = want {
         if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
             return bad("build_id has odd characters.");
         }
-        let v = std::fs::read_to_string(dir.join(format!("{id}.json"))).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
-        let Some(path) = v.as_ref().and_then(|v| v.get("path")).and_then(Value::as_str) else {
-            return err(404, format!("No build {id} in this project."));
-        };
-        best = Some((0, id.to_string(), path.to_string()));
-    } else if let Ok(rd) = std::fs::read_dir(&dir) {
+        let v = std::fs::read_to_string(dir.join(format!("{id}.json")))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        if let Some(path) = v.as_ref().and_then(|v| v.get("path")).and_then(Value::as_str) {
+            return Ok((id.to_string(), safe_rel(root, path)?));
+        }
+        for ext in ["rbxlx", "rbxl"] {
+            let rel = format!("build/{id}.{ext}");
+            if let Ok(p) = safe_rel(root, &rel) {
+                if p.is_file() {
+                    return Ok((id.to_string(), p));
+                }
+            }
+        }
+        return err(404, format!("No build {id} in this project."));
+    }
+
+    let mut best_json: Option<(u64, String, String)> = None;
+    if let Ok(rd) = std::fs::read_dir(&dir) {
         for e in rd.flatten() {
-            let Some(v) = std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
-            let (Some(path), at) = (v.get("path").and_then(Value::as_str), v.get("at").and_then(Value::as_u64).unwrap_or(0)) else { continue };
-            let id = v.get("build_id").and_then(Value::as_str).unwrap_or("build").to_string();
-            if best.as_ref().is_none_or(|b| at >= b.0) {
-                best = Some((at, id, path.to_string()));
+            let Some(v) = std::fs::read_to_string(e.path())
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            else {
+                continue;
+            };
+            let (Some(path), at) = (
+                v.get("path").and_then(Value::as_str),
+                v.get("at").and_then(Value::as_u64).unwrap_or(0),
+            ) else {
+                continue;
+            };
+            let id = v
+                .get("build_id")
+                .and_then(Value::as_str)
+                .unwrap_or("build")
+                .to_string();
+            if best_json.as_ref().is_none_or(|b| at >= b.0) {
+                best_json = Some((at, id, path.to_string()));
             }
         }
     }
-    let Some((_, id, path)) = best else {
-        return bad("Build the project first; there is no build to publish.");
-    };
-    Ok((id, safe_rel(root, &path)?))
+
+    let best_root = find_newest_root_build_place(root);
+    match (best_json, best_root) {
+        (Some((json_at, json_id, json_rel)), Some((root_ms, root_mtime, root_id, root_abs))) => {
+            let json_abs_res = safe_rel(root, &json_rel);
+            let Ok(json_abs) = json_abs_res else {
+                return Ok((root_id, root_abs));
+            };
+            if !json_abs.is_file() {
+                return Ok((root_id, root_abs));
+            }
+            let same_file = match (std::fs::canonicalize(&json_abs), std::fs::canonicalize(&root_abs)) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => json_abs == root_abs,
+            };
+            if same_file {
+                return Ok((json_id, json_abs));
+            }
+            let json_file_mtime = std::fs::metadata(&json_abs)
+                .and_then(|m| m.modified())
+                .unwrap_or(UNIX_EPOCH);
+            let json_at_ms = if json_at > 0 && json_at < 10_000_000_000 {
+                json_at.saturating_mul(1000)
+            } else {
+                json_at
+            };
+            if root_mtime > json_file_mtime
+                || (json_at_ms > 0 && root_ms > json_at_ms && root_mtime >= json_file_mtime)
+            {
+                Ok((root_id, root_abs))
+            } else {
+                Ok((json_id, json_abs))
+            }
+        }
+        (Some((_, json_id, json_rel)), None) => Ok((json_id, safe_rel(root, &json_rel)?)),
+        (None, Some((_, _, root_id, root_abs))) => Ok((root_id, root_abs)),
+        (None, None) => bad("Build the project first; there is no build to publish."),
+    }
 }
 
 fn max_publish_bytes() -> u64 {
@@ -3987,6 +4817,7 @@ pub fn route(ctx: &Ctx, method: &str, path: &str, query: &str, body: &Value) -> 
                 ("GET", ["assets", "lock"]) => read_manifest_lock(&root).map(ok_json),
                 ("POST", ["assets", "authorise"]) => assets_authorise(&root, body).map(ok_json),
                 ("POST", ["assets", "upload"]) => assets_upload(ctx, &root, body).map(ok_json),
+                ("POST", ["assets", "moderation"]) => assets_moderation_poll(ctx, &root, body).map(ok_json),
                 ("POST", ["assets", "codegen"]) => assets_codegen(&root, body).map(ok_json),
                 ("POST", ["publish"]) => publish(ctx, &root, body).map(ok_json),
                 ("GET", ["products"]) => products_get(ctx, &root).map(ok_json),

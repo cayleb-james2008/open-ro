@@ -195,6 +195,10 @@ fn fallback_agy_models() -> Vec<AgyModel> {
         ("gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen (XHigh)"),
         ("gemini-4-hydrogen-medium", "Gemini 4 Hydrogen (Medium)"),
         ("gemini-4-hydrogen-low", "Gemini 4 Hydrogen (Low)"),
+        ("gemini-4-neon-xhigh", "Gemini 4 Neon (XHigh)"),
+        ("gemini-4-neon-high", "Gemini 4 Neon (High)"),
+        ("gemini-4-neon-medium", "Gemini 4 Neon (Medium)"),
+        ("gemini-4-neon-low", "Gemini 4 Neon (Low)"),
     ]
     .iter()
     .map(|(i, l)| AgyModel { id: i.to_string(), label: l.to_string() })
