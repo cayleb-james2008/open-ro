@@ -811,6 +811,117 @@ try {
     if (!isWebEngineSync) {
       await p.unroute(pullSyncPattern);
     }
+
+    // Semantic Luau Code Workbench: Check Types, Symbols & Exports rail, Line-Gutter Mismatches & Cross-File Go-to-Definition
+    await p.evaluate(async () => {
+      const projs = await fetch("/api/projects").then((r) => r.json());
+      const activeId = projs?.active;
+      if (!activeId) return;
+      await fetch(`/api/projects/${encodeURIComponent(activeId)}/file`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: "src/shared/GateTypes.luau",
+          content: [
+            "--!strict",
+            "export type RewardPayload = { coins: number, label: string }",
+            "local GateTypes = {}",
+            "function GateTypes.Award(player: Player, amount: number): boolean",
+            "\treturn amount > 0",
+            "end",
+            "return GateTypes",
+            "",
+          ].join("\n"),
+        }),
+      });
+      await fetch(`/api/projects/${encodeURIComponent(activeId)}/file`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: "src/server/GateCaller.server.luau",
+          content: [
+            "--!strict",
+            'local ReplicatedStorage = game:GetService("ReplicatedStorage")',
+            'local GateTypes = require(ReplicatedStorage:WaitForChild("GateTypes"))',
+            "GateTypes.Award(nil)",
+            "GateTypes.NonExistentCall()",
+            "",
+          ].join("\n"),
+        }),
+      });
+    });
+
+    const syncExpBtn = p.locator('button[aria-label="Sync Explorer from Studio"]').first();
+    if ((await syncExpBtn.count()) > 0 && (await syncExpBtn.isVisible())) {
+      await syncExpBtn.click();
+      await p.waitForTimeout(300);
+    }
+
+    await p.getByRole("button", { name: "Code", exact: true }).first().click();
+    await p.locator("[data-code-diff-workbench]").waitFor({ state: "visible", timeout: 8000 });
+
+    const callerTab = p.locator("[data-code-diff-workbench] button").filter({ hasText: "GateCaller.server.luau" }).first();
+    await callerTab.waitFor({ state: "visible", timeout: 8000 });
+    await callerTab.click();
+
+    await p.locator("[data-check-types-btn]").click();
+    await p.locator("[data-diagnostics-source]").waitFor({ state: "visible", timeout: 8000 });
+    const diagSourceTxt = await p.locator("[data-diagnostics-source]").innerText();
+    check(
+      "Code Workbench Check Types updates diagnostics source badge",
+      /luau-analyze\+builtin|builtin|Static Prover/i.test(diagSourceTxt),
+      diagSourceTxt,
+    );
+
+    const symbolsRail = p.locator("[data-symbols-rail]");
+    if ((await symbolsRail.count()) === 0) {
+      await p.locator("[data-symbols-toggle]").click();
+    }
+    await symbolsRail.waitFor({ state: "visible", timeout: 5000 });
+    const awardSymBtn = symbolsRail.locator('[data-symbol-item="Award"]').first();
+    await awardSymBtn.waitFor({ state: "visible", timeout: 8000 });
+    await awardSymBtn.click();
+    await p.waitForFunction(
+      () => document.querySelector("[data-code-diff-workbench]")?.textContent?.includes("src/shared/GateTypes.luau"),
+      null,
+      { timeout: 8000 },
+    );
+    check("Symbols & Exports outline jumps to target script and line", true);
+
+    await callerTab.click();
+    const gutterMarker = p.locator('[data-gutter-marker="4"], [data-gutter-marker="5"], [data-gutter-marker]').first();
+    await gutterMarker.waitFor({ state: "visible", timeout: 8000 });
+    await gutterMarker.click();
+    await p.locator("[data-gutter-tooltip]").waitFor({ state: "visible", timeout: 5000 });
+    const tooltipTxt = await p.locator("[data-gutter-tooltip]").innerText();
+    check(
+      "Line-gutter diagnostic marker renders mismatch tooltip",
+      /missing_export|arity_mismatch|Award|NonExistentCall/i.test(tooltipTxt),
+      tooltipTxt.slice(0, 100),
+    );
+
+    // Cross-file F12 / Go to Definition from GateTypes.Award(nil) -> src/shared/GateTypes.luau
+    const codeTextarea = p.locator('[data-code-diff-workbench] textarea[aria-label^="Edit Luau source"]').first();
+    await codeTextarea.waitFor({ state: "visible", timeout: 5000 });
+    await codeTextarea.evaluate((el) => {
+      const idx = el.value.indexOf("Award");
+      if (idx >= 0) {
+        el.focus();
+        el.setSelectionRange(idx + 2, idx + 2);
+      }
+    });
+    await p.locator("[data-goto-definition-btn]").click();
+    await p.waitForFunction(
+      () => document.querySelector("[data-code-diff-workbench]")?.textContent?.includes("src/shared/GateTypes.luau"),
+      null,
+      { timeout: 8000 },
+    );
+    check("Cross-file Go-to-Definition navigates to GateTypes.luau", true);
+
+    await assertLayoutInvariants(p, "1440x900 Light Code Workbench");
+    await setThemeViaSettings(p, "dark");
+    await assertLayoutInvariants(p, "1440x900 Dark Code Workbench");
+    await setThemeViaSettings(p, "light");
   }
 
   // Check Assets, Swarm, and Viewport (StudioViewport3D) tabs on workbench in Light & Dark

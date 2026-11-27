@@ -1581,3 +1581,72 @@ export async function importProjectModel(
 ): Promise<Res<ImportModelResponse>> {
   return call<ImportModelResponse>(projUrl(projectId, "/import-model"), payload, { timeoutMs: 45000 });
 }
+
+export type LuauSymbolKind = "function" | "type" | "export" | "remote_event" | "remote_function";
+
+export type LuauSymbol = {
+  name: string;
+  kind: LuauSymbolKind | string;
+  path: string;
+  line: number;
+  signature?: string | null;
+};
+
+export type LuauContractMismatchKind =
+  | "missing_export"
+  | "arity_mismatch"
+  | "remote_arg_mismatch"
+  | "strict_type_error";
+
+export type LuauContractMismatch = {
+  caller_path: string;
+  caller_line: number;
+  target_path: string;
+  kind: LuauContractMismatchKind | string;
+  message: string;
+};
+
+export type LuauDiagnosticsSource = "luau-analyze+builtin" | "builtin";
+
+export type LuauDiagnosticEntry = {
+  path: string;
+  line: number;
+  severity: "error" | "warning" | "info" | string;
+  code: string;
+  message: string;
+};
+
+export type WorkspaceSymbolIndex = {
+  ok: boolean;
+  luau_analyze_available: boolean;
+  diagnostics_source: LuauDiagnosticsSource | string;
+  symbols: LuauSymbol[];
+  mismatches: LuauContractMismatch[];
+  diagnostics: LuauDiagnosticEntry[];
+};
+
+export type LuauDefinitionResult = {
+  ok: boolean;
+  target_path: string | null;
+  line: number;
+  col: number;
+  symbol: LuauSymbol | null;
+};
+
+export async function fetchLuauSymbols(projectId: string): Promise<Res<WorkspaceSymbolIndex>> {
+  return call<WorkspaceSymbolIndex>(projUrl(projectId, "/luau/symbols"));
+}
+
+export async function runLuauTypecheck(projectId: string): Promise<Res<WorkspaceSymbolIndex>> {
+  return call<WorkspaceSymbolIndex>(projUrl(projectId, "/luau/typecheck"), {});
+}
+
+export async function fetchLuauDefinition(
+  projectId: string,
+  path: string,
+  line: number,
+  col: number,
+): Promise<Res<LuauDefinitionResult>> {
+  const qs = buildLiveOpsQuery({ path, line, col });
+  return call<LuauDefinitionResult>(projUrl(projectId, `/luau/definition${qs}`));
+}

@@ -12,7 +12,11 @@
 //  - Live EventSource('/api/build/stream') and EventSource('/api/studio/stream') SSE emitters
 //  - Optional BYOK OpenAI-compatible LLM & Gemini Nano Banana / OpenAI Image API (keys strictly in sessionStorage)
 //  - One-click Connect to Local openro-rs (http://127.0.0.1:8077)
-import { computePlaceDiff } from "../src/app/luauAudit";
+import {
+  buildWorkspaceSymbolIndex,
+  computePlaceDiff,
+  resolveLuauDefinitionClient,
+} from "../src/app/luauAudit";
 import {
   analyzeSafeArea,
   buildGuiPreset,
@@ -5542,6 +5546,41 @@ export function installWebEngine() {
         proj.files[rel] = content;
         persist();
         return jsonResponse({ ok: true, path: rel, created, bytes: content.length, sha256: `web-${content.length}` });
+      }
+
+      if ((method === "GET" && tail === "luau/symbols") || (method === "POST" && tail === "luau/typecheck")) {
+        const luauScripts: Record<string, string> = {};
+        for (const [relPath, src] of Object.entries(proj.files || {})) {
+          if (/\.luau?$/i.test(relPath) && typeof src === "string") {
+            luauScripts[relPath] = src;
+          }
+        }
+        const index = buildWorkspaceSymbolIndex(luauScripts, proj.instances || {});
+        return jsonResponse({
+          ok: index.ok,
+          luau_analyze_available: false,
+          diagnostics_source: "builtin",
+          symbols: index.symbols,
+          mismatches: index.mismatches,
+          diagnostics: index.diagnostics,
+        });
+      }
+
+      if (method === "GET" && tail === "luau/definition") {
+        const rel = (u.searchParams.get("path") || "").trim().replace(/\\/g, "/");
+        if (!isSafeRelPath(rel)) {
+          return jsonResponse({ ok: false, error: "invalid or unsafe script path" }, 400);
+        }
+        const line = Math.max(1, Number(u.searchParams.get("line") || "1") || 1);
+        const col = Math.max(1, Number(u.searchParams.get("col") || "1") || 1);
+        const luauScripts: Record<string, string> = {};
+        for (const [relPath, src] of Object.entries(proj.files || {})) {
+          if (/\.luau?$/i.test(relPath) && typeof src === "string") {
+            luauScripts[relPath] = src;
+          }
+        }
+        const res = resolveLuauDefinitionClient(luauScripts, rel, line, col, proj.instances || {});
+        return jsonResponse(res);
       }
 
       if (method === "POST" && tail === "sandbox/run") {

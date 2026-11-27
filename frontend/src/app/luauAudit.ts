@@ -1,6 +1,12 @@
 // Static Luau Analyzer, Syntax Highlighter Tokenizer, and Place Build Diff engine.
 // Mirrors src/luau_check.rs checks for instant client-side diagnostics + standalone web-engine parity.
 import type { Place, PlaceDiff, PlaceDiffItem, PlaceInstance } from "./data";
+import type {
+  LuauContractMismatch,
+  LuauSymbol,
+  WorkspaceSymbolIndex,
+  LuauDefinitionResult,
+} from "./ship/api";
 
 export type LuauSeverity = "error" | "warning";
 
@@ -316,10 +322,14 @@ export function analyzePlaceLuau(place: Place): LuauDiagnostic[] {
       }
     }
 
-    // Check WaitForChild("...") on ReplicatedStorage remotes
+    // Check WaitForChild("...") on ReplicatedStorage remotes (excluding known ModuleScripts)
+    const hasScriptNamed = (name: string) =>
+      Object.keys(place.scripts || {}).some(
+        (k) => k === `ReplicatedStorage.${name}` || scriptShortStem(k).toLowerCase() === name.toLowerCase(),
+      );
     for (const m of source.matchAll(/ReplicatedStorage:WaitForChild\(\s*["']([^"']+)["']\s*\)/g)) {
       const remoteName = m[1];
-      if (!createsRemote(remoteName) && !place.instances[`ReplicatedStorage.${remoteName}`]) {
+      if (!createsRemote(remoteName) && !place.instances[`ReplicatedStorage.${remoteName}`] && !hasScriptNamed(remoteName)) {
         diagnostics.push({
           path,
           line: findLineOf(source, new RegExp(remoteName)),
@@ -369,6 +379,8 @@ export type LuauToken = { kind: LuauTokenKind; text: string };
 const LUAU_KEYWORDS = new Set([
   "local",
   "function",
+  "export",
+  "type",
   "end",
   "if",
   "then",
@@ -538,4 +550,578 @@ export function computePlaceDiff(prev: Place | null, next: Place | null): PlaceD
   }
 
   return { added, modified, removed };
+}
+
+// --- Client-Side Luau Symbol Index, Cross-File Contract Prover & Definition Lookup ---
+
+function stripScriptExt(p: string): string {
+  return p
+    .replace(/\\/g, "/")
+    .replace(/(?:\.(?:server|client))?\.luau?$/i, "")
+    .replace(/\/init$/i, "");
+}
+
+function scriptShortStem(p: string): string {
+  const clean = stripScriptExt(p);
+  const slash = clean.split("/").pop() || clean;
+  return slash.split(".").pop() || slash;
+}
+
+function splitTopLevelCommas(raw: string): string[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  const parts: string[] = [];
+  let depthParen = 0;
+  let depthBrace = 0;
+  let depthBracket = 0;
+  let quote: string | null = null;
+  let start = 0;
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (quote) {
+      if (ch === "\\" && i + 1 < trimmed.length) {
+        i++;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "(") depthParen++;
+    else if (ch === ")") depthParen = Math.max(0, depthParen - 1);
+    else if (ch === "{") depthBrace++;
+    else if (ch === "}") depthBrace = Math.max(0, depthBrace - 1);
+    else if (ch === "[") depthBracket++;
+    else if (ch === "]") depthBracket = Math.max(0, depthBracket - 1);
+    else if (ch === "," && depthParen === 0 && depthBrace === 0 && depthBracket === 0) {
+      parts.push(trimmed.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  const tail = trimmed.slice(start).trim();
+  if (tail) parts.push(tail);
+  return parts;
+}
+
+function parseParamArity(paramsRaw: string, isMethodDef: boolean): { min: number; max: number | null } {
+  const params = splitTopLevelCommas(paramsRaw);
+  let min = 0;
+  let max: number | null = 0;
+  for (let i = 0; i < params.length; i++) {
+    const p = params[i];
+    if (!p) continue;
+    if (i === 0 && !isMethodDef && (p === "self" || p.startsWith("self:"))) {
+      continue;
+    }
+    if (p.startsWith("...")) {
+      max = null;
+      continue;
+    }
+    const typeSplit = p.split(":");
+    const typePart = typeSplit.slice(1).join(":").trim();
+    const isOptional = typePart.endsWith("?") || typePart.includes("| nil") || typePart.includes("nil |");
+    if (!isOptional) min++;
+    if (max !== null) max++;
+  }
+  return { min, max };
+}
+
+function resolveRequireTarget(expr: string, fromPath: string, scriptPaths: string[]): string | null {
+  const stringArgs = [...expr.matchAll(/["']([^"']+)["']/g)].map((m) => m[1]);
+  const identParts = expr
+    .replace(/game:GetService\(\s*["'][^"']+["']\s*\)/g, "")
+    .replace(/WaitForChild|FindFirstChild/g, " ")
+    .match(/[A-Za-z_][A-Za-z0-9_]*/g);
+
+  const candidates: string[] = [];
+  if (stringArgs.length > 0) {
+    candidates.push(stringArgs[stringArgs.length - 1]);
+  }
+  if (identParts && identParts.length > 0) {
+    const filtered = identParts.filter((w) => w !== "game" && w !== "script" && w !== "Parent" && w !== "ReplicatedStorage" && w !== "ServerStorage" && w !== "ServerScriptService");
+    if (filtered.length > 0) candidates.push(filtered[filtered.length - 1]);
+  }
+
+  for (const cand of candidates) {
+    const lower = cand.toLowerCase();
+    // Prefer same directory / relative match first, then stem match
+    const fromDir = fromPath.includes("/") ? fromPath.slice(0, fromPath.lastIndexOf("/")) : "";
+    if (fromDir) {
+      const sibling = scriptPaths.find(
+        (p) => p !== fromPath && p.startsWith(`${fromDir}/`) && scriptShortStem(p).toLowerCase() === lower,
+      );
+      if (sibling) return sibling;
+    }
+    const exactStem = scriptPaths.find((p) => p !== fromPath && scriptShortStem(p).toLowerCase() === lower);
+    if (exactStem) return exactStem;
+    const pathMatch = scriptPaths.find((p) => p !== fromPath && stripScriptExt(p).toLowerCase().endsWith(lower));
+    if (pathMatch) return pathMatch;
+  }
+  return null;
+}
+
+type ParsedFunctionMeta = {
+  symbol: LuauSymbol;
+  minArgs: number;
+  maxArgs: number | null;
+  isMethod: boolean;
+  paramTypes: string[];
+};
+
+type RemoteEndpoint = {
+  remoteName: string;
+  path: string;
+  line: number;
+  direction: "call" | "handler";
+  payloadCount: number;
+  kind: "remote_event" | "remote_function";
+};
+
+function parseRemoteMap(scripts: Record<string, string>, instances?: Record<string, PlaceInstance>) {
+  const remoteDefs = new Map<string, LuauSymbol>();
+  for (const [dmPath, inst] of Object.entries(instances || {})) {
+    if (inst.class_name === "RemoteEvent" || inst.class_name === "RemoteFunction") {
+      const name = dmPath.split(".").pop() || dmPath;
+      remoteDefs.set(name, {
+        name,
+        kind: inst.class_name === "RemoteFunction" ? "remote_function" : "remote_event",
+        path: dmPath,
+        line: 1,
+        signature: inst.class_name,
+      });
+    }
+  }
+  for (const [path, src] of Object.entries(scripts)) {
+    const lines = src.split("\n");
+    const varToKind = new Map<string, "remote_event" | "remote_function">();
+    for (let i = 0; i < lines.length; i++) {
+      const ln = lines[i];
+      const newMatch = /\blocal\s+([A-Za-z_]\w*)\s*=\s*Instance\.new\(\s*["'](RemoteEvent|RemoteFunction)["']\s*\)/.exec(ln);
+      if (newMatch) {
+        const kind = newMatch[2] === "RemoteFunction" ? "remote_function" : "remote_event";
+        varToKind.set(newMatch[1], kind);
+        const inlineName = new RegExp(`\\b${newMatch[1]}\\.Name\\s*=\\s*["']([^"']+)["']`).exec(src);
+        const rName = inlineName ? inlineName[1] : newMatch[1];
+        remoteDefs.set(rName, {
+          name: rName,
+          kind,
+          path,
+          line: i + 1,
+          signature: kind === "remote_function" ? "RemoteFunction" : "RemoteEvent",
+        });
+      }
+      const nameAssign = /\b([A-Za-z_]\w*)\.Name\s*=\s*["']([^"']+)["']/.exec(ln);
+      if (nameAssign && varToKind.has(nameAssign[1])) {
+        const kind = varToKind.get(nameAssign[1])!;
+        remoteDefs.set(nameAssign[2], {
+          name: nameAssign[2],
+          kind,
+          path,
+          line: i + 1,
+          signature: kind === "remote_function" ? "RemoteFunction" : "RemoteEvent",
+        });
+      }
+    }
+  }
+  return remoteDefs;
+}
+
+export function buildWorkspaceSymbolIndex(
+  scripts: Record<string, string>,
+  instances?: Record<string, PlaceInstance>,
+): WorkspaceSymbolIndex {
+  const symbols: LuauSymbol[] = [];
+  const mismatches: LuauContractMismatch[] = [];
+  const diagnostics = analyzePlaceLuau({ scripts, instances: instances || {} });
+  const scriptPaths = Object.keys(scripts);
+
+  const exportsByPath = new Map<string, Map<string, ParsedFunctionMeta>>();
+  const exportKeysByPath = new Map<string, Set<string>>();
+  const remoteDefs = parseRemoteMap(scripts, instances);
+  for (const sym of remoteDefs.values()) {
+    if (sym.path in scripts) symbols.push(sym);
+  }
+
+  // Pass 1: extract symbols & exports per file
+  for (const [path, src] of Object.entries(scripts)) {
+    const lines = src.split("\n");
+    const fnMap = new Map<string, ParsedFunctionMeta>();
+    const exportNames = new Set<string>();
+    const localFns = new Map<string, ParsedFunctionMeta>();
+
+    // Track returned module identifier (e.g. `return Economy`)
+    const returnIdentMatch = /\breturn\s+([A-Za-z_]\w*)\s*(?:--.*)?$/m.exec(src);
+    const moduleTableName = returnIdentMatch ? returnIdentMatch[1] : null;
+
+    for (let i = 0; i < lines.length; i++) {
+      const lineNo = i + 1;
+      const raw = lines[i];
+      const trimmed = raw.trim();
+      if (!trimmed || trimmed.startsWith("--")) continue;
+
+      const typeMatch = /^(export\s+)?type\s+([A-Za-z_]\w*(?:<[^>]+>)?)\s*=\s*(.+)$/.exec(trimmed);
+      if (typeMatch) {
+        const cleanName = typeMatch[2].replace(/<.*>$/, "");
+        symbols.push({
+          name: cleanName,
+          kind: "type",
+          path,
+          line: lineNo,
+          signature: typeMatch[3].trim().slice(0, 64),
+        });
+        if (typeMatch[1]) exportNames.add(cleanName);
+        continue;
+      }
+
+      const modFnMatch = /^(?:local\s+)?function\s+([A-Za-z_]\w*)([.:])([A-Za-z_]\w*)\s*\(([^)]*)\)(?:\s*:\s*([^-\n]+))?/.exec(trimmed);
+      if (modFnMatch) {
+        const tbl = modFnMatch[1];
+        const sep = modFnMatch[2];
+        const fnName = modFnMatch[3];
+        const paramsRaw = modFnMatch[4] || "";
+        const retType = modFnMatch[5]?.trim();
+        const isExport = !moduleTableName || tbl === moduleTableName || tbl === "M" || tbl === "Module";
+        const arity = parseParamArity(paramsRaw, sep === ":");
+        const paramTypes = splitTopLevelCommas(paramsRaw).map((p) => (p.includes(":") ? p.split(":").slice(1).join(":").trim() : "any"));
+        const sig = `(${paramsRaw.trim()})${retType ? `: ${retType}` : ""}`;
+        const sym: LuauSymbol = {
+          name: fnName,
+          kind: isExport ? "export" : "function",
+          path,
+          line: lineNo,
+          signature: sig,
+        };
+        symbols.push(sym);
+        if (isExport) {
+          exportNames.add(fnName);
+          fnMap.set(fnName, { symbol: sym, minArgs: arity.min, maxArgs: arity.max, isMethod: sep === ":", paramTypes });
+        }
+        continue;
+      }
+
+      const localFnMatch = /^(local\s+)?function\s+([A-Za-z_]\w*)\s*\(([^)]*)\)(?:\s*:\s*([^-\n]+))?/.exec(trimmed);
+      if (localFnMatch) {
+        const isLocal = Boolean(localFnMatch[1]);
+        const fnName = localFnMatch[2];
+        const paramsRaw = localFnMatch[3] || "";
+        const retType = localFnMatch[4]?.trim();
+        const arity = parseParamArity(paramsRaw, false);
+        const paramTypes = splitTopLevelCommas(paramsRaw).map((p) => (p.includes(":") ? p.split(":").slice(1).join(":").trim() : "any"));
+        const sig = `(${paramsRaw.trim()})${retType ? `: ${retType}` : ""}`;
+        const sym: LuauSymbol = {
+          name: fnName,
+          kind: isLocal ? "function" : "export",
+          path,
+          line: lineNo,
+          signature: sig,
+        };
+        symbols.push(sym);
+        localFns.set(fnName, { symbol: sym, minArgs: arity.min, maxArgs: arity.max, isMethod: false, paramTypes });
+        if (!isLocal) {
+          exportNames.add(fnName);
+          fnMap.set(fnName, localFns.get(fnName)!);
+        }
+        continue;
+      }
+
+      const assignFnMatch = /^([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*function\s*\(([^)]*)\)/.exec(trimmed);
+      if (assignFnMatch) {
+        const fnName = assignFnMatch[2];
+        const paramsRaw = assignFnMatch[3] || "";
+        const arity = parseParamArity(paramsRaw, false);
+        const paramTypes = splitTopLevelCommas(paramsRaw).map((p) => (p.includes(":") ? p.split(":").slice(1).join(":").trim() : "any"));
+        const sym: LuauSymbol = {
+          name: fnName,
+          kind: "export",
+          path,
+          line: lineNo,
+          signature: `(${paramsRaw.trim()})`,
+        };
+        symbols.push(sym);
+        exportNames.add(fnName);
+        fnMap.set(fnName, { symbol: sym, minArgs: arity.min, maxArgs: arity.max, isMethod: false, paramTypes });
+      }
+    }
+
+    // Detect `return { Foo = Foo, Bar = ... }` table exports
+    const retTableMatch = /\breturn\s*\{([\s\S]*?)\}\s*(?:--.*)?$/m.exec(src);
+    if (retTableMatch) {
+      const entries = splitTopLevelCommas(retTableMatch[1]);
+      for (const entry of entries) {
+        const kv = /^([A-Za-z_]\w*)(?:\s*=\s*([A-Za-z_]\w*))?$/.exec(entry.trim());
+        if (kv) {
+          const expName = kv[1];
+          const refName = kv[2] || kv[1];
+          exportNames.add(expName);
+          if (!fnMap.has(expName)) {
+            const lf = localFns.get(refName);
+            if (lf) {
+              fnMap.set(expName, lf);
+              lf.symbol.kind = "export";
+            } else {
+              symbols.push({ name: expName, kind: "export", path, line: lines.length, signature: null });
+            }
+          }
+        }
+      }
+    }
+
+    exportsByPath.set(path, fnMap);
+    exportKeysByPath.set(path, exportNames);
+  }
+
+  // Pass 2: cross-file require() contracts & RemoteEvent/RemoteFunction payload contracts
+  const remoteEndpoints: RemoteEndpoint[] = [];
+
+  for (const [callerPath, src] of Object.entries(scripts)) {
+    const lines = src.split("\n");
+    const requireAliases = new Map<string, string>();
+    const remoteAliases = new Map<string, string>();
+
+    for (let i = 0; i < lines.length; i++) {
+      const lineNo = i + 1;
+      const trimmed = lines[i].trim();
+      if (!trimmed || trimmed.startsWith("--")) continue;
+
+      const reqMatch = /\blocal\s+([A-Za-z_]\w*)\s*=\s*require\((.+)\)\s*(?:--.*)?$/.exec(trimmed);
+      if (reqMatch) {
+        const alias = reqMatch[1];
+        const target = resolveRequireTarget(reqMatch[2], callerPath, scriptPaths);
+        if (target) requireAliases.set(alias, target);
+      }
+
+      const remBindMatch = /\blocal\s+([A-Za-z_]\w*)\s*=\s*[^-\n]*?(?:WaitForChild|FindFirstChild)\(\s*["']([^"']+)["']\s*\)/.exec(trimmed);
+      if (remBindMatch && (remoteDefs.has(remBindMatch[2]) || /Remote|Event|Func|Buy|Shop|Roll/i.test(remBindMatch[2]))) {
+        remoteAliases.set(remBindMatch[1], remBindMatch[2]);
+      }
+
+      // Check require() alias calls: Alias.Fn(args) or Alias:Fn(args)
+      for (const [alias, targetPath] of requireAliases.entries()) {
+        const callRe = new RegExp(`\\b${alias}([.:])([A-Za-z_]\\w*)\\s*\\(([^)]*)\\)`, "g");
+        for (const m of trimmed.matchAll(callRe)) {
+          const isColon = m[1] === ":";
+          const fnName = m[2];
+          const args = splitTopLevelCommas(m[3] || "");
+          const targetExports = exportKeysByPath.get(targetPath);
+          const targetFns = exportsByPath.get(targetPath);
+          if (targetExports && targetExports.size > 0 && !targetExports.has(fnName)) {
+            mismatches.push({
+              caller_path: callerPath,
+              caller_line: lineNo,
+              target_path: targetPath,
+              kind: "missing_export",
+              message: `${scriptShortStem(targetPath)} does not export '${fnName}'`,
+            });
+            continue;
+          }
+          const fnMeta = targetFns?.get(fnName);
+          if (fnMeta) {
+            // If method is defined with `:` and called with `.`, caller must pass `self` (+1 arg)
+            const passedCount = isColon && !fnMeta.isMethod ? args.length + 1 : !isColon && fnMeta.isMethod ? Math.max(0, args.length - 1) : args.length;
+            if (passedCount < fnMeta.minArgs || (fnMeta.maxArgs !== null && passedCount > fnMeta.maxArgs)) {
+              const expectedStr = fnMeta.maxArgs === null ? `${fnMeta.minArgs}+` : fnMeta.minArgs === fnMeta.maxArgs ? `${fnMeta.minArgs}` : `${fnMeta.minArgs}..${fnMeta.maxArgs}`;
+              mismatches.push({
+                caller_path: callerPath,
+                caller_line: lineNo,
+                target_path: targetPath,
+                kind: "arity_mismatch",
+                message: `'${fnName}' expects ${expectedStr} argument(s), got ${passedCount}`,
+              });
+            }
+          }
+        }
+      }
+
+      // Collect RemoteEvent / RemoteFunction callers and handlers
+      for (const [alias, remoteName] of remoteAliases.entries()) {
+        const fireServer = new RegExp(`\\b${alias}:(FireServer|InvokeServer)\\s*\\(([^)]*)\\)`).exec(trimmed);
+        if (fireServer) {
+          remoteEndpoints.push({
+            remoteName,
+            path: callerPath,
+            line: lineNo,
+            direction: "call",
+            payloadCount: splitTopLevelCommas(fireServer[2] || "").length,
+            kind: fireServer[1] === "InvokeServer" ? "remote_function" : "remote_event",
+          });
+        }
+        const fireClient = new RegExp(`\\b${alias}:FireClient\\s*\\(([^)]*)\\)`).exec(trimmed);
+        if (fireClient) {
+          const args = splitTopLevelCommas(fireClient[1] || "");
+          remoteEndpoints.push({
+            remoteName,
+            path: callerPath,
+            line: lineNo,
+            direction: "call",
+            payloadCount: Math.max(0, args.length - 1),
+            kind: "remote_event",
+          });
+        }
+        const srvHandler = new RegExp(`\\b${alias}\\.OnServerEvent:Connect\\s*\\(\\s*function\\s*\\(([^)]*)\\)`).exec(trimmed);
+        if (srvHandler) {
+          const params = splitTopLevelCommas(srvHandler[1] || "");
+          remoteEndpoints.push({
+            remoteName,
+            path: callerPath,
+            line: lineNo,
+            direction: "handler",
+            payloadCount: Math.max(0, params.length - 1),
+            kind: "remote_event",
+          });
+        }
+        const srvInvoke = new RegExp(`\\b${alias}\\.OnServerInvoke\\s*=\\s*function\\s*\\(([^)]*)\\)`).exec(trimmed);
+        if (srvInvoke) {
+          const params = splitTopLevelCommas(srvInvoke[1] || "");
+          remoteEndpoints.push({
+            remoteName,
+            path: callerPath,
+            line: lineNo,
+            direction: "handler",
+            payloadCount: Math.max(0, params.length - 1),
+            kind: "remote_function",
+          });
+        }
+      }
+    }
+  }
+
+  // Compare remote calls vs handlers
+  const handlersByRemote = new Map<string, RemoteEndpoint[]>();
+  for (const ep of remoteEndpoints) {
+    if (ep.direction === "handler") {
+      const list = handlersByRemote.get(ep.remoteName) || [];
+      list.push(ep);
+      handlersByRemote.set(ep.remoteName, list);
+    }
+  }
+  for (const ep of remoteEndpoints) {
+    if (ep.direction !== "call") continue;
+    const handlers = handlersByRemote.get(ep.remoteName);
+    if (!handlers || handlers.length === 0) continue;
+    const h = handlers[0];
+    if (ep.payloadCount !== h.payloadCount) {
+      mismatches.push({
+        caller_path: ep.path,
+        caller_line: ep.line,
+        target_path: h.path,
+        kind: "remote_arg_mismatch",
+        message: `Remote '${ep.remoteName}' expects ${h.payloadCount} payload arg(s), caller passes ${ep.payloadCount}`,
+      });
+    }
+  }
+
+  return {
+    ok: diagnostics.every((d) => d.severity !== "error") && mismatches.length === 0,
+    luau_analyze_available: false,
+    diagnostics_source: "builtin",
+    symbols,
+    mismatches,
+    diagnostics,
+  };
+}
+
+function identAtColumn(lineText: string, col1: number): { word: string; qualifier: string | null } {
+  const idx = Math.max(0, Math.min(lineText.length - 1, col1 - 1));
+  let s = idx;
+  let e = idx;
+  while (s > 0 && /[A-Za-z0-9_]/.test(lineText[s - 1])) s--;
+  while (e < lineText.length && /[A-Za-z0-9_]/.test(lineText[e])) e++;
+  const word = lineText.slice(s, e);
+  let qualifier: string | null = null;
+  if (s >= 2 && (lineText[s - 1] === "." || lineText[s - 1] === ":")) {
+    let qs = s - 1;
+    while (qs > 0 && /[A-Za-z0-9_]/.test(lineText[qs - 1])) qs--;
+    const q = lineText.slice(qs, s - 1);
+    if (q) qualifier = q;
+  }
+  return { word, qualifier };
+}
+
+export function resolveLuauDefinitionClient(
+  scripts: Record<string, string>,
+  path: string,
+  line: number,
+  col: number,
+  instances?: Record<string, PlaceInstance>,
+): LuauDefinitionResult {
+  const src = scripts[path];
+  if (src === undefined) {
+    return { ok: false, target_path: null, line: 1, col: 1, symbol: null };
+  }
+  const index = buildWorkspaceSymbolIndex(scripts, instances);
+  const lines = src.split("\n");
+  const lineText = lines[Math.max(0, Math.min(lines.length - 1, line - 1))] || "";
+  const scriptPaths = Object.keys(scripts);
+
+  // Check require(...) on the current line
+  const reqOnLine = /require\((.+)\)/.exec(lineText);
+  const { word, qualifier } = identAtColumn(lineText, col);
+  if (reqOnLine && (word === "require" || reqOnLine[0].includes(word) || !word)) {
+    const target = resolveRequireTarget(reqOnLine[1], path, scriptPaths);
+    if (target) {
+      const sym = index.symbols.find((s) => s.path === target) || null;
+      return { ok: true, target_path: target, line: sym?.line ?? 1, col: 1, symbol: sym };
+    }
+  }
+
+  // Check qualified call like Alias.Fn or Alias:Fn
+  if (qualifier && word) {
+    for (const ln of lines) {
+      const reqMatch = new RegExp(`\\blocal\\s+${qualifier}\\s*=\\s*require\\((.+)\\)`).exec(ln);
+      if (reqMatch) {
+        const target = resolveRequireTarget(reqMatch[1], path, scriptPaths);
+        if (target) {
+          const sym = index.symbols.find((s) => s.path === target && s.name === word) || null;
+          return { ok: true, target_path: target, line: sym?.line ?? 1, col: 1, symbol: sym };
+        }
+      }
+    }
+  }
+
+  // Check remote alias or quoted remote name on line
+  const quoted = /["']([^"']+)["']/.exec(lineText);
+  if (quoted) {
+    const rSym = index.symbols.find((s) => (s.kind === "remote_event" || s.kind === "remote_function") && s.name === quoted[1]);
+    if (rSym) {
+      return { ok: true, target_path: rSym.path, line: rSym.line, col: 1, symbol: rSym };
+    }
+  }
+
+  if (word) {
+    // Check if word is a require alias itself
+    for (const ln of lines) {
+      const reqMatch = new RegExp(`\\blocal\\s+${word}\\s*=\\s*require\\((.+)\\)`).exec(ln);
+      if (reqMatch) {
+        const target = resolveRequireTarget(reqMatch[1], path, scriptPaths);
+        if (target) {
+          const sym = index.symbols.find((s) => s.path === target) || null;
+          return { ok: true, target_path: target, line: sym?.line ?? 1, col: 1, symbol: sym };
+        }
+      }
+      const remMatch = new RegExp(`\\blocal\\s+${word}\\s*=\\s*[^-\\n]*?(?:WaitForChild|FindFirstChild)\\(\\s*["']([^"']+)["']\\s*\\)`).exec(ln);
+      if (remMatch) {
+        const rSym = index.symbols.find((s) => (s.kind === "remote_event" || s.kind === "remote_function") && s.name === remMatch[1]);
+        if (rSym) {
+          return { ok: true, target_path: rSym.path, line: rSym.line, col: 1, symbol: rSym };
+        }
+      }
+    }
+
+    // Same-file symbol match
+    const localSym = index.symbols.find((s) => s.path === path && s.name === word);
+    if (localSym) {
+      return { ok: true, target_path: localSym.path, line: localSym.line, col: 1, symbol: localSym };
+    }
+
+    // Cross-file exported symbol match
+    const wsSym = index.symbols.find((s) => s.name === word && (s.kind === "export" || s.kind === "type" || s.kind === "remote_event" || s.kind === "remote_function"));
+    if (wsSym) {
+      return { ok: true, target_path: wsSym.path, line: wsSym.line, col: 1, symbol: wsSym };
+    }
+  }
+
+  return { ok: false, target_path: null, line: 1, col: 1, symbol: null };
 }
