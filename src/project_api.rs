@@ -275,7 +275,7 @@ pub fn route(shared: &Arc<Shared>, method: &str, full_path: &str, body: &[u8], l
             | ("POST", [_, "sync", "diff" | "pull-diff" | "pull"] | [_, "scene", "mutate"] | [_, "sandbox", "run"] | [_, "playtests", "rerun"] | [_, "playtests", "fix-plan"] | [_, "playtests", "fix-apply"] | [_, "playtests", "fix-all"])
             | ("GET", [_, "workspace" | "mesh-asset" | "builds" | "playtests" | "dependencies" | "snapshots" | "sync-conflicts" | "publish-guard" | "monetization-audit" | "economy-sim" | "files" | "file" | "preview" | "gui"] | [_, "snapshots", "hook-integrity"] | [_, "gui", _] | [_, "sandbox", "runs" | "latest"] | [_, "luau", "symbols" | "definition"])
             | ("POST", [_, "luau", "typecheck"])
-            | ("POST", [_, "dependencies", "prune"] | [_, "monetization-audit"] | [_, "economy-sim"] | [_, "snapshots"] | [_, "snapshots", _, "restore"] | [_, "snapshots", _, "restore-hooks"] | [_, "sync-conflicts", "resolve"] | [_, "publish-guard", "autofix"] | [_, "gui", _] | [_, "gui", _, "compile"])
+            | ("POST", [_, "dependencies", "prune"] | [_, "monetization-audit"] | [_, "economy-sim"] | [_, "snapshots"] | [_, "snapshots", _, "restore"] | [_, "snapshots", _, "restore-hooks"] | [_, "sync-conflicts", "resolve"] | [_, "publish-guard", "autofix"] | [_, "gui", _] | [_, "gui", _, "compile"] | [_, "ui-kit", "generate"])
             | ("POST", [_, "file"] | [_, "file", "delete"] | [_, "file", "edit"])
             | ("GET", [_, "git", "status" | "log"])
             | ("POST", [_, "git", "commit" | "revert"])
@@ -696,6 +696,33 @@ fn dispatch(shared: &Arc<Shared>, method: &str, segs: &[&str], query: &str, body
                     } else {
                         Reply::bad(e)
                     }
+                })
+        }
+        ("POST", [id, "ui-kit", "generate"]) => {
+            let r = project_of(shared, id)?;
+            let mut b = parse_body(body)?;
+            let data_dir = shared
+                .data_dir
+                .as_deref()
+                .unwrap_or_else(|| std::path::Path::new("openro-data"));
+            if let Some(obj) = b.as_object_mut() {
+                obj.entry("data_dir".to_string())
+                    .or_insert_with(|| json!(data_dir.to_string_lossy()));
+            }
+            let store = crate::secrets::SecretStore::for_data_dir(data_dir);
+            crate::ui_kit::generate_ui_kit(&r.dir, &store, Some(&r.id), &b)
+                .map(Reply::ok)
+                .map_err(|oc| {
+                    let st = match oc.status {
+                        404 => "404 Not Found",
+                        429 => "429 Too Many Requests",
+                        500 => "500 Internal Server Error",
+                        502 => "502 Bad Gateway",
+                        503 => "503 Service Unavailable",
+                        504 => "504 Gateway Timeout",
+                        _ => "400 Bad Request",
+                    };
+                    Reply::err(st, oc.msg)
                 })
         }
         ("GET", [id, "mesh-asset"]) => {

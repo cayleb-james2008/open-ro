@@ -205,6 +205,46 @@ try {
     `${luauText.length} chars`,
   );
 
+  // UI Kit generator strip + mixable layouts + API presets & procedural slice + new UI adapter presets
+  await p.locator("[data-ui-kit-strip]").waitFor({ state: "visible", timeout: 5000 });
+  await p.locator("[data-ui-kit-layout]").selectOption("compact-mobile-split");
+  await p.locator("[data-ui-kit-skin]").selectOption("sakura-lacquer");
+  await p.locator("[data-ui-kit-apply]").click();
+  await p.locator('[data-gui-canvas-node="uk-ss"]').waitFor({ state: "visible", timeout: 4000 });
+  const ukWarnText = await p.locator("[data-gui-warnings]").innerText();
+  check("UI Kit mixable layout applies cleanly with 0 warnings", /\b0\b/.test(ukWarnText), ukWarnText.slice(0, 80));
+
+  const uiKitApiRes = await p.evaluate(async () => {
+    const pr = await fetch("/api/ui-kit/presets").then((r) => r.json());
+    const gen = await fetch("/api/studio/ui-kit/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ layout: "skybridge-crest", skin: "obsidian-prism", sheet: "chrome_sheet", procedural_fallback: true }),
+    }).then((r) => r.json());
+    const adp = await fetch("/api/adapters").then((r) => r.json());
+    return { pr, gen, adp };
+  });
+  check(
+    "GET /api/ui-kit/presets returns 7 rules, 4 layouts, 5 skins, 3 sheets",
+    uiKitApiRes.pr?.ok === true &&
+      uiKitApiRes.pr?.craft_rules?.length === 7 &&
+      uiKitApiRes.pr?.layouts?.length === 4 &&
+      uiKitApiRes.pr?.skins?.length === 5 &&
+      uiKitApiRes.pr?.sheets?.length === 3,
+    JSON.stringify({ rules: uiKitApiRes.pr?.craft_rules?.length, layouts: uiKitApiRes.pr?.layouts?.length }),
+  );
+  check(
+    "POST /api/studio/ui-kit/generate slices transparent chrome assets",
+    uiKitApiRes.gen?.ok === true && Number(uiKitApiRes.gen?.sliced_count) >= 8,
+    `sliced=${uiKitApiRes.gen?.sliced_count}`,
+  );
+  const presetIds = Array.isArray(uiKitApiRes.adp?.presets) ? uiKitApiRes.adp.presets.map((x) => x.id) : [];
+  check(
+    "Tool Adapters include recraft-v3-ui, layer-ai-ui, and scenario-game-ui presets",
+    ["recraft-v3-ui", "layer-ai-ui", "scenario-game-ui"].every((id) => presetIds.includes(id)),
+    JSON.stringify(presetIds),
+  );
+
   // Ship tab & Monetization Pack
   await p.getByRole("button", { name: "Ship", exact: true }).first().click();
   await p.locator("[data-ship], [data-ship-empty]").first().waitFor({ state: "visible", timeout: 10000 });

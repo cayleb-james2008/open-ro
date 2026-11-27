@@ -18,14 +18,20 @@ import {
   resolveLuauDefinitionClient,
 } from "../src/app/luauAudit";
 import {
+  UI_KIT_LAYOUT_META,
+  UI_KIT_SHEET_META,
+  UI_KIT_SKIN_META,
   analyzeSafeArea,
   buildGuiPreset,
+  buildUiKitScreenDoc,
   compileScreenDocToLuau,
   isValidGuiSlug,
   normalizeScreenDoc,
   templateScreenDoc,
   type GuiPresetId,
   type ScreenDoc,
+  type UiKitLayoutId,
+  type UiKitSkinId,
 } from "../src/app/guiDesignerEngine";
 import { GAME_SYSTEMS } from "../src/app/systems";
 import { buildRojoShipPackZip } from "../src/app/zipBuilder";
@@ -3590,6 +3596,28 @@ export function installWebEngine() {
         slug: rawSlug,
         saved_path: body.save_luau !== false ? scriptPath : undefined,
         ...compiled,
+      });
+    }
+    if (method === "GET" && u.pathname === "/api/ui-kit/presets") {
+      return jsonResponse({
+        ok: true,
+        layouts: UI_KIT_LAYOUT_META,
+        skins: UI_KIT_SKIN_META.map((s) => ({ id: s.id, name: s.label })),
+        sheets: UI_KIT_SHEET_META.map((s) => ({ id: s.id, name: s.label })),
+      });
+    }
+    if (method === "POST" && u.pathname === "/api/studio/ui-kit/generate") {
+      const layout = (typeof body.layout === "string" ? body.layout : "skybridge-crest") as UiKitLayoutId;
+      const skin = (typeof body.skin === "string" ? body.skin : "obsidian-prism") as UiKitSkinId;
+      const doc = buildUiKitScreenDoc(layout, skin);
+      return jsonResponse({
+        ok: true,
+        layout,
+        skin,
+        sheet: typeof body.sheet === "string" ? body.sheet : "chrome_sheet",
+        sliced_count: 8,
+        screen_doc: doc,
+        safe_area_warnings: analyzeSafeArea(doc),
       });
     }
     if (method === "POST" && u.pathname === "/api/studio/playtest") {

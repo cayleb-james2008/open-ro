@@ -368,7 +368,14 @@ export function AdaptersPanel() {
     .filter((a) => cap === "all" || a.capability === cap)
     .slice()
     .sort((a, b) => a.priority - b.priority);
-  const FEATURED_ORDER = ["playwright-cdp-cli", "craft-anything-cli", "rea-cli"];
+  const FEATURED_ORDER = [
+    "playwright-cdp-cli",
+    "craft-anything-cli",
+    "rea-cli",
+    "recraft-v3-ui",
+    "layer-ai-ui",
+    "scenario-game-ui",
+  ];
   const filteredPresets = presets
     .filter((p) => {
       if (p.installed || installedIds.has(p.id)) return false;
