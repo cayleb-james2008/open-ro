@@ -994,6 +994,44 @@ export type StudioKeyboardInputPayload = {
   modifiers?: { ctrl?: boolean; shift?: boolean; alt?: boolean; meta?: boolean };
 };
 
+export type StudioCuaEvent = {
+  id: number;
+  at_ms: number;
+  actor: string;
+  kind: string;
+  summary: string;
+  norm_x?: number;
+  norm_y?: number;
+  to_norm_x?: number;
+  to_norm_y?: number;
+  key?: string;
+  hotkey?: string[];
+  frame_url?: string;
+  ok: boolean;
+};
+
+export function normalizeStudioCuaEvent(raw: unknown): StudioCuaEvent | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const id = typeof o.id === "number" ? o.id : Number(o.id ?? 0);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  return {
+    id,
+    at_ms: typeof o.at_ms === "number" ? o.at_ms : Date.now(),
+    actor: typeof o.actor === "string" && o.actor ? o.actor : "agent",
+    kind: typeof o.kind === "string" && o.kind ? o.kind : "cua",
+    summary: typeof o.summary === "string" ? o.summary : "",
+    norm_x: typeof o.norm_x === "number" ? o.norm_x : undefined,
+    norm_y: typeof o.norm_y === "number" ? o.norm_y : undefined,
+    to_norm_x: typeof o.to_norm_x === "number" ? o.to_norm_x : undefined,
+    to_norm_y: typeof o.to_norm_y === "number" ? o.to_norm_y : undefined,
+    key: typeof o.key === "string" ? o.key : undefined,
+    hotkey: Array.isArray(o.hotkey) ? o.hotkey.filter((x): x is string => typeof x === "string") : undefined,
+    frame_url: typeof o.frame_url === "string" ? o.frame_url : undefined,
+    ok: o.ok !== false,
+  };
+}
+
 export type StudioToolName =
   | "list_roblox_studios"
   | "get_studio_state"
@@ -1572,6 +1610,7 @@ export function subscribeStudioStream(opts: {
   onAction: (ev: StudioActionEvent) => void;
   onFrame: (info: { seq: number; mime?: string; width?: number; height?: number; source?: string }) => void;
   onStatus?: (info: { studio_mode?: StudioMode; has_live_frame?: boolean; frame_seq?: number }) => void;
+  onCuaEvent?: (ev: StudioCuaEvent) => void;
 }): () => void {
   if (!opts.enabled || typeof EventSource === "undefined") {
     return () => {};
@@ -1587,6 +1626,16 @@ export function subscribeStudioStream(opts: {
         const parsed = JSON.parse((e as MessageEvent).data);
         const norm = normalizeStudioAction(parsed);
         if (norm) opts.onAction(norm);
+      } catch {
+        /* ignore malformed event */
+      }
+    });
+    es.addEventListener("studio_cua", (e) => {
+      if (closed || !opts.onCuaEvent) return;
+      try {
+        const parsed = JSON.parse((e as MessageEvent).data);
+        const norm = normalizeStudioCuaEvent(parsed);
+        if (norm) opts.onCuaEvent(norm);
       } catch {
         /* ignore malformed event */
       }

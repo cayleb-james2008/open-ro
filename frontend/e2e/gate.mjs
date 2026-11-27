@@ -1151,6 +1151,92 @@ try {
     check("Undo dialog opens & closes on Escape", true);
   }
 
+  // M2 PR D: Studio-native primary tab + Offline fallback cluster + Live CUA over embedded Studio
+  const studioTab = p.getByRole("button", { name: "Studio", exact: true }).first();
+  await studioTab.waitFor({ state: "visible", timeout: 5000 });
+  const offlineCluster = p.locator("[data-offline-fallbacks]");
+  await offlineCluster.waitFor({ state: "visible", timeout: 5000 });
+  const offlineHasUiAnd3d =
+    (await offlineCluster.getByRole("button", { name: "UI", exact: true }).count()) > 0 &&
+    (await offlineCluster.getByRole("button", { name: "Viewport", exact: true }).count()) > 0;
+  check("Workbench keeps Studio #1 tab and groups UI/3D in Offline fallback cluster", offlineHasUiAnd3d);
+
+  await studioTab.click();
+  await p.locator("[data-embedded-studio-panel]").waitFor({ state: "visible", timeout: 5000 });
+  const cuaSetupRes = await p.evaluate(async () => {
+    const attach = await fetch("/api/studio/embed/attach", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    }).then(async (r) => ({ status: r.status, body: await r.json() }));
+    const click = await fetch("/api/studio/cua/mouse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "click", x: 0.52, y: 0.48, normalized: true }),
+    }).then(async (r) => ({ status: r.status, body: await r.json() }));
+    const drag = await fetch("/api/studio/cua/mouse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "drag", from_x: 0.28, from_y: 0.36, to_x: 0.68, to_y: 0.62, normalized: true }),
+    }).then(async (r) => ({ status: r.status, body: await r.json() }));
+    const hk = await fetch("/api/studio/cua/keyboard", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hotkey: ["ctrl", "s"] }),
+    }).then(async (r) => ({ status: r.status, body: await r.json() }));
+    const shot = await fetch("/api/studio/cua/screenshot", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: "e2e-live" }),
+    }).then(async (r) => ({ status: r.status, body: await r.json() }));
+    return { attach, click, drag, hk, shot };
+  });
+  const badHkStatus = await fetch(`${BASE}api/studio/cua/keyboard`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ hotkey: ["alt", "f4"] }),
+  }).then((r) => r.status);
+  check(
+    "Studio CUA endpoints execute click/drag/hotkey/screenshot and block Alt+F4 (400)",
+    cuaSetupRes.attach.status === 200 &&
+      cuaSetupRes.click.status === 200 &&
+      cuaSetupRes.drag.status === 200 &&
+      cuaSetupRes.hk.status === 200 &&
+      badHkStatus === 400 &&
+      cuaSetupRes.shot.status === 200 &&
+      String(cuaSetupRes.shot.body?.url || "").startsWith("/api/studio/cua/frame/"),
+    JSON.stringify({ attach: cuaSetupRes.attach.status, badHk: badHkStatus }),
+  );
+
+  await p.locator("[data-embedded-viewport-surface]").waitFor({ state: "visible", timeout: 8000 });
+  await p.locator("[data-cua-overlay]").waitFor({ state: "visible", timeout: 8000 });
+  await p.locator("[data-cua-reticle]").waitFor({ state: "visible", timeout: 8000 });
+  await p.locator("[data-cua-badge]").waitFor({ state: "visible", timeout: 8000 });
+  await p.locator("[data-cua-ticker]").waitFor({ state: "visible", timeout: 8000 });
+  const tickerTxt = await p.locator("[data-cua-ticker]").innerText();
+  check(
+    "Live Studio sidebar renders CUA reticle overlay and real-time activity ticker",
+    tickerTxt.includes("drag") || tickerTxt.includes("screenshot") || tickerTxt.includes("ctrl+s"),
+    tickerTxt.slice(0, 120),
+  );
+  await assertLayoutInvariants(p, "1440x900 Light Live Studio CUA");
+  await p.screenshot({ path: `${OUT}/live-studio-cua-1440-light.png` });
+
+  // Pause Agent CUA takeover lock -> 409 on mouse -> Resume CUA
+  const pauseBtn = p.locator("[data-cua-pause-btn]");
+  await pauseBtn.click();
+  await p.waitForFunction(() => document.querySelector("[data-cua-pause-btn]")?.textContent?.includes("Resume"), null, { timeout: 5000 });
+  const pausedMouse = await fetch(`${BASE}api/studio/cua/mouse`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "click", x: 0.5, y: 0.5 }),
+  }).then((r) => r.status);
+  check("Pause Agent CUA locks mouse/keyboard with HTTP 409", pausedMouse === 409, `status=${pausedMouse}`);
+  await pauseBtn.click();
+  await p.waitForFunction(() => document.querySelector("[data-cua-pause-btn]")?.textContent?.includes("Pause"), null, { timeout: 5000 });
+  await p.evaluate(() => fetch("/api/studio/embed/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }));
+  check("Resume CUA unlocks agent control cleanly", true);
+
   // Dark theme at 1440x900
   await setThemeViaSettings(p, "dark");
   await assertLayoutInvariants(p, "1440x900 Dark");

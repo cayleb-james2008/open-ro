@@ -457,6 +457,24 @@ impl StudioStreamHub {
         frame
     }
 
+    /// Broadcast a live Studio CUA event (`event: studio_cua`) to all SSE subscribers.
+    pub fn push_cua_event(&self, event_json: Value) {
+        let stream_seq = self.next_stream_seq.fetch_add(1, Ordering::SeqCst);
+        {
+            let mut st = self.state.lock().unwrap();
+            if st.stream_log.len() >= MAX_STREAM_LOG_ITEMS {
+                st.stream_log.pop_front();
+            }
+            st.stream_log.push_back(StudioStreamMessage {
+                stream_seq,
+                event_name: "studio_cua",
+                data: event_json,
+            });
+            st.latest_stream_seq = stream_seq;
+        }
+        self.notify.notify_all();
+    }
+
     /// Store a newly captured live Roblox Studio viewport frame, broadcast
     /// `event: studio_frame`, and record a matching `StudioActionKind::StudioFrame` action.
     pub fn store_frame(&self, mut frame: StudioFrame) -> StudioFrame {

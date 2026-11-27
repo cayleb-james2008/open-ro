@@ -16,12 +16,14 @@ use crate::desktop::current_platform;
 use crate::mcp::{official_studio_tool_catalog, McpClient, OFFICIAL_STUDIO_TOOLS};
 use crate::studio_stream::{StudioFrame, StudioStreamHub};
 use serde_json::{json, Value};
+use std::collections::VecDeque;
 #[cfg(unix)]
 use std::io::Read;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Default isolated X11 display used for embedded Studio on Linux.
@@ -1155,9 +1157,326 @@ pub fn probe_x11_resolution(_display: &str) -> Option<[u32; 2]> {
     None
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidatedMouseCmd {
+    pub action: String,
+    pub x: i32,
+    pub y: i32,
+    pub norm_x: f64,
+    pub norm_y: f64,
+    pub to_x: Option<i32>,
+    pub to_y: Option<i32>,
+    pub to_norm_x: Option<f64>,
+    pub to_norm_y: Option<f64>,
+    pub button: String,
+    pub delta_y: f64,
+}
+
+fn resolve_coord_pair(
+    rx: f64,
+    ry: f64,
+    normalized_hint: Option<bool>,
+    w: f64,
+    h: f64,
+    label: &str,
+) -> Result<(i32, i32, f64, f64), String> {
+    if !rx.is_finite() || !ry.is_finite() {
+        return Err(format!("{label} coordinates must be finite numbers"));
+    }
+    if rx < 0.0 || ry < 0.0 || rx > 8192.0 || ry > 8192.0 {
+        return Err(format!("{label} coordinates out of range: ({rx}, {ry})"));
+    }
+    let is_norm = match normalized_hint {
+        Some(true) => {
+            if rx > 1.0 || ry > 1.0 {
+                return Err(format!(
+                    "normalized {label} coordinates must be within 0.0..=1.0: ({rx}, {ry})"
+                ));
+            }
+            true
+        }
+        Some(false) => false,
+        None => rx <= 1.0 && ry <= 1.0,
+    };
+    let (px, py, nx, ny) = if is_norm {
+        let px = (rx * w).round() as i32;
+        let py = (ry * h).round() as i32;
+        (
+            px.clamp(0, (w as i32) - 1),
+            py.clamp(0, (h as i32) - 1),
+            (rx * 10_000.0).round() / 10_000.0,
+            (ry * 10_000.0).round() / 10_000.0,
+        )
+    } else {
+        let px = (rx.round() as i32).clamp(0, (w as i32) - 1);
+        let py = (ry.round() as i32).clamp(0, (h as i32) - 1);
+        (
+            px,
+            py,
+            (((px as f64) / w.max(1.0)) * 10_000.0).round() / 10_000.0,
+            (((py as f64) / h.max(1.0)) * 10_000.0).round() / 10_000.0,
+        )
+    };
+    Ok((px, py, nx, ny))
+}
+
+/// Validate and normalize a CUA mouse request (`click`, `double_click`, `right_click`, `move`, `drag`, `scroll`, `down`, `up`).
+pub fn validate_cua_mouse_payload(
+    payload: &Value,
+    resolution: [u32; 2],
+) -> Result<ValidatedMouseCmd, String> {
+    let raw_action = payload
+        .get("action")
+        .or_else(|| payload.get("event"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("click")
+        .trim()
+        .to_ascii_lowercase();
+    let action = match raw_action.as_str() {
+        "click" | "double_click" | "right_click" | "move" | "drag" | "down" | "up" => raw_action,
+        "scroll" | "wheel" => "scroll".to_string(),
+        other => return Err(format!("unsupported mouse action '{other}'")),
+    };
+    let w = resolution[0].clamp(320, 3840) as f64;
+    let h = resolution[1].clamp(200, 2160) as f64;
+    let norm_hint = payload.get("normalized").and_then(|v| v.as_bool());
+    let rx = payload
+        .get("from_x")
+        .or_else(|| payload.get("x"))
+        .and_then(|v| v.as_f64())
+        .ok_or_else(|| "mouse input requires numeric x/from_x coordinate".to_string())?;
+    let ry = payload
+        .get("from_y")
+        .or_else(|| payload.get("y"))
+        .and_then(|v| v.as_f64())
+        .ok_or_else(|| "mouse input requires numeric y/from_y coordinate".to_string())?;
+    let (x, y, norm_x, norm_y) = resolve_coord_pair(rx, ry, norm_hint, w, h, "start")?;
+
+    let (to_x, to_y, to_norm_x, to_norm_y) = if action == "drag" {
+        let tx = payload
+            .get("to_x")
+            .or_else(|| payload.get("end_x"))
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| "drag action requires numeric to_x/end_x".to_string())?;
+        let ty = payload
+            .get("to_y")
+            .or_else(|| payload.get("end_y"))
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| "drag action requires numeric to_y/end_y".to_string())?;
+        let (px2, py2, nx2, ny2) = resolve_coord_pair(tx, ty, norm_hint, w, h, "target")?;
+        (Some(px2), Some(py2), Some(nx2), Some(ny2))
+    } else {
+        (None, None, None, None)
+    };
+
+    let button = match payload
+        .get("button")
+        .or_else(|| payload.get("mouse_button"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(if action == "right_click" { "right" } else { "left" })
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "right" | "2" => "right".to_string(),
+        "middle" => "middle".to_string(),
+        _ => "left".to_string(),
+    };
+    let delta_y = payload
+        .get("delta_y")
+        .or_else(|| payload.get("deltaY"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| {
+            if payload.get("direction").and_then(|v| v.as_str()) == Some("up") {
+                -120.0
+            } else {
+                120.0
+            }
+        });
+    if !delta_y.is_finite() {
+        return Err("scroll delta_y must be finite".to_string());
+    }
+
+    Ok(ValidatedMouseCmd {
+        action,
+        x,
+        y,
+        norm_x,
+        norm_y,
+        to_x,
+        to_y,
+        to_norm_x,
+        to_norm_y,
+        button,
+        delta_y,
+    })
+}
+
+fn normalize_hotkey_token(raw: &str) -> Result<String, String> {
+    let t = raw.trim().to_ascii_lowercase();
+    if t.is_empty() || t.contains('\0') || t.chars().any(|c| c.is_control()) {
+        return Err("hotkey token must be non-empty without control characters".to_string());
+    }
+    let norm = match t.as_str() {
+        "control" | "control_l" | "control_r" | "leftcontrol" | "rightcontrol" => "ctrl",
+        "shift_l" | "shift_r" | "leftshift" | "rightshift" => "shift",
+        "alt_l" | "alt_r" | "leftalt" | "rightalt" | "option" => "alt",
+        "cmd" | "command" | "win" | "windows" | "meta" | "meta_l" | "meta_r" | "super"
+        | "super_l" | "super_r" | "hyper" | "hyper_l" | "hyper_r" => "super",
+        "esc" => "escape",
+        "del" => "delete",
+        "ret" | "return" => "enter",
+        other => other,
+    };
+    Ok(norm.to_string())
+}
+
+/// Normalize a list of hotkey tokens (e.g. `["ctrl", "shift", "p"]`).
+pub fn normalize_hotkey_tokens(keys: &[String]) -> Result<Vec<String>, String> {
+    if keys.is_empty() || keys.len() > 5 {
+        return Err("hotkey must contain between 1 and 5 keys".to_string());
+    }
+    let mut out = Vec::with_capacity(keys.len());
+    for k in keys {
+        out.push(normalize_hotkey_token(k)?);
+    }
+    Ok(out)
+}
+
+/// Strict OS-escape safety denylist for Studio CUA keyboard/hotkey execution.
+/// Blocks `super`/`meta`, `alt+f4`, `ctrl+alt+delete`, `ctrl+alt+f*`, and `ctrl+alt+backspace`.
+pub fn check_hotkey_safety(keys: &[String]) -> Result<(), String> {
+    let norm = normalize_hotkey_tokens(keys)?;
+    let has = |target: &str| norm.iter().any(|k| k == target);
+    if has("super") {
+        return Err("blocked OS-escape shortcut: super/meta key is not permitted".to_string());
+    }
+    if has("alt") && has("f4") {
+        return Err("blocked OS-escape shortcut: alt+f4 is not permitted".to_string());
+    }
+    if has("ctrl") && has("alt") && (has("delete") || has("backspace")) {
+        return Err("blocked OS-escape shortcut: ctrl+alt+delete/backspace is not permitted".to_string());
+    }
+    if has("ctrl")
+        && has("alt")
+        && norm.iter().any(|k| {
+            k.strip_prefix('f')
+                .and_then(|n| n.parse::<u8>().ok())
+                .is_some_and(|n| (1..=12).contains(&n))
+        })
+    {
+        return Err("blocked OS-escape shortcut: ctrl+alt+f* VT switch is not permitted".to_string());
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValidatedKeyboardCmd {
+    pub action: String,
+    pub key: Option<String>,
+    pub text: Option<String>,
+    pub hotkey: Option<Vec<String>>,
+}
+
+/// Validate a CUA keyboard request (`hotkey` chord, `key` + optional `modifiers`, or `text`).
+pub fn validate_cua_keyboard_payload(payload: &Value) -> Result<ValidatedKeyboardCmd, String> {
+    let mut hotkey_vec: Option<Vec<String>> = None;
+    if let Some(hk) = payload.get("hotkey") {
+        let raw_tokens: Vec<String> = if let Some(arr) = hk.as_array() {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        } else if let Some(s) = hk.as_str() {
+            s.split('+')
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect()
+        } else {
+            return Err("hotkey must be an array of key strings or '+'-separated string".to_string());
+        };
+        let norm = normalize_hotkey_tokens(&raw_tokens)?;
+        check_hotkey_safety(&norm)?;
+        hotkey_vec = Some(norm);
+    }
+
+    let key = payload
+        .get("key")
+        .or_else(|| payload.get("key_code"))
+        .or_else(|| payload.get("code"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let text = payload
+        .get("text")
+        .or_else(|| payload.get("text_inputs"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+
+    if let Some(ref t) = text {
+        if t.contains('\0') || t.len() > 2048 {
+            return Err("keyboard text must be 1..=2048 bytes without NUL".to_string());
+        }
+    }
+
+    if hotkey_vec.is_none() {
+        if let Some(ref k) = key {
+            let mut chord = Vec::new();
+            if let Some(mods) = payload.get("modifiers").and_then(|v| v.as_object()) {
+                if mods.get("ctrl").and_then(|v| v.as_bool()) == Some(true) {
+                    chord.push("ctrl".to_string());
+                }
+                if mods.get("shift").and_then(|v| v.as_bool()) == Some(true) {
+                    chord.push("shift".to_string());
+                }
+                if mods.get("alt").and_then(|v| v.as_bool()) == Some(true) {
+                    chord.push("alt".to_string());
+                }
+                if mods.get("meta").and_then(|v| v.as_bool()) == Some(true)
+                    || mods.get("super").and_then(|v| v.as_bool()) == Some(true)
+                {
+                    chord.push("super".to_string());
+                }
+            }
+            let norm_key = normalize_hotkey_token(k)?;
+            let has_mods = !chord.is_empty();
+            chord.push(norm_key);
+            check_hotkey_safety(&chord)?;
+            if has_mods {
+                hotkey_vec = Some(chord);
+            }
+        }
+    }
+
+    if hotkey_vec.is_none() && key.is_none() && text.is_none() {
+        return Err("keyboard input requires non-empty 'hotkey', 'key', or 'text'".to_string());
+    }
+
+    let action = if hotkey_vec.is_some() {
+        "hotkey".to_string()
+    } else if text.is_some() && key.is_none() {
+        "type".to_string()
+    } else {
+        payload
+            .get("action")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("press")
+            .to_ascii_lowercase()
+    };
+
+    Ok(ValidatedKeyboardCmd {
+        action,
+        key,
+        text,
+        hotkey: hotkey_vec,
+    })
+}
+
 /// Forward a mouse event directly into an X11 display (`DISPLAY=:99`) via `libX11` + `libXtst`
-/// so users can click buttons or complete Roblox Studio sign-in inside the embedded viewport
-/// even before Studio MCP attaches (#35).
+/// so users and agents can click, drag, move, or scroll inside the embedded Studio viewport (#35, #81).
 #[cfg(unix)]
 pub fn send_x11_mouse(
     display: &str,
@@ -1165,19 +1484,29 @@ pub fn send_x11_mouse(
     action: &str,
     x: f64,
     y: f64,
+    to: Option<(f64, f64)>,
     button: &str,
     delta_y: f64,
 ) -> Result<Value, String> {
     let valid = validate_x11_display(display)?;
     let w = resolution[0].clamp(320, 3840) as f64;
     let h = resolution[1].clamp(200, 2160) as f64;
-    let (px, py) = if (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y) && (x > 0.0 || y > 0.0) {
-        ((x * w).round() as i32, (y * h).round() as i32)
-    } else {
-        (x.round() as i32, y.round() as i32)
+    let to_px_pair = |vx: f64, vy: f64| -> (i32, i32) {
+        let (px, py) = if (0.0..=1.0).contains(&vx) && (0.0..=1.0).contains(&vy) && (vx > 0.0 || vy > 0.0) {
+            ((vx * w).round() as i32, (vy * h).round() as i32)
+        } else {
+            (vx.round() as i32, vy.round() as i32)
+        };
+        (px.clamp(0, (w as i32) - 1), py.clamp(0, (h as i32) - 1))
     };
-    let px = px.clamp(0, (w as i32) - 1);
-    let py = py.clamp(0, (h as i32) - 1);
+    let (px, py) = to_px_pair(x, y);
+    let (tpx, tpy, has_drag_to) = match to {
+        Some((tx, ty)) => {
+            let (dx, dy) = to_px_pair(tx, ty);
+            (dx, dy, 1)
+        }
+        None => (px, py, 0),
+    };
     let btn: u32 = match button {
         "right" | "2" => 3,
         "middle" => 2,
@@ -1198,6 +1527,7 @@ if not dpy:
     sys.stderr.write("cannot open X11 display")
     sys.exit(1)
 action, px, py, btn, dy = sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]), float(sys.argv[6])
+tpx, tpy, has_to = int(sys.argv[7]), int(sys.argv[8]), int(sys.argv[9])
 xtst.XTestFakeMotionEvent(dpy, -1, px, py, 0)
 if action == "click":
     xtst.XTestFakeButtonEvent(dpy, btn, 1, 0)
@@ -1211,11 +1541,22 @@ elif action == "double_click":
 elif action == "right_click":
     xtst.XTestFakeButtonEvent(dpy, 3, 1, 0)
     xtst.XTestFakeButtonEvent(dpy, 3, 0, 0)
+elif action == "drag" and has_to:
+    xtst.XTestFakeButtonEvent(dpy, btn, 1, 0)
+    x11.XFlush(dpy)
+    steps = 12
+    for step in range(1, steps + 1):
+        ix = round(px + (tpx - px) * (step / steps))
+        iy = round(py + (tpy - py) * (step / steps))
+        xtst.XTestFakeMotionEvent(dpy, -1, ix, iy, 0)
+        x11.XFlush(dpy)
+        time.sleep(0.012)
+    xtst.XTestFakeButtonEvent(dpy, btn, 0, 0)
 elif action == "down":
     xtst.XTestFakeButtonEvent(dpy, btn, 1, 0)
 elif action == "up":
     xtst.XTestFakeButtonEvent(dpy, btn, 0, 0)
-elif action == "wheel":
+elif action in ("wheel", "scroll"):
     wb = 4 if dy < 0 else 5
     steps = max(1, min(6, int(abs(dy) / 80) or 1))
     for _ in range(steps):
@@ -1234,6 +1575,9 @@ x11.XCloseDisplay(dpy)
             &py.to_string(),
             &btn.to_string(),
             &delta_y.to_string(),
+            &tpx.to_string(),
+            &tpy.to_string(),
+            &has_drag_to.to_string(),
         ])
         .stdin(Stdio::null())
         .output()
@@ -1242,7 +1586,16 @@ x11.XCloseDisplay(dpy)
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return Err(format!("X11 mouse pass-through on {valid} failed: {err}"));
     }
-    Ok(json!({ "ok": true, "transport": "x11", "display": valid, "x": px, "y": py, "action": action }))
+    Ok(json!({
+        "ok": true,
+        "transport": "x11",
+        "display": valid,
+        "x": px,
+        "y": py,
+        "to_x": if has_drag_to == 1 { Some(tpx) } else { None },
+        "to_y": if has_drag_to == 1 { Some(tpy) } else { None },
+        "action": action,
+    }))
 }
 
 #[cfg(not(unix))]
@@ -1252,22 +1605,33 @@ pub fn send_x11_mouse(
     _action: &str,
     _x: f64,
     _y: f64,
+    _to: Option<(f64, f64)>,
     _button: &str,
     _delta_y: f64,
 ) -> Result<Value, String> {
     Err("X11 mouse pass-through is only available on Linux".to_string())
 }
 
-/// Forward a keyboard key press or typed text directly into an X11 display (`DISPLAY=:99`)
-/// via `libX11` + `libXtst` while Studio is awaiting auth/sign-in (#35).
+/// Forward a keyboard key press, typed text, or validated hotkey chord into an X11 display
+/// (`DISPLAY=:99`) via `libX11` + `libXtst` (#35, #81).
 #[cfg(unix)]
 pub fn send_x11_keyboard(
     display: &str,
     action: &str,
     key: Option<&str>,
     text: Option<&str>,
+    hotkey: Option<&[String]>,
 ) -> Result<Value, String> {
     let valid = validate_x11_display(display)?;
+    let hotkey_joined = if let Some(hk) = hotkey {
+        check_hotkey_safety(hk)?;
+        normalize_hotkey_tokens(hk)?.join("+")
+    } else {
+        if let Some(k) = key {
+            check_hotkey_safety(&[k.to_string()])?;
+        }
+        String::new()
+    };
     let script = r#"
 import ctypes, sys
 x11 = ctypes.CDLL("libX11.so.6")
@@ -1285,12 +1649,14 @@ dpy = x11.XOpenDisplay(sys.argv[1].encode())
 if not dpy:
     sys.stderr.write("cannot open X11 display")
     sys.exit(1)
-action, key, text = sys.argv[2], sys.argv[3], sys.argv[4]
+action, key, text, hotkey = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 KEY_MAP = {
     "enter": "Return", "return": "Return", "tab": "Tab", "escape": "Escape", "esc": "Escape",
     "backspace": "BackSpace", "delete": "Delete", "space": "space", " ": "space",
     "arrowup": "Up", "up": "Up", "arrowdown": "Down", "down": "Down",
     "arrowleft": "Left", "left": "Left", "arrowright": "Right", "right": "Right",
+    "ctrl": "Control_L", "shift": "Shift_L", "alt": "Alt_L",
+    **{f"f{i}": f"F{i}" for i in range(1, 13)},
 }
 SHIFTED = set('~!@#$%^&*()_+{}|:"<>?')
 CHAR_MAP = {
@@ -1302,11 +1668,13 @@ CHAR_MAP = {
     '`': 'grave', '{': 'braceleft', '|': 'bar', '}': 'braceright', '~': 'asciitilde',
 }
 shift_kc = x11.XKeysymToKeycode(dpy, x11.XStringToKeysym(b"Shift_L"))
-def press_sym(sym_name, need_shift=False, mode="press"):
+def keycode_for(sym_name):
     ks = x11.XStringToKeysym(sym_name.encode())
     if not ks:
-        return
-    kc = x11.XKeysymToKeycode(dpy, ks)
+        return 0
+    return x11.XKeysymToKeycode(dpy, ks)
+def press_sym(sym_name, need_shift=False, mode="press"):
+    kc = keycode_for(sym_name)
     if not kc:
         return
     if need_shift and shift_kc:
@@ -1317,7 +1685,24 @@ def press_sym(sym_name, need_shift=False, mode="press"):
         xtst.XTestFakeKeyEvent(dpy, kc, 0, 0)
     if need_shift and shift_kc:
         xtst.XTestFakeKeyEvent(dpy, shift_kc, 0, 0)
-if text:
+if hotkey:
+    mods = []
+    mains = []
+    for tok in hotkey.split("+"):
+        if tok in ("ctrl", "shift", "alt"):
+            kc = keycode_for(KEY_MAP[tok])
+            if kc:
+                mods.append(kc)
+        else:
+            sym = KEY_MAP.get(tok, CHAR_MAP.get(tok, tok))
+            mains.append(sym)
+    for mkc in mods:
+        xtst.XTestFakeKeyEvent(dpy, mkc, 1, 0)
+    for sym in mains:
+        press_sym(sym, False, "press")
+    for mkc in reversed(mods):
+        xtst.XTestFakeKeyEvent(dpy, mkc, 0, 0)
+elif text:
     for ch in text[:256]:
         if ch == '\n':
             press_sym("Return")
@@ -1343,6 +1728,7 @@ x11.XCloseDisplay(dpy)
             action,
             key.unwrap_or(""),
             text.unwrap_or(""),
+            &hotkey_joined,
         ])
         .stdin(Stdio::null())
         .output()
@@ -1360,6 +1746,7 @@ pub fn send_x11_keyboard(
     _action: &str,
     _key: Option<&str>,
     _text: Option<&str>,
+    _hotkey: Option<&[String]>,
 ) -> Result<Value, String> {
     Err("X11 keyboard pass-through is only available on Linux".to_string())
 }
@@ -2938,8 +3325,8 @@ pub fn translate_mouse_payload(payload: &Value) -> Result<Vec<Value>, String> {
         _ => "left",
     };
 
-    let x = payload.get("x").and_then(|v| v.as_f64());
-    let y = payload.get("y").and_then(|v| v.as_f64());
+    let x = payload.get("from_x").or_else(|| payload.get("x")).and_then(|v| v.as_f64());
+    let y = payload.get("from_y").or_else(|| payload.get("y")).and_then(|v| v.as_f64());
     let instance_path = payload
         .get("instance_path")
         .and_then(|v| v.as_str())
@@ -3007,12 +3394,14 @@ pub fn translate_mouse_payload(payload: &Value) -> Result<Vec<Value>, String> {
         }
         "drag" => {
             let end_x = payload
-                .get("end_x")
+                .get("to_x")
+                .or_else(|| payload.get("end_x"))
                 .or_else(|| payload.get("x2"))
                 .and_then(|v| v.as_f64())
                 .or(x);
             let end_y = payload
-                .get("end_y")
+                .get("to_y")
+                .or_else(|| payload.get("end_y"))
                 .or_else(|| payload.get("y2"))
                 .and_then(|v| v.as_f64())
                 .or(y);
@@ -3152,6 +3541,47 @@ pub fn translate_keyboard_payload(payload: &Value) -> Result<Vec<Value>, String>
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty());
+
+    if let Some(hk) = payload.get("hotkey") {
+        let raw_tokens: Vec<String> = if let Some(arr) = hk.as_array() {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        } else if let Some(s) = hk.as_str() {
+            s.split('+')
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let norm = normalize_hotkey_tokens(&raw_tokens)?;
+        check_hotkey_safety(&norm)?;
+        let mut mods = Vec::new();
+        let mut mains = Vec::new();
+        for tok in &norm {
+            match tok.as_str() {
+                "ctrl" => mods.push("LeftControl"),
+                "shift" => mods.push("LeftShift"),
+                "alt" => mods.push("LeftAlt"),
+                other => mains.push(normalize_roblox_keycode(other)),
+            }
+        }
+        let mut out = Vec::new();
+        for m in &mods {
+            out.push(json!({ "action": "keyDown", "key_code": m }));
+        }
+        for k in &mains {
+            out.push(json!({ "action": "keyPress", "key_code": k }));
+        }
+        for m in mods.iter().rev() {
+            out.push(json!({ "action": "keyUp", "key_code": m }));
+        }
+        if out.is_empty() {
+            return Err("hotkey produced no key actions".to_string());
+        }
+        return Ok(out);
+    }
 
     if matches!(event.as_str(), "text" | "textinput" | "type") {
         let text = payload
@@ -3315,4 +3745,454 @@ fn current_unix_uid() -> Option<String> {
         }
     }
     None
+}
+
+/// Bounded capacity of `StudioCuaLog`.
+pub const MAX_CUA_LOG_ENTRIES: usize = 80;
+/// Maximum retained PNG frames under `<data_dir>/cua-frames/`.
+pub const MAX_CUA_FRAMES: usize = 40;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StudioCuaEvent {
+    pub id: u64,
+    pub at_ms: u64,
+    pub actor: String,
+    pub kind: String,
+    pub summary: String,
+    pub norm_x: Option<f64>,
+    pub norm_y: Option<f64>,
+    pub to_norm_x: Option<f64>,
+    pub to_norm_y: Option<f64>,
+    pub key: Option<String>,
+    pub hotkey: Option<Vec<String>>,
+    pub frame_url: Option<String>,
+    pub ok: bool,
+}
+
+impl StudioCuaEvent {
+    pub fn to_json(&self) -> Value {
+        let mut map = serde_json::Map::new();
+        map.insert("id".to_string(), json!(self.id));
+        map.insert("at_ms".to_string(), json!(self.at_ms));
+        map.insert("actor".to_string(), json!(self.actor));
+        map.insert("kind".to_string(), json!(self.kind));
+        map.insert("summary".to_string(), json!(self.summary));
+        if let Some(v) = self.norm_x {
+            map.insert("norm_x".to_string(), json!(v));
+        }
+        if let Some(v) = self.norm_y {
+            map.insert("norm_y".to_string(), json!(v));
+        }
+        if let Some(v) = self.to_norm_x {
+            map.insert("to_norm_x".to_string(), json!(v));
+        }
+        if let Some(v) = self.to_norm_y {
+            map.insert("to_norm_y".to_string(), json!(v));
+        }
+        if let Some(ref k) = self.key {
+            map.insert("key".to_string(), json!(k));
+        }
+        if let Some(ref hk) = self.hotkey {
+            map.insert("hotkey".to_string(), json!(hk));
+        }
+        if let Some(ref u) = self.frame_url {
+            map.insert("frame_url".to_string(), json!(u));
+        }
+        map.insert("ok".to_string(), json!(self.ok));
+        Value::Object(map)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct StudioCuaEventInput {
+    pub actor: String,
+    pub kind: String,
+    pub summary: String,
+    pub norm_x: Option<f64>,
+    pub norm_y: Option<f64>,
+    pub to_norm_x: Option<f64>,
+    pub to_norm_y: Option<f64>,
+    pub key: Option<String>,
+    pub hotkey: Option<Vec<String>>,
+    pub frame_url: Option<String>,
+    pub ok: bool,
+}
+
+/// Thread-safe bounded 80-entry CUA action log + `cua_paused` human-takeover lock
+/// broadcasting live events over `StudioStreamHub` (`/api/studio/stream`).
+pub struct StudioCuaLog {
+    events: Mutex<VecDeque<StudioCuaEvent>>,
+    pub cua_paused: AtomicBool,
+    next_id: AtomicU64,
+    stream_hub: Mutex<Option<Arc<StudioStreamHub>>>,
+}
+
+impl StudioCuaLog {
+    pub fn new(stream_hub: Option<Arc<StudioStreamHub>>) -> Self {
+        StudioCuaLog {
+            events: Mutex::new(VecDeque::with_capacity(MAX_CUA_LOG_ENTRIES)),
+            cua_paused: AtomicBool::new(false),
+            next_id: AtomicU64::new(1),
+            stream_hub: Mutex::new(stream_hub),
+        }
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.cua_paused.load(Ordering::SeqCst)
+    }
+
+    pub fn pause(&self, actor: &str) -> StudioCuaEvent {
+        self.cua_paused.store(true, Ordering::SeqCst);
+        self.record(StudioCuaEventInput {
+            actor: actor.to_string(),
+            kind: "pause".to_string(),
+            summary: "Agent CUA paused by human takeover".to_string(),
+            norm_x: None,
+            norm_y: None,
+            to_norm_x: None,
+            to_norm_y: None,
+            key: None,
+            hotkey: None,
+            frame_url: None,
+            ok: true,
+        })
+    }
+
+    pub fn resume(&self, actor: &str) -> StudioCuaEvent {
+        self.cua_paused.store(false, Ordering::SeqCst);
+        self.record(StudioCuaEventInput {
+            actor: actor.to_string(),
+            kind: "resume".to_string(),
+            summary: "Agent CUA resumed".to_string(),
+            norm_x: None,
+            norm_y: None,
+            to_norm_x: None,
+            to_norm_y: None,
+            key: None,
+            hotkey: None,
+            frame_url: None,
+            ok: true,
+        })
+    }
+
+    pub fn record(&self, input: StudioCuaEventInput) -> StudioCuaEvent {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let ev = StudioCuaEvent {
+            id,
+            at_ms: now_ms(),
+            actor: input.actor,
+            kind: input.kind,
+            summary: input.summary,
+            norm_x: input.norm_x,
+            norm_y: input.norm_y,
+            to_norm_x: input.to_norm_x,
+            to_norm_y: input.to_norm_y,
+            key: input.key,
+            hotkey: input.hotkey,
+            frame_url: input.frame_url,
+            ok: input.ok,
+        };
+        {
+            let mut ring = self.events.lock().unwrap();
+            if ring.len() >= MAX_CUA_LOG_ENTRIES {
+                ring.pop_front();
+            }
+            ring.push_back(ev.clone());
+        }
+        if let Some(hub) = self.stream_hub.lock().unwrap().as_ref() {
+            hub.push_cua_event(ev.to_json());
+        }
+        ev
+    }
+
+    pub fn recent(&self, limit: usize) -> Vec<StudioCuaEvent> {
+        let cap = limit.min(MAX_CUA_LOG_ENTRIES);
+        let ring = self.events.lock().unwrap();
+        let skip = ring.len().saturating_sub(cap);
+        ring.iter().skip(skip).cloned().collect()
+    }
+
+    pub fn since(&self, since_id: u64, limit: usize) -> Vec<StudioCuaEvent> {
+        let cap = limit.min(MAX_CUA_LOG_ENTRIES);
+        let ring = self.events.lock().unwrap();
+        let filtered: Vec<StudioCuaEvent> =
+            ring.iter().filter(|e| e.id > since_id).cloned().collect();
+        let skip = filtered.len().saturating_sub(cap);
+        filtered.into_iter().skip(skip).collect()
+    }
+}
+
+static CUA_FRAME_FILE_SEQ: AtomicU64 = AtomicU64::new(1);
+
+fn sanitize_cua_label(label: Option<&str>) -> String {
+    let raw = label.unwrap_or("frame");
+    let clean: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(32)
+        .collect();
+    let trimmed = clean.trim_matches('_');
+    if trimmed.is_empty() {
+        "frame".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn ensure_safe_cua_frames_dir(data_dir: &Path) -> Result<PathBuf, String> {
+    let cua_dir = data_dir.join("cua-frames");
+    if let Ok(meta) = std::fs::symlink_metadata(&cua_dir) {
+        if meta.file_type().is_symlink() {
+            return Err("cua-frames directory must not be a symlink (CWE-59)".to_string());
+        }
+    }
+    std::fs::create_dir_all(&cua_dir)
+        .map_err(|e| format!("failed to create cua-frames directory: {e}"))?;
+    let canon_root = std::fs::canonicalize(data_dir)
+        .map_err(|e| format!("failed to canonicalize data_dir: {e}"))?;
+    let canon_cua = std::fs::canonicalize(&cua_dir)
+        .map_err(|e| format!("failed to canonicalize cua-frames: {e}"))?;
+    if !canon_cua.starts_with(&canon_root) {
+        return Err("cua-frames escaped data_dir containment (CWE-22)".to_string());
+    }
+    Ok(canon_cua)
+}
+
+fn prune_cua_frames(cua_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(cua_dir) else {
+        return;
+    };
+    let mut files: Vec<(SystemTime, String, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("png") {
+                return None;
+            }
+            let mtime = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(UNIX_EPOCH);
+            let name = e.file_name().to_string_lossy().to_string();
+            Some((mtime, name, p))
+        })
+        .collect();
+    if files.len() <= MAX_CUA_FRAMES {
+        return;
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let to_remove = files.len() - MAX_CUA_FRAMES;
+    for (_, _, p) in files.into_iter().take(to_remove) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+fn convert_jpeg_to_png(jpeg_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    if let Ok(mut child) = Command::new("ffmpeg")
+        .args([
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-f",
+            "mjpeg",
+            "-i",
+            "pipe:0",
+            "-frames:v",
+            "1",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "png",
+            "pipe:1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(jpeg_bytes);
+        }
+        if let Ok(out) = child.wait_with_output() {
+            if out.status.success() && out.stdout.starts_with(b"\x89PNG\r\n\x1a\n") {
+                return Ok(out.stdout);
+            }
+        }
+    }
+    let mut py = Command::new("python3")
+        .args([
+            "-c",
+            "import sys,io; from PIL import Image; im=Image.open(io.BytesIO(sys.stdin.buffer.read())); buf=io.BytesIO(); im.save(buf, format='PNG'); sys.stdout.buffer.write(buf.getvalue())",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn python3 PIL for JPEG->PNG: {e}"))?;
+    if let Some(mut stdin) = py.stdin.take() {
+        let _ = stdin.write_all(jpeg_bytes);
+    }
+    let out = py
+        .wait_with_output()
+        .map_err(|e| format!("JPEG->PNG conversion failed: {e}"))?;
+    if !out.status.success() || !out.stdout.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("JPEG->PNG conversion failed: {err}"));
+    }
+    Ok(out.stdout)
+}
+
+#[cfg(unix)]
+fn capture_x11_single_png(display: &str, resolution: [u32; 2]) -> Result<Vec<u8>, String> {
+    let valid = validate_x11_display(display)?;
+    if !x11_socket_exists(&valid) {
+        return Err(format!("X11 display {valid} socket is not active"));
+    }
+    let size = format!(
+        "{}x{}",
+        resolution[0].clamp(320, 3840),
+        resolution[1].clamp(200, 2160)
+    );
+    let out = Command::new("ffmpeg")
+        .args([
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-f",
+            "x11grab",
+            "-video_size",
+            &size,
+            "-i",
+            &valid,
+            "-frames:v",
+            "1",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "png",
+            "pipe:1",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("ffmpeg x11grab single-frame capture failed: {e}"))?;
+    if !out.status.success() || !out.stdout.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("ffmpeg x11grab PNG capture on {valid} failed: {err}"));
+    }
+    Ok(out.stdout)
+}
+
+#[cfg(not(unix))]
+fn capture_x11_single_png(_display: &str, _resolution: [u32; 2]) -> Result<Vec<u8>, String> {
+    Err("X11 single-frame capture is only supported on Linux/Unix".to_string())
+}
+
+/// Capture the current Studio viewport into `<data_dir>/cua-frames/<id>.png` (CWE-22/59 safe,
+/// pruned to 40 frames) from `StudioStreamHub` or validated single-frame X11 `ffmpeg x11grab`.
+pub fn capture_studio_frame_png_from_hub(
+    hub: &StudioStreamHub,
+    state: &StudioEmbedState,
+    data_dir: &Path,
+    label: Option<&str>,
+) -> Result<Value, String> {
+    let (png_bytes, width, height, seq) = if let Some(frame) = hub.latest_frame() {
+        let png = if frame.bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            frame.bytes.clone()
+        } else {
+            convert_jpeg_to_png(&frame.bytes)?
+        };
+        (png, frame.width, frame.height, frame.seq)
+    } else if let Some(ref disp) = state.display {
+        let png = capture_x11_single_png(disp, state.resolution)?;
+        let stored = hub.push_frame(StudioFrame {
+            seq: 0,
+            ts_ms: now_ms(),
+            mime: "image/png".to_string(),
+            bytes: png.clone(),
+            width: state.resolution[0],
+            height: state.resolution[1],
+            source: "cua_x11_png".to_string(),
+        });
+        (png, stored.width, stored.height, stored.seq)
+    } else {
+        return Err("No live Studio frame or active X11 display available for CUA screenshot".to_string());
+    };
+
+    let cua_dir = ensure_safe_cua_frames_dir(data_dir)?;
+    let seq_num = CUA_FRAME_FILE_SEQ.fetch_add(1, Ordering::SeqCst);
+    let clean_label = sanitize_cua_label(label);
+    let filename = format!("cua-{:013}-{:04}-{}.png", now_ms(), seq_num, clean_label);
+    let dest = cua_dir.join(&filename);
+    if let Ok(meta) = std::fs::symlink_metadata(&dest) {
+        if meta.file_type().is_symlink() {
+            return Err("refusing to overwrite symlink in cua-frames (CWE-59)".to_string());
+        }
+    }
+    std::fs::write(&dest, &png_bytes)
+        .map_err(|e| format!("failed to write CUA frame PNG: {e}"))?;
+    let canon_dest = std::fs::canonicalize(&dest)
+        .map_err(|e| format!("failed to canonicalize saved CUA frame: {e}"))?;
+    if !canon_dest.starts_with(&cua_dir) {
+        let _ = std::fs::remove_file(&dest);
+        return Err("saved CUA frame escaped containment (CWE-22)".to_string());
+    }
+    prune_cua_frames(&cua_dir);
+
+    Ok(json!({
+        "ok": true,
+        "path": canon_dest.to_string_lossy(),
+        "file": filename,
+        "url": format!("/api/studio/cua/frame/{filename}"),
+        "width": width,
+        "height": height,
+        "seq": seq,
+        "display": state.display,
+        "phase": state.phase,
+        "place_open": state.place_open,
+    }))
+}
+
+/// CWE-22/59 safe resolver for `GET /api/studio/cua/frame/<file>`.
+pub fn resolve_cua_frame_path(data_dir: &Path, file: &str) -> Result<PathBuf, (u16, String)> {
+    let trimmed = file.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+        || trimmed.contains('\0')
+        || !trimmed.ends_with(".png")
+        || !trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err((400, "invalid CUA frame filename".to_string()));
+    }
+    let cua_dir = data_dir.join("cua-frames");
+    if let Ok(meta) = std::fs::symlink_metadata(&cua_dir) {
+        if meta.file_type().is_symlink() {
+            return Err((403, "cua-frames directory symlink refused (CWE-59)".to_string()));
+        }
+    }
+    let target = cua_dir.join(trimmed);
+    let meta = match std::fs::symlink_metadata(&target) {
+        Ok(m) => m,
+        Err(_) => return Err((404, "CUA frame not found".to_string())),
+    };
+    if meta.file_type().is_symlink() {
+        return Err((403, "symlink CUA frame refused (CWE-59)".to_string()));
+    }
+    let canon_dir = std::fs::canonicalize(&cua_dir)
+        .map_err(|_| (404, "cua-frames directory not found".to_string()))?;
+    let canon_file = std::fs::canonicalize(&target)
+        .map_err(|_| (404, "CUA frame not found".to_string()))?;
+    if !canon_file.starts_with(&canon_dir) {
+        return Err((403, "CUA frame path traversal refused (CWE-22)".to_string()));
+    }
+    Ok(canon_file)
 }

@@ -14,6 +14,7 @@ import {
   Keyboard,
   Monitor,
   MoreHorizontal,
+  Pause,
   Play,
   Plug,
   RefreshCw,
@@ -27,6 +28,7 @@ import { Input } from "@/components/ui/input";
 import { Pill, PillIndicator } from "@/components/kibo-ui/pill";
 import {
   type StudioActionEvent,
+  type StudioCuaEvent,
   type StudioEmbedStatus,
   type StudioKeyboardInputPayload,
   type StudioMode,
@@ -71,6 +73,9 @@ export function EmbeddedStudioPanel({
   frameSeq,
   subscribeFrameSeq,
   actions,
+  cuaEvents = [],
+  cuaPaused = false,
+  onToggleCuaPause,
   onLaunchEmbed,
   onAttachEmbed,
   onTransferEmbed,
@@ -90,6 +95,9 @@ export function EmbeddedStudioPanel({
   frameSeq: number;
   subscribeFrameSeq?: (cb: (seq: number) => void) => () => void;
   actions: StudioActionEvent[];
+  cuaEvents?: StudioCuaEvent[];
+  cuaPaused?: boolean;
+  onToggleCuaPause?: () => Promise<void> | void;
   onLaunchEmbed?: (command?: string) => Promise<void> | void;
   onAttachEmbed?: () => Promise<void> | void;
   onTransferEmbed?: () => Promise<void> | void;
@@ -302,6 +310,32 @@ export function EmbeddedStudioPanel({
   const showSnapshot = !showMjpeg && (hasLiveFrame || embedStatus.running) && !frameFailed;
   const playLabel: Record<StudioPlayMode, string> = { edit: "Edit", play: "Playing", server: "Server" };
   const awaitingSignIn = embedStatus.phase === "awaiting_signin";
+  const latestCua = cuaEvents.length > 0 ? cuaEvents[cuaEvents.length - 1] : null;
+  const latestPointerCua = [...cuaEvents]
+    .reverse()
+    .find((ev) => typeof ev.norm_x === "number" && typeof ev.norm_y === "number") ?? null;
+  const tickerItems = [
+    ...cuaEvents.slice(-24).map((ev) => ({
+      id: `cua-${ev.id}`,
+      ts: ev.at_ms,
+      tag: ev.kind,
+      actor: ev.actor,
+      summary: ev.summary,
+      frameUrl: ev.frame_url,
+      ok: ev.ok,
+    })),
+    ...actions.slice(-24).map((ac) => ({
+      id: `mcp-${ac.seq}`,
+      ts: ac.ts_ms,
+      tag: ac.kind,
+      actor: "MCP",
+      summary: ac.summary,
+      frameUrl: ac.frame_seq ? `/api/studio/frame?seq=${ac.frame_seq}` : undefined,
+      ok: true,
+    })),
+  ]
+    .sort((a, b) => a.ts - b.ts)
+    .slice(-30);
 
   return (
     <div data-embedded-studio-panel className="flex h-full min-h-0 flex-col bg-surface">
@@ -335,6 +369,12 @@ export function EmbeddedStudioPanel({
             {embedStatus.place_open === false ? "Start Page" : embedStatus.datamodel_type || playLabel[embedStatus.play_mode]}
           </Badge>
 
+          {cuaPaused && (
+            <Badge className="border-transparent bg-pill-warn-bg px-1.5 py-0.5 text-xs font-medium text-pill-warn-fg">
+              CUA Paused
+            </Badge>
+          )}
+
           {lastPointer && (
             <span className="hidden font-mono text-xs text-ink-3 xl:inline">
               {lastPointer.action} ({lastPointer.x},{lastPointer.y})
@@ -348,6 +388,23 @@ export function EmbeddedStudioPanel({
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
+          {onToggleCuaPause && (
+            <Button
+              variant={cuaPaused ? "default" : "outline"}
+              size="xs"
+              data-cua-pause-btn
+              aria-pressed={cuaPaused}
+              onClick={() => void onToggleCuaPause()}
+              className={cuaPaused ? "max-md:min-h-11" : "bg-surface max-md:min-h-11"}
+            >
+              {cuaPaused ? (
+                <Play className="size-3" strokeWidth={1.5} aria-hidden />
+              ) : (
+                <Pause className="size-3" strokeWidth={1.5} aria-hidden />
+              )}
+              <span>{cuaPaused ? "Resume CUA" : "Pause Agent CUA"}</span>
+            </Button>
+          )}
           {onInvokeStudioTool && (
             embedStatus.play_mode === "play" || embedStatus.play_mode === "server" ? (
               <Button
@@ -544,7 +601,7 @@ export function EmbeddedStudioPanel({
                 Sign in above: OpenRO connects automatically
               </div>
             )}
-            <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-board/50">
+            <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-board/50">
               {showMjpeg ? (
                 <img
                   src={embedStatus.stream_url || "/api/studio/stream.mjpg"}
@@ -565,16 +622,68 @@ export function EmbeddedStudioPanel({
                   <p className="font-medium text-ink">Waiting for Studio frame…</p>
                 </div>
               )}
-            </div>
 
-            {actions.length > 0 && (
-              <div className="flex flex-none flex-wrap items-center justify-between gap-2 border-t border-hairline bg-surface px-3 py-1 text-xs">
-                <span className="truncate font-mono text-ink">
-                  {actions[actions.length - 1].summary}
-                </span>
-                <span className="font-mono tabular-nums text-ink-2">#{actions[actions.length - 1].seq}</span>
-              </div>
-            )}
+              {(latestCua || latestPointerCua) && (
+                <div
+                  data-cua-overlay
+                  className="pointer-events-none absolute inset-0 overflow-hidden"
+                >
+                  {latestCua && (
+                    <div
+                      data-cua-badge
+                      className="absolute left-2.5 top-2.5 inline-flex items-center gap-1.5 rounded-chip border border-hairline bg-surface/90 px-2 py-0.5 font-mono text-xs text-ink shadow-sm backdrop-blur-sm"
+                    >
+                      <span className="size-2 rounded-full bg-blue motion-safe:animate-pulse" aria-hidden />
+                      <span>{latestCua.summary}</span>
+                    </div>
+                  )}
+                  {latestPointerCua &&
+                    typeof latestPointerCua.norm_x === "number" &&
+                    typeof latestPointerCua.norm_y === "number" &&
+                    typeof latestPointerCua.to_norm_x === "number" &&
+                    typeof latestPointerCua.to_norm_y === "number" && (
+                      <svg
+                        viewBox="0 0 100 100"
+                        preserveAspectRatio="none"
+                        className="absolute inset-0 h-full w-full"
+                        aria-hidden
+                      >
+                        <defs>
+                          <marker id="cua-arrow" markerWidth="4" markerHeight="4" refX="3" refY="2" orient="auto">
+                            <path d="M0,0 L4,2 L0,4 Z" fill="currentColor" />
+                          </marker>
+                        </defs>
+                        <line
+                          x1={latestPointerCua.norm_x * 100}
+                          y1={latestPointerCua.norm_y * 100}
+                          x2={latestPointerCua.to_norm_x * 100}
+                          y2={latestPointerCua.to_norm_y * 100}
+                          stroke="currentColor"
+                          strokeWidth="0.6"
+                          strokeDasharray="1.5 1"
+                          markerEnd="url(#cua-arrow)"
+                          className="text-blue"
+                        />
+                      </svg>
+                    )}
+                  {latestPointerCua &&
+                    typeof latestPointerCua.norm_x === "number" &&
+                    typeof latestPointerCua.norm_y === "number" && (
+                      <div
+                        data-cua-reticle
+                        style={{
+                          left: `${latestPointerCua.norm_x * 100}%`,
+                          top: `${latestPointerCua.norm_y * 100}%`,
+                        }}
+                        className="absolute -translate-x-1/2 -translate-y-1/2"
+                      >
+                        <span className="block size-7 rounded-full border-2 border-blue bg-blue/15 motion-safe:animate-ping" />
+                        <span className="absolute left-1/2 top-1/2 block size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-surface bg-blue" />
+                      </div>
+                    )}
+                </div>
+              )}
+            </div>
           </div>
         ) : (
           <div
@@ -637,6 +746,41 @@ export function EmbeddedStudioPanel({
           </div>
         )}
       </div>
+
+      {/* Live Agent Activity Ticker (MCP + CUA) */}
+      {tickerItems.length > 0 && (
+        <div
+          data-cua-ticker
+          aria-label="Live Agent Studio Activity"
+          className="max-h-24 flex-none overflow-y-auto border-t border-hairline bg-surface px-3 py-1.5"
+        >
+          <div className="flex flex-col gap-1">
+            {tickerItems.slice().reverse().map((item) => (
+              <div
+                key={item.id}
+                className="flex items-center justify-between gap-2 text-xs"
+              >
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="shrink-0 rounded-sm border border-hairline bg-board px-1.5 py-0 font-mono text-xs text-ink-2">
+                    {item.tag}
+                  </span>
+                  <span className="truncate font-mono text-ink">{item.summary}</span>
+                </div>
+                {item.frameUrl && (
+                  <a
+                    href={item.frameUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 font-mono text-xs text-blue hover:underline"
+                  >
+                    frame
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

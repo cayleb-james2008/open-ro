@@ -17,6 +17,7 @@ import { Toaster, toast } from "sonner";
 import { Drawer } from "vaul";
 import {
   ArrowLeftRight,
+  Box,
   Check,
   Coins,
   Command,
@@ -89,6 +90,7 @@ import {
   normalizeProposalList,
   normalizeSnapshots,
   normalizeStudioActionsResponse,
+  normalizeStudioCuaEvent,
   normalizeThread,
   post,
   read,
@@ -110,6 +112,7 @@ import {
   type ReasoningLevel,
   type ScriptFileDiff,
   type StudioActionEvent,
+  type StudioCuaEvent,
   type StudioEmbedStatus,
   type StudioKeyboardInputPayload,
   type StudioMode,
@@ -505,6 +508,8 @@ export function App() {
         : "local_place",
   );
   const [studioActions, setStudioActions] = useState<StudioActionEvent[]>([]);
+  const [cuaEvents, setCuaEvents] = useState<StudioCuaEvent[]>([]);
+  const [cuaPaused, setCuaPaused] = useState(false);
   const [hasLiveFrame, setHasLiveFrame] = useState(false);
   const [threadFrameSeq, setThreadFrameSeq] = useState(0);
   const frameSeqRef = useRef(0);
@@ -801,6 +806,18 @@ export function App() {
         }
         if (norm.has_live_frame && typeof norm.frame_seq === "number" && norm.frame_seq > 0) {
           publishLiveFrame(norm.frame_seq);
+        }
+        try {
+          const cua = await read<Record<string, unknown>>("/api/studio/cua/status");
+          if (typeof cua.cua_paused === "boolean") setCuaPaused(cua.cua_paused);
+          if (Array.isArray(cua.recent_events)) {
+            const list = cua.recent_events
+              .map(normalizeStudioCuaEvent)
+              .filter((x): x is StudioCuaEvent => Boolean(x));
+            if (list.length > 0) setCuaEvents(list);
+          }
+        } catch {
+          /* non-fatal */
         }
       } catch {
         /* keep current embed status */
@@ -1120,6 +1137,11 @@ export function App() {
         if (st.studio_mode) setStudioMode((prev) => (prev === st.studio_mode ? prev : st.studio_mode!));
         if (typeof st.has_live_frame === "boolean") setHasLiveFrame(st.has_live_frame);
         if (typeof st.frame_seq === "number" && st.frame_seq > 0) publishLiveFrame(st.frame_seq);
+      },
+      onCuaEvent: (ev) => {
+        setCuaEvents((prev) => (prev.some((x) => x.id === ev.id) ? prev : [...prev, ev].slice(-80)));
+        if (ev.kind === "pause") setCuaPaused(true);
+        if (ev.kind === "resume") setCuaPaused(false);
       },
     });
     return () => {
@@ -2817,6 +2839,26 @@ export function App() {
     }
   };
 
+  const handleToggleCuaPause = async () => {
+    if (!v090Ready) return;
+    const action = cuaPaused ? "resume" : "pause";
+    try {
+      const res = await post<{ ok?: boolean; cua_paused?: boolean; event?: unknown }>("/api/studio/cua/window", {
+        action,
+        actor: "user",
+      });
+      if (typeof res.cua_paused === "boolean") {
+        setCuaPaused(res.cua_paused);
+      }
+      const ev = normalizeStudioCuaEvent(res.event);
+      if (ev) {
+        setCuaEvents((prev) => (prev.some((x) => x.id === ev.id) ? prev : [...prev, ev].slice(-80)));
+      }
+    } catch {
+      toast.error("Could not update Agent CUA pause state.");
+    }
+  };
+
   const handleInvokeStudioTool = async (
     tool: StudioToolName,
     args: Record<string, unknown>,
@@ -3180,13 +3222,13 @@ export function App() {
       <div className="flex min-h-10 flex-none flex-wrap items-center justify-between gap-1.5 border-b border-hairline bg-board/40 px-2.5 py-1">
         <SegmentedControl aria-label="Studio workbench tab" size="sm" className="max-w-full flex-wrap">
           <SegmentedControlItem
-            data-checked={centerTab === "embedded-studio" || centerTab === "studio-3d" ? "" : undefined}
-            aria-pressed={centerTab === "embedded-studio" || centerTab === "studio-3d"}
+            data-checked={centerTab === "embedded-studio" ? "" : undefined}
+            aria-pressed={centerTab === "embedded-studio"}
             onClick={() => setCenterTab(isBrowserEngine ? "studio-3d" : "embedded-studio")}
             className="gap-1 max-md:!h-11 max-md:px-2"
           >
             <Monitor className="size-3.5" strokeWidth={1.5} aria-hidden />
-            <span>Viewport</span>
+            <span>Studio</span>
           </SegmentedControlItem>
           <SegmentedControlItem
             data-checked={centerTab === "code-diff" ? "" : undefined}
@@ -3201,15 +3243,6 @@ export function App() {
                 {pendingProposalCount}
               </span>
             )}
-          </SegmentedControlItem>
-          <SegmentedControlItem
-            data-checked={centerTab === "gui-designer" ? "" : undefined}
-            aria-pressed={centerTab === "gui-designer"}
-            onClick={() => setCenterTab("gui-designer")}
-            className="gap-1 max-md:!h-11 max-md:px-2"
-          >
-            <LayoutTemplate className="size-3.5" strokeWidth={1.5} aria-hidden />
-            <span>UI</span>
           </SegmentedControlItem>
           {!isBrowserEngine && (
             <SegmentedControlItem
@@ -3244,7 +3277,36 @@ export function App() {
           )}
         </SegmentedControl>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <div
+            data-offline-fallbacks
+            role="group"
+            aria-label="Offline fallbacks"
+            className="flex items-center gap-0.5 rounded-chip border border-hairline bg-board/60 px-1.5 py-0.5"
+          >
+            <span className="px-1 text-xs text-ink-3">Offline</span>
+            <Button
+              variant={centerTab === "gui-designer" ? "secondary" : "ghost"}
+              size="xs"
+              aria-pressed={centerTab === "gui-designer"}
+              onClick={() => setCenterTab("gui-designer")}
+              className="h-8 gap-1 px-2 text-xs text-ink-2 hover:text-ink max-md:min-h-11"
+            >
+              <LayoutTemplate className="size-3" strokeWidth={1.5} aria-hidden />
+              <span>UI</span>
+            </Button>
+            <Button
+              variant={centerTab === "studio-3d" ? "secondary" : "ghost"}
+              size="xs"
+              aria-label="Viewport"
+              aria-pressed={centerTab === "studio-3d"}
+              onClick={() => setCenterTab("studio-3d")}
+              className="h-8 gap-1 px-2 text-xs text-ink-2 hover:text-ink max-md:min-h-11"
+            >
+              <Box className="size-3" strokeWidth={1.5} aria-hidden />
+              <span>3D</span>
+            </Button>
+          </div>
           <Button
             variant="outline"
             size="xs"
@@ -3296,6 +3358,9 @@ export function App() {
               frameSeq={frameSeqRef.current}
               subscribeFrameSeq={subscribeFrameSeq}
               actions={studioActions}
+              cuaEvents={cuaEvents}
+              cuaPaused={cuaPaused}
+              onToggleCuaPause={handleToggleCuaPause}
               onLaunchEmbed={handleLaunchEmbed}
               onAttachEmbed={handleAttachEmbed}
               onTransferEmbed={handleTransferEmbed}
