@@ -505,7 +505,7 @@ fn external_ui_gen_adapters_and_http_routes() {
     assert_eq!(presets["ok"], true);
     assert_eq!(presets["craft_rules"].as_array().unwrap().len(), 10);
     assert_eq!(presets["layouts"].as_array().unwrap().len(), 4);
-    assert_eq!(presets["skins"].as_array().unwrap().len(), 6);
+    assert_eq!(presets["skins"].as_array().unwrap().len(), 7);
     let sheets = presets["sheets"].as_array().unwrap();
     assert_eq!(sheets.len(), 6);
     let preset_sheet_ids: Vec<&str> = sheets

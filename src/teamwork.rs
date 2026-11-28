@@ -2721,6 +2721,9 @@ fn is_write_or_submit_tool(tool: &str) -> bool {
             | "verify_task"
             | "finish_run"
             | "evidence_record"
+            | "teardown_game"
+            | "teardown_screenshot"
+            | "teardown_spec"
             | "unknown_add"
             | "unknown_update"
     )
@@ -3288,7 +3291,7 @@ fn role_rules_for(role: &str) -> &'static str {
         ),
         "researcher" => concat!(
             "You are the Teamwork researcher/designer.\n",
-            "Follow Study -> Build -> Check -> Refine: use `research_roblox_game` (`target` = Roblox URL or place/universe ID -> saves dossier & thumbs in `refs/<universeId>/`), `web_search`, `web_fetch`, `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_update_manifest`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`.\n",
+            "Follow Study -> Build -> Check -> Refine: use `research_roblox_game` (`target` = Roblox URL or place/universe ID -> saves dossier & thumbs in `refs/<universeId>/`), `teardown_game` (`target`, `new_niche?` -> full badges/passes/YouTube/wiki teardown + 7-pillar E2E spec in `refs/teardowns/<uid>/`), `teardown_screenshot`, `teardown_spec`, `web_search`, `web_fetch`, `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_update_manifest`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`.\n",
             "Record observed/derived/inferred findings with `evidence_record`, track open gaps with `unknown_add`/`unknown_update` (resolve only with `resolution` + `evidence_for`), and validate `docs/mechanics.json` provenance via `mechanics_check`.\n",
             "Budget <=3 research turns before writing deliverables (`web_fetch` is capped cleanly).\n",
             "Claim every file you write (`project_write_file` auto-claims onto your active task), then call `submit_task` to hand off to `@verifier`."
@@ -3298,7 +3301,7 @@ fn role_rules_for(role: &str) -> &'static str {
             "Claim every file you edit with `claim_files` (two active tasks may never claim or edit the same file).\n",
             "Follow Study -> Build -> Check -> Refine: check `study_status`/`unknowns_list`, record verified behavior with `evidence_record`/`unknown_add`/`unknown_update` (capping guesswork), cite `ev_*` IDs in `docs/mechanics.json` (`mechanics_check`), build, check (`project_check`/`project_playtest`, pass `\"force\":true` to bypass `KeptChecks`), and refine.\n",
             "Studio-Native First: push native Luau/ScreenGui/instances into live Roblox Studio via MCP/Rojo sync (`project_sync`, `project_scene_mutate`, `gui_compile`); use `studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, and `studio_cua_window` over the headed Studio window for any native Studio UI/dialog outside MCP (Asset Manager, Game Settings, Properties, Studio UI Editor, dialogs); use local-hardware adapters (`chatgpt-browser-cli`, `blender-cycles-cli`, `rust-synth-builtin`, `adapter_invoke`) for asset generation Studio cannot do natively.\n",
-            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_symbols`, `project_typecheck`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, `studio_cua_window`, `studio_stage_content`, `studio_verify_device`, `studio_verify_audio`, `studio_verify_ui_craft`, `research_roblox_game`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `ui_kit_presets`, `ui_kit_generate`, `mesh_generate`, `blender_generate`, `blender_build_map`, `audio_generate`, `sfx_pack_list`, `sfx_pack_install`, `sfx_pack_search`, `sfx_pack_use`, `music_search`, `music_import`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `assets_moderation_poll`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_codegen`, `liveops_telemetry_sync`, `liveops_telemetry_summary`.\n",
+            "Use `project_files`, `project_read_file`, `project_grep`, `project_write_file`, `project_edit_file`, `project_delete_file`, `project_update_manifest`, `project_scene_get`, `project_scene_mutate`, `gui_save`, `gui_compile`, `luau_check`, `project_symbols`, `project_typecheck`, `project_format`, `project_check`, `project_run_lune`, `sandbox_playtest`, `project_build`, `project_sync`, `project_sync_pull`, `project_playtest`, `studio_cua_screenshot`, `studio_cua_mouse`, `studio_cua_keyboard`, `studio_cua_window`, `studio_stage_content`, `studio_verify_device`, `studio_verify_audio`, `studio_verify_ui_craft`, `research_roblox_game`, `teardown_game`, `teardown_screenshot`, `teardown_spec`, `web_search`, `web_fetch`, `evidence_record`, `evidence_list`, `unknown_add`, `unknown_update`, `unknowns_list`, `mechanics_check`, `study_status`, `reference_search`, `reference_select`, `art_generate`, `art_approve`, `image_process`, `art_pack_card`, `ui_kit_presets`, `ui_kit_generate`, `mesh_generate`, `blender_generate`, `blender_build_map`, `audio_generate`, `sfx_pack_list`, `sfx_pack_install`, `sfx_pack_search`, `sfx_pack_use`, `music_search`, `music_import`, `adapter_list`, `adapter_invoke`, `opencloud_status`, `creator_hub_status`, `creator_hub_setup`, `creator_hub_configure`, `assets_authorise`, `assets_codegen`, `assets_upload`, `assets_moderation_poll`, `products_sync`, `products_codegen`, `project_publish`, `universe_get`, `universe_set`, `liveops_datastore_list`, `liveops_datastore_get`, `liveops_datastore_set`, `liveops_messaging_publish`, `liveops_remote_config_push`, `liveops_telemetry_codegen`, `liveops_telemetry_sync`, `liveops_telemetry_summary`.\n",
             "Live Studio CUA & Bridge signatures: `studio_cua_screenshot {\"label\":\"viewport\"}`, `studio_cua_mouse {\"action\":\"click|double_click|right_click|move|drag|scroll\",\"x\":0.5,\"y\":0.5,\"to_x\":0.7,\"to_y\":0.7,\"normalized\":true}`, `studio_cua_keyboard {\"hotkey\":[\"ctrl\",\"s\"]}`, `studio_cua_window {\"action\":\"status|launch|attach|transfer|stop|pause|resume\",\"place_file\":\"...?\"}`, `studio_stage_content {}`, `studio_verify_device {\"profile\":\"phone_844x390|tablet_1024x768|desktop_1920x1080\"}`, `studio_verify_audio {}`, `studio_verify_ui_craft {\"offline\":false}`.\n",
             "UI Craft (10 Rules, zero copying): use `ui_kit_presets` / `ui_kit_generate` (ChatGPT sheet -> auto-sliced 9-slice transparent PNGs + `AssetIds.slices` + mixable layouts `skybridge-crest`/`perimeter-command`/`workshop-ribbon`/`compact-mobile-split` + `anime-pop-dark` matte dark dot-matrix skin + vibrant vertical `UIGradient` headers/pills + thick 2.5-3px black outlines + `cartoon_icons_sheet` + >=5.25:1 Dark/Light glass, `Lighting.BlurEffect`, >=44px glossy buttons, 844x390 safe-area clearance; never copy ANRX star-ribbons or dated medieval metallic bevel chrome).\n",
             "Image-Gen-First (Rules 8-10): generate `panels_sheet` (`modal_glass`, `title_ribbon`, `tab_active`, `tab_inactive`, `btn_emerald`, `btn_gold`, `dock_tile`, `inspector_card`), `cartoon_icons_sheet`, `chrome_sheet`, and `card_borders_sheet` via `ui_kit_generate {\"skin\":\"anime-pop-dark\",\"provider\":\"chatgpt-browser-cli\",\"procedural_fallback\":false}` and `blender_build_map {\"preset\":\"arcane-dungeon-sanctum\"}` for sculpted `.mesh` sanctum props/floor; bind >=70% of modals/headers/tabs/buttons/progress bars/dock tiles to sliced PNGs (`ScaleType.Slice`/`Stretch`) with `BackgroundTransparency = 1` on slice-backed parents; then run `studio_verify_ui_craft` (live gate: ui_images_bound >= 6, slice_chrome_active >= 4, opaque_parent_violations == 0, panel_coverage_pct >= 65).\n",
@@ -3753,6 +3756,9 @@ fn execute_agent_tool(
             tool_project_playtest(shared, mgr, handle, agent_name, gen, args)
         }
         "research_roblox_game" => tool_research_roblox_game(handle, args),
+        "teardown_game" => tool_teardown_game(handle, args),
+        "teardown_screenshot" => tool_teardown_screenshot(handle, args),
+        "teardown_spec" => tool_teardown_spec(handle, args),
         "web_fetch" => tool_web_fetch(args),
         "web_search" => tool_web_search(args),
         "evidence_record" => tool_evidence_record(handle, args),
@@ -4861,6 +4867,21 @@ fn tool_research_roblox_game(handle: &Arc<RunHandle>, args: &Value) -> Result<Va
         .ok_or("research_roblox_game requires args.target (Roblox game URL, place ID, or universe ID)")?;
     let niche = args.get("niche").and_then(|v| v.as_str());
     crate::market_taste::research_roblox_game_to_project(&project_dir, &target, niche)
+}
+
+fn tool_teardown_game(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    crate::teardown::teardown_roblox_game(&project_dir, args).map_err(|oc| oc.msg)
+}
+
+fn tool_teardown_screenshot(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    crate::teardown::record_teardown_screenshot(&project_dir, args).map_err(|oc| oc.msg)
+}
+
+fn tool_teardown_spec(handle: &Arc<RunHandle>, args: &Value) -> Result<Value, String> {
+    let project_dir = handle.state.lock().unwrap().project_dir.clone();
+    crate::teardown::merge_teardown_spec(&project_dir, args).map_err(|oc| oc.msg)
 }
 
 fn resolve_web_fetch_max_chars(args: &Value) -> usize {

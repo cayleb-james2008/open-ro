@@ -1633,7 +1633,7 @@ pub fn analyze_pcm16_wav(bytes: &[u8]) -> Result<WavStats, String> {
     })
 }
 
-fn find_ffmpeg_binary() -> Option<PathBuf> {
+pub(crate) fn find_ffmpeg_binary() -> Option<PathBuf> {
     let bin_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
@@ -2611,7 +2611,7 @@ fn find_binary_on_path(name: &str) -> Option<PathBuf> {
     None
 }
 
-fn find_yt_dlp_binary() -> Option<PathBuf> {
+pub(crate) fn find_yt_dlp_binary() -> Option<PathBuf> {
     find_binary_on_path("yt-dlp")
 }
 
@@ -2856,16 +2856,16 @@ pub fn filter_youtube_music_jsonl(jsonl: &str, genre_id: &str, limit: usize) -> 
     (tracks, counts)
 }
 
-struct CapturedRun {
-    code: Option<i32>,
-    stdout: String,
-    stderr: String,
-    timed_out: bool,
+pub(crate) struct CapturedRun {
+    pub(crate) code: Option<i32>,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) timed_out: bool,
 }
 
 /// Run a binary with a strict argv (never a shell), capturing stdout/stderr with a hard timeout.
 /// On timeout the child is killed and any stdout already produced is still returned.
-fn run_argv_with_timeout(bin: &Path, args: &[String], timeout: Duration) -> Result<CapturedRun, String> {
+pub(crate) fn run_argv_with_timeout(bin: &Path, args: &[String], timeout: Duration) -> Result<CapturedRun, String> {
     let mut child = Command::new(bin)
         .args(args)
         .stdin(Stdio::null())
@@ -2954,7 +2954,7 @@ fn sanitize_music_query(raw: Option<&str>) -> Option<String> {
     }
 }
 
-fn read_mock_jsonl(raw: &str) -> String {
+pub(crate) fn read_mock_jsonl(raw: &str) -> String {
     let trimmed = raw.trim();
     if !trimmed.starts_with('{') {
         if let Ok(text) = std::fs::read_to_string(trimmed) {

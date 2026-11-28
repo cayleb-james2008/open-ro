@@ -2073,6 +2073,11 @@ fn handle(
         break 'req_done;
     }
 
+    // Gap #93 project-scoped Live Game Teardown routes.
+    if try_route_project_teardown(&mut stream, shared, &req, path, query) {
+        break 'req_done;
+    }
+
     // Open Cloud, shared secrets, reference search, art generation & image processing routes.
     if try_route_opencloud_assets(&mut stream, shared, &req, path, query) {
         break 'req_done;
@@ -6904,7 +6909,8 @@ fn try_route_project_studio(
                 .filter(|s| !s.is_empty())
                 .map(crate::studio_embed::sanitize_studio_content_slug)
                 .unwrap_or_else(|| crate::studio_embed::default_studio_project_slug(&proj_ref.dir));
-            match crate::studio_embed::stage_project_studio_content(&proj_ref.dir, &slug) {
+            let force = body.get("force").and_then(Value::as_bool).unwrap_or(false);
+            match crate::studio_embed::stage_project_studio_content_with_options(&proj_ref.dir, &slug, force) {
                 Ok(v) => respond_json(stream, "200 OK", &v),
                 Err(e) => {
                     if crate::studio_embed::find_studio_content_dir().is_none() {
@@ -6915,7 +6921,9 @@ fn try_route_project_studio(
                                 "ok": false,
                                 "studio_found": false,
                                 "staged_count": 0,
+                                "overwritten_count": 0,
                                 "skipped_count": 0,
+                                "force": force,
                                 "error": e,
                             }),
                         )
@@ -6991,6 +6999,94 @@ fn try_route_project_blender(
     match crate::mesh::build_map_kit(data_dir, Some(&proj_dir), &body, blender_override.as_deref()) {
         Ok(v) => respond_json(stream, "200 OK", &v),
         Err(e) => respond_err(stream, "400 Bad Request", &e),
+    }
+    true
+}
+
+fn try_route_project_teardown(
+    stream: &mut TcpStream,
+    shared: &Shared,
+    req: &Request,
+    path: &str,
+    query: &str,
+) -> bool {
+    let Some(rest) = path.strip_prefix("/api/projects/") else {
+        return false;
+    };
+    let segs: Vec<&str> = rest.split('/').collect();
+    if segs.len() < 2 || segs[1] != "teardown" {
+        return false;
+    }
+    let sub = match segs.as_slice() {
+        [_, "teardown"] => "",
+        [_, "teardown", "screenshot"] => "screenshot",
+        [_, "teardown", "spec"] => "spec",
+        _ => return false,
+    };
+    let id = segs[0];
+    if !host_allowed(&req.host, &[]) {
+        respond_err(
+            stream,
+            "403 Forbidden",
+            "Live Game Teardown endpoints are only allowed from this machine (loopback)",
+        );
+        return true;
+    }
+    let Some(proj_dir) = resolve_project_dir(shared, id) else {
+        respond_err(stream, "404 Not Found", &format!("unknown project '{id}'"));
+        return true;
+    };
+    let parse_json_body = || -> Result<Value, ()> {
+        if req.body.is_empty() {
+            Ok(json!({}))
+        } else {
+            serde_json::from_slice::<Value>(&req.body)
+                .ok()
+                .filter(|v| v.is_object())
+                .ok_or(())
+        }
+    };
+    match (req.method.as_str(), sub) {
+        ("POST", "") => {
+            let Ok(body) = parse_json_body() else {
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
+                return true;
+            };
+            match crate::teardown::teardown_roblox_game(&proj_dir, &body) {
+                Ok(v) => respond_json(stream, "200 OK", &v),
+                Err(oc) => respond_err(stream, status_line_for_code(oc.status), &oc.msg),
+            }
+        }
+        ("GET", "") => {
+            let uid = query_param(query, "universe_id").and_then(|s| s.parse::<u64>().ok());
+            match crate::teardown::get_teardown(&proj_dir, uid) {
+                Ok(v) => respond_json(stream, "200 OK", &v),
+                Err(oc) => respond_err(stream, status_line_for_code(oc.status), &oc.msg),
+            }
+        }
+        ("POST", "screenshot") => {
+            let Ok(body) = parse_json_body() else {
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
+                return true;
+            };
+            match crate::teardown::record_teardown_screenshot(&proj_dir, &body) {
+                Ok(v) => respond_json(stream, "200 OK", &v),
+                Err(oc) => respond_err(stream, status_line_for_code(oc.status), &oc.msg),
+            }
+        }
+        ("POST", "spec") => {
+            let Ok(body) = parse_json_body() else {
+                respond_err(stream, "400 Bad Request", "invalid JSON body");
+                return true;
+            };
+            match crate::teardown::merge_teardown_spec(&proj_dir, &body) {
+                Ok(v) => respond_json(stream, "200 OK", &v),
+                Err(oc) => respond_err(stream, status_line_for_code(oc.status), &oc.msg),
+            }
+        }
+        _ => {
+            respond_err(stream, "405 Method Not Allowed", "unsupported method for teardown endpoint");
+        }
     }
     true
 }

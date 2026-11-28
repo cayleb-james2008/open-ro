@@ -2553,7 +2553,7 @@ pub fn research_roblox_game_to_project_with_base(
     Ok(payload)
 }
 
-fn detect_image_ext(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn detect_image_ext(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("png")
     } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
@@ -2703,7 +2703,7 @@ pub fn validate_public_url(raw_url: &str, allow_loopback: bool) -> Result<String
     Ok(trimmed.to_string())
 }
 
-fn fetch_bytes_checked(
+pub(crate) fn fetch_bytes_checked(
     raw_url: &str,
     allow_loopback: bool,
     max_bytes: usize,
@@ -2798,7 +2798,7 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
-fn download_image_bytes(
+pub(crate) fn download_image_bytes(
     url: &str,
     allow_loopback: bool,
     timeout: Duration,

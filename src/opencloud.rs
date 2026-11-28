@@ -1630,19 +1630,212 @@ fn is_cloud_ready_lock_state(state: &str) -> bool {
     )
 }
 
-/// Generate `src/shared/AssetIds.luau` (or custom `out` path) from `assets.lock.json`,
+fn clean_rojo_rel_path(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.contains('\\') || trimmed.contains('\0') {
+        return None;
+    }
+    let stripped = trimmed
+        .strip_prefix("./")
+        .unwrap_or(trimmed)
+        .trim_end_matches('/');
+    if stripped.is_empty() {
+        None
+    } else {
+        Some(stripped.to_string())
+    }
+}
+
+fn is_luau_module_path(path: &str) -> bool {
+    let low = path.to_ascii_lowercase();
+    low.ends_with(".luau") || low.ends_with(".lua")
+}
+
+fn find_explicit_rojo_module(
+    root: &Path,
+    node: &Value,
+    node_path: &str,
+    module_filename: &str,
+    module_stem: &str,
+) -> Option<(String, String)> {
+    let map = node.as_object()?;
+    let mut keys: Vec<&String> = map.keys().filter(|k| !k.starts_with('$')).collect();
+    keys.sort();
+    for key in keys {
+        let child = &map[key];
+        let child_path = format!("{node_path}.{key}");
+        let key_stem = key
+            .strip_suffix(".luau")
+            .or_else(|| key.strip_suffix(".lua"))
+            .unwrap_or(key);
+        if key.eq_ignore_ascii_case(module_filename) || key_stem.eq_ignore_ascii_case(module_stem) {
+            if let Some(raw_p) = child.get("$path").and_then(Value::as_str) {
+                if let Some(clean) = clean_rojo_rel_path(raw_p) {
+                    let candidate = if is_luau_module_path(&clean) {
+                        clean
+                    } else {
+                        format!("{clean}/init.luau")
+                    };
+                    if safe_rel(root, &candidate).is_ok() {
+                        return Some((candidate, child_path));
+                    }
+                }
+            }
+        }
+        if let Some(found) =
+            find_explicit_rojo_module(root, child, &child_path, module_filename, module_stem)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_existing_module_in_rojo_dirs(
+    root: &Path,
+    node: &Value,
+    node_path: &str,
+    module_filename: &str,
+) -> Option<(String, String)> {
+    let map = node.as_object()?;
+    if let Some(raw_p) = map.get("$path").and_then(Value::as_str) {
+        if let Some(clean) = clean_rojo_rel_path(raw_p) {
+            if !is_luau_module_path(&clean) {
+                let candidate = format!("{clean}/{module_filename}");
+                if let Ok(abs) = safe_rel(root, &candidate) {
+                    if abs.is_file() {
+                        return Some((candidate, node_path.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    let mut keys: Vec<&String> = map.keys().filter(|k| !k.starts_with('$')).collect();
+    keys.sort();
+    for key in keys {
+        let child = &map[key];
+        let child_path = format!("{node_path}.{key}");
+        if let Some(found) =
+            find_existing_module_in_rojo_dirs(root, child, &child_path, module_filename)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Resolve the output path for a shared Luau codegen module (`AssetIds.luau` / `ProductIds.luau`)
+/// from `default.project.json` `tree.ReplicatedStorage` (preserving exact filesystem casing on
+/// Linux and verifying via `safe_rel`), returning `(rel_path, resolved_from_rojo, rojo_node)` (Gap #96).
+pub fn resolve_rojo_shared_module_out(
+    root: &Path,
+    module_filename: &str,
+    fallback: &str,
+) -> (String, bool, Option<String>) {
+    let proj_file = root.join("default.project.json");
+    if std::fs::symlink_metadata(&proj_file)
+        .map(|m| m.file_type().is_symlink() || !m.is_file())
+        .unwrap_or(true)
+    {
+        return (fallback.to_string(), false, None);
+    }
+    let Ok(raw) = std::fs::read_to_string(&proj_file) else {
+        return (fallback.to_string(), false, None);
+    };
+    let Ok(json_val) = serde_json::from_str::<Value>(&raw) else {
+        return (fallback.to_string(), false, None);
+    };
+    let Some(tree) = json_val.get("tree").and_then(Value::as_object) else {
+        return (fallback.to_string(), false, None);
+    };
+    let rs_pair = tree
+        .get("ReplicatedStorage")
+        .map(|v| ("ReplicatedStorage", v))
+        .or_else(|| {
+            tree.iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("ReplicatedStorage"))
+                .map(|(k, v)| (k.as_str(), v))
+        });
+    let Some((rs_key, rs_node)) = rs_pair else {
+        return (fallback.to_string(), false, None);
+    };
+    let module_stem = module_filename
+        .strip_suffix(".luau")
+        .or_else(|| module_filename.strip_suffix(".lua"))
+        .unwrap_or(module_filename);
+
+    // 1. Explicit module `$path` inside ReplicatedStorage
+    if let Some((path, node_path)) =
+        find_explicit_rojo_module(root, rs_node, rs_key, module_filename, module_stem)
+    {
+        return (path, true, Some(node_path));
+    }
+
+    // 2. Shared / Common / Modules `$path` directory under ReplicatedStorage
+    if let Some(rs_map) = rs_node.as_object() {
+        for preferred in ["Shared", "Common", "Modules"] {
+            if let Some((child_key, child_val)) = rs_map
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(preferred))
+            {
+                if let Some(raw_p) = child_val.get("$path").and_then(Value::as_str) {
+                    if let Some(clean) = clean_rojo_rel_path(raw_p) {
+                        if !is_luau_module_path(&clean) {
+                            let candidate = format!("{clean}/{module_filename}");
+                            if safe_rel(root, &candidate).is_ok() {
+                                return (
+                                    candidate,
+                                    true,
+                                    Some(format!("{rs_key}.{child_key}")),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Existing file under any ReplicatedStorage `$path` directory
+    if let Some((path, node_path)) =
+        find_existing_module_in_rojo_dirs(root, rs_node, rs_key, module_filename)
+    {
+        return (path, true, Some(node_path));
+    }
+
+    // 4. Direct ReplicatedStorage.$path directory
+    if let Some(raw_p) = rs_node.get("$path").and_then(Value::as_str) {
+        if let Some(clean) = clean_rojo_rel_path(raw_p) {
+            if !is_luau_module_path(&clean) {
+                let candidate = format!("{clean}/{module_filename}");
+                if safe_rel(root, &candidate).is_ok() {
+                    return (candidate, true, Some(rs_key.to_string()));
+                }
+            }
+        }
+    }
+
+    (fallback.to_string(), false, None)
+}
+
+/// Generate `src/shared/AssetIds.luau` (or Rojo-mapped / custom `out` path) from `assets.lock.json`,
 /// local Studio content fallbacks (`rbxasset://openro/<slug>/<rel_path>` when
 /// `studio_local_fallback == true`, Gap #84), `art/ui/**/slices.json`, and
 /// `assets/meshes/manifest.json`.
 pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
     let manifest = read_manifest(root);
     let lock = read_lock(&lock_path(root, &manifest)?);
-    let out_rel = body
+    let explicit_out = body
         .get("out")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("src/shared/AssetIds.luau");
+        .map(ToString::to_string);
+    let (out_rel_owned, resolved_from_rojo, rojo_node) = match explicit_out {
+        Some(o) => (o, false, None),
+        None => resolve_rojo_shared_module_out(root, "AssetIds.luau", "src/shared/AssetIds.luau"),
+    };
+    let out_rel = out_rel_owned.as_str();
     if !out_rel.ends_with(".luau") && !out_rel.ends_with(".lua") {
         return bad("out path must end in .luau or .lua.");
     }
@@ -2271,6 +2464,8 @@ pub fn assets_codegen(root: &Path, body: &Value) -> R<Value> {
     Ok(json!({
         "ok": true,
         "path": out_rel,
+        "resolved_from_rojo": resolved_from_rojo,
+        "rojo_node": rojo_node,
         "count": by_path.len(),
         "card_count": card_rows.len(),
         "icon_count": icon_rows.len(),
@@ -2708,16 +2903,21 @@ fn products_sync(ctx: &Ctx, root: &Path, body: &Value) -> R<Value> {
     Ok(out)
 }
 
-/// Generate `stylua`-clean `src/shared/ProductIds.luau` (or custom `out`) from synced
-/// `products` entries in `openro.project.json` (#69).
+/// Generate `stylua`-clean `src/shared/ProductIds.luau` (or Rojo-mapped / custom `out`) from synced
+/// `products` entries in `openro.project.json` (#69, #96).
 pub fn products_codegen(root: &Path, body: &Value) -> R<Value> {
     let manifest = read_manifest(root);
-    let out_rel = body
+    let explicit_out = body
         .get("out")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("src/shared/ProductIds.luau");
+        .map(ToString::to_string);
+    let (out_rel_owned, resolved_from_rojo, rojo_node) = match explicit_out {
+        Some(o) => (o, false, None),
+        None => resolve_rojo_shared_module_out(root, "ProductIds.luau", "src/shared/ProductIds.luau"),
+    };
+    let out_rel = out_rel_owned.as_str();
     if !out_rel.ends_with(".luau") && !out_rel.ends_with(".lua") {
         return bad("out path must end in .luau or .lua.");
     }
@@ -2791,6 +2991,8 @@ pub fn products_codegen(root: &Path, body: &Value) -> R<Value> {
     Ok(json!({
         "ok": true,
         "path": out_rel,
+        "resolved_from_rojo": resolved_from_rojo,
+        "rojo_node": rojo_node,
         "count": by_key.len(),
         "game_passes": game_passes.len(),
         "developer_products": dev_products.len(),

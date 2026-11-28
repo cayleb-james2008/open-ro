@@ -242,13 +242,15 @@ STUDIO & WHOLE-GAME TOOLS:\n\
 - {{\"tool\": \"project_playtest\", \"args\": {{\"sync_first\": true, \"suite\": \"playtest/suite.json\"}}}} runs the Playtest Runner (checks, screenshots, console errors)\n\n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
 - {{\"tool\": \"research_roblox_game\", \"args\": {{\"target\": \"<place/universe id or URL>\"}}}} fetches real Roblox metadata & thumbnails into refs/<universeId>/\n\
+- {{\"tool\": \"teardown_game\", \"args\": {{\"target\": \"<place/universe id or URL>\", \"new_niche\": \"...?\"}}}} runs full Live Game Teardown (Badges, GamePasses, Media, YouTube captions/frames, Wiki, 7-pillar E2E spec -> refs/teardowns/<uid>/)\n\
+- {{\"tool\": \"teardown_screenshot\", \"args\": {{\"path\": \"...\", \"role\": \"hud|modal_shop|pack_open\"}}}} / {{\"tool\": \"teardown_spec\", \"args\": {{\"e2e_spec\": {{...}}}}}} records teardown UI screenshots & updates the 7-pillar E2E spec\n\
 - {{\"tool\": \"web_search\", \"args\": {{\"query\": \"...\", \"limit\": 5}}}} and {{\"tool\": \"web_fetch\", \"args\": {{\"url\": \"https://...\"}}}} read-only public web research\n\
 - {{\"tool\": \"reference_search\", \"args\": {{\"query\": \"...\", \"character\": \"...\", \"show\": \"...\"}}}} gathers action reference shots into gitignored art/references/\n\
 - {{\"tool\": \"art_generate\", \"args\": {{\"prompt\": \"single-line eye-level three-quarter prompt\", \"out_path\": \"art/cards/x/art.png\", \"references\": [\"art/references/...\"]}}}} generates art (ChatGPT shared browser default; never Higgsfield)\n\
 - {{\"tool\": \"image_process\", \"args\": {{\"input\": \"...\", \"output\": \"...\", \"ops\": [...]}}}} crops/resizes/composites/removes background on PNGs\n\
 - {{\"tool\": \"art_pack_card\", \"args\": {{\"card_id\": \"...\"}}}} packs card art/icon/full variants + contact sheet\n\
-- {{\"tool\": \"ui_kit_presets\", \"args\": {{}}}} lists 10 UI Craft rules, 4 mixable layouts, 6 visual skins (incl. `anime-pop-dark`), and 6 UI sheet recipes (incl. `cartoon_icons_sheet`)\n\
-- {{\"tool\": \"ui_kit_generate\", \"args\": {{\"layout\": \"skybridge-crest|perimeter-command|workshop-ribbon|compact-mobile-split\", \"skin\": \"anime-pop-dark|obsidian-prism|skybridge-gilded|sakura-lacquer|cyber-forge|clean-monochrome\", \"sheet\": \"chrome_sheet|panels_sheet|icons_sheet|cartoon_icons_sheet|rarity_frames_sheet|card_borders_sheet\", \"procedural_fallback\": false}}}} generates & auto-slices transparent 9-slice UI chrome/icons/frames into art/ui/<skin>/ + art/ui/slices.json\n\
+- {{\"tool\": \"ui_kit_presets\", \"args\": {{}}}} lists 10 UI Craft rules, 4 mixable layouts, 7 visual skins (incl. `anime-pop-dark`, `meme-pop-arcade`), and 6 UI sheet recipes (incl. `cartoon_icons_sheet`)\n\
+- {{\"tool\": \"ui_kit_generate\", \"args\": {{\"layout\": \"skybridge-crest|perimeter-command|workshop-ribbon|compact-mobile-split\", \"skin\": \"anime-pop-dark|meme-pop-arcade|obsidian-prism|skybridge-gilded|sakura-lacquer|cyber-forge|clean-monochrome\", \"sheet\": \"chrome_sheet|panels_sheet|icons_sheet|cartoon_icons_sheet|rarity_frames_sheet|card_borders_sheet\", \"procedural_fallback\": false}}}} generates & auto-slices transparent 9-slice UI chrome/icons/frames into art/ui/<skin>/ + art/ui/slices.json\n\
 - {{\"tool\": \"mesh_generate\", \"args\": {{\"name\": \"PropName\", \"description\": \"...\", \"script\": \"...\"}}}} (alias `blender_generate`) generates smart-UV AO-baked .mesh + .obj + .glb + PNG + manifest.json (<=20k tris) into assets/meshes/\n\
 - {{\"tool\": \"blender_build_map\", \"args\": {{\"preset\": \"arcane-dungeon-sanctum\"}}}} builds a complete 5-prop Blender 3D architecture kit (.mesh/.obj/.glb/PNG) + checkered arcane floor PNG + map_kit.json + AssetIds.meshes codegen\n\
 - {{\"tool\": \"audio_generate\", \"args\": {{\"name\": \"SfxName\", \"preset\": \"...\", \"recipe\": {{...}}, \"duration_ms\": 1200}}}} synthesizes 44.1kHz WAV into assets/audio/\n\
@@ -315,7 +317,7 @@ Studio-Native First & LIVE CUA TOOLS:\n\
 - Studio-Native & CUA: studio_cua_screenshot/studio_cua_mouse/studio_cua_keyboard/studio_cua_window, studio_stage_content, studio_verify_device {{profile}}, studio_verify_audio, studio_verify_ui_craft {{offline:false}}\n\
 \n\
 RESEARCH, ART, 3D, AUDIO & UPLOAD TOOLS:\n\
-- research_roblox_game {{target}} / web_search {{query,limit}} / web_fetch {{url}} / reference_search {{query,character,show}}\n\
+- research_roblox_game {{target}} / teardown_game {{target,new_niche?}} / teardown_screenshot {{path,role}} / teardown_spec {{e2e_spec}} / web_search {{query,limit}} / web_fetch {{url}} / reference_search {{query,character,show}}\n\
 - art_generate {{prompt,out_path,references}} (ChatGPT default; never Higgsfield) / image_process {{input,output,ops}} / art_pack_card {{card_id}}\n\
 - ui_kit_presets {{}} / ui_kit_generate {{layout:\"skybridge-crest\",skin:\"anime-pop-dark\",sheet:\"chrome_sheet|panels_sheet|cartoon_icons_sheet\"}} (UI Craft (10 Rules): generate panels_sheet+cartoon_icons_sheet+card_borders_sheet; bind >=70% sliced PNGs w/ BackgroundTransparency=1 & dense grids; verify via studio_verify_ui_craft)\n\
 - mesh_generate {{name,description,script}} / blender_build_map {{preset:\"arcane-dungeon-sanctum\"}} / audio_generate {{name,preset,recipe,duration_ms}} / sfx_pack_list|install|search|use / music_search|import (copyright-free BGM) / OSS tools via adapter_invoke (blender-mcp-oss, luau-lsp-cli, darklua-cli, asphalt-cli, rokit-cli)\n\
@@ -3117,6 +3119,9 @@ impl Agent {
                                         | "liveops_telemetry_sync"
                                         | "adapter_invoke"
                                         | "evidence_record"
+                                        | "teardown_game"
+                                        | "teardown_screenshot"
+                                        | "teardown_spec"
                                         | "unknown_add"
                                         | "unknown_update"
                                 ) {
@@ -3600,6 +3605,9 @@ impl Agent {
                                 | "liveops_telemetry_sync"
                                 | "adapter_invoke"
                                 | "evidence_record"
+                                | "teardown_game"
+                                | "teardown_screenshot"
+                                | "teardown_spec"
                                 | "unknown_add"
                                 | "unknown_update"
                         ) {
@@ -4779,6 +4787,30 @@ impl Agent {
                 transcript.push(format!("tool research_roblox_game({target}) -> {name}"));
                 thread.push(format!("Researched Roblox game {name}."));
                 Ok(format!("tool_result: research_roblox_game: {text}"))
+            }
+            "teardown_game" => {
+                let proj = self.require_project_root()?;
+                let res = crate::teardown::teardown_roblox_game(&proj, args).map_err(|oc| oc.msg)?;
+                let name = res.pointer("/game/name").and_then(|v| v.as_str()).unwrap_or("game");
+                let uid = res.get("universe_id").and_then(|v| v.as_u64()).unwrap_or(0);
+                let text = res.to_string();
+                transcript.push(format!("tool teardown_game({uid}) -> {name}"));
+                thread.push(format!("Completed live game teardown for {name} ({uid})."));
+                Ok(format!("tool_result: teardown_game: {text}"))
+            }
+            "teardown_screenshot" => {
+                let proj = self.require_project_root()?;
+                let res = crate::teardown::record_teardown_screenshot(&proj, args).map_err(|oc| oc.msg)?;
+                let text = res.to_string();
+                transcript.push(format!("tool teardown_screenshot -> {text}"));
+                Ok(format!("tool_result: teardown_screenshot: {text}"))
+            }
+            "teardown_spec" => {
+                let proj = self.require_project_root()?;
+                let res = crate::teardown::merge_teardown_spec(&proj, args).map_err(|oc| oc.msg)?;
+                let text = res.to_string();
+                transcript.push(format!("tool teardown_spec -> {text}"));
+                Ok(format!("tool_result: teardown_spec: {text}"))
             }
             "web_fetch" => {
                 let url = args

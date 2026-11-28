@@ -4646,11 +4646,20 @@ fn ensure_safe_dir_no_symlink(base: &Path, rel_parts: &[&str]) -> Result<PathBuf
 /// so Roblox Studio renders `rbxasset://openro/<slug>/<rel_path>` instantly without waiting
 /// for Open Cloud moderation (Gap #84).
 ///
-/// Path-jailed, skips symlinks, skips unchanged files by byte length + modified timestamp,
-/// and writes atomically via temp file + rename.
+/// Path-jailed, skips symlinks, skips unchanged files by byte length + SHA-256 content hash
+/// (unless `force` is true), and writes atomically via temp file + rename.
 pub fn stage_project_studio_content(
     project_dir: &Path,
     project_slug: &str,
+) -> Result<Value, String> {
+    stage_project_studio_content_with_options(project_dir, project_slug, false)
+}
+
+/// Configurable variant of `stage_project_studio_content` supporting `force` overwrites (Gap #95).
+pub fn stage_project_studio_content_with_options(
+    project_dir: &Path,
+    project_slug: &str,
+    force: bool,
 ) -> Result<Value, String> {
     if !project_dir.is_dir() {
         return Err(format!(
@@ -4704,6 +4713,7 @@ pub fn stage_project_studio_content(
 
     let candidates = collect_studio_content_files(project_dir);
     let mut staged_count = 0usize;
+    let mut overwritten_count = 0usize;
     let mut skipped_count = 0usize;
     let mut files: Vec<String> = Vec::with_capacity(candidates.len());
 
@@ -4744,27 +4754,30 @@ pub fn stage_project_studio_content(
         let dst_parent = ensure_safe_dir_no_symlink(&canon_dest_root, parent_parts)?;
         let dst_abs = dst_parent.join(file_name[0]);
 
+        let bytes = std::fs::read(&src_abs)
+            .map_err(|e| format!("failed to read '{}': {e}", src_abs.display()))?;
+
+        let mut was_existing = false;
         if let Ok(dst_meta) = std::fs::symlink_metadata(&dst_abs) {
             if dst_meta.file_type().is_symlink() {
                 continue;
             }
-            if dst_meta.is_file() && dst_meta.len() == src_len {
-                if let (Some(sm), Some(dm)) = (src_mtime, dst_meta.modified().ok()) {
-                    let diff = sm
-                        .duration_since(dm)
-                        .or_else(|_| dm.duration_since(sm))
-                        .ok();
-                    if diff.is_some_and(|d| d <= Duration::from_micros(10)) {
-                        skipped_count += 1;
-                        files.push(rel);
-                        continue;
+            if dst_meta.is_file() {
+                was_existing = true;
+                if !force && dst_meta.len() == src_len {
+                    if let Ok(dst_bytes) = std::fs::read(&dst_abs) {
+                        if crate::opencloud::sha256_hex(&dst_bytes)
+                            == crate::opencloud::sha256_hex(&bytes)
+                        {
+                            skipped_count += 1;
+                            files.push(rel);
+                            continue;
+                        }
                     }
                 }
             }
         }
 
-        let bytes = std::fs::read(&src_abs)
-            .map_err(|e| format!("failed to read '{}': {e}", src_abs.display()))?;
         let seq = STUDIO_CONTENT_STAGE_SEQ.fetch_add(1, Ordering::Relaxed);
         let tmp_path = dst_parent.join(format!(
             ".openro-stage-{}-{}.tmp",
@@ -4796,6 +4809,9 @@ pub fn stage_project_studio_content(
             }
         }
         staged_count += 1;
+        if was_existing {
+            overwritten_count += 1;
+        }
         files.push(rel);
     }
 
@@ -4806,7 +4822,9 @@ pub fn stage_project_studio_content(
         "target_dir": canon_dest_root.to_string_lossy(),
         "prefix": format!("rbxasset://openro/{slug}/"),
         "staged_count": staged_count,
+        "overwritten_count": overwritten_count,
         "skipped_count": skipped_count,
+        "force": force,
         "files": files,
     }))
 }

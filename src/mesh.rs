@@ -1151,11 +1151,167 @@ for k in range(0, size + 1, tile):
 img.save(out_path, "PNG", optimize=True)
 "##;
 
-fn map_kit_prop_specs(preset: &str) -> Result<Vec<(&'static str, &'static str, &'static str)>, String> {
+pub fn map_kit_prop_specs(preset: &str) -> Result<Vec<(&'static str, &'static str, &'static str)>, String> {
     let norm = preset.trim().to_ascii_lowercase().replace('_', "-");
+    if norm == "meme-arcade-plaza" {
+        return Ok(vec![
+            (
+                "plaza_floor_tile",
+                "Stylized chamfered meme-arcade plaza floor tile with dark slate slabs, crisp emerald-cyan neon inlay rim, and gold corner studs",
+                r##"
+slate_mat = make_stone_material("slate", "#1B2030", "#0F131E", noise_scale=4.0, roughness=0.55)
+gold_mat = make_metallic_material("gold", "#FACC15", "#713F12", roughness=0.28)
+glow_mat = make_glow_material("glow", "#22C55E", 3.8)
+
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0.35)); slab = bpy.context.active_object
+slab.scale = (16.0, 16.0, 0.7); bpy.ops.object.transform_apply(scale=True); bevel_obj(slab, 0.08, 2); assign_material(slab, slate_mat)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0.72)); inlay = bpy.context.active_object
+inlay.scale = (14.4, 14.4, 0.08); bpy.ops.object.transform_apply(scale=True); inlay['glow'] = True; assign_material(inlay, glow_mat)
+for sx in (-7.1, 7.1):
+    for sy in (-7.1, 7.1):
+        bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=0.42, depth=0.26, location=(sx, sy, 0.78))
+        stud = bpy.context.active_object; bevel_obj(stud, 0.03, 1); assign_material(stud, gold_mat)
+"##,
+            ),
+            (
+                "meme_pedestal",
+                "Chunky octagonal meme-arcade showcase pedestal with stepped obsidian plinth, gold trim collar, and glowing lime display pad",
+                r##"
+slate_mat = make_stone_material("slate", "#1B2030", "#0E121D", noise_scale=5.0, roughness=0.45)
+gold_mat = make_metallic_material("gold", "#FACC15", "#713F12", roughness=0.25)
+glow_mat = make_glow_material("glow", "#22C55E", 4.5)
+
+bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=3.4, depth=0.9, location=(0, 0, 0.45))
+b1 = bpy.context.active_object; bevel_obj(b1, 0.06, 2); assign_material(b1, slate_mat)
+bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=2.6, depth=1.6, location=(0, 0, 1.7))
+b2 = bpy.context.active_object; bevel_obj(b2, 0.06, 2); assign_material(b2, slate_mat)
+bpy.ops.mesh.primitive_torus_add(major_segments=16, minor_segments=8, major_radius=2.55, minor_radius=0.2, location=(0, 0, 2.5))
+ring = bpy.context.active_object; assign_material(ring, gold_mat)
+bpy.ops.mesh.primitive_cylinder_add(vertices=12, radius=2.15, depth=0.3, location=(0, 0, 2.6))
+pad = bpy.context.active_object; pad['glow'] = True; assign_material(pad, glow_mat)
+"##,
+            ),
+            (
+                "speed_treadmill",
+                "Stylized meme-arcade speed training treadmill with sloped deck, glowing cyan track bars, twin side rails, and overhead console bar",
+                r##"
+slate_mat = make_stone_material("slate", "#182032", "#0C101B", noise_scale=5.0, roughness=0.4)
+gold_mat = make_metallic_material("gold", "#FACC15", "#713F12", roughness=0.26)
+glow_mat = make_glow_material("glow", "#38BDF8", 4.4)
+
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0.45)); deck = bpy.context.active_object
+deck.scale = (4.8, 9.2, 0.9); bpy.ops.object.transform_apply(scale=True); bevel_obj(deck, 0.07, 2); assign_material(deck, slate_mat)
+for sy in (-3.0, -1.0, 1.0, 3.0):
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, sy, 0.94)); bar = bpy.context.active_object
+    bar.scale = (3.4, 0.45, 0.12); bpy.ops.object.transform_apply(scale=True); bar['glow'] = True; assign_material(bar, glow_mat)
+for sx in (-2.2, 2.2):
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(sx, 3.4, 2.4)); post = bpy.context.active_object
+    post.scale = (0.55, 0.55, 3.4); bpy.ops.object.transform_apply(scale=True); bevel_obj(post, 0.04, 1); assign_material(post, gold_mat)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 3.4, 4.1)); console = bpy.context.active_object
+console.scale = (5.0, 1.2, 0.85); bpy.ops.object.transform_apply(scale=True); bevel_obj(console, 0.05, 2); assign_material(console, slate_mat)
+"##,
+            ),
+            (
+                "fuse_chamber",
+                "Stylized unit fusion chamber pod with octagonal base plinth, four vertical buttress struts, gold containment rings, and glowing emerald core",
+                r##"
+slate_mat = make_stone_material("slate", "#1B2030", "#0D111C", noise_scale=5.5, roughness=0.42)
+gold_mat = make_metallic_material("gold", "#FACC15", "#713F12", roughness=0.25)
+glow_mat = make_glow_material("glow", "#22C55E", 4.8)
+
+bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=4.2, depth=1.0, location=(0, 0, 0.5))
+base = bpy.context.active_object; bevel_obj(base, 0.07, 2); assign_material(base, slate_mat)
+bpy.ops.mesh.primitive_cylinder_add(vertices=12, radius=1.9, depth=6.4, location=(0, 0, 4.2))
+core = bpy.context.active_object; core['glow'] = True; assign_material(core, glow_mat)
+for ang_i in range(4):
+    ang = ang_i * math.pi / 2.0 + math.pi / 4.0
+    px, py = math.cos(ang) * 3.1, math.sin(ang) * 3.1
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(px, py, 4.2)); strut = bpy.context.active_object
+    strut.scale = (0.85, 0.85, 6.8); bpy.ops.object.transform_apply(scale=True); bevel_obj(strut, 0.04, 1); assign_material(strut, slate_mat)
+for z in (1.4, 7.4):
+    bpy.ops.mesh.primitive_torus_add(major_segments=16, minor_segments=8, major_radius=3.2, minor_radius=0.28, location=(0, 0, z))
+    ring = bpy.context.active_object; assign_material(ring, gold_mat)
+"##,
+            ),
+            (
+                "dungeon_portal_arch",
+                "Vibrant meme-arcade dungeon raid portal arch with beveled cobalt piers, gold keystone cap, and glowing cyan vortex torus",
+                r##"
+slate_mat = make_stone_material("slate", "#1D2847", "#0C1224", noise_scale=5.0, roughness=0.5)
+gold_mat = make_metallic_material("gold", "#FACC15", "#713F12", roughness=0.26)
+glow_mat = make_glow_material("glow", "#38BDF8", 4.8)
+
+for sx in (-6.0, 6.0):
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(sx, 0, 6.0)); pier = bpy.context.active_object
+    pier.scale = (2.8, 2.8, 12.0); bpy.ops.object.transform_apply(scale=True); bevel_obj(pier, 0.07, 2); assign_material(pier, slate_mat)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 12.6)); lintel = bpy.context.active_object
+lintel.scale = (16.4, 3.4, 2.2); bpy.ops.object.transform_apply(scale=True); bevel_obj(lintel, 0.07, 2); assign_material(lintel, slate_mat)
+bpy.ops.mesh.primitive_cone_add(vertices=6, radius1=1.8, radius2=0.4, depth=2.2, location=(0, 0, 14.6))
+crest = bpy.context.active_object; bevel_obj(crest, 0.04, 1); assign_material(crest, gold_mat)
+bpy.ops.mesh.primitive_torus_add(major_segments=20, minor_segments=8, major_radius=4.5, minor_radius=0.35, location=(0, 0, 7.0), rotation=(math.pi / 2, 0, 0))
+portal = bpy.context.active_object; portal['glow'] = True; assign_material(portal, glow_mat)
+"##,
+            ),
+            (
+                "domain_gate_arch",
+                "Monumental gold-and-obsidian domain gate arch with twin stepped obelisk pylons, crown keystone, and glowing emerald threshold ring",
+                r##"
+slate_mat = make_stone_material("slate", "#141824", "#090B12", noise_scale=5.0, roughness=0.45)
+gold_mat = make_metallic_material("gold", "#FACC15", "#713F12", roughness=0.24)
+glow_mat = make_glow_material("glow", "#22C55E", 4.8)
+
+for sx in (-7.2, 7.2):
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(sx, 0, 1.0)); base = bpy.context.active_object
+    base.scale = (4.2, 4.2, 2.0); bpy.ops.object.transform_apply(scale=True); bevel_obj(base, 0.07, 2); assign_material(base, slate_mat)
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(sx, 0, 8.0)); col = bpy.context.active_object
+    col.scale = (2.9, 2.9, 12.0); bpy.ops.object.transform_apply(scale=True); bevel_obj(col, 0.06, 2); assign_material(col, slate_mat)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 15.0)); beam = bpy.context.active_object
+beam.scale = (19.0, 3.8, 2.4); bpy.ops.object.transform_apply(scale=True); bevel_obj(beam, 0.08, 2); assign_material(beam, gold_mat)
+bpy.ops.mesh.primitive_torus_add(major_segments=20, minor_segments=8, major_radius=5.2, minor_radius=0.36, location=(0, 0, 8.2), rotation=(math.pi / 2, 0, 0))
+ring = bpy.context.active_object; ring['glow'] = True; assign_material(ring, glow_mat)
+"##,
+            ),
+            (
+                "meme_pack_crate",
+                "Stylized collectible meme pack crate with beveled dark-slate shell, crossed gold strapping bands, and glowing emerald front lock",
+                r##"
+slate_mat = make_stone_material("slate", "#1B2030", "#0E121C", noise_scale=4.5, roughness=0.42)
+gold_mat = make_metallic_material("gold", "#FACC15", "#713F12", roughness=0.26)
+glow_mat = make_glow_material("glow", "#22C55E", 4.6)
+
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 1.6)); body = bpy.context.active_object
+body.scale = (3.4, 3.4, 3.2); bpy.ops.object.transform_apply(scale=True); bevel_obj(body, 0.1, 2); assign_material(body, slate_mat)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 1.6)); band1 = bpy.context.active_object
+band1.scale = (3.6, 0.65, 3.35); bpy.ops.object.transform_apply(scale=True); bevel_obj(band1, 0.03, 1); assign_material(band1, gold_mat)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 1.6)); band2 = bpy.context.active_object
+band2.scale = (0.65, 3.6, 3.35); bpy.ops.object.transform_apply(scale=True); bevel_obj(band2, 0.03, 1); assign_material(band2, gold_mat)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 1.78, 1.8)); lock = bpy.context.active_object
+lock.scale = (0.9, 0.25, 0.9); bpy.ops.object.transform_apply(scale=True); lock['glow'] = True; assign_material(lock, glow_mat)
+"##,
+            ),
+            (
+                "trophy_crown_statue",
+                "Tall meme-arcade victory trophy crown statue on stepped obsidian pedestal with fluted gold stem and glowing cyan crown gem",
+                r##"
+slate_mat = make_stone_material("slate", "#1B2030", "#0D111C", noise_scale=5.0, roughness=0.48)
+gold_mat = make_metallic_material("gold", "#FACC15", "#713F12", roughness=0.22)
+glow_mat = make_glow_material("glow", "#38BDF8", 4.8)
+
+bpy.ops.mesh.primitive_cylinder_add(vertices=8, radius=3.0, depth=1.2, location=(0, 0, 0.6))
+ped = bpy.context.active_object; bevel_obj(ped, 0.07, 2); assign_material(ped, slate_mat)
+bpy.ops.mesh.primitive_cylinder_add(vertices=12, radius=0.95, depth=3.4, location=(0, 0, 2.9))
+stem = bpy.context.active_object; bevel_obj(stem, 0.04, 1); assign_material(stem, gold_mat)
+bpy.ops.mesh.primitive_cone_add(vertices=8, radius1=1.4, radius2=2.4, depth=2.0, location=(0, 0, 5.5))
+crown = bpy.context.active_object; bevel_obj(crown, 0.06, 2); assign_material(crown, gold_mat)
+bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=1, radius=0.85, location=(0, 0, 6.7))
+gem = bpy.context.active_object; gem['glow'] = True; assign_material(gem, glow_mat)
+"##,
+            ),
+        ]);
+    }
     if !matches!(norm.as_str(), "arcane-dungeon-sanctum" | "dungeon-sanctum" | "arcane-arena" | "default") {
         return Err(format!(
-            "unknown Blender map kit preset '{preset}' (supported: arcane-dungeon-sanctum)"
+            "unknown Blender map kit preset '{preset}' (supported: arcane-dungeon-sanctum, meme-arcade-plaza)"
         ));
     }
     Ok(vec![

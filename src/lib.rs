@@ -36,6 +36,7 @@ pub mod studio_plugin;
 pub mod studio_stream;
 pub mod studio_sync;
 pub mod study_check;
+pub mod teardown;
 pub mod teamwork;
 pub mod tool_adapters;
 pub mod ui_kit;

@@ -437,6 +437,42 @@ pub fn visual_skins() -> Vec<UiSkinSpec> {
                 crest_trim: "#15803D",
             },
         },
+        UiSkinSpec {
+            id: "meme-pop-arcade",
+            name: "Meme Pop Arcade",
+            mood: "chunky meme-arcade pop Roblox UI, glossy cel-shaded emerald & gold pills, crisp #000000 ink outlines, high-contrast rounded HUD plates",
+            chroma_key: "#FF00FF",
+            dark: SkinTokens {
+                bg: "#0B0E17",
+                surface: "#121520",
+                surface_elevated: "#1B2030",
+                text: "#F8FAFC",
+                text_muted: "#CBD5E1",
+                accent: "#22C55E",
+                accent_fg: "#052E16",
+                rim: "#FACC15",
+                stroke_dark: "#000000",
+                danger: "#B91C1C",
+                danger_fg: "#FFFFFF",
+                crest_fill: "#1E293B",
+                crest_trim: "#38BDF8",
+            },
+            light: SkinTokens {
+                bg: "#EDF1F7",
+                surface: "#F6F8FC",
+                surface_elevated: "#FFFFFF",
+                text: "#0F172A",
+                text_muted: "#334155",
+                accent: "#16A34A",
+                accent_fg: "#04120A",
+                rim: "#CA8A04",
+                stroke_dark: "#000000",
+                danger: "#B91C1C",
+                danger_fg: "#FFFFFF",
+                crest_fill: "#E2E8F0",
+                crest_trim: "#15803D",
+            },
+        },
     ]
 }
 
@@ -813,6 +849,55 @@ pub fn build_ui_sheet_prompt(skin_id: &str, sheet_id: &str) -> Result<String, St
         .join(" "))
 }
 
+/// Build a single-line prompt for reference-screenshot-guided UI kit variants (`--mode edit --ref-image ...`).
+/// When `ref_count > 0`, instructs the image generator to study the attached screenshot(s) for
+/// layout hierarchy, stroke weight, outline, and gloss while producing a tweaked, distinct original
+/// variant (NOT a 1:1 clone) in the target theme/palette on a uniform chroma-key background.
+pub fn build_ui_variant_prompt(
+    skin_id: &str,
+    sheet_id: &str,
+    variant_theme: Option<&str>,
+    ref_count: usize,
+) -> Result<String, String> {
+    let skin = find_skin(skin_id)?;
+    let recipe = find_sheet_recipe(sheet_id)?;
+    let theme_clean = variant_theme
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if ref_count == 0 && theme_clean.is_none() {
+        return build_ui_sheet_prompt(skin.id, recipe.id);
+    }
+    let items_list: Vec<&str> = recipe.items.iter().map(|i| i.prompt_desc).collect();
+    let joined = items_list.join("; ");
+    let chroma = if recipe.id == "card_borders_sheet" {
+        "#00FF00"
+    } else {
+        skin.chroma_key
+    };
+    let theme_desc = theme_clean.unwrap_or(skin.name);
+    let palette_desc = format!(
+        "surface {}, accent {}, rim {}, outline {}",
+        skin.dark.surface, skin.dark.accent, skin.dark.rim, skin.dark.stroke_dark
+    );
+    let ref_clause = if ref_count > 0 {
+        format!(
+            "Using the {ref_count} attached reference screenshot(s) strictly as a layout hierarchy, stroke weight, outline, and gloss guide, produce a tweaked, distinct original variant (NOT a 1:1 clone) in '{theme_desc}' theme ({palette_desc})"
+        )
+    } else {
+        format!("In '{theme_desc}' theme ({palette_desc})")
+    };
+    let raw = format!(
+        "{ref_clause}, formatted as a 2D game UI sprite sheet in {} aesthetic ({}), evenly spaced {}x{} grid with generous gutters on a flat uniform {} chroma-key background for clean alpha cutout, containing: {}, strictly zero text, no letters, no numbers, no watermarks, and no copied logos",
+        skin.name,
+        skin.mood,
+        recipe.cols,
+        recipe.rows,
+        chroma,
+        joined
+    );
+    Ok(raw.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
 fn srgb_channel_to_linear(c: u8) -> f64 {
     let v = f64::from(c) / 255.0;
     if v <= 0.03928 {
@@ -926,7 +1011,32 @@ pub fn presets_json() -> Value {
 }
 
 pub fn prompt_guidance() -> &'static str {
-    "UI Craft (10 Rules, zero copying): ui_kit_presets/ui_kit_generate -> 9-slice transparent PNGs + AssetIds.slices (chrome_sheet, panels_sheet, icons_sheet, cartoon_icons_sheet, card_borders_sheet -> card-borders/*), BlurEffect modal depth, >=5.25:1 Dark/Light glass, >=44px CTA + UIStroke numerals, Master-Detail + 844x390 safe; render full-bleed edge-to-edge ImageLabel portraits (UDim2.fromScale(1, 1), Enum.ScaleType.Crop) overlaid with sleek card-borders/* + Anime Nexus RNG X perimeter icon docks + bottom hotbar, using skin 'anime-pop-dark' matte dark dot-matrix panels, vibrant vertical UIGradient headers/pills, chunky #000000-outlined cartoon_icons_sheet icons, frameless glowing HUD counters/pity bars, and Blender 3D maps via blender_build_map (NEVER heavy medieval metallic shields or dated medieval bevel chrome). Image-Gen-First: generate cartoon_icons_sheet, panels_sheet, chrome_sheet, and card_borders_sheet via ui_kit_generate {\"provider\":\"chatgpt-browser-cli\",\"procedural_fallback\":false}; bind >=70% to sliced PNGs with BackgroundTransparency = 1 on slice-backed parents; verify via studio_verify_ui_craft."
+    "UI Craft (10 Rules, zero copying): ui_kit_presets/ui_kit_generate -> 9-slice transparent PNGs + AssetIds.slices (chrome_sheet, panels_sheet, icons_sheet, cartoon_icons_sheet, card_borders_sheet -> card-borders/*), BlurEffect modal depth, >=5.25:1 Dark/Light glass, >=44px CTA + UIStroke numerals, Master-Detail + 844x390 safe; render full-bleed edge-to-edge ImageLabel portraits (UDim2.fromScale(1, 1), Enum.ScaleType.Crop) overlaid with sleek card-borders/* + Anime Nexus RNG X perimeter icon docks + bottom hotbar, using skins 'anime-pop-dark' or 'meme-pop-arcade' matte dark panels, vibrant vertical UIGradient headers/pills, chunky #000000-outlined cartoon_icons_sheet icons, frameless glowing HUD counters/pity bars, and Blender 3D maps via blender_build_map (NEVER heavy medieval metallic shields or dated medieval bevel chrome). Image-Gen-First & Reference Variants: when a live game teardown has reference screenshots, ui_kit_generate defaults use_teardown_reference=true to pass up to 3 screenshots into ChatGPT (--mode edit --ref-image ...) as layout hierarchy/weight/outline/gloss guides while producing a tweaked original variant (variant_theme, NEVER a 1:1 clone) with character_art=false; generate cartoon_icons_sheet, panels_sheet, chrome_sheet, and card_borders_sheet via ui_kit_generate {\"provider\":\"chatgpt-browser-cli\",\"procedural_fallback\":false}; bind >=70% to sliced PNGs with BackgroundTransparency = 1 on slice-backed parents; verify via studio_verify_ui_craft."
+}
+
+fn collect_explicit_ui_refs(body: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut push_unique = |raw: &str| {
+        let t = raw.trim();
+        if !t.is_empty() && !out.iter().any(|p| p == t) && out.len() < 8 {
+            out.push(t.to_string());
+        }
+    };
+    for key in ["reference_screenshots", "reference_images", "ref_images", "references"] {
+        if let Some(arr) = body.get(key).and_then(Value::as_array) {
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    push_unique(s);
+                }
+            }
+        }
+    }
+    for key in ["reference_screenshot", "reference_image", "ref_image"] {
+        if let Some(s) = body.get(key).and_then(Value::as_str) {
+            push_unique(s);
+        }
+    }
+    out
 }
 
 /// Generate (or slice an existing) UI Kit asset sheet + build the matching mixable ScreenDoc.
@@ -959,7 +1069,36 @@ pub fn generate_ui_kit(
         .and_then(Value::as_str)
         .unwrap_or("dark");
 
-    let prompt = build_ui_sheet_prompt(skin.id, sheet_id).map_err(|msg| Oc { status: 400, msg })?;
+    let use_teardown_reference = body
+        .get("use_teardown_reference")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let reference_teardown_id = body
+        .get("reference_teardown_id")
+        .and_then(Value::as_u64);
+    let variant_theme = body
+        .get("variant_theme")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let explicit_refs = collect_explicit_ui_refs(body);
+    let reference_images = if !explicit_refs.is_empty() {
+        explicit_refs
+    } else if use_teardown_reference {
+        crate::teardown::default_teardown_ui_references(root, reference_teardown_id)
+    } else {
+        Vec::new()
+    };
+    let reference_guided = !reference_images.is_empty();
+    let variant_mode = if reference_guided {
+        "reference_variant"
+    } else {
+        "clean_sheet"
+    };
+
+    let prompt = build_ui_variant_prompt(skin.id, sheet_id, variant_theme, reference_images.len())
+        .map_err(|msg| Oc { status: 400, msg })?;
     let default_sheet_rel = format!("art/ui/sheets/{}_{}.png", skin.id, sheet_id);
 
     let procedural_fallback = body
@@ -1002,7 +1141,23 @@ pub fn generate_ui_kit(
             ),
             Err(oc) if oc.status == 500 || oc.status == 503 => {
                 // Zero-dependency pure-Rust RGBA PNG fallback when Pillow is absent (e.g. minimal CI sandbox).
-                return generate_rust_fallback_kit(root, &skin, sheet_id, layout_id, theme_mode, &prompt, project_id, body);
+                let mut res = generate_rust_fallback_kit(
+                    root,
+                    &skin,
+                    sheet_id,
+                    layout_id,
+                    theme_mode,
+                    &prompt,
+                    project_id,
+                    body,
+                )?;
+                if let Some(obj) = res.as_object_mut() {
+                    obj.insert("reference_guided".into(), json!(reference_guided));
+                    obj.insert("reference_images".into(), json!(reference_images));
+                    obj.insert("variant_mode".into(), json!(variant_mode));
+                    obj.insert("variant_theme".into(), json!(variant_theme));
+                }
+                return Ok(res);
             }
             Err(oc) => return Err(oc),
         }
@@ -1012,7 +1167,7 @@ pub fn generate_ui_kit(
             .or_else(|| body.get("adapter_id"))
             .and_then(Value::as_str)
             .unwrap_or("chatgpt-browser-cli");
-        let gen_body = json!({
+        let mut gen_body = json!({
             "project": project_id.unwrap_or(""),
             "provider": raw_provider,
             "kind": "ui_sheet",
@@ -1021,6 +1176,9 @@ pub fn generate_ui_kit(
             "out_path": default_sheet_rel,
             "transparent": raw_provider.contains("openai"),
         });
+        if !reference_images.is_empty() {
+            gen_body["reference_images"] = json!(reference_images);
+        }
 
         let data_dir = body
             .get("data_dir")
@@ -1060,6 +1218,10 @@ pub fn generate_ui_kit(
                 "sheet": sheet_id,
                 "layout": layout_id,
                 "prompt": prompt,
+                "reference_guided": reference_guided,
+                "reference_images": reference_images,
+                "variant_mode": variant_mode,
+                "variant_theme": variant_theme,
             }));
         }
         let path = gen_res
@@ -1108,6 +1270,10 @@ pub fn generate_ui_kit(
         "theme_mode": theme_mode,
         "prompt": prompt,
         "sheet_path": sheet_rel,
+        "reference_guided": reference_guided,
+        "reference_images": reference_images,
+        "variant_mode": variant_mode,
+        "variant_theme": variant_theme,
         "generation": gen_meta,
         "slices_json": sliced.get("slices_json").cloned().unwrap_or(Value::Null),
         "sliced_count": sliced.get("sliced_count").cloned().unwrap_or(json!(0)),

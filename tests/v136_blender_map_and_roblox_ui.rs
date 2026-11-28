@@ -127,7 +127,7 @@ fn pop_anime_skin_craft_rule_and_cartoon_icons_sheet() {
     assert!(r10.roblox_binding.contains("blender_build_map"));
 
     let skins = visual_skins();
-    assert_eq!(skins.len(), 6);
+    assert_eq!(skins.len(), 7);
     let pop = find_skin("anime-pop-dark").expect("anime-pop-dark");
     for (mode, tok) in [("dark", &pop.dark), ("light", &pop.light)] {
         assert!(
@@ -175,7 +175,7 @@ fn pop_anime_skin_craft_rule_and_cartoon_icons_sheet() {
     }
     let presets = presets_json();
     assert_eq!(presets["craft_rules"].as_array().unwrap().len(), 10);
-    assert_eq!(presets["skins"].as_array().unwrap().len(), 6);
+    assert_eq!(presets["skins"].as_array().unwrap().len(), 7);
     assert_eq!(presets["sheets"].as_array().unwrap().len(), 6);
 }
 
