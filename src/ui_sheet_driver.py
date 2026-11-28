@@ -296,16 +296,117 @@ def save_and_verify(img, out_abs, max_bytes):
     }
 
 
-def fit_to_target(cropped, target_size, pad_px=4):
-    if target_size:
-        tw, th = int(target_size[0]), int(target_size[1])
+def _fg_mask_bytes(src, bg_color, tol):
+    sw, sh = src.size
+    rgba = src.convert("RGBA")
+    alpha = rgba.getchannel("A")
+    if bg_color[3] <= 12:
+        fg = alpha.point(lambda a: 255 if a > 16 else 0)
     else:
-        cw, ch = cropped.size
+        diff_rgb = ImageChops.difference(rgba.convert("RGB"), Image.new("RGB", (sw, sh), bg_color[:3]))
+        dr, dg, db = diff_rgb.split()
+        max_diff = ImageChops.lighter(dr, ImageChops.lighter(dg, db))
+        non_bg = max_diff.point(lambda d: 255 if d > tol else 0)
+        non_tr = alpha.point(lambda a: 255 if a > 16 else 0)
+        fg = ImageChops.darker(non_bg, non_tr)
+    return fg.tobytes(), sw, sh
+
+
+def _grid_seam_clashes(fg_bytes, sw, sh, rows, cols):
+    for r in range(1, rows):
+        yc = int(round(r * sh / rows))
+        hits = 0
+        samples = 0
+        for y in range(max(0, yc - 1), min(sh, yc + 2)):
+            row = fg_bytes[y * sw : (y + 1) * sw]
+            hits += sum(1 for v in row if v)
+            samples += sw
+        if samples > 0 and (hits / samples) > 0.015:
+            return True
+    for c in range(1, cols):
+        xc = int(round(c * sw / cols))
+        hits = 0
+        samples = 0
+        for x in range(max(0, xc - 1), min(sw, xc + 2)):
+            hits += sum(1 for y in range(sh) if fg_bytes[y * sw + x])
+            samples += sh
+        if samples > 0 and (hits / samples) > 0.015:
+            return True
+    return False
+
+
+def _merge_runs(active_flags, max_gap, min_span):
+    runs = []
+    start = None
+    gap = 0
+    for i, on in enumerate(active_flags):
+        if on:
+            if start is None:
+                start = i
+            gap = 0
+        elif start is not None:
+            gap += 1
+            if gap > max_gap:
+                end = i - gap
+                if (end - start + 1) >= min_span:
+                    runs.append((start, end))
+                start = None
+                gap = 0
+    if start is not None:
+        end = len(active_flags) - 1 - gap
+        if (end - start + 1) >= min_span:
+            runs.append((start, end))
+    return runs
+
+
+def detect_sheet_boxes(src, bg_color, tol, expected_count, default_rows, default_cols):
+    fg_bytes, sw, sh = _fg_mask_bytes(src, bg_color, tol)
+    if not _grid_seam_clashes(fg_bytes, sw, sh, default_rows, default_cols):
+        return None
+    row_has = [any(fg_bytes[y * sw : (y + 1) * sw]) for y in range(sh)]
+    ybands = _merge_runs(row_has, max_gap=max(6, sh // 120), min_span=16)
+    min_area = max(256, int(sw * sh * 0.0015))
+    boxes = []
+    for by0, by1 in ybands:
+        col_has = [any(fg_bytes[y * sw + x] for y in range(by0, by1 + 1)) for x in range(sw)]
+        xbands = _merge_runs(col_has, max_gap=max(6, sw // 120), min_span=16)
+        for bx0, bx1 in xbands:
+            ys = [y for y in range(by0, by1 + 1) if any(fg_bytes[y * sw + bx0 : y * sw + bx1 + 1])]
+            if not ys:
+                continue
+            sy0, sy1 = ys[0], ys[-1]
+            if (bx1 - bx0 + 1) * (sy1 - sy0 + 1) < min_area:
+                continue
+            boxes.append([max(0, bx0 - 4), max(0, sy0 - 4), min(sw, bx1 + 5), min(sh, sy1 + 5)])
+    if len(boxes) == expected_count:
+        return boxes
+    return None
+
+
+def fit_to_target(cropped, target_size, pad_px=4, tight=False):
+    cw, ch = cropped.size
+    if target_size:
+        max_tw, max_th = int(target_size[0]), int(target_size[1])
+        if tight:
+            inner_max_w = max(8, max_tw - pad_px * 2)
+            inner_max_h = max(8, max_th - pad_px * 2)
+            if cw > inner_max_w or ch > inner_max_h:
+                fitted = ImageOps.contain(cropped, (inner_max_w, inner_max_h), Image.Resampling.LANCZOS)
+            else:
+                fitted = cropped
+            tw = max(32, ((fitted.width + pad_px * 2 + 1) // 2) * 2)
+            th = max(28, ((fitted.height + pad_px * 2 + 1) // 2) * 2)
+        else:
+            tw, th = max_tw, max_th
+            inner_w = max(8, tw - pad_px * 2)
+            inner_h = max(8, th - pad_px * 2)
+            fitted = ImageOps.contain(cropped, (inner_w, inner_h), Image.Resampling.LANCZOS)
+    else:
         tw = max(32, ((cw + pad_px * 2 + 1) // 2) * 2)
-        th = max(32, ((ch + pad_px * 2 + 1) // 2) * 2)
-    inner_w = max(8, tw - pad_px * 2)
-    inner_h = max(8, th - pad_px * 2)
-    fitted = ImageOps.contain(cropped, (inner_w, inner_h), Image.Resampling.LANCZOS)
+        th = max(28 if tight else 32, ((ch + pad_px * 2 + 1) // 2) * 2)
+        inner_w = max(8, tw - pad_px * 2)
+        inner_h = max(8, th - pad_px * 2)
+        fitted = ImageOps.contain(cropped, (inner_w, inner_h), Image.Resampling.LANCZOS)
     canvas = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
     ox = (tw - fitted.width) // 2
     oy = (th - fitted.height) // 2
@@ -319,6 +420,8 @@ def do_slice_sheet(req):
     bg_color = req.get("bg_color")
     if bg_color is None:
         bg_color = sample_bg_color(src)
+    else:
+        bg_color = parse_color(bg_color, (0, 255, 0, 255))
     tol = int(req.get("tolerance", 42))
     method = str(req.get("method") or "auto").lower()
     defringe = bool(req.get("defringe", True))
@@ -327,12 +430,21 @@ def do_slice_sheet(req):
     out_dir.mkdir(parents=True, exist_ok=True)
     out_dir_rel = req["out_dir_rel"].rstrip("/")
 
+    items = req["items"]
+    auto_boxes = None
+    if items and not any(it.get("box") for it in items):
+        default_rows = max(1, int(items[0].get("rows", req.get("rows", 2))))
+        default_cols = max(1, int(items[0].get("cols", req.get("cols", 4))))
+        auto_boxes = detect_sheet_boxes(src, bg_color, tol, len(items), default_rows, default_cols)
+
     results = []
-    for item in req["items"]:
+    for idx, item in enumerate(items):
         name = item["name"]
         if item.get("box"):
             bx = item["box"]
             x0, y0, x1, y1 = int(bx[0]), int(bx[1]), int(bx[2]), int(bx[3])
+        elif auto_boxes is not None:
+            x0, y0, x1, y1 = auto_boxes[idx]
         else:
             rows = max(1, int(item.get("rows", req.get("rows", 2))))
             cols = max(1, int(item.get("cols", req.get("cols", 4))))
@@ -359,10 +471,12 @@ def do_slice_sheet(req):
         if bbox is None:
             fail(f"Sliced cell '{name}' contained no foreground pixels after background removal.")
         cropped = cleaned.crop(bbox)
-        target_size = item.get("target_size")
-        pad_px = int(item.get("pad_px", 4))
-        final_img = fit_to_target(cropped, target_size, pad_px=pad_px)
         is_9slice = bool(item.get("is_9slice", False))
+        tight_fit = bool(item.get("tight_fit", is_9slice and not cutout_interior))
+        target_size = item.get("target_size")
+        default_pad = 2 if tight_fit else 4
+        pad_px = int(item.get("pad_px", default_pad))
+        final_img = fit_to_target(cropped, target_size, pad_px=pad_px, tight=tight_fit)
         slice_rect = item.get("slice_override")
         if is_9slice and not slice_rect:
             slice_rect = compute_slice_center(final_img, cutout_interior=cutout_interior)

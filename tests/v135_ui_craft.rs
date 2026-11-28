@@ -723,3 +723,74 @@ fn verify_ui_craft_live_studio_probe_pass_fail_and_offline_override() {
     assert_eq!(res_np["mode"], "offline_fallback", "{res_np}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn adaptive_chroma_slicer_handles_2x4_panels_sheet_tight_9slice() {
+    let dir = scratch("adaptive-2x4");
+    let proj = dir.join("proj");
+    std::fs::create_dir_all(proj.join("art/ui/sheets")).unwrap();
+    std::fs::create_dir_all(proj.join("src/shared")).unwrap();
+    let sheet_rel = "art/ui/sheets/obsidian-prism_panels_sheet.png";
+    let sheet_abs = proj.join(sheet_rel);
+
+    // Synthesize a 1536x1024 #00FF00 chroma-key sheet laid out as 2 columns x 4 rows
+    // (including asymmetric Row 3 dock_tile=320x240 + inspector_card=920x240) and
+    // assert OpenRO's 4x2 panels_sheet slicer auto-switches to chroma-band boxes with
+    // tight zero-letterbox 9-slice outputs.
+    let py = r#"
+import sys
+from PIL import Image, ImageDraw
+img = Image.new("RGBA", (1536, 1024), (0, 255, 0, 255))
+d = ImageDraw.Draw(img)
+rects = [
+    (40, 30, 710, 230, (24, 34, 58, 255)),
+    (750, 30, 1490, 230, (18, 92, 180, 255)),
+    (44, 290, 700, 395, (212, 160, 48, 255)),
+    (800, 290, 1480, 395, (72, 82, 102, 255)),
+    (42, 460, 720, 600, (16, 165, 96, 255)),
+    (800, 460, 1490, 600, (220, 150, 32, 255)),
+    (60, 680, 380, 960, (20, 28, 48, 255)),
+    (490, 680, 1480, 960, (16, 22, 38, 255)),
+]
+for x0, y0, x1, y1, col in rects:
+    d.rounded_rectangle((x0, y0, x1, y1), radius=14, fill=col, outline=(120, 210, 255, 255), width=4)
+img.save(sys.argv[1])
+"#;
+    let st = Command::new("python3").args(["-c", py, sheet_abs.to_str().unwrap()]).status().unwrap();
+    if !st.success() {
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+
+    let sliced = openro_rs::image_ops::slice_ui_sheet(
+        &proj,
+        &json!({
+            "input": sheet_rel,
+            "skin": "obsidian-prism",
+            "sheet": "panels_sheet",
+        }),
+    )
+    .expect("adaptive 2x4 panels_sheet slice");
+    assert_eq!(sliced["ok"], true);
+    let items = sliced["sliced"].as_array().unwrap();
+    assert_eq!(items.len(), 8);
+    for it in items {
+        let name = it["name"].as_str().unwrap();
+        let w = it["width"].as_u64().unwrap();
+        let h = it["height"].as_u64().unwrap();
+        let ratio = it["opaque_ratio"].as_f64().unwrap();
+        assert!(ratio >= 0.70, "{name} expected tight 9-slice opaque_ratio >= 0.70, got {ratio} ({w}x{h})");
+        let sl = it["slice"].as_array().expect("9-slice rect");
+        let (l, t, r, b) = (sl[0].as_i64().unwrap(), sl[1].as_i64().unwrap(), sl[2].as_i64().unwrap(), sl[3].as_i64().unwrap());
+        assert!(0 < l && l < r && r < w as i64 && 0 < t && t < b && b < h as i64, "{name}: {sl:?}");
+    }
+    // Check wide modal_glass / btn_emerald did not get cropped to square or letterboxed tall
+    let btn = items.iter().find(|x| x["name"] == "btn_emerald").unwrap();
+    assert!(btn["width"].as_u64().unwrap() > btn["height"].as_u64().unwrap() * 2, "{btn}");
+    let dock = items.iter().find(|x| x["name"] == "dock_tile").unwrap();
+    let dw = dock["width"].as_u64().unwrap();
+    let dh = dock["height"].as_u64().unwrap();
+    assert!(dw >= 120 && dh >= 120, "{dock}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
