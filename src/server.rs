@@ -7058,9 +7058,35 @@ fn try_route_project_teardown(
             }
         }
         ("GET", "") => {
-            let uid = query_param(query, "universe_id").and_then(|s| s.parse::<u64>().ok());
+            let uid = match query_param(query, "universe_id") {
+                Some(raw) if !raw.trim().is_empty() => match raw.trim().parse::<u64>() {
+                    Ok(id) if id > 0 => Some(id),
+                    _ => {
+                        respond_err(stream, "400 Bad Request", "invalid universe_id query parameter");
+                        return true;
+                    }
+                },
+                _ => None,
+            };
             match crate::teardown::get_teardown(&proj_dir, uid) {
                 Ok(v) => respond_json(stream, "200 OK", &v),
+                Err(oc) if oc.status == 404 && uid.is_none() => respond_json(
+                    stream,
+                    "200 OK",
+                    &json!({
+                        "ok": true,
+                        "has_teardown": false,
+                        "screenshots": [],
+                        "recommended_ui_reference_screenshots": [],
+                    }),
+                ),
+                Err(oc) => respond_err(stream, status_line_for_code(oc.status), &oc.msg),
+            }
+        }
+        ("GET", "screenshot") => {
+            let rel = crate::project_api::query_param(query, "path").unwrap_or_default();
+            match crate::teardown::read_teardown_screenshot_image(&proj_dir, &rel) {
+                Ok((bytes, mime)) => respond_bytes(stream, "200 OK", mime, "no-store", &bytes),
                 Err(oc) => respond_err(stream, status_line_for_code(oc.status), &oc.msg),
             }
         }

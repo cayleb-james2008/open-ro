@@ -224,13 +224,13 @@ fn start_mock_roblox_server(png_bytes: Vec<u8>) -> (String, std::sync::Arc<std::
     (format!("http://{addr}"), stop)
 }
 
-fn http_req_host(
+fn http_req_raw_host(
     port: u16,
     method: &str,
     path: &str,
     host_hdr: &str,
     body: Option<&Value>,
-) -> (u16, Value) {
+) -> (u16, String, Vec<u8>) {
     let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
     let payload = body.map(|b| b.to_string()).unwrap_or_default();
     let req = if body.is_some() {
@@ -244,15 +244,35 @@ fn http_req_host(
     s.write_all(req.as_bytes()).unwrap();
     let mut resp = Vec::new();
     s.read_to_end(&mut resp).unwrap();
-    let text = String::from_utf8_lossy(&resp);
-    let (head, body_str) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+    let sep = resp
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap_or(resp.len());
+    let head = String::from_utf8_lossy(&resp[..sep]).to_string();
+    let body_bytes = if sep + 4 <= resp.len() {
+        resp[sep + 4..].to_vec()
+    } else {
+        Vec::new()
+    };
     let code = head
         .lines()
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|c| c.parse::<u16>().ok())
         .unwrap_or(0);
-    let json_val = serde_json::from_str(body_str).unwrap_or_else(|_| json!({ "raw": body_str }));
+    (code, head, body_bytes)
+}
+
+fn http_req_host(
+    port: u16,
+    method: &str,
+    path: &str,
+    host_hdr: &str,
+    body: Option<&Value>,
+) -> (u16, Value) {
+    let (code, _head, body_bytes) = http_req_raw_host(port, method, path, host_hdr, body);
+    let body_str = String::from_utf8_lossy(&body_bytes);
+    let json_val = serde_json::from_str(&body_str).unwrap_or_else(|_| json!({ "raw": body_str }));
     (code, json_val)
 }
 
@@ -335,6 +355,30 @@ fn teardown_engine_and_ui_variant_end_to_end_offline() {
         .to_string(),
     );
 
+    // 0. GET /api/projects/:id/teardown before any teardown -> 200 OK has_teardown:false (no 404 console spam)
+    let (st_empty, empty_td) = http_req_host(
+        port,
+        "GET",
+        &format!("/api/projects/{pid}/teardown"),
+        &format!("127.0.0.1:{port}"),
+        None,
+    );
+    assert_eq!(st_empty, 200, "empty teardown GET must return 200: {empty_td}");
+    assert_eq!(empty_td["ok"], true);
+    assert_eq!(empty_td["has_teardown"], false);
+    assert_eq!(empty_td["screenshots"], json!([]));
+    assert_eq!(empty_td["recommended_ui_reference_screenshots"], json!([]));
+
+    // Explicit ?universe_id=99999999 still returns 404 Not Found when missing
+    let (st_missing_uid, _) = http_req_host(
+        port,
+        "GET",
+        &format!("/api/projects/{pid}/teardown?universe_id=99999999"),
+        &format!("127.0.0.1:{port}"),
+        None,
+    );
+    assert_eq!(st_missing_uid, 404);
+
     // 1. Non-loopback host rejected with 403 Forbidden
     let (st_forb, _) = http_req_host(
         port,
@@ -385,6 +429,7 @@ fn teardown_engine_and_ui_variant_end_to_end_offline() {
     );
     assert_eq!(st_get, 200);
     assert_eq!(got["universe_id"], 99887766);
+    assert_eq!(got["has_teardown"], true);
 
     // 4. Record live HUD screenshot -> prioritized ahead of storefront_thumbnail
     std::fs::create_dir_all(pdir.join("captures")).unwrap();
@@ -421,6 +466,68 @@ fn teardown_engine_and_ui_variant_end_to_end_offline() {
         rec_refs[0].as_str().unwrap().contains("refs/teardowns/99887766/screenshots/"),
         "live hud screenshot should be prioritized first: {rec_refs:?}"
     );
+
+    // 4b. GET /api/projects/:id/teardown/screenshot?path=<rel> serves image/png & enforces CWE-22/CWE-59/refs-prefix
+    let shot_rel = rec_refs[0].as_str().unwrap();
+    let encoded_shot = shot_rel.replace('/', "%2F");
+    let (st_img, head_img, body_img) = http_req_raw_host(
+        port,
+        "GET",
+        &format!("/api/projects/{pid}/teardown/screenshot?path={encoded_shot}"),
+        &format!("127.0.0.1:{port}"),
+        None,
+    );
+    assert_eq!(
+        st_img,
+        200,
+        "GET teardown/screenshot failed: {head_img}\nbody={}",
+        String::from_utf8_lossy(&body_img)
+    );
+    assert!(head_img.to_ascii_lowercase().contains("content-type: image/png"), "{head_img}");
+    assert_eq!(body_img, png);
+
+    let (st_outside_refs, _) = http_req_host(
+        port,
+        "GET",
+        &format!("/api/projects/{pid}/teardown/screenshot?path=captures%2Flive_hud.png"),
+        &format!("127.0.0.1:{port}"),
+        None,
+    );
+    assert_eq!(st_outside_refs, 400);
+
+    let (st_trav, _) = http_req_host(
+        port,
+        "GET",
+        &format!("/api/projects/{pid}/teardown/screenshot?path=refs%2F..%2Fopenro.project.json"),
+        &format!("127.0.0.1:{port}"),
+        None,
+    );
+    assert_eq!(st_trav, 400);
+
+    #[cfg(unix)]
+    {
+        let sym_target = pdir.join("captures/live_hud.png");
+        let sym_link = pdir.join("refs/teardowns/99887766/screenshots/sym.png");
+        let _ = std::os::unix::fs::symlink(&sym_target, &sym_link);
+        let (st_sym, _) = http_req_host(
+            port,
+            "GET",
+            &format!("/api/projects/{pid}/teardown/screenshot?path=refs/teardowns/99887766/screenshots/sym.png"),
+            &format!("127.0.0.1:{port}"),
+            None,
+        );
+        assert_eq!(st_sym, 400);
+        let _ = std::fs::remove_file(&sym_link);
+    }
+
+    let (st_shot_forb, _) = http_req_host(
+        port,
+        "GET",
+        &format!("/api/projects/{pid}/teardown/screenshot?path={encoded_shot}"),
+        "evil.example.com:80",
+        None,
+    );
+    assert_eq!(st_shot_forb, 403);
 
     // 5. Merge E2E spec pillar
     let (st_spec, spec_res) = http_req_host(
