@@ -226,28 +226,36 @@ try {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ layout: "skybridge-crest", skin: "obsidian-prism", sheet: "card_borders_sheet", procedural_fallback: true }),
     }).then((r) => r.json());
+    const panelsGen = await fetch("/api/studio/ui-kit/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ layout: "perimeter-command", skin: "obsidian-prism", sheet: "panels_sheet", procedural_fallback: true }),
+    }).then((r) => r.json());
     const adp = await fetch("/api/adapters").then((r) => r.json());
-    return { pr, gen, bordersGen, adp };
+    return { pr, gen, bordersGen, panelsGen, adp };
   });
   const sheetIds = Array.isArray(uiKitApiRes.pr?.sheets) ? uiKitApiRes.pr.sheets.map((x) => x.id) : [];
   check(
-    "GET /api/ui-kit/presets returns 7 rules, 4 layouts, 5 skins, 4 sheets (incl. card_borders_sheet)",
+    "GET /api/ui-kit/presets returns 9 rules, 4 layouts, 5 skins, 5 sheets (incl. card_borders_sheet & panels_sheet)",
     uiKitApiRes.pr?.ok === true &&
-      uiKitApiRes.pr?.craft_rules?.length === 7 &&
+      uiKitApiRes.pr?.craft_rules?.length === 9 &&
       uiKitApiRes.pr?.layouts?.length === 4 &&
       uiKitApiRes.pr?.skins?.length === 5 &&
-      uiKitApiRes.pr?.sheets?.length === 4 &&
-      sheetIds.includes("card_borders_sheet"),
+      uiKitApiRes.pr?.sheets?.length === 5 &&
+      sheetIds.includes("card_borders_sheet") &&
+      sheetIds.includes("panels_sheet"),
     JSON.stringify({ rules: uiKitApiRes.pr?.craft_rules?.length, layouts: uiKitApiRes.pr?.layouts?.length, sheetIds }),
   );
   check(
-    "POST /api/studio/ui-kit/generate slices transparent chrome & 7 card_borders_sheet overlays",
+    "POST /api/studio/ui-kit/generate slices transparent chrome, 7 card_borders_sheet & 8 panels_sheet overlays",
     uiKitApiRes.gen?.ok === true &&
       Number(uiKitApiRes.gen?.sliced_count) >= 8 &&
       uiKitApiRes.bordersGen?.ok === true &&
       Number(uiKitApiRes.bordersGen?.sliced_count) === 7 &&
+      uiKitApiRes.panelsGen?.ok === true &&
+      Number(uiKitApiRes.panelsGen?.sliced_count) === 8 &&
       uiKitApiRes.bordersGen?.slices_json === "art/ui/slices.json",
-    `chrome=${uiKitApiRes.gen?.sliced_count} borders=${uiKitApiRes.bordersGen?.sliced_count}`,
+    `chrome=${uiKitApiRes.gen?.sliced_count} borders=${uiKitApiRes.bordersGen?.sliced_count} panels=${uiKitApiRes.panelsGen?.sliced_count}`,
   );
   const presetIds = Array.isArray(uiKitApiRes.adp?.presets) ? uiKitApiRes.adp.presets.map((x) => x.id) : [];
   check(
