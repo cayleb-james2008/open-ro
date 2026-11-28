@@ -335,7 +335,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
           setProjectArtFiles(aRes.files);
         }
         const tdRes = await fetchProjectTeardown(projectId);
-        if (tdRes.ok) {
+        if (tdRes.ok && tdRes.has_teardown !== false) {
           const rec = Array.isArray(tdRes.recommended_ui_reference_screenshots)
             ? tdRes.recommended_ui_reference_screenshots.filter(
                 (p): p is string => typeof p === "string" && p.trim().length > 0,
@@ -1221,7 +1221,7 @@ export const GuiDesignerWorkbench = memo(function GuiDesignerWorkbench({
                           prev.includes(refPath) ? prev.filter((p) => p !== refPath) : [...prev, refPath],
                         )
                       }
-                      className={`inline-flex h-7 items-center gap-1 rounded-sm border px-1.5 font-mono text-xs transition-colors max-md:min-h-11 ${
+                      className={`inline-flex h-7 items-center gap-1 rounded-sm border px-1.5 font-mono text-xs transition-[color,background-color,border-color] duration-(--dur-press) ease-(--ease-house) max-md:min-h-11 ${
                         active
                           ? "border-blue/60 bg-pill-active-bg text-pill-active-fg"
                           : "border-hairline bg-board text-ink-2 hover:text-ink"
