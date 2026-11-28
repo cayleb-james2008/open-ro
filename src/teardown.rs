@@ -1367,6 +1367,7 @@ pub fn teardown_roblox_game(project_dir: &Path, body: &Value) -> Result<Value, O
 
     let mut doc = json!({
         "ok": true,
+        "has_teardown": true,
         "schema": "openro.teardown.v1",
         "universe_id": uid,
         "root_place_id": root_place_id,
@@ -1450,8 +1451,59 @@ pub fn get_teardown(project_dir: &Path, universe_id: Option<u64>) -> Result<Valu
     let abs = safe_rel(project_dir, &json_rel)?;
     let raw = std::fs::read_to_string(&abs)
         .map_err(|_| err(404, format!("teardown {uid} not found")))?;
-    serde_json::from_str::<Value>(&raw)
-        .map_err(|e| err(500, format!("corrupt teardown {uid}: {e}")))
+    let mut val = serde_json::from_str::<Value>(&raw)
+        .map_err(|e| err(500, format!("corrupt teardown {uid}: {e}")))?;
+    if let Some(obj) = val.as_object_mut() {
+        obj.entry("has_teardown".to_string()).or_insert_with(|| json!(true));
+    }
+    Ok(val)
+}
+
+/// Safely read a teardown screenshot/thumbnail image under `<project_dir>/refs/...`
+/// for `GET /api/projects/:id/teardown/screenshot?path=<rel>`, enforcing CWE-22/CWE-59
+/// and verifying real PNG/JPEG/WEBP magic bytes.
+pub fn read_teardown_screenshot_image(
+    project_dir: &Path,
+    raw_rel: &str,
+) -> Result<(Vec<u8>, &'static str), Oc> {
+    let rel = raw_rel.trim();
+    let lower = rel.to_ascii_lowercase();
+    if rel.is_empty()
+        || rel.contains('\0')
+        || rel.contains('\\')
+        || rel.contains("..")
+        || lower.contains("%2e")
+        || lower.contains("%2f")
+        || lower.contains("%5c")
+        || lower.contains("%00")
+        || lower.contains("%25")
+    {
+        return Err(bad("invalid teardown screenshot path"));
+    }
+    if !rel.starts_with("refs/") {
+        return Err(bad("teardown screenshot path must stay under refs/"));
+    }
+    let abs = safe_rel(project_dir, rel)?;
+    let meta = std::fs::symlink_metadata(&abs)
+        .map_err(|_| err(404, format!("teardown screenshot '{rel}' not found")))?;
+    if meta.file_type().is_symlink() {
+        return Err(bad(format!("teardown screenshot '{rel}' is a symlink (CWE-59)")));
+    }
+    if !meta.is_file() {
+        return Err(bad(format!("teardown screenshot '{rel}' is not a regular file")));
+    }
+    if meta.len() > MAX_SCREENSHOT_BYTES as u64 {
+        return Err(bad("teardown screenshot exceeds 20 MiB limit"));
+    }
+    let bytes = std::fs::read(&abs)
+        .map_err(|e| err(500, format!("read teardown screenshot '{rel}': {e}")))?;
+    let mime = match detect_image_ext(&bytes) {
+        Some("png") => "image/png",
+        Some("jpg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        _ => return Err(bad(format!("teardown screenshot '{rel}' is not a valid PNG/JPEG/WEBP image"))),
+    };
+    Ok((bytes, mime))
 }
 
 fn sanitize_png_filename(raw: &str) -> String {
