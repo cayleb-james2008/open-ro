@@ -4,6 +4,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/cayleb-james2008/open-ro/release.yml?branch=main&label=build)](https://github.com/cayleb-james2008/open-ro/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Stack](https://img.shields.io/badge/stack-Rust%20%2B%20React%2019%20%2B%20TypeScript-0f172a.svg)](#architecture)
+[![M8ven Score](https://m8ven.ai/badge/mcp/cayleb-james2008/open-ro)](https://m8ven.ai/mcp/cayleb-james2008/open-ro?s=readme)
 
 OpenRO is a single-binary Roblox Studio IDE written in Rust with a React 19 interface. It builds, checks, executes headless Luau journeys, monetizes, and publishes Roblox games from Rojo project folders or an embedded Local Place engine, with an offline browser demo (`web-dist/index.html`) that runs the same workflows locally with no external network requests.
 
