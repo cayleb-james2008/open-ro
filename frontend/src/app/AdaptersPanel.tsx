@@ -91,6 +91,7 @@ const BASE_FEATURED_ORDER = [
 ];
 
 const AUDIO_FEATURED_ORDER = [
+  "youtube-nocopyright-music-cli",
   "audioldm-s-local-cli",
   "stable-audio-small-cli",
   "tangoflux-sfx-cli",
