@@ -173,7 +173,15 @@ function summarizeTeardownPillar(value: unknown): string {
 }
 
 function formatTeardownEntries(
-  block: { videos?: Array<{ title?: string; channel?: string }>; pages?: Array<{ title?: string; snippet?: string }>; findings?: string[]; summary?: string } | undefined,
+  block:
+    | {
+        videos?: Array<{ title?: string; channel?: string; captions?: string; captions_snippet?: string }>;
+        pages?: Array<{ url?: string; excerpt?: string; title?: string; snippet?: string }>;
+        search_results?: Array<{ title?: string; url?: string; snippet?: string }>;
+        findings?: string[];
+        summary?: string;
+      }
+    | undefined,
 ): string[] {
   if (!block) return [];
   const lines: string[] = [];
@@ -187,12 +195,28 @@ function formatTeardownEntries(
   }
   if (Array.isArray(block.videos)) {
     for (const v of block.videos) {
-      if (v?.title) lines.push(v.channel ? `${v.title} (${v.channel})` : v.title);
+      if (v?.title) {
+        const cap = (v.captions || v.captions_snippet || "").trim();
+        const label = v.channel ? `${v.title} (${v.channel})` : v.title;
+        lines.push(cap ? `${label}: ${cap.slice(0, 120)}` : label);
+      }
     }
   }
   if (Array.isArray(block.pages)) {
     for (const p of block.pages) {
-      if (p?.title) lines.push(p.snippet ? `${p.title}: ${p.snippet.slice(0, 120)}` : p.title);
+      const heading = p?.title?.trim() || p?.url?.trim() || "";
+      const body = (p?.excerpt || p?.snippet || "").trim();
+      if (heading && body) lines.push(`${heading}: ${body.slice(0, 120)}`);
+      else if (heading) lines.push(heading);
+      else if (body) lines.push(body.slice(0, 120));
+    }
+  }
+  if (lines.length === 0 && Array.isArray(block.search_results)) {
+    for (const sr of block.search_results) {
+      const heading = sr?.title?.trim() || sr?.url?.trim() || "";
+      const body = (sr?.snippet || "").trim();
+      if (heading && body) lines.push(`${heading}: ${body.slice(0, 120)}`);
+      else if (heading) lines.push(heading);
     }
   }
   return lines.slice(0, 5);
@@ -1571,7 +1595,7 @@ export function ToolLibraryDialog({
                               <div className="flex flex-wrap gap-1.5">
                                 {gamePasses.slice(0, 8).map((gp, idx) => {
                                   const label = gp.displayName || gp.name || `Pass #${idx + 1}`;
-                                  const robux = gp.price ?? gp.priceInRobux;
+                                  const robux = gp.price_robux ?? gp.price ?? gp.priceInRobux;
                                   return (
                                     <Pill
                                       key={`${gp.id ?? label}-${idx}`}
@@ -1660,9 +1684,10 @@ export function ToolLibraryDialog({
                             </div>
                           )}
 
-                          {teardownRes.teardown_md && (
+                          {(teardownRes.teardown_md_path || teardownRes.teardown_md) && (
                             <p className="text-xs text-ink-2">
-                              Saved teardown: <code className="font-mono">{teardownRes.teardown_md}</code>
+                              Saved teardown:{" "}
+                              <code className="font-mono">{teardownRes.teardown_md_path || teardownRes.teardown_md}</code>
                             </p>
                           )}
                         </div>

@@ -207,12 +207,21 @@ try {
 
   // UI Kit generator strip + mixable layouts + API presets & procedural slice + new UI adapter presets
   await p.locator("[data-ui-kit-strip]").waitFor({ state: "visible", timeout: 5000 });
+  await p.locator("[data-ui-kit-reference-strip]").waitFor({ state: "visible", timeout: 4000 });
+  const useTeardownDefault = await p.locator("[data-ui-kit-use-teardown]").isChecked();
+  const variantThemeInput = p.locator("[data-ui-kit-variant-theme]");
+  await variantThemeInput.fill("Meme Arcade Pop");
   await p.locator("[data-ui-kit-layout]").selectOption("compact-mobile-split");
-  await p.locator("[data-ui-kit-skin]").selectOption("sakura-lacquer");
+  await p.locator("[data-ui-kit-skin]").selectOption("meme-pop-arcade");
   await p.locator("[data-ui-kit-apply]").click();
   await p.locator('[data-gui-canvas-node="uk-ss"]').waitFor({ state: "visible", timeout: 4000 });
   const ukWarnText = await p.locator("[data-gui-warnings]").innerText();
-  check("UI Kit mixable layout applies cleanly with 0 warnings", /\b0\b/.test(ukWarnText), ukWarnText.slice(0, 80));
+  check(
+    "UI Kit Reference Variant strip, meme-pop-arcade skin & mixable layout apply with 0 warnings",
+    useTeardownDefault && (await variantThemeInput.inputValue()) === "Meme Arcade Pop" && /\b0\b/.test(ukWarnText),
+    ukWarnText.slice(0, 80),
+  );
+  await variantThemeInput.fill("");
 
   const uiKitApiRes = await p.evaluate(async () => {
     const pr = await fetch("/api/ui-kit/presets").then((r) => r.json());
@@ -1560,6 +1569,78 @@ try {
     const audioTierBadges = await toolLibDlg.locator("[data-model-size]").count();
     check("AdaptersPanel renders model_size badges for tiered audio presets", audioTierBadges >= 1, `badges=${audioTierBadges}`);
   }
+
+  // Market Taste Live Teardown button + 7-pillar result card + screenshot preview <img> load
+  await toolLibDlg.getByRole("button", { name: /^Market Taste/ }).click();
+  await toolLibDlg.locator("[data-market-taste-panel]").waitFor({ state: "visible", timeout: 8000 });
+  await toolLibDlg.locator("[data-live-teardown-btn]").waitFor({ state: "visible", timeout: 5000 });
+
+  const teardownRoutePattern = "**/api/projects/*/teardown";
+  const teardownShotPattern = "**/api/projects/*/teardown/screenshot*";
+  const tinyPng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2ZkAAAAASUVORK5CYII=",
+    "base64",
+  );
+  await p.route(teardownRoutePattern, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        universe_id: 10092619788,
+        teardown_md_path: "refs/teardowns/10092619788/TEARDOWN.md",
+        game: { name: "Meme Arcade Gate Test", universe_id: 10092619788 },
+        badges: [{ id: 1, name: "First Run" }, { id: 2, name: "100 Wins" }],
+        game_passes: [{ id: 101, name: "VIP Boost", price_robux: 199 }],
+        youtube_research: {
+          videos: [{ title: "Meme Arcade Tips", channel: "GateTester", captions: "Fast speedrun loop and pack reveal" }],
+        },
+        wiki_research: {
+          pages: [{ url: "https://wiki.example.com/meme-arcade", bytes: 420, excerpt: "Plaza upgrades double coin rate." }],
+        },
+        screenshots: [{ path: "refs/teardowns/10092619788/screenshots/hud.png", role: "hud", notes: "HUD overview" }],
+        recommended_ui_reference_screenshots: ["refs/teardowns/10092619788/screenshots/hud.png"],
+        e2e_spec: {
+          core_loop: { summary: "Run -> Earn -> Open Pack" },
+          first_60s_onboarding: { summary: "Immediate starter arrow to treadmill" },
+          screens_and_copy_density: { summary: "Chunky 2-word pills and top-right counters" },
+          economy_and_monetization: { summary: "VIP Boost 199 R$ + pack multipliers" },
+          world_3d_and_props: { summary: "Neon plaza pedestals and portal arches" },
+          audio_sfx_mood: { summary: "Punchy synth pop and coin chimes" },
+          retention_hooks: { summary: "Daily streak + rebirth multiplier" },
+        },
+      }),
+    });
+  });
+  await p.route(teardownShotPattern, async (route) => {
+    await route.fulfill({ status: 200, contentType: "image/png", body: tinyPng });
+  });
+
+  await toolLibDlg.locator('input[aria-label="Roblox Game URL or ID"]').fill("10092619788");
+  await toolLibDlg.locator("[data-live-teardown-btn]").click();
+  await toolLibDlg.locator("[data-teardown-result]").waitFor({ state: "visible", timeout: 8000 });
+  const teardownText = await toolLibDlg.locator("[data-teardown-result]").innerText();
+  const shotLoaded = await toolLibDlg.locator("[data-teardown-screenshots] img").first().evaluate(
+    (img) => img.complete && img.naturalWidth > 0,
+  );
+  await p.unroute(teardownRoutePattern);
+  await p.unroute(teardownShotPattern);
+  check(
+    "Market Taste Live Teardown renders Badges, GamePasses (price_robux), YouTube/Wiki findings, 7-pillar spec & screenshot preview",
+    teardownText.includes("2 Badges") &&
+      teardownText.includes("VIP Boost") &&
+      teardownText.includes("199 R$") &&
+      teardownText.includes("Fast speedrun loop") &&
+      teardownText.includes("Plaza upgrades double coin rate") &&
+      teardownText.includes("7-Pillar E2E Spec Summary") &&
+      teardownText.includes("refs/teardowns/10092619788/TEARDOWN.md") &&
+      shotLoaded,
+    teardownText.slice(0, 180),
+  );
 
   await toolLibDlg.locator('button[aria-label="Close Tool Library"]').click();
   await toolLibDlg.waitFor({ state: "hidden", timeout: 5000 });

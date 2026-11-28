@@ -1671,15 +1671,20 @@ export type TeardownGamePass = {
   id?: number | string;
   name?: string;
   displayName?: string;
+  price_robux?: number | null;
   price?: number | null;
   priceInRobux?: number | null;
+  is_for_sale?: boolean;
   description?: string;
 };
 
 export type TeardownReport = {
   ok?: boolean;
+  has_teardown?: boolean;
   universe_id?: number;
   teardown_dir?: string;
+  teardown_json_path?: string;
+  teardown_md_path?: string;
   teardown_md?: string;
   game?: {
     name?: string;
@@ -1696,12 +1701,22 @@ export type TeardownReport = {
   game_passes?: TeardownGamePass[];
   media?: unknown[];
   youtube_research?: {
-    videos?: Array<{ title?: string; url?: string; channel?: string; duration_s?: number; captions_snippet?: string }>;
+    videos?: Array<{
+      id?: string;
+      title?: string;
+      url?: string;
+      channel?: string;
+      duration_s?: number;
+      description?: string;
+      captions?: string;
+      captions_snippet?: string;
+    }>;
     findings?: string[];
     summary?: string;
   };
   wiki_research?: {
-    pages?: Array<{ title?: string; url?: string; snippet?: string }>;
+    pages?: Array<{ url?: string; bytes?: number; excerpt?: string; title?: string; snippet?: string }>;
+    search_results?: Array<{ title?: string; url?: string; snippet?: string }>;
     findings?: string[];
     summary?: string;
   };
@@ -1712,7 +1727,7 @@ export type TeardownReport = {
 
 export function teardownScreenshotPreviewUrl(projectId: string, relPath: string): string {
   if (/^(https?:|data:|blob:)/i.test(relPath)) return relPath;
-  return projUrl(projectId, `/preview?path=${enc(relPath)}`);
+  return projUrl(projectId, `/teardown/screenshot?path=${enc(relPath)}`);
 }
 
 export async function fetchProjectTeardown(projectId: string): Promise<Res<TeardownReport>> {
